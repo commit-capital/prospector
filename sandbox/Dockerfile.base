@@ -1,0 +1,58 @@
+# The per-batch base image: pinned-main checkout + (Tier 1) main's pinned deps,
+# baked in. Phase containers run FROM this with no source mount, so untrusted
+# writes land in the container's own copy-on-write layer and cannot reach the
+# host filesystem.
+#
+# Build context layout (verify_driver.py prepare-base builds it):
+#   src/         the scrubbed, remote-stripped clone at the pinned main SHA
+#   pnpm-store/  prefetched pnpm store (Tier 1 only; empty dir at Tier 0)
+#
+# Build with --network none: egress during install is structurally impossible,
+# not merely unconfigured. The scrub runs on the host BEFORE this build, because
+# an image layer is durable: a credential in any layer stays readable in the
+# image even once a later layer removes the file.
+#
+# Two stages, because layer durability also has a size cost: the shipped image
+# carries only the installed tree, while the pnpm store (1.9GB for upstream)
+# lives in builder-stage layers that never enter it. COPY --from streams the
+# tree through tar, which records hardlinks, so .pnpm's links to shared inodes
+# arrive as links, not duplicated bytes.
+ARG BASE_IMAGE=pr-verify:local
+
+FROM ${BASE_IMAGE} AS builder
+
+ARG TIER=0
+
+COPY --chown=sandbox:sandbox src /work/src
+# The store is staged under /work, which the base image owns as `sandbox`:
+# this stage builds and runs as non-root.
+COPY --chown=sandbox:sandbox pnpm-store /work/pnpm-store
+
+WORKDIR /work/src
+
+# Offline + frozen means the sandbox cannot fetch any package that is not already
+# in the prefetched store, so a PR-introduced dependency is impossible here.
+# Install runs as `sandbox`, so main's pinned-dep lifecycle scripts execute
+# unprivileged, offline, and secretless.
+# The tree arrives with no node_modules, and that is asserted rather than assumed.
+# pnpm reads an existing node_modules as the record of what is installed: handed
+# one, it exits 0 without linking anything, and the image ships importing nothing.
+# The assert is the gate — it holds for any node_modules, whatever wrote it.
+RUN if [ "$TIER" = "1" ]; then \
+      set -e; \
+      [ ! -e node_modules ] \
+        || { echo "src carries a node_modules; expected a clean tree" >&2; exit 1; }; \
+      pnpm install --offline --frozen-lockfile --store-dir /work/pnpm-store; \
+    fi
+
+FROM ${BASE_IMAGE}
+
+# The installed tree only — the store stays behind in the builder. pnpm's
+# isolated linker hardlinks node_modules/.pnpm into the store, and a hardlink
+# is the inode: the copied files carry their full content without the store
+# directory existing anywhere in this image.
+COPY --from=builder --chown=sandbox:sandbox /work/src /work/src
+
+WORKDIR /work/src
+
+CMD ["bash", "-lc", "echo 'pr-verify base image: run via sandbox-run.sh' && exit 0"]

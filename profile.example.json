@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "subsystems": [
+    {"name": "scheduler", "match_terms": ["cron", "missed run", "schedule drift"]},
+    {"name": "storage", "match_terms": ["blob", "bucket", "upload"]},
+    {"name": "auth", "match_terms": ["oauth", "session token"]}
+  ],
+  "risk_tiers": {
+    "tier0_globs": ["src/auth/**", ".github/**", "package.json"],
+    "tier1_globs": ["src/db/migrations/**"],
+    "instruction_globs": [".agents/**"],
+    "tier3_globs": ["docs/**", "README.md"],
+    "default_tier": 2
+  },
+  "codeowners": {
+    "gated_globs": [".github/**", "scripts/release*"],
+    "owners": ["@release-owner"]
+  },
+  "trusted_authors": ["maintainer-one"],
+  "automation_bots": ["dependabot[bot]"],
+  "dependency_manifests": ["package.json", "requirements*.txt"],
+  "test_paths": {
+    "dir_pattern": "(^|/)(tests?|__tests__|spec|e2e)(/)",
+    "file_pattern": "(\\.(test|spec)\\.[^/]+|_(test|spec)\\.[^/]+|(^|/)test_[^/]+)$"
+  },
+  "artifact_rules": [
+    {"category": "lockfile", "pattern": "(^|/)(package-lock\\.json|pnpm-lock\\.yaml|yarn\\.lock)$"},
+    {"category": "migrations", "pattern": "(^|/)migrations/meta/"},
+    {"category": "locale", "pattern": "(^|/)(i18n|locales?)/.*\\.json$"},
+    {"category": "vendored", "pattern": "(^|/)third_party/"},
+    {"category": "generated", "pattern": "\\.generated\\.[^/]+$"}
+  ],
+  "harness": {
+    "pr_template": {
+      "required_sections": ["Summary", "Testing"],
+      "recommended_sections": ["Checklist"]
+    }
+  },
+  "verify": {
+    "test_runner": ["npx", "vitest", "run"],
+    "test_flags": ["--testTimeout=120000", "--hookTimeout=120000"],
+    "pnpm_version": "9.15.4",
+    "compile_cmd": "pnpm -r typecheck",
+    "build_cmd": "pnpm build",
+    "suite": {
+      "wrapper": "scripts/run-vitest-stable.mjs",
+      "server_project": "@your-org/server",
+      "preflight": "preflight:workspace-links",
+      "home_env": "YOURAPP_HOME",
+      "instance_env": "YOURAPP_INSTANCE_ID"
+    }
+  }
+}

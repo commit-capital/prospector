@@ -1,0 +1,50 @@
+#!/usr/bin/env python3
+"""The cockpit agent's single memory-write tool.
+
+The embedded agent (chat.py) is sandboxed read-only; this allowlisted command is
+its one way to persist a learning mid-conversation — a correction it received, a
+durable preference, a repo fact it had to be re-taught. It writes to the shared
+SQL store (agent_memory table, same DB as the triage store) tagged author="agent",
+and is recalled into the start of every future thread.
+
+Usage:
+    review_cockpit/agent/remember "<learning>" --why "<reasoning>" [--tags a,b]
+
+Reuses agent_memory.add() (in review_cockpit/backend/) for the single source of truth on entry shape.
+"""
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+# Run under a bare python3 (the agent's shell), so put the repo root on the path
+# rather than rely on the editable install — it resolves the qualified
+# `review_cockpit.backend` package and the `pipeline` package backend imports.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
+from review_cockpit.backend import agent_memory  # noqa: E402
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(
+        prog="remember",
+        description="Persist a durable learning to the cockpit agent's memory.",
+    )
+    p.add_argument("text", help="the learning — a correction, preference, or repo fact")
+    p.add_argument("--why", help="the reasoning that makes it generalize")
+    p.add_argument("--tags", help="optional comma-separated tags")
+    args = p.parse_args(argv)
+
+    tags = [t.strip() for t in args.tags.split(",")] if args.tags else None
+    try:
+        entry = agent_memory.add(args.text, why=args.why, tags=tags, author="agent")
+    except ValueError as e:
+        print(f"remember: {e}", file=sys.stderr)
+        return 2
+    print(f"remembered ({entry['id']}): {entry['text']}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

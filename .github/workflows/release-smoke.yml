@@ -1,0 +1,72 @@
+name: Release smoke
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+# A fresh clone must install, ingest, and serve — the clone-and-run release
+# contract, exercised exactly as the README quick start documents it. The
+# target repo is this one (always exists, no deployment literals, follows a
+# rename); the store is the local SQLite default; the dummy bot login has no
+# key, so the executor can only dry-run — and nothing here writes anyway.
+
+# The ingest step reads PRs and issues through the runner token, which only
+# carries the scopes granted here — read-only, matching the job's contract.
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+jobs:
+  fresh-install:
+    runs-on: ubuntu-latest
+    env:
+      TRIAGE_REPO: ${{ github.repository }}
+      TRIAGE_BOT_LOGIN: smoke-test-bot
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      # pnpm version comes from the frontend package.json "packageManager"
+      # field, so the pin lives in exactly one place.
+      - name: Install pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          package_json_file: review_cockpit/frontend/package.json
+      - name: Install Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: review_cockpit/frontend/pnpm-lock.yaml
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          enable-cache: true
+      # The documented install step: uv-locked Python env + frontend deps.
+      - name: Set up (README step 1)
+        run: ./setup.sh
+      - name: Build the frontend
+        run: pnpm --dir review_cockpit/frontend build
+      - name: Ingest open PRs + issues
+        run: uv run pr-triager ingest --max 5
+      - name: Regenerate STATUS.md
+        run: uv run pr-triager status
+      - name: Serve and probe
+        run: |
+          uv run pr-triager serve --port 8787 > serve.log 2>&1 &
+          SERVE_PID=$!
+          ok=""
+          for _ in $(seq 1 30); do
+            if curl -sf http://localhost:8787/api/health > /dev/null; then ok=1; break; fi
+            sleep 1
+          done
+          if [ -z "$ok" ]; then
+            echo "::error::backend never bound :8787"
+            cat serve.log
+            exit 1
+          fi
+          curl -sf http://localhost:8787/api/health | grep '"ok":true'
+          curl -sf http://localhost:8787/ | grep -i '<!doctype html'
+          kill "$SERVE_PID"

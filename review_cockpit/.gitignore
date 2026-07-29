@@ -1,0 +1,21 @@
+# Per-worktree dev ports (.env.example is committed)
+.env
+.env.local
+
+backend/__pycache__/
+backend/.pytest_cache/
+frontend/node_modules/
+frontend/dist/
+cache/
+!cache/.gitkeep
+# Agent memory lives in the shared SQL store, not committed files
+agent/memory.jsonl
+# Pre-sharding single-file log + raw payloads stay local (per-machine archive).
+approved-actions/*.json
+approved-actions/*.jsonl
+!approved-actions/.gitkeep
+# Per-operator shards under log/ are the shared team record and ARE committed,
+# except dry-run previews (*.local.jsonl), which stay per-machine.
+approved-actions/log/*.local.jsonl
+training/*.jsonl
+!training/.gitkeep

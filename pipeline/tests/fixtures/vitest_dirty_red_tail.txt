@@ -1,0 +1,54 @@
+boot-probe: isolation OK
+Applied patch to 'packages/db/src/backup-lib.test.ts' cleanly.
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.8 [39m[90m/work/src[39m
+
+ [31m❯[39m [30m[43m @exampleorg/db [49m[39m src/backup-lib.test.ts [2m([22m[2m7 tests[22m[2m | [22m[31m2 failed[39m[2m)[22m[33m 9811[2mms[22m[39m
+     [32m✓[39m preserves line boundaries across buffered flushes[32m 1[2mms[22m[39m
+[31m     [31m×[31m keeps the newest backup for each retained calendar month[39m[33m 1344[2mms[22m[39m
+     [33m[2m✓[22m[39m backs up and restores large table payloads without materializing one giant string [33m 1912[2mms[22m[39m
+     [33m[2m✓[22m[39m backs up and restores non-public database schemas and migration history [33m 1868[2mms[22m[39m
+     [33m[2m✓[22m[39m preserves composite foreign key column order without duplicate referenced columns [33m 1851[2mms[22m[39m
+[31m     [31m×[31m restores fallback COPY data when child tables are dumped before parent tables[39m[33m 1756[2mms[22m[39m
+     [33m[2m✓[22m[39m restores legacy public-only backups without migration history [33m 1078[2mms[22m[39m
+
+[31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 2 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m [30m[43m @exampleorg/db [49m[39m src/backup-lib.test.ts[2m > [22mrunDatabaseBackup[2m > [22mkeeps the newest backup for each retained calendar month
+[31m[1mAssertionError[22m: expected 3 to be 2 // Object.is equality[39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- 2[39m
+[31m+ 3[39m
+
+[36m [2m❯[22m src/backup-lib.test.ts:[2m106:36[22m[39m
+    [90m104|[39m         })[33m;[39m
+    [90m105|[39m
+    [90m106|[39m         [34mexpect[39m(result[33m.[39mprunedCount)[33m.[39m[34mtoBe[39m([34m2[39m)[33m;[39m
+    [90m   |[39m                                    [31m^[39m
+    [90m107|[39m         [34mexpect[39m(fs[33m.[39m[34mexistsSync[39m(janNewest))[33m.[39m[34mtoBe[39m([35mtrue[39m)[33m;[39m
+    [90m108|[39m         [34mexpect[39m(fs[33m.[39m[34mexistsSync[39m(janOlder))[33m.[39m[34mtoBe[39m([35mfalse[39m)[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m [30m[43m @exampleorg/db [49m[39m src/backup-lib.test.ts[2m > [22mrunDatabaseBackup[2m > [22mrestores fallback COPY data when child tables are dumped before parent tables
+[31m[1mError[22m: Failed to restore example-copy-fk-test-20260721-153401.sql.gz: ERROR: syntax error at or near "1" [statement: COPY "drizzle"."__drizzle_migrations" ("id", "hash", "created_at") FROM stdin;]; psql error: spawn psql ENOENT[39m
+[36m [2m❯[22m runDatabaseRestore src/backup-lib.ts:[2m1016:11[22m[39m
+    [90m1014|[39m       [33m:[39m [35mnull[39m[33m;[39m
+    [90m1015|[39m     const psqlMessage = psqlRestoreError === null ? "" : `; psql error…
+    [90m1016|[39m     [35mthrow[39m [35mnew[39m [33mError[39m(
+    [90m   |[39m           [31m^[39m
+    [90m1017|[39m       `Failed to restore ${basename(opts.backupFile)}: ${sanitizeResto…
+    [90m1018|[39m     )[33m;[39m
+[90m [2m❯[22m src/backup-lib.test.ts:[2m502:9[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯[22m[39m
+
+
+[2m Test Files [22m [1m[31m1 failed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[31m2 failed[39m[22m[2m | [22m[1m[32m5 passed[39m[22m[90m (7)[39m
+[2m   Start at [22m 15:33:53
+[2m   Duration [22m 10.68s[2m (transform 240ms, setup 0ms, import 828ms, tests 9.81s, environment 0ms)[22m
+

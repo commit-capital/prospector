@@ -1,0 +1,33 @@
+{
+  // Teaches Pyright where the packages live and the uv-locked interpreter. Code
+  // is imported qualified — from pipeline import store, from review_cockpit.backend
+  // import data, from issue_triage import issue_store — installed (editable) per
+  // pyproject [tool.setuptools]. All source roots sit at the repo root ("."), so a
+  // single extraPath mirrors the runtime install.
+  "venvPath": ".",
+  "venv": ".venv",
+  "pythonVersion": "3.14",
+  "extraPaths": [
+    "."
+  ],
+  // Tests are out of the type gate by design — they deliberately do None-unsafe
+  // things (store.get(7)["meta"]) that the test knows are present. Excluding the
+  // glob lets CI point pyright at a whole source dir without the test noise.
+  "exclude": [
+    "**/__pycache__",
+    "**/node_modules",
+    ".venv",
+    "archive",
+    "**/test_*.py"
+  ],
+  // review-new-pr/harness is a standalone tool (deployed into another repo's
+  // .github/) that inserts its own dir onto sys.path at runtime and imports its
+  // gate package by bare name (from gates import secret_scan). It gets its own
+  // execution environment whose root resolves `gates` to the harness package.
+  "executionEnvironments": [
+    {
+      "root": "review-new-pr/harness",
+      "extraPaths": ["review-new-pr/harness"]
+    }
+  ]
+}

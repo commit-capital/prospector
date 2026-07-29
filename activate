@@ -1,0 +1,18 @@
+# Convenience only — `uv run <cmd>` is the real contract and needs no activation.
+# Usage: source ./activate
+uv sync --quiet
+# shellcheck disable=SC1091
+source .venv/bin/activate
+ACTIVATE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -z "${TRIAGE_BOT_KEY_FILE:-}" ] && [ -f "$ACTIVATE_ROOT/.env" ]; then
+  TRIAGE_BOT_KEY_FILE="$(sed -n 's/^TRIAGE_BOT_KEY_FILE=//p' "$ACTIVATE_ROOT/.env")"
+fi
+case "${TRIAGE_BOT_KEY_FILE:-}" in
+  '~/'*) TRIAGE_BOT_KEY_FILE="$HOME/${TRIAGE_BOT_KEY_FILE#\~/}" ;;
+esac
+if [ -n "${TRIAGE_BOT_KEY_FILE:-}" ] && [ -r "$TRIAGE_BOT_KEY_FILE" ]; then
+  echo "✓ triage bot key configured (live token probe available)"
+else
+  echo "⚠ no readable TRIAGE_BOT_KEY_FILE configured — upstream writes are dry-run only"
+fi
+unset ACTIVATE_ROOT

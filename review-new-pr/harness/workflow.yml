@@ -1,0 +1,192 @@
+# PR Review Harness — Layer 1 (static gates)
+#
+# This workflow runs on every PR push and produces a structured verdict.
+# It does NOT post comments or close PRs — verdicts are written to an
+# artifact for Layer 2 to consume.
+#
+# Security stance:
+#   - `pull_request` event ONLY (not `pull_request_target`) — runs in PR
+#     context, sees PR contents, but cannot read base-repo secrets.
+#   - `permissions:` block drops everything except contents/pulls read.
+#   - No write tokens. The harness can ONLY read.
+#   - The verdict-writing job runs in a separate job that does not run
+#     contributor code, so even a malicious PR cannot tamper with its own
+#     verdict.
+#
+# To install: drop this file at `.github/workflows/pr-review-harness.yml`
+# in the target repository.
+
+name: PR Review Harness — Layer 1
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+# Drop every capability we don't need. This is the single most important
+# security knob in a GitHub Actions workflow.
+permissions:
+  contents: read
+  pull-requests: read
+
+# Cancel in-progress runs for older commits on the same PR.
+concurrency:
+  group: pr-harness-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # ──────────────────────────────────────────────────────────────────────
+  # Static gates — fan out. Each runs in its own ephemeral VM. None of
+  # them install dependencies or execute contributor code; they only read
+  # the diff text.
+  # ──────────────────────────────────────────────────────────────────────
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run secret_scan gate
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python3 .github/harness/run_single_gate.py \
+            --gate secret_scan \
+            --pr "$PR_NUMBER" \
+            --base "$BASE_SHA" \
+            --head "$HEAD_SHA" \
+            --out verdict-secret_scan.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verdict-secret_scan
+          path: verdict-secret_scan.json
+          retention-days: 30
+
+  dep-diff:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run dep_diff gate
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python3 .github/harness/run_single_gate.py \
+            --gate dep_diff \
+            --pr "$PR_NUMBER" \
+            --base "$BASE_SHA" \
+            --head "$HEAD_SHA" \
+            --out verdict-dep_diff.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verdict-dep_diff
+          path: verdict-dep_diff.json
+          retention-days: 30
+
+  pr-template-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          # PR template check needs the PR body, not the diff — keep
+          # checkout shallow.
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch PR body via GitHub API
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" \
+            --jq '{number, title, body, head: .head.sha, author: .user.login}' \
+            > pr-meta.json
+
+      - name: Run pr_template_check gate
+        run: |
+          python3 .github/harness/run_single_gate.py \
+            --gate pr_template_check \
+            --meta pr-meta.json \
+            --out verdict-pr_template_check.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verdict-pr_template_check
+          path: verdict-pr_template_check.json
+          retention-days: 30
+
+  # ──────────────────────────────────────────────────────────────────────
+  # Reducer: combine per-gate artifacts into one verdict JSON.
+  # Runs in its OWN job that does NOT check out contributor code. This
+  # prevents a malicious PR from tampering with its own roll-up verdict
+  # by altering anything in its tree.
+  # ──────────────────────────────────────────────────────────────────────
+
+  combine-verdicts:
+    needs: [secret-scan, dep-diff, pr-template-check]
+    if: always()           # produce a verdict even if a gate failed
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      # Check out the BASE branch (trusted), not the PR head.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: gate-verdicts
+
+      - name: Reduce to overall verdict
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python3 .github/harness/reduce_verdicts.py \
+            --in gate-verdicts \
+            --pr "$PR_NUMBER" \
+            --head-sha "$HEAD_SHA" \
+            --out verdict.json
+          echo "── PR #$PR_NUMBER verdict ──"
+          cat verdict.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verdict
+          path: verdict.json
+          retention-days: 90
+
+      # Step intentionally missing: writing to the `review-state` orphan
+      # branch. That comes in Sub-project 2. For now, the verdict lives
+      # in an artifact that Layer 2 can fetch via the Actions API.

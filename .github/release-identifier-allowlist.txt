@@ -1,0 +1,3 @@
+# Public case study and its README link.
+README.md
+docs/deployments/paperclip.md

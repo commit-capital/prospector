@@ -1,0 +1,36 @@
+boot-probe: isolation OK
+Applied patch to 'packages/db/src/backup-lib.test.ts' cleanly.
+Applied patch to 'packages/db/src/backup-lib.ts' cleanly.
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.8 [39m[90m/work/src[39m
+
+ [31m❯[39m [30m[43m @exampleorg/db [49m[39m src/backup-lib.test.ts [2m([22m[2m7 tests[22m[2m | [22m[31m1 failed[39m[2m)[22m[33m 9818[2mms[22m[39m
+     [32m✓[39m preserves line boundaries across buffered flushes[32m 1[2mms[22m[39m
+     [33m[2m✓[22m[39m keeps the newest backup for each retained calendar month [33m 1329[2mms[22m[39m
+     [33m[2m✓[22m[39m backs up and restores large table payloads without materializing one giant string [33m 1980[2mms[22m[39m
+     [33m[2m✓[22m[39m backs up and restores non-public database schemas and migration history [33m 1888[2mms[22m[39m
+     [33m[2m✓[22m[39m preserves composite foreign key column order without duplicate referenced columns [33m 1824[2mms[22m[39m
+[31m     [31m×[31m restores fallback COPY data when child tables are dumped before parent tables[39m[33m 1730[2mms[22m[39m
+     [33m[2m✓[22m[39m restores legacy public-only backups without migration history [33m 1066[2mms[22m[39m
+
+[31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 1 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m [30m[43m @exampleorg/db [49m[39m src/backup-lib.test.ts[2m > [22mrunDatabaseBackup[2m > [22mrestores fallback COPY data when child tables are dumped before parent tables
+[31m[1mError[22m: Failed to restore example-copy-fk-test-20260721-153413.sql.gz: ERROR: syntax error at or near "1" [statement: COPY "drizzle"."__drizzle_migrations" ("id", "hash", "created_at") FROM stdin;]; psql error: spawn psql ENOENT[39m
+[36m [2m❯[22m runDatabaseRestore src/backup-lib.ts:[2m1022:11[22m[39m
+    [90m1020|[39m       [33m:[39m [35mnull[39m[33m;[39m
+    [90m1021|[39m     const psqlMessage = psqlRestoreError === null ? "" : `; psql error…
+    [90m1022|[39m     [35mthrow[39m [35mnew[39m [33mError[39m(
+    [90m   |[39m           [31m^[39m
+    [90m1023|[39m       `Failed to restore ${basename(opts.backupFile)}: ${sanitizeResto…
+    [90m1024|[39m     )[33m;[39m
+[90m [2m❯[22m src/backup-lib.test.ts:[2m502:9[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯[22m[39m
+
+
+[2m Test Files [22m [1m[31m1 failed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m6 passed[39m[22m[90m (7)[39m
+[2m   Start at [22m 15:34:04
+[2m   Duration [22m 10.69s[2m (transform 237ms, setup 0ms, import 822ms, tests 9.82s, environment 0ms)[22m
+
