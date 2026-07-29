@@ -9,7 +9,7 @@ identifier_allowlist=".github/release-identifier-allowlist.txt"
 # Split known deployment names so this scanner does not match its own source.
 # The project_ref pattern catches any concrete Supabase MCP project binding while
 # allowing documentation placeholders such as project_ref=<id>.
-identifier_re='paper''clip|commitper''clip|commit-''capital|brandon''burr|aayme''loglu|project_ref=[[:alnum:]]{20}'
+identifier_re='paper''clip|commitper''clip|brandon''burr|aayme''loglu|project_ref=[[:alnum:]]{20}'
 identifier_matches="$(mktemp)"
 identifier_allowed="$(mktemp)"
 trap 'rm -f "$identifier_matches" "$identifier_allowed"' EXIT

@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Pipeline + web UI for triaging a large open-PR backlog: cluster, analyze, security-review, and execute gated merge/close decisions as a GitHub App"
 readme = "README.md"
 license = "MIT"
+authors = [{ name = "Commit Capital" }]
 requires-python = "==3.14.*"
 dependencies = [
   "fastapi==0.140.13",
@@ -19,6 +20,10 @@ dependencies = [
   "sse-starlette==3.4.6",
   "uvicorn[standard]==0.51.0",
 ]
+
+[project.urls]
+Repository = "https://github.com/commit-capital/prospector"
+Issues = "https://github.com/commit-capital/prospector/issues"
 
 [project.scripts]
 pr-triager = "pipeline.cli:main"
