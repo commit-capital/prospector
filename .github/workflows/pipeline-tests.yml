@@ -1,0 +1,109 @@
+name: Pipeline tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      # ubuntu-latest ships Postgres 16 preinstalled but stopped. Starting the
+      # local service is a few seconds; a `services:` container image spends ~25s
+      # on pull + health-check polling before any step runs. Same DB, no wait.
+      - name: Start Postgres
+        run: |
+          sudo systemctl start postgresql.service
+          sudo -u postgres psql -c "ALTER USER postgres PASSWORD 'pg';"
+      # uv reads .python-version (3.14.6) and uv.lock; it fetches the pinned
+      # interpreter automatically. This is the same locked env developers run.
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          enable-cache: true
+      # --locked fails if uv.lock is out of date vs pyproject.toml, so CI tests
+      # exactly the committed lock rather than silently re-resolving.
+      - name: Sync the locked environment
+        run: uv sync --locked
+      # One command runs all three suites (pipeline/tests + issue_triage/tests +
+      # review_cockpit/backend/tests).
+      # `-n0` runs serial: xdist (`-n auto` in addopts) is a wash on the 2-core
+      # runner — each worker re-imports the whole app stack, cancelling the split
+      # — while it halves wall time on developers' many-core machines.
+      - name: Run tests
+        run: uv run pytest -n0
+        env:
+          TEST_POSTGRES_URL: postgresql+psycopg://postgres:pg@localhost:5432/postgres
+
+  pyright:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          enable-cache: true
+      - name: Sync the locked environment
+        run: uv sync --locked
+      # Type-check the typed domain models and everything that consumes them. The
+      # dict-compat shim is gone (#150 PR C), so a raw dict access on a Pr/Cluster
+      # is now a hard error here. Each tree is checked as a whole dir so every new
+      # source module is covered automatically — no hand-maintained file list to
+      # keep in sync. pyrightconfig.json's exclude drops test_*.py (tests
+      # deliberately do None-unsafe things).
+      - name: Pyright (domain model + consumers)
+        run: uv run pyright pipeline issue_triage review_cockpit/backend review-new-pr/harness
+
+  ruff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          enable-cache: true
+      - name: Sync the locked environment
+        run: uv sync --locked
+      # Lint config lives in pyproject [tool.ruff]: pyflakes + pycodestyle +
+      # pyupgrade + N999 (no hyphenated/un-importable package dirs). --no-fix so
+      # CI reports rather than mutates.
+      - name: Ruff
+        run: uv run ruff check --no-fix .
+
+  frontend-build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: review_cockpit/frontend
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      # pnpm version comes from the frontend package.json "packageManager" field
+      # (pnpm@11.5.3) — read it there so the pin lives in exactly one place.
+      - name: Install pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          package_json_file: review_cockpit/frontend/package.json
+      - name: Install Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: review_cockpit/frontend/pnpm-lock.yaml
+      # --frozen-lockfile: strict install from the committed pnpm-lock.yaml, the
+      # same command setup.sh runs; fails if package.json and the lock have drifted.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      # eslint exits non-zero only on errors (the baseline is 0); the few
+      # remaining warnings don't fail the gate. Bar: add no new lint errors.
+      - name: Lint
+        run: pnpm run lint
+      # `tsc -b && vite build` — the tsc step is the type gate (0 errors), the
+      # vite step proves the bundle builds.
+      - name: Build (type-check + bundle)
+        run: pnpm run build

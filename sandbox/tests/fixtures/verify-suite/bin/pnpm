@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Stub pnpm for test-verify-suite.sh. Speaks the three invocation shapes
+# verify-suite.mjs emits: the preflight run, `vitest list`, and `vitest run`.
+# FIXTURE_FAIL: comma-separated repo-relative files to report as failed.
+# FIXTURE_DROP: one repo-relative file to omit from the report entirely.
+set -euo pipefail
+all="$*"
+case "$all" in
+  *preflight:workspace-links*) exit 0 ;;
+esac
+
+if [[ "$all" == *"vitest list"* ]]; then
+  proj="" out="" prev=""
+  for a in "$@"; do
+    [ "$prev" = "--project" ] && proj="$a"
+    case "$a" in --json=*) out="${a#--json=}" ;; esac
+    prev="$a"
+  done
+  case "$proj" in
+    "@fix/ui")  printf '%s' '["packages/ui/src/u1.test.ts","packages/ui/src/u2.test.ts"]' > "$out" ;;
+    "@fix/lib") printf '%s' '["packages/lib/src/l1.test.ts"]' > "$out" ;;
+    *) echo "stub pnpm: unknown project $proj" >&2; exit 1 ;;
+  esac
+  exit 0
+fi
+
+if [[ "$all" == *"vitest run"* ]]; then
+  out="" files=()
+  for a in "$@"; do
+    case "$a" in
+      --outputFile=*) out="${a#--outputFile=}" ;;
+      *.test.ts) files+=("$a") ;;
+    esac
+  done
+  results="" sep="" any_failed=0
+  for f in "${files[@]}"; do
+    [ "$f" = "${FIXTURE_DROP:-}" ] && continue
+    status="passed"
+    case ",${FIXTURE_FAIL:-}," in
+      *",$f,"*) status="failed"; any_failed=1 ;;
+    esac
+    results+="$sep{\"name\":\"$PWD/$f\",\"status\":\"$status\"}"
+    sep=","
+  done
+  success=true; [ "$any_failed" = 1 ] && success=false
+  printf '%s' "{\"success\":$success,\"testResults\":[$results]}" > "$out"
+  exit "$any_failed"
+fi
+
+echo "stub pnpm: unhandled invocation: $all" >&2
+exit 99

@@ -1,0 +1,860 @@
+"""Review Cockpit backend — FastAPI.
+
+Read-only API over the existing triage artifacts. Serves the built SPA from
+frontend/dist when present; otherwise the SPA runs from the Vite dev server and
+talks to this API via a proxy.
+
+Run:  uv run uvicorn review_cockpit.backend.app:app --reload --port 8787   (from the repo root)
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from fastapi import Body, FastAPI, HTTPException, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from sse_starlette.sse import EventSourceResponse
+
+from review_cockpit.backend import activity
+from review_cockpit.backend import autohunt_view
+from review_cockpit.backend import bulk
+from review_cockpit.backend import caps
+from review_cockpit.backend import chat
+from review_cockpit.backend import data
+from review_cockpit.backend import deep_search
+from review_cockpit.backend import decisions
+from review_cockpit.backend import executor
+from review_cockpit.backend import feedback
+from review_cockpit.backend import instance
+from review_cockpit.backend import issue_data
+from review_cockpit.backend import issues as issues_mod
+from review_cockpit.backend import jobs
+from review_cockpit.backend import freshness_live
+from review_cockpit.backend import models
+from review_cockpit.backend import pipeline_status
+from review_cockpit.backend import pr_history
+from review_cockpit.backend import pr_search
+from review_cockpit.backend import repo_meta
+from review_cockpit.backend import review_refresh
+from review_cockpit.backend import responses as responses_mod
+from review_cockpit.backend import service
+from review_cockpit.backend import tables
+from review_cockpit.backend import training
+from review_cockpit.backend import verify_queue
+from review_cockpit.backend import verify_worker
+
+from pipeline import greptile
+
+class SurrogateSafeJSONResponse(JSONResponse):
+    """JSON render that survives unpaired UTF-16 surrogates. GitHub text (review
+    bodies, comments) can carry lone "\\ud800"-style escapes, which json.loads
+    keeps as unencodable surrogate characters; each is emitted as "?" so the
+    payload stays valid UTF-8 and the endpoint never 500s over broken text."""
+
+    def render(self, content: object) -> bytes:
+        return json.dumps(content, ensure_ascii=False, allow_nan=False,
+                          separators=(",", ":")).encode("utf-8", errors="replace")
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    """Launch background services without blocking application startup."""
+    _launch_live_sweep()
+    _launch_verify_worker()
+    yield
+
+
+app = FastAPI(title="Review Cockpit", version="0.1.0",
+              default_response_class=SurrogateSafeJSONResponse,
+              lifespan=lifespan)
+
+# Allow the Vite dev server during development: the default port 5173 plus
+# this worktree's configured VITE_PORT (setup.sh assigns one per worktree).
+_vite_ports = {"5173", os.environ.get("VITE_PORT", "5173")}
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[f"http://{h}:{p}" for p in sorted(_vite_ports)
+                   for h in ("localhost", "127.0.0.1")],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.middleware("http")
+async def no_store_api(request, call_next):
+    """The cockpit is a live dashboard over changing artifacts — browsers must
+    never serve a cached /api response (it's caused stale 'assessed' counts after
+    a sweep). Force revalidation on every API call; let static assets cache."""
+    resp = await call_next(request)
+    if request.url.path.startswith("/api/"):
+        resp.headers["Cache-Control"] = "no-store, must-revalidate"
+    return resp
+
+
+def _launch_live_sweep():
+    """On launch, refresh live PR state into the shared store in the background so
+    the view converges on GitHub's truth within seconds — without blocking startup.
+
+    Reuses a recent sweep (shared across operators via the store) instead of
+    re-querying GitHub on every relaunch: the sweep only runs when none is on record
+    or the last is older than COCKPIT_LIVE_TTL_MIN (default 60). A sweep is ~70
+    GraphQL calls, so within the TTL a relaunch costs zero upstream calls — the
+    manual "Refresh live state" button always forces one. Skipped entirely under
+    pytest or when explicitly disabled."""
+    import os
+    import sys
+    import threading
+    if "pytest" in sys.modules or os.environ.get("COCKPIT_NO_LAUNCH_SWEEP"):
+        return
+    ttl = float(os.environ.get("COCKPIT_LIVE_TTL_MIN", "60"))
+    if not freshness_live.stale(ttl):
+        return  # a recent sweep is on record — reuse it, no GitHub calls this launch
+
+    def run():
+        try:
+            freshness_live.sweep()
+            data.refresh()
+        except Exception:
+            pass
+
+    threading.Thread(target=run, daemon=True).start()
+
+
+def _launch_verify_worker():
+    """Start the sandbox-verification worker when this backend is the runner
+    (TRIAGE_VERIFY_WORKER=1 — the machine with the Docker sandbox). Every other
+    backend serves the queue API only. Skipped under pytest — tests drive the
+    worker's functions directly."""
+    import sys
+    if "pytest" in sys.modules:
+        return
+    verify_worker.startup()
+
+
+@app.get("/api/health")
+def health():
+    return {"ok": True, "clusters": len(data.clusters()), "prs": len(data.prs())}
+
+
+@app.get("/api/instance")
+def instance_info():
+    return instance.instance()
+
+
+@app.get("/api/meta")
+def meta() -> repo_meta.RepoMeta:
+    return repo_meta.meta()
+
+
+@app.get("/api/feedback/target")
+def feedback_target() -> feedback.FeedbackTarget:
+    return feedback.target()
+
+
+@app.post("/api/feedback/generate")
+async def feedback_generate(payload: dict = Body(...)) -> feedback.GenerateResult:
+    """Generate a polished GitHub issue title + body from a raw description.
+    Calls Claude; falls back to empty title + raw body on error."""
+    desc = (payload.get("description") or "").strip()
+    if not desc:
+        raise HTTPException(400, "description required")
+    return await feedback.generate_issue(desc)
+
+
+@app.post("/api/refresh")
+def refresh():
+    data.refresh()
+    return {"ok": True}
+
+
+@app.get("/api/clusters")
+def clusters():
+    return {"items": service.cluster_summaries()}
+
+
+@app.get("/api/clusters/{cid}")
+def cluster(cid: int):
+    detail = service.cluster_detail(cid)
+    if detail is None:
+        raise HTTPException(404, f"cluster {cid} not found")
+    return detail
+
+
+MAX_PR_QUERY_LIMIT = 5000  # covers the full open-PR corpus so the frontend's "All" page size works
+
+
+@app.post("/api/prs/query")
+def prs_query(payload: dict = Body(...)):
+    """The one PR-list endpoint. Body: {spec, sort?, direction?, offset?, limit?}."""
+    return service.query_prs(
+        payload.get("spec") or {},
+        sort=payload.get("sort"), direction=payload.get("direction"),
+        offset=int(payload.get("offset", 0)), limit=min(int(payload.get("limit", 50)), MAX_PR_QUERY_LIMIT),
+    )
+
+
+@app.post("/api/prs/search")
+async def prs_search(payload: dict = Body(...)):
+    """NL query -> validated filter spec the Explorer applies. Returns {spec, note}."""
+    query = (payload.get("query") or "").strip()
+    if not query:
+        return {"spec": {}, "note": ""}
+    spec = await pr_search.search_to_spec(query)
+    note = "interpreted as the filters below" if spec else "couldn't parse that into filters — try rephrasing"
+    return {"spec": spec, "note": note}
+
+
+@app.post("/api/prs/deep-search")
+async def prs_deep_search(payload: dict = Body(...)):
+    """Agentic deep search over a candidate PR set, streamed SSE. Body: {query, prs}.
+    Emits `progress` {done,total} frames, then a final `result` with the matched
+    PRs + per-PR reasons. The agent judges each PR on compact facts; output is
+    coerced so only real candidates can match (see deep_search)."""
+    query = (payload.get("query") or "").strip()
+    prs = [int(n) for n in (payload.get("prs") or [])]
+
+    async def gen():
+        async for ev in deep_search.stream(query, prs):
+            yield {"event": ev.pop("type"), "data": json.dumps(ev)}
+    return EventSourceResponse(gen())
+
+
+@app.get("/api/prs/{n}")
+def pr(n: int):
+    detail = service.pr_detail(n)
+    if detail is None:
+        raise HTTPException(404, f"PR {n} not in cache")
+    return detail
+
+
+@app.post("/api/prs/{n}/verify/queue")
+def verify_queue_pr(n: int):
+    """Queue PR #n for sandbox verification. The request lands in the shared
+    store; the verification worker on the sandbox machine picks it up."""
+    try:
+        return verify_queue.queue_pr(n)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/prs/{n}/verify/dequeue")
+def verify_dequeue_pr(n: int):
+    """Cancel PR #n's still-queued verification request."""
+    try:
+        return verify_queue.dequeue_pr(n)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/verify/runner")
+def verify_runner():
+    """Verification-runner liveness (the verify_worker heartbeat registry) —
+    lets any cockpit warn when PRs are queued but no runner is online."""
+    return verify_queue.runner_status()
+
+
+@app.get("/api/autohunt")
+def autohunt(days: int = Query(7, ge=1, le=400), all_time: bool = False,
+             limit: int = Query(100, ge=1, le=autohunt_view.HISTORY_LIMIT_CAP)):
+    """The idle auto-hunter's status (worker opt-in, pools, failure memory), a
+    result summary over the selected window, and up to `limit` individual runs
+    from that same window, newest first — a fixed-size digest in place of an
+    ever-growing table. Pass `all_time=true` to span the whole ledger
+    regardless of `days`."""
+    window = None if all_time else days
+    return {
+        "status": autohunt_view.status(),
+        "summary": autohunt_view.summary(window),
+        "history": autohunt_view.history_window(window, limit=limit),
+    }
+
+
+@app.get("/api/prs/{n}/actions")
+def pr_actions(n: int):
+    """Every real action the configured bot has taken on this PR (with the human
+    operator who initiated each), newest-first — shown in the PR-detail panel."""
+    return {"items": activity.for_pr(n)}
+
+
+@app.get("/api/prs/{n}/history")
+def pr_history_endpoint(n: int):
+    """Condensed upstream activity for this PR — comments, reviews (Greptile's
+    score history flagged), commits, and reopen/close/force-push/rename
+    events — read live from GitHub, oldest first. Powers the PR-detail history
+    panel so a reviewer doesn't have to open GitHub to see the back-and-forth."""
+    return {"items": pr_history.fetch_pr_history(n)}
+
+
+@app.get("/api/prs/{n}/diff")
+def pr_diff(n: int):
+    return service.get_diff(n)
+
+
+@app.get("/api/prs/{n}/greptile")
+def pr_greptile(n: int):
+    """This PR's Greptile review summary ({score, body}) — read directly from
+    GitHub on demand (e.g. a column hover) rather than on every list row. Returns
+    {} when Greptile left no review or the fetch failed."""
+    return greptile.fetch_greptile_feedback(n) or {}
+
+
+@app.post("/api/freshness")
+def freshness_check(payload: dict = Body(...)):
+    """Live freshness check (#25): given a list of PR numbers, re-fetch their
+    current GitHub state and report where it diverges from the store snapshot."""
+    prs = payload.get("prs") or []
+    return freshness_live.check([int(n) for n in prs if str(n).strip()])
+
+
+@app.post("/api/actions/run-state")
+def actions_run_state(payload: dict = Body(...)):
+    """Run-state (#10): which of these PRs already have a landed live action,
+    so the UI can mark them done and guard a re-fire. Backed by the activity
+    log, so it survives a refresh."""
+    prs = payload.get("prs") or []
+    return {"states": activity.run_state([int(n) for n in prs if str(n).strip()])}
+
+
+@app.post("/api/live/refresh")
+def live_refresh(payload: dict = Body(default={})):
+    """Sweep PRs' live upstream state (open/closed/merged) into the shared store so
+    every operator's view reflects what GitHub shows — without ever writing
+    the upstream repo. With a `prs` list, sweep just those; otherwise every PR the store
+    still thinks is open. Read-only upstream."""
+    prs_arg = payload.get("prs")
+    targets = [int(n) for n in prs_arg if str(n).strip()] if prs_arg else None
+    res = freshness_live.sweep(targets)
+    data.refresh()
+    return res
+
+
+@app.get("/api/live/status")
+def live_status():
+    """When the live sweep last ran (shared across operators) — drives the
+    'live as of …' UI."""
+    return {"fetched_at": freshness_live.last_swept_at()}
+
+
+@app.post("/api/responses/scan")
+def responses_scan(payload: dict = Body(default={})):
+    """Sweep the PRs we've acted on and classify how the community responded
+    since (replies, reopens, new commits). Read-only upstream (GraphQL timeline)
+    + a cockpit-local registry write. With a `prs` list, scan just those."""
+    prs_arg = payload.get("prs")
+    targets = [int(n) for n in prs_arg if str(n).strip()] if prs_arg else None
+    return responses_mod.scan(targets)
+
+
+@app.post("/api/responses/{n}/ack")
+def responses_ack(n: int):
+    """Mark PR `n`'s community-response signal as seen (#537) — for every
+    operator, until a newer response supersedes it."""
+    return {"pr": n, "ack": responses_mod.ack(n)}
+
+
+@app.get("/api/suggest/pr/{n}")
+def suggest_pr(n: int, disposition: str | None = None):
+    """Suggestion (incl. the exact bot comment) for a PR, optionally as if its
+    disposition were `disposition` — lets the UI refresh the comment when the
+    operator changes the selected action (#13)."""
+    s = service.suggestion_for(n, disposition)
+    if s is None:
+        raise HTTPException(404, f"PR {n} not in store")
+    return s
+
+
+@app.get("/api/default-comment")
+def default_comment(action: str, canonical: int | None = None,
+                    upstream_pr: int | None = None, upstream_commit: str | None = None,
+                    upstream_date: str | None = None, dup_reason: str | None = None):
+    """The exact closing comment the executor would post for a manual close
+    action — so the PR-detail Disposition panel can show & let you edit it before
+    closing, instead of silently posting the default (#77). Single source of
+    truth: the same decisions.default_comment the executor falls back to.
+    `dup_reason` is an optional, genuine clause stating why the canonical wins —
+    included only when supplied, never as boilerplate (#184)."""
+    a = models.CloseAction(action=action, canonical=canonical, upstream_pr=upstream_pr,
+                           upstream_commit=upstream_commit, upstream_date=upstream_date,
+                           dup_reason=dup_reason)
+    return {"comment": decisions.default_comment(a)}
+
+
+# ---------------------------------------------------------------------------
+# Live agent chat (M3).
+# ---------------------------------------------------------------------------
+@app.get("/api/chat/history")
+def chat_history(pr: int | None = None, cluster: int | None = None, issue: int | None = None,
+                 chat_id: str | None = None):
+    # `chat_id` selects an operator-named session's own thread (#343) instead of
+    # the default one-thread-per-subject; omitted, this is unchanged.
+    ctx_id = chat._thread_key(chat_id, pr, cluster, issue)
+    return {"messages": chat.load_thread(ctx_id), "session": chat._session_id(ctx_id), "ctx": ctx_id}
+
+
+@app.get("/api/chat")
+async def chat_stream(q: str, pr: int | None = None, cluster: int | None = None,
+                      issue: int | None = None,
+                      file: str | None = None, line: int | None = None,
+                      prs: str | None = None, prs_total: int | None = None,
+                      chat_id: str | None = None):
+    # `prs` is a comma-separated PR-number list — the operator's currently
+    # visible/filtered view (#355), e.g. from PR Explorer. `prs_total` carries
+    # the true match count when the frontend truncated the list before sending.
+    pr_list = [int(x) for x in prs.split(",") if x.strip().isdigit()] if prs else None
+    async def gen():
+        async for ev in chat.stream_chat(q, pr=pr, cluster=cluster, issue=issue,
+                                         file=file, line=line,
+                                         prs=pr_list, prs_total=prs_total, chat_id=chat_id):
+            yield ev
+    return EventSourceResponse(gen())
+
+
+@app.post("/api/chat/stop")
+def chat_stop(pr: int | None = None, cluster: int | None = None, issue: int | None = None,
+              chat_id: str | None = None):
+    """Interrupt the in-flight answer for this thread (#14)."""
+    return {"stopped": chat.stop_chat(pr=pr, cluster=cluster, issue=issue, chat_id=chat_id)}
+
+
+# ---------------------------------------------------------------------------
+# Control-panel jobs (M5). Fixed allowlisted set; read-only upstream.
+# ---------------------------------------------------------------------------
+@app.get("/api/jobs/specs")
+def job_specs():
+    return {"specs": jobs.list_specs()}
+
+
+@app.get("/api/jobs")
+def jobs_list():
+    return {"jobs": jobs.list_jobs()}
+
+
+@app.get("/api/jobs/run/{kind}")
+async def jobs_run(kind: str, cluster: int | None = None, pr: int | None = None,
+                   count: int | None = None):
+    try:
+        job = jobs.start_job(kind, cluster, pr, count)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    # Scheduled independent of this request's SSE stream (#683) — the job runs
+    # to completion even if this connection is dropped (tab closed, page
+    # navigated away).
+    asyncio.create_task(jobs.run_job(job))
+    return EventSourceResponse(jobs.attach_job(job))
+
+
+@app.get("/api/jobs/{job_id}/stream")
+async def jobs_stream(job_id: int):
+    """Reattach to a job already running (or finished) server-side — the full
+    log replays immediately, then the connection follows it live (#683)."""
+    job = jobs.JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404, f"no such job: {job_id}")
+    return EventSourceResponse(jobs.attach_job(job))
+
+
+# ---------------------------------------------------------------------------
+# Upstream execution as the configured bot (M6). Dry-run unless a bot key is present.
+# ---------------------------------------------------------------------------
+@app.get("/api/identities")
+def get_identities():
+    return executor.identities()
+
+
+@app.post("/api/identities/refresh")
+def refresh_identities():
+    """Re-probe whether this machine can mint a bot token — "retry
+    live mode" in the cockpit UI. live_possible() only probes once and caches
+    the result for the process's lifetime, so a key file added, a GitHub App
+    installed, or a network blip cleared after that first probe otherwise never
+    takes effect without a full backend restart. caps.refresh() resets both
+    that cache and the derived /api/capabilities cache together."""
+    caps.refresh()
+    return executor.identities()
+
+
+@app.get("/api/capabilities")
+def get_capabilities():
+    c = caps.capabilities()
+    return {"login": c.get("login"), "merge_upstream": c.get("merge_upstream", False),
+            "review": c.get("review")}
+
+
+@app.post("/api/merge/pr/{n}")
+def merge_pr(n: int, method: str = "squash", dry_run: bool = True, reason: str | None = None):
+    res = executor.merge_pr(n, method, dry_run=dry_run, reason=reason)
+    training.capture(n, "MERGE", reason=reason, dry_run=dry_run, result=res)
+    return res
+
+
+@app.post("/api/execute/pr/{n}")
+def execute_pr(n: int, payload: models.CloseAction = Body(...), dry_run: bool = True):
+    # token minted per-call; None when no key → execute_pr forces dry-run.
+    token = None if dry_run else executor.mint_bot_token()
+    res = executor.execute_pr(n, payload, token=token, dry_run=dry_run)
+    training.capture(n, res.get("action", "?"), reason=payload.reason, tags=payload.tags,
+                     public_body=payload.comment, dry_run=dry_run, result=res)
+    return res
+
+
+@app.post("/api/execute/bulk")
+async def execute_bulk(payload: models.BulkExecuteBody = Body(...)):
+    """Apply one action to many PRs, streamed SSE. Body: {prs, action, comment?,
+    comments?, canonical?, method?, reason?, tags?, dry_run}. `comments` maps a PR
+    number to its own comment, so a bulk close can post each PR's suggested text
+    instead of one shared `comment` (#182). Loops the per-PR executor; every
+    per-PR gate is reused (see bulk.run_bulk)."""
+    async def gen():
+        async for ev in bulk.run_bulk(
+            payload.prs, payload.action, comment=payload.comment, comments=payload.comments,
+            canonical=payload.canonical, method=payload.method,
+            reason=payload.reason, tags=payload.tags, dry_run=payload.dry_run,
+        ):
+            yield ev
+    return EventSourceResponse(gen())
+
+
+@app.post("/api/execute/cluster")
+async def execute_cluster(payload: models.ClusterExecuteBody = Body(...)):
+    """Apply each PR's own disposition across a cluster, streamed SSE — the cluster
+    page's mixed 'execute all'. One activity-shard commit for the whole group (see
+    bulk.run_cluster); every per-PR gate is reused via the same executor functions."""
+    async def gen():
+        async for ev in bulk.run_cluster(payload.items, dry_run=payload.dry_run):
+            yield ev
+    return EventSourceResponse(gen())
+
+
+@app.post("/api/reopen/pr/{n}")
+def reopen_pr(n: int, dry_run: bool = True):
+    token = None if dry_run else executor.mint_bot_token()
+    res = executor.reopen_pr(n, token=token, dry_run=dry_run)
+    training.capture(n, "REOPEN", dry_run=dry_run, result=res)
+    return res
+
+
+# --- GitHub Issues, folded into the cockpit (#192) ---------------------------
+
+@app.get("/api/issues")
+def list_issues():
+    """Open GitHub issues enriched with their dedup cluster, pain, repro grade,
+    and the PRs that may address them (issue_triage projection)."""
+    return {"items": issues_mod.list_issues()}
+
+
+@app.post("/api/issues/query")
+def issues_query(payload: dict = Body(default_factory=dict)):
+    """Paginated Issue-table endpoint. Body: {q?, sort?, direction?, disposition?,
+    state?, author?, pain?, repro_grade?, subsystem?, dups?, linked_prs?, labels?,
+    offset?, limit?}; disposition "none" selects unanalyzed issues, state
+    "open"/"closed" filters by lifecycle ("all"/absent returns both). See
+    issues.query_issues for the per-field filter semantics."""
+    return issues_mod.query_issues(
+        q=payload.get("q") or "",
+        sort=payload.get("sort"), direction=payload.get("direction"),
+        disposition=payload.get("disposition"), state=payload.get("state"),
+        author=payload.get("author") or None,
+        pain=payload.get("pain"),
+        repro_grade=payload.get("repro_grade"),
+        subsystem=payload.get("subsystem"),
+        dups=payload.get("dups"),
+        linked_prs=payload.get("linked_prs"),
+        labels=payload.get("labels") or None,
+        offset=int(payload.get("offset", 0)), limit=min(int(payload.get("limit", 50)), 500),
+    )
+
+
+@app.get("/api/issues/duplicates")
+def issue_duplicates():
+    """The curated close-as-dup worklist, grouped by canonical issue, most painful
+    first — with each cluster's candidate PRs cross-linked."""
+    return {"groups": issues_mod.duplicate_groups()}
+
+
+@app.get("/api/issues/already-fixed")
+def issues_already_fixed():
+    """The already-fixed worklist: tier-1 close-fixed issues with a live-merged
+    fixer (ready to close), and tier-2 likely-fixed issues for human review."""
+    return issues_mod.already_fixed()
+
+
+# {n} matches any path segment, so this stays registered after every literal
+# /api/issues/* route.
+@app.get("/api/issues/{n}")
+def issue_detail(n: int):
+    """One issue's detail row — meta, analysis (disposition/rationale/asks),
+    repro, cluster context, and linked PRs — for the issue flyout."""
+    d = issues_mod.get_issue(n)
+    if d is None:
+        raise HTTPException(404, f"issue {n} not in store")
+    return d
+
+
+@app.post("/api/execute/issue/{n}/close-dup")
+def close_issue_dup(n: int, payload: models.IssueCloseDupBody = Body(default_factory=models.IssueCloseDupBody),
+                    dry_run: bool = True):
+    """Close issue #n as a duplicate of `canonical`, as the configured bot (gated +
+    logged). Body: {canonical?, comment?}."""
+    token = None if dry_run else executor.mint_bot_token()
+    return executor.close_issue(n, payload, token=token, dry_run=dry_run)
+
+
+@app.post("/api/execute/issue/{n}/close-fixed")
+def close_issue_fixed(n: int, payload: models.IssueCloseFixedBody, dry_run: bool = True):
+    """Close issue #n as fixed by merged PR `fixed_by`, as the configured bot (gated on a
+    live merged-state re-verify + logged). Body: {fixed_by, comment?}."""
+    token = None if dry_run else executor.mint_bot_token()
+    return executor.close_issue_fixed(n, payload, token=token, dry_run=dry_run)
+
+
+@app.post("/api/execute/issue/{n}/close")
+def close_issue(n: int, payload: models.IssueCloseBody = Body(default_factory=models.IssueCloseBody),
+                dry_run: bool = True):
+    """Close issue #n as directed by the operator, as the configured bot (gated on
+    issues.close_gate + logged). Body: {disposition, comment, fixed_by?, canonical?}."""
+    token = None if dry_run else executor.mint_bot_token()
+    return executor.close_issue_with_comment(n, payload, token=token, dry_run=dry_run)
+
+
+@app.post("/api/execute/issue/{n}/comment")
+def comment_issue(n: int, payload: models.IssueCommentBody = Body(default_factory=models.IssueCommentBody),
+                  dry_run: bool = True):
+    """Post a comment on issue #n as the configured bot, without closing (gated +
+    logged). Body: {comment}."""
+    token = None if dry_run else executor.mint_bot_token()
+    return executor.comment_issue(n, payload, token=token, dry_run=dry_run)
+
+
+@app.post("/api/reopen/issue/{n}")
+def reopen_issue(n: int, dry_run: bool = True):
+    """Undo an issue close: reopen #n and delete the bot's closing comment(s), as
+    the configured bot (gated + logged). The inverse of the issue-close endpoints."""
+    token = None if dry_run else executor.mint_bot_token()
+    return executor.reopen_issue(n, token=token, dry_run=dry_run)
+
+
+@app.post("/api/review/pr/{n}")
+def submit_review(n: int, payload: models.ReviewBody = Body(...), dry_run: bool = True):
+    token = None if dry_run else executor.mint_bot_token()
+    res = executor.submit_review(n, payload.event, payload.body, token=token, dry_run=dry_run)
+    training.capture(n, f"REVIEW:{payload.event}", reason=payload.reason, tags=payload.tags,
+                     public_body=payload.body, dry_run=dry_run, result=res)
+    return res
+
+
+@app.post("/api/comment/pr/{n}")
+def comment_line(n: int, payload: models.LineCommentBody = Body(...), dry_run: bool = True):
+    token = None if dry_run else executor.mint_bot_token()
+    res = executor.comment_line(n, payload.file, payload.line, payload.body,
+                                token=token, dry_run=dry_run)
+    training.capture(n, "LINE_COMMENT", reason=payload.reason, public_body=payload.body,
+                     dry_run=dry_run, result=res)
+    return res
+
+
+@app.post("/api/greptile/retrigger/pr/{n}")
+def retrigger_greptile(n: int, dry_run: bool = True):
+    """Post "@greptileai" on PR #n as the configured bot to re-trigger a Greptile
+    review — no new commit needed. Gated + logged like every bot write. Once the
+    post lands, a backend task waits for Greptile's new scored summary and
+    targeted-ingests it into the shared snapshot; no UI session is required."""
+    token = None if dry_run else executor.mint_bot_token()
+    baseline = review_refresh.capture(n) if token is not None else None
+    result = executor.retrigger_greptile(n, token=token, dry_run=dry_run)
+    if result.get("status") == "executed" and baseline is not None:
+        review_refresh.schedule(n, baseline)
+    return result
+
+
+@app.get("/api/pipeline/status")
+def pipeline_status_get():
+    """Pipeline phase timing + PR coverage stats for the Control Panel."""
+    return pipeline_status.status()
+
+
+@app.get("/api/training/stats")
+def training_stats():
+    return training.stats()
+
+
+@app.get("/api/activity")
+def get_activity(limit: int = Query(200, le=1000)):
+    return {"items": activity.recent(limit)}
+
+
+@app.get("/api/tables")
+def get_tables():
+    """Overview grid: every store table with its row count + a short preview."""
+    return {"tables": tables.overview()}
+
+
+@app.get("/api/tables/{name}")
+def get_table(request: Request, name: str,
+              limit: int = Query(50, le=200), offset: int = Query(0, ge=0),
+              order: str | None = None, dir: str = "asc"):
+    """One table's rows, paginated and optionally sorted/filtered. Per-column
+    filters arrive as `f_<column>` query params (real SQL columns only)."""
+    filters = {k[2:]: v for k, v in request.query_params.items() if k.startswith("f_")}
+    try:
+        return tables.rows(name, limit=limit, offset=offset, order=order,
+                           dir=dir, filters=filters)
+    except tables.UnknownTable:
+        raise HTTPException(404, f"unknown table: {name}")
+    except tables.UnknownColumn as e:
+        raise HTTPException(400, f"unknown column: {e}")
+
+
+@app.post("/api/activity/sync")
+def activity_sync(limit: int = 200):
+    """Return the current activity feed. The ``synced`` key is kept for frontend
+    compatibility; activity reads directly from the DB so no sync is needed."""
+    return {"synced": False, "items": activity.recent(limit)}
+
+
+@app.get("/api/activity/summary")
+def activity_summary(group_by: str = "day", since: str | None = None,
+                     until: str | None = None, include_dry_run: bool = False,
+                     identity: str | None = None, operator: str | None = None):
+    """Aggregate triage metrics for the dashboard (#42): totals + buckets
+    grouped by day / week / cluster / identity / operator. Live actions only by
+    default; ``operator`` filters to one teammate's work."""
+    return activity.summarize(activity.all_events(), group_by=group_by,
+                              include_dry_run=include_dry_run, since=since,
+                              until=until, identity=identity, operator=operator)
+
+
+@app.get("/api/activity/progress")
+def activity_progress():
+    """Backlog progress (#27): landed live actions vs. the open-PR universe, so
+    the operator sees how far through the ~3,000-PR backlog they are."""
+    return activity.progress(data.prs())
+
+
+@app.get("/api/activity/issue-progress")
+def activity_issue_progress():
+    """Landed issue closes vs. the open-issue universe."""
+    return activity.issue_progress(issue_data.issues())
+
+
+@app.get("/api/activity/firehose")
+def activity_firehose(days: int = Query(30, le=400), all_time: bool = False, pr_author: str | None = None):
+    """Firehose comparison (#238): new PRs/issues opened on the upstream repo
+    vs our triage actions per day, plus any PRs we closed that were subsequently
+    reopened by their authors. Pass ``all_time=true`` to span from the earliest
+    PR in the store to today regardless of ``days``. Pass ``pr_author`` to
+    restrict PR stats to PRs by a specific GitHub login."""
+    from datetime import datetime as _dt
+    prs = data.prs()
+    all_issues = issues_mod.list_issues()
+    events = activity.all_events()
+    start_date = None
+    if all_time:
+        dates = [
+            _dt.fromisoformat(pr.created_at.replace("Z", "+00:00")).date()
+            for pr in prs.values()
+            if pr.created_at
+        ]
+        if dates:
+            start_date = min(dates)
+    stats = activity.firehose_stats(prs, all_issues, days, events, start_date=start_date, pr_author=pr_author)
+    stats["reopened_after_close"] = activity.reopened_after_close(prs, events)
+    stats["iss_action_counts"] = activity.issue_action_counts(events)
+    return stats
+
+
+@app.get("/api/activity/pr-authors")
+def pr_authors():
+    """Unique PR authors in the store, sorted by PR count descending — for the
+    author-filter picker in the velocity chart."""
+    prs = data.prs()
+    counts: dict[str, int] = {}
+    for rec in prs.values():
+        if rec.author:
+            counts[rec.author] = counts.get(rec.author, 0) + 1
+    return {
+        "authors": [
+            {"login": k, "pr_count": v}
+            for k, v in sorted(counts.items(), key=lambda x: -x[1])
+        ]
+    }
+
+
+@app.get("/api/activity/people")
+def activity_people():
+    """Unified list of people for the person-filter picker: cockpit operators
+    (from the activity log) merged with PR authors (from the store).
+
+    Each entry exposes a display name, a GitHub login (inferred from the
+    operator email prefix for cockpit operators), whether they are a cockpit
+    operator, and their PR count. Operators appear first; other PR authors
+    follow sorted by PR count descending."""
+    events = activity.all_events()
+    op_entries = activity.operators_with_login(events)
+    op_logins = {e["login"] for e in op_entries}
+
+    prs = data.prs()
+    pr_counts: dict[str, int] = {}
+    for rec in prs.values():
+        if rec.author:
+            pr_counts[rec.author] = pr_counts.get(rec.author, 0) + 1
+
+    result: list[dict] = []
+    for entry in op_entries:
+        result.append({**entry, "is_operator": True, "pr_count": pr_counts.get(entry["login"], 0)})
+
+    for login, count in sorted(pr_counts.items(), key=lambda x: -x[1]):
+        if login not in op_logins:
+            result.append({"display": login, "login": login, "is_operator": False, "pr_count": count})
+
+    return {"people": result}
+
+
+@app.get("/api/action-items")
+def action_items(status: str | None = None, kind: str | None = None):
+    items = data.action_items()
+    prs = data.prs()
+    for it in items:  # enrich with the source PR's title/url/author for the worklist
+        pr_num = it.get("pr")
+        rec = prs.get(pr_num) if isinstance(pr_num, int) else None
+        it["pr_title"] = rec.title if rec else None
+        it["pr_url"] = rec.url if rec else None
+        it["pr_author"] = rec.author if rec else None
+        it["pr_summary"] = (rec.section("summary") or {}).get("one_liner") if rec else None
+    if status:
+        items = [i for i in items if i.get("status") == status]
+    if kind:
+        items = [i for i in items if i.get("kind") == kind]
+    counts: dict[str, int] = {}
+    for i in data.action_items():
+        counts[i.get("status", "open")] = counts.get(i.get("status", "open"), 0) + 1
+    return {"items": items, "counts": counts}
+
+
+@app.post("/api/action-items/{item_id:path}/status")
+def set_action_item_status(item_id: str, payload: dict = Body(...)):
+    try:
+        return data.set_action_item_status(item_id, payload.get("status", "open"))
+    except (KeyError, ValueError) as e:
+        raise HTTPException(400, str(e))
+
+
+# ---------------------------------------------------------------------------
+# Serve the built SPA (frontend/dist) if it exists.
+# ---------------------------------------------------------------------------
+DIST = Path(__file__).resolve().parents[1] / "frontend" / "dist"
+if DIST.exists():
+    app.mount("/assets", StaticFiles(directory=DIST / "assets"), name="assets")
+
+    @app.get("/{full_path:path}")
+    def spa(full_path: str):
+        # serve real files, else fall back to index.html for client routing
+        candidate = DIST / full_path
+        if full_path and candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(DIST / "index.html")

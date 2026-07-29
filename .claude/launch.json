@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "cockpit",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-c", "set -a; [ -f .env ] && source .env; set +a; exec uv run uvicorn review_cockpit.backend.app:app --port \"${API_PORT:-8787}\" --log-level warning"],
+      "port": 8788
+    },
+    {
+      "name": "cockpit-dev",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-c", "FRONTEND=review_cockpit/frontend; source frontend-toolchain.sh && exec \"${PNPM[@]}\" --dir \"$FRONTEND\" dev"],
+      "port": 5173
+    }
+  ]
+}

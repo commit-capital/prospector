@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "subsystems": [
+    {"name": "execution-locks", "match_terms": ["execution lock", "stale lock"]},
+    {"name": "inbox", "match_terms": ["inbox", "badge count"]},
+    {"name": "auth", "match_terms": ["oauth", "api key", "jwt token"]},
+    {"name": "ui", "match_terms": ["error toast", "frontend", "empty state"]},
+    {"name": "cli", "match_terms": ["cli subcommand"]},
+    {"name": "widgets", "match_terms": ["widget frobnicator"]}
+  ],
+  "risk_tiers": {
+    "tier0_globs": ["server/core/**", ".github/**", "package.json", "**/package.json", "pnpm-lock.yaml"],
+    "tier1_globs": ["db/schema/**", "server/routes/approvals.ts", "server/**"],
+    "instruction_globs": ["skills/**", "AGENTS.md"],
+    "tier3_globs": ["ui/**", "docs/**", "README.md"],
+    "default_tier": 2
+  },
+  "codeowners": {
+    "gated_globs": [".github/**", "skills/**", "package.json", "**/package.json", "pnpm-lock.yaml", "scripts/release*"],
+    "owners": ["@owner-a", "@owner-b"]
+  },
+  "trusted_authors": ["trusted-dev"],
+  "artifact_rules": [
+    {"category": "lockfile", "pattern": "(^|/)(pnpm-lock\\.yaml|package-lock\\.json|npm-shrinkwrap\\.json|yarn\\.lock|bun\\.lockb?|Cargo\\.lock|poetry\\.lock|composer\\.lock|Gemfile\\.lock|go\\.sum|uv\\.lock|Pipfile\\.lock)$"},
+    {"category": "migrations", "pattern": "(^|/)(migrations|drizzle)/meta/.*\\.json$"},
+    {"category": "locale", "pattern": "(^|/)(i18n|locales?|lang|translations?)/.*\\.(json|po|pot|xliff|xlf|ftl|arb|strings)$"},
+    {"category": "vendored", "pattern": "(^|/)(node_modules|dist|build|out|vendor|\\.next|\\.nuxt|\\.vite|coverage|storybook-static)/"},
+    {"category": "generated", "pattern": "\\.min\\.(js|css)$|\\.map$|\\.tsbuildinfo$|\\.d\\.ts$|\\.generated\\.[^/]+$|(^|/)__generated__/|_pb2\\.pyi?$|\\.pb\\.go$"}
+  ],
+  "harness": {
+    "pr_template": {
+      "required_sections": ["Summary", "Testing", "Risk Level"],
+      "recommended_sections": ["Checklist"]
+    }
+  },
+  "verify": {
+    "suite": {
+      "wrapper": "scripts/run-vitest-stable.mjs",
+      "server_project": "@fixture/server",
+      "home_env": "FIXTURE_HOME",
+      "instance_env": "FIXTURE_INSTANCE_ID"
+    }
+  }
+}

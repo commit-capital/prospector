@@ -1,0 +1,11 @@
+{
+  "weights": {"reporters": 0.5, "reactions": 0.25, "comments": 0.25},
+  "severity": {
+    "k": 0.34,
+    "cap": 1.0,
+    "keywords": ["crash", "data loss", "corrupt", "security", "vulnerab", "exploit",
+                 "leak", "hang", "freeze", "infinite loop", "oom", "deadlock",
+                 "billing", "charge", "production down", "cannot login", "unrecoverable"],
+    "labels": ["bug", "critical", "p0", "security", "regression"]
+  }
+}

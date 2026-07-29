@@ -1,0 +1,12 @@
+{
+  "name": "tier1-fixture",
+  "version": "0.0.0",
+  "private": true,
+  "packageManager": "pnpm@9.15.4",
+  "scripts": {
+    "test": "node test.js"
+  },
+  "dependencies": {
+    "ms": "2.1.3"
+  }
+}

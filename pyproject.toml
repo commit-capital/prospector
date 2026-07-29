@@ -1,0 +1,79 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pr-triager"
+version = "0.1.0"
+description = "Pipeline + web UI for triaging a large open-PR backlog: cluster, analyze, security-review, and execute gated merge/close decisions as a GitHub App"
+readme = "README.md"
+license = "MIT"
+requires-python = "==3.14.*"
+dependencies = [
+  "fastapi==0.140.13",
+  "httpx==0.28.1",
+  "psycopg[binary]==3.3.4",
+  "pydantic==2.13.4",
+  "python-dotenv==1.2.2",
+  "sqlalchemy==2.0.51",
+  "sse-starlette==3.4.6",
+  "uvicorn[standard]==0.51.0",
+]
+
+[project.scripts]
+pr-triager = "pipeline.cli:main"
+
+[dependency-groups]
+dev = [
+  "pyright==1.1.411",  # type-checks the typed Pr/Cluster domain model; reads pyrightconfig.json
+  "pytest==9.1.1",
+  "pytest-xdist==3.8.0",  # `-n auto` fans the suite across cores (see addopts)
+  "ruff==0.16.0",  # lints for dead code, modernizations, and N999 (no hyphenated package dirs)
+]
+
+[tool.setuptools]
+# The source roots, installed (editable) as packages so their modules resolve
+# identically at runtime, under pytest, and from the CLI — qualified as
+# pipeline.*, review_cockpit.backend.*, issue_triage.*. Each package sits at its
+# natural path under the repo root, so no package-dir remapping is needed. New
+# modules need no change — they're submodules of an already-registered package.
+packages = ["pipeline", "review_cockpit", "review_cockpit.backend", "issue_triage"]
+
+[tool.pytest.ini_options]
+# One command runs all three suites. importlib import-mode avoids pytest's
+# same-basename collision trap across the test roots. The suites import the code
+# under test as packages (from pipeline import store, from review_cockpit.backend
+# import data, from issue_triage import issue_store), resolved through the editable
+# install — the same mechanism runtime and the CLI use — so green tests imply the app boots.
+# `-n auto` fans the ~960 tests across the machine's cores via pytest-xdist; every
+# store test isolates itself (Store(tmp_path), the temp_store SQLite tempdir, or a
+# monkeypatched STORE_URL), and workers are separate processes so module-level
+# caches don't cross. The one shared resource — the CI Postgres DB — is pinned to a
+# single worker via an xdist_group marker on test_postgres_backend.py — which
+# only binds under `--dist loadgroup` (plain `load` ignores the marker); ungrouped
+# tests still spread across all workers under loadgroup, exactly like load.
+testpaths = ["pipeline/tests", "review_cockpit/backend/tests", "issue_triage/tests"]
+addopts = "--import-mode=importlib -n auto --dist loadgroup"
+
+[tool.ruff]
+target-version = "py314"
+
+[tool.ruff.lint]
+# Pyflakes (F: dead code, undefined names) + pycodestyle (E/W) + pyupgrade (UP:
+# modernizations, several of which enforce conventions pyright can't — no quoted
+# annotations, `X | None` over Optional) + N999, the invalid-module-name guard
+# that keeps anyone from re-introducing a non-importable package directory like
+# the old `review-cockpit/`. Naming rules beyond N999 stay off — they force
+# awkward renames (exception/test/alias names) for little value.
+select = ["F", "E", "W", "UP", "N999"]
+ignore = [
+  "E501",            # line too long — let the formatter/editor own wrapping
+  "E266",            # multiple leading '#' in a block comment
+  "E731",            # assigning a lambda to a name
+  "E226", "E241", "E242",  # whitespace around arithmetic / after ','
+  "E702",            # multiple statements on one line (';') — a deliberate idiom here
+  "F403", "F405",    # `import *` and names possibly from it
+  "F541",            # f-string with no placeholders
+  "UP017",           # datetime.timezone.utc → datetime.UTC: pure churn
+  "UP046", "UP047",  # PEP 695 generics: aggressive restyle of TypeVar/Generic
+]

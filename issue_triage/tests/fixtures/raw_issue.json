@@ -1,0 +1,9 @@
+{
+  "number": 4242, "title": "Issue stuck in_progress after agent crash",
+  "body": "Steps:\n1. assign agent\n2. kill it\nExpected: lock clears\nActual: stuck",
+  "labels": [{"name": "bug"}], "comments": 7,
+  "reactions": {"+1": 12, "heart": 1, "total_count": 13},
+  "user": {"login": "alice"}, "created_at": "2026-01-02T00:00:00Z",
+  "updated_at": "2026-02-02T00:00:00Z", "state_reason": null,
+  "pull_request": null
+}

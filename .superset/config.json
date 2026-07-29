@@ -1,0 +1,9 @@
+{
+  "setup": [
+    "./setup.sh"
+  ],
+  "teardown": [],
+  "run": [
+    "uv run pr-triager serve --dev"
+  ]
+}
