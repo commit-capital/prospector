@@ -32,7 +32,7 @@ jobs:
       - name: Sync the locked environment
         run: uv sync --locked
       # One command runs all three suites (pipeline/tests + issue_triage/tests +
-      # review_cockpit/backend/tests).
+      # app/backend/tests).
       # `-n0` runs serial: xdist (`-n auto` in addopts) is a wash on the 2-core
       # runner — each worker re-imports the whole app stack, cancelling the split
       # — while it halves wall time on developers' many-core machines.
@@ -58,7 +58,7 @@ jobs:
       # keep in sync. pyrightconfig.json's exclude drops test_*.py (tests
       # deliberately do None-unsafe things).
       - name: Pyright (domain model + consumers)
-        run: uv run pyright pipeline issue_triage review_cockpit/backend review-new-pr/harness
+        run: uv run pyright pipeline issue_triage app/backend review-new-pr/harness
 
   ruff:
     runs-on: ubuntu-latest
@@ -80,7 +80,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: review_cockpit/frontend
+        working-directory: app/frontend
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       # pnpm version comes from the frontend package.json "packageManager" field
@@ -88,13 +88,13 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
         with:
-          package_json_file: review_cockpit/frontend/package.json
+          package_json_file: app/frontend/package.json
       - name: Install Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: pnpm
-          cache-dependency-path: review_cockpit/frontend/pnpm-lock.yaml
+          cache-dependency-path: app/frontend/pnpm-lock.yaml
       # --frozen-lockfile: strict install from the committed pnpm-lock.yaml, the
       # same command setup.sh runs; fails if package.json and the lock have drifted.
       - name: Install dependencies

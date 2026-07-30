@@ -1,6 +1,6 @@
 """Deployment target — the one place the repo/bot identity lives.
 
-Every pipeline and cockpit module reads these from here instead of re-declaring a
+Every pipeline and app module reads these from here instead of re-declaring a
 literal, so pointing the whole system at a different repository is a matter of
 setting a few environment variables rather than editing a dozen files. No identity
 is baked into the source: TRIAGE_REPO and TRIAGE_BOT_LOGIN are required (a clear
@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 
 # The repo-root .env is the single environment source for the whole system
 # (Python here, plus setup.sh and Vite). Load it before reading any value
-# so a CLI run picks up the same config the cockpit does. Real environment
+# so a CLI run picks up the same config the app does. Real environment
 # variables win over the file (override=False), and the path is resolved relative
 # to this file so it works regardless of the current working directory.
 # TRIAGE_SKIP_DOTENV (set by the test conftests) disables loading so the suite is
@@ -52,13 +52,13 @@ REPO_OWNER, REPO_NAME = REPO.split("/", 1)
 # is built from.
 REPO_URL: str = f"https://github.com/{REPO}"
 
-# Human-facing product name for the cockpit (tab title, headings). Defaults to
+# Human-facing product name for the app (tab title, headings). Defaults to
 # the repository's short name.
 DISPLAY_NAME: str = os.environ.get("TRIAGE_DISPLAY_NAME") or REPO_NAME
 
-# "owner/name" the cockpit's 🐞 Feedback button files issues into. Empty disables
+# "owner/name" the app's 🐞 Feedback button files issues into. Empty disables
 # the button — feedback about this tool must never land on the triaged upstream.
-FEEDBACK_REPO: str = os.environ.get("COCKPIT_FEEDBACK_REPO", "")
+FEEDBACK_REPO: str = os.environ.get("PROSPECTOR_FEEDBACK_REPO", "")
 
 
 @lru_cache(maxsize=1)
@@ -80,7 +80,7 @@ def default_branch() -> str:
     out = r.stdout.strip()
     return out if r.returncode == 0 and out else "main"
 
-# Login of the GitHub App identity the cockpit executes upstream writes as.
+# Login of the GitHub App identity the app executes upstream writes as.
 # Required — writes must be attributed to a known identity.
 _bot_login = os.environ.get("TRIAGE_BOT_LOGIN")
 if not _bot_login:

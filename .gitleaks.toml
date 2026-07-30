@@ -6,6 +6,6 @@ description = "Test suites use secret-shaped strings as fixtures"
 paths = [
   '''pipeline/tests/.*''',
   '''issue_triage/tests/.*''',
-  '''review_cockpit/backend/tests/.*''',
+  '''app/backend/tests/.*''',
   '''review-new-pr/harness/tests/.*''',
 ]

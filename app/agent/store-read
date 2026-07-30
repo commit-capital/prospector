@@ -1,0 +1,171 @@
+#!/usr/bin/env python3
+"""The app agent's read window into the pipeline store.
+
+The store is a SQL database (a shared SQL database via TRIAGE_STORE_URL,
+or a local SQLite default) — not files on disk. The agent's file tools
+(Read/Grep/Glob) can't open a DB connection, so this allowlisted command is how
+it reads a PR's or cluster's recorded sections (meta / signals / summary /
+cluster / analysis / security / threat / drift / resolution), an issue's
+recorded sections (meta / summary / repro / cluster / analysis / links /
+resolution / fix_scan), the threat registry, and the app activity log
+(executed upstream actions). It reads through the validated store accessors
+(store.Store, issue_store.IssueStore) and the app's activity module — the
+ONLY sanctioned readers — and prints the record as indented JSON.
+
+Usage:
+    app/agent/store-read pr <N>                  # the whole PR record
+    app/agent/store-read pr <N> --section analysis   # one section
+    app/agent/store-read cluster <CID>           # the whole cluster record
+    app/agent/store-read issue <N>               # the whole issue record
+    app/agent/store-read issue <N> --section analysis   # one section
+    app/agent/store-read threats                 # the threat registry
+    app/agent/store-read activity pr <N>         # executed actions on one PR
+    app/agent/store-read activity issue <N>      # executed actions on one issue
+    app/agent/store-read activity recent         # the recent action feed
+
+The `activity` subcommand reads the app's append-only activity log — the
+record of what was actually *executed* upstream (closes, merges, reopens,
+comments, and by whom), as opposed to the pipeline's proposed dispositions in
+the `analysis` sections. `pr`/`issue` list landed actions only (dry-runs and
+failed attempts excluded), newest-first; `recent` prints the raw feed including
+dry-run previews, capped by `--limit`.
+
+A record (or requested section) the pipeline hasn't produced yet prints `null`
+with a note on stderr, so the agent can report "not analyzed yet" instead of
+inventing one. Reuses pipeline/store.py for the single source of truth on the
+store shape, mirroring `uncluster`; it runs under the app's uv env, which is
+where every allowlisted agent command runs.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+# Run under a bare python3 (the agent's shell), so put the repo root on the path
+# for the `pipeline` package rather than relying on the editable install.
+sys.path.insert(0, str(REPO_ROOT))
+
+from issue_triage.issue_store import IssueStore  # noqa: E402
+from pipeline.store import Store  # noqa: E402
+
+
+def main(argv: list[str] | None = None) -> int:
+    # `--store` lives on a shared parent so it's accepted on either side of the
+    # subcommand (the agent and tests pass it after, e.g. `pr 5 --store ...`).
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--store", default=None, help="store root (testing hook)")
+
+    p = argparse.ArgumentParser(
+        prog="store-read", parents=[common],
+        description="Read a PR / cluster / issue record or the threat registry from the store.",
+    )
+    sub = p.add_subparsers(dest="what", required=True)
+
+    pr = sub.add_parser("pr", parents=[common], help="read one PR's record")
+    pr.add_argument("number", type=int, help="the PR number")
+    pr.add_argument("--section", default=None,
+                    help="print only this section (meta/signals/summary/cluster/"
+                         "analysis/security/threat/drift/resolution)")
+
+    cl = sub.add_parser("cluster", parents=[common], help="read one cluster's record")
+    cl.add_argument("id", type=int, help="the cluster id")
+
+    iss = sub.add_parser("issue", parents=[common], help="read one issue's record")
+    iss.add_argument("number", type=int, help="the issue number")
+    iss.add_argument("--section", default=None,
+                     help="print only this section (meta/summary/repro/cluster/"
+                          "analysis/links/resolution/fix_scan)")
+
+    sub.add_parser("threats", parents=[common], help="read the durable threat registry")
+
+    act = sub.add_parser("activity", parents=[common],
+                         help="read executed actions from the app activity log")
+    act.add_argument("target", choices=("pr", "issue", "recent"),
+                     help="pr/issue: landed actions on one PR/issue; recent: the raw feed")
+    act.add_argument("number", type=int, nargs="?",
+                     help="the PR/issue number (required for pr/issue)")
+    act.add_argument("--limit", type=int, default=50,
+                     help="max events printed by `recent` (default 50)")
+
+    args = p.parse_args(argv)
+
+    if args.what == "activity":
+        # The activity log lives in the same DB as the store but is read through
+        # the app's activity module, which resolves its engine from
+        # settings.STORE_URL — point that at the --store root when given.
+        if args.store:
+            from pipeline import settings
+            settings.STORE_URL = f"sqlite:///{Path(args.store)}/store.db"
+        from app.backend import activity
+        if args.target == "recent":
+            print(json.dumps(activity.recent(args.limit), indent=2, sort_keys=True))
+            return 0
+        if args.number is None:
+            p.error(f"activity {args.target} requires a number")
+        events = (activity.for_pr(args.number) if args.target == "pr"
+                  else activity.for_issue(args.number))
+        if not events:
+            print(f"store-read: no executed actions recorded for {args.target} "
+                  f"#{args.number} (nothing has been done to it through the app)",
+                  file=sys.stderr)
+        print(json.dumps(events, indent=2, sort_keys=True))
+        return 0
+
+    if args.what == "issue":
+        istore = IssueStore(args.store)
+        irec = istore.load_issue(args.number)
+        if irec is None:
+            print(f"store-read: issue #{args.number} is not in the store "
+                  f"(not ingested yet — try `gh issue view {args.number}`)", file=sys.stderr)
+            print("null")
+            return 0
+        if args.section:
+            payload = irec.section(args.section)
+            if payload is None:
+                print(f"store-read: issue #{args.number} has no `{args.section}` section yet "
+                      f"(the pipeline hasn't produced it)", file=sys.stderr)
+            print(json.dumps(payload, indent=2, sort_keys=True))
+            return 0
+        print(json.dumps(irec.raw, indent=2, sort_keys=True))
+        return 0
+
+    store = Store(args.store) if args.store else Store()
+
+    if args.what == "pr":
+        rec = store.load_pr(args.number)
+        if rec is None:
+            print(f"store-read: PR #{args.number} is not in the store "
+                  f"(not ingested yet — try `gh pr view {args.number}`)", file=sys.stderr)
+            print("null")
+            return 0
+        if args.section:
+            payload = rec.section(args.section)
+            if payload is None:
+                print(f"store-read: PR #{args.number} has no `{args.section}` section yet "
+                      f"(the pipeline hasn't produced it)", file=sys.stderr)
+            print(json.dumps(payload, indent=2, sort_keys=True))
+            return 0
+        print(json.dumps(rec.raw, indent=2, sort_keys=True))
+        return 0
+
+    if args.what == "cluster":
+        cl_rec = store.load_cluster(args.id)
+        if cl_rec is None:
+            print(f"store-read: cluster {args.id} is not in the store", file=sys.stderr)
+            print("null")
+            return 0
+        print(json.dumps(cl_rec.raw, indent=2, sort_keys=True))
+        return 0
+
+    if args.what == "threats":
+        print(json.dumps(store.load_threats(), indent=2, sort_keys=True))
+        return 0
+
+    return 2  # unreachable: subparser is required
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

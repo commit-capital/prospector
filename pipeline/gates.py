@@ -1,6 +1,6 @@
 """The ONE clean/merge gate policy.
 
-Every consumer — the GATE phase, the cockpit chips, the executor's merge
+Every consumer — the GATE phase, the app chips, the executor's merge
 check — calls these functions; nothing else encodes policy.
 
 Policy (per the operator's bar): a merge candidate is CLEAN iff
@@ -317,7 +317,7 @@ def blocked_on_security(pr: Pr, today: str | None = None) -> bool:
     review is missing, stale, or older than SECURITY_MAX_AGE_DAYS — so re-running
     SECURITY is exactly what would unblock merge.
 
-    The single source of truth for 'security is the merge blocker', so the cockpit
+    The single source of truth for 'security is the merge blocker', so the app
     surfaces its re-run button without re-deriving the 7-day policy client-side.
     Mirrors the security-currency branch of merge_allowed: fresh analysis, merge
     disposition, pr_clean, and a non-current security section."""
@@ -342,7 +342,7 @@ def security_cleared(pr: Pr, today: str | None = None) -> bool:
 def merge_eligibility(pr: Pr, today: str | None = None,
                       changed_paths: list[str] | None = None,
                       override_reason: str | None = None) -> tuple[bool, str]:
-    """Human-initiated merge gate — the cockpit action bar.
+    """Human-initiated merge gate — the app action bar.
 
     More permissive than merge_allowed: an operator may merge any PR that passed
     every check we actually RAN on it — Greptile 5/5, CI, mergeable, fresh, no
@@ -387,7 +387,7 @@ def merge_eligibility(pr: Pr, today: str | None = None,
             why = verify_signals_incomplete(pr)
             if why is not None:
                 # The operator may still merge on partial evidence, but never
-                # unknowingly: the reason names the gap and the cockpit displays it.
+                # unknowingly: the reason names the gap and the app displays it.
                 return True, f"passed all checks run — verification incomplete: {why}"
         elif pr.verify_outcome == "agent-verified":
             # A concluded, corroborating state: the harness-authored test went
@@ -415,7 +415,7 @@ def merge_eligibility(pr: Pr, today: str | None = None,
 def security_overridable(pr: Pr, today: str | None = None,
                          changed_paths: list[str] | None = None) -> bool:
     """True iff the block a reason would clear is specifically a current YELLOW
-    security verdict with no logged override. The cockpit uses this to surface
+    security verdict with no logged override. The app uses this to surface
     the override-reason input, and the executor to log the reason to the right
     section — so it must name the SECURITY block, not an escalate verify block a
     reason would also clear (see verify_overridable)."""
@@ -433,7 +433,7 @@ def verify_overridable(pr: Pr, today: str | None = None,
                        changed_paths: list[str] | None = None) -> bool:
     """True iff the block a reason would clear is specifically a current escalate
     verify outcome with no logged override — the ONE verify outcome an operator
-    may merge past. The cockpit shows the override-reason input and the executor
+    may merge past. The app shows the override-reason input and the executor
     logs the reason to the verify section only where this holds."""
     if not (is_current(pr, "verify", max_age_days=VERIFY_MAX_AGE_DAYS, today=today)
             and pr.verify_outcome == "escalate" and not pr.verify_override):
@@ -539,7 +539,7 @@ def vacuous_name_filter(blind: dict, host: dict) -> str | None:
     computes (a red that exited 0 is not-verified regardless), and it reads only
     trusted inputs — the pre-committed test_cmd and the host-observed exit —
     never the untrusted output tails. commit_outcomes records it as a dedicated
-    finding and the cockpit story names it."""
+    finding and the app story names it."""
     if host.get("red_exit") != SENTINEL_PASS:
         return None
     cmd = blind.get("test_cmd")
@@ -631,7 +631,7 @@ def vacuous_path_filter(blind: dict, repro: dict) -> str | None:
     outcome never turns on, and this reads only trusted inputs — the
     pre-committed repro_command and the host-observed exit — never the
     untrusted output tails. commit_outcomes records it as a dedicated finding
-    and the cockpit story names it."""
+    and the app story names it."""
     if not repro.get("ran") or repro.get("exit_code") != SENTINEL_TEST_FAIL:
         return None
     cmd = blind.get("repro_command")
@@ -720,7 +720,7 @@ def contained_green_failures(host: dict) -> list[str]:
     """The contaminating test ids the containment exemption accepted, across
     both green legs, sorted — [] when the exemption applied to neither.
     commit_outcomes records them as a dedicated `dirty-green` finding,
-    verify_signals_incomplete names them as partial evidence, and the cockpit
+    verify_signals_incomplete names them as partial evidence, and the app
     story surfaces them."""
     out: set[str] = set()
     if (host.get("green_exit") == SENTINEL_TEST_FAIL
@@ -935,7 +935,7 @@ def verify_signals_incomplete(pr: Pr) -> str | None:
     that authored no repro_command attempted nothing, so nothing is incomplete.
     When one WAS authored it must have run and the judge must have rated it
     matching; a repro that never ran, ran unrated, or was rated not-matching is
-    partial evidence. merge_allowed refuses to auto-recommend on it; the cockpit
+    partial evidence. merge_allowed refuses to auto-recommend on it; the app
     names it on the human path and in the verify panel. Operator decision
     2026-07-16: a verified-fix whose repro never executed (#7524, a harness path
     defect) must not present as full-confidence evidence at merge time.

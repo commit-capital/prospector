@@ -25,7 +25,7 @@ One machine per store runs the sandbox; everything it needs, in order:
    runs verification must prepare the same pin locally.
 4. **Enable the worker:** set `TRIAGE_VERIFY_WORKER=1` (and optionally
    `TRIAGE_VERIFY_AUTOHUNT=1`) in `.env` on THIS machine only, then restart
-   the cockpit backend. Exactly one worker per store: the queue claim is
+   the app backend. Exactly one worker per store: the queue claim is
    atomic, so a second worker is safe but redundant — it would need its own
    local copy of the same pin to run anything.
 5. **Point the boot probe at this machine's sensitive services** via

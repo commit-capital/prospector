@@ -5,6 +5,6 @@ setup = "bash setup.sh"
 run_mode = "nonconcurrent"
 
 [scripts.run.dev]
-command = "uv run pr-triager serve --dev"
+command = "uv run prospector serve --dev"
 default = true
 icon = "play"

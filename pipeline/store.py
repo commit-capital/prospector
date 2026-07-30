@@ -37,11 +37,11 @@ GREPTILE_FINDING_CLASSES = ("substantive", "nitpick")
 VERIFY_TIERS = {0, 1}
 
 # The lifecycle of an operator-queued sandbox verification (the verify_request
-# section): queued in the cockpit, picked up and run by the verify worker,
+# section): queued in the app, picked up and run by the verify worker,
 # parked as waiting-for-base while the runner has no usable pinned base, or
 # re-queued `queued` with an attempt count after a transient failure (the
 # worker retries both, bounded), and finished as done / error / cancelled.
-# Terminal states stay on the record so the cockpit can show what happened;
+# Terminal states stay on the record so the app can show what happened;
 # re-queueing replaces the section.
 VERIFY_REQUEST_STATUSES = {"queued", "running", "waiting-for-base", "done", "error",
                            "cancelled"}
@@ -55,7 +55,7 @@ VERIFY_ERROR_KINDS = {"refused-safety", "no-base", "fetch-error", "agent-failed"
                       "sandbox-error", "interrupted", "hold", "exception"}
 
 # Who queued a verification request: the idle auto-hunter stamps its picks
-# "auto"; the cockpit's operator path leaves the field unset.
+# "auto"; the app's operator path leaves the field unset.
 VERIFY_REQUEST_SOURCES = {"operator", "auto"}
 
 # every per-PR record section this code knows; an unknown section is preserved
@@ -320,7 +320,7 @@ class Store:
 
     def delete_cluster(self, cid: int) -> None:
         """Soft-delete: tombstone the cluster (mark deleted, which bumps its
-        saved_at) so the removal rides the `clusters_since` watermark every cockpit
+        saved_at) so the removal rides the `clusters_since` watermark every app
         polls and reaches each operator's snapshot without a server bounce. The row
         is hard-removed later by reap_cluster_tombstones. No-op if the cluster is
         absent or already tombstoned."""
@@ -424,7 +424,7 @@ class Store:
     def load_response_acks(self) -> dict:
         """Which PRs' community-response signals an operator has marked seen
         (`{acks: {"<pr>": {at, by}}}`), shared across operators — an ack clears
-        the signal from every cockpit's queue until a response newer than the
+        the signal from every instance's queue until a response newer than the
         ack's `at` supersedes it."""
         return self._load_registry("response_acks", {"acks": {}})
 
@@ -434,9 +434,9 @@ class Store:
         self._save_registry("response_acks", registry)
 
     def load_live_sweep(self) -> dict:
-        """When the cockpit's live sweep last ran (`{swept_at}`), shared across
-        operators — one operator's sweep tells every cockpit how fresh the live
-        state is, and gates the launch-time re-sweep (COCKPIT_LIVE_TTL_MIN)."""
+        """When the app's live sweep last ran (`{swept_at}`), shared across
+        operators — one operator's sweep tells every app how fresh the live
+        state is, and gates the launch-time re-sweep (PROSPECTOR_LIVE_TTL_MIN)."""
         return self._load_registry("live_sweep", {"swept_at": None})
 
     def save_live_sweep(self, registry: dict) -> None:
@@ -475,7 +475,7 @@ class Store:
         beat, the PR each is running (None when idle), whether each idle
         auto-hunt is enabled, and each worker's this-process security-failure
         memory. Every worker merges its own record in each drain tick; any
-        cockpit reads the map to show which runners are online. An empty map
+        app reads the map to show which runners are online. An empty map
         means no worker has ever run against this store. A record written flat
         (a single host's heartbeat with no `hosts` key) reads as a
         single-entry map."""
@@ -492,7 +492,7 @@ class Store:
     def save_verify_worker(self, record: dict) -> None:
         """Merge one host's heartbeat record into the verify_worker registry,
         pruning entries stale past _WORKER_PRUNE_SECONDS. host and last_beat
-        are required: a beat that names no machine or no time tells a cockpit
+        are required: a beat that names no machine or no time tells an app
         nothing about whether a runner is online. Two hosts' merges may race on
         the shared row; a lost beat is rewritten by the loser's next tick."""
         if not record.get("host"):

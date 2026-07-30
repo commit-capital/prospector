@@ -69,7 +69,7 @@ class Pr:
     @property
     def state(self) -> str | None:
         """The PR's open/closed/merged state as stored — set by INGEST and updated
-        in place by the cockpit's live sweep and the executor's own actions, so the
+        in place by the app's live sweep and the executor's own actions, so the
         board and gates act on the latest GitHub-owned truth every operator shares."""
         return self._meta().get("state")
 
@@ -399,7 +399,7 @@ class Pr:
                               host: str | None = None,
                               head_sha: str | None = None) -> None:
         """Record this PR's sandbox-verification queue state (the verify_request
-        section): the cockpit writes `queued`/`cancelled`, the verify_pr
+        section): the app writes `queued`/`cancelled`, the verify_pr
         orchestrator advances it through `running` (with `step`) to `done` or
         `error` (with error_kind/error/log_tail), parks it `waiting-for-base`
         (with error_kind/error) for the worker to retry, or re-queues a
@@ -539,7 +539,7 @@ class Pr:
         """Persist GitHub-owned live facts into the shared store: the PR's
         open/closed/merged `meta.state`, and its `signals` verdicts — `mergeable`,
         `diffstat` ({additions, deletions, changed_files}), and `has_tests`. The
-        cockpit's live sweep and the executor's own actions call this so upstream
+        app's live sweep and the executor's own actions call this so upstream
         drift is shared with every operator at once — no per-machine overlay. Each
         touched section is restamped; signals keeps its `against_head_sha`, so the
         freshness check still anchors it to the same head. One validated write."""

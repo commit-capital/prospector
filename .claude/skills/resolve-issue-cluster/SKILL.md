@@ -1,20 +1,20 @@
 ---
 name: resolve-issue-cluster
-description: Execute a curated issue cluster's close-as-dup actions upstream via the cockpit executor as the configured bot, gated on confirmed curation. Close-as-dup is implemented; request-repro / link-pr remain surfaced suggestions.
+description: Execute a curated issue cluster's close-as-dup actions upstream via the app executor as the configured bot, gated on confirmed curation. Close-as-dup is implemented; request-repro / link-pr remain surfaced suggestions.
 ---
 
 # resolve-issue-cluster
 
-The issue-side resolve step, mirroring the cockpit's PR resolution. Resolve
+The issue-side resolve step, mirroring the app's PR resolution. Resolve
 `TRIAGE_REPO` and `TRIAGE_BOT_LOGIN` from the process environment or the
 gitignored root `.env` before starting; stop if either is missing. The one
-upstream write — **close-as-dup** — is implemented and runs through the cockpit
+upstream write — **close-as-dup** — is implemented and runs through the app
 executor as the configured GitHub App, gated and logged like every other
 upstream write.
 
 ## Where execution happens
 
-The cockpit's **Issues tab** is the surface. The close-as-dup worklist
+The app's **Issues tab** is the surface. The close-as-dup worklist
 (`/api/issues/duplicates`) lists the confirmed duplicate groups, most painful
 first; closing one calls `POST /api/execute/issue/<n>/close-dup`, which runs
 `executor.close_issue` — post a comment pointing at the canonical, then close

@@ -4,6 +4,6 @@
   ],
   "teardown": [],
   "run": [
-    "uv run pr-triager serve --dev"
+    "uv run prospector serve --dev"
   ]
 }

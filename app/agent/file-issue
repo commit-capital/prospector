@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+"""The app agent's "file a ticket on the meta-repo" path — AS THE OPERATOR.
+
+The meta-repo (`PROSPECTOR_FEEDBACK_REPO`) is where triager/pipeline bugs and
+enhancement requests go. It is outside the bot's GitHub App installation, so the
+bot token cannot even resolve it — a plain `gh issue create --repo <meta>` fails
+with "Could not resolve to a Repository" whenever the chat-agent subprocess is
+authenticated as the bot. This script is the sanctioned path: it drops the bot
+token so `gh` falls back to the operator's own login, and files there as them.
+
+The repo is fixed to the configured meta-repo — the operator-identity write is
+scoped to filing a ticket on their own tooling repo, and nothing else. Filing
+upstream stays on the bot's path (`gh issue create --repo <upstream>`).
+
+Usage:
+    file-issue --title "<title>" --body "<body>" [--label bug]
+    file-issue --title "<title>" --body-file <path> [--label bug ...]
+
+Stdlib only, so it runs under the sandbox's system python (like `remember` /
+`resubmit`).
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+# Run under a bare python3 (the agent's shell): put the repo root on the path for
+# the `pipeline` package rather than relying on the editable install.
+sys.path.insert(0, str(REPO_ROOT))
+
+from pipeline.settings import FEEDBACK_REPO  # noqa: E402
+
+
+def operator_env() -> dict[str, str]:
+    """Env that authenticates `gh` as the OPERATOR, not the bot: drop the injected
+    bot GH_TOKEN (and GITHUB_TOKEN) so `gh` falls back to the operator's default
+    login. Everything else (PATH, HOME) is inherited so their credentials resolve."""
+    env = dict(os.environ)
+    env.pop("GH_TOKEN", None)
+    env.pop("GITHUB_TOKEN", None)
+    return env
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(
+        prog="file-issue",
+        description="File an issue on the configured meta-repo as the operator.",
+    )
+    p.add_argument("--title", required=True, help="the issue title")
+    body = p.add_mutually_exclusive_group(required=True)
+    body.add_argument("--body", help="the issue body, inline")
+    body.add_argument("--body-file", dest="body_file", help="path to a file holding the body")
+    p.add_argument("--label", action="append", default=[], metavar="LABEL",
+                   help="a label to apply (repeatable)")
+    args = p.parse_args(argv)
+
+    if not FEEDBACK_REPO:
+        print("file-issue: no meta-repo configured (PROSPECTOR_FEEDBACK_REPO is unset)",
+              file=sys.stderr)
+        return 2
+
+    cmd = ["gh", "issue", "create", "--repo", FEEDBACK_REPO, "--title", args.title]
+    if args.body_file:
+        path = Path(args.body_file)
+        if not path.is_file():
+            print(f"file-issue: body file not found: {path}", file=sys.stderr)
+            return 2
+        cmd += ["--body-file", str(path)]
+    else:
+        cmd += ["--body", args.body]
+    for label in args.label:
+        cmd += ["--label", label]
+
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=operator_env())
+    if r.returncode != 0:
+        print(f"file-issue: {r.stderr.strip() or r.stdout.strip()}", file=sys.stderr)
+        return 1
+    print(r.stdout.strip())
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

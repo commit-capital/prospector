@@ -1,6 +1,6 @@
 """Run the full VERIFY sequence on ONE pull request, headlessly.
 
-This is the per-PR runner the cockpit's verification queue drives: the blind
+This is the per-PR runner the app's verification queue drives: the blind
 adequacy, author, and post-run judge agents execute as locked-down headless
 `claude -p` subprocesses (pipeline/headless_agent.py), the sandbox phases run
 via verify_driver.verify_pr, and gates.verify_outcome computes the outcome —
@@ -15,9 +15,9 @@ security verdict, re-checked at run time rather than trusted from queue time.
 Evidence stays in memory: the sandbox phases hand their results straight to
 the commit path, with no intermediate files on disk.
 
-Progress goes to stdout one line per step; the cockpit's verification worker
+Progress goes to stdout one line per step; the app's verification worker
 captures it. The PR's `verify_request` section records each transition
-(running → done / error) so every cockpit shows the run's state live.
+(running → done / error) so every app shows the run's state live.
 
   uv run python pipeline/verify_pr.py --pr N [--store DIR] [--from-queue]
 
@@ -112,7 +112,7 @@ def _say(msg: str) -> None:
 
 class _Request:
     """This run's verify_request transitions on the PR record. Carries queued_at
-    (from the cockpit's queue write), started_at, source, and the prior attempt
+    (from the app's queue write), started_at, source, and the prior attempt
     count across transitions, since record_verify_request replaces the whole
     section."""
 
@@ -170,7 +170,7 @@ class _Request:
             attempts=self._attempts + 1, source=self._source, host=self._host)
 
     def hours_since_queued(self) -> float | None:
-        """Hours since the cockpit queued this request, or None when it did not
+        """Hours since the app queued this request, or None when it did not
         come from the queue (or the stamp is unparseable)."""
         if not self._queued_at:
             return None

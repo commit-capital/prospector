@@ -63,7 +63,7 @@ def get_engine(url: str) -> Engine:
     SQLite URLs get the default pool plus a busy timeout, and their parent
     directory is created if absent. PostgreSQL URLs use NullPool — a connection
     is opened per operation and closed on release, never held idle — so several
-    clients (each cockpit, reload worker, and pipeline run) share a small
+    clients (each app, reload worker, and pipeline run) share a small
     connection budget without exhausting it. NullPool keeps those clients from
     pinning idle connections and consuming the shared pooler's slots. psycopg's
     server-side prepared statements are disabled so the engine works through a

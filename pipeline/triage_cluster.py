@@ -6,7 +6,7 @@ head moved (reported below).
 
   uv run python triage_cluster.py --cluster N [--store DIR]
 
-Progress is printed to stdout one line per step; the cockpit streams it as SSE.
+Progress is printed to stdout one line per step; the app streams it as SSE.
 """
 from __future__ import annotations
 
@@ -138,7 +138,7 @@ def _run(store: Store, cid: int, cluster: Cluster) -> int:
             _say(f"    ! {e}")
         return 1
 
-    # 6. Format the just-committed rationale for cockpit display. This is derived,
+    # 6. Format the just-committed rationale for app display. This is derived,
     # presentation-only data: an unavailable model or an unexpected formatter
     # failure must not undo or fail the authoritative triage result.
     _say("⑥ Formatting the rationale for display…")
@@ -169,7 +169,7 @@ def _run(store: Store, cid: int, cluster: Cluster) -> int:
         if rec is not None and rec.section("security") and not is_current(rec, "security"):
             _say(f"      ⚠ security verdict is now stale (head moved) — "
                  f"merge-blocked until a fresh security review "
-                 f"(security_review.py --pr {n}, or the ↻ Run button in the cockpit)")
+                 f"(security_review.py --pr {n}, or the ↻ Run button in the app)")
     return 0
 
 

@@ -5,7 +5,7 @@ Examples: rotate a leaked credential (from threat-scan), salvage a good fix
 out of a rejected PR into a clean first-party PR (from analyze), notify
 upstream of a security issue. These are durable, cross-cutting tasks with a
 done/open lifecycle — so they live in the action-items registry (owned by store.py),
-not in a per-PR section. The cockpit surfaces them as a flat, checkable worklist.
+not in a per-PR section. The app surfaces them as a flat, checkable worklist.
 
 Each item has a STABLE id ("<kind>:<pr>") so re-running a scan upserts rather
 than duplicates, and a human-set status survives re-emission.

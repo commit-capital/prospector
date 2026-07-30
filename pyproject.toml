@@ -3,7 +3,7 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pr-triager"
+name = "prospector"
 version = "0.1.0"
 description = "Pipeline + web UI for triaging a large open-PR backlog: cluster, analyze, security-review, and execute gated merge/close decisions as a GitHub App"
 readme = "README.md"
@@ -26,7 +26,7 @@ Repository = "https://github.com/commit-capital/prospector"
 Issues = "https://github.com/commit-capital/prospector/issues"
 
 [project.scripts]
-pr-triager = "pipeline.cli:main"
+prospector = "pipeline.cli:main"
 
 [dependency-groups]
 dev = [
@@ -39,15 +39,15 @@ dev = [
 [tool.setuptools]
 # The source roots, installed (editable) as packages so their modules resolve
 # identically at runtime, under pytest, and from the CLI — qualified as
-# pipeline.*, review_cockpit.backend.*, issue_triage.*. Each package sits at its
+# pipeline.*, app.backend.*, issue_triage.*. Each package sits at its
 # natural path under the repo root, so no package-dir remapping is needed. New
 # modules need no change — they're submodules of an already-registered package.
-packages = ["pipeline", "review_cockpit", "review_cockpit.backend", "issue_triage"]
+packages = ["pipeline", "app", "app.backend", "issue_triage"]
 
 [tool.pytest.ini_options]
 # One command runs all three suites. importlib import-mode avoids pytest's
 # same-basename collision trap across the test roots. The suites import the code
-# under test as packages (from pipeline import store, from review_cockpit.backend
+# under test as packages (from pipeline import store, from app.backend
 # import data, from issue_triage import issue_store), resolved through the editable
 # install — the same mechanism runtime and the CLI use — so green tests imply the app boots.
 # `-n auto` fans the ~960 tests across the machine's cores via pytest-xdist; every
@@ -57,7 +57,7 @@ packages = ["pipeline", "review_cockpit", "review_cockpit.backend", "issue_triag
 # single worker via an xdist_group marker on test_postgres_backend.py — which
 # only binds under `--dist loadgroup` (plain `load` ignores the marker); ungrouped
 # tests still spread across all workers under loadgroup, exactly like load.
-testpaths = ["pipeline/tests", "review_cockpit/backend/tests", "issue_triage/tests"]
+testpaths = ["pipeline/tests", "app/backend/tests", "issue_triage/tests"]
 addopts = "--import-mode=importlib -n auto --dist loadgroup"
 
 [tool.ruff]
@@ -67,9 +67,9 @@ target-version = "py314"
 # Pyflakes (F: dead code, undefined names) + pycodestyle (E/W) + pyupgrade (UP:
 # modernizations, several of which enforce conventions pyright can't — no quoted
 # annotations, `X | None` over Optional) + N999, the invalid-module-name guard
-# that keeps anyone from re-introducing a non-importable package directory like
-# the old `review-cockpit/`. Naming rules beyond N999 stay off — they force
-# awkward renames (exception/test/alias names) for little value.
+# that keeps every package directory importable — a hyphenated name is not.
+# Naming rules beyond N999 stay off — they force awkward renames
+# (exception/test/alias names) for little value.
 select = ["F", "E", "W", "UP", "N999"]
 ignore = [
   "E501",            # line too long — let the formatter/editor own wrapping

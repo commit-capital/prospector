@@ -1,6 +1,6 @@
-"""Umbrella CLI for the triage pipeline + cockpit.
+"""Umbrella CLI for the triage pipeline + app.
 
-`pr-triager <command>` dispatches to the existing tools: each handler
+`prospector <command>` dispatches to the existing tools: each handler
 lazily imports its tool and forwards the remaining argv to the tool's main(),
 so the tools stay independently runnable (`uv run python pipeline/ingest.py`).
 """
@@ -14,10 +14,10 @@ from collections.abc import Callable
 from pipeline import settings
 
 USAGE = """\
-usage: pr-triager <command> [args]
+usage: prospector <command> [args]
 
 commands:
-  serve            run the cockpit (API + built frontend); --dev runs the hot-reload dev servers
+  serve            run the app (API + built frontend); --dev runs the hot-reload dev servers
   ingest           refresh open PRs + issue links into the store
   threat-scan      deterministic threat scan over cached diffs
   status           regenerate STATUS.md from the store
@@ -25,12 +25,12 @@ commands:
   recluster        re-summarize + re-cluster one cluster's members
   security-review  3-lens adversarial security review of one PR
 
-`pr-triager <command> --help` shows the command's own options.
+`prospector <command> --help` shows the command's own options.
 """
 
 
 def _serve(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(prog="pr-triager serve", description="Run the cockpit server.")
+    parser = argparse.ArgumentParser(prog="prospector serve", description="Run the app server.")
     parser.add_argument("--dev", action="store_true", help="run the hot-reload dev servers (uvicorn --reload + Vite)")
     parser.add_argument("--port", type=int, default=None, help="API port (default: API_PORT from .env, else 8787)")
     args = parser.parse_args(argv)
@@ -46,16 +46,16 @@ def _serve(argv: list[str]) -> int:
         return devserve.run()
     settings.load_env_file()
     port: int = args.port if args.port is not None else int(os.environ.get("API_PORT", "8787"))
-    dist = settings.REPO_ROOT / "review_cockpit" / "frontend" / "dist"
+    dist = settings.REPO_ROOT / "app" / "frontend" / "dist"
     if not dist.is_dir():
         print(
-            "note: no built frontend (review_cockpit/frontend/dist) — serving the API only.\n"
-            "      build it with: pnpm --dir review_cockpit/frontend build",
+            "note: no built frontend (app/frontend/dist) — serving the API only.\n"
+            "      build it with: pnpm --dir app/frontend build",
             file=sys.stderr,
         )
     import uvicorn
 
-    uvicorn.run("review_cockpit.backend.app:app", port=port)
+    uvicorn.run("app.backend.app:app", port=port)
     return 0
 
 
@@ -73,7 +73,7 @@ def _threat_scan(argv: list[str]) -> int:
 
 def _status(argv: list[str]) -> int:
     if argv:
-        print("pr-triager status takes no arguments", file=sys.stderr)
+        print("prospector status takes no arguments", file=sys.stderr)
         return 2
     from pipeline import views
 

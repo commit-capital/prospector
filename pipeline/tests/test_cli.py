@@ -53,7 +53,7 @@ def test_serve_invokes_uvicorn_with_port(monkeypatch):
 
     monkeypatch.setattr(uvicorn, "run", fake_run)
     assert cli.main(["serve", "--port", "9999"]) == 0
-    assert calls["app"] == "review_cockpit.backend.app:app"
+    assert calls["app"] == "app.backend.app:app"
     assert calls["port"] == 9999
 
 
@@ -74,4 +74,4 @@ def test_no_arguments_is_usage_error(capsys):
 
 def test_help_prints_usage(capsys):
     assert cli.main(["--help"]) == 0
-    assert "pr-triager" in capsys.readouterr().out
+    assert "prospector" in capsys.readouterr().out

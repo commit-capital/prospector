@@ -1,0 +1,54 @@
+#!/usr/bin/env python3
+"""The app agent's "reingest one PR" path — refresh a single PR's store
+record against its current head SHA, then bring the sections that went stale back
+to the current head.
+
+After the agent pushes to a PR (via `resubmit`), Greptile + CI re-run on GitHub
+and the head moves, but the pipeline's store keeps `signals` / `summary` /
+`analysis` / `drift` pinned to the old head until a full pipeline pass re-ingests
+the PR. Because the merge gate wants signals + drift computed against the current
+head, the resubmitted PR is drift-blocked from merge with no way to refresh it.
+This command closes that loop: it re-fetches the PR (signals/drift re-stamped at
+the live head — deterministic, enough on its own to clear the drift block) and,
+when summary/analysis are left stale, re-summarizes + re-analyzes just this PR
+(and the cluster(s) it belongs to) so every section tracks the current head.
+
+Usage:
+    app/agent/reingest <pr>              # refresh + re-triage one PR
+    app/agent/reingest <pr> --store DIR  # (testing hook)
+
+A no-op when the head has not moved since the last full pass. Scoped to one PR —
+never a full-corpus re-cluster. All writes go through the validated store
+accessor, mirroring `store-read` / `uncluster`; it runs under the app's uv
+env, where every allowlisted agent command runs. The natural follow-on to a
+`resubmit` push, so a resubmitted PR becomes mergeable without an out-of-band run.
+"""
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+# Run under a bare python3 (the agent's shell): put the repo root on the path for
+# the `pipeline` package rather than relying on the editable install.
+sys.path.insert(0, str(REPO_ROOT))
+
+from pipeline import reingest  # noqa: E402
+from pipeline.store import Store  # noqa: E402
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(
+        prog="reingest",
+        description="Refresh one PR's store record against its current head and re-triage it.",
+    )
+    p.add_argument("pr", type=int, help="the upstream PR number")
+    p.add_argument("--store", default=None, help="store root (testing hook)")
+    args = p.parse_args(argv)
+    store = Store(args.store) if args.store else Store()
+    return reingest.run(store, args.pr)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

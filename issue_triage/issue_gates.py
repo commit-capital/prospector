@@ -3,7 +3,7 @@
 close_dup_allowed is the pipeline's static auto-recommend (drives the dup
 worklist); close_dup_eligibility adds live upstream checks that the duplicate and
 its canonical are eligible (the canonical may also be closed as completed/fixed),
-and is the cockpit/executor's pre-write gate — the issue-side analog of
+and is the app/executor's pre-write gate — the issue-side analog of
 gates.py's merge_allowed vs merge_eligibility.
 issue_cluster_state is the derived board chip, computed on read, never stored.
 """
@@ -102,7 +102,7 @@ def close_fixed_eligibility(issue: Issue, fixed_by_state: str | None,
     """Executor's pre-write gate for closing an issue as fixed by a merged PR: the
     referenced PR must be currently `merged` and the issue still open. Deterministic
     — a merged fixer stands on its own, with no cluster-curation dependency (the
-    cockpit only offers this on a confirmed-cluster card). Both the PR's `merged`
+    app only offers this on a confirmed-cluster card). Both the PR's `merged`
     state and `issue_live_state` are resolved live by the caller; a fetched issue
     state overrides the store's snapshot, falling back to it when the fetch returns
     None (fail-open — a transient read failure must not block the gate)."""

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Review Cockpit — dependency setup. Syncs the repo-root uv environment (pinned
+# Prospector — dependency setup. Syncs the repo-root uv environment (pinned
 # to Python 3.14.6 via .python-version + uv.lock) and installs frontend deps.
-# Idempotent: safe to run standalone, from `pr-triager serve --dev`, or as
+# Idempotent: safe to run standalone, from `prospector serve --dev`, or as
 # Conductor's setup script (.conductor/settings.toml). Run from anywhere — paths are
 # resolved to the repo root.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-FRONTEND="$ROOT/review_cockpit/frontend"
+FRONTEND="$ROOT/app/frontend"
 
 # Put a Node >=24 on PATH and pick a pnpm >=11 (the frontend's pinned toolchain).
 source "$ROOT/frontend-toolchain.sh"
@@ -32,7 +32,7 @@ fi
 # install finishes — not on node_modules/ existing. An interrupted install
 # leaves a partial node_modules/ (packages linked, .bin/ symlinks missing), and
 # a bare directory check would treat that as done and skip the repair, so
-# `pr-triager serve --dev` keeps failing without self-healing. The marker
+# `prospector serve --dev` keeps failing without self-healing. The marker
 # is absent until the install completes, so a partial tree re-triggers the install.
 if [ ! -e "$FRONTEND/node_modules/.modules.yaml" ]; then
   ( cd "$FRONTEND" && "${PNPM[@]}" install --frozen-lockfile )
@@ -40,7 +40,7 @@ fi
 
 # Per-worktree dev ports in the single root .env. Append the pair only if absent
 # so operator-set vars (TRIAGE_STORE_URL, …) are preserved. Each worktree is its
-# own checkout with its own root .env, so concurrent cockpits don't collide.
+# own checkout with its own root .env, so concurrent app instances don't collide.
 ENV_FILE="$ROOT/.env"
 touch "$ENV_FILE"
 

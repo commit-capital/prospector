@@ -33,13 +33,13 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
         with:
-          package_json_file: review_cockpit/frontend/package.json
+          package_json_file: app/frontend/package.json
       - name: Install Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: pnpm
-          cache-dependency-path: review_cockpit/frontend/pnpm-lock.yaml
+          cache-dependency-path: app/frontend/pnpm-lock.yaml
       - name: Install uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
@@ -48,14 +48,14 @@ jobs:
       - name: Set up (README step 1)
         run: ./setup.sh
       - name: Build the frontend
-        run: pnpm --dir review_cockpit/frontend build
+        run: pnpm --dir app/frontend build
       - name: Ingest open PRs + issues
-        run: uv run pr-triager ingest --max 5
+        run: uv run prospector ingest --max 5
       - name: Regenerate STATUS.md
-        run: uv run pr-triager status
+        run: uv run prospector status
       - name: Serve and probe
         run: |
-          uv run pr-triager serve --port 8787 > serve.log 2>&1 &
+          uv run prospector serve --port 8787 > serve.log 2>&1 &
           SERVE_PID=$!
           ok=""
           for _ in $(seq 1 30); do

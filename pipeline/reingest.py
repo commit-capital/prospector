@@ -15,7 +15,7 @@ without spending an agent. Scoped to one PR — never a full-corpus re-cluster.
 
   uv run python pipeline/reingest.py --pr N [--store DIR]
 
-Progress is printed to stdout one line per step; the cockpit streams it as SSE.
+Progress is printed to stdout one line per step; the app streams it as SSE.
 """
 from __future__ import annotations
 
@@ -100,7 +100,7 @@ def _analyze_cluster(store: Store, cid: int) -> list[str]:
 
 
 def _reformat_cluster(store: Store, cid: int) -> None:
-    """Format a just-committed cluster rationale for cockpit display. Derived,
+    """Format a just-committed cluster rationale for app display. Derived,
     presentation-only: an unavailable model or a formatter failure must not undo
     the authoritative analysis."""
     try:

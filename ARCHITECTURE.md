@@ -1,7 +1,7 @@
 # Architecture — the data layer
 
-How a fact gets from GitHub into the store and out to a cockpit request. This is
-the part that isn't obvious from any single file: the SQL store, the cockpit's
+How a fact gets from GitHub into the store and out to an API request. This is
+the part that isn't obvious from any single file: the SQL store, the app's
 in-memory snapshot, and the live sweep. For *what the system does* and the
 trust model see `README.md` and `CLAUDE.md`; for the phase run-commands see
 `pipeline/workflows/README.md`. This doc is the map of *where state lives and how
@@ -11,7 +11,7 @@ than restating them.
 ## One picture
 
 ```
- GitHub ──INGEST/phases──►  SQL store  ──watermark sync──►  cockpit snapshot  ──►  /api/* reads
+ GitHub ──INGEST/phases──►  SQL store  ──watermark sync──►  app snapshot  ──►  /api/* reads
    ▲    ▲                  (storekit)     (data.py)          (in-memory dicts)
    │    │ live sweep            │
    │    └ (freshness_live) ─────┤  persists PR closed/merged/mergeable
@@ -34,7 +34,7 @@ never parsed back**.
   issues / threat` ride in a JSON `data` column alongside mirror
   columns and a `saved_at` write-stamp), a `runs` ledger, singleton `registries`
   rows (durable threat blocklist + incident log, action items, the live-sweep
-  timestamp), and the cockpit's own `activity` and `chat_messages` tables. Issues
+  timestamp), and the app's own `activity` and `chat_messages` tables. Issues
   add `issues` / `issue_clusters`.
 - **Backend selection** (`storekit.resolve_url`): an explicit `--store DIR`
   (tests, CLI) → `sqlite:///DIR/store.db`; else `TRIAGE_STORE_URL` (a shared
@@ -51,9 +51,9 @@ never parsed back**.
   `is_current()` is the single check, no manual invalidation. The row's `saved_at`
   column is a separate write-stamp that drives the watermark sync below.
 
-## 2. The cockpit reads from an in-memory snapshot
+## 2. The app reads from an in-memory snapshot
 
-`review_cockpit/backend/data.py` is the read side. It never does per-request DB
+`app/backend/data.py` is the read side. It never does per-request DB
 I/O — every board/list read serves from module-level dicts (`_prs`, `_clusters`,
 `_pr_to_clusters_idx`).
 
@@ -84,7 +84,7 @@ caches a stale board on top of an already-debounced snapshot.
 The store's PR state is only as fresh as the last phase run, but a PR may have
 been closed, merged, reopened, or made conflicting upstream since —
 GitHub-owned facts that are the same for every operator.
-`review_cockpit/backend/freshness_live.py` fetches them live and **persists any
+`app/backend/freshness_live.py` fetches them live and **persists any
 drift into the shared store**, so all operators converge on GitHub's truth by
 reading the store, not a per-machine cache:
 
@@ -92,12 +92,12 @@ reading the store, not a per-machine cache:
   `sweep()` → `persist_live()` writes divergent `meta.state` (open/closed/merged)
   and `signals.mergeable` via `model.Pr.record_live_state`. The executor's own
   merge/close/reopen persist through the same method.
-- **Cadence:** on cockpit launch when the last sweep is missing or older than
-  `COCKPIT_LIVE_TTL_MIN` (default 60), and on the manual "Refresh live state"
+- **Cadence:** on app launch when the last sweep is missing or older than
+  `PROSPECTOR_LIVE_TTL_MIN` (default 60), and on the manual "Refresh live state"
   button. The `live_sweep` singleton row records when it last ran — shared, so one
-  operator's sweep gates every cockpit's launch re-sweep and drives the
+  operator's sweep gates every instance's launch re-sweep and drives the
   "live as of …" UI.
-- This is why a PR shown as closed/merged in the cockpit can be fresher than the
+- This is why a PR shown as closed/merged in the app can be fresher than the
   last phase run: the sweep moved it ahead of INGEST, and the next INGEST simply
   re-confirms the same `meta.state`.
 
@@ -122,15 +122,15 @@ Neither path can write as the app when token minting fails. The trust model in
 ## Gotchas worth knowing before you touch the backend
 
 - **One import mechanism: installed packages.** The source roots are packages —
-  `pipeline`, `issue_triage`, and `review_cockpit` (whose backend is
-  `review_cockpit.backend`), each at its natural path under the repo root —
+  `pipeline`, `issue_triage`, and `app` (whose backend is
+  `app.backend`), each at its natural path under the repo root —
   installed (editable) via stock setuptools (`pyproject.toml` `[tool.setuptools]`).
   Code imports them qualified: `from pipeline import store`,
-  `from review_cockpit.backend import data`, `from issue_triage import issue_store`.
+  `from app.backend import data`, `from issue_triage import issue_store`.
   The same install backs runtime, pytest, and the CLI, so **green tests imply
-  `review_cockpit.backend.app:app` boots**. A backend-only
-  `import review_cockpit.backend.app` is the quickest boot check. (Standalone tools
-  that run under a bare `python3` — `review-new-pr/harness/`, `review_cockpit/agent/*`
+  `app.backend.app:app` boots**. A backend-only
+  `import app.backend.app` is the quickest boot check. (Standalone tools
+  that run under a bare `python3` — `review-new-pr/harness/`, `app/agent/*`
   — bootstrap their own package roots instead.)
 - **The store is the joined view.** There is no markdown parsing and no artifact
   joining — read facts from the store, never reconstruct them from `STATUS.md`.

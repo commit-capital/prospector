@@ -9,7 +9,7 @@ import os
 
 os.environ["TRIAGE_SKIP_DOTENV"] = "1"
 # Keep tests off the shared DB, and keep parallel workers off each other. Under
-# `pytest -n auto` (xdist) every worker process imports review_cockpit.backend.data,
+# `pytest -n auto` (xdist) every worker process imports app.backend.data,
 # whose module-level `_store = Store()` runs create_all on the default SQLite store;
 # a single shared file makes concurrent workers race ("table prs already exists").
 # Hand each worker a fresh private store DB. Serial runs just drop TRIAGE_STORE_URL
@@ -28,11 +28,11 @@ os.environ.setdefault("TRIAGE_BOT_LOGIN", "test-bot")
 # comments fail if they assume a fixed branch name, and settings.default_branch()
 # never shells out to gh during a test run.
 os.environ.setdefault("TRIAGE_DEFAULT_BRANCH", "trunk")
-os.environ.setdefault("COCKPIT_FEEDBACK_REPO", "test-owner/test-meta-repo")
+os.environ.setdefault("PROSPECTOR_FEEDBACK_REPO", "test-owner/test-meta-repo")
 # Fixture policy profile with deliberately fake vocabulary — a test that
 # silently depends on the real deployment's taxonomy fails here, which is the
 # point (same idiom as the fake repo/bot identity above). All three suites
-# (pipeline, issue_triage, cockpit) run under it, so editing the fixture can
+# (pipeline, issue_triage, app) run under it, so editing the fixture can
 # move assertions in any of them.
 os.environ.setdefault("TRIAGE_PROFILE", os.path.join(
     os.path.dirname(os.path.abspath(__file__)),

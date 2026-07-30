@@ -22,7 +22,7 @@ end-to-end write test.
 Run the application with:
 
 ```bash
-uv run pr-triager serve --dev
+uv run prospector serve --dev
 ```
 
 ## Validate changes
@@ -32,9 +32,9 @@ Run the checks relevant to your change before opening a pull request:
 ```bash
 uv run pytest
 uv run ruff check --no-fix .
-uv run pyright pipeline issue_triage review_cockpit/backend review-new-pr/harness
-pnpm --dir review_cockpit/frontend lint
-pnpm --dir review_cockpit/frontend build
+uv run pyright pipeline issue_triage app/backend review-new-pr/harness
+pnpm --dir app/frontend lint
+pnpm --dir app/frontend build
 bash .github/scripts/release_tree_guard.sh
 ```
 

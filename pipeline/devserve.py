@@ -1,4 +1,4 @@
-"""Cockpit dev launcher: uvicorn --reload + the Vite dev server, torn down together.
+"""Dev launcher: uvicorn --reload + the Vite dev server, torn down together.
 
 Runs setup.sh (idempotent), waits for the API port before starting Vite so the
 dev server never proxies into a closed socket, and kills both process groups on
@@ -19,19 +19,19 @@ from pathlib import Path
 from pipeline import settings
 
 FRONTEND_CMD = (
-    'FRONTEND="$0/review_cockpit/frontend" && source "$0/frontend-toolchain.sh" && cd "$FRONTEND" && exec "${PNPM[@]}" dev'
+    'FRONTEND="$0/app/frontend" && source "$0/frontend-toolchain.sh" && cd "$FRONTEND" && exec "${PNPM[@]}" dev'
 )
 
 
 def reload_exclude(root: Path) -> str:
-    """The `--reload-exclude` argument: the cockpit's diff cache, absolute.
+    """The `--reload-exclude` argument: the app's diff cache, absolute.
 
     uvicorn keeps the exclusion as a directory only when the argument names an
     existing directory, and matches it against the absolute paths it watches,
     so the cache directory is created here before the server starts. The
-    cockpit itself fills it lazily on its first diff fetch.
+    app itself fills it lazily on its first diff fetch.
     """
-    path = root / "review_cockpit" / "cache"
+    path = root / "app" / "cache"
     path.mkdir(parents=True, exist_ok=True)
     return str(path)
 
@@ -84,7 +84,7 @@ def run() -> int:
         print(f"→ backend  http://localhost:{api_port}  (API)")
         backend = subprocess.Popen(
             [
-                sys.executable, "-m", "uvicorn", "review_cockpit.backend.app:app",
+                sys.executable, "-m", "uvicorn", "app.backend.app:app",
                 "--port", str(api_port),
                 "--reload",
                 "--reload-exclude", reload_exclude(root),
