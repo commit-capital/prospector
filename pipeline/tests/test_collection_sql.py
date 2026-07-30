@@ -168,3 +168,34 @@ def test_bound_session_nested_reuses_outer(tmp_path):
         coll.save({"pr": 2, "x": 1})
     assert n["c"] == 1
     assert set(coll.all()) == {1, 2}
+
+
+def _sever_next_statement(monkeypatch):
+    """Make the next Connection.execute die the way a pooler dropping the socket
+    mid-query does; later statements run for real."""
+    from sqlalchemy import Connection
+    from sqlalchemy.exc import DBAPIError
+    real = Connection.execute
+    calls: list[int] = []
+
+    def flaky(self, *args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            err = DBAPIError(
+                "SELECT", None, Exception("SSL connection has been closed unexpectedly"))
+            err.connection_invalidated = True
+            raise err
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Connection, "execute", flaky)
+
+
+def test_bound_session_read_survives_a_severed_connection(tmp_path, monkeypatch):
+    """A bulk read inside a batch — the verify worker's orphan recovery — retries
+    on a replacement connection, and the rest of the block runs on it."""
+    coll = _nullpool_coll(tmp_path)
+    coll.save({"pr": 1, "x": 1})
+    with storekit.bound_session(coll.engine):
+        _sever_next_statement(monkeypatch)
+        assert set(coll.all()) == {1}
+        assert coll.load(1)["x"] == 1

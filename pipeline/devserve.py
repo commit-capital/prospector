@@ -24,17 +24,20 @@ FRONTEND_CMD = (
 )
 
 
-def reload_exclude(root: Path) -> str:
-    """The `--reload-exclude` argument: the app's diff cache, absolute.
+# The packages uvicorn's reloader watches: the backend's own importable
+# source. Everything else under the repo root writes *.py without changing what
+# the server runs — agent worktrees under .claude/, the virtualenvs, the
+# frontend's node_modules — and a restart there costs the verification worker
+# its in-flight sandbox run.
+SOURCE_DIRS = ("pipeline", "issue_triage", "prospector_app/backend")
 
-    uvicorn keeps the exclusion as a directory only when the argument names an
-    existing directory, and matches it against the absolute paths it watches,
-    so the cache directory is created here before the server starts. The
-    app itself fills it lazily on its first diff fetch.
-    """
-    path = root / "prospector_app" / "cache"
-    path.mkdir(parents=True, exist_ok=True)
-    return str(path)
+
+def reload_dirs(root: Path) -> list[str]:
+    """The `--reload-dir` arguments: each source package, absolute. uvicorn
+    watches these trees recursively and reloads on any `*.py` write inside
+    them; a directory it cannot resolve is dropped, and an empty set falls
+    back to the whole working directory."""
+    return [str(root / rel) for rel in SOURCE_DIRS]
 
 
 def is_port_open(port: int) -> bool:
@@ -106,7 +109,7 @@ def run() -> int:
                 sys.executable, "-m", "uvicorn", "prospector_app.backend.app:app",
                 "--port", str(api_port),
                 "--reload",
-                "--reload-exclude", reload_exclude(root),
+                *[arg for d in reload_dirs(root) for arg in ("--reload-dir", d)],
             ],
             cwd=root,
             start_new_session=True,
