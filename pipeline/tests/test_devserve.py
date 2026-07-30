@@ -1,8 +1,12 @@
-"""Port-wait helper: bound port detected, closed port times out."""
+"""Port-wait helper: bound port detected, closed port times out; the
+reload-exclude argument is one uvicorn accepts and honours."""
 from __future__ import annotations
 
 import socket
 import threading
+from pathlib import Path
+
+from uvicorn.config import resolve_reload_patterns
 
 from pipeline import devserve
 
@@ -23,3 +27,18 @@ def test_await_port_times_out_on_closed_port():
     port = sock.getsockname()[1]
     sock.close()
     assert devserve.await_port(port, timeout=1.0) is False
+
+
+def test_reload_exclude_is_an_existing_directory(tmp_path: Path):
+    exclude = devserve.reload_exclude(tmp_path)
+    assert Path(exclude).is_dir()
+
+
+def test_uvicorn_excludes_the_reload_exclude_directory(tmp_path: Path, monkeypatch):
+    """uvicorn resolves the argument to a watched-path exclusion. A path it
+    cannot resolve to a directory is globbed against the working directory,
+    where an absolute pattern is rejected."""
+    monkeypatch.chdir(tmp_path)
+    exclude = devserve.reload_exclude(tmp_path)
+    _patterns, directories = resolve_reload_patterns([exclude], [])
+    assert Path(exclude).resolve() in directories
