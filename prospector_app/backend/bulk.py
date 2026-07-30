@@ -26,6 +26,23 @@ _CLUSTER_CLOSE = {"close-dup": "CLOSE_DUP", "close-fixed": "CLOSE_FIXED",
                   "close-stale": "CLOSE_STALE", "close": "CLOSE"}
 
 
+def _warn_bookkeeping(done: dict[str, Any], errors: list[str]) -> None:
+    """Attach a batch-level warning to the done frame when any action executed
+    upstream but its post-write bookkeeping (store reflection / activity append)
+    failed. The upstream writes landed; the warning tells the operator the
+    app's own records for those PRs are behind, and names the first error —
+    a store-level failure (e.g. a stale schema guard) repeats across the whole
+    batch, so one loud message beats a per-row detail hunt."""
+    if not errors:
+        return
+    done["bookkeeping_errors"] = len(errors)
+    done["warning"] = (
+        f"{len(errors)} action(s) executed upstream but post-write bookkeeping "
+        f"failed ({errors[0]}) — the store/activity records for them are stale. "
+        "Fix the cause (a stale-schema error means: pull + restart the app), "
+        "then reconcile with a live sweep / activity backfill.")
+
+
 async def run_bulk(prs: list[int], action: str, *, comment: str | None = None,
                    comments: dict[int, str] | None = None,
                    canonical: int | None = None, method: str = "squash",
@@ -44,6 +61,7 @@ async def run_bulk(prs: list[int], action: str, *, comment: str | None = None,
 
     token = None if dry_run else executor.mint_bot_token()
     summary: dict[str, int] = {}
+    bookkeeping_errors: list[str] = []
     for n in prs:
         pr_comment = (comments or {}).get(n) or comment
         try:
@@ -62,8 +80,12 @@ async def run_bulk(prs: list[int], action: str, *, comment: str | None = None,
             res = {"pr": n, "action": action, "status": "error", "detail": str(e)[:200]}
         status = res.get("status", "error")
         summary[status] = summary.get(status, 0) + 1
+        if res.get("bookkeeping_error"):
+            bookkeeping_errors.append(str(res["bookkeeping_error"]))
         yield {"event": "result", "data": json.dumps(res)}
-    yield {"event": "done", "data": json.dumps({"summary": summary})}
+    done: dict[str, Any] = {"summary": summary}
+    _warn_bookkeeping(done, bookkeeping_errors)
+    yield {"event": "done", "data": json.dumps(done)}
 
 
 def _merge_ok(res: dict[str, Any]) -> bool:
@@ -128,10 +150,13 @@ async def run_cluster(items: list[models.ClusterItem], *, dry_run: bool = True):
 
     token = None if dry_run else executor.mint_bot_token()
     summary: dict[str, int] = {}
+    bookkeeping_errors: list[str] = []
 
     def tally(res: dict[str, Any]) -> dict[str, str]:
         status = res.get("status", "error")
         summary[status] = summary.get(status, 0) + 1
+        if res.get("bookkeeping_error"):
+            bookkeeping_errors.append(str(res["bookkeeping_error"]))
         return {"event": "result", "data": json.dumps(res)}
 
     is_merge = lambda it: (it.action or "").lower() == "merge"
@@ -154,4 +179,5 @@ async def run_cluster(items: list[models.ClusterItem], *, dry_run: bool = True):
     done: dict[str, Any] = {"summary": summary}
     if aborted:
         done["aborted"] = aborted
+    _warn_bookkeeping(done, bookkeeping_errors)
     yield {"event": "done", "data": json.dumps(done)}

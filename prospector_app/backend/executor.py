@@ -259,6 +259,17 @@ def _comment_marker(comment: str) -> str | None:
     return marker or None
 
 
+def _note_bookkeeping_failure(res: dict, what: str, e: Exception) -> None:
+    """Append a local bookkeeping failure to the result's `bookkeeping_error`
+    (and its human-readable `detail`) without touching `status` — the status
+    reports the upstream write, and local bookkeeping never changes it."""
+    note = f"{what}: {type(e).__name__}: {str(e)[:160]}"
+    prior = res.get("bookkeeping_error")
+    res["bookkeeping_error"] = f"{prior}; {note}" if prior else note
+    detail = res.get("detail") or ""
+    res["detail"] = f"{detail}; {note}" if detail else note
+
+
 def _comment_then_close(n: int, *, base: dict, idempotency_key: str | None,
                         comment_argv: list[str], close_argv: list[str], token: str,
                         log_verb: str, capture_event_url: bool = False,
@@ -267,12 +278,17 @@ def _comment_then_close(n: int, *, base: dict, idempotency_key: str | None,
     `idempotency_key`), then close. `idempotency_key` is required and scopes the
     check to this action's own comment: an unscoped check would let any earlier bot
     comment — a re-triggered Greptile review, a prior close comment — suppress this
-    one, closing the PR or issue with no explanation. Every exit records to the
-    activity log, so a failed upstream write is never silent. `on_success` runs
-    after the close succeeds."""
+    one, closing the PR or issue with no explanation. Every exit attempts an
+    activity-log record, so a failed upstream write is never silent. Once the
+    close has landed upstream the returned status stays "executed": `on_success`
+    (store bookkeeping) and the activity append are each best-effort, and a
+    failure in either is carried on the result as `bookkeeping_error`."""
     def _fail(detail: str) -> dict:
         res = {**base, "status": "error", "detail": detail}
-        activity.record(log_verb, identity=BOT_LOGIN, dry_run=False, **res)
+        try:
+            activity.record(log_verb, identity=BOT_LOGIN, dry_run=False, **res)
+        except Exception as e:  # the log write never masks the upstream failure
+            _note_bookkeeping_failure(res, "activity log write failed", e)
         return res
 
     steps: list[str] = []
@@ -298,8 +314,14 @@ def _comment_then_close(n: int, *, base: dict, idempotency_key: str | None,
     if capture_event_url and event_url:
         res["event_url"] = event_url
     if on_success is not None:
-        on_success()
-    activity.record(log_verb, identity=BOT_LOGIN, dry_run=False, **res)
+        try:
+            on_success()
+        except Exception as e:
+            _note_bookkeeping_failure(res, "post-close bookkeeping failed", e)
+    try:
+        activity.record(log_verb, identity=BOT_LOGIN, dry_run=False, **res)
+    except Exception as e:
+        _note_bookkeeping_failure(res, "activity log write failed", e)
     return res
 
 

@@ -91,6 +91,48 @@ def test_bulk_route_streams(monkeypatch):
     assert "result" in r.text and "done" in r.text
 
 
+def test_bulk_done_frame_warns_on_bookkeeping_errors(monkeypatch):
+    """A PR that executed upstream but whose bookkeeping failed counts as
+    executed in the summary, and the done frame carries a warning naming the
+    failure — so a batch-wide deterministic store failure is visible once,
+    loudly, instead of read off 39 identical per-row details."""
+    def fake_exec(n, action, *, token, dry_run):
+        return {"pr": n, "action": action.action, "status": "executed",
+                "detail": "commented + closed; bookkeeping failed",
+                "bookkeeping_error": "StaleSchemaError: store schema is v9 but this code is v8"}
+    monkeypatch.setattr(executor, "execute_pr", fake_exec)
+    monkeypatch.setattr(executor, "mint_bot_token", lambda: "tok")
+
+    evs = _drain(bulk.run_bulk([1, 2, 3], "CLOSE_STALE", dry_run=False))
+    done = json.loads([e for e in evs if e["event"] == "done"][0]["data"])
+    assert done["summary"]["executed"] == 3
+    assert done["bookkeeping_errors"] == 3
+    assert "StaleSchemaError" in done["warning"]
+
+
+def test_bulk_done_frame_has_no_warning_when_bookkeeping_is_clean(monkeypatch):
+    monkeypatch.setattr(executor, "execute_pr",
+                        lambda n, a, *, token, dry_run: {"pr": n, "action": a.action,
+                                                         "status": "executed", "detail": "ok"})
+    monkeypatch.setattr(executor, "mint_bot_token", lambda: "tok")
+    evs = _drain(bulk.run_bulk([1, 2], "CLOSE", dry_run=False))
+    done = json.loads([e for e in evs if e["event"] == "done"][0]["data"])
+    assert "warning" not in done and "bookkeeping_errors" not in done
+
+
+def test_run_cluster_done_frame_warns_on_bookkeeping_errors(monkeypatch):
+    monkeypatch.setattr(executor, "execute_pr",
+                        lambda n, a, *, token, dry_run: {"pr": n, "action": a.action, "status": "executed",
+                                                         "bookkeeping_error": "StaleSchemaError: v9 vs v8"})
+    monkeypatch.setattr(executor, "mint_bot_token", lambda: "tok")
+    monkeypatch.setattr(bulk.training, "capture", lambda *a, **k: None)
+    evs = _drain(bulk.run_cluster([models.ClusterItem(pr=1, action="close-dup", canonical=9)],
+                                  dry_run=False))
+    done = json.loads([e for e in evs if e["event"] == "done"][0]["data"])
+    assert done["bookkeeping_errors"] == 1
+    assert "StaleSchemaError" in done["warning"]
+
+
 def test_run_cluster_routes_each_disposition(monkeypatch):
     monkeypatch.setattr(executor, "merge_pr",
                         lambda n, method, *, dry_run, reason=None: {"pr": n, "action": "MERGE", "status": "dry-run"})

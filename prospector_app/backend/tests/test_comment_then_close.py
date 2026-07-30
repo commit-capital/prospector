@@ -89,6 +89,56 @@ def test_event_url_is_opt_in(monkeypatch):
     assert _call(capture_event_url=True)["event_url"] == "https://x/#c1"
 
 
+# --- a landed close is never reported as an error by post-close bookkeeping ---
+
+def test_on_success_failure_keeps_status_executed_and_still_records(monkeypatch):
+    """The comment+close landed upstream; the store reflection (`on_success`)
+    then raises (e.g. a stale schema guard). The result must stay executed —
+    carrying the failure as `bookkeeping_error` — and the activity entry must
+    still be written, so the audit trail never silently loses a real write."""
+    monkeypatch.setattr(executor, "_has_bot_comment", lambda n, contains=None: False)
+    monkeypatch.setattr(executor, "bot_run", lambda argv, token, **kw: _Res(0))
+    recorded = _capture_activity(monkeypatch)
+
+    def boom():
+        raise RuntimeError("store schema is v9 but this code is v8")
+
+    res = _call(on_success=boom)
+    assert res["status"] == "executed"
+    assert "commented + closed" in res["detail"]
+    assert "store schema is v9" in res["bookkeeping_error"]
+    assert recorded and recorded[0][1]["status"] == "executed"
+    assert "store schema is v9" in recorded[0][1]["bookkeeping_error"]
+
+
+def test_activity_failure_after_close_keeps_status_executed(monkeypatch):
+    monkeypatch.setattr(executor, "_has_bot_comment", lambda n, contains=None: False)
+    monkeypatch.setattr(executor, "bot_run", lambda argv, token, **kw: _Res(0))
+
+    def record_boom(verb, **k):
+        raise RuntimeError("activity insert failed")
+
+    monkeypatch.setattr(executor.activity, "record", record_boom)
+    res = _call()
+    assert res["status"] == "executed"
+    assert "activity insert failed" in res["bookkeeping_error"]
+
+
+def test_error_result_survives_a_failed_activity_record(monkeypatch):
+    """A failed upstream write still returns its own error detail when the
+    activity append itself fails — the log write never masks the real failure."""
+    monkeypatch.setattr(executor, "_has_bot_comment", lambda n, contains=None: False)
+    monkeypatch.setattr(executor, "bot_run", lambda argv, token, **kw: _Res(1, "rate limited"))
+
+    def record_boom(verb, **k):
+        raise RuntimeError("log down")
+
+    monkeypatch.setattr(executor.activity, "record", record_boom)
+    res = _call()
+    assert res["status"] == "error" and "comment failed" in res["detail"]
+    assert "log down" in res["bookkeeping_error"]
+
+
 # --- the idempotency key is scoped to this action's own comment ---
 
 def test_comment_marker_is_a_verbatim_substring_of_the_first_line():

@@ -24,6 +24,7 @@ commands:
   triage-cluster   refresh one cluster's member facts + re-classify
   recluster        re-summarize + re-cluster one cluster's members
   security-review  3-lens adversarial security review of one PR
+  activity-backfill  reconstruct missing activity-log entries for bot closes (dry-run default)
 
 `prospector <command> --help` shows the command's own options.
 """
@@ -98,6 +99,12 @@ def _security_review(argv: list[str]) -> int:
     return security_review.main(argv)
 
 
+def _activity_backfill(argv: list[str]) -> int:
+    from prospector_app.backend import activity_backfill
+
+    return activity_backfill.main(argv)
+
+
 COMMANDS: dict[str, Callable[[list[str]], int]] = {
     "serve": _serve,
     "ingest": _ingest,
@@ -106,6 +113,7 @@ COMMANDS: dict[str, Callable[[list[str]], int]] = {
     "triage-cluster": _triage_cluster,
     "recluster": _recluster,
     "security-review": _security_review,
+    "activity-backfill": _activity_backfill,
 }
 
 
