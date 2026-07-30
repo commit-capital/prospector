@@ -1,5 +1,5 @@
 """The REST API reports a GitHub App's actions under the `[bot]`-suffixed login
-(`commitperclip[bot]`, `user.type == "Bot"`), while TRIAGE_BOT_LOGIN is the bare
+(`triagebot[bot]`, `user.type == "Bot"`), while TRIAGE_BOT_LOGIN is the bare
 App slug. The executor's read-back helpers (`_has_bot_comment`,
 `_bot_comment_ids`, `_bot_change_request_ids`, `_latest_bot_review_url`) must
 recognize the bot under either form — an exact-match on the bare login never

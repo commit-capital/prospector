@@ -213,7 +213,7 @@ def _changed_paths(n: int) -> list[str]:
 
 def _is_bot_login(login: str | None) -> bool:
     """True when `login` identifies the configured bot. The REST API reports a
-    GitHub App's actions under the `[bot]`-suffixed login (`commitperclip[bot]`),
+    GitHub App's actions under the `[bot]`-suffixed login (`triagebot[bot]`),
     while TRIAGE_BOT_LOGIN is the bare App slug — accept either form, on either
     side."""
     return bool(login) and login.removesuffix("[bot]") == BOT_LOGIN.removesuffix("[bot]")
