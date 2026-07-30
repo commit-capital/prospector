@@ -554,7 +554,26 @@ interface AutohuntSummary {
   verify: AutohuntResultCounts;
 }
 
-export interface Autohunt { status: AutohuntStatus; summary: AutohuntSummary; history: AutohuntRun[]; }
+/** One PR whose verify_request is still in flight — queued, waiting for a
+ *  sandbox base, or running — ordered the way the worker picks them up.
+ *  `source` is "auto" for hunter-queued requests and null for operator-queued
+ *  ones, same as `AutohuntRun.trigger`. */
+export interface VerifyQueueEntry {
+  pr: number;
+  title?: string | null;
+  status: "running" | "waiting-for-base" | "queued";
+  source?: string | null;
+  step?: string | null;
+  queued_at?: string | null;
+  started_at?: string | null;
+}
+
+export interface Autohunt {
+  status: AutohuntStatus;
+  summary: AutohuntSummary;
+  history: AutohuntRun[];
+  verify_queue: VerifyQueueEntry[];
+}
 
 export interface PRDetail extends PRRow {
   body?: string | null;

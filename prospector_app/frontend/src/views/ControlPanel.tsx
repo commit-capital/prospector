@@ -48,6 +48,10 @@ function agoColor(iso: string | null | undefined): string {
   return "chip chip-red";
 }
 
+const VERIFY_QUEUE_LABEL: Record<string, string> = {
+  running: "running", "waiting-for-base": "waiting for base", queued: "queued",
+};
+
 /** Chip tone for a hunt run's result: security verdicts map straight to their
  *  color; verify outcomes are green when the fix is confirmed, red on
  *  error/regression, amber for every in-between state. */
@@ -540,6 +544,19 @@ export default function ControlPanel() {
             <span className="muted small">
               {hunt.status.security_pool} awaiting security · {hunt.status.verify_pool} GREEN awaiting verify
             </span>
+            {hunt.verify_queue.length > 0 && (
+              <span className="small" style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+                <span className="muted small">verify queue: </span>
+                {hunt.verify_queue.map((q) => (
+                  <PRLink key={q.pr} n={q.pr}
+                    className={`chip sm ${q.status === "running" ? "chip-blue" : "chip-muted"}`}
+                    title={`${q.title ?? ""}${q.step ? ` · ${q.step}` : ""}${q.queued_at ? ` · queued ${ago(q.queued_at)}` : ""}`}>
+                    {q.status === "running" ? "🔄" : "⏳"} #{q.pr} · {VERIFY_QUEUE_LABEL[q.status] ?? q.status}
+                    {" · "}{q.source === "auto" ? "auto" : "manual"}
+                  </PRLink>
+                ))}
+              </span>
+            )}
             {(hunt.status.security_failed.length > 0 || hunt.status.verify_failed.length > 0) && (
               <span className="small">
                 <span className="muted small">needs attention (auto-run failed): </span>
