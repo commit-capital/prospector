@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
-import { api, type JobSpec, type JobRec, type PipelineStatus, type Autohunt, type AutohuntResultCounts, type FilterSpec } from "../api";
+import { api, type JobSpec, type JobRec, type PipelineStatus, type Autohunt, type AutohuntResultCounts, type FilterSpec, type VerifyQueue } from "../api";
 import { useRepoMeta } from "../RepoMetaContext";
 import { PRLink } from "../components/PRLink";
 
@@ -62,6 +62,13 @@ function resultChip(phase: string, result: string | null | undefined): string {
   if (result === "verified-fix" || result === "agent-verified") return "chip chip-green";
   if (result.startsWith("error") || result === "regressed") return "chip chip-red";
   return "chip chip-amber";
+}
+
+/** Chip tone for a queued/running/waiting-for-base verify request. */
+function queueStatusChip(status: string): string {
+  if (status === "running") return "chip chip-blue";
+  if (status === "waiting-for-base") return "chip chip-amber";
+  return "chip chip-muted";
 }
 
 /** One phase's status at a glance: freshness chip up top, done/total progress
@@ -170,6 +177,9 @@ export default function ControlPanel() {
   const [hunt, setHunt] = useState<Autohunt | null>(null);
   const [huntRange, setHuntRange] = useState<HuntRangeOpt>(HUNT_RANGE_OPTIONS[0]);
   const [huntExpanded, setHuntExpanded] = useState(false);
+  const [verifyQueue, setVerifyQueue] = useState<VerifyQueue | null>(null);
+  const [verifyQueueRange, setVerifyQueueRange] = useState<HuntRangeOpt>(HUNT_RANGE_OPTIONS[0]);
+  const [verifyHistoryExpanded, setVerifyHistoryExpanded] = useState(false);
 
   const refreshJobs = () => api.jobsList().then((d) => setJobs(d.jobs)).catch((e) => setErr(String(e)));
   const refreshPipelineStatus = () => api.pipelineStatus().then(setPipeline).catch(() => {});
@@ -221,6 +231,13 @@ export default function ControlPanel() {
     const t = setInterval(load, 30_000);
     return () => clearInterval(t);
   }, [huntRange]);
+
+  useEffect(() => {
+    const load = () => api.verifyQueue(verifyQueueRange.days, verifyQueueRange.allTime).then(setVerifyQueue).catch(() => {});
+    load();
+    const t = setInterval(load, 30_000);
+    return () => clearInterval(t);
+  }, [verifyQueueRange]);
 
   const sweepReconcile = async () => {
     setReconBusy(true);
@@ -612,6 +629,74 @@ export default function ControlPanel() {
         </>
       ) : (
         <div className="muted small" style={{ marginBottom: 14 }}>Loading auto-hunt status…</div>
+      )}
+
+      {/* ── Verify queue ── */}
+      <h3>Verify queue</h3>
+      {verifyQueue ? (
+        <>
+          <table className="grid compact">
+            <thead><tr><th>Status</th><th>PR</th><th>Source</th><th>Since</th></tr></thead>
+            <tbody>
+              {verifyQueue.queue.length === 0 ? (
+                <tr><td colSpan={4} className="muted small">Nothing queued, waiting, or running.</td></tr>
+              ) : verifyQueue.queue.map((e) => (
+                <tr key={e.pr}>
+                  <td><span className={queueStatusChip(e.status)}>{e.status}{e.step ? ` · ${e.step}` : ""}</span></td>
+                  <td className="mono">
+                    <PRLink n={e.pr} />
+                    {e.title && <div className="muted small">{e.title.slice(0, 60)}</div>}
+                  </td>
+                  <td><span className="chip chip-muted sm">{e.source === "auto" ? "auto" : "manual"}</span></td>
+                  <td className="muted small" title={fmt(e.started_at ?? e.queued_at)}>{ago(e.started_at ?? e.queued_at)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          <div className="jobspec-label" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 12 }}>
+            <span className="muted small">
+              run history · {verifyQueueRange.allTime ? "all time" : `last ${verifyQueueRange.days} days`}
+            </span>
+            <div className="act-range-picker">
+              {HUNT_RANGE_OPTIONS.map((opt) => (
+                <button key={opt.label}
+                  className={`act-range-btn${verifyQueueRange.label === opt.label ? " act-range-btn-active" : ""}`}
+                  onClick={() => setVerifyQueueRange(opt)}>
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <button className="btn-secondary sm" style={{ marginTop: 4 }}
+            onClick={() => setVerifyHistoryExpanded((v) => !v)}>
+            {verifyHistoryExpanded ? "▾ Hide run history" : `▸ Show run history (${verifyQueue.history.length})`}
+          </button>
+
+          {verifyHistoryExpanded && (
+            <table className="grid compact" style={{ marginTop: 10 }}>
+              <thead><tr><th>When</th><th>PR</th><th>Result</th><th>Source</th></tr></thead>
+              <tbody>
+                {verifyQueue.history.length === 0 ? (
+                  <tr><td colSpan={4} className="muted small">No verify runs in this window.</td></tr>
+                ) : verifyQueue.history.map((r, i) => (
+                  <tr key={`${r.pr}-${r.started ?? i}`}>
+                    <td className="muted small" title={fmt(r.finished ?? r.started)}>{ago(r.finished ?? r.started)}</td>
+                    <td className="mono">
+                      <PRLink n={r.pr} />
+                      {r.title && <div className="muted small">{r.title.slice(0, 60)}</div>}
+                    </td>
+                    <td><span className={resultChip("verify", r.result)}>{r.result ?? "—"}</span></td>
+                    <td><span className="chip chip-muted sm">{r.trigger === "autohunt" ? "auto" : "manual"}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </>
+      ) : (
+        <div className="muted small" style={{ marginBottom: 14 }}>Loading verify queue…</div>
       )}
 
       <h3>Recent jobs</h3>
