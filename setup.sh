@@ -7,7 +7,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-FRONTEND="$ROOT/app/frontend"
+FRONTEND="$ROOT/prospector_app/frontend"
 
 # Put a Node >=24 on PATH and pick a pnpm >=11 (the frontend's pinned toolchain).
 source "$ROOT/frontend-toolchain.sh"

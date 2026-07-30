@@ -39,15 +39,15 @@ dev = [
 [tool.setuptools]
 # The source roots, installed (editable) as packages so their modules resolve
 # identically at runtime, under pytest, and from the CLI — qualified as
-# pipeline.*, app.backend.*, issue_triage.*. Each package sits at its
+# pipeline.*, prospector_app.backend.*, issue_triage.*. Each package sits at its
 # natural path under the repo root, so no package-dir remapping is needed. New
 # modules need no change — they're submodules of an already-registered package.
-packages = ["pipeline", "app", "app.backend", "issue_triage"]
+packages = ["pipeline", "prospector_app", "prospector_app.backend", "issue_triage"]
 
 [tool.pytest.ini_options]
 # One command runs all three suites. importlib import-mode avoids pytest's
 # same-basename collision trap across the test roots. The suites import the code
-# under test as packages (from pipeline import store, from app.backend
+# under test as packages (from pipeline import store, from prospector_app.backend
 # import data, from issue_triage import issue_store), resolved through the editable
 # install — the same mechanism runtime and the CLI use — so green tests imply the app boots.
 # `-n auto` fans the ~960 tests across the machine's cores via pytest-xdist; every
@@ -57,7 +57,7 @@ packages = ["pipeline", "app", "app.backend", "issue_triage"]
 # single worker via an xdist_group marker on test_postgres_backend.py — which
 # only binds under `--dist loadgroup` (plain `load` ignores the marker); ungrouped
 # tests still spread across all workers under loadgroup, exactly like load.
-testpaths = ["pipeline/tests", "app/backend/tests", "issue_triage/tests"]
+testpaths = ["pipeline/tests", "prospector_app/backend/tests", "issue_triage/tests"]
 addopts = "--import-mode=importlib -n auto --dist loadgroup"
 
 [tool.ruff]

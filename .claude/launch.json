@@ -4,13 +4,13 @@
     {
       "name": "app",
       "runtimeExecutable": "bash",
-      "runtimeArgs": ["-c", "set -a; [ -f .env ] && source .env; set +a; exec uv run uvicorn app.backend.app:app --port \"${API_PORT:-8787}\" --log-level warning"],
+      "runtimeArgs": ["-c", "set -a; [ -f .env ] && source .env; set +a; exec uv run uvicorn prospector_app.backend.app:app --port \"${API_PORT:-8787}\" --log-level warning"],
       "port": 8788
     },
     {
       "name": "app-dev",
       "runtimeExecutable": "bash",
-      "runtimeArgs": ["-c", "FRONTEND=app/frontend; source frontend-toolchain.sh && exec \"${PNPM[@]}\" --dir \"$FRONTEND\" dev"],
+      "runtimeArgs": ["-c", "FRONTEND=prospector_app/frontend; source frontend-toolchain.sh && exec \"${PNPM[@]}\" --dir \"$FRONTEND\" dev"],
       "port": 5173
     }
   ]

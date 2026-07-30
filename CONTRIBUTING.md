@@ -32,9 +32,9 @@ Run the checks relevant to your change before opening a pull request:
 ```bash
 uv run pytest
 uv run ruff check --no-fix .
-uv run pyright pipeline issue_triage app/backend review-new-pr/harness
-pnpm --dir app/frontend lint
-pnpm --dir app/frontend build
+uv run pyright pipeline issue_triage prospector_app/backend review-new-pr/harness
+pnpm --dir prospector_app/frontend lint
+pnpm --dir prospector_app/frontend build
 bash .github/scripts/release_tree_guard.sh
 ```
 

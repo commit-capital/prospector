@@ -2,7 +2,7 @@
 re-run, and turn its stream-json output into (a) a final text result and
 (b) live progress events.
 
-Lockdown mirrors app/backend/chat.py: --safe-mode (drop the repo's
+Lockdown mirrors prospector_app/backend/chat.py: --safe-mode (drop the repo's
 CLAUDE.md / hooks / plugins / skills / MCP) + --setting-sources "" (load no
 settings file, so no repo grant or deny reaches this agent) + --permission-mode
 dontAsk (never prompt, silently deny anything off the allowlist) + a read-only
