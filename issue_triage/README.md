@@ -57,7 +57,7 @@ python issue_triage/issue_views.py                 # regenerate ISSUE-STATUS.md 
 ```
 
 The cockpit's Issues tab is a read-only projection over this store
-(`review_cockpit/backend/issues.py`); the close-as-dup worklist is the confirmed
+(`app/backend/issues.py`); the close-as-dup worklist is the confirmed
 duplicates, most painful first.
 
 ## Pain score

@@ -53,7 +53,7 @@ never parsed back**.
 
 ## 2. The cockpit reads from an in-memory snapshot
 
-`review_cockpit/backend/data.py` is the read side. It never does per-request DB
+`app/backend/data.py` is the read side. It never does per-request DB
 I/O — every board/list read serves from module-level dicts (`_prs`, `_clusters`,
 `_pr_to_clusters_idx`).
 
@@ -84,7 +84,7 @@ caches a stale board on top of an already-debounced snapshot.
 The store's PR state is only as fresh as the last phase run, but a PR may have
 been closed, merged, reopened, or made conflicting upstream since —
 GitHub-owned facts that are the same for every operator.
-`review_cockpit/backend/freshness_live.py` fetches them live and **persists any
+`app/backend/freshness_live.py` fetches them live and **persists any
 drift into the shared store**, so all operators converge on GitHub's truth by
 reading the store, not a per-machine cache:
 
@@ -122,15 +122,15 @@ Neither path can write as the app when token minting fails. The trust model in
 ## Gotchas worth knowing before you touch the backend
 
 - **One import mechanism: installed packages.** The source roots are packages —
-  `pipeline`, `issue_triage`, and `review_cockpit` (whose backend is
-  `review_cockpit.backend`), each at its natural path under the repo root —
+  `pipeline`, `issue_triage`, and `app` (whose backend is
+  `app.backend`), each at its natural path under the repo root —
   installed (editable) via stock setuptools (`pyproject.toml` `[tool.setuptools]`).
   Code imports them qualified: `from pipeline import store`,
-  `from review_cockpit.backend import data`, `from issue_triage import issue_store`.
+  `from app.backend import data`, `from issue_triage import issue_store`.
   The same install backs runtime, pytest, and the CLI, so **green tests imply
-  `review_cockpit.backend.app:app` boots**. A backend-only
-  `import review_cockpit.backend.app` is the quickest boot check. (Standalone tools
-  that run under a bare `python3` — `review-new-pr/harness/`, `review_cockpit/agent/*`
+  `app.backend.app:app` boots**. A backend-only
+  `import app.backend.app` is the quickest boot check. (Standalone tools
+  that run under a bare `python3` — `review-new-pr/harness/`, `app/agent/*`
   — bootstrap their own package roots instead.)
 - **The store is the joined view.** There is no markdown parsing and no artifact
   joining — read facts from the store, never reconstruct them from `STATUS.md`.

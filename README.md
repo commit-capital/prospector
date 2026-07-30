@@ -22,7 +22,7 @@ uv run pr-triager ingest
 uv run pr-triager serve --dev   # or: ./pr_triager.sh
 ```
 
-For a single-process setup without the dev servers, build the frontend once (`pnpm --dir review_cockpit/frontend build`, or `npx -y pnpm@11 --dir review_cockpit/frontend build` without a pnpm install) and run `uv run pr-triager serve`.
+For a single-process setup without the dev servers, build the frontend once (`pnpm --dir app/frontend build`, or `npx -y pnpm@11 --dir app/frontend build` without a pnpm install) and run `uv run pr-triager serve`.
 
 `uv run pr-triager --help` lists every subcommand. The Clusters board in the web UI is the front door; `CLAUDE.md` (trust model and operating rules) and `ARCHITECTURE.md` (the data layer) are the two documents to read before going deeper. `STATUS.md` is a generated text snapshot of the store — regenerate it with `uv run pr-triager status`.
 
@@ -67,7 +67,7 @@ The merge bar is strict: **the configured review provider's bar + CI passing + m
 | Folder | Purpose |
 |--------|---------|
 | `pipeline/` | The store (`store/`), the phase drivers, `gates.py` / `freshness.py` / `taxonomy.py` / `profile.py`, the Workflow scripts, the `pr-triager` CLI (`cli.py`), and `views.py` (generates `STATUS.md`). |
-| `review_cockpit/` | The web app. `backend/` (FastAPI over the store) + `frontend/` (React/Vite). The human triage + execution surface. |
+| `app/` | The web app. `backend/` (FastAPI over the store) + `frontend/` (React/Vite). The human triage + execution surface. |
 | `issue_triage/` | The **issue** pipeline, on the same substrate as `pipeline/`: its own validated store (`store/`), `issue_freshness.py` / `issue_gates.py` / `issue_model.py` over the shared `pipeline/storekit.py`, and phase drivers (INGEST → CLUSTER → ANALYZE). Imports `pipeline/taxonomy.py`; the cockpit Issues tab projects its store. |
 
 ## Configuration

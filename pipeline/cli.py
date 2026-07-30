@@ -46,16 +46,16 @@ def _serve(argv: list[str]) -> int:
         return devserve.run()
     settings.load_env_file()
     port: int = args.port if args.port is not None else int(os.environ.get("API_PORT", "8787"))
-    dist = settings.REPO_ROOT / "review_cockpit" / "frontend" / "dist"
+    dist = settings.REPO_ROOT / "app" / "frontend" / "dist"
     if not dist.is_dir():
         print(
-            "note: no built frontend (review_cockpit/frontend/dist) — serving the API only.\n"
-            "      build it with: pnpm --dir review_cockpit/frontend build",
+            "note: no built frontend (app/frontend/dist) — serving the API only.\n"
+            "      build it with: pnpm --dir app/frontend build",
             file=sys.stderr,
         )
     import uvicorn
 
-    uvicorn.run("review_cockpit.backend.app:app", port=port)
+    uvicorn.run("app.backend.app:app", port=port)
     return 0
 
 

@@ -9,7 +9,7 @@ import os
 
 os.environ["TRIAGE_SKIP_DOTENV"] = "1"
 # Keep tests off the shared DB, and keep parallel workers off each other. Under
-# `pytest -n auto` (xdist) every worker process imports review_cockpit.backend.data,
+# `pytest -n auto` (xdist) every worker process imports app.backend.data,
 # whose module-level `_store = Store()` runs create_all on the default SQLite store;
 # a single shared file makes concurrent workers race ("table prs already exists").
 # Hand each worker a fresh private store DB. Serial runs just drop TRIAGE_STORE_URL

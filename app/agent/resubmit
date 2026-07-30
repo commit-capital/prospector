@@ -1,0 +1,397 @@
+#!/usr/bin/env python3
+"""The cockpit agent's "resubmit a PR" path — author changes on a contributor's
+fork branch and push them, AS THE OPERATOR.
+
+Most triage actions run as the configured bot. This one cannot: pushing to a
+contributor's fork head branch relies on the PR's "Allow edits from maintainers",
+which grants push to *users with push access to the upstream repo* — not to a
+GitHub App installation. So a resubmit runs under the operator's own identity (a
+maintainer on the upstream repo), a deliberate exception to the bot-identity
+model. Because the whole chat-agent subprocess is authenticated as the bot when a
+a bot token is minted (GH_TOKEN in the env), this script drops GH_TOKEN
+first (`operator_env`) so `gh` reads and `git`-over-ssh pushes go out as the
+operator, never the bot.
+
+Pushing a commit re-triggers the review provider and CI for free — both run on push.
+
+Flow (the agent runs these; it authors the edits itself between prepare and push):
+    resubmit <pr> prepare              # preflight + shallow-clone the fork branch
+    #   ...agent edits files under the printed worktree path...
+    resubmit <pr> push -m "<message>"  # commit, push to the fork branch, log, clean
+    resubmit <pr> abort                # discard the worktree, push nothing
+
+`update` is a standalone action on the same operator identity — it merges the base
+branch into the PR's head so CI re-runs against current base code, writing none of
+its own content. It needs no clone and no prepare:
+    resubmit <pr> update
+
+Preflight refuses cleanly when the PR is closed or "Allow edits from maintainers"
+is off (nothing to push to), and `push` refuses if the contributor moved the head
+since prepare (the local clone would be stale — never force-push over them).
+
+Stdlib only, so it runs under the sandbox's system python (like `remember` /
+`uncluster`). It reuses app.backend.activity for the audit hook — this
+is the chat-agent write path's first activity-log entry.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+# Run under a bare python3 (the agent's shell): put the repo root on the path for
+# the `pipeline` / `app` packages rather than relying on the install.
+sys.path.insert(0, str(REPO_ROOT))
+
+from pipeline.settings import REPO  # noqa: E402
+
+# Isolated per-PR clones live in the cockpit's gitignored cache, never in the
+# operator's working tree — a resubmit never disturbs the repo they're running in.
+WORKTREE_ROOT = REPO_ROOT / "app" / "cache" / "resubmit"
+# Fields we need off the PR to preflight and locate the fork's head branch.
+_PR_FIELDS = ("number,state,baseRefName,headRefName,headRefOid,maintainerCanModify,"
+              "isCrossRepository,headRepository,headRepositoryOwner")
+
+
+def operator_env(base: dict[str, str] | None = None) -> dict[str, str]:
+    """Env that authenticates `gh`/`git` as the OPERATOR, not the bot: drop the
+    injected bot GH_TOKEN (and GITHUB_TOKEN) so `gh` falls back to the
+    operator's default login and `git`-over-ssh uses their key. Everything else
+    (PATH, HOME, ssh-agent) is inherited so the operator's credentials resolve."""
+    env = dict(os.environ if base is None else base)
+    env.pop("GH_TOKEN", None)
+    env.pop("GITHUB_TOKEN", None)
+    return env
+
+
+def _gh_json(pr: int) -> dict:
+    """Read the PR's preflight fields as the operator. Raises on a gh failure."""
+    r = subprocess.run(
+        ["gh", "pr", "view", str(pr), "--repo", REPO, "--json", _PR_FIELDS],
+        capture_output=True, text=True, timeout=60, env=operator_env())
+    if r.returncode != 0:
+        raise RuntimeError(f"gh pr view #{pr} failed: {r.stderr.strip() or r.stdout.strip()}")
+    return json.loads(r.stdout)
+
+
+def fork_ssh_url(info: dict) -> str:
+    """The ssh clone URL of the PR's head repository (the contributor's fork), e.g.
+    `git@github.com:owner/repository.git`. ssh so the push authenticates with the
+    operator's key regardless of any GH_TOKEN left in the env."""
+    nwo = (info.get("headRepository") or {}).get("nameWithOwner")
+    if not nwo:
+        raise RuntimeError("PR has no head repository (deleted fork?)")
+    return f"git@github.com:{nwo}.git"
+
+
+def eligibility(info: dict) -> tuple[bool, str]:
+    """Can the operator push to this PR's head branch? Returns (ok, reason). A PR
+    must be OPEN and either allow maintainer edits (the cross-repo fork case) or
+    live on the upstream repo itself (a same-repo branch the operator can push
+    directly). Fails closed on anything unexpected."""
+    state = (info.get("state") or "").upper()
+    if state != "OPEN":
+        return False, f"PR #{info.get('number')} is {state or 'in an unknown state'}, not open — nothing to resubmit."
+    if not info.get("isCrossRepository"):
+        return True, "same-repo branch — operator has direct push access."
+    if info.get("maintainerCanModify"):
+        return True, "'Allow edits from maintainers' is on — operator can push to the fork branch."
+    return False, (
+        f"PR #{info.get('number')} has 'Allow edits from maintainers' OFF, so no "
+        "maintainer (and no bot) can push to the fork branch. Ask the author to "
+        "enable it or to apply the change themselves."
+    )
+
+
+def _worktree(pr: int) -> Path:
+    return WORKTREE_ROOT / f"pr-{pr}"
+
+
+def _meta_path(pr: int) -> Path:
+    # A SIBLING of the clone, never inside it: the clone's `git add -A` at push
+    # time must see only the agent's edits, so the tool's own bookkeeping file
+    # cannot be one of them.
+    return WORKTREE_ROOT / f"pr-{pr}.resubmit.json"
+
+
+def _cleanup(pr: int) -> None:
+    """Discard a PR's prepared state — the clone and its sibling meta file."""
+    shutil.rmtree(_worktree(pr), ignore_errors=True)
+    _meta_path(pr).unlink(missing_ok=True)
+
+
+def _git(args: list[str], cwd: Path, timeout: int = 300) -> subprocess.CompletedProcess:
+    """A git command in the clone, as the operator (ssh key, no bot token)."""
+    return subprocess.run(["git", *args], cwd=str(cwd), capture_output=True,
+                          text=True, timeout=timeout, env=operator_env())
+
+
+def cmd_prepare(pr: int) -> int:
+    info = _gh_json(pr)
+    ok, reason = eligibility(info)
+    if not ok:
+        print(f"resubmit: {reason}", file=sys.stderr)
+        return 3
+
+    wt = _worktree(pr)
+    _cleanup(pr)  # drop any stale clone + meta from an earlier, unfinished attempt
+    wt.parent.mkdir(parents=True, exist_ok=True)
+
+    branch, sha = info["headRefName"], info["headRefOid"]
+    url = fork_ssh_url(info)
+    # Shallow single-branch clone: enough to add a commit on top of the head and
+    # push it back as a fast-forward, without fetching the whole fork history.
+    r = subprocess.run(
+        ["git", "clone", "--depth", "1", "--branch", branch, url, str(wt)],
+        capture_output=True, text=True, timeout=300, env=operator_env())
+    if r.returncode != 0:
+        print(f"resubmit: clone of {url} ({branch}) failed: {r.stderr.strip()}", file=sys.stderr)
+        return 4
+
+    _meta_path(pr).write_text(json.dumps({
+        "pr": pr, "branch": branch, "head_sha": sha, "fork": url,
+        "repo": (info.get("headRepository") or {}).get("nameWithOwner"),
+    }))
+    print(f"prepared PR #{pr} for resubmit — {reason}")
+    print(f"  fork branch: {info['headRepository']['nameWithOwner']} @ {branch} ({sha[:8]})")
+    print(f"  edit files under: {wt}")
+    print(f"  then: app/agent/resubmit {pr} push -m \"<commit message>\"")
+    return 0
+
+
+def cmd_push(pr: int, message: str, dry_run: bool) -> int:
+    wt = _worktree(pr)
+    meta_path = _meta_path(pr)
+    if not meta_path.exists():
+        print(f"resubmit: PR #{pr} was not prepared (run `resubmit {pr} prepare` first)", file=sys.stderr)
+        return 2
+    meta = json.loads(meta_path.read_text())
+    branch = meta["branch"]
+
+    # Nothing staged/unstaged means the agent authored no change — refuse rather
+    # than push an empty commit under the operator's name.
+    status = _git(["status", "--porcelain"], wt)
+    if status.returncode != 0:
+        print(f"resubmit: git status failed: {status.stderr.strip()}", file=sys.stderr)
+        return 4
+    if not status.stdout.strip():
+        print(f"resubmit: no changes in {wt} — author the edits before pushing.", file=sys.stderr)
+        return 5
+
+    # Re-preflight against the live PR: refuse if it closed, lost maintainer-edit
+    # permission, or the contributor pushed since prepare (our clone is now stale,
+    # and pushing would either fail non-fast-forward or clobber their work).
+    info = _gh_json(pr)
+    ok, reason = eligibility(info)
+    if not ok:
+        print(f"resubmit: {reason}", file=sys.stderr)
+        return 3
+    if info["headRefOid"] != meta["head_sha"]:
+        print(f"resubmit: PR #{pr} head moved since prepare "
+              f"({meta['head_sha'][:8]} → {info['headRefOid'][:8]}); the author pushed. "
+              f"Re-run `resubmit {pr} prepare` to rebase on their latest.", file=sys.stderr)
+        return 6
+
+    # Stage everything (add -A) so a newly-created file is committed too, not just
+    # edits to tracked files — the porcelain check above counts untracked changes.
+    add = _git(["add", "-A"], wt)
+    if add.returncode != 0:
+        print(f"resubmit: git add failed: {add.stderr.strip()}", file=sys.stderr)
+        return 4
+    commit = _git(["commit", "-m", message], wt)
+    if commit.returncode != 0:
+        print(f"resubmit: commit failed: {commit.stderr.strip()}", file=sys.stderr)
+        return 4
+    new_sha = _git(["rev-parse", "HEAD"], wt).stdout.strip()
+
+    if dry_run:
+        print(f"[dry-run] would push {new_sha[:8]} to {meta['repo']} @ {branch} (as the operator)")
+    else:
+        push = _git(["push", "origin", f"HEAD:{branch}"], wt)
+        if push.returncode != 0:
+            print(f"resubmit: push to {meta['repo']} @ {branch} failed: {push.stderr.strip()}", file=sys.stderr)
+            return 7
+
+    _log(pr, meta, new_sha, message, dry_run)
+    _cleanup(pr)
+
+    where = f"{meta['repo']} @ {branch}"
+    if dry_run:
+        print(f"[dry-run] resubmit of PR #{pr} logged; nothing pushed to {where}.")
+    else:
+        print(f"resubmitted PR #{pr}: pushed {new_sha[:8]} to {where} as the operator.")
+        print("  Greptile + CI re-run on the push.")
+    return 0
+
+
+def cmd_diff(pr: int) -> int:
+    """Print the diff of the agent's edits in the prepared worktree, so the operator
+    can review exactly what `push` will commit. The clone is a separate repo under
+    the cache, so a plain `git diff` in the cockpit's cwd can't reach it — this runs
+    git in the worktree. Read-only: `add -N` only marks untracked files intent-to-add
+    so a newly-created file appears in the diff (matching push's `add -A`); nothing is
+    committed or pushed."""
+    wt = _worktree(pr)
+    if not _meta_path(pr).exists():
+        print(f"resubmit: PR #{pr} was not prepared (run `resubmit {pr} prepare` first)", file=sys.stderr)
+        return 2
+    _git(["add", "-N", "."], wt)
+    r = _git(["diff", "HEAD"], wt)
+    if r.returncode != 0:
+        print(f"resubmit: git diff failed: {r.stderr.strip()}", file=sys.stderr)
+        return 4
+    out = r.stdout.strip()
+    if not out:
+        print(f"resubmit: no changes yet in {wt} — author the edits first.")
+        return 0
+    print(out)
+    return 0
+
+
+def _await_head_move(pr: int, before: str, attempts: int = 15, delay: float = 2.0) -> str | None:
+    """Poll for the PR's head to move off ``before``, returning the new sha — or None
+    if it hasn't moved within ``attempts`` polls. `gh pr update-branch` returns once
+    GitHub *accepts* the merge, before the merge commit exists, so the new head is
+    not readable on the first poll and reporting it needs this wait."""
+    for i in range(attempts):
+        sha = _gh_json(pr)["headRefOid"]
+        if sha != before:
+            return sha
+        if i < attempts - 1:
+            time.sleep(delay)
+    return None
+
+
+def cmd_update(pr: int, dry_run: bool) -> int:
+    """Merge the PR's base branch into its head branch, AS THE OPERATOR, so CI and
+    the review provider re-run against current base code.
+
+    `gh pr update-branch` does the merge server-side, honouring the same "Allow
+    edits from maintainers" grant `push` relies on — so no clone is needed. It runs
+    as the operator because a GitHub App token may not write `.github/workflows/**`
+    without the `workflows` permission, and a base branch that moved across a
+    workflow change carries one of those files into the merge; the operator's
+    `workflow` token scope does allow it.
+
+    `--rebase` is deliberately not exposed: rebasing force-pushes and rewrites the
+    contributor's commits. This path only ever adds a merge commit."""
+    info = _gh_json(pr)
+    ok, reason = eligibility(info)
+    if not ok:
+        print(f"resubmit: {reason}", file=sys.stderr)
+        return 3
+
+    branch, base, before = info["headRefName"], info["baseRefName"], info["headRefOid"]
+    if dry_run:
+        _log_update(pr, info, before, before, True)
+        print(f"[dry-run] would merge {base} into #{pr} @ {branch} ({before[:8]}) "
+              "as the operator; nothing merged.")
+        return 0
+
+    r = subprocess.run(["gh", "pr", "update-branch", str(pr), "--repo", REPO],
+                       capture_output=True, text=True, timeout=120, env=operator_env())
+    if r.returncode != 0:
+        err = r.stderr.strip() or r.stdout.strip()
+        print(f"resubmit: update-branch on #{pr} failed: {err}", file=sys.stderr)
+        if "conflict" in err.lower():
+            print(f"resubmit: {base} conflicts with this PR, so the merge needs the "
+                  "author — offer to comment asking them to update.", file=sys.stderr)
+        return 8
+
+    after = _await_head_move(pr, before)
+    _log_update(pr, info, before, after, False)
+    if after:
+        print(f"updated PR #{pr}: merged {base} into {branch} as the operator "
+              f"({before[:8]} → {after[:8]}).")
+    else:
+        print(f"updated PR #{pr}: GitHub accepted the merge of {base} into {branch}, "
+              f"but the head still read {before[:8]}. Confirm it landed with "
+              f"`gh pr view {pr} --repo {REPO} --json headRefOid` before treating "
+              "the PR as refreshed.")
+    print("  Greptile + CI re-run on the merge commit.")
+    print(f"  Then: app/agent/reingest {pr}, once those checks settle.")
+    return 0
+
+
+def cmd_abort(pr: int) -> int:
+    if not _worktree(pr).exists() and not _meta_path(pr).exists():
+        print(f"resubmit: nothing to abort — PR #{pr} has no prepared worktree.", file=sys.stderr)
+        return 2
+    _cleanup(pr)
+    print(f"aborted resubmit of PR #{pr}; discarded the worktree, pushed nothing.")
+    return 0
+
+
+def _log(pr: int, meta: dict, new_sha: str, message: str, dry_run: bool) -> None:
+    """Append the resubmit to the cockpit activity log — the chat-agent write
+    path's audit hook. Best-effort: a logging failure must not fail a push that
+    already went out. Recorded under the operator's identity (operator_env dropped
+    the bot token), which is who actually pushed."""
+    try:
+        from app.backend import activity
+        activity.record("resubmit", pr=pr, action="RESUBMIT", repo=meta.get("repo"),
+                        branch=meta.get("branch"), from_sha=meta.get("head_sha"),
+                        to_sha=new_sha, message=message, dry_run=dry_run)
+    except Exception as e:  # noqa: BLE001 — never let audit logging break the push
+        print(f"resubmit: warning — activity log failed: {e}", file=sys.stderr)
+
+
+def _log_update(pr: int, info: dict, from_sha: str, to_sha: str | None, dry_run: bool) -> None:
+    """Append the branch update to the cockpit activity log, under the operator's
+    identity — who actually merged. ``to_sha`` is None when GitHub accepted the merge
+    but the new head wasn't readable in time. Best-effort, like `_log`: a logging
+    failure must not fail a merge that already went out."""
+    try:
+        from app.backend import activity
+        activity.record("resubmit", pr=pr, action="UPDATE_BRANCH",
+                        repo=(info.get("headRepository") or {}).get("nameWithOwner"),
+                        branch=info.get("headRefName"), base=info.get("baseRefName"),
+                        from_sha=from_sha, to_sha=to_sha, dry_run=dry_run)
+    except Exception as e:  # noqa: BLE001 — never let audit logging break the merge
+        print(f"resubmit: warning — activity log failed: {e}", file=sys.stderr)
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(
+        prog="resubmit",
+        description="Author changes on a contributor's fork branch and push them, as the operator.",
+    )
+    p.add_argument("pr", type=int, help="the upstream PR number")
+    sub = p.add_subparsers(dest="action", required=True)
+    sub.add_parser("prepare", help="preflight + clone the fork's head branch to edit")
+    pushp = sub.add_parser("push", help="commit the edits and push to the fork branch")
+    pushp.add_argument("-m", "--message", required=True, help="commit message")
+    pushp.add_argument("--dry-run", action="store_true",
+                       help="commit locally but do not push (log it as a dry-run)")
+    sub.add_parser("diff", help="show the diff of the edits authored in the worktree")
+    updp = sub.add_parser("update", help="merge the base branch into the PR's head branch")
+    updp.add_argument("--dry-run", action="store_true",
+                      help="log the update without merging anything")
+    sub.add_parser("abort", help="discard the prepared worktree without pushing")
+    args = p.parse_args(argv)
+
+    try:
+        if args.action == "prepare":
+            return cmd_prepare(args.pr)
+        if args.action == "push":
+            return cmd_push(args.pr, args.message, args.dry_run)
+        if args.action == "diff":
+            return cmd_diff(args.pr)
+        if args.action == "update":
+            return cmd_update(args.pr, args.dry_run)
+        if args.action == "abort":
+            return cmd_abort(args.pr)
+    except RuntimeError as e:
+        print(f"resubmit: {e}", file=sys.stderr)
+        return 4
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
