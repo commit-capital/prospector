@@ -14,12 +14,26 @@ import socket
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 from pipeline import settings
 
 FRONTEND_CMD = (
     'FRONTEND="$0/review_cockpit/frontend" && source "$0/frontend-toolchain.sh" && cd "$FRONTEND" && exec "${PNPM[@]}" dev'
 )
+
+
+def reload_exclude(root: Path) -> str:
+    """The `--reload-exclude` argument: the cockpit's diff cache, absolute.
+
+    uvicorn keeps the exclusion as a directory only when the argument names an
+    existing directory, and matches it against the absolute paths it watches,
+    so the cache directory is created here before the server starts. The
+    cockpit itself fills it lazily on its first diff fetch.
+    """
+    path = root / "review_cockpit" / "cache"
+    path.mkdir(parents=True, exist_ok=True)
+    return str(path)
 
 
 def await_port(port: int, timeout: float = 30.0) -> bool:
@@ -73,7 +87,7 @@ def run() -> int:
                 sys.executable, "-m", "uvicorn", "review_cockpit.backend.app:app",
                 "--port", str(api_port),
                 "--reload",
-                "--reload-exclude", str(root / "review_cockpit" / "cache"),
+                "--reload-exclude", reload_exclude(root),
             ],
             cwd=root,
             start_new_session=True,
