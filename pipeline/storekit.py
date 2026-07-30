@@ -350,7 +350,8 @@ def _read_registry(engine: Engine, name: str) -> dict | None:
             select(schema.registries.c.data)
             .where(schema.registries.c.name == name)).first()
     conn = _bound_conn(engine)
-    row = q(conn) if conn is not None else read_retrying(engine, q)
+    row = (bound_read_retrying(engine, conn, q) if conn is not None
+           else read_retrying(engine, q))
     return row[0] if row is not None else None
 
 
@@ -490,8 +491,37 @@ def bound_session(engine: Engine) -> Generator[Connection]:
     try:
         yield conn
     finally:
-        del conns[id(engine)]
-        conn.close()
+        # Close whatever is bound at exit: a rebind may have replaced the
+        # connection opened here, and the replacement is the live one.
+        conns.pop(id(engine)).close()
+
+
+def _rebind(engine: Engine) -> Connection:
+    """Replace this thread's bound connection on `engine` with a fresh one and
+    return it. The caller holds a connection the server severed; every later op
+    in the block would fail on it, so it is discarded and its replacement takes
+    over the binding."""
+    conns = _BOUND.conns
+    conns.pop(id(engine)).close()
+    conn = engine.connect().execution_options(isolation_level="AUTOCOMMIT")
+    conns[id(engine)] = conn
+    return conn
+
+
+def bound_read_retrying(engine: Engine, conn: Connection,
+                        fn: Callable[[Connection], R]) -> R:
+    """Run a read on `bound_session`'s reused connection, retrying once on a
+    replacement if the server severs it mid-query — the same NAT, VPN, or pooler
+    drop `read_retrying` covers on an unbound read, and safe on the same grounds:
+    nothing is half-applied, so re-running is safe. The replacement stays bound,
+    so the rest of the block continues instead of failing on an invalidated
+    connection. A non-disconnect error propagates immediately, binding intact."""
+    try:
+        return fn(conn)
+    except DBAPIError as exc:
+        if not exc.connection_invalidated:
+            raise
+    return fn(_rebind(engine))
 
 
 def strip_json_paths(data_col: ColumnElement, dialect: str,
@@ -572,10 +602,11 @@ class Collection(Generic[T]):
     def _read(self, fn: Callable[[Connection], R]) -> R:
         """Run a read. On a bound_session connection it runs directly on that reused
         AUTOCOMMIT connection — a single round-trip, no BEGIN/COMMIT; otherwise on a
-        fresh AUTOCOMMIT connection with read_retrying's one-shot reconnect."""
+        fresh AUTOCOMMIT connection. Either way a mid-query connection drop is
+        retried once on a new connection."""
         conn = _bound_conn(self.engine)
         if conn is not None:
-            return fn(conn)
+            return bound_read_retrying(self.engine, conn, fn)
         return read_retrying(self.engine, fn)
 
     def _write(self, fn: Callable[[Connection], R]) -> R:
