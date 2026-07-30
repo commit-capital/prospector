@@ -211,19 +211,40 @@ def _changed_paths(n: int) -> list[str]:
     return [ln.strip() for ln in r.stdout.splitlines() if ln.strip()]
 
 
+def _is_bot_login(login: str | None) -> bool:
+    """True when `login` identifies the configured bot. The REST API reports a
+    GitHub App's actions under the `[bot]`-suffixed login (`triagebot[bot]`),
+    while TRIAGE_BOT_LOGIN is the bare App slug — accept either form, on either
+    side."""
+    return bool(login) and login.removesuffix("[bot]") == BOT_LOGIN.removesuffix("[bot]")
+
+
+def _jq_rows(stdout: str | None) -> list[dict]:
+    """Parse `gh api --jq '.[] | {…}'` output — one compact JSON object per line,
+    across every page under `--paginate`. Malformed lines are skipped."""
+    rows: list[dict] = []
+    for line in (stdout or "").splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
 def _has_bot_comment(n: int, contains: str | None = None) -> bool:
     """True when the configured bot has already commented on issue/PR `n`. With
     `contains`, only comments whose body includes that substring count, scoping the
     idempotency check to comments about this specific action (a close-fixed comment
-    references its fixing PR; a close-dup comment references its canonical). The
-    substring is matched in Python: jq's `contains("…")` takes a quoted literal, so a
-    body holding a quote or backslash cannot be searched for through the filter."""
+    references its fixing PR; a close-dup comment references its canonical). Both
+    the login and the substring are matched in Python: the REST login carries the
+    `[bot]` suffix, and jq's `contains("…")` takes a quoted literal, so a body
+    holding a quote or backslash cannot be searched for through the filter."""
     r = run(["gh", "api", f"repos/{REPO}/issues/{n}/comments",
-             "--jq", f'[.[] | select(.user.login=="{BOT_LOGIN}") | .body]'], timeout=30)
-    try:
-        bodies = json.loads(r.stdout)
-    except (ValueError, TypeError, AttributeError):
-        return False
+             "--jq", '.[] | {login: .user.login, body: .body}'], timeout=30)
+    bodies = [row.get("body") for row in _jq_rows(r.stdout)
+              if _is_bot_login(row.get("login"))]
     if contains is None:
         return bool(bodies)
     return any(contains in (b or "") for b in bodies)
@@ -343,10 +364,11 @@ def execute_pr(n: int, action: models.CloseAction, *, token: str | None, dry_run
 
 def _bot_comment_ids(n: int) -> list[int]:
     r = run(["gh", "api", f"repos/{REPO}/issues/{n}/comments",
-             "--jq", f'[.[] | select(.user.login=="{BOT_LOGIN}") | .id] | .[]'], timeout=30)
+             "--jq", '.[] | {login: .user.login, id: .id}'], timeout=30)
     if r.returncode != 0:
         return []
-    return [int(x) for x in r.stdout.split() if x.strip().isdigit()]
+    return [int(row["id"]) for row in _jq_rows(r.stdout)
+            if _is_bot_login(row.get("login")) and isinstance(row.get("id"), int)]
 
 
 def _bot_change_request_ids(n: int) -> list[int]:
@@ -356,10 +378,12 @@ def _bot_change_request_ids(n: int) -> list[int]:
     comment, so deleting issue comments on reopen leaves its "here's what to
     fix" body visible — the cause of #70. These get dismissed on reopen."""
     r = run(["gh", "api", "--paginate", f"repos/{REPO}/pulls/{n}/reviews",
-             "--jq", f'[.[] | select(.user.login=="{BOT_LOGIN}" and .state=="CHANGES_REQUESTED") | .id] | .[]'], timeout=30)
+             "--jq", '.[] | {login: .user.login, id: .id, state: .state}'], timeout=30)
     if r.returncode != 0:
         return []
-    return [int(x) for x in r.stdout.split() if x.strip().isdigit()]
+    return [int(row["id"]) for row in _jq_rows(r.stdout)
+            if _is_bot_login(row.get("login")) and row.get("state") == "CHANGES_REQUESTED"
+            and isinstance(row.get("id"), int)]
 
 
 def reopen_pr(n: int, *, token: str | None, dry_run: bool) -> dict:
@@ -478,8 +502,10 @@ def _latest_bot_review_url(n: int) -> str | None:
     anchor for a review that carries a body (request-changes / comment). `gh pr
     review` prints no URL, so we read it back from the reviews API."""
     r = run(["gh", "api", f"repos/{REPO}/pulls/{n}/reviews?per_page=100",
-             "--jq", f'[.[] | select(.user.login=="{BOT_LOGIN}") | .html_url] | last // empty'], timeout=30)
-    return (r.stdout or "").strip() or None
+             "--jq", '.[] | {login: .user.login, url: .html_url}'], timeout=30)
+    urls = [row["url"] for row in _jq_rows(r.stdout)
+            if _is_bot_login(row.get("login")) and isinstance(row.get("url"), str)]
+    return urls[-1] if urls else None
 
 
 def submit_review(n: int, event: str, body: str, *, token: str | None, dry_run: bool) -> dict:
