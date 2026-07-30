@@ -52,6 +52,16 @@ class AutohuntStatus(TypedDict):
     verify_failed: list[VerifyFailed]
 
 
+class VerifyQueueEntry(TypedDict):
+    pr: int
+    title: str | None
+    status: str
+    source: str | None
+    step: str | None
+    queued_at: str | None
+    started_at: str | None
+
+
 # ledger phase -> the lane name the panel renders
 _HISTORY_PHASES = {"security:review-one": "security", "verify:single": "verify"}
 
@@ -85,6 +95,35 @@ def status() -> AutohuntStatus:
         "security_failed": sorted(failed_set),
         "verify_failed": verify_failed,
     }
+
+
+# Live verify_request statuses, in worker pickup order: a `running` request is
+# already claimed, `waiting-for-base` rests for a retry, `queued` awaits pickup.
+_LIVE_VERIFY_STATUSES = ("running", "waiting-for-base", "queued")
+
+
+def verify_queue_live() -> list[VerifyQueueEntry]:
+    """Every PR with a verify_request still in flight — queued, waiting for a
+    sandbox base, or running — so the panel can show what is happening right
+    now, not just what already finished. Ordered running-first, then
+    waiting-for-base, then queued, and oldest-queued-first within each status
+    (the order verify_worker.next_queued picks them up in). `source` is "auto"
+    for hunter-queued requests and None for operator-queued ones, same as
+    history()'s `trigger`."""
+    rank = {status: i for i, status in enumerate(_LIVE_VERIFY_STATUSES)}
+    out: list[VerifyQueueEntry] = []
+    for n, pr in data.prs().items():
+        req = pr.verify_request or {}
+        status = req.get("status")
+        if status not in rank:
+            continue
+        out.append({
+            "pr": n, "title": pr.title, "status": str(status),
+            "source": req.get("source"), "step": req.get("step"),
+            "queued_at": req.get("queued_at"), "started_at": req.get("started_at"),
+        })
+    out.sort(key=lambda r: (rank[r["status"]], r["queued_at"] or ""))
+    return out
 
 
 def _result(lane: str, rec: dict) -> str | None:

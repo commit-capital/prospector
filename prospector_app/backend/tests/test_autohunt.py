@@ -437,3 +437,54 @@ def test_summary_ignores_non_hunt_phases(store):
     s = autohunt_view.summary(days=None)
     assert s["security"]["total"] == 0
     assert s["verify"]["total"] == 0
+
+
+def test_verify_queue_live_excludes_terminal_statuses(store):
+    """A run that already finished (done/error/cancelled) or was never queued
+    at all is not "in flight" — only queued/waiting-for-base/running belong
+    on the live queue."""
+    from prospector_app.backend import autohunt_view
+    for n in (1, 2, 3, 4, 5):
+        store.save_pr(_clean_merge_pr(n))
+    store.edit_pr(1).record_verify_request("queued", queued_at=_now())
+    store.edit_pr(2).record_verify_request("running", queued_at=_now(), started_at=_now())
+    store.edit_pr(3).record_verify_request("waiting-for-base", queued_at=_now())
+    store.edit_pr(4).record_verify_request("done", queued_at=_now())
+    store.edit_pr(5).record_verify_request("error", queued_at=_now())
+    data.refresh()
+    assert {e["pr"] for e in autohunt_view.verify_queue_live()} == {1, 2, 3}
+
+
+def test_verify_queue_live_orders_running_then_waiting_then_queued(store):
+    """Ordered the way the worker picks them up: a claimed `running` request
+    first, then a resting `waiting-for-base`, then `queued` — oldest
+    queued_at first within each status."""
+    from prospector_app.backend import autohunt_view
+    for n in (1, 2, 3, 4):
+        store.save_pr(_clean_merge_pr(n))
+    store.edit_pr(1).record_verify_request(
+        "queued", queued_at="2026-07-20T00:00:00+00:00")
+    store.edit_pr(2).record_verify_request(
+        "queued", queued_at="2026-07-01T00:00:00+00:00")
+    store.edit_pr(3).record_verify_request(
+        "waiting-for-base", queued_at="2026-07-10T00:00:00+00:00")
+    store.edit_pr(4).record_verify_request(
+        "running", queued_at="2026-07-15T00:00:00+00:00", started_at=_now(), step="red-run")
+    data.refresh()
+    rows = autohunt_view.verify_queue_live()
+    assert [r["pr"] for r in rows] == [4, 3, 2, 1]
+    assert rows[0]["status"] == "running"
+    assert rows[0]["step"] == "red-run"
+
+
+def test_verify_queue_live_reports_source_and_title(store):
+    from prospector_app.backend import autohunt_view
+    store.save_pr(_clean_merge_pr(1))
+    store.save_pr(_clean_merge_pr(2))
+    store.edit_pr(1).record_verify_request("queued", queued_at=_now(), source="auto")
+    store.edit_pr(2).record_verify_request("queued", queued_at=_now())
+    data.refresh()
+    rows = {r["pr"]: r for r in autohunt_view.verify_queue_live()}
+    assert rows[1]["source"] == "auto"
+    assert rows[1]["title"] == "fix 1"
+    assert rows[2]["source"] is None
