@@ -1,9 +1,12 @@
-"""Port-wait helper: bound port detected, closed port times out; the
-reload-dir arguments are ones uvicorn accepts and honours, and they cover the
-backend's own source without reaching the rest of the repo root."""
+"""Port-wait helper: bound port detected, closed port times out, a dead
+backend process short-circuits the wait; the reload-dir arguments are ones
+uvicorn accepts and honours, and they cover the backend's own source without
+reaching the rest of the repo root."""
 from __future__ import annotations
 
 import socket
+import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -34,22 +37,61 @@ def _tree(root: Path) -> None:
         (root / rel).mkdir(parents=True, exist_ok=True)
 
 
-def test_await_port_succeeds_on_bound_port():
+def _running_proc() -> subprocess.Popen[bytes]:
+    return subprocess.Popen([sys.executable, "-c", "import time; time.sleep(5)"])
+
+
+def test_is_port_open_true_on_bound_port():
     server = socket.create_server(("localhost", 0))
     port = server.getsockname()[1]
     accept_thread = threading.Thread(target=lambda: server.accept(), daemon=True)
     accept_thread.start()
     try:
-        assert devserve.await_port(port, timeout=5.0) is True
+        assert devserve.is_port_open(port) is True
     finally:
         server.close()
+
+
+def test_is_port_open_false_on_closed_port():
+    sock = socket.create_server(("localhost", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    assert devserve.is_port_open(port) is False
+
+
+def test_await_port_succeeds_on_bound_port():
+    server = socket.create_server(("localhost", 0))
+    port = server.getsockname()[1]
+    accept_thread = threading.Thread(target=lambda: server.accept(), daemon=True)
+    accept_thread.start()
+    proc = _running_proc()
+    try:
+        assert devserve.await_port(port, proc, timeout=5.0) is True
+    finally:
+        server.close()
+        proc.kill()
+        proc.wait()
 
 
 def test_await_port_times_out_on_closed_port():
     sock = socket.create_server(("localhost", 0))
     port = sock.getsockname()[1]
     sock.close()
-    assert devserve.await_port(port, timeout=1.0) is False
+    proc = _running_proc()
+    try:
+        assert devserve.await_port(port, proc, timeout=1.0) is False
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_await_port_returns_false_as_soon_as_proc_exits():
+    sock = socket.create_server(("localhost", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    assert devserve.await_port(port, proc, timeout=30.0) is False
 
 
 def test_uvicorn_watches_every_reload_dir(tmp_path: Path, monkeypatch):

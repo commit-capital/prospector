@@ -1,6 +1,7 @@
 """Dev launcher: uvicorn --reload + the Vite dev server, torn down together.
 
-Runs setup.sh (idempotent), waits for the API port before starting Vite so the
+Refuses to start when the API port is already bound by another process, runs
+setup.sh (idempotent), waits for the API port before starting Vite so the
 dev server never proxies into a closed socket, and kills both process groups on
 exit. uvicorn's --reload worker tree shuts down on SIGINT but ignores SIGTERM,
 so teardown sends SIGINT to each group, waits briefly, then SIGKILLs survivors.
@@ -39,14 +40,28 @@ def reload_dirs(root: Path) -> list[str]:
     return [str(root / rel) for rel in SOURCE_DIRS]
 
 
-def await_port(port: int, timeout: float = 30.0) -> bool:
+def is_port_open(port: int) -> bool:
+    """Whether a TCP listener currently answers on `port` at localhost."""
+    try:
+        with socket.create_connection(("localhost", port), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
+def await_port(port: int, proc: subprocess.Popen[bytes], timeout: float = 30.0) -> bool:
+    """Wait for `port` to accept connections, or for `proc` to exit first.
+
+    Polling `proc` alongside the socket means a backend that dies immediately
+    is detected as soon as it exits, rather than only after the full timeout.
+    """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        try:
-            with socket.create_connection(("localhost", port), timeout=0.5):
-                return True
-        except OSError:
-            time.sleep(0.5)
+        if proc.poll() is not None:
+            return False
+        if is_port_open(port):
+            return True
+        time.sleep(0.5)
     return False
 
 
@@ -82,6 +97,10 @@ def run() -> int:
     api_port = int(os.environ.get("API_PORT", "8787"))
     vite_port = int(os.environ.get("VITE_PORT", "5173"))
 
+    if is_port_open(api_port):
+        print(f"✗ port {api_port} is already in use — another instance may be running.", file=sys.stderr)
+        return 1
+
     procs: list[subprocess.Popen[bytes]] = []
     try:
         print(f"→ backend  http://localhost:{api_port}  (API)")
@@ -96,7 +115,7 @@ def run() -> int:
             start_new_session=True,
         )
         procs.append(backend)
-        if not await_port(api_port):
+        if not await_port(api_port, backend):
             print(f"✗ backend never bound :{api_port} — see the traceback above.", file=sys.stderr)
             return 1
 
