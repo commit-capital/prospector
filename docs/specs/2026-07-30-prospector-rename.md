@@ -1,7 +1,7 @@
 # Design: rename the project surface to Prospector
 
 Date: 2026-07-30
-Status: approved, not yet implemented
+Status: implemented
 
 ## Problem
 
