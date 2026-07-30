@@ -263,8 +263,9 @@ def verify_runner():
 def autohunt(days: int = Query(7, ge=1, le=400), all_time: bool = False,
              limit: int = Query(100, ge=1, le=autohunt_view.HISTORY_LIMIT_CAP)):
     """The idle auto-hunter's status (worker opt-in, pools, failure memory), a
-    result summary over the selected window, and up to `limit` individual runs
-    from that same window, newest first — a fixed-size digest in place of an
+    result summary over the selected window, up to `limit` individual runs
+    from that same window newest first, and every verify_request currently
+    queued/running/waiting-for-base — a fixed-size digest in place of an
     ever-growing table. Pass `all_time=true` to span the whole ledger
     regardless of `days`."""
     window = None if all_time else days
@@ -272,6 +273,7 @@ def autohunt(days: int = Query(7, ge=1, le=400), all_time: bool = False,
         "status": autohunt_view.status(),
         "summary": autohunt_view.summary(window),
         "history": autohunt_view.history_window(window, limit=limit),
+        "queue": autohunt_view.verify_queue_snapshot(),
     }
 
 

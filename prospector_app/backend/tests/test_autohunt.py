@@ -437,3 +437,46 @@ def test_summary_ignores_non_hunt_phases(store):
     s = autohunt_view.summary(days=None)
     assert s["security"]["total"] == 0
     assert s["verify"]["total"] == 0
+
+
+def test_verify_queue_snapshot_ranks_manual_ahead_of_auto(store):
+    """Live in-flight state — queued/running/waiting-for-base — has no runs-
+    ledger row (a ledger entry lands only once a run finishes), so this scan
+    is the only visibility into what's currently happening. Manual entries
+    sort ahead of auto-picked ones, then oldest queued_at first, matching the
+    worker's own pick order."""
+    from prospector_app.backend import autohunt_view
+    store.save_pr(_clean_merge_pr(1))
+    store.save_pr(_clean_merge_pr(2))
+    store.save_pr(_clean_merge_pr(3))
+    store.edit_pr(1).record_verify_request(
+        "queued", queued_at="2026-07-01T00:00:00+00:00", source="auto")
+    store.edit_pr(2).record_verify_request(
+        "running", queued_at="2026-07-20T00:00:00+00:00",
+        started_at="2026-07-20T00:05:00+00:00", step="sandbox red run")
+    store.edit_pr(3).record_verify_request("done", queued_at=_now())
+    data.refresh()
+    rows = autohunt_view.verify_queue_snapshot()
+    assert [r["pr"] for r in rows] == [2, 1]
+    assert rows[0] == {"pr": 2, "title": "fix 2", "status": "running",
+                       "source": "manual", "queued_at": "2026-07-20T00:00:00+00:00",
+                       "started_at": "2026-07-20T00:05:00+00:00",
+                       "step": "sandbox red run", "host": None}
+    assert rows[1]["source"] == "auto"
+
+
+def test_verify_queue_snapshot_includes_waiting_for_base(store):
+    from prospector_app.backend import autohunt_view
+    store.save_pr(_clean_merge_pr(1))
+    store.edit_pr(1).record_verify_request(
+        "waiting-for-base", queued_at=_now(), error_kind="no-base")
+    data.refresh()
+    rows = autohunt_view.verify_queue_snapshot()
+    assert [r["status"] for r in rows] == ["waiting-for-base"]
+
+
+def test_verify_queue_snapshot_empty_when_nothing_in_flight(store):
+    from prospector_app.backend import autohunt_view
+    store.save_pr(_clean_merge_pr(1))
+    data.refresh()
+    assert autohunt_view.verify_queue_snapshot() == []

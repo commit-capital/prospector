@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
-import { api, type JobSpec, type JobRec, type PipelineStatus, type Autohunt, type AutohuntResultCounts, type FilterSpec } from "../api";
+import { api, type JobSpec, type JobRec, type PipelineStatus, type Autohunt, type AutohuntResultCounts, type FilterSpec, type VerifyQueueEntry } from "../api";
 import { useRepoMeta } from "../RepoMetaContext";
 import { PRLink } from "../components/PRLink";
 
@@ -62,6 +62,15 @@ function resultChip(phase: string, result: string | null | undefined): string {
   if (result === "verified-fix" || result === "agent-verified") return "chip chip-green";
   if (result.startsWith("error") || result === "regressed") return "chip chip-red";
   return "chip chip-amber";
+}
+
+/** Chip tone for an in-flight verify_request's status: running is the
+ *  attention-grabbing state, queued is neutral, waiting-for-base is a stall
+ *  worth flagging. */
+function queueStatusChip(status: VerifyQueueEntry["status"]): string {
+  if (status === "running") return "chip chip-blue";
+  if (status === "waiting-for-base") return "chip chip-amber";
+  return "chip chip-muted";
 }
 
 /** One phase's status at a glance: freshness chip up top, done/total progress
@@ -554,6 +563,28 @@ export default function ControlPanel() {
               </span>
             )}
           </div>
+
+          <h3 style={{ marginBottom: 4 }}>Verify queue</h3>
+          {hunt.queue.length === 0 ? (
+            <div className="muted small">Nothing queued or running.</div>
+          ) : (
+            <table className="grid compact">
+              <thead><tr><th>Status</th><th>PR</th><th>Queued</th><th>Source</th></tr></thead>
+              <tbody>
+                {hunt.queue.map((q) => (
+                  <tr key={q.pr}>
+                    <td><span className={queueStatusChip(q.status)}>{q.status}{q.step ? ` · ${q.step}` : ""}</span></td>
+                    <td className="mono">
+                      <PRLink n={q.pr} />
+                      {q.title && <div className="muted small">{q.title.slice(0, 60)}</div>}
+                    </td>
+                    <td className="muted small" title={fmt(q.queued_at)}>{ago(q.queued_at)}</td>
+                    <td><span className="chip chip-muted sm">{q.source}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
 
           <div className="jobspec-label" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 12 }}>
             <span className="muted small">

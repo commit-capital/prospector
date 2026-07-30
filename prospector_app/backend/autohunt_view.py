@@ -31,6 +31,17 @@ class VerifyFailed(TypedDict):
     error_kind: str | None
 
 
+class VerifyQueueEntry(TypedDict):
+    pr: int
+    title: str | None
+    status: str
+    source: str
+    queued_at: str | None
+    started_at: str | None
+    step: str | None
+    host: str | None
+
+
 class AutohuntResultCounts(TypedDict):
     total: int
     by_result: dict[str, int]
@@ -85,6 +96,33 @@ def status() -> AutohuntStatus:
         "security_failed": sorted(failed_set),
         "verify_failed": verify_failed,
     }
+
+
+# in-flight verify_request statuses: not yet a terminal outcome, so the runs
+# ledger (written only when a run finishes) carries no row for them.
+_QUEUE_STATUSES = ("queued", "running", "waiting-for-base")
+
+
+def verify_queue_snapshot() -> list[VerifyQueueEntry]:
+    """Every PR with an in-flight verify_request — queued, running, or parked
+    waiting-for-base — operator-queued entries first, then oldest queued_at
+    first within each group (the same ranking the worker picks by). This is
+    the only view of what's queued or currently running: history()/
+    history_window() only ever see a request once it lands in the ledger."""
+    out: list[VerifyQueueEntry] = []
+    for n, pr in sorted(data.prs().items()):
+        req = pr.verify_request or {}
+        status = req.get("status")
+        if status not in _QUEUE_STATUSES:
+            continue
+        out.append({
+            "pr": n, "title": pr.title, "status": status,
+            "source": "auto" if req.get("source") == "auto" else "manual",
+            "queued_at": req.get("queued_at"), "started_at": req.get("started_at"),
+            "step": req.get("step"), "host": req.get("host"),
+        })
+    out.sort(key=lambda e: (e["source"] == "auto", str(e["queued_at"] or "")))
+    return out
 
 
 def _result(lane: str, rec: dict) -> str | None:

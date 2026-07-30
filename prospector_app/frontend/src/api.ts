@@ -554,7 +554,22 @@ interface AutohuntSummary {
   verify: AutohuntResultCounts;
 }
 
-export interface Autohunt { status: AutohuntStatus; summary: AutohuntSummary; history: AutohuntRun[]; }
+/** One PR with an in-flight verify_request — queued, running, or parked
+ *  waiting-for-base. The runs ledger carries no row for these (a ledger
+ *  entry lands only once a run finishes), so this is the only view of what's
+ *  queued or currently running. */
+export interface VerifyQueueEntry {
+  pr: number;
+  title?: string | null;
+  status: "queued" | "running" | "waiting-for-base";
+  source: "auto" | "manual";
+  queued_at?: string | null;
+  started_at?: string | null;
+  step?: string | null;
+  host?: string | null;
+}
+
+export interface Autohunt { status: AutohuntStatus; summary: AutohuntSummary; history: AutohuntRun[]; queue: VerifyQueueEntry[]; }
 
 export interface PRDetail extends PRRow {
   body?: string | null;
