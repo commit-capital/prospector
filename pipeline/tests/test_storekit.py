@@ -58,6 +58,74 @@ def test_read_retrying_reraises_when_retry_also_disconnects():
     assert len(calls) == 2  # retried exactly once, then gave up
 
 
+def test_bound_read_retrying_rebinds_and_retries_once_on_disconnect():
+    eng = create_engine("sqlite://")
+    seen: list[Connection] = []
+
+    def fn(conn: Connection) -> str:
+        seen.append(conn)
+        if len(seen) == 1:
+            raise _disconnect_error()
+        return "ok"
+
+    with storekit.bound_session(eng) as conn:
+        assert storekit.bound_read_retrying(eng, conn, fn) == "ok"
+        assert len(seen) == 2
+        assert seen[1] is not seen[0]
+        assert seen[0].closed  # the severed connection is discarded
+        # the rest of the block runs on the replacement
+        assert storekit._bound_conn(eng) is seen[1]
+
+
+def test_bound_read_retrying_propagates_non_disconnect_without_rebinding():
+    eng = create_engine("sqlite://")
+    calls: list[int] = []
+
+    def fn(_conn: Connection) -> str:
+        calls.append(1)
+        raise DBAPIError("SELECT 1", None, Exception("syntax error"))
+
+    with storekit.bound_session(eng) as conn:
+        with pytest.raises(DBAPIError):
+            storekit.bound_read_retrying(eng, conn, fn)
+        assert len(calls) == 1
+        assert storekit._bound_conn(eng) is conn
+
+
+def test_bound_read_retrying_reraises_when_the_replacement_also_disconnects():
+    eng = create_engine("sqlite://")
+    calls: list[int] = []
+
+    def fn(_conn: Connection) -> str:
+        calls.append(1)
+        raise _disconnect_error()
+
+    with storekit.bound_session(eng) as conn:
+        with pytest.raises(DBAPIError):
+            storekit.bound_read_retrying(eng, conn, fn)
+        assert len(calls) == 2  # retried exactly once, then gave up
+
+
+def test_bound_session_closes_the_connection_a_rebind_left_bound():
+    """The block's exit closes whatever is bound at that moment. Closing the
+    original by name would leak the replacement a rebind installed."""
+    eng = create_engine("sqlite://")
+    calls: list[int] = []
+
+    def fn(_conn: Connection) -> str:
+        calls.append(1)
+        if len(calls) == 1:
+            raise _disconnect_error()
+        return "ok"
+
+    with storekit.bound_session(eng) as conn:
+        storekit.bound_read_retrying(eng, conn, fn)
+        replacement = storekit._bound_conn(eng)
+    assert replacement is not None
+    assert replacement.closed
+    assert storekit._bound_conn(eng) is None
+
+
 def test_stamp_sets_checked_at_and_token():
     rec: dict = {"meta": {"updated_at": "T"}}
     storekit.stamp(rec, "analysis", {"disposition": "x"}, "against_updated_at", "T")
