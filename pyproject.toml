@@ -3,7 +3,7 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pr-triager"
+name = "prospector"
 version = "0.1.0"
 description = "Pipeline + web UI for triaging a large open-PR backlog: cluster, analyze, security-review, and execute gated merge/close decisions as a GitHub App"
 readme = "README.md"
@@ -26,7 +26,7 @@ Repository = "https://github.com/commit-capital/prospector"
 Issues = "https://github.com/commit-capital/prospector/issues"
 
 [project.scripts]
-pr-triager = "pipeline.cli:main"
+prospector = "pipeline.cli:main"
 
 [dependency-groups]
 dev = [

@@ -8,7 +8,7 @@ Run the normal development stack from the repository root:
 
 ```bash
 ./setup.sh
-uv run pr-triager serve --dev
+uv run prospector serve --dev
 ```
 
 Vite serves the UI on `VITE_PORT` (5173 by default) and proxies `/api` to the
@@ -24,7 +24,7 @@ pnpm --dir app/frontend build
 ```
 
 The production build is emitted to `app/frontend/dist`. When that
-directory exists, `uv run pr-triager serve` serves the SPA and API from one
+directory exists, `uv run prospector serve` serves the SPA and API from one
 local process.
 
 Source layout:

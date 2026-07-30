@@ -16,15 +16,15 @@ Prerequisites: macOS or Linux; `git`; [`uv`](https://docs.astral.sh/uv/) (it fet
 cp .env.example .env            # then set TRIAGE_REPO=owner/name (and see Configuration below)
 
 # 3. pull the open PRs into the store (read-only; local SQLite by default)
-uv run pr-triager ingest
+uv run prospector ingest
 
 # 4. run the app and open the printed frontend URL
-uv run pr-triager serve --dev   # or: ./pr_triager.sh
+uv run prospector serve --dev   # or: ./run-prospector.sh
 ```
 
-For a single-process setup without the dev servers, build the frontend once (`pnpm --dir app/frontend build`, or `npx -y pnpm@11 --dir app/frontend build` without a pnpm install) and run `uv run pr-triager serve`.
+For a single-process setup without the dev servers, build the frontend once (`pnpm --dir app/frontend build`, or `npx -y pnpm@11 --dir app/frontend build` without a pnpm install) and run `uv run prospector serve`.
 
-`uv run pr-triager --help` lists every subcommand. The Clusters board in the web UI is the front door; `CLAUDE.md` (trust model and operating rules) and `ARCHITECTURE.md` (the data layer) are the two documents to read before going deeper. `STATUS.md` is a generated text snapshot of the store — regenerate it with `uv run pr-triager status`.
+`uv run prospector --help` lists every subcommand. The Clusters board in the web UI is the front door; `CLAUDE.md` (trust model and operating rules) and `ARCHITECTURE.md` (the data layer) are the two documents to read before going deeper. `STATUS.md` is a generated text snapshot of the store — regenerate it with `uv run prospector status`.
 
 ## How it works
 
@@ -66,7 +66,7 @@ The merge bar is strict: **the configured review provider's bar + CI passing + m
 
 | Folder | Purpose |
 |--------|---------|
-| `pipeline/` | The store (`store/`), the phase drivers, `gates.py` / `freshness.py` / `taxonomy.py` / `profile.py`, the Workflow scripts, the `pr-triager` CLI (`cli.py`), and `views.py` (generates `STATUS.md`). |
+| `pipeline/` | The store (`store/`), the phase drivers, `gates.py` / `freshness.py` / `taxonomy.py` / `profile.py`, the Workflow scripts, the `prospector` CLI (`cli.py`), and `views.py` (generates `STATUS.md`). |
 | `app/` | The web app. `backend/` (FastAPI over the store) + `frontend/` (React/Vite). The human triage + execution surface. |
 | `issue_triage/` | The **issue** pipeline, on the same substrate as `pipeline/`: its own validated store (`store/`), `issue_freshness.py` / `issue_gates.py` / `issue_model.py` over the shared `pipeline/storekit.py`, and phase drivers (INGEST → CLUSTER → ANALYZE). Imports `pipeline/taxonomy.py`; the cockpit Issues tab projects its store. |
 
@@ -79,7 +79,7 @@ The system reads a single gitignored `/.env` at the repo root. Copy `/.env.examp
 **Backing store.** With `TRIAGE_STORE_URL` unset, each store component uses a local SQLite file under its own directory — fine for dev, CI, or solo work. Set `TRIAGE_STORE_URL` to a shared PostgreSQL database URL to point the whole system (and every operator machine) at one shared store. SQLite and PostgreSQL are the supported store dialects.
 
 No example, demo, or seed store ships with the project. A fresh checkout starts
-empty, and `pr-triager ingest` populates it from the repository you configure.
+empty, and `prospector ingest` populates it from the repository you configure.
 
 The SQL store can be exported to a tree of JSON files at any time — a backup / inspection escape hatch (the JSON is never read back as a store; re-importing it is the reverse `import` subcommand):
 
@@ -116,22 +116,22 @@ All from the repo root. The first three are deterministic and cheap; the last th
 
 ```bash
 # refresh open PRs + issue links into the store (read-only gh; cheap)
-uv run pr-triager ingest            # [--max N]
+uv run prospector ingest            # [--max N]
 
 # deterministic threat scan over cached diffs (no agents, no metered tokens)
-uv run pr-triager threat-scan       # [--only 123,456]
+uv run prospector threat-scan       # [--only 123,456]
 
 # regenerate STATUS.md from the store
-uv run pr-triager status
+uv run prospector status
 
 # one cluster: refresh member facts from GitHub + re-classify dispositions/outcome
-uv run pr-triager triage-cluster --cluster <cid>
+uv run prospector triage-cluster --cluster <cid>
 
 # one cluster: re-summarize + re-cluster its members (split a mis-clustered PR out)
-uv run pr-triager recluster --cluster <cid>
+uv run prospector recluster --cluster <cid>
 
 # one PR: 3-lens adversarial security review (also the ↻ Run button in the cockpit)
-uv run pr-triager security-review --pr <n>
+uv run prospector security-review --pr <n>
 ```
 
 Triage itself is a cockpit operation: open the Clusters board, approve a plan, and the executor acts upstream as the configured bot (gated, logged). You never hand-run `gh pr merge/close/comment` against the triaged repo.

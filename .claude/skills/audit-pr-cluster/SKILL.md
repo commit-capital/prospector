@@ -265,7 +265,7 @@ gzip via the browser's `DecompressionStream`):
 
 ```bash
 OUT="$SCRATCHPAD/cluster-<cid>-drafts-url.txt"   # your session scratchpad dir
-# Resolve the cockpit port the same way `pr-triager serve --dev` does: $VITE_PORT → repo-root .env → 5173
+# Resolve the cockpit port the same way `prospector serve --dev` does: $VITE_PORT → repo-root .env → 5173
 PORT="${VITE_PORT:-$(sed -n 's/^VITE_PORT=//p' "$REPO_ROOT/.env" 2>/dev/null)}"; PORT="${PORT:-5173}"
 python3 - "$OUT" "$PORT" <<'PY'
 import json, base64, gzip, sys

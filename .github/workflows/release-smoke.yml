@@ -50,12 +50,12 @@ jobs:
       - name: Build the frontend
         run: pnpm --dir app/frontend build
       - name: Ingest open PRs + issues
-        run: uv run pr-triager ingest --max 5
+        run: uv run prospector ingest --max 5
       - name: Regenerate STATUS.md
-        run: uv run pr-triager status
+        run: uv run prospector status
       - name: Serve and probe
         run: |
-          uv run pr-triager serve --port 8787 > serve.log 2>&1 &
+          uv run prospector serve --port 8787 > serve.log 2>&1 &
           SERVE_PID=$!
           ok=""
           for _ in $(seq 1 30); do

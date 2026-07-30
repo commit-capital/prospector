@@ -22,7 +22,7 @@ end-to-end write test.
 Run the application with:
 
 ```bash
-uv run pr-triager serve --dev
+uv run prospector serve --dev
 ```
 
 ## Validate changes

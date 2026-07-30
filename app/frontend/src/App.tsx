@@ -238,7 +238,7 @@ function BackendBanner() {
   return (
     <div className="backend-down" role="alert">
       ⚠ Can't reach the backend API on <code>:{__API_PORT__}</code>. Is{" "}
-      <code>pr-triager serve --dev</code> running? This page will recover on its own once it's back.
+      <code>prospector serve --dev</code> running? This page will recover on its own once it's back.
     </div>
   );
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Review Cockpit — dependency setup. Syncs the repo-root uv environment (pinned
 # to Python 3.14.6 via .python-version + uv.lock) and installs frontend deps.
-# Idempotent: safe to run standalone, from `pr-triager serve --dev`, or as
+# Idempotent: safe to run standalone, from `prospector serve --dev`, or as
 # Conductor's setup script (.conductor/settings.toml). Run from anywhere — paths are
 # resolved to the repo root.
 set -euo pipefail
@@ -32,7 +32,7 @@ fi
 # install finishes — not on node_modules/ existing. An interrupted install
 # leaves a partial node_modules/ (packages linked, .bin/ symlinks missing), and
 # a bare directory check would treat that as done and skip the repair, so
-# `pr-triager serve --dev` keeps failing without self-healing. The marker
+# `prospector serve --dev` keeps failing without self-healing. The marker
 # is absent until the install completes, so a partial tree re-triggers the install.
 if [ ! -e "$FRONTEND/node_modules/.modules.yaml" ]; then
   ( cd "$FRONTEND" && "${PNPM[@]}" install --frozen-lockfile )

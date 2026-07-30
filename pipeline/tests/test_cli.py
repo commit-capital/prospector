@@ -74,4 +74,4 @@ def test_no_arguments_is_usage_error(capsys):
 
 def test_help_prints_usage(capsys):
     assert cli.main(["--help"]) == 0
-    assert "pr-triager" in capsys.readouterr().out
+    assert "prospector" in capsys.readouterr().out

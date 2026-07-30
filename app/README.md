@@ -60,7 +60,7 @@ manual is `app/agent/context.md`.
 ## Run
 
 ```bash
-uv run pr-triager serve --dev   # starts backend :8787 + Vite dev :5173, open http://localhost:5173
+uv run prospector serve --dev   # starts backend :8787 + Vite dev :5173, open http://localhost:5173
 ```
 
 Running several worktrees at once? Give each its own ports so they don't collide:
@@ -69,7 +69,7 @@ Running several worktrees at once? Give each its own ports so they don't collide
 cp .env.example .env   # then set distinct VITE_PORT / API_PORT for this worktree
 ```
 
-`.env` is gitignored; `pr-triager serve --dev` and `vite.config.ts` both read it (Vite proxies
+`.env` is gitignored; `prospector serve --dev` and `vite.config.ts` both read it (Vite proxies
 `/api` to `API_PORT`, so each frontend always talks to its own backend). Leaving
 it unset keeps the defaults above.
 

@@ -215,7 +215,7 @@ wheels = [
 ]
 
 [[package]]
-name = "pr-triager"
+name = "prospector"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
