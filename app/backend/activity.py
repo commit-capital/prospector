@@ -136,10 +136,10 @@ def _slug(s: str) -> str:
 @functools.lru_cache(maxsize=1)
 def operator() -> dict:
     """Who is running the cockpit, resolved unobtrusively (never prompts): the
-    ``COCKPIT_OPERATOR`` env override → git ``user.name`` / ``user.email`` → OS
+    ``PROSPECTOR_OPERATOR`` env override → git ``user.name`` / ``user.email`` → OS
     login. ``name`` is shown in the UI; ``slug`` is the per-operator shard name
     (derived from the name so the file is easily attributable)."""
-    env = os.environ.get("COCKPIT_OPERATOR")
+    env = os.environ.get("PROSPECTOR_OPERATOR")
     name = env or _git_config("user.name")
     email = None if env else _git_config("user.email")
     try:

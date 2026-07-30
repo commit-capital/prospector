@@ -103,16 +103,16 @@ def _launch_live_sweep():
 
     Reuses a recent sweep (shared across operators via the store) instead of
     re-querying GitHub on every relaunch: the sweep only runs when none is on record
-    or the last is older than COCKPIT_LIVE_TTL_MIN (default 60). A sweep is ~70
+    or the last is older than PROSPECTOR_LIVE_TTL_MIN (default 60). A sweep is ~70
     GraphQL calls, so within the TTL a relaunch costs zero upstream calls — the
     manual "Refresh live state" button always forces one. Skipped entirely under
     pytest or when explicitly disabled."""
     import os
     import sys
     import threading
-    if "pytest" in sys.modules or os.environ.get("COCKPIT_NO_LAUNCH_SWEEP"):
+    if "pytest" in sys.modules or os.environ.get("PROSPECTOR_NO_LAUNCH_SWEEP"):
         return
-    ttl = float(os.environ.get("COCKPIT_LIVE_TTL_MIN", "60"))
+    ttl = float(os.environ.get("PROSPECTOR_LIVE_TTL_MIN", "60"))
     if not freshness_live.stale(ttl):
         return  # a recent sweep is on record — reuse it, no GitHub calls this launch
 

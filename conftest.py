@@ -28,7 +28,7 @@ os.environ.setdefault("TRIAGE_BOT_LOGIN", "test-bot")
 # comments fail if they assume a fixed branch name, and settings.default_branch()
 # never shells out to gh during a test run.
 os.environ.setdefault("TRIAGE_DEFAULT_BRANCH", "trunk")
-os.environ.setdefault("COCKPIT_FEEDBACK_REPO", "test-owner/test-meta-repo")
+os.environ.setdefault("PROSPECTOR_FEEDBACK_REPO", "test-owner/test-meta-repo")
 # Fixture policy profile with deliberately fake vocabulary — a test that
 # silently depends on the real deployment's taxonomy fails here, which is the
 # point (same idiom as the fake repo/bot identity above). All three suites

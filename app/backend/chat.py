@@ -151,7 +151,7 @@ _GH_WRITE_ALLOW = [
 # durable. NOTE: keep this prefix in sync with the script's actual path.
 _REMEMBER_ALLOW = ["Bash(app/agent/remember:*)"]
 
-# The agent's bug-filing write: open an issue on the meta-repo (COCKPIT_FEEDBACK_REPO)
+# The agent's bug-filing write: open an issue on the meta-repo (PROSPECTOR_FEEDBACK_REPO)
 # AS THE OPERATOR. The meta-repo sits outside the bot's GitHub App installation, so
 # a bot-authenticated `gh` can't even resolve it; the script drops the bot token and
 # files under the operator's own login. Always available — a triager bug is

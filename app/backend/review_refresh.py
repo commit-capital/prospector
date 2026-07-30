@@ -23,8 +23,8 @@ from app.backend import data
 
 _log = logging.getLogger(__name__)
 
-POLL_SECONDS = float(os.environ.get("COCKPIT_REVIEW_REFRESH_POLL_SECONDS", "10"))
-POLL_ATTEMPTS = int(os.environ.get("COCKPIT_REVIEW_REFRESH_ATTEMPTS", "30"))
+POLL_SECONDS = float(os.environ.get("PROSPECTOR_REVIEW_REFRESH_POLL_SECONDS", "10"))
+POLL_ATTEMPTS = int(os.environ.get("PROSPECTOR_REVIEW_REFRESH_ATTEMPTS", "30"))
 
 
 @dataclass(frozen=True)

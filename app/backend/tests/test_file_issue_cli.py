@@ -34,7 +34,7 @@ def _run(tmp_path, args, feedback_repo="test-owner/test-meta-repo"):
     # TRIAGE_SKIP_DOTENV so the subprocess stays hermetic against any real .env.
     env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "TRIAGE_SKIP_DOTENV": "1",
            "TRIAGE_REPO": "test-owner/test-repo", "TRIAGE_BOT_LOGIN": "test-bot",
-           "COCKPIT_FEEDBACK_REPO": feedback_repo,
+           "PROSPECTOR_FEEDBACK_REPO": feedback_repo,
            "GH_TOKEN": "bot-token", "GITHUB_TOKEN": "bot-token",
            "STUB_GH_LOG": str(log)}
     r = subprocess.run([sys.executable, str(FILE_ISSUE), *args],
@@ -78,7 +78,7 @@ def test_missing_body_file_refuses_before_calling_gh(tmp_path):
 def test_unconfigured_meta_repo_refuses(tmp_path):
     r, call = _run(tmp_path, ["--title", "t", "--body", "b"], feedback_repo="")
     assert r.returncode == 2
-    assert "COCKPIT_FEEDBACK_REPO" in r.stderr
+    assert "PROSPECTOR_FEEDBACK_REPO" in r.stderr
     assert call is None
 
 

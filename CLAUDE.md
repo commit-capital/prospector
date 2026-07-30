@@ -51,7 +51,7 @@ with no target configured, those commands fail closed.
   create/close/reopen/comment/edit, and workflow reruns against `TRIAGE_REPO`
   as `TRIAGE_BOT_LOGIN`. Without a token those upstream writes are withheld;
   they never fall back to the operator's login. A separate helper may always
-  file an issue only on `COCKPIT_FEEDBACK_REPO` as the operator. The agent's
+  file an issue only on `PROSPECTOR_FEEDBACK_REPO` as the operator. The agent's
   resubmit helper also uses the operator identity for contributor-fork pushes,
   but is available only on a machine that can mint the bot token. These paths
   do not use `safety_guard`'s `BOT_WRITE_ALLOW` or the per-PR merge gate. The

@@ -22,7 +22,7 @@ export function FeedbackButton() {
     api.feedbackTarget().then(setTarget).catch(() => {});
   }, []);
 
-  // No configured feedback repo (COCKPIT_FEEDBACK_REPO unset) → nowhere to file,
+  // No configured feedback repo (PROSPECTOR_FEEDBACK_REPO unset) → nowhere to file,
   // so the button doesn't render.
   if (!target?.repo) return null;
 

@@ -58,7 +58,7 @@ DISPLAY_NAME: str = os.environ.get("TRIAGE_DISPLAY_NAME") or REPO_NAME
 
 # "owner/name" the cockpit's 🐞 Feedback button files issues into. Empty disables
 # the button — feedback about this tool must never land on the triaged upstream.
-FEEDBACK_REPO: str = os.environ.get("COCKPIT_FEEDBACK_REPO", "")
+FEEDBACK_REPO: str = os.environ.get("PROSPECTOR_FEEDBACK_REPO", "")
 
 
 @lru_cache(maxsize=1)

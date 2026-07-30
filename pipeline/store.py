@@ -436,7 +436,7 @@ class Store:
     def load_live_sweep(self) -> dict:
         """When the cockpit's live sweep last ran (`{swept_at}`), shared across
         operators — one operator's sweep tells every cockpit how fresh the live
-        state is, and gates the launch-time re-sweep (COCKPIT_LIVE_TTL_MIN)."""
+        state is, and gates the launch-time re-sweep (PROSPECTOR_LIVE_TTL_MIN)."""
         return self._load_registry("live_sweep", {"swept_at": None})
 
     def save_live_sweep(self, registry: dict) -> None:

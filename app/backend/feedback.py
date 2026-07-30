@@ -61,7 +61,7 @@ def operator_login() -> str | None:
 def target() -> FeedbackTarget:
     """The repo, pre-assignee, label, and this-checkout context the Feedback
     button needs to build GitHub's prefilled new-issue URL. repo is None when
-    COCKPIT_FEEDBACK_REPO is unset, which hides the button."""
+    PROSPECTOR_FEEDBACK_REPO is unset, which hides the button."""
     inst = instance.instance()
     return {
         "repo": settings.FEEDBACK_REPO or None,

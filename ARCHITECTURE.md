@@ -93,7 +93,7 @@ reading the store, not a per-machine cache:
   and `signals.mergeable` via `model.Pr.record_live_state`. The executor's own
   merge/close/reopen persist through the same method.
 - **Cadence:** on cockpit launch when the last sweep is missing or older than
-  `COCKPIT_LIVE_TTL_MIN` (default 60), and on the manual "Refresh live state"
+  `PROSPECTOR_LIVE_TTL_MIN` (default 60), and on the manual "Refresh live state"
   button. The `live_sweep` singleton row records when it last ran — shared, so one
   operator's sweep gates every cockpit's launch re-sweep and drives the
   "live as of …" UI.
