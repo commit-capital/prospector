@@ -542,13 +542,13 @@ export default function ControlPanel() {
             </span>
             {(hunt.status.security_failed.length > 0 || hunt.status.verify_failed.length > 0) && (
               <span className="small">
-                <span className="muted small">needs attention (auto-run failed): </span>
+                <span className="muted small">needs attention (run failed): </span>
                 {hunt.status.security_failed.map((n) => (
-                  <PRLink key={`sec-${n}`} n={n} className="chip chip-red sm">🛡 #{n}</PRLink>
+                  <PRLink key={`sec-${n}`} n={n} className="chip chip-red sm">🛡 #{n} · auto</PRLink>
                 ))}
                 {hunt.status.verify_failed.map((f) => (
                   <PRLink key={`ver-${f.pr}`} n={f.pr} className="chip chip-red sm">
-                    🧪 #{f.pr}{f.error_kind ? ` · ${f.error_kind}` : ""}
+                    🧪 #{f.pr}{f.error_kind ? ` · ${f.error_kind}` : ""} · {f.source === "auto" ? "auto" : "manual"}
                   </PRLink>
                 ))}
               </span>

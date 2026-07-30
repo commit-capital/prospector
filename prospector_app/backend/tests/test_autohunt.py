@@ -291,10 +291,10 @@ def test_status_defaults_when_registry_empty(store):
     assert s["verify_failed"] == []
 
 
-def test_status_collects_auto_verify_failures(store):
-    """Only auto-queued requests that ended in error land in verify_failed:
-    an operator-queued error stays off the panel (it is the operator's own
-    run), and a live auto request is still awaiting pickup, not failed."""
+def test_status_collects_all_verify_failures(store):
+    """Every errored verify request lands in verify_failed, auto-queued or
+    operator-queued alike, each tagged with its `source`; a live auto request
+    is still awaiting pickup, not failed."""
     from prospector_app.backend import autohunt_view
     for n in (1, 2, 3, 4):
         store.save_pr(_clean_merge_pr(n))
@@ -308,8 +308,9 @@ def test_status_collects_auto_verify_failures(store):
         "error", queued_at=_now(), source="auto")
     data.refresh()
     s = autohunt_view.status()
-    assert s["verify_failed"] == [{"pr": 1, "error_kind": "interrupted"},
-                                  {"pr": 4, "error_kind": None}]
+    assert s["verify_failed"] == [{"pr": 1, "error_kind": "interrupted", "source": "auto"},
+                                  {"pr": 2, "error_kind": "no-base", "source": None},
+                                  {"pr": 4, "error_kind": None, "source": "auto"}]
 
 
 def test_history_normalizes_newest_first(store):
