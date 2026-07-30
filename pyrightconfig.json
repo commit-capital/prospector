@@ -1,6 +1,6 @@
 {
   // Teaches Pyright where the packages live and the uv-locked interpreter. Code
-  // is imported qualified — from pipeline import store, from app.backend
+  // is imported qualified — from pipeline import store, from prospector_app.backend
   // import data, from issue_triage import issue_store — installed (editable) per
   // pyproject [tool.setuptools]. All source roots sit at the repo root ("."), so a
   // single extraPath mirrors the runtime install.

@@ -4,7 +4,7 @@ profile's `test_paths` rules), and the glob dialect the path policies
 (codeowners, risktier) match against.
 
 The test-file convention has a TypeScript twin in
-`app/frontend/src/testPaths.ts`, which consumes the same rules.
+`prospector_app/frontend/src/testPaths.ts`, which consumes the same rules.
 """
 from __future__ import annotations
 
