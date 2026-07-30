@@ -89,6 +89,41 @@ def test_waiting_for_base_is_in_flight(store):
     assert store.load_pr(1).verify_request["status"] == "cancelled"
 
 
+def test_queue_entries_lists_in_flight_ordered_and_labels_source(store):
+    """Every PR with a request in flight is listed — running first, then
+    waiting-for-base, then queued, oldest queued_at first within each group —
+    with `source` distinguishing an auto-hunt pick from an operator queue."""
+    store.save_pr({"pr": 2, "meta": {"title": "fix bar", "state": "open",
+                                     "head_sha": "b" * 40}})
+    store.save_pr({"pr": 3, "meta": {"title": "fix baz", "state": "open",
+                                     "head_sha": "c" * 40}})
+    store.edit_pr(1).record_verify_request(
+        "queued", queued_at="2026-07-01T00:00:00+00:00", source="auto")
+    store.edit_pr(2).record_verify_request(
+        "queued", queued_at="2026-06-01T00:00:00+00:00")
+    store.edit_pr(3).record_verify_request(
+        "running", queued_at="2026-05-01T00:00:00+00:00",
+        started_at="2026-05-01T00:05:00+00:00", step="commit")
+    data.refresh()
+
+    entries = verify_queue.queue_entries()
+    assert [e["pr"] for e in entries] == [3, 2, 1]
+    running, older_queued, newer_queued = entries
+    assert running == {"pr": 3, "title": "fix baz", "status": "running",
+                       "source": None, "step": "commit",
+                       "queued_at": "2026-05-01T00:00:00+00:00",
+                       "started_at": "2026-05-01T00:05:00+00:00"}
+    assert older_queued["pr"] == 2 and older_queued["source"] is None
+    assert newer_queued["pr"] == 1 and newer_queued["source"] == "auto"
+
+
+def test_queue_entries_excludes_terminal_requests(store):
+    for status in ("done", "error", "cancelled"):
+        store.edit_pr(1).record_verify_request(status, queued_at=_now())
+        data.refresh()
+        assert verify_queue.queue_entries() == []
+
+
 def test_runner_status_offline_and_online(store, monkeypatch):
     s = verify_queue.runner_status()
     assert s["online"] is False and s["configured"] is False
