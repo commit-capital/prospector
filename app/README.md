@@ -10,7 +10,7 @@ The human's job shrinks from re-analyzing PRs to **approving pre-made plans**.
 
 ## Safety model (read this)
 
-The cockpit executor performs triage actions directly upstream as the configured
+The app executor performs triage actions directly upstream as the configured
 GitHub App — comment, close, reopen, review, and gated merges (see the repo
 `CLAUDE.md`). Reads run as the local login. Executor writes are controlled and
 audited:
@@ -28,7 +28,7 @@ audited:
 
 ### What the "ask the agent" chat is allowed to do
 
-The cockpit's chat agent (the **Ask** pane, `backend/chat.py`) is a *separate*
+The app's chat agent (the **Ask** pane, `backend/chat.py`) is a *separate*
 actor from the executor above. Its permissions come from a narrow command
 allowlist:
 

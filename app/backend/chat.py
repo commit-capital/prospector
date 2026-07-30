@@ -1,6 +1,6 @@
 """Context-aware 'ask the agent' chat — headless `claude -p`, streamed as SSE.
 
-The cockpit's agent pane is global: it knows what you're looking at. A question
+The app's agent pane is global: it knows what you're looking at. A question
 carries a context (a PR, a cluster, an issue, or nothing) plus an optional diff anchor
 (file:line). Any question also carries the operator's currently visible/
 filtered PR list (e.g. PR Explorer, #355) whenever one is on screen — so
@@ -83,10 +83,10 @@ from pipeline import storekit
 from pipeline.settings import BOT_LOGIN, DISPLAY_NAME, FEEDBACK_REPO, REPO
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-COCKPIT = Path(__file__).resolve().parents[1]
+APP_ROOT = Path(__file__).resolve().parents[1]
 # Gitignored cache for per-thread machine-local state (partials, claude session_ids).
-SESSION_DIR = COCKPIT / "cache" / "chat"
-AGENT_CONTEXT = COCKPIT / "agent" / "context.md"
+SESSION_DIR = APP_ROOT / "cache" / "chat"
+AGENT_CONTEXT = APP_ROOT / "agent" / "context.md"
 CLAUDE_BIN = shutil.which("claude") or "claude"
 DIFF_BUDGET = 16000
 
@@ -99,7 +99,7 @@ DIFF_BUDGET = 16000
 # target and to confirm before any write.
 #
 # Why Bash-with-allowlist and not an MCP server: in headless `claude -p` +
-# stream-json (what the cockpit streams over SSE), MCP tools register too late to
+# stream-json (what the app streams over SSE), MCP tools register too late to
 # be exposed to the model — measured ~20% availability, unusable. A `gh`-command
 # allowlist is reliable there AND matches how the rest of this repo reads GitHub
 # (safety_guard's `run`). Safety: --permission-mode dontAsk runs ONLY allowlisted
@@ -299,9 +299,9 @@ def system_prompt() -> str:
     try:
         text = AGENT_CONTEXT.read_text().strip()
     except OSError as e:
-        raise RuntimeError(f"cockpit agent context missing: {AGENT_CONTEXT} ({e})") from e
+        raise RuntimeError(f"app agent context missing: {AGENT_CONTEXT} ({e})") from e
     if not text:
-        raise RuntimeError(f"cockpit agent context is empty: {AGENT_CONTEXT}")
+        raise RuntimeError(f"app agent context is empty: {AGENT_CONTEXT}")
     return (text.replace("{display_name}", DISPLAY_NAME)
                 .replace("{repo}", REPO).replace("{bot}", BOT_LOGIN)
                 .replace("{feedback_repo}", FEEDBACK_REPO or "(none configured)")

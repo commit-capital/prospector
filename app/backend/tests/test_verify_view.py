@@ -1,4 +1,4 @@
-"""verify_view renders the stored VERIFY record for the cockpit: per-outcome
+"""verify_view renders the stored VERIFY record for the app: per-outcome
 copy + tone, freshness against the merge-recency window, ANSI-stripped output
 tails — and never alters the outcome or the store record itself."""
 from __future__ import annotations

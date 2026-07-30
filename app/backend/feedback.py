@@ -1,4 +1,4 @@
-"""Where the cockpit's own bug/feature reports go.
+"""Where the app's own bug/feature reports go.
 
 The 🐞 Feedback button opens a popup dialog, uses Claude to generate a polished
 title and body from the operator's description, then opens GitHub's prefilled
@@ -24,7 +24,7 @@ from typing import TypedDict
 from pipeline import settings
 from app.backend import instance
 
-LABELS = ["cockpit"]
+LABELS = ["app"]
 
 _GENERATE_TIMEOUT = 8
 _GENERATE_MODEL = "claude-haiku-4-5-20251001"
@@ -73,7 +73,7 @@ def target() -> FeedbackTarget:
 
 
 _GENERATE_PROMPT = """\
-You are helping file a GitHub issue for a PR-triage cockpit (a web app for reviewing and executing pull-request triage).
+You are helping file a GitHub issue for a PR-triage app (a web app for reviewing and executing pull-request triage).
 
 Convert this informal description into a concise GitHub issue. Keep it tight — \
 one short paragraph max for the body, no extra headers or lists unless they add \
@@ -134,7 +134,7 @@ def _call_anthropic(prompt: str, api_key: str) -> str:
 
 
 async def generate_issue(description: str) -> GenerateResult:
-    """Use Claude Haiku to turn a raw cockpit-feedback description into a concise
+    """Use Claude Haiku to turn a raw app-feedback description into a concise
     GitHub issue title and body. Calls the Anthropic API directly via stdlib
     (no subprocess startup overhead). Falls back to derived title + raw description
     on any error so the caller always gets a non-empty result."""

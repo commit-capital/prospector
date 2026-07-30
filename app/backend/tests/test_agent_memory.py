@@ -1,4 +1,4 @@
-"""Cockpit agent memory: durable learnings are persisted and recalled into the
+"""App agent memory: durable learnings are persisted and recalled into the
 agent's context across sessions."""
 import pytest
 from sqlalchemy import create_engine

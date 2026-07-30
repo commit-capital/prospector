@@ -36,14 +36,14 @@ from pipeline.settings import BOT_LOGIN, REPO
 CACHE_DIR = Path(__file__).resolve().parents[1] / "cache"
 DIFF_CACHE = CACHE_DIR / "diffs"
 # The pipeline caches every PR's diff during clustering/threat-scan; it's far
-# broader than the cockpit's own lazily-fetched cache, so read it as a fallback
+# broader than the app's own lazily-fetched cache, so read it as a fallback
 # (read-only, no network) — this is what gives changed_paths / size_split broad
 # coverage for the list view.
 PIPELINE_DIFF_CACHE = Path(__file__).resolve().parents[2] / "pipeline" / "cache" / "diffs"
 
 
 def diff_text(rec: Pr) -> str | None:
-    """A PR's cached unified diff: the cockpit's own cache first, then the
+    """A PR's cached unified diff: the app's own cache first, then the
     pipeline's broad cache. None when neither has it."""
     return (testpaths.cached_diff_text(rec, DIFF_CACHE)
             or testpaths.cached_diff_text(rec, PIPELINE_DIFF_CACHE))
@@ -198,7 +198,7 @@ def _age_days(pr: Pr) -> int | None:
 
 
 def _merge_gate_fields(rec: Pr) -> dict:
-    """The merge gate for the cockpit: ok/reason from gates.merge_eligibility,
+    """The merge gate for the app: ok/reason from gates.merge_eligibility,
     plus `overridable` (a reason at merge time clears the block) and
     `override_kind` naming which block ("security" for a YELLOW verdict,
     "verify" for an escalate outcome) so the UI logs and labels the override to
@@ -291,7 +291,7 @@ def pr_row(n: int, rec: Pr | None = None) -> dict | None:
         "human_merge": hm,
         "checks": pr_checks.checks_for_record(rec),
         "suggestion": sug,
-        # Deferred out of triage (dependency bump). The cockpit shows a single
+        # Deferred out of triage (dependency bump). The app shows a single
         # "handled upstream" banner instead of the merge/security/action surface.
         "out_of_scope": sug.get("action") == "OUT_OF_SCOPE",
         # how the community responded to our triage since we acted (#community-signals)
@@ -622,7 +622,7 @@ def pr_detail(n: int) -> dict | None:
                 row["risk_tier"] = live_risk["tier"]
                 row["risk_tier_paths"] = live_risk["pinned_by"]
         row["body"] = body if body_fut is None else _resolve_live(body_fut, body, failed_live, "body")
-    # Which live bits couldn't refresh (empty when all succeeded). The cockpit shows
+    # Which live bits couldn't refresh (empty when all succeeded). The app shows
     # a "couldn't refresh live data" note rather than the operator seeing a 500.
     row["live_refresh_failed"] = failed_live
 

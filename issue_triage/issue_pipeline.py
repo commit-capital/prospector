@@ -3,7 +3,7 @@ INGEST -> CLUSTER. Each phase stamps freshness; re-running only recomputes what 
 issue's moved updated_at has staled.
 
 The agentic ANALYZE phase is not run here — it runs in parallel batches via
-`analyze_issues.py` (the cockpit's issue-analyze job or the CLI). This
+`analyze_issues.py` (the app's issue-analyze job or the CLI). This
 orchestrator prints how many issues are pending analysis when it finishes.
 
   python issue_triage/issue_pipeline.py            # full: live fetch + deterministic phases

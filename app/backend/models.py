@@ -1,4 +1,4 @@
-"""Pydantic models for the cockpit's FastAPI boundary.
+"""Pydantic models for the app's FastAPI boundary.
 
 The single source of truth for the wire shapes the frontend round-trips: the
 execute/close action payload, the per-endpoint request bodies, and the

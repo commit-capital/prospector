@@ -1,13 +1,13 @@
 """The sandbox-verification worker: drains queued verify_requests by running
-pipeline/verify_pr.py, one PR at a time, inside the cockpit backend process.
+pipeline/verify_pr.py, one PR at a time, inside the app backend process.
 
 It runs ONLY where TRIAGE_VERIFY_WORKER=1 is set — the machine with the Docker
-sandbox and the pinned base image. Every other cockpit backend serves the same
+sandbox and the pinned base image. Every other app backend serves the same
 queue/dequeue API but starts no worker; the queue lives in the shared store,
 so a click anywhere reaches the runner here within one poll tick.
 
 Two daemon threads: a heartbeat (writes the verify_worker registry every tick,
-so any cockpit can show runner liveness) and the drain loop (orphan recovery,
+so any app can show runner liveness) and the drain loop (orphan recovery,
 then pick-oldest-queued → spawn the orchestrator → finalize). The orchestrator
 owns the request's transitions; the worker only recovers what a dead process
 left behind.
@@ -214,7 +214,7 @@ def next_queued() -> int | None:
 
 # Security auto-runs that exited nonzero this process: the hunter skips them
 # so a broken run is never immediately re-fired (a backend restart clears the
-# set; the operator can re-run any PR from the cockpit meanwhile).
+# set; the operator can re-run any PR from the app meanwhile).
 security_failed: set[int] = set()
 
 

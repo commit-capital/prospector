@@ -479,7 +479,7 @@ class TestVerifyBaseRegistry:
 
 class TestResponseAcks:
     """Which PRs' response signals operators have marked seen — shared, so one
-    operator's ack clears the signal from every cockpit."""
+    operator's ack clears the signal from every app."""
 
     def test_defaults_to_empty(self, store):
         assert store.load_response_acks() == {"acks": {}}

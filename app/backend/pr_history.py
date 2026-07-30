@@ -1,7 +1,7 @@
 """Condensed on-PR activity history — comments, reviews (Greptile's scored ones
 flagged), commits, and reopen/close/force-push/rename events — read live from
 GitHub via one batched GraphQL query per PR. Powers the PR-detail history
-panel so a reviewer can follow the back-and-forth without leaving the cockpit."""
+panel so a reviewer can follow the back-and-forth without leaving the app."""
 from __future__ import annotations
 
 import json

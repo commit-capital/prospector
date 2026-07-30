@@ -2,8 +2,8 @@
 waves: select open, unscanned issues (highest pain first), bundle their symptom
 evidence, run the canonical FIND-FIXED prompt through gh-enabled headless claudes
 (several batches at once), and commit the verdicts back to the store. The agentic
-FIND-FIXED path — run from the cockpit Control tab (the `issue-find-fixed` job) or
-the CLI. Progress prints one line per step; the cockpit streams it as SSE.
+FIND-FIXED path — run from the app Control tab (the `issue-find-fixed` job) or
+the CLI. Progress prints one line per step; the app streams it as SSE.
 
 Store I/O stays on the calling thread — the candidate scan and bundle build happen
 once up front, and each finished batch's verdicts are applied serially as it

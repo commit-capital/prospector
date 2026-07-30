@@ -3,9 +3,9 @@ outcome yet or with any active member whose analysis is missing/stale, hand
 each its own evidence bundle, run the canonical per-cluster ANALYZE prompt
 through locked-down headless claudes (several at once), and commit the
 verdicts back to the store. The agentic bulk ANALYZE path — run from the
-cockpit Control tab (the `analyze-clusters` job) or the CLI, as the backlog
+app Control tab (the `analyze-clusters` job) or the CLI, as the backlog
 counterpart to `triage_cluster.py` (which triages one cluster end-to-end,
-including a GitHub refresh). Progress prints one line per step; the cockpit
+including a GitHub refresh). Progress prints one line per step; the app
 streams it as SSE.
 
 Store I/O stays on the calling thread — bundles are built once up front (over

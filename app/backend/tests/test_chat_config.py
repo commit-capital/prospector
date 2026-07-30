@@ -1,4 +1,4 @@
-"""Guards on how the cockpit chat agent is sandboxed (chat.isolation_flags).
+"""Guards on how the app chat agent is sandboxed (chat.isolation_flags).
 
 These are the security-relevant invariants of the embedded assistant: isolation
 from the operator's harness, dontAsk, a read `gh` allowlist, and the curated
@@ -119,7 +119,7 @@ def test_resubmit_and_file_edits_unlocked_with_a_token():
     # NotebookEdit is never needed and stays denied.
     assert "NotebookEdit" in disallowed
     # the real, executable script backs the allowlisted path.
-    script = chat.COCKPIT / "agent" / "resubmit"
+    script = chat.APP_ROOT / "agent" / "resubmit"
     assert script.exists() and os.access(script, os.X_OK)
 
 
@@ -153,7 +153,7 @@ def test_local_self_writes_are_allowlisted_and_executable():
         assert "Bash(app/agent/uncluster:*)" in allowed
     # Each allowlisted path must be the real, executable script.
     for name in ("remember", "uncluster"):
-        script = chat.COCKPIT / "agent" / name
+        script = chat.APP_ROOT / "agent" / name
         assert script.exists() and os.access(script, os.X_OK)
 
 
@@ -165,7 +165,7 @@ def test_file_issue_is_allowlisted_and_executable():
     for token in (False, True):
         allowed = _flag(chat.isolation_flags(token), "--allowedTools")
         assert "Bash(app/agent/file-issue:*)" in allowed
-    script = chat.COCKPIT / "agent" / "file-issue"
+    script = chat.APP_ROOT / "agent" / "file-issue"
     assert script.exists() and os.access(script, os.X_OK)
 
 
@@ -175,7 +175,7 @@ def test_store_read_is_allowlisted_and_executable():
     for token in (False, True):
         allowed = _flag(chat.isolation_flags(token), "--allowedTools")
         assert "Bash(app/agent/store-read:*)" in allowed
-    script = chat.COCKPIT / "agent" / "store-read"
+    script = chat.APP_ROOT / "agent" / "store-read"
     assert script.exists() and os.access(script, os.X_OK)
 
 
@@ -185,7 +185,7 @@ def test_reingest_is_allowlisted_and_executable():
     for token in (False, True):
         allowed = _flag(chat.isolation_flags(token), "--allowedTools")
         assert "Bash(app/agent/reingest:*)" in allowed
-    script = chat.COCKPIT / "agent" / "reingest"
+    script = chat.APP_ROOT / "agent" / "reingest"
     assert script.exists() and os.access(script, os.X_OK)
 
 
@@ -196,7 +196,7 @@ def test_gh_read_is_allowlisted_and_executable():
     for token in (False, True):
         allowed = _flag(chat.isolation_flags(token), "--allowedTools")
         assert "Bash(app/agent/gh-read:*)" in allowed
-    script = chat.COCKPIT / "agent" / "gh-read"
+    script = chat.APP_ROOT / "agent" / "gh-read"
     assert script.exists() and os.access(script, os.X_OK)
 
 

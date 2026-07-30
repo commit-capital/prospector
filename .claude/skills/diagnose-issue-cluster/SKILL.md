@@ -88,5 +88,5 @@ this skill runs no GitHub write verb.
 
 This skill performs reads via the operator's `gh` login (or the store) and
 writes only to the local repo + local store. The sanctioned upstream write path
-is `/resolve-issue-cluster` (the gated cockpit executor as
+is `/resolve-issue-cluster` (the gated app executor as
 `TRIAGE_BOT_LOGIN`) — see that skill.

@@ -31,7 +31,7 @@ export function FeedbackButton() {
       <button
         className="feedback-btn"
         onClick={() => setOpen(true)}
-        title="Report a bug or request a feature for the cockpit"
+        title="Report a bug or request a feature for the app"
       >
         🐞 Feedback
       </button>

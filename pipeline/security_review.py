@@ -6,7 +6,7 @@ point: review a single PR — e.g. when its head moved and freshness invalidated
 the old verdict, or to vet a PR before the wave reaches it.
 
 The Workflow sandbox (security.js) has no filesystem access and is driven by the
-operator in Claude, so the cockpit cannot invoke it. This module runs the same
+operator in Claude, so the app cannot invoke it. This module runs the same
 3-lens-then-refute shape via concurrent headless `claude -p` agents and commits
 via security_driver.commit_verdicts.
 
@@ -19,7 +19,7 @@ actually headed to merge (commit_verdicts/_flip_red is disposition-aware).
 
   uv run python security_review.py --pr N [--store DIR]
 
-Progress is printed to stdout one line per step; the cockpit streams it as SSE.
+Progress is printed to stdout one line per step; the app streams it as SSE.
 """
 from __future__ import annotations
 

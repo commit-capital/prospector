@@ -85,7 +85,7 @@ def test_firehose_triaged_from_events():
 def test_firehose_merge_buckets_by_operator_local_day_not_utc():
     """A merge stamped just after UTC midnight lands on the operator's *local*
     calendar day, not the UTC day. The store stamps ``at`` in UTC, but the
-    cockpit shows it in local time — so an evening merge (already "tomorrow" in
+    app shows it in local time — so an evening merge (already "tomorrow" in
     UTC) must bucket on today's local bar, or it falls a day past the window's
     leading edge and vanishes from the count (the 4-vs-5 bug)."""
     pacific = timezone(timedelta(hours=-8))

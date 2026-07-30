@@ -4,7 +4,7 @@ sandbox.
 This module owns everything that must be exact: pinning and preparing the code
 under test, running each sandbox phase, reading the authoritative result from
 each container's EXIT CODE, and every store write. The per-PR runner
-(pipeline/verify_pr.py, driven by the cockpit's verification queue) calls these
+(pipeline/verify_pr.py, driven by the app's verification queue) calls these
 leaf functions and pairs them with the headless blind/judge agents;
 gates.verify_outcome computes the outcome from the signals — never an agent.
 
@@ -652,7 +652,7 @@ _ADVISORY_FAILURES_MAX = 50
 def _advisory_failures(tail: str) -> list[str]:
     """Failing test files named by a regress run's trailer. ADVISORY: the
     trailer came from a container that ran PR code, so these names inform the
-    judge and the cockpit and never touch a verdict — the verdict is the exit
+    judge and the app and never touch a verdict — the verdict is the exit
     code alone. Unparsable output yields [] and changes nothing."""
     failed = (parse_suite_trailer(tail) or {}).get("failed")
     if not isinstance(failed, list):
@@ -1259,7 +1259,7 @@ def commit_outcomes(store: Store, items: list[JudgeItem]) -> tuple[int, list[int
                 continue
             # An empty rating stores no signal key: a run whose outcome the
             # gates resolve from blind + host alone (unverifiable, needs-rebase)
-            # commits with empty ratings, and the cockpit must not render a
+            # commits with empty ratings, and the app must not render a
             # judgment nobody made.
             if it.red_reason_match:
                 signals["red_reason_match"] = it.red_reason_match

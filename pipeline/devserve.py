@@ -1,4 +1,4 @@
-"""Cockpit dev launcher: uvicorn --reload + the Vite dev server, torn down together.
+"""Dev launcher: uvicorn --reload + the Vite dev server, torn down together.
 
 Runs setup.sh (idempotent), waits for the API port before starting Vite so the
 dev server never proxies into a closed socket, and kills both process groups on
@@ -24,12 +24,12 @@ FRONTEND_CMD = (
 
 
 def reload_exclude(root: Path) -> str:
-    """The `--reload-exclude` argument: the cockpit's diff cache, absolute.
+    """The `--reload-exclude` argument: the app's diff cache, absolute.
 
     uvicorn keeps the exclusion as a directory only when the argument names an
     existing directory, and matches it against the absolute paths it watches,
     so the cache directory is created here before the server starts. The
-    cockpit itself fills it lazily on its first diff fetch.
+    app itself fills it lazily on its first diff fetch.
     """
     path = root / "app" / "cache"
     path.mkdir(parents=True, exist_ok=True)

@@ -81,7 +81,7 @@ class Finding(TypedDict):
     The agent's schema mandates severity/category/title/detail; location and
     confidence are optional, and the pipeline preserves whatever else it carries
     (e.g. lens) and stores it verbatim — so this documents the contract the
-    cockpit reads by key without closing the shape (extra keys survive at
+    app reads by key without closing the shape (extra keys survive at
     runtime)."""
     severity: str
     category: str

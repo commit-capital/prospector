@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The cockpit agent's single memory-write tool.
+"""The app agent's single memory-write tool.
 
 The embedded agent (chat.py) is sandboxed read-only; this allowlisted command is
 its one way to persist a learning mid-conversation — a correction it received, a
@@ -29,7 +29,7 @@ from app.backend import agent_memory  # noqa: E402
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="remember",
-        description="Persist a durable learning to the cockpit agent's memory.",
+        description="Persist a durable learning to the app agent's memory.",
     )
     p.add_argument("text", help="the learning — a correction, preference, or repo fact")
     p.add_argument("--why", help="the reasoning that makes it generalize")

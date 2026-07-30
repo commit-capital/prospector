@@ -1,4 +1,4 @@
-"""Durable, repo-scoped memory for the cockpit's embedded agent.
+"""Durable, repo-scoped memory for the app's embedded agent.
 
 The agent pane (chat.py) spins up a fresh Claude per subject; without persistent
 memory it re-learns the same repo-specific preferences and corrections each

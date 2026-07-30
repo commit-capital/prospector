@@ -92,7 +92,7 @@ def disposition_orphans(store: Store) -> int:
     signals we already have:
 
       malicious threat       → needs-human   (sticky hard block)
-      drift = already-fixed  → close-fixed   (no upstream cite; cockpit flags it)
+      drift = already-fixed  → close-fixed   (no upstream cite; app flags it)
       otherwise              → merge         (the quality gates decide readiness:
                                               a gate gap derives request-changes
                                               with asks at read time)
@@ -359,7 +359,7 @@ def commit_analysis(store: Store, payload: dict) -> list[str]:
         if d == "merge" and m is not None and m.draft:
             errs.append(f"pr {n}: draft cannot be a merge winner")
         # a maintainer's open PR is intentional — the pipeline never proposes
-        # closing it; the operator can still close manually from the cockpit
+        # closing it; the operator can still close manually from the app
         if d in ("close-dup", "close-fixed", "close-stale") and m is not None \
                 and m.author in trusted:
             errs.append(f"pr {n}: {d} on a trusted contributor's PR — "

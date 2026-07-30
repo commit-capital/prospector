@@ -1,4 +1,4 @@
-"""Read-only schema browser backing the cockpit's Tables tab.
+"""Read-only schema browser backing the app's Tables tab.
 
 Introspects the store's SQL tables (`schema.METADATA`) and serves, per table, a
 row count + preview for the overview grid and a paginated / sortable / filterable

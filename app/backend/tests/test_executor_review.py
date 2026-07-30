@@ -1,5 +1,5 @@
 """submit_review dry-run/executed detail describes the resulting PR state, so
-the cockpit toast says what a bounce actually does (PR stays open, review
+the app toast says what a bounce actually does (PR stays open, review
 submitted, store untouched) rather than only previewing the comment."""
 from app.backend import data
 from app.backend import executor

@@ -143,7 +143,7 @@ def fetch_greptile_feedback(n: int) -> dict | None:
         return None
     body = c.get("body") or ""
     # Greptile may edit its existing summary in place or post a new one.  The
-    # cockpit uses this opaque version to notice either shape after a manual
+    # app uses this opaque version to notice either shape after a manual
     # re-trigger; include a body digest as a final backstop for fixtures/older
     # GitHub payloads that omit timestamps.
     version = ":".join([

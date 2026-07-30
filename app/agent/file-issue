@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The cockpit agent's "file a ticket on the meta-repo" path — AS THE OPERATOR.
+"""The app agent's "file a ticket on the meta-repo" path — AS THE OPERATOR.
 
 The meta-repo (`PROSPECTOR_FEEDBACK_REPO`) is where triager/pipeline bugs and
 enhancement requests go. It is outside the bot's GitHub App installation, so the

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { COLUMNS, type ColumnDef } from "./components/explorer/columns";
 import { useExec } from "./ExecContext";
 
-const KEY = "cockpit-explorer-columns";
+const KEY = "app-explorer-columns";
 const DEFAULTS: Record<string, boolean> = Object.fromEntries(COLUMNS.map((c) => [c.key, c.defaultOn]));
 
 // Only explicit user overrides are stored, so a column added in a later release

@@ -2,7 +2,7 @@
 
 **Prospector** is a pipeline + web UI for triaging a large open-PR backlog on a GitHub repository you help maintain: it clusters PRs by the problem they solve, proposes each PR's fate (merge / ask-the-author-to-fix / close), adversarially security-reviews the merge candidates, verifies fixes in a sandbox, and — once a human approves — executes the decisions upstream as a GitHub App.
 
-See `docs/deployments/paperclip.md` for the deployment it was built in: a ~3,000-PR backlog worked down from this cockpit.
+See `docs/deployments/paperclip.md` for the deployment it was built in: a ~3,000-PR backlog worked down from this app.
 
 ## Quick start
 
@@ -28,14 +28,14 @@ For a single-process setup without the dev servers, build the frontend once (`pn
 
 ## How it works
 
-The **store** (SQL, via `TRIAGE_STORE_URL` or a local SQLite default) is the single source of truth: one validated row per PR and per cluster, every fact stamped with the `head_sha` it was computed against (so it goes stale automatically when an author pushes). The cockpit serves reads from an in-memory snapshot it keeps in sync with the store incrementally; all markdown is generated *from* the store, never parsed back.
+The **store** (SQL, via `TRIAGE_STORE_URL` or a local SQLite default) is the single source of truth: one validated row per PR and per cluster, every fact stamped with the `head_sha` it was computed against (so it goes stale automatically when an author pushes). The app serves reads from an in-memory snapshot it keeps in sync with the store incrementally; all markdown is generated *from* the store, never parsed back.
 
 Seven idempotent phases feed the store:
 
 ```
 INGEST ─► CLUSTER ─► ANALYZE ─► GATE ─► SECURITY ─► VERIFY ─► RESOLVE
   │         │          │          │        │          │          │
-  │         │          │          │        │          │          └─ cockpit: human approves,
+  │         │          │          │        │          │          └─ app: human approves,
   │         │          │          │        │          │             executor acts upstream as
   │         │          │          │        │          │             the bot (gated merges)
   │         │          │          │        │          └─ run the PR's test in a secretless
@@ -68,13 +68,13 @@ The merge bar is strict: **the configured review provider's bar + CI passing + m
 |--------|---------|
 | `pipeline/` | The store (`store/`), the phase drivers, `gates.py` / `freshness.py` / `taxonomy.py` / `profile.py`, the Workflow scripts, the `prospector` CLI (`cli.py`), and `views.py` (generates `STATUS.md`). |
 | `app/` | The web app. `backend/` (FastAPI over the store) + `frontend/` (React/Vite). The human triage + execution surface. |
-| `issue_triage/` | The **issue** pipeline, on the same substrate as `pipeline/`: its own validated store (`store/`), `issue_freshness.py` / `issue_gates.py` / `issue_model.py` over the shared `pipeline/storekit.py`, and phase drivers (INGEST → CLUSTER → ANALYZE). Imports `pipeline/taxonomy.py`; the cockpit Issues tab projects its store. |
+| `issue_triage/` | The **issue** pipeline, on the same substrate as `pipeline/`: its own validated store (`store/`), `issue_freshness.py` / `issue_gates.py` / `issue_model.py` over the shared `pipeline/storekit.py`, and phase drivers (INGEST → CLUSTER → ANALYZE). Imports `pipeline/taxonomy.py`; the app Issues tab projects its store. |
 
 ## Configuration
 
 The system reads a single gitignored `/.env` at the repo root. Copy `/.env.example` to `/.env` and fill in as needed; `pipeline/settings.py`, `setup.sh`, and Vite all read it. Real shell environment variables override anything in the file.
 
-**Repository profile.** Repository-specific policy vocabulary — the subsystem taxonomy the CLUSTER phase and issue triage classify against, the path→risk-tier map, the CODEOWNERS gated paths/owners, trusted/automation authors, dependency manifests, test/artifact path conventions, review-harness PR-template policy, and VERIFY full-suite adapter — lives in a JSON **repository profile** selected by `TRIAGE_PROFILE` (see `profile.example.json` for the shape; `pipeline/profile.py` validates it strictly and fails loudly on any malformed or unknown field). Match terms are regular expressions searched against the lowercased title/body — write them in lowercase. The `test_paths` patterns are also compiled by the cockpit frontend as JavaScript RegExp — keep them in the shared regex subset (no `(?P<…>)` named groups, inline flags, or possessive quantifiers; `\Z` differs between engines). Without a profile the generic default applies: no subsystem vocabulary, so every PR and issue classifies as `other` — clustering still works, just without subsystem grouping, risk ranking knows only the shared supply-chain surface, no path is CODEOWNERS-gated, no author is trusted, dependency/test/artifact conventions fall back to cross-ecosystem defaults, the review harness enforces no PR-template sections, and the baseline/regress leg is skipped until `verify.suite` is configured. The `dependency_manifests` list also drives the VERIFY sandbox's dependency-refusal gate — narrowing it below the generic default weakens that protection. The real profile lives beside `.env` as the gitignored `profile.json` at the repo root.
+**Repository profile.** Repository-specific policy vocabulary — the subsystem taxonomy the CLUSTER phase and issue triage classify against, the path→risk-tier map, the CODEOWNERS gated paths/owners, trusted/automation authors, dependency manifests, test/artifact path conventions, review-harness PR-template policy, and VERIFY full-suite adapter — lives in a JSON **repository profile** selected by `TRIAGE_PROFILE` (see `profile.example.json` for the shape; `pipeline/profile.py` validates it strictly and fails loudly on any malformed or unknown field). Match terms are regular expressions searched against the lowercased title/body — write them in lowercase. The `test_paths` patterns are also compiled by the app frontend as JavaScript RegExp — keep them in the shared regex subset (no `(?P<…>)` named groups, inline flags, or possessive quantifiers; `\Z` differs between engines). Without a profile the generic default applies: no subsystem vocabulary, so every PR and issue classifies as `other` — clustering still works, just without subsystem grouping, risk ranking knows only the shared supply-chain surface, no path is CODEOWNERS-gated, no author is trusted, dependency/test/artifact conventions fall back to cross-ecosystem defaults, the review harness enforces no PR-template sections, and the baseline/regress leg is skipped until `verify.suite` is configured. The `dependency_manifests` list also drives the VERIFY sandbox's dependency-refusal gate — narrowing it below the generic default weakens that protection. The real profile lives beside `.env` as the gitignored `profile.json` at the repo root.
 
 **Backing store.** With `TRIAGE_STORE_URL` unset, each store component uses a local SQLite file under its own directory — fine for dev, CI, or solo work. Set `TRIAGE_STORE_URL` to a shared PostgreSQL database URL to point the whole system (and every operator machine) at one shared store. SQLite and PostgreSQL are the supported store dialects.
 
@@ -108,11 +108,11 @@ Only machines that should execute live writes get the key; the app id and login 
 
 ## Operations — who runs what
 
-Two kinds of operations: ones **you** run (a single self-contained command, or a cockpit button), and ones **the agent** runs (an agent orchestrating a multi-stage phase). The dividing line is fan-out: a job that targets one PR or one cluster, or that's pure deterministic bookkeeping, is a command you run; a job that summarizes/clusters/analyzes the whole corpus interleaves an agentic `workflows/*.js` step and is agent-driven.
+Two kinds of operations: ones **you** run (a single self-contained command, or an app button), and ones **the agent** runs (an agent orchestrating a multi-stage phase). The dividing line is fan-out: a job that targets one PR or one cluster, or that's pure deterministic bookkeeping, is a command you run; a job that summarizes/clusters/analyzes the whole corpus interleaves an agentic `workflows/*.js` step and is agent-driven.
 
 ### Operations you run
 
-All from the repo root. The first three are deterministic and cheap; the last three spawn a single headless agent (they spend metered tokens, but are still one command you invoke). Most are also buttons on the cockpit **Control** tab.
+All from the repo root. The first three are deterministic and cheap; the last three spawn a single headless agent (they spend metered tokens, but are still one command you invoke). Most are also buttons on the app **Control** tab.
 
 ```bash
 # refresh open PRs + issue links into the store (read-only gh; cheap)
@@ -130,11 +130,11 @@ uv run prospector triage-cluster --cluster <cid>
 # one cluster: re-summarize + re-cluster its members (split a mis-clustered PR out)
 uv run prospector recluster --cluster <cid>
 
-# one PR: 3-lens adversarial security review (also the ↻ Run button in the cockpit)
+# one PR: 3-lens adversarial security review (also the ↻ Run button in the app)
 uv run prospector security-review --pr <n>
 ```
 
-Triage itself is a cockpit operation: open the Clusters board, approve a plan, and the executor acts upstream as the configured bot (gated, logged). You never hand-run `gh pr merge/close/comment` against the triaged repo.
+Triage itself is an app operation: open the Clusters board, approve a plan, and the executor acts upstream as the configured bot (gated, logged). You never hand-run `gh pr merge/close/comment` against the triaged repo.
 
 ### Operations the agent runs
 
@@ -164,7 +164,7 @@ Versioning is `0.x`, bumped manually in `pyproject.toml` at meaningful milestone
 
 ## Safety
 
-`CLAUDE.md` is authoritative. In short: reads run as the local login. The cockpit
+`CLAUDE.md` is authoritative. In short: reads run as the local login. The app
 executor writes as the configured app, logs every attempt, and applies the
 per-PR gate to merges. The optional chat agent has a separate, confirmation-based
 allowlist for non-merge writes; bot-authenticated chat writes are not part of the
@@ -172,4 +172,4 @@ executor's activity log, while operator-identity resubmits append best-effort
 entries. With no readable `TRIAGE_BOT_KEY_FILE`, neither path can write as the
 app, though local helpers and configured feedback-repository issue filing remain
 available. Don't hand-run `gh pr merge/close/comment` against the configured
-upstream; use the cockpit's controlled paths.
+upstream; use the app's controlled paths.

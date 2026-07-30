@@ -48,7 +48,7 @@ def _last_runs() -> dict[str, str]:
 
 def _issue_runs() -> list[storekit.RunRecord]:
     """The issue pipeline's own runs ledger — a separate store from the PR
-    store's, oldest first, served from the cockpit's cached snapshot."""
+    store's, oldest first, served from the app's cached snapshot."""
     from app.backend import issues
     return issues.cached_runs()
 
@@ -118,7 +118,7 @@ def _seconds_per_run(records: list[storekit.RunRecord], phase: str) -> float | N
 def _issue_coverage() -> dict:
     """Issue coverage counts: how many open issues have a current analysis vs.
     are still pending — the same missing-or-stale selection
-    issue_analyze_driver.pending uses. Computed over the cockpit's cached light
+    issue_analyze_driver.pending uses. Computed over the app's cached light
     issue snapshot, so a request does no whole-store fetch."""
     from issue_triage.issue_freshness import is_current
     from app.backend import issues
@@ -141,7 +141,7 @@ def _pr_coverage(all_prs: dict[int, Pr], diffs_dir: Path) -> dict:
     demand, so the split of its uncovered PRs (stale + never) into
     `diff_cached_here` (current head's diff already cached) and
     `diff_uncached_here` (the scan fetches it as it runs) is a workload hint —
-    how much fetching the next scan run from this cockpit will do."""
+    how much fetching the next scan run from this app will do."""
     total = len(all_prs)
 
     def split(section: str) -> dict[str, int]:

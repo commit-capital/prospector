@@ -17,7 +17,7 @@ const KIND_VERB: Record<string, string> = {
 /** Condensed upstream activity for one PR — comments, reviews (Greptile's
  *  score history flagged), commits, and reopen/close/force-push/rename
  *  events, oldest first — so a reviewer can follow the back-and-forth
- *  without leaving the cockpit. Hidden while loading finds nothing. */
+ *  without leaving the app. Hidden while loading finds nothing. */
 export function PRHistory({ pr }: { pr: number }) {
   const [items, setItems] = useState<PRHistoryItem[] | null>(null);
 

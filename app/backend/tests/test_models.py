@@ -1,4 +1,4 @@
-"""The cockpit's FastAPI-boundary models: the discriminated accept union, the
+"""The app's FastAPI-boundary models: the discriminated accept union, the
 close-action payload, and the per-endpoint request bodies."""
 import pydantic
 

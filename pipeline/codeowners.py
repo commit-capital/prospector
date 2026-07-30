@@ -4,13 +4,13 @@ A triaged repository's default-branch ruleset may require a code owner's
 approval/merge for a set of infrastructure paths. The bot has `contents:
 write` and can merge everything else, but a bot merge of a code-owner-gated
 path would either be blocked by branch protection or, worse, bypass an
-intended human gate. So the cockpit must detect these PRs and route them to a
+intended human gate. So the app must detect these PRs and route them to a
 human owner instead of auto-merging (#15, #26).
 
 The gated globs and owners are repository policy in the active profile
 (pipeline/profile.py `codeowners`); the generic default gates nothing. This is
 the single source of truth for the path→owner map; the merge gate and the
-cockpit both consume it.
+app both consume it.
 """
 from __future__ import annotations
 

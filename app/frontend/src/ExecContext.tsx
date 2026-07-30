@@ -113,10 +113,10 @@ export function ExecProvider({ children }: { children: ReactNode }) {
   // which tears down this provider) keeps the mode. sessionStorage not localStorage:
   // a reopened tab resets to dry-run, so live can't silently linger. "0" = live.
   const [dryRun, setDryRun] = useState(() => {
-    try { return sessionStorage.getItem("cockpit-dry-run") !== "0"; } catch { return true; }
+    try { return sessionStorage.getItem("app-dry-run") !== "0"; } catch { return true; }
   });
   useEffect(() => {
-    try { sessionStorage.setItem("cockpit-dry-run", dryRun ? "1" : "0"); } catch { /* storage unavailable */ }
+    try { sessionStorage.setItem("app-dry-run", dryRun ? "1" : "0"); } catch { /* storage unavailable */ }
   }, [dryRun]);
   const [canMergeUpstream, setCanMerge] = useState(false);
   const [login, setLogin] = useState<string | null>(null);

@@ -1,4 +1,4 @@
-"""Review Cockpit backend — FastAPI.
+"""Prospector backend — FastAPI.
 
 Read-only API over the existing triage artifacts. Serves the built SPA from
 frontend/dist when present; otherwise the SPA runs from the Vite dev server and
@@ -70,7 +70,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(title="Review Cockpit", version="0.1.0",
+app = FastAPI(title="Prospector", version="0.1.0",
               default_response_class=SurrogateSafeJSONResponse,
               lifespan=lifespan)
 
@@ -88,7 +88,7 @@ app.add_middleware(
 
 @app.middleware("http")
 async def no_store_api(request, call_next):
-    """The cockpit is a live dashboard over changing artifacts — browsers must
+    """The app is a live dashboard over changing artifacts — browsers must
     never serve a cached /api response (it's caused stale 'assessed' counts after
     a sweep). Force revalidation on every API call; let static assets cache."""
     resp = await call_next(request)
@@ -255,7 +255,7 @@ def verify_dequeue_pr(n: int):
 @app.get("/api/verify/runner")
 def verify_runner():
     """Verification-runner liveness (the verify_worker heartbeat registry) —
-    lets any cockpit warn when PRs are queued but no runner is online."""
+    lets any app warn when PRs are queued but no runner is online."""
     return verify_queue.runner_status()
 
 
@@ -345,7 +345,7 @@ def live_status():
 def responses_scan(payload: dict = Body(default={})):
     """Sweep the PRs we've acted on and classify how the community responded
     since (replies, reopens, new commits). Read-only upstream (GraphQL timeline)
-    + a cockpit-local registry write. With a `prs` list, scan just those."""
+    + an app-local registry write. With a `prs` list, scan just those."""
     prs_arg = payload.get("prs")
     targets = [int(n) for n in prs_arg if str(n).strip()] if prs_arg else None
     return responses_mod.scan(targets)
@@ -470,7 +470,7 @@ def get_identities():
 @app.post("/api/identities/refresh")
 def refresh_identities():
     """Re-probe whether this machine can mint a bot token — "retry
-    live mode" in the cockpit UI. live_possible() only probes once and caches
+    live mode" in the app UI. live_possible() only probes once and caches
     the result for the process's lifetime, so a key file added, a GitHub App
     installed, or a network blip cleared after that first probe otherwise never
     takes effect without a full backend restart. caps.refresh() resets both
@@ -539,7 +539,7 @@ def reopen_pr(n: int, dry_run: bool = True):
     return res
 
 
-# --- GitHub Issues, folded into the cockpit (#192) ---------------------------
+# --- GitHub Issues, folded into the app (#192) ---------------------------
 
 @app.get("/api/issues")
 def list_issues():
@@ -787,11 +787,11 @@ def pr_authors():
 
 @app.get("/api/activity/people")
 def activity_people():
-    """Unified list of people for the person-filter picker: cockpit operators
+    """Unified list of people for the person-filter picker: app operators
     (from the activity log) merged with PR authors (from the store).
 
     Each entry exposes a display name, a GitHub login (inferred from the
-    operator email prefix for cockpit operators), whether they are a cockpit
+    operator email prefix for app operators), whether they are an app
     operator, and their PR count. Operators appear first; other PR authors
     follow sorted by PR count descending."""
     events = activity.all_events()

@@ -269,7 +269,7 @@ select { background: var(--panel); border: 1px solid var(--border); color: var(-
 .safety-pop-findings { margin: 2px 0 0; padding-left: 16px; }
 .safety-pop-findings li { margin: 2px 0; }
 
-/* Glossary InfoTip — rich hover/focus cards that explain the cockpit's coded
+/* Glossary InfoTip — rich hover/focus cards that explain the app's coded
    shorthand (dispositions, states, lanes, columns…), plus the per-PR reason. */
 .glo-trigger { cursor: help; outline: none; }
 .glo-cue { border-bottom: 1px dotted color-mix(in srgb, currentColor 45%, transparent); }

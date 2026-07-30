@@ -1,5 +1,5 @@
 """gates.py — the ONE clean/merge policy. Replaces v1's three divergent
-implementations (checks._tier0_is_clean, verdict.gate_decision, cockpit
+implementations (checks._tier0_is_clean, verdict.gate_decision, app
 merge_concerns)."""
 import pytest
 
@@ -171,7 +171,7 @@ class TestMergeAllowed:
 
 
 class TestMergeEligibility:
-    """The cockpit's human-initiated merge gate: mergeable iff every check we
+    """The app's human-initiated merge gate: mergeable iff every check we
     actually ran passed. ANALYZE/SECURITY absence does not block."""
 
     def test_clean_unanalyzed_pr_is_eligible(self):
@@ -1477,7 +1477,7 @@ class TestVerifyMergeBar:
         assert ok is True
 
     def test_merge_allowed_never_names_a_null_outcome_to_the_operator(self):
-        # merge_allowed's reason is the cockpit's "Merge blocked" card text.
+        # merge_allowed's reason is the app's "Merge blocked" card text.
         pr = _pr(analysis=_merge_analysis(), security=_green(),
                  verify=_verified(outcome=None))
         ok, why = gates.merge_allowed(pr, today="2026-06-10")

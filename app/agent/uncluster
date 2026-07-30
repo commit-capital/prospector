@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The cockpit agent's manual clustering override.
+"""The app agent's manual clustering override.
 
 Clustering is automated (the CLUSTER phase), but it occasionally mis-groups a
 PR — most often when a PR's head moved to unrelated content after it was
@@ -79,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
 
     now = storekit.now()
     store.append_run({"phase": "cluster:manual-uncluster", "started": now,
-                      "finished": now, "actor": "cockpit-agent",
+                      "finished": now, "actor": "app-agent",
                       "stats": {"pr": args.pr, "removed_from": removed}})
 
     still = store.load_pr(args.pr).cluster_ids

@@ -1,4 +1,4 @@
-"""Cockpit backend over the pipeline-v2 store: rows, suggestions, board state.
+"""App backend over the pipeline-v2 store: rows, suggestions, board state.
 Records are built in-memory; data loaders are monkeypatched."""
 from datetime import datetime, timedelta, timezone
 

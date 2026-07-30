@@ -8,7 +8,7 @@ auto-saving domain model, and idempotent phase drivers — so issues are read,
 clustered, analyzed, and **kept fresh** exactly the way PRs are.
 
 **Reads run as the operator's local `gh`; the one upstream write (close-as-dup)
-goes through the cockpit executor as the configured bot (`TRIAGE_BOT_LOGIN`),
+goes through the app executor as the configured bot (`TRIAGE_BOT_LOGIN`),
 gated and logged.**
 
 ## Substrate (shared with the PR pipeline)
@@ -25,7 +25,7 @@ gated and logged.**
   summary/repro/analysis go stale **automatically**; `is_current()` is the single
   check.
 - **Gates** (`issue_gates.py`): the ONE policy module. `close_dup_allowed` (pipeline
-  auto-recommend) and `close_dup_eligibility` (the cockpit/executor pre-write gate —
+  auto-recommend) and `close_dup_eligibility` (the app/executor pre-write gate —
   adds a live "canonical open or closed as fixed" check), plus the derived
   `issue_cluster_state`.
   A close-as-dup requires a **human-confirmed** curation verdict.
@@ -44,7 +44,7 @@ gated and logged.**
 | (curate) | `/diagnose-issue-cluster` | agentic: confirm canonical / split false merges → writes the cluster `curation` section |
 | ANALYZE | `issue_analyze_driver.py` + `analyze_issues.py` | agentic per-issue disposition (`close-dup` / `request-repro` / `link-pr` / `needs-human`) run in parallel batches and committed back to the store |
 | GATE | `issue_gates.py` | close-dup eligibility, computed on read |
-| RESOLVE | cockpit `executor.close_issue` | gated close-as-dup upstream as the configured bot |
+| RESOLVE | app `executor.close_issue` | gated close-as-dup upstream as the configured bot |
 
 ## Run it
 
@@ -56,7 +56,7 @@ python issue_triage/issue_analyze_driver.py commit verdicts.json   # apply verdi
 python issue_triage/issue_views.py                 # regenerate ISSUE-STATUS.md / SUMMARY.md
 ```
 
-The cockpit's Issues tab is a read-only projection over this store
+The app's Issues tab is a read-only projection over this store
 (`app/backend/issues.py`); the close-as-dup worklist is the confirmed
 duplicates, most painful first.
 
@@ -87,4 +87,4 @@ weights, loaded by `issue_cluster_driver`.
 - `/diagnose-issue-cluster <N>` — curate one cluster → write its store `curation`
   section (confirm the canonical, split false merges). Read-only on GitHub.
 - `/resolve-issue-cluster <N>` — gated upstream execution of close-as-dup via the
-  cockpit executor.
+  app executor.

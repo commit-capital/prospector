@@ -94,7 +94,7 @@ IDs are stable across re-runs (member-overlap matching in the driver).
 Singletons are NOT clusters: a PR with no ≥2-member group stays unclustered, but
 a pass stamps it standalone — a `cluster` section with no `id`, freshly stamped
 against the head. That distinguishes "considered, left standalone" from "no pass
-has reached it yet" via `is_current(rec, "cluster")`, and the cockpit card
+has reached it yet" via `is_current(rec, "cluster")`, and the app card
 reflects the difference. Standalone PRs are still handled through the PR Queue /
 Easy / Stale lanes.
 
@@ -186,7 +186,7 @@ uv run python verify_driver.py prepare-base --tier 1
 uv run python views.py
 ```
 
-With a base pinned, verification runs per-PR from the cockpit: the operator
+With a base pinned, verification runs per-PR from the app: the operator
 clicks **Queue for verification** on a PR, and the verification worker
 (`TRIAGE_VERIFY_WORKER=1`, the machine with the sandbox) drains the queue by
 running `pipeline/verify_pr.py` for one PR at a time. That runner:

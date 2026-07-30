@@ -11,7 +11,7 @@ import { PRDetailContent } from "../views/PRDetail";
 export function PRFlyout() {
   const { prs, closePane, close } = usePRFlyout();
   const [maximized, setMaximized] = useState(false);
-  const { width, startResize } = useResizableWidth("cockpit-flyout-width", 640);
+  const { width, startResize } = useResizableWidth("app-flyout-width", 640);
   // explicit per-pane heights (px) once the user drags a pane divider
   const [heights, setHeights] = useState<Record<number, number>>({});
 

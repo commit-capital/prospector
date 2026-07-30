@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The cockpit agent's "reingest one PR" path — refresh a single PR's store
+"""The app agent's "reingest one PR" path — refresh a single PR's store
 record against its current head SHA, then bring the sections that went stale back
 to the current head.
 
@@ -19,7 +19,7 @@ Usage:
 
 A no-op when the head has not moved since the last full pass. Scoped to one PR —
 never a full-corpus re-cluster. All writes go through the validated store
-accessor, mirroring `store-read` / `uncluster`; it runs under the cockpit's uv
+accessor, mirroring `store-read` / `uncluster`; it runs under the app's uv
 env, where every allowlisted agent command runs. The natural follow-on to a
 `resubmit` push, so a resubmitted PR becomes mergeable without an out-of-band run.
 """

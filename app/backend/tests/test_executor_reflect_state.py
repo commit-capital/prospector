@@ -1,6 +1,6 @@
 """A successful upstream action reflects its effect on the PR's state — close →
 closed, merge → merged, reopen → open — durably into the shared store (meta.state),
-so every operator sees it and the cockpit doesn't show a stale 'open' snapshot until
+so every operator sees it and the app doesn't show a stale 'open' snapshot until
 the next sweep/INGEST."""
 import types
 

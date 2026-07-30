@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Review Cockpit — dependency setup. Syncs the repo-root uv environment (pinned
+# Prospector — dependency setup. Syncs the repo-root uv environment (pinned
 # to Python 3.14.6 via .python-version + uv.lock) and installs frontend deps.
 # Idempotent: safe to run standalone, from `prospector serve --dev`, or as
 # Conductor's setup script (.conductor/settings.toml). Run from anywhere — paths are
@@ -40,7 +40,7 @@ fi
 
 # Per-worktree dev ports in the single root .env. Append the pair only if absent
 # so operator-set vars (TRIAGE_STORE_URL, …) are preserved. Each worktree is its
-# own checkout with its own root .env, so concurrent cockpits don't collide.
+# own checkout with its own root .env, so concurrent app instances don't collide.
 ENV_FILE="$ROOT/.env"
 touch "$ENV_FILE"
 

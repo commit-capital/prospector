@@ -1,4 +1,4 @@
-"""The cockpit's auto-hunt surface: the idle hunter's status (worker opt-in,
+"""The app's auto-hunt surface: the idle hunter's status (worker opt-in,
 pool sizes, failure memory), a windowed result summary, and its run history
 from the store's runs ledger."""
 from __future__ import annotations
@@ -58,7 +58,7 @@ _HISTORY_PHASES = {"security:review-one": "security", "verify:single": "verify"}
 
 def status() -> AutohuntStatus:
     """The hunter's live status. `enabled` and `security_failed` come from the
-    worker's heartbeat registry, so any cockpit reports the runner machine's
+    worker's heartbeat registry, so any app reports the runner machine's
     state; the pool counts are computed from the shared snapshot with the same
     gates and failure-memory the hunter picks by. A PR parked in
     `security_failed` is not counted in `security_pool` — it is not awaiting
@@ -184,7 +184,7 @@ def summary(days: int | None) -> AutohuntSummary:
     fixed-size digest in place of an ever-growing per-run table. Filters the
     runs ledger by its indexed `ts` column, so the scan cost tracks the
     window, not the ledger's total size. Each bucket also carries the distinct
-    PR numbers behind it, so the cockpit can open exactly those PRs in the
+    PR numbers behind it, so the app can open exactly those PRs in the
     Explorer when an operator clicks a result chip."""
     totals = {"security": 0, "verify": 0}
     by_result: dict[str, dict[str, int]] = {"security": {}, "verify": {}}

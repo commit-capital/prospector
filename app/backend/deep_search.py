@@ -24,7 +24,7 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from app.backend import chat  # CLAUDE_BIN, isolation_flags, REPO_ROOT, COCKPIT, system_prompt
+from app.backend import chat  # CLAUDE_BIN, isolation_flags, REPO_ROOT, APP_ROOT, system_prompt
 from app.backend import data
 from app.backend import service
 from app.backend import subproc
@@ -33,7 +33,7 @@ from app.backend import testpaths
 if TYPE_CHECKING:
     from pipeline.model import Pr
 
-CACHE_DIR = chat.COCKPIT / "cache" / "deep_search"
+CACHE_DIR = chat.APP_ROOT / "cache" / "deep_search"
 BATCH_SIZE = 25          # PRs of compact facts per agent call
 MAX_CONCURRENCY = 5      # parallel headless `claude` processes
 MAX_CANDIDATES = 500     # hard ceiling; the UI narrows with fast filters first

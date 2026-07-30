@@ -1689,7 +1689,7 @@ class TestCommitOutcomes:
         # The #7524 shape: the blind agent's -t filter matched no test names, so
         # vitest skipped everything and exited 0 on both red and green. The
         # outcome is still not-verified (no verdict from output tails), but the
-        # finding names the harness cause so the cockpit story is precise.
+        # finding names the harness cause so the app story is precise.
         s = _pinned(tmp_path)
         _pr(s, 1); _diff(diffs, "h1", "src/a.test.ts")
         self._ran(s, red=0, test_cmd='npx vitest run x.test.ts -t "release preserves status"')

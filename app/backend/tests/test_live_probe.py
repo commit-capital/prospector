@@ -4,7 +4,7 @@ a key file added, an app installed, or a network blip cleared after that
 first probe otherwise never takes effect without a restart. mint_error()
 records *why* the last mint failed (get-bot-token.sh's stderr, or a local
 reason) instead of discarding it; /api/identities/refresh is what actually
-re-probes on demand ("retry live mode" in the cockpit UI)."""
+re-probes on demand ("retry live mode" in the app UI)."""
 import os
 import subprocess
 

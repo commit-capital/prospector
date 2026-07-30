@@ -1,6 +1,6 @@
 """Live PR state (#25): fetch, compare, and persist.
 
-The cockpit's data is a snapshot. Master moves, PRs get force-pushed, closed, or
+The app's data is a snapshot. Master moves, PRs get force-pushed, closed, or
 merged underneath us — and acting on a stale picture is how you embarrass a
 contributor with a comment that contradicts reality. This module re-fetches the
 live state for a batch of PRs, reports where it has DIVERGED from the snapshot,
@@ -201,7 +201,7 @@ def persist_live(live: dict[int, dict], committed: dict[int, Pr]) -> list[int]:
 # --- the launch / manual sweep ---------------------------------------------
 def sweep(prs: list[int] | None = None) -> dict:
     """Fetch live state for the open PR universe (or a given subset) and persist any
-    drift into the shared store. Reads the committed snapshot the cockpit already
+    drift into the shared store. Reads the committed snapshot the app already
     loaded (`data.prs()`) — no second bulk download — and targets PRs the store
     thinks are open (`state`), so a PR reopened upstream (state now open) is still
     re-checked. Stamps the shared `live_sweep` singleton. Returns

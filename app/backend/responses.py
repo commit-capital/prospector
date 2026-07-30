@@ -8,7 +8,7 @@ explorer can surface it as a sortable column + filterable chips.
 
 Read-only upstream (one batched GraphQL request per ~20 PRs, the freshness_live
 pattern). The classified signals are a derived cache — `scan` rebuilds them from
-upstream — so they live in a cockpit-local registry. Operator acks are human
+upstream — so they live in an app-local registry. Operator acks are human
 input that exists nowhere else, so they live in the shared store's
 `response_acks` registry and are visible to every operator.
 """
@@ -380,7 +380,7 @@ def for_pr(n: int) -> dict | None:
 # --- acknowledgment persistence (shared store, TTL-cached read) -------------
 # "I've seen every response on this PR as of this instant" (#537), recorded in
 # the store's `response_acks` registry so one operator's ack clears the signal
-# from every cockpit's queue until a newer response supersedes it.
+# from every instance's queue until a newer response supersedes it.
 _ACK_TTL_SEC = 5.0
 _acks_cache: tuple[float, dict[int, dict[str, str]]] | None = None
 

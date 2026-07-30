@@ -1,7 +1,7 @@
 """Generate the dev-facing hand-off docs FROM the issue store (never parsed back):
 ISSUE-STATUS.md (snapshot + pain leaderboard) and SUMMARY.md (per-cluster table).
 Mirrors pipeline/views.py for PRs. All output is advisory; closes run through the
-cockpit executor gated on confirmed curation.
+app executor gated on confirmed curation.
 """
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ def status_md(store: IssueStore) -> str:
     lines = [
         f"# {DISPLAY_NAME} Issue Triage — Status", "",
         "_Generated from the issue store. Suggested actions only; closes run through "
-        f"the cockpit executor as {BOT_LOGIN}, gated on confirmed curation._", "",
+        f"the app executor as {BOT_LOGIN}, gated on confirmed curation._", "",
         "| What we found | Count |", "|---|---|",
         f"| Open issues | {len(issues)} |",
         f"| Clusters | {len(cls)} |",

@@ -1,5 +1,5 @@
 """The operator's sandbox-verification queue, over the store's per-PR
-verify_request section. Any cockpit queues (and cancels) here; the verification
+verify_request section. Any app queues (and cancels) here; the verification
 worker (verify_worker.py) on the sandbox-capable machine picks queued PRs up
 and runs pipeline/verify_pr.py. State lives in the shared store, so a queue
 click on one machine reaches the runner on another, and survives restarts.
@@ -45,7 +45,7 @@ def queue_pr(n: int, source: str | None = None) -> dict:
 def dequeue_pr(n: int) -> dict:
     """Cancel PR `n`'s verification request. Only a request the runner has not
     started — `queued` or `waiting-for-base` — can be cancelled; a running
-    sandbox is not interrupted from the cockpit."""
+    sandbox is not interrupted from the app."""
     rec = data.store().load_pr(n)
     if rec is None:
         raise ValueError(f"PR #{n} not in store")

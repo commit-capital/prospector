@@ -32,7 +32,7 @@ os.environ.setdefault("PROSPECTOR_FEEDBACK_REPO", "test-owner/test-meta-repo")
 # Fixture policy profile with deliberately fake vocabulary — a test that
 # silently depends on the real deployment's taxonomy fails here, which is the
 # point (same idiom as the fake repo/bot identity above). All three suites
-# (pipeline, issue_triage, cockpit) run under it, so editing the fixture can
+# (pipeline, issue_triage, app) run under it, so editing the fixture can
 # move assertions in any of them.
 os.environ.setdefault("TRIAGE_PROFILE", os.path.join(
     os.path.dirname(os.path.abspath(__file__)),

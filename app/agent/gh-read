@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The cockpit agent's read window into GitHub's raw contents + code search.
+"""The app agent's read window into GitHub's raw contents + code search.
 
 The agent's allowlisted `gh` commands (chat.py:_GH_ALLOW) cover PR/issue/search
 subcommands but not `gh api`, because `gh api` is read-only only by *default* —
@@ -23,7 +23,7 @@ doesn't exist, so the agent can report "no such file" instead of inventing one).
 `search` prints GitHub's JSON result; the repo qualifier is appended automatically
 unless the query already carries a `repo:` one. Reads only — no bot token, no
 upstream write — so it rides the same always-available allowlisted-Bash path as
-`store-read`; it runs under the cockpit's uv env, where every agent command runs.
+`store-read`; it runs under the app's uv env, where every agent command runs.
 NOTE: keep the allowlist prefix in chat.py (_GH_READ_ALLOW) in sync with this path.
 """
 from __future__ import annotations

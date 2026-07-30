@@ -1,6 +1,6 @@
 """Operator-facing view of a PR's VERIFY record (the dynamic-verification phase).
 
-Renders the stored `verify` section for the cockpit: per-outcome headline copy,
+Renders the stored `verify` section for the app: per-outcome headline copy,
 a display tone, freshness (gates.VERIFY_MAX_AGE_DAYS — the merge-recency
 window), and the signals passed through with ANSI escape sequences stripped
 from the captured output tails — including `authored_test`, the agent-authored
@@ -731,7 +731,7 @@ def _cause(outcome: str | None, signals: dict) -> str | None:
 
 
 def verify_request_view(rec: Pr) -> VerifyRequestView | None:
-    """The PR's verification-queue state rendered for the cockpit detail view,
+    """The PR's verification-queue state rendered for the app detail view,
     or None when the PR was never queued. The log_tail is the orchestrator's
     captured output on an errored run — ANSI-stripped like every other tail."""
     req = rec.verify_request
@@ -754,7 +754,7 @@ def verify_request_view(rec: Pr) -> VerifyRequestView | None:
 
 
 def verify_detail(rec: Pr) -> VerifyDetail | None:
-    """The PR's verify section rendered for the cockpit detail view, or None
+    """The PR's verify section rendered for the app detail view, or None
     when the phase never reached this PR (no section at all)."""
     sec = rec.section("verify")
     if not sec:

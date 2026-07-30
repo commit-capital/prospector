@@ -3,7 +3,7 @@
 Which external code-review provider (if any) gates a clean merge, and at what bar.
 Two built-in profiles selected by TRIAGE_REVIEW_PROVIDER: `greptile` reproduces the
 confidence-score bar; `none` requires no external review. Every consumer — the
-gate, the ANALYZE prompt, the cockpit capabilities descriptor — reads the active
+gate, the ANALYZE prompt, the app capabilities descriptor — reads the active
 policy here rather than a literal provider name or threshold.
 """
 from __future__ import annotations

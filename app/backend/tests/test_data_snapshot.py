@@ -1,4 +1,4 @@
-"""The cockpit reads from an in-memory snapshot that self-freshens incrementally.
+"""The app reads from an in-memory snapshot that self-freshens incrementally.
 These cover the contract data.py relies on: reads serve from memory, the watermark
 refetches only what changed (including soft-deletes, which drop from the snapshot),
 and a background freshen that errors leaves the last good snapshot in place."""

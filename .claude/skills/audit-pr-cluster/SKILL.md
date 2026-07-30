@@ -1,6 +1,6 @@
 ---
 name: audit-pr-cluster
-description: Use when given a PR cluster ID and asked to check whether the pipeline's analysis/disposition is right and to draft the close-out comment(s). Independently verifies every load-bearing claim against the configured upstream repository, then writes one comment (or a few, if members diverge). Read-only — the human posts via the cockpit UI.
+description: Use when given a PR cluster ID and asked to check whether the pipeline's analysis/disposition is right and to draft the close-out comment(s). Independently verifies every load-bearing claim against the configured upstream repository, then writes one comment (or a few, if members diverge). Read-only — the human posts via the app UI.
 ---
 
 # audit-pr-cluster
@@ -12,9 +12,9 @@ state of `TRIAGE_REPO`, decide whether you agree with the disposition,
 and draft the close-out comment(s) the operator will post.
 
 It sits between the pipeline's CLUSTER + ANALYZE phases (produce the analysis)
-and the cockpit executor (posts the action). It is **read-only against
+and the app executor (posts the action). It is **read-only against
 `TRIAGE_REPO`** — it never runs `gh pr close/comment/merge/review`. The operator
-posts the drafted comment through the cockpit UI (gated, logged, as
+posts the drafted comment through the app UI (gated, logged, as
 `TRIAGE_BOT_LOGIN`); see the trust model in `CLAUDE.md`.
 
 ## Why this exists: the rationale is a claim, not a fact
@@ -58,11 +58,11 @@ login.
 
 ## Source of the analysis
 
-Read the cluster detail from the cockpit (same data the `/clusters/<cid>` page
+Read the cluster detail from the app (same data the `/clusters/<cid>` page
 shows — the store served through `service.cluster_detail`):
 
 ```bash
-curl -s http://localhost:5174/api/clusters/<cid>   # dev cockpit; adjust port if needed
+curl -s http://localhost:5174/api/clusters/<cid>   # dev app; adjust port if needed
 ```
 
 Key fields:
@@ -243,7 +243,7 @@ Comment style (converged conventions):
 - Keep it concise.
 - **Output the drafted comment as plain text** — plain paragraphs, never markdown
   blockquotes (`>` prefix) or other line-prefixed formatting. The operator copies it
-  straight into the cockpit UI, and a `>` on every line gets pasted literally.
+  straight into the app UI, and a `>` on every line gets pasted literally.
   Inline `code` backticks are fine.
 
 Output the verdict and the comment(s) inline for the operator to post. Optionally
@@ -252,7 +252,7 @@ save a briefing to `docs/pr-cluster-audits/cluster-<cid>.md` if asked.
 ### 9. Emit the pre-fill link
 
 End with a single link that drops every drafted comment straight into the cluster
-page's edit boxes, so the operator doesn't copy-paste each one. The cockpit reads a
+page's edit boxes, so the operator doesn't copy-paste each one. The app reads a
 `?drafts=` param — a base64url-encoded **gzipped** JSON map of `{ "<pr>": "<text>" }`
 — seeds the boxes on load, then strips the param. Reuse the *same* text for members
 that share a comment (gzip collapses the duplication and keeps the link short).
@@ -260,12 +260,12 @@ that share a comment (gzip collapses the duplication and keeps the link short).
 Don't print the raw URL — a ~1.5 KB base64 blob is finicky to select in a terminal.
 Instead **write it to a scratchpad file and copy it to the clipboard** (`pbcopy`), so
 the operator just pastes into the address bar (Cmd+L, Cmd+V), and offer the one-liner
-that opens it directly. Build it deterministically (matches the cockpit's decoder —
+that opens it directly. Build it deterministically (matches the app's decoder —
 gzip via the browser's `DecompressionStream`):
 
 ```bash
 OUT="$SCRATCHPAD/cluster-<cid>-drafts-url.txt"   # your session scratchpad dir
-# Resolve the cockpit port the same way `prospector serve --dev` does: $VITE_PORT → repo-root .env → 5173
+# Resolve the app port the same way `prospector serve --dev` does: $VITE_PORT → repo-root .env → 5173
 PORT="${VITE_PORT:-$(sed -n 's/^VITE_PORT=//p' "$REPO_ROOT/.env" 2>/dev/null)}"; PORT="${PORT:-5173}"
 python3 - "$OUT" "$PORT" <<'PY'
 import json, base64, gzip, sys
@@ -287,11 +287,11 @@ echo "✓ link copied ($(wc -c < "$OUT" | tr -d ' ') chars, :$PORT) · saved to 
 
 Only include members that are still **OPEN** (a closed/merged member is a no-op).
 Tell the operator the link is on their clipboard (and give the `open "$(cat "$OUT")"`
-one-liner); note that it needs the dev cockpit running and that opening it seeds — but
+one-liner); note that it needs the dev app running and that opening it seeds — but
 never clobbers — the edit boxes.
 
 ## Read-only contract
 
 Reads run as the operator's `gh` login. This skill writes nothing upstream and
-runs no `gh` write verb. The sanctioned upstream write path is the cockpit
-executor (the cockpit UI) as `TRIAGE_BOT_LOGIN` — gated and logged.
+runs no `gh` write verb. The sanctioned upstream write path is the app
+executor (the app UI) as `TRIAGE_BOT_LOGIN` — gated and logged.

@@ -48,7 +48,7 @@ export function DispositionChip({ d }: { d: IssueTriageDisposition | null }) {
 // detector attributed by symptom (fix-found), or a PR the issue's own text names
 // (issue-ref) — render as links, strongest evidence first and most-resolved first
 // (merged, then closed, then open); a PR that merely shares the issue's subsystem
-// tag is weak evidence and collapses into a muted count. A PR in the cockpit's
+// tag is weak evidence and collapses into a muted count. A PR in the app's
 // store — open, merged, or closed — opens in the in-app flyout (pr-ref); one that
 // isn't in the store links out to GitHub, with a state chip (purple merged /
 // muted closed) when its state is known.

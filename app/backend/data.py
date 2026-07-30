@@ -1,4 +1,4 @@
-"""Read-side data access for the Review Cockpit.
+"""Read-side data access for Prospector.
 
 Every board/list read is served from an in-memory snapshot of the store — the
 SQL database behind pipeline's store.py / gates.py / freshness.py — so requests

@@ -1,4 +1,4 @@
-"""Append-only activity log — an audit trail of what the cockpit has done.
+"""Append-only activity log — an audit trail of what the app has done.
 
 Records the consequential events (live posts/closes, reopens, handoff emits) so
 the team can review their combined work and undo it. Dry-runs are recorded too,
@@ -49,7 +49,7 @@ _TABLES_READY = False
 def _engine() -> storekit.Engine:
     """The shared store engine (same DB as the PR/issue store; one cached engine
     per URL). Ensures the activity/chat tables exist once per process, so any
-    entry point can record — not only the cockpit, which builds Store() at
+    entry point can record — not only the app, which builds Store() at
     startup."""
     global _TABLES_READY
     eng = storekit.get_engine(storekit.resolve_url(None, store.DEFAULT_ROOT))
@@ -135,7 +135,7 @@ def _slug(s: str) -> str:
 
 @functools.lru_cache(maxsize=1)
 def operator() -> dict:
-    """Who is running the cockpit, resolved unobtrusively (never prompts): the
+    """Who is running the app, resolved unobtrusively (never prompts): the
     ``PROSPECTOR_OPERATOR`` env override → git ``user.name`` / ``user.email`` → OS
     login. ``name`` is shown in the UI; ``slug`` is the per-operator shard name
     (derived from the name so the file is easily attributable)."""
@@ -416,7 +416,7 @@ def summarize(events, *, group_by: str = "day", include_dry_run: bool = False,
 def _local_day(stamp: str | None, tz: tzinfo) -> str:
     """The calendar day of a UTC-stamped ISO timestamp in timezone ``tz``.
 
-    The store stamps every ``at`` / ``created_at`` in UTC, but the cockpit shows
+    The store stamps every ``at`` / ``created_at`` in UTC, but the app shows
     and buckets them in the operator's local time, so a late-evening action
     (already "tomorrow" in UTC) sits on today's local bar. A naive timestamp is
     read as UTC; an unparseable one falls back to its bare date prefix."""
@@ -654,7 +654,7 @@ def progress(prs: dict[int, Pr], events: list[dict] | None = None) -> dict:
 
 
 def issue_progress(issues: dict[int, Issue], events: list[dict] | None = None) -> dict:
-    """Backlog progress for issues closed through the cockpit.
+    """Backlog progress for issues closed through the app.
 
     The denominator is the union of issues still open in the store and issues
     whose latest landed state action is an issue close. A later issue reopen

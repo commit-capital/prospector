@@ -11,7 +11,7 @@ export function IssueFlyout() {
   const { issue, close } = useIssueFlyout();
   const { issueUrl } = useRepoMeta();
   const [maximized, setMaximized] = useState(false);
-  const { width, startResize } = useResizableWidth("cockpit-flyout-width", 640);
+  const { width, startResize } = useResizableWidth("app-flyout-width", 640);
 
   useEffect(() => {
     if (issue == null) return;

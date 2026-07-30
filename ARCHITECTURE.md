@@ -1,7 +1,7 @@
 # Architecture — the data layer
 
-How a fact gets from GitHub into the store and out to a cockpit request. This is
-the part that isn't obvious from any single file: the SQL store, the cockpit's
+How a fact gets from GitHub into the store and out to an API request. This is
+the part that isn't obvious from any single file: the SQL store, the app's
 in-memory snapshot, and the live sweep. For *what the system does* and the
 trust model see `README.md` and `CLAUDE.md`; for the phase run-commands see
 `pipeline/workflows/README.md`. This doc is the map of *where state lives and how
@@ -11,7 +11,7 @@ than restating them.
 ## One picture
 
 ```
- GitHub ──INGEST/phases──►  SQL store  ──watermark sync──►  cockpit snapshot  ──►  /api/* reads
+ GitHub ──INGEST/phases──►  SQL store  ──watermark sync──►  app snapshot  ──►  /api/* reads
    ▲    ▲                  (storekit)     (data.py)          (in-memory dicts)
    │    │ live sweep            │
    │    └ (freshness_live) ─────┤  persists PR closed/merged/mergeable
@@ -34,7 +34,7 @@ never parsed back**.
   issues / threat` ride in a JSON `data` column alongside mirror
   columns and a `saved_at` write-stamp), a `runs` ledger, singleton `registries`
   rows (durable threat blocklist + incident log, action items, the live-sweep
-  timestamp), and the cockpit's own `activity` and `chat_messages` tables. Issues
+  timestamp), and the app's own `activity` and `chat_messages` tables. Issues
   add `issues` / `issue_clusters`.
 - **Backend selection** (`storekit.resolve_url`): an explicit `--store DIR`
   (tests, CLI) → `sqlite:///DIR/store.db`; else `TRIAGE_STORE_URL` (a shared
@@ -51,7 +51,7 @@ never parsed back**.
   `is_current()` is the single check, no manual invalidation. The row's `saved_at`
   column is a separate write-stamp that drives the watermark sync below.
 
-## 2. The cockpit reads from an in-memory snapshot
+## 2. The app reads from an in-memory snapshot
 
 `app/backend/data.py` is the read side. It never does per-request DB
 I/O — every board/list read serves from module-level dicts (`_prs`, `_clusters`,
@@ -92,12 +92,12 @@ reading the store, not a per-machine cache:
   `sweep()` → `persist_live()` writes divergent `meta.state` (open/closed/merged)
   and `signals.mergeable` via `model.Pr.record_live_state`. The executor's own
   merge/close/reopen persist through the same method.
-- **Cadence:** on cockpit launch when the last sweep is missing or older than
+- **Cadence:** on app launch when the last sweep is missing or older than
   `PROSPECTOR_LIVE_TTL_MIN` (default 60), and on the manual "Refresh live state"
   button. The `live_sweep` singleton row records when it last ran — shared, so one
-  operator's sweep gates every cockpit's launch re-sweep and drives the
+  operator's sweep gates every instance's launch re-sweep and drives the
   "live as of …" UI.
-- This is why a PR shown as closed/merged in the cockpit can be fresher than the
+- This is why a PR shown as closed/merged in the app can be fresher than the
   last phase run: the sweep moved it ahead of INGEST, and the next INGEST simply
   re-confirms the same `meta.state`.
 

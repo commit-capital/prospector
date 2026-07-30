@@ -1,4 +1,4 @@
-// Typed client for the cockpit backend.
+// Typed client for the app backend.
 
 import { markReachable, isProxyDown } from "./health";
 
@@ -482,7 +482,7 @@ export interface VerifyDetail {
 export type VerifyFault = "pr" | "system" | "judgment" | null;
 
 /** A PR's sandbox-verification queue state (the verify_request section):
- *  queued from any cockpit, run by the verification worker on the sandbox
+ *  queued from any app, run by the verification worker on the sandbox
  *  machine, parked as waiting-for-base while the runner has no usable pinned
  *  base (retried, bounded), finished as done / error / cancelled. */
 export interface VerifyRequest {
@@ -596,7 +596,7 @@ async function get<T>(url: string): Promise<T> {
   return r.json();
 }
 
-// --- GitHub Issues, folded into the cockpit (#192) ---
+// --- GitHub Issues, folded into the app (#192) ---
 export interface IssuePR {
   pr: number; title?: string | null; how?: "explicit" | "fix-found" | "issue-ref" | "subsystem" | null;
   in_store?: boolean; state?: "open" | "merged" | "closed" | null;
@@ -710,7 +710,7 @@ export interface IssueLikelyFixedItem {
   url: string;
 }
 
-/** Where the cockpit's 🐞 Feedback button files issues, plus the operator login
+/** Where the app's 🐞 Feedback button files issues, plus the operator login
  *  to pre-assign and this checkout's branch/worktree for the issue's context
  *  footer. The frontend can't resolve repo or login on its own; a null repo
  *  means no feedback repo is configured and the button is hidden. */

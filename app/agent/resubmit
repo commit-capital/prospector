@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The cockpit agent's "resubmit a PR" path — author changes on a contributor's
+"""The app agent's "resubmit a PR" path — author changes on a contributor's
 fork branch and push them, AS THE OPERATOR.
 
 Most triage actions run as the configured bot. This one cannot: pushing to a
@@ -51,7 +51,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from pipeline.settings import REPO  # noqa: E402
 
-# Isolated per-PR clones live in the cockpit's gitignored cache, never in the
+# Isolated per-PR clones live in the app's gitignored cache, never in the
 # operator's working tree — a resubmit never disturbs the repo they're running in.
 WORKTREE_ROOT = REPO_ROOT / "app" / "cache" / "resubmit"
 # Fields we need off the PR to preflight and locate the fork's head branch.
@@ -233,7 +233,7 @@ def cmd_push(pr: int, message: str, dry_run: bool) -> int:
 def cmd_diff(pr: int) -> int:
     """Print the diff of the agent's edits in the prepared worktree, so the operator
     can review exactly what `push` will commit. The clone is a separate repo under
-    the cache, so a plain `git diff` in the cockpit's cwd can't reach it — this runs
+    the cache, so a plain `git diff` in the app's cwd can't reach it — this runs
     git in the worktree. Read-only: `add -N` only marks untracked files intent-to-add
     so a newly-created file appears in the diff (matching push's `add -A`); nothing is
     committed or pushed."""
@@ -329,7 +329,7 @@ def cmd_abort(pr: int) -> int:
 
 
 def _log(pr: int, meta: dict, new_sha: str, message: str, dry_run: bool) -> None:
-    """Append the resubmit to the cockpit activity log — the chat-agent write
+    """Append the resubmit to the app activity log — the chat-agent write
     path's audit hook. Best-effort: a logging failure must not fail a push that
     already went out. Recorded under the operator's identity (operator_env dropped
     the bot token), which is who actually pushed."""
@@ -343,7 +343,7 @@ def _log(pr: int, meta: dict, new_sha: str, message: str, dry_run: bool) -> None
 
 
 def _log_update(pr: int, info: dict, from_sha: str, to_sha: str | None, dry_run: bool) -> None:
-    """Append the branch update to the cockpit activity log, under the operator's
+    """Append the branch update to the app activity log, under the operator's
     identity — who actually merged. ``to_sha`` is None when GitHub accepted the merge
     but the new head wasn't readable in time. Best-effort, like `_log`: a logging
     failure must not fail a merge that already went out."""

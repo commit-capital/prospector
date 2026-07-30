@@ -2,7 +2,7 @@
 triage discovers (rotate a leaked secret, salvage a fix from a rejected PR,
 notify upstream) — distinct from per-PR merge/close dispositions. Stored in
 a durable store-level collection (store/action_items.json), surfaced in the
-cockpit. Mirrors the threats.json registry pattern."""
+app. Mirrors the threats.json registry pattern."""
 from pipeline import actions
 from pipeline.store import Store, ValidationError
 

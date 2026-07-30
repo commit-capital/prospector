@@ -45,7 +45,7 @@ function viewName(pathname: string): string {
     ?? VIEW_NAMES[VIEW_NAMES.length - 1][1];
 }
 
-// Labels which checkout this cockpit is serving — the git branch and worktree
+// Labels which checkout this app is serving — the git branch and worktree
 // dir the backend runs from — so multiple instances (one per worktree) are
 // tellable apart. Renders a full-width bar at the top of the page and sets the
 // tab title. The title leads with the worktree name (short, single-segment) so
@@ -208,7 +208,7 @@ function ThemeToggle() {
   const flip = () => {
     const next = theme === "dark" ? "light" : "dark";
     document.documentElement.dataset.theme = next;
-    localStorage.setItem("cockpit-theme", next);
+    localStorage.setItem("app-theme", next);
     setTheme(next);
   };
   return (

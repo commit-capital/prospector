@@ -1,4 +1,4 @@
-"""Cached read-side access for the Issue cockpit.
+"""Cached read-side access for the Issue app.
 
 The default Issues table uses a light snapshot with candidate PR arrays omitted,
 then hydrates only the visible page with full rows. Duplicate triage can opt into

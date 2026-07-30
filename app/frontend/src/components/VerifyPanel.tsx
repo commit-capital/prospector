@@ -132,7 +132,7 @@ function RequestStrip({ req, runner }: { req: VerifyRequest; runner: VerifyRunne
         <div>
           <div className="vb-headline">
             Queued for sandbox verification
-            {offline && <span className="chip chip-yellow sm" style={{ marginLeft: 8 }} title="No verification worker has beat recently, so the queue is not draining. Start the cockpit backend with TRIAGE_VERIFY_WORKER=1 on the sandbox machine.">⚠ runner offline</span>}
+            {offline && <span className="chip chip-yellow sm" style={{ marginLeft: 8 }} title="No verification worker has beat recently, so the queue is not draining. Start the app backend with TRIAGE_VERIFY_WORKER=1 on the sandbox machine.">⚠ runner offline</span>}
           </div>
           <div className="vb-detail">
             Waiting for the runner{req.source === "auto" && " · auto-picked"}
@@ -149,7 +149,7 @@ function RequestStrip({ req, runner }: { req: VerifyRequest; runner: VerifyRunne
         <div>
           <div className="vb-headline">
             Waiting for a sandbox base
-            {offline && <span className="chip chip-yellow sm" style={{ marginLeft: 8 }} title="No verification worker has beat recently, so the queue is not draining. Start the cockpit backend with TRIAGE_VERIFY_WORKER=1 on the sandbox machine.">⚠ runner offline</span>}
+            {offline && <span className="chip chip-yellow sm" style={{ marginLeft: 8 }} title="No verification worker has beat recently, so the queue is not draining. Start the app backend with TRIAGE_VERIFY_WORKER=1 on the sandbox machine.">⚠ runner offline</span>}
           </div>
           <div className="vb-detail">
             {req.error ?? "The runner has no usable pinned base yet"}. The worker

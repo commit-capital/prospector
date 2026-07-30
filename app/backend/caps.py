@@ -1,6 +1,6 @@
 """Capability detection.
 
-Under the org-admin trust model, the cockpit executes upstream as the
+Under the org-admin trust model, the app executes upstream as the
 configured GitHub App, NOT as
 the local login. So "can we merge / write upstream" is whether this machine can
 actually mint a bot token (executor.live_possible) — with none, every

@@ -6,7 +6,7 @@ comments), reopen, and squash-merge gate-clean PRs (merge_pr). Every write goes
 out under a real installation token minted by pipeline/get-bot-token.sh from
 the private-key path in TRIAGE_BOT_KEY_FILE. When no token can be minted, mint_bot_token()
 returns None and every execution — including merge — is forced to DRY-RUN, so
-the cockpit cannot post.
+the app cannot post.
 
 Merges are upstream squash-merges via merge_pr (gated by
 gates.merge_eligibility), not fork cherry-picks. The disposition path here
@@ -96,7 +96,7 @@ def live_possible() -> bool:
     refuse. Cached for the process's lifetime once probed — a fix made after
     that first probe (the key file appears, the app gets installed, a network
     blip clears) does not take effect until refresh_live() re-probes; the
-    cockpit's "retry live mode" action (POST /api/identities/refresh) is what
+    app's "retry live mode" action (POST /api/identities/refresh) is what
     calls it, since nothing else in the request path does."""
     global _live_possible
     if _live_possible is None:
@@ -153,7 +153,7 @@ def _reflect_state(n: int, *, state: str | None, merged: bool = False) -> None:
     """Record our action's effect on a PR's upstream state — open/closed/merged —
     durably in the shared store (meta.state via record_live_state, so every operator
     sees it without waiting for the next live sweep or INGEST) and refresh this
-    cockpit's snapshot so it reflects the change instantly. A merge outranks a raw
+    app's snapshot so it reflects the change instantly. A merge outranks a raw
     state, matching GitHub's own merged→closed. A no-op write when the PR has no
     store row — a brand-new PR we closed without ever ingesting has nothing to
     update."""
@@ -167,7 +167,7 @@ def _reflect_state(n: int, *, state: str | None, merged: bool = False) -> None:
 def _preflight(n: int, rec: Pr | None, *, check_head: bool,
                check_mergeable: bool = False,
                fail_closed: bool = False) -> tuple[bool, str]:
-    """Re-check the PR's live state right before a write (#11). The cockpit acts
+    """Re-check the PR's live state right before a write (#11). The app acts
     on snapshotted data; by now the PR may have been merged, closed, its head
     moved, or (for a merge) developed conflicts. Returns (ok, message).
 
@@ -595,7 +595,7 @@ def merge_pr(n: int, method: str = "squash", *, dry_run: bool, reason: str | Non
     supplies `reason`; the reason is logged durably to the store as the verdict's
     override (Pr.log_security_override) before the merge executes, so the pass is
     auditable. RED always blocks. With no configured bot key this is forced to
-    dry-run (no token to mint), so the cockpit cannot merge.
+    dry-run (no token to mint), so the app cannot merge.
 
     A live merge additionally passes the deterministic compile preflight:
     pipeline/compile_preflight.py runs the profile's verify.compile_cmd over

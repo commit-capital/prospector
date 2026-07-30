@@ -1,4 +1,4 @@
-"""Read-only schema browser backing the cockpit's Tables tab: row counts,
+"""Read-only schema browser backing the app's Tables tab: row counts,
 preview, JSON-blob expansion, pagination, sort, and filter."""
 from __future__ import annotations
 

@@ -2,8 +2,8 @@
 whose analysis is missing or stale, bundle their evidence, run the canonical
 issue-ANALYZE prompt through locked-down headless claudes (several batches at
 once), and commit the verdicts back to the store. The agentic ANALYZE path —
-run from the cockpit Control tab (the `issue-analyze` job) or the CLI. Progress
-prints one line per step; the cockpit streams it as SSE.
+run from the app Control tab (the `issue-analyze` job) or the CLI. Progress
+prints one line per step; the app streams it as SSE.
 
 Store I/O stays on the calling thread — the pending scan and bundle build happen
 once up front, and each finished batch's verdicts are applied serially as it

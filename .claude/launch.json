@@ -2,13 +2,13 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "cockpit",
+      "name": "app",
       "runtimeExecutable": "bash",
       "runtimeArgs": ["-c", "set -a; [ -f .env ] && source .env; set +a; exec uv run uvicorn app.backend.app:app --port \"${API_PORT:-8787}\" --log-level warning"],
       "port": 8788
     },
     {
-      "name": "cockpit-dev",
+      "name": "app-dev",
       "runtimeExecutable": "bash",
       "runtimeArgs": ["-c", "FRONTEND=app/frontend; source frontend-toolchain.sh && exec \"${PNPM[@]}\" --dir \"$FRONTEND\" dev"],
       "port": 5173

@@ -1,4 +1,4 @@
-// Single source of truth for what the cockpit's shorthand means. Every coded
+// Single source of truth for what the app's shorthand means. Every coded
 // term the UI shows — dispositions, cluster states, safety verdicts, lanes,
 // columns, bulk actions — has one plain-language explanation here, surfaced to
 // the user through <InfoTip>. The enum maps are typed Record<EnumType, …> so the

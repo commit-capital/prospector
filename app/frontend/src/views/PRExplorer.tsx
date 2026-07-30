@@ -22,7 +22,7 @@ const SPEC_PARAM = "spec";
 const Q_PARAM = "q";
 type PageSizeOption = 50 | 100 | 200 | "all";
 const PAGE_SIZE_OPTIONS: PageSizeOption[] = [50, 100, 200, "all"];
-const PAGE_SIZE_KEY = "cockpit-explorer-page-size";
+const PAGE_SIZE_KEY = "app-explorer-page-size";
 // Exceeds the open-PR corpus (~3k) and the backend's MAX_PR_QUERY_LIMIT, so
 // "All" always returns every matching row in a single page.
 const ALL_ROWS_LIMIT = 5000;

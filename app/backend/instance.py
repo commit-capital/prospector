@@ -1,6 +1,6 @@
 """Which checkout is this backend serving.
 
-When several cockpits run at once — one per git worktree — their tabs are
+When several app instances run at once — one per git worktree — their tabs are
 otherwise identical. This reports the branch and worktree directory name so the
 frontend can label the tab and let an operator tell instances apart. Git is
 shelled out once and cached; the answer can't change without restarting the

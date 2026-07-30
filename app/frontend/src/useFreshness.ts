@@ -11,7 +11,7 @@ export interface FreshnessState {
 
 /** On mount (and whenever the PR set changes) kick off a background live-state
  *  refresh for the given PRs and report which ones have diverged from the
- *  cockpit's snapshot (#25). Read-only; one batched request. Exposes `refresh()`
+ *  app's snapshot (#25). Read-only; one batched request. Exposes `refresh()`
  *  so a caller can force a re-check after landing a fix (e.g. a re-analysis run
  *  that catches the stored head up to what diverged). */
 export function useFreshness(prs: number[]): FreshnessState {

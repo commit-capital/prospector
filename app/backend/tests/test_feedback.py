@@ -15,7 +15,7 @@ def test_target_uses_configured_repo(monkeypatch):
     t = feedback.target()
     assert t["repo"] == "someone/elsewhere"
     assert t["assignee"] == "tester"
-    assert t["labels"] == ["cockpit"]
+    assert t["labels"] == ["app"]
     assert t["branch"] == "feat/x"
     assert t["worktree"] == "wt"
     assert set(t) == {"repo", "assignee", "labels", "branch", "worktree"}

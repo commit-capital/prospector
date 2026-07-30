@@ -1,4 +1,4 @@
-"""The cockpit's sandbox-verification queue: the queue/dequeue pre-checks and
+"""The app's sandbox-verification queue: the queue/dequeue pre-checks and
 state machine, runner liveness, the worker's pickup/orphan-recovery behavior,
 and the request view the PR detail pane renders."""
 from __future__ import annotations

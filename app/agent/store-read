@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The cockpit agent's read window into the pipeline store.
+"""The app agent's read window into the pipeline store.
 
 The store is a SQL database (a shared SQL database via TRIAGE_STORE_URL,
 or a local SQLite default) — not files on disk. The agent's file tools
@@ -7,9 +7,9 @@ or a local SQLite default) — not files on disk. The agent's file tools
 it reads a PR's or cluster's recorded sections (meta / signals / summary /
 cluster / analysis / security / threat / drift / resolution), an issue's
 recorded sections (meta / summary / repro / cluster / analysis / links /
-resolution / fix_scan), the threat registry, and the cockpit activity log
+resolution / fix_scan), the threat registry, and the app activity log
 (executed upstream actions). It reads through the validated store accessors
-(store.Store, issue_store.IssueStore) and the cockpit's activity module — the
+(store.Store, issue_store.IssueStore) and the app's activity module — the
 ONLY sanctioned readers — and prints the record as indented JSON.
 
 Usage:
@@ -23,7 +23,7 @@ Usage:
     app/agent/store-read activity issue <N>      # executed actions on one issue
     app/agent/store-read activity recent         # the recent action feed
 
-The `activity` subcommand reads the cockpit's append-only activity log — the
+The `activity` subcommand reads the app's append-only activity log — the
 record of what was actually *executed* upstream (closes, merges, reopens,
 comments, and by whom), as opposed to the pipeline's proposed dispositions in
 the `analysis` sections. `pr`/`issue` list landed actions only (dry-runs and
@@ -33,7 +33,7 @@ dry-run previews, capped by `--limit`.
 A record (or requested section) the pipeline hasn't produced yet prints `null`
 with a note on stderr, so the agent can report "not analyzed yet" instead of
 inventing one. Reuses pipeline/store.py for the single source of truth on the
-store shape, mirroring `uncluster`; it runs under the cockpit's uv env, which is
+store shape, mirroring `uncluster`; it runs under the app's uv env, which is
 where every allowlisted agent command runs.
 """
 from __future__ import annotations
@@ -82,7 +82,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("threats", parents=[common], help="read the durable threat registry")
 
     act = sub.add_parser("activity", parents=[common],
-                         help="read executed actions from the cockpit activity log")
+                         help="read executed actions from the app activity log")
     act.add_argument("target", choices=("pr", "issue", "recent"),
                      help="pr/issue: landed actions on one PR/issue; recent: the raw feed")
     act.add_argument("number", type=int, nargs="?",
@@ -94,7 +94,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.what == "activity":
         # The activity log lives in the same DB as the store but is read through
-        # the cockpit's activity module, which resolves its engine from
+        # the app's activity module, which resolves its engine from
         # settings.STORE_URL — point that at the --store root when given.
         if args.store:
             from pipeline import settings
@@ -109,7 +109,7 @@ def main(argv: list[str] | None = None) -> int:
                   else activity.for_issue(args.number))
         if not events:
             print(f"store-read: no executed actions recorded for {args.target} "
-                  f"#{args.number} (nothing has been done to it through the cockpit)",
+                  f"#{args.number} (nothing has been done to it through the app)",
                   file=sys.stderr)
         print(json.dumps(events, indent=2, sort_keys=True))
         return 0

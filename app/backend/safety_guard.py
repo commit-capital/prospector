@@ -1,4 +1,4 @@
-"""Subprocess guard for the cockpit backend — two enforced layers.
+"""Subprocess guard for the app backend — two enforced layers.
 
 `run()` is the read-only path for the backend's own shell-outs (reads run as the
 operator's local `gh` login). It:
@@ -8,7 +8,7 @@ operator's local `gh` login). It:
     gh issue create/edit/close, gh api with -X POST/PATCH/DELETE/PUT,
     git push to the upstream remote, curl writes to api.github.com)
 
-so the cockpit can never write to the upstream repo as the operator's local
+so the app can never write to the upstream repo as the operator's local
 `gh` login.
 
 Upstream writes go out only through the sanctioned bot paths below —
@@ -17,7 +17,7 @@ Upstream writes go out only through the sanctioned bot paths below —
 empty token would fall back to the default login, so we refuse) and inject it
 via GH_TOKEN for that one subprocess. On a machine where no bot token
 can be minted, the executor obtains no token and these paths are unreachable —
-the cockpit stays effectively read-only.
+the app stays effectively read-only.
 """
 from __future__ import annotations
 
@@ -73,7 +73,7 @@ def run(argv: list[str], *, timeout: int = 120, text: bool = True) -> subprocess
 # ---------------------------------------------------------------------------
 # Sanctioned bot write path (M6).
 #
-# The cockpit may post to the upstream repo ONLY as the configured bot,
+# The app may post to the upstream repo ONLY as the configured bot,
 # ONLY for close + comment actions, and ONLY with a real installation token.
 # This mirrors /resolve-pr-cluster. The hard guarantees:
 #   * a non-empty token is REQUIRED — an empty token would make `gh` fall back
@@ -81,7 +81,7 @@ def run(argv: list[str], *, timeout: int = 120, text: bool = True) -> subprocess
 #   * the token is injected via GH_TOKEN for that one subprocess only.
 #   * only an allowlist of write ops is permitted; merge is never allowed.
 # On a machine with no readable configured bot key the executor obtains no token, so
-# this path is unreachable and the cockpit stays effectively read-only.
+# this path is unreachable and the app stays effectively read-only.
 # ---------------------------------------------------------------------------
 BOT_WRITE_ALLOW = [
     re.compile(r"^gh\s+pr\s+comment\s+\d+\b"),
@@ -132,7 +132,7 @@ def bot_merge_run(argv: list[str], token: str, *, timeout: int = 120) -> subproc
     """Sanctioned UPSTREAM MERGE as the configured bot — the one write that
     is NOT a comment/close. Requires a non-empty token and matches only `gh pr
     merge <n>`. With no configured bot key the executor never mints a token, so
-    this path is unreachable and the cockpit cannot merge."""
+    this path is unreachable and the app cannot merge."""
     if not token or not token.strip():
         raise WriteAttemptBlocked(f"refusing to merge without a {BOT_LOGIN} token (would fall back to default login)")
     if not argv or argv[0].rsplit("/", 1)[-1] != "gh":

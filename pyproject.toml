@@ -67,9 +67,9 @@ target-version = "py314"
 # Pyflakes (F: dead code, undefined names) + pycodestyle (E/W) + pyupgrade (UP:
 # modernizations, several of which enforce conventions pyright can't — no quoted
 # annotations, `X | None` over Optional) + N999, the invalid-module-name guard
-# that keeps anyone from re-introducing a non-importable package directory like
-# the old `review-cockpit/`. Naming rules beyond N999 stay off — they force
-# awkward renames (exception/test/alias names) for little value.
+# that keeps every package directory importable — a hyphenated name is not.
+# Naming rules beyond N999 stay off — they force awkward renames
+# (exception/test/alias names) for little value.
 select = ["F", "E", "W", "UP", "N999"]
 ignore = [
   "E501",            # line too long — let the formatter/editor own wrapping

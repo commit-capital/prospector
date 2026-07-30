@@ -1,4 +1,4 @@
-"""Umbrella CLI for the triage pipeline + cockpit.
+"""Umbrella CLI for the triage pipeline + app.
 
 `prospector <command>` dispatches to the existing tools: each handler
 lazily imports its tool and forwards the remaining argv to the tool's main(),
@@ -17,7 +17,7 @@ USAGE = """\
 usage: prospector <command> [args]
 
 commands:
-  serve            run the cockpit (API + built frontend); --dev runs the hot-reload dev servers
+  serve            run the app (API + built frontend); --dev runs the hot-reload dev servers
   ingest           refresh open PRs + issue links into the store
   threat-scan      deterministic threat scan over cached diffs
   status           regenerate STATUS.md from the store
@@ -30,7 +30,7 @@ commands:
 
 
 def _serve(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(prog="prospector serve", description="Run the cockpit server.")
+    parser = argparse.ArgumentParser(prog="prospector serve", description="Run the app server.")
     parser.add_argument("--dev", action="store_true", help="run the hot-reload dev servers (uvicorn --reload + Vite)")
     parser.add_argument("--port", type=int, default=None, help="API port (default: API_PORT from .env, else 8787)")
     args = parser.parse_args(argv)

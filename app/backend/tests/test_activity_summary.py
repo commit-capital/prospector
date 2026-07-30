@@ -61,7 +61,7 @@ def test_since_until_bounds_inclusive():
 def test_summarize_buckets_by_operator_local_day_not_utc():
     """A landed action stamped just after UTC midnight buckets on the operator's
     local day, so the per-day actions chart shows it where the operator saw it —
-    matching firehose_stats and the local-time timestamp the cockpit renders."""
+    matching firehose_stats and the local-time timestamp the app renders."""
     pacific = timezone(timedelta(hours=-8))
     # 00:58 UTC on the 26th is 16:58 on the 25th in Pacific.
     events = [ev("2026-06-26T00:58:43+00:00", "merge", pr=3800, status="merged")]

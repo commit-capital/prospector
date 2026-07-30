@@ -119,7 +119,7 @@ def main() -> int:
     target_repo = configured_value(project_dir, "TRIAGE_REPO")
 
     if GH_API_WRITE.search(command):
-        deny("Direct mutating gh api calls are outside the cockpit write boundary.")
+        deny("Direct mutating gh api calls are outside the app write boundary.")
         return 0
 
     is_direct_write = GH_WRITE.search(command) or GIT_PUSH.search(command)
@@ -130,7 +130,7 @@ def main() -> int:
     ):
         target = target_repo or "the unconfigured triage target"
         deny(
-            f"Direct writes to {target} are blocked; use the cockpit's "
+            f"Direct writes to {target} are blocked; use the app's "
             "sanctioned, bot-identified write path."
         )
     return 0

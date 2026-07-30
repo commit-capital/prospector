@@ -1,11 +1,11 @@
-"""GitHub Issues, folded into the cockpit (#192).
+"""GitHub Issues, folded into the app (#192).
 
 A read-only projection over the issue store (issue_triage/store/): the migrated
 issues, their dedup clusters, pain, repro grades, and the issue<->PR candidate
 links. Assembles the rows + the curated close-as-dup worklist the Issues view
 shows, and cross-links each issue to the PRs that may address it.
 
-Writes (close-as-dup) go through the cockpit executor as the configured bot, gated by
+Writes (close-as-dup) go through the app executor as the configured bot, gated by
 issue_gates.close_dup_eligibility (via close_dup_gate) and logged like every other
 upstream write (executor.close_issue).
 """
@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from issue_triage.issue_model import Issue, IssueCluster
 
 # The issue store root. None resolves the shared store (TRIAGE_STORE_URL), the
-# same source the rest of the cockpit reads; tests override it with a seeded tmp
+# same source the rest of the app reads; tests override it with a seeded tmp
 # path, which an explicit root maps to a local SQLite file.
 STORE_ROOT: Path | None = None
 _synced_store_root: Path | None = None
@@ -40,14 +40,14 @@ def _store():
 
 
 def cached_issues() -> dict[int, Issue]:
-    """Every issue in the store from the cockpit's cached light snapshot
+    """Every issue in the store from the app's cached light snapshot
     (candidate PR links omitted) — for whole-store scans that need no links."""
     _sync_store_root()
     return issue_data.issues()
 
 
 def cached_runs() -> list[storekit.RunRecord]:
-    """The issue pipeline's runs ledger, oldest first, from the cockpit's
+    """The issue pipeline's runs ledger, oldest first, from the app's
     cached snapshot."""
     _sync_store_root()
     return issue_data.runs()
@@ -64,7 +64,7 @@ def _sync_store_root() -> None:
 
 def reflect_issue_state(n: int, state: str, state_reason: str | None = None) -> None:
     """Record our own issue state change and its reason into the shared issue store
-    and refresh this cockpit's snapshot, so the Issues view and close-as-dup
+    and refresh this app's snapshot, so the Issues view and close-as-dup
     worklist reflect it instantly. The issue-side analog of the PR executor's
     _reflect_state. A no-op when the issue has no store row."""
     st = _store()
@@ -81,7 +81,7 @@ def issue_state(n: int) -> str | None:
 
 
 def _store_pr_states() -> dict[int, str]:
-    """PR number -> state (open/merged/closed) for every PR in the cockpit's PR
+    """PR number -> state (open/merged/closed) for every PR in the app's PR
     store. The store keeps merged/closed PRs it once saw open, so most resolve here;
     a candidate PR is absent only when it merged/closed before any ingest captured
     it open, and its /api/prs/{n} detail would then 404. The one seam tests stub to

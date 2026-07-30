@@ -6,8 +6,8 @@ import { dirname, resolve } from 'node:path'
 // Ports come from a per-worktree `.env` at the repo root, so multiple checkouts
 // can run side by side without colliding. Defaults preserve the original
 // single-checkout setup (Vite 5173, API 8787).
-const cockpitRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const repoRoot = resolve(cockpitRoot, '..')
+const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const repoRoot = resolve(appRoot, '..')
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, repoRoot, '')

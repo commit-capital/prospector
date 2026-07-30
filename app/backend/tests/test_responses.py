@@ -454,7 +454,7 @@ class TestAck:
         """The point of storing acks centrally: B sees what A cleared."""
         store = self._seed(monkeypatch, tmp_path, {42: {"pr": 42, "replied": True, "last_response_at": AFTER}})
         store.save_response_acks({"acks": {"42": {"at": LATER, "by": "Taylor"}}})
-        monkeypatch.setattr(responses, "_acks_cache", None)  # B's cockpit, cold cache
+        monkeypatch.setattr(responses, "_acks_cache", None)  # B's app, cold cache
         assert responses.for_pr(42)["ack"] == {"at": LATER, "by": "Taylor"}
 
     def test_store_read_failure_shows_signals_unacked(self, monkeypatch, tmp_path):

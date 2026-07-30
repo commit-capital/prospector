@@ -1,13 +1,13 @@
 """Single source of truth for change classification and diff size splitting.
 
-The cockpit shows the *real* surface area of a change: the non-test split flags
+The app shows the *real* surface area of a change: the non-test split flags
 PRs that delete more test code than they add (#17, #22), and the effective-LOC
 breakdown strips machine-generated artifacts so a huge raw diffstat reads as
 the lines a human actually wrote and a reviewer reads.
 
 The test-path matcher and the diff→paths parse live in `pipeline/diffpaths.py`
 (the pipeline's security driver classifies risk tiers with them too); this
-module re-exports them for the cockpit. Artifact classification reads the
+module re-exports them for the app. Artifact classification reads the
 active repository profile's `artifact_rules`; the generic default covers
 lockfiles, locale bundles, vendored/build output, and generated code.
 """
