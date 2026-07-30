@@ -509,8 +509,15 @@ def test_has_bot_comment_scopes_by_substring(monkeypatch):
     the given reference, so a close-fixed comment (#PR) and a close-dup comment
     (#canonical) on the same thread do not suppress each other. Matching happens in
     Python, so a body containing quotes or backslashes is searched correctly."""
+    import json
+
+    monkeypatch.setattr(executor, "BOT_LOGIN", "triagebot")
+
     class _R:
-        stdout = '["fixed by #900", "closing as a dup of \\"#42\\" \\\\ x"]'
+        stdout = "\n".join(json.dumps(row) for row in [
+            {"login": "triagebot[bot]", "body": "fixed by #900"},
+            {"login": "triagebot[bot]", "body": 'closing as a dup of "#42" \\ x'},
+        ])
 
     monkeypatch.setattr(executor, "run", lambda argv, **kw: _R())
     assert executor._has_bot_comment(11, "#900")
