@@ -108,10 +108,13 @@ def check(prs: list[int]) -> dict:
 
 # --- persist observed drift into the shared store --------------------------
 def persist_live(live: dict[int, dict], committed: dict[int, Pr]) -> list[int]:
-    """Write each PR's live state (open/closed/merged), mergeable verdict, diffstat,
-    and has_tests into the shared store when they diverge from the committed values
-    in `committed` (the snapshot). Skips PRs with no store row (never ingested — nothing
-    to update). Returns the PRs actually written, sorted."""
+    """Write each PR's live state and current-head signals into the shared store.
+
+    CI, mergeability, diffstat, and test presence are persisted only when the
+    fetched head matches the committed head. Missing live values preserve the
+    stored verdict. PRs with no store row are skipped. Returns the PRs actually
+    written, sorted.
+    """
     store = data.store()
     changed: list[int] = []
     with store.batch():
@@ -121,20 +124,26 @@ def persist_live(live: dict[int, dict], committed: dict[int, Pr]) -> list[int]:
             sig = (pr.signals if pr else None) or {}
             state = _live_state(lv)
             state_arg = state if (state and state != (pr.state if pr else None)) else None
-            live_mrg = _LIVE_MERGEABLE.get(lv.get("mergeable") or "")
-            mergeable_arg = (live_mrg if (live_mrg is not None
-                                          and live_mrg != (pr.mergeable if pr else None)) else None)
-            live_ds = lv.get("diffstat")
-            diffstat_arg = live_ds if (live_ds is not None and live_ds != sig.get("diffstat")) else None
-            live_ht = lv.get("has_tests")
-            has_tests_arg = live_ht if (live_ht is not None and live_ht != sig.get("has_tests")) else None
-            if (state_arg is None and mergeable_arg is None
+            same_head = pr is not None and lv.get("head") == pr.head_sha
+            live_ci = lv.get("ci") if same_head else None
+            ci_arg = live_ci if live_ci is not None and live_ci != sig.get("ci") else None
+            live_mrg = _LIVE_MERGEABLE.get(lv.get("mergeable") or "") if same_head else None
+            mergeable_arg = (live_mrg if live_mrg is not None
+                              and live_mrg != (pr.mergeable if pr else None) else None)
+            live_ds = lv.get("diffstat") if same_head else None
+            diffstat_arg = (live_ds if live_ds is not None
+                            and live_ds != sig.get("diffstat") else None)
+            live_ht = lv.get("has_tests") if same_head else None
+            has_tests_arg = (live_ht if live_ht is not None
+                             and live_ht != sig.get("has_tests") else None)
+            if (state_arg is None and ci_arg is None and mergeable_arg is None
                     and diffstat_arg is None and has_tests_arg is None):
                 continue
             if store.load_pr(n) is None:
                 continue
-            store.edit_pr(n).record_live_state(state=state_arg, mergeable=mergeable_arg,
-                                               diffstat=diffstat_arg, has_tests=has_tests_arg)
+            store.edit_pr(n).record_live_state(
+                state=state_arg, ci=ci_arg, mergeable=mergeable_arg,
+                diffstat=diffstat_arg, has_tests=has_tests_arg)
             changed.append(n)
     return sorted(changed)
 

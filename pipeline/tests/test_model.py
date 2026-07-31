@@ -520,6 +520,21 @@ def test_record_live_state_persists_diffstat_and_has_tests(tmp_path):
     assert sig["greptile"] == 5              # other signals untouched
 
 
+def test_record_live_state_persists_ci(tmp_path):
+    rec = _base_pr(16, "h1")
+    rec["signals"] = {"greptile": 5, "mergeable": True,
+                      "checked_at": "2026-06-10T00:00:00+00:00",
+                      "against_head_sha": "h1"}
+    st = _seed(tmp_path, rec)
+
+    st.edit_pr(16).record_live_state(ci="passing")
+
+    sig = st.load_pr(16).section("signals")
+    assert sig["ci"] == "passing"
+    assert sig["against_head_sha"] == "h1"
+    assert sig["greptile"] == 5
+
+
 def test_cluster_set_members_reconciles(tmp_path):
     st = _seed_cluster(tmp_path, [1, 2, 3])
     cl = st.edit_cluster(7)
