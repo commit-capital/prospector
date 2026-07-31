@@ -127,9 +127,13 @@ def test_curated_writes_unlocked_with_a_token_but_never_merge():
     # With a token the curated upstream writes are added on top of the reads...
     allowed = _flag(chat.isolation_flags(True), "--allowedTools")
     for sub in ("gh pr edit", "gh pr comment", "gh pr close", "gh pr reopen", "gh pr review",
-                "gh issue create", "gh issue close", "gh issue reopen",
+                "gh issue create", "gh issue reopen",
                 "gh issue comment", "gh issue edit", "gh run rerun"):
         assert f"Bash({sub}:*)" in allowed
+    # Issue closes have one executor-backed helper, so they land in Activity;
+    # direct gh close is not reachable from the embedded agent.
+    assert "Bash(prospector_app/agent/close-issue:*)" in allowed
+    assert "Bash(gh issue close:*)" not in allowed
     # ...the reads are still present...
     assert "Bash(gh pr view:*)" in allowed
     # ...but merge is NEVER unlocked here (it stays on the executor's gated path),
@@ -141,6 +145,15 @@ def test_curated_writes_unlocked_with_a_token_but_never_merge():
     # merge, so it runs as the operator through `resubmit <pr> update`.
     assert "gh pr update-branch" not in allowed
     assert "Bash(prospector_app/agent/resubmit:*)" in allowed
+
+
+def test_issue_close_helper_requires_token_and_is_executable():
+    read_only = _flag(chat.isolation_flags(False), "--allowedTools")
+    writable = _flag(chat.isolation_flags(True), "--allowedTools")
+    assert "prospector_app/agent/close-issue" not in read_only
+    assert "Bash(prospector_app/agent/close-issue:*)" in writable
+    script = chat.APP_ROOT / "agent" / "close-issue"
+    assert script.exists() and os.access(script, os.X_OK)
 
 
 def test_local_self_writes_are_allowlisted_and_executable():
@@ -269,6 +282,8 @@ def test_context_documents_upstream_writes_and_the_merge_limit():
     assert "{bot}" not in sp and "{repo}" not in sp
     assert "gh pr edit" in sp
     assert "gh run rerun" in sp
+    assert "prospector_app/agent/close-issue" in sp
+    assert "never direct\n  `gh issue close`" in sp
     # Updating a stale PR's branch is documented as the operator-identity path, so
     # the agent doesn't look for a bot command that isn't allowlisted.
     assert "resubmit <pr> update" in sp

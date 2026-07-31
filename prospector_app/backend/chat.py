@@ -14,8 +14,10 @@ issue/general) by default, or an explicit `chat_id` for an operator-named sessio
 
 It is mostly a reader, but when a bot token can be minted it may also
 run a curated set of upstream writes — on PRs (edit/comment/close/reopen/review),
-issues (create/close/reopen/comment/edit), and workflow runs (rerun) — AS the bot,
-after the operator confirms in chat — see _GH_WRITE_ALLOW / isolation_flags. Two
+issues (create/reopen/comment/edit), and workflow runs (rerun) — AS the bot,
+after the operator confirms in chat — see _GH_WRITE_ALLOW / isolation_flags.
+Issue closes run through the executor-backed close-issue helper so each attempt
+is gated and recorded in Activity. Two
 write paths run AS THE OPERATOR instead, each through a helper script that drops the
 bot token: "resubmit" (_RESUBMIT_ALLOW), which both authors a change on a
 contributor's fork branch and pushes it over the operator's ssh key — a GitHub App
@@ -45,8 +47,9 @@ behave like a coding agent. The lockdown (see isolation_flags):
     allowlist. (NOT `plan`: plan mode is a *coding* affordance — propose-a-plan-
     then-await-approval — which produced the "permissions / plan" chatter.)
   - --allowedTools Read,Grep,Glob + read-only `gh` (see _GH_ALLOW) + the helper
-    scripts, plus the curated upstream PR + issue writes (_GH_WRITE_ALLOW) when a
-    bot token is available; --disallowedTools <everything else> → dontAsk denies
+    scripts, plus the curated upstream PR + issue writes (_GH_WRITE_ALLOW and
+    _ISSUE_CLOSE_ALLOW) when a bot token is available; --disallowedTools
+    <everything else> → dontAsk denies
     any command not on the allowlist.
 
 Context comes from two dedicated, agent-facing sources (NOT the dev CLAUDE.md):
@@ -128,7 +131,9 @@ _GH_ALLOW = [
 # a moved base branch routinely carries into the merge, so that runs as the operator
 # through `resubmit <pr> update` (_RESUBMIT_ALLOW). The agent is
 # instructed (agent/context.md) to confirm with the operator before each write and to use
-# `gh pr edit` for the body/title only. dontAsk denies anything not listed here.
+# `gh pr edit` for the body/title only. Issue close is absent: it runs through
+# _ISSUE_CLOSE_ALLOW so the executor records Activity. dontAsk denies anything
+# not listed here.
 _GH_WRITE_ALLOW = [
     "Bash(gh issue create:*)",
     "Bash(gh pr edit:*)",
@@ -136,12 +141,18 @@ _GH_WRITE_ALLOW = [
     "Bash(gh pr close:*)",
     "Bash(gh pr reopen:*)",
     "Bash(gh pr review:*)",
-    "Bash(gh issue close:*)",
     "Bash(gh issue reopen:*)",
     "Bash(gh issue comment:*)",
     "Bash(gh issue edit:*)",
     "Bash(gh run rerun:*)",
 ]
+
+# The agent's issue-close path calls the same executor operation as the Issues UI,
+# including its live gate, configured-bot write, store reflection, and Activity
+# append. Direct `gh issue close` is not allowlisted, making this helper the only
+# close command the embedded agent can execute. It is unlocked only with a bot
+# token because it performs a live upstream write.
+_ISSUE_CLOSE_ALLOW = ["Bash(prospector_app/agent/close-issue:*)"]
 
 # The agent's one self-write: persist a learning to its committed memory. Same
 # allowlisted-Bash mechanism as gh-issue-create (MCP is unreliable in headless
@@ -254,7 +265,8 @@ def isolation_flags(can_write: bool) -> list[str]:
                *_FILE_ISSUE_ALLOW]
     disallowed = list(_DISALLOWED_TOOLS)
     if can_write:
-        allowed += [*_GH_WRITE_ALLOW, *_RESUBMIT_ALLOW, "Edit", "Write"]
+        allowed += [*_GH_WRITE_ALLOW, *_ISSUE_CLOSE_ALLOW, *_RESUBMIT_ALLOW,
+                    "Edit", "Write"]
         # The resubmit path authors real code edits, so Edit/Write come off the
         # deny list. They stay filesystem-wide (claude can't path-scope them), so
         # the agent is instructed (agent/context.md) to edit only inside the

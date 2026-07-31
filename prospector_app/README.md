@@ -52,10 +52,10 @@ The agent drafts the exact upstream change in chat and acts only after the
 operator confirms. With no bot key it has no path that writes to `TRIAGE_REPO`,
 but its local helpers and the configured feedback-repository path remain
 available. `--permission-mode dontAsk` silently denies every command outside the
-allowlist. Bot-authenticated chat writes and feedback issue filing are not
-recorded in the executor activity log; resubmit pushes and branch updates append
-best-effort activity entries under the operator's identity. The full operating
-manual is `prospector_app/agent/context.md`.
+allowlist. Chat issue closes use the executor and are recorded in Activity; other
+bot-authenticated chat writes and feedback issue filing are not. Resubmit pushes
+and branch updates append best-effort activity entries under the operator's
+identity. The full operating manual is `prospector_app/agent/context.md`.
 
 ## Run
 
