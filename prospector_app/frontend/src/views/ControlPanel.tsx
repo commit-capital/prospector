@@ -162,7 +162,13 @@ export default function ControlPanel() {
 
   const [pipeline, setPipeline] = useState<PipelineStatus | null>(null);
   const [learn, setLearn] = useState<{ count: number; with_reason: number; decisions: Record<string, number> } | null>(null);
-  const [recon, setRecon] = useState<{ checked: number; changed: number } | null>(null);
+  const [recon, setRecon] = useState<{
+    attempted: number;
+    checked: number;
+    changed: number;
+    failed: number[];
+    complete: boolean;
+  } | null>(null);
   const [reconBusy, setReconBusy] = useState(false);
   const [resp, setResp] = useState<{ checked: number; with_response: number; failed: number[] } | null>(null);
   const [respBusy, setRespBusy] = useState(false);
@@ -459,8 +465,17 @@ export default function ControlPanel() {
         <div className="jobspec">
           <span className="jobspec-label">
             <b>Refresh live PR state</b> — re-fetch every open PR's upstream status (open/closed/merged) from GitHub
-            into this machine's overlay. Runs on launch; this re-runs it now. Read-only.
-            {recon && <span className="muted small"> · last sweep: {recon.changed} changed of {recon.checked} checked</span>}
+            into the shared store. Runs on launch; this re-runs it now. Read-only upstream.
+            {recon && (
+              <span className="muted small">
+                {" "}· last attempt: {recon.changed} changed of {recon.checked} checked
+                {!recon.complete && (
+                  <span className="chip chip-red sm" style={{ marginLeft: 6 }}>
+                    ⚠ {recon.failed.length} could not be checked
+                  </span>
+                )}
+              </span>
+            )}
           </span>
           <button className="btn-secondary sm" onClick={sweepReconcile} disabled={reconBusy}>
             {reconBusy ? "Refreshing…" : "♻️ Refresh live state"}
