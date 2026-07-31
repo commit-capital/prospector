@@ -533,22 +533,27 @@ class Pr:
         self._persist()
 
     def record_live_state(self, *, state: str | None = None,
+                          ci: str | None = None,
                           mergeable: bool | None = None,
                           diffstat: dict | None = None,
                           has_tests: bool | None = None) -> None:
         """Persist GitHub-owned live facts into the shared store: the PR's
-        open/closed/merged `meta.state`, and its `signals` verdicts — `mergeable`,
-        `diffstat` ({additions, deletions, changed_files}), and `has_tests`. The
-        app's live sweep and the executor's own actions call this so upstream
-        drift is shared with every operator at once — no per-machine overlay. Each
-        touched section is restamped; signals keeps its `against_head_sha`, so the
-        freshness check still anchors it to the same head. One validated write."""
+        open/closed/merged `meta.state`, and its `signals` verdicts — `ci`,
+        `mergeable`, `diffstat` ({additions, deletions, changed_files}), and
+        `has_tests`. The app's live sweep and executor actions call this so
+        upstream drift is shared with every operator at once — no per-machine
+        overlay. Each touched section is restamped; signals keeps its
+        `against_head_sha`, so the freshness check still anchors it to the same
+        head. One validated write."""
         if state is not None:
             meta = dict(self.section("meta") or {})
             meta["state"] = state
             _stamp(self.rec, "meta", meta, None)
-        if mergeable is not None or diffstat is not None or has_tests is not None:
+        if (ci is not None or mergeable is not None
+                or diffstat is not None or has_tests is not None):
             signals = dict(self.section("signals") or {})
+            if ci is not None:
+                signals["ci"] = ci
             if mergeable is not None:
                 signals["mergeable"] = mergeable
             if diffstat is not None:
