@@ -43,6 +43,7 @@ fi
 # own checkout with its own root .env, so concurrent app instances don't collide.
 ENV_FILE="$ROOT/.env"
 touch "$ENV_FILE"
+primary="$(git -C "$ROOT" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | head -1)"
 
 # Seed operator config into a fresh worktree's .env. .env is gitignored, so a new
 # worktree starts without it; the operator vars (TRIAGE_REPO, TRIAGE_STORE_URL, …)
@@ -50,7 +51,6 @@ touch "$ENV_FILE"
 # when this .env lacks the one required var, so the backend boots. The port block
 # below stays per-worktree.
 if ! grep -q '^TRIAGE_REPO=' "$ENV_FILE"; then
-  primary="$(git -C "$ROOT" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | head -1)"
   src="$primary/.env"
   if [ -n "$primary" ] && [ "$src" != "$ENV_FILE" ] && [ -f "$src" ]; then
     grep -q '^TRIAGE_REPO=' "$src" && {
@@ -59,6 +59,17 @@ if ! grep -q '^TRIAGE_REPO=' "$ENV_FILE"; then
       echo "→ config   seeded operator vars from $src"
     }
   fi
+fi
+
+# The repository policy profile is static, local, and gitignored. Conductor
+# copies it via .worktreeinclude; this setup path also serves workspace hosts
+# that start from tracked files and then run the repository setup script.
+PROFILE_FILE="$ROOT/profile.json"
+primary_profile="$primary/profile.json"
+if [ -n "$primary" ] && [ "$primary" != "$ROOT" ] \
+    && [ ! -e "$PROFILE_FILE" ] && [ -f "$primary_profile" ]; then
+  cp -p "$primary_profile" "$PROFILE_FILE"
+  echo "→ config   seeded repository profile from $primary_profile"
 fi
 
 if ! grep -q '^API_PORT=' "$ENV_FILE"; then
