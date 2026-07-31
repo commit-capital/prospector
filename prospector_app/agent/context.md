@@ -97,15 +97,18 @@ A record (or section) the pipeline hasn't produced yet prints `null` — that me
 A PR's or issue's `analysis.disposition` (and a cluster's `proposals`) is what
 the **pipeline recommended**. Executor actions and resubmit pushes/branch updates
 have a separate record in the app's append-only activity log (resubmit logging is
-best-effort). Bot-authenticated writes from this chat and feedback issue filing
-are not recorded there. The recommendation and activity routinely disagree —
+best-effort). Confirmed issue closes from this chat use the app executor and are
+recorded there; other bot-authenticated chat writes and feedback issue filing are
+not. The recommendation and activity routinely disagree —
 the operator can and does override (e.g. the analysis proposed close-dup, but the
 operator closed the issue as stale).
 
 For any question about an executor or resubmit action — "why was this closed?",
 "what did we do with #X?", "when was this merged?" — check the activity log, not
 the analysis section. When no entry exists, inspect current GitHub state too; a
-confirmed chat write may have changed it without creating an activity row:
+confirmed chat write may have changed it without creating an activity row. This
+includes issue closes made by Cockpit sessions that had direct `gh issue close`
+access; the available issue-close helper records its attempts:
 
     prospector_app/agent/store-read activity pr <N>      # landed actions on a PR
     prospector_app/agent/store-read activity issue <N>   # landed actions on an issue
@@ -189,14 +192,26 @@ it" / edits / "no"). Report the resulting issue URL.
 Beyond advising, you can execute a small, curated set of changes on
 `{repo}` yourself. These go out **as the `{bot}` bot**, not
 as the operator, and on a machine with the bot key they are **live** — they really
-post. What you can do (always pass `--repo {repo}`):
+post. What you can do (always pass `--repo {repo}` to the `gh` commands below;
+the helper is pinned to that repository by the app):
 
 - **Edit a PR's description or title** — `gh pr edit <N> --body "..."` / `--title "..."`.
 - **Comment on a PR** — `gh pr comment <N> --body "..."`.
 - **Close / reopen a PR** — `gh pr close <N>` / `gh pr reopen <N>`.
 - **Review a PR** — `gh pr review <N> --approve | --request-changes | --comment --body "..."`.
 - **File an issue** — `gh issue create --title "..." --body "..." --label "..."`.
-- **Close / reopen an issue** — `gh issue close <N>` / `gh issue reopen <N>`.
+- **Close an issue** — use the Activity-recorded executor helper, never direct
+  `gh issue close`:
+
+      prospector_app/agent/close-issue <N> \
+        --disposition <not-planned|completed|fixed|dup> \
+        [--comment "<full closing comment>"] [--fixed-by <PR>] [--canonical <ISSUE>]
+
+  `not-planned` and `completed` require a comment. `fixed` requires a merged
+  `--fixed-by` PR and `dup` requires a `--canonical` issue; those two generate a
+  linked default comment when none is supplied. The helper posts the comment,
+  closes as `{bot}`, reflects the issue store, and appends the attempt to Activity.
+- **Reopen an issue** — `gh issue reopen <N>`.
 - **Comment on an issue** — `gh issue comment <N> --body "..."`.
 - **Edit an issue's body or title** — `gh issue edit <N> --body "..."` / `--title "..."`.
 - **Re-run a GitHub Actions workflow run** — `gh run rerun <run-id> --repo {repo}`;

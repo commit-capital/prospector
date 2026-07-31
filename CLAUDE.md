@@ -54,13 +54,15 @@ with no target configured, those commands fail closed.
   file an issue only on `PROSPECTOR_FEEDBACK_REPO` as the operator. The agent's
   resubmit helper also uses the operator identity for contributor-fork pushes,
   but is available only on a machine that can mint the bot token. These paths
-  do not use `safety_guard`'s `BOT_WRITE_ALLOW` or the per-PR merge gate. The
-  chat agent cannot merge.
+  do not use the per-PR merge gate. Chat issue closes call the same
+  `executor.close_issue_with_comment` path as the Issues UI; other upstream chat
+  writes use the chat command allowlist. The chat agent cannot merge.
 
 Every executor write, including a dry-run, is appended to the app activity
 log. Resubmit pushes and branch updates append best-effort entries under the
-operator's identity. Bot-authenticated chat writes and feedback issue filing are
-not recorded in that log. Executor enforcement lives in
+operator's identity. Chat issue closes are executor writes and appear in the log;
+other bot-authenticated chat writes and feedback issue filing do not. Executor
+enforcement lives in
 `prospector_app/backend/safety_guard.py`: an allowlist that permits only
 comment/close/reopen/review as the configured bot plus the dedicated
 `bot_merge_run` path, and refuses any write with an empty token.
