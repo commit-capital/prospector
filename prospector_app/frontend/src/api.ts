@@ -830,7 +830,15 @@ export const api = {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(prs ? { prs } : {}),
     });
-    return r.json() as Promise<{ checked: number; changed: number; prs: number[]; fetched_at: string | null }>;
+    return r.json() as Promise<{
+      attempted: number;
+      checked: number;
+      changed: number;
+      prs: number[];
+      failed: number[];
+      complete: boolean;
+      fetched_at: string | null;
+    }>;
   },
   liveStatus: () => get<{ fetched_at: string | null }>("/api/live/status"),
   scanResponses: async (prs?: number[]) => {

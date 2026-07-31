@@ -14,23 +14,14 @@ writes, and only to our own store (never upstream).
 """
 from __future__ import annotations
 
-import json
-import logging
-import subprocess
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from prospector_app.backend import data
-from prospector_app.backend.safety_guard import run
-from pipeline import diffpaths
-from pipeline.settings import REPO_NAME, REPO_OWNER
+from pipeline import live_prs
 
 if TYPE_CHECKING:
     from pipeline.model import Pr
-
-_log = logging.getLogger(__name__)
-
-_CHUNK = 40
 
 _LIVE_MERGEABLE = {"MERGEABLE": True, "CONFLICTING": False}
 
@@ -54,60 +45,10 @@ def _live_state(lv: dict) -> str | None:
     outranks a raw state, matching GitHub's own merged→closed."""
     return "merged" if lv.get("merged") else (lv.get("state") or None)
 
-# GraphQL status-rollup → our CI vocabulary
-_CI_NORM = {"SUCCESS": "passing", "FAILURE": "failing", "ERROR": "failing",
-            "PENDING": "pending", "EXPECTED": "pending"}
-
-
-def _query(prs: list[int]) -> str:
-    fields = ("number state merged headRefOid mergeable "
-              "additions deletions changedFiles "
-              "files(first: 100) { nodes { path } } "
-              "commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }")
-    aliases = " ".join(f"p{i}: pullRequest(number: {int(n)}) {{ {fields} }}"
-                       for i, n in enumerate(prs))
-    return f'query {{ repository(owner: "{REPO_OWNER}", name: "{REPO_NAME}") {{ {aliases} }} }}'
-
 
 def live_states(prs: list[int]) -> dict[int, dict]:
     """Batched live {state, merged, head, mergeable, ci, diffstat, has_tests} per PR via GraphQL."""
-    out: dict[int, dict] = {}
-    for i in range(0, len(prs), _CHUNK):
-        chunk = prs[i:i + _CHUNK]
-        try:
-            r = run(["gh", "api", "graphql", "-f", f"query={_query(chunk)}"], timeout=60)
-        except subprocess.TimeoutExpired:
-            # gh wedged; skip this chunk so the sweep stays bounded. Logged so a
-            # slow/flaky gh is visible rather than live state silently lagging.
-            _log.warning("live_states: gh graphql timed out; skipping %d PRs (%d-%d)",
-                         len(chunk), chunk[0], chunk[-1])
-            continue
-        if r.returncode != 0:
-            continue
-        try:
-            repo = (json.loads(r.stdout).get("data") or {}).get("repository") or {}
-        except (ValueError, TypeError):
-            continue
-        for j, n in enumerate(chunk):
-            node = repo.get(f"p{j}")
-            if not node:
-                continue
-            nodes = ((node.get("commits") or {}).get("nodes")) or [{}]
-            roll = (nodes[0] or {}).get("commit", {}).get("statusCheckRollup") or {}
-            file_nodes = ((node.get("files") or {}).get("nodes")) or []
-            paths = [f.get("path") for f in file_nodes if f.get("path")]
-            out[int(n)] = {
-                "state": (node.get("state") or "").lower(),   # open / closed / merged
-                "merged": bool(node.get("merged")),
-                "head": node.get("headRefOid"),
-                "mergeable": node.get("mergeable"),            # MERGEABLE / CONFLICTING / UNKNOWN
-                "ci": _CI_NORM.get(roll.get("state") or ""),
-                "diffstat": {"additions": node.get("additions"),
-                             "deletions": node.get("deletions"),
-                             "changed_files": node.get("changedFiles")},
-                "has_tests": diffpaths.has_tests(paths),
-            }
-    return out
+    return live_prs.fetch(prs)
 
 
 def check(prs: list[int]) -> dict:
@@ -204,11 +145,13 @@ def sweep(prs: list[int] | None = None) -> dict:
     drift into the shared store. Reads the committed snapshot the app already
     loaded (`data.prs()`) — no second bulk download — and targets PRs the store
     thinks are open (`state`), so a PR reopened upstream (state now open) is still
-    re-checked. Stamps the shared `live_sweep` singleton. Returns
-    {checked, changed, prs, fetched_at}."""
+    re-checked. A complete full-corpus pass stamps the shared `live_sweep`
+    singleton. Returns attempted/checked counts, changed and failed PR IDs,
+    completion, and fetched_at."""
     from prospector_app.backend import activity
     snapshot = data.prs()
-    if prs is None:
+    full_sweep = prs is None
+    if full_sweep:
         # store-open PRs, plus the PRs we've closed — a closed PR is off the open
         # set, so re-checking the closed-by-us set is how an upstream reopen lands
         # back in the store (and surfaces in the reopened-after-close panel).
@@ -216,12 +159,20 @@ def sweep(prs: list[int] | None = None) -> dict:
                          | {n for n in activity.closed_by_us_prs() if n in snapshot})
     else:
         targets = [int(n) for n in prs if int(n) in snapshot]
-    live = live_states(targets)
+    target_set = set(targets)
+    live = {n: facts for n, facts in live_states(targets).items() if n in target_set}
+    missing = sorted(set(targets) - set(live))
+    if missing:
+        live.update({n: facts for n, facts in live_states(missing).items() if n in target_set})
+    missing = sorted(set(targets) - set(live))
     changed = persist_live(live, snapshot)
     swept_at = _now()
-    data.store().save_live_sweep({"swept_at": swept_at})
-    return {"checked": len(targets), "changed": len(changed),
-            "prs": changed, "fetched_at": swept_at}
+    complete = not missing
+    if full_sweep and complete:
+        data.store().save_live_sweep({"swept_at": swept_at})
+    return {"attempted": len(targets), "checked": len(live), "changed": len(changed),
+            "prs": changed, "failed": missing, "complete": complete,
+            "fetched_at": swept_at}
 
 
 def last_swept_at() -> str | None:
