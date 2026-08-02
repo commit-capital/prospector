@@ -133,12 +133,11 @@ def test_firehose_issue_closed_from_events():
     assert stats["totals"]["iss_closed_nd"] == 3
 
 
-def test_firehose_issue_closed_not_filtered_by_pr_author():
-    """The pr_author filter restricts PR series only — issue closes still count."""
+def test_firehose_issue_closed_counts_scoped_input_events():
     prs = {1: _pr(1, f"{_days_ago(2)}T10:00:00Z", author="alice")}
     events = [_ev(f"{_days_ago(2)}T12:00:00+00:00", "issue-close", issue=600, status="closed")]
     stats = activity.firehose_stats(
-        prs, [], n_days=30, events=events, today=_TODAY, tz=timezone.utc, pr_author="alice")
+        prs, [], n_days=30, events=events, today=_TODAY, tz=timezone.utc)
     assert sum(stats["iss_closed"]) == 1
 
 
@@ -283,7 +282,9 @@ def test_firehose_pr_author_filters_incoming():
         2: _pr(2, f"{_days_ago(2)}T11:00:00Z", author="devin"),
         3: _pr(3, f"{_days_ago(1)}T09:00:00Z", author="upstream-dev"),
     }
-    stats = activity.firehose_stats(prs, [], n_days=30, events=[], today=_TODAY, tz=timezone.utc, pr_author="upstream-dev")
+    scope = activity.ActivityScope.from_selection(prs, pr_author="upstream-dev")
+    stats = activity.firehose_stats(
+        scope.prs(prs), [], n_days=30, events=[], today=_TODAY, tz=timezone.utc)
     assert sum(stats["pr_incoming"]) == 2  # only upstream-dev's PRs counted
 
 
@@ -296,28 +297,36 @@ def test_firehose_pr_author_filters_triage_events():
         _ev(f"{_days_ago(3)}T10:00:00+00:00", "merge", pr=10),
         _ev(f"{_days_ago(3)}T11:00:00+00:00", "close", pr=20),
     ]
-    stats = activity.firehose_stats(prs, [], n_days=30, events=events, today=_TODAY, tz=timezone.utc, pr_author="upstream-dev")
+    scope = activity.ActivityScope.from_selection(prs, pr_author="upstream-dev")
+    stats = activity.firehose_stats(
+        scope.prs(prs), [], n_days=30, events=scope.events(events),
+        today=_TODAY, tz=timezone.utc)
     # Only the merge on pr=10 (upstream-dev's) should be counted; close on pr=20 (devin's) excluded.
     assert sum(stats["pr_merged"]) == 1
     assert sum(stats["pr_closed"]) == 0
     assert sum(stats["pr_triaged"]) == 1
 
 
-def test_firehose_pr_author_no_filter_returns_all():
+def test_activity_scope_without_selection_returns_all():
     prs = {
         1: _pr(1, f"{_days_ago(2)}T10:00:00Z", author="upstream-dev"),
         2: _pr(2, f"{_days_ago(2)}T10:00:00Z", author="devin"),
     }
-    stats = activity.firehose_stats(prs, [], n_days=30, events=[], today=_TODAY, tz=timezone.utc)
+    scope = activity.ActivityScope.from_selection(prs)
+    stats = activity.firehose_stats(
+        scope.prs(prs), [], n_days=30, events=[], today=_TODAY, tz=timezone.utc)
     assert sum(stats["pr_incoming"]) == 2  # both PRs counted with no author filter
 
 
-def test_firehose_pr_author_issues_not_filtered():
-    """Issues are upstream GitHub issues, not tied to a PR author — they are
-    always returned unfiltered regardless of pr_author."""
-    issues = [
-        _issue(f"{_days_ago(1)}T08:00:00Z"),
-        _issue(f"{_days_ago(1)}T09:00:00Z"),
+def test_author_scope_excludes_issue_and_other_author_events():
+    prs = {
+        1: _pr(1, f"{_days_ago(2)}T10:00:00Z", author="upstream-dev"),
+        2: _pr(2, f"{_days_ago(2)}T10:00:00Z", author="devin"),
+    }
+    events = [
+        _ev(f"{_days_ago(1)}T08:00:00Z", "close", pr=1),
+        _ev(f"{_days_ago(1)}T09:00:00Z", "close", pr=2),
+        _ev(f"{_days_ago(1)}T10:00:00Z", "issue-close", issue=3),
     ]
-    stats = activity.firehose_stats({}, issues, n_days=30, events=[], today=_TODAY, tz=timezone.utc, pr_author="upstream-dev")
-    assert sum(stats["iss_incoming"]) == 2  # issues unaffected by pr_author filter
+    scope = activity.ActivityScope.from_selection(prs, pr_author="upstream-dev")
+    assert scope.events(events) == [events[0]]

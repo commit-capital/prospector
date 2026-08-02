@@ -596,6 +596,18 @@ async function get<T>(url: string): Promise<T> {
   return r.json();
 }
 
+export interface ActivityScopeParams {
+  prAuthor?: string;
+  operator?: string;
+}
+
+function activitySearch(scope: ActivityScopeParams = {}, initial?: Record<string, string>): URLSearchParams {
+  const qs = new URLSearchParams(initial);
+  if (scope.prAuthor) qs.set("pr_author", scope.prAuthor);
+  if (scope.operator) qs.set("operator", scope.operator);
+  return qs;
+}
+
 // --- GitHub Issues, folded into the app (#192) ---
 export interface IssuePR {
   pr: number; title?: string | null; how?: "explicit" | "fix-found" | "issue-ref" | "subsystem" | null;
@@ -1021,17 +1033,18 @@ export const api = {
     });
     return r.json() as Promise<ExecResult>;
   },
-  activityProgress: () => get<ActivityProgress>("/api/activity/progress"),
-  activityIssueProgress: () => get<IssueActivityProgress>("/api/activity/issue-progress"),
-  activityFirehose: (days = 30, allTime = false, prAuthor?: string) => {
-    const qs = new URLSearchParams({ days: String(days) });
+  activityProgress: (scope: ActivityScopeParams = {}) =>
+    get<ActivityProgress>(`/api/activity/progress?${activitySearch(scope)}`),
+  activityIssueProgress: (scope: Pick<ActivityScopeParams, "operator"> = {}) =>
+    get<IssueActivityProgress>(`/api/activity/issue-progress?${activitySearch(scope)}`),
+  activityFirehose: (days = 30, allTime = false, scope: ActivityScopeParams = {}) => {
+    const qs = activitySearch(scope, { days: String(days) });
     if (allTime) qs.set("all_time", "true");
-    if (prAuthor) qs.set("pr_author", prAuthor);
     return get<FirehoseStats>(`/api/activity/firehose?${qs}`);
   },
   prAuthors: () => get<{ authors: Array<{ login: string; pr_count: number }> }>("/api/activity/pr-authors"),
   activityPeople: () => get<{ people: ActivityPerson[] }>("/api/activity/people"),
-  activitySummary: (p: { group_by?: string; since?: string; until?: string; identity?: string; operator?: string; include_dry_run?: boolean } = {}) => {
+  activitySummary: (p: { group_by?: string; since?: string; until?: string; identity?: string; operator?: string; pr_author?: string; include_dry_run?: boolean } = {}) => {
     const qs = new URLSearchParams();
     for (const [k, v] of Object.entries(p)) if (v !== undefined && v !== "") qs.set(k, String(v));
     return get<ActivitySummary>(`/api/activity/summary?${qs}`);

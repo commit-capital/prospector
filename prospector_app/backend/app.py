@@ -720,50 +720,66 @@ def activity_sync(limit: int = 200):
 @app.get("/api/activity/summary")
 def activity_summary(group_by: str = "day", since: str | None = None,
                      until: str | None = None, include_dry_run: bool = False,
-                     identity: str | None = None, operator: str | None = None):
+                     identity: str | None = None, operator: str | None = None,
+                     pr_author: str | None = None):
     """Aggregate triage metrics for the dashboard (#42): totals + buckets
     grouped by day / week / cluster / identity / operator. Live actions only by
-    default; ``operator`` filters to one teammate's work."""
-    return activity.summarize(activity.all_events(), group_by=group_by,
+    default; ``operator`` filters to one teammate's work and ``pr_author`` to
+    actions on one contributor's PRs."""
+    prs = data.prs()
+    scope = activity.ActivityScope.from_selection(
+        prs, pr_author=pr_author, operator=operator)
+    return activity.summarize(scope.events(activity.all_events()), group_by=group_by,
                               include_dry_run=include_dry_run, since=since,
-                              until=until, identity=identity, operator=operator)
+                              until=until, identity=identity)
 
 
 @app.get("/api/activity/progress")
-def activity_progress():
+def activity_progress(pr_author: str | None = None, operator: str | None = None):
     """Backlog progress (#27): landed live actions vs. the open-PR universe, so
     the operator sees how far through the ~3,000-PR backlog they are."""
-    return activity.progress(data.prs())
+    prs = data.prs()
+    events = activity.all_events()
+    scope = activity.ActivityScope.from_selection(
+        prs, pr_author=pr_author, operator=operator)
+    return activity.progress(scope.prs(prs), scope.events(events))
 
 
 @app.get("/api/activity/issue-progress")
-def activity_issue_progress():
+def activity_issue_progress(operator: str | None = None):
     """Landed issue closes vs. the open-issue universe."""
-    return activity.issue_progress(issue_data.issues())
+    scope = activity.ActivityScope(operator=operator)
+    return activity.issue_progress(
+        issue_data.issues(), scope.events(activity.all_events()))
 
 
 @app.get("/api/activity/firehose")
-def activity_firehose(days: int = Query(30, le=400), all_time: bool = False, pr_author: str | None = None):
+def activity_firehose(days: int = Query(30, le=400), all_time: bool = False,
+                      pr_author: str | None = None, operator: str | None = None):
     """Firehose comparison (#238): new PRs/issues opened on the upstream repo
     vs our triage actions per day, plus any PRs we closed that were subsequently
     reopened by their authors. Pass ``all_time=true`` to span from the earliest
     PR in the store to today regardless of ``days``. Pass ``pr_author`` to
-    restrict PR stats to PRs by a specific GitHub login."""
+    restrict PR stats to PRs by a specific GitHub login, or ``operator`` to
+    restrict action stats to one teammate."""
     from datetime import datetime as _dt
     prs = data.prs()
-    all_issues = issues_mod.list_issues()
-    events = activity.all_events()
+    scope = activity.ActivityScope.from_selection(
+        prs, pr_author=pr_author, operator=operator)
+    scoped_prs = scope.prs(prs)
+    all_issues = [] if pr_author else issues_mod.list_issues()
+    events = scope.events(activity.all_events())
     start_date = None
     if all_time:
         dates = [
             _dt.fromisoformat(pr.created_at.replace("Z", "+00:00")).date()
-            for pr in prs.values()
+            for pr in scoped_prs.values()
             if pr.created_at
         ]
         if dates:
             start_date = min(dates)
-    stats = activity.firehose_stats(prs, all_issues, days, events, start_date=start_date, pr_author=pr_author)
-    stats["reopened_after_close"] = activity.reopened_after_close(prs, events)
+    stats = activity.firehose_stats(scoped_prs, all_issues, days, events, start_date=start_date)
+    stats["reopened_after_close"] = activity.reopened_after_close(scoped_prs, events)
     stats["iss_action_counts"] = activity.issue_action_counts(events)
     return stats
 
@@ -787,17 +803,15 @@ def pr_authors():
 
 @app.get("/api/activity/people")
 def activity_people():
-    """Unified list of people for the person-filter picker: app operators
-    (from the activity log) merged with PR authors (from the store).
+    """Unified list of roles for the person-filter picker: app operators
+    (from the activity log) followed by PR authors (from the store).
 
     Each entry exposes a display name, a GitHub login (inferred from the
     operator email prefix for app operators), whether they are an app
-    operator, and their PR count. Operators appear first; other PR authors
-    follow sorted by PR count descending."""
+    operator, and their PR count. Operators appear first; PR authors follow
+    sorted by PR count descending. A login in both groups gets both roles."""
     events = activity.all_events()
     op_entries = activity.operators_with_login(events)
-    op_logins = {e["login"] for e in op_entries}
-
     prs = data.prs()
     pr_counts: dict[str, int] = {}
     for rec in prs.values():
@@ -809,8 +823,7 @@ def activity_people():
         result.append({**entry, "is_operator": True, "pr_count": pr_counts.get(entry["login"], 0)})
 
     for login, count in sorted(pr_counts.items(), key=lambda x: -x[1]):
-        if login not in op_logins:
-            result.append({"display": login, "login": login, "is_operator": False, "pr_count": count})
+        result.append({"display": login, "login": login, "is_operator": False, "pr_count": count})
 
     return {"people": result}
 

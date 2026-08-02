@@ -3,8 +3,11 @@ kind; legacy mechanical rows are normalized on read with no migration."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 from prospector_app.backend import activity
+from prospector_app.backend import app as appmod
+from prospector_app.backend import data
 
 
 def test_close_actions_map_to_close_with_reason():
@@ -28,6 +31,20 @@ def test_legacy_mechanical_kinds_normalize():
 def test_canonical_kinds_pass_through():
     for k in activity.KINDS:
         assert activity.canonical_kind({"kind": k}) == k
+
+
+def test_activity_people_preserves_operator_and_author_roles(monkeypatch):
+    monkeypatch.setattr(activity, "all_events", lambda: [{
+        "operator": "Alice", "operator_email": "alice@example.com",
+    }])
+    monkeypatch.setattr(data, "prs", lambda: {
+        1: SimpleNamespace(author="alice"),
+        2: SimpleNamespace(author="alice"),
+    })
+    people = appmod.activity_people()["people"]
+    assert [(p["login"], p["is_operator"]) for p in people] == [
+        ("alice", True), ("alice", False),
+    ]
 
 
 def test_normalize_adds_reason_for_close():
