@@ -5,6 +5,9 @@ preflight, the operator-identity env swap (drop the bot token), the fork ssh URL
 and the argparse surface. The module has no `.py` extension (it runs under the
 sandbox's bare python3), so we load it by path."""
 import importlib.util
+import json
+import os
+import subprocess
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
@@ -32,7 +35,7 @@ resubmit = _load()
 
 def _pr(**over):
     base = {"number": 42, "state": "OPEN", "baseRefName": "master", "headRefName": "fix",
-            "headRefOid": "a" * 40, "isCrossRepository": True,
+            "baseRefOid": "c" * 40, "headRefOid": "a" * 40, "isCrossRepository": True,
             "maintainerCanModify": True,
             "headRepository": {"nameWithOwner": "contrib/test-repo"},
             "headRepositoryOwner": {"login": "contrib"}}
@@ -88,7 +91,7 @@ def test_fork_ssh_url_raises_on_deleted_fork():
         resubmit.fork_ssh_url(_pr(headRepository={}))
 
 
-# --- argparse surface: the three subcommands, and push requires a message --------
+# --- argparse surface: push always requires an explicit content/rewrite mode -----
 
 def test_push_requires_a_commit_message():
     with pytest.raises(SystemExit):
@@ -128,6 +131,217 @@ def test_cleanup_removes_both_clone_and_meta(monkeypatch, tmp_path):
     resubmit._cleanup(42)
     assert not wt.exists()
     assert not meta.exists()
+
+
+# --- rebase: real local repos exercise the resumable Git transaction -----------
+
+def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
+    env = dict(os.environ)
+    env.update({
+        "GIT_AUTHOR_NAME": "Resubmit Test", "GIT_AUTHOR_EMAIL": "test@example.com",
+        "GIT_COMMITTER_NAME": "Resubmit Test", "GIT_COMMITTER_EMAIL": "test@example.com",
+    })
+    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True,
+                          check=True, env=env)
+
+
+def _make_rebase_repos(tmp_path: Path, *, conflict: bool = True,
+                       two_conflicts: bool = False) -> dict:
+    """Create an upstream + contributor fork whose fix branch needs rebasing."""
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    _git(seed, "init", "-b", "master")
+    (seed / "one.txt").write_text("common one\n")
+    (seed / "two.txt").write_text("common two\n")
+    _git(seed, "add", ".")
+    _git(seed, "commit", "-m", "common base")
+
+    upstream = tmp_path / "upstream.git"
+    fork = tmp_path / "fork.git"
+    _git(tmp_path, "clone", "--bare", str(seed), str(upstream))
+    _git(tmp_path, "clone", "--bare", str(seed), str(fork))
+
+    author = tmp_path / "author"
+    _git(tmp_path, "clone", str(fork), str(author))
+    _git(author, "switch", "-c", "fix")
+    if conflict:
+        (author / "one.txt").write_text("author one\n")
+        _git(author, "add", "one.txt")
+        _git(author, "commit", "-m", "change one")
+        if two_conflicts:
+            (author / "two.txt").write_text("author two\n")
+            _git(author, "add", "two.txt")
+            _git(author, "commit", "-m", "change two")
+    else:
+        (author / "feature.txt").write_text("feature\n")
+        _git(author, "add", "feature.txt")
+        _git(author, "commit", "-m", "add feature")
+    _git(author, "push", "origin", "fix")
+    old_head = _git(author, "rev-parse", "HEAD").stdout.strip()
+
+    upstream_work = tmp_path / "upstream-work"
+    _git(tmp_path, "clone", str(upstream), str(upstream_work))
+    if conflict:
+        (upstream_work / "one.txt").write_text("upstream one\n")
+        if two_conflicts:
+            (upstream_work / "two.txt").write_text("upstream two\n")
+    else:
+        (upstream_work / "base-only.txt").write_text("new base content\n")
+    _git(upstream_work, "add", ".")
+    _git(upstream_work, "commit", "-m", "advance base")
+    _git(upstream_work, "push", "origin", "master")
+    base_head = _git(upstream_work, "rev-parse", "HEAD").stdout.strip()
+    return {"upstream": upstream, "fork": fork, "old_head": old_head,
+            "base_head": base_head}
+
+
+def _wire_rebase(monkeypatch, tmp_path: Path, repos: dict) -> None:
+    monkeypatch.setattr(resubmit, "WORKTREE_ROOT", tmp_path / "resubmit")
+    monkeypatch.setattr(resubmit, "fork_ssh_url", lambda info: repos["fork"].as_uri())
+    monkeypatch.setattr(resubmit, "upstream_ssh_url", lambda: repos["upstream"].as_uri())
+    monkeypatch.setattr(
+        resubmit, "_gh_json",
+        lambda pr: _pr(headRefOid=repos["old_head"], baseRefOid=repos["base_head"]),
+    )
+    monkeypatch.setattr(resubmit, "_log_rebase", lambda *args, **kwargs: None)
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "Resubmit Test")
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "test@example.com")
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "Resubmit Test")
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "test@example.com")
+
+
+def test_default_prepare_keeps_the_existing_shallow_clone(monkeypatch, tmp_path):
+    monkeypatch.setattr(resubmit, "WORKTREE_ROOT", tmp_path / "resubmit")
+    monkeypatch.setattr(resubmit, "_gh_json", lambda pr: _pr())
+    monkeypatch.setattr(resubmit, "fork_ssh_url", lambda info: "fork-url")
+    calls = []
+
+    def ran(argv, **kwargs):
+        calls.append(argv)
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(resubmit.subprocess, "run", ran)
+    assert resubmit.cmd_prepare(42) == 0
+    assert calls[0][:4] == ["git", "clone", "--depth", "1"]
+    assert "--filter=blob:none" not in calls[0]
+
+
+def test_default_content_edit_still_pushes_fast_forward(monkeypatch, tmp_path):
+    repos = _make_rebase_repos(tmp_path, conflict=False)
+    _wire_rebase(monkeypatch, tmp_path, repos)
+    monkeypatch.setattr(resubmit, "_log", lambda *args, **kwargs: None)
+    assert resubmit.cmd_prepare(42) == 0
+    wt = resubmit._worktree(42)
+    (wt / "feature.txt").write_text("feature with maintainer edit\n")
+    assert resubmit.cmd_push(42, "Adjust feature", False) == 0
+    pushed = _git(repos["fork"], "rev-parse", "refs/heads/fix").stdout.strip()
+    assert pushed != repos["old_head"]
+    assert _git(repos["fork"], "rev-parse", f"{pushed}^").stdout.strip() == repos["old_head"]
+
+
+def test_clean_rebase_completes_without_an_edit(monkeypatch, tmp_path, capsys):
+    repos = _make_rebase_repos(tmp_path, conflict=False)
+    _wire_rebase(monkeypatch, tmp_path, repos)
+
+    assert resubmit.cmd_prepare(42, rebase=True) == 0
+    meta = json.loads(resubmit._meta_path(42).read_text())
+    assert meta["phase"] == "ready"
+    assert meta["head_sha"] == repos["old_head"]
+    assert meta["base_sha"] == repos["base_head"]
+    assert meta["new_head_sha"] != repos["old_head"]
+    assert "head:" in capsys.readouterr().out
+    assert resubmit.cmd_diff(42) == 0
+    assert repos["old_head"] in capsys.readouterr().out
+
+
+def test_conflict_must_be_resolved_then_pushes_with_exact_lease(
+        monkeypatch, tmp_path, capsys):
+    repos = _make_rebase_repos(tmp_path)
+    _wire_rebase(monkeypatch, tmp_path, repos)
+    assert resubmit.cmd_prepare(42, rebase=True) == 0
+    wt = resubmit._worktree(42)
+    meta = json.loads(resubmit._meta_path(42).read_text())
+    assert meta["phase"] == "conflicted"
+    assert "one.txt" in capsys.readouterr().out
+
+    # Git's markers cannot be staged by the helper.
+    assert resubmit.cmd_continue(42) == 10
+    assert "conflict markers" in capsys.readouterr().err
+    (wt / "one.txt").write_text("resolved one\n")
+    assert resubmit.cmd_continue(42) == 0
+    meta = json.loads(resubmit._meta_path(42).read_text())
+    assert meta["phase"] == "ready"
+    new_head = meta["new_head_sha"]
+
+    # The acknowledgement is exact and the remote stays untouched on a mismatch.
+    assert resubmit.cmd_push(42, None, False, "deadbeef") == 11
+    assert _git(repos["fork"], "rev-parse", "refs/heads/fix").stdout.strip() == repos["old_head"]
+
+    real_git = resubmit._git
+    push_calls = []
+
+    def recording_git(args, cwd, timeout=300, extra_env=None):
+        if args and args[0] == "push":
+            push_calls.append(args)
+        return real_git(args, cwd, timeout, extra_env)
+
+    monkeypatch.setattr(resubmit, "_git", recording_git)
+    assert resubmit.cmd_push(42, None, False, repos["old_head"]) == 0
+    assert _git(repos["fork"], "rev-parse", "refs/heads/fix").stdout.strip() == new_head
+    assert push_calls == [["push",
+                           f"--force-with-lease=refs/heads/fix:{repos['old_head']}",
+                           "origin", "HEAD:fix"]]
+    assert "--force" not in push_calls[0]
+    assert _git(repos["fork"], "rev-parse", "fix^").stdout.strip() == repos["base_head"]
+    assert "exact force-with-lease" in capsys.readouterr().out
+
+
+def test_rebase_stops_again_on_a_second_conflict(monkeypatch, tmp_path):
+    repos = _make_rebase_repos(tmp_path, two_conflicts=True)
+    _wire_rebase(monkeypatch, tmp_path, repos)
+    assert resubmit.cmd_prepare(42, rebase=True) == 0
+    wt = resubmit._worktree(42)
+    assert resubmit._conflicted_paths(wt) == ["one.txt"]
+    (wt / "one.txt").write_text("resolved one\n")
+    assert resubmit.cmd_continue(42) == 0
+    assert resubmit._conflicted_paths(wt) == ["two.txt"]
+    assert json.loads(resubmit._meta_path(42).read_text())["phase"] == "conflicted"
+
+
+def test_rebase_push_refuses_if_base_moved(monkeypatch, tmp_path, capsys):
+    repos = _make_rebase_repos(tmp_path, conflict=False)
+    _wire_rebase(monkeypatch, tmp_path, repos)
+    assert resubmit.cmd_prepare(42, rebase=True) == 0
+    monkeypatch.setattr(
+        resubmit, "_gh_json",
+        lambda pr: _pr(headRefOid=repos["old_head"], baseRefOid="f" * 40),
+    )
+    assert resubmit.cmd_push(42, None, False, repos["old_head"]) == 6
+    assert "base moved" in capsys.readouterr().err
+    assert _git(repos["fork"], "rev-parse", "refs/heads/fix").stdout.strip() == repos["old_head"]
+
+
+def test_rebase_push_refuses_if_contributor_head_moved(monkeypatch, tmp_path, capsys):
+    repos = _make_rebase_repos(tmp_path, conflict=False)
+    _wire_rebase(monkeypatch, tmp_path, repos)
+    assert resubmit.cmd_prepare(42, rebase=True) == 0
+    monkeypatch.setattr(
+        resubmit, "_gh_json",
+        lambda pr: _pr(headRefOid="e" * 40, baseRefOid=repos["base_head"]),
+    )
+    assert resubmit.cmd_push(42, None, False, repos["old_head"]) == 6
+    assert "head moved" in capsys.readouterr().err
+    assert _git(repos["fork"], "rev-parse", "refs/heads/fix").stdout.strip() == repos["old_head"]
+
+
+def test_abort_during_conflict_leaves_remote_untouched(monkeypatch, tmp_path):
+    repos = _make_rebase_repos(tmp_path)
+    _wire_rebase(monkeypatch, tmp_path, repos)
+    assert resubmit.cmd_prepare(42, rebase=True) == 0
+    assert resubmit.cmd_abort(42) == 0
+    assert not resubmit._worktree(42).exists()
+    assert not resubmit._meta_path(42).exists()
+    assert _git(repos["fork"], "rev-parse", "refs/heads/fix").stdout.strip() == repos["old_head"]
 
 
 # --- update: merge the base branch into the PR's head, as the operator ---------

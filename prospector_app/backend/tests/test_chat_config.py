@@ -288,6 +288,12 @@ def test_context_documents_upstream_writes_and_the_merge_limit():
     # the agent doesn't look for a bot command that isn't allowlisted.
     assert "resubmit <pr> update" in sp
     assert "gh pr update-branch" not in sp
+    # Conflicting PRs use the same narrow helper: the prompt forbids workaround
+    # edits and requires an exact old-head acknowledgement for the leased rewrite.
+    assert "prepare --rebase" in sp
+    assert "push --confirm-rewrite <full-old-head-sha>" in sp
+    assert "never change the\nshape or style" in sp.lower()
+    assert "force-with-lease" in sp
     # ...and the hard "never merge" limit is stated.
     assert "merge" in sp.lower()
     assert "cannot" in sp.lower() or "never" in sp.lower()
