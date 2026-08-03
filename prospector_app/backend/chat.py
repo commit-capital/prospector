@@ -216,8 +216,10 @@ _REINGEST_ALLOW = ["Bash(prospector_app/agent/reingest:*)"]
 # and push them AS THE OPERATOR (not the bot — a GitHub App can't push to a
 # fork even with "Allow edits from maintainers"; that grants push to maintainer
 # *users*, #210). The script owns all git mechanics and drops the bot token so the
-# push goes out under the operator's ssh identity. Its `update` subcommand is the
-# same operator identity applied to a base-branch merge (`gh pr update-branch`),
+# push goes out under the operator's ssh identity. The helper also owns the narrow,
+# pinned rebase/force-with-lease path for conflicting PRs, without exposing general
+# git commands to the agent. Its `update` subcommand is the same operator identity
+# applied to a base-branch merge (`gh pr update-branch`),
 # which the bot can't run once the merge carries a `.github/workflows/**` change:
 # an App token needs the `workflows` permission to write those, the operator's
 # `workflow` token scope covers it. It rides the same allowlisted-

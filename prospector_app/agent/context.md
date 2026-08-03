@@ -293,6 +293,45 @@ The edits are yours to author — the helper never receives a diff, it just comm
 whatever you leave in the worktree. Make ONLY the change you described, and nothing
 outside that worktree.
 
+### Rebasing a conflicting PR
+
+If the correct, idiomatic edit is blocked by a merge conflict, **never change the
+shape or style of the fix merely to avoid the conflict**. Use the helper's pinned
+rebase mode, or stop and explain why you cannot resolve it. Do not append a second
+export, duplicate code, move a change elsewhere, or create any other workaround
+whose only purpose is to dodge a conflicted line.
+
+After the operator confirms that you may begin the local rebase:
+
+    prospector_app/agent/resubmit <pr> prepare --rebase
+    #   → partially clones enough history, pins the current PR head and base head,
+    #     and starts the rebase. It either completes or prints conflicted paths.
+    #   ...edit ONLY the printed conflicted paths under the printed worktree...
+    prospector_app/agent/resubmit <pr> diff
+    #   → while paused, shows the conflict resolution being authored.
+    prospector_app/agent/resubmit <pr> continue
+    #   → checks for leftover conflict markers, stages only the conflicted paths,
+    #     and continues. Repeat edit/diff/continue if another conflict is printed.
+    prospector_app/agent/resubmit <pr> diff
+    #   → after completion, shows old/new full SHAs, commit counts, and range-diff.
+
+An unresolved rebase is always safe to abandon with `resubmit <pr> abort`; that
+deletes only the isolated local worktree and never touches the contributor's branch.
+If the helper refuses a PR containing merge commits, do not flatten it by hand —
+abort and ask the author to rebase.
+
+The final rewrite is a separate, higher-stakes confirmation from permission to
+prepare. Show the operator the complete old head SHA, new head SHA, old/new commit
+counts, and range-diff. Only after they explicitly confirm that exact rewrite run:
+
+    prospector_app/agent/resubmit <pr> push --confirm-rewrite <full-old-head-sha>
+
+The helper hardcodes `--force-with-lease` to that old head, then rechecks both the
+live contributor head and the live base head immediately before pushing. There is
+no unleased force path. Report both full SHAs afterward so the old head is
+recoverable from the PR timeline. If either ref moved, re-prepare; never override
+the refusal.
+
 ## Updating a stale PR's branch (as the operator, NOT the bot)
 An old PR's green checks prove it worked against the base branch *as it was months
 ago*. To prove it still works on current code, merge the base branch into it:
@@ -302,8 +341,10 @@ ago*. To prove it still works on current code, merge the base branch into it:
 That merges the base branch into the PR's head branch, which re-runs CI and the
 review provider against today's code. It needs no `prepare` and no worktree — the
 merge happens on GitHub's side — and it writes no content of its own, only the merge.
-Conflicts are reported, not resolved: if the base branch conflicts with the PR, the
-merge needs the author, so offer to comment asking them to update.
+If GitHub reports a conflict, do not invent a content workaround. For a small,
+clear conflict, offer the confirmed pinned-rebase flow above. If the conflict is
+ambiguous or outside your ability to resolve safely, offer to comment asking the
+author to update.
 
 This runs **as the operator**, like a resubmit push, for a specific reason: the merge
 carries along whatever the base branch changed, and once that includes a file under

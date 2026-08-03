@@ -43,7 +43,9 @@ allowlist:
   submit a review, manage issues, and rerun a workflow. It cannot merge.
 - **Writes as the operator, after confirmation:** on a machine that can mint the
   bot token, the `resubmit` helper may push an agreed code change to a
-  contributor's editable fork branch or update that branch from the base branch.
+  contributor's editable fork branch, update that branch from the base branch,
+  or resolve a conflicting PR through a pinned, explicitly confirmed
+  force-with-lease rebase.
   Separately, when `PROSPECTOR_FEEDBACK_REPO` is configured, `file-issue` may always
   open a tooling issue there as the operator. Both helpers drop the injected bot
   token before invoking GitHub.
