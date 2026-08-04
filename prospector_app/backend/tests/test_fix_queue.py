@@ -5,12 +5,14 @@ from __future__ import annotations
 
 import socket
 import stat
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from pipeline import profile
 from pipeline import settings
 from pipeline import store as S
+from pipeline.storekit import now as _now
 from prospector_app.backend import data
 from prospector_app.backend import fix_queue
 from prospector_app.backend import fix_worker
@@ -141,6 +143,45 @@ def test_runner_status_without_a_push_identity(store, monkeypatch):
     st = fix_queue.runner_status()
     assert st["push_identity"] is False
     assert st["push_login"] is None
+
+
+def test_a_laptop_can_queue_while_the_worker_holds_the_key(store, monkeypatch):
+    # The whole point of a shared queue: an operator clicks from a machine with
+    # no push credential at all, and the machine that has one does the work.
+    # can_queue must follow the WORKER, never this backend's own config.
+    monkeypatch.setattr(settings, "PUSH_LOGIN", "")
+    store.save_fix_worker({"host": "sandbox-box", "last_beat": _now(),
+                           "current_pr": None, "autohunt": False})
+    st = fix_queue.runner_status()
+    assert st["push_identity"] is False, "this backend holds no key"
+    assert st["online"] is True
+    assert st["can_queue"] is True, "a laptop must still be able to queue"
+
+
+def test_cannot_queue_when_no_worker_has_ever_been_seen(store, monkeypatch):
+    monkeypatch.setattr(settings, "PUSH_LOGIN", "")
+    st = fix_queue.runner_status()
+    assert st["can_queue"] is False
+
+
+def test_the_worker_machine_can_queue_before_its_first_beat(store, push_key):
+    # The sandbox box itself holds the key, so it can queue even with no
+    # heartbeat written yet.
+    st = fix_queue.runner_status()
+    assert st["online"] is False
+    assert st["can_queue"] is True
+
+
+def test_a_stale_worker_beat_stops_queueing(store, monkeypatch):
+    # A worker that stopped beating cannot drain, so a queued action would sit
+    # forever — say so rather than accepting the click.
+    monkeypatch.setattr(settings, "PUSH_LOGIN", "")
+    old_beat = (datetime.now(timezone.utc)
+                - timedelta(seconds=fix_queue.STALE_BEAT_SECONDS + 60)).isoformat()
+    store.save_fix_worker({"host": "sandbox-box", "last_beat": old_beat,
+                           "current_pr": None, "autohunt": False})
+    st = fix_queue.runner_status()
+    assert st["online"] is False and st["can_queue"] is False
 
 
 # --- worker: key safety is asserted, not assumed --------------------------------

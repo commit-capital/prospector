@@ -1,23 +1,23 @@
 import type { FixAction, FixRequest, FixRunner } from "../api";
 import { localDateTime, timeAgo } from "../timeAgo";
 
-/** Why a given action is unavailable right now, or null when it may be queued.
- *  A machine with no push identity can never push, so every action is withheld
- *  with that reason rather than failing at the runner. */
-function unavailable(action: FixAction, runner: FixRunner | null,
-                     req: FixRequest | null, resolved: boolean): string | null {
+/** Why an action cannot be queued right now, or null when it can be.
+ *  Queueing is gated on a worker being reachable, NOT on this browser's backend
+ *  holding the push key — the queue is shared so an operator clicks from a
+ *  laptop and the machine with the key does the work. Eligibility itself is the
+ *  backend's call (gates.fix_eligibility); it reports its reason on the click
+ *  rather than being second-guessed here. */
+function unavailable(runner: FixRunner | null, req: FixRequest | null,
+                     resolved: boolean): string | null {
   if (resolved) return "This PR is already resolved.";
-  if (runner != null && !runner.push_identity) {
-    return "No machine user is configured on this deployment, so nothing can push to "
-         + "contributor branches. Set TRIAGE_PUSH_LOGIN, TRIAGE_PUSH_EMAIL and "
-         + "TRIAGE_PUSH_SSH_KEY_FILE in .env.";
+  if (runner != null && !runner.can_queue) {
+    return "No autofix worker has been seen against this store, so a queued action "
+         + "would never run. Start a backend with TRIAGE_FIX_WORKER=1 on the machine "
+         + "holding the machine user's push key.";
   }
   const status = req?.status;
   if (status && IN_FLIGHT.includes(status)) {
     return `PR already has a ${status} ${req?.action} request.`;
-  }
-  if (action === "fix") {
-    return null; // the backend's profile opt-in is the authority; it reports why
   }
   return null;
 }
@@ -25,21 +25,28 @@ function unavailable(action: FixAction, runner: FixRunner | null,
 const IN_FLIGHT = ["queued", "running", "awaiting-review", "approved", "pushing"];
 
 const LABEL: Record<FixAction, string> = {
-  update: "⤵ Merge base in",
-  rebase: "⟳ Rebase onto base",
+  update: "↻ Re-test against current main",
+  rebase: "⟳ Resolve merge conflicts",
   fix: "🔧 Author a fix",
 };
 
 const HELP: Record<FixAction, string> = {
-  update: "Merge the base branch into this PR's head so CI and the review provider "
-        + "re-run against current base code. Authors no content of its own, and a "
-        + "conflicting base stops before anything is pushed.",
-  rebase: "Replay this PR's commits onto current base to clear a conflict, then "
-        + "force-push behind a lease pinned to the author's exact head. Rewrites "
-        + "the contributor's branch history, so it parks for your review first.",
-  fix: "Have an agent author a change against this PR's failing gates, then park "
-     + "the diff for your review. Only the gates the repository profile names as "
-     + "fixable are attempted.",
+  update: "Adds a merge commit bringing current main into this PR, which makes CI "
+        + "and the review provider answer \"does this still work against main as it "
+        + "is today?\" — their last answer is only as current as the last push. "
+        + "Does not unblock a merge: GitHub merges cleanly with or without this. "
+        + "The contributor's commits are untouched, and a conflicting main stops "
+        + "before anything is pushed. Moving the head does re-stale this PR's "
+        + "stored facts, so it needs a re-ingest afterwards.",
+  rebase: "Replays this PR's commits onto current main to clear a conflict, then "
+        + "force-pushes behind a lease pinned to the author's exact head. The "
+        + "contributor stays the author of every commit, but the commits get new "
+        + "SHAs — which collapses inline review comments anchored to the old ones, "
+        + "and means anyone with the branch checked out needs a hard reset. It "
+        + "parks for your review before any of that happens.",
+  fix: "Has an agent write a change against this PR's failing gates and park the "
+     + "diff for your review — nothing is pushed until you approve it. Only the "
+     + "gates the repository profile names as fixable are attempted.",
 };
 
 /** The queue/run state strip: where an in-flight, parked, or failed autofix
@@ -190,7 +197,7 @@ export function FixAction({ req, runner, busy, resolved, onQueue, onDequeue, onA
   return (
     <>
       {(["update", "rebase", "fix"] as FixAction[]).map((action) => {
-        const why = unavailable(action, runner, req, resolved);
+        const why = unavailable(runner, req, resolved);
         return (
           <button key={action} className="btn-secondary sm" disabled={busy != null || why != null}
             onClick={() => onQueue(action)} title={why ?? HELP[action]}>
@@ -212,6 +219,8 @@ export function FixBody({ req, runner }: { req: FixRequest | null; runner: FixRu
         No autofix has been queued for this PR. Queueing one has the
         {runner?.push_login ? ` ${runner.push_login}` : " machine user"} account act on the
         contributor's branch — never your own account.
+        {runner != null && !runner.can_queue
+          && " No worker has been seen against this store, so nothing would run yet."}
       </div>
     );
   }
