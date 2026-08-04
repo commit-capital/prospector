@@ -9,9 +9,9 @@ contributor's branch as a dedicated machine user.
 
 Pushing to a contributor's fork head branch relies on the PR's "Allow edits from
 maintainers", which grants push to **users with push access to the base repo**.
-A GitHub App installation token is not a user, so the `commitperclip` App —
-which owns comments, merges, and closes — fundamentally cannot make these
-pushes. `prospector_app/agent/resubmit` therefore runs as the operator, dropping
+A GitHub App installation token is not a user, so the configured bot App — which
+owns comments, merges, and closes — fundamentally cannot make these pushes.
+`prospector_app/agent/resubmit` therefore runs as the operator, dropping
 `GH_TOKEN` so the push goes out over an ambient SSH key.
 
 That is the gap this design closes. A third identity joins the trust model:
