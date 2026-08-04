@@ -29,6 +29,7 @@ import stat
 import subprocess
 import threading
 import traceback
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -43,6 +44,21 @@ POLL_SECONDS = 15.0
 
 # Captured resubmit output kept on a request the worker has to mark failed.
 TAIL_CHARS = 4000
+
+# resubmit exits that describe a world that moved rather than a decision:
+# a git/network failure (4), refs that shifted under the pin (6), and a push
+# the remote rejected (7). Retrying re-reads the live PR and re-pins, which is
+# exactly the remedy. Every other exit is a judgment — the PR is closed, the
+# merge conflicts, the fence refused the ref — and repeating it changes nothing.
+TRANSIENT_EXITS = {4, 6, 7}
+
+# How many times a transient failure is re-queued before it is left for a human.
+MAX_ATTEMPTS = 3
+
+# How long a re-queued request rests before pickup, so a moving base or a
+# flaking remote gets time to settle instead of burning the attempt cap in one
+# minute.
+TRANSIENT_RETRY_SECONDS = 300.0
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RESUBMIT = REPO_ROOT / "prospector_app" / "agent" / "resubmit"
@@ -156,6 +172,8 @@ def _oldest(status: str) -> int | None:
         req = rec.fix_request or {}
         if req.get("status") != status:
             continue
+        if req.get("attempts") and not _rested(req, TRANSIENT_RETRY_SECONDS):
+            continue
         key = (req.get("source") == "auto", str(req.get("queued_at") or ""))
         if best_key is None or key < best_key:
             best_n, best_key = n, key
@@ -167,6 +185,38 @@ def _resubmit(pr: int, *args: str) -> subprocess.CompletedProcess[str]:
     identity. Runs from the repo root under the same interpreter's environment."""
     return subprocess.run([str(RESUBMIT), str(pr), *args], cwd=str(REPO_ROOT),
                           capture_output=True, text=True, timeout=1800)
+
+
+def _rested(req: dict, seconds: float) -> bool:
+    """Whether a re-queued request's last attempt (its checked_at write stamp) is
+    at least `seconds` old. A missing or unparseable stamp reads as rested, so a
+    malformed record cannot wait forever."""
+    stamp = req.get("checked_at")
+    if not isinstance(stamp, str):
+        return True
+    try:
+        at = datetime.fromisoformat(stamp)
+    except ValueError:
+        return True
+    return (datetime.now(timezone.utc) - at).total_seconds() >= seconds
+
+
+def _settle(n: int, req: dict, rc: int, output: str) -> None:
+    """Record a failed resubmit run: re-queue it when the exit says the world
+    moved and attempts remain, otherwise refuse it for a human to look at."""
+    attempts = int(req.get("attempts") or 0) + 1
+    if rc in TRANSIENT_EXITS and attempts < MAX_ATTEMPTS:
+        data.store().edit_pr(n).record_fix_request(
+            "queued", req.get("action", "fix"), queued_at=req.get("queued_at"),
+            attempts=attempts, source=req.get("source"), host=socket.gethostname(),
+            error=f"attempt {attempts} did not stick, retrying: {output[-TAIL_CHARS:]}")
+        data.refresh()
+        print(f"[fix-worker] PR #{n} exited {rc}; re-queued (attempt {attempts}"
+              f"/{MAX_ATTEMPTS})", flush=True)
+        return
+    exhausted = (" after "
+                 f"{attempts} attempts" if rc in TRANSIENT_EXITS else "")
+    _refuse(n, req, f"{output[-TAIL_CHARS:]}{exhausted}")
 
 
 def _fail(n: int, req: dict, message: str) -> None:
@@ -215,14 +265,15 @@ def run_one(n: int) -> None:
         # it needs no preflight and no review park.
         r = _resubmit(n, "update")
         if r.returncode != 0:
-            _refuse(n, claimed, (r.stderr or r.stdout).strip())
+            _settle(n, claimed, r.returncode, (r.stderr or r.stdout).strip())
             return
         _finish_pushed(n, claimed, (r.stdout or "").strip())
         return
 
     prepared = _resubmit(n, "prepare", *(["--rebase"] if action == "rebase" else []))
     if prepared.returncode != 0:
-        _refuse(n, claimed, (prepared.stderr or prepared.stdout).strip())
+        _settle(n, claimed, prepared.returncode,
+                (prepared.stderr or prepared.stdout).strip())
         return
     try:
         diff = _resubmit(n, "diff")
@@ -298,7 +349,7 @@ def _push(n: int, req: dict, action: str, result: dict) -> None:
     r = _resubmit(n, *args)
     if r.returncode != 0:
         _resubmit(n, "abort")
-        _refuse(n, req, (r.stderr or r.stdout).strip(), result=result)
+        _settle(n, req, r.returncode, (r.stderr or r.stdout).strip())
         return
     _finish_pushed(n, req, (r.stdout or "").strip(), result=result)
 

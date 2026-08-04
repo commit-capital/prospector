@@ -38,8 +38,10 @@ none of its own content. It needs no prepare:
 
 Preflight refuses cleanly when the PR is closed or "Allow edits from maintainers"
 is off (nothing to push to), and `push` refuses if the contributor moved the head
-since prepare. A rebase push also refuses if the base moved, requires an exact
-old-head acknowledgement, and hardcodes a force-with-lease pinned to that head.
+since prepare. A rebase push requires an exact old-head acknowledgement and
+hardcodes a force-with-lease pinned to that head. A base that merely advanced is
+fine — that is the ordinary state of every open PR — but one rewritten out from
+under the pin refuses, since the commits the rebase was computed against are gone.
 
 Stdlib only, so it runs under the sandbox's system python (like `remember` /
 `uncluster`). It reuses prospector_app.backend.activity for the audit hook — this
@@ -335,11 +337,19 @@ def cmd_prepare(pr: int, rebase: bool = False) -> int:
             print(f"resubmit: fetching upstream {base} failed: {fetch.stderr.strip()}", file=sys.stderr)
             _cleanup(pr)
             return 4
+        # The pin is whatever the base branch actually points at right now, read
+        # from the ref we just fetched. The API's baseRefOid is NOT that: it is
+        # the base commit the PR was opened or last synced against, so on any PR
+        # whose base has moved — every PR a rebase is for — it names an older
+        # commit. Only the head is re-checked here, because pushing over a head
+        # that moved would clobber the author; a base that moved just means the
+        # rebase lands one or two commits behind, which is what every PR is.
         base_sha = _git_text(["rev-parse", f"refs/remotes/upstream/{base}"], wt)
         live = _gh_json(pr)
-        if live.get("headRefOid") != sha or live.get("baseRefOid") != base_sha:
-            print(f"resubmit: PR #{pr} head or base moved while preparing; rerun prepare "
-                  "against the latest refs.", file=sys.stderr)
+        if live.get("headRefOid") != sha:
+            print(f"resubmit: PR #{pr} head moved while preparing ({sha[:8]} → "
+                  f"{(live.get('headRefOid') or 'unknown')[:8]}); rerun prepare "
+                  "against the author's latest head.", file=sys.stderr)
             _cleanup(pr)
             return 6
         merge_base = _git_text(["merge-base", sha, base_sha], wt)
@@ -420,8 +430,22 @@ def cmd_continue(pr: int) -> int:
     return _mark_rebase_ready(pr, meta, wt)
 
 
-def _live_push_preflight(pr: int, meta: dict, *, check_base: bool) -> tuple[dict | None, int]:
-    """Re-check permission and the exact refs immediately before either push."""
+def _live_push_preflight(pr: int, meta: dict, *, check_base: bool,
+                         wt: Path | None = None) -> tuple[dict | None, int]:
+    """Re-check permission and the refs immediately before either push.
+
+    The head must be exactly what prepare pinned: pushing over a head the author
+    moved would clobber their work, and the force-with-lease would reject it
+    anyway.
+
+    The base is checked for REWRITE, not for movement. A base that advanced
+    leaves the rebase a couple of commits behind, which is the ordinary state of
+    every open PR and no reason to refuse. A base that was rewritten out from
+    under the pin is different — the commits the rebase was computed against are
+    gone, so the pin means nothing and the transaction restarts. That is an
+    ancestry question against the live ref, which is why it re-fetches rather
+    than reading the API's baseRefOid (that field is the base the PR was opened
+    or last synced against, not where the branch points now)."""
     info = _gh_json(pr)
     ok, reason = eligibility(info)
     if not ok:
@@ -432,11 +456,21 @@ def _live_push_preflight(pr: int, meta: dict, *, check_base: bool) -> tuple[dict
               f"({meta['head_sha'][:8]} → {(info.get('headRefOid') or 'unknown')[:8]}); "
               "the author pushed. Re-run prepare against their latest head.", file=sys.stderr)
         return None, 6
-    if check_base and info.get("baseRefOid") != meta["base_sha"]:
-        print(f"resubmit: PR #{pr} base moved since prepare "
-              f"({meta['base_sha'][:8]} → {(info.get('baseRefOid') or 'unknown')[:8]}); "
-              "re-run prepare so the rewrite lands on the current base.", file=sys.stderr)
-        return None, 6
+    if check_base and wt is not None:
+        base = meta["base_branch"]
+        fetch = _git(["fetch", "--filter=blob:none", "--no-tags", "upstream",
+                      f"+refs/heads/{base}:refs/remotes/upstream/{base}"], wt)
+        if fetch.returncode != 0:
+            print(f"resubmit: re-fetching upstream {base} failed: {fetch.stderr.strip()}",
+                  file=sys.stderr)
+            return None, 4
+        live_base = _git_text(["rev-parse", f"refs/remotes/upstream/{base}"], wt)
+        rewritten = _git(["merge-base", "--is-ancestor", meta["base_sha"], live_base], wt)
+        if rewritten.returncode != 0:
+            print(f"resubmit: PR #{pr}'s base {base} was rewritten since prepare "
+                  f"({meta['base_sha'][:8]} is no longer an ancestor of {live_base[:8]}); "
+                  "re-run prepare so the rewrite lands on real history.", file=sys.stderr)
+            return None, 6
     try:
         assert_push_target(info, meta["branch"])
     except RuntimeError as e:
@@ -465,7 +499,7 @@ def _push_rebase(pr: int, meta: dict, confirm_rewrite: str | None, dry_run: bool
               "including unreviewed edits in a rewrite.", file=sys.stderr)
         return 9
 
-    _, rc = _live_push_preflight(pr, meta, check_base=True)
+    _, rc = _live_push_preflight(pr, meta, check_base=True, wt=wt)
     if rc:
         return rc
     new_sha = _git_text(["rev-parse", "HEAD"], wt)
