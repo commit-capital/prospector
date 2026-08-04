@@ -224,12 +224,13 @@ _OUTCOME_COPY: dict[str, tuple[str, str, str]] = {
         "info",
         "Unverifiable — no test and no reproduction to run",
         "The PR ships no test and no linked-issue repro, so there is nothing to go "
-        "red→green. A useful author ask; it fails the auto-merge bar."),
+        "red→green. It fails the auto-merge bar but does not block a human merge."),
     "unverifiable-needs-live-agent": (
         "info",
         "Unverifiable here — reproducing needs a live agent run",
         "The blind pass judged this bug reproducible only with a live model agent "
-        "(Tier 2), which this sandbox does not run. It fails the auto-merge bar."),
+        "(Tier 2), which this sandbox does not run. It fails the auto-merge bar "
+        "but does not block a human merge."),
     "regressed": (
         "blocked",
         "Regressed — the merged tree gets worse with this PR applied",

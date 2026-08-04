@@ -206,6 +206,18 @@ def _suggest_inner(rec: Pr, disposition: str | None = None,
             return {"action": "MERGE", "label": "Merge", "tone": "green",
                     "rationale": rec.rationale or "Canonical fix — gates clean, security GREEN.",
                     "accept": models.MergeAccept(method="squash", tags=["clean", "agent-suggested"])}
+        # The automatic recommendation bar is intentionally stricter than the
+        # operator's merge button. Do not call the PR "merge blocked" when only
+        # auto-verification is missing and a reasonless human merge is eligible.
+        human_ok, human_reason = gates.merge_eligibility(rec)
+        if (human_ok
+                and rec.verify_outcome in gates.VERIFY_UNVERIFIABLE_OUTCOMES
+                and not (human_merge and human_merge.get("required"))):
+            return {"action": "BLOCKED", "label": "Human merge available", "tone": "yellow",
+                    "rationale": (f"Automatic recommendation withheld: {reason}. "
+                                  f"Human merge is allowed without an override reason "
+                                  f"({human_reason})."),
+                    "accept": None}
         # A CODEOWNERS-gated PR can't be merged by the bot even once the
         # stated blocker clears — say so, or "re-run SECURITY" reads as the whole
         # path to landing it when the terminal step is a human code-owner merge.

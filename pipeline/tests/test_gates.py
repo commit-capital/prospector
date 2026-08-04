@@ -1417,6 +1417,12 @@ class TestVerifyMergeBar:
                                         override_reason="read the red output; the test is fine")
         assert ok is True
 
+    def test_unverifiable_outcomes_allow_a_reasonless_human_merge(self):
+        for outcome in ("unverifiable-no-test", "unverifiable-needs-live-agent"):
+            pr = _pr(verify=_verified(outcome=outcome))
+            ok, why = gates.merge_eligibility(pr, today="2026-06-10")
+            assert ok is True and outcome in why and "inconclusive" in why
+
     def test_a_logged_verify_override_clears_escalate(self):
         pr = _pr(verify=_verified(outcome="escalate",
                                   override={"reason": "checked by hand", "by": "op"}))
@@ -1435,6 +1441,10 @@ class TestVerifyMergeBar:
     def test_verify_overridable_marks_only_a_reason_clearable_escalate(self):
         assert gates.verify_overridable(
             _pr(verify=_verified(outcome="escalate")), today="2026-06-10")
+        # unverifiable outcomes already permit a reasonless human merge
+        for outcome in gates.VERIFY_UNVERIFIABLE_OUTCOMES:
+            assert not gates.verify_overridable(
+                _pr(verify=_verified(outcome=outcome)), today="2026-06-10")
         # a verified-fix needs no override
         assert not gates.verify_overridable(
             _pr(verify=_verified()), today="2026-06-10")
