@@ -412,6 +412,56 @@ def merge_eligibility(pr: Pr, today: str | None = None,
     return True, "passed all checks run"
 
 
+def fix_eligibility(pr: Pr, action: str,
+                    changed_paths: list[str] | None = None) -> tuple[bool, str]:
+    """Autofix gate — may the push bot act on this PR's head branch?
+
+    Answers from stored facts alone, so any app instance can render the buttons
+    without touching the network. It is a pre-check, not the authority: the
+    runner re-reads the live PR before it pushes, where "Allow edits from
+    maintainers", the PR's current state, and the head SHA it was pinned against
+    are all re-confirmed.
+
+    Autofix eligibility is not the merge boundary and does not stand in for one —
+    an autofixed PR still faces merge_eligibility unchanged. What these blocks
+    protect is the bot's own reach: which branches it will touch at all.
+
+    Hard blocks, all fail-closed:
+      - a `malicious` threat verdict, which is sticky and exempt from nothing
+      - any recorded RED security verdict, current or stale. A stale RED on a
+        moved head may well be a finding the author already fixed, but the bot
+        stays off the branch until an adversarial review says so again.
+      - a CODEOWNERS-gated path, or one the profile's autofix.deny_globs names
+      - a PR that is not open
+      - a `fix` action where the profile names no fixable gates, i.e. the
+        deployment has not opted into agent-authored changes
+    """
+    if action not in settings.FIX_ACTIONS:
+        return False, f"unknown autofix action {action!r}"
+    if pr.state != "open":
+        return False, f"PR is {pr.state}, not open"
+    if pr.threat_verdict == "malicious":
+        return False, "threat verdict is malicious"
+    if pr.security_verdict == "RED":
+        return False, "security review returned RED"
+    if changed_paths is not None:
+        hm = codeowners.human_merge(changed_paths)
+        if hm:
+            owners = " ".join(hm["owners"])
+            return False, (f"touches a CODEOWNERS-gated path owned by {owners}: "
+                           f"{', '.join(hm['paths'][:5])}")
+        denied = [p for p in changed_paths
+                  if any(diffpaths.matches_glob(diffpaths.normalize_path(p), g)
+                         for g in profile.active().autofix.deny_globs)]
+        if denied:
+            return False, ("touches a path the profile withholds from autofix: "
+                           f"{', '.join(denied[:5])}")
+    if action == "fix" and not profile.active().autofix.fixable_gates:
+        return False, ("the active profile names no autofix.fixable_gates, so "
+                       "agent-authored fixes are not enabled for this repository")
+    return True, f"eligible for {action}"
+
+
 def security_overridable(pr: Pr, today: str | None = None,
                          changed_paths: list[str] | None = None) -> bool:
     """True iff the block a reason would clear is specifically a current YELLOW

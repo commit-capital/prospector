@@ -1957,3 +1957,79 @@ class TestAgentVerifiedLanesIncomplete:
         assert ok is True
         assert "agent-authored" in why
         assert "incomplete" not in why
+
+
+class TestFixEligibility:
+    """The autofix gate: which PRs the push bot may touch at all. Answers from
+    stored facts only — the runner re-confirms the live PR before it pushes."""
+
+    def _profile(self, monkeypatch, **over):
+        p = profile.RepoProfile(autofix=profile.AutofixPolicy(**over))
+        monkeypatch.setattr(profile, "active", lambda: p)
+        return p
+
+    def test_mechanical_actions_need_no_profile_optin(self, monkeypatch):
+        self._profile(monkeypatch)
+        for action in ("update", "rebase"):
+            ok, why = gates.fix_eligibility(_pr(), action)
+            assert ok is True, why
+            assert action in why
+
+    def test_unknown_action_refused(self):
+        ok, why = gates.fix_eligibility(_pr(), "amend")
+        assert ok is False
+        assert "unknown autofix action" in why
+
+    def test_closed_pr_refused(self):
+        pr = _pr(meta={"title": "t", "state": "closed", "head_sha": HEAD})
+        ok, why = gates.fix_eligibility(pr, "update")
+        assert ok is False
+        assert "not open" in why
+
+    def test_malicious_threat_refused(self):
+        pr = _pr(threat={"verdict": "malicious", "checked_at": NOW})
+        ok, why = gates.fix_eligibility(pr, "update")
+        assert ok is False
+        assert "malicious" in why
+
+    def test_red_security_refused_even_when_stale(self):
+        # A stale RED may be a finding the author already fixed, but the bot
+        # stays off the branch until an adversarial review says so again.
+        pr = _pr(security={"verdict": "RED", "findings": [],
+                           "checked_at": "2020-01-01T00:00:00+00:00",
+                           "against_head_sha": "old"})
+        ok, why = gates.fix_eligibility(pr, "update")
+        assert ok is False
+        assert "RED" in why
+
+    def test_deny_glob_path_refused(self, monkeypatch):
+        self._profile(monkeypatch, deny_globs=(".github/workflows/**",))
+        ok, why = gates.fix_eligibility(
+            _pr(), "update", changed_paths=["src/a.ts", ".github/workflows/ci.yml"])
+        assert ok is False
+        assert ".github/workflows/ci.yml" in why
+
+    def test_paths_outside_the_deny_list_pass(self, monkeypatch):
+        self._profile(monkeypatch, deny_globs=(".github/workflows/**",))
+        ok, why = gates.fix_eligibility(_pr(), "update", changed_paths=["src/a.ts"])
+        assert ok is True, why
+
+    def test_codeowners_gated_path_refused(self, monkeypatch):
+        p = profile.RepoProfile(
+            codeowners=profile.CodeownersPolicy(gated_globs=("infra/**",),
+                                                owners=("@core",)))
+        monkeypatch.setattr(profile, "active", lambda: p)
+        ok, why = gates.fix_eligibility(_pr(), "update", changed_paths=["infra/main.tf"])
+        assert ok is False
+        assert "CODEOWNERS" in why and "@core" in why
+
+    def test_fix_needs_profile_optin(self, monkeypatch):
+        self._profile(monkeypatch)
+        ok, why = gates.fix_eligibility(_pr(), "fix")
+        assert ok is False
+        assert "fixable_gates" in why
+
+    def test_fix_allowed_once_gates_named(self, monkeypatch):
+        self._profile(monkeypatch, fixable_gates=("ci",))
+        ok, why = gates.fix_eligibility(_pr(), "fix")
+        assert ok is True, why

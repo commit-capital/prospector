@@ -81,11 +81,18 @@ it reuses the risk-tier and CODEOWNERS vocabulary the profile already owns:
 
 ```json
 "autofix": {
-  "max_risk_tier": "<tier>",
   "deny_globs": ["..."],
   "fixable_gates": ["ci", "review"]
 }
 ```
+
+There is deliberately no risk-tier condition. `pipeline/risktier.py` documents
+itself as an ordering and attention signal that no gate consumes, because path
+shape is attacker-controlled; making autofix the first policy to gate on it would
+break that invariant. `deny_globs` is purpose-built for this and says what it
+means. Neither is a security boundary — the boundary is the threat verdict, the
+security review, and CODEOWNERS routing, all of which gate autofix independently,
+and an autofixed PR still faces `merge_eligibility` unchanged.
 
 ## Architecture
 
@@ -114,10 +121,14 @@ Hard blocks, all fail-closed:
 
 - `threat` verdict of `malicious` (sticky, no staleness exemption)
 - security verdict RED
-- any changed path that is CODEOWNERS-gated, matches the profile's
-  `autofix.deny_globs`, or exceeds `autofix.max_risk_tier`
+- any changed path that is CODEOWNERS-gated or matches `autofix.deny_globs`
 - PR not open
-- cross-repository PR with `maintainerCanModify` off
+- a `fix` action where the profile names no `autofix.fixable_gates`
+
+The live PR's `maintainerCanModify` grant is deliberately *not* checked here: the
+gate answers from stored facts so any app can render the buttons without a
+network round-trip, and `resubmit`'s own preflight re-confirms it — along with
+the PR's state and pinned head SHA — immediately before the push.
 
 ### Queue and worker
 
@@ -135,10 +146,13 @@ group- or world-readable, or resolves under `VERIFY_SCRATCH` — the sandbox
 machine runs untrusted contributor code, so the push credential must be
 provably outside anything the sandbox can reach.
 
-`update` skips the compile preflight: `gh`-style base merges cannot produce a
-conflicted state, and a post-merge CI failure is honest signal about the PR.
-`rebase` and `fix` run `compile_preflight` over the resulting tree, and anything
-but a clean pass lands `refused` with the build error, pushing nothing.
+`update` skips the compile preflight: a conflicting base stops at `git merge` and
+pushes nothing, and a post-merge CI failure is honest signal about the PR.
+`rebase` and `fix` run `compile_preflight.run_for_patch` over the authored tree —
+a sibling of `run_for_merge` that takes the patch instead of fetching it, so a
+change that exists only in a local worktree is measured before it reaches the
+contributor's branch. Anything but a clean pass lands `refused` with the build
+error, pushing nothing.
 
 ### Push path
 
@@ -152,18 +166,22 @@ A guard refuses any push whose target ref is not the open PR's `headRefName` on
 its head repository, or whose pinned `head_sha` no longer matches the live PR.
 
 `cmd_update` merges locally over SSH — clone the head branch, merge
-`upstream/<base>`, push — rather than calling the `update-branch` REST
-endpoint. The REST call needs an API token the machine user does not have, and
-attributes the merge to whoever triggered it. Merging locally also sidesteps the
-`workflow` OAuth scope entirely, since SSH pushes are not subject to it.
+`upstream/<base>`, push behind a lease pinned to the author's head — rather than
+calling the `update-branch` REST endpoint. The REST call needs an API token the
+machine user does not have, and attributes the merge to whoever triggered it.
+Merging locally also sidesteps the `workflow` OAuth scope entirely, since SSH
+pushes are not subject to it. It runs on the worker like every other action,
+since it now needs a clone.
 
 ### Autonomy
 
 `TRIAGE_FIX_AUTOPUSH` is a comma-separated list of actions that skip
 `awaiting-review` on a clean preflight; empty by default. `TRIAGE_FIX_AUTOHUNT=1`
-lets an idle worker queue eligible PRs itself, as verify autohunt does. Together
-they are the unattended backlog burn-down, reached by configuration rather than
-a rewrite.
+lets an idle worker queue eligible PRs itself, as verify autohunt does — but only
+the mechanical actions: `rebase` for a PR GitHub reports unmergeable, `update`
+for one whose drift scan says the base moved. An agent-authored `fix` is always
+an operator's call. Together these are the unattended backlog burn-down, reached
+by configuration rather than a rewrite.
 
 ### UI and audit
 

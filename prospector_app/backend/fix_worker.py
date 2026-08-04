@@ -1,0 +1,406 @@
+"""The autofix worker: drains queued fix_requests by acting on contributor PR
+head branches, one PR at a time, inside the app backend process.
+
+It runs ONLY where TRIAGE_FIX_WORKER=1 is set — the machine holding the machine
+user's SSH key. Every other app backend serves the same queue/approve API and
+starts no worker; the queue lives in the shared store, so a click anywhere
+reaches the runner here within one poll tick.
+
+All git mechanics go through prospector_app/agent/resubmit, which owns the push
+identity, the "Allow edits from maintainers" preflight, the pinned lease, and
+the fence that refuses any ref that is not the open PR's head. The worker
+decides *which* PR gets *which* action and whether the result may be pushed; it
+never runs git itself.
+
+`update` pushes on a clean local merge: it authors no content, and a merge that
+conflicts stops before the push. `rebase` and `fix` additionally require a clean
+compile preflight over the resulting tree, and park as `awaiting-review` with
+the diff unless their action is named in TRIAGE_FIX_AUTOPUSH.
+
+With TRIAGE_FIX_AUTOHUNT=1 an empty queue turns the drain loop into a hunter: it
+queues the eligible PRs whose gates an autofix could plausibly clear, oldest
+community pain first. An operator-queued request always wins the next pick.
+"""
+from __future__ import annotations
+
+import os
+import socket
+import stat
+import subprocess
+import threading
+import traceback
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from pipeline import compile_preflight, gates, settings
+from pipeline.storekit import now as _now
+from prospector_app.backend import data, fix_queue, service
+
+if TYPE_CHECKING:
+    from pipeline.model import Pr
+
+POLL_SECONDS = 15.0
+
+# Captured resubmit output kept on a request the worker has to mark failed.
+TAIL_CHARS = 4000
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+RESUBMIT = REPO_ROOT / "prospector_app" / "agent" / "resubmit"
+
+# The PR the drain loop is currently acting on (None when idle) — read by the
+# heartbeat thread; `stop` ends both loops (tests set it).
+state: dict[str, int | None] = {"current_pr": None}
+stop = threading.Event()
+
+
+def enabled() -> bool:
+    """Whether THIS backend is the autofix runner. Deliberately an exact opt-in:
+    only the machine whose .env sets TRIAGE_FIX_WORKER=1 drains the queue."""
+    return settings.FIX_WORKER
+
+
+def enabled_autohunt() -> bool:
+    """Whether the idle auto-hunt runs on this backend. An exact opt-in like
+    enabled(), and meaningful only alongside it."""
+    return settings.FIX_AUTOHUNT
+
+
+def key_safety_failure() -> str | None:
+    """Why this machine must not run the worker, or None when it may.
+
+    The push key is a passphrase-less credential that can write to contributor
+    branches, and this is also the machine that runs untrusted contributor code
+    in the verify sandbox. So the key must exist, be readable by its owner
+    alone, and live outside the sandbox scratch root — properties asserted at
+    startup rather than assumed."""
+    if not settings.push_identity_configured():
+        return ("no contributor-push identity is configured: set TRIAGE_PUSH_LOGIN, "
+                "TRIAGE_PUSH_EMAIL and TRIAGE_PUSH_SSH_KEY_FILE in .env")
+    key = settings.PUSH_SSH_KEY_FILE
+    assert key is not None  # push_identity_configured() proved it
+    try:
+        mode = key.stat().st_mode
+    except OSError as e:
+        return f"TRIAGE_PUSH_SSH_KEY_FILE is unreadable ({key}): {e}"
+    if not stat.S_ISREG(mode):
+        return f"TRIAGE_PUSH_SSH_KEY_FILE is not a regular file: {key}"
+    if mode & (stat.S_IRWXG | stat.S_IRWXO):
+        return (f"TRIAGE_PUSH_SSH_KEY_FILE is group/world-accessible: {key} "
+                f"(chmod 600 it)")
+    scratch = settings.VERIFY_SCRATCH.resolve()
+    resolved = key.resolve()
+    if resolved == scratch or scratch in resolved.parents:
+        return (f"TRIAGE_PUSH_SSH_KEY_FILE lives under the sandbox scratch root "
+                f"({scratch}) — move the key outside anything the sandbox can reach")
+    return None
+
+
+def beat() -> None:
+    """Write this worker's liveness and autohunt opt-in into the shared store."""
+    data.store().save_fix_worker({
+        "host": socket.gethostname(), "pid": os.getpid(),
+        "last_beat": _now(), "current_pr": state["current_pr"],
+        "autohunt": enabled_autohunt()})
+
+
+def recover_orphans() -> list[int]:
+    """Mark THIS host's `running`/`pushing` requests failed: an action does not
+    survive the worker's process, so at startup such a status claimed by this
+    host can only be a restart's leftover. A request another host claimed is its
+    live run, never touched from here. Returns the PRs marked.
+
+    A `pushing` orphan is reported as indeterminate: the push may or may not
+    have gone out before the process died, so the operator re-reads the PR
+    rather than the worker guessing."""
+    marked: list[int] = []
+    me = socket.gethostname()
+    st = data.store()
+    with st.batch():
+        for n, rec in sorted(st.all_prs().items()):
+            req = rec.fix_request or {}
+            status = req.get("status")
+            if status not in ("running", "pushing"):
+                continue
+            if req.get("host") not in (None, me):
+                continue
+            note = ("the autofix worker restarted mid-run — nothing was pushed; re-queue to retry"
+                    if status == "running" else
+                    "the autofix worker restarted mid-push — re-read the PR to see whether "
+                    "the push landed before re-queueing")
+            st.edit_pr(n).record_fix_request(
+                "failed", req.get("action", "fix"), queued_at=req.get("queued_at"),
+                started_at=req.get("started_at"), finished_at=_now(), error=note,
+                source=req.get("source"), host=me)
+            marked.append(n)
+    return marked
+
+
+def next_queued() -> int | None:
+    """The best runnable PR, or None: every `queued` request, ranked operator
+    picks before auto-picks and, within each group, oldest queued_at first — so
+    an operator click never waits behind an earlier auto-queued request. Reads
+    the backend's incremental store snapshot, so the scan costs no store
+    round-trip."""
+    return _oldest("queued")
+
+
+def next_approved() -> int | None:
+    """The oldest request an operator approved for pushing, or None."""
+    return _oldest("approved")
+
+
+def _oldest(status: str) -> int | None:
+    best_n: int | None = None
+    best_key: tuple[bool, str] | None = None
+    for n, rec in data.prs().items():
+        req = rec.fix_request or {}
+        if req.get("status") != status:
+            continue
+        key = (req.get("source") == "auto", str(req.get("queued_at") or ""))
+        if best_key is None or key < best_key:
+            best_n, best_key = n, key
+    return best_n
+
+
+def _resubmit(pr: int, *args: str) -> subprocess.CompletedProcess[str]:
+    """Run the resubmit helper, which owns every git mechanic and the push
+    identity. Runs from the repo root under the same interpreter's environment."""
+    return subprocess.run([str(RESUBMIT), str(pr), *args], cwd=str(REPO_ROOT),
+                          capture_output=True, text=True, timeout=1800)
+
+
+def _fail(n: int, req: dict, message: str) -> None:
+    data.store().edit_pr(n).record_fix_request(
+        "failed", req.get("action", "fix"), queued_at=req.get("queued_at"),
+        started_at=req.get("started_at"), finished_at=_now(),
+        error=message[-TAIL_CHARS:], source=req.get("source"),
+        host=socket.gethostname())
+    data.refresh()
+
+
+def _refuse(n: int, req: dict, reason: str, result: dict | None = None) -> None:
+    data.store().edit_pr(n).record_fix_request(
+        "refused", req.get("action", "fix"), queued_at=req.get("queued_at"),
+        started_at=req.get("started_at"), finished_at=_now(),
+        refused_reason=reason[-TAIL_CHARS:], result=result,
+        source=req.get("source"), host=socket.gethostname())
+    data.refresh()
+
+
+def recheck_eligibility(n: int, action: str) -> tuple[bool, str]:
+    """Re-run the autofix gate against the record as it stands now. A request
+    can sit in the queue while a threat scan or security review lands, so the
+    gate that allowed the queue click is re-asked before the worker acts."""
+    rec = data.store().load_pr(n)
+    if rec is None:
+        return False, f"PR #{n} left the store"
+    return gates.fix_eligibility(rec, action, service.changed_paths(rec))
+
+
+def run_one(n: int) -> None:
+    """Act on one claimed PR. Every exit writes a terminal status, so a request
+    never sits `running` after this returns."""
+    host = socket.gethostname()
+    claimed = data.store().claim_fix_request(n, host=host)
+    if claimed is None:
+        return  # another worker got there first, or the request moved on
+    action = claimed.get("action") or "fix"
+    ok, why = recheck_eligibility(n, action)
+    if not ok:
+        _refuse(n, claimed, f"no longer eligible for {action}: {why}")
+        return
+
+    if action == "update":
+        # A base merge authors no content and cannot push a conflicted state, so
+        # it needs no preflight and no review park.
+        r = _resubmit(n, "update")
+        if r.returncode != 0:
+            _refuse(n, claimed, (r.stderr or r.stdout).strip())
+            return
+        _finish_pushed(n, claimed, (r.stdout or "").strip())
+        return
+
+    prepared = _resubmit(n, "prepare", *(["--rebase"] if action == "rebase" else []))
+    if prepared.returncode != 0:
+        _refuse(n, claimed, (prepared.stderr or prepared.stdout).strip())
+        return
+    try:
+        diff = _resubmit(n, "diff")
+        if diff.returncode != 0:
+            _fail(n, claimed, (diff.stderr or diff.stdout).strip())
+            return
+        patch = (diff.stdout or "").strip()
+        if not patch:
+            _refuse(n, claimed, f"the {action} produced no change to push")
+            return
+        pf = _preflight(n, patch)
+        if pf is not None:
+            pf_ok, pf_why = gates.compile_preflight_gate(pf)
+            if not pf_ok:
+                _refuse(n, claimed, f"compile preflight blocked the push: {pf_why}",
+                        result={"patch": patch[-TAIL_CHARS:], "compile_preflight": pf})
+                return
+        result = {"patch": patch[-TAIL_CHARS:], "compile_preflight": pf,
+                  "message": _commit_message(action)}
+        if action not in settings.FIX_AUTOPUSH:
+            data.store().edit_pr(n).record_fix_request(
+                "awaiting-review", action, queued_at=claimed.get("queued_at"),
+                started_at=claimed.get("started_at"), result=result,
+                source=claimed.get("source"), host=host,
+                head_sha=claimed.get("against_head_sha"))
+            data.refresh()
+            return  # the prepared worktree stays for the approved push
+        _push(n, claimed, action, result)
+    except Exception:
+        _resubmit(n, "abort")
+        raise
+
+
+def _preflight(n: int, patch: str) -> dict | None:
+    """The compile-preflight record for the authored tree, or None when the
+    profile configures no compile command. The patch is written where the
+    sandbox driver reads it from, so the change is measured before it ever
+    reaches the contributor's branch."""
+    rec = data.store().load_pr(n)
+    head = (rec.head_sha if rec else "") or ""
+    scratch = settings.VERIFY_SCRATCH / "autofix"
+    scratch.mkdir(parents=True, exist_ok=True)
+    path = scratch / f"pr-{n}.patch"
+    path.write_text(patch + "\n")
+    return compile_preflight.run_for_patch(n, head, path)
+
+
+def _commit_message(action: str) -> str:
+    return ("Rebase onto current base" if action == "rebase"
+            else "Address review and CI feedback")
+
+
+def push_approved(n: int) -> None:
+    """Push a request an operator approved, from the worktree the run prepared."""
+    host = socket.gethostname()
+    claimed = data.store().claim_fix_request(n, host=host, statuses=("approved",),
+                                             to_status="pushing")
+    if claimed is None:
+        return
+    action = claimed.get("action") or "fix"
+    ok, why = recheck_eligibility(n, action)
+    if not ok:
+        _resubmit(n, "abort")
+        _refuse(n, claimed, f"no longer eligible for {action}: {why}")
+        return
+    _push(n, claimed, action, claimed.get("result") or {})
+
+
+def _push(n: int, req: dict, action: str, result: dict) -> None:
+    args = (["push", "--confirm-rewrite", str(req.get("against_head_sha") or "")]
+            if action == "rebase" else
+            ["push", "-m", str(result.get("message") or _commit_message(action))])
+    r = _resubmit(n, *args)
+    if r.returncode != 0:
+        _resubmit(n, "abort")
+        _refuse(n, req, (r.stderr or r.stdout).strip(), result=result)
+        return
+    _finish_pushed(n, req, (r.stdout or "").strip(), result=result)
+
+
+def _finish_pushed(n: int, req: dict, output: str, result: dict | None = None) -> None:
+    merged = dict(result or {})
+    merged["output"] = output[-TAIL_CHARS:]
+    data.store().edit_pr(n).record_fix_request(
+        "pushed", req.get("action", "fix"), queued_at=req.get("queued_at"),
+        started_at=req.get("started_at"), finished_at=_now(), result=merged,
+        source=req.get("source"), host=socket.gethostname())
+    data.refresh()
+
+
+def auto_fixable(pr: Pr) -> str | None:
+    """The action the idle hunter would queue for this PR, or None. Only the
+    mechanical actions are hunted: an agent-authored fix is an operator's call,
+    never something the queue starts on its own.
+
+    A PR GitHub reports unmergeable needs its history replayed on current base,
+    which is `rebase`; a PR whose drift scan says the base moved out from under
+    it needs `update`. Anything else is left alone."""
+    if (pr.fix_request or {}).get("status") in fix_queue.IN_FLIGHT:
+        return None
+    if pr.mergeable is False:
+        action = "rebase"
+    elif pr.drift_state == "conflicts":
+        action = "update"
+    else:
+        return None
+    ok, _ = gates.fix_eligibility(pr, action, service.changed_paths(pr))
+    return action if ok else None
+
+
+def next_auto() -> tuple[str, int] | None:
+    """The idle hunter's next (action, PR), or None when nothing is eligible."""
+    for n, rec in sorted(data.prs().items()):
+        action = auto_fixable(rec)
+        if action is not None:
+            return action, n
+    return None
+
+
+def _beat_loop() -> None:
+    while not stop.is_set():
+        try:
+            beat()
+        except Exception:
+            traceback.print_exc()
+        stop.wait(POLL_SECONDS)
+
+
+def _drain_loop() -> None:
+    try:
+        marked = recover_orphans()
+        if marked:
+            print(f"[fix-worker] marked failed after restart: {marked}", flush=True)
+    except Exception:
+        traceback.print_exc()
+    while not stop.is_set():
+        try:
+            n = next_approved()
+            if n is not None:
+                state["current_pr"] = n
+                beat()
+                print(f"[fix-worker] pushing approved fix for PR #{n}", flush=True)
+                push_approved(n)
+                continue
+            n = next_queued()
+            if n is not None:
+                state["current_pr"] = n
+                beat()
+                print(f"[fix-worker] picking up PR #{n}", flush=True)
+                run_one(n)
+                continue
+            pick = next_auto() if enabled_autohunt() else None
+            if pick is None:
+                stop.wait(POLL_SECONDS)
+                continue
+            action, n = pick
+            print(f"[autofix-hunt] queueing {action} for PR #{n}", flush=True)
+            fix_queue.queue_pr(n, action, source="auto")
+        except Exception:
+            traceback.print_exc()
+            stop.wait(POLL_SECONDS)
+        finally:
+            state["current_pr"] = None
+
+
+def startup() -> bool:
+    """Start the heartbeat + drain threads when this backend is the runner.
+    Returns whether the worker started. A machine that opts in but cannot hold
+    the push credential safely refuses to start and says why — the queue API
+    keeps serving, so the refusal never takes the app down with it."""
+    if not enabled():
+        return False
+    failure = key_safety_failure()
+    if failure is not None:
+        print(f"[fix-worker] NOT started: {failure}", flush=True)
+        return False
+    threading.Thread(target=_beat_loop, daemon=True, name="fix-worker-beat").start()
+    threading.Thread(target=_drain_loop, daemon=True, name="fix-worker").start()
+    print(f"[fix-worker] enabled on {socket.gethostname()} as {settings.PUSH_LOGIN} "
+          f"(poll every {POLL_SECONDS:.0f}s)", flush=True)
+    return True

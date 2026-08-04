@@ -49,5 +49,9 @@
       "home_env": "YOURAPP_HOME",
       "instance_env": "YOURAPP_INSTANCE_ID"
     }
+  },
+  "autofix": {
+    "deny_globs": [".github/workflows/**", "scripts/release/**"],
+    "fixable_gates": ["ci", "review"]
   }
 }

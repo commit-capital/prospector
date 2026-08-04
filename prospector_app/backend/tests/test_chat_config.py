@@ -6,6 +6,7 @@ upstream-write commands that are unlocked ONLY when a bot token is
 available (writes go out as the bot, never as the operator's login).
 """
 import os
+from pathlib import Path
 
 import pytest
 
@@ -105,11 +106,19 @@ def test_read_only_allowlist_without_a_token():
     assert "Write" in _multi(flags, "--disallowedTools")
 
 
-def test_resubmit_and_file_edits_unlocked_with_a_token():
-    # On a real operator machine (token) the resubmit path is offered, and the
-    # Edit/Write tools it needs to author the change are lifted off the deny list.
-    # This is the ONE operator-identity write; the push itself runs as the
-    # operator (the `resubmit` helper drops the bot token), not the bot.
+@pytest.fixture
+def push_identity(monkeypatch):
+    """A configured machine user — resubmit needs one on top of the bot token."""
+    monkeypatch.setattr(chat.settings, "PUSH_LOGIN", "test-push-bot")
+    monkeypatch.setattr(chat.settings, "PUSH_EMAIL", "1+b@users.noreply.github.com")
+    monkeypatch.setattr(chat.settings, "PUSH_SSH_KEY_FILE", Path("/tmp/key"))
+
+
+def test_resubmit_and_file_edits_unlocked_with_a_token(push_identity):
+    # On a machine that both mints a bot token and holds the machine user's key,
+    # the resubmit path is offered and the Edit/Write tools it needs to author
+    # the change are lifted off the deny list. The push itself runs as the
+    # machine user (the `resubmit` helper drops the bot token), not the App.
     flags = chat.isolation_flags(True)
     allowed = _flag(flags, "--allowedTools")
     assert "Bash(prospector_app/agent/resubmit:*)" in allowed
@@ -123,7 +132,22 @@ def test_resubmit_and_file_edits_unlocked_with_a_token():
     assert script.exists() and os.access(script, os.X_OK)
 
 
-def test_curated_writes_unlocked_with_a_token_but_never_merge():
+def test_resubmit_stays_locked_without_a_push_identity(monkeypatch):
+    # A bot token alone is not enough: every resubmit push refuses without a
+    # machine user, so the tool is never advertised on such a machine — and the
+    # file-edit tools it exists to serve stay denied with it.
+    monkeypatch.setattr(chat.settings, "PUSH_LOGIN", "")
+    flags = chat.isolation_flags(True)
+    allowed = _flag(flags, "--allowedTools")
+    assert "Bash(prospector_app/agent/resubmit:*)" not in allowed
+    assert "Edit" not in allowed and "Write" not in allowed
+    disallowed = _multi(flags, "--disallowedTools")
+    assert "Edit" in disallowed and "Write" in disallowed
+    # The bot-identity writes are unaffected — they need no push key.
+    assert "Bash(gh pr comment:*)" in allowed
+
+
+def test_curated_writes_unlocked_with_a_token_but_never_merge(push_identity):
     # With a token the curated upstream writes are added on top of the reads...
     allowed = _flag(chat.isolation_flags(True), "--allowedTools")
     for sub in ("gh pr edit", "gh pr comment", "gh pr close", "gh pr reopen", "gh pr review",
@@ -140,9 +164,9 @@ def test_curated_writes_unlocked_with_a_token_but_never_merge():
     # and there is no raw `gh api` escape hatch.
     assert "gh pr merge" not in allowed
     assert "gh api" not in allowed
-    # Updating a stale PR's branch is not a bot write either: an App token can't
-    # write the `.github/workflows/**` files a moved base branch carries into the
-    # merge, so it runs as the operator through `resubmit <pr> update`.
+    # Updating a stale PR's branch is not a bot write either: an App installation
+    # token cannot push to a fork at all, so it runs as the machine user through
+    # `resubmit <pr> update`.
     assert "gh pr update-branch" not in allowed
     assert "Bash(prospector_app/agent/resubmit:*)" in allowed
 

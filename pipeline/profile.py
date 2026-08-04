@@ -58,6 +58,23 @@ class HarnessPolicy:
     pr_template_recommended: tuple[str, ...] = ()
 
 
+# Which failing gates an autofix `fix` action may attempt to clear.
+AUTOFIX_GATES: tuple[str, ...] = ("ci", "review")
+
+
+# Autofix policy: the surfaces the push bot keeps its hands off, and the failing
+# gates an agent may author against. deny_globs ranks effort and blast radius,
+# not trust — the security boundary is the threat verdict, the security review,
+# and CODEOWNERS routing, all of which gate autofix independently of any path
+# shape a contributor controls. Empty deny_globs with no fixable gates is the
+# generic default: mechanical actions stay available, agent-authored fixes do
+# not, so a repository opts into them by naming its own policy.
+@dataclass(frozen=True)
+class AutofixPolicy:
+    deny_globs: tuple[str, ...] = ()
+    fixable_gates: tuple[str, ...] = ()
+
+
 # The full-suite regression lane's repository contract: the stabilized-wrapper
 # script the plan derives from, the vitest project its serialized/general-server
 # suites run under, an optional preflight npm script, and the names of the
@@ -164,6 +181,7 @@ class RepoProfile:
     artifact_rules: tuple[ArtifactRule, ...] = GENERIC_ARTIFACT_RULES
     harness: HarnessPolicy = HarnessPolicy()
     verify: VerifyPolicy = VerifyPolicy()
+    autofix: AutofixPolicy = AutofixPolicy()
 
     def subsystem_names(self) -> list[str]:
         """Accepted subsystem values, ending with the catch-all "other"."""
@@ -255,6 +273,19 @@ def _parse_codeowners(raw: object, source: str) -> CodeownersPolicy:
     return CodeownersPolicy(
         gated_globs=_parse_str_list(section.get("gated_globs", []), source, "codeowners.gated_globs"),
         owners=_parse_str_list(section.get("owners", []), source, "codeowners.owners"),
+    )
+
+
+def _parse_autofix(raw: object, source: str) -> AutofixPolicy:
+    section = _require_object(raw, source, "autofix", {"deny_globs", "fixable_gates"})
+    gates = _parse_str_list(section.get("fixable_gates", []), source, "autofix.fixable_gates")
+    unknown = sorted(set(gates) - set(AUTOFIX_GATES))
+    if unknown:
+        raise _fail(source, "autofix.fixable_gates",
+                    f"unknown gate(s) {unknown}; valid gates are {list(AUTOFIX_GATES)}")
+    return AutofixPolicy(
+        deny_globs=_parse_str_list(section.get("deny_globs", []), source, "autofix.deny_globs"),
+        fixable_gates=gates,
     )
 
 
@@ -373,7 +404,7 @@ def _parse_artifact_rules(raw: object, source: str) -> tuple[ArtifactRule, ...]:
 _SECTIONS: tuple[str, ...] = (
     "subsystems", "risk_tiers", "codeowners", "trusted_authors",
     "automation_bots", "dependency_manifests", "test_paths", "artifact_rules",
-    "harness", "verify")
+    "harness", "verify", "autofix")
 
 
 def parse_profile(payload: object, source: str) -> RepoProfile:
@@ -406,6 +437,8 @@ def parse_profile(payload: object, source: str) -> RepoProfile:
         if "harness" in doc else HarnessPolicy(),
         verify=_parse_verify(doc["verify"], source)
         if "verify" in doc else VerifyPolicy(),
+        autofix=_parse_autofix(doc["autofix"], source)
+        if "autofix" in doc else AutofixPolicy(),
     )
 
 

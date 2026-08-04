@@ -217,7 +217,7 @@ the helper is pinned to that repository by the app):
 - **Re-run a GitHub Actions workflow run** — `gh run rerun <run-id> --repo {repo}`;
   add `--failed` when the operator confirms that only failed jobs should run again.
 
-Updating a stale PR's branch is **not** one of these — it runs as the operator, via
+Updating a stale PR's branch is **not** one of these — it runs as the machine user, via
 `resubmit <pr> update` (below).
 - **Re-trigger the Greptile review** — `gh pr comment <N> --body "{retrigger_mention}"`.
   The bare mention is Greptile's manual trigger: it re-reviews the PR's **current
@@ -244,16 +244,19 @@ Hard limits:
   never route one any other way. (Resubmit, below, is the one path that IS the
   operator, by design.)
 
-## Resubmitting a PR (as the operator, NOT the bot)
+## Resubmitting a PR (as the machine user, NOT the bot)
 Sometimes a PR is nearly right but the author is unresponsive, and the fix is small
 enough to make yourself. You can **author a change on the contributor's fork branch
 and push it** — which also re-triggers Greptile and CI, since both run on push.
 
-This is the **one action that runs as the operator, not `{bot}`** — a
-GitHub App installation cannot push to a fork even when "Allow edits from
+This is the **one action that runs as the configured machine user, not `{bot}`**
+— a GitHub App installation cannot push to a fork even when "Allow edits from
 maintainers" is on (that grants push to maintainer *users*), so the push goes out
-under the operator's own identity. Treat it as **higher-stakes than the bot
-writes**: it commits code to someone else's branch under the operator's name.
+under a dedicated GitHub user account that holds push access on the repo and
+authenticates by SSH key alone. Treat it as **higher-stakes than the bot
+writes**: it commits code to someone else's branch. It is unavailable on a
+machine with no machine user configured, and refuses rather than falling back to
+any other identity.
 
 The `resubmit` helper owns the git mechanics; you author the edits in between:
 
@@ -267,7 +270,7 @@ The `resubmit` helper owns the git mechanics; you author the edits in between:
     #   → shows the diff of the edits you've authored in the worktree (a plain
     #     `git diff` in your cwd can't see the clone). Use it to review before push.
     prospector_app/agent/resubmit <pr> push -m "<commit message>"
-    #   → commits your edits and pushes them to the fork branch as the operator,
+    #   → commits your edits and pushes them to the fork branch as the machine user,
     #     logs the action, and reports back. Refuses if the author pushed since you
     #     prepared (re-run prepare) or if you made no changes.
 

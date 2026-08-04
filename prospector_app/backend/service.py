@@ -583,6 +583,7 @@ def pr_detail(n: int) -> dict | None:
     row["safety_summary"] = _safety_summary(rec)
     row["verify_detail"] = verify_view.verify_detail(rec)
     row["verify_request"] = verify_view.verify_request_view(rec)
+    row["fix_request"] = rec.fix_request
     row["analysis_detail"] = rec.section("analysis")
     row["summary"] = rec.section("summary")
     row["author_stats"] = data.author_stats(rec.author)

@@ -1,7 +1,8 @@
 """The agent's `resubmit` helper — author a change on a contributor's fork branch
-and push it AS THE OPERATOR (#210). The git/gh mechanics need a live fork, so the
-unit tests here lock down the safety-critical PURE logic: the push-eligibility
-preflight, the operator-identity env swap (drop the bot token), the fork ssh URL,
+and push it AS THE CONFIGURED MACHINE USER. The git/gh mechanics need a live
+fork, so the unit tests here lock down the safety-critical PURE logic: the
+push-eligibility preflight, the machine-user env swap (drop the App token, pin
+the key, stamp the commit identity), the push-target fence, the fork ssh URL,
 and the argparse surface. The module has no `.py` extension (it runs under the
 sandbox's bare python3), so we load it by path."""
 import importlib.util
@@ -29,6 +30,19 @@ def _load():
 
 
 resubmit = _load()
+
+
+@pytest.fixture(autouse=True)
+def push_identity(monkeypatch, tmp_path_factory):
+    """Every push path refuses without a configured machine user, so the suite
+    configures one. The key is a real file because push_env stats it."""
+    key = tmp_path_factory.mktemp("push-key") / "id_ed25519"
+    key.write_text("not-a-real-key\n")
+    monkeypatch.setattr(resubmit.settings, "PUSH_LOGIN", "test-push-bot")
+    monkeypatch.setattr(resubmit.settings, "PUSH_EMAIL",
+                        "1+test-push-bot@users.noreply.github.com")
+    monkeypatch.setattr(resubmit.settings, "PUSH_SSH_KEY_FILE", key)
+    return key
 
 
 # --- eligibility: the preflight that decides whether a push is even possible ----
@@ -347,7 +361,7 @@ def test_abort_during_conflict_leaves_remote_untouched(monkeypatch, tmp_path):
 # --- update: merge the base branch into the PR's head, as the operator ---------
 
 class _Ran:
-    """Records the `gh pr update-branch` invocation and replays a canned result."""
+    """Records a subprocess invocation and replays a canned result."""
 
     def __init__(self, returncode: int = 0, stderr: str = ""):
         self.returncode, self.stderr = returncode, stderr
@@ -358,89 +372,95 @@ class _Ran:
         return type("R", (), {"returncode": self.returncode, "stdout": "", "stderr": self.stderr})()
 
 
-@pytest.fixture
-def stub_update(monkeypatch):
-    """Stub the three live edges of cmd_update: the PR read, the poll's sleep, and
-    the activity log. The PR read models GitHub's async update — the head still reads
-    as the old sha on the first poll after the merge is accepted, and moves on the
-    next one."""
-    reads = iter([_pr(), _pr(), _pr(headRefOid="b" * 40)])
-    monkeypatch.setattr(resubmit, "_gh_json",
-                        lambda pr: next(reads, _pr(headRefOid="b" * 40)))
-    monkeypatch.setattr(resubmit.time, "sleep", lambda s: None)
+def _wire_update(monkeypatch, tmp_path: Path, repos: dict) -> list[tuple]:
+    """Point cmd_update at local file:// repos and capture the activity log."""
+    _wire_rebase(monkeypatch, tmp_path, repos)
     logged: list[tuple] = []
-    monkeypatch.setattr(resubmit, "_log_update",
-                        lambda *a, **k: logged.append((a, k)))
+    monkeypatch.setattr(resubmit, "_log_update", lambda *a, **k: logged.append((a, k)))
     return logged
 
 
-def test_update_merges_the_base_branch_as_the_operator(monkeypatch, stub_update, capsys):
-    # The merge runs `gh pr update-branch` with the bot token DROPPED — an App token
-    # can't write the `.github/workflows/**` a moved base branch carries in.
+def test_update_merges_the_base_branch_as_the_machine_user(monkeypatch, tmp_path, capsys):
+    # A clean base merge lands a merge commit on the fork branch, authored by the
+    # machine user, and leaves the contributor's own commits in place.
+    repos = _make_rebase_repos(tmp_path, conflict=False)
+    logged = _wire_update(monkeypatch, tmp_path, repos)
     monkeypatch.setenv("GH_TOKEN", "bot-token")
-    ran = _Ran()
-    monkeypatch.setattr(resubmit.subprocess, "run", ran)
-    rc = resubmit.cmd_update(42, dry_run=False)
-    assert rc == 0
-    argv, kw = ran.calls[0]
-    assert argv[:3] == ["gh", "pr", "update-branch"]
-    assert "GH_TOKEN" not in kw["env"]
-    # --rebase force-pushes over the contributor's commits; it is never passed.
-    assert "--rebase" not in argv
-    assert stub_update, "the update is recorded in the activity log"
-    out = capsys.readouterr().out
-    assert "master" in out and "reingest 42" in out
-    # The new head is reported, not the pre-merge sha the first poll still returns.
-    assert "aaaaaaaa → bbbbbbbb" in out
 
-
-def test_update_reports_honestly_when_the_new_head_never_appears(monkeypatch, capsys):
-    # GitHub accepts the merge asynchronously; if the head hasn't moved by the end of
-    # the poll we must NOT claim a sha transition that we never observed.
-    monkeypatch.setattr(resubmit, "_gh_json", lambda pr: _pr())
-    monkeypatch.setattr(resubmit.time, "sleep", lambda s: None)
-    logged: list[tuple] = []
-    monkeypatch.setattr(resubmit, "_log_update", lambda *a, **k: logged.append(a))
-    monkeypatch.setattr(resubmit.subprocess, "run", _Ran())
     assert resubmit.cmd_update(42, dry_run=False) == 0
     out = capsys.readouterr().out
-    assert "Confirm it landed" in out
-    assert "→" not in out, "no sha transition is claimed"
-    assert logged[0][3] is None, "the unobserved head is logged as None, not the old sha"
+    assert "merged master into fix as test-push-bot" in out
+    assert "reingest 42" in out
+    assert logged, "the update is recorded in the activity log"
+
+    after = _git(repos["fork"], "rev-parse", "fix").stdout.strip()
+    assert after != repos["old_head"], "the fork branch moved"
+    parents = _git(repos["fork"], "rev-list", "--parents", "-n", "1", "fix").stdout.split()
+    assert len(parents) == 3, "a merge commit with both parents"
+    assert repos["old_head"] in parents and repos["base_head"] in parents
+    committer = _git(repos["fork"], "log", "-1", "--format=%cn <%ce>", "fix").stdout.strip()
+    assert committer == "test-push-bot <1+test-push-bot@users.noreply.github.com>"
 
 
-def test_update_refuses_when_the_operator_cannot_push(monkeypatch, stub_update, capsys):
-    # Maintainer edits off → no push access to the fork branch, so no gh call at all.
+def test_update_leaves_the_branch_untouched_on_a_conflict(monkeypatch, tmp_path, capsys):
+    # A conflicting base stops at `git merge` — the contributor's branch is never
+    # moved into a half-merged state.
+    repos = _make_rebase_repos(tmp_path, conflict=True)
+    logged = _wire_update(monkeypatch, tmp_path, repos)
+
+    assert resubmit.cmd_update(42, dry_run=False) == 8
+    err = capsys.readouterr().err
+    assert "conflict" in err and "author" in err
+    assert "one.txt" in err, "the conflicted path is named"
+    assert not logged, "a failed merge is not logged as one that happened"
+    assert _git(repos["fork"], "rev-parse", "fix").stdout.strip() == repos["old_head"]
+
+
+def test_update_refuses_when_the_machine_user_cannot_push(monkeypatch, tmp_path, capsys):
+    # Maintainer edits off → no push access to the fork branch, so nothing runs.
+    repos = _make_rebase_repos(tmp_path, conflict=False)
+    _wire_update(monkeypatch, tmp_path, repos)
     monkeypatch.setattr(resubmit, "_gh_json", lambda pr: _pr(maintainerCanModify=False))
     ran = _Ran()
     monkeypatch.setattr(resubmit.subprocess, "run", ran)
+
     assert resubmit.cmd_update(42, dry_run=False) == 3
     assert ran.calls == []
     assert "Allow edits from maintainers" in capsys.readouterr().err
 
 
-def test_update_reports_a_conflict_as_the_authors_to_resolve(monkeypatch, stub_update, capsys):
-    ran = _Ran(returncode=1, stderr="GraphQL: merge conflict between base and head")
-    monkeypatch.setattr(resubmit.subprocess, "run", ran)
-    assert resubmit.cmd_update(42, dry_run=False) == 8
-    err = capsys.readouterr().err
-    assert "conflict" in err and "author" in err
-    assert not stub_update, "a failed merge is not logged as one that happened"
-
-
-def test_update_dry_run_merges_nothing(monkeypatch, stub_update, capsys):
+def test_update_refuses_without_a_push_identity(monkeypatch, tmp_path, capsys):
+    # An unconfigured machine returns the feature disabled, never a push under
+    # whatever identity happens to be ambient.
+    repos = _make_rebase_repos(tmp_path, conflict=False)
+    _wire_update(monkeypatch, tmp_path, repos)
+    monkeypatch.setattr(resubmit.settings, "PUSH_LOGIN", "")
     ran = _Ran()
     monkeypatch.setattr(resubmit.subprocess, "run", ran)
+
+    assert resubmit.cmd_update(42, dry_run=False) == 3
+    assert ran.calls == []
+    assert "TRIAGE_PUSH_LOGIN" in capsys.readouterr().err
+
+
+def test_update_dry_run_merges_nothing(monkeypatch, tmp_path, capsys):
+    repos = _make_rebase_repos(tmp_path, conflict=False)
+    _wire_update(monkeypatch, tmp_path, repos)
+    ran = _Ran()
+    monkeypatch.setattr(resubmit.subprocess, "run", ran)
+
     assert resubmit.cmd_update(42, dry_run=True) == 0
-    assert ran.calls == [], "dry-run never shells out to gh"
+    assert ran.calls == [], "dry-run never clones or pushes"
     assert "[dry-run]" in capsys.readouterr().out
 
 
-def test_update_needs_no_prepared_worktree(monkeypatch, tmp_path, stub_update):
-    # Unlike push, update owns no local clone — it must work with nothing prepared.
-    monkeypatch.setattr(resubmit, "WORKTREE_ROOT", tmp_path / "resubmit")
-    monkeypatch.setattr(resubmit.subprocess, "run", _Ran())
+def test_update_needs_no_prepared_worktree(monkeypatch, tmp_path):
+    # Unlike push, update owns no prepared state — it must work with nothing set up.
+    repos = _make_rebase_repos(tmp_path, conflict=False)
+    _wire_update(monkeypatch, tmp_path, repos)
+    assert not resubmit._meta_path(42).exists()
     assert resubmit.cmd_update(42, dry_run=False) == 0
+    assert not resubmit._worktree(42).exists(), "the throwaway clone is cleaned up"
 
 
 def test_update_takes_no_rebase_flag():
@@ -459,3 +479,46 @@ def test_abort_with_only_a_stale_meta_still_cleans(monkeypatch, tmp_path):
     rc = resubmit.cmd_abort(42)
     assert rc == 0
     assert not meta.exists()
+
+
+# --- machine-user identity: pushes never ride the App token or an ambient key ----
+
+def test_push_env_pins_the_key_and_identity(push_identity):
+    env = resubmit.push_env({"GH_TOKEN": "app", "GITHUB_TOKEN": "app", "PATH": "/usr/bin"})
+    assert "GH_TOKEN" not in env and "GITHUB_TOKEN" not in env
+    # IdentitiesOnly is what stops ssh-agent offering a personal key first, which
+    # would land the commit under the wrong account.
+    assert "-o IdentitiesOnly=yes" in env["GIT_SSH_COMMAND"]
+    assert str(push_identity) in env["GIT_SSH_COMMAND"]
+    assert env["GIT_AUTHOR_NAME"] == env["GIT_COMMITTER_NAME"] == "test-push-bot"
+    assert env["GIT_AUTHOR_EMAIL"].endswith("@users.noreply.github.com")
+    assert env["PATH"] == "/usr/bin"
+
+
+def test_push_env_refuses_without_a_configured_identity(monkeypatch):
+    monkeypatch.setattr(resubmit.settings, "PUSH_LOGIN", "")
+    with pytest.raises(RuntimeError, match="TRIAGE_PUSH_LOGIN"):
+        resubmit.push_env()
+
+
+def test_push_env_refuses_a_missing_key_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(resubmit.settings, "PUSH_SSH_KEY_FILE", tmp_path / "absent")
+    with pytest.raises(RuntimeError, match="not a readable file"):
+        resubmit.push_env()
+
+
+# --- the push-target fence: a ruleset cannot scope to one account, this can ------
+
+def test_push_target_accepts_the_prs_own_head_ref():
+    resubmit.assert_push_target(_pr(), "fix")
+
+
+@pytest.mark.parametrize("branch", ["master", "main", "other-pr-branch", ""])
+def test_push_target_refuses_any_ref_that_is_not_the_head(branch):
+    with pytest.raises(RuntimeError, match="refusing to push"):
+        resubmit.assert_push_target(_pr(), branch)
+
+
+def test_push_target_refuses_a_closed_pr():
+    with pytest.raises(RuntimeError, match="not open"):
+        resubmit.assert_push_target(_pr(state="CLOSED"), "fix")

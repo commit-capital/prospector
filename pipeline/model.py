@@ -300,6 +300,12 @@ class Pr:
         return self.rec.get("verify_request")
 
     @property
+    def fix_request(self) -> dict | None:
+        """This PR's autofix queue state ({status, action, queued_at, ...}), or
+        None when never queued."""
+        return self.rec.get("fix_request")
+
+    @property
     def drift_state(self) -> str | None:
         return (self.rec.get("drift") or {}).get("state")
 
@@ -420,6 +426,39 @@ class Pr:
             if value is not None:
                 section[field] = value
         _stamp(self.rec, "verify_request", section, head_sha)
+        self._persist()
+
+    def record_fix_request(self, status: str, action: str, *, queued_at: str | None = None,
+                           started_at: str | None = None, finished_at: str | None = None,
+                           step: str | None = None, error: str | None = None,
+                           refused_reason: str | None = None,
+                           result: dict | None = None, attempts: int | None = None,
+                           source: str | None = None, host: str | None = None,
+                           base_sha: str | None = None,
+                           head_sha: str | None = None) -> None:
+        """Record this PR's autofix queue state (the fix_request section): any app
+        writes `queued`/`cancelled`/`approved`, the fix worker advances it through
+        `running` (with `step`) to `awaiting-review` (with `result` carrying the
+        authored patch, commit message, and preflight verdict), then `pushing` and
+        `pushed`, or ends it `refused` (with refused_reason — a gate or preflight
+        blocked it, nothing reached upstream) or `failed` (with error). Replaces
+        the whole section — callers carry forward the fields still true (queued_at
+        and action across a run's transitions). base_sha pins the base the action
+        was computed against; head_sha stamps the contributor head it applies to,
+        so a head that moves invalidates the request. source records who queued it
+        ("auto" for the idle hunter; the operator path leaves it unset). host
+        records the machine that ran it. None-valued fields are omitted, so the
+        stored record carries only what is set."""
+        section: dict = {"status": status, "action": action}
+        for field, value in (("queued_at", queued_at), ("started_at", started_at),
+                             ("finished_at", finished_at), ("step", step),
+                             ("error", error), ("refused_reason", refused_reason),
+                             ("result", result), ("attempts", attempts),
+                             ("source", source), ("host", host),
+                             ("base_sha", base_sha)):
+            if value is not None:
+                section[field] = value
+        _stamp(self.rec, "fix_request", section, head_sha)
         self._persist()
 
     def log_security_override(self, reason: str, *, by: str | None = None) -> None:
