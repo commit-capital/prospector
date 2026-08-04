@@ -14,6 +14,7 @@ from typing import Any
 
 from prospector_app.backend import executor
 from prospector_app.backend import models
+from prospector_app.backend import review_refresh
 from prospector_app.backend import training
 
 CAP = 1000
@@ -67,6 +68,11 @@ async def run_bulk(prs: list[int], action: str, *, comment: str | None = None,
         try:
             if action == "MERGE":
                 res = executor.merge_pr(n, method, dry_run=dry_run, reason=reason)
+            elif action == "GREPTILE_RETRIGGER":
+                baseline = review_refresh.capture(n) if token is not None else None
+                res = executor.retrigger_greptile(n, token=token, dry_run=dry_run)
+                if res.get("status") == "executed" and baseline is not None:
+                    review_refresh.schedule(n, baseline)
             elif action in _REVIEW:
                 res = executor.submit_review(n, _REVIEW[action], pr_comment or "",
                                              token=token, dry_run=dry_run)

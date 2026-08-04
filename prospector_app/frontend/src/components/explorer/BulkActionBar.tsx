@@ -4,7 +4,7 @@ import { term } from "../../glossary";
 import { useExec } from "../../ExecContext";
 
 export type BulkAction = "CLOSE" | "CLOSE_DUP" | "CLOSE_FIXED" | "CLOSE_STALE"
-  | "CLOSE_OVERSIZED" | "REQUEST_CHANGES" | "COMMENT" | "MERGE";
+  | "CLOSE_OVERSIZED" | "REQUEST_CHANGES" | "COMMENT" | "GREPTILE_RETRIGGER" | "MERGE";
 
 const ACTS: { v: BulkAction; label: string }[] = [
   { v: "CLOSE_DUP", label: "close — dup of" },
@@ -25,9 +25,13 @@ export function BulkActionBar({ selected, onApply }:
   const [canonical, setCanonical] = useState("");
   // post each PR's own suggested comment instead of one shared comment (#182)
   const [perPr, setPerPr] = useState(false);
-  const { botLogin, pushToast } = useExec();
+  const { botLogin, pushToast, review } = useExec();
   if (selected.length === 0) return null;
   const isMerge = action === "MERGE";
+  const postsComment = action !== "MERGE" && action !== "GREPTILE_RETRIGGER";
+  const actions = review.retrigger
+    ? [...ACTS.slice(0, -1), { v: "GREPTILE_RETRIGGER" as const, label: `re-trigger ${review.label}` }, ACTS.at(-1)!]
+    : ACTS;
 
   // Local-only utility — no upstream write, so it bypasses onApply/the executor.
   const copyIds = async () => {
@@ -51,23 +55,26 @@ export function BulkActionBar({ selected, onApply }:
       </button>
       <select value={action} onChange={(e) => setAction(e.target.value as BulkAction)}
         title="One action applied to every selected PR. Each write is gated per-PR and logged to the activity feed.">
-        {ACTS.map((a) => <option key={a.v} value={a.v} title={term(`bulk.${a.v}`)?.meaning}>{a.label}</option>)}
+        {actions.map((a) => <option key={a.v} value={a.v} title={term(`bulk.${a.v}`)?.meaning}>{a.label}</option>)}
       </select>
       {action === "CLOSE_DUP" && !perPr && (
         <input className="canon" placeholder="#" value={canonical}
           onChange={(e) => setCanonical(e.target.value.replace(/\D/g, ""))} />
       )}
-      {!isMerge && (
+      {postsComment && (
         <label className="bulk-perpr" title={`Post the comment ${botLogin} suggested for each PR (its own canonical/rationale) instead of one comment for all of them.`}>
           <input type="checkbox" checked={perPr} onChange={(e) => setPerPr(e.target.checked)} />
           each PR's own comment
         </label>
       )}
-      {!isMerge && !perPr && (
+      {postsComment && !perPr && (
         <input className="cmtbox" placeholder="one shared comment applied to all selected"
           value={comment} onChange={(e) => setComment(e.target.value)} />
       )}
-      {!isMerge && perPr && <span className="muted small">each PR keeps its own suggested comment</span>}
+      {postsComment && perPr && <span className="muted small">each PR keeps its own suggested comment</span>}
+      {action === "GREPTILE_RETRIGGER" && (
+        <span className="muted small">posts the review trigger on each PR — no new commit needed</span>
+      )}
       {isMerge && <span className="muted small">merge posts no comment — each PR is gated individually</span>}
       <button className="btn-primary sm"
         onClick={() => onApply({ action, comment, canonical: canonical ? Number(canonical) : undefined, perPr })}>
