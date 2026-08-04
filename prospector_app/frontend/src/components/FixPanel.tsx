@@ -1,23 +1,23 @@
 import type { FixAction, FixRequest, FixRunner } from "../api";
 import { localDateTime, timeAgo } from "../timeAgo";
 
-/** Why a given action is unavailable right now, or null when it may be queued.
- *  A machine with no push identity can never push, so every action is withheld
- *  with that reason rather than failing at the runner. */
-function unavailable(action: FixAction, runner: FixRunner | null,
-                     req: FixRequest | null, resolved: boolean): string | null {
+/** Why an action cannot be queued right now, or null when it can be.
+ *  Queueing is gated on a worker being reachable, NOT on this browser's backend
+ *  holding the push key — the queue is shared so an operator clicks from a
+ *  laptop and the machine with the key does the work. Eligibility itself is the
+ *  backend's call (gates.fix_eligibility); it reports its reason on the click
+ *  rather than being second-guessed here. */
+function unavailable(runner: FixRunner | null, req: FixRequest | null,
+                     resolved: boolean): string | null {
   if (resolved) return "This PR is already resolved.";
-  if (runner != null && !runner.push_identity) {
-    return "No machine user is configured on this deployment, so nothing can push to "
-         + "contributor branches. Set TRIAGE_PUSH_LOGIN, TRIAGE_PUSH_EMAIL and "
-         + "TRIAGE_PUSH_SSH_KEY_FILE in .env.";
+  if (runner != null && !runner.can_queue) {
+    return "No autofix worker has been seen against this store, so a queued action "
+         + "would never run. Start a backend with TRIAGE_FIX_WORKER=1 on the machine "
+         + "holding the machine user's push key.";
   }
   const status = req?.status;
   if (status && IN_FLIGHT.includes(status)) {
     return `PR already has a ${status} ${req?.action} request.`;
-  }
-  if (action === "fix") {
-    return null; // the backend's profile opt-in is the authority; it reports why
   }
   return null;
 }
@@ -190,7 +190,7 @@ export function FixAction({ req, runner, busy, resolved, onQueue, onDequeue, onA
   return (
     <>
       {(["update", "rebase", "fix"] as FixAction[]).map((action) => {
-        const why = unavailable(action, runner, req, resolved);
+        const why = unavailable(runner, req, resolved);
         return (
           <button key={action} className="btn-secondary sm" disabled={busy != null || why != null}
             onClick={() => onQueue(action)} title={why ?? HELP[action]}>
@@ -212,6 +212,8 @@ export function FixBody({ req, runner }: { req: FixRequest | null; runner: FixRu
         No autofix has been queued for this PR. Queueing one has the
         {runner?.push_login ? ` ${runner.push_login}` : " machine user"} account act on the
         contributor's branch — never your own account.
+        {runner != null && !runner.can_queue
+          && " No worker has been seen against this store, so nothing would run yet."}
       </div>
     );
   }

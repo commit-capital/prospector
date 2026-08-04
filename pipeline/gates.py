@@ -431,10 +431,22 @@ def fix_eligibility(pr: Pr, action: str,
       - any recorded RED security verdict, current or stale. A stale RED on a
         moved head may well be a finding the author already fixed, but the bot
         stays off the branch until an adversarial review says so again.
-      - a CODEOWNERS-gated path, or one the profile's autofix.deny_globs names
+      - a path the profile's autofix.deny_globs names
       - a PR that is not open
       - a `fix` action where the profile names no fixable gates, i.e. the
         deployment has not opted into agent-authored changes
+      - a `fix` action on a CODEOWNERS-gated path
+
+    CODEOWNERS blocks `fix` alone. It routes *merges* to owners, and it keeps
+    doing that server-side no matter what lands on the branch — so `update` and
+    `rebase`, which author no content of their own, are how a gated PR gets
+    ready for the owner review it needs. Only agent-authored content is
+    withheld, because that is new code an owner would be reviewing on the
+    strength of the bot having written it.
+
+    A repository that also wants the mechanical actions off some surface names
+    it in autofix.deny_globs, which blocks every action. Agent-executed
+    instruction paths are the case worth naming there.
     """
     if action not in settings.FIX_ACTIONS:
         return False, f"unknown autofix action {action!r}"
@@ -445,11 +457,12 @@ def fix_eligibility(pr: Pr, action: str,
     if pr.security_verdict == "RED":
         return False, "security review returned RED"
     if changed_paths is not None:
-        hm = codeowners.human_merge(changed_paths)
-        if hm:
-            owners = " ".join(hm["owners"])
-            return False, (f"touches a CODEOWNERS-gated path owned by {owners}: "
-                           f"{', '.join(hm['paths'][:5])}")
+        if action == "fix":
+            hm = codeowners.human_merge(changed_paths)
+            if hm:
+                owners = " ".join(hm["owners"])
+                return False, (f"authoring a fix on a CODEOWNERS-gated path owned by "
+                               f"{owners} needs a human: {', '.join(hm['paths'][:5])}")
         denied = [p for p in changed_paths
                   if any(diffpaths.matches_glob(diffpaths.normalize_path(p), g)
                          for g in profile.active().autofix.deny_globs)]

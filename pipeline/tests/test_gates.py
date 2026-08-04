@@ -2014,14 +2014,38 @@ class TestFixEligibility:
         ok, why = gates.fix_eligibility(_pr(), "update", changed_paths=["src/a.ts"])
         assert ok is True, why
 
-    def test_codeowners_gated_path_refused(self, monkeypatch):
+    def _gated(self, monkeypatch, **over):
         p = profile.RepoProfile(
             codeowners=profile.CodeownersPolicy(gated_globs=("infra/**",),
-                                                owners=("@core",)))
+                                                owners=("@core",)),
+            autofix=profile.AutofixPolicy(**over))
         monkeypatch.setattr(profile, "active", lambda: p)
-        ok, why = gates.fix_eligibility(_pr(), "update", changed_paths=["infra/main.tf"])
+
+    def test_codeowners_blocks_authoring_a_fix(self, monkeypatch):
+        self._gated(monkeypatch, fixable_gates=("ci",))
+        ok, why = gates.fix_eligibility(_pr(), "fix", changed_paths=["infra/main.tf"])
         assert ok is False
         assert "CODEOWNERS" in why and "@core" in why
+
+    def test_codeowners_does_not_block_the_mechanical_actions(self, monkeypatch):
+        # CODEOWNERS routes the MERGE, and keeps doing that server-side whatever
+        # lands on the branch. Rebasing a conflicted gated PR is precisely how it
+        # gets ready for the owner review it needs, so blocking that only strands
+        # the PR.
+        self._gated(monkeypatch)
+        for action in ("update", "rebase"):
+            ok, why = gates.fix_eligibility(_pr(), action, changed_paths=["infra/main.tf"])
+            assert ok is True, f"{action}: {why}"
+
+    def test_deny_globs_still_block_every_action(self, monkeypatch):
+        # The profile's own dial is how a repository withholds the mechanical
+        # actions too — agent-executed instruction paths being the case for it.
+        self._gated(monkeypatch, deny_globs=("skills/**",), fixable_gates=("ci",))
+        for action in ("update", "rebase", "fix"):
+            ok, why = gates.fix_eligibility(_pr(), action,
+                                            changed_paths=["skills/agent/SKILL.md"])
+            assert ok is False, action
+            assert "withholds from autofix" in why
 
     def test_fix_needs_profile_optin(self, monkeypatch):
         self._profile(monkeypatch)

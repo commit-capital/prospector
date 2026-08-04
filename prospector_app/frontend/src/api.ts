@@ -548,11 +548,14 @@ export interface FixResult {
 }
 
 /** Autofix-runner liveness plus this backend's push configuration.
- *  `push_identity` false is why the actions render disabled — the machine
- *  holds no machine-user credential and never falls back to another. */
+ *  `can_queue` is what disables the actions — it asks whether ANY worker is
+ *  reachable against the shared store, not whether this backend holds the key,
+ *  since queueing from a laptop is the point. `push_identity` is this
+ *  backend's own credential, for diagnostics. */
 export interface FixRunner {
   configured: boolean;
   online: boolean;
+  can_queue: boolean;
   push_identity: boolean;
   push_login?: string | null;
   autopush: FixAction[];

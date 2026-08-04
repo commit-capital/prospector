@@ -114,18 +114,26 @@ def worker_records(reg: dict) -> list[dict]:
 def runner_status() -> dict:
     """Whether a fix worker is alive against this store: `configured` says this
     backend runs one, `online` says some machine's worker beat within
-    STALE_BEAT_SECONDS (the queue is shared, so the runner may be elsewhere).
-    `push_identity` says whether THIS backend could push at all, which is what
-    the app renders the buttons' disabled reason from. `autopush` names the
-    actions this backend pushes without review."""
+    STALE_BEAT_SECONDS. `push_identity` says whether THIS backend holds the
+    credential.
+
+    `can_queue` is what the app gates the buttons on, and it is deliberately
+    NOT this backend's own configuration. The queue lives in the shared store
+    precisely so an operator clicks from a laptop and the machine holding the
+    key does the work — so an online worker anywhere is what makes queueing
+    meaningful. A worker only starts once its key passes
+    fix_worker.key_safety_failure, so a beating worker already proves a usable
+    push identity exists."""
     from prospector_app.backend import fix_worker
     records = worker_records(data.store().load_fix_worker())
     hosts = [{"host": r.get("host"), "online": _beat_online(r.get("last_beat")),
               "last_beat": r.get("last_beat"), "current_pr": r.get("current_pr"),
               "autohunt": bool(r.get("autohunt"))} for r in records]
+    online = any(h["online"] for h in hosts)
     fresh: dict = hosts[0] if hosts else {}
     return {"configured": fix_worker.enabled(),
-            "online": any(h["online"] for h in hosts),
+            "online": online,
+            "can_queue": online or settings.push_identity_configured(),
             "push_identity": settings.push_identity_configured(),
             "push_login": settings.PUSH_LOGIN or None,
             "autopush": sorted(settings.FIX_AUTOPUSH),
