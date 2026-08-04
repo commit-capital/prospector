@@ -510,6 +510,57 @@ export interface VerifyRunner {
   last_beat?: string | null;
 }
 
+/** An autofix action the push bot may run on a contributor's PR head branch.
+ *  `update` merges the base branch in, `rebase` replays the PR onto current
+ *  base behind a pinned lease, `fix` has an agent author a change. */
+export type FixAction = "update" | "rebase" | "fix";
+
+/** The autofix queue state for one PR: queued in any app, run by the fix
+ *  worker on the machine holding the push key, parked as awaiting-review with
+ *  the authored diff, approved by a human, then pushed. `refused` means a gate
+ *  or the compile preflight blocked it and nothing reached upstream. */
+export interface FixRequest {
+  status: "queued" | "running" | "awaiting-review" | "approved" | "pushing"
+        | "pushed" | "refused" | "failed" | "cancelled";
+  action: FixAction;
+  source?: "operator" | "auto" | null;
+  step?: string | null;
+  queued_at?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  error?: string | null;
+  refused_reason?: string | null;
+  result?: FixResult | null;
+  host?: string | null;
+  base_sha?: string | null;
+  checked_at?: string | null;
+  against_head_sha?: string | null;
+}
+
+/** What the worker authored, carried on the request so the review view can
+ *  show the diff before anything is pushed. */
+export interface FixResult {
+  patch?: string | null;
+  message?: string | null;
+  output?: string | null;
+  compile_preflight?: { exit?: number | null; refused?: string | null;
+                        error?: string | null; error_excerpt?: string | null } | null;
+}
+
+/** Autofix-runner liveness plus this backend's push configuration.
+ *  `push_identity` false is why the actions render disabled — the machine
+ *  holds no machine-user credential and never falls back to another. */
+export interface FixRunner {
+  configured: boolean;
+  online: boolean;
+  push_identity: boolean;
+  push_login?: string | null;
+  autopush: FixAction[];
+  host?: string | null;
+  current_pr?: number | null;
+  last_beat?: string | null;
+}
+
 /** One security/verify run from the store's runs ledger, normalized for the
  *  auto-hunt panel. `trigger` is "autohunt" on hunter-fired runs, null on
  *  operator-fired or unstamped entries. */
@@ -563,6 +614,7 @@ export interface PRDetail extends PRRow {
   safety_summary?: SafetySummary;
   verify_detail?: VerifyDetail | null;
   verify_request?: VerifyRequest | null;
+  fix_request?: FixRequest | null;
   analysis_detail?: unknown;
   size?: { additions: number | null; deletions: number | null; changed_files: number | null };
   greptile?: { score: number | null; body: string } | null;
@@ -1081,6 +1133,25 @@ export const api = {
     return body as { pr: number; status: string };
   },
   verifyRunner: () => get<VerifyRunner>("/api/verify/runner"),
+  queueFix: async (n: number, action: FixAction) => {
+    const r = await fetch(`/api/prs/${n}/fix/queue?action=${action}`, { method: "POST" });
+    const body = (await r.json().catch(() => null)) as { detail?: string; pr?: number; status?: string } | null;
+    if (!r.ok) throw new Error(body?.detail ?? `queue ${action} → ${r.status}`);
+    return body as { pr: number; action: FixAction; status: string };
+  },
+  dequeueFix: async (n: number) => {
+    const r = await fetch(`/api/prs/${n}/fix/dequeue`, { method: "POST" });
+    const body = (await r.json().catch(() => null)) as { detail?: string; pr?: number; status?: string } | null;
+    if (!r.ok) throw new Error(body?.detail ?? `cancel autofix → ${r.status}`);
+    return body as { pr: number; status: string };
+  },
+  approveFix: async (n: number) => {
+    const r = await fetch(`/api/prs/${n}/fix/approve`, { method: "POST" });
+    const body = (await r.json().catch(() => null)) as { detail?: string; pr?: number; status?: string } | null;
+    if (!r.ok) throw new Error(body?.detail ?? `approve autofix → ${r.status}`);
+    return body as { pr: number; status: string };
+  },
+  fixRunner: () => get<FixRunner>("/api/fix/runner"),
   autohunt: (days = 7, allTime = false, limit = 100) => {
     const qs = new URLSearchParams({ days: String(days), limit: String(limit) });
     if (allTime) qs.set("all_time", "true");

@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from pipeline import gates
 from pipeline import schema
+from pipeline import settings
 from pipeline import storekit
 from pipeline.storekit import Collection, ValidationError
 
@@ -58,11 +59,31 @@ VERIFY_ERROR_KINDS = {"refused-safety", "no-base", "fetch-error", "agent-failed"
 # "auto"; the app's operator path leaves the field unset.
 VERIFY_REQUEST_SOURCES = {"operator", "auto"}
 
+# What an autofix request asks the fix worker to do on the PR's head branch:
+# merge the base branch in so checks re-run against current base code, rebase
+# onto current base behind a pinned lease to clear a conflict, or have an agent
+# author a change against a failing gate.
+FIX_ACTIONS = set(settings.FIX_ACTIONS)
+
+# The lifecycle of a fix request: queued in any app, picked up and run by the
+# fix worker, parked as awaiting-review with the authored diff for a human to
+# approve, approved and pushed. `refused` covers a gate or preflight that
+# blocked the push (nothing reached upstream); `failed` an action that errored.
+# Terminal states stay on the record so the app can show what happened;
+# re-queueing replaces the section.
+FIX_REQUEST_STATUSES = {"queued", "running", "awaiting-review", "approved", "pushing",
+                        "pushed", "refused", "failed", "cancelled"}
+
+# Who queued a fix request: the idle auto-hunter stamps its picks "auto"; the
+# app's operator path leaves the field unset.
+FIX_REQUEST_SOURCES = {"operator", "auto"}
+
 # every per-PR record section this code knows; an unknown section is preserved
 # through save (with a stderr notice) so a checkout behind the store schema
 # round-trips newer records without loss
 PR_SECTIONS = ("meta", "signals", "drift", "summary", "cluster", "analysis", "security",
-               "issues", "threat", "greptile_review", "verify", "verify_request")
+               "issues", "threat", "greptile_review", "verify", "verify_request",
+               "fix_request")
 
 
 def _mirror_pr(rec: dict) -> dict:
@@ -139,6 +160,19 @@ def validate_pr(rec: dict) -> None:
             raise ValidationError(
                 f"verify_request.source: {vr.get('source')!r} not in "
                 f"{sorted(VERIFY_REQUEST_SOURCES)}")
+    fr = rec.get("fix_request")
+    if fr:
+        if fr.get("status") not in FIX_REQUEST_STATUSES:
+            raise ValidationError(
+                f"fix_request.status: {fr.get('status')!r} not in "
+                f"{sorted(FIX_REQUEST_STATUSES)}")
+        if fr.get("action") not in FIX_ACTIONS:
+            raise ValidationError(
+                f"fix_request.action: {fr.get('action')!r} not in {sorted(FIX_ACTIONS)}")
+        if fr.get("source") is not None and fr["source"] not in FIX_REQUEST_SOURCES:
+            raise ValidationError(
+                f"fix_request.source: {fr.get('source')!r} not in "
+                f"{sorted(FIX_REQUEST_SOURCES)}")
     d = rec.get("drift")
     if d and d.get("state") not in DRIFT_STATES:
         raise ValidationError(f"drift.state: {d.get('state')!r} not in {sorted(DRIFT_STATES)}")
@@ -531,6 +565,64 @@ class Store:
                 section[field] = req[field]
         head = (rec.get("meta") or {}).get("head_sha")
         storekit.stamp(rec, "verify_request", section, "against_head_sha", head)
+        return section if self._prs.save_if(rec, stamp) else None
+
+    def load_fix_worker(self) -> dict:
+        """Autofix-worker heartbeats, one record per host (`{hosts: {<hostname>:
+        {host, pid, last_beat, current_pr, autohunt}}}`) — which machines' fix
+        workers exist, when each last beat, the PR each is acting on (None when
+        idle), and whether each idle auto-hunt is enabled. Every worker merges
+        its own record in each drain tick; any app reads the map to show which
+        runners are online. An empty map means no fix worker has ever run
+        against this store."""
+        return self._load_registry("fix_worker", {"hosts": {}})
+
+    def save_fix_worker(self, record: dict) -> None:
+        """Merge one host's heartbeat record into the fix_worker registry,
+        pruning entries stale past _WORKER_PRUNE_SECONDS. host and last_beat are
+        required: a beat that names no machine or no time tells an app nothing
+        about whether a runner is online. Two hosts' merges may race on the
+        shared row; a lost beat is rewritten by the loser's next tick."""
+        if not record.get("host"):
+            raise ValidationError("fix_worker.host: required")
+        if not record.get("last_beat"):
+            raise ValidationError("fix_worker.last_beat: required")
+        from datetime import datetime, timedelta, timezone
+        host = str(record["host"])
+        hosts = dict(self.load_fix_worker()["hosts"])
+        hosts[host] = record
+        cutoff = (datetime.now(timezone.utc)
+                  - timedelta(seconds=self._WORKER_PRUNE_SECONDS)
+                  ).isoformat(timespec="microseconds")
+        hosts = {h: r for h, r in hosts.items()
+                 if h == host or str(r.get("last_beat") or "") >= cutoff}
+        self._save_registry("fix_worker", {"hosts": hosts})
+
+    def claim_fix_request(self, n: int, *, host: str,
+                          statuses: tuple[str, ...] = ("queued",),
+                          to_status: str = "running") -> dict | None:
+        """Atomically claim PR `n`'s fix_request for `host`: flip it from one of
+        `statuses` to `to_status` (step `claimed`) only while the row is
+        unchanged since it was read — a compare-and-swap on the saved_at
+        write-stamp — so two workers against the shared store can never both run
+        one PR. The approved→pushing hand-off claims through the same path.
+        Returns the claimed section on success; None when the request is not
+        claimable or another writer got there first."""
+        row = self._prs.stamped(n)
+        if row is None:
+            return None
+        rec, stamp = row
+        req = rec.get("fix_request") or {}
+        if req.get("status") not in statuses:
+            return None
+        section: dict = {"status": to_status, "action": req.get("action"),
+                         "step": "claimed", "host": host,
+                         "started_at": storekit.now()}
+        for field in ("queued_at", "source", "attempts", "base_sha", "result"):
+            if req.get(field) is not None:
+                section[field] = req[field]
+        head = (rec.get("meta") or {}).get("head_sha")
+        storekit.stamp(rec, "fix_request", section, "against_head_sha", head)
         return section if self._prs.save_if(rec, stamp) else None
 
     def save_verify_base(self, registry: dict) -> None:

@@ -46,6 +46,8 @@ from prospector_app.backend import responses as responses_mod
 from prospector_app.backend import service
 from prospector_app.backend import tables
 from prospector_app.backend import training
+from prospector_app.backend import fix_queue
+from prospector_app.backend import fix_worker
 from prospector_app.backend import verify_queue
 from prospector_app.backend import verify_worker
 
@@ -67,6 +69,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     """Launch background services without blocking application startup."""
     _launch_live_sweep()
     _launch_verify_worker()
+    _launch_fix_worker()
     yield
 
 
@@ -135,6 +138,17 @@ def _launch_verify_worker():
     if "pytest" in sys.modules:
         return
     verify_worker.startup()
+
+
+def _launch_fix_worker():
+    """Start the autofix worker when this backend is the runner
+    (TRIAGE_FIX_WORKER=1 — the machine holding the machine user's push key).
+    Every other backend serves the queue API only. Skipped under pytest — tests
+    drive the worker's functions directly."""
+    import sys
+    if "pytest" in sys.modules:
+        return
+    fix_worker.startup()
 
 
 @app.get("/api/health")
@@ -257,6 +271,43 @@ def verify_runner():
     """Verification-runner liveness (the verify_worker heartbeat registry) —
     lets any app warn when PRs are queued but no runner is online."""
     return verify_queue.runner_status()
+
+
+@app.post("/api/prs/{n}/fix/queue")
+def fix_queue_pr(n: int, action: str):
+    """Queue PR #n for an autofix action (update / rebase / fix). The request
+    lands in the shared store; the autofix worker on the machine holding the
+    push identity picks it up."""
+    try:
+        return fix_queue.queue_pr(n, action)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/prs/{n}/fix/dequeue")
+def fix_dequeue_pr(n: int):
+    """Cancel PR #n's queued fix request, or discard one awaiting review."""
+    try:
+        return fix_queue.dequeue_pr(n)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/prs/{n}/fix/approve")
+def fix_approve_pr(n: int):
+    """Approve PR #n's authored fix for pushing. The worker pushes it from the
+    worktree it prepared, on its next tick."""
+    try:
+        return fix_queue.approve_pr(n)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/fix/runner")
+def fix_runner():
+    """Autofix-runner liveness plus this backend's push-identity configuration —
+    what the app renders the actions' disabled reason from."""
+    return fix_queue.runner_status()
 
 
 @app.get("/api/autohunt")
