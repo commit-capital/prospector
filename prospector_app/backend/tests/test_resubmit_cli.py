@@ -205,17 +205,24 @@ def _make_rebase_repos(tmp_path: Path, *, conflict: bool = True,
     _git(upstream_work, "commit", "-m", "advance base")
     _git(upstream_work, "push", "origin", "master")
     base_head = _git(upstream_work, "rev-parse", "HEAD").stdout.strip()
+    # The base as it stood when the PR branched — what GitHub reports as
+    # baseRefOid — distinct from base_head, the tip after master advanced.
+    stale_base = _git(seed, "rev-parse", "HEAD").stdout.strip()
     return {"upstream": upstream, "fork": fork, "old_head": old_head,
-            "base_head": base_head}
+            "base_head": base_head, "stale_base": stale_base}
 
 
 def _wire_rebase(monkeypatch, tmp_path: Path, repos: dict) -> None:
     monkeypatch.setattr(resubmit, "WORKTREE_ROOT", tmp_path / "resubmit")
     monkeypatch.setattr(resubmit, "fork_ssh_url", lambda info: repos["fork"].as_uri())
     monkeypatch.setattr(resubmit, "upstream_ssh_url", lambda: repos["upstream"].as_uri())
+    # baseRefOid is the base commit the PR was opened/last synced against, NOT
+    # where the base branch points now — on any PR whose base has moved (i.e.
+    # every PR a rebase is for) it names an older commit. The fixture models
+    # that, so a check comparing it against the live tip fails here too.
     monkeypatch.setattr(
         resubmit, "_gh_json",
-        lambda pr: _pr(headRefOid=repos["old_head"], baseRefOid=repos["base_head"]),
+        lambda pr: _pr(headRefOid=repos["old_head"], baseRefOid=repos["stale_base"]),
     )
     monkeypatch.setattr(resubmit, "_log_rebase", lambda *args, **kwargs: None)
     monkeypatch.setenv("GIT_AUTHOR_NAME", "Resubmit Test")
@@ -322,17 +329,46 @@ def test_rebase_stops_again_on_a_second_conflict(monkeypatch, tmp_path):
     assert json.loads(resubmit._meta_path(42).read_text())["phase"] == "conflicted"
 
 
-def test_rebase_push_refuses_if_base_moved(monkeypatch, tmp_path, capsys):
+def test_rebase_survives_a_base_that_merely_advanced(monkeypatch, tmp_path, capsys):
+    # The base moving is the ordinary state of every open PR — it is why the PR
+    # needs rebasing at all. A rebase pinned to a base that has since advanced is
+    # simply a couple of commits behind, exactly like any other PR, so it pushes.
     repos = _make_rebase_repos(tmp_path, conflict=False)
     _wire_rebase(monkeypatch, tmp_path, repos)
     assert resubmit.cmd_prepare(42, rebase=True) == 0
-    monkeypatch.setattr(
-        resubmit, "_gh_json",
-        lambda pr: _pr(headRefOid=repos["old_head"], baseRefOid="f" * 40),
-    )
-    assert resubmit.cmd_push(42, None, False, repos["old_head"]) == 6
-    assert "base moved" in capsys.readouterr().err
-    assert _git(repos["fork"], "rev-parse", "refs/heads/fix").stdout.strip() == repos["old_head"]
+
+    # advance upstream master after the pin is taken
+    work = tmp_path / "advance"
+    _git(tmp_path, "clone", str(repos["upstream"]), str(work))
+    (work / "later.txt").write_text("later\n")
+    _git(work, "add", ".")
+    _git(work, "commit", "-m", "master moves on")
+    _git(work, "push", "origin", "master")
+
+    rc = resubmit.cmd_push(42, None, dry_run=False, confirm_rewrite=repos["old_head"])
+    assert rc == 0, capsys.readouterr().err
+    assert _git(repos["fork"], "rev-parse", "fix").stdout.strip() != repos["old_head"]
+
+
+def test_rebase_push_refuses_if_the_base_was_rewritten(monkeypatch, tmp_path, capsys):
+    # A base force-pushed out from under the pin is different: the commits the
+    # rebase was computed against are gone, so the pin means nothing.
+    repos = _make_rebase_repos(tmp_path, conflict=False)
+    _wire_rebase(monkeypatch, tmp_path, repos)
+    assert resubmit.cmd_prepare(42, rebase=True) == 0
+
+    work = tmp_path / "rewrite"
+    _git(tmp_path, "clone", str(repos["upstream"]), str(work))
+    _git(work, "reset", "--hard", "HEAD~1")
+    (work / "divergent.txt").write_text("divergent\n")
+    _git(work, "add", ".")
+    _git(work, "commit", "-m", "rewritten history")
+    _git(work, "push", "--force", "origin", "master")
+
+    rc = resubmit.cmd_push(42, None, dry_run=False, confirm_rewrite=repos["old_head"])
+    assert rc == 6
+    assert "rewritten" in capsys.readouterr().err
+    assert _git(repos["fork"], "rev-parse", "fix").stdout.strip() == repos["old_head"]
 
 
 def test_rebase_push_refuses_if_contributor_head_moved(monkeypatch, tmp_path, capsys):

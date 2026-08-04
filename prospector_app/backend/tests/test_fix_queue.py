@@ -318,3 +318,75 @@ def test_hunter_skips_a_pr_already_in_flight(store):
 def test_key_mode_helper_uses_owner_only_permissions(push_key):
     # Guards the fixture itself: a 600 key is what the safety check accepts.
     assert stat.S_IMODE(push_key.stat().st_mode) == 0o600
+
+
+# --- worker: a world that moved is retried, a decision is not -------------------
+
+class _Ran:
+    """Replays a canned resubmit exit, recording the subcommands invoked."""
+
+    def __init__(self, rc: int):
+        self.rc, self.calls = rc, []
+
+    def __call__(self, n, *args):
+        self.calls.append(args)
+        return type("R", (), {"returncode": self.rc, "stdout": "", "stderr": "boom"})()
+
+
+def _queued(store, action="update"):
+    fix_queue.queue_pr(1, action)
+    return store.load_pr(1).fix_request
+
+
+def test_a_moved_ref_is_requeued_not_refused(store, monkeypatch):
+    # Exit 6 means the head or base shifted under the pin — re-reading the live
+    # PR is the remedy, so the request goes back in the queue rather than
+    # stranding until someone notices and clicks again.
+    _queued(store)
+    monkeypatch.setattr(fix_worker, "_resubmit", _Ran(6))
+    fix_worker.run_one(1)
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "queued"
+    assert req["attempts"] == 1
+
+
+def test_retries_are_bounded(store, monkeypatch):
+    _queued(store)
+    monkeypatch.setattr(fix_worker, "_resubmit", _Ran(6))
+    monkeypatch.setattr(fix_worker, "_rested", lambda req, secs: True)
+    for _ in range(fix_worker.MAX_ATTEMPTS):
+        fix_worker.run_one(1)
+        data.refresh()
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "refused", "a permanently moving ref stops eventually"
+    assert "attempts" in (req.get("refused_reason") or "")
+
+
+def test_a_decision_is_not_retried(store, monkeypatch):
+    # Exit 8 is a merge conflict the author has to resolve. Repeating it changes
+    # nothing, so it refuses on the first run.
+    _queued(store)
+    monkeypatch.setattr(fix_worker, "_resubmit", _Ran(8))
+    fix_worker.run_one(1)
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "refused"
+    assert not req.get("attempts")
+
+
+def test_a_fence_refusal_is_never_retried(store, monkeypatch):
+    # Exit 12 is assert_push_target refusing a ref. Retrying a fence violation
+    # is exactly what must not happen.
+    _queued(store)
+    monkeypatch.setattr(fix_worker, "_resubmit", _Ran(12))
+    fix_worker.run_one(1)
+    assert store.load_pr(1).fix_request["status"] == "refused"
+
+
+def test_a_requeued_request_rests_before_pickup(store, monkeypatch):
+    _queued(store)
+    monkeypatch.setattr(fix_worker, "_resubmit", _Ran(6))
+    fix_worker.run_one(1)
+    data.refresh()
+    assert fix_worker.next_queued() is None, "it waits out the retry interval"
+    monkeypatch.setattr(fix_worker, "_rested", lambda req, secs: True)
+    assert fix_worker.next_queued() == 1
