@@ -543,6 +543,7 @@ export interface FixResult {
   patch?: string | null;
   message?: string | null;
   output?: string | null;
+  detail?: string | null;
   compile_preflight?: { exit?: number | null; refused?: string | null;
                         error?: string | null; error_excerpt?: string | null } | null;
 }

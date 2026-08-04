@@ -757,6 +757,31 @@ def cmd_update(pr: int, dry_run: bool) -> int:
     return 0
 
 
+def cmd_state(pr: int) -> int:
+    """Print the prepared state as JSON: {mode, phase, conflicts}.
+
+    `prepare --rebase` exits 0 whether the rebase finished or PAUSED on
+    conflicts — the pause is a normal, resumable stop, not an error. So the exit
+    code alone cannot tell "ready to push" from "stopped, a human must resolve
+    these", and any non-interactive caller needs this to tell them apart."""
+    meta = _read_meta(pr)
+    if not meta:
+        print(json.dumps({"phase": "none", "mode": None, "conflicts": []}))
+        return 0
+    wt = _worktree(pr)
+    conflicts: list[str] = []
+    phase = meta.get("phase") or ("ready" if meta.get("mode") == "edit" else "unknown")
+    if wt.exists() and meta.get("mode") == "rebase":
+        try:
+            conflicts = _conflicted_paths(wt)
+        except RuntimeError:
+            conflicts = []
+        if conflicts:
+            phase = "conflicted"
+    print(json.dumps({"phase": phase, "mode": meta.get("mode"), "conflicts": conflicts}))
+    return 0
+
+
 def cmd_abort(pr: int) -> int:
     if not _worktree(pr).exists() and not _meta_path(pr).exists():
         print(f"resubmit: nothing to abort — PR #{pr} has no prepared worktree.", file=sys.stderr)
@@ -831,6 +856,7 @@ def main(argv: list[str] | None = None) -> int:
     updp.add_argument("--dry-run", action="store_true",
                       help="log the update without merging anything")
     sub.add_parser("abort", help="discard the prepared worktree without pushing")
+    sub.add_parser("state", help="print the prepared state as JSON (phase, mode, conflicts)")
     args = p.parse_args(argv)
 
     try:
@@ -844,6 +870,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_diff(args.pr)
         if args.action == "update":
             return cmd_update(args.pr, args.dry_run)
+        if args.action == "state":
+            return cmd_state(args.pr)
         if args.action == "abort":
             return cmd_abort(args.pr)
     except RuntimeError as e:

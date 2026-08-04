@@ -23,6 +23,7 @@ community pain first. An operator-queued request always wins the next pick.
 """
 from __future__ import annotations
 
+import json
 import os
 import socket
 import stat
@@ -187,6 +188,56 @@ def _resubmit(pr: int, *args: str) -> subprocess.CompletedProcess[str]:
                           capture_output=True, text=True, timeout=1800)
 
 
+# What each resubmit exit means, in the words an operator would use. The raw
+# stderr is kept alongside for anyone debugging, but it is never the headline:
+# a stack trace or a docker argv tells an operator nothing about what to do.
+_PLAIN_EXITS: dict[int, str] = {
+    3: "This PR can't be pushed to — it's closed, or the author turned off "
+       "\"Allow edits from maintainers\".",
+    4: "A git command failed talking to GitHub. Usually a network blip; it retries.",
+    5: "There was nothing to push — no change was produced.",
+    6: "The author pushed to this branch while we were working, so the change no "
+       "longer applies. It retries against their new commit.",
+    7: "GitHub rejected the push. Usually the branch moved underneath us; it retries.",
+    8: "The base branch conflicts with this PR, so it can't be merged in "
+       "automatically. Try \"Resolve merge conflicts\", or ask the author to update.",
+    9: "The rebase couldn't be completed automatically.",
+    11: "The rebase confirmation didn't match the author's current commit.",
+    12: "Refused: the push would have targeted a branch other than this PR's own.",
+}
+
+
+def plain_reason(rc: int, output: str) -> str:
+    """A one-line explanation of a failed run for the operator, with the raw
+    output kept out of it. An unmapped exit falls back to the first line of what
+    the command actually said, which is at least a sentence rather than a
+    traceback."""
+    mapped = _PLAIN_EXITS.get(rc)
+    if mapped:
+        return mapped
+    first = next((ln.strip() for ln in output.splitlines() if ln.strip()), "")
+    first = first.removeprefix("resubmit: ")
+    return first or f"The {rc and 'action failed' or 'action failed'} (exit {rc})."
+
+
+def plain_preflight(pf: dict) -> str:
+    """Why the compile preflight did not clear the change, in plain words.
+
+    A refusal is a policy decision and already reads as a sentence. An `error` is
+    an exception string from the sandbox — docker argv, a Python class name —
+    which says nothing an operator can act on beyond "the sandbox is broken on
+    this machine"."""
+    if pf.get("refused"):
+        return f"The change wasn't compile-checked: {pf['refused']}"
+    if pf.get("error"):
+        return ("The build check couldn't run — the sandbox failed to start on the "
+                "worker machine. Nothing was pushed. This is a problem with the "
+                "worker, not with the PR.")
+    if pf.get("exit") not in (0, None):
+        return "The project didn't compile with this change applied, so nothing was pushed."
+    return "The build check did not pass."
+
+
 def _rested(req: dict, seconds: float) -> bool:
     """Whether a re-queued request's last attempt (its checked_at write stamp) is
     at least `seconds` old. A missing or unparseable stamp reads as rested, so a
@@ -214,9 +265,10 @@ def _settle(n: int, req: dict, rc: int, output: str) -> None:
         print(f"[fix-worker] PR #{n} exited {rc}; re-queued (attempt {attempts}"
               f"/{MAX_ATTEMPTS})", flush=True)
         return
-    exhausted = (" after "
-                 f"{attempts} attempts" if rc in TRANSIENT_EXITS else "")
-    _refuse(n, req, f"{output[-TAIL_CHARS:]}{exhausted}")
+    reason = plain_reason(rc, output)
+    if rc in TRANSIENT_EXITS:
+        reason = f"{reason} Gave up after {attempts} attempts."
+    _refuse(n, req, reason, result={"output": output[-TAIL_CHARS:]})
 
 
 def _fail(n: int, req: dict, message: str) -> None:
@@ -276,6 +328,21 @@ def run_one(n: int) -> None:
                 (prepared.stderr or prepared.stdout).strip())
         return
     try:
+        # `prepare --rebase` exits 0 both when the rebase finished and when it
+        # PAUSED on conflicts git could not resolve. A paused rebase leaves
+        # conflict markers in the tree, so anything read from it is not a change
+        # — it is an unfinished merge. Nothing downstream may treat it as one.
+        paused = _conflicted_state(n)
+        if paused is not None:
+            _resubmit(n, "abort")
+            files = ", ".join(paused[:5])
+            more = f" (and {len(paused) - 5} more)" if len(paused) > 5 else ""
+            _refuse(n, claimed,
+                    f"This PR's changes and the current base both edit the same lines "
+                    f"in {len(paused)} file(s), and git can't combine them on its own: "
+                    f"{files}{more}. Resolving that needs a person who knows which "
+                    f"version is right — ask the author to rebase.")
+            return
         diff = _resubmit(n, "diff")
         if diff.returncode != 0:
             _fail(n, claimed, (diff.stderr or diff.stdout).strip())
@@ -288,8 +355,9 @@ def run_one(n: int) -> None:
         if pf is not None:
             pf_ok, pf_why = gates.compile_preflight_gate(pf)
             if not pf_ok:
-                _refuse(n, claimed, f"compile preflight blocked the push: {pf_why}",
-                        result={"patch": patch[-TAIL_CHARS:], "compile_preflight": pf})
+                _refuse(n, claimed, plain_preflight(pf),
+                        result={"patch": patch[-TAIL_CHARS:], "compile_preflight": pf,
+                                "detail": pf_why})
                 return
         result = {"patch": patch[-TAIL_CHARS:], "compile_preflight": pf,
                   "message": _commit_message(action)}
@@ -305,6 +373,23 @@ def run_one(n: int) -> None:
     except Exception:
         _resubmit(n, "abort")
         raise
+
+
+def _conflicted_state(n: int) -> list[str] | None:
+    """The conflicted paths when the prepared rebase is paused on them, else
+    None. Reads `resubmit state` rather than the exit code, which cannot tell a
+    resumable pause from a finished rebase."""
+    r = _resubmit(n, "state")
+    if r.returncode != 0:
+        return None
+    try:
+        state = json.loads(r.stdout or "{}")
+    except ValueError:
+        return None
+    conflicts = state.get("conflicts") or []
+    if state.get("phase") == "conflicted" or conflicts:
+        return [str(c) for c in conflicts] or ["(unnamed)"]
+    return None
 
 
 def _preflight(n: int, patch: str) -> dict | None:
