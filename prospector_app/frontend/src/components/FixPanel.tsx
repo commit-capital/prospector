@@ -25,21 +25,28 @@ function unavailable(runner: FixRunner | null, req: FixRequest | null,
 const IN_FLIGHT = ["queued", "running", "awaiting-review", "approved", "pushing"];
 
 const LABEL: Record<FixAction, string> = {
-  update: "⤵ Merge base in",
-  rebase: "⟳ Rebase onto base",
+  update: "↻ Re-test against current main",
+  rebase: "⟳ Resolve merge conflicts",
   fix: "🔧 Author a fix",
 };
 
 const HELP: Record<FixAction, string> = {
-  update: "Merge the base branch into this PR's head so CI and the review provider "
-        + "re-run against current base code. Authors no content of its own, and a "
-        + "conflicting base stops before anything is pushed.",
-  rebase: "Replay this PR's commits onto current base to clear a conflict, then "
-        + "force-push behind a lease pinned to the author's exact head. Rewrites "
-        + "the contributor's branch history, so it parks for your review first.",
-  fix: "Have an agent author a change against this PR's failing gates, then park "
-     + "the diff for your review. Only the gates the repository profile names as "
-     + "fixable are attempted.",
+  update: "Adds a merge commit bringing current main into this PR, which makes CI "
+        + "and the review provider answer \"does this still work against main as it "
+        + "is today?\" — their last answer is only as current as the last push. "
+        + "Does not unblock a merge: GitHub merges cleanly with or without this. "
+        + "The contributor's commits are untouched, and a conflicting main stops "
+        + "before anything is pushed. Moving the head does re-stale this PR's "
+        + "stored facts, so it needs a re-ingest afterwards.",
+  rebase: "Replays this PR's commits onto current main to clear a conflict, then "
+        + "force-pushes behind a lease pinned to the author's exact head. The "
+        + "contributor stays the author of every commit, but the commits get new "
+        + "SHAs — which collapses inline review comments anchored to the old ones, "
+        + "and means anyone with the branch checked out needs a hard reset. It "
+        + "parks for your review before any of that happens.",
+  fix: "Has an agent write a change against this PR's failing gates and park the "
+     + "diff for your review — nothing is pushed until you approve it. Only the "
+     + "gates the repository profile names as fixable are attempted.",
 };
 
 /** The queue/run state strip: where an in-flight, parked, or failed autofix
