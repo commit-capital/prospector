@@ -116,6 +116,12 @@ VERIFY_OUTCOMES = {
     "deps-touched",
 }
 
+# Outcomes where VERIFY produced no evidence either way. They never satisfy the
+# automatic merge bar, but they do not block a human-initiated merge.
+VERIFY_UNVERIFIABLE_OUTCOMES = {
+    "unverifiable-no-test", "unverifiable-needs-live-agent",
+}
+
 # The sandbox's host-visible exit contract. A phase container's PID 1 is the
 # trusted run-phase.sh; untrusted PR code runs as its child and cannot forge
 # these as the host observes them. A red is accepted ONLY on exactly
@@ -347,7 +353,9 @@ def merge_eligibility(pr: Pr, today: str | None = None,
     More permissive than merge_allowed: an operator may merge any PR that passed
     every check we actually RAN on it — Greptile 5/5, CI, mergeable, fresh, no
     threat/secret — even one ANALYZE never reached, SECURITY never reviewed, or
-    VERIFY never run.
+    VERIFY never run. A current unverifiable outcome is also non-blocking: it
+    records that the sandbox found nothing faithful to run, not evidence against
+    the PR. No reason is required for those human merges.
     ANALYZE disposition is irrelevant here. Security blocks only when a review
     ran for this head and is not GREEN; a never-run review never blocks (we don't
     run the deep review on non-merge-candidate / Easy-Lane PRs). A CODEOWNERS path
@@ -379,8 +387,9 @@ def merge_eligibility(pr: Pr, today: str | None = None,
     # once the phase reaches one, so the outcome is what says a verification
     # concluded. A null outcome (blind committed, or a run that errored and held) has
     # concluded nothing and blocks no more than a section that was never written.
-    # Only a verification that reached a verdict on this head and did not confirm the
-    # fix blocks.
+    # Only a verification that reached negative evidence (or needs an explicit
+    # human escalation decision) blocks. An unverifiable conclusion is absence
+    # of evidence, so it remains visible but does not block a human merge.
     if (pr.verify_outcome is not None
             and is_current(pr, "verify", max_age_days=VERIFY_MAX_AGE_DAYS, today=today)):
         if pr.verify_outcome == "verified-fix":
@@ -401,13 +410,18 @@ def merge_eligibility(pr: Pr, today: str | None = None,
             if why is not None:
                 return True, f"{provenance}; verification incomplete: {why}"
             return True, provenance
+        elif pr.verify_outcome in VERIFY_UNVERIFIABLE_OUTCOMES:
+            # No negative evidence about the PR: the sandbox had nothing it
+            # could faithfully run. Keep this off the automatic merge path, but
+            # do not turn absence of evidence into a human-merge block.
+            return True, ("passed all checks run — dynamic verification "
+                          f"{pr.verify_outcome} (inconclusive)")
         elif not pr.verify_override:
-            # escalate ("a human must decide") is the ONE verify outcome an
-            # operator may merge past with a logged reason, exactly like a YELLOW
-            # security verdict. Every other non-verified outcome (not-verified,
-            # regressed, needs-rebase, deps-touched, the unverifiables) is either
-            # "the PR must change" or "add a test" and stays a hard block.
-            if not (pr.verify_outcome == "escalate" and (override_reason or "").strip()):
+            # escalate ("a human must decide") may be cleared with a logged
+            # reason. Actual failures (not-verified, regressed, needs-rebase)
+            # and safety refusals (deps-touched) stay hard blocks regardless.
+            if not (pr.verify_outcome == "escalate"
+                    and (override_reason or "").strip()):
                 return False, f"dynamic verification {pr.verify_outcome}"
     return True, "passed all checks run"
 
@@ -495,9 +509,9 @@ def security_overridable(pr: Pr, today: str | None = None,
 def verify_overridable(pr: Pr, today: str | None = None,
                        changed_paths: list[str] | None = None) -> bool:
     """True iff the block a reason would clear is specifically a current escalate
-    verify outcome with no logged override — the ONE verify outcome an operator
-    may merge past. The app shows the override-reason input and the executor
-    logs the reason to the verify section only where this holds."""
+    verify outcome with no logged override. Unverifiable outcomes do not block a
+    human merge and therefore need no override. The app shows the override-reason
+    input and the executor logs the reason only where this holds."""
     if not (is_current(pr, "verify", max_age_days=VERIFY_MAX_AGE_DAYS, today=today)
             and pr.verify_outcome == "escalate" and not pr.verify_override):
         return False
