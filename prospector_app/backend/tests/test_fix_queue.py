@@ -390,3 +390,79 @@ def test_a_requeued_request_rests_before_pickup(store, monkeypatch):
     assert fix_worker.next_queued() is None, "it waits out the retry interval"
     monkeypatch.setattr(fix_worker, "_rested", lambda req, secs: True)
     assert fix_worker.next_queued() == 1
+
+
+# --- a paused rebase is not a finished change ----------------------------------
+
+class _Staged:
+    """Replays a scripted resubmit run: prepare succeeds, `state` reports the
+    rebase paused on conflicts."""
+
+    def __init__(self, conflicts):
+        self.conflicts, self.calls = conflicts, []
+
+    def __call__(self, n, *args):
+        self.calls.append(args[0])
+        out = ""
+        if args[0] == "state":
+            import json as _json
+            out = _json.dumps({"phase": "conflicted" if self.conflicts else "ready",
+                               "mode": "rebase", "conflicts": self.conflicts})
+        return type("R", (), {"returncode": 0, "stdout": out, "stderr": ""})()
+
+
+def test_a_paused_rebase_never_reaches_preflight_or_review(store, monkeypatch):
+    # `prepare --rebase` exits 0 when it PAUSES on conflicts. Treating that as a
+    # finished change captures the conflict markers as a patch — which is what
+    # got shown to an operator as "the change, exactly as it would be pushed".
+    fix_queue.queue_pr(1, "rebase")
+    ran = _Staged(["packages/a/src/execute.ts", "packages/b/src/run.ts"])
+    monkeypatch.setattr(fix_worker, "_resubmit", ran)
+    called = []
+    monkeypatch.setattr(fix_worker, "_preflight", lambda n, patch: called.append(n))
+
+    fix_worker.run_one(1)
+
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "refused"
+    assert called == [], "a conflicted tree is never compile-checked"
+    assert "abort" in ran.calls, "the paused worktree is discarded"
+    assert not (req.get("result") or {}).get("patch"), "no conflict markers are kept"
+
+
+def test_the_conflict_refusal_names_the_files_in_plain_words(store, monkeypatch):
+    fix_queue.queue_pr(1, "rebase")
+    monkeypatch.setattr(fix_worker, "_resubmit", _Staged(["src/execute.ts"]))
+    fix_worker.run_one(1)
+    why = store.load_pr(1).fix_request["refused_reason"]
+    assert "src/execute.ts" in why
+    assert "ask the author" in why
+    for jargon in ("<<<<<<<", "CalledProcessError", "returncode", "exit "):
+        assert jargon not in why
+
+
+# --- refusals read as sentences, not tracebacks --------------------------------
+
+def test_plain_reason_replaces_command_noise():
+    raw = ("CalledProcessError: Command '['docker', 'run', '--rm', '-v', "
+           "'/Users/x/base/678728f/src:/work/src']' returned non-zero exit status 1.")
+    for rc in sorted(fix_worker._PLAIN_EXITS):
+        why = fix_worker.plain_reason(rc, raw)
+        assert "docker" not in why and "CalledProcessError" not in why
+        assert why.endswith(".") and why[0].isupper()
+
+
+def test_plain_reason_falls_back_to_a_sentence_not_a_dump():
+    why = fix_worker.plain_reason(99, "resubmit: the fork repository was deleted\ntrace...")
+    assert why == "the fork repository was deleted"
+
+
+def test_a_broken_sandbox_reads_as_a_worker_problem():
+    why = fix_worker.plain_preflight({"error": "CalledProcessError: Command '['docker'...]'"})
+    assert "docker" not in why and "CalledProcessError" not in why
+    assert "worker" in why and "Nothing was pushed" in why
+
+
+def test_a_real_compile_failure_says_so():
+    why = fix_worker.plain_preflight({"exit": 1})
+    assert "didn't compile" in why

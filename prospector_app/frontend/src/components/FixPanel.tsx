@@ -119,8 +119,8 @@ function RequestStrip({ req, runner }: { req: FixRequest; runner: FixRunner | nu
       <div className="verdict-banner v-caution">
         <span className="vb-icon">⛔</span>
         <div>
-          <div className="vb-headline">The {req.action} was refused — nothing was pushed</div>
-          <div className="vb-detail">{req.refused_reason ?? "no reason recorded"}</div>
+          <div className="vb-headline">Nothing was pushed</div>
+          <div className="vb-detail">{req.refused_reason ?? "No reason was recorded."}</div>
         </div>
       </div>
     );
@@ -130,8 +130,8 @@ function RequestStrip({ req, runner }: { req: FixRequest; runner: FixRunner | nu
       <div className="verdict-banner v-red">
         <span className="vb-icon">✗</span>
         <div>
-          <div className="vb-headline">The {req.action} failed</div>
-          <div className="vb-detail">{req.error ?? "no error recorded"}</div>
+          <div className="vb-headline">This didn't finish</div>
+          <div className="vb-detail">{req.error ?? "No error was recorded."}</div>
         </div>
       </div>
     );
@@ -225,25 +225,30 @@ export function FixBody({ req, runner }: { req: FixRequest | null; runner: FixRu
     );
   }
   const pf = req.result?.compile_preflight;
+  const showPatch = req.result?.patch
+    && (req.status === "awaiting-review" || req.status === "approved");
+  // Raw command output, build errors and stack traces are for whoever is
+  // debugging the worker. They go behind a disclosure so the plain explanation
+  // above stays the thing an operator reads.
+  const raw = [pf?.error_excerpt, pf?.error, req.result?.detail, req.result?.output]
+    .filter(Boolean).join("\n\n");
   return (
     <>
       <RequestStrip req={req} runner={runner} />
-      {pf && (pf.refused || pf.error || (pf.exit != null && pf.exit !== 0)) && (
-        <div className="small">
-          <strong>Compile preflight:</strong>{" "}
-          {pf.refused ?? pf.error ?? `exited ${pf.exit}`}
-          {pf.error_excerpt && <pre className="log-tail">{pf.error_excerpt}</pre>}
-        </div>
-      )}
-      {req.result?.patch && (
+      {showPatch && (
         <>
           <div className="small muted" style={{ marginTop: 8 }}>
-            The authored change, exactly as it would be pushed:
+            The change, exactly as it would be pushed:
           </div>
-          <pre className="log-tail">{req.result.patch}</pre>
+          <pre className="log-tail">{req.result?.patch}</pre>
         </>
       )}
-      {req.result?.output && <pre className="log-tail">{req.result.output}</pre>}
+      {raw && (
+        <details className="small" style={{ marginTop: 8 }}>
+          <summary className="muted">Technical detail</summary>
+          <pre className="log-tail">{raw}</pre>
+        </details>
+      )}
     </>
   );
 }
