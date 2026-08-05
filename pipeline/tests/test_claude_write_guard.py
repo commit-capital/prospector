@@ -48,6 +48,24 @@ def denied(result: dict[str, Any]) -> bool:
     )
 
 
+def checkout(path: Path, **remotes: str) -> Path:
+    subprocess.run(["git", "init", "-q", str(path)], check=True)
+    for name, repo in remotes.items():
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(path),
+                "remote",
+                "add",
+                name,
+                f"git@github.com:{repo}.git",
+            ],
+            check=True,
+        )
+    return path
+
+
 def test_denies_literal_and_config_variable_target_writes() -> None:
     assert denied(
         run_guard("gh pr close 12 --repo test-owner/test-repo --comment done")
@@ -102,6 +120,122 @@ def test_missing_target_configuration_fails_closed() -> None:
             "gh issue create --repo any/repo --title bug --body details",
             project_dir=Path("/tmp/no-triage-config"),
             triage_repo=None,
+        )
+    )
+
+
+def test_allows_pushing_an_unconfigured_checkout_to_its_own_origin(
+    tmp_path: Path,
+) -> None:
+    repo = checkout(tmp_path / "repo", origin="tool-owner/tool-repo")
+    for command in ("git push", "git push -u origin HEAD", "git push origin main"):
+        assert not denied(
+            run_guard(command, project_dir=tmp_path, triage_repo=None, cwd=repo)
+        )
+
+
+def test_denies_an_unconfigured_push_to_a_remote_beyond_the_checkout(
+    tmp_path: Path,
+) -> None:
+    repo = checkout(
+        tmp_path / "repo",
+        origin="tool-owner/tool-repo",
+        elsewhere="other-owner/other-repo",
+    )
+    assert denied(
+        run_guard(
+            "git push elsewhere main",
+            project_dir=tmp_path,
+            triage_repo=None,
+            cwd=repo,
+        )
+    )
+
+
+def test_denies_pushing_to_a_remote_that_is_the_configured_target(
+    tmp_path: Path,
+) -> None:
+    repo = checkout(
+        tmp_path / "repo",
+        origin="tool-owner/tool-repo",
+        upstream="test-owner/test-repo",
+    )
+    assert denied(run_guard("git push upstream main", cwd=repo))
+
+
+def test_allows_pushing_a_configured_checkout_to_an_unrelated_origin(
+    tmp_path: Path,
+) -> None:
+    repo = checkout(tmp_path / "repo", origin="tool-owner/tool-repo")
+    assert not denied(run_guard("git push --force-with-lease origin HEAD", cwd=repo))
+    assert not denied(run_guard("echo pushing && git push -u origin HEAD:fix", cwd=repo))
+
+
+def test_denies_a_push_whose_destination_cannot_be_resolved(tmp_path: Path) -> None:
+    repo = checkout(tmp_path / "repo", origin="tool-owner/tool-repo")
+    assert denied(run_guard("git push $REMOTE main", cwd=repo))
+    assert denied(run_guard("git push undeclared main", cwd=repo))
+
+
+def test_resolves_the_destination_of_a_dash_c_push_from_that_directory(
+    tmp_path: Path,
+) -> None:
+    tool = checkout(tmp_path / "tool", origin="tool-owner/tool-repo")
+    target = checkout(tmp_path / "target", origin="test-owner/test-repo")
+    assert not denied(run_guard(f"git -C {tool} push origin HEAD", cwd=target))
+    assert denied(run_guard(f"git -C {target} push origin HEAD", cwd=tool))
+
+
+def test_allows_a_command_whose_text_only_mentions_a_push(tmp_path: Path) -> None:
+    repo = checkout(tmp_path / "repo", origin="tool-owner/tool-repo")
+    assert not denied(
+        run_guard("git commit -m 'stop reading every git push as a target write'", cwd=repo)
+    )
+    assert not denied(
+        run_guard(
+            "git commit -F - <<'MSG'\nEvery git push was denied by the guard\nMSG",
+            cwd=repo,
+        )
+    )
+    assert not denied(
+        run_guard(
+            "git commit -F - <<'MSG'\nEvery git push was denied\n"
+            "The branch's remote is resolved now\nMSG",
+            cwd=repo,
+        )
+    )
+
+
+def test_denies_a_push_behind_a_directory_change(tmp_path: Path) -> None:
+    repo = checkout(tmp_path / "repo", origin="tool-owner/tool-repo")
+    assert denied(run_guard("cd ../elsewhere && git push origin HEAD", cwd=repo))
+
+
+def test_denies_a_push_naming_the_target_it_hides_from_the_parser(
+    tmp_path: Path,
+) -> None:
+    repo = checkout(tmp_path / "repo", origin="tool-owner/tool-repo")
+    assert denied(
+        run_guard(
+            "bash -c 'git push git@github.com:test-owner/test-repo.git HEAD:main'",
+            cwd=repo,
+        )
+    )
+
+
+def test_missing_target_configuration_still_fails_closed_for_gh_writes(
+    tmp_path: Path,
+) -> None:
+    repo = checkout(tmp_path / "repo", origin="tool-owner/tool-repo")
+    assert denied(
+        run_guard("gh pr merge 12", project_dir=tmp_path, triage_repo=None, cwd=repo)
+    )
+    assert denied(
+        run_guard(
+            "gh issue close 12 --repo tool-owner/tool-repo",
+            project_dir=tmp_path,
+            triage_repo=None,
+            cwd=repo,
         )
     )
 
