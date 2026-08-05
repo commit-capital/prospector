@@ -167,9 +167,14 @@ def resolve_destination(destination: str, cwd: Path) -> str:
 def push_targets(command: str, cwd: Path) -> list[tuple[str, str]] | None:
     """Each push in the command as its destination repository and own origin.
 
-    ``None`` when a destination cannot be resolved: a segment that reads like a
-    push and cannot be lexed, a directory change alongside a push, a shell
-    expansion standing in for the remote, or a remote the checkout cannot name.
+    ``None`` when a destination cannot be resolved: a directory change alongside
+    a push, a shell expansion standing in for the remote, or a remote the
+    checkout cannot name.
+
+    A segment whose quoting does not lex falls back to whitespace splitting.
+    Quoting spans segments whenever a command substitution splits one, so its
+    reading is approximate; a push it reads keeps facing the same resolution,
+    which no approximation can talk into naming a repository.
     """
     targets: list[tuple[str, str]] = []
     moved = False
@@ -177,9 +182,7 @@ def push_targets(command: str, cwd: Path) -> list[tuple[str, str]] | None:
         try:
             tokens = shlex.split(part)
         except ValueError:
-            if GIT_PUSH.search(part):
-                return None
-            continue
+            tokens = part.split()
         if tokens and tokens[0] in DIRECTORY_CHANGE:
             moved = True
             continue

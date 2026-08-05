@@ -206,6 +206,22 @@ def test_allows_a_command_whose_text_only_mentions_a_push(tmp_path: Path) -> Non
     )
 
 
+def test_allows_command_substitution_beside_a_push_mention(tmp_path: Path) -> None:
+    repo = checkout(tmp_path / "repo", origin="tool-owner/tool-repo")
+    assert not denied(
+        run_guard(
+            'gh pr create --title "Resolve git push destinations" '
+            '--body "$(cat body.md)"',
+            cwd=repo,
+        )
+    )
+
+
+def test_denies_a_push_whose_quoting_does_not_lex(tmp_path: Path) -> None:
+    repo = checkout(tmp_path / "repo", origin="tool-owner/tool-repo")
+    assert denied(run_guard("git push 'unclosed", cwd=repo))
+
+
 def test_denies_a_push_behind_a_directory_change(tmp_path: Path) -> None:
     repo = checkout(tmp_path / "repo", origin="tool-owner/tool-repo")
     assert denied(run_guard("cd ../elsewhere && git push origin HEAD", cwd=repo))
