@@ -18,11 +18,11 @@ import json, os, sys
 json.dump({"argv": sys.argv[1:], "gh_token": os.environ.get("GH_TOKEN"),
            "github_token": os.environ.get("GITHUB_TOKEN")},
           open(os.environ["STUB_GH_LOG"], "w"))
-print("https://github.com/test-owner/test-meta-repo/issues/42")
+print(os.environ.get("STUB_GH_OUTPUT", "https://github.com/test-owner/test-meta-repo/issues/42"))
 """
 
 
-def _run(tmp_path, args, feedback_repo="test-owner/test-meta-repo"):
+def _run(tmp_path, args, feedback_repo="test-owner/test-meta-repo", gh_output=None):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     gh = bin_dir / "gh"
@@ -37,6 +37,8 @@ def _run(tmp_path, args, feedback_repo="test-owner/test-meta-repo"):
            "PROSPECTOR_FEEDBACK_REPO": feedback_repo,
            "GH_TOKEN": "bot-token", "GITHUB_TOKEN": "bot-token",
            "STUB_GH_LOG": str(log)}
+    if gh_output is not None:
+        env["STUB_GH_OUTPUT"] = gh_output
     r = subprocess.run([sys.executable, str(FILE_ISSUE), *args],
                        env=env, capture_output=True, text=True)
     call = json.loads(log.read_text()) if log.exists() else None
@@ -47,7 +49,13 @@ def test_files_on_the_meta_repo_as_the_operator(tmp_path):
     r, call = _run(tmp_path, ["--title", "clustering is off", "--body", "the details",
                               "--label", "bug"])
     assert r.returncode == 0, r.stderr
-    assert "issues/42" in r.stdout
+    assert json.loads(r.stdout) == {
+        "ok": True,
+        "kind": "feedback-issue",
+        "repo": "test-owner/test-meta-repo",
+        "number": 42,
+        "url": "https://github.com/test-owner/test-meta-repo/issues/42",
+    }
     assert call is not None
     # the repo is pinned to the configured meta-repo...
     assert call["argv"][:3] == ["issue", "create", "--repo"]
@@ -89,3 +97,12 @@ def test_the_repo_cannot_be_overridden(tmp_path):
                               "--body", "b"])
     assert r.returncode != 0
     assert call is None
+
+
+def test_unexpected_gh_success_output_is_not_a_receipt(tmp_path):
+    r, call = _run(tmp_path, ["--title", "t", "--body", "b"],
+                   gh_output="Issue created, probably #42")
+    assert call is not None
+    assert r.returncode == 1
+    assert r.stdout == ""
+    assert "unexpected success output" in r.stderr

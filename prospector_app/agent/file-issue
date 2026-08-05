@@ -22,7 +22,9 @@ Stdlib only, so it runs under the sandbox's system python (like `remember` /
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -79,7 +81,21 @@ def main(argv: list[str] | None = None) -> int:
     if r.returncode != 0:
         print(f"file-issue: {r.stderr.strip() or r.stdout.strip()}", file=sys.stderr)
         return 1
-    print(r.stdout.strip())
+    # A receipt requires gh's canonical URL for the configured repository.
+    url = r.stdout.strip()
+    match = re.fullmatch(
+        rf"https://github\.com/{re.escape(FEEDBACK_REPO)}/issues/(\d+)/?", url
+    )
+    if match is None:
+        print(f"file-issue: unexpected success output from gh: {url!r}", file=sys.stderr)
+        return 1
+    print(json.dumps({
+        "ok": True,
+        "kind": "feedback-issue",
+        "repo": FEEDBACK_REPO,
+        "number": int(match.group(1)),
+        "url": url.rstrip("/"),
+    }, separators=(",", ":")))
     return 0
 
 
