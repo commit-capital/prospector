@@ -2,11 +2,10 @@
 
 The app's agent pane is global: it knows what you're looking at. A question
 carries a context (a PR, a cluster, an issue, or nothing) plus an optional diff anchor
-(file:line). Any question also carries the operator's currently visible/
-filtered PR list (e.g. PR Explorer, #355) whenever one is on screen — so
-"review these" doesn't need the numbers spelled out, even when a PR's flyout
-happens to be open on top of that list (#507) — that list doesn't change the
-thread identity, only the prompt. We build the right context block, spawn a
+(file:line). Requests from PR Explorer carry the operator's filtered PR list;
+a new or reconstructed session includes it in the prompt, so "review these"
+doesn't need the numbers spelled out (#355, #507). The list doesn't change the
+thread identity. We build the right context block, spawn a
 sandboxed headless Claude rooted at the repo, and stream the answer. Threads +
 claude sessions are kept per thread key — a subject's context id (pr/cluster/
 issue/general) by default, or an explicit `chat_id` for an operator-named session
@@ -676,13 +675,8 @@ async def stream_chat(question: str, pr: int | None = None, cluster: int | None 
     # and re-learn the same repository-specific corrections.
     memory = agent_memory.context_block() if is_first else ""
     intro = f"{memory}\n\n" if memory else ""
-    # The Explorer's filtered set (#355) can change between turns of the same
-    # thread, unlike a pr/cluster subject's stable facts — re-stated on every
-    # question, not just the thread's first, so the agent never answers against
-    # a stale view. Sent alongside a pr/cluster subject too (#507), not just
-    # general ones — a PR flyout open on top of the filtered list doesn't mean
-    # the operator has stopped browsing it.
-    visible = f"{_visible_prs_context(prs, prs_total)}\n\n" if prs else ""
+    # The Explorer's filtered set grounds a new or reconstructed session.
+    visible = f"{_visible_prs_context(prs, prs_total)}\n\n" if prs and ground else ""
     # The subject's facts (a PR/cluster's context) are injected at thread start and
     # re-injected on a re-ground, since the fresh session has lost them.
     base = f"{_build_context(pr, cluster, issue, file, line)}\n\n" if ground else ""
