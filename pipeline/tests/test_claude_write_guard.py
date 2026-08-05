@@ -217,6 +217,17 @@ def test_allows_command_substitution_beside_a_push_mention(tmp_path: Path) -> No
     )
 
 
+def test_reads_a_push_past_shell_redirection(tmp_path: Path) -> None:
+    repo = checkout(tmp_path / "repo", origin="tool-owner/tool-repo")
+    assert not denied(run_guard("git push 2>&1 | tail -3", cwd=repo))
+    assert not denied(run_guard("git push > out.log origin HEAD", cwd=repo))
+    assert denied(
+        run_guard("git push 2>&1 upstream HEAD", cwd=checkout(
+            tmp_path / "target", origin="test-owner/test-repo",
+        ))
+    )
+
+
 def test_denies_a_push_whose_quoting_does_not_lex(tmp_path: Path) -> None:
     repo = checkout(tmp_path / "repo", origin="tool-owner/tool-repo")
     assert denied(run_guard("git push 'unclosed", cwd=repo))

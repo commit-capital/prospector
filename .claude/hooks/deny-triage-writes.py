@@ -29,6 +29,7 @@ CONFIG_REPO_REF = re.compile(r"\$(?:TRIAGE_REPO|\{TRIAGE_REPO\})")
 SHELL_SEPARATOR = re.compile(r"&&|\|\||[;&|\n()]")
 SHELL_EXPANSION = re.compile(r"[$`]")
 ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+REDIRECTION = re.compile(r"^\d*(?:>>|>|<)&?")
 DIRECTORY_CHANGE = {"cd", "chdir", "pushd", "popd"}
 COMMAND_PREFIXES = {"command", "env", "exec", "nice", "nohup", "sudo", "time"}
 GIT_VALUE_OPTIONS = {
@@ -123,10 +124,17 @@ def push_arguments(tokens: list[str]) -> tuple[str, list[str]] | None:
 
 
 def push_destination_argument(arguments: list[str]) -> str:
-    """The repository a push names, empty when it names none."""
+    """The repository a push names, empty when it names none.
+
+    Redirections are stepped over, along with the file a bare one writes to.
+    """
     index = 0
     while index < len(arguments):
         argument = arguments[index]
+        redirection = REDIRECTION.match(argument)
+        if redirection:
+            index += 1 if argument[redirection.end() :] else 2
+            continue
         if argument.startswith("--repo="):
             return argument.removeprefix("--repo=")
         if argument in PUSH_VALUE_OPTIONS:
