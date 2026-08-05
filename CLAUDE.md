@@ -19,18 +19,18 @@ with no target configured, those commands fail closed.
 
 - **Reads** run as the operator's default local `gh` login. Do not set
   `GH_CONFIG_DIR`.
-- **Pushes to contributor PR head branches** run as a third identity: the
-  machine user in `TRIAGE_PUSH_LOGIN`, a GitHub *user* account holding push
-  access on `TRIAGE_REPO` and authenticating by SSH key alone
-  (`TRIAGE_PUSH_SSH_KEY_FILE`), with no API token. Pushing to a fork head branch
-  rides the PR's "Allow edits from maintainers", which grants push to maintainer
-  *users*, so an App installation token can never do it. `resubmit`'s `push_env`
-  pins that key with `IdentitiesOnly=yes` and stamps the account's commit
-  identity, and `assert_push_target` refuses any ref that is not the open PR's
-  own head — a repository ruleset targets branches and grants bypass to actors,
-  so it cannot scope a restriction to one account, and this is where the machine
-  user's reach is actually bounded. With the identity unset every push refuses;
-  nothing falls back to the operator or the App.
+- **Pushes to contributor PR head branches** use one shared `resubmit` flow with
+  caller-selected identity. Interactive chat resubmits run as the confirming
+  operator after dropping the injected App token. The unattended autofix worker
+  explicitly selects the machine user in `TRIAGE_PUSH_LOGIN`, a GitHub *user*
+  authenticating by its pinned SSH key alone (`TRIAGE_PUSH_SSH_KEY_FILE`), with
+  no API token. Pushing to a fork head branch rides "Allow edits from
+  maintainers", which grants push to maintainer *users*, so an App installation
+  token can never do it. `assert_push_target` refuses any ref that is not the open
+  PR's own head — a repository ruleset targets branches and grants bypass to
+  actors, so it cannot scope a restriction to one account, and this is where the
+  user's reach is actually bounded. With the worker identity unset every
+  unattended push refuses; it never falls back to the operator or the App.
 - **Writes** use a token minted from `TRIAGE_BOT_KEY_FILE` by
   `pipeline/get-bot-token.sh`, and are attributed to `TRIAGE_BOT_LOGIN`. When a
   bot token cannot be minted, the executor obtains no token and **every write is
@@ -64,15 +64,17 @@ with no target configured, those commands fail closed.
   as `TRIAGE_BOT_LOGIN`. Without a token those upstream writes are withheld;
   they never fall back to the operator's login. A separate helper may always
   file an issue only on `PROSPECTOR_FEEDBACK_REPO` as the operator. The agent's
-  resubmit helper uses the machine-user identity for contributor-branch pushes,
-  and is advertised only on a machine that both mints the bot token and holds a
-  complete push identity. These paths do not use the per-PR merge gate. Chat issue closes call the same
+  resubmit helper uses the confirming operator's identity for interactive
+  contributor-branch pushes and is advertised when the session can mint the bot
+  token. The worker opts into its configured machine identity separately. These
+  paths do not use the per-PR merge gate. Chat issue closes call the same
   `executor.close_issue_with_comment` path as the Issues UI; other upstream chat
   writes use the chat command allowlist. The chat agent cannot merge.
 
 Every executor write, including a dry-run, is appended to the app activity
 log. Resubmit pushes and branch updates append best-effort entries under the
-machine user's identity. Chat issue closes are executor writes and appear in the log;
+identity selected by their caller. Chat issue closes are executor writes and
+appear in the log;
 other bot-authenticated chat writes and feedback issue filing do not. Executor
 enforcement lives in
 `prospector_app/backend/safety_guard.py`: an allowlist that permits only

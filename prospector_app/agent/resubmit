@@ -1,20 +1,14 @@
 #!/usr/bin/env python3
-"""The app agent's "resubmit a PR" path — author changes on a contributor's
-fork branch and push them AS THE CONFIGURED MACHINE USER.
+"""Author changes on a contributor PR and push them through one guarded flow.
 
 Most triage actions run as the configured GitHub App. Pushes cannot: writing to
 a contributor's fork head branch relies on the PR's "Allow edits from
 maintainers", which grants push to *users with push access to the upstream repo*
-— not to a GitHub App installation. So pushes go out under the machine user in
-settings.PUSH_LOGIN, a GitHub user account holding push access on the triaged
-repo and authenticating by SSH key alone. Because the whole chat-agent
-subprocess is authenticated as the App when a bot token is minted (GH_TOKEN in
-the env), `push_env` drops GH_TOKEN and pins the machine user's key, so a push
-can never ride the App token or whatever key an ssh-agent happens to hold.
-`gh` reads stay on the operator's default login (`operator_env`).
-
-With no machine user configured every push refuses — nothing falls back to
-another identity.
+— not to a GitHub App installation. Interactive, explicitly confirmed chat
+resubmits therefore use the operator's existing GitHub SSH identity, as they did
+before the autofix worker existed. Unattended worker invocations opt into the
+configured machine user and its pinned key. Both identities use this exact same
+clone/rebase/lease/push implementation; only the environment policy differs.
 
 Pushing a commit re-triggers the review provider and CI for free — both run on push.
 
@@ -31,7 +25,7 @@ A conflicting PR uses the same isolated worktree and a pinned rebase transaction
     resubmit <pr> diff                 # review the resolution / final range-diff
     resubmit <pr> push --confirm-rewrite <old-head-sha>
 
-`update` is a standalone action on the same machine-user identity — it merges the
+`update` is a standalone action on the same selected identity — it merges the
 base branch into the PR's head so CI re-runs against current base code, writing
 none of its own content. It needs no prepare:
     resubmit <pr> update
@@ -51,8 +45,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import shlex
 import shutil
 import subprocess
 import sys
@@ -65,6 +57,12 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from pipeline import settings  # noqa: E402
 from pipeline.settings import REPO  # noqa: E402
+from prospector_app.backend.resubmit_identity import (  # noqa: E402
+    actor_label,
+    git_env,
+    operator_env,
+    uses_machine_user,
+)
 
 # Isolated per-PR clones live in the app's gitignored cache, never in the
 # operator's working tree — a resubmit never disturbs the repo they're running in.
@@ -74,50 +72,10 @@ _PR_FIELDS = ("number,state,baseRefName,baseRefOid,headRefName,headRefOid,mainta
               "isCrossRepository,headRepository,headRepositoryOwner")
 
 
-def operator_env(base: dict[str, str] | None = None) -> dict[str, str]:
-    """Env that authenticates `gh`/`git` as the OPERATOR, not the bot: drop the
-    injected bot GH_TOKEN (and GITHUB_TOKEN) so `gh` falls back to the
-    operator's default login and `git`-over-ssh uses their key. Everything else
-    (PATH, HOME, ssh-agent) is inherited so the operator's credentials resolve."""
-    env = dict(os.environ if base is None else base)
-    env.pop("GH_TOKEN", None)
-    env.pop("GITHUB_TOKEN", None)
-    return env
-
-
-def push_env(base: dict[str, str] | None = None) -> dict[str, str]:
-    """Env that authenticates `git` as the configured MACHINE USER: drop the
-    injected App token, pin its private key, and stamp its commit identity.
-
-    `IdentitiesOnly=yes` is load-bearing — without it ssh offers every key an
-    agent holds and the push can land under whatever account owns the first one
-    that authenticates. `-i` alone does not prevent that.
-
-    Raises RuntimeError when no machine user is configured, so a push refuses
-    rather than falling back to an ambient identity."""
-    if not settings.push_identity_configured():
-        raise RuntimeError(
-            "no contributor-push identity is configured on this machine: set "
-            "TRIAGE_PUSH_LOGIN, TRIAGE_PUSH_EMAIL and TRIAGE_PUSH_SSH_KEY_FILE "
-            "in .env (see .env.example). Pushes never fall back to another identity.")
-    key = settings.PUSH_SSH_KEY_FILE
-    assert key is not None  # push_identity_configured() proved it
-    if not key.is_file():
-        raise RuntimeError(f"TRIAGE_PUSH_SSH_KEY_FILE is not a readable file: {key}")
-    env = operator_env(base)
-    env["GIT_SSH_COMMAND"] = (
-        f"ssh -i {shlex.quote(str(key))} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new")
-    env["GIT_AUTHOR_NAME"] = settings.PUSH_LOGIN
-    env["GIT_AUTHOR_EMAIL"] = settings.PUSH_EMAIL
-    env["GIT_COMMITTER_NAME"] = settings.PUSH_LOGIN
-    env["GIT_COMMITTER_EMAIL"] = settings.PUSH_EMAIL
-    return env
-
-
 def assert_push_target(info: dict, branch: str) -> None:
     """The bot-specific fence. A repository ruleset targets branches and grants
     bypass to actors, so it can never scope a restriction to one account; this
-    is where the machine user's reach is actually bounded.
+    is where either push identity's reach is actually bounded.
 
     `branch` must be the open PR's own head ref, so the only thing a push can
     ever move is the branch behind the PR being acted on — never the default
@@ -148,7 +106,7 @@ def _gh_json(pr: int) -> dict:
 def fork_ssh_url(info: dict) -> str:
     """The ssh clone URL of the PR's head repository (the contributor's fork), e.g.
     `git@github.com:owner/repository.git`. ssh so the push authenticates with the
-    machine user's key regardless of any GH_TOKEN left in the env."""
+    selected SSH identity regardless of any GH_TOKEN left in the env."""
     nwo = (info.get("headRepository") or {}).get("nameWithOwner")
     if not nwo:
         raise RuntimeError("PR has no head repository (deleted fork?)")
@@ -156,28 +114,29 @@ def fork_ssh_url(info: dict) -> str:
 
 
 def upstream_ssh_url() -> str:
-    """The configured upstream repository, fetched with the machine user's SSH key."""
+    """The configured upstream repository, fetched with the selected SSH identity."""
     return f"git@github.com:{REPO}.git"
 
 
 def eligibility(info: dict) -> tuple[bool, str]:
-    """Can the machine user push to this PR's head branch? Returns (ok, reason).
+    """Can the selected user push to this PR's head branch? Returns (ok, reason).
     A PR must be OPEN and either allow maintainer edits (the cross-repo fork
-    case) or live on the upstream repo itself (a same-repo branch the machine
-    user's write access covers). Fails closed on anything unexpected."""
+    case) or live on the upstream repo itself. Worker calls additionally require
+    their configured machine identity; interactive calls use the operator.
+    Fails closed on anything unexpected."""
     state = (info.get("state") or "").upper()
     if state != "OPEN":
         return False, f"PR #{info.get('number')} is {state or 'in an unknown state'}, not open — nothing to resubmit."
-    if not settings.push_identity_configured():
+    if uses_machine_user() and not settings.push_identity_configured():
         return False, (
-            "no contributor-push identity is configured on this machine — set "
+            "the autofix worker has no contributor-push identity configured — set "
             "TRIAGE_PUSH_LOGIN, TRIAGE_PUSH_EMAIL and TRIAGE_PUSH_SSH_KEY_FILE "
             "in .env (see .env.example).")
     if not info.get("isCrossRepository"):
-        return True, f"same-repo branch — {settings.PUSH_LOGIN} has direct push access."
+        return True, f"same-repo branch — {actor_label()} has direct push access."
     if info.get("maintainerCanModify"):
         return True, ("'Allow edits from maintainers' is on — "
-                      f"{settings.PUSH_LOGIN} can push to the fork branch.")
+                      f"{actor_label()} can push to the fork branch.")
     return False, (
         f"PR #{info.get('number')} has 'Allow edits from maintainers' OFF, so no "
         "maintainer (and no App) can push to the fork branch. Ask the author to "
@@ -204,9 +163,8 @@ def _cleanup(pr: int) -> None:
 
 def _git(args: list[str], cwd: Path, timeout: int = 300,
          extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
-    """A git command in the clone, as the machine user (its key, its commit
-    identity, no App token)."""
-    env = push_env()
+    """A git command in the clone under the caller-selected push identity."""
+    env = git_env()
     if extra_env:
         env.update(extra_env)
     return subprocess.run(["git", *args], cwd=str(cwd), capture_output=True,
@@ -306,7 +264,7 @@ def cmd_prepare(pr: int, rebase: bool = False) -> int:
                   ["git", "clone", "--depth", "1", "--branch", branch, url, str(wt)])
     r = subprocess.run(
         clone_args,
-        capture_output=True, text=True, timeout=300, env=push_env())
+        capture_output=True, text=True, timeout=300, env=git_env())
     if r.returncode != 0:
         print(f"resubmit: clone of {url} ({branch}) failed: {r.stderr.strip()}", file=sys.stderr)
         return 4
@@ -530,7 +488,7 @@ def _push_rebase(pr: int, meta: dict, confirm_rewrite: str | None, dry_run: bool
     if dry_run:
         print(f"[dry-run] rebase of PR #{pr} logged; remote branch untouched.")
     else:
-        print(f"rebased PR #{pr} as {settings.PUSH_LOGIN} with an exact force-with-lease:")
+        print(f"rebased PR #{pr} as {actor_label()} with an exact force-with-lease:")
         print(f"  head: {meta['head_sha']} → {new_sha}")
         print(f"  commits: {meta['old_commit_count']} → {meta['new_commit_count']}")
         print("  Greptile + CI re-run on the push.")
@@ -559,7 +517,7 @@ def cmd_push(pr: int, message: str | None, dry_run: bool,
     branch = meta["branch"]
 
     # Nothing staged/unstaged means the agent authored no change — refuse rather
-    # than push an empty commit under the machine user's name.
+    # than push an empty commit under the selected user's name.
     status = _git(["status", "--porcelain"], wt)
     if status.returncode != 0:
         print(f"resubmit: git status failed: {status.stderr.strip()}", file=sys.stderr)
@@ -589,7 +547,7 @@ def cmd_push(pr: int, message: str | None, dry_run: bool,
 
     if dry_run:
         print(f"[dry-run] would push {new_sha[:8]} to {meta['repo']} @ {branch} "
-              f"(as {settings.PUSH_LOGIN})")
+              f"(as {actor_label()})")
     else:
         push = _git(["push", "origin", f"HEAD:{branch}"], wt)
         if push.returncode != 0:
@@ -603,7 +561,7 @@ def cmd_push(pr: int, message: str | None, dry_run: bool,
     if dry_run:
         print(f"[dry-run] resubmit of PR #{pr} logged; nothing pushed to {where}.")
     else:
-        print(f"resubmitted PR #{pr}: pushed {new_sha[:8]} to {where} as {settings.PUSH_LOGIN}.")
+        print(f"resubmitted PR #{pr}: pushed {new_sha[:8]} to {where} as {actor_label()}.")
         print("  Greptile + CI re-run on the push.")
     return 0
 
@@ -658,12 +616,12 @@ def cmd_diff(pr: int) -> int:
 
 
 def cmd_update(pr: int, dry_run: bool) -> int:
-    """Merge the PR's base branch into its head branch as the machine user, so CI
+    """Merge the PR's base branch into its head as the selected user, so CI
     and the review provider re-run against current base code.
 
     The merge runs locally over SSH in a throwaway clone rather than through the
-    `update-branch` REST endpoint: the machine user holds an SSH key and no API
-    token, and a server-side update-branch is attributed to whoever called it.
+    `update-branch` REST endpoint: worker credentials have no API token, and a
+    server-side update-branch is attributed to whoever called it.
     Merging locally also puts the push outside the `workflow` OAuth scope, which
     an API-token push would need the moment a moved base carries a
     `.github/workflows/**` change into the merge.
@@ -681,7 +639,7 @@ def cmd_update(pr: int, dry_run: bool) -> int:
     if dry_run:
         _log_update(pr, info, before, before, True)
         print(f"[dry-run] would merge {base} into #{pr} @ {branch} ({before[:8]}) "
-              f"as {settings.PUSH_LOGIN}; nothing merged.")
+              f"as {actor_label()}; nothing merged.")
         return 0
 
     try:
@@ -697,7 +655,7 @@ def cmd_update(pr: int, dry_run: bool) -> int:
     clone = subprocess.run(
         ["git", "clone", "--filter=blob:none", "--single-branch", "--no-tags",
          "--branch", branch, url, str(wt)],
-        capture_output=True, text=True, timeout=300, env=push_env())
+        capture_output=True, text=True, timeout=300, env=git_env())
     if clone.returncode != 0:
         print(f"resubmit: clone of {url} ({branch}) failed: {clone.stderr.strip()}",
               file=sys.stderr)
@@ -750,7 +708,7 @@ def cmd_update(pr: int, dry_run: bool) -> int:
         _cleanup(pr)
 
     _log_update(pr, info, before, after, False)
-    print(f"updated PR #{pr}: merged {base} into {branch} as {settings.PUSH_LOGIN} "
+    print(f"updated PR #{pr}: merged {base} into {branch} as {actor_label()} "
           f"({before[:8]} → {after[:8]}).")
     print("  Greptile + CI re-run on the merge commit.")
     print(f"  Then: prospector_app/agent/reingest {pr}, once those checks settle.")
@@ -794,8 +752,7 @@ def cmd_abort(pr: int) -> int:
 def _log(pr: int, meta: dict, new_sha: str, message: str, dry_run: bool) -> None:
     """Append the resubmit to the app activity log — the chat-agent write
     path's audit hook. Best-effort: a logging failure must not fail a push that
-    already went out. Recorded under the machine user's identity (push_env pinned
-    its key and commit identity), which is who actually pushed."""
+    already went out. The caller-selected git identity is who actually pushed."""
     try:
         from prospector_app.backend import activity
         activity.record("resubmit", pr=pr, action="RESUBMIT", repo=meta.get("repo"),
@@ -819,9 +776,11 @@ def _log_rebase(pr: int, meta: dict, new_sha: str, dry_run: bool) -> None:
 
 
 def _log_update(pr: int, info: dict, from_sha: str, to_sha: str | None, dry_run: bool) -> None:
-    """Append the branch update to the app activity log, under the machine user's
-    identity — who actually merged. Best-effort, like `_log`: a logging failure must
-    not fail a merge that already went out."""
+    """Append the branch update to the app activity log under the selected user.
+
+    Best-effort, like `_log`: a logging failure must not fail a merge that already
+    went out.
+    """
     try:
         from prospector_app.backend import activity
         activity.record("resubmit", pr=pr, action="UPDATE_BRANCH",
@@ -835,8 +794,8 @@ def _log_update(pr: int, info: dict, from_sha: str, to_sha: str | None, dry_run:
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="resubmit",
-        description="Author changes on a contributor's fork branch and push them, "
-                    "as the configured machine user.",
+        description="Author changes on a contributor's fork branch and push them "
+                    "through the guarded resubmit flow.",
     )
     p.add_argument("pr", type=int, help="the upstream PR number")
     sub = p.add_subparsers(dest="action", required=True)

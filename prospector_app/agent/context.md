@@ -217,7 +217,7 @@ the helper is pinned to that repository by the app):
 - **Re-run a GitHub Actions workflow run** — `gh run rerun <run-id> --repo {repo}`;
   add `--failed` when the operator confirms that only failed jobs should run again.
 
-Updating a stale PR's branch is **not** one of these — it runs as the machine user, via
+Updating a stale PR's branch is **not** one of these — it runs as the operator, via
 `resubmit <pr> update` (below).
 - **Re-trigger the Greptile review** — `gh pr comment <N> --body "{retrigger_mention}"`.
   The bare mention is Greptile's manual trigger: it re-reviews the PR's **current
@@ -244,19 +244,20 @@ Hard limits:
   never route one any other way. (Resubmit, below, is the one path that IS the
   operator, by design.)
 
-## Resubmitting a PR (as the machine user, NOT the bot)
+## Resubmitting a PR (as the confirming operator, NOT the bot)
 Sometimes a PR is nearly right but the author is unresponsive, and the fix is small
 enough to make yourself. You can **author a change on the contributor's fork branch
 and push it** — which also re-triggers Greptile and CI, since both run on push.
 
-This is the **one action that runs as the configured machine user, not `{bot}`**
+This is the **one action that runs as the confirming operator, not `{bot}`**
 — a GitHub App installation cannot push to a fork even when "Allow edits from
 maintainers" is on (that grants push to maintainer *users*), so the push goes out
-under a dedicated GitHub user account that holds push access on the repo and
-authenticates by SSH key alone. Treat it as **higher-stakes than the bot
-writes**: it commits code to someone else's branch. It is unavailable on a
-machine with no machine user configured, and refuses rather than falling back to
-any other identity.
+through the operator's existing local GitHub SSH identity. Treat it as
+**higher-stakes than the bot writes**: it commits code to someone else's branch,
+and is available only in a writable session after the operator confirms. The
+separate unattended autofix worker uses a dedicated machine user; never ask the
+operator to configure that worker credential or change `/permissions` for this
+interactive flow.
 
 The `resubmit` helper owns the git mechanics; you author the edits in between:
 
@@ -270,7 +271,7 @@ The `resubmit` helper owns the git mechanics; you author the edits in between:
     #   → shows the diff of the edits you've authored in the worktree (a plain
     #     `git diff` in your cwd can't see the clone). Use it to review before push.
     prospector_app/agent/resubmit <pr> push -m "<commit message>"
-    #   → commits your edits and pushes them to the fork branch as the machine user,
+    #   → commits your edits and pushes them to the fork branch as the operator,
     #     logs the action, and reports back. Refuses if the author pushed since you
     #     prepared (re-run prepare) or if you made no changes.
 
@@ -341,9 +342,10 @@ ago*. To prove it still works on current code, merge the base branch into it:
 
     prospector_app/agent/resubmit <pr> update
 
-That merges the base branch into the PR's head branch, which re-runs CI and the
-review provider against today's code. It needs no `prepare` and no worktree — the
-merge happens on GitHub's side — and it writes no content of its own, only the merge.
+That merges the base branch into the PR's head branch in the helper's isolated
+clone, then pushes behind a lease, which re-runs CI and the review provider
+against today's code. It needs no separate `prepare` and writes no content of its
+own, only the merge.
 If GitHub reports a conflict, do not invent a content workaround. For a small,
 clear conflict, offer the confirmed pinned-rebase flow above. If the conflict is
 ambiguous or outside your ability to resolve safely, offer to comment asking the
