@@ -14,8 +14,13 @@ They live in the gitignored root `.env` (or the process environment), so a
 checkout has no implicit repository or bot identity. The app executes
 approved triage actions directly on `TRIAGE_REPO` as the configured GitHub App.
 The project `PreToolUse` hook in `.claude/settings.json` reads the same
-configuration and denies direct GitHub write commands targeting `TRIAGE_REPO`;
-with no target configured, those commands fail closed.
+configuration and denies direct GitHub write commands targeting `TRIAGE_REPO`.
+A `gh` write names its own repository, so with no target configured every one
+of them fails closed. A `git push` is judged by the destination it resolves to
+— the named remote, else the branch's push remote, else `origin` — and an
+unresolvable destination fails closed; with no target configured a push is held
+to the checkout it runs in, which is how a fresh clone with no `.env` pushes its
+own branches while still being unable to reach the triage repository.
 
 - **Reads** run as the operator's default local `gh` login. Do not set
   `GH_CONFIG_DIR`.
