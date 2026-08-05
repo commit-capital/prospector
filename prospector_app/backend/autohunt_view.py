@@ -29,6 +29,7 @@ class AutohuntRun(TypedDict):
 class VerifyFailed(TypedDict):
     pr: int
     error_kind: str | None
+    source: str | None
 
 
 class AutohuntResultCounts(TypedDict):
@@ -62,10 +63,12 @@ def status() -> AutohuntStatus:
     state; the pool counts are computed from the shared snapshot with the same
     gates and failure-memory the hunter picks by. A PR parked in
     `security_failed` is not counted in `security_pool` — it is not awaiting
-    pickup, and renders separately as a failed chip. `verify_failed` lists the
-    auto-queued verify requests that ended in error (the hunter never re-fires
-    an errored request, so each waits for an operator re-queue); operator-queued
-    errors stay off the panel."""
+    pickup, and renders separately as a failed chip. `verify_failed` lists every
+    verify request that ended in error, auto-queued or operator-queued alike —
+    the hunter never re-fires an errored request, so each waits for an operator
+    re-queue regardless of who queued it — tagged with its `source` ("auto" for
+    hunter-fired requests, None for operator-queued ones) so the panel can label
+    each failure by who queued it."""
     records = verify_queue.worker_records(data.store().load_verify_worker())
     newest: dict = records[0] if records else {}
     prs = data.prs()
@@ -74,8 +77,9 @@ def status() -> AutohuntStatus:
     verify_failed: list[VerifyFailed] = []
     for n, pr in sorted(prs.items()):
         req = pr.verify_request or {}
-        if req.get("status") == "error" and req.get("source") == "auto":
-            verify_failed.append({"pr": n, "error_kind": req.get("error_kind")})
+        if req.get("status") == "error":
+            verify_failed.append({"pr": n, "error_kind": req.get("error_kind"),
+                                  "source": req.get("source")})
     return {
         "enabled": bool(newest.get("autohunt")),
         "runner": verify_queue.runner_status(),

@@ -580,15 +580,16 @@ export interface AutohuntRun {
 
 /** The idle hunter's live status: worker opt-in + liveness, pool sizes
  *  computed with the hunter's own gates, and its failure parking lots —
- *  security runs parked by the worker's failure memory, and auto-queued
- *  verify requests that ended in error (awaiting an operator re-queue). */
+ *  security runs parked by the worker's failure memory, and verify requests
+ *  that ended in error (awaiting an operator re-queue), auto-queued or
+ *  operator-queued alike. */
 interface AutohuntStatus {
   enabled: boolean;
   runner: VerifyRunner;
   security_pool: number;
   verify_pool: number;
   security_failed: number[];
-  verify_failed: { pr: number; error_kind?: string | null }[];
+  verify_failed: { pr: number; error_kind?: string | null; source?: string | null }[];
 }
 
 /** Run counts + result breakdown for one lane (security or verify) within
