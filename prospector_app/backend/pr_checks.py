@@ -116,6 +116,10 @@ def checks_for_record(rec: Pr, today: str | None = None) -> dict:
     # outcome fails that strict check. This display is stricter than the human
     # merge gate, where an unverifiable outcome is non-blocking because it carries
     # no negative evidence. A null outcome warns because it concluded nothing.
+    # A verified-fix whose attempted signals did not all corroborate warns
+    # instead of passing, naming the gap: the red→green stands, but a partial
+    # record is evidence the operator has to weigh rather than a clean bill,
+    # and merge_allowed already refuses to auto-recommend it.
     verify = rec.section("verify")
     if verify:
         o = rec.verify_outcome
@@ -131,6 +135,9 @@ def checks_for_record(rec: Pr, today: str | None = None) -> dict:
             st, detail = "warn", f"{detail} · STALE — {tail}"
         else:
             st = "pass" if o == "verified-fix" else "fail"
+            partial = gates.verify_signals_incomplete(rec) if st == "pass" else None
+            if partial:
+                st, detail = "warn", f"{detail} · PARTIAL — {partial}"
         by_key["verify"] = _c("verify", "Dynamic verification", st, detail, verify.get("checked_at"))
     else:
         by_key["verify"] = _c("verify", "Dynamic verification", "na", "not run yet", None)
