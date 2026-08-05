@@ -265,12 +265,7 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
     const p = ctxParams();
     p.set("q", text);
     if (anchor) { p.set("file", anchor.file); p.set("line", String(anchor.line)); }
-    // Every question carries the operator's currently-visible PR list (e.g. PR
-    // Explorer's active filters), not just general ones, so "review these"
-    // still works even when a PR's flyout happens to be open on top of that
-    // list (#507) — the flyout doesn't mean the operator stopped browsing the
-    // broader set. It rides alongside the pr/cluster subject's own full
-    // context (diff, findings, member signals) as supplementary information.
+    // PR Explorer's filtered set is available to ground agent sessions.
     if (visiblePrs && visiblePrs.length) {
       const capped = visiblePrs.slice(0, VISIBLE_PRS_CAP);
       p.set("prs", capped.join(","));
