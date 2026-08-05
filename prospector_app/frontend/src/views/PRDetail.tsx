@@ -21,7 +21,7 @@ import { useFreshness } from "../useFreshness";
 import { FreshnessBar, FreshnessCallout } from "../components/Freshness";
 import { useRunState } from "../useRunState";
 import { useJobStream } from "../useJobStream";
-import { useIssueFlyout } from "../useIssueFlyout";
+import { LinkedIssues } from "../components/LinkedIssues";
 import { splitDiffSizes } from "../testPaths";
 
 const LEVEL_ICON: Record<string, string> = { safe: "🛡️", caution: "⚠️", risk: "⛔", unknown: "❔" };
@@ -40,8 +40,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
   const [retriggering, setRetriggering] = useState(false);
   const [err, setErr] = useState<string>();
   const { botLogin, dryRun, reportResult, review, pushToast } = useExec();
-  const { meta, issueUrl } = useRepoMeta();
-  const { openIssue } = useIssueFlyout();
+  const { meta } = useRepoMeta();
   // bump to re-fetch the per-PR action log after an action lands here.
   const [actLog, setActLog] = useState(0);
 
@@ -230,8 +229,6 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
   // merge gate, disposition action) is moot — it was computed when the PR was an
   // open candidate. Show the current state and skip to the informational context.
   const resolved = pr.github_state === "merged" || pr.github_state === "closed";
-  const fixingIssues = (pr.issues ?? []).filter((issue) =>
-    issue.how === "explicit" || issue.how === "fix-found" || issue.how === "issue-ref");
 
   // #581: each check row in ChecksPanel carries its own re-run/queue action and
   // (when there's more to say than the one-line summary) its expanded detail —
@@ -347,21 +344,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
 
       <section className="prc-section">
         <h3>Issues this may fix</h3>
-        {fixingIssues.length ? (
-          <span className="issue-prs">
-            {fixingIssues.map((issue) => (
-              <a key={issue.issue} href={issueUrl(issue.issue)} target="_blank" rel="noreferrer"
-                className="gh-pr-link" title="Open in this panel (⌘-click for GitHub ↗)"
-                onClick={(e) => {
-                  if (e.metaKey || e.ctrlKey || e.shiftKey) return;
-                  e.preventDefault();
-                  openIssue(issue.issue);
-                }}>
-                #{issue.issue}
-              </a>
-            ))}
-          </span>
-        ) : <span className="muted">—</span>}
+        <LinkedIssues issues={pr.issues} />
       </section>
 
       {/* #550/#581: what checks ran, when, and what they found — plus the

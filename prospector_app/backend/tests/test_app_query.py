@@ -95,7 +95,7 @@ def test_every_explorer_column_has_a_sort_key():
     explorer_columns = {
         "pr", "loc", "files", "title", "author", "updated", "cluster",
         "safety", "disposition", "greptile", "checks", "drift", "merge", "age",
-        "author_rate", "summary",
+        "author_rate", "summary", "issues",
     }
     assert explorer_columns <= set(service._SORT_KEYS), \
         explorer_columns - set(service._SORT_KEYS)
@@ -127,6 +127,23 @@ def test_sort_by_age_desc_is_oldest_first(monkeypatch):
     monkeypatch.setattr(data, "pr_to_clusters", lambda: {})
     out = service.query_prs({}, sort="age")  # default desc → oldest first
     assert [r["number"] for r in out["items"]] == [2, 1]
+
+
+def test_sort_by_linked_issues_counts_fix_evidence(monkeypatch):
+    prs = {1: _rec(1), 2: _rec(2), 3: _rec(3)}
+    prs[1].raw["issues"] = {"linked": [
+        {"issue": 10, "how": "explicit"},
+        {"issue": 11, "how": "subsystem"},
+    ]}
+    prs[2].raw["issues"] = {"linked": [
+        {"issue": 20, "how": "explicit"},
+        {"issue": 21, "how": "issue-ref"},
+    ]}
+    monkeypatch.setattr(data, "prs", lambda: prs)
+    monkeypatch.setattr(data, "clusters", lambda: {})
+    monkeypatch.setattr(data, "pr_to_clusters", lambda: {})
+    out = service.query_prs({}, sort="issues")
+    assert [r["number"] for r in out["items"]] == [2, 1, 3]
 
 
 def test_pr_greptile_route(monkeypatch):

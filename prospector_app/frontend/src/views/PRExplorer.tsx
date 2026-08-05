@@ -49,7 +49,7 @@ let lastQuery: { key: string; result: QueryResult } | null = null;
 // ascending. Mirrors the backend `_DEFAULT_DESC` so the caret matches the order.
 const DESC_FIRST = new Set([
   "pr", "greptile", "safety", "updated", "loc", "files",
-  "checks", "merge", "age", "author_rate", "pain",
+  "checks", "merge", "age", "author_rate", "pain", "issues",
 ]);
 
 function readSpec(params: URLSearchParams): FilterSpec {
