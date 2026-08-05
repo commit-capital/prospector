@@ -1010,12 +1010,24 @@ def verify_signals_incomplete(pr: Pr) -> str | None:
 
     Signal 4 (the independent repro) is the one optional signal: a blind pass
     that authored no repro_command attempted nothing, so nothing is incomplete.
-    When one WAS authored it must have run and the judge must have rated it
+    When one WAS authored it must have run, the host's own facts about that run
+    must leave its exit meaning something, and the judge must have rated it
     matching; a repro that never ran, ran unrated, or was rated not-matching is
     partial evidence. merge_allowed refuses to auto-recommend on it; the app
     names it on the human path and in the verify panel. Operator decision
     2026-07-16: a verified-fix whose repro never executed (#7524, a harness path
     defect) must not present as full-confidence evidence at merge time.
+
+    Three host-observed facts settle Signal 4 ahead of the judge's rating,
+    because each one drains the exit code of meaning and the rating is read
+    from an output tail the exit no longer explains: an exit outside the
+    sandbox's sentinel set (the phase container errored — a timeout, an OOM, an
+    image fault), an exit of SENTINEL_PASS (the repro found the pinned base
+    healthy, so it demonstrated no defect to corroborate), and a
+    vacuous_path_filter command (the filter matches no files, so the failing
+    exit is the harness's defect). These read only trusted inputs — the
+    pre-committed repro_command and the host-recorded exit — so a judge fooled
+    by the untrusted tail cannot promote any of them to corroboration.
 
     Reads the record as it stands — currency is the callers' concern."""
     signals = pr.verify_signals
@@ -1043,6 +1055,21 @@ def verify_signals_incomplete(pr: Pr) -> str | None:
     repro = signals.get("independent_repro") or {}
     if not repro.get("ran"):
         return "an independent repro was authored but never ran"
+    exit_code = repro.get("exit_code")
+    if exit_code not in (SENTINEL_PASS, SENTINEL_TEST_FAIL):
+        return (f"the independent repro exited {exit_code}, outside the "
+                f"sandbox's sentinel set — the run errored at the harness "
+                f"level, so its output carries no signal either way")
+    if exit_code == SENTINEL_PASS:
+        return ("the independent repro passed against the pinned base — it "
+                "demonstrated no defect on unfixed main, so it corroborates "
+                "nothing")
+    vacuous = vacuous_path_filter(blind, repro)
+    if vacuous is not None:
+        return (f"the independent repro's command mixes --config/--root with a "
+                f"path filter that repeats the rebased root ({vacuous}) — the "
+                f"filter matches no files, so its failing exit is a harness "
+                f"defect rather than corroboration")
     rating = signals.get("repro_reason_match") or {}
     matches = rating.get("matches")
     if matches is True:

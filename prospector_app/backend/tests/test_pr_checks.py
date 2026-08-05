@@ -97,16 +97,52 @@ def _verify_check(rec):
     return next((x for x in c["checks"] if x["name"] == "Dynamic verification"), None)
 
 
-def _verify_section(outcome, *, head=HEAD, at=None, findings=()):
+def _verify_section(outcome, *, head=HEAD, at=None, findings=(), signals=None):
     from datetime import datetime, timezone
-    return {"outcome": outcome, "signals": {}, "findings": list(findings),
+    return {"outcome": outcome, "signals": signals or {}, "findings": list(findings),
             "against_head_sha": head, "against_base_sha": "b606869",
             "checked_at": at or datetime.now(timezone.utc).isoformat()}
+
+
+def _repro_signals(*, exit_code):
+    """A verify record whose blind pass authored a repro that ran and exited
+    `exit_code`, with the judge rating it a match — the rating that carries the
+    record to verified-fix when the exit itself means something."""
+    return {"blind_adequacy": {"repro_command": "node --test repro.mjs"},
+            "independent_repro": {"ran": True, "exit_code": exit_code},
+            "repro_reason_match": {"matches": True, "applicable": True,
+                                   "confidence": "high"}}
 
 
 def test_current_verified_fix_passes_check():
     chk = _verify_check(_pr(verify=_verify_section("verified-fix")))
     assert chk and chk["status"] == "pass" and chk["detail"] == "verified-fix"
+
+
+def test_verified_fix_on_partial_evidence_warns():
+    # The reported case (#20): the repro's container errored, so the run proved
+    # nothing about the base, yet the stored outcome is still verified-fix. The
+    # check must not read as a clean pass — the harness is what needs fixing.
+    chk = _verify_check(_pr(verify=_verify_section(
+        "verified-fix", signals=_repro_signals(exit_code=137))))
+    assert chk and chk["status"] == "warn"
+    assert "PARTIAL" in chk["detail"] and "harness level" in chk["detail"]
+
+
+def test_verified_fix_on_corroborated_evidence_still_passes():
+    # The demotion is scoped to a repro whose exit carries no meaning: a plain
+    # failing repro on the pinned base still corroborates and still passes.
+    chk = _verify_check(_pr(verify=_verify_section(
+        "verified-fix", signals=_repro_signals(exit_code=20))))
+    assert chk and chk["status"] == "pass" and "PARTIAL" not in chk["detail"]
+
+
+def test_partial_evidence_never_promotes_a_failing_outcome():
+    # This display is stricter than the merge gate: agent-verified already
+    # fails it, and partial evidence must not lift anything to warn.
+    chk = _verify_check(_pr(verify=_verify_section(
+        "agent-verified", signals=_repro_signals(exit_code=137))))
+    assert chk and chk["status"] == "fail"
 
 
 def test_current_blocking_outcomes_fail_check():
