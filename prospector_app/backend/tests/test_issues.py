@@ -276,15 +276,14 @@ def test_close_issue_dry_run_blocked_when_dup_closed_upstream(tmp_path, monkeypa
     assert "already closed" in res["detail"]
 
 
-def test_close_issue_dry_run_blocked_when_canonical_closed_upstream(tmp_path, monkeypatch):
-    """#411: the gate live-checks the canonical too, even when the store snapshot
-    still has it open."""
+def test_close_issue_dry_run_allows_canonical_closed_not_planned(tmp_path, monkeypatch):
+    """A canonical's state and resolution do not change whether another issue is
+    its duplicate."""
     _seed(tmp_path, monkeypatch)
     monkeypatch.setattr(executor.activity, "record", lambda *a, **k: None)
     monkeypatch.setattr(issues, "_live_state", lambda n: "open" if n == 11 else "closed")
     res = executor.close_issue(11, models.IssueCloseDupBody(canonical=10), token=None, dry_run=True)
-    assert res["status"] == "blocked"
-    assert "canonical" in res["detail"].lower()
+    assert res["status"] == "dry-run"
 
 
 def test_close_issue_dry_run_allows_canonical_fixed_upstream(tmp_path, monkeypatch):
@@ -292,7 +291,6 @@ def test_close_issue_dry_run_allows_canonical_fixed_upstream(tmp_path, monkeypat
     _seed(tmp_path, monkeypatch)
     monkeypatch.setattr(executor.activity, "record", lambda *a, **k: None)
     monkeypatch.setattr(issues, "_live_state", lambda n: "open" if n == 11 else "closed")
-    monkeypatch.setattr(issues, "_live_state_reason", lambda n: "completed")
     res = executor.close_issue(
         11, models.IssueCloseDupBody(canonical=10), token=None, dry_run=True)
     assert res["status"] == "dry-run"

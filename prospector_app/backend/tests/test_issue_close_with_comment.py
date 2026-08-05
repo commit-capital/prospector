@@ -74,7 +74,7 @@ def test_close_gate_fixed_ok_when_merged(tmp_path, monkeypatch):
     assert ok, why
 
 
-# --- gate: dup (operator-asserted, live canonical-open check) ---
+# --- gate: dup (operator-asserted canonical) ---
 
 def test_close_gate_dup_requires_canonical(tmp_path, monkeypatch):
     _seed(tmp_path, monkeypatch)
@@ -82,17 +82,23 @@ def test_close_gate_dup_requires_canonical(tmp_path, monkeypatch):
     assert not ok and "canonical" in why
 
 
-def test_close_gate_dup_blocks_closed_canonical(tmp_path, monkeypatch):
+def test_close_gate_dup_allows_closed_not_planned_canonical(tmp_path, monkeypatch):
     _seed(tmp_path, monkeypatch)
-    monkeypatch.setattr(issues, "_live_state", lambda n: "closed" if n == 20 else "open")
+    calls = []
+
+    def live_state(n):
+        calls.append(n)
+        return "closed" if n == 20 else "open"
+
+    monkeypatch.setattr(issues, "_live_state", live_state)
     ok, why = issues.close_gate(10, "dup", None, None, 20)
-    assert not ok and "canonical #20" in why
+    assert ok, why
+    assert calls == [10]
 
 
 def test_close_gate_dup_allows_fixed_canonical(tmp_path, monkeypatch):
     _seed(tmp_path, monkeypatch)
     monkeypatch.setattr(issues, "_live_state", lambda n: "closed" if n == 20 else "open")
-    monkeypatch.setattr(issues, "_live_state_reason", lambda n: "completed")
     ok, why = issues.close_gate(10, "dup", None, None, 20)
     assert ok, why
 

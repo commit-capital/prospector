@@ -507,16 +507,6 @@ def _live_state(n: int) -> str | None:
     return r.stdout.strip() or None
 
 
-def _live_state_reason(n: int) -> str | None:
-    """Issue `n`'s current upstream close reason, or None when it is open or the
-    fetch fails. GitHub reports the app's FIXED disposition as ``completed``."""
-    r = run(["gh", "api", f"repos/{REPO}/issues/{n}", "--jq",
-             ".state_reason // empty"], timeout=30)
-    if r.returncode != 0:
-        return None
-    return r.stdout.strip() or None
-
-
 def close_fixed_gate(n: int, fixed_by: int) -> tuple[bool, str]:
     """The executor's pre-write gate for closing issue `n` as fixed by PR `fixed_by`.
     `fixed_by` must be a recorded fix candidate — an explicit Fixes/Closes/Resolves
@@ -559,8 +549,8 @@ def close_dup_gate(n: int) -> tuple[bool, str]:
     """The executor's pre-write gate for closing issue `n` as a duplicate — the
     issue-side analog of gates.merge_eligibility. Loads the issue + its cluster
     from the store and applies issue_gates.close_dup_eligibility, live-checking
-    upstream that the duplicate is open and its canonical is open or was closed
-    as completed/fixed. Other closed canonicals remain blocked."""
+    upstream that the duplicate itself is still open. The canonical's state and
+    resolution do not affect whether the duplicate relationship is valid."""
     st = _store()
     issues = st.all_issues()
     iss = issues.get(int(n))
@@ -568,8 +558,7 @@ def close_dup_gate(n: int) -> tuple[bool, str]:
         return False, "issue not in store"
     from issue_triage import issue_gates
     cl = st.load_issue_cluster(iss.cluster_id) if iss.cluster_id else None
-    return issue_gates.close_dup_eligibility(
-        iss, cl, issues, live_state=_live_state, live_state_reason=_live_state_reason)
+    return issue_gates.close_dup_eligibility(iss, cl, issues, live_state=_live_state)
 
 
 def close_gate(n: int, disposition: str, comment: str | None,
@@ -580,8 +569,9 @@ def close_gate(n: int, disposition: str, comment: str | None,
     via _live_state, fail-open when GitHub is unreachable). A plain close
     (not-planned/completed) also requires a non-empty comment. 'fixed' requires a
     `fixed_by` PR that a live check does not show unmerged; 'dup' requires a
-    `canonical` issue that is open or closed as completed/fixed. Operator-asserted:
-    it does not require the fixer/dup link to be one the pipeline already recorded."""
+    `canonical` issue. Operator-asserted: it does not require the fixer/dup link to
+    be one the pipeline already recorded, and the canonical's state or resolution
+    does not affect whether the duplicate relationship is valid."""
     if disposition not in ("not-planned", "completed", "fixed", "dup"):
         return False, f"invalid disposition {disposition!r}"
     if disposition == "fixed" and not fixed_by:
@@ -600,11 +590,6 @@ def close_gate(n: int, disposition: str, comment: str | None,
         state = _live_pr_states([int(fixed_by)]).get(int(fixed_by))
         if state is not None and state != "merged":
             return False, f"#{fixed_by} is not merged"
-    elif disposition == "dup" and canonical is not None and _live_state(int(canonical)) == "closed":
-        reason = _live_state_reason(int(canonical))
-        if reason != "completed":
-            detail = f" ({reason})" if reason else ""
-            return False, f"canonical #{canonical} is closed{detail}"
     return True, "ok"
 
 
