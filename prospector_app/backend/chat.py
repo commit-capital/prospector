@@ -75,6 +75,7 @@ from prospector_app.backend import agent_memory
 from prospector_app.backend import data
 from prospector_app.backend import executor
 from prospector_app.backend import issues
+from prospector_app.backend import issue_receipts
 from prospector_app.backend import safety_guard
 from prospector_app.backend import subproc
 from pipeline import review_policy
@@ -722,6 +723,9 @@ async def stream_chat(question: str, pr: int | None = None, cluster: int | None 
     _RUNNING[ctx_id] = proc
     captured_sid: str | None = None
     parts: list[str] = []
+    final_text: str | None = None
+    tool_commands: dict[str, str] = {}
+    file_issue_receipts: list[dict] = []
     last_pw = 0.0  # last partial-sidecar write time (throttled, #191)
     saw_result = False  # claude's own "this turn is done" signal
     stopped = False
@@ -744,11 +748,30 @@ async def stream_chat(question: str, pr: int | None = None, cluster: int | None 
                     if dd.get("type") == "text_delta" and dd.get("text"):
                         parts.append(dd["text"])
                         yield {"event": "delta", "data": dd["text"]}
-            elif t == "assistant" and not parts:
+            elif t == "assistant":
+                content = e.get("message", {}).get("content", [])
+                for c in content:
+                    if c.get("type") == "tool_use" and c.get("name") == "Bash":
+                        tool_id = c.get("id")
+                        command = (c.get("input") or {}).get("command")
+                        if isinstance(tool_id, str) and isinstance(command, str):
+                            tool_commands[tool_id] = command
+                if not parts:
+                    for c in content:
+                        if c.get("type") == "text" and c.get("text"):
+                            parts.append(c["text"])
+                            yield {"event": "delta", "data": c["text"]}
+            elif t == "user":
                 for c in e.get("message", {}).get("content", []):
-                    if c.get("type") == "text" and c.get("text"):
-                        parts.append(c["text"])
-                        yield {"event": "delta", "data": c["text"]}
+                    if c.get("type") != "tool_result":
+                        continue
+                    command = tool_commands.get(c.get("tool_use_id"), "")
+                    is_error = bool(c.get("is_error"))
+                    receipt = issue_receipts.parse(
+                        command, c.get("content"), FEEDBACK_REPO, is_error=is_error
+                    )
+                    if receipt is not None:
+                        file_issue_receipts.append(receipt)
             elif t == "result":
                 saw_result = True
                 break
@@ -757,6 +780,12 @@ async def stream_chat(question: str, pr: int | None = None, cluster: int | None 
             if parts and time.monotonic() - last_pw > 0.4:
                 _write_partial(ctx_id, "".join(parts))
                 last_pw = time.monotonic()
+
+        if saw_result:
+            raw_text = "".join(parts)
+            final_text = issue_receipts.validate(raw_text, file_issue_receipts, FEEDBACK_REPO)
+            if final_text != raw_text:
+                yield {"event": "replace", "data": final_text}
     finally:
         # Runs on a clean finish AND on an abnormal teardown — an operator Stop
         # (the frontend closes its EventSource before it even calls /chat/stop)
@@ -772,7 +801,11 @@ async def stream_chat(question: str, pr: int | None = None, cluster: int | None 
         # landing on `proc.wait()` can't skip them too.
         stopped = ctx_id not in _RUNNING
         _RUNNING.pop(ctx_id, None)
-        _save(ctx_id, "assistant", "".join(parts), captured_sid)
+        if final_text is None:
+            final_text = issue_receipts.validate(
+                "".join(parts), file_issue_receipts, FEEDBACK_REPO
+            )
+        _save(ctx_id, "assistant", final_text, captured_sid)
         _clear_partial(ctx_id)
         # The live session's resumability is only confirmed when the turn ended
         # via claude's own "result" event; anything else (operator stop, dropped
