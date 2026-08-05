@@ -9,11 +9,13 @@ Closed/merged PRs already in the store get their meta.state updated (the
 record is history, not deleted). Brand-new closed PRs are not ingested —
 they're dupe/already-fixed *evidence*, consulted live during ANALYZE.
 
-A full run reconciles the whole open corpus (and the closed-state sweep); `--new`
-fetches that corpus and upserts only PRs absent from the store, while `--prs`
-fetches each named PR directly and reconciles its live CI and Greptile signals.
-Both skip the closed-state sweep. Targeted refreshes write each PR as it is
-completed; corpus refreshes stage the records and persist bounded chunks.
+A full run reconciles the whole open corpus (and the closed-state sweep), then
+chains the Greptile reviewed-SHA backfill and the issue ingest. `--new` fetches
+that corpus and upserts only PRs absent from the store, while `--prs` fetches
+each named PR directly and reconciles its live CI and Greptile signals. Both
+skip the closed-state sweep, the backfill, and the issue-ingest chain.
+Targeted refreshes write each PR as it is completed; corpus refreshes stage
+the records and persist bounded chunks.
 
 Usage:
   uv run python pipeline/ingest.py [--max N] [--store DIR]
@@ -490,6 +492,18 @@ def main(argv: list[str] | None = None) -> int:
              "live_facts_fetched": len(live), "live_facts_missing": len(gh_prs) - len(live)}
     store.append_run({"phase": "ingest", "started": started, "finished": _now(), "stats": stats})
     print(f"done: {stats}")
+
+    # A full ingest keeps the reviewed-SHA fact fresh too: chain the backfill
+    # (its own run ledger entry) so a bulk-ingested PR doesn't read "not
+    # current" indefinitely. It self-scopes to open scored PRs missing a SHA,
+    # so a corpus with nothing to backfill costs one cheap store scan (#21).
+    if review_policy.active().provider == "greptile":
+        print("backfilling Greptile reviewed-SHA for scored PRs missing it…", flush=True)
+        backfill_started = _now()
+        backfill_stats = greptile.backfill_greptile_data(store, existing_prs)
+        store.append_run({"phase": "backfill-greptile-data", "started": backfill_started,
+                          "finished": _now(), "stats": backfill_stats})
+        print(f"done: {backfill_stats}")
 
     # A full ingest refreshes both corpora: chain the issue ingest (its own run
     # ledger entry, its own store rows) so issue state can't silently drift while

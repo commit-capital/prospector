@@ -434,6 +434,25 @@ class TestTargetedIngest:
         assert ingest.main(["--new", "--store", str(tmp_path)]) == 0
         assert calls == [[]]
 
+    def test_main_full_chains_greptile_backfill(self, tmp_path, monkeypatch):
+        """A full ingest backfills the Greptile reviewed-SHA after the PR sweep
+        (#21); targeted modes and a non-Greptile provider do not."""
+        monkeypatch.setattr(ingest, "fetch_open_prs", lambda mx=None: [GH_PR])
+        monkeypatch.setattr(ingest, "load_issue_links", lambda: {})
+        calls: list[object] = []
+        monkeypatch.setattr(greptile, "backfill_greptile_data",
+                            lambda store, prs=None: calls.append(store) or {"candidates": 0,
+                                                                             "stamped": 0, "skipped": 0})
+
+        assert ingest.main(["--store", str(tmp_path), "--skip-issues"]) == 0
+        assert len(calls) == 1
+        assert ingest.main(["--new", "--store", str(tmp_path)]) == 0
+        assert len(calls) == 1  # targeted mode does not chain the backfill
+
+        monkeypatch.setattr(settings, "REVIEW_PROVIDER", "none")
+        assert ingest.main(["--store", str(tmp_path), "--skip-issues"]) == 0
+        assert len(calls) == 1  # no review provider — nothing to backfill
+
     def test_main_full_loads_pr_corpus_once(self, tmp_path, monkeypatch):
         monkeypatch.setattr(ingest, "fetch_open_prs", lambda mx=None: [GH_PR])
         monkeypatch.setattr(ingest, "load_issue_links", lambda: {})
@@ -460,7 +479,8 @@ class TestTargetedIngest:
 
         assert ingest.main(["--store", str(tmp_path), "--skip-issues"]) == 0
         assert store.load_pr(5001).state == "closed"
-        assert store.runs()[-1].raw["stats"]["state_transitions"] == 1
+        ingest_run = next(r for r in store.runs() if r.phase == "ingest")
+        assert ingest_run.raw["stats"]["state_transitions"] == 1
 
 
 class TestRefreshPrs:

@@ -16,15 +16,19 @@ from pipeline.gh import gh_list
 from pipeline.settings import REPO
 
 if TYPE_CHECKING:
+    from pipeline.model import Pr
     from pipeline.store import Store
 
 
-def prs_missing_greptile_data(store: Store) -> list[int]:
+def prs_missing_greptile_data(store: Store, prs: dict[int, Pr] | None = None) -> list[int]:
     """Open, scored PRs missing a reviewed SHA — the fact recovered from GitHub's
     review/comment data. Sorted ascending so a backfill processes them
-    deterministically."""
+    deterministically. `prs` lets a caller that already loaded the corpus this
+    run (e.g. a full ingest) reuse that snapshot instead of a second full scan;
+    it defaults to loading the corpus itself."""
+    corpus = prs if prs is not None else store.all_prs()
     return sorted(
-        n for n, pr in store.all_prs().items()
+        n for n, pr in corpus.items()
         if pr.state == "open" and pr.greptile is not None and not pr.greptile_reviewed_sha
     )
 
@@ -174,15 +178,16 @@ def _is_greptile(actor: dict) -> bool:
     return "greptile" in (actor.get("user") or {}).get("login", "").lower()
 
 
-def backfill_greptile_data(store: Store) -> dict:
+def backfill_greptile_data(store: Store, prs: dict[int, Pr] | None = None) -> dict:
     """Stamp the Greptile-reviewed commit SHA — and correct the confidence score
     to Greptile's own — onto open scored PRs missing a reviewed SHA, so staleness
     becomes known. Each PR is
     independent: one whose verdict can't be fetched (404, no Greptile review, gh
     hiccup) is skipped, never fatal. Persists per PR, so an interrupted run
-    resumes by re-selecting only the PRs still missing a SHA. Returns
-    {candidates, stamped, skipped}."""
-    numbers = prs_missing_greptile_data(store)
+    resumes by re-selecting only the PRs still missing a SHA. `prs` is passed
+    through to `prs_missing_greptile_data` to reuse an already-loaded corpus
+    snapshot. Returns {candidates, stamped, skipped}."""
+    numbers = prs_missing_greptile_data(store, prs)
     stamped = skipped = 0
     for i, n in enumerate(numbers, 1):
         score, sha = fetch_greptile_verdict(n)
