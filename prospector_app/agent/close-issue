@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+"""Close one upstream issue through the app executor and activity log.
+
+The embedded agent receives the configured bot token in ``GH_TOKEN``. This
+helper turns its confirmed close into the same ``IssueCloseBody`` operation the
+Issues UI uses, so the live gate, bot identity, issue-store reflection, and
+append-only Activity entry all come from one executor path.
+
+Usage:
+    close-issue <issue> --disposition not-planned --comment "<why>"
+    close-issue <issue> --disposition completed --comment "<what completed>"
+    close-issue <issue> --disposition fixed --fixed-by <pr> [--comment "<why>"]
+    close-issue <issue> --disposition dup --canonical <issue> [--comment "<why>"]
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
+
+from prospector_app.backend import executor  # noqa: E402
+from prospector_app.backend import models  # noqa: E402
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(
+        prog="close-issue",
+        description="Close an issue as the configured bot and record it in Activity.",
+    )
+    p.add_argument("issue", type=int, help="the issue number to close")
+    p.add_argument(
+        "--disposition",
+        required=True,
+        choices=("not-planned", "completed", "fixed", "dup"),
+        help="the close semantics and GitHub state reason",
+    )
+    p.add_argument("--comment", help="the closing comment")
+    p.add_argument("--fixed-by", type=int, help="merged PR that fixed the issue")
+    p.add_argument("--canonical", type=int, help="canonical issue for a duplicate")
+    args = p.parse_args(argv)
+
+    token = os.environ.get("GH_TOKEN")
+    if not token:
+        print("close-issue: no bot token is available", file=sys.stderr)
+        return 2
+
+    action = models.IssueCloseBody(
+        disposition=args.disposition,
+        comment=args.comment,
+        fixed_by=args.fixed_by,
+        canonical=args.canonical,
+    )
+    result = executor.close_issue_with_comment(
+        args.issue, action, token=token, dry_run=False,
+    )
+    print(json.dumps(result, sort_keys=True))
+    return 0 if result.get("status") == "executed" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

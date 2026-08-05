@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
-"""The app agent's "resubmit a PR" path — author changes on a contributor's
-fork branch and push them, AS THE OPERATOR.
+"""Author changes on a contributor PR and push them through one guarded flow.
 
-Most triage actions run as the configured bot. This one cannot: pushing to a
-contributor's fork head branch relies on the PR's "Allow edits from maintainers",
-which grants push to *users with push access to the upstream repo* — not to a
-GitHub App installation. So a resubmit runs under the operator's own identity (a
-maintainer on the upstream repo), a deliberate exception to the bot-identity
-model. Because the whole chat-agent subprocess is authenticated as the bot when a
-a bot token is minted (GH_TOKEN in the env), this script drops GH_TOKEN
-first (`operator_env`) so `gh` reads and `git`-over-ssh pushes go out as the
-operator, never the bot.
+Most triage actions run as the configured GitHub App. Pushes cannot: writing to
+a contributor's fork head branch relies on the PR's "Allow edits from
+maintainers", which grants push to *users with push access to the upstream repo*
+— not to a GitHub App installation. Interactive, explicitly confirmed chat
+resubmits therefore use the operator's existing GitHub SSH identity, as they did
+before the autofix worker existed. Unattended worker invocations opt into the
+configured machine user and its pinned key. Both identities use this exact same
+clone/rebase/lease/push implementation; only the environment policy differs.
 
 Pushing a commit re-triggers the review provider and CI for free — both run on push.
 
@@ -20,14 +18,24 @@ Flow (the agent runs these; it authors the edits itself between prepare and push
     resubmit <pr> push -m "<message>"  # commit, push to the fork branch, log, clean
     resubmit <pr> abort                # discard the worktree, push nothing
 
-`update` is a standalone action on the same operator identity — it merges the base
-branch into the PR's head so CI re-runs against current base code, writing none of
-its own content. It needs no clone and no prepare:
+A conflicting PR uses the same isolated worktree and a pinned rebase transaction:
+    resubmit <pr> prepare --rebase     # partial clone + rebase onto current base
+    #   ...if it stops, agent resolves only the printed conflicted paths...
+    resubmit <pr> continue             # stage those paths + continue; repeat as needed
+    resubmit <pr> diff                 # review the resolution / final range-diff
+    resubmit <pr> push --confirm-rewrite <old-head-sha>
+
+`update` is a standalone action on the same selected identity — it merges the
+base branch into the PR's head so CI re-runs against current base code, writing
+none of its own content. It needs no prepare:
     resubmit <pr> update
 
 Preflight refuses cleanly when the PR is closed or "Allow edits from maintainers"
 is off (nothing to push to), and `push` refuses if the contributor moved the head
-since prepare (the local clone would be stale — never force-push over them).
+since prepare. A rebase push requires an exact old-head acknowledgement and
+hardcodes a force-with-lease pinned to that head. A base that merely advanced is
+fine — that is the ordinary state of every open PR — but one rewritten out from
+under the pin refuses, since the commits the rebase was computed against are gone.
 
 Stdlib only, so it runs under the sandbox's system python (like `remember` /
 `uncluster`). It reuses prospector_app.backend.activity for the audit hook — this
@@ -37,11 +45,9 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -49,25 +55,42 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # the `pipeline` / `app` packages rather than relying on the install.
 sys.path.insert(0, str(REPO_ROOT))
 
+from pipeline import settings  # noqa: E402
 from pipeline.settings import REPO  # noqa: E402
+from prospector_app.backend.resubmit_identity import (  # noqa: E402
+    actor_label,
+    git_env,
+    operator_env,
+    uses_machine_user,
+)
 
 # Isolated per-PR clones live in the app's gitignored cache, never in the
 # operator's working tree — a resubmit never disturbs the repo they're running in.
 WORKTREE_ROOT = REPO_ROOT / "prospector_app" / "cache" / "resubmit"
 # Fields we need off the PR to preflight and locate the fork's head branch.
-_PR_FIELDS = ("number,state,baseRefName,headRefName,headRefOid,maintainerCanModify,"
+_PR_FIELDS = ("number,state,baseRefName,baseRefOid,headRefName,headRefOid,maintainerCanModify,"
               "isCrossRepository,headRepository,headRepositoryOwner")
 
 
-def operator_env(base: dict[str, str] | None = None) -> dict[str, str]:
-    """Env that authenticates `gh`/`git` as the OPERATOR, not the bot: drop the
-    injected bot GH_TOKEN (and GITHUB_TOKEN) so `gh` falls back to the
-    operator's default login and `git`-over-ssh uses their key. Everything else
-    (PATH, HOME, ssh-agent) is inherited so the operator's credentials resolve."""
-    env = dict(os.environ if base is None else base)
-    env.pop("GH_TOKEN", None)
-    env.pop("GITHUB_TOKEN", None)
-    return env
+def assert_push_target(info: dict, branch: str) -> None:
+    """The bot-specific fence. A repository ruleset targets branches and grants
+    bypass to actors, so it can never scope a restriction to one account; this
+    is where either push identity's reach is actually bounded.
+
+    `branch` must be the open PR's own head ref, so the only thing a push can
+    ever move is the branch behind the PR being acted on — never the default
+    branch, never another PR's branch, never a tag. Raises RuntimeError on any
+    mismatch."""
+    state = (info.get("state") or "").upper()
+    if state != "OPEN":
+        raise RuntimeError(f"PR #{info.get('number')} is {state or 'in an unknown state'}, "
+                           "not open — refusing to push.")
+    head = info.get("headRefName")
+    if not head or branch != head:
+        raise RuntimeError(
+            f"refusing to push to {branch!r}: PR #{info.get('number')}'s head ref is "
+            f"{head!r}. The push identity only ever moves the head branch of the "
+            "open PR being acted on.")
 
 
 def _gh_json(pr: int) -> dict:
@@ -83,28 +106,40 @@ def _gh_json(pr: int) -> dict:
 def fork_ssh_url(info: dict) -> str:
     """The ssh clone URL of the PR's head repository (the contributor's fork), e.g.
     `git@github.com:owner/repository.git`. ssh so the push authenticates with the
-    operator's key regardless of any GH_TOKEN left in the env."""
+    selected SSH identity regardless of any GH_TOKEN left in the env."""
     nwo = (info.get("headRepository") or {}).get("nameWithOwner")
     if not nwo:
         raise RuntimeError("PR has no head repository (deleted fork?)")
     return f"git@github.com:{nwo}.git"
 
 
+def upstream_ssh_url() -> str:
+    """The configured upstream repository, fetched with the selected SSH identity."""
+    return f"git@github.com:{REPO}.git"
+
+
 def eligibility(info: dict) -> tuple[bool, str]:
-    """Can the operator push to this PR's head branch? Returns (ok, reason). A PR
-    must be OPEN and either allow maintainer edits (the cross-repo fork case) or
-    live on the upstream repo itself (a same-repo branch the operator can push
-    directly). Fails closed on anything unexpected."""
+    """Can the selected user push to this PR's head branch? Returns (ok, reason).
+    A PR must be OPEN and either allow maintainer edits (the cross-repo fork
+    case) or live on the upstream repo itself. Worker calls additionally require
+    their configured machine identity; interactive calls use the operator.
+    Fails closed on anything unexpected."""
     state = (info.get("state") or "").upper()
     if state != "OPEN":
         return False, f"PR #{info.get('number')} is {state or 'in an unknown state'}, not open — nothing to resubmit."
+    if uses_machine_user() and not settings.push_identity_configured():
+        return False, (
+            "the autofix worker has no contributor-push identity configured — set "
+            "TRIAGE_PUSH_LOGIN, TRIAGE_PUSH_EMAIL and TRIAGE_PUSH_SSH_KEY_FILE "
+            "in .env (see .env.example).")
     if not info.get("isCrossRepository"):
-        return True, "same-repo branch — operator has direct push access."
+        return True, f"same-repo branch — {actor_label()} has direct push access."
     if info.get("maintainerCanModify"):
-        return True, "'Allow edits from maintainers' is on — operator can push to the fork branch."
+        return True, ("'Allow edits from maintainers' is on — "
+                      f"{actor_label()} can push to the fork branch.")
     return False, (
         f"PR #{info.get('number')} has 'Allow edits from maintainers' OFF, so no "
-        "maintainer (and no bot) can push to the fork branch. Ask the author to "
+        "maintainer (and no App) can push to the fork branch. Ask the author to "
         "enable it or to apply the change themselves."
     )
 
@@ -126,13 +161,89 @@ def _cleanup(pr: int) -> None:
     _meta_path(pr).unlink(missing_ok=True)
 
 
-def _git(args: list[str], cwd: Path, timeout: int = 300) -> subprocess.CompletedProcess:
-    """A git command in the clone, as the operator (ssh key, no bot token)."""
+def _git(args: list[str], cwd: Path, timeout: int = 300,
+         extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+    """A git command in the clone under the caller-selected push identity."""
+    env = git_env()
+    if extra_env:
+        env.update(extra_env)
     return subprocess.run(["git", *args], cwd=str(cwd), capture_output=True,
-                          text=True, timeout=timeout, env=operator_env())
+                          text=True, timeout=timeout, env=env)
 
 
-def cmd_prepare(pr: int) -> int:
+def _read_meta(pr: int) -> dict | None:
+    path = _meta_path(pr)
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError, TypeError) as e:
+        raise RuntimeError(f"invalid prepared state for PR #{pr}: {e}") from e
+
+
+def _write_meta(pr: int, meta: dict) -> None:
+    _meta_path(pr).write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n")
+
+
+def _git_text(args: list[str], cwd: Path) -> str:
+    r = _git(args, cwd)
+    if r.returncode != 0:
+        raise RuntimeError(f"git {' '.join(args)} failed: {r.stderr.strip() or r.stdout.strip()}")
+    return r.stdout.strip()
+
+
+def _conflicted_paths(wt: Path) -> list[str]:
+    r = _git(["diff", "--name-only", "--diff-filter=U", "-z"], wt)
+    if r.returncode != 0:
+        raise RuntimeError(f"git conflict check failed: {r.stderr.strip()}")
+    return [p for p in r.stdout.split("\0") if p]
+
+
+def _rebase_in_progress(wt: Path) -> bool:
+    git_dir = _git_text(["rev-parse", "--absolute-git-dir"], wt)
+    return any((Path(git_dir) / name).exists() for name in ("rebase-merge", "rebase-apply"))
+
+
+def _print_conflicts(pr: int, wt: Path, paths: list[str]) -> None:
+    print(f"rebase of PR #{pr} paused on {len(paths)} conflicted path(s):")
+    for path in paths:
+        print(f"  {path}")
+    print(f"  resolve only those files under: {wt}")
+    print(f"  inspect: prospector_app/agent/resubmit {pr} diff")
+    print(f"  then: prospector_app/agent/resubmit {pr} continue")
+    print(f"  or abort safely: prospector_app/agent/resubmit {pr} abort")
+
+
+def _mark_rebase_ready(pr: int, meta: dict, wt: Path) -> int:
+    new_sha = _git_text(["rev-parse", "HEAD"], wt)
+    count = int(_git_text(["rev-list", "--count", f"{meta['base_sha']}..{new_sha}"], wt))
+    meta.update({"phase": "ready", "new_head_sha": new_sha, "new_commit_count": count})
+    _write_meta(pr, meta)
+    print(f"rebased PR #{pr} onto {meta['base_branch']} ({meta['base_sha'][:8]}):")
+    print(f"  head: {meta['head_sha'][:8]} → {new_sha[:8]}")
+    print(f"  commits: {meta['old_commit_count']} → {count}")
+    print(f"  inspect: prospector_app/agent/resubmit {pr} diff")
+    print("  after the operator approves this rewrite:")
+    print(f"    prospector_app/agent/resubmit {pr} push --confirm-rewrite {meta['head_sha']}")
+    return 0
+
+
+def _start_rebase(pr: int, meta: dict, wt: Path) -> int:
+    r = _git(["rebase", "--onto", meta["base_sha"], meta["merge_base"], meta["head_sha"]], wt,
+             extra_env={"GIT_EDITOR": "true"})
+    paths = _conflicted_paths(wt)
+    if paths:
+        meta["phase"] = "conflicted"
+        _write_meta(pr, meta)
+        _print_conflicts(pr, wt, paths)
+        return 0
+    if r.returncode != 0:
+        print(f"resubmit: rebase failed: {r.stderr.strip() or r.stdout.strip()}", file=sys.stderr)
+        return 9
+    return _mark_rebase_ready(pr, meta, wt)
+
+
+def cmd_prepare(pr: int, rebase: bool = False) -> int:
     info = _gh_json(pr)
     ok, reason = eligibility(info)
     if not ok:
@@ -145,19 +256,79 @@ def cmd_prepare(pr: int) -> int:
 
     branch, sha = info["headRefName"], info["headRefOid"]
     url = fork_ssh_url(info)
-    # Shallow single-branch clone: enough to add a commit on top of the head and
-    # push it back as a fast-forward, without fetching the whole fork history.
+    # Ordinary content edits keep the existing cheap one-commit clone. Rebase mode
+    # fetches commit/tree history but lazily downloads blobs, which is enough to find
+    # a real merge base without making every resubmit pay for it.
+    clone_args = (["git", "clone", "--filter=blob:none", "--single-branch", "--no-tags",
+                   "--branch", branch, url, str(wt)] if rebase else
+                  ["git", "clone", "--depth", "1", "--branch", branch, url, str(wt)])
     r = subprocess.run(
-        ["git", "clone", "--depth", "1", "--branch", branch, url, str(wt)],
-        capture_output=True, text=True, timeout=300, env=operator_env())
+        clone_args,
+        capture_output=True, text=True, timeout=300, env=git_env())
     if r.returncode != 0:
         print(f"resubmit: clone of {url} ({branch}) failed: {r.stderr.strip()}", file=sys.stderr)
         return 4
 
-    _meta_path(pr).write_text(json.dumps({
+    meta = {
         "pr": pr, "branch": branch, "head_sha": sha, "fork": url,
         "repo": (info.get("headRepository") or {}).get("nameWithOwner"),
-    }))
+        "mode": "rebase" if rebase else "edit",
+    }
+    _write_meta(pr, meta)
+
+    if rebase:
+        cloned_head = _git_text(["rev-parse", "HEAD"], wt)
+        if cloned_head != sha:
+            print(f"resubmit: PR #{pr} head moved while preparing ({sha[:8]} → "
+                  f"{cloned_head[:8]}); rerun prepare.", file=sys.stderr)
+            _cleanup(pr)
+            return 6
+        add_remote = _git(["remote", "add", "upstream", upstream_ssh_url()], wt)
+        if add_remote.returncode != 0:
+            print(f"resubmit: adding upstream failed: {add_remote.stderr.strip()}", file=sys.stderr)
+            _cleanup(pr)
+            return 4
+        base = info["baseRefName"]
+        fetch = _git(["fetch", "--filter=blob:none", "--no-tags", "upstream",
+                      f"+refs/heads/{base}:refs/remotes/upstream/{base}"], wt)
+        if fetch.returncode != 0:
+            print(f"resubmit: fetching upstream {base} failed: {fetch.stderr.strip()}", file=sys.stderr)
+            _cleanup(pr)
+            return 4
+        # The pin is whatever the base branch actually points at right now, read
+        # from the ref we just fetched. The API's baseRefOid is NOT that: it is
+        # the base commit the PR was opened or last synced against, so on any PR
+        # whose base has moved — every PR a rebase is for — it names an older
+        # commit. Only the head is re-checked here, because pushing over a head
+        # that moved would clobber the author; a base that moved just means the
+        # rebase lands one or two commits behind, which is what every PR is.
+        base_sha = _git_text(["rev-parse", f"refs/remotes/upstream/{base}"], wt)
+        live = _gh_json(pr)
+        if live.get("headRefOid") != sha:
+            print(f"resubmit: PR #{pr} head moved while preparing ({sha[:8]} → "
+                  f"{(live.get('headRefOid') or 'unknown')[:8]}); rerun prepare "
+                  "against the author's latest head.", file=sys.stderr)
+            _cleanup(pr)
+            return 6
+        merge_base = _git_text(["merge-base", sha, base_sha], wt)
+        merges = _git_text(["rev-list", "--merges", f"{merge_base}..{sha}"], wt)
+        if merges:
+            print(f"resubmit: PR #{pr} contains merge commits; automatic rebasing refuses "
+                  "to flatten that history. Abort or ask the author to rebase.", file=sys.stderr)
+            _cleanup(pr)
+            return 9
+        meta.update({
+            "base_branch": base, "base_sha": base_sha, "merge_base": merge_base,
+            "old_commit_count": int(_git_text(["rev-list", "--count",
+                                                f"{merge_base}..{sha}"], wt)),
+            "phase": "prepared",
+        })
+        _write_meta(pr, meta)
+        print(f"prepared PR #{pr} for a pinned rebase — {reason}")
+        print(f"  fork branch: {meta['repo']} @ {branch} ({sha[:8]})")
+        print(f"  base: {base} ({base_sha[:8]})")
+        return _start_rebase(pr, meta, wt)
+
     print(f"prepared PR #{pr} for resubmit — {reason}")
     print(f"  fork branch: {info['headRepository']['nameWithOwner']} @ {branch} ({sha[:8]})")
     print(f"  edit files under: {wt}")
@@ -165,17 +336,188 @@ def cmd_prepare(pr: int) -> int:
     return 0
 
 
-def cmd_push(pr: int, message: str, dry_run: bool) -> int:
+def cmd_continue(pr: int) -> int:
     wt = _worktree(pr)
-    meta_path = _meta_path(pr)
-    if not meta_path.exists():
+    meta = _read_meta(pr)
+    if not meta:
+        print(f"resubmit: PR #{pr} was not prepared (run `resubmit {pr} prepare --rebase` first)",
+              file=sys.stderr)
+        return 2
+    if meta.get("mode") != "rebase":
+        print(f"resubmit: PR #{pr} is prepared for a content edit, not a rebase.", file=sys.stderr)
+        return 2
+    if meta.get("phase") == "ready" and not _rebase_in_progress(wt):
+        return _mark_rebase_ready(pr, meta, wt)
+    if not _rebase_in_progress(wt):
+        print(f"resubmit: PR #{pr} has no rebase waiting to continue.", file=sys.stderr)
+        return 2
+
+    paths = _conflicted_paths(wt)
+    if not paths:
+        print(f"resubmit: rebase of PR #{pr} is paused but has no conflicted paths; abort "
+              "rather than guessing at Git's state.", file=sys.stderr)
+        return 9
+
+    check = _git(["diff", "--check", "--", *paths], wt)
+    if check.returncode != 0:
+        print("resubmit: conflict markers or whitespace errors remain; nothing was staged:",
+              file=sys.stderr)
+        print(check.stdout.strip() or check.stderr.strip(), file=sys.stderr)
+        return 10
+    add = _git(["add", "-A", "--", *paths], wt)
+    if add.returncode != 0:
+        print(f"resubmit: staging resolved paths failed: {add.stderr.strip()}", file=sys.stderr)
+        return 4
+    still_unmerged = _conflicted_paths(wt)
+    if still_unmerged:
+        print(f"resubmit: these paths are still unresolved: {', '.join(still_unmerged)}",
+              file=sys.stderr)
+        return 10
+
+    r = _git(["rebase", "--continue"], wt, extra_env={"GIT_EDITOR": "true"})
+    next_paths = _conflicted_paths(wt)
+    if next_paths:
+        meta["phase"] = "conflicted"
+        _write_meta(pr, meta)
+        _print_conflicts(pr, wt, next_paths)
+        return 0
+    if r.returncode != 0:
+        print(f"resubmit: rebase continue failed: {r.stderr.strip() or r.stdout.strip()}",
+              file=sys.stderr)
+        return 9
+    return _mark_rebase_ready(pr, meta, wt)
+
+
+def _live_push_preflight(pr: int, meta: dict, *, check_base: bool,
+                         wt: Path | None = None) -> tuple[dict | None, int]:
+    """Re-check permission and the refs immediately before either push.
+
+    The head must be exactly what prepare pinned: pushing over a head the author
+    moved would clobber their work, and the force-with-lease would reject it
+    anyway.
+
+    The base is checked for REWRITE, not for movement. A base that advanced
+    leaves the rebase a couple of commits behind, which is the ordinary state of
+    every open PR and no reason to refuse. A base that was rewritten out from
+    under the pin is different — the commits the rebase was computed against are
+    gone, so the pin means nothing and the transaction restarts. That is an
+    ancestry question against the live ref, which is why it re-fetches rather
+    than reading the API's baseRefOid (that field is the base the PR was opened
+    or last synced against, not where the branch points now)."""
+    info = _gh_json(pr)
+    ok, reason = eligibility(info)
+    if not ok:
+        print(f"resubmit: {reason}", file=sys.stderr)
+        return None, 3
+    if info.get("headRefOid") != meta["head_sha"]:
+        print(f"resubmit: PR #{pr} head moved since prepare "
+              f"({meta['head_sha'][:8]} → {(info.get('headRefOid') or 'unknown')[:8]}); "
+              "the author pushed. Re-run prepare against their latest head.", file=sys.stderr)
+        return None, 6
+    if check_base and wt is not None:
+        base = meta["base_branch"]
+        fetch = _git(["fetch", "--filter=blob:none", "--no-tags", "upstream",
+                      f"+refs/heads/{base}:refs/remotes/upstream/{base}"], wt)
+        if fetch.returncode != 0:
+            print(f"resubmit: re-fetching upstream {base} failed: {fetch.stderr.strip()}",
+                  file=sys.stderr)
+            return None, 4
+        live_base = _git_text(["rev-parse", f"refs/remotes/upstream/{base}"], wt)
+        rewritten = _git(["merge-base", "--is-ancestor", meta["base_sha"], live_base], wt)
+        if rewritten.returncode != 0:
+            print(f"resubmit: PR #{pr}'s base {base} was rewritten since prepare "
+                  f"({meta['base_sha'][:8]} is no longer an ancestor of {live_base[:8]}); "
+                  "re-run prepare so the rewrite lands on real history.", file=sys.stderr)
+            return None, 6
+    try:
+        assert_push_target(info, meta["branch"])
+    except RuntimeError as e:
+        print(f"resubmit: {e}", file=sys.stderr)
+        return None, 12
+    return info, 0
+
+
+def _push_rebase(pr: int, meta: dict, confirm_rewrite: str | None, dry_run: bool) -> int:
+    wt = _worktree(pr)
+    if meta.get("phase") != "ready" or _rebase_in_progress(wt):
+        print(f"resubmit: rebase of PR #{pr} is not complete; resolve/continue it or abort.",
+              file=sys.stderr)
+        return 9
+    if confirm_rewrite != meta["head_sha"]:
+        print(f"resubmit: rewrite confirmation must be the exact old head SHA "
+              f"{meta['head_sha']}; nothing pushed.", file=sys.stderr)
+        return 11
+
+    status = _git(["status", "--porcelain"], wt)
+    if status.returncode != 0:
+        print(f"resubmit: git status failed: {status.stderr.strip()}", file=sys.stderr)
+        return 4
+    if status.stdout.strip():
+        print("resubmit: rebased worktree is not clean; continue or abort rather than "
+              "including unreviewed edits in a rewrite.", file=sys.stderr)
+        return 9
+
+    _, rc = _live_push_preflight(pr, meta, check_base=True, wt=wt)
+    if rc:
+        return rc
+    new_sha = _git_text(["rev-parse", "HEAD"], wt)
+    if new_sha != meta.get("new_head_sha"):
+        print(f"resubmit: local head changed after rebase ({meta.get('new_head_sha', '')[:8]} → "
+              f"{new_sha[:8]}); nothing pushed.", file=sys.stderr)
+        return 9
+    ancestor = _git(["merge-base", "--is-ancestor", meta["base_sha"], new_sha], wt)
+    if ancestor.returncode != 0:
+        print("resubmit: rebased head is not based on the pinned base; nothing pushed.",
+              file=sys.stderr)
+        return 9
+
+    lease = f"--force-with-lease=refs/heads/{meta['branch']}:{meta['head_sha']}"
+    if dry_run:
+        print(f"[dry-run] would rewrite {meta['repo']} @ {meta['branch']} with an exact lease:")
+        print(f"  head: {meta['head_sha']} → {new_sha}")
+        print(f"  commits: {meta['old_commit_count']} → {meta['new_commit_count']}")
+    else:
+        push = _git(["push", lease, "origin", f"HEAD:{meta['branch']}"], wt)
+        if push.returncode != 0:
+            print(f"resubmit: lease-protected push to {meta['repo']} @ {meta['branch']} "
+                  f"failed: {push.stderr.strip()}", file=sys.stderr)
+            return 7
+
+    _log_rebase(pr, meta, new_sha, dry_run)
+    _cleanup(pr)
+    if dry_run:
+        print(f"[dry-run] rebase of PR #{pr} logged; remote branch untouched.")
+    else:
+        print(f"rebased PR #{pr} as {actor_label()} with an exact force-with-lease:")
+        print(f"  head: {meta['head_sha']} → {new_sha}")
+        print(f"  commits: {meta['old_commit_count']} → {meta['new_commit_count']}")
+        print("  Greptile + CI re-run on the push.")
+    return 0
+
+
+def cmd_push(pr: int, message: str | None, dry_run: bool,
+             confirm_rewrite: str | None = None) -> int:
+    wt = _worktree(pr)
+    meta = _read_meta(pr)
+    if not meta:
         print(f"resubmit: PR #{pr} was not prepared (run `resubmit {pr} prepare` first)", file=sys.stderr)
         return 2
-    meta = json.loads(meta_path.read_text())
+    if meta.get("mode") == "rebase":
+        if message:
+            print("resubmit: a completed rebase already has commits; use "
+                  "--confirm-rewrite <old-head-sha>, not -m.", file=sys.stderr)
+            return 2
+        return _push_rebase(pr, meta, confirm_rewrite, dry_run)
+    if confirm_rewrite:
+        print("resubmit: --confirm-rewrite is only valid after prepare --rebase.", file=sys.stderr)
+        return 2
+    if not message:
+        print("resubmit: ordinary content pushes require -m/--message.", file=sys.stderr)
+        return 2
     branch = meta["branch"]
 
     # Nothing staged/unstaged means the agent authored no change — refuse rather
-    # than push an empty commit under the operator's name.
+    # than push an empty commit under the selected user's name.
     status = _git(["status", "--porcelain"], wt)
     if status.returncode != 0:
         print(f"resubmit: git status failed: {status.stderr.strip()}", file=sys.stderr)
@@ -187,16 +529,9 @@ def cmd_push(pr: int, message: str, dry_run: bool) -> int:
     # Re-preflight against the live PR: refuse if it closed, lost maintainer-edit
     # permission, or the contributor pushed since prepare (our clone is now stale,
     # and pushing would either fail non-fast-forward or clobber their work).
-    info = _gh_json(pr)
-    ok, reason = eligibility(info)
-    if not ok:
-        print(f"resubmit: {reason}", file=sys.stderr)
-        return 3
-    if info["headRefOid"] != meta["head_sha"]:
-        print(f"resubmit: PR #{pr} head moved since prepare "
-              f"({meta['head_sha'][:8]} → {info['headRefOid'][:8]}); the author pushed. "
-              f"Re-run `resubmit {pr} prepare` to rebase on their latest.", file=sys.stderr)
-        return 6
+    _, rc = _live_push_preflight(pr, meta, check_base=False)
+    if rc:
+        return rc
 
     # Stage everything (add -A) so a newly-created file is committed too, not just
     # edits to tracked files — the porcelain check above counts untracked changes.
@@ -211,7 +546,8 @@ def cmd_push(pr: int, message: str, dry_run: bool) -> int:
     new_sha = _git(["rev-parse", "HEAD"], wt).stdout.strip()
 
     if dry_run:
-        print(f"[dry-run] would push {new_sha[:8]} to {meta['repo']} @ {branch} (as the operator)")
+        print(f"[dry-run] would push {new_sha[:8]} to {meta['repo']} @ {branch} "
+              f"(as {actor_label()})")
     else:
         push = _git(["push", "origin", f"HEAD:{branch}"], wt)
         if push.returncode != 0:
@@ -225,7 +561,7 @@ def cmd_push(pr: int, message: str, dry_run: bool) -> int:
     if dry_run:
         print(f"[dry-run] resubmit of PR #{pr} logged; nothing pushed to {where}.")
     else:
-        print(f"resubmitted PR #{pr}: pushed {new_sha[:8]} to {where} as the operator.")
+        print(f"resubmitted PR #{pr}: pushed {new_sha[:8]} to {where} as {actor_label()}.")
         print("  Greptile + CI re-run on the push.")
     return 0
 
@@ -238,9 +574,34 @@ def cmd_diff(pr: int) -> int:
     so a newly-created file appears in the diff (matching push's `add -A`); nothing is
     committed or pushed."""
     wt = _worktree(pr)
-    if not _meta_path(pr).exists():
+    meta = _read_meta(pr)
+    if not meta:
         print(f"resubmit: PR #{pr} was not prepared (run `resubmit {pr} prepare` first)", file=sys.stderr)
         return 2
+    if meta.get("mode") == "rebase":
+        paths = _conflicted_paths(wt)
+        if paths or _rebase_in_progress(wt):
+            r = _git(["diff", "--no-color"], wt)
+            if r.returncode != 0:
+                print(f"resubmit: git diff failed: {r.stderr.strip()}", file=sys.stderr)
+                return 4
+            print(r.stdout.strip() or "resubmit: rebase is paused, but no working diff is visible.")
+            return 0
+        if meta.get("phase") != "ready":
+            print(f"resubmit: rebase of PR #{pr} is not ready to inspect.", file=sys.stderr)
+            return 9
+        print(f"rebase rewrite for PR #{pr}:")
+        print(f"  base: {meta['base_branch']} @ {meta['base_sha']}")
+        print(f"  head: {meta['head_sha']} → {meta['new_head_sha']}")
+        print(f"  commits: {meta['old_commit_count']} → {meta['new_commit_count']}")
+        r = _git(["range-diff", "--no-color",
+                  f"{meta['merge_base']}..{meta['head_sha']}",
+                  f"{meta['base_sha']}..{meta['new_head_sha']}"], wt)
+        if r.returncode != 0:
+            print(f"resubmit: git range-diff failed: {r.stderr.strip()}", file=sys.stderr)
+            return 4
+        print(r.stdout.strip() or "  (no patch differences between old and rebased commits)")
+        return 0
     _git(["add", "-N", "."], wt)
     r = _git(["diff", "HEAD"], wt)
     if r.returncode != 0:
@@ -254,33 +615,20 @@ def cmd_diff(pr: int) -> int:
     return 0
 
 
-def _await_head_move(pr: int, before: str, attempts: int = 15, delay: float = 2.0) -> str | None:
-    """Poll for the PR's head to move off ``before``, returning the new sha — or None
-    if it hasn't moved within ``attempts`` polls. `gh pr update-branch` returns once
-    GitHub *accepts* the merge, before the merge commit exists, so the new head is
-    not readable on the first poll and reporting it needs this wait."""
-    for i in range(attempts):
-        sha = _gh_json(pr)["headRefOid"]
-        if sha != before:
-            return sha
-        if i < attempts - 1:
-            time.sleep(delay)
-    return None
-
-
 def cmd_update(pr: int, dry_run: bool) -> int:
-    """Merge the PR's base branch into its head branch, AS THE OPERATOR, so CI and
-    the review provider re-run against current base code.
+    """Merge the PR's base branch into its head as the selected user, so CI
+    and the review provider re-run against current base code.
 
-    `gh pr update-branch` does the merge server-side, honouring the same "Allow
-    edits from maintainers" grant `push` relies on — so no clone is needed. It runs
-    as the operator because a GitHub App token may not write `.github/workflows/**`
-    without the `workflows` permission, and a base branch that moved across a
-    workflow change carries one of those files into the merge; the operator's
-    `workflow` token scope does allow it.
+    The merge runs locally over SSH in a throwaway clone rather than through the
+    `update-branch` REST endpoint: worker credentials have no API token, and a
+    server-side update-branch is attributed to whoever called it.
+    Merging locally also puts the push outside the `workflow` OAuth scope, which
+    an API-token push would need the moment a moved base carries a
+    `.github/workflows/**` change into the merge.
 
-    `--rebase` is deliberately not exposed: rebasing force-pushes and rewrites the
-    contributor's commits. This path only ever adds a merge commit."""
+    A conflicting base stops at `git merge` and pushes nothing — the conflict
+    needs the author. Rebase is a separate action: this path only ever adds a
+    merge commit, never rewrites the contributor's history."""
     info = _gh_json(pr)
     ok, reason = eligibility(info)
     if not ok:
@@ -291,31 +639,104 @@ def cmd_update(pr: int, dry_run: bool) -> int:
     if dry_run:
         _log_update(pr, info, before, before, True)
         print(f"[dry-run] would merge {base} into #{pr} @ {branch} ({before[:8]}) "
-              "as the operator; nothing merged.")
+              f"as {actor_label()}; nothing merged.")
         return 0
 
-    r = subprocess.run(["gh", "pr", "update-branch", str(pr), "--repo", REPO],
-                       capture_output=True, text=True, timeout=120, env=operator_env())
-    if r.returncode != 0:
-        err = r.stderr.strip() or r.stdout.strip()
-        print(f"resubmit: update-branch on #{pr} failed: {err}", file=sys.stderr)
-        if "conflict" in err.lower():
-            print(f"resubmit: {base} conflicts with this PR, so the merge needs the "
-                  "author — offer to comment asking them to update.", file=sys.stderr)
-        return 8
+    try:
+        assert_push_target(info, branch)
+    except RuntimeError as e:
+        print(f"resubmit: {e}", file=sys.stderr)
+        return 12
 
-    after = _await_head_move(pr, before)
+    wt = _worktree(pr)
+    _cleanup(pr)
+    wt.parent.mkdir(parents=True, exist_ok=True)
+    url = fork_ssh_url(info)
+    clone = subprocess.run(
+        ["git", "clone", "--filter=blob:none", "--single-branch", "--no-tags",
+         "--branch", branch, url, str(wt)],
+        capture_output=True, text=True, timeout=300, env=git_env())
+    if clone.returncode != 0:
+        print(f"resubmit: clone of {url} ({branch}) failed: {clone.stderr.strip()}",
+              file=sys.stderr)
+        _cleanup(pr)
+        return 4
+
+    try:
+        add_remote = _git(["remote", "add", "upstream", upstream_ssh_url()], wt)
+        if add_remote.returncode != 0:
+            print(f"resubmit: adding upstream failed: {add_remote.stderr.strip()}",
+                  file=sys.stderr)
+            return 4
+        fetch = _git(["fetch", "--no-tags", "--filter=blob:none", "upstream",
+                      f"+refs/heads/{base}:refs/remotes/upstream/{base}"], wt)
+        if fetch.returncode != 0:
+            print(f"resubmit: fetching {base} failed: {fetch.stderr.strip()}", file=sys.stderr)
+            return 4
+
+        local_head = _git_text(["rev-parse", "HEAD"], wt)
+        if local_head != before:
+            print(f"resubmit: PR #{pr} head moved while cloning ({before[:8]} → "
+                  f"{local_head[:8]}); nothing merged.", file=sys.stderr)
+            return 6
+
+        merge = _git(["merge", "--no-edit", "-m", f"Merge branch '{base}' into {branch}",
+                      f"refs/remotes/upstream/{base}"], wt)
+        if merge.returncode != 0:
+            conflicts = _conflicted_paths(wt)
+            print(f"resubmit: merging {base} into #{pr} conflicts on "
+                  f"{len(conflicts)} path(s); nothing pushed.", file=sys.stderr)
+            for path in conflicts[:10]:
+                print(f"  {path}", file=sys.stderr)
+            print(f"resubmit: {base} conflicts with this PR, so the merge needs the "
+                  "author or a rebase — offer to comment asking them to update.",
+                  file=sys.stderr)
+            return 8
+
+        after = _git_text(["rev-parse", "HEAD"], wt)
+        if after == before:
+            print(f"resubmit: PR #{pr} is already up to date with {base}; nothing pushed.")
+            return 0
+
+        push = _git(["push", f"--force-with-lease=refs/heads/{branch}:{before}",
+                     "origin", f"HEAD:{branch}"], wt)
+        if push.returncode != 0:
+            print(f"resubmit: push to {info['headRepository']['nameWithOwner']} @ {branch} "
+                  f"failed: {push.stderr.strip()}", file=sys.stderr)
+            return 7
+    finally:
+        _cleanup(pr)
+
     _log_update(pr, info, before, after, False)
-    if after:
-        print(f"updated PR #{pr}: merged {base} into {branch} as the operator "
-              f"({before[:8]} → {after[:8]}).")
-    else:
-        print(f"updated PR #{pr}: GitHub accepted the merge of {base} into {branch}, "
-              f"but the head still read {before[:8]}. Confirm it landed with "
-              f"`gh pr view {pr} --repo {REPO} --json headRefOid` before treating "
-              "the PR as refreshed.")
+    print(f"updated PR #{pr}: merged {base} into {branch} as {actor_label()} "
+          f"({before[:8]} → {after[:8]}).")
     print("  Greptile + CI re-run on the merge commit.")
     print(f"  Then: prospector_app/agent/reingest {pr}, once those checks settle.")
+    return 0
+
+
+def cmd_state(pr: int) -> int:
+    """Print the prepared state as JSON: {mode, phase, conflicts}.
+
+    `prepare --rebase` exits 0 whether the rebase finished or PAUSED on
+    conflicts — the pause is a normal, resumable stop, not an error. So the exit
+    code alone cannot tell "ready to push" from "stopped, a human must resolve
+    these", and any non-interactive caller needs this to tell them apart."""
+    meta = _read_meta(pr)
+    if not meta:
+        print(json.dumps({"phase": "none", "mode": None, "conflicts": []}))
+        return 0
+    wt = _worktree(pr)
+    conflicts: list[str] = []
+    phase = meta.get("phase") or ("ready" if meta.get("mode") == "edit" else "unknown")
+    if wt.exists() and meta.get("mode") == "rebase":
+        try:
+            conflicts = _conflicted_paths(wt)
+        except RuntimeError:
+            conflicts = []
+        if conflicts:
+            phase = "conflicted"
+    print(json.dumps({"phase": phase, "mode": meta.get("mode"), "conflicts": conflicts}))
     return 0
 
 
@@ -331,8 +752,7 @@ def cmd_abort(pr: int) -> int:
 def _log(pr: int, meta: dict, new_sha: str, message: str, dry_run: bool) -> None:
     """Append the resubmit to the app activity log — the chat-agent write
     path's audit hook. Best-effort: a logging failure must not fail a push that
-    already went out. Recorded under the operator's identity (operator_env dropped
-    the bot token), which is who actually pushed."""
+    already went out. The caller-selected git identity is who actually pushed."""
     try:
         from prospector_app.backend import activity
         activity.record("resubmit", pr=pr, action="RESUBMIT", repo=meta.get("repo"),
@@ -342,11 +762,25 @@ def _log(pr: int, meta: dict, new_sha: str, message: str, dry_run: bool) -> None
         print(f"resubmit: warning — activity log failed: {e}", file=sys.stderr)
 
 
+def _log_rebase(pr: int, meta: dict, new_sha: str, dry_run: bool) -> None:
+    """Append the old/new refs for a contributor-branch rewrite."""
+    try:
+        from prospector_app.backend import activity
+        activity.record("resubmit", pr=pr, action="REBASE", repo=meta.get("repo"),
+                        branch=meta.get("branch"), base=meta.get("base_branch"),
+                        base_sha=meta.get("base_sha"), from_sha=meta.get("head_sha"),
+                        to_sha=new_sha, old_commit_count=meta.get("old_commit_count"),
+                        new_commit_count=meta.get("new_commit_count"), dry_run=dry_run)
+    except Exception as e:  # noqa: BLE001 — never let audit logging break the push
+        print(f"resubmit: warning — rebase activity log failed: {e}", file=sys.stderr)
+
+
 def _log_update(pr: int, info: dict, from_sha: str, to_sha: str | None, dry_run: bool) -> None:
-    """Append the branch update to the app activity log, under the operator's
-    identity — who actually merged. ``to_sha`` is None when GitHub accepted the merge
-    but the new head wasn't readable in time. Best-effort, like `_log`: a logging
-    failure must not fail a merge that already went out."""
+    """Append the branch update to the app activity log under the selected user.
+
+    Best-effort, like `_log`: a logging failure must not fail a merge that already
+    went out.
+    """
     try:
         from prospector_app.backend import activity
         activity.record("resubmit", pr=pr, action="UPDATE_BRANCH",
@@ -360,31 +794,43 @@ def _log_update(pr: int, info: dict, from_sha: str, to_sha: str | None, dry_run:
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="resubmit",
-        description="Author changes on a contributor's fork branch and push them, as the operator.",
+        description="Author changes on a contributor's fork branch and push them "
+                    "through the guarded resubmit flow.",
     )
     p.add_argument("pr", type=int, help="the upstream PR number")
     sub = p.add_subparsers(dest="action", required=True)
-    sub.add_parser("prepare", help="preflight + clone the fork's head branch to edit")
+    prep = sub.add_parser("prepare", help="preflight + clone the fork's head branch to edit")
+    prep.add_argument("--rebase", action="store_true",
+                      help="fetch both histories and rebase the PR onto its pinned base")
+    sub.add_parser("continue", help="stage resolved conflict paths and continue a prepared rebase")
     pushp = sub.add_parser("push", help="commit the edits and push to the fork branch")
-    pushp.add_argument("-m", "--message", required=True, help="commit message")
+    push_mode = pushp.add_mutually_exclusive_group(required=True)
+    push_mode.add_argument("-m", "--message", help="commit message for an ordinary content edit")
+    push_mode.add_argument("--confirm-rewrite", metavar="OLD_HEAD_SHA",
+                           help="acknowledge the exact old head before a rebased rewrite")
     pushp.add_argument("--dry-run", action="store_true",
-                       help="commit locally but do not push (log it as a dry-run)")
+                       help="complete locally but do not push (log it as a dry-run)")
     sub.add_parser("diff", help="show the diff of the edits authored in the worktree")
     updp = sub.add_parser("update", help="merge the base branch into the PR's head branch")
     updp.add_argument("--dry-run", action="store_true",
                       help="log the update without merging anything")
     sub.add_parser("abort", help="discard the prepared worktree without pushing")
+    sub.add_parser("state", help="print the prepared state as JSON (phase, mode, conflicts)")
     args = p.parse_args(argv)
 
     try:
         if args.action == "prepare":
-            return cmd_prepare(args.pr)
+            return cmd_prepare(args.pr, args.rebase)
+        if args.action == "continue":
+            return cmd_continue(args.pr)
         if args.action == "push":
-            return cmd_push(args.pr, args.message, args.dry_run)
+            return cmd_push(args.pr, args.message, args.dry_run, args.confirm_rewrite)
         if args.action == "diff":
             return cmd_diff(args.pr)
         if args.action == "update":
             return cmd_update(args.pr, args.dry_run)
+        if args.action == "state":
+            return cmd_state(args.pr)
         if args.action == "abort":
             return cmd_abort(args.pr)
     except RuntimeError as e:

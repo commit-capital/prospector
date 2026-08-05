@@ -151,10 +151,11 @@ The security boundary is the machine, not the app:
 - Executor writes use the configured GitHub App, refuse an empty bot token, and
   are appended to the activity log; merges additionally pass the per-PR gate in
   `pipeline/gates.py`. Confirmed bot writes from the optional chat agent use its
-  own explicit command allowlist and are not recorded in that activity log.
-  Resubmit pushes and branch updates run as the operator and append best-effort
-  activity entries; configured feedback-repository issue filing also runs as the
-  operator and is not recorded there.
+  own explicit command allowlist; issue closes route through the executor and are
+  recorded in that activity log, while its other bot writes are not. Resubmit
+  pushes and branch updates run as the operator and append best-effort activity
+  entries; configured feedback-repository issue filing also runs as the operator
+  and is not recorded there.
 
 ## Platform contract & versioning
 
@@ -167,9 +168,9 @@ Versioning is `0.x`, bumped manually in `pyproject.toml` at meaningful milestone
 `CLAUDE.md` is authoritative. In short: reads run as the local login. The app
 executor writes as the configured app, logs every attempt, and applies the
 per-PR gate to merges. The optional chat agent has a separate, confirmation-based
-allowlist for non-merge writes; bot-authenticated chat writes are not part of the
-executor's activity log, while operator-identity resubmits append best-effort
-entries. With no readable `TRIAGE_BOT_KEY_FILE`, neither path can write as the
-app, though local helpers and configured feedback-repository issue filing remain
-available. Don't hand-run `gh pr merge/close/comment` against the configured
-upstream; use the app's controlled paths.
+allowlist for non-merge writes; its issue closes use the executor and activity
+log, while its other bot-authenticated writes do not. Operator-identity resubmits
+append best-effort entries. With no readable `TRIAGE_BOT_KEY_FILE`, neither path
+can write as the app, though local helpers and configured feedback-repository
+issue filing remain available. Don't hand-run `gh pr merge/close/comment` against
+the configured upstream; use the app's controlled paths.

@@ -151,3 +151,65 @@ REVIEW_PROVIDER: str = parse_review_provider(os.environ.get("TRIAGE_REVIEW_PROVI
 # provider's built-in bar (greptile → 5).
 _review_threshold = os.environ.get("TRIAGE_REVIEW_THRESHOLD")
 REVIEW_THRESHOLD: int | None = int(_review_threshold) if _review_threshold else None
+
+# The autofix actions a fix request may carry. `update` merges the base branch
+# into the PR head, `rebase` rebases onto current base behind a pinned lease,
+# and `fix` has an agent author a change against a failing gate.
+FIX_ACTIONS: tuple[str, ...] = ("update", "rebase", "fix")
+
+# The machine user that pushes to contributor PR head branches: a GitHub *user*
+# account holding push access on REPO, distinct from the App identity in
+# BOT_LOGIN. Pushing to a fork head branch rides the PR's "Allow edits from
+# maintainers", which grants push to maintainer users — an App installation
+# token can never satisfy it. The account authenticates by SSH key alone (no API
+# token), so its whole reach is git refs.
+#
+# All three unset → contributor-branch pushes are unavailable and the app
+# surfaces them disabled. Setting only some of them is a misconfiguration, not a
+# half-enabled feature: it fails loudly rather than pushing under whatever
+# identity happens to be ambient.
+PUSH_LOGIN: str = os.environ.get("TRIAGE_PUSH_LOGIN", "").strip()
+PUSH_EMAIL: str = os.environ.get("TRIAGE_PUSH_EMAIL", "").strip()
+_push_key = os.environ.get("TRIAGE_PUSH_SSH_KEY_FILE", "").strip()
+PUSH_SSH_KEY_FILE: Path | None = Path(_push_key).expanduser() if _push_key else None
+
+if any((PUSH_LOGIN, PUSH_EMAIL, PUSH_SSH_KEY_FILE)) and not all(
+        (PUSH_LOGIN, PUSH_EMAIL, PUSH_SSH_KEY_FILE)):
+    raise SystemExit(
+        "TRIAGE_PUSH_LOGIN, TRIAGE_PUSH_EMAIL and TRIAGE_PUSH_SSH_KEY_FILE must be "
+        "set together (the machine user's login, its commit email, and its private "
+        "key). Set all three or none — see .env.example."
+    )
+
+
+def push_identity_configured() -> bool:
+    """Whether this machine holds a complete contributor-push identity. False
+    leaves every autofix action unavailable rather than falling back to another
+    identity."""
+    return bool(PUSH_LOGIN and PUSH_EMAIL and PUSH_SSH_KEY_FILE)
+
+
+def parse_fix_autopush(raw: str | None) -> frozenset[str]:
+    """The autofix actions that push on a clean preflight instead of parking for
+    human review. Empty by default; an unknown action name is a hard error so a
+    typo never silently withholds the automation it was meant to enable."""
+    names = {part.strip().lower() for part in (raw or "").split(",") if part.strip()}
+    unknown = sorted(names - set(FIX_ACTIONS))
+    if unknown:
+        raise SystemExit(
+            f"TRIAGE_FIX_AUTOPUSH names unknown actions: {', '.join(unknown)}. "
+            f"Valid actions are {', '.join(FIX_ACTIONS)} — see .env.example."
+        )
+    return frozenset(names)
+
+
+# The sandbox machine's autofix worker. Set on the machine that drains the fix
+# queue; every other app instance serves the same queue API and starts no worker.
+FIX_WORKER: bool = os.environ.get("TRIAGE_FIX_WORKER", "") == "1"
+
+# Actions that skip `awaiting-review` once their preflight is clean.
+FIX_AUTOPUSH: frozenset[str] = parse_fix_autopush(os.environ.get("TRIAGE_FIX_AUTOPUSH"))
+
+# When "1", an idle fix worker queues eligible PRs itself instead of waiting for
+# an operator click.
+FIX_AUTOHUNT: bool = os.environ.get("TRIAGE_FIX_AUTOHUNT", "") == "1"

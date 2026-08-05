@@ -31,6 +31,7 @@ import getpass
 import os
 import re
 import subprocess
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone, tzinfo
 from typing import TYPE_CHECKING
 
@@ -62,6 +63,46 @@ def _engine() -> storekit.Engine:
 # The semantic vocabulary (#40). Aggregation groups on these.
 KINDS = ("merge", "close", "comment", "reopen", "undo", "handoff", "reconcile",
          "issue-close", "issue-reopen")
+
+
+@dataclass(frozen=True)
+class ActivityScope:
+    """One dashboard selection, applied uniformly to PRs and activity events.
+
+    An author scope contains that author's PR numbers and therefore excludes
+    issue events. An operator scope keeps events attributed to that operator
+    while retaining the repository's open backlog as the shared remainder in
+    progress metrics. Supplying both intersects the two dimensions.
+    """
+
+    pr_numbers: frozenset[int] | None = None
+    operator: str | None = None
+
+    @classmethod
+    def from_selection(
+        cls,
+        prs: dict[int, Pr],
+        *,
+        pr_author: str | None = None,
+        operator: str | None = None,
+    ) -> ActivityScope:
+        numbers = (frozenset(n for n, rec in prs.items() if rec.author == pr_author)
+                   if pr_author else None)
+        return cls(pr_numbers=numbers, operator=operator)
+
+    def prs(self, prs: dict[int, Pr]) -> dict[int, Pr]:
+        if self.pr_numbers is None:
+            return prs
+        return {n: rec for n, rec in prs.items() if n in self.pr_numbers}
+
+    def events(self, events: list[dict]) -> list[dict]:
+        out = events
+        if self.operator:
+            out = [ev for ev in out if (ev.get("operator") or "—") == self.operator]
+        if self.pr_numbers is not None:
+            out = [ev for ev in out
+                   if ev.get("pr") is not None and int(ev["pr"]) in self.pr_numbers]
+        return out
 
 # CLOSE_* action → the human reason recorded on a close event.
 CLOSE_REASONS = {
@@ -439,7 +480,6 @@ def firehose_stats(
     today: date | None = None,
     tz: tzinfo | None = None,
     start_date: date | None = None,
-    pr_author: str | None = None,
 ) -> dict:
     """Aggregate incoming-vs-triaged stats for the firehose panel.
 
@@ -451,11 +491,6 @@ def firehose_stats(
 
     When ``start_date`` is provided it overrides ``n_days`` and spans from
     that date to today — use this for "all time" queries.
-
-    When ``pr_author`` is set, only PRs authored by that GitHub login are
-    counted for ``pr_incoming``; triage events (close/merge/reopen) are
-    similarly restricted to events on PRs by that author. Issue stats are
-    not filtered by PR author.
 
     Every UTC timestamp is bucketed by its day in ``tz`` (the operator's local
     timezone by default), and the window ends on today in that same zone — so an
@@ -471,17 +506,8 @@ def firehose_stats(
     days = [(today_d - timedelta(days=i)).isoformat() for i in range(n_days - 1, -1, -1)]
     day_set = set(days)
 
-    # When filtering by PR author, restrict incoming PRs and triage events to
-    # that author's PRs. Build the set once for O(1) event lookups.
-    author_pr_nums: set[int] | None = (
-        {n for n, rec in prs.items() if rec.author == pr_author}
-        if pr_author is not None else None
-    )
-
     pr_incoming: dict[str, int] = {d: 0 for d in days}
-    for n, rec in prs.items():
-        if author_pr_nums is not None and n not in author_pr_nums:
-            continue
+    for rec in prs.values():
         day = _local_day(rec.created_at, local_tz)
         if day in day_set:
             pr_incoming[day] += 1
@@ -508,10 +534,6 @@ def firehose_stats(
             if day in iss_closed:
                 iss_closed[day] += 1
             continue
-        if author_pr_nums is not None:
-            pr_num = ev.get("pr")
-            if pr_num is None or int(pr_num) not in author_pr_nums:
-                continue
         if kind == "close" and day in pr_closed:
             pr_closed[day] += 1
             pr_triaged[day] += 1

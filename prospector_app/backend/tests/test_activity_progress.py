@@ -4,8 +4,8 @@ from prospector_app.backend import activity
 from pipeline.model import Pr
 
 
-def _pr(n: int, state: str) -> Pr:
-    return Pr(None, {"pr": n, "meta": {"title": f"t{n}", "author": "a",
+def _pr(n: int, state: str, author: str = "a") -> Pr:
+    return Pr(None, {"pr": n, "meta": {"title": f"t{n}", "author": author,
                                        "state": state, "head_sha": "h"}})
 
 
@@ -83,3 +83,32 @@ def test_only_open_prs_form_the_backlog():
 def test_empty_store_is_safe():
     p = activity.progress({}, [])
     assert p["open_total"] == 0 and p["pct"] == 0.0 and p["remaining"] == 0
+
+
+def test_author_scope_filters_progress_universe_and_actions():
+    prs = {
+        1: _pr(1, "open", "alice"),
+        2: _pr(2, "closed", "alice"),
+        3: _pr(3, "open", "bob"),
+    }
+    events = [
+        ev("2026-06-10T12:00:00", "close", 2, reason="stale"),
+        ev("2026-06-10T11:00:00", "close", 3, reason="duplicate"),
+    ]
+    scope = activity.ActivityScope.from_selection(prs, pr_author="alice")
+    p = activity.progress(scope.prs(prs), scope.events(events))
+    assert p["universe"] == 2
+    assert p["actioned"] == 1
+    assert p["remaining"] == 1
+
+
+def test_operator_scope_filters_progress_actions_but_keeps_backlog_universe():
+    prs = store({1: "open", 2: "closed", 3: "closed"})
+    events = [
+        ev("2026-06-10T12:00:00", "close", 2, operator="Alice"),
+        ev("2026-06-10T11:00:00", "close", 3, operator="Bob"),
+    ]
+    scope = activity.ActivityScope.from_selection(prs, operator="Alice")
+    p = activity.progress(scope.prs(prs), scope.events(events))
+    assert p["universe"] == 2
+    assert p["actioned"] == 1

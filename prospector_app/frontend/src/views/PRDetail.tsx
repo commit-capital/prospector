@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { api, type PRDetail as PD, type DiffResult, type VerifyRunner } from "../api";
+import { api, type PRDetail as PD, type DiffResult, type VerifyRunner, type FixAction as FixActionName, type FixRunner } from "../api";
 import { DriftChip, TierChip, authorTip } from "../components/Chips";
 import { InfoTip } from "../components/InfoTip";
 import { dispositionEntry } from "../glossary";
@@ -11,6 +11,7 @@ import { DiffView } from "../components/DiffView";
 import { Collapsible } from "../components/Collapsible";
 import { PRActionBar } from "../components/PRActionBar";
 import { VerifyAction, VerifyBody } from "../components/VerifyPanel";
+import { FixAction, FixBody } from "../components/FixPanel";
 import { PRActionLog } from "../components/PRActionLog";
 import { PRHistory } from "../components/PRHistory";
 import { LineCommentBox } from "../components/ReviewModal";
@@ -20,6 +21,7 @@ import { useFreshness } from "../useFreshness";
 import { FreshnessBar, FreshnessCallout } from "../components/Freshness";
 import { useRunState } from "../useRunState";
 import { useJobStream } from "../useJobStream";
+import { LinkedIssues } from "../components/LinkedIssues";
 import { splitDiffSizes } from "../testPaths";
 
 const LEVEL_ICON: Record<string, string> = { safe: "🛡️", caution: "⚠️", risk: "⛔", unknown: "❔" };
@@ -88,6 +90,46 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
     try { await api.dequeueVerify(prNum); } catch (e) { window.alert(String(e)); }
     await reloadPr();
     setVerifyBusy(null);
+  };
+
+  // Autofix queue: runner liveness (plus whether this deployment holds a push
+  // identity at all, which is what disables the buttons) and the queue/cancel/
+  // approve actions on the shared store's fix_request.
+  const [fixRunner, setFixRunner] = useState<FixRunner | null>(null);
+  const [fixBusy, setFixBusy] = useState<FixActionName | "dequeue" | "approve" | null>(null);
+  useEffect(() => { api.fixRunner().then(setFixRunner).catch(() => {}); }, [prNum]);
+  const fixStatus = pr?.fix_request?.status;
+  const fixInFlight = fixStatus === "queued" || fixStatus === "running"
+    || fixStatus === "approved" || fixStatus === "pushing";
+  useEffect(() => {
+    // an in-flight request resolves on the runner's side — poll it into view
+    if (!fixInFlight) return;
+    const t = window.setInterval(() => {
+      api.pr(prNum).then(setPr).catch(() => {});
+      api.fixRunner().then(setFixRunner).catch(() => {});
+    }, 10000);
+    return () => window.clearInterval(t);
+  }, [fixInFlight, prNum]);
+  const queueFix = async (action: FixActionName) => {
+    if (fixBusy) return;
+    setFixBusy(action);
+    try { await api.queueFix(prNum, action); } catch (e) { window.alert(String(e)); }
+    await reloadPr();
+    setFixBusy(null);
+  };
+  const dequeueFix = async () => {
+    if (fixBusy) return;
+    setFixBusy("dequeue");
+    try { await api.dequeueFix(prNum); } catch (e) { window.alert(String(e)); }
+    await reloadPr();
+    setFixBusy(null);
+  };
+  const approveFix = async () => {
+    if (fixBusy) return;
+    setFixBusy("approve");
+    try { await api.approveFix(prNum); } catch (e) { window.alert(String(e)); }
+    await reloadPr();
+    setFixBusy(null);
   };
 
   // Live freshness check (#25): re-fetch this PR's upstream state in the
@@ -300,10 +342,31 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
         onRerunAnalysis={pr.clusters.length ? runAnalyze : undefined}
         rerunning={analyzeJob.running} rerunLog={analyzeJob.log} />
 
+      <section className="prc-section">
+        <h3>Issues this may fix</h3>
+        <LinkedIssues issues={pr.issues} />
+      </section>
+
       {/* #550/#581: what checks ran, when, and what they found — plus the
           action that unblocks each one, right there — the topline item,
           above even the recommended Action section below. */}
       <ChecksPanel c={pr.checks} actions={checksActions} bodies={checksBodies} />
+
+      {/* Autofix: have the configured machine user push a small fix to the
+          contributor's branch, rather than asking the author and waiting.
+          Content-authoring actions park their diff here for approval — nothing
+          reaches GitHub until "Approve & push". */}
+      <section className="panel">
+        <div className="panel-head">
+          <h3>Autofix</h3>
+          <div className="panel-actions">
+            <FixAction req={pr.fix_request ?? null} runner={fixRunner} busy={fixBusy}
+              resolved={resolved} onQueue={queueFix} onDequeue={dequeueFix}
+              onApprove={approveFix} />
+          </div>
+        </div>
+        <FixBody req={pr.fix_request ?? null} runner={fixRunner} />
+      </section>
 
       {/* Deferred (dependency bump): the merge/security/action surface is all
           noise here — the pipeline doesn't triage these and the author lands

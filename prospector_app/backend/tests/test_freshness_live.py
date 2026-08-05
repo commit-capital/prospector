@@ -1,10 +1,7 @@
 """Live freshness check (#25): compare upstream PR state against the store
 snapshot and report divergences. The GraphQL fetch (live_states) is
 monkeypatched; we only test the comparison logic."""
-import json
 import logging
-import subprocess
-import types
 
 from prospector_app.backend import data
 from prospector_app.backend import freshness_live
@@ -98,18 +95,13 @@ def test_unreachable_pr_marked_not_reachable(monkeypatch):
     assert item["reachable"] is False and item["diverged"] == []
 
 
-def _fake_run(payload):
-    return lambda argv, *, timeout=60, **kw: types.SimpleNamespace(
-        returncode=0, stdout=json.dumps(payload))
-
-
 def test_live_states_parses_diffstat_and_has_tests(monkeypatch):
     node = {"number": 1, "state": "OPEN", "merged": False, "headRefOid": HEAD,
             "mergeable": "MERGEABLE", "additions": 40, "deletions": 6, "changedFiles": 2,
             "files": {"nodes": [{"path": "src/app.ts"}, {"path": "src/app.test.ts"}]},
             "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]}}
-    monkeypatch.setattr(freshness_live, "run",
-                        _fake_run({"data": {"repository": {"p0": node}}}))
+    monkeypatch.setattr(freshness_live.live_prs, "gh_graphql",
+                        lambda query: {"data": {"repository": {"p0": node}}})
     out = freshness_live.live_states([1])
     assert out[1]["diffstat"] == {"additions": 40, "deletions": 6, "changed_files": 2}
     assert out[1]["has_tests"] is True
@@ -121,18 +113,24 @@ def test_live_states_has_tests_false_without_test_files(monkeypatch):
             "mergeable": "MERGEABLE", "additions": 3, "deletions": 1, "changedFiles": 1,
             "files": {"nodes": [{"path": "README.md"}]},
             "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]}}
-    monkeypatch.setattr(freshness_live, "run",
-                        _fake_run({"data": {"repository": {"p0": node}}}))
+    monkeypatch.setattr(freshness_live.live_prs, "gh_graphql",
+                        lambda query: {"data": {"repository": {"p0": node}}})
     assert freshness_live.live_states([2])[2]["has_tests"] is False
 
 
-def test_live_states_skips_chunk_on_gh_timeout(monkeypatch, caplog):
-    """A wedged gh times out per-chunk: live_states drops that chunk (no raise,
-    stays bounded) and logs a warning so the lag is visible (#322)."""
-    def boom(argv, *, timeout=60, **kw):
-        raise subprocess.TimeoutExpired(cmd=argv, timeout=timeout)
-    monkeypatch.setattr(freshness_live, "run", boom)
-    with caplog.at_level(logging.WARNING, logger="freshness_live"):
+def test_live_states_omits_incomplete_diffstat(monkeypatch):
+    node = {"number": 2, "state": "OPEN", "merged": False, "headRefOid": HEAD,
+            "mergeable": "MERGEABLE", "additions": None, "deletions": 1,
+            "changedFiles": 1, "files": {"nodes": []}, "commits": {"nodes": []}}
+    monkeypatch.setattr(freshness_live.live_prs, "gh_graphql",
+                        lambda query: {"data": {"repository": {"p0": node}}})
+    assert freshness_live.live_states([2]) == {}
+
+
+def test_live_states_skips_failed_chunk(monkeypatch, caplog):
+    """A failed gh request drops its chunk and logs the missing coverage."""
+    monkeypatch.setattr(freshness_live.live_prs, "gh_graphql", lambda query: None)
+    with caplog.at_level(logging.WARNING, logger="pipeline.live_prs"):
         out = freshness_live.live_states([1, 2, 3])
     assert out == {}
-    assert any("timed out" in r.message for r in caplog.records)
+    assert any("live PR fetch failed" in r.message for r in caplog.records)

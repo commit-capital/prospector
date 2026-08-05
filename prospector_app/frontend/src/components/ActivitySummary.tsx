@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, type ActivitySummary as Sum, type ActivityBucket, type ActivityProgress, type IssueActivityProgress, type FirehoseStats, type ActivityPerson } from "../api";
+import { api, type ActivitySummary as Sum, type ActivityBucket, type ActivityProgress, type IssueActivityProgress, type FirehoseStats, type ActivityPerson, type ActivityScopeParams } from "../api";
 import { useRepoMeta } from "../RepoMetaContext";
 
 const RANGE_OPTIONS = [
@@ -416,27 +416,46 @@ export function ActivitySummary({ onQuickFilter }: ActivitySummaryProps) {
   const [chartView, setChartView] = useState<ChartView>("line");
   const [reopenedPage, setReopenedPage] = useState(0);
 
-  // Derive operator name and PR author login from the selected person.
+  // The two picker groups are distinct scopes even when one GitHub login
+  // appears in both. Operator scope attributes actions; author scope follows
+  // every PR by that author through the dashboard.
   const who = selectedPerson?.is_operator ? selectedPerson.display : "";
-  const prAuthor = selectedPerson?.login ?? "";
+  const prAuthor = selectedPerson && !selectedPerson.is_operator ? selectedPerson.login : "";
+  const selectedKey = selectedPerson
+    ? `${selectedPerson.is_operator ? "operator" : "author"}:${selectedPerson.login}`
+    : "";
+  const scope = useMemo<ActivityScopeParams>(() => ({
+    ...(who ? { operator: who } : {}),
+    ...(prAuthor ? { prAuthor } : {}),
+  }), [prAuthor, who]);
+  const showIssues = !prAuthor;
+  const showIncoming = !who;
 
   useEffect(() => {
     api.activityPeople().then((r) => setPeople(r.people));
-    api.activityProgress().then(setProg);
-    api.activityIssueProgress().then(setIssueProg);
   }, []);
+
+  useEffect(() => {
+    let current = true;
+    api.activityProgress(scope).then((value) => { if (current) setProg(value); });
+    api.activitySummary({
+      group_by: "day",
+      ...(who ? { operator: who } : {}),
+      ...(prAuthor ? { pr_author: prAuthor } : {}),
+    }).then((value) => { if (current) setDay(value); });
+    if (showIssues) {
+      api.activityIssueProgress(who ? { operator: who } : {})
+        .then((value) => { if (current) setIssueProg(value); });
+    }
+    return () => { current = false; };
+  }, [prAuthor, scope, showIssues, who]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reset firehose to loading before refetching on range or author change
     setFirehose(undefined);
     setReopenedPage(0);
-    api.activityFirehose(rangeOpt.days, rangeOpt.allTime, prAuthor || undefined).then(setFirehose);
-  }, [rangeOpt, prAuthor]);
-
-  useEffect(() => {
-    const p = who ? { operator: who } : {};
-    api.activitySummary({ group_by: "day", ...p }).then(setDay);
-  }, [who]);
+    api.activityFirehose(rangeOpt.days, rangeOpt.allTime, scope).then(setFirehose);
+  }, [rangeOpt, scope]);
 
   const days = useMemo(() => lastNDays(30), []);
   const byKey = useMemo(() => {
@@ -466,7 +485,12 @@ export function ActivitySummary({ onQuickFilter }: ActivitySummaryProps) {
   const reopenedStart = reopenedClampedPage * REOPENED_PAGE_SIZE;
   const reopenedShown = reopened.slice(reopenedStart, reopenedStart + REOPENED_PAGE_SIZE);
   const issActionCounts = firehose?.iss_action_counts ?? {};
-  const dailySeries = firehose ? buildDailySeries(firehose) : null;
+  const dailySeries = firehose
+    ? buildDailySeries(firehose).filter((series) => (
+      (showIssues || !series.key.startsWith("iss_"))
+      && (showIncoming || !series.key.endsWith("_incoming"))
+    ))
+    : null;
   const cumulativeSeries = firehose ? buildCumulativeSeries(firehose) : null;
 
   const quickFilter = (kinds: string[], range: string) => {
@@ -486,24 +510,26 @@ export function ActivitySummary({ onQuickFilter }: ActivitySummaryProps) {
         <label className="muted small">
           person:{" "}
           <select
-            value={selectedPerson?.login ?? ""}
+            value={selectedKey}
             onChange={(e) => {
-              const login = e.target.value;
-              setSelectedPerson(login ? (people.find((p) => p.login === login) ?? null) : null);
+              const key = e.target.value;
+              setSelectedPerson(key ? (people.find((p) => (
+                `${p.is_operator ? "operator" : "author"}:${p.login}` === key
+              )) ?? null) : null);
             }}
           >
             <option value="">everyone</option>
             {operators.length > 0 && (
               <optgroup label="Triage operators">
                 {operators.map((p) => (
-                  <option key={p.login} value={p.login}>{p.display}</option>
+                  <option key={`operator:${p.login}`} value={`operator:${p.login}`}>{p.display}</option>
                 ))}
               </optgroup>
             )}
             {nonOperators.length > 0 && (
               <optgroup label="PR authors">
                 {nonOperators.map((p) => (
-                  <option key={p.login} value={p.login}>{p.login} ({p.pr_count})</option>
+                  <option key={`author:${p.login}`} value={`author:${p.login}`}>{p.login} ({p.pr_count})</option>
                 ))}
               </optgroup>
             )}
@@ -554,7 +580,7 @@ export function ActivitySummary({ onQuickFilter }: ActivitySummaryProps) {
         </div>
       </div>
 
-      {issueProg && issueProg.universe > 0 && (
+      {showIssues && issueProg && issueProg.universe > 0 && (
         <div className="act-progress">
           <div className="act-progress-top">
             <b>{issueProg.actioned.toLocaleString()}</b> of {issueProg.universe.toLocaleString()} issues triaged
@@ -573,7 +599,7 @@ export function ActivitySummary({ onQuickFilter }: ActivitySummaryProps) {
       )}
 
       {/* Issue stat cards — our landed issue actions from the activity log */}
-      <div className="act-cards-section">
+      {showIssues && <div className="act-cards-section">
         <div className="act-cards-label muted small">Our actions · Issues</div>
         <div className="act-cards">
           <StatCard n={week["issue-close"]} label="closed this week" lead
@@ -585,10 +611,10 @@ export function ActivitySummary({ onQuickFilter }: ActivitySummaryProps) {
           <StatCard n={allIssueActions} label="issue actions all-time" muted
             onClick={() => quickFilter(["issue-close"], "all")} />
         </div>
-      </div>
+      </div>}
 
       {/* PR stat cards from upstream GitHub firehose */}
-      <div className="act-cards-section">
+      {showIncoming && <div className="act-cards-section">
         <div className="act-cards-label muted small">Upstream · PRs</div>
         <div className="act-cards">
           {fhTotals ? (
@@ -605,10 +631,10 @@ export function ActivitySummary({ onQuickFilter }: ActivitySummaryProps) {
             </>
           )}
         </div>
-      </div>
+      </div>}
 
       {/* Issue stat cards from upstream GitHub firehose */}
-      <div className="act-cards-section">
+      {showIncoming && showIssues && <div className="act-cards-section">
         <div className="act-cards-label muted small">Upstream · Issues</div>
         <div className="act-cards">
           {fhTotals ? (
@@ -625,12 +651,14 @@ export function ActivitySummary({ onQuickFilter }: ActivitySummaryProps) {
             </>
           )}
         </div>
-      </div>
+      </div>}
 
       {/* Velocity line/bar chart: upstream daily PR and issue activity */}
       <div className="act-firehose">
         <div className="act-firehose-head">
-          <span className="act-chart-title muted small">upstream daily activity</span>
+          <span className="act-chart-title muted small">
+            {who ? "daily triage activity" : "upstream daily activity"}
+          </span>
           <div className="act-range-picker">
             {RANGE_OPTIONS.map((opt) => (
               <button
@@ -673,10 +701,12 @@ export function ActivitySummary({ onQuickFilter }: ActivitySummaryProps) {
               <div className="act-breakdown-section">
                 <div className="act-breakdown-label muted small">Pull Requests</div>
                 <div className="act-breakdown-grid">
-                  <div className="act-breakdown-item">
-                    <div className="act-breakdown-n" style={{ color: "var(--gold)" }}>{fhTotals?.pr_incoming_nd ?? 0}</div>
-                    <div className="act-breakdown-l">Opened</div>
-                  </div>
+                  {showIncoming && (
+                    <div className="act-breakdown-item">
+                      <div className="act-breakdown-n" style={{ color: "var(--gold)" }}>{fhTotals?.pr_incoming_nd ?? 0}</div>
+                      <div className="act-breakdown-l">Opened</div>
+                    </div>
+                  )}
                   <div className="act-breakdown-item">
                     <div className="act-breakdown-n" style={{ color: "var(--green)" }}>{fhTotals?.pr_merged_nd ?? 0}</div>
                     <div className="act-breakdown-l">Merged</div>
@@ -691,20 +721,30 @@ export function ActivitySummary({ onQuickFilter }: ActivitySummaryProps) {
                   </div>
                 </div>
               </div>
-              <div className="act-breakdown-divider" />
-              <div className="act-breakdown-section">
-                <div className="act-breakdown-label muted small">Issues</div>
-                <div className="act-breakdown-grid">
-                  <div className="act-breakdown-item">
-                    <div className="act-breakdown-n" style={{ color: "var(--purple)" }}>{fhTotals?.iss_incoming_nd ?? 0}</div>
-                    <div className="act-breakdown-l">Opened</div>
+              {showIssues && (
+                <>
+                  <div className="act-breakdown-divider" />
+                  <div className="act-breakdown-section">
+                    <div className="act-breakdown-label muted small">Issues</div>
+                    <div className="act-breakdown-grid">
+                      {showIncoming && (
+                        <div className="act-breakdown-item">
+                          <div className="act-breakdown-n" style={{ color: "var(--purple)" }}>{fhTotals?.iss_incoming_nd ?? 0}</div>
+                          <div className="act-breakdown-l">Opened</div>
+                        </div>
+                      )}
+                      <div className="act-breakdown-item">
+                        <div className="act-breakdown-n" style={{ color: "var(--muted)" }}>{fhTotals?.iss_closed_nd ?? 0}</div>
+                        <div className="act-breakdown-l">Closed</div>
+                      </div>
+                    </div>
                   </div>
-                </div>
-              </div>
+                </>
+              )}
             </div>
 
             {/* Daily activity + cumulative charts side by side */}
-            {cumulativeSeries && (
+            {cumulativeSeries && !who && (
               <div className="act-charts-row">
                 <div className="act-charts-col">
                   <div className="act-chart-title muted small" style={{ marginBottom: 8 }}>
@@ -712,12 +752,14 @@ export function ActivitySummary({ onQuickFilter }: ActivitySummaryProps) {
                   </div>
                   <LineChart series={[cumulativeSeries[0]]} days={firehose.days} height={100} />
                 </div>
-                <div className="act-charts-col">
-                  <div className="act-chart-title muted small" style={{ marginBottom: 8 }}>
-                    cumulative open issues · net change over window
+                {showIssues && (
+                  <div className="act-charts-col">
+                    <div className="act-chart-title muted small" style={{ marginBottom: 8 }}>
+                      cumulative open issues · net change over window
+                    </div>
+                    <LineChart series={[cumulativeSeries[1]]} days={firehose.days} height={100} />
                   </div>
-                  <LineChart series={[cumulativeSeries[1]]} days={firehose.days} height={100} />
-                </div>
+                )}
               </div>
             )}
 
@@ -765,7 +807,11 @@ export function ActivitySummary({ onQuickFilter }: ActivitySummaryProps) {
       {/* Operator-filtered totals line (when a triage operator is selected) */}
       {weekStart && day && (
         <div className="muted small" style={{ marginTop: 8 }}>
-          {who ? `${who}'s actions since ${weekStart}:` : `all operators since ${weekStart}:`}
+          {who
+            ? `${who}'s actions since ${weekStart}:`
+            : prAuthor
+              ? `actions on ${prAuthor}'s PRs since ${weekStart}:`
+              : `all operators since ${weekStart}:`}
           {" "}
           {WEEK_KINDS.map((k) => {
             const t = week[k];

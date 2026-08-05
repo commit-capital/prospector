@@ -14,14 +14,15 @@ issue/general) by default, or an explicit `chat_id` for an operator-named sessio
 
 It is mostly a reader, but when a bot token can be minted it may also
 run a curated set of upstream writes — on PRs (edit/comment/close/reopen/review),
-issues (create/close/reopen/comment/edit), and workflow runs (rerun) — AS the bot,
-after the operator confirms in chat — see _GH_WRITE_ALLOW / isolation_flags. Two
-write paths run AS THE OPERATOR instead, each through a helper script that drops the
-bot token: "resubmit" (_RESUBMIT_ALLOW), which both authors a change on a
-contributor's fork branch and pushes it over the operator's ssh key — a GitHub App
-can't push to a fork (#210) — and merges the base branch into a stale PR's head
-(`resubmit <pr> update`), which the bot can't do either once that merge carries a
-`.github/workflows/**` change; and "file-issue" (_FILE_ISSUE_ALLOW), opening a
+issues (create/reopen/comment/edit), and workflow runs (rerun) — AS the bot,
+after the operator confirms in chat — see _GH_WRITE_ALLOW / isolation_flags.
+Issue closes run through the executor-backed close-issue helper so each attempt
+is gated and recorded in Activity. Two write paths use a different identity
+instead, each through a helper script that drops the bot token: "resubmit"
+(_RESUBMIT_ALLOW), which authors a change on a contributor's fork branch and
+pushes it over the confirming OPERATOR's ssh identity — a GitHub App can't push
+to a fork (#210) — and merges the base branch into a stale PR's head
+(`resubmit <pr> update`); and "file-issue" (_FILE_ISSUE_ALLOW), opening a
 triager bug on the meta-repo, which lies outside the bot's app installation.
 
 ISOLATED. This is a lean Q&A assistant, NOT the developer's full dev agent. We
@@ -45,8 +46,9 @@ behave like a coding agent. The lockdown (see isolation_flags):
     allowlist. (NOT `plan`: plan mode is a *coding* affordance — propose-a-plan-
     then-await-approval — which produced the "permissions / plan" chatter.)
   - --allowedTools Read,Grep,Glob + read-only `gh` (see _GH_ALLOW) + the helper
-    scripts, plus the curated upstream PR + issue writes (_GH_WRITE_ALLOW) when a
-    bot token is available; --disallowedTools <everything else> → dontAsk denies
+    scripts, plus the curated upstream PR + issue writes (_GH_WRITE_ALLOW and
+    _ISSUE_CLOSE_ALLOW) when a bot token is available; --disallowedTools
+    <everything else> → dontAsk denies
     any command not on the allowlist.
 
 Context comes from two dedicated, agent-facing sources (NOT the dev CLAUDE.md):
@@ -124,11 +126,13 @@ _GH_ALLOW = [
 # script owns the meta-repo. Workflow reruns are included so
 # the agent can retry a failed CI run after confirmation. `gh pr merge` is
 # deliberately ABSENT: merges stay on the executor's gated path. Updating a stale
-# PR's branch is absent too — a bot token may not write `.github/workflows/**`, which
-# a moved base branch routinely carries into the merge, so that runs as the operator
-# through `resubmit <pr> update` (_RESUBMIT_ALLOW). The agent is
+# PR's branch is absent too — an App installation token cannot push to a fork at
+# all, so that runs as the machine user through `resubmit <pr> update`
+# (_RESUBMIT_ALLOW). The agent is
 # instructed (agent/context.md) to confirm with the operator before each write and to use
-# `gh pr edit` for the body/title only. dontAsk denies anything not listed here.
+# `gh pr edit` for the body/title only. Issue close is absent: it runs through
+# _ISSUE_CLOSE_ALLOW so the executor records Activity. dontAsk denies anything
+# not listed here.
 _GH_WRITE_ALLOW = [
     "Bash(gh issue create:*)",
     "Bash(gh pr edit:*)",
@@ -136,12 +140,18 @@ _GH_WRITE_ALLOW = [
     "Bash(gh pr close:*)",
     "Bash(gh pr reopen:*)",
     "Bash(gh pr review:*)",
-    "Bash(gh issue close:*)",
     "Bash(gh issue reopen:*)",
     "Bash(gh issue comment:*)",
     "Bash(gh issue edit:*)",
     "Bash(gh run rerun:*)",
 ]
+
+# The agent's issue-close path calls the same executor operation as the Issues UI,
+# including its live gate, configured-bot write, store reflection, and Activity
+# append. Direct `gh issue close` is not allowlisted, making this helper the only
+# close command the embedded agent can execute. It is unlocked only with a bot
+# token because it performs a live upstream write.
+_ISSUE_CLOSE_ALLOW = ["Bash(prospector_app/agent/close-issue:*)"]
 
 # The agent's one self-write: persist a learning to its committed memory. Same
 # allowlisted-Bash mechanism as gh-issue-create (MCP is unreliable in headless
@@ -202,18 +212,17 @@ _STORE_READ_ALLOW = ["Bash(prospector_app/agent/store-read:*)"]
 _REINGEST_ALLOW = ["Bash(prospector_app/agent/reingest:*)"]
 
 # The agent's "resubmit a PR" path: author changes on a contributor's fork branch
-# and push them AS THE OPERATOR (not the bot — a GitHub App can't push to a
-# fork even with "Allow edits from maintainers"; that grants push to maintainer
-# *users*, #210). The script owns all git mechanics and drops the bot token so the
-# push goes out under the operator's ssh identity. Its `update` subcommand is the
-# same operator identity applied to a base-branch merge (`gh pr update-branch`),
-# which the bot can't run once the merge carries a `.github/workflows/**` change:
-# an App token needs the `workflows` permission to write those, the operator's
-# `workflow` token scope covers it. It rides the same allowlisted-
-# Bash path, but — like _GH_WRITE_ALLOW — is unlocked only on a real operator
-# machine (can_write), together with the Edit/Write tools the agent needs to author
-# the change in the prepared worktree. NOTE: keep this prefix in sync with the
-# script's actual path.
+# and push them AS THE CONFIRMING OPERATOR (not the App — a GitHub App can't
+# push to a fork even with "Allow edits from maintainers"; that grants push to
+# maintainer *users*, #210). The script owns all git mechanics, drops the bot
+# token before using the operator's existing SSH identity. The helper also owns
+# the narrow, pinned rebase/force-with-lease path for conflicting PRs, without
+# exposing general git commands to the agent, and its `update` subcommand merges
+# the base branch in locally over ssh. It rides the same allowlisted-Bash path,
+# and is unlocked when a bot token proves this is a writable operator session,
+# together with the Edit/Write tools the agent needs to author the change in the
+# prepared worktree. Unattended fix_worker calls opt into the configured machine
+# user separately. NOTE: keep this prefix in sync with the script's actual path.
 _RESUBMIT_ALLOW = ["Bash(prospector_app/agent/resubmit:*)"]
 
 # Everything that is NOT a read tool. dontAsk already blocks their *use*; listing
@@ -243,18 +252,20 @@ _DISALLOWED_TOOLS = [
 def isolation_flags(can_write: bool) -> list[str]:
     """The agent's sandbox flags. When can_write (a bot token was
     minted, so this is a real operator machine) the curated upstream writes in
-    _GH_WRITE_ALLOW are added to the allowlist, along with the resubmit path
-    (_RESUBMIT_ALLOW) and the Edit/Write tools it needs to author a change in the
-    prepared fork worktree. Otherwise the agent's only write is the meta-repo issue
-    it files as the operator (_FILE_ISSUE_ALLOW) — no upstream write command or
-    file-edit tool is even advertised, so there is no way to touch the configured
-    repo or files on disk."""
+    _GH_WRITE_ALLOW are added to the allowlist, along with the interactive
+    resubmit path (_RESUBMIT_ALLOW) and the Edit/Write tools it needs to author a
+    change in the prepared fork worktree. The separate unattended worker path
+    still requires a configured machine user. Otherwise the agent's only write is
+    the meta-repo issue it files as the operator (_FILE_ISSUE_ALLOW) — no
+    upstream write command or file-edit tool is even advertised, so there is no
+    way to touch the configured repo or files on disk."""
     allowed = ["Read", "Grep", "Glob", *_GH_ALLOW, *_GH_READ_ALLOW, *_GIT_ALLOW,
                *_REMEMBER_ALLOW, *_UNCLUSTER_ALLOW, *_STORE_READ_ALLOW, *_REINGEST_ALLOW,
                *_FILE_ISSUE_ALLOW]
     disallowed = list(_DISALLOWED_TOOLS)
     if can_write:
-        allowed += [*_GH_WRITE_ALLOW, *_RESUBMIT_ALLOW, "Edit", "Write"]
+        allowed += [*_GH_WRITE_ALLOW, *_ISSUE_CLOSE_ALLOW, *_RESUBMIT_ALLOW,
+                    "Edit", "Write"]
         # The resubmit path authors real code edits, so Edit/Write come off the
         # deny list. They stay filesystem-wide (claude can't path-scope them), so
         # the agent is instructed (agent/context.md) to edit only inside the

@@ -112,9 +112,10 @@ GitHub App named by `TRIAGE_BOT_LOGIN` and mint its token through
   and routes merges through the dedicated, per-PR-gated `bot_merge_run` path.
 - The **chat agent** (`chat.py`) runs a narrower, non-merge `gh` command allowlist
   under `--permission-mode dontAsk` after conversational confirmation.
-  Bot-authenticated chat writes and feedback issue filing are not recorded in
-  the executor activity table. Resubmit pushes and branch updates run as the
-  operator and append best-effort activity entries.
+  Its issue-close helper calls the executor and records Activity; other
+  bot-authenticated chat writes and feedback issue filing are not recorded in the
+  executor activity table. Resubmit pushes and branch updates run as the operator
+  and append best-effort activity entries.
 
 Neither path can write as the app when token minting fails. The trust model in
 `CLAUDE.md` is authoritative — read it before anything that writes.

@@ -9,6 +9,7 @@ import { GreptileCell } from "./GreptileCell";
 import { GitHubPRLink } from "../GitHubPRLink";
 import { ConflictChip, DraftChip, TierChip, AckButton } from "../Chips";
 import { TRUSTED_AUTHOR_BADGE } from "../TrustedAuthor";
+import { LinkedIssues } from "../LinkedIssues";
 
 // Visual aid: a star trails a trusted contributor's handle wherever authors
 // are shown (the profile's trusted_authors list, surfaced per-row as trusted_author).
@@ -342,4 +343,6 @@ export const COLUMNS: ColumnDef[] = [
         </InfoTip>
       );
     } },
+  { key: "issues", label: "Linked Issues", defaultOn: true, term: "col.issues", stopOpen: true,
+    cell: (r) => <LinkedIssues issues={r.issues} limit={6} /> },
 ];

@@ -106,10 +106,10 @@ def test_read_only_allowlist_without_a_token():
 
 
 def test_resubmit_and_file_edits_unlocked_with_a_token():
-    # On a real operator machine (token) the resubmit path is offered, and the
-    # Edit/Write tools it needs to author the change are lifted off the deny list.
-    # This is the ONE operator-identity write; the push itself runs as the
-    # operator (the `resubmit` helper drops the bot token), not the bot.
+    # A minted bot token proves this is a writable operator session, so
+    # the resubmit path is offered and the Edit/Write tools it needs to author
+    # the change are lifted off the deny list. The interactive push itself runs
+    # as the confirming operator (the helper drops the App token), not the App.
     flags = chat.isolation_flags(True)
     allowed = _flag(flags, "--allowedTools")
     assert "Bash(prospector_app/agent/resubmit:*)" in allowed
@@ -123,24 +123,50 @@ def test_resubmit_and_file_edits_unlocked_with_a_token():
     assert script.exists() and os.access(script, os.X_OK)
 
 
+def test_interactive_resubmit_needs_no_worker_push_identity():
+    # TRIAGE_PUSH_* belongs to the unattended worker. A laptop with an ordinary
+    # operator SSH login keeps the explicitly confirmed chat flow available.
+    flags = chat.isolation_flags(True)
+    allowed = _flag(flags, "--allowedTools")
+    assert "Bash(prospector_app/agent/resubmit:*)" in allowed
+    assert "Edit" in allowed and "Write" in allowed
+    disallowed = _multi(flags, "--disallowedTools")
+    assert "Edit" not in disallowed and "Write" not in disallowed
+    # Bot-identity writes remain available in the same writable session.
+    assert "Bash(gh pr comment:*)" in allowed
+
+
 def test_curated_writes_unlocked_with_a_token_but_never_merge():
     # With a token the curated upstream writes are added on top of the reads...
     allowed = _flag(chat.isolation_flags(True), "--allowedTools")
     for sub in ("gh pr edit", "gh pr comment", "gh pr close", "gh pr reopen", "gh pr review",
-                "gh issue create", "gh issue close", "gh issue reopen",
+                "gh issue create", "gh issue reopen",
                 "gh issue comment", "gh issue edit", "gh run rerun"):
         assert f"Bash({sub}:*)" in allowed
+    # Issue closes have one executor-backed helper, so they land in Activity;
+    # direct gh close is not reachable from the embedded agent.
+    assert "Bash(prospector_app/agent/close-issue:*)" in allowed
+    assert "Bash(gh issue close:*)" not in allowed
     # ...the reads are still present...
     assert "Bash(gh pr view:*)" in allowed
     # ...but merge is NEVER unlocked here (it stays on the executor's gated path),
     # and there is no raw `gh api` escape hatch.
     assert "gh pr merge" not in allowed
     assert "gh api" not in allowed
-    # Updating a stale PR's branch is not a bot write either: an App token can't
-    # write the `.github/workflows/**` files a moved base branch carries into the
-    # merge, so it runs as the operator through `resubmit <pr> update`.
+    # Updating a stale PR's branch is not a bot write either: an App installation
+    # token cannot push to a fork at all, so it runs as the operator through
+    # `resubmit <pr> update`.
     assert "gh pr update-branch" not in allowed
     assert "Bash(prospector_app/agent/resubmit:*)" in allowed
+
+
+def test_issue_close_helper_requires_token_and_is_executable():
+    read_only = _flag(chat.isolation_flags(False), "--allowedTools")
+    writable = _flag(chat.isolation_flags(True), "--allowedTools")
+    assert "prospector_app/agent/close-issue" not in read_only
+    assert "Bash(prospector_app/agent/close-issue:*)" in writable
+    script = chat.APP_ROOT / "agent" / "close-issue"
+    assert script.exists() and os.access(script, os.X_OK)
 
 
 def test_local_self_writes_are_allowlisted_and_executable():
@@ -269,10 +295,18 @@ def test_context_documents_upstream_writes_and_the_merge_limit():
     assert "{bot}" not in sp and "{repo}" not in sp
     assert "gh pr edit" in sp
     assert "gh run rerun" in sp
+    assert "prospector_app/agent/close-issue" in sp
+    assert "never direct\n  `gh issue close`" in sp
     # Updating a stale PR's branch is documented as the operator-identity path, so
     # the agent doesn't look for a bot command that isn't allowlisted.
     assert "resubmit <pr> update" in sp
     assert "gh pr update-branch" not in sp
+    # Conflicting PRs use the same narrow helper: the prompt forbids workaround
+    # edits and requires an exact old-head acknowledgement for the leased rewrite.
+    assert "prepare --rebase" in sp
+    assert "push --confirm-rewrite <full-old-head-sha>" in sp
+    assert "never change the\nshape or style" in sp.lower()
+    assert "force-with-lease" in sp
     # ...and the hard "never merge" limit is stated.
     assert "merge" in sp.lower()
     assert "cannot" in sp.lower() or "never" in sp.lower()

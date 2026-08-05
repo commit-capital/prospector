@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, TypedDict
 
 from pipeline import diffpaths
 from pipeline import greptile
+from pipeline import live_prs
 from pipeline import model
 from pipeline import review_policy
 from pipeline.gh import fetch_pr, gh_json
@@ -44,6 +45,7 @@ if TYPE_CHECKING:
 
 
 _UPSERT_BATCH_SIZE = 250
+_LIVE_MERGEABLE = {"MERGEABLE": True, "CONFLICTING": False}
 
 
 class _UpsertStats(TypedDict):
@@ -133,28 +135,35 @@ def issues_by_pr(links: list[dict]) -> dict[int, list[dict]]:
 def _build_signals(*, existing_signals: dict | None, ci_override: str | None,
                    greptile_override: int | None,
                    greptile_reviewed_sha: str | None,
+                   mergeable_override: bool | None = None,
                    diffstat_override: dict | None = None,
-                   has_tests_override: bool | None = None) -> dict | None:
+                   has_tests_override: bool | None = None,
+                   head_moved: bool = False) -> dict | None:
     """The PR's signals section for an upsert, or None when there's nothing to
-    write. Built only when a single-PR refresh supplied a live override: a copy
-    of the PR's existing signals with those current-head facts overlaid.
+    write. Built when a refresh supplied a live override: a copy of the PR's
+    existing signals with those current-head facts overlaid.
     Diff-derived fields are never carried into a newly stamped section: they are
     replaced with values computed at the fetched head, or removed when that data
-    was unavailable. The bulk path leaves stored signals untouched (the live
-    sweep and the Greptile scrape own them)."""
-    has_override = (ci_override is not None or greptile_override is not None
+    was unavailable."""
+    has_override = (ci_override is not None or mergeable_override is not None
+                    or greptile_override is not None
                     or greptile_reviewed_sha is not None
                     or diffstat_override is not None
                     or has_tests_override is not None)
     if not has_override:
         return None
     sig = dict(existing_signals or {})
+    if head_moved:
+        sig.pop("ci", None)
+        sig.pop("mergeable", None)
     # These values describe one exact diff. Keeping them while `_stage_pr`
     # stamps the whole section at a moved head would make stale data look fresh.
     sig.pop("diffstat", None)
     sig.pop("has_tests", None)
     if ci_override is not None:
         sig["ci"] = ci_override
+    if mergeable_override is not None:
+        sig["mergeable"] = mergeable_override
     if greptile_override is not None:
         sig["greptile"] = greptile_override
     if greptile_reviewed_sha is not None:
@@ -177,6 +186,7 @@ def _diffstat_from_gh(gh_pr: dict) -> dict | None:
 def _stage_pr(store: Store, gh_pr: dict, existing: Pr | None,
               issues: list[dict] | None = None, *,
               ci_override: str | None = None,
+              mergeable_override: bool | None = None,
               greptile_override: int | None = None,
               greptile_reviewed_sha: str | None = None,
               diffstat_override: dict | None = None,
@@ -184,11 +194,13 @@ def _stage_pr(store: Store, gh_pr: dict, existing: Pr | None,
     """Merge GitHub facts into a new or existing PR without writing it."""
     n = int(gh_pr["number"])
     meta = meta_from_gh(gh_pr)
+    head_moved = existing is not None and existing.head_sha != meta.get("head_sha")
     sig = _build_signals(
         existing_signals=existing.signals if existing is not None else None,
-        ci_override=ci_override,
+        ci_override=ci_override, mergeable_override=mergeable_override,
         greptile_override=greptile_override, greptile_reviewed_sha=greptile_reviewed_sha,
-        diffstat_override=diffstat_override, has_tests_override=has_tests_override)
+        diffstat_override=diffstat_override, has_tests_override=has_tests_override,
+        head_moved=head_moved)
     drift = drift_from_signals(sig) if sig is not None else None
     pr = existing if existing is not None else model.Pr(store, {"pr": n})
     pr.stage_facts(meta, signals=sig, drift=drift, issues=issues or None)
@@ -198,6 +210,7 @@ def _stage_pr(store: Store, gh_pr: dict, existing: Pr | None,
 def upsert_pr(store: Store, gh_pr: dict,
               issues: list[dict] | None = None,
               *, ci_override: str | None = None,
+              mergeable_override: bool | None = None,
               greptile_override: int | None = None,
               greptile_reviewed_sha: str | None = None,
               diffstat_override: dict | None = None,
@@ -212,7 +225,8 @@ def upsert_pr(store: Store, gh_pr: dict,
     existing = store.load_pr(int(gh_pr["number"]))
     pr = _stage_pr(
         store, gh_pr, existing, issues,
-        ci_override=ci_override, greptile_override=greptile_override,
+        ci_override=ci_override, mergeable_override=mergeable_override,
+        greptile_override=greptile_override,
         greptile_reviewed_sha=greptile_reviewed_sha,
         diffstat_override=diffstat_override, has_tests_override=has_tests_override)
     store.save_pr(pr)
@@ -238,6 +252,8 @@ def refresh_prs(store: Store, numbers: list[int]) -> list[dict]:
         # verdict for this exact head so a stale 'failing' can't false-block.
         head_sha = (gh_pr.get("head") or {}).get("sha")
         ci = gh_ci_status(head_sha) if head_sha else None
+        raw_mergeable = gh_pr.get("mergeable")
+        mergeable = raw_mergeable if isinstance(raw_mergeable, bool) else None
         diffstat = _diffstat_from_gh(gh_pr)
         has_tests = None
         if head_sha:
@@ -257,7 +273,8 @@ def refresh_prs(store: Store, numbers: list[int]) -> list[dict]:
         else:
             greptile_score, greptile_sha = None, None
         rec = upsert_pr(store, gh_pr, issue_links.get(n),
-                        ci_override=ci, greptile_override=greptile_score,
+                        ci_override=ci, mergeable_override=mergeable,
+                        greptile_override=greptile_score,
                         greptile_reviewed_sha=greptile_sha,
                         diffstat_override=diffstat, has_tests_override=has_tests)
         new_sha = rec.head_sha
@@ -333,6 +350,7 @@ def _select_new_prs(gh_prs: list[dict], existing_ids: set[int]) -> list[dict]:
 
 def _upsert_all(store: Store, prs: list[dict], issue_links: dict[int, list[dict]],
                 existing_prs: dict[int, Pr], *,
+                live_facts: dict[int, dict] | None = None,
                 batch_size: int = _UPSERT_BATCH_SIZE) -> _UpsertStats:
     """Stage and bulk-upsert `prs`, returning counts plus their open IDs.
 
@@ -342,9 +360,18 @@ def _upsert_all(store: Store, prs: list[dict], issue_links: dict[int, list[dict]
     staged: list[Pr] = []
     drafts = 0
     open_ids: set[int] = set()
+    facts = live_facts or {}
     for gh_pr in prs:
         n = int(gh_pr["number"])
-        rec = _stage_pr(store, gh_pr, existing_prs.get(n), issue_links.get(n))
+        live = facts.get(n) or {}
+        head_sha = (gh_pr.get("head") or {}).get("sha")
+        current = live if live.get("head") == head_sha else {}
+        live_mergeable = _LIVE_MERGEABLE.get(current.get("mergeable") or "")
+        rec = _stage_pr(
+            store, gh_pr, existing_prs.get(n), issue_links.get(n),
+            ci_override=current.get("ci"), mergeable_override=live_mergeable,
+            diffstat_override=current.get("diffstat"),
+            has_tests_override=current.get("has_tests"))
         staged.append(rec)
         open_ids.add(n)
         if rec.draft:
@@ -379,15 +406,17 @@ def _targeted_ingest(store: Store, args: argparse.Namespace, started: str) -> in
     gh_prs = fetch_open_prs(args.max)
     issue_links = load_issue_links()
 
+    existing_prs = store.all_prs()
+    targets = _select_new_prs(gh_prs, set(existing_prs))
+    print(f"open PRs: {len(gh_prs)} | targeting: {len(targets)}")
+    live = live_prs.fetch([int(pr["number"]) for pr in targets])
     with store.batch():
-        existing_prs = store.all_prs()
-        targets = _select_new_prs(gh_prs, set(existing_prs))
-        print(f"open PRs: {len(gh_prs)} | targeting: {len(targets)}")
-        counts = _upsert_all(store, targets, issue_links, existing_prs)
+        counts = _upsert_all(store, targets, issue_links, existing_prs, live_facts=live)
     upserted, drafts = counts["upserted"], counts["drafts"]
 
     stats = {"open_fetched": len(gh_prs), "targeted": len(targets),
-             "upserted": upserted, "drafts": drafts}
+             "upserted": upserted, "drafts": drafts,
+             "live_facts_fetched": len(live), "live_facts_missing": len(targets) - len(live)}
     store.append_run({"phase": "ingest:new", "started": started,
                       "finished": _now(), "stats": stats})
     print(f"done: {stats}")
@@ -435,13 +464,14 @@ def main(argv: list[str] | None = None) -> int:
 
     print("fetching open PRs…", flush=True)
     gh_prs = fetch_open_prs(args.max)
+    live = live_prs.fetch([int(pr["number"]) for pr in gh_prs])
     issue_links = load_issue_links()
     print(f"open PRs: {len(gh_prs)} | PRs with issue links: {len(issue_links)}")
 
     transitions = 0
     with store.batch():
         existing_prs = store.all_prs()
-        counts = _upsert_all(store, gh_prs, issue_links, existing_prs)
+        counts = _upsert_all(store, gh_prs, issue_links, existing_prs, live_facts=live)
         upserted, drafts, open_now = counts["upserted"], counts["drafts"], counts["open_ids"]
 
         # PRs in the store that are no longer in the open list → closed or merged;
@@ -456,7 +486,8 @@ def main(argv: list[str] | None = None) -> int:
                 transitions += 1
 
     stats = {"open_fetched": len(gh_prs), "upserted": upserted,
-             "drafts": drafts, "state_transitions": transitions}
+             "drafts": drafts, "state_transitions": transitions,
+             "live_facts_fetched": len(live), "live_facts_missing": len(gh_prs) - len(live)}
     store.append_run({"phase": "ingest", "started": started, "finished": _now(), "stats": stats})
     print(f"done: {stats}")
 
