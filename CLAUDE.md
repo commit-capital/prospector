@@ -72,15 +72,15 @@ own branches while still being unable to reach the triage repository.
   resubmit helper uses the confirming operator's identity for interactive
   contributor-branch pushes and is advertised when the session can mint the bot
   token. The worker opts into its configured machine identity separately. These
-  paths do not use the per-PR merge gate. Chat issue closes call the same
-  `executor.close_issue_with_comment` path as the Issues UI; other upstream chat
-  writes use the chat command allowlist. The chat agent cannot merge.
+  paths do not use the per-PR merge gate. Chat PR close, reopen, and review
+  operations, plus issue closes, call their corresponding executor paths; other
+  upstream chat writes use the chat command allowlist. The chat agent cannot merge.
 
 Every executor write, including a dry-run, is appended to the app activity
 log. Resubmit pushes and branch updates append best-effort entries under the
-identity selected by their caller. Chat issue closes are executor writes and
-appear in the log;
-other bot-authenticated chat writes and feedback issue filing do not. Executor
+identity selected by their caller. Chat PR close, reopen, and review operations,
+plus issue closes, are executor writes and appear in the log; other
+bot-authenticated chat writes and feedback issue filing do not. Executor
 enforcement lives in
 `prospector_app/backend/safety_guard.py`: an allowlist that permits only
 comment/close/reopen/review as the configured bot plus the dedicated

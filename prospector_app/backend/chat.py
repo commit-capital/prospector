@@ -15,8 +15,9 @@ It is mostly a reader, but when a bot token can be minted it may also
 run a curated set of upstream writes — on PRs (edit/comment/close/reopen/review),
 issues (create/reopen/comment/edit), and workflow runs (rerun) — AS the bot,
 after the operator confirms in chat — see _GH_WRITE_ALLOW / isolation_flags.
-Issue closes run through the executor-backed close-issue helper so each attempt
-is gated and recorded in Activity. Two write paths use a different identity
+PR closes, reopens, and reviews, plus issue closes, run through executor-backed
+helpers so each attempt is gated and recorded in Activity. Two write paths use a
+different identity
 instead, each through a helper script that drops the bot token: "resubmit"
 (_RESUBMIT_ALLOW), which authors a change on a contributor's fork branch and
 pushes it over the confirming OPERATOR's ssh identity — a GitHub App can't push
@@ -130,20 +131,27 @@ _GH_ALLOW = [
 # all, so that runs as the machine user through `resubmit <pr> update`
 # (_RESUBMIT_ALLOW). The agent is
 # instructed (agent/context.md) to confirm with the operator before each write and to use
-# `gh pr edit` for the body/title only. Issue close is absent: it runs through
-# _ISSUE_CLOSE_ALLOW so the executor records Activity. dontAsk denies anything
-# not listed here.
+# `gh pr edit` for the body/title only. PR close/reopen/review and issue close are
+# absent: they run through executor helpers that record Activity. dontAsk denies
+# anything not listed here.
 _GH_WRITE_ALLOW = [
     "Bash(gh issue create:*)",
     "Bash(gh pr edit:*)",
     "Bash(gh pr comment:*)",
-    "Bash(gh pr close:*)",
-    "Bash(gh pr reopen:*)",
-    "Bash(gh pr review:*)",
     "Bash(gh issue reopen:*)",
     "Bash(gh issue comment:*)",
     "Bash(gh issue edit:*)",
     "Bash(gh run rerun:*)",
+]
+
+# These PR writes call the same executor operations as the app UI, including
+# preflight, configured-bot writes, store reflection where applicable, and
+# Activity appends. Direct gh equivalents are not allowlisted, making the
+# helpers the embedded agent's only close, reopen, and review commands.
+_PR_EXECUTOR_ALLOW = [
+    "Bash(prospector_app/agent/close-pr:*)",
+    "Bash(prospector_app/agent/reopen-pr:*)",
+    "Bash(prospector_app/agent/submit-review:*)",
 ]
 
 # The agent's issue-close path calls the same executor operation as the Issues UI,
@@ -264,7 +272,8 @@ def isolation_flags(can_write: bool) -> list[str]:
                *_FILE_ISSUE_ALLOW]
     disallowed = list(_DISALLOWED_TOOLS)
     if can_write:
-        allowed += [*_GH_WRITE_ALLOW, *_ISSUE_CLOSE_ALLOW, *_RESUBMIT_ALLOW,
+        allowed += [*_GH_WRITE_ALLOW, *_PR_EXECUTOR_ALLOW, *_ISSUE_CLOSE_ALLOW,
+                    *_RESUBMIT_ALLOW,
                     "Edit", "Write"]
         # The resubmit path authors real code edits, so Edit/Write come off the
         # deny list. They stay filesystem-wide (claude can't path-scope them), so
