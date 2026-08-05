@@ -1,10 +1,10 @@
-"""The agent's `resubmit` helper — author a change on a contributor's fork branch
-and push it AS THE CONFIGURED MACHINE USER. The git/gh mechanics need a live
-fork, so the unit tests here lock down the safety-critical PURE logic: the
-push-eligibility preflight, the machine-user env swap (drop the App token, pin
-the key, stamp the commit identity), the push-target fence, the fork ssh URL,
-and the argparse surface. The module has no `.py` extension (it runs under the
-sandbox's bare python3), so we load it by path."""
+"""The shared resubmit helper and its operator/worker identity policy.
+
+The git/gh mechanics need a live fork, so the unit tests lock down the
+safety-critical pure logic, then exercise the rebase and update mechanics with
+local repositories. The module has no `.py` extension (it runs under bare
+python3), so we load it by path.
+"""
 import importlib.util
 import json
 import os
@@ -13,6 +13,8 @@ from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
 import pytest
+
+from prospector_app.backend import resubmit_identity
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 RESUBMIT_PATH = REPO_ROOT / "prospector_app" / "agent" / "resubmit"
@@ -34,14 +36,14 @@ resubmit = _load()
 
 @pytest.fixture(autouse=True)
 def push_identity(monkeypatch, tmp_path_factory):
-    """Every push path refuses without a configured machine user, so the suite
-    configures one. The key is a real file because push_env stats it."""
+    """Exercise the worker identity by default; focused tests switch to chat."""
     key = tmp_path_factory.mktemp("push-key") / "id_ed25519"
     key.write_text("not-a-real-key\n")
     monkeypatch.setattr(resubmit.settings, "PUSH_LOGIN", "test-push-bot")
     monkeypatch.setattr(resubmit.settings, "PUSH_EMAIL",
                         "1+test-push-bot@users.noreply.github.com")
     monkeypatch.setattr(resubmit.settings, "PUSH_SSH_KEY_FILE", key)
+    monkeypatch.setenv(resubmit_identity.MACHINE_USER_ENV, "1")
     return key
 
 
@@ -76,6 +78,18 @@ def test_eligible_same_repo_branch_even_without_maintainer_flag():
     assert ok is True
 
 
+def test_interactive_operator_needs_no_worker_identity(monkeypatch):
+    # The dedicated key is an unattended-worker boundary, not a prerequisite for
+    # an operator-confirmed chat resubmit on their own laptop.
+    monkeypatch.delenv(resubmit_identity.MACHINE_USER_ENV)
+    monkeypatch.setattr(resubmit.settings, "PUSH_LOGIN", "")
+    monkeypatch.setattr(resubmit.settings, "PUSH_EMAIL", "")
+    monkeypatch.setattr(resubmit.settings, "PUSH_SSH_KEY_FILE", None)
+    ok, reason = resubmit.eligibility(_pr())
+    assert ok is True
+    assert "operator" in reason
+
+
 @pytest.mark.parametrize("state", ["CLOSED", "MERGED", ""])
 def test_ineligible_when_not_open(state):
     ok, reason = resubmit.eligibility(_pr(state=state))
@@ -92,6 +106,15 @@ def test_operator_env_drops_bot_tokens():
     assert "GITHUB_TOKEN" not in swapped
     assert swapped["PATH"] == "/usr/bin"    # everything else is inherited
     assert swapped["HOME"] == "/home/op"    # so ssh/git credentials still resolve
+
+
+def test_interactive_git_env_uses_operator_credentials(monkeypatch):
+    monkeypatch.delenv(resubmit_identity.MACHINE_USER_ENV)
+    env = resubmit_identity.git_env({"GH_TOKEN": "app", "GITHUB_TOKEN": "app",
+                                     "SSH_AUTH_SOCK": "/tmp/agent"})
+    assert "GH_TOKEN" not in env and "GITHUB_TOKEN" not in env
+    assert env["SSH_AUTH_SOCK"] == "/tmp/agent"
+    assert "GIT_SSH_COMMAND" not in env
 
 
 # --- fork URL: ssh so the push uses the operator's key, not any GH_TOKEN ---------
@@ -260,6 +283,21 @@ def test_default_content_edit_still_pushes_fast_forward(monkeypatch, tmp_path):
     assert _git(repos["fork"], "rev-parse", f"{pushed}^").stdout.strip() == repos["old_head"]
 
 
+def test_interactive_rebase_reuses_worker_mechanics_without_its_key(monkeypatch, tmp_path):
+    repos = _make_rebase_repos(tmp_path, conflict=False)
+    _wire_rebase(monkeypatch, tmp_path, repos)
+    monkeypatch.delenv(resubmit_identity.MACHINE_USER_ENV)
+    monkeypatch.setattr(resubmit.settings, "PUSH_LOGIN", "")
+    monkeypatch.setattr(resubmit.settings, "PUSH_EMAIL", "")
+    monkeypatch.setattr(resubmit.settings, "PUSH_SSH_KEY_FILE", None)
+
+    assert resubmit.cmd_prepare(42, rebase=True) == 0
+    meta = json.loads(resubmit._meta_path(42).read_text())
+    assert meta["phase"] == "ready"
+    assert meta["base_sha"] == repos["base_head"]
+    assert resubmit.cmd_abort(42) == 0
+
+
 def test_clean_rebase_completes_without_an_edit(monkeypatch, tmp_path, capsys):
     repos = _make_rebase_repos(tmp_path, conflict=False)
     _wire_rebase(monkeypatch, tmp_path, repos)
@@ -394,7 +432,7 @@ def test_abort_during_conflict_leaves_remote_untouched(monkeypatch, tmp_path):
     assert _git(repos["fork"], "rev-parse", "refs/heads/fix").stdout.strip() == repos["old_head"]
 
 
-# --- update: merge the base branch into the PR's head, as the operator ---------
+# --- update: merge the base branch into the PR's head under either identity ----
 
 class _Ran:
     """Records a subprocess invocation and replays a canned result."""
@@ -520,7 +558,8 @@ def test_abort_with_only_a_stale_meta_still_cleans(monkeypatch, tmp_path):
 # --- machine-user identity: pushes never ride the App token or an ambient key ----
 
 def test_push_env_pins_the_key_and_identity(push_identity):
-    env = resubmit.push_env({"GH_TOKEN": "app", "GITHUB_TOKEN": "app", "PATH": "/usr/bin"})
+    env = resubmit_identity.push_env(
+        {"GH_TOKEN": "app", "GITHUB_TOKEN": "app", "PATH": "/usr/bin"})
     assert "GH_TOKEN" not in env and "GITHUB_TOKEN" not in env
     # IdentitiesOnly is what stops ssh-agent offering a personal key first, which
     # would land the commit under the wrong account.
@@ -534,13 +573,13 @@ def test_push_env_pins_the_key_and_identity(push_identity):
 def test_push_env_refuses_without_a_configured_identity(monkeypatch):
     monkeypatch.setattr(resubmit.settings, "PUSH_LOGIN", "")
     with pytest.raises(RuntimeError, match="TRIAGE_PUSH_LOGIN"):
-        resubmit.push_env()
+        resubmit_identity.push_env()
 
 
 def test_push_env_refuses_a_missing_key_file(monkeypatch, tmp_path):
     monkeypatch.setattr(resubmit.settings, "PUSH_SSH_KEY_FILE", tmp_path / "absent")
     with pytest.raises(RuntimeError, match="not a readable file"):
-        resubmit.push_env()
+        resubmit_identity.push_env()
 
 
 # --- the push-target fence: a ruleset cannot scope to one account, this can ------

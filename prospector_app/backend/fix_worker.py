@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING
 from pipeline import compile_preflight, gates, settings
 from pipeline.storekit import now as _now
 from prospector_app.backend import data, fix_queue, service
+from prospector_app.backend.resubmit_identity import worker_env
 
 if TYPE_CHECKING:
     from pipeline.model import Pr
@@ -183,9 +184,11 @@ def _oldest(status: str) -> int | None:
 
 def _resubmit(pr: int, *args: str) -> subprocess.CompletedProcess[str]:
     """Run the resubmit helper, which owns every git mechanic and the push
-    identity. Runs from the repo root under the same interpreter's environment."""
+    identity. The worker opts into its machine user here; interactive invocations
+    of the same helper retain the operator identity."""
     return subprocess.run([str(RESUBMIT), str(pr), *args], cwd=str(REPO_ROOT),
-                          capture_output=True, text=True, timeout=1800)
+                          capture_output=True, text=True, timeout=1800,
+                          env=worker_env())
 
 
 # What each resubmit exit means, in the words an operator would use. The raw

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import socket
 import stat
+import subprocess
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -16,6 +17,7 @@ from pipeline.storekit import now as _now
 from prospector_app.backend import data
 from prospector_app.backend import fix_queue
 from prospector_app.backend import fix_worker
+from prospector_app.backend import resubmit_identity
 
 
 @pytest.fixture
@@ -321,6 +323,18 @@ def test_key_mode_helper_uses_owner_only_permissions(push_key):
 
 
 # --- worker: a world that moved is retried, a decision is not -------------------
+
+def test_worker_explicitly_selects_machine_user_identity(monkeypatch):
+    seen = {}
+
+    def ran(*args, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(args[0], 0, "", "")
+
+    monkeypatch.setattr(fix_worker.subprocess, "run", ran)
+    fix_worker._resubmit(42, "state")
+    assert seen["env"][resubmit_identity.MACHINE_USER_ENV] == "1"
+
 
 class _Ran:
     """Replays a canned resubmit exit, recording the subcommands invoked."""
