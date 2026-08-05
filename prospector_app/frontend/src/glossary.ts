@@ -110,6 +110,7 @@ export const TERMS: Record<string, GlossaryEntry> = {
   "col.age": { title: "Age", meaning: "Days since the PR last changed upstream." },
   "col.author_rate": { title: "Author merge-rate", meaning: "How often this author's PRs get merged upstream. Hover for merged/total and open count." },
   "col.summary": { title: "Agent summary", meaning: "The pipeline's one-line, diff-grounded description of what this PR changes." },
+  "col.issues": { title: "Linked Issues", meaning: "Issues this PR may fix, backed by an explicit fix reference or issue-to-PR reference." },
   "ui.columns": { title: "Columns", meaning: "Show or hide table columns. Your choices are remembered in this browser." },
 
   // filter-row controls (the facet, not a single value)

@@ -360,9 +360,12 @@ _SORT_KEYS = {
     "author_rate": _author_rate,
     "summary": lambda r: ((r["summary"] or {}).get("one_liner") or "").lower(),
     "pain": lambda r: r.get("pain_score") or 0,
+    "issues": lambda r: sum(
+        1 for issue in r.get("issues") or []
+        if issue.get("how") in ("explicit", "fix-found", "issue-ref")),
 }
 _DEFAULT_DESC = {"pr", "greptile", "safety", "updated", "loc", "files",
-                 "checks", "merge", "age", "author_rate", "pain"}
+                 "checks", "merge", "age", "author_rate", "pain", "issues"}
 
 
 def query_prs(spec: dict, sort: str | None = None, direction: str | None = None,
