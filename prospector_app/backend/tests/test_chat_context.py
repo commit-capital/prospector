@@ -207,7 +207,7 @@ def test_visible_prs_context_rides_alongside_a_pr_subject(temp_store, tmp_path, 
     monkeypatch.setattr(chat, "_pr_context", lambda *a, **k: "SUBJECT-CONTEXT-PR-101")
     monkeypatch.setattr(chat.service, "pr_row", lambda n: _ROWS.get(n))
 
-    captured: dict[str, list[str]] = {}
+    captured: list[list[str]] = []
 
     class FakeProc:
         pid = 1
@@ -220,7 +220,7 @@ def test_visible_prs_context_rides_alongside_a_pr_subject(temp_store, tmp_path, 
             return 0
 
     async def fake_exec(*cmd, **kw):
-        captured["cmd"] = list(cmd)
+        captured.append(list(cmd))
         return FakeProc()
 
     monkeypatch.setattr(chat.asyncio, "create_subprocess_exec", fake_exec)
@@ -228,11 +228,16 @@ def test_visible_prs_context_rides_alongside_a_pr_subject(temp_store, tmp_path, 
     async def drive():
         async for _ in chat.stream_chat("review these", pr=101, prs=[101, 102], prs_total=2):
             pass
+        async for _ in chat.stream_chat("and compare their tests", pr=101,
+                                        prs=[101, 102], prs_total=2):
+            pass
     asyncio.run(drive())
 
-    prompt = captured["cmd"][captured["cmd"].index("-p") + 1]
-    assert "SUBJECT-CONTEXT-PR-101" in prompt  # the flyout PR's own full context…
-    assert "#102" in prompt                    # …AND the broader filtered list
+    first = captured[0][captured[0].index("-p") + 1]
+    second = captured[1][captured[1].index("-p") + 1]
+    assert "SUBJECT-CONTEXT-PR-101" in first
+    assert "#102" in first
+    assert "#102" not in second
 
 
 def test_visible_prs_context_omitted_when_nothing_is_currently_filtered(temp_store, tmp_path, monkeypatch):
