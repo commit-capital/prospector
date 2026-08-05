@@ -2,8 +2,7 @@
 
 close_dup_allowed is the pipeline's static auto-recommend (drives the dup
 worklist); close_dup_eligibility adds live upstream checks that the duplicate and
-its canonical are eligible (the canonical may also be closed as completed/fixed),
-and is the app/executor's pre-write gate — the issue-side analog of
+is still open, and is the app/executor's pre-write gate — the issue-side analog of
 gates.py's merge_allowed vs merge_eligibility.
 issue_cluster_state is the derived board chip, computed on read, never stored.
 """
@@ -62,39 +61,23 @@ def close_dup_allowed(issue: Issue, cluster: IssueCluster | None,
 def close_dup_eligibility(issue: Issue, cluster: IssueCluster | None,
                           issues: dict[int, Issue] | None = None,
                           live_state: Callable[[int], str | None] | None = None,
-                          today: str | None = None, *,
-                          live_state_reason: Callable[[int], str | None] | None = None,
+                          today: str | None = None,
                           ) -> tuple[bool, str]:
     """Executor's pre-write gate: close_dup_allowed plus checks that the duplicate
-    itself is still open and its canonical is either open or closed as
-    completed/fixed. Other closed canonicals remain blocked: they may have been
-    rejected, superseded, or themselves marked duplicate.
+    itself is still open. The canonical's current state and resolution do not
+    affect whether the duplicate relationship is valid.
 
     `live_state` fetches an issue's current upstream state ("open"/"closed", or
-    None when GitHub is unreachable); `live_state_reason` fetches the corresponding
-    close reason. They are consulted only after the static checks pass, and fetched
-    values override the store's snapshot. A failed fetch falls back to the store
-    (fail-open for open state, but fail-closed when a canonical is known closed and
-    its reason is unknown)."""
+    None when GitHub is unreachable). It is consulted only after the static checks
+    pass, and a fetched value overrides the store's snapshot. A failed fetch falls
+    back to the store."""
     ok, reason = close_dup_allowed(issue, cluster, today)
     if not ok:
         return ok, reason
     own = (live_state(issue.number) if live_state else None) or issue.state
     if own is not None and own != "open":
         return False, f"issue #{issue.number} is already {own} upstream — no action needed"
-    canon = issue.canonical
-    if canon is not None:
-        stored_issue = issues[canon] if issues is not None and canon in issues else None
-        canon_state = (live_state(canon) if live_state else None) or (
-            stored_issue.state if stored_issue is not None else None)
-        if canon_state is not None and canon_state != "open":
-            stored_reason = stored_issue.state_reason if stored_issue is not None else None
-            canon_reason = (live_state_reason(canon) if live_state_reason else None) or stored_reason
-            if canon_state == "closed" and canon_reason == "completed":
-                return True, "confirmed duplicate, canonical fixed — ready to close"
-            detail = f" ({canon_reason})" if canon_reason else ""
-            return False, f"canonical #{canon} is no longer open{detail}"
-    return True, "confirmed duplicate, canonical eligible — ready to close"
+    return True, "confirmed duplicate — ready to close"
 
 
 def close_fixed_eligibility(issue: Issue, fixed_by_state: str | None,

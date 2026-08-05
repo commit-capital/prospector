@@ -796,8 +796,9 @@ def close_issue(n: int, action: models.IssueCloseDupBody, *, token: str | None, 
     base = {"issue": int(n), "action": "CLOSE_ISSUE_DUP", "canonical": canonical}
     # Gate: only a confirmed, eligible duplicate may be closed (the issue-side
     # analog of the merge path's gates.merge_eligibility). Live-checks upstream
-    # that the dup is open and its canonical is open or fixed (#411), and blocks
-    # dry-runs too — so a dry-run preview matches what a live run does.
+    # that the dup itself is still open (#411), and blocks dry-runs too — so a
+    # dry-run preview matches what a live run does. The canonical may be closed
+    # with any resolution; that does not change the duplicate relationship.
     ok, reason = issues_mod.close_dup_gate(int(n))
     if not ok:
         res = {**base, "status": "blocked", "detail": f"close-dup gate: {reason}"}

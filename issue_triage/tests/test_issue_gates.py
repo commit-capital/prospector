@@ -65,12 +65,13 @@ def test_blocked_when_issue_closed_in_store(tmp_path):
     assert not ok and "already closed" in reason
 
 
-def test_eligibility_blocks_closed_canonical(tmp_path):
+def test_eligibility_allows_closed_not_planned_canonical(tmp_path):
+    """The canonical's resolution does not invalidate a duplicate relationship."""
     st, iss, cl = _confirmed_dup(tmp_path)
     canon = st.edit_issue(4)
-    canon.set_meta({**META, "state": "closed"})
+    canon.set_meta({**META, "state": "closed", "state_reason": "not_planned"})
     ok, reason = issue_gates.close_dup_eligibility(iss, cl, st.all_issues())
-    assert not ok and "canonical" in reason.lower()
+    assert ok, reason
 
 
 def test_eligibility_allows_canonical_closed_as_completed(tmp_path):
@@ -80,7 +81,6 @@ def test_eligibility_allows_canonical_closed_as_completed(tmp_path):
     canon.set_meta({**META, "state": "closed", "state_reason": "completed"})
     ok, reason = issue_gates.close_dup_eligibility(iss, cl, st.all_issues())
     assert ok, reason
-    assert "fixed" in reason
 
 
 def test_eligibility_passes_with_open_canonical(tmp_path):
@@ -98,32 +98,19 @@ def test_eligibility_blocks_live_closed_dup(tmp_path):
     assert not ok and "#5" in reason and "already closed" in reason
 
 
-def test_eligibility_blocks_live_closed_canonical(tmp_path):
-    """#411: the store says open but the canonical is closed upstream — the live
-    state wins over the store snapshot."""
+def test_eligibility_does_not_live_check_canonical(tmp_path):
+    """Only the issue being closed needs a live state check; the canonical's
+    current state is irrelevant to the duplicate relationship."""
     st, iss, cl = _confirmed_dup(tmp_path)
-    ok, reason = issue_gates.close_dup_eligibility(
-        iss, cl, st.all_issues(), live_state=lambda n: "open" if n == 5 else "closed")
-    assert not ok and "canonical" in reason.lower()
+    calls: list[int] = []
 
+    def fetch(n: int) -> str:
+        calls.append(n)
+        return "open" if n == 5 else "closed"
 
-def test_eligibility_allows_live_canonical_closed_as_completed(tmp_path):
-    """Live state + reason override the stale open store snapshot."""
-    st, iss, cl = _confirmed_dup(tmp_path)
-    ok, reason = issue_gates.close_dup_eligibility(
-        iss, cl, st.all_issues(),
-        live_state=lambda n: "open" if n == 5 else "closed",
-        live_state_reason=lambda n: "completed")
+    ok, reason = issue_gates.close_dup_eligibility(iss, cl, st.all_issues(), live_state=fetch)
+    assert calls == [5]
     assert ok, reason
-
-
-def test_eligibility_blocks_live_canonical_closed_not_planned(tmp_path):
-    st, iss, cl = _confirmed_dup(tmp_path)
-    ok, reason = issue_gates.close_dup_eligibility(
-        iss, cl, st.all_issues(),
-        live_state=lambda n: "open" if n == 5 else "closed",
-        live_state_reason=lambda n: "not_planned")
-    assert not ok and "not_planned" in reason
 
 
 def test_eligibility_fails_open_when_live_unreachable(tmp_path):
