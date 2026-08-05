@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+"""Close one upstream PR through the app executor and Activity log.
+
+Usage:
+    close-pr <pr> --disposition manual --comment "<why>"
+    close-pr <pr> --disposition dup [--canonical <pr>] [--comment "<why>"]
+    close-pr <pr> --disposition fixed [--upstream-pr <pr>] [--comment "<why>"]
+    close-pr <pr> --disposition stale [--comment "<why>"]
+    close-pr <pr> --disposition oversized [--merge-pr <pr> ...] [--comment "<why>"]
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
+
+from prospector_app.backend import executor  # noqa: E402
+from prospector_app.backend import models  # noqa: E402
+
+
+_ACTION = {
+    "manual": "CLOSE",
+    "dup": "CLOSE_DUP",
+    "fixed": "CLOSE_FIXED",
+    "stale": "CLOSE_STALE",
+    "oversized": "CLOSE_OVERSIZED",
+}
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(
+        prog="close-pr",
+        description="Close a PR as the configured bot and record it in Activity.",
+    )
+    p.add_argument("pr", type=int, help="the pull request number to close")
+    p.add_argument(
+        "--disposition",
+        required=True,
+        choices=tuple(_ACTION),
+        help="the close semantics used for the comment and Activity action",
+    )
+    p.add_argument("--comment", help="the closing comment")
+    p.add_argument("--canonical", type=int, help="canonical PR for a duplicate")
+    p.add_argument("--upstream-pr", type=int, help="merged PR containing the fix")
+    p.add_argument("--upstream-commit", help="upstream commit containing the fix")
+    p.add_argument("--upstream-date", help="date the upstream fix merged")
+    p.add_argument(
+        "--merge-pr",
+        type=int,
+        action="append",
+        dest="merge_prs",
+        help="PR already being kept from an oversized effort; repeat for multiple PRs",
+    )
+    p.add_argument("--dup-reason", help="specific reason the canonical PR is preferred")
+    args = p.parse_args(argv)
+
+    token = os.environ.get("GH_TOKEN")
+    if not token:
+        print("close-pr: no bot token is available", file=sys.stderr)
+        return 2
+
+    action = models.CloseAction(
+        action=_ACTION[args.disposition],
+        canonical=args.canonical,
+        upstream_pr=args.upstream_pr,
+        upstream_commit=args.upstream_commit,
+        upstream_date=args.upstream_date,
+        merge_prs=args.merge_prs,
+        dup_reason=args.dup_reason,
+        comment=args.comment,
+    )
+    result = executor.execute_pr(args.pr, action, token=token, dry_run=False)
+    print(json.dumps(result, sort_keys=True))
+    return 0 if result.get("status") == "executed" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

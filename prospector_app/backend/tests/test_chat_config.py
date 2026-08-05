@@ -139,14 +139,15 @@ def test_interactive_resubmit_needs_no_worker_push_identity():
 def test_curated_writes_unlocked_with_a_token_but_never_merge():
     # With a token the curated upstream writes are added on top of the reads...
     allowed = _flag(chat.isolation_flags(True), "--allowedTools")
-    for sub in ("gh pr edit", "gh pr comment", "gh pr close", "gh pr reopen", "gh pr review",
-                "gh issue create", "gh issue reopen",
+    for sub in ("gh pr edit", "gh pr comment", "gh issue create", "gh issue reopen",
                 "gh issue comment", "gh issue edit", "gh run rerun"):
         assert f"Bash({sub}:*)" in allowed
-    # Issue closes have one executor-backed helper, so they land in Activity;
-    # direct gh close is not reachable from the embedded agent.
-    assert "Bash(prospector_app/agent/close-issue:*)" in allowed
-    assert "Bash(gh issue close:*)" not in allowed
+    # PR close/reopen/review and issue close have executor-backed helpers, so
+    # they land in Activity; their direct gh forms are not reachable.
+    for helper in ("close-pr", "reopen-pr", "submit-review", "close-issue"):
+        assert f"Bash(prospector_app/agent/{helper}:*)" in allowed
+    for direct in ("gh pr close", "gh pr reopen", "gh pr review", "gh issue close"):
+        assert f"Bash({direct}:*)" not in allowed
     # ...the reads are still present...
     assert "Bash(gh pr view:*)" in allowed
     # ...but merge is NEVER unlocked here (it stays on the executor's gated path),
@@ -160,13 +161,14 @@ def test_curated_writes_unlocked_with_a_token_but_never_merge():
     assert "Bash(prospector_app/agent/resubmit:*)" in allowed
 
 
-def test_issue_close_helper_requires_token_and_is_executable():
+def test_executor_write_helpers_require_token_and_are_executable():
     read_only = _flag(chat.isolation_flags(False), "--allowedTools")
     writable = _flag(chat.isolation_flags(True), "--allowedTools")
-    assert "prospector_app/agent/close-issue" not in read_only
-    assert "Bash(prospector_app/agent/close-issue:*)" in writable
-    script = chat.APP_ROOT / "agent" / "close-issue"
-    assert script.exists() and os.access(script, os.X_OK)
+    for name in ("close-pr", "reopen-pr", "submit-review", "close-issue"):
+        assert f"prospector_app/agent/{name}" not in read_only
+        assert f"Bash(prospector_app/agent/{name}:*)" in writable
+        script = chat.APP_ROOT / "agent" / name
+        assert script.exists() and os.access(script, os.X_OK)
 
 
 def test_local_self_writes_are_allowlisted_and_executable():
@@ -295,6 +297,10 @@ def test_context_documents_upstream_writes_and_the_merge_limit():
     assert "{bot}" not in sp and "{repo}" not in sp
     assert "gh pr edit" in sp
     assert "gh run rerun" in sp
+    for helper in ("close-pr", "reopen-pr", "submit-review"):
+        assert f"prospector_app/agent/{helper}" in sp
+    for direct in ("gh pr close", "gh pr reopen", "gh pr review"):
+        assert direct not in sp
     assert "prospector_app/agent/close-issue" in sp
     assert "never direct\n  `gh issue close`" in sp
     # Updating a stale PR's branch is documented as the operator-identity path, so
