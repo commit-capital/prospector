@@ -127,14 +127,18 @@ def _cutoff(days: int | None) -> str | None:
     return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
 
 
-def _row(rec: storekit.RunRecord, prs: dict[int, Pr]) -> AutohuntRun | None:
+def _row(rec: storekit.RunRecord, prs: dict[int, Pr],
+         lanes: frozenset[str] | None) -> AutohuntRun | None:
     """One ledger record as a panel row, or None when it's not a security/verify
-    phase run (the ledger interleaves other phases and store-edits too)."""
+    phase run (the ledger interleaves other phases and store-edits too) or its
+    lane isn't in `lanes` (None means every lane)."""
     if not isinstance(rec, storekit.PhaseRun):
         return None
     lane = _HISTORY_PHASES.get(rec.phase)
     n = rec.raw.get("pr")
     if lane is None or not isinstance(n, int):
+        return None
+    if lanes is not None and lane not in lanes:
         return None
     pr = prs.get(n)
     return {
@@ -153,7 +157,7 @@ def history(limit: int = 50) -> list[AutohuntRun]:
     prs = data.prs()
     out: list[AutohuntRun] = []
     for rec in reversed(data.runs(limit=HISTORY_TAIL)):
-        row = _row(rec, prs)
+        row = _row(rec, prs, None)
         if row is None:
             continue
         out.append(row)
@@ -162,18 +166,20 @@ def history(limit: int = 50) -> list[AutohuntRun]:
     return out
 
 
-def history_window(days: int | None, limit: int = 100) -> list[AutohuntRun]:
+def history_window(days: int | None, limit: int = 100,
+                    lanes: frozenset[str] | None = None) -> list[AutohuntRun]:
     """The most recent per-PR security/verify runs within the last `days` days
     (None = every run in the ledger), newest first, capped at `limit` (and
     HISTORY_LIMIT_CAP regardless of what's asked). Filters the ledger by its
     indexed `ts` column, so — unlike `history`'s bounded tail scan — every
     matching run in the window is found regardless of how it's interleaved
-    with other phases."""
+    with other phases. `lanes` restricts the result to those lanes (None is
+    both security and verify)."""
     limit = min(limit, HISTORY_LIMIT_CAP)
     prs = data.prs()
     out: list[AutohuntRun] = []
     for rec in reversed(data.runs(since=_cutoff(days))):
-        row = _row(rec, prs)
+        row = _row(rec, prs, lanes)
         if row is None:
             continue
         out.append(row)

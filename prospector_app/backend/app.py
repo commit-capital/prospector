@@ -46,6 +46,8 @@ from prospector_app.backend import responses as responses_mod
 from prospector_app.backend import service
 from prospector_app.backend import tables
 from prospector_app.backend import training
+from prospector_app.backend import fix_queue
+from prospector_app.backend import fix_worker
 from prospector_app.backend import verify_queue
 from prospector_app.backend import verify_worker
 
@@ -67,6 +69,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     """Launch background services without blocking application startup."""
     _launch_live_sweep()
     _launch_verify_worker()
+    _launch_fix_worker()
     yield
 
 
@@ -135,6 +138,17 @@ def _launch_verify_worker():
     if "pytest" in sys.modules:
         return
     verify_worker.startup()
+
+
+def _launch_fix_worker():
+    """Start the autofix worker when this backend is the runner
+    (TRIAGE_FIX_WORKER=1 — the machine holding the machine user's push key).
+    Every other backend serves the queue API only. Skipped under pytest — tests
+    drive the worker's functions directly."""
+    import sys
+    if "pytest" in sys.modules:
+        return
+    fix_worker.startup()
 
 
 @app.get("/api/health")
@@ -259,6 +273,43 @@ def verify_runner():
     return verify_queue.runner_status()
 
 
+@app.post("/api/prs/{n}/fix/queue")
+def fix_queue_pr(n: int, action: str):
+    """Queue PR #n for an autofix action (update / rebase / fix). The request
+    lands in the shared store; the autofix worker on the machine holding the
+    push identity picks it up."""
+    try:
+        return fix_queue.queue_pr(n, action)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/prs/{n}/fix/dequeue")
+def fix_dequeue_pr(n: int):
+    """Cancel PR #n's queued fix request, or discard one awaiting review."""
+    try:
+        return fix_queue.dequeue_pr(n)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/prs/{n}/fix/approve")
+def fix_approve_pr(n: int):
+    """Approve PR #n's authored fix for pushing. The worker pushes it from the
+    worktree it prepared, on its next tick."""
+    try:
+        return fix_queue.approve_pr(n)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/fix/runner")
+def fix_runner():
+    """Autofix-runner liveness plus this backend's push-identity configuration —
+    what the app renders the actions' disabled reason from."""
+    return fix_queue.runner_status()
+
+
 @app.get("/api/autohunt")
 def autohunt(days: int = Query(7, ge=1, le=400), all_time: bool = False,
              limit: int = Query(100, ge=1, le=autohunt_view.HISTORY_LIMIT_CAP)):
@@ -272,6 +323,21 @@ def autohunt(days: int = Query(7, ge=1, le=400), all_time: bool = False,
         "status": autohunt_view.status(),
         "summary": autohunt_view.summary(window),
         "history": autohunt_view.history_window(window, limit=limit),
+    }
+
+
+@app.get("/api/verify/queue")
+def verify_queue_status(days: int = Query(7, ge=1, le=400), all_time: bool = False,
+                         limit: int = Query(100, ge=1, le=autohunt_view.HISTORY_LIMIT_CAP)):
+    """The sandbox-verification queue: every PR currently queued, waiting on a
+    base refresh, or running, plus verify-only run history from the runs
+    ledger over the selected window — separate from the Auto-hunt panel's
+    combined security+verify feed. Pass `all_time=true` to span the whole
+    ledger regardless of `days`."""
+    window = None if all_time else days
+    return {
+        "queue": verify_queue.queue_entries(),
+        "history": autohunt_view.history_window(window, limit=limit, lanes=frozenset({"verify"})),
     }
 
 
@@ -720,50 +786,66 @@ def activity_sync(limit: int = 200):
 @app.get("/api/activity/summary")
 def activity_summary(group_by: str = "day", since: str | None = None,
                      until: str | None = None, include_dry_run: bool = False,
-                     identity: str | None = None, operator: str | None = None):
+                     identity: str | None = None, operator: str | None = None,
+                     pr_author: str | None = None):
     """Aggregate triage metrics for the dashboard (#42): totals + buckets
     grouped by day / week / cluster / identity / operator. Live actions only by
-    default; ``operator`` filters to one teammate's work."""
-    return activity.summarize(activity.all_events(), group_by=group_by,
+    default; ``operator`` filters to one teammate's work and ``pr_author`` to
+    actions on one contributor's PRs."""
+    prs = data.prs()
+    scope = activity.ActivityScope.from_selection(
+        prs, pr_author=pr_author, operator=operator)
+    return activity.summarize(scope.events(activity.all_events()), group_by=group_by,
                               include_dry_run=include_dry_run, since=since,
-                              until=until, identity=identity, operator=operator)
+                              until=until, identity=identity)
 
 
 @app.get("/api/activity/progress")
-def activity_progress():
+def activity_progress(pr_author: str | None = None, operator: str | None = None):
     """Backlog progress (#27): landed live actions vs. the open-PR universe, so
     the operator sees how far through the ~3,000-PR backlog they are."""
-    return activity.progress(data.prs())
+    prs = data.prs()
+    events = activity.all_events()
+    scope = activity.ActivityScope.from_selection(
+        prs, pr_author=pr_author, operator=operator)
+    return activity.progress(scope.prs(prs), scope.events(events))
 
 
 @app.get("/api/activity/issue-progress")
-def activity_issue_progress():
+def activity_issue_progress(operator: str | None = None):
     """Landed issue closes vs. the open-issue universe."""
-    return activity.issue_progress(issue_data.issues())
+    scope = activity.ActivityScope(operator=operator)
+    return activity.issue_progress(
+        issue_data.issues(), scope.events(activity.all_events()))
 
 
 @app.get("/api/activity/firehose")
-def activity_firehose(days: int = Query(30, le=400), all_time: bool = False, pr_author: str | None = None):
+def activity_firehose(days: int = Query(30, le=400), all_time: bool = False,
+                      pr_author: str | None = None, operator: str | None = None):
     """Firehose comparison (#238): new PRs/issues opened on the upstream repo
     vs our triage actions per day, plus any PRs we closed that were subsequently
     reopened by their authors. Pass ``all_time=true`` to span from the earliest
     PR in the store to today regardless of ``days``. Pass ``pr_author`` to
-    restrict PR stats to PRs by a specific GitHub login."""
+    restrict PR stats to PRs by a specific GitHub login, or ``operator`` to
+    restrict action stats to one teammate."""
     from datetime import datetime as _dt
     prs = data.prs()
-    all_issues = issues_mod.list_issues()
-    events = activity.all_events()
+    scope = activity.ActivityScope.from_selection(
+        prs, pr_author=pr_author, operator=operator)
+    scoped_prs = scope.prs(prs)
+    all_issues = [] if pr_author else issues_mod.list_issues()
+    events = scope.events(activity.all_events())
     start_date = None
     if all_time:
         dates = [
             _dt.fromisoformat(pr.created_at.replace("Z", "+00:00")).date()
-            for pr in prs.values()
+            for pr in scoped_prs.values()
             if pr.created_at
         ]
         if dates:
             start_date = min(dates)
-    stats = activity.firehose_stats(prs, all_issues, days, events, start_date=start_date, pr_author=pr_author)
-    stats["reopened_after_close"] = activity.reopened_after_close(prs, events)
+    stats = activity.firehose_stats(scoped_prs, all_issues, days, events, start_date=start_date)
+    stats["reopened_after_close"] = activity.reopened_after_close(scoped_prs, events)
     stats["iss_action_counts"] = activity.issue_action_counts(events)
     return stats
 
@@ -787,17 +869,15 @@ def pr_authors():
 
 @app.get("/api/activity/people")
 def activity_people():
-    """Unified list of people for the person-filter picker: app operators
-    (from the activity log) merged with PR authors (from the store).
+    """Unified list of roles for the person-filter picker: app operators
+    (from the activity log) followed by PR authors (from the store).
 
     Each entry exposes a display name, a GitHub login (inferred from the
     operator email prefix for app operators), whether they are an app
-    operator, and their PR count. Operators appear first; other PR authors
-    follow sorted by PR count descending."""
+    operator, and their PR count. Operators appear first; PR authors follow
+    sorted by PR count descending. A login in both groups gets both roles."""
     events = activity.all_events()
     op_entries = activity.operators_with_login(events)
-    op_logins = {e["login"] for e in op_entries}
-
     prs = data.prs()
     pr_counts: dict[str, int] = {}
     for rec in prs.values():
@@ -809,8 +889,7 @@ def activity_people():
         result.append({**entry, "is_operator": True, "pr_count": pr_counts.get(entry["login"], 0)})
 
     for login, count in sorted(pr_counts.items(), key=lambda x: -x[1]):
-        if login not in op_logins:
-            result.append({"display": login, "login": login, "is_operator": False, "pr_count": count})
+        result.append({"display": login, "login": login, "is_operator": False, "pr_count": count})
 
     return {"people": result}
 

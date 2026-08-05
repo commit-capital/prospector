@@ -27,6 +27,12 @@ GH_PR = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _no_live_network(monkeypatch):
+    """Unit tests opt into live facts explicitly; ordinary ingest tests stay offline."""
+    monkeypatch.setattr(ingest.live_prs, "fetch", lambda prs: {})
+
+
 class TestMetaFromGh:
     def test_maps_fields(self):
         meta = ingest.meta_from_gh(GH_PR)
@@ -290,6 +296,54 @@ class TestUpsertAll:
         assert batches == [[5001, 5002], [5003]]
         assert st.all_prs()[5001].greptile == 5  # non-ingest facts survive staging
 
+    def test_stores_batched_live_facts_for_matching_head(self, tmp_path):
+        st = Store(tmp_path)
+        facts = {
+            5001: {"head": "deadbeef", "ci": "passing", "mergeable": "MERGEABLE",
+                   "diffstat": {"additions": 12, "deletions": 3, "changed_files": 4},
+                   "has_tests": True},
+        }
+        with st.batch():
+            ingest._upsert_all(st, [GH_PR], issue_links={}, existing_prs={}, live_facts=facts)
+
+        rec = st.load_pr(5001)
+        assert rec.signals["diffstat"] == {"additions": 12, "deletions": 3,
+                                           "changed_files": 4}
+        assert rec.signals["has_tests"] is True
+        assert rec.ci == "passing"
+        assert rec.mergeable is True
+
+    def test_ignores_batched_facts_for_a_different_head(self, tmp_path):
+        st = Store(tmp_path)
+        facts = {
+            5001: {"head": "older", "diffstat": {"additions": 1, "deletions": 0,
+                                                    "changed_files": 1}},
+        }
+        with st.batch():
+            ingest._upsert_all(st, [GH_PR], issue_links={}, existing_prs={}, live_facts=facts)
+
+        assert st.load_pr(5001).signals is None
+
+    def test_head_move_does_not_make_unresolved_ci_current(self, tmp_path):
+        st = Store(tmp_path)
+        ingest.upsert_pr(st, GH_PR, ci_override="passing", mergeable_override=True)
+        moved = dict(GH_PR, head={"sha": "new-head"})
+        facts = {
+            5001: {"head": "new-head", "ci": None, "mergeable": "UNKNOWN",
+                   "diffstat": {"additions": 2, "deletions": 1, "changed_files": 1},
+                   "has_tests": False},
+        }
+
+        with st.batch():
+            ingest._upsert_all(
+                st, [moved], issue_links={}, existing_prs=st.all_prs(), live_facts=facts)
+
+        rec = st.load_pr(5001)
+        assert rec.ci is None
+        assert rec.mergeable is None
+        assert rec.signals["diffstat"] == {"additions": 2, "deletions": 1,
+                                           "changed_files": 1}
+
 
 class TestTargetedIngest:
     def test_parse_pr_ids(self):
@@ -306,9 +360,17 @@ class TestTargetedIngest:
         new_pr = dict(GH_PR, number=6002, head={"sha": "newsha"})
         monkeypatch.setattr(ingest, "fetch_open_prs", lambda mx=None: [GH_PR, new_pr])
         monkeypatch.setattr(ingest, "load_issue_links", lambda: {})
+        monkeypatch.setattr(
+            ingest.live_prs, "fetch",
+            lambda prs: {6002: {"head": "newsha", "ci": "passing",
+                                "mergeable": "MERGEABLE",
+                                "diffstat": {"additions": 8, "deletions": 2,
+                                             "changed_files": 3},
+                                "has_tests": False}})
         rc = ingest.main(["--new", "--store", str(tmp_path)])
         assert rc == 0
-        assert store.load_pr(6002) is not None
+        assert store.load_pr(6002).signals["diffstat"] == {
+            "additions": 8, "deletions": 2, "changed_files": 3}
         assert store.runs()[-1].raw["stats"]["upserted"] == 1
 
     def test_main_prs_ingests_requested_only(self, tmp_path, monkeypatch):

@@ -110,6 +110,7 @@ export const TERMS: Record<string, GlossaryEntry> = {
   "col.age": { title: "Age", meaning: "Days since the PR last changed upstream." },
   "col.author_rate": { title: "Author merge-rate", meaning: "How often this author's PRs get merged upstream. Hover for merged/total and open count." },
   "col.summary": { title: "Agent summary", meaning: "The pipeline's one-line, diff-grounded description of what this PR changes." },
+  "col.issues": { title: "Linked Issues", meaning: "Issues this PR may fix, backed by an explicit fix reference or issue-to-PR reference." },
   "ui.columns": { title: "Columns", meaning: "Show or hide table columns. Your choices are remembered in this browser." },
 
   // filter-row controls (the facet, not a single value)
@@ -153,6 +154,7 @@ export const TERMS: Record<string, GlossaryEntry> = {
   "bulk.CLOSE": { title: "Triage close", meaning: "Close each selected PR with a generic triage reason." },
   "bulk.REQUEST_CHANGES": { title: "Request changes", meaning: "Post a change-request review on each selected PR, asking the author to fix the gaps." },
   "bulk.COMMENT": { title: "Comment", meaning: "Post one shared comment to every selected PR — no state change." },
+  "bulk.GREPTILE_RETRIGGER": { title: "Re-trigger Greptile", meaning: "Post the configured review trigger on each selected PR so Greptile reviews its current head again." },
   "bulk.MERGE": { title: "Merge", meaning: "Merge each selected PR. Gated individually — nothing merges that fails its own gate; no comment is posted." },
 
   // freshness (the OTHER meaning of "stale")

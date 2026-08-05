@@ -19,6 +19,18 @@ with no target configured, those commands fail closed.
 
 - **Reads** run as the operator's default local `gh` login. Do not set
   `GH_CONFIG_DIR`.
+- **Pushes to contributor PR head branches** use one shared `resubmit` flow with
+  caller-selected identity. Interactive chat resubmits run as the confirming
+  operator after dropping the injected App token. The unattended autofix worker
+  explicitly selects the machine user in `TRIAGE_PUSH_LOGIN`, a GitHub *user*
+  authenticating by its pinned SSH key alone (`TRIAGE_PUSH_SSH_KEY_FILE`), with
+  no API token. Pushing to a fork head branch rides "Allow edits from
+  maintainers", which grants push to maintainer *users*, so an App installation
+  token can never do it. `assert_push_target` refuses any ref that is not the open
+  PR's own head — a repository ruleset targets branches and grants bypass to
+  actors, so it cannot scope a restriction to one account, and this is where the
+  user's reach is actually bounded. With the worker identity unset every
+  unattended push refuses; it never falls back to the operator or the App.
 - **Writes** use a token minted from `TRIAGE_BOT_KEY_FILE` by
   `pipeline/get-bot-token.sh`, and are attributed to `TRIAGE_BOT_LOGIN`. When a
   bot token cannot be minted, the executor obtains no token and **every write is
@@ -52,15 +64,19 @@ with no target configured, those commands fail closed.
   as `TRIAGE_BOT_LOGIN`. Without a token those upstream writes are withheld;
   they never fall back to the operator's login. A separate helper may always
   file an issue only on `PROSPECTOR_FEEDBACK_REPO` as the operator. The agent's
-  resubmit helper also uses the operator identity for contributor-fork pushes,
-  but is available only on a machine that can mint the bot token. These paths
-  do not use `safety_guard`'s `BOT_WRITE_ALLOW` or the per-PR merge gate. The
-  chat agent cannot merge.
+  resubmit helper uses the confirming operator's identity for interactive
+  contributor-branch pushes and is advertised when the session can mint the bot
+  token. The worker opts into its configured machine identity separately. These
+  paths do not use the per-PR merge gate. Chat issue closes call the same
+  `executor.close_issue_with_comment` path as the Issues UI; other upstream chat
+  writes use the chat command allowlist. The chat agent cannot merge.
 
 Every executor write, including a dry-run, is appended to the app activity
 log. Resubmit pushes and branch updates append best-effort entries under the
-operator's identity. Bot-authenticated chat writes and feedback issue filing are
-not recorded in that log. Executor enforcement lives in
+identity selected by their caller. Chat issue closes are executor writes and
+appear in the log;
+other bot-authenticated chat writes and feedback issue filing do not. Executor
+enforcement lives in
 `prospector_app/backend/safety_guard.py`: an allowlist that permits only
 comment/close/reopen/review as the configured bot plus the dedicated
 `bot_merge_run` path, and refuses any write with an empty token.
@@ -69,9 +85,9 @@ comment/close/reopen/review as the configured bot plus the dedicated
 
 One canonical store, seven phases plus a deterministic threat-scan backstop. **The store is the only source of truth** — all markdown (`STATUS.md`, briefings) is generated output, never parsed back.
 
-- **Store** (`store.py` over `storekit.py`): a SQL database — one row per PR (its sections `meta / signals / drift / summary / cluster / analysis / security / issues / threat / greptile_review / verify` carried in a JSON `data` column, alongside mirror columns and a `saved_at` write-stamp), one row per cluster, a `runs` ledger table, and singleton `registries` rows (the durable threat registry, action items). The backend is `TRIAGE_STORE_URL` (a shared SQL database) or a local SQLite default under `pipeline/store/`. **Validated on write; `storekit`/`store.py` is the ONLY accessor** — never hand-write rows.
+- **Store** (`store.py` over `storekit.py`): a SQL database — one row per PR (its sections `meta / signals / drift / summary / cluster / analysis / security / issues / threat / greptile_review / verify / verify_request / fix_request` carried in a JSON `data` column, alongside mirror columns and a `saved_at` write-stamp), one row per cluster, a `runs` ledger table, and singleton `registries` rows (the durable threat registry, action items). The backend is `TRIAGE_STORE_URL` (a shared SQL database) or a local SQLite default under `pipeline/store/`. **Validated on write; `storekit`/`store.py` is the ONLY accessor** — never hand-write rows.
 - **Freshness** (`freshness.py`): every fact section is stamped `against_head_sha`. When a PR head moves, its analysis/security/signals go stale **automatically** — `is_current()` is the single check. No manual invalidation.
-- **Gates** (`gates.py`): the ONE policy module. `pr_clean` (not-malicious ∧ the configured review provider's bar ∧ CI passing ∧ mergeable ∧ fresh), `security_eligible`, `verify_eligible`, `merge_allowed` (pipeline auto-recommend — requires a current `verified-fix` alongside GREEN security), `merge_eligibility` (human-initiated app merge — drops the disposition requirement, treats never-run security or never-run verification as OK, and blocks on verification only when one ran and did not confirm the fix), the derived `cluster_state` (computed on read, never stored), and `merge_demotion` — the ONE merge-pick consequence (security verdict + verify outcome + quality-gate bar), derived at read time by `Pr.disposition`/`rationale`/`asks` over a stored-verbatim ANALYZE verdict, so nothing derived is ever stored and a cleared fact heals the read in place. **The configured review provider's bar is a hard merge requirement** — the provider and threshold are deployment config (`pipeline/review_policy.py`, selected by `TRIAGE_REVIEW_PROVIDER`). A merge pick below that configured threshold reads as `request-changes`, with an ask to address the review feedback and reach the bar. A deployment with `TRIAGE_REVIEW_PROVIDER=none` requires no external review. A `threat` verdict of `malicious` is a sticky hard block (fails closed, no staleness exemption). A PR may belong to several clusters (straddlers, #196); each cluster proposes a disposition for its members and `reconcile_disposition` picks the PR's single disposition by severity precedence (`needs-human > close-dup > close-fixed > close-stale > request-changes > merge` — most-blocking wins).
+- **Gates** (`gates.py`): the ONE policy module. `pr_clean` (not-malicious ∧ the configured review provider's bar ∧ CI passing ∧ mergeable ∧ fresh), `security_eligible`, `verify_eligible`, `merge_allowed` (pipeline auto-recommend — requires a current `verified-fix` alongside GREEN security), `merge_eligibility` (human-initiated app merge — drops the disposition requirement; treats never-run, stale, pending, and unverifiable verification as non-blocking; requires no reason for those merges; blocks actual negative verification evidence; and permits an explicit `escalate` only with a logged reason), the derived `cluster_state` (computed on read, never stored), and `merge_demotion` — the ONE merge-pick consequence (security verdict + verify outcome + quality-gate bar), derived at read time by `Pr.disposition`/`rationale`/`asks` over a stored-verbatim ANALYZE verdict, so nothing derived is ever stored and a cleared fact heals the read in place. **The configured review provider's bar is a hard merge requirement** — the provider and threshold are deployment config (`pipeline/review_policy.py`, selected by `TRIAGE_REVIEW_PROVIDER`). A merge pick below that configured threshold reads as `request-changes`, with an ask to address the review feedback and reach the bar. A deployment with `TRIAGE_REVIEW_PROVIDER=none` requires no external review. A `threat` verdict of `malicious` is a sticky hard block (fails closed, no staleness exemption). A PR may belong to several clusters (straddlers, #196); each cluster proposes a disposition for its members and `reconcile_disposition` picks the PR's single disposition by severity precedence (`needs-human > close-dup > close-fixed > close-stale > request-changes > merge` — most-blocking wins).
 - **Threats** (`threats.py`): the ONE threat-detection policy — attack-pattern signatures (obfuscated self-decoders, capability smuggles, build-config require-injection, EOL-churn camouflage) scanned over a PR's diff, plus the durable actor blocklist + incident log in the store's `threats` registry. `threat_scan.py` is the deterministic driver (Phase 0.5). Greptile/CI are quality signals, **not** a security verdict — this is the supply-chain backstop.
 - **Profile** (`profile.py`): the ONE repository-policy profile — repository-specific vocabulary as validated JSON data (`TRIAGE_PROFILE` path; strict parse, hard error on unknown/malformed fields). Owns the subsystem taxonomy, the path→risk-tier glob map, the CODEOWNERS gating policy (gated globs + owners), trusted/automation authors, dependency manifests, the test/artifact path rules, and the review-harness PR-template policy (`review-new-pr/harness` reads the same JSON standalone via stdlib `json`, never importing `pipeline`).
 - **Taxonomy** (`taxonomy.py`): the ONE subsystem-classification accessor; the vocabulary itself is repository policy in the active profile (`profile.py`, selected by `TRIAGE_PROFILE`, generic default = everything `other`); `issue_triage` imports it.
@@ -85,6 +101,22 @@ Phases (each idempotent; drivers own the deterministic half, Workflow scripts th
 5. **SECURITY** (`security_driver.py` + `workflows/security.js`) — 3-lens adversarial review + refuting verifier on gated merge candidates only; RED flips the PR to needs-human and reopens every cluster it belongs to.
 6. **VERIFY** (`verify_driver.py` + `workflows/verify_blind.js` + `workflows/verify_judge.js`) — run the PR's test in a secretless Docker sandbox against a pinned `main`: red before the fix, green after, each phase its own container so the host reads the verdict from its exit code. Dynamic verification never runs against a credentialed deployment. A green that exits failing is still accepted when its parsed failing set is contamination the red run already carried — every green failure also failed red, none named by the PR's own test hunks (`gates.green_accepted`); such a verified-fix carries a `dirty-green` finding and reads as partial evidence at merge time (`verify_signals_incomplete`), so it never auto-recommends. A blind adequacy verdict commits to the store before any run; `gates.verify_outcome` computes the outcome from that verdict, the exit codes, and the post-run judgment, so a blind-unfaithful-yet-clean-red→green escalates to needs-human. A PR that ships no test gets an AUTHOR pass: an agent authors a new test file (validated fail-closed — new files under test paths only; the driver builds the patch and derives the command), and a clean confirmed red→green with a matching red reason records `agent-verified` — corroborating evidence that satisfies `merge_eligibility` but never `merge_allowed`, whose bar stays an author-shipped `verified-fix`. The profile may configure merge-gate *lanes* (`verify.compile_cmd`, `verify.build_cmd`) — whole-repo commands run over the PR-patched tree after a clean confirm; `verified-fix`/`agent-verified` require every configured lane green (a failed lane reads `regressed`, an infra-broken lane `escalate`, and a record missing configured lanes is incomplete evidence named at merge time). The worker refreshes the base pin daily when master has moved, so lanes measure a ≤24h-old base.
 7. **RESOLVE** — human approves in the app; the executor acts upstream as `TRIAGE_BOT_LOGIN`.
+
+**AUTOFIX** (`prospector_app/backend/fix_queue.py` + `fix_worker.py`) sits beside
+the phases rather than in them: a per-PR `fix_request` section any app queues and
+the worker on `TRIAGE_FIX_WORKER=1` drains, pushing to the contributor's head
+branch as the machine user. Actions are `update` (merge the base in), `rebase`
+(replay onto current base behind a pinned lease), and `fix` (an agent authors a
+change against a failing gate). `gates.fix_eligibility` is the ONE policy —
+fail-closed on a malicious threat verdict, any recorded RED security verdict, a
+CODEOWNERS-gated path, a path the profile's `autofix.deny_globs` names, a
+non-open PR, and (for `fix`) a profile naming no `autofix.fixable_gates`. It
+bounds the bot's reach, not the merge boundary: an autofixed PR still faces
+`merge_eligibility` unchanged. `update` pushes on a clean local merge; `rebase`
+and `fix` additionally require a clean `compile_preflight.run_for_patch` over the
+authored tree and park as `awaiting-review` with the diff unless their action is
+in `TRIAGE_FIX_AUTOPUSH`. `TRIAGE_FIX_AUTOHUNT=1` lets an idle worker queue the
+mechanical actions itself; an agent-authored `fix` is never auto-queued.
 
 See `pipeline/workflows/README.md` for the exact run commands. Run phases from the CLI or the app Control tab; `views.py` regenerates `STATUS.md` from the store.
 

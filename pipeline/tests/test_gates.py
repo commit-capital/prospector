@@ -1417,6 +1417,12 @@ class TestVerifyMergeBar:
                                         override_reason="read the red output; the test is fine")
         assert ok is True
 
+    def test_unverifiable_outcomes_allow_a_reasonless_human_merge(self):
+        for outcome in ("unverifiable-no-test", "unverifiable-needs-live-agent"):
+            pr = _pr(verify=_verified(outcome=outcome))
+            ok, why = gates.merge_eligibility(pr, today="2026-06-10")
+            assert ok is True and outcome in why and "inconclusive" in why
+
     def test_a_logged_verify_override_clears_escalate(self):
         pr = _pr(verify=_verified(outcome="escalate",
                                   override={"reason": "checked by hand", "by": "op"}))
@@ -1435,6 +1441,10 @@ class TestVerifyMergeBar:
     def test_verify_overridable_marks_only_a_reason_clearable_escalate(self):
         assert gates.verify_overridable(
             _pr(verify=_verified(outcome="escalate")), today="2026-06-10")
+        # unverifiable outcomes already permit a reasonless human merge
+        for outcome in gates.VERIFY_UNVERIFIABLE_OUTCOMES:
+            assert not gates.verify_overridable(
+                _pr(verify=_verified(outcome=outcome)), today="2026-06-10")
         # a verified-fix needs no override
         assert not gates.verify_overridable(
             _pr(verify=_verified()), today="2026-06-10")
@@ -1957,3 +1967,103 @@ class TestAgentVerifiedLanesIncomplete:
         assert ok is True
         assert "agent-authored" in why
         assert "incomplete" not in why
+
+
+class TestFixEligibility:
+    """The autofix gate: which PRs the push bot may touch at all. Answers from
+    stored facts only — the runner re-confirms the live PR before it pushes."""
+
+    def _profile(self, monkeypatch, **over):
+        p = profile.RepoProfile(autofix=profile.AutofixPolicy(**over))
+        monkeypatch.setattr(profile, "active", lambda: p)
+        return p
+
+    def test_mechanical_actions_need_no_profile_optin(self, monkeypatch):
+        self._profile(monkeypatch)
+        for action in ("update", "rebase"):
+            ok, why = gates.fix_eligibility(_pr(), action)
+            assert ok is True, why
+            assert action in why
+
+    def test_unknown_action_refused(self):
+        ok, why = gates.fix_eligibility(_pr(), "amend")
+        assert ok is False
+        assert "unknown autofix action" in why
+
+    def test_closed_pr_refused(self):
+        pr = _pr(meta={"title": "t", "state": "closed", "head_sha": HEAD})
+        ok, why = gates.fix_eligibility(pr, "update")
+        assert ok is False
+        assert "not open" in why
+
+    def test_malicious_threat_refused(self):
+        pr = _pr(threat={"verdict": "malicious", "checked_at": NOW})
+        ok, why = gates.fix_eligibility(pr, "update")
+        assert ok is False
+        assert "malicious" in why
+
+    def test_red_security_refused_even_when_stale(self):
+        # A stale RED may be a finding the author already fixed, but the bot
+        # stays off the branch until an adversarial review says so again.
+        pr = _pr(security={"verdict": "RED", "findings": [],
+                           "checked_at": "2020-01-01T00:00:00+00:00",
+                           "against_head_sha": "old"})
+        ok, why = gates.fix_eligibility(pr, "update")
+        assert ok is False
+        assert "RED" in why
+
+    def test_deny_glob_path_refused(self, monkeypatch):
+        self._profile(monkeypatch, deny_globs=(".github/workflows/**",))
+        ok, why = gates.fix_eligibility(
+            _pr(), "update", changed_paths=["src/a.ts", ".github/workflows/ci.yml"])
+        assert ok is False
+        assert ".github/workflows/ci.yml" in why
+
+    def test_paths_outside_the_deny_list_pass(self, monkeypatch):
+        self._profile(monkeypatch, deny_globs=(".github/workflows/**",))
+        ok, why = gates.fix_eligibility(_pr(), "update", changed_paths=["src/a.ts"])
+        assert ok is True, why
+
+    def _gated(self, monkeypatch, **over):
+        p = profile.RepoProfile(
+            codeowners=profile.CodeownersPolicy(gated_globs=("infra/**",),
+                                                owners=("@core",)),
+            autofix=profile.AutofixPolicy(**over))
+        monkeypatch.setattr(profile, "active", lambda: p)
+
+    def test_codeowners_blocks_authoring_a_fix(self, monkeypatch):
+        self._gated(monkeypatch, fixable_gates=("ci",))
+        ok, why = gates.fix_eligibility(_pr(), "fix", changed_paths=["infra/main.tf"])
+        assert ok is False
+        assert "CODEOWNERS" in why and "@core" in why
+
+    def test_codeowners_does_not_block_the_mechanical_actions(self, monkeypatch):
+        # CODEOWNERS routes the MERGE, and keeps doing that server-side whatever
+        # lands on the branch. Rebasing a conflicted gated PR is precisely how it
+        # gets ready for the owner review it needs, so blocking that only strands
+        # the PR.
+        self._gated(monkeypatch)
+        for action in ("update", "rebase"):
+            ok, why = gates.fix_eligibility(_pr(), action, changed_paths=["infra/main.tf"])
+            assert ok is True, f"{action}: {why}"
+
+    def test_deny_globs_still_block_every_action(self, monkeypatch):
+        # The profile's own dial is how a repository withholds the mechanical
+        # actions too — agent-executed instruction paths being the case for it.
+        self._gated(monkeypatch, deny_globs=("skills/**",), fixable_gates=("ci",))
+        for action in ("update", "rebase", "fix"):
+            ok, why = gates.fix_eligibility(_pr(), action,
+                                            changed_paths=["skills/agent/SKILL.md"])
+            assert ok is False, action
+            assert "withholds from autofix" in why
+
+    def test_fix_needs_profile_optin(self, monkeypatch):
+        self._profile(monkeypatch)
+        ok, why = gates.fix_eligibility(_pr(), "fix")
+        assert ok is False
+        assert "fixable_gates" in why
+
+    def test_fix_allowed_once_gates_named(self, monkeypatch):
+        self._profile(monkeypatch, fixable_gates=("ci",))
+        ok, why = gates.fix_eligibility(_pr(), "fix")
+        assert ok is True, why

@@ -112,10 +112,10 @@ def checks_for_record(rec: Pr, today: str | None = None) -> dict:
         by_key["security"] = _c("security", "Deep security review", "na", "not run yet", None)
 
     # Dynamic verification (VERIFY): the sandbox red→green run. A current
-    # verified-fix passes; every other concluded current outcome fails — exactly
-    # the set gates.merge_eligibility blocks on. A null outcome (blind verdict
-    # committed, or a held run) concluded nothing, so it warns rather than fails,
-    # matching the gate treating it like a never-run verification.
+    # verified-fix passes the automatic bar; every other concluded current
+    # outcome fails that strict check. This display is stricter than the human
+    # merge gate, where an unverifiable outcome is non-blocking because it carries
+    # no negative evidence. A null outcome warns because it concluded nothing.
     verify = rec.section("verify")
     if verify:
         o = rec.verify_outcome

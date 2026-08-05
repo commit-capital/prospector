@@ -510,10 +510,65 @@ export interface VerifyRunner {
   last_beat?: string | null;
 }
 
+/** An autofix action the push bot may run on a contributor's PR head branch.
+ *  `update` merges the base branch in, `rebase` replays the PR onto current
+ *  base behind a pinned lease, `fix` has an agent author a change. */
+export type FixAction = "update" | "rebase" | "fix";
+
+/** The autofix queue state for one PR: queued in any app, run by the fix
+ *  worker on the machine holding the push key, parked as awaiting-review with
+ *  the authored diff, approved by a human, then pushed. `refused` means a gate
+ *  or the compile preflight blocked it and nothing reached upstream. */
+export interface FixRequest {
+  status: "queued" | "running" | "awaiting-review" | "approved" | "pushing"
+        | "pushed" | "refused" | "failed" | "cancelled";
+  action: FixAction;
+  source?: "operator" | "auto" | null;
+  step?: string | null;
+  queued_at?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  error?: string | null;
+  refused_reason?: string | null;
+  result?: FixResult | null;
+  host?: string | null;
+  base_sha?: string | null;
+  checked_at?: string | null;
+  against_head_sha?: string | null;
+}
+
+/** What the worker authored, carried on the request so the review view can
+ *  show the diff before anything is pushed. */
+export interface FixResult {
+  patch?: string | null;
+  message?: string | null;
+  output?: string | null;
+  detail?: string | null;
+  compile_preflight?: { exit?: number | null; refused?: string | null;
+                        error?: string | null; error_excerpt?: string | null } | null;
+}
+
+/** Autofix-runner liveness plus this backend's push configuration.
+ *  `can_queue` is what disables the actions — it asks whether ANY worker is
+ *  reachable against the shared store, not whether this backend holds the key,
+ *  since queueing from a laptop is the point. `push_identity` is this
+ *  backend's own credential, for diagnostics. */
+export interface FixRunner {
+  configured: boolean;
+  online: boolean;
+  can_queue: boolean;
+  push_identity: boolean;
+  push_login?: string | null;
+  autopush: FixAction[];
+  host?: string | null;
+  current_pr?: number | null;
+  last_beat?: string | null;
+}
+
 /** One security/verify run from the store's runs ledger, normalized for the
  *  auto-hunt panel. `trigger` is "autohunt" on hunter-fired runs, null on
  *  operator-fired or unstamped entries. */
-interface AutohuntRun {
+export interface AutohuntRun {
   phase: "security" | "verify";
   pr: number;
   title?: string | null;
@@ -557,6 +612,23 @@ interface AutohuntSummary {
 
 export interface Autohunt { status: AutohuntStatus; summary: AutohuntSummary; history: AutohuntRun[]; }
 
+/** One PR with a sandbox-verification request in flight: running, waiting on
+ *  a base refresh, or queued. `source` is "auto" for the idle hunter, null/
+ *  undefined for an operator-queued request. */
+export interface VerifyQueueEntry {
+  pr: number;
+  title?: string | null;
+  status: "queued" | "running" | "waiting-for-base";
+  source?: "auto" | null;
+  step?: string | null;
+  queued_at?: string | null;
+  started_at?: string | null;
+}
+
+/** The sandbox-verification queue: PRs currently in flight, plus verify-only
+ *  run history from the runs ledger over the selected window. */
+export interface VerifyQueue { queue: VerifyQueueEntry[]; history: AutohuntRun[]; }
+
 export interface PRDetail extends PRRow {
   body?: string | null;
   base?: string | null;
@@ -564,6 +636,7 @@ export interface PRDetail extends PRRow {
   safety_summary?: SafetySummary;
   verify_detail?: VerifyDetail | null;
   verify_request?: VerifyRequest | null;
+  fix_request?: FixRequest | null;
   analysis_detail?: unknown;
   size?: { additions: number | null; deletions: number | null; changed_files: number | null };
   greptile?: { score: number | null; body: string } | null;
@@ -595,6 +668,18 @@ async function get<T>(url: string): Promise<T> {
   markReachable(true); // server answered, even if with an app-level error below
   if (!r.ok) throw new Error(`${url} → ${r.status}`);
   return r.json();
+}
+
+export interface ActivityScopeParams {
+  prAuthor?: string;
+  operator?: string;
+}
+
+function activitySearch(scope: ActivityScopeParams = {}, initial?: Record<string, string>): URLSearchParams {
+  const qs = new URLSearchParams(initial);
+  if (scope.prAuthor) qs.set("pr_author", scope.prAuthor);
+  if (scope.operator) qs.set("operator", scope.operator);
+  return qs;
 }
 
 // --- GitHub Issues, folded into the app (#192) ---
@@ -831,7 +916,15 @@ export const api = {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(prs ? { prs } : {}),
     });
-    return r.json() as Promise<{ checked: number; changed: number; prs: number[]; fetched_at: string | null }>;
+    return r.json() as Promise<{
+      attempted: number;
+      checked: number;
+      changed: number;
+      prs: number[];
+      failed: number[];
+      complete: boolean;
+      fetched_at: string | null;
+    }>;
   },
   liveStatus: () => get<{ fetched_at: string | null }>("/api/live/status"),
   scanResponses: async (prs?: number[]) => {
@@ -1014,17 +1107,18 @@ export const api = {
     });
     return r.json() as Promise<ExecResult>;
   },
-  activityProgress: () => get<ActivityProgress>("/api/activity/progress"),
-  activityIssueProgress: () => get<IssueActivityProgress>("/api/activity/issue-progress"),
-  activityFirehose: (days = 30, allTime = false, prAuthor?: string) => {
-    const qs = new URLSearchParams({ days: String(days) });
+  activityProgress: (scope: ActivityScopeParams = {}) =>
+    get<ActivityProgress>(`/api/activity/progress?${activitySearch(scope)}`),
+  activityIssueProgress: (scope: Pick<ActivityScopeParams, "operator"> = {}) =>
+    get<IssueActivityProgress>(`/api/activity/issue-progress?${activitySearch(scope)}`),
+  activityFirehose: (days = 30, allTime = false, scope: ActivityScopeParams = {}) => {
+    const qs = activitySearch(scope, { days: String(days) });
     if (allTime) qs.set("all_time", "true");
-    if (prAuthor) qs.set("pr_author", prAuthor);
     return get<FirehoseStats>(`/api/activity/firehose?${qs}`);
   },
   prAuthors: () => get<{ authors: Array<{ login: string; pr_count: number }> }>("/api/activity/pr-authors"),
   activityPeople: () => get<{ people: ActivityPerson[] }>("/api/activity/people"),
-  activitySummary: (p: { group_by?: string; since?: string; until?: string; identity?: string; operator?: string; include_dry_run?: boolean } = {}) => {
+  activitySummary: (p: { group_by?: string; since?: string; until?: string; identity?: string; operator?: string; pr_author?: string; include_dry_run?: boolean } = {}) => {
     const qs = new URLSearchParams();
     for (const [k, v] of Object.entries(p)) if (v !== undefined && v !== "") qs.set(k, String(v));
     return get<ActivitySummary>(`/api/activity/summary?${qs}`);
@@ -1061,10 +1155,34 @@ export const api = {
     return body as { pr: number; status: string };
   },
   verifyRunner: () => get<VerifyRunner>("/api/verify/runner"),
+  queueFix: async (n: number, action: FixAction) => {
+    const r = await fetch(`/api/prs/${n}/fix/queue?action=${action}`, { method: "POST" });
+    const body = (await r.json().catch(() => null)) as { detail?: string; pr?: number; status?: string } | null;
+    if (!r.ok) throw new Error(body?.detail ?? `queue ${action} → ${r.status}`);
+    return body as { pr: number; action: FixAction; status: string };
+  },
+  dequeueFix: async (n: number) => {
+    const r = await fetch(`/api/prs/${n}/fix/dequeue`, { method: "POST" });
+    const body = (await r.json().catch(() => null)) as { detail?: string; pr?: number; status?: string } | null;
+    if (!r.ok) throw new Error(body?.detail ?? `cancel autofix → ${r.status}`);
+    return body as { pr: number; status: string };
+  },
+  approveFix: async (n: number) => {
+    const r = await fetch(`/api/prs/${n}/fix/approve`, { method: "POST" });
+    const body = (await r.json().catch(() => null)) as { detail?: string; pr?: number; status?: string } | null;
+    if (!r.ok) throw new Error(body?.detail ?? `approve autofix → ${r.status}`);
+    return body as { pr: number; status: string };
+  },
+  fixRunner: () => get<FixRunner>("/api/fix/runner"),
   autohunt: (days = 7, allTime = false, limit = 100) => {
     const qs = new URLSearchParams({ days: String(days), limit: String(limit) });
     if (allTime) qs.set("all_time", "true");
     return get<Autohunt>(`/api/autohunt?${qs}`);
+  },
+  verifyQueue: (days = 7, allTime = false, limit = 100) => {
+    const qs = new URLSearchParams({ days: String(days), limit: String(limit) });
+    if (allTime) qs.set("all_time", "true");
+    return get<VerifyQueue>(`/api/verify/queue?${qs}`);
   },
   activity: (limit = 200) => get<{ items: ActivityItem[] }>(`/api/activity?limit=${limit}`),
   syncActivity: async (limit = 500) => {

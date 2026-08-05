@@ -94,6 +94,56 @@ def test_sweep_stamps_last_swept_at(tmp_path, monkeypatch):
     assert freshness_live.last_swept_at() == res["fetched_at"]
 
 
+def test_sweep_retries_missing_prs_before_marking_complete(tmp_path, monkeypatch):
+    st = _wire(tmp_path, monkeypatch, [_raw(5), _raw(6)], {})
+    calls: list[list[int]] = []
+
+    def fetch(prs):
+        calls.append(prs)
+        if len(calls) == 1:
+            return {5: {"state": "open", "merged": False, "head": HEAD,
+                        "mergeable": "MERGEABLE"}}
+        return {6: {"state": "open", "merged": False, "head": HEAD,
+                    "mergeable": "MERGEABLE"}}
+
+    monkeypatch.setattr(freshness_live, "live_states", fetch)
+    res = freshness_live.sweep()
+
+    assert calls == [[5, 6], [6]]
+    assert res["attempted"] == 2 and res["checked"] == 2
+    assert res["complete"] is True and res["failed"] == []
+    assert st.load_live_sweep()["swept_at"] == res["fetched_at"]
+
+
+def test_partial_sweep_does_not_advance_completion_marker(tmp_path, monkeypatch):
+    st = _wire(tmp_path, monkeypatch, [_raw(5), _raw(6)], {})
+    prior = "2026-06-01T00:00:00+00:00"
+    st.save_live_sweep({"swept_at": prior})
+    monkeypatch.setattr(
+        freshness_live, "live_states",
+        lambda prs: {5: {"state": "open", "merged": False, "head": HEAD,
+                         "mergeable": "MERGEABLE"}} if 5 in prs else {})
+
+    res = freshness_live.sweep()
+
+    assert res["attempted"] == 2 and res["checked"] == 1
+    assert res["complete"] is False and res["failed"] == [6]
+    assert st.load_live_sweep()["swept_at"] == prior
+
+
+def test_targeted_sweep_does_not_mark_full_corpus_complete(tmp_path, monkeypatch):
+    st = _wire(tmp_path, monkeypatch, [_raw(5), _raw(6)],
+               {5: {"state": "open", "merged": False, "head": HEAD,
+                    "mergeable": "MERGEABLE"}})
+    prior = "2026-06-01T00:00:00+00:00"
+    st.save_live_sweep({"swept_at": prior})
+
+    res = freshness_live.sweep([5])
+
+    assert res["complete"] is True and res["checked"] == 1
+    assert st.load_live_sweep()["swept_at"] == prior
+
+
 def test_stale_reflects_the_shared_singleton(tmp_path, monkeypatch):
     st = _wire(tmp_path, monkeypatch, [], {})
     assert freshness_live.stale(60) is True          # never swept → worth a sweep
@@ -149,6 +199,46 @@ def test_sweep_persists_diffstat_and_has_tests(tmp_path, monkeypatch):
     assert sig["diffstat"] == {"additions": 12, "deletions": 3, "changed_files": 4}
     assert sig["has_tests"] is True
     assert res["changed"] == 1 and res["prs"] == [5]  # diffstat-only change still counts
+
+
+def test_sweep_persists_new_ci_verdict(tmp_path, monkeypatch):
+    seed = _raw(5, "open")
+    seed["signals"].pop("ci")
+    st = _wire(tmp_path, monkeypatch, [seed],
+               {5: {"state": "open", "merged": False, "head": HEAD,
+                    "mergeable": "MERGEABLE", "ci": "passing"}})
+
+    res = freshness_live.sweep()
+
+    assert st.load_pr(5).ci == "passing"
+    assert res["changed"] == 1 and res["prs"] == [5]
+
+
+def test_sweep_preserves_ci_when_live_rollup_is_missing(tmp_path, monkeypatch):
+    st = _wire(tmp_path, monkeypatch, [_raw(5, "open")],
+               {5: {"state": "open", "merged": False, "head": HEAD,
+                    "mergeable": "MERGEABLE", "ci": None}})
+
+    freshness_live.sweep()
+
+    assert st.load_pr(5).ci == "passing"
+
+
+def test_sweep_does_not_stamp_signals_from_a_moved_head(tmp_path, monkeypatch):
+    seed = _raw(5, "open")
+    st = _wire(tmp_path, monkeypatch, [seed],
+               {5: {"state": "open", "merged": False, "head": "new-head",
+                    "mergeable": "CONFLICTING", "ci": "failing",
+                    "diffstat": {"additions": 99, "deletions": 1, "changed_files": 4},
+                    "has_tests": True}})
+
+    res = freshness_live.sweep()
+
+    rec = st.load_pr(5)
+    assert rec.ci == "passing"
+    assert rec.mergeable is True
+    assert rec.signals.get("diffstat") is None
+    assert res["changed"] == 0
 
 
 def test_sweep_skips_write_when_diffstat_unchanged(tmp_path, monkeypatch):

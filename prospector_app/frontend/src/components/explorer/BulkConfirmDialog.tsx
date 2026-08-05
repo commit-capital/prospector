@@ -49,13 +49,14 @@ export function BulkConfirmDialog({ action, comment, canonical, perPr = false, s
 
   const count = targets.length;
   const doneCount = Object.keys(results).length;
+  const postsComment = action !== "MERGE" && action !== "GREPTILE_RETRIGGER";
   const blockedMerges = action === "MERGE"
     ? targets.filter((r) => r.merge_gate && !r.merge_gate.ok) : [];
 
   // Per-PR comments (#182): each PR's own suggested text. A PR with no suggestion
   // falls back server-side to the shared comment / default template.
   const perPrComments: Record<number, string> = {};
-  if (perPr && action !== "MERGE") {
+  if (perPr && postsComment) {
     for (const r of targets) {
       const c = r.suggestion?.bot_comment;
       if (c) perPrComments[r.number] = c;
@@ -65,8 +66,8 @@ export function BulkConfirmDialog({ action, comment, canonical, perPr = false, s
   const run = async () => {
     setRunning(true);
     await api.executeBulk(
-      { prs: targets.map((r) => r.number), action, comment: action === "MERGE" ? undefined : comment,
-        comments: perPr && action !== "MERGE" ? perPrComments : undefined,
+      { prs: targets.map((r) => r.number), action, comment: postsComment ? comment : undefined,
+        comments: perPr && postsComment ? perPrComments : undefined,
         canonical, dry_run: dryRun },
       (r) => setResults((prev) => ({ ...prev, [r.pr]: r })),
       (s) => { setSummary(s); setRunning(false); onDone(); },
@@ -80,7 +81,7 @@ export function BulkConfirmDialog({ action, comment, canonical, perPr = false, s
       <div className="modal bulk-confirm" onClick={(e) => e.stopPropagation()}>
         <h3>{action} — {count} PR(s) {dryRun ? "(dry run)" : `LIVE as ${botLogin}`}</h3>
         {running && <div className="bulk-progress">Running… {doneCount} of {count} done</div>}
-        {action !== "MERGE" && (perPr
+        {postsComment && (perPr
           ? <div className="muted small bulk-perpr-note">📮 Posting <b>each PR's own suggested comment</b> ({Object.keys(perPrComments).length} of {count} have one; the rest fall back to the default).</div>
           : comment && <pre className="shared-comment">{comment}</pre>)}
         {blockedMerges.length > 0 && (
@@ -96,7 +97,7 @@ export function BulkConfirmDialog({ action, comment, canonical, perPr = false, s
                 <GitHubPRLink n={r.number} url={r.url} className="num" /> {r.title}
                 {gate && !gate.ok && <span className="chip chip-red" title={gate.reason}>blocked</span>}
                 {res && <span className={`chip chip-${res.status === "executed" || res.status === "merged" ? "green" : res.status === "error" || res.status === "blocked" ? "red" : "muted"}`}>{res.status}</span>}
-                {perPr && action !== "MERGE" && (
+                {perPr && postsComment && (
                   perPrComments[r.number]
                     ? <div className="muted small bulk-pr-comment" title={perPrComments[r.number]}>📮 {perPrComments[r.number].replace(/\s+/g, " ").slice(0, 80)}…</div>
                     : <div className="muted small bulk-pr-comment">📮 <i>default comment (no per-PR suggestion)</i></div>

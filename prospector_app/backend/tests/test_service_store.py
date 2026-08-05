@@ -97,6 +97,13 @@ class TestSuggest:
         s = suggest.suggest_for_record(rec)
         assert s["action"] == "MERGE" and s["accept"].kind == "merge"
 
+    def test_unverifiable_names_reasonless_human_merge_instead_of_block(self):
+        rec = _pr(analysis=_analysis(), security=_green(),
+                  verify=_verified(outcome="unverifiable-no-test"))
+        s = suggest.suggest_for_record(rec)
+        assert s["label"] == "Human merge available"
+        assert "without an override reason" in s["rationale"]
+
     def test_dependabot_bump_is_out_of_scope(self):
         rec = _pr(n=7750)
         rec.raw["meta"]["author"] = "dependabot[bot]"
@@ -325,6 +332,21 @@ class TestServiceRows:
         rec.raw["meta"]["body"] = ""  # skip the live body fetch
         gate = service.pr_detail(1)["merge_gate"]
         assert gate["ok"] is True
+
+    @pytest.mark.parametrize("outcome", [
+        "unverifiable-no-test", "unverifiable-needs-live-agent",
+    ])
+    def test_merge_gate_allows_reasonless_unverifiable_pr(
+            self, patched, monkeypatch, outcome):
+        rec = _pr(verify=_verified(outcome=outcome))
+        rec.raw["meta"]["body"] = ""
+        patched({1: rec})
+        monkeypatch.setattr(service, "_greptile_and_ci", lambda n, sha: (None, []))
+        monkeypatch.setattr(service, "_live_changed_paths", lambda n: None)
+        gate = service.pr_detail(1)["merge_gate"]
+        assert gate["ok"] is True
+        assert gate["overridable"] is False
+        assert outcome in gate["reason"]
 
     def test_merge_gate_blocks_dirty_pr(self, patched, monkeypatch):
         rec = _pr()

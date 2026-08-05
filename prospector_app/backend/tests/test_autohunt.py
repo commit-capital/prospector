@@ -394,6 +394,19 @@ def test_history_window_caps_at_hard_limit(store, monkeypatch):
     assert len(autohunt_view.history_window(days=None, limit=100)) == 2
 
 
+def test_history_window_lanes_filters_to_one_lane(store):
+    """`lanes` restricts the ledger scan to just that lane — the Verify Queue
+    panel's history is verify-only, unlike the combined Auto-hunt table."""
+    from prospector_app.backend import autohunt_view
+    store.append_run({"phase": "security:review-one", "pr": 1,
+                      "stats": {"verdict": "GREEN"}})
+    store.append_run({"phase": "verify:single", "pr": 2,
+                      "stats": {"outcome": "verified-fix"}})
+    rows = autohunt_view.history_window(days=None, lanes=frozenset({"verify"}))
+    assert [r["phase"] for r in rows] == ["verify"]
+    assert rows[0]["pr"] == 2
+
+
 def test_summary_counts_totals_and_results_within_window(store):
     from prospector_app.backend import autohunt_view
     old = "2020-01-01T00:00:00+00:00"

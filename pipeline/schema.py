@@ -32,7 +32,9 @@ _JSON = JSON().with_variant(JSONB, "postgresql")
 # 9 — a transiently failed verify_request re-queues with an `attempts` count
 #     and may carry the fetch-error error_kind (older validators refuse to
 #     save a record carrying that kind).
-STORE_SCHEMA_VERSION = 9
+# 10 — PRs carry a fix_request section (the autofix queue), which older
+#     validators drop as an unknown section rather than round-tripping.
+STORE_SCHEMA_VERSION = 10
 
 # saved_at is a microsecond-resolution ISO timestamp stamped on every save — when
 # the store row was last written (distinct from `updated_at`, which mirrors the

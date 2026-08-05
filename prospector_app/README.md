@@ -43,7 +43,9 @@ allowlist:
   submit a review, manage issues, and rerun a workflow. It cannot merge.
 - **Writes as the operator, after confirmation:** on a machine that can mint the
   bot token, the `resubmit` helper may push an agreed code change to a
-  contributor's editable fork branch or update that branch from the base branch.
+  contributor's editable fork branch, update that branch from the base branch,
+  or resolve a conflicting PR through a pinned, explicitly confirmed
+  force-with-lease rebase.
   Separately, when `PROSPECTOR_FEEDBACK_REPO` is configured, `file-issue` may always
   open a tooling issue there as the operator. Both helpers drop the injected bot
   token before invoking GitHub.
@@ -52,10 +54,10 @@ The agent drafts the exact upstream change in chat and acts only after the
 operator confirms. With no bot key it has no path that writes to `TRIAGE_REPO`,
 but its local helpers and the configured feedback-repository path remain
 available. `--permission-mode dontAsk` silently denies every command outside the
-allowlist. Bot-authenticated chat writes and feedback issue filing are not
-recorded in the executor activity log; resubmit pushes and branch updates append
-best-effort activity entries under the operator's identity. The full operating
-manual is `prospector_app/agent/context.md`.
+allowlist. Chat issue closes use the executor and are recorded in Activity; other
+bot-authenticated chat writes and feedback issue filing are not. Resubmit pushes
+and branch updates append best-effort activity entries under the operator's
+identity. The full operating manual is `prospector_app/agent/context.md`.
 
 ## Run
 
