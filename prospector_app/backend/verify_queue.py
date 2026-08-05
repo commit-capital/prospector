@@ -12,6 +12,7 @@ cache) is the orchestrator's, which fails closed on the runner.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import TypedDict
 
 from pipeline.storekit import now as _now
 from prospector_app.backend import data
@@ -57,6 +58,41 @@ def dequeue_pr(n: int) -> dict:
                               finished_at=_now())
     data.refresh()
     return {"pr": n, "status": "cancelled"}
+
+
+class QueueEntry(TypedDict):
+    pr: int
+    title: str | None
+    status: str
+    source: str | None
+    step: str | None
+    queued_at: str | None
+    started_at: str | None
+
+
+# Live verify_request statuses that mean "in flight", ranked in the order the
+# queue view lists them: currently running, then waiting on a base refresh,
+# then merely queued.
+_QUEUE_STATUS_ORDER = {"running": 0, "waiting-for-base": 1, "queued": 2}
+
+
+def queue_entries() -> list[QueueEntry]:
+    """Every PR with a verification request in flight, running first, then
+    waiting-for-base, then queued — oldest queued_at first within each group,
+    matching the order the worker will pick them up in (`next_queued`)."""
+    out: list[QueueEntry] = []
+    for n, rec in data.prs().items():
+        req = rec.verify_request or {}
+        status = req.get("status")
+        if status not in _QUEUE_STATUS_ORDER:
+            continue
+        out.append({
+            "pr": n, "title": rec.title, "status": status,
+            "source": req.get("source"), "step": req.get("step"),
+            "queued_at": req.get("queued_at"), "started_at": req.get("started_at"),
+        })
+    out.sort(key=lambda e: (_QUEUE_STATUS_ORDER[e["status"]], str(e["queued_at"] or "")))
+    return out
 
 
 def _beat_online(last: object) -> bool:

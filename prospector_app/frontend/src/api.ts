@@ -568,7 +568,7 @@ export interface FixRunner {
 /** One security/verify run from the store's runs ledger, normalized for the
  *  auto-hunt panel. `trigger` is "autohunt" on hunter-fired runs, null on
  *  operator-fired or unstamped entries. */
-interface AutohuntRun {
+export interface AutohuntRun {
   phase: "security" | "verify";
   pr: number;
   title?: string | null;
@@ -610,6 +610,23 @@ interface AutohuntSummary {
 }
 
 export interface Autohunt { status: AutohuntStatus; summary: AutohuntSummary; history: AutohuntRun[]; }
+
+/** One PR with a sandbox-verification request in flight: running, waiting on
+ *  a base refresh, or queued. `source` is "auto" for the idle hunter, null/
+ *  undefined for an operator-queued request. */
+export interface VerifyQueueEntry {
+  pr: number;
+  title?: string | null;
+  status: "queued" | "running" | "waiting-for-base";
+  source?: "auto" | null;
+  step?: string | null;
+  queued_at?: string | null;
+  started_at?: string | null;
+}
+
+/** The sandbox-verification queue: PRs currently in flight, plus verify-only
+ *  run history from the runs ledger over the selected window. */
+export interface VerifyQueue { queue: VerifyQueueEntry[]; history: AutohuntRun[]; }
 
 export interface PRDetail extends PRRow {
   body?: string | null;
@@ -1160,6 +1177,11 @@ export const api = {
     const qs = new URLSearchParams({ days: String(days), limit: String(limit) });
     if (allTime) qs.set("all_time", "true");
     return get<Autohunt>(`/api/autohunt?${qs}`);
+  },
+  verifyQueue: (days = 7, allTime = false, limit = 100) => {
+    const qs = new URLSearchParams({ days: String(days), limit: String(limit) });
+    if (allTime) qs.set("all_time", "true");
+    return get<VerifyQueue>(`/api/verify/queue?${qs}`);
   },
   activity: (limit = 200) => get<{ items: ActivityItem[] }>(`/api/activity?limit=${limit}`),
   syncActivity: async (limit = 500) => {

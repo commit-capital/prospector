@@ -326,6 +326,21 @@ def autohunt(days: int = Query(7, ge=1, le=400), all_time: bool = False,
     }
 
 
+@app.get("/api/verify/queue")
+def verify_queue_status(days: int = Query(7, ge=1, le=400), all_time: bool = False,
+                         limit: int = Query(100, ge=1, le=autohunt_view.HISTORY_LIMIT_CAP)):
+    """The sandbox-verification queue: every PR currently queued, waiting on a
+    base refresh, or running, plus verify-only run history from the runs
+    ledger over the selected window — separate from the Auto-hunt panel's
+    combined security+verify feed. Pass `all_time=true` to span the whole
+    ledger regardless of `days`."""
+    window = None if all_time else days
+    return {
+        "queue": verify_queue.queue_entries(),
+        "history": autohunt_view.history_window(window, limit=limit, lanes=frozenset({"verify"})),
+    }
+
+
 @app.get("/api/prs/{n}/actions")
 def pr_actions(n: int):
     """Every real action the configured bot has taken on this PR (with the human
