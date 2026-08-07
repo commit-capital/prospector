@@ -15,6 +15,7 @@ gates.merge_eligibility), not fork cherry-picks. The disposition path here
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 from pathlib import Path
 from collections.abc import Callable
@@ -35,6 +36,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 GET_TOKEN = REPO_ROOT / "pipeline" / "get-bot-token.sh"
 
 CLOSE_ACTIONS = {"CLOSE_DUP", "CLOSE_FIXED", "CLOSE", "CLOSE_STALE", "CLOSE_OVERSIZED"}
+
+logger = logging.getLogger(__name__)
+
+
+def _public_exception_detail(context: str, error: Exception) -> str:
+    """Log an unexpected exception without returning its internals to the API."""
+    logger.error(context, exc_info=(type(error), error, error.__traceback__))
+    return f"{context}; see server logs"
 
 
 def _cluster_id(n: int) -> str | None:
@@ -73,7 +82,7 @@ def mint_bot_token() -> str | None:
     try:
         r = subprocess.run(["bash", str(GET_TOKEN)], capture_output=True, text=True, timeout=30)
     except Exception as e:
-        _last_mint_error = f"{type(e).__name__}: {e}"
+        _last_mint_error = _public_exception_detail("token helper failed unexpectedly", e)
         return None
     tok = (r.stdout or "").strip()
     if tok:
@@ -263,7 +272,7 @@ def _note_bookkeeping_failure(res: dict, what: str, e: Exception) -> None:
     """Append a local bookkeeping failure to the result's `bookkeeping_error`
     (and its human-readable `detail`) without touching `status` — the status
     reports the upstream write, and local bookkeeping never changes it."""
-    note = f"{what}: {type(e).__name__}: {str(e)[:160]}"
+    note = _public_exception_detail(what, e)
     prior = res.get("bookkeeping_error")
     res["bookkeeping_error"] = f"{prior}; {note}" if prior else note
     detail = res.get("detail") or ""
@@ -308,7 +317,7 @@ def _comment_then_close(n: int, *, base: dict, idempotency_key: str | None,
             return _fail(f"close failed: {clr.stderr.strip()[:160]}")
         steps.append("closed")
     except Exception as e:  # WriteAttemptBlocked or subprocess error
-        return _fail(str(e)[:160])
+        return _fail(_public_exception_detail("upstream action failed unexpectedly", e))
 
     res = {**base, "status": "executed", "detail": " + ".join(steps)}
     if capture_event_url and event_url:
@@ -438,7 +447,8 @@ def reopen_pr(n: int, *, token: str | None, dry_run: bool) -> dict:
             if dn.returncode == 0:
                 dismissed += 1
     except Exception as e:
-        res = {**base, "status": "error", "detail": str(e)[:160]}
+        res = {**base, "status": "error",
+               "detail": _public_exception_detail("reopen failed unexpectedly", e)}
         activity.record("reopen", identity=BOT_LOGIN, dry_run=False, **res)
         return res
     detail = f"reopened + removed {removed} bot comment(s)"
@@ -473,7 +483,8 @@ def reopen_issue(n: int, *, token: str | None, dry_run: bool) -> dict:
             if dr.returncode == 0:
                 removed += 1
     except Exception as e:
-        res = {**base, "status": "error", "detail": str(e)[:160]}
+        res = {**base, "status": "error",
+               "detail": _public_exception_detail("issue reopen failed unexpectedly", e)}
         activity.record("issue-reopen", identity=BOT_LOGIN, dry_run=False, **res)
         return res
     res = {**base, "status": "reopened", "detail": f"reopened + removed {removed} bot comment(s)"}
@@ -500,7 +511,8 @@ def comment_issue(n: int, action: models.IssueCommentBody, *, token: str | None,
     try:
         r = bot_run(["gh", "issue", "comment", str(n), "--repo", REPO, "--body", comment], token)
     except Exception as e:
-        res = {**base, "status": "error", "detail": str(e)[:160]}
+        res = {**base, "status": "error",
+               "detail": _public_exception_detail("issue comment failed unexpectedly", e)}
         activity.record("issue-comment", identity=BOT_LOGIN, dry_run=False, **res)
         return res
     if r.returncode != 0:
@@ -562,7 +574,8 @@ def submit_review(n: int, event: str, body: str, *, token: str | None, dry_run: 
                 if url:
                     res["event_url"] = url
     except Exception as e:
-        res = {**base, "status": "error", "detail": str(e)[:160]}
+        res = {**base, "status": "error",
+               "detail": _public_exception_detail("review failed unexpectedly", e)}
     activity.record("review", identity=BOT_LOGIN, dry_run=False, event=event, **res)
     return res
 
@@ -596,7 +609,8 @@ def comment_line(n: int, file: str, line: int, body: str, *, token: str | None, 
             if url:
                 res["event_url"] = url
     except Exception as e:
-        res = {**base, "status": "error", "detail": str(e)[:160]}
+        res = {**base, "status": "error",
+               "detail": _public_exception_detail("line comment failed unexpectedly", e)}
     activity.record("line_comment", identity=BOT_LOGIN, dry_run=False, **res)
     return res
 
@@ -631,7 +645,8 @@ def retrigger_greptile(n: int, *, token: str | None, dry_run: bool) -> dict:
             if url:
                 res["event_url"] = url
     except Exception as e:
-        res = {**base, "status": "error", "detail": str(e)[:160]}
+        res = {**base, "status": "error",
+               "detail": _public_exception_detail("review retrigger failed unexpectedly", e)}
     activity.record("greptile_retrigger", identity=BOT_LOGIN, dry_run=False, **res)
     return res
 
@@ -734,7 +749,8 @@ def merge_pr(n: int, method: str = "squash", *, dry_run: bool, reason: str | Non
         res = ({**base, "status": "merged", "detail": f"merged (--{method})"} if r.returncode == 0
                else {**base, "status": "error", "detail": r.stderr.strip()[:160]})
     except Exception as e:
-        res = {**base, "status": "error", "detail": str(e)[:160]}
+        res = {**base, "status": "error",
+               "detail": _public_exception_detail("merge failed unexpectedly", e)}
     if res["status"] == "merged":
         _reflect_state(n, state="closed", merged=True)
     activity.record("merge", identity=BOT_LOGIN, dry_run=False, **res)

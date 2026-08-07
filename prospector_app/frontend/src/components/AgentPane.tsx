@@ -66,10 +66,7 @@ function loadSessions(): ChatSession[] {
 }
 
 function newSessionId(): string {
-  const rand = typeof crypto !== "undefined" && crypto.randomUUID
-    ? crypto.randomUUID()
-    : Math.random().toString(36).slice(2);
-  return `sess-${rand}`;
+  return `sess-${crypto.randomUUID()}`;
 }
 
 // Turn bare http(s) URLs in a user's message into clickable links while leaving

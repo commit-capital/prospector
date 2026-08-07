@@ -56,7 +56,8 @@ def test_exception_is_recorded(monkeypatch):
     monkeypatch.setattr(executor, "bot_run", _boom)
     recorded = _capture_activity(monkeypatch)
     res = _call()
-    assert res["status"] == "error" and "token revoked" in res["detail"]
+    assert res["status"] == "error"
+    assert res["detail"] == "upstream action failed unexpectedly; see server logs"
     assert recorded and recorded[0][1]["status"] == "error"
 
 
@@ -106,9 +107,9 @@ def test_on_success_failure_keeps_status_executed_and_still_records(monkeypatch)
     res = _call(on_success=boom)
     assert res["status"] == "executed"
     assert "commented + closed" in res["detail"]
-    assert "store schema is v9" in res["bookkeeping_error"]
+    assert res["bookkeeping_error"] == "post-close bookkeeping failed; see server logs"
     assert recorded and recorded[0][1]["status"] == "executed"
-    assert "store schema is v9" in recorded[0][1]["bookkeeping_error"]
+    assert recorded[0][1]["bookkeeping_error"] == "post-close bookkeeping failed; see server logs"
 
 
 def test_activity_failure_after_close_keeps_status_executed(monkeypatch):
@@ -121,7 +122,7 @@ def test_activity_failure_after_close_keeps_status_executed(monkeypatch):
     monkeypatch.setattr(executor.activity, "record", record_boom)
     res = _call()
     assert res["status"] == "executed"
-    assert "activity insert failed" in res["bookkeeping_error"]
+    assert res["bookkeeping_error"] == "activity log write failed; see server logs"
 
 
 def test_error_result_survives_a_failed_activity_record(monkeypatch):
@@ -136,7 +137,7 @@ def test_error_result_survives_a_failed_activity_record(monkeypatch):
     monkeypatch.setattr(executor.activity, "record", record_boom)
     res = _call()
     assert res["status"] == "error" and "comment failed" in res["detail"]
-    assert "log down" in res["bookkeeping_error"]
+    assert res["bookkeeping_error"] == "activity log write failed; see server logs"
 
 
 # --- the idempotency key is scoped to this action's own comment ---

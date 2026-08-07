@@ -63,5 +63,5 @@ def test_comment_issue_live_bot_run_raises_records_error_not_uncaught(monkeypatc
     monkeypatch.setattr(executor, "bot_run", _raise)
     res = executor.comment_issue(410, models.IssueCommentBody(comment="ping"), token="tok", dry_run=False)
     assert res["status"] == "error"
-    assert "timed out" in res["detail"].lower()
+    assert res["detail"] == "issue comment failed unexpectedly; see server logs"
     assert recorded, "a raised exception from bot_run must still be logged"
