@@ -84,7 +84,7 @@ def test_mint_bot_token_records_subprocess_exception(monkeypatch):
         raise subprocess.TimeoutExpired(cmd="get-bot-token.sh", timeout=30)
     monkeypatch.setattr(executor.subprocess, "run", boom)
     assert executor.mint_bot_token() is None
-    assert "TimeoutExpired" in executor.mint_error()
+    assert executor.mint_error() == "token helper failed unexpectedly; see server logs"
 
 
 def test_mint_bot_token_success_clears_prior_error(monkeypatch):

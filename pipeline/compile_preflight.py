@@ -13,10 +13,19 @@ result would be meaningless.
 """
 from __future__ import annotations
 
+import logging
 import time
 from pathlib import Path
 
 from pipeline import diffpaths, gates, profile, verify_driver
+
+logger = logging.getLogger(__name__)
+
+
+def _record_unexpected_error(result: dict, error: Exception) -> None:
+    logger.error("compile preflight failed unexpectedly",
+                 exc_info=(type(error), error, error.__traceback__))
+    result["error"] = "compile preflight failed unexpectedly; see server logs"
 
 
 def run_for_patch(pr: int, head_sha: str, patch: Path) -> dict | None:
@@ -37,7 +46,7 @@ def run_for_patch(pr: int, head_sha: str, patch: Path) -> dict | None:
     try:
         _compile_over(result, patch, cmd, head_sha)
     except Exception as e:
-        result["error"] = f"{type(e).__name__}: {str(e)[:200]}"
+        _record_unexpected_error(result, e)
     finally:
         result["duration_s"] = round(time.monotonic() - t0, 1)
     return result
@@ -62,7 +71,7 @@ def run_for_merge(pr: int, head_sha: str) -> dict | None:
         patch = verify_driver.fetch_patch(pr, head_sha)
         _compile_over(result, patch, cmd, head_sha)
     except Exception as e:
-        result["error"] = f"{type(e).__name__}: {str(e)[:200]}"
+        _record_unexpected_error(result, e)
     finally:
         result["duration_s"] = round(time.monotonic() - t0, 1)
     return result

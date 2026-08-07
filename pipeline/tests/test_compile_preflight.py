@@ -142,7 +142,8 @@ class TestRunForMerge:
                             lambda *a, **k: pytest.fail("ran despite no base"))
         res = compile_preflight.run_for_merge(7, "a" * 40)
         assert res is not None
-        assert "RuntimeError" in res["error"] and "exit" not in res
+        assert res["error"] == "compile preflight failed unexpectedly; see server logs"
+        assert "exit" not in res
 
     def test_every_record_carries_duration(self, configured, no_sandbox_calls):
         res = compile_preflight.run_for_merge(1, "")
