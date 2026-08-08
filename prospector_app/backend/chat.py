@@ -78,6 +78,7 @@ from prospector_app.backend import issues
 from prospector_app.backend import issue_receipts
 from prospector_app.backend import safety_guard
 from prospector_app.backend import subproc
+from pipeline import profile
 from pipeline import review_policy
 from pipeline import schema
 from prospector_app.backend import service
@@ -325,10 +326,19 @@ def system_prompt() -> str:
     policy = review_policy.active()
     review_bar = (f"{policy.label} {policy.threshold}/{policy.score_max}"
                   if policy.required else "none")
+    harness = profile.active().harness
+    template_parts = []
+    if harness.pr_template_required:
+        template_parts.append("required: " + ", ".join(harness.pr_template_required))
+    if harness.pr_template_recommended:
+        template_parts.append(
+            "recommended: " + ", ".join(harness.pr_template_recommended))
+    pr_template = "; ".join(template_parts) or "(none configured)"
     return (text.replace("{display_name}", DISPLAY_NAME)
                 .replace("{repo}", REPO).replace("{bot}", BOT_LOGIN)
                 .replace("{feedback_repo}", FEEDBACK_REPO or "(none configured)")
                 .replace("{review_bar}", review_bar)
+                .replace("{pr_template}", pr_template)
                 .replace("{retrigger_mention}",
                          policy.retrigger_mention or "(none configured)"))
 
