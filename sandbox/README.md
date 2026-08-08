@@ -68,7 +68,7 @@ One phase per invocation, against a base image built from `Dockerfile.base`:
     bash sandbox/sandbox-run.sh \
       --image pr-verify-base:<sha12>-t0 --phase apply-check|repro|red|green \
       --patch /path/to/fix.patch --tier 0 --test-cmd 'pnpm -s test' \
-      --base-sha <main-sha> --head-sha <pr-sha>
+      --base-sha <base-sha> --head-sha <pr-sha>
 
 The exit code is the result; the container's stdout/stderr streams to the
 launcher's. Sentinels are declared in `pipeline/gates.py` and mirrored in
@@ -96,7 +96,7 @@ the diff-membership check, the regress leg, and the dirty-green finding the
 record carries.
 
 The code under test is baked into the base image (`verify_driver.py
-prepare-base` builds it from a scrubbed clone at a pinned `main` SHA), so a
+prepare-base` builds it from a scrubbed clone at a pinned default-branch SHA), so a
 phase container mounts no source at all — untrusted writes land in its own
 copy-on-write layer. Each phase runs in its own container from that image, so
 a red phase's writes cannot appear in the green phase's container.
@@ -180,12 +180,12 @@ deliberate `no-suite-config` skip.
 ## Tiers
 
 Both tiers run every phase `--internal`, with no egress and no secrets. They
-differ only in whether the base image's build installed main's pinned
+differ only in whether the base image installed the default branch's pinned
 dependencies. `tier` is a property of the batch's base image, chosen by
 `verify_driver.py prepare-base --tier`.
 
 - **Tier 0 (default):** the base image carries no installed dependencies.
-- **Tier 1:** `Dockerfile.base` bakes main's pinned dependencies into the base
+- **Tier 1:** `Dockerfile.base` bakes those pinned dependencies into the base
   image, installed **offline** from a prefetched pnpm store. `prepare-base` runs
   `pnpm fetch` into a store dir from inside `pr-verify:local` — the same image,
   and so the same platform and pnpm, that installs from the store;
@@ -195,7 +195,7 @@ dependencies. `tier` is a property of the batch's base image, chosen by
   nothing can fetch a package outside that store — a PR-introduced
   dependency is structurally impossible here. Dependency-changing PRs
   (touching `package.json` / `pnpm-lock.yaml` / `pnpm-workspace.yaml`) are
-  refused before a sandbox boots by the deps-touched gate, so main's pinned
+  refused before a sandbox boots by the deps-touched gate, so the base image's
   deps are the only thing ever installed.
 - **Tier 2 (live agent):** OUT OF SCOPE — deferred behind a krunkit VM rebuild.
 
@@ -204,7 +204,7 @@ dependencies. `tier` is a property of the batch's base image, chosen by
 **Measurement checkpoint.** The first `prepare-base` baseline run on the
 target machine IS the measurement of a complete stabilized full-suite run —
 upstream's own wrapper truncates at its first failing invocation on a red
-main, so `baseline` mode is what makes a complete run observable at all. If
+the default branch, so `baseline` mode is what makes a complete run observable at all. If
 that run exceeds ~20 minutes, the number goes back to the operator before
 `regress` is relied on for anything — a 5-PR batch would then cost over two
 hours of regress runs, and parallelizing the independent workspace-project

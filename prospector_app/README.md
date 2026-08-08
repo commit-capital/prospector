@@ -19,7 +19,7 @@ audited:
   permits only comment/close/reopen/review (as the configured bot) plus the
   dedicated `bot_merge_run` path, and **refuses any write with an empty token**.
   Reads (`gh` reads, `git` reads, `claude -p`, `python`) pass through. Unit-tested
-  in `backend/test_safety_guard.py`.
+  in `backend/tests/test_safety_guard.py`.
 - Writes mint the configured app's token via `get-bot-token.sh`. On any machine
   where no token can be minted, every write is **forced to dry-run** — it
   physically cannot post. Merges are additionally gated per-PR by

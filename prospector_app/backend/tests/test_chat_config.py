@@ -67,6 +67,14 @@ def test_agent_has_its_own_context_not_the_dev_claude_md(monkeypatch):
     assert "store-read pr" in sp  # the real doc, pointing at the store accessor
 
 
+def test_system_prompt_renders_configured_review_bar(monkeypatch):
+    monkeypatch.setattr(settings, "REVIEW_PROVIDER", "greptile")
+    monkeypatch.setattr(settings, "REVIEW_THRESHOLD", 4)
+    sp = chat.system_prompt()
+    assert "Greptile 4/5" in sp
+    assert "{review_bar}" not in sp
+
+
 def test_missing_context_is_a_loud_failure(monkeypatch, tmp_path):
     # No silent fallback: if the manual is gone, refuse rather than run the
     # triage agent on a degraded prompt.
