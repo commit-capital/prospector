@@ -19,8 +19,9 @@ def _pr(store, n, head="h1", state="open", draft=False, summary_sha=None):
     store.save_pr(rec)
 
 
-def _spr(store, n, subsystem="ui", primary="p", head="h1"):
+def _spr(store, n, subsystem="ui", primary="p", head=None):
     """A summarized (current) PR with a given subsystem + primary_change."""
+    head = head or f"h{n}"
     store.save_pr({"pr": n, "meta": {"title": f"t{n}", "author": "a", "state": "open",
                    "draft": False, "head_sha": head, "checked_at": NOW},
         "summary": {"one_liner": f"o{n}", "subsystem": subsystem, "mechanism": "m",
@@ -257,11 +258,11 @@ class TestResetStaleMemberships:
 
     def test_detaches_stale_member_keeps_fresh_ones(self, tmp_path):
         s = Store(tmp_path)
-        _spr(s, 1, head="old")
-        _spr(s, 2, head="old")
+        _spr(s, 1, head="old1")
+        _spr(s, 2, head="old2")
         cd.commit_clusters(s, [{"root_problem": "r", "prs": [1, 2]}])
         assert is_current(s.load_pr(2), "cluster")
-        self._move_head(s, 2, "new")                 # #2 force-pushed + re-summarized
+        self._move_head(s, 2, "new2")                # #2 force-pushed + re-summarized
         assert not is_current(s.load_pr(2), "cluster")  # membership now stale
 
         res = cd.reset_stale_memberships(s)
@@ -272,11 +273,11 @@ class TestResetStaleMemberships:
 
     def test_deletes_a_cluster_emptied_by_the_detach(self, tmp_path):
         s = Store(tmp_path)
-        _spr(s, 1, head="old")
-        _spr(s, 2, head="old")
+        _spr(s, 1, head="old1")
+        _spr(s, 2, head="old2")
         cd.commit_clusters(s, [{"root_problem": "r", "prs": [1, 2]}])
-        self._move_head(s, 1, "new")
-        self._move_head(s, 2, "new")                 # both stale → cluster empties
+        self._move_head(s, 1, "new1")
+        self._move_head(s, 2, "new2")                # both stale → cluster empties
 
         res = cd.reset_stale_memberships(s)
         assert res["detached"] == [1, 2]
@@ -285,8 +286,8 @@ class TestResetStaleMemberships:
 
     def test_skips_when_summary_is_also_stale(self, tmp_path):
         s = Store(tmp_path)
-        _spr(s, 1, head="old")
-        _spr(s, 2, head="old")
+        _spr(s, 1, head="old1")
+        _spr(s, 2, head="old2")
         cd.commit_clusters(s, [{"root_problem": "r", "prs": [1, 2]}])
         self._move_head(s, 2, "new", resummarize=False)  # head moved, summary not refreshed
 
@@ -297,7 +298,7 @@ class TestResetStaleMemberships:
     def test_detaches_a_straddler_from_every_cluster(self, tmp_path):
         s = Store(tmp_path)
         for n in (1, 2, 3):
-            _spr(s, n, head="old")
+            _spr(s, n, head=f"old{n}")
         cd.commit_clusters(s, [{"root_problem": "a", "prs": [1, 2]},
                                {"root_problem": "b", "prs": [2, 3]}])
         assert s.load_pr(2).cluster_ids == [1, 2]    # straddler
@@ -310,8 +311,8 @@ class TestResetStaleMemberships:
 
     def test_noop_when_nothing_stale(self, tmp_path):
         s = Store(tmp_path)
-        _spr(s, 1, head="h")
-        _spr(s, 2, head="h")
+        _spr(s, 1, head="h1")
+        _spr(s, 2, head="h2")
         cd.commit_clusters(s, [{"root_problem": "r", "prs": [1, 2]}])
         assert cd.reset_stale_memberships(s) == {
             "detached": [], "emptied_clusters": [], "standalone_cleared": []}
@@ -478,7 +479,7 @@ class TestMarkStandalone:
     def test_commit_clusters_marks_leftovers_standalone(self, tmp_path):
         s = Store(tmp_path)
         for n in (1, 2, 3):
-            _pr(s, n, summary_sha="h1")
+            _pr(s, n, head=f"h{n}", summary_sha=f"h{n}")
         result = cd.commit_clusters(s, [{"root_problem": "x", "prs": [1, 2]}])
         assert result["standalone"] == 1    # PR 3 was considered, left standalone
         assert s.load_pr(3).cluster_ids == []
@@ -498,6 +499,39 @@ class TestGroups:
         entry = cd.groups(s)["inbox"][0]
         assert entry["primary_change"] == "primary thing"
         assert entry["secondary_changes"] == ["secondary thing"]
+
+
+class TestIdenticalHeadMemberships:
+    def test_full_cluster_adds_identical_head_pr_from_other_subsystem(self, tmp_path):
+        s = Store(tmp_path)
+        _spr(s, 1, subsystem="ui", primary="first framing", head="same")
+        _spr(s, 2, subsystem="cli", primary="second framing", head="same")
+        _spr(s, 3, subsystem="ui", primary="related", head="other")
+
+        cd.commit_clusters(s, [{"root_problem": "shared", "prs": [1, 3]}])
+
+        assert s.load_pr(1).cluster_ids == s.load_pr(2).cluster_ids
+        assert s.load_pr(2).cluster_ids == s.load_pr(3).cluster_ids
+
+    def test_incremental_assignment_overrides_duplicate_standalone_result(self, tmp_path):
+        s = Store(tmp_path)
+        _spr(s, 1, head="existing")
+        _spr(s, 2, subsystem="ui", primary="first framing", head="same")
+        _spr(s, 3, subsystem="cli", primary="second framing", head="same")
+        s.save_cluster({"id": 5, "root_problem": "shared", "prs": [1],
+                        "outcome": "merge-ready", "checked_at": NOW})
+        set_section(s, 1, "cluster", {"ids": [5]})
+
+        cd.commit_assignments(s, {
+            "joins": [{"pr": 2, "cluster_id": 5}],
+            "new_clusters": [],
+            "standalone": [3],
+        })
+
+        assert s.load_pr(2).cluster_ids == [5]
+        assert s.load_pr(3).cluster_ids == [5]
+        assert sorted(s.load_cluster(5).prs) == [1, 2, 3]
+        assert s.load_cluster(5).outcome is None
 
 
 class TestWaveSkipsDependabotBumps:

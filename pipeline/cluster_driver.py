@@ -327,9 +327,44 @@ def commit_clusters(store: Store, proposed: list[dict],
             created.append(cid)
         cl.set_members(members)        # adds new + wires backrefs, removes departed + clears
         existing[cid] = cl
+    _sync_identical_head_memberships(store)
     standalone = mark_standalone(store)
     return {"created": created, "updated": updated,
             "dropped_singletons": dropped, "standalone": standalone}
+
+
+def _sync_identical_head_memberships(store: Store) -> int:
+    """Give open, currently summarized PRs with one head SHA the same cluster ids.
+
+    An agent may frame the same diff differently across summary runs. Cluster
+    membership is therefore synchronized from the union of the memberships in
+    each identical-head group. Added members reopen the affected cluster for
+    analysis. Returns the number of memberships added.
+    """
+    by_head: dict[str, list[Pr]] = {}
+    for _, rec in _active(store):
+        if rec.head_sha and is_current(rec, "summary"):
+            by_head.setdefault(rec.head_sha, []).append(rec)
+
+    clusters = store.all_clusters()
+    added = 0
+    for duplicates in by_head.values():
+        if len(duplicates) < 2:
+            continue
+        member_ids = {rec.n for rec in duplicates}
+        cluster_ids = {cid for rec in duplicates for cid in rec.cluster_ids
+                       if cid in clusters}
+        for cid in cluster_ids:
+            missing = member_ids - set(clusters[cid].prs)
+            if not missing:
+                continue
+            cluster = store.edit_cluster(cid)
+            for n in sorted(missing):
+                cluster.add_member(n)
+                added += 1
+            cluster.set_outcome(None)
+            clusters[cid] = cluster
+    return added
 
 
 def mark_standalone(store: Store) -> int:
@@ -511,6 +546,7 @@ def commit_assignments(store: Store, payload: dict) -> dict:
             continue
         store.edit_pr(p).mark_standalone()
         standalone += 1
+    _sync_identical_head_memberships(store)
     return {"joined": joined, "created": created, "standalone": standalone, "errors": errors}
 
 
