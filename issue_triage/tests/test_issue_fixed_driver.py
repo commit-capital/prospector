@@ -111,10 +111,22 @@ def test_candidates_orders_by_cluster_pain_then_skips_current(tmp_path):
     assert issue_fixed_driver.candidates(st) == [4, 5]
 
 
+def test_bundle_flags_live_comment_evidence(tmp_path):
+    st = issue_store.IssueStore(tmp_path)
+    st.create_issue(5, dict(META, author="reporter", comments=2))
+    entry = issue_fixed_driver.bundle(st, only=[5])[0]
+    assert entry["author"] == "reporter"
+    assert entry["comments"] == 2
+
+
 def test_prompt_embeds_criteria_and_placeholders():
     assert issue_fixed_driver.FIX_CRITERIA in issue_fixed_driver.FIND_FIXED_PROMPT
     assert "__BUNDLE_PATH__" in issue_fixed_driver.FIND_FIXED_PROMPT
     assert "__REPO__" not in issue_fixed_driver.FIND_FIXED_PROMPT  # substituted at module load
+    assert "pre-merge behavior" in issue_fixed_driver.FIX_CRITERIA
+    assert "already produced the expected behavior" in issue_fixed_driver.FIX_CRITERIA
+    assert "gh issue view <n>" in issue_fixed_driver.FIND_FIXED_PROMPT
+    assert "retracts the suspected cause" in issue_fixed_driver.FIND_FIXED_PROMPT
 
 
 def test_apply_fixed_supersedes_needs_human(tmp_path):
