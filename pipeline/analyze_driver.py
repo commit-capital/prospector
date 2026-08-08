@@ -244,6 +244,8 @@ Decide per PR (every member MUST get exactly one):
 - "close-stale": abandoned/obsolete, no salvageable value.
 - "needs-human": product decision or judgment we can't make here — explain why.
 
+Close dispositions apply to the whole PR. Before `close-dup` or `close-fixed`, account for every substantive primary and secondary change; if the canonical or upstream fix covers only one concern, keep the PR open (usually `request-changes` to split it) or use `needs-human`.
+
 A `trusted` member (a maintainer named in the repository profile) is NEVER given a close disposition — no close-dup, close-fixed, or close-stale. A maintainer's open PR is intentional; if it is not the winner, use "request-changes" (with specific asks) or "needs-human". The commit validator rejects a close on a trusted member.
 
 When present, use `greptile_review` to distinguish substantive defects from nits and write precise asks. It does not override the configured score bar: a below-bar PR is `request-changes`, even when its remaining comments are nits.

@@ -63,6 +63,9 @@ class TestPlaceholders:
         assert "__SUBSYSTEMS__" not in filled
         assert "__REPO__" not in filled
 
+    def test_analyze_requires_whole_pr_coverage_before_close(self):
+        assert "account for every substantive primary and secondary change" in ad.ANALYZE_PROMPT
+
 
 class TestDriversShipTheCanonicalText:
     def test_analyze_index_ships_the_prompt(self, tmp_path, monkeypatch):
