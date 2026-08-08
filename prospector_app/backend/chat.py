@@ -322,11 +322,15 @@ def system_prompt() -> str:
         raise RuntimeError(f"app agent context missing: {AGENT_CONTEXT} ({e})") from e
     if not text:
         raise RuntimeError(f"app agent context is empty: {AGENT_CONTEXT}")
+    policy = review_policy.active()
+    review_bar = (f"{policy.label} {policy.threshold}/{policy.score_max}"
+                  if policy.required else "none")
     return (text.replace("{display_name}", DISPLAY_NAME)
                 .replace("{repo}", REPO).replace("{bot}", BOT_LOGIN)
                 .replace("{feedback_repo}", FEEDBACK_REPO or "(none configured)")
+                .replace("{review_bar}", review_bar)
                 .replace("{retrigger_mention}",
-                         review_policy.active().retrigger_mention or "(none configured)"))
+                         policy.retrigger_mention or "(none configured)"))
 
 
 def _ctx_id(pr: int | None, cluster: int | None, issue: int | None = None) -> str:

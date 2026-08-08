@@ -48,9 +48,10 @@ python3 run_harness.py --pr 4318 --gate secret_scan
 python3 run_harness.py --batch
 ```
 
-### Calibration baseline (as of 2026-05-18)
+### Historical calibration (2026-05-18)
 
-Last batch run over the original deployment's 2,231-PR cached backlog:
+These figures are a tuning baseline from the original deployment's 2,231-PR
+cached backlog, not current production metrics:
 
 | Outcome | Count | % |
 |---|---|---|
@@ -111,18 +112,14 @@ What this harness **cannot** do:
 The reducer job that produces the final verdict checks out the BASE branch
 (trusted), not the PR head. A malicious PR cannot tamper with its own verdict.
 
-## What's NOT in v1 (per the design)
+## Scope
 
-These come in later sub-projects:
+This static harness does not provide:
 
-- **Build/test gates** (typecheck, build, tests in sandboxed runner): Sub-project 1.5
-- **LLM-based gates** (code quality, correctness, roadmap alignment): Sub-project 2
-- **Orphan-branch verdict storage** for Layer 2 consumption: Sub-project 2
-- **Layer 2 cross-PR review service**: Sub-projects 3–4
-- **Training data capture**: Sub-project 5
-
-Each is independently deliverable. v1 is the smallest reasonable opening
-move — a single workflow file + three Python gates, reviewable in 10 minutes.
+- build or test execution;
+- LLM review;
+- durable cross-PR verdict storage or review service; or
+- training-data capture.
 
 ## Tunable knobs
 
@@ -141,5 +138,5 @@ If you want to adjust the harness, the things to change:
 4. Spot-check the now-fail and now-pass PRs to confirm the change makes sense at the population level.
 5. When the distribution looks right, ship.
 
-Three gates, no LLM in the loop, validated against a 2,231-PR real backlog
-with zero false-positive auto-rejects.
+Three gates, no LLM in the loop. Re-run the batch calibration before relying on
+the historical distribution above.

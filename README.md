@@ -28,46 +28,44 @@ For a single-process setup without the dev servers, build the frontend once (`pn
 
 ## How it works
 
-The **store** (SQL, via `TRIAGE_STORE_URL` or a local SQLite default) is the single source of truth: one validated row per PR and per cluster, every fact stamped with the `head_sha` it was computed against (so it goes stale automatically when an author pushes). The app serves reads from an in-memory snapshot it keeps in sync with the store incrementally; all markdown is generated *from* the store, never parsed back.
+The **store** (SQL, via `TRIAGE_STORE_URL` or a local SQLite default) is the single source of truth: one validated row per PR and per cluster, every fact stamped with the `head_sha` it was computed against (so it goes stale automatically when an author pushes). The app serves reads from an incrementally refreshed in-memory snapshot; generated status and briefing Markdown is output only, never parsed back.
 
-Seven idempotent phases feed the store:
+Seven idempotent phases plus a deterministic threat scan feed the store:
 
 ```
-INGEST ─► CLUSTER ─► ANALYZE ─► GATE ─► SECURITY ─► VERIFY ─► RESOLVE
-  │         │          │          │        │          │          │
-  │         │          │          │        │          │          └─ app: human approves,
-  │         │          │          │        │          │             executor acts upstream as
-  │         │          │          │        │          │             the bot (gated merges)
-  │         │          │          │        │          └─ run the PR's test in a secretless
-  │         │          │          │        │             sandbox against a pinned main: red
-  │         │          │          │        │             before the fix, green after; adds
-  │         │          │          │        │             verified-fix to the merge bar
-  │         │          │          │        └─ 3-lens adversarial review + refuting
-  │         │          │          │           verifier, on GATE-clean merge candidates
-  │         │          │          │           only; RED → needs-human + reopen cluster
-  │         │          │          └─ which merge candidates are clean enough to review
-  │         │          │             (review bar ∧ CI ∧ mergeable ∧ fresh)
-  │         │          └─ per-cluster dispositions + outcome; a below-bar merge pick
-  │         │             reads as request-changes with author asks (derived on read)
-  │         └─ diff-grounded summaries → semantic clusters (stable IDs)
-  └─ open non-draft PRs + issue links → store
+INGEST ─► THREAT SCAN ─► CLUSTER ─► ANALYZE ─► GATE ─► SECURITY ─► VERIFY ─► RESOLVE
 ```
 
-Each phase has a deterministic **driver** (`*_driver.py` — wave selection, validation, store writes) and, where it needs judgment, an agentic **Workflow** script (`pipeline/workflows/*.js`) with schema-validated structured output. Drivers never trust an agent to write the store directly. See `pipeline/workflows/README.md` for the run commands.
+- **INGEST:** fetch open non-draft PRs and issue links.
+- **THREAT SCAN:** apply deterministic attack signatures and the actor blocklist.
+- **CLUSTER / ANALYZE:** summarize diffs, group related PRs, and propose dispositions.
+- **GATE / SECURITY / VERIFY:** apply quality gates, adversarial review, and
+  secretless red→green verification.
+- **RESOLVE:** a human approves; the executor performs controlled upstream actions.
+
+Deterministic drivers own selection, validation, and store writes. Agentic
+judgment runs through schema-validated batch Workflows or locked-down per-PR
+agents; agents never write the store directly. See `pipeline/workflows/README.md`.
 
 ### Vocabulary
 
 - **Disposition** (per PR): `merge`, `request-changes` (ask the author for specific fixes, then merge), `close-dup`, `close-fixed`, `close-stale`, `needs-human`.
 - **Cluster state**: `needs-analysis`, `awaiting-authors`, `needs-first-party-work` (the feature is wanted but no contributed PR is cleanly salvageable — write our own), `blocked-on-decision`, `security-pending`, `ready`, `done`.
 
-The merge bar is strict: **the configured review provider's bar + CI passing + mergeable + security GREEN (or a logged override) + verified-fix**. The review provider is deployment config (`TRIAGE_REVIEW_PROVIDER`; `none` requires no external review). Anything short of the bar routes to request-changes or close — the app never suggests merging a flagged PR.
+The automatic merge recommendation is strict: **the configured review-provider
+bar + passing CI + mergeability + current GREEN security + an author-shipped
+verified fix**. Human-initiated merges use `gates.merge_eligibility`: they must
+pass every check that actually ran, but missing or inconclusive SECURITY/VERIFY
+evidence is not itself a block. The provider and score threshold are deployment
+configuration (`TRIAGE_REVIEW_PROVIDER`, `TRIAGE_REVIEW_THRESHOLD`); `none`
+disables the external-review requirement.
 
 ## Structure
 
 | Folder | Purpose |
 |--------|---------|
 | `pipeline/` | The store (`store/`), the phase drivers, `gates.py` / `freshness.py` / `taxonomy.py` / `profile.py`, the Workflow scripts, the `prospector` CLI (`cli.py`), and `views.py` (generates `STATUS.md`). |
-| `app/` | The web app. `backend/` (FastAPI over the store) + `frontend/` (React/Vite). The human triage + execution surface. |
+| `prospector_app/` | The web app: `backend/` (FastAPI), `frontend/` (React/Vite), and `agent/` (Ask-pane helpers and operating context). |
 | `issue_triage/` | The **issue** pipeline, on the same substrate as `pipeline/`: its own validated store (`store/`), `issue_freshness.py` / `issue_gates.py` / `issue_model.py` over the shared `pipeline/storekit.py`, and phase drivers (INGEST → CLUSTER → ANALYZE). Imports `pipeline/taxonomy.py`; the app Issues tab projects its store. |
 
 ## Configuration
@@ -138,7 +136,10 @@ Triage itself is an app operation: open the Clusters board, approve a plan, and 
 
 ### Operations the agent runs
 
-The full **CLUSTER**, **ANALYZE**, **SECURITY**, and **VERIFY** phases run the whole wave: each interleaves a driver's deterministic halves (`cluster_driver.py` / `analyze_driver.py` / `security_driver.py` / `verify_driver.py` subcommands — `wave`, `fetch-diffs`, `groups`, `commit-summaries-dir`, `commit-clusters-dir`, `eligible`, `commit`, `prepare-base`, …) with an agentic Workflow script (`pipeline/workflows/{summarize,cluster,analyze,security,verify_blind,verify_judge}.js`). You kick these off by asking the agent (or via the triage skills), not by typing one command — and the `workflows/*.js` scripts are never run by hand. See `pipeline/workflows/README.md` for the exact sequence.
+Full **CLUSTER**, **ANALYZE**, and **SECURITY** waves interleave deterministic
+drivers with the Workflow scripts in `pipeline/workflows/`. **VERIFY** instead
+runs per PR through the app queue and `verify_pr.py` worker. See
+`pipeline/workflows/README.md` for the current sequences.
 
 ## Deployment boundary
 

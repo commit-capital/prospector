@@ -1,5 +1,8 @@
 # Design: rename the project surface to Prospector
 
+> Historical design record. The implemented package is `prospector_app/`, not
+> the proposed `app/`; current paths and commands live in the root `README.md`.
+
 Date: 2026-07-30
 Status: implemented
 

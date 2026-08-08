@@ -1,5 +1,8 @@
 # Autofix queue — pushing small fixes to contributor PRs
 
+> Implementation record. Current behavior is defined by
+> `prospector_app/backend/fix_queue.py`, `fix_worker.py`, and `pipeline/gates.py`.
+
 Most PRs in the backlog fail their merge gates on merge drift or nitpicks, not
 on substance. Today the only way to clear those is to ask the author and wait.
 This adds a queue that authors the fix itself and pushes it to the

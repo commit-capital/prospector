@@ -2,8 +2,8 @@
 
 Store-backed triage pipeline for the open **issues** on the triaged repository
 (`TRIAGE_REPO`).
-The issue-side counterpart to `pipeline/` (which does PRs): it runs on the same v2
-substrate — a validated store, per-fact freshness, one gate-policy module, a typed
+The issue-side counterpart to the PR pipeline uses the same substrate: a
+validated store, per-fact freshness, one gate-policy module, a typed
 auto-saving domain model, and idempotent phase drivers — so issues are read,
 clustered, analyzed, and **kept fresh** exactly the way PRs are.
 
@@ -49,11 +49,11 @@ gated and logged.**
 ## Run it
 
 ```bash
-python issue_triage/issue_pipeline.py              # INGEST + CLUSTER (live fetch)
-python issue_triage/issue_pipeline.py --skip-fetch # reuse the store
-python issue_triage/analyze_issues.py --limit 200  # ANALYZE the 200 lowest-id pending issues (parallel)
-python issue_triage/issue_analyze_driver.py commit verdicts.json   # apply verdicts from a file (manual path)
-python issue_triage/issue_views.py                 # regenerate ISSUE-STATUS.md / SUMMARY.md
+uv run python issue_triage/issue_pipeline.py              # INGEST + CLUSTER (live fetch)
+uv run python issue_triage/issue_pipeline.py --skip-fetch # reuse the store
+uv run python issue_triage/analyze_issues.py --limit 200  # ANALYZE the 200 lowest-id pending issues (parallel)
+uv run python issue_triage/issue_analyze_driver.py commit verdicts.json
+uv run python issue_triage/issue_views.py                 # regenerate ISSUE-STATUS.md / SUMMARY.md
 ```
 
 The app's Issues tab is a read-only projection over this store

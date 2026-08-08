@@ -22,9 +22,9 @@ than restating them.
 
 ## 1. The store is SQL
 
-One database is the single source of truth. There is no committed store data and
-no JSON-file store — all markdown (`STATUS.md`, briefings) is **generated output,
-never parsed back**.
+One database is the single source of truth. There is no committed store data or
+JSON-file store. Status and briefing Markdown is **generated output, never parsed
+back**.
 
 - **Accessor:** `pipeline/store.py` over `pipeline/storekit.py`. This is the
   ONLY accessor — never hand-write rows. `issue_triage/issue_store.py` mirrors it
@@ -123,8 +123,7 @@ Neither path can write as the app when token minting fails. The trust model in
 ## Gotchas worth knowing before you touch the backend
 
 - **One import mechanism: installed packages.** The source roots are packages —
-  `pipeline`, `issue_triage`, and `app` (whose backend is
-  `prospector_app.backend`), each at its natural path under the repo root —
+  `pipeline`, `issue_triage`, and `prospector_app` —
   installed (editable) via stock setuptools (`pyproject.toml` `[tool.setuptools]`).
   Code imports them qualified: `from pipeline import store`,
   `from prospector_app.backend import data`, `from issue_triage import issue_store`.
