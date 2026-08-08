@@ -33,20 +33,22 @@ _BODY_CLIP = 1500
 # FIND_FIXED_PROMPT and surfaced by the `bundle` CLI dump, so the policy is stated
 # exactly once.
 FIX_CRITERIA = """\
-- fixed: a specific MERGED pull request already resolves the described bug. Find it by SYMPTOM, not by the issue number: search merged PRs for the error text / keywords / affected area (`gh pr list --state merged --search "..."`, `gh search prs`), narrow by the issue's subsystem to the likely files, read the current default-branch code there (`gh api repos/__REPO__/contents/<path>`), and attribute the change to its PR (`gh api repos/__REPO__/commits/<sha>/pulls`). READ the candidate PR's diff (`gh pr diff <n> --repo __REPO__`) and confirm it addresses THIS symptom before citing it. Set "fixed_by" to that PR number (and "upstream_date" if known). If you cannot pin a specific merged PR, do NOT use "fixed".
+- fixed: a specific MERGED pull request caused the described bug to become fixed. Find it by SYMPTOM, not by the issue number: search merged PRs for the error text / keywords / affected area (`gh pr list --state merged --search "..."`, `gh search prs`), narrow by the issue's subsystem to the likely files, and read the candidate PR's own diff (`gh pr diff <n> --repo __REPO__`). For the relevant hunk, identify the pre-merge behavior from its removed/context lines and evaluate the issue's stated inputs against it; the diff must change the result from the reported behavior to the expected behavior. Current default-branch code proves only the current state, not that this PR caused it. If the pre-merge code already produced the expected behavior, or the diff changes a different path or input case, this PR is not the fix. Set "fixed_by" to the PR number (and "upstream_date" if known). If you cannot establish that causal before/after change for a specific merged PR, do NOT use "fixed".
 - likely-fixed: the current default branch plainly no longer exhibits the described behavior, but you cannot attribute a specific merged PR. A human verifies before closing; do not set fixed_by.
 - not-fixed: the bug still appears present on the default branch, or there is not enough evidence to decide.""".replace("__REPO__", REPO)
 
-FIND_FIXED_PROMPT = """You are checking whether open GitHub issues on __REPO__ (an open-source agent-orchestration product) have ALREADY been fixed on the default branch. Read the JSON file at __BUNDLE_PATH__ — a list of issues, each with number, title, body, subsystem, repro_grade, identifiers, candidate_prs, and cluster context. The file is pretty-printed; Read it in full, continuing with offset until the end — do not grep for fragments.
+FIND_FIXED_PROMPT = """You are checking whether open GitHub issues on __REPO__ (an open-source agent-orchestration product) have ALREADY been fixed on the default branch. Read the JSON file at __BUNDLE_PATH__ — a list of issues, each with number, title, body, author, comments, subsystem, repro_grade, identifiers, candidate_prs, and cluster context. The file is pretty-printed; Read it in full, continuing with offset until the end — do not grep for fragments.
 
 Many of these bugs were fixed by a developer who hit the bug independently and never referenced the issue, so the fix does NOT mention the issue number. Your job is to find that fix by its SYMPTOM. Use read-only `gh` freely.
+
+For every entry whose `comments` count is nonzero, read the live thread with `gh issue view <n> --repo __REPO__ --comments`. A reporter follow-up that retracts the suspected cause, narrows reproducibility, or identifies a different root cause is evidence about the issue as reported and must be reconciled before attributing a fix. Generic fallback errors are weak evidence for the subsystem that emitted them; trace where the failed state originated before crediting a nearby classifier change.
 
 Choose exactly one status per issue:
 __CRITERIA__
 
 Every bundled issue MUST get exactly one verdict: {"issue": <number>, "status": "fixed"|"likely-fixed"|"not-fixed", "fixed_by": <PR number or null>, "fixed_title": "<PR title or "">", "upstream_date": <"YYYY-MM-DD" or null>, "gist": "...", "rationale": "..."} — where:
 - "gist": 2-3 plain sentences restating what THIS issue actually is (the concrete bug), legible to someone who hasn't read the raw body.
-- "rationale": 2-4 sentences explaining the evidence. For "fixed", name the cited PR and how its diff resolves the symptom. For "likely-fixed", say what on the default branch shows it is fixed and why no PR could be attributed.
+- "rationale": 2-4 sentences explaining the evidence. For "fixed", name the cited PR, the relevant removed/context line and its result for the issue's stated inputs, then the changed behavior that resolves the symptom. For "likely-fixed", say what on the default branch shows it is fixed and why no PR could be attributed.
 - "fixed_by"/"fixed_title"/"upstream_date" only for "fixed"; "issue" MUST equal the bundle entry's number.""".replace("__CRITERIA__", FIX_CRITERIA).replace("__REPO__", REPO)
 
 FIND_FIXED_FENCED_TAIL = """
@@ -76,6 +78,8 @@ def _issue_bundle(iss: Issue, cluster: IssueCluster | None) -> dict:
         "number": iss.number,
         "title": iss.title,
         "body": (iss.body or "")[:_BODY_CLIP],
+        "author": iss.author,
+        "comments": iss.comments,
         "subsystem": iss.subsystem,
         "repro_grade": iss.repro_grade,
         "identifiers": iss.identifiers,
