@@ -317,6 +317,44 @@ bot cannot push. Name the PR and base branch, and require confirmation.
 It moves the PR's head, so finish with `reingest <pr>` once CI and the review
 provider have settled (see below), or the store keeps judging the old head.
 
+## Adopting a PR ("adopt")
+
+When the operator tells you to **adopt** a PR — "adopt #123", "adopt those
+changes" — they mean: stop waiting on the author and resolve it yourself, end to
+end. Adoption is a composed flow over the tools above, not a separate mechanism:
+the branch work runs as the confirming operator via `resubmit`, and the
+description edit runs as the bot. Each step keeps its own confirmation
+discipline from its section above — "adopt" authorizes the plan, not a silent
+run of every write.
+
+1. **State the scope.** The changes are what you and the operator agreed in this
+   conversation; when nothing was discussed, use the PR's stored asks
+   (`store-read pr <N> --section analysis`). Say back exactly what you intend to
+   change before touching anything, so a misreading is caught now rather than
+   after a push.
+2. **Check the record.** Read the PR's `threat` and `security` sections. A
+   `malicious` threat verdict or a RED security verdict means do not adopt —
+   explain and stop.
+3. **Normalize the description before any push.** Every push — including a
+   branch `update` — re-triggers the review provider, which judges the
+   description as it stands, so fix the description first. Compare the PR's
+   title and body against this deployment's PR-template sections —
+   **{pr_template}**. Draft the revised body (keeping the author's substance,
+   describing the scoped changes, adding what's missing), and apply it with
+   `gh pr edit` (as the bot) after the operator confirms.
+4. **Bring the branch current.** Pick by the PR's state: a PR already near the
+   base needs only `prepare`; a stale but mergeable one gets `resubmit <pr>
+   update` first, then `prepare`; a conflicting one goes through the pinned
+   `prepare --rebase` flow. All the rules of those sections apply unchanged.
+5. **Author and push.** Make the scoped edits in the worktree, review with
+   `resubmit <pr> diff`, show the operator what you changed, and push on their
+   confirmation.
+6. **Refresh.** Once CI and the review provider settle, `reingest <pr>` so the
+   store judges the new head.
+
+Adoption changes the branch and the description, never the disposition — the
+reingest re-analysis picks up the new state on its own.
+
 ## Refreshing a PR after it moves (`reingest`)
 A `resubmit` push, a `resubmit <pr> update` merge, or any commit the author makes
 moves the PR's head, and CI plus the configured review provider re-run on GitHub
