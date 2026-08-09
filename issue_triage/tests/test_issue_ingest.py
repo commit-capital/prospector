@@ -32,6 +32,15 @@ def test_ingest_links_explicit_fixing_pr(tmp_path):
     assert any(c["pr"] == 100 and c["how"] == "explicit" for c in cands)
 
 
+def test_ingest_links_prose_body_reference(tmp_path):
+    st = issue_store.IssueStore(tmp_path)
+    prs = [{"number": 100, "title": "fix login",
+            "body": "Refs upstream issue #5"}]
+    issue_ingest.ingest_records(st, [RAW], prs=prs)
+    assert {"pr": 100, "how": "body-ref", "title": "fix login"} \
+        in st.load_issue(5).candidate_prs
+
+
 def test_load_prs_reads_open_and_merged_prs_from_sql_store(tmp_path):
     """_load_prs sources its corpus from the SQL PR store — open and merged PRs,
     each stamped with its state and a subsystem; closed-unmerged PRs are out."""

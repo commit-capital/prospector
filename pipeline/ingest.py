@@ -122,7 +122,8 @@ def drift_from_signals(signals: dict) -> dict:
 def issues_by_pr(links: list[dict]) -> dict[int, list[dict]]:
     """Invert a list of per-issue link records ({issue, pain, candidates}) into the
     PR → linked-issues map. Each candidate carries how the PR was matched
-    ('explicit' | 'subsystem'); downstream credits pain only for 'explicit'."""
+    ('explicit' | 'body-ref' | 'issue-ref' | 'subsystem'); downstream credits
+    pain only for 'explicit'."""
     out: dict[int, list[dict]] = {}
     for link in links:
         for cand in link.get("candidates", []) or []:
@@ -205,7 +206,7 @@ def _stage_pr(store: Store, gh_pr: dict, existing: Pr | None,
         head_moved=head_moved)
     drift = drift_from_signals(sig) if sig is not None else None
     pr = existing if existing is not None else model.Pr(store, {"pr": n})
-    pr.stage_facts(meta, signals=sig, drift=drift, issues=issues or None)
+    pr.stage_facts(meta, signals=sig, drift=drift, issues=issues)
     return pr
 
 
@@ -241,7 +242,6 @@ def refresh_prs(store: Store, numbers: list[int]) -> list[dict]:
     CI, Greptile, diffstat, and test presence are reconciled before the signals
     section is stamped. A moved head auto-stales summary/analysis/security via
     the store's against_head_sha stamping — no explicit invalidation here."""
-    issue_links = load_issue_links()
     out: list[dict] = []
     for n in numbers:
         n = int(n)
@@ -250,6 +250,7 @@ def refresh_prs(store: Store, numbers: list[int]) -> list[dict]:
         gh_pr = fetch_pr(n)
         if gh_pr is None:
             raise RuntimeError(f"gh api pulls/{n} failed or returned no PR")
+        issue_links = load_issue_links(prs=[gh_pr])
         # GitHub is the source of truth for CI: reconcile against its live
         # verdict for this exact head so a stale 'failing' can't false-block.
         head_sha = (gh_pr.get("head") or {}).get("sha")
@@ -274,7 +275,7 @@ def refresh_prs(store: Store, numbers: list[int]) -> list[dict]:
             greptile_score, greptile_sha = greptile.fetch_greptile_verdict(n)
         else:
             greptile_score, greptile_sha = None, None
-        rec = upsert_pr(store, gh_pr, issue_links.get(n),
+        rec = upsert_pr(store, gh_pr, issue_links.get(n, []),
                         ci_override=ci, mergeable_override=mergeable,
                         greptile_override=greptile_score,
                         greptile_reviewed_sha=greptile_sha,
@@ -322,22 +323,46 @@ def fetch_open_prs(max_n: int | None = None) -> list[dict]:
     return out[:max_n] if max_n else out
 
 
-def load_issue_links(iss_store: IssueStore | None = None) -> dict[int, list[dict]]:
+def load_issue_links(iss_store: IssueStore | None = None,
+                     prs: list[dict] | None = None) -> dict[int, list[dict]]:
     """PR → linked issues, read from the SQL issue store. Each issue carries its
     candidate PRs (stamped by issue_ingest via set_links) and belongs to a cluster
     whose pain applies to it; invert that issue→PRs mapping into the PR→issues map
-    the ingest attaches to each PR."""
+    the ingest attaches to each PR. When live PRs are supplied, their current
+    bodies authoritatively refresh direct explicit/body-ref evidence."""
     from issue_triage.issue_store import IssueStore
     st = iss_store or IssueStore()
     pain_by_cluster = {cid: cl.pain for cid, cl in st.all_issue_clusters().items()}
-    links = [
-        {"issue": iss.number,
-         "pain": pain_by_cluster.get(iss.cluster_id) if iss.cluster_id is not None else None,
+    issues = st.all_issues()
+    issue_pain = {
+        n: pain_by_cluster.get(iss.cluster_id) if iss.cluster_id is not None else None
+        for n, iss in issues.items()
+    }
+    out = issues_by_pr([
+        {"issue": iss.number, "pain": issue_pain[iss.number],
          "candidates": iss.candidate_prs}
-        for iss in st.all_issues().values()
+        for iss in issues.values()
         if iss.candidate_prs
-    ]
-    return issues_by_pr(links)
+    ])
+
+    # The issue store's candidate snapshot is refreshed when the issue changes,
+    # but a newly opened or newly edited PR must not wait for that unrelated
+    # event. Parse the live PR bodies too, validate #N against the issue corpus,
+    # and overlay stronger direct evidence over a weak subsystem match.
+    from issue_triage import link_prs
+    for pr in prs or []:
+        n = int(pr["number"])
+        by_issue = {entry["issue"]: entry for entry in out.get(n, [])
+                    if entry.get("how") not in ("explicit", "body-ref")}
+        refs = link_prs.classify_issue_refs(pr.get("body"))
+        for issue_n in sorted(refs.keys() & issues.keys()):
+            how = refs[issue_n]
+            by_issue[issue_n] = {"issue": issue_n, "pain": issue_pain[issue_n], "how": how}
+        if by_issue:
+            out[n] = list(by_issue.values())
+        else:
+            out.pop(n, None)
+    return out
 
 
 def _parse_pr_ids(spec: str) -> set[int]:
@@ -370,7 +395,7 @@ def _upsert_all(store: Store, prs: list[dict], issue_links: dict[int, list[dict]
         current = live if live.get("head") == head_sha else {}
         live_mergeable = _LIVE_MERGEABLE.get(current.get("mergeable") or "")
         rec = _stage_pr(
-            store, gh_pr, existing_prs.get(n), issue_links.get(n),
+            store, gh_pr, existing_prs.get(n), issue_links.get(n, []),
             ci_override=current.get("ci"), mergeable_override=live_mergeable,
             diffstat_override=current.get("diffstat"),
             has_tests_override=current.get("has_tests"))
@@ -406,10 +431,9 @@ def _targeted_ingest(store: Store, args: argparse.Namespace, started: str) -> in
 
     print("fetching open PRs…", flush=True)
     gh_prs = fetch_open_prs(args.max)
-    issue_links = load_issue_links()
-
     existing_prs = store.all_prs()
     targets = _select_new_prs(gh_prs, set(existing_prs))
+    issue_links = load_issue_links(prs=targets)
     print(f"open PRs: {len(gh_prs)} | targeting: {len(targets)}")
     live = live_prs.fetch([int(pr["number"]) for pr in targets])
     with store.batch():
@@ -467,7 +491,7 @@ def main(argv: list[str] | None = None) -> int:
     print("fetching open PRs…", flush=True)
     gh_prs = fetch_open_prs(args.max)
     live = live_prs.fetch([int(pr["number"]) for pr in gh_prs])
-    issue_links = load_issue_links()
+    issue_links = load_issue_links(prs=gh_prs)
     print(f"open PRs: {len(gh_prs)} | PRs with issue links: {len(issue_links)}")
 
     transitions = 0
