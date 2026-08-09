@@ -134,3 +134,21 @@ def test_live_states_skips_failed_chunk(monkeypatch, caplog):
         out = freshness_live.live_states([1, 2, 3])
     assert out == {}
     assert any("live PR fetch failed" in r.message for r in caplog.records)
+
+
+def test_live_states_keeps_resolved_aliases_when_one_errors(monkeypatch, caplog):
+    """One dead alias in a batch (a PR scrubbed from GitHub) nulls its own node
+    and rides an `errors` array; every other alias in the batch still lands."""
+    node = {"number": 1, "state": "OPEN", "merged": False, "headRefOid": HEAD,
+            "mergeable": "MERGEABLE", "additions": 3, "deletions": 1, "changedFiles": 1,
+            "files": {"nodes": [{"path": "src/app.ts"}]},
+            "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]}}
+    envelope = {"data": {"repository": {"p0": node, "p1": None}},
+                "errors": [{"type": "NOT_FOUND",
+                            "message": "Could not resolve to a PullRequest with the number of 10241."}]}
+    monkeypatch.setattr(freshness_live.live_prs, "gh_graphql", lambda query: envelope)
+    with caplog.at_level(logging.WARNING, logger="pipeline.live_prs"):
+        out = freshness_live.live_states([1, 10241])
+    assert 1 in out and out[1]["state"] == "open"
+    assert 10241 not in out
+    assert any("GraphQL error" in r.message for r in caplog.records)
