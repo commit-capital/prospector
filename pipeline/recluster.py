@@ -77,7 +77,7 @@ def run(store: Store, cid: int) -> int:
         if rec is None or rec.head_sha is None:
             continue
         sha = rec.head_sha
-        diff_cache.fetch_diff(n, sha)
+        diff_cache.fetch_diff(n, sha, store=store)
         batch.append({"pr": n, "head_sha": sha, "title": rec.title,
                       "diff_path": str(diff_cache.DIFFS / f"{sha}.diff")})
     bp = Path(f"/tmp/recluster-summarize-{cid}.json")

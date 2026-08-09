@@ -172,7 +172,7 @@ def _run(store: Store, pr: int) -> int:
     #    both the cached diff and the deterministic threat verdict track it.
     sha = rec.head_sha or ""
     _say("② Caching the diff for the current head…")
-    diff_cache.fetch_diff(pr, sha)
+    diff_cache.fetch_diff(pr, sha, store=store)
     _say("③ Threat-rescanning the current head…")
     _threat_rescan(pr)
 

@@ -158,11 +158,13 @@ def _verify(pr: int, diff_path: str, flagged: list[Finding]) -> list[Finding]:
     return confirmed
 
 
-def review_pr(pr: int, title: str, head: str) -> tuple[VerdictItem, int] | None:
+def review_pr(pr: int, title: str, head: str,
+              store: Store | None = None) -> tuple[VerdictItem, int] | None:
     """Run the 3-lens-then-refute review on ONE PR. Returns (verdict_item,
     lenses_ok) — the item is a VerdictItem ready for
     security_driver.commit_verdicts, and lenses_ok is how many of the lenses ran
-    (diagnostics only). Returns None if the diff can't be cached.
+    (diagnostics only). Returns None if the diff can't be cached. `store` routes
+    the diff fetch through the shared diff cache.
 
     This is the review ENGINE — deliberately ignorant of disposition/mergeability/
     gates. WHICH PRs get reviewed is a wave-selection concern
@@ -170,7 +172,7 @@ def review_pr(pr: int, title: str, head: str) -> tuple[VerdictItem, int] | None:
     # Ensure the diff for the current head is cached (review + verify Read it).
     _say("① Caching diff…")
     diff_path = diff_cache.DIFFS / f"{head}.diff"
-    if not diff_cache.fetch_diff(pr, head):
+    if not diff_cache.fetch_diff(pr, head, store=store):
         _say(f"✗ could not fetch diff for PR #{pr}")
         return None
 
@@ -248,7 +250,7 @@ def run(store: Store, pr: int, *, trigger: str | None = None) -> int:
     _say(f"▶ Security review of PR #{pr}: {title}")
     _say(f"  head {head[:7]}")
 
-    reviewed = review_pr(pr, title, head)
+    reviewed = review_pr(pr, title, head, store=store)
     if reviewed is None:
         return 1
     item, lenses_ok = reviewed

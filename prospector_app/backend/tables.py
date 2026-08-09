@@ -42,6 +42,9 @@ DESCRIPTIONS: dict[str, str] = {
                   "log and the action-items list — keyed by name.",
     "agent_memory": "The Prospector agent's durable memories: one fact per row with "
                     "author, text, and tags.",
+    "diffs": "Shared PR-diff cache — one immutable row per fetched PR head, "
+             "holding the capped diff text every machine's local file cache "
+             "reads through.",
 }
 
 PREVIEW_ROWS = 5

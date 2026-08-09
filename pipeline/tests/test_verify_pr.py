@@ -77,7 +77,7 @@ def pinned(store, tmp_path, monkeypatch):
     clone.mkdir()
     monkeypatch.setattr(verify_driver, "base_clone_dir", lambda sha: clone)
     monkeypatch.setattr(vp, "_image_exists", lambda image: True)
-    monkeypatch.setattr(diff_cache, "fetch_diff", lambda pr, head: True)
+    monkeypatch.setattr(diff_cache, "fetch_diff", lambda pr, head, *a, **k: True)
     monkeypatch.setattr(verify_driver, "changed_paths_for", lambda rec: ["src/x.test.ts"])
     # the harness self-test passes by default; its cache is per-image and
     # module-level, so clear it between tests
@@ -473,7 +473,7 @@ def test_a_patch_fetch_failure_parks_as_fetch_error(store, pinned, monkeypatch):
 def test_an_unfetchable_diff_parks_as_fetch_error(store, pinned, monkeypatch):
     """A diff that cannot be fetched is a transient upstream failure, not a
     safety refusal: the queued request parks for retry."""
-    monkeypatch.setattr(diff_cache, "fetch_diff", lambda pr, head: False)
+    monkeypatch.setattr(diff_cache, "fetch_diff", lambda pr, head, *a, **k: False)
     store.edit_pr(1).record_verify_request("queued", queued_at=_now())
     assert vp.run(store, 1, from_queue=True) == 0
     req = _request(store)
