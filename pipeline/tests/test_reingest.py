@@ -21,7 +21,7 @@ def _no_network(monkeypatch):
     monkeypatch.setattr(reingest.ingest, "refresh_prs",
                         lambda s, nums, **k: [{"pr": int(nums[0]), "moved": False,
                                                "old_sha": "sha", "new_sha": "sha"}])
-    monkeypatch.setattr(reingest.diff_cache, "fetch_diff", lambda pr, sha: True)
+    monkeypatch.setattr(reingest.diff_cache, "fetch_diff", lambda pr, sha, *a, **k: True)
     monkeypatch.setattr(reingest, "_threat_rescan", lambda pr: None)
 
 

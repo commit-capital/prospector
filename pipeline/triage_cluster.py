@@ -82,7 +82,7 @@ def _run(store: Store, cid: int, cluster: Cluster) -> int:
         for n in moved:
             rec = store.load_pr(n)
             if rec is not None:
-                diff_cache.fetch_diff(n, rec.head_sha or "")
+                diff_cache.fetch_diff(n, rec.head_sha or "", store=store)
 
     # 3. Threat re-scan moved heads (deterministic backstop; sticky on malicious).
     if moved:

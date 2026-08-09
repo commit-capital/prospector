@@ -1,6 +1,10 @@
 """diff_cache.py — the machine-local diff cache and its bounded, read-only
 GitHub fetch (shared by the CLUSTER wave and the threat scan's fetch step)."""
+import pytest
+
 from pipeline import diff_cache
+from pipeline.store import Store
+from pipeline.wire import DiffManifestItem
 
 
 class TestFetchDiffFallback:
@@ -72,3 +76,118 @@ class TestFetchDiffFallback:
         alt = tmp_path / "alt"
         assert diff_cache.fetch_diff(9, "cafe", alt) is True
         assert (alt / "cafe.diff").read_text() == text
+
+
+DIFF_A = "diff --git a/src/a.ts b/src/a.ts\n+alpha\n"
+DIFF_B = "diff --git a/src/b.ts b/src/b.ts\n+beta\n"
+
+
+def _no_github(monkeypatch):
+    """Make any subprocess call fail the test — the path under test must not
+    reach GitHub."""
+    def boom(*a, **k):
+        raise AssertionError("unexpected GitHub call")
+    monkeypatch.setattr(diff_cache.subprocess, "run", boom)
+
+
+@pytest.fixture
+def store(tmp_path) -> Store:
+    return Store(tmp_path / "store")
+
+
+class TestStoreDiffRows:
+    """Store accessors for the shared `diffs` table: immutable rows keyed by
+    head SHA."""
+
+    def test_save_and_load_roundtrip(self, store):
+        store.save_diffs_many([("aaa1", 7, DIFF_A)])
+        assert store.load_diff("aaa1") == DIFF_A
+        assert store.load_diff("zzz9") is None
+
+    def test_existing_head_is_left_untouched(self, store):
+        store.save_diffs_many([("aaa1", 7, DIFF_A)])
+        store.save_diffs_many([("aaa1", 7, "changed body")])
+        assert store.load_diff("aaa1") == DIFF_A
+
+    def test_bulk_load_returns_only_present(self, store):
+        store.save_diffs_many([("aaa1", 7, DIFF_A), ("bbb2", 8, DIFF_B)])
+        assert store.load_diffs(["aaa1", "bbb2", "zzz9"]) == {"aaa1": DIFF_A, "bbb2": DIFF_B}
+        assert store.load_diffs([]) == {}
+
+    def test_rejects_empty_head_or_body(self, store):
+        from pipeline.storekit import ValidationError
+        with pytest.raises(ValidationError):
+            store.save_diffs_many([("", 7, DIFF_A)])
+        with pytest.raises(ValidationError):
+            store.save_diffs_many([("aaa1", 7, "")])
+
+
+class TestReadThroughFetch:
+    """fetch_diff consults the local file, then the shared store, then GitHub —
+    writing back at each level so the next reader up the chain hits."""
+
+    def test_store_hit_materializes_local_file_without_github(
+            self, tmp_path, monkeypatch, store):
+        monkeypatch.setattr(diff_cache, "DIFFS", tmp_path / "diffs")
+        _no_github(monkeypatch)
+        store.save_diffs_many([("aaa1", 7, DIFF_A)])
+        paths = diff_cache.fetch_diff_paths(7, "aaa1", store=store)
+        assert paths == ["src/a.ts"]
+        assert (tmp_path / "diffs" / "aaa1.diff").read_text() == DIFF_A
+
+    def test_github_fetch_writes_back_to_store(self, tmp_path, monkeypatch, store):
+        monkeypatch.setattr(diff_cache, "DIFFS", tmp_path / "diffs")
+
+        class R:
+            returncode, stdout, stderr = 0, DIFF_A, ""
+
+        monkeypatch.setattr(diff_cache.subprocess, "run", lambda *a, **k: R())
+        assert diff_cache.fetch_diff(7, "aaa1", store=store) is True
+        assert store.load_diff("aaa1") == DIFF_A
+
+    def test_store_failure_degrades_to_github(self, tmp_path, monkeypatch, store):
+        monkeypatch.setattr(diff_cache, "DIFFS", tmp_path / "diffs")
+
+        class R:
+            returncode, stdout, stderr = 0, DIFF_A, ""
+
+        monkeypatch.setattr(diff_cache.subprocess, "run", lambda *a, **k: R())
+        monkeypatch.setattr(store, "load_diff",
+                            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("db down")))
+        monkeypatch.setattr(store, "save_diffs_many",
+                            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("db down")))
+        assert diff_cache.fetch_diff(7, "aaa1", store=store) is True
+        assert (tmp_path / "diffs" / "aaa1.diff").read_text() == DIFF_A
+
+    def test_local_file_wins_without_touching_store_or_github(
+            self, tmp_path, monkeypatch, store):
+        d = tmp_path / "diffs"
+        d.mkdir(parents=True)
+        (d / "aaa1.diff").write_text(DIFF_A)
+        monkeypatch.setattr(diff_cache, "DIFFS", d)
+        _no_github(monkeypatch)
+        monkeypatch.setattr(store, "load_diff",
+                            lambda *a, **k: (_ for _ in ()).throw(AssertionError("unexpected store read")))
+        assert diff_cache.fetch_diff_paths(7, "aaa1", store=store) == ["src/a.ts"]
+
+
+class TestBulkFetch:
+    def test_fetch_diffs_pulls_store_hits_and_writes_fresh_fetches_through(
+            self, tmp_path, monkeypatch, store):
+        monkeypatch.setattr(diff_cache, "DIFFS", tmp_path / "diffs")
+        store.save_diffs_many([("aaa1", 7, DIFF_A)])
+
+        def run(cmd, **kw):
+            class R:
+                returncode, stdout, stderr = 0, DIFF_B, ""
+            assert cmd[:3] == ["gh", "pr", "diff"] and cmd[3] == "8"
+            return R()
+
+        monkeypatch.setattr(diff_cache.subprocess, "run", run)
+        manifest = [DiffManifestItem(pr=7, head_sha="aaa1", title=None, diff_path=""),
+                    DiffManifestItem(pr=8, head_sha="bbb2", title=None, diff_path="")]
+        ok, bad = diff_cache.fetch_diffs(manifest, store=store)
+        assert (ok, bad) == (2, 0)
+        assert (tmp_path / "diffs" / "aaa1.diff").read_text() == DIFF_A
+        assert (tmp_path / "diffs" / "bbb2.diff").read_text() == DIFF_B
+        assert store.load_diff("bbb2") == DIFF_B

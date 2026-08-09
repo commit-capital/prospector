@@ -120,6 +120,19 @@ registries = Table(
     Column("data", _JSON, nullable=False),
 )
 
+# Shared cache of fetched PR diffs, one row per PR head. A head's diff never
+# changes, so rows are immutable once written; `body` is the same
+# MAX_DIFF_BYTES-capped text the machine-local file cache holds (diff_cache.py
+# is the writer and owns the cap). `pr` labels the row for inspection and may
+# be NULL when the head no longer maps to a known PR.
+diffs = Table(
+    "diffs", METADATA,
+    Column("head_sha", String, primary_key=True),
+    Column("pr", Integer, index=True),
+    Column("body", String, nullable=False),
+    Column("fetched_at", String),
+)
+
 agent_memory = Table(
     "agent_memory", METADATA,
     Column("rowid", Integer, primary_key=True, autoincrement=True),

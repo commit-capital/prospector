@@ -263,7 +263,7 @@ def refresh_prs(store: Store, numbers: list[int]) -> list[dict]:
             # summarize/analyze tail. Derive the signal before the atomic
             # signals write so the section's new head stamp is truthful.
             from pipeline import diff_cache
-            paths = diff_cache.fetch_diff_paths(n, head_sha)
+            paths = diff_cache.fetch_diff_paths(n, head_sha, store=store)
             if paths is not None:
                 has_tests = diffpaths.has_tests(paths)
         # Read Greptile's own confidence score + reviewed commit directly from

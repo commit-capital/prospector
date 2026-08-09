@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -42,6 +41,7 @@ from pipeline import gates
 from pipeline import profile
 from pipeline import threats
 from pipeline.store import Store
+from pipeline.wire import DiffManifestItem
 
 if TYPE_CHECKING:
     from pipeline.model import Pr
@@ -51,17 +51,19 @@ def _today() -> str:
     return datetime.now(timezone.utc).date().isoformat()
 
 
-def fetch_missing_diffs(prs: dict[int, Pr], diffs_dir: Path,
-                        workers: int = 8) -> tuple[dict[str, int], set[int]]:
+def fetch_missing_diffs(prs: dict[int, Pr], diffs_dir: Path, workers: int = 8,
+                        store: Store | None = None) -> tuple[dict[str, int], set[int]]:
     """Fetch the current-head diff of every open PR in `prs` that has none
-    cached — parallel, read-only against GitHub (diff_cache.fetch_diff).
-    Genuine dependency bumps from the profile's automation authors are left
-    unfetched; their diffs are out of scanning scope (gates.is_dependabot_bump
-    — the change-shape check needs the paths, so for an uncached automation PR
-    it reads the per-file listing). Returns the fetch counters and the set of
+    cached — parallel, read-only against GitHub (diff_cache.fetch_diff), with
+    heads already in the shared store's diff cache pulled in bulk first and
+    fresh fetches pushed back (diff_cache.fetch_diffs). Genuine dependency
+    bumps from the profile's automation authors are left unfetched; their
+    diffs are out of scanning scope (gates.is_dependabot_bump — the
+    change-shape check needs the paths, so for an uncached automation PR it
+    reads the per-file listing). Returns the fetch counters and the set of
     exempt PR numbers."""
     bots = profile.active().automation_bots
-    targets: list[tuple[int, str]] = []
+    manifest: list[DiffManifestItem] = []
     exempt: set[int] = set()
     for n, rec in sorted(prs.items()):
         head = rec.head_sha
@@ -71,11 +73,9 @@ def fetch_missing_diffs(prs: dict[int, Pr], diffs_dir: Path,
                 rec.author, diff_cache.changed_paths(n, head, diffs_dir)):
             exempt.add(n)
             continue
-        targets.append((n, head))
-    fetched = failed = 0
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        for ok in ex.map(lambda t: diff_cache.fetch_diff(t[0], t[1], diffs_dir), targets):
-            fetched, failed = (fetched + 1, failed) if ok else (fetched, failed + 1)
+        manifest.append(DiffManifestItem.for_pr(n, rec, diffs_dir))
+    fetched, failed = diff_cache.fetch_diffs(manifest, workers=workers, store=store,
+                                             diffs_dir=diffs_dir)
     return {"fetched": fetched, "fetch_failed": failed, "bump_exempt": len(exempt)}, exempt
 
 
@@ -147,7 +147,7 @@ def main(argv: list[str] | None = None) -> int:
     fetch_stats: dict[str, int] = {}
     exempt: set[int] = set()
     if not args.no_fetch:
-        fetch_stats, exempt = fetch_missing_diffs(prs, diffs_dir)
+        fetch_stats, exempt = fetch_missing_diffs(prs, diffs_dir, store=store)
         print(f"fetch: {fetch_stats}")
 
     malicious: list[int] = []

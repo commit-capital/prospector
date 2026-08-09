@@ -470,7 +470,7 @@ def _run_inner(store: Store, rec: Pr, req: _Request) -> int:
     # is a transient upstream failure and re-queues; a deps-touching PR is
     # refused and recorded as deps-touched.
     _say("① Caching diff…")
-    if not diff_cache.fetch_diff(n, head):
+    if not diff_cache.fetch_diff(n, head, store=store):
         return _fail_transient(req, "fetch-error",
                                f"could not fetch the diff for PR #{n} — "
                                f"verification fails closed without one")
