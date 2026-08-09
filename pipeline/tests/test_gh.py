@@ -93,11 +93,35 @@ def test_gh_graphql_parses_object(monkeypatch):
     assert gh.gh_graphql("query {}") == {"data": {"x": 1}}
 
 
-def test_gh_graphql_none_on_nonzero_exit(monkeypatch):
+def test_gh_graphql_none_on_nonzero_exit_with_unparseable_body(monkeypatch):
     monkeypatch.setattr(gh.subprocess, "run", _fake_run("ignored", returncode=1))
     assert gh.gh_graphql("query {}") is None
 
 
 def test_gh_graphql_none_on_array_body(monkeypatch):
     monkeypatch.setattr(gh.subprocess, "run", _fake_run('[1, 2]'))
+    assert gh.gh_graphql("query {}") is None
+
+
+def test_gh_graphql_keeps_partial_data_on_nonzero_exit(monkeypatch):
+    # gh exits 1 when the response carries any GraphQL error, yet still prints
+    # the full envelope; errors coexist with partial data (one dead alias in a
+    # batched query errors while every other alias resolves).
+    envelope = json.dumps({
+        "data": {"repository": {"p0": {"number": 1}, "p1": None}},
+        "errors": [{"type": "NOT_FOUND",
+                    "message": "Could not resolve to a PullRequest with the number of 10241."}],
+    })
+    monkeypatch.setattr(gh.subprocess, "run", _fake_run(envelope, returncode=1))
+    out = gh.gh_graphql("query {}")
+    assert out is not None
+    assert out["data"]["repository"]["p0"] == {"number": 1}
+
+
+def test_gh_graphql_none_on_nonzero_exit_without_data(monkeypatch):
+    # A parseable error body with no data object (auth failure, rate limit) is
+    # still a failed call.
+    monkeypatch.setattr(
+        gh.subprocess, "run",
+        _fake_run('{"message": "API rate limit exceeded"}', returncode=1))
     assert gh.gh_graphql("query {}") is None

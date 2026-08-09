@@ -52,6 +52,14 @@ def fetch(prs: list[int]) -> dict[int, dict]:
             _log.warning("live PR fetch failed for %d PRs (%d-%d)",
                          len(chunk), chunk[0], chunk[-1])
             continue
+        errors = payload.get("errors")
+        if errors:
+            # Partial envelope: the erroring aliases (e.g. a PR scrubbed from
+            # GitHub) come back as null nodes and are omitted from the result;
+            # every resolved alias in the batch is still used.
+            _log.warning("live PR fetch: %d GraphQL error(s) in batch %d-%d; first: %s",
+                         len(errors), chunk[0], chunk[-1],
+                         (errors[0] or {}).get("message", "?"))
         repo = (payload.get("data") or {}).get("repository") or {}
         for j, n in enumerate(chunk):
             node = repo.get(f"p{j}")

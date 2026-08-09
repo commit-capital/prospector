@@ -27,20 +27,27 @@ def gh_api(path: str, *, timeout: int = 60) -> Any | None:
 
 
 def gh_graphql(query: str, *, timeout: int = 60) -> dict | None:
-    """`gh api graphql` for `query`, parsed as a JSON object, or None on any
-    failure (non-zero exit, timeout, unparseable/non-object body)."""
+    """`gh api graphql` for `query`, parsed as a JSON object, or None when no
+    usable response came back (timeout, unparseable/non-object body, or an
+    error body with no `data`).
+
+    gh exits non-zero on any GraphQL error while still printing the full
+    envelope, and errors coexist with partial data — so a body carrying a
+    `data` object is returned regardless of exit code."""
     try:
         res = subprocess.run(["gh", "api", "graphql", "-f", f"query={query}"],
                              capture_output=True, text=True, timeout=timeout)
     except (subprocess.SubprocessError, OSError):
         return None
-    if res.returncode != 0:
-        return None
     try:
         parsed = json.loads(res.stdout)
     except json.JSONDecodeError:
         return None
-    return parsed if isinstance(parsed, dict) else None
+    if not isinstance(parsed, dict):
+        return None
+    if res.returncode != 0 and not isinstance(parsed.get("data"), dict):
+        return None
+    return parsed
 
 
 def gh_json(path: str) -> dict | None:
