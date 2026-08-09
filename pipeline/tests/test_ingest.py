@@ -153,6 +153,37 @@ class TestIssueLinks:
         # issue 44 has no candidate PRs → it links to nothing
         assert 44 not in {e["issue"] for links in by_pr.values() for e in links}
 
+    def test_live_pr_body_reference_does_not_wait_for_issue_reingest(self, tmp_path):
+        from issue_triage import issue_store
+        st = issue_store.IssueStore(tmp_path)
+        st.create_issue(3846, {"title": "query alias", "state": "open", "updated_at": "T"})
+
+        by_pr = ingest.load_issue_links(st, prs=[{
+            "number": 4032, "body": "Refs upstream issue #3846"}])
+
+        assert by_pr[4032] == [
+            {"issue": 3846, "pain": None, "how": "body-ref"}]
+
+    def test_live_explicit_reference_overrides_stored_subsystem_match(self, tmp_path):
+        from issue_triage import issue_store
+        st = issue_store.IssueStore(tmp_path)
+        issue = st.create_issue(42, {"title": "crash", "state": "open", "updated_at": "T"})
+        issue.set_links([{"pr": 10, "how": "subsystem"}])
+
+        by_pr = ingest.load_issue_links(st, prs=[{"number": 10, "body": "Fixes #42"}])
+
+        assert by_pr[10] == [{"issue": 42, "pain": None, "how": "explicit"}]
+
+    def test_live_body_removal_clears_stored_direct_reference(self, tmp_path):
+        from issue_triage import issue_store
+        st = issue_store.IssueStore(tmp_path)
+        issue = st.create_issue(42, {"title": "crash", "state": "open", "updated_at": "T"})
+        issue.set_links([{"pr": 10, "how": "explicit"}])
+
+        by_pr = ingest.load_issue_links(st, prs=[{"number": 10, "body": "No issue link."}])
+
+        assert 10 not in by_pr
+
 
 class TestBuildSignals:
     def test_override_copies_existing(self):
@@ -359,7 +390,7 @@ class TestTargetedIngest:
         ingest.upsert_pr(store, GH_PR)  # seed 5001
         new_pr = dict(GH_PR, number=6002, head={"sha": "newsha"})
         monkeypatch.setattr(ingest, "fetch_open_prs", lambda mx=None: [GH_PR, new_pr])
-        monkeypatch.setattr(ingest, "load_issue_links", lambda: {})
+        monkeypatch.setattr(ingest, "load_issue_links", lambda **_: {})
         monkeypatch.setattr(
             ingest.live_prs, "fetch",
             lambda prs: {6002: {"head": "newsha", "ci": "passing",
@@ -381,7 +412,7 @@ class TestTargetedIngest:
                             lambda mx=None: pytest.fail("--prs must not fetch the open corpus"))
         monkeypatch.setattr(ingest, "fetch_pr",
                             lambda n: fetched.append(n) or b)
-        monkeypatch.setattr(ingest, "load_issue_links", lambda: {})
+        monkeypatch.setattr(ingest, "load_issue_links", lambda **_: {})
         monkeypatch.setattr(ingest, "gh_ci_status", lambda sha: "passing")
         monkeypatch.setattr(greptile, "fetch_greptile_verdict", lambda n: (5, "s2"))
         rc = ingest.main(["--prs", "7002", "--store", str(tmp_path)])
@@ -399,7 +430,7 @@ class TestTargetedIngest:
         b = dict(GH_PR, number=7003, head={"sha": "s3"})
         monkeypatch.setattr(ingest, "fetch_pr", lambda n: b)
         monkeypatch.setattr(ingest, "gh_ci_status", lambda sha: "passing")
-        monkeypatch.setattr(ingest, "load_issue_links", lambda: {})
+        monkeypatch.setattr(ingest, "load_issue_links", lambda **_: {})
         monkeypatch.setattr(greptile, "fetch_greptile_verdict",
                             lambda n: pytest.fail("must not fetch Greptile when provider is none"))
         out = ingest.refresh_prs(store, [7003])
@@ -424,7 +455,7 @@ class TestTargetedIngest:
         and the targeted modes do not."""
         from issue_triage import issue_ingest
         monkeypatch.setattr(ingest, "fetch_open_prs", lambda mx=None: [GH_PR])
-        monkeypatch.setattr(ingest, "load_issue_links", lambda: {})
+        monkeypatch.setattr(ingest, "load_issue_links", lambda **_: {})
         calls: list[list[str] | None] = []
         monkeypatch.setattr(issue_ingest, "main", lambda argv=None: calls.append(argv))
         assert ingest.main(["--store", str(tmp_path)]) == 0
@@ -438,7 +469,7 @@ class TestTargetedIngest:
         """A full ingest backfills the Greptile reviewed-SHA after the PR sweep
         (#21); targeted modes and a non-Greptile provider do not."""
         monkeypatch.setattr(ingest, "fetch_open_prs", lambda mx=None: [GH_PR])
-        monkeypatch.setattr(ingest, "load_issue_links", lambda: {})
+        monkeypatch.setattr(ingest, "load_issue_links", lambda **_: {})
         calls: list[object] = []
         monkeypatch.setattr(greptile, "backfill_greptile_data",
                             lambda store, prs=None: calls.append(store) or {"candidates": 0,
@@ -455,7 +486,7 @@ class TestTargetedIngest:
 
     def test_main_full_loads_pr_corpus_once(self, tmp_path, monkeypatch):
         monkeypatch.setattr(ingest, "fetch_open_prs", lambda mx=None: [GH_PR])
-        monkeypatch.setattr(ingest, "load_issue_links", lambda: {})
+        monkeypatch.setattr(ingest, "load_issue_links", lambda **_: {})
         loads: list[int] = []
         all_prs = Store.all_prs
 
@@ -472,7 +503,7 @@ class TestTargetedIngest:
         ingest.upsert_pr(store, GH_PR)
         closed = dict(GH_PR, state="closed")
         monkeypatch.setattr(ingest, "fetch_open_prs", lambda mx=None: [])
-        monkeypatch.setattr(ingest, "load_issue_links", lambda: {})
+        monkeypatch.setattr(ingest, "load_issue_links", lambda **_: {})
         monkeypatch.setattr(ingest, "fetch_pr", lambda n: closed)
         monkeypatch.setattr(
             Store, "edit_pr", lambda self, n: pytest.fail("closure must use the snapshot"))
@@ -488,7 +519,7 @@ class TestRefreshPrs:
         import json as _json
         st = Store(tmp_path)
 
-        monkeypatch.setattr(ingest, "load_issue_links", lambda: {})
+        monkeypatch.setattr(ingest, "load_issue_links", lambda **_: {})
         monkeypatch.setattr(ingest, "gh_ci_status", lambda sha: "passing")
         monkeypatch.setattr(greptile, "fetch_greptile_verdict", lambda n: (5, "deadbeef"))
         monkeypatch.setattr(ingest.subprocess, "run",

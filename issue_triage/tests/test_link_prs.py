@@ -1,5 +1,5 @@
 from issue_triage import link_prs
-from issue_triage.link_prs import parse_issue_refs, candidate_prs
+from issue_triage.link_prs import candidate_prs, parse_body_issue_refs, parse_issue_refs
 
 
 def test_candidate_prs_caps_subsystem_matches_keeps_all_direct():
@@ -17,12 +17,23 @@ def test_candidate_prs_caps_subsystem_matches_keeps_all_direct():
 
 
 def test_parse_fixes_closes_resolves():
-    body = "This Fixes #123 and also closes #45.\nResolves #6789."
+    body = "This Fixes #123 and also closes: #45.\nResolves #6789."
     assert parse_issue_refs(body) == {45, 123, 6789}
 
 
 def test_parse_ignores_non_keyword_hash():
     assert parse_issue_refs("see #999 for context") == set()
+
+
+def test_broad_body_refs_include_prose_issue_reference():
+    body = "Refs upstream issue #3846; see #4000 for context."
+    assert parse_body_issue_refs(body) == {3846, 4000}
+
+
+def test_candidate_prs_marks_non_closing_body_reference_lower_confidence():
+    prs = [{"number": 10, "body": "Refs upstream issue #3846", "title": "route fix"}]
+    assert candidate_prs(3846, None, prs) == [
+        {"pr": 10, "how": "body-ref", "title": "route fix"}]
 
 
 def test_candidate_prs_matches_explicit_link():

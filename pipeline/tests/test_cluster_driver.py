@@ -534,6 +534,55 @@ class TestIdenticalHeadMemberships:
         assert s.load_cluster(5).outcome is None
 
 
+class TestLinkedIssueMemberships:
+    @staticmethod
+    def _link(store, n, issue, how):
+        set_section(store, n, "issues", {
+            "linked": [{"issue": issue, "pain": None, "how": how}]})
+
+    def test_full_cluster_creates_cluster_for_shared_direct_issue(self, tmp_path):
+        s = Store(tmp_path)
+        _spr(s, 3870, subsystem="ui", primary="accept query alias")
+        _spr(s, 4032, subsystem="cli", primary="normalize parent id")
+        self._link(s, 3870, 3846, "explicit")
+        self._link(s, 4032, 3846, "body-ref")
+
+        result = cd.commit_clusters(s, [])
+
+        assert result["created"] == [1]
+        assert s.load_pr(3870).cluster_ids == [1]
+        assert s.load_pr(4032).cluster_ids == [1]
+        assert sorted(s.load_cluster(1).prs) == [3870, 4032]
+
+    def test_shared_issue_extends_existing_cluster_and_reopens_it(self, tmp_path):
+        s = Store(tmp_path)
+        _spr(s, 1); _spr(s, 2); _spr(s, 3)
+        self._link(s, 2, 42, "explicit")
+        self._link(s, 3, 42, "body-ref")
+        s.save_cluster({"id": 5, "root_problem": "same defect", "prs": [1, 2],
+                        "outcome": "merge-ready", "checked_at": NOW})
+        set_section(s, 1, "cluster", {"ids": [5]})
+        set_section(s, 2, "cluster", {"ids": [5]})
+
+        cd.commit_assignments(s, {"joins": [], "new_clusters": [], "standalone": [3]})
+
+        assert s.load_pr(3).cluster_ids == [5]
+        assert sorted(s.load_cluster(5).prs) == [1, 2, 3]
+        assert s.load_cluster(5).outcome is None
+
+    def test_subsystem_candidate_is_not_a_hard_cluster_signal(self, tmp_path):
+        s = Store(tmp_path)
+        _spr(s, 1); _spr(s, 2)
+        self._link(s, 1, 42, "explicit")
+        self._link(s, 2, 42, "subsystem")
+
+        cd.commit_clusters(s, [])
+
+        assert s.all_clusters() == {}
+        assert s.load_pr(1).cluster_ids == []
+        assert s.load_pr(2).cluster_ids == []
+
+
 class TestWaveSkipsDependabotBumps:
     def _dependabot(self, store, n, head, files):
         store.save_pr({"pr": n, "meta": {

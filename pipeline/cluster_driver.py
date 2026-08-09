@@ -34,7 +34,7 @@ from pipeline.storekit import now as _now
 from pipeline.wire import DiffManifestItem, SummaryEntry
 
 if TYPE_CHECKING:
-    from pipeline.model import Pr
+    from pipeline.model import Cluster, Pr
 
 
 def _active(store: Store):
@@ -327,10 +327,67 @@ def commit_clusters(store: Store, proposed: list[dict],
             created.append(cid)
         cl.set_members(members)        # adds new + wires backrefs, removes departed + clears
         existing[cid] = cl
+    created.extend(_sync_linked_issue_memberships(store))
     _sync_identical_head_memberships(store)
     standalone = mark_standalone(store)
     return {"created": created, "updated": updated,
             "dropped_singletons": dropped, "standalone": standalone}
+
+
+_DIRECT_ISSUE_LINKS = frozenset({"explicit", "body-ref"})
+
+
+def _extend_cluster(cluster: Cluster, members: set[int]) -> int:
+    """Add missing members and reopen the cluster. Returns the number added."""
+    missing = members - set(cluster.prs)
+    for n in sorted(missing):
+        cluster.add_member(n)
+    if missing:
+        cluster.set_outcome(None)
+    return len(missing)
+
+
+def _sync_linked_issue_memberships(store: Store) -> list[int]:
+    """Ensure open PRs directly referencing one issue share a cluster.
+
+    Shared issue identity is deterministic evidence that survives divergent
+    summaries, subsystems, and changed-symbol wording. Closing-keyword links and
+    lower-confidence body references both count; weak subsystem candidates and
+    issue-text references do not. If no existing cluster contains any member, a
+    new cluster is created. Otherwise the cluster containing the most members is
+    extended (stable lowest-id tie-break). Returns created cluster ids.
+    """
+    by_issue: dict[int, set[int]] = {}
+    for n, rec in _active(store):
+        if not is_current(rec, "summary"):
+            continue
+        for link in rec.linked_issues:
+            if not isinstance(link, dict) or link.get("how") not in _DIRECT_ISSUE_LINKS:
+                continue
+            issue = link.get("issue")
+            if type(issue) is int:
+                by_issue.setdefault(issue, set()).add(n)
+
+    clusters = store.all_clusters()
+    next_id = max(clusters, default=0) + 1
+    created: list[int] = []
+    for issue, members in sorted(by_issue.items()):
+        if len(members) < 2:
+            continue
+        if any(members <= set(c.prs) for c in clusters.values()):
+            continue
+        candidates = [c for c in clusters.values() if members & set(c.prs)]
+        if candidates:
+            cluster = min(candidates, key=lambda c: (-len(members & set(c.prs)), c.id))
+            _extend_cluster(cluster, members)
+        else:
+            cid = next_id
+            next_id += 1
+            cluster = store.create_cluster(cid, f"Pull requests linked to issue #{issue}")
+            cluster.set_members(sorted(members))
+            clusters[cid] = cluster
+            created.append(cid)
+    return created
 
 
 def _sync_identical_head_memberships(store: Store) -> int:
@@ -355,14 +412,8 @@ def _sync_identical_head_memberships(store: Store) -> int:
         cluster_ids = {cid for rec in duplicates for cid in rec.cluster_ids
                        if cid in clusters}
         for cid in cluster_ids:
-            missing = member_ids - set(clusters[cid].prs)
-            if not missing:
-                continue
             cluster = store.edit_cluster(cid)
-            for n in sorted(missing):
-                cluster.add_member(n)
-                added += 1
-            cluster.set_outcome(None)
+            added += _extend_cluster(cluster, member_ids)
             clusters[cid] = cluster
     return added
 
@@ -544,8 +595,14 @@ def commit_assignments(store: Store, payload: dict) -> dict:
         if store.load_pr(p) is None:
             errors.append(f"pr {p}: not in store")
             continue
+        # A previous unit's deterministic post-step may already have placed this
+        # PR (for example via a shared issue across subsystem units). Never let a
+        # stale agent payload overwrite that real membership with an empty stamp.
+        if any(p in c.prs for c in existing.values()):
+            continue
         store.edit_pr(p).mark_standalone()
         standalone += 1
+    created += len(_sync_linked_issue_memberships(store))
     _sync_identical_head_memberships(store)
     return {"joined": joined, "created": created, "standalone": standalone, "errors": errors}
 
