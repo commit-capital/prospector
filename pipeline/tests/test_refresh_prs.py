@@ -137,7 +137,7 @@ def test_moved_head_recomputes_diff_signals_before_restamping(tmp_path, monkeypa
     from pipeline import diff_cache
     monkeypatch.setattr(
         diff_cache, "fetch_diff_paths",
-        lambda pr, sha: ["src/app.ts", "src/app.test.ts"])
+        lambda pr, sha, *a, **k: ["src/app.ts", "src/app.test.ts"])
 
     ingest.refresh_prs(store, [7])
 

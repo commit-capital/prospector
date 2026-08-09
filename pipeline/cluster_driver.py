@@ -628,7 +628,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps([m.to_dict() for m in wave(store, args.max)], indent=1))
     elif args.cmd == "fetch-diffs":
         m = wave(store, args.max)
-        ok, bad = diff_cache.fetch_diffs(m)
+        ok, bad = diff_cache.fetch_diffs(m, store=store)
         print(f"diffs cached: {ok} ok, {bad} failed, {len(m)} requested")
     elif args.cmd == "write-batches":
         info = write_batches(wave(store, args.max))

@@ -445,7 +445,7 @@ class TestFetchMissingDiffs:
         diffs = tmp_path / "diffs"; diffs.mkdir()
         self._seed(store, 7, author="mallory", head="h7")
 
-        def fake_fetch(pr, head, diffs_dir):
+        def fake_fetch(pr, head, diffs_dir, store=None):
             (diffs_dir / f"{head}.diff").write_text(PAYLOAD_DIFF)
             return True
         monkeypatch.setattr(diff_cache, "fetch_diff", fake_fetch)
@@ -489,7 +489,7 @@ class TestFetchMissingDiffs:
         monkeypatch.setattr(diff_cache, "changed_paths",
                             lambda pr, head, diffs_dir=None: ["pnpm-lock.yaml", "src/app.ts"])
 
-        def fake_fetch(pr, head, diffs_dir):
+        def fake_fetch(pr, head, diffs_dir, store=None):
             (diffs_dir / f"{head}.diff").write_text(CLEAN_DIFF)
             return True
         monkeypatch.setattr(diff_cache, "fetch_diff", fake_fetch)
@@ -503,7 +503,7 @@ class TestFetchMissingDiffs:
         store = Store(tmp_path)
         diffs = tmp_path / "diffs"; diffs.mkdir()
         self._seed(store, 10)
-        monkeypatch.setattr(diff_cache, "fetch_diff", lambda pr, head, diffs_dir: False)
+        monkeypatch.setattr(diff_cache, "fetch_diff", lambda pr, head, diffs_dir, store=None: False)
         threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs)])
         assert store.load_pr(10).section("threat") is None
         stats = self._stats(store)

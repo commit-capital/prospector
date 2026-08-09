@@ -476,6 +476,61 @@ class Store:
     def save_live_sweep(self, registry: dict) -> None:
         self._save_registry("live_sweep", registry)
 
+    # -- Shared diff cache ---------------------------------------------------
+    # One row per fetched PR head (`diffs` table): the capped diff text keyed
+    # by the head SHA it was taken at. A head's diff never changes, so rows are
+    # immutable — writes insert absent heads and leave existing ones untouched,
+    # and reads need no staleness check. diff_cache.py is the one writer and
+    # owns the size cap; these accessors own the rows.
+    def load_diff(self, head_sha: str) -> str | None:
+        """The cached diff body for `head_sha`, or None when never uploaded."""
+        from sqlalchemy import select
+        def q(conn) -> tuple | None:
+            return conn.execute(
+                select(schema.diffs.c.body)
+                .where(schema.diffs.c.head_sha == head_sha)).first()
+        row = storekit.read_retrying(self.engine, q)
+        return None if row is None else row[0]
+
+    def load_diffs(self, head_shas: list[str]) -> dict[str, str]:
+        """The cached diff bodies present for `head_shas`, in one query —
+        absent heads are simply missing from the result."""
+        from sqlalchemy import select
+        if not head_shas:
+            return {}
+        def q(conn) -> list:
+            return conn.execute(
+                select(schema.diffs.c.head_sha, schema.diffs.c.body)
+                .where(schema.diffs.c.head_sha.in_(head_shas))).all()
+        return {r[0]: r[1] for r in storekit.read_retrying(self.engine, q)}
+
+    def save_diffs_many(self, rows: list[tuple[str, int | None, str]]) -> None:
+        """Insert `(head_sha, pr, body)` rows for heads absent from the table;
+        an existing head is left untouched. Validated; one statement per call."""
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+        storekit.assert_writable(self.engine)
+        seen: set[str] = set()
+        values: list[dict] = []
+        for head_sha, pr, body in rows:
+            if not head_sha or not isinstance(head_sha, str):
+                raise ValidationError("diffs.head_sha: required str")
+            if not body or not isinstance(body, str):
+                raise ValidationError("diffs.body: required str")
+            if head_sha in seen:
+                continue
+            seen.add(head_sha)
+            values.append({"head_sha": head_sha, "pr": pr, "body": body,
+                           "fetched_at": storekit.now()})
+        if not values:
+            return
+        ins = (pg_insert(schema.diffs) if self.engine.dialect.name == "postgresql"
+               else sqlite_insert(schema.diffs))
+        stmt = ins.values(values).on_conflict_do_nothing(
+            index_elements=[schema.diffs.c.head_sha])
+        with self.engine.begin() as conn:
+            conn.execute(stmt)
+
     def load_author_baseline(self) -> dict:
         """Per-author PR counts for PRs closed/merged before our first ingest —
         the ones absent from the store. Captured once by `pipeline.authors` and
