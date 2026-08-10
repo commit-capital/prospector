@@ -92,19 +92,27 @@ def status() -> AutohuntStatus:
 
 
 def _result(lane: str, rec: dict) -> str | None:
-    """One display word for a run's outcome: the security verdict, the verify
-    outcome, or `error:<kind>` for a verify run that ended in error."""
+    """One display word for what a run concluded: the security verdict, or —
+    for a verify run — the state it ended in.
+
+    `done` is the only status whose run committed the entry's outcome, so it is
+    the only one that reports it. Every other state (a `waiting-for-base` park,
+    an `error:<kind>`, a cancel, a transient re-queue) is the state the run
+    itself reached; an entry in that state can still carry an outcome stat, and
+    that word belongs to whichever earlier run left it on the PR."""
     stats = rec.get("stats") or {}
     if lane == "security":
         verdict = stats.get("verdict")
         return str(verdict) if verdict is not None else None
+    status_ = stats.get("status")
+    if status_ == "error":
+        kind = stats.get("error_kind")
+        return f"error:{kind}" if kind else "error"
+    if status_ is not None and status_ != "done":
+        return str(status_)
     outcome = stats.get("outcome")
     if outcome is not None:
         return str(outcome)
-    status_ = stats.get("status")
-    kind = stats.get("error_kind")
-    if status_ == "error" and kind:
-        return f"error:{kind}"
     return str(status_) if status_ is not None else None
 
 
