@@ -36,6 +36,9 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
   const [pr, setPr] = useState<PD>();
   const [diff, setDiff] = useState<DiffResult | null>(null);
   const [diffLoading, setDiffLoading] = useState(true);
+  // Which diff the Diff panel shows: the PR's own change, or the conflicted
+  // merge state a failed "Resolve merge conflicts" attempt paused on (#46).
+  const [diffMode, setDiffMode] = useState<"pr" | "merge">("pr");
   const [lineComment, setLineComment] = useState<{ file: string; line: number } | null>(null);
   const [retriggering, setRetriggering] = useState(false);
   const [err, setErr] = useState<string>();
@@ -46,7 +49,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reset the detail panes before fetching the selected PR
-    setPr(undefined); setDiff(null); setDiffLoading(true); setErr(undefined);
+    setPr(undefined); setDiff(null); setDiffLoading(true); setDiffMode("pr"); setErr(undefined);
     api.pr(prNum).then(setPr).catch((e) => setErr(String(e)));
     api.diff(prNum).then((d) => { setDiff(d); setDiffLoading(false); }).catch(() => setDiffLoading(false));
   }, [prNum]);
@@ -213,6 +216,11 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
   const sum = pr.safety_summary;
   const sz = pr.size;
   const ci = pr.ci_checks ?? [];
+
+  // The conflict diff a refused "Resolve merge conflicts" attempt captured
+  // before its worktree was discarded — the Diff panel's second mode (#46).
+  const mergeDiff = pr.fix_request?.result?.merge_diff ?? null;
+  const conflictPaths = pr.fix_request?.result?.conflict_paths ?? [];
 
   // non-test surface area + test-removal flag (#17/#22): prefer the loaded diff
   // (always present here) split by the served profile's test-path rules, fall
@@ -527,16 +535,46 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
           reopen/close/force-push/rename events, oldest first */}
       <PRHistory pr={pr.number} />
 
-      {/* 6. the diff, last — click a line for the explain/comment popup */}
+      {/* 6. the diff, last — click a line for the explain/comment popup. When a
+          "Resolve merge conflicts" attempt refused on conflicts, the captured
+          conflict diff is offered as a second mode beside the PR's own change
+          (#46). */}
       <section className="prc-section">
         <h3>Diff <span className="muted small" style={{ textTransform: "none", letterSpacing: 0 }}>· click a line to explain or comment · ⌘/ctrl-click to open it on GitHub</span></h3>
-        {diffLoading && <div className="diff-status"><span className="spinner" /> Loading diff…</div>}
-        {!diffLoading && diff && (
+        {mergeDiff && (
+          <div className="segmented diff-mode" role="tablist" aria-label="diff mode">
+            <button className={diffMode === "pr" ? "on" : ""} role="tab" aria-selected={diffMode === "pr"}
+              onClick={() => setDiffMode("pr")} title="The PR's own change.">
+              Diff
+            </button>
+            <button className={diffMode === "merge" ? "on" : ""} role="tab" aria-selected={diffMode === "merge"}
+              onClick={() => setDiffMode("merge")}
+              title="The conflicted state the failed “Resolve merge conflicts” attempt paused on.">
+              Merge diff
+            </button>
+          </div>
+        )}
+        {diffMode === "merge" && mergeDiff ? (
           <>
-            {diff.note && <div className="diff-note">ℹ️ {diff.note}</div>}
-            {diff.diff
-              ? <DiffView diffText={diff.diff} onComment={(file, line) => setLineComment({ file, line })} blobUrl={blobUrl} />
-              : <div className="diff-status muted">{diff.error ? `No diff — ${diff.error}` : "No diff (empty/no commits)."}{pr.url && <> · <a href={pr.url} target="_blank" rel="noreferrer">GitHub ↗</a></>}</div>}
+            <div className="diff-note">
+              ⚠ Where this PR and the current base collide — the conflicted state the
+              “Resolve merge conflicts” attempt paused on
+              {conflictPaths.length > 0 && <> ({conflictPaths.length} file{conflictPaths.length === 1 ? "" : "s"})</>},
+              not the PR's own change.
+            </div>
+            <DiffView diffText={mergeDiff} />
+          </>
+        ) : (
+          <>
+            {diffLoading && <div className="diff-status"><span className="spinner" /> Loading diff…</div>}
+            {!diffLoading && diff && (
+              <>
+                {diff.note && <div className="diff-note">ℹ️ {diff.note}</div>}
+                {diff.diff
+                  ? <DiffView diffText={diff.diff} onComment={(file, line) => setLineComment({ file, line })} blobUrl={blobUrl} />
+                  : <div className="diff-status muted">{diff.error ? `No diff — ${diff.error}` : "No diff (empty/no commits)."}{pr.url && <> · <a href={pr.url} target="_blank" rel="noreferrer">GitHub ↗</a></>}</div>}
+              </>
+            )}
           </>
         )}
       </section>

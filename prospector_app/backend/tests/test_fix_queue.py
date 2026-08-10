@@ -410,10 +410,10 @@ def test_a_requeued_request_rests_before_pickup(store, monkeypatch):
 
 class _Staged:
     """Replays a scripted resubmit run: prepare succeeds, `state` reports the
-    rebase paused on conflicts."""
+    rebase paused on conflicts, and `diff` prints `diff_out`."""
 
-    def __init__(self, conflicts):
-        self.conflicts, self.calls = conflicts, []
+    def __init__(self, conflicts, diff_out=""):
+        self.conflicts, self.diff_out, self.calls = conflicts, diff_out, []
 
     def __call__(self, n, *args):
         self.calls.append(args[0])
@@ -422,6 +422,8 @@ class _Staged:
             import json as _json
             out = _json.dumps({"phase": "conflicted" if self.conflicts else "ready",
                                "mode": "rebase", "conflicts": self.conflicts})
+        elif args[0] == "diff":
+            out = self.diff_out
         return type("R", (), {"returncode": 0, "stdout": out, "stderr": ""})()
 
 
@@ -453,6 +455,59 @@ def test_the_conflict_refusal_names_the_files_in_plain_words(store, monkeypatch)
     assert "ask the author" in why
     for jargon in ("<<<<<<<", "CalledProcessError", "returncode", "exit "):
         assert jargon not in why
+
+
+def test_a_conflict_refusal_carries_the_merge_diff(store, monkeypatch):
+    # The conflict diff is read from the paused worktree before the abort
+    # discards it, and stored on the refusal as `merge_diff` so the app's diff
+    # panel can show the conflicted hunks (#46). It is kept apart from `patch`,
+    # which stays empty — a conflicted tree is not a pushable change.
+    fix_queue.queue_pr(1, "rebase")
+    diff_text = ("diff --cc src/execute.ts\n"
+                 "@@@ -1,3 -1,3 +1,7 @@@\n"
+                 "++<<<<<<< HEAD")
+    ran = _Staged(["src/execute.ts"], diff_out=diff_text)
+    monkeypatch.setattr(fix_worker, "_resubmit", ran)
+    fix_worker.run_one(1)
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "refused"
+    result = req.get("result") or {}
+    assert result.get("merge_diff") == diff_text
+    assert result.get("conflict_paths") == ["src/execute.ts"]
+    assert not result.get("patch")
+    assert ran.calls.index("diff") < ran.calls.index("abort")
+
+
+def test_a_conflict_refusal_without_a_diff_stores_no_result(store, monkeypatch):
+    fix_queue.queue_pr(1, "rebase")
+    monkeypatch.setattr(fix_worker, "_resubmit", _Staged(["src/execute.ts"]))
+    fix_worker.run_one(1)
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "refused"
+    assert not req.get("result")
+
+
+def test_resubmit_chatter_is_not_stored_as_a_merge_diff(store, monkeypatch):
+    # `resubmit diff` prints a status sentence when the paused worktree shows
+    # no working diff; that sentence is not a diff and must not be stored as one.
+    fix_queue.queue_pr(1, "rebase")
+    ran = _Staged(["src/execute.ts"],
+                  diff_out="resubmit: rebase is paused, but no working diff is visible.")
+    monkeypatch.setattr(fix_worker, "_resubmit", ran)
+    fix_worker.run_one(1)
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "refused"
+    assert not req.get("result")
+
+
+def test_the_merge_diff_is_capped(monkeypatch):
+    big = "diff --cc a\n" + "x" * fix_worker.MERGE_DIFF_CHARS
+    monkeypatch.setattr(
+        fix_worker, "_resubmit",
+        lambda n, *a: subprocess.CompletedProcess(a, 0, stdout=big, stderr=""))
+    out = fix_worker._conflict_diff(1)
+    assert out is not None
+    assert len(out) == fix_worker.MERGE_DIFF_CHARS
 
 
 # --- refusals read as sentences, not tracebacks --------------------------------

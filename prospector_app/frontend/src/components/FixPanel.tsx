@@ -120,7 +120,12 @@ function RequestStrip({ req, runner }: { req: FixRequest; runner: FixRunner | nu
         <span className="vb-icon">⛔</span>
         <div>
           <div className="vb-headline">Nothing was pushed</div>
-          <div className="vb-detail">{req.refused_reason ?? "No reason was recorded."}</div>
+          <div className="vb-detail">
+            {req.refused_reason ?? "No reason was recorded."}
+            {req.result?.merge_diff && (
+              <> The conflicted hunks are in the Diff panel below — switch it to “Merge diff”.</>
+            )}
+          </div>
         </div>
       </div>
     );
