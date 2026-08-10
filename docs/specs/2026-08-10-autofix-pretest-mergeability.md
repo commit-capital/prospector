@@ -110,15 +110,24 @@ wants it.
 Two surfaces:
 
 - **PR detail** — `FixPanel`'s `awaiting-review` branch renders the verdict:
-  "✅ Conflicts resolvable" for a clean probe, alongside the diff, the preflight
-  result, and the existing Approve / Discard controls. A result whose `base_sha`
-  is behind the current base renders a staleness note — the approve re-probes
-  regardless, so this sets expectations rather than blocking.
-- **Fix Queue tab** — a cross-PR list of every `awaiting-review` request beside
-  the Verify queue, with per-row Approve and Discard. This is the surface that
-  makes a proven backlog browsable; it does not exist today. Batch approval is
-  a sequence of the same per-row approve, so the worker still pushes one PR at a
-  time.
+  "Conflicts resolvable" for a clean probe, alongside the preflight result and
+  the existing Approve / Discard controls. It names the base the result was
+  proven against and says that pushing re-runs the action against current base.
+
+  It does *not* compute whether that base is now behind: the panel polls, and
+  resolving upstream's default-branch HEAD is a network round trip per poll. The
+  approve path re-proves unconditionally, so a staleness badge would buy
+  presentation rather than safety.
+- **Fix queue section** — a cross-PR list on the Control tab beside the Verify
+  queue, `awaiting-review` rows first since they are the only actionable ones,
+  each with Push and Discard. This is the surface that makes a proven backlog
+  browsable; it does not exist today. Approving several is a sequence of the
+  same per-row approve, so the worker still pushes one PR at a time.
+
+  A row's `resolvable` claim is "the action produced a change and the compile
+  preflight did not reject it". A deployment configuring no `verify.compile_cmd`
+  records None, which reads as resolvable — the merge resolving is the claim
+  being made, and the build check corroborates it.
 
 ## Testing
 

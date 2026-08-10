@@ -12,10 +12,16 @@ the fence that refuses any ref that is not the open PR's head. The worker
 decides *which* PR gets *which* action and whether the result may be pushed; it
 never runs git itself.
 
-`update` pushes on a clean local merge: it authors no content, and a merge that
-conflicts stops before the push. `rebase` and `fix` additionally require a clean
-compile preflight over the resulting tree, and park as `awaiting-review` with
-the diff unless their action is named in TRIAGE_FIX_AUTOPUSH.
+Every action is probed before it is pushed: the mechanics run in full, the
+resulting tree goes through the compile preflight, and the request parks as
+`awaiting-review` with its evidence unless TRIAGE_FIX_AUTOPUSH names the action.
+So the hunter can be left on against a repository it never touches.
+
+A parked mechanical request keeps no worktree — push_approved re-derives it
+against whatever base is current then, which is what stops a browsable backlog
+from accumulating clones or pushing a result proven against a base that has
+since moved. An agent-authored `fix` is not reproducible, so it keeps its tree
+and pushes the reviewed patch verbatim.
 
 With TRIAGE_FIX_AUTOHUNT=1 an empty queue turns the drain loop into a hunter: it
 queues the eligible PRs whose gates an autofix could plausibly clear, oldest

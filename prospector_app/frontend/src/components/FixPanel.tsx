@@ -95,20 +95,27 @@ function RequestStrip({ req, runner }: { req: FixRequest; runner: FixRunner | nu
   }
   if (req.status === "awaiting-review" || req.status === "approved") {
     const pf = req.result?.compile_preflight;
+    const proven = pf == null || pf.exit === 0;
+    const mechanical = req.action === "update" || req.action === "rebase";
     return (
-      <div className="verdict-banner v-caution">
-        <span className="vb-icon">👀</span>
+      <div className={proven ? "verdict-banner v-green" : "verdict-banner v-caution"}>
+        <span className="vb-icon">{proven ? "✅" : "👀"}</span>
         <div>
           <div className="vb-headline">
             {req.status === "approved"
-              ? `Approved — waiting for the runner to push${runner?.online ? "" : ""}`
-              : `A ${req.action} is ready for your review`}
+              ? "Approved — waiting for the runner to push"
+              : proven
+                ? `Conflicts resolvable — this ${req.action} applies cleanly`
+                : `A ${req.action} is ready for your review`}
             {req.status === "approved" && offlineChip}
           </div>
           <div className="vb-detail">
             Nothing has been pushed to the contributor's branch yet.
             {pf && pf.exit === 0 && " Compile preflight passed."}
             {req.result?.message && ` Commit message: “${req.result.message}”.`}
+            {mechanical && req.base_sha &&
+              ` Proven against base ${req.base_sha.slice(0, 8)}; pushing re-runs it against
+                current base first.`}
           </div>
         </div>
       </div>

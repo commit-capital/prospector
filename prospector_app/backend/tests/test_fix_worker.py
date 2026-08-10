@@ -167,6 +167,67 @@ def test_approving_refuses_when_the_base_now_conflicts(store, monkeypatch):
     assert "conflicts" in (req.get("refused_reason") or "").lower()
 
 
+def test_the_reviewable_pile_is_listed_before_work_still_in_flight(store):
+    # The proven-and-waiting set is the whole point of the tab: it is what an
+    # operator acts on, so it must not be buried under running work.
+    store.load_pr(1).record_fix_request("queued", "update", queued_at=NOW)
+    store.save_pr({"pr": 2, "meta": {"title": "second", "state": "open",
+                                     "head_sha": "b" * 40}})
+    store.load_pr(2).record_fix_request(
+        "awaiting-review", "rebase", queued_at=NOW, base_sha="c" * 40,
+        result={"compile_preflight": {"exit": 0}})
+    data.refresh()
+
+    rows = fix_queue.queue_entries()
+
+    assert [r["pr"] for r in rows] == [2, 1]
+    assert rows[0]["status"] == "awaiting-review"
+    assert rows[0]["action"] == "rebase"
+    assert rows[0]["base_sha"] == "c" * 40
+    assert rows[0]["resolvable"] is True
+
+
+def test_a_parked_request_whose_preflight_failed_is_not_resolvable(store):
+    store.load_pr(1).record_fix_request(
+        "awaiting-review", "update", queued_at=NOW,
+        result={"compile_preflight": {"exit": 1}})
+    data.refresh()
+    assert fix_queue.queue_entries()[0]["resolvable"] is False
+
+
+def test_a_request_with_no_configured_preflight_is_still_resolvable(store):
+    # A deployment with no verify.compile_cmd records None. The merge itself
+    # resolving is the claim being made; the build check is corroboration.
+    store.load_pr(1).record_fix_request(
+        "awaiting-review", "update", queued_at=NOW,
+        result={"compile_preflight": None})
+    data.refresh()
+    assert fix_queue.queue_entries()[0]["resolvable"] is True
+
+
+def test_settled_requests_are_not_listed(store):
+    store.load_pr(1).record_fix_request("pushed", "update", queued_at=NOW)
+    data.refresh()
+    assert fix_queue.queue_entries() == []
+
+
+def test_the_queue_route_serves_the_reviewable_pile(store):
+    from fastapi.testclient import TestClient
+
+    from prospector_app.backend import app as appmod
+
+    store.load_pr(1).record_fix_request(
+        "awaiting-review", "update", queued_at=NOW, base_sha="c" * 40,
+        result={"compile_preflight": {"exit": 0}})
+    data.refresh()
+
+    body = TestClient(appmod.app).get("/api/fix/queue").json()
+
+    assert [r["pr"] for r in body["queue"]] == [1]
+    assert body["queue"][0]["resolvable"] is True
+    assert "runner" in body
+
+
 def test_approving_a_fix_pushes_the_reviewed_patch_verbatim(store, monkeypatch):
     # An agent-authored change is not reproducible: re-deriving it at approve
     # time would push something the operator never saw.

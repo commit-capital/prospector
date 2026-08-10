@@ -565,6 +565,27 @@ export interface FixRunner {
   last_beat?: string | null;
 }
 
+/** One row of the autofix queue. `resolvable` is the claim a parked row makes:
+ *  the action produced a change and the compile preflight did not reject it.
+ *  `base_sha` is the base it was proven against — approving re-runs the action
+ *  against whatever base is current then, so this dates the proof rather than
+ *  gating it. */
+export interface FixQueueEntry {
+  pr: number;
+  title?: string | null;
+  status: FixRequest["status"];
+  action: FixAction;
+  source?: "operator" | "auto" | null;
+  queued_at?: string | null;
+  base_sha?: string | null;
+  resolvable: boolean;
+}
+
+export interface FixQueue {
+  queue: FixQueueEntry[];
+  runner: FixRunner;
+}
+
 /** One security/verify run from the store's runs ledger, normalized for the
  *  auto-hunt panel. `trigger` is "autohunt" on hunter-fired runs, null on
  *  operator-fired or unstamped entries. */
@@ -1174,6 +1195,7 @@ export const api = {
     return body as { pr: number; status: string };
   },
   fixRunner: () => get<FixRunner>("/api/fix/runner"),
+  fixQueue: () => get<FixQueue>("/api/fix/queue"),
   autohunt: (days = 7, allTime = false, limit = 100) => {
     const qs = new URLSearchParams({ days: String(days), limit: String(limit) });
     if (allTime) qs.set("all_time", "true");

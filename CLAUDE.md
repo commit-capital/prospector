@@ -119,11 +119,20 @@ fail-closed on a malicious threat verdict, any recorded RED security verdict, a
 CODEOWNERS-gated path, a path the profile's `autofix.deny_globs` names, a
 non-open PR, and (for `fix`) a profile naming no `autofix.fixable_gates`. It
 bounds the bot's reach, not the merge boundary: an autofixed PR still faces
-`merge_eligibility` unchanged. `update` pushes on a clean local merge; `rebase`
-and `fix` additionally require a clean `compile_preflight.run_for_patch` over the
-authored tree and park as `awaiting-review` with the diff unless their action is
-in `TRIAGE_FIX_AUTOPUSH`. `TRIAGE_FIX_AUTOHUNT=1` lets an idle worker queue the
-mechanical actions itself; an agent-authored `fix` is never auto-queued.
+`merge_eligibility` unchanged. Every action is probed before it is pushed —
+the mechanics run in full (`resubmit update --probe` for a base merge, `prepare
+--rebase` for a replay), the resulting tree goes through
+`compile_preflight.run_for_patch`, and the request parks as `awaiting-review`
+with its evidence unless `TRIAGE_FIX_AUTOPUSH` names the action. A parked
+mechanical request keeps no worktree: `push_approved` re-derives it against
+current base and refuses if that no longer resolves, so an approval means "push
+this against base as it stands now" rather than replaying an older verdict. An
+agent-authored `fix` is not reproducible and so keeps its tree and its reviewed
+patch. `TRIAGE_FIX_AUTOHUNT=1` lets an idle worker queue the mechanical actions
+itself, gated by `gates.fix_huntable` — the review provider's bar on top of
+`fix_eligibility`, and deliberately not `mergeable`, CI, or a GREEN security
+verdict, none of which a PR that needs updating can have. An agent-authored
+`fix` is never auto-queued.
 
 See `pipeline/workflows/README.md` for the exact run commands. Run phases from the CLI or the app Control tab; `views.py` regenerates `STATUS.md` from the store.
 
