@@ -32,6 +32,42 @@ One machine per store runs the sandbox; everything it needs, in order:
    `TRIAGE_VERIFY_PROBE_DENY` (host:port entries that must be unreachable
    from the sandbox). Unset keeps `boot-probe.sh`'s built-in default.
 
+## Base artifact retention
+
+Each pin leaves two durable artifacts keyed by its SHA: the
+`pr-verify-base:<sha12>-t<tier>` image (~3.5GB) and the scrubbed clone under
+`$TRIAGE_VERIFY_SCRATCH/base/<sha12>/` (~1.6GB, clone plus prefetched pnpm
+store). The worker re-pins daily, so `prepare-base` reclaims what it
+supersedes.
+
+**A generation is a base SHA.** The clone is keyed by the SHA alone while the
+image tag also carries the tier, so retention keeps or drops a whole SHA — that
+is what keeps the two in lockstep.
+
+**Two generations survive: the pinned SHA and the most recently created other
+one.** The second slot is load-bearing. `verify_pr` reads the pin once at run
+start and holds that image and clone for the whole run, and `compile_preflight`
+builds and uses an image for current default-branch HEAD from the app's merge
+and autofix threads — either can be mid-run against a non-pinned SHA while the
+worker re-pins. Keeping the newest non-pinned generation covers that without
+locking. Image removal is un-forced besides, so a phase container running right
+now refuses the removal and keeps its clone too.
+
+`prepare-base` sweeps on both sides of its build: before, so a disk that is
+already full can be recovered (the build is what fails when it is full, which
+would otherwise leave no path back), and again once the new pin is saved. The
+sweep also prunes what the two-stage build leaves behind — dangling images
+carrying the `prospector.verify-base=1` label that `Dockerfile.base` stamps on
+both its stages, and BuildKit cache unused for 24h. A sweep never fails a pin:
+its errors are reported and swallowed.
+
+To reclaim by hand, or to see what would go:
+
+```
+uv run python pipeline/verify_driver.py gc --dry-run
+uv run python pipeline/verify_driver.py gc
+```
+
 Direct `sandbox-run.sh` invocations (the tests here) also honor
 `PR_VERIFY_NET` (isolated network name, default `pr-verify-net`) and
 `PR_VERIFY_DEBUG=1` (dump the container env to stdout — used by the

@@ -10,6 +10,7 @@ gates.verify_outcome computes the outcome from the signals — never an agent.
 
 CLI:
   prepare-base [--base-sha S] [--tier N]   pin main+tier, clone+scrub, build the base image, capture its baseline
+  gc [--dry-run]                           reclaim base images and clones outside the retention rule
 """
 from __future__ import annotations
 
@@ -34,6 +35,7 @@ from pipeline import gates
 from pipeline import gh
 from pipeline import profile
 from pipeline import settings
+from pipeline import verify_gc
 from pipeline import wire
 from pipeline.model import Pr
 from pipeline.store import Store
@@ -237,6 +239,22 @@ def image_exists(image: str) -> bool:
     return p.returncode == 0
 
 
+def collect_garbage(pinned_sha: str | None, *, dry_run: bool = False) -> dict:
+    """Reclaim base artifacts outside the retention rule, reporting the result.
+    Wrapped so that tidying up can never fail the pin it runs alongside."""
+    try:
+        result = verify_gc.collect(pinned_sha, dry_run=dry_run)
+    except Exception as e:
+        result = {"ok": False, "keep": [], "reclaimed": [],
+                  "error": f"{type(e).__name__}: {e}"}
+    if result.get("error"):
+        print(f"base GC did not complete: {result['error']}", file=sys.stderr)
+    elif result.get("reclaimed"):
+        print(f"base GC reclaimed {len(result['reclaimed'])} generation(s): "
+              f"{', '.join(result['reclaimed'])}", file=sys.stderr)
+    return result
+
+
 def build_base_image(sha: str, *, tier: int) -> str:
     """Produce a scrubbed remote-stripped clone of `sha` under SCRATCH and build
     the per-batch base image from it (Tier 1 prefetches the pnpm store first so
@@ -274,8 +292,15 @@ def prepare_base(store: Store, *, base_sha: str | None = None, tier: int = 0) ->
     """Clone and build the base image for the resolved base commit
     (build_base_image), capture the pinned base's own failing-test set by
     running the baseline phase against it, and save the pin. Returns the image
-    tag."""
+    tag.
+
+    Reclaims superseded base artifacts on both sides of the build. The first
+    sweep runs while the outgoing pin is still the pin, so it frees the disk the
+    build is about to need while retention protects whatever a verify run in
+    flight is reading; the second retires the outgoing generation once the new
+    pin is saved."""
     sha = base_sha or resolve_base_sha()
+    collect_garbage(store.load_verify_base().get("base_sha"))
     tag = build_base_image(sha, tier=tier)
 
     suite = profile.active().verify.suite
@@ -316,6 +341,7 @@ def prepare_base(store: Store, *, base_sha: str | None = None, tier: int = 0) ->
                             "baseline_captured_at": _now(),
                             "suite": suite is not None,
                             "prepared_on": host, "arch": platform.machine()})
+    collect_garbage(sha)
     return tag
 
 
@@ -1406,11 +1432,13 @@ def build_image() -> str:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("cmd", choices=["prepare-base", "build-image"])
+    ap.add_argument("cmd", choices=["prepare-base", "build-image", "gc"])
     ap.add_argument("--base-sha", default=None)
     ap.add_argument("--tier", type=int, default=0, choices=[0, 1],
                     help="the tier to build the base image at. verify_pr reads it "
                          "back from the pin.")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="gc only: report what would be reclaimed, remove nothing")
     ap.add_argument("--store", default=None)
     args = ap.parse_args(argv)
 
@@ -1419,6 +1447,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     store = Store(args.store) if args.store else Store()
+
+    if args.cmd == "gc":
+        result = collect_garbage(store.load_verify_base().get("base_sha"),
+                                 dry_run=args.dry_run)
+        verb = "would reclaim" if args.dry_run else "reclaimed"
+        print(f"keeping {', '.join(result['keep']) or 'nothing'}; "
+              f"{verb} {', '.join(result['reclaimed']) or 'nothing'}")
+        return 0 if result["ok"] else 1
+
     tag = prepare_base(store, base_sha=args.base_sha, tier=args.tier)
     print(f"base image ready: {tag}")
     reg = store.load_verify_base()

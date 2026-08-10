@@ -224,7 +224,14 @@ class TestPrepareBase:
         with pytest.raises(RuntimeError, match="ghp_"):
             vd.prepare_base(store, base_sha="deadbeefcafebabe1234")
 
-        assert not any(cmd[0] == "docker" for cmd in calls)
+        # The gate is about the CHECKOUT reaching Docker, and exactly two verbs
+        # receive it: `build` takes it as the build context, `run` mounts it for
+        # the Tier 1 prefetch. Either one before the scrub assertion bakes the
+        # secret into a durable layer. The sweep's own queries (`image ls`,
+        # `rmi`, `prune`) name no path and are listed here so that adding a
+        # third tree-carrying verb has to come through this assertion.
+        tree_carrying = [c for c in calls if c[0] == "docker" and c[1] in ("build", "run")]
+        assert tree_carrying == []
 
     def test_a_public_certificate_is_not_a_credential(self, tmp_path):
         """A .pem is a credential file only when it carries a private key."""
@@ -538,6 +545,51 @@ class TestPrepareBaseBaseline:
                             lambda *a, **kw: (0, _suite_tail([], mode="regress")))
         with pytest.raises(RuntimeError, match="refusing to pin"):
             vd.prepare_base(Store(tmp_path), base_sha="a" * 12, tier=0)
+
+
+class TestPrepareBaseGarbageCollection:
+    """prepare_base owns the artifacts it creates, so it owns reclaiming them.
+    The sweep runs on both sides of the build: a full disk breaks the build, so
+    a sweep that only ran after a successful pin could never run again."""
+
+    def _quiet(self, tmp_path, monkeypatch, events: list):
+        monkeypatch.setattr(vd.subprocess, "run",
+                            lambda *a, **k: events.append("build") or _SubprocessOK())
+        monkeypatch.setattr(vd, "SCRATCH", tmp_path / "scratch")
+        monkeypatch.setattr(vd.profile, "active", lambda: profile.GENERIC)
+
+    def test_sweeps_before_the_build_and_after_the_pin(self, tmp_path, monkeypatch):
+        events: list = []
+        self._quiet(tmp_path, monkeypatch, events)
+        monkeypatch.setattr(vd.verify_gc, "collect",
+                            lambda pinned, **kw: events.append(("gc", pinned)) or {"ok": True})
+        vd.prepare_base(Store(tmp_path), base_sha="a" * 12, tier=0)
+        gc_events = [e for e in events if e != "build"]
+        assert len(gc_events) == 2
+        assert events.index(gc_events[0]) < events.index("build")
+
+    def test_the_sweep_before_the_build_protects_the_outgoing_pin(self, tmp_path, monkeypatch):
+        """It runs while the old pin is still the pin, so the artifacts a verify
+        run in flight is reading are the ones retention keeps."""
+        events: list = []
+        self._quiet(tmp_path, monkeypatch, events)
+        s = Store(tmp_path)
+        s.save_verify_base({"base_sha": "o" * 12, "tier": 0, "pinned_at": NOW,
+                            "baseline_failing": [], "baseline_captured_at": NOW})
+        monkeypatch.setattr(vd.verify_gc, "collect",
+                            lambda pinned, **kw: events.append(("gc", pinned)) or {"ok": True})
+        vd.prepare_base(s, base_sha="a" * 12, tier=0)
+        assert [e[1] for e in events if e != "build"] == ["o" * 12, "a" * 12]
+
+    def test_a_sweep_that_raises_never_fails_the_pin(self, tmp_path, monkeypatch):
+        def boom(pinned, **kw):
+            raise RuntimeError("docker exploded")
+
+        self._quiet(tmp_path, monkeypatch, [])
+        monkeypatch.setattr(vd.verify_gc, "collect", boom)
+        s = Store(tmp_path)
+        assert vd.prepare_base(s, base_sha="a" * 12, tier=0)
+        assert s.load_verify_base()["base_sha"] == "a" * 12
 
 
 class TestPinnedBaseline:

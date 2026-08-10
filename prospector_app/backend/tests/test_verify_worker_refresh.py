@@ -104,6 +104,71 @@ class TestMaybeRefreshBase:
         assert st.runs[0]["stats"]["ok"] is False
         assert "baseline capture failed" in st.runs[0]["stats"]["error"]
 
+    def test_a_failed_refresh_records_its_error_on_the_pin(self, monkeypatch):
+        """The runs ledger is not a place anyone looks. The pin carries the
+        outcome too, so the app can show a lane that has stopped tracking
+        master."""
+        st = self._wire(monkeypatch, {
+            "base_sha": "a" * 40, "tier": 1,
+            "pinned_at": "2026-07-20T12:00:00+00:00"})
+        monkeypatch.setattr(verify_worker.verify_driver, "resolve_base_sha",
+                            lambda: "b" * 40)
+
+        def boom(*a, **k):
+            raise RuntimeError("no space left on device")
+
+        monkeypatch.setattr(verify_worker.verify_driver, "prepare_base", boom)
+        verify_worker.maybe_refresh_base()
+        assert st.reg["refresh_ok"] is False
+        assert "no space left on device" in st.reg["refresh_error"]
+        assert st.reg["refresh_failures"] == 1
+
+    def test_consecutive_failures_accumulate(self, monkeypatch):
+        st = self._wire(monkeypatch, {
+            "base_sha": "a" * 40, "tier": 1, "refresh_failures": 2,
+            "pinned_at": "2026-07-20T12:00:00+00:00"})
+        monkeypatch.setattr(verify_worker.verify_driver, "resolve_base_sha",
+                            lambda: "b" * 40)
+        monkeypatch.setattr(verify_worker.verify_driver, "prepare_base",
+                            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
+        verify_worker.maybe_refresh_base()
+        assert st.reg["refresh_failures"] == 3
+
+    def test_a_successful_refresh_clears_the_failure_run(self, monkeypatch):
+        """Written after prepare_base returns, because prepare_base
+        full-replaces the pin."""
+        st = self._wire(monkeypatch, {
+            "base_sha": "a" * 40, "tier": 1, "refresh_failures": 4,
+            "refresh_ok": False, "refresh_error": "no space left on device",
+            "pinned_at": "2026-07-20T12:00:00+00:00"})
+        monkeypatch.setattr(verify_worker.verify_driver, "resolve_base_sha",
+                            lambda: "b" * 40)
+
+        def mock_prepare_base(store, base_sha, tier):
+            store.save_verify_base({
+                "base_sha": base_sha, "tier": tier,
+                "pinned_at": "2026-07-22T12:00:00+00:00", "baseline_failing": [],
+                "baseline_captured_at": "2026-07-22T12:00:00+00:00"})
+
+        monkeypatch.setattr(verify_worker.verify_driver, "prepare_base",
+                            mock_prepare_base)
+        verify_worker.maybe_refresh_base()
+        assert st.reg["refresh_ok"] is True
+        assert st.reg["refresh_failures"] == 0
+        assert st.reg["refresh_error"] is None
+
+    def test_an_unmoved_head_counts_as_a_healthy_refresh(self, monkeypatch):
+        """Upstream simply has not moved. The lane is tracking master fine, so
+        this must not read as a stalled refresh."""
+        st = self._wire(monkeypatch, {
+            "base_sha": "a" * 40, "tier": 1, "refresh_failures": 3,
+            "pinned_at": "2026-07-20T12:00:00+00:00"})
+        monkeypatch.setattr(verify_worker.verify_driver, "resolve_base_sha",
+                            lambda: "a" * 40)
+        verify_worker.maybe_refresh_base()
+        assert st.reg["refresh_ok"] is True
+        assert st.reg["refresh_failures"] == 0
+
     def test_preamble_failure_is_contained(self, monkeypatch):
         """A preamble failure (load_verify_base raises) does not escape
         maybe_refresh_base — the drain tick must always reach next_queued()."""
