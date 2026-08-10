@@ -96,8 +96,8 @@ def test_read_only_allowlist_without_a_token():
                 "gh search prs", "gh search issues", "gh search commits",
                 "gh release view", "gh run view"):
         assert f"Bash({sub}:*)" in allowed
-    # no upstream write is even advertised without a token — `gh issue create`
-    # (upstream filing, as the bot) among them.
+    # No upstream write helper or direct gh write is advertised without a token.
+    assert "prospector_app/agent/gh-write" not in allowed
     for danger in ("gh pr edit", "gh pr comment", "gh pr close", "gh pr reopen",
                    "gh pr review", "gh pr update-branch", "gh pr merge", "gh api",
                    "gh issue create", "gh issue close", "gh issue reopen",
@@ -141,15 +141,16 @@ def test_interactive_resubmit_needs_no_worker_push_identity():
     disallowed = _multi(flags, "--disallowedTools")
     assert "Edit" not in disallowed and "Write" not in disallowed
     # Bot-identity writes remain available in the same writable session.
-    assert "Bash(gh pr comment:*)" in allowed
+    assert "Bash(prospector_app/agent/gh-write:*)" in allowed
 
 
 def test_curated_writes_unlocked_with_a_token_but_never_merge():
-    # With a token the curated upstream writes are added on top of the reads...
+    # With a token one validating, on-demand-mint helper is added on top of the reads.
     allowed = _flag(chat.isolation_flags(True), "--allowedTools")
+    assert "Bash(prospector_app/agent/gh-write:*)" in allowed
     for sub in ("gh pr edit", "gh pr comment", "gh issue create", "gh issue reopen",
                 "gh issue comment", "gh issue edit", "gh run rerun"):
-        assert f"Bash({sub}:*)" in allowed
+        assert f"Bash({sub}:*)" not in allowed
     # PR close/reopen/review and issue close have executor-backed helpers, so
     # they land in Activity; their direct gh forms are not reachable.
     for helper in ("close-pr", "reopen-pr", "submit-review", "close-issue"):
@@ -167,6 +168,8 @@ def test_curated_writes_unlocked_with_a_token_but_never_merge():
     # `resubmit <pr> update`.
     assert "gh pr update-branch" not in allowed
     assert "Bash(prospector_app/agent/resubmit:*)" in allowed
+    script = chat.APP_ROOT / "agent" / "gh-write"
+    assert script.exists() and os.access(script, os.X_OK)
 
 
 def test_executor_write_helpers_require_token_and_are_executable():
@@ -290,7 +293,7 @@ def test_context_has_critic_and_issue_guidance():
     assert "before you read" in sp.lower()
     # issue-filing capability + target repo (the configured feedback repo,
     # substituted for {feedback_repo} — conftest pins test-owner/test-meta-repo)
-    assert "gh issue create" in sp
+    assert "gh-write issue create" in sp
     assert "test-owner/test-meta-repo" in sp
     assert "{feedback_repo}" not in sp
     # both failure modes named
@@ -303,8 +306,8 @@ def test_context_documents_upstream_writes_and_the_merge_limit():
     assert chat.BOT_LOGIN in sp
     assert chat.REPO in sp
     assert "{bot}" not in sp and "{repo}" not in sp
-    assert "gh pr edit" in sp
-    assert "gh run rerun" in sp
+    assert "gh-write pr edit" in sp
+    assert "gh-write run rerun" in sp
     for helper in ("close-pr", "reopen-pr", "submit-review"):
         assert f"prospector_app/agent/{helper}" in sp
     for direct in ("gh pr close", "gh pr reopen", "gh pr review"):
@@ -330,7 +333,7 @@ def test_context_documents_the_review_retrigger(monkeypatch):
     # Re-triggering the review is a bot comment carrying the provider's mention —
     # the prompt names the configured one so the agent doesn't have to guess it.
     sp = chat.system_prompt()
-    assert "gh pr comment" in sp
+    assert "gh-write pr comment" in sp
     assert review_policy.active().retrigger_mention == "@greptileai"
     assert "@greptileai" in sp
     assert "{retrigger_mention}" not in sp
