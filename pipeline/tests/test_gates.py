@@ -2063,6 +2063,83 @@ class TestFixEligibility:
         assert ok is False
         assert "fixable_gates" in why
 
+
+class TestFixHuntable:
+    """The idle hunter's own bar, on top of fix_eligibility. It picks PRs a human
+    already liked and that are merely out of date, so it asks for the review
+    provider's bar and nothing that a base merge is what fixes."""
+
+    def _profile(self, monkeypatch, **over):
+        p = profile.RepoProfile(autofix=profile.AutofixPolicy(**over))
+        monkeypatch.setattr(profile, "active", lambda: p)
+        return p
+
+    def _stale(self, **over):
+        """A PR meeting the review bar whose branch has fallen behind: not
+        mergeable, CI failing on the drifted base. The whole target population."""
+        return _pr(signals={"greptile": 5, "ci": "failing", "mergeable": False,
+                            "has_tests": True, "checked_at": NOW,
+                            "against_head_sha": HEAD},
+                   drift={"state": "conflicts", "checked_at": NOW,
+                          "against_head_sha": HEAD}, **over)
+
+    def test_unmergeable_ci_red_pr_meeting_the_review_bar_is_huntable(self, monkeypatch):
+        # The central case. pr_clean refuses this PR on both counts, and that is
+        # correct for merging — but conflicts and a CI run against a stale base
+        # are what the update exists to clear, so neither can be a precondition.
+        self._profile(monkeypatch)
+        ok, why = gates.fix_huntable(self._stale(), "rebase")
+        assert ok is True, why
+
+    def test_review_bar_unmet_refused(self, monkeypatch):
+        self._profile(monkeypatch)
+        pr = self._stale()
+        pr.raw["signals"]["greptile"] = 4
+        ok, why = gates.fix_huntable(pr, "rebase")
+        assert ok is False
+        assert "greptile" in why
+
+    def test_stale_signals_refused(self, monkeypatch):
+        # The review score is read off signals, so a stale section means the bar
+        # is unknowable rather than met.
+        self._profile(monkeypatch)
+        pr = self._stale()
+        pr.raw["signals"]["against_head_sha"] = "moved"
+        ok, why = gates.fix_huntable(pr, "rebase")
+        assert ok is False
+        assert "signals" in why
+
+    def test_missing_signals_refused(self, monkeypatch):
+        self._profile(monkeypatch)
+        pr = _pr()
+        del pr.raw["signals"]
+        ok, why = gates.fix_huntable(pr, "rebase")
+        assert ok is False
+        assert "signals" in why
+
+    def test_eligibility_blocks_propagate(self, monkeypatch):
+        self._profile(monkeypatch)
+        pr = self._stale(threat={"verdict": "malicious", "checked_at": NOW})
+        ok, why = gates.fix_huntable(pr, "rebase")
+        assert ok is False
+        assert "malicious" in why
+
+    def test_deny_globs_propagate(self, monkeypatch):
+        self._profile(monkeypatch, deny_globs=(".github/workflows/**",))
+        ok, why = gates.fix_huntable(self._stale(), "update",
+                                     changed_paths=[".github/workflows/ci.yml"])
+        assert ok is False
+        assert "withholds from autofix" in why
+
+    def test_never_hunts_an_agent_authored_fix(self, monkeypatch):
+        # An agent-authored change is an operator's call. The hunter queues only
+        # the mechanical actions, and the gate says so rather than relying on the
+        # caller to remember.
+        self._profile(monkeypatch, fixable_gates=("ci",))
+        ok, why = gates.fix_huntable(self._stale(), "fix")
+        assert ok is False
+        assert "fix" in why
+
     def test_fix_allowed_once_gates_named(self, monkeypatch):
         self._profile(monkeypatch, fixable_gates=("ci",))
         ok, why = gates.fix_eligibility(_pr(), "fix")

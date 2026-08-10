@@ -287,8 +287,11 @@ def test_orphan_recovery_flags_an_interrupted_push_as_indeterminate(store):
 # --- worker: the idle hunter only takes mechanical actions ----------------------
 
 def test_hunter_queues_a_rebase_for_an_unmergeable_pr(store):
+    # The review score is part of the hunt bar (gates.fix_huntable): unprompted
+    # sandbox time goes to PRs a reviewer already rated.
     rec = store.load_pr(1).raw
-    rec["signals"] = {"mergeable": False, "checked_at": "2026-06-10T00:00:00+00:00",
+    rec["signals"] = {"greptile": 5, "mergeable": False,
+                      "checked_at": "2026-06-10T00:00:00+00:00",
                       "against_head_sha": "a" * 40}
     store.save_pr(rec)
     data.refresh()

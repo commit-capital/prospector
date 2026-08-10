@@ -295,12 +295,22 @@ def fix_dequeue_pr(n: int):
 
 @app.post("/api/prs/{n}/fix/approve")
 def fix_approve_pr(n: int):
-    """Approve PR #n's authored fix for pushing. The worker pushes it from the
-    worktree it prepared, on its next tick."""
+    """Approve PR #n's authored fix for pushing. The worker re-derives a
+    mechanical change against current base and pushes it on its next tick; an
+    agent-authored fix is pushed from the worktree it prepared."""
     try:
         return fix_queue.approve_pr(n)
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+@app.get("/api/fix/queue")
+def fix_queue_status():
+    """The autofix queue: every PR with a request in flight, the ones proven and
+    waiting for a decision first. This is the browsable pre-tested backlog —
+    approving a row re-runs its merge or rebase against current base before
+    anything reaches the contributor's branch."""
+    return {"queue": fix_queue.queue_entries(), "runner": fix_queue.runner_status()}
 
 
 @app.get("/api/fix/runner")

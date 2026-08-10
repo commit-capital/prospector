@@ -489,6 +489,43 @@ def fix_eligibility(pr: Pr, action: str,
     return True, f"eligible for {action}"
 
 
+# The autofix actions the idle hunter may queue on its own. An agent-authored
+# `fix` is an operator's call: it is new code, and nothing about a PR being out
+# of date argues for writing some.
+HUNTABLE_ACTIONS = ("update", "rebase")
+
+
+def fix_huntable(pr: Pr, action: str,
+                 changed_paths: list[str] | None = None) -> tuple[bool, str]:
+    """May the idle hunter queue `action` for this PR without being asked?
+
+    fix_eligibility bounds which branches the push bot may touch at all. This is
+    the narrower question of which PRs are worth spending sandbox time on
+    unprompted, and it adds one thing: a human-facing quality signal, in the form
+    of the configured review provider's bar.
+
+    It asks for nothing that being out of date is what causes. `pr_clean` also
+    requires `mergeable` and passing CI, and both are false precisely on the PRs
+    this hunts — a conflicted branch and a CI run against a base that has since
+    moved. A current GREEN security verdict is impossible here for the same
+    reason: security_eligible gates the review behind pr_clean, so a conflicted
+    PR never earns a verdict at all. Requiring any of the three would leave the
+    hunt pool permanently empty.
+
+    The operator's own click answers to fix_eligibility alone; this bar governs
+    only what the hunter starts by itself.
+    """
+    if action not in HUNTABLE_ACTIONS:
+        return False, (f"the hunter queues only {' and '.join(HUNTABLE_ACTIONS)}; "
+                       f"a {action} is an operator's call")
+    if not is_current(pr, "signals"):
+        return False, "signals stale or missing, so the review bar is unknowable"
+    blocker = review_policy.active().clean_blocker(pr)
+    if blocker:
+        return False, blocker
+    return fix_eligibility(pr, action, changed_paths)
+
+
 def security_overridable(pr: Pr, today: str | None = None,
                          changed_paths: list[str] | None = None) -> bool:
     """True iff the block a reason would clear is specifically a current YELLOW

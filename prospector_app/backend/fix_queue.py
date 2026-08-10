@@ -93,6 +93,37 @@ def approve_pr(n: int) -> dict:
     return {"pr": n, "status": "approved"}
 
 
+# Listing order. `awaiting-review` leads because it is the only status an
+# operator can act on; everything else is work in progress they are waiting out.
+_QUEUE_STATUS_ORDER = {"awaiting-review": 0, "pushing": 1, "running": 2,
+                       "approved": 3, "queued": 4}
+
+
+def queue_entries() -> list[dict]:
+    """Every PR with an autofix request in flight, the reviewable ones first and
+    oldest-queued first within each status.
+
+    `resolvable` is the claim the row makes: the action produced a change and
+    the compile preflight did not reject it. A deployment configuring no
+    verify.compile_cmd records None, which is not a failure — the merge or
+    rebase resolving is the claim, and the build check corroborates it."""
+    out: list[dict] = []
+    for n, rec in data.prs().items():
+        req = rec.fix_request or {}
+        status = req.get("status")
+        if status not in _QUEUE_STATUS_ORDER:
+            continue
+        pf = (req.get("result") or {}).get("compile_preflight")
+        out.append({
+            "pr": n, "title": rec.title, "status": status,
+            "action": req.get("action"), "source": req.get("source"),
+            "queued_at": req.get("queued_at"), "base_sha": req.get("base_sha"),
+            "resolvable": status == "awaiting-review" and (pf is None or pf.get("exit") == 0),
+        })
+    out.sort(key=lambda e: (_QUEUE_STATUS_ORDER[e["status"]], str(e["queued_at"] or "")))
+    return out
+
+
 def _beat_online(last: object) -> bool:
     """Whether a heartbeat stamp is within STALE_BEAT_SECONDS."""
     if not isinstance(last, str):

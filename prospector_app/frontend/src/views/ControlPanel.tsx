@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
-import { api, type JobSpec, type JobRec, type PipelineStatus, type Autohunt, type AutohuntResultCounts, type FilterSpec, type VerifyQueue } from "../api";
+import { api, type JobSpec, type JobRec, type PipelineStatus, type Autohunt, type AutohuntResultCounts, type FilterSpec, type VerifyQueue, type FixQueue } from "../api";
 import { useRepoMeta } from "../RepoMetaContext";
 import { PRLink } from "../components/PRLink";
 
@@ -186,6 +186,26 @@ export default function ControlPanel() {
   const [verifyQueue, setVerifyQueue] = useState<VerifyQueue | null>(null);
   const [verifyQueueRange, setVerifyQueueRange] = useState<HuntRangeOpt>(HUNT_RANGE_OPTIONS[0]);
   const [verifyHistoryExpanded, setVerifyHistoryExpanded] = useState(false);
+  const [fixQueue, setFixQueue] = useState<FixQueue | null>(null);
+  const [fixBusy, setFixBusy] = useState<number | null>(null);
+  const [fixError, setFixError] = useState<string | null>(null);
+
+  const refreshFixQueue = () => api.fixQueue().then(setFixQueue).catch(() => {});
+
+  /** Approve or discard one parked change. The push itself happens on the
+   *  worker's next tick, so this reloads rather than reporting a landed push. */
+  const runFixAction = async (pr: number, kind: "approve" | "discard") => {
+    setFixBusy(pr);
+    setFixError(null);
+    try {
+      await (kind === "approve" ? api.approveFix(pr) : api.dequeueFix(pr));
+      await refreshFixQueue();
+    } catch (e) {
+      setFixError(String(e));
+    } finally {
+      setFixBusy(null);
+    }
+  };
 
   const refreshJobs = () => api.jobsList().then((d) => setJobs(d.jobs)).catch((e) => setErr(String(e)));
   const refreshPipelineStatus = () => api.pipelineStatus().then(setPipeline).catch(() => {});
@@ -244,6 +264,12 @@ export default function ControlPanel() {
     const t = setInterval(load, 30_000);
     return () => clearInterval(t);
   }, [verifyQueueRange]);
+
+  useEffect(() => {
+    refreshFixQueue();
+    const t = setInterval(refreshFixQueue, 30_000);
+    return () => clearInterval(t);
+  }, []);
 
   const sweepReconcile = async () => {
     setReconBusy(true);
@@ -712,6 +738,66 @@ export default function ControlPanel() {
         </>
       ) : (
         <div className="muted small" style={{ marginBottom: 14 }}>Loading verify queue…</div>
+      )}
+
+      {/* ── Fix queue ── */}
+      <h3>Fix queue</h3>
+      {fixQueue ? (
+        <>
+          <div className="muted small" style={{ marginBottom: 8 }}>
+            Proven in the sandbox, pushed to nobody. Approving re-runs the merge or
+            rebase against current base before anything reaches the branch.
+          </div>
+          <table className="grid compact">
+            <thead><tr><th>Status</th><th>PR</th><th>Action</th><th>Source</th><th>Since</th><th></th></tr></thead>
+            <tbody>
+              {fixQueue.queue.length === 0 ? (
+                <tr><td colSpan={6} className="muted small">Nothing queued, running, or waiting for review.</td></tr>
+              ) : fixQueue.queue.map((e) => (
+                <tr key={e.pr}>
+                  <td>
+                    {e.status === "awaiting-review" ? (
+                      <span className={e.resolvable ? "chip chip-green sm" : "chip chip-amber sm"}
+                        title={e.resolvable
+                          ? "The action produced a change and the compile preflight did not reject it."
+                          : "The change is parked, but its compile preflight did not pass."}>
+                        {e.resolvable ? "✅ Conflicts resolvable" : "⚠ Needs a look"}
+                      </span>
+                    ) : (
+                      <span className={queueStatusChip(e.status)}>{e.status}</span>
+                    )}
+                  </td>
+                  <td className="mono">
+                    <PRLink n={e.pr} />
+                    {e.title && <div className="muted small">{e.title.slice(0, 60)}</div>}
+                  </td>
+                  <td><span className="chip chip-muted sm">{e.action}</span></td>
+                  <td><span className="chip chip-muted sm">{e.source === "auto" ? "auto" : "manual"}</span></td>
+                  <td className="muted small" title={fmt(e.queued_at)}>{ago(e.queued_at)}</td>
+                  <td>
+                    {e.status === "awaiting-review" && (
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <button className="btn-primary sm" disabled={fixBusy != null}
+                          onClick={() => runFixAction(e.pr, "approve")}
+                          title={`Push this ${e.action} to PR #${e.pr} as the machine user.`}>
+                          {fixBusy === e.pr ? "…" : "✓ Push"}
+                        </button>
+                        <button className="btn-secondary sm" disabled={fixBusy != null}
+                          onClick={() => runFixAction(e.pr, "discard")}
+                          title="Discard this proven change without pushing it.">
+                          ✕
+                        </button>
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {fixError && <div className="muted small" style={{ marginTop: 6 }}>{fixError}</div>}
+        </>
+      ) : (
+        <div className="muted small" style={{ marginBottom: 14 }}>Loading fix queue…</div>
       )}
 
       <h3>Recent jobs</h3>

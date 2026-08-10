@@ -537,6 +537,59 @@ def test_update_needs_no_prepared_worktree(monkeypatch, tmp_path):
     assert not resubmit._worktree(42).exists(), "the throwaway clone is cleaned up"
 
 
+# --- update --probe: prove the merge without pushing it -------------------------
+
+def test_update_probe_merges_locally_and_pushes_nothing(monkeypatch, tmp_path, capsys):
+    # The whole point of the pre-test: the merge really runs, and the
+    # contributor's branch never moves.
+    repos = _make_rebase_repos(tmp_path, conflict=False)
+    logged = _wire_update(monkeypatch, tmp_path, repos)
+
+    assert resubmit.cmd_update(42, dry_run=False, probe=True) == 0
+
+    assert _git(repos["fork"], "rev-parse", "fix").stdout.strip() == repos["old_head"]
+    assert not logged, "a probe is not an update that happened"
+    assert not resubmit._worktree(42).exists(), "the throwaway clone is cleaned up"
+
+
+def test_update_probe_emits_the_prs_change_over_current_base(monkeypatch, tmp_path, capsys):
+    # compile_preflight.run_for_patch applies the patch over default-branch HEAD,
+    # so the probe must emit the PR's own change relative to current base — not
+    # the merge diff, which would carry base's commits back in on top of base.
+    repos = _make_rebase_repos(tmp_path, conflict=False)
+    _wire_update(monkeypatch, tmp_path, repos)
+
+    assert resubmit.cmd_update(42, dry_run=False, probe=True) == 0
+
+    out = capsys.readouterr().out
+    assert "feature.txt" in out, "the PR's own change is in the patch"
+    assert "base-only.txt" not in out, "base's own commits are not"
+
+
+def test_update_probe_reports_a_conflict_without_pushing(monkeypatch, tmp_path, capsys):
+    repos = _make_rebase_repos(tmp_path, conflict=True)
+    _wire_update(monkeypatch, tmp_path, repos)
+
+    assert resubmit.cmd_update(42, dry_run=False, probe=True) == 8
+
+    err = capsys.readouterr().err
+    assert "one.txt" in err, "the conflicted path is named"
+    assert _git(repos["fork"], "rev-parse", "fix").stdout.strip() == repos["old_head"]
+
+
+def test_update_probe_still_refuses_without_a_push_identity(monkeypatch, tmp_path, capsys):
+    # A probe pushes nothing, but it clones a contributor's fork over SSH as the
+    # machine user. An unconfigured machine does no such thing.
+    repos = _make_rebase_repos(tmp_path, conflict=False)
+    _wire_update(monkeypatch, tmp_path, repos)
+    monkeypatch.setattr(resubmit.settings, "PUSH_LOGIN", "")
+    ran = _Ran()
+    monkeypatch.setattr(resubmit.subprocess, "run", ran)
+
+    assert resubmit.cmd_update(42, dry_run=False, probe=True) == 3
+    assert ran.calls == []
+
+
 def test_update_takes_no_rebase_flag():
     # The flag isn't merely unused — the CLI refuses it, so no prompt can smuggle
     # a force-push through this path.
