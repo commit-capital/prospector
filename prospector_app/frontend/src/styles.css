@@ -400,9 +400,12 @@ select { background: var(--panel); border: 1px solid var(--border); color: var(-
 .markdown pre { background: var(--panel2); padding: 12px; border-radius: 8px; overflow: auto; }
 
 /* ===== PR flyout ===== */
-.flyout-scrim { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 40; animation: fade .15s; }
+/* Scrim and panel both start below the topbar (like the agent pane) so the
+   header controls — dry/live toggle, feedback, nav — stay visible and clickable
+   while a PR's details are open. */
+.flyout-scrim { position: fixed; inset: var(--topbar-h, 52px) 0 0 0; background: rgba(0,0,0,.35); z-index: 40; animation: fade .15s; }
 @keyframes fade { from { opacity: 0; } }
-.flyout { position: fixed; top: 0; right: 0; height: 100vh; width: 640px; max-width: 96vw;
+.flyout { position: fixed; top: var(--topbar-h, 52px); right: 0; bottom: 0; width: 640px; max-width: 96vw;
   background: var(--bg); border-left: 1px solid var(--border); box-shadow: -8px 0 28px rgba(0,0,0,.25);
   z-index: 41; display: flex; flex-direction: column; animation: slidein .18s ease; }
 .flyout-max { width: 1100px !important; }
