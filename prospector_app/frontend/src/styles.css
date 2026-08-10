@@ -201,6 +201,8 @@ a:hover { text-decoration: underline; }
 .segmented button { background: var(--panel); color: var(--muted); border: none; padding: 6px 12px; cursor: pointer; }
 .segmented button.on { background: var(--panel2); color: var(--text); }
 .segmented .count { opacity: .6; margin-left: 4px; }
+/* the Diff panel's Diff / Merge-diff mode switch */
+.diff-mode { display: inline-flex; margin-bottom: 8px; }
 .search { background: var(--panel); border: 1px solid var(--border); color: var(--text);
   border-radius: 8px; padding: 6px 10px; min-width: 220px; }
 .search.sm { min-width: 90px; }
