@@ -668,11 +668,16 @@ def run(store: Store, pr: int, *, from_queue: bool = False) -> int:
         rc = 1
     after = store.load_pr(pr)
     request = (after.verify_request if after is not None else None) or {}
+    # `outcome` names what THIS run concluded, so only a request that ended
+    # `done` stamps one — the PR's stored outcome outlives the run that wrote
+    # it, and a park or a failure reached no conclusion of its own.
+    status = request.get("status")
+    outcome = (after.verify_outcome
+               if after is not None and status == "done" else None)
     entry: dict = {
         "phase": "verify:single", "pr": pr, "started": started, "finished": _now(),
-        "stats": {"status": request.get("status"),
-                  "error_kind": request.get("error_kind"),
-                  "outcome": after.verify_outcome if after is not None else None}}
+        "stats": {"status": status, "error_kind": request.get("error_kind"),
+                  "outcome": outcome}}
     if runnable and prior.get("source") == "auto":
         entry["trigger"] = "autohunt"
     store.append_run(entry)
