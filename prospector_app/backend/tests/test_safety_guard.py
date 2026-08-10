@@ -95,6 +95,27 @@ def test_bot_run_refuses_empty_token():
             sg.bot_run(["gh", "pr", "close", "123"], bad)  # type: ignore[arg-type]
 
 
+CHAT_BOT_OK = [
+    ["gh", "pr", "comment", "123", "--body", "thanks"],
+    ["gh", "pr", "edit", "123", "--title", "better title"],
+    ["gh", "issue", "create", "--title", "bug", "--body", "details"],
+    ["gh", "issue", "edit", "123", "--title", "better title"],
+    ["gh", "issue", "reopen", "123"],
+    ["gh", "run", "rerun", "456", "--failed"],
+]
+
+
+@pytest.mark.parametrize("argv", CHAT_BOT_OK)
+def test_chat_bot_write_allowed_shape(argv):
+    sg.assert_chat_bot_write(argv)
+
+
+def test_chat_bot_run_refuses_empty_token():
+    for bad in ("", "   ", None):
+        with pytest.raises(sg.WriteAttemptBlocked):
+            sg.chat_bot_run(["gh", "pr", "edit", "123", "--title", "x"], bad)  # type: ignore[arg-type]
+
+
 # --- sanctioned bot-MERGE path (org-admin model) -------------------------
 def test_bot_merge_refuses_empty_token():
     # merging as the configured bot still requires a real token — no token, no merge

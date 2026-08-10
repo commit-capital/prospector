@@ -1,0 +1,132 @@
+#!/usr/bin/env python3
+"""Run one curated upstream GitHub write with a freshly minted bot token.
+
+The helper validates and reconstructs the command, pins it to TRIAGE_REPO, and
+mints an installation token immediately before the subprocess starts.
+"""
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
+
+from pipeline.settings import REPO  # noqa: E402
+from prospector_app.backend import executor  # noqa: E402
+from prospector_app.backend import safety_guard  # noqa: E402
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="gh-write",
+        description="Run a curated GitHub write as the configured bot.",
+    )
+    subjects = parser.add_subparsers(dest="subject", required=True)
+
+    pr = subjects.add_parser("pr")
+    pr_actions = pr.add_subparsers(dest="action", required=True)
+    pr_edit = pr_actions.add_parser("edit")
+    pr_edit.add_argument("number", type=int)
+    pr_edit.add_argument("--title")
+    pr_edit.add_argument("--body")
+    pr_comment = pr_actions.add_parser("comment")
+    pr_comment.add_argument("number", type=int)
+    pr_comment.add_argument("--body", required=True)
+
+    issue = subjects.add_parser("issue")
+    issue_actions = issue.add_subparsers(dest="action", required=True)
+    issue_create = issue_actions.add_parser("create")
+    issue_create.add_argument("--title", required=True)
+    issue_create.add_argument("--body", required=True)
+    issue_create.add_argument("--label", action="append", default=[])
+    issue_reopen = issue_actions.add_parser("reopen")
+    issue_reopen.add_argument("number", type=int)
+    issue_comment = issue_actions.add_parser("comment")
+    issue_comment.add_argument("number", type=int)
+    issue_comment.add_argument("--body", required=True)
+    issue_edit = issue_actions.add_parser("edit")
+    issue_edit.add_argument("number", type=int)
+    issue_edit.add_argument("--title")
+    issue_edit.add_argument("--body")
+
+    run = subjects.add_parser("run")
+    run_actions = run.add_subparsers(dest="action", required=True)
+    rerun = run_actions.add_parser("rerun")
+    rerun.add_argument("run_id", type=int)
+    rerun.add_argument("--failed", action="store_true")
+    return parser
+
+
+def build_gh_argv(argv: list[str]) -> list[str]:
+    parser = _parser()
+    args = parser.parse_args(argv)
+
+    if args.subject == "pr" and args.action == "edit":
+        if args.title is None and args.body is None:
+            parser.error("pr edit requires --title and/or --body")
+        cmd = ["gh", "pr", "edit", str(args.number)]
+        if args.title is not None:
+            cmd += ["--title", args.title]
+        if args.body is not None:
+            cmd += ["--body", args.body]
+    elif args.subject == "pr" and args.action == "comment":
+        cmd = ["gh", "pr", "comment", str(args.number), "--body", args.body]
+    elif args.subject == "issue" and args.action == "create":
+        cmd = ["gh", "issue", "create", "--title", args.title, "--body", args.body]
+        for label in args.label:
+            cmd += ["--label", label]
+    elif args.subject == "issue" and args.action == "reopen":
+        cmd = ["gh", "issue", "reopen", str(args.number)]
+    elif args.subject == "issue" and args.action == "comment":
+        cmd = ["gh", "issue", "comment", str(args.number), "--body", args.body]
+    elif args.subject == "issue" and args.action == "edit":
+        if args.title is None and args.body is None:
+            parser.error("issue edit requires --title and/or --body")
+        cmd = ["gh", "issue", "edit", str(args.number)]
+        if args.title is not None:
+            cmd += ["--title", args.title]
+        if args.body is not None:
+            cmd += ["--body", args.body]
+    elif args.subject == "run" and args.action == "rerun":
+        cmd = ["gh", "run", "rerun", str(args.run_id)]
+        if args.failed:
+            cmd.append("--failed")
+    else:
+        parser.error("unsupported write")
+    return [*cmd, "--repo", REPO]
+
+
+def _bad_credentials(stdout: str, stderr: str) -> bool:
+    detail = f"{stdout}\n{stderr}".lower()
+    return "http 401" in detail or "bad credentials" in detail
+
+
+def main(argv: list[str] | None = None) -> int:
+    cmd = build_gh_argv(argv if argv is not None else sys.argv[1:])
+    token = executor.mint_bot_token()
+    if not token:
+        detail = executor.mint_error() or "bot token mint returned no token"
+        print(f"gh-write: bot installation token unavailable: {detail}", file=sys.stderr)
+        return 2
+
+    result = safety_guard.chat_bot_run(cmd, token)
+    if result.returncode != 0:
+        if _bad_credentials(result.stdout, result.stderr):
+            print(
+                "gh-write: bot installation token expired — retry the write to mint a fresh token",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"gh-write: {result.stderr.strip() or result.stdout.strip()}",
+                file=sys.stderr,
+            )
+        return 1
+    print(result.stdout.strip())
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

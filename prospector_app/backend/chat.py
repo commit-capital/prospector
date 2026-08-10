@@ -118,32 +118,11 @@ _GH_ALLOW = [
     "Bash(gh run view:*)",
 ]
 
-# The curated upstream-write commands the agent may run on the configured repo
-# — but ONLY when a bot token is minted, in which case the whole `gh`
-# subprocess is authenticated as the bot (see _bot_token + stream_chat). These are
-# added to the allowlist on top of _GH_ALLOW only in that case; with no token they
-# are withheld and the agent's only write is the meta-repo issue it files as the
-# operator (_FILE_ISSUE_ALLOW). Covers PR writes and issue writes, `gh issue
-# create` among them — upstream issue filing is a bot write like the rest, and the
-# script owns the meta-repo. Workflow reruns are included so
-# the agent can retry a failed CI run after confirmation. `gh pr merge` is
-# deliberately ABSENT: merges stay on the executor's gated path. Updating a stale
-# PR's branch is absent too — an App installation token cannot push to a fork at
-# all, so that runs as the machine user through `resubmit <pr> update`
-# (_RESUBMIT_ALLOW). The agent is
-# instructed (agent/context.md) to confirm with the operator before each write and to use
-# `gh pr edit` for the body/title only. PR close/reopen/review and issue close are
-# absent: they run through executor helpers that record Activity. dontAsk denies
-# anything not listed here.
-_GH_WRITE_ALLOW = [
-    "Bash(gh issue create:*)",
-    "Bash(gh pr edit:*)",
-    "Bash(gh pr comment:*)",
-    "Bash(gh issue reopen:*)",
-    "Bash(gh issue comment:*)",
-    "Bash(gh issue edit:*)",
-    "Bash(gh run rerun:*)",
-]
+# Curated upstream writes ride one narrow helper that validates the operation,
+# pins --repo to REPO, and mints an installation token for each invocation. PR
+# close/reopen/review and issue close use their executor helpers below so those
+# attempts are also recorded in Activity.
+_GH_WRITE_ALLOW = ["Bash(prospector_app/agent/gh-write:*)"]
 
 # These PR writes call the same executor operations as the app UI, including
 # preflight, configured-bot writes, store reflection where applicable, and
@@ -712,9 +691,9 @@ async def stream_chat(question: str, pr: int | None = None, cluster: int | None 
     else:
         prompt = f"{visible}{anchored}{question}"
 
-    # When a bot token can be minted, the agent's curated upstream
-    # writes are unlocked AND the whole gh subprocess is authenticated as the bot
-    # (bot_env). With no token it stays read-only on the operator's local login.
+    # A successful mint unlocks the agent's curated upstream helpers. The chat
+    # process uses the operator environment for reads, and each write helper
+    # mints its execution token.
     token = _bot_token()
     cmd = [
         CLAUDE_BIN, "-p", prompt,
@@ -735,7 +714,7 @@ async def stream_chat(question: str, pr: int | None = None, cluster: int | None 
     proc = await subproc.spawn(
         cmd, cwd=REPO_ROOT, stderr=asyncio.subprocess.STDOUT,
         start_new_session=True,
-        env=safety_guard.bot_env(token) if token else None,
+        env=safety_guard.operator_env(),
     )
     _RUNNING[ctx_id] = proc
     captured_sid: str | None = None

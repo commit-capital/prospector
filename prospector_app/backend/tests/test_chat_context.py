@@ -273,3 +273,43 @@ def test_visible_prs_context_omitted_when_nothing_is_currently_filtered(temp_sto
     prompt = captured["cmd"][captured["cmd"].index("-p") + 1]
     assert "SUBJECT-CONTEXT-PR-101" in prompt
     assert "currently looking at" not in prompt  # no visible-PRs block was sent
+
+
+def test_writable_chat_process_uses_operator_environment(temp_store, tmp_path, monkeypatch):
+    monkeypatch.setattr(chat, "SESSION_DIR", tmp_path / "cache" / "chat")
+    monkeypatch.setattr(chat, "_op_slug", lambda: "tester")
+    monkeypatch.setattr(chat, "_bot_token", lambda: "capability-probe-token")
+    monkeypatch.setattr(chat, "system_prompt", lambda: "SYS")
+    monkeypatch.setenv("GH_TOKEN", "expired-session-token")
+    monkeypatch.setenv("GITHUB_TOKEN", "other-expired-session-token")
+    captured = {}
+
+    class FakeProc:
+        pid = 1
+        returncode = 0
+
+        def __init__(self):
+            self.stdout = self._gen()
+
+        async def _gen(self):
+            yield b'{"type":"result","session_id":"sess-A"}\n'
+
+        async def wait(self):
+            return 0
+
+    async def fake_spawn(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["env"] = kwargs["env"]
+        return FakeProc()
+
+    monkeypatch.setattr(chat.subproc, "spawn", fake_spawn)
+
+    async def drive():
+        async for _ in chat.stream_chat("hello"):
+            pass
+
+    asyncio.run(drive())
+    assert "GH_TOKEN" not in captured["env"]
+    assert "GITHUB_TOKEN" not in captured["env"]
+    allowed = captured["cmd"][captured["cmd"].index("--allowedTools") + 1]
+    assert "Bash(prospector_app/agent/gh-write:*)" in allowed

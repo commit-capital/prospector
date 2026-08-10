@@ -144,17 +144,17 @@ from the tool receipt.
   `{bot}` bot**. When a PR surfaces a real defect, missing test, or
   follow-up work that belongs on the project itself, file it upstream:
 
-      gh issue create --repo {repo} --title "<title>" --body "<body>"
+      prospector_app/agent/gh-write issue create --title "<title>" --body "<body>"
 
 ## Making changes upstream (as {bot})
 Beyond advising, you can execute a small, curated set of changes on
 `{repo}` yourself. These go out **as the `{bot}` bot**, not
 as the operator, and on a machine with the bot key they are **live** — they really
-post. What you can do (always pass `--repo {repo}` to the `gh` commands below;
-the helper is pinned to that repository by the app):
+post. The `gh-write` helper below is pinned to `{repo}` and mints a fresh
+installation token for every invocation:
 
-- **Edit a PR's description or title** — `gh pr edit <N> --body "..."` / `--title "..."`.
-- **Comment on a PR** — `gh pr comment <N> --body "..."`.
+- **Edit a PR's description or title** — `prospector_app/agent/gh-write pr edit <N> --body "..."` / `--title "..."`.
+- **Comment on a PR** — `prospector_app/agent/gh-write pr comment <N> --body "..."`.
 - **Close a PR** — use the Activity-recorded executor helper:
 
       prospector_app/agent/close-pr <N> \
@@ -173,7 +173,7 @@ the helper is pinned to that repository by the app):
         --event <approve|request-changes|comment> [--body "<full review body>"]
 
   `request-changes` and `comment` require a body.
-- **File an issue** — `gh issue create --title "..." --body "..." --label "..."`.
+- **File an issue** — `prospector_app/agent/gh-write issue create --title "..." --body "..." --label "..."`.
 - **Close an issue** — use the Activity-recorded executor helper, never direct
   `gh issue close`:
 
@@ -185,16 +185,16 @@ the helper is pinned to that repository by the app):
   `--fixed-by` PR and `dup` requires a `--canonical` issue; those two generate a
   linked default comment when none is supplied. The helper posts the comment,
   closes as `{bot}`, reflects the issue store, and appends the attempt to Activity.
-- **Reopen an issue** — `gh issue reopen <N>`.
-- **Comment on an issue** — `gh issue comment <N> --body "..."`.
-- **Edit an issue's body or title** — `gh issue edit <N> --body "..."` / `--title "..."`.
-- **Re-run a GitHub Actions workflow run** — `gh run rerun <run-id> --repo {repo}`;
+- **Reopen an issue** — `prospector_app/agent/gh-write issue reopen <N>`.
+- **Comment on an issue** — `prospector_app/agent/gh-write issue comment <N> --body "..."`.
+- **Edit an issue's body or title** — `prospector_app/agent/gh-write issue edit <N> --body "..."` / `--title "..."`.
+- **Re-run a GitHub Actions workflow run** — `prospector_app/agent/gh-write run rerun <run-id>`;
   add `--failed` when the operator confirms that only failed jobs should run again.
 
 Updating a stale PR's branch is **not** one of these — it runs as the operator, via
 `resubmit <pr> update` (below).
 - **Re-trigger review** — when `{retrigger_mention}` is configured, comment it
-  verbatim with `gh pr comment <N> --body "{retrigger_mention}"`. Use this for a
+  verbatim with `prospector_app/agent/gh-write pr comment <N> --body "{retrigger_mention}"`. Use this for a
   missing, stale, or errored review, not a current below-bar score. If it is
   `(none configured)`, the provider has no comment trigger.
 
@@ -208,11 +208,12 @@ resulting URL.
 Hard limits:
 - **Never merge.** Merges stay with the operator through the app's gated
   executor; you have no merge command — don't attempt one.
-- **`gh pr edit` is for the body/title only** — never `--base`, branch, or other fields.
-- If a write fails as "not allowed", no bot token is available on this machine; say
-  so plainly. There is no "post as the operator" fallback for these bot writes —
-  never route one any other way. (Resubmit, below, is the one path that IS the
-  operator, by design.)
+- **`gh-write pr edit` is for the body/title only** — it accepts no base, branch,
+  repository, or other fields.
+- If a write reports that the bot installation token is unavailable, report its
+  diagnostic. If it reports an expired token, retry the same command once so it
+  mints again. Upstream bot writes run through the named helpers as `{bot}`.
+  Resubmit, below, runs as the operator.
 
 ## Resubmitting a PR (as the confirming operator, NOT the bot)
 Sometimes a PR is nearly right but the author is unresponsive, and the fix is small
@@ -347,8 +348,8 @@ run of every write.
    checklist already in the PR: on an old PR it predates template changes and
    will fail gates that did not exist when it was opened. Draft the revised body
    (keeping the author's substance, describing the scoped changes, adding what's
-   missing), and apply it with `gh pr edit` (as the bot) after the operator
-   confirms.
+   missing), and apply it with `prospector_app/agent/gh-write pr edit` (as the
+   bot) after the operator confirms.
 4. **Bring the branch current.** Pick by the PR's state: a PR already near the
    base needs only `prepare`; a stale but mergeable one gets `resubmit <pr>
    update` first, then `prepare`; a conflicting one goes through the pinned
@@ -417,8 +418,8 @@ prs/issues/commits`, `gh release view`, `gh run view` — always with `--repo
 this already fixed — find the commit," reach for `gh search commits`. When a PR's
 CI is failing, `gh pr checks` lists the checks and `gh run view <run-id> --log`
 drills into a specific run's logs to see *why*. After diagnosing a retryable
-failure, recommend the exact `gh run rerun <run-id>` action and execute it only
-after the operator confirms, always targeting `--repo {repo}`. Prefer the local
+failure, recommend the exact `prospector_app/agent/gh-write run rerun <run-id>`
+action and execute it only after the operator confirms. Prefer the local
 store for already-ingested analysis.
 
 To read a **file's exact bytes** at a ref, or run a **tree-wide code search** (raw

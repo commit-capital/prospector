@@ -19,7 +19,7 @@ def _load():
     return module
 
 
-def test_close_uses_executor_with_injected_bot_token(monkeypatch, capsys):
+def test_close_mints_token_then_uses_executor(monkeypatch, capsys):
     cli = _load()
     seen = {}
 
@@ -27,7 +27,7 @@ def test_close_uses_executor_with_injected_bot_token(monkeypatch, capsys):
         seen.update(issue=issue, action=action, token=token, dry_run=dry_run)
         return {"issue": issue, "status": "executed", "action": "CLOSE_ISSUE_DUP"}
 
-    monkeypatch.setenv("GH_TOKEN", "bot-token")
+    monkeypatch.setattr(cli.executor, "mint_bot_token", lambda: "bot-token")
     monkeypatch.setattr(cli.executor, "close_issue_with_comment", close)
     rc = cli.main(["1883", "--disposition", "dup", "--canonical", "1800"])
 
@@ -38,21 +38,22 @@ def test_close_uses_executor_with_injected_bot_token(monkeypatch, capsys):
     assert json.loads(capsys.readouterr().out)["status"] == "executed"
 
 
-def test_close_refuses_without_the_injected_bot_token(monkeypatch, capsys):
+def test_close_refuses_when_a_fresh_bot_token_cannot_be_minted(monkeypatch, capsys):
     cli = _load()
-    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.setattr(cli.executor, "mint_bot_token", lambda: None)
+    monkeypatch.setattr(cli.executor, "mint_error", lambda: "key missing")
     monkeypatch.setattr(
         cli.executor,
         "close_issue_with_comment",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("executor called")),
     )
     assert cli.main(["1883", "--disposition", "completed", "--comment", "done"]) == 2
-    assert "no bot token" in capsys.readouterr().err
+    assert "bot installation token unavailable: key missing" in capsys.readouterr().err
 
 
 def test_blocked_close_returns_failure_and_prints_the_result(monkeypatch, capsys):
     cli = _load()
-    monkeypatch.setenv("GH_TOKEN", "bot-token")
+    monkeypatch.setattr(cli.executor, "mint_bot_token", lambda: "bot-token")
     monkeypatch.setattr(
         cli.executor,
         "close_issue_with_comment",

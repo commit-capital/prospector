@@ -63,8 +63,8 @@ own branches while still being unable to reach the triage repository.
   previews never boot a container. `gh pr edit` is never allowed on the
   executor path.
 - **The app chat agent** (`prospector_app/backend/chat.py`) has a separate,
-  curated upstream-write path. With a bot token and conversational
-  confirmation it may run PR edit/comment/close/reopen/review, issue
+  curated upstream-write path. When token minting is available, conversational
+  confirmation unlocks PR edit/comment/close/reopen/review, issue
   create/close/reopen/comment/edit, and workflow reruns against `TRIAGE_REPO`
   as `TRIAGE_BOT_LOGIN`. Without a token those upstream writes are withheld;
   they never fall back to the operator's login. A separate helper may always
@@ -74,7 +74,9 @@ own branches while still being unable to reach the triage repository.
   token. The worker opts into its configured machine identity separately. These
   paths do not use the per-PR merge gate. Chat PR close, reopen, and review
   operations, plus issue closes, call their corresponding executor paths; other
-  upstream chat writes use the chat command allowlist. The chat agent cannot merge.
+  upstream chat writes use `prospector_app/agent/gh-write`, which validates the
+  operation, pins the configured repository, and mints a token for each invocation.
+  Chat reads use the operator environment. The chat agent cannot merge.
 
 Every executor write, including a dry-run, is appended to the app activity
 log. Resubmit pushes and branch updates append best-effort entries under the

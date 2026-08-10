@@ -8,16 +8,13 @@ operator's local `gh` login). It:
     gh issue create/edit/close, gh api with -X POST/PATCH/DELETE/PUT,
     git push to the upstream remote, curl writes to api.github.com)
 
-so the app can never write to the upstream repo as the operator's local
-`gh` login.
+Backend reads use the operator's local `gh` login.
 
 Upstream writes go out only through the sanctioned bot paths below —
-`bot_run` (comment / close / reopen / review / inline comment) and
-`bot_merge_run` (squash-merge). Both REQUIRE a non-empty installation token (an
-empty token would fall back to the default login, so we refuse) and inject it
-via GH_TOKEN for that one subprocess. On a machine where no bot token
-can be minted, the executor obtains no token and these paths are unreachable —
-the app stays effectively read-only.
+`bot_run` (executor comments / closes / reopens / reviews), `chat_bot_run`
+(validated embedded-agent edits / comments / issue writes / workflow reruns), and
+`bot_merge_run` (squash-merge). All require a non-empty installation token and
+inject it via GH_TOKEN for that one subprocess.
 """
 from __future__ import annotations
 
@@ -70,18 +67,19 @@ def run(argv: list[str], *, timeout: int = 120, text: bool = True) -> subprocess
     return subprocess.run(argv, capture_output=True, text=text, timeout=timeout)
 
 
+def operator_env(base: dict[str, str] | None = None) -> dict[str, str]:
+    """Environment for read-only operator GitHub commands and the chat process."""
+    env = dict(base if base is not None else os.environ)
+    env.pop("GH_TOKEN", None)
+    env.pop("GITHUB_TOKEN", None)
+    return env
+
+
 # ---------------------------------------------------------------------------
 # Sanctioned bot write path (M6).
 #
-# The app may post to the upstream repo ONLY as the configured bot,
-# ONLY for close + comment actions, and ONLY with a real installation token.
-# This mirrors /resolve-pr-cluster. The hard guarantees:
-#   * a non-empty token is REQUIRED — an empty token would make `gh` fall back
-#     to the operator's default `gh` login, which is forbidden, so we refuse.
-#   * the token is injected via GH_TOKEN for that one subprocess only.
-#   * only an allowlist of write ops is permitted; merge is never allowed.
-# On a machine with no readable configured bot key the executor obtains no token, so
-# this path is unreachable and the app stays effectively read-only.
+# Bot writes use the configured identity, a non-empty installation token, and an
+# explicit operation allowlist. The token is scoped to one subprocess.
 # ---------------------------------------------------------------------------
 BOT_WRITE_ALLOW = [
     re.compile(r"^gh\s+pr\s+comment\s+\d+\b"),
@@ -99,10 +97,19 @@ BOT_WRITE_ALLOW = [
     re.compile(r"^gh\s+api\s+(?:-X\s*DELETE|--method[=\s]+DELETE)\s+repos/\S+/issues/comments/\d+\b"),
     re.compile(r"^gh\s+api\s+repos/\S+/issues/comments/\d+\s+(?:-X\s*DELETE|--method[=\s]+DELETE)\b"),
 ]
-# Merge has its OWN sanctioned path (bot_merge_run) gated by the executor's
-# store-check — it is deliberately NOT in the comment/close allowlist, so the
-# ordinary bot-write path can never merge. Edits are never allowed at all.
+# Merge uses bot_merge_run and its executor store gate. The ordinary bot-write
+# path is scoped to comments, closes, reopens, and reviews.
 _BOT_FORBID = re.compile(r"\bgh\s+pr\s+(merge|edit)\b")
+
+CHAT_BOT_WRITE_ALLOW = [
+    re.compile(r"^gh\s+pr\s+comment\s+\d+\b"),
+    re.compile(r"^gh\s+pr\s+edit\s+\d+\b"),
+    re.compile(r"^gh\s+issue\s+comment\s+\d+\b"),
+    re.compile(r"^gh\s+issue\s+create\b"),
+    re.compile(r"^gh\s+issue\s+edit\s+\d+\b"),
+    re.compile(r"^gh\s+issue\s+reopen\s+\d+\b"),
+    re.compile(r"^gh\s+run\s+rerun\s+\d+\b"),
+]
 
 
 def assert_bot_write(argv: list[str]) -> None:
@@ -115,26 +122,47 @@ def assert_bot_write(argv: list[str]) -> None:
         raise WriteAttemptBlocked(f"not an allowlisted bot write: {joined!r}")
 
 
+def assert_chat_bot_write(argv: list[str]) -> None:
+    if not argv or argv[0].rsplit("/", 1)[-1] != "gh":
+        raise WriteAttemptBlocked("chat bot writes must use gh")
+    joined = " ".join(argv)
+    if re.search(r"\bgh\s+pr\s+merge\b", joined):
+        raise WriteAttemptBlocked(f"operation not allowed via the chat bot-write path: {joined!r}")
+    if not any(p.search(joined) for p in CHAT_BOT_WRITE_ALLOW):
+        raise WriteAttemptBlocked(f"not an allowlisted chat bot write: {joined!r}")
+
+
 _MERGE_RE = re.compile(r"^gh\s+pr\s+merge\s+\d+\b")
 
 
-def bot_run(argv: list[str], token: str, *, timeout: int = 60) -> subprocess.CompletedProcess:
-    """Run a sanctioned bot write (comment / close / reopen / review /
-    inline comment). Requires a non-empty token; the write goes out as
-    the configured bot via GH_TOKEN, never the default login."""
+def _require_bot_token(token: str | None, action: str) -> str:
     if not token or not token.strip():
-        raise WriteAttemptBlocked(f"refusing to write without a {BOT_LOGIN} token (would fall back to default login)")
+        raise WriteAttemptBlocked(
+            f"refusing to {action} without a {BOT_LOGIN} token (would fall back to default login)"
+        )
+    return token
+
+
+def bot_run(argv: list[str], token: str, *, timeout: int = 60) -> subprocess.CompletedProcess:
+    """Run a sanctioned bot write as the configured bot via GH_TOKEN."""
+    token = _require_bot_token(token, "write")
     assert_bot_write(argv)
     return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=bot_env(token))
 
 
+def chat_bot_run(argv: list[str], token: str, *, timeout: int = 60) -> subprocess.CompletedProcess:
+    """Run a validated embedded-agent write with a non-empty bot token."""
+    token = _require_bot_token(token, "write")
+    assert_chat_bot_write(argv)
+    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=bot_env(token))
+
+
 def bot_merge_run(argv: list[str], token: str, *, timeout: int = 120) -> subprocess.CompletedProcess:
-    """Sanctioned UPSTREAM MERGE as the configured bot — the one write that
-    is NOT a comment/close. Requires a non-empty token and matches only `gh pr
-    merge <n>`. With no configured bot key the executor never mints a token, so
-    this path is unreachable and the app cannot merge."""
-    if not token or not token.strip():
-        raise WriteAttemptBlocked(f"refusing to merge without a {BOT_LOGIN} token (would fall back to default login)")
+    """Run a gated upstream squash-merge as the configured bot.
+
+    The command shape is limited to ``gh pr merge <n>``.
+    """
+    token = _require_bot_token(token, "merge")
     if not argv or argv[0].rsplit("/", 1)[-1] != "gh":
         raise WriteAttemptBlocked("merge must use gh")
     if not _MERGE_RE.match(" ".join(argv)):
@@ -143,9 +171,7 @@ def bot_merge_run(argv: list[str], token: str, *, timeout: int = 120) -> subproc
 
 
 def bot_env(token: str) -> dict[str, str]:
-    """Subprocess env that authenticates `gh`/`git` as the configured bot: inject the
-    minted `GH_TOKEN`, pin `GH_HOST`, and drop `GH_CONFIG_DIR` so the local gh
-    config is never consulted (no fall-back to the operator's login)."""
+    """Build the configured bot environment for a GitHub subprocess."""
     env = {**os.environ, "GH_TOKEN": token, "GH_HOST": "github.com"}
     env.pop("GH_CONFIG_DIR", None)
     return env

@@ -28,7 +28,7 @@ def test_close_pr_uses_executor_with_full_disposition(monkeypatch, capsys):
         seen.update(pr=pr, action=action, token=token, dry_run=dry_run)
         return {"pr": pr, "status": "executed", "action": "CLOSE_DUP"}
 
-    monkeypatch.setenv("GH_TOKEN", "bot-token")
+    monkeypatch.setattr(cli.executor, "mint_bot_token", lambda: "bot-token")
     monkeypatch.setattr(cli.executor, "execute_pr", close)
     rc = cli.main([
         "2857", "--disposition", "dup", "--canonical", "2800",
@@ -47,9 +47,10 @@ def test_close_pr_uses_executor_with_full_disposition(monkeypatch, capsys):
     assert json.loads(capsys.readouterr().out)["status"] == "executed"
 
 
-def test_close_pr_refuses_without_the_injected_bot_token(monkeypatch, capsys):
+def test_close_pr_refuses_when_a_fresh_bot_token_cannot_be_minted(monkeypatch, capsys):
     cli = _load("close-pr")
-    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.setattr(cli.executor, "mint_bot_token", lambda: None)
+    monkeypatch.setattr(cli.executor, "mint_error", lambda: "key missing")
     monkeypatch.setattr(
         cli.executor,
         "execute_pr",
@@ -57,7 +58,7 @@ def test_close_pr_refuses_without_the_injected_bot_token(monkeypatch, capsys):
     )
 
     assert cli.main(["2857", "--disposition", "manual", "--comment", "Closing."]) == 2
-    assert "no bot token" in capsys.readouterr().err
+    assert "bot installation token unavailable: key missing" in capsys.readouterr().err
 
 
 def test_reopen_pr_uses_executor(monkeypatch, capsys):
@@ -68,7 +69,7 @@ def test_reopen_pr_uses_executor(monkeypatch, capsys):
         seen.update(pr=pr, token=token, dry_run=dry_run)
         return {"pr": pr, "status": "reopened", "action": "REOPEN"}
 
-    monkeypatch.setenv("GH_TOKEN", "bot-token")
+    monkeypatch.setattr(cli.executor, "mint_bot_token", lambda: "bot-token")
     monkeypatch.setattr(cli.executor, "reopen_pr", reopen)
 
     assert cli.main(["2857"]) == 0
@@ -84,7 +85,7 @@ def test_submit_review_uses_executor(monkeypatch, capsys):
         seen.update(pr=pr, event=event, body=body, token=token, dry_run=dry_run)
         return {"pr": pr, "status": "executed", "action": f"REVIEW:{event}"}
 
-    monkeypatch.setenv("GH_TOKEN", "bot-token")
+    monkeypatch.setattr(cli.executor, "mint_bot_token", lambda: "bot-token")
     monkeypatch.setattr(cli.executor, "submit_review", review)
 
     assert cli.main([
@@ -102,7 +103,7 @@ def test_submit_review_uses_executor(monkeypatch, capsys):
 
 def test_executor_rejection_returns_failure_and_prints_result(monkeypatch, capsys):
     cli = _load("submit-review")
-    monkeypatch.setenv("GH_TOKEN", "bot-token")
+    monkeypatch.setattr(cli.executor, "mint_bot_token", lambda: "bot-token")
     monkeypatch.setattr(
         cli.executor,
         "submit_review",
