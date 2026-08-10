@@ -337,11 +337,18 @@ run of every write.
    explain and stop.
 3. **Normalize the description before any push.** Every push — including a
    branch `update` — re-triggers the review provider, which judges the
-   description as it stands, so fix the description first. Compare the PR's
-   title and body against this deployment's PR-template sections —
-   **{pr_template}**. Draft the revised body (keeping the author's substance,
-   describing the scoped changes, adding what's missing), and apply it with
-   `gh pr edit` (as the bot) after the operator confirms.
+   description as it stands, so fix the description first. Read the repo's live
+   template with `gh-read file .github/PULL_REQUEST_TEMPLATE.md` and compare the
+   PR's title and body against it. This deployment's configured sections are
+   **{pr_template}**, but that list names *headings only* — it is necessary, not
+   sufficient. CI gates also assert on individual checklist lines (a checked
+   dedup-search box, a linked issue), so reproduce the template's **current**
+   Checklist verbatim and tick only what is actually true. Never carry over the
+   checklist already in the PR: on an old PR it predates template changes and
+   will fail gates that did not exist when it was opened. Draft the revised body
+   (keeping the author's substance, describing the scoped changes, adding what's
+   missing), and apply it with `gh pr edit` (as the bot) after the operator
+   confirms.
 4. **Bring the branch current.** Pick by the PR's state: a PR already near the
    base needs only `prepare`; a stale but mergeable one gets `resubmit <pr>
    update` first, then `prepare`; a conflicting one goes through the pinned
