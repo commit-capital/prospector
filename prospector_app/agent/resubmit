@@ -615,9 +615,17 @@ def cmd_diff(pr: int) -> int:
     return 0
 
 
-def cmd_update(pr: int, dry_run: bool) -> int:
+def cmd_update(pr: int, dry_run: bool, probe: bool = False) -> int:
     """Merge the PR's base branch into its head as the selected user, so CI
     and the review provider re-run against current base code.
+
+    `probe` runs the merge and stops before the push, printing the PR's own
+    change relative to current base. That is the shape
+    compile_preflight.run_for_patch applies over default-branch HEAD, so the
+    tree it measures is the tree a push would produce. The exit code carries the
+    verdict either way — 8 when the base conflicts — which is what lets the
+    autofix worker prove a merge resolves without touching the branch. It is
+    distinct from `dry_run`, which returns before cloning and so proves nothing.
 
     The merge runs locally over SSH in a throwaway clone rather than through the
     `update-branch` REST endpoint: worker credentials have no API token, and a
@@ -696,6 +704,14 @@ def cmd_update(pr: int, dry_run: bool) -> int:
         after = _git_text(["rev-parse", "HEAD"], wt)
         if after == before:
             print(f"resubmit: PR #{pr} is already up to date with {base}; nothing pushed.")
+            return 0
+
+        if probe:
+            d = _git(["diff", "--no-color", f"refs/remotes/upstream/{base}", "HEAD"], wt)
+            if d.returncode != 0:
+                print(f"resubmit: git diff failed: {d.stderr.strip()}", file=sys.stderr)
+                return 4
+            print(d.stdout, end="")
             return 0
 
         push = _git(["push", f"--force-with-lease=refs/heads/{branch}:{before}",
@@ -814,6 +830,8 @@ def main(argv: list[str] | None = None) -> int:
     updp = sub.add_parser("update", help="merge the base branch into the PR's head branch")
     updp.add_argument("--dry-run", action="store_true",
                       help="log the update without merging anything")
+    updp.add_argument("--probe", action="store_true",
+                      help="run the merge and print the resulting change, but push nothing")
     sub.add_parser("abort", help="discard the prepared worktree without pushing")
     sub.add_parser("state", help="print the prepared state as JSON (phase, mode, conflicts)")
     args = p.parse_args(argv)
@@ -828,7 +846,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.action == "diff":
             return cmd_diff(args.pr)
         if args.action == "update":
-            return cmd_update(args.pr, args.dry_run)
+            return cmd_update(args.pr, args.dry_run, args.probe)
         if args.action == "state":
             return cmd_state(args.pr)
         if args.action == "abort":

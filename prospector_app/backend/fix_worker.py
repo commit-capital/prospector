@@ -34,7 +34,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pipeline import compile_preflight, gates, settings
+from pipeline import compile_preflight, gates, settings, verify_driver
 from pipeline.storekit import now as _now
 from prospector_app.backend import data, fix_queue, service
 from prospector_app.backend.resubmit_identity import worker_env
@@ -315,22 +315,50 @@ def run_one(n: int) -> None:
         _refuse(n, claimed, f"no longer eligible for {action}: {why}")
         return
 
+    try:
+        patch = _probe(n, claimed, action)
+        if patch is None:
+            return  # _probe wrote the terminal status
+        pf = _preflight(n, patch)
+        if pf is not None:
+            pf_ok, pf_why = gates.compile_preflight_gate(pf)
+            if not pf_ok:
+                _resubmit(n, "abort")
+                _refuse(n, claimed, plain_preflight(pf),
+                        result={"patch": patch[-TAIL_CHARS:], "compile_preflight": pf,
+                                "detail": pf_why})
+                return
+        result = {"patch": patch[-TAIL_CHARS:], "compile_preflight": pf,
+                  "message": _commit_message(action)}
+        if action not in settings.FIX_AUTOPUSH:
+            _park(n, claimed, action, result, host)
+            return
+        _push(n, claimed, action, result)
+    except Exception:
+        _resubmit(n, "abort")
+        raise
+
+
+def _probe(n: int, claimed: dict, action: str) -> str | None:
+    """The change `action` would push, without pushing it, or None when the probe
+    ended the request instead. The patch is the PR's whole change relative to
+    current base, which is what compile_preflight.run_for_patch applies over
+    default-branch HEAD — so the tree it measures is the tree a push would
+    produce."""
     if action == "update":
-        # A base merge authors no content and cannot push a conflicted state, so
-        # it needs no preflight and no review park.
-        r = _resubmit(n, "update")
+        # A base merge is one atomic resubmit command, so its probe is the same
+        # command stopped before the push rather than a prepare/diff pair.
+        r = _resubmit(n, "update", "--probe")
         if r.returncode != 0:
             _settle(n, claimed, r.returncode, (r.stderr or r.stdout).strip())
-            return
-        _finish_pushed(n, claimed, (r.stdout or "").strip())
-        return
-
-    prepared = _resubmit(n, "prepare", *(["--rebase"] if action == "rebase" else []))
-    if prepared.returncode != 0:
-        _settle(n, claimed, prepared.returncode,
-                (prepared.stderr or prepared.stdout).strip())
-        return
-    try:
+            return None
+        patch = (r.stdout or "").strip()
+    else:
+        prepared = _resubmit(n, "prepare", *(["--rebase"] if action == "rebase" else []))
+        if prepared.returncode != 0:
+            _settle(n, claimed, prepared.returncode,
+                    (prepared.stderr or prepared.stdout).strip())
+            return None
         # `prepare --rebase` exits 0 both when the rebase finished and when it
         # PAUSED on conflicts git could not resolve. A paused rebase leaves
         # conflict markers in the tree, so anything read from it is not a change
@@ -345,37 +373,45 @@ def run_one(n: int) -> None:
                     f"in {len(paused)} file(s), and git can't combine them on its own: "
                     f"{files}{more}. Resolving that needs a person who knows which "
                     f"version is right — ask the author to rebase.")
-            return
+            return None
         diff = _resubmit(n, "diff")
         if diff.returncode != 0:
             _fail(n, claimed, (diff.stderr or diff.stdout).strip())
-            return
+            return None
         patch = (diff.stdout or "").strip()
-        if not patch:
-            _refuse(n, claimed, f"the {action} produced no change to push")
-            return
-        pf = _preflight(n, patch)
-        if pf is not None:
-            pf_ok, pf_why = gates.compile_preflight_gate(pf)
-            if not pf_ok:
-                _refuse(n, claimed, plain_preflight(pf),
-                        result={"patch": patch[-TAIL_CHARS:], "compile_preflight": pf,
-                                "detail": pf_why})
-                return
-        result = {"patch": patch[-TAIL_CHARS:], "compile_preflight": pf,
-                  "message": _commit_message(action)}
-        if action not in settings.FIX_AUTOPUSH:
-            data.store().edit_pr(n).record_fix_request(
-                "awaiting-review", action, queued_at=claimed.get("queued_at"),
-                started_at=claimed.get("started_at"), result=result,
-                source=claimed.get("source"), host=host,
-                head_sha=claimed.get("against_head_sha"))
-            data.refresh()
-            return  # the prepared worktree stays for the approved push
-        _push(n, claimed, action, result)
-    except Exception:
+    if not patch:
         _resubmit(n, "abort")
-        raise
+        _refuse(n, claimed, f"the {action} produced no change to push")
+        return None
+    return patch
+
+
+def _park(n: int, claimed: dict, action: str, result: dict, host: str) -> None:
+    """Record a proven change for an operator to approve, pushing nothing.
+
+    A mechanical action's worktree is discarded here: push_approved re-derives it
+    against whatever base is current then, so holding one would only accumulate
+    clones on the sandbox machine while a browsable backlog sits unreviewed. An
+    agent-authored `fix` is not reproducible, so its tree stays."""
+    if action in gates.HUNTABLE_ACTIONS:
+        _resubmit(n, "abort")
+    data.store().edit_pr(n).record_fix_request(
+        "awaiting-review", action, queued_at=claimed.get("queued_at"),
+        started_at=claimed.get("started_at"), result=result,
+        source=claimed.get("source"), host=host, base_sha=_base_sha(),
+        head_sha=claimed.get("against_head_sha"))
+    data.refresh()
+
+
+def _base_sha() -> str | None:
+    """Upstream's default-branch HEAD, or None when it cannot be read. It stamps
+    which base a parked result was proven against, so the app can say when that
+    proof has aged. Advisory only — the approve path re-proves regardless, so a
+    failure here must not cost the operator the parked result."""
+    try:
+        return verify_driver.resolve_base_sha()
+    except Exception:
+        return None
 
 
 def _conflicted_state(n: int) -> list[str] | None:
@@ -415,7 +451,14 @@ def _commit_message(action: str) -> str:
 
 
 def push_approved(n: int) -> None:
-    """Push a request an operator approved, from the worktree the run prepared."""
+    """Push a request an operator approved, re-deriving a mechanical change
+    against current base first.
+
+    The stored result proves the change applied to the base it was measured
+    against, which an active repository moves past continuously. Re-running the
+    merge or rebase is what makes the approval mean "push this against main as it
+    stands now" rather than "replay a verdict from Tuesday" — and it fails loudly,
+    as a refusal naming the conflicting paths, when that is no longer possible."""
     host = socket.gethostname()
     claimed = data.store().claim_fix_request(n, host=host, statuses=("approved",),
                                              to_status="pushing")
@@ -427,11 +470,30 @@ def push_approved(n: int) -> None:
         _resubmit(n, "abort")
         _refuse(n, claimed, f"no longer eligible for {action}: {why}")
         return
+    if action == "rebase":
+        # `update` re-derives inside its own push command; a rebase needs the
+        # worktree back before push can rewrite anything.
+        prepared = _resubmit(n, "prepare", "--rebase")
+        if prepared.returncode != 0:
+            _settle(n, claimed, prepared.returncode,
+                    (prepared.stderr or prepared.stdout).strip())
+            return
+        paused = _conflicted_state(n)
+        if paused is not None:
+            _resubmit(n, "abort")
+            _refuse(n, claimed,
+                    f"The base moved since this rebase was proven, and it now "
+                    f"conflicts on {len(paused)} file(s): {', '.join(paused[:5])}. "
+                    f"Nothing was pushed.")
+            return
     _push(n, claimed, action, claimed.get("result") or {})
 
 
 def _push(n: int, req: dict, action: str, result: dict) -> None:
-    args = (["push", "--confirm-rewrite", str(req.get("against_head_sha") or "")]
+    # `update` merges against current base and pushes in one command, so it is
+    # its own re-derivation; the other actions push a tree already prepared.
+    args = (["update"] if action == "update" else
+            ["push", "--confirm-rewrite", str(req.get("against_head_sha") or "")]
             if action == "rebase" else
             ["push", "-m", str(result.get("message") or _commit_message(action))])
     r = _resubmit(n, *args)
@@ -459,7 +521,11 @@ def auto_fixable(pr: Pr) -> str | None:
 
     A PR GitHub reports unmergeable needs its history replayed on current base,
     which is `rebase`; a PR whose drift scan says the base moved out from under
-    it needs `update`. Anything else is left alone."""
+    it needs `update`. Anything else is left alone.
+
+    gates.fix_huntable is the bar, not fix_eligibility: unprompted sandbox time
+    goes to PRs a reviewer already rated, so a branch nobody has vouched for is
+    left for an operator to queue by hand."""
     if (pr.fix_request or {}).get("status") in fix_queue.IN_FLIGHT:
         return None
     if pr.mergeable is False:
@@ -468,7 +534,7 @@ def auto_fixable(pr: Pr) -> str | None:
         action = "update"
     else:
         return None
-    ok, _ = gates.fix_eligibility(pr, action, service.changed_paths(pr))
+    ok, _ = gates.fix_huntable(pr, action, service.changed_paths(pr))
     return action if ok else None
 
 
