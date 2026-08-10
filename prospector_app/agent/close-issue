@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Close one upstream issue through the app executor and activity log.
 
-The embedded agent receives the configured bot token in ``GH_TOKEN``. This
-helper turns its confirmed close into the same ``IssueCloseBody`` operation the
-Issues UI uses, so the live gate, bot identity, issue-store reflection, and
-append-only Activity entry all come from one executor path.
+The helper mints a configured bot token for its confirmed close and turns the
+request into the same ``IssueCloseBody`` operation the Issues UI uses, so the
+live gate, bot identity, issue-store reflection, and append-only Activity entry
+all come from one executor path.
 
 Usage:
     close-issue <issue> --disposition not-planned --comment "<why>"
@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -44,9 +43,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--canonical", type=int, help="canonical issue for a duplicate")
     args = p.parse_args(argv)
 
-    token = os.environ.get("GH_TOKEN")
+    token = executor.mint_bot_token()
     if not token:
-        print("close-issue: no bot token is available", file=sys.stderr)
+        detail = executor.mint_error() or "bot token mint returned no token"
+        print(f"close-issue: bot installation token unavailable: {detail}", file=sys.stderr)
         return 2
 
     action = models.IssueCloseBody(

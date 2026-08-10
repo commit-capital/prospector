@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -59,9 +58,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dup-reason", help="specific reason the canonical PR is preferred")
     args = p.parse_args(argv)
 
-    token = os.environ.get("GH_TOKEN")
+    token = executor.mint_bot_token()
     if not token:
-        print("close-pr: no bot token is available", file=sys.stderr)
+        detail = executor.mint_error() or "bot token mint returned no token"
+        print(f"close-pr: bot installation token unavailable: {detail}", file=sys.stderr)
         return 2
 
     action = models.CloseAction(

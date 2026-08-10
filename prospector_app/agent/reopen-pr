@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -22,9 +21,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("pr", type=int, help="the pull request number to reopen")
     args = p.parse_args(argv)
 
-    token = os.environ.get("GH_TOKEN")
+    token = executor.mint_bot_token()
     if not token:
-        print("reopen-pr: no bot token is available", file=sys.stderr)
+        detail = executor.mint_error() or "bot token mint returned no token"
+        print(f"reopen-pr: bot installation token unavailable: {detail}", file=sys.stderr)
         return 2
 
     result = executor.reopen_pr(args.pr, token=token, dry_run=False)
