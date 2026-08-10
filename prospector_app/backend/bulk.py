@@ -16,6 +16,7 @@ from prospector_app.backend import executor
 from prospector_app.backend import models
 from prospector_app.backend import review_refresh
 from prospector_app.backend import training
+from prospector_app.backend import verify_queue
 
 CAP = 1000
 
@@ -60,13 +61,26 @@ async def run_bulk(prs: list[int], action: str, *, comment: str | None = None,
         yield {"event": "error", "data": f"batch of {len(prs)} exceeds cap of {CAP}"}
         return
 
-    token = None if dry_run else executor.mint_bot_token()
+    # Queueing for verification is a local store write — no upstream token.
+    token = None if dry_run or action == "QUEUE_VERIFY" else executor.mint_bot_token()
     summary: dict[str, int] = {}
     bookkeeping_errors: list[str] = []
     for n in prs:
         pr_comment = (comments or {}).get(n) or comment
         try:
-            if action == "MERGE":
+            if action == "QUEUE_VERIFY":
+                # A local write to the shared verify queue; the sandbox worker
+                # picks it up. Nothing is posted upstream, so dry-run does not
+                # apply. The pre-check's operator-readable refusal (already in
+                # flight, closed, threat-flagged) reads as skipped, not error.
+                try:
+                    verify_queue.queue_pr(n)
+                    res = {"pr": n, "action": action, "status": "queued",
+                           "detail": "queued for sandbox verification"}
+                except ValueError as e:
+                    res = {"pr": n, "action": action, "status": "skipped",
+                           "detail": str(e)}
+            elif action == "MERGE":
                 res = executor.merge_pr(n, method, dry_run=dry_run, reason=reason)
             elif action == "GREPTILE_RETRIGGER":
                 baseline = review_refresh.capture(n) if token is not None else None

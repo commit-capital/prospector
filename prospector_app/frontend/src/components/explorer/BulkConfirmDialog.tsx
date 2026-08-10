@@ -49,7 +49,11 @@ export function BulkConfirmDialog({ action, comment, canonical, perPr = false, s
 
   const count = targets.length;
   const doneCount = Object.keys(results).length;
-  const postsComment = action !== "MERGE" && action !== "GREPTILE_RETRIGGER";
+  const postsComment = action !== "MERGE" && action !== "GREPTILE_RETRIGGER"
+    && action !== "QUEUE_VERIFY";
+  // Queueing for verification is a local store write, so the dry/live posting
+  // mode does not apply to it.
+  const localQueue = action === "QUEUE_VERIFY";
   const blockedMerges = action === "MERGE"
     ? targets.filter((r) => r.merge_gate && !r.merge_gate.ok) : [];
 
@@ -79,8 +83,14 @@ export function BulkConfirmDialog({ action, comment, canonical, perPr = false, s
   return (
     <div className="modal-backdrop" onClick={() => { if (!running) onClose(); }}>
       <div className="modal bulk-confirm" onClick={(e) => e.stopPropagation()}>
-        <h3>{action} — {count} PR(s) {dryRun ? "(dry run)" : `LIVE as ${botLogin}`}</h3>
+        <h3>{action} — {count} PR(s) {localQueue ? "(local verify queue)" : dryRun ? "(dry run)" : `LIVE as ${botLogin}`}</h3>
         {running && <div className="bulk-progress">Running… {doneCount} of {count} done</div>}
+        {localQueue && (
+          <div className="muted small bulk-perpr-note">
+            🧪 Queues each PR for sandbox verification. The verify worker picks them up
+            from the shared queue; nothing is posted upstream.
+          </div>
+        )}
         {postsComment && (perPr
           ? <div className="muted small bulk-perpr-note">📮 Posting <b>each PR's own suggested comment</b> ({Object.keys(perPrComments).length} of {count} have one; the rest fall back to the default).</div>
           : comment && <pre className="shared-comment">{comment}</pre>)}
@@ -96,7 +106,7 @@ export function BulkConfirmDialog({ action, comment, canonical, perPr = false, s
               <li key={r.number} className={res ? "bulk-target-done" : undefined}>
                 <GitHubPRLink n={r.number} url={r.url} className="num" /> {r.title}
                 {gate && !gate.ok && <span className="chip chip-red" title={gate.reason}>blocked</span>}
-                {res && <span className={`chip chip-${res.status === "executed" || res.status === "merged" ? "green" : res.status === "error" || res.status === "blocked" ? "red" : "muted"}`}>{res.status}</span>}
+                {res && <span className={`chip chip-${res.status === "executed" || res.status === "merged" || res.status === "queued" ? "green" : res.status === "error" || res.status === "blocked" ? "red" : "muted"}`} title={res.detail ?? undefined}>{res.status}</span>}
                 {perPr && postsComment && (
                   perPrComments[r.number]
                     ? <div className="muted small bulk-pr-comment" title={perPrComments[r.number]}>📮 {perPrComments[r.number].replace(/\s+/g, " ").slice(0, 80)}…</div>
@@ -110,8 +120,8 @@ export function BulkConfirmDialog({ action, comment, canonical, perPr = false, s
           ? <div className="bulk-summary">{Object.entries(summary).map(([k, v]) => `${v} ${k}`).join(" · ")}</div>
           : <div className="modal-actions">
               <button className="btn-secondary" onClick={onClose} disabled={running}>Cancel</button>
-              <button className={`btn-primary ${!dryRun ? "btn-live" : ""}`} onClick={run} disabled={running}>
-                {running ? "Running…" : dryRun ? "Run (dry)" : `● Apply to ${count}`}
+              <button className={`btn-primary ${!dryRun && !localQueue ? "btn-live" : ""}`} onClick={run} disabled={running}>
+                {running ? "Running…" : localQueue ? `Queue ${count}` : dryRun ? "Run (dry)" : `● Apply to ${count}`}
               </button>
             </div>}
         {summary && <div className="modal-actions"><button className="btn-primary" onClick={onClose}>Done</button></div>}

@@ -4,7 +4,8 @@ import { term } from "../../glossary";
 import { useExec } from "../../ExecContext";
 
 export type BulkAction = "CLOSE" | "CLOSE_DUP" | "CLOSE_FIXED" | "CLOSE_STALE"
-  | "CLOSE_OVERSIZED" | "REQUEST_CHANGES" | "COMMENT" | "GREPTILE_RETRIGGER" | "MERGE";
+  | "CLOSE_OVERSIZED" | "REQUEST_CHANGES" | "COMMENT" | "GREPTILE_RETRIGGER"
+  | "QUEUE_VERIFY" | "MERGE";
 
 const ACTS: { v: BulkAction; label: string }[] = [
   { v: "CLOSE_DUP", label: "close — dup of" },
@@ -14,6 +15,7 @@ const ACTS: { v: BulkAction; label: string }[] = [
   { v: "CLOSE", label: "triage close" },
   { v: "REQUEST_CHANGES", label: "request changes" },
   { v: "COMMENT", label: "comment" },
+  { v: "QUEUE_VERIFY", label: "queue for verification" },
   { v: "MERGE", label: "merge" },
 ];
 
@@ -28,7 +30,8 @@ export function BulkActionBar({ selected, onApply }:
   const { botLogin, pushToast, review } = useExec();
   if (selected.length === 0) return null;
   const isMerge = action === "MERGE";
-  const postsComment = action !== "MERGE" && action !== "GREPTILE_RETRIGGER";
+  const postsComment = action !== "MERGE" && action !== "GREPTILE_RETRIGGER"
+    && action !== "QUEUE_VERIFY";
   const actions = review.retrigger
     ? [...ACTS.slice(0, -1), { v: "GREPTILE_RETRIGGER" as const, label: `re-trigger ${review.label}` }, ACTS.at(-1)!]
     : ACTS;
@@ -74,6 +77,9 @@ export function BulkActionBar({ selected, onApply }:
       {postsComment && perPr && <span className="muted small">each PR keeps its own suggested comment</span>}
       {action === "GREPTILE_RETRIGGER" && (
         <span className="muted small">posts the review trigger on each PR — no new commit needed</span>
+      )}
+      {action === "QUEUE_VERIFY" && (
+        <span className="muted small">queues each PR for the sandbox verifier — a local queue, nothing posted upstream</span>
       )}
       {isMerge && <span className="muted small">merge posts no comment — each PR is gated individually</span>}
       <button className="btn-primary sm"

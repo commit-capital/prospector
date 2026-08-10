@@ -155,6 +155,7 @@ export const TERMS: Record<string, GlossaryEntry> = {
   "bulk.REQUEST_CHANGES": { title: "Request changes", meaning: "Post a change-request review on each selected PR, asking the author to fix the gaps." },
   "bulk.COMMENT": { title: "Comment", meaning: "Post one shared comment to every selected PR — no state change." },
   "bulk.GREPTILE_RETRIGGER": { title: "Re-trigger Greptile", meaning: "Post the configured review trigger on each selected PR so Greptile reviews its current head again." },
+  "bulk.QUEUE_VERIFY": { title: "Queue for verification", meaning: "Queue each selected PR for sandbox verification — the verify worker runs its tests red→green in an isolated container. A local queue write; nothing is posted upstream." },
   "bulk.MERGE": { title: "Merge", meaning: "Merge each selected PR. Gated individually — nothing merges that fails its own gate; no comment is posted." },
 
   // freshness (the OTHER meaning of "stale")
