@@ -371,6 +371,7 @@ def _probe(n: int, claimed: dict, action: str) -> str | None:
         # — it is an unfinished merge. Nothing downstream may treat it as one.
         paused = _conflicted_state(n)
         if paused is not None:
+            merge_diff = _conflict_diff(n)
             _resubmit(n, "abort")
             files = ", ".join(paused[:5])
             more = f" (and {len(paused) - 5} more)" if len(paused) > 5 else ""
@@ -378,7 +379,9 @@ def _probe(n: int, claimed: dict, action: str) -> str | None:
                     f"This PR's changes and the current base both edit the same lines "
                     f"in {len(paused)} file(s), and git can't combine them on its own: "
                     f"{files}{more}. Resolving that needs a person who knows which "
-                    f"version is right — ask the author to rebase.")
+                    f"version is right — ask the author to rebase.",
+                    result={"merge_diff": merge_diff, "conflict_paths": paused}
+                           if merge_diff else None)
             return None
         diff = _resubmit(n, "diff")
         if diff.returncode != 0:
@@ -435,6 +438,26 @@ def _conflicted_state(n: int) -> list[str] | None:
     if state.get("phase") == "conflicted" or conflicts:
         return [str(c) for c in conflicts] or ["(unnamed)"]
     return None
+
+
+# A conflict diff is kept whole up to this cap so the app can render every
+# conflicted hunk; the cap keeps a pathological merge from bloating the store.
+MERGE_DIFF_CHARS = 200_000
+
+
+def _conflict_diff(n: int) -> str | None:
+    """The paused rebase's conflict diff (`resubmit diff` over the paused
+    worktree), or None when no diff can be read. Captured before the abort
+    discards the worktree; the app's diff panel shows it beside the refusal.
+    Output that is not a git diff — resubmit's own status chatter — is
+    discarded rather than stored as one."""
+    r = _resubmit(n, "diff")
+    if r.returncode != 0:
+        return None
+    out = (r.stdout or "").strip()
+    if not out.startswith("diff "):
+        return None
+    return out[:MERGE_DIFF_CHARS]
 
 
 def _preflight(n: int, patch: str) -> dict | None:

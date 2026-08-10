@@ -164,6 +164,21 @@ def test_no_base_parks_a_queued_request_as_waiting(store, monkeypatch):
     assert req["queued_at"]
 
 
+def test_a_park_stamps_no_outcome_in_the_ledger(store, monkeypatch):
+    """The ledger's `outcome` stat names what THIS run concluded. A park ran
+    nothing, so it stamps none even though the PR carries an outcome an earlier
+    run left — a stale word here reads as a verification that never happened."""
+    monkeypatch.setattr(vp, "_image_exists", lambda image: True)
+    set_section(store, 1, "verify", {"outcome": "agent-verified", "signals": {},
+                                     "against_base_sha": "b" * 40})
+    store.edit_pr(1).record_verify_request("queued", queued_at=_now())
+    assert vp.run(store, 1, from_queue=True) == 0
+    stats = store.runs()[-1].raw["stats"]
+    assert stats["status"] == "waiting-for-base"
+    assert stats["outcome"] is None
+    assert store.load_pr(1).verify_outcome == "agent-verified"
+
+
 def test_no_base_wait_is_bounded(store, monkeypatch):
     """Past WAITING_FOR_BASE_MAX_HOURS since queueing, the no-base failure is
     terminal — the request errors with the current no-base message."""

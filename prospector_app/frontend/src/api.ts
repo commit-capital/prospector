@@ -538,12 +538,17 @@ export interface FixRequest {
 }
 
 /** What the worker authored, carried on the request so the review view can
- *  show the diff before anything is pushed. */
+ *  show the diff before anything is pushed. A rebase refused on merge
+ *  conflicts instead carries the paused worktree's conflict diff
+ *  (merge_diff + conflict_paths), so the diff panel can show the
+ *  conflicted hunks. */
 export interface FixResult {
   patch?: string | null;
   message?: string | null;
   output?: string | null;
   detail?: string | null;
+  merge_diff?: string | null;
+  conflict_paths?: string[] | null;
   compile_preflight?: { exit?: number | null; refused?: string | null;
                         error?: string | null; error_excerpt?: string | null } | null;
 }
