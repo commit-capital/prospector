@@ -103,6 +103,41 @@ def test_greptile_retrigger_dry_run_does_not_capture_or_schedule(monkeypatch):
     assert seen == [(1, None, True)]
 
 
+def test_queue_verify_routes_to_the_verify_queue_without_a_token(monkeypatch):
+    # Queueing for verification is a local store write: no bot token is minted
+    # even on a live run, and a pre-check refusal (already in flight, closed,
+    # threat-flagged) reads as skipped, not error.
+    monkeypatch.setattr(executor, "mint_bot_token",
+                        lambda: (_ for _ in ()).throw(AssertionError("must not mint")))
+    queued = []
+    def fake_queue(n, source=None):
+        if n == 2:
+            raise ValueError(f"PR #{n} already has a queued verification request")
+        queued.append(n)
+        return {"pr": n, "status": "queued"}
+    monkeypatch.setattr(bulk.verify_queue, "queue_pr", fake_queue)
+
+    evs = _drain(bulk.run_bulk([1, 2, 3], "QUEUE_VERIFY", dry_run=False))
+
+    assert queued == [1, 3]
+    results = [json.loads(e["data"]) for e in evs if e["event"] == "result"]
+    assert [r["status"] for r in results] == ["queued", "skipped", "queued"]
+    assert "already has" in results[1]["detail"]
+    done = [e for e in evs if e["event"] == "done"][0]
+    assert done_summary(done) == {"queued": 2, "skipped": 1}
+
+
+def test_queue_verify_queues_in_dry_run_mode(monkeypatch):
+    # The dry/live posting mode gates upstream writes; the verify queue is a
+    # local store write, so queueing proceeds in either mode.
+    queued = []
+    monkeypatch.setattr(bulk.verify_queue, "queue_pr",
+                        lambda n, source=None: queued.append(n) or {"pr": n, "status": "queued"})
+    evs = _drain(bulk.run_bulk([7], "QUEUE_VERIFY", dry_run=True))
+    assert queued == [7]
+    assert done_summary([e for e in evs if e["event"] == "done"][0]) == {"queued": 1}
+
+
 def test_cap_rejects_oversized_batch(monkeypatch):
     evs = _drain(bulk.run_bulk(list(range(1, 1002)), "CLOSE", dry_run=True))
     err = [e for e in evs if e["event"] == "error"]
