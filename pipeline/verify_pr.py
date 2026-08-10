@@ -227,6 +227,23 @@ def _no_base(req: _Request, message: str) -> int:
     return 0
 
 
+def _no_daemon(req: _Request, message: str) -> int:
+    """Handle an unreachable Docker daemon. A queued request parks as
+    `waiting-for-base` for however long the outage lasts: the wait budget bounds
+    a base the operator must prepare, and no re-queue makes a stopped daemon
+    answer. A direct CLI run has no worker to re-pick it and errors."""
+    if req.hours_since_queued() is None:
+        return _fail(req, "sandbox-error", message)
+    _say(f"… {message} — waiting for the daemon to come back")
+    req.waiting_for_base(message)
+    return 0
+
+
+def _daemon_available() -> bool:
+    """True when the local Docker daemon answers this machine."""
+    return verify_driver.daemon_available()
+
+
 def _image_exists(image: str) -> bool:
     """True when the pinned base image is present in the local Docker daemon. A
     missing image (e.g. after a Colima wipe) is a no-base condition — re-run
@@ -443,6 +460,12 @@ def _run_inner(store: Store, rec: Pr, req: _Request) -> int:
         return _no_base(req,
                         f"pinned base clone missing at {clone}{elsewhere} — run "
                         f"`verify_driver.py prepare-base` on this machine")
+    # The daemon answers before its image inventory means anything: a stopped
+    # daemon reports the pinned image as absent, which reads as a base this
+    # machine never prepared.
+    if not _daemon_available():
+        return _no_daemon(req, "the local Docker daemon is not answering — start "
+                               "it (e.g. `colima start`) to resume verification")
     if not _image_exists(image):
         return _no_base(req,
                         f"base image {image} not found in the local Docker daemon"

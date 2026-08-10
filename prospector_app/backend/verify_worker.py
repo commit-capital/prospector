@@ -59,6 +59,16 @@ TRANSIENT_RETRY_SECONDS = 600.0
 # How old the base pin must be before the daily refresh considers re-pinning.
 REFRESH_AFTER_HOURS = 24.0
 
+# The steps a restart may resume: at each of them the run has committed nothing
+# and no phase container has run the PR's code, so re-queueing repeats only
+# cheap work. From "sandbox" on, the expensive half has already executed.
+RESUMABLE_STEPS = ("preflight", "blind", "author")
+
+# How many restarts a request may be resumed through. Past the cap the
+# interruption is the operator's to look at: a worker that keeps dying in the
+# same pre-sandbox step is a failure of its own, not a run to re-fire.
+RESTART_MAX_ATTEMPTS = 3
+
 # Last captured orchestrator output kept on a request the worker itself has to
 # mark errored (the orchestrator died without writing a terminal status).
 TAIL_CHARS = 4000
@@ -85,15 +95,19 @@ def beat() -> None:
         "autohunt": enabled_autohunt(), "security_failed": sorted(security_failed)})
 
 
-def recover_orphans() -> list[int]:
-    """Mark THIS host's `running` requests errored (`interrupted`): a run does
-    not survive the worker's process, so at startup a running status claimed by
-    this host can only be a restart's leftover. A request another host claimed
-    is its live run, never touched from here; a hostless record (written before
-    claims carried a host) is treated as this host's. The operator re-queues
-    deliberately — a heavy sandbox run is never silently re-fired. Returns the
-    PRs marked."""
+def recover_orphans() -> tuple[list[int], list[int]]:
+    """Resolve THIS host's `running` requests: a run does not survive the
+    worker's process, so at startup a running status claimed by this host can
+    only be a restart's leftover. A request another host claimed is its live
+    run, never touched from here; a hostless record (written before claims
+    carried a host) is treated as this host's.
+
+    A run stopped at a RESUMABLE_STEPS step re-queues itself, capped at
+    RESTART_MAX_ATTEMPTS: nothing of the PR's verification ran. Anything further
+    along is marked `interrupted` for a deliberate re-queue — a heavy sandbox
+    run is never silently re-fired. Returns (marked, requeued)."""
     marked: list[int] = []
+    requeued: list[int] = []
     me = socket.gethostname()
     st = data.store()
     with st.batch():
@@ -103,6 +117,16 @@ def recover_orphans() -> list[int]:
                 continue
             if req.get("host") not in (None, me):
                 continue
+            attempts = req.get("attempts") or 0
+            if req.get("step") in RESUMABLE_STEPS and attempts < RESTART_MAX_ATTEMPTS:
+                st.edit_pr(n).record_verify_request(
+                    "queued", queued_at=req.get("queued_at"),
+                    error_kind="interrupted",
+                    error="the verification worker restarted before the sandbox "
+                          "ran — re-queued automatically",
+                    attempts=attempts + 1, source=req.get("source"), host=me)
+                requeued.append(n)
+                continue
             st.edit_pr(n).record_verify_request(
                 "error", queued_at=req.get("queued_at"),
                 started_at=req.get("started_at"), finished_at=_now(),
@@ -110,7 +134,7 @@ def recover_orphans() -> list[int]:
                 error="the verification worker restarted mid-run — re-queue to retry",
                 source=req.get("source"), host=me)
             marked.append(n)
-    return marked
+    return marked, requeued
 
 
 def _rested(req: dict, seconds: float) -> bool:
@@ -192,14 +216,25 @@ def next_queued() -> int | None:
     attempt, ranked operator picks before auto-picks and, within each group,
     oldest queued_at first — so an operator click never waits behind an
     earlier auto-queued request. Reads the backend's incremental store
-    snapshot, so the scan costs no store round-trip."""
+    snapshot, so the scan costs no store round-trip.
+
+    A parked base-waiter is held back while the Docker daemon is down, since
+    its preflight reaches that same verdict. The probe costs one call per scan
+    and is consulted only once a rested base-waiter is in hand; a `queued`
+    request is never gated by it, so its preflight is what records why it
+    cannot proceed."""
     best_n: int | None = None
     best_key: tuple[bool, str] | None = None
+    daemon: bool | None = None
     for n, rec in data.prs().items():
         req = rec.verify_request or {}
         status = req.get("status")
         if status == "waiting-for-base":
             if not _rested(req, BASE_RETRY_SECONDS):
+                continue
+            if daemon is None:
+                daemon = verify_driver.daemon_available()
+            if not daemon:
                 continue
         elif status == "queued":
             if req.get("attempts") and not _rested(req, TRANSIENT_RETRY_SECONDS):
@@ -360,9 +395,11 @@ def _beat_loop() -> None:
 
 def _drain_loop() -> None:
     try:
-        marked = recover_orphans()
+        marked, requeued = recover_orphans()
         if marked:
             print(f"[verify-worker] marked interrupted after restart: {marked}", flush=True)
+        if requeued:
+            print(f"[verify-worker] re-queued after restart: {requeued}", flush=True)
     except Exception:
         traceback.print_exc()
     while not stop.is_set():

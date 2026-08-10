@@ -76,6 +76,7 @@ def pinned(store, tmp_path, monkeypatch):
     clone = tmp_path / "clone"
     clone.mkdir()
     monkeypatch.setattr(verify_driver, "base_clone_dir", lambda sha: clone)
+    monkeypatch.setattr(vp, "_daemon_available", lambda: True)
     monkeypatch.setattr(vp, "_image_exists", lambda image: True)
     monkeypatch.setattr(diff_cache, "fetch_diff", lambda pr, head, *a, **k: True)
     monkeypatch.setattr(verify_driver, "changed_paths_for", lambda rec: ["src/x.test.ts"])
@@ -149,6 +150,45 @@ def test_missing_image_is_no_base(store, pinned, monkeypatch):
     monkeypatch.setattr(vp, "_image_exists", lambda image: False)
     assert vp.run(store, 1) == 1
     assert _request(store)["error_kind"] == "no-base"
+
+
+def test_an_unreachable_daemon_is_not_a_missing_base(store, pinned, monkeypatch):
+    """A stopped Docker daemon answers every image query the same way a missing
+    image does. The preflight names the daemon so the operator restarts it,
+    rather than sending them to prepare-base for a base that is already here."""
+    monkeypatch.setattr(vp, "_daemon_available", lambda: False)
+    store.edit_pr(1).record_verify_request("queued", queued_at=_now())
+    assert vp.run(store, 1, from_queue=True) == 0
+    req = _request(store)
+    assert req["status"] == "waiting-for-base"
+    assert "Docker daemon" in req["error"]
+    assert "prepare-base" not in req["error"]
+
+
+def test_an_unreachable_daemon_park_ignores_the_wait_budget(store, pinned, monkeypatch):
+    """The wait budget bounds a base this machine must prepare — an operator
+    action. No re-queue makes a stopped daemon answer, so a request parked on
+    the outage keeps waiting however long it lasts and runs when it lifts."""
+    monkeypatch.setattr(vp, "_daemon_available", lambda: False)
+    store.edit_pr(1).record_verify_request(
+        "waiting-for-base", queued_at="2026-07-15T00:00:00+00:00",
+        error_kind="no-base", error="the daemon is down")
+    assert vp.run(store, 1, from_queue=True) == 0
+    assert _request(store)["status"] == "waiting-for-base"
+
+    monkeypatch.setattr(vp, "_daemon_available", lambda: True)
+    assert vp.run(store, 1, from_queue=True) == 0
+    assert _request(store)["status"] == "done"
+
+
+def test_a_direct_run_errors_when_the_daemon_is_down(store, pinned, monkeypatch):
+    """A direct CLI run has no worker to retry it, so the outage is terminal
+    for that run — recorded as the sandbox failure it is, not a missing base."""
+    monkeypatch.setattr(vp, "_daemon_available", lambda: False)
+    assert vp.run(store, 1) == 1
+    req = _request(store)
+    assert req["status"] == "error"
+    assert req["error_kind"] == "sandbox-error"
 
 
 def test_no_base_parks_a_queued_request_as_waiting(store, monkeypatch):
