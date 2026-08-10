@@ -346,6 +346,54 @@ def test_history_result_names_the_error_kind(store):
     assert rows[0]["title"] is None
 
 
+def test_history_result_is_the_run_own_state_not_a_carried_outcome(store):
+    """A run that ended anywhere but `done` reports that state. The ledger's
+    `outcome` stat is the PR's stored outcome read after the run, so a park or
+    a failure carries whatever an earlier run left behind — rendering it would
+    show a no-base park as a verification that never happened."""
+    from prospector_app.backend import autohunt_view
+    store.append_run({"phase": "verify:single", "pr": 1,
+                      "stats": {"status": "waiting-for-base", "error_kind": "no-base",
+                                "outcome": "agent-verified"}})
+    store.append_run({"phase": "verify:single", "pr": 2,
+                      "stats": {"status": "error", "error_kind": "sandbox-error",
+                                "outcome": "verified-fix"}})
+    store.append_run({"phase": "verify:single", "pr": 3,
+                      "stats": {"status": "cancelled", "error_kind": None,
+                                "outcome": "escalate"}})
+    rows = autohunt_view.history()
+    assert [r["result"] for r in rows] == ["cancelled", "error:sandbox-error",
+                                           "waiting-for-base"]
+
+
+def test_history_result_keeps_the_outcome_of_a_completed_run(store):
+    """`done` is the one status whose outcome this run committed, so it is the
+    result shown; a done run that recorded none falls back to the status."""
+    from prospector_app.backend import autohunt_view
+    store.append_run({"phase": "verify:single", "pr": 1,
+                      "stats": {"status": "done", "error_kind": None,
+                                "outcome": "unverifiable-no-test"}})
+    store.append_run({"phase": "verify:single", "pr": 2,
+                      "stats": {"status": "done", "error_kind": None, "outcome": None}})
+    rows = autohunt_view.history()
+    assert [r["result"] for r in rows] == ["done", "unverifiable-no-test"]
+
+
+def test_summary_counts_a_park_under_its_own_state(store):
+    """summary() buckets by the same result word the history table shows, so a
+    no-base park never inflates the verified counts."""
+    from prospector_app.backend import autohunt_view
+    store.append_run({"phase": "verify:single", "pr": 1,
+                      "stats": {"status": "waiting-for-base", "error_kind": "no-base",
+                                "outcome": "agent-verified"}})
+    store.append_run({"phase": "verify:single", "pr": 2,
+                      "stats": {"status": "done", "error_kind": None,
+                                "outcome": "agent-verified"}})
+    verify = autohunt_view.summary(days=None)["verify"]
+    assert verify["by_result"] == {"waiting-for-base": 1, "agent-verified": 1}
+    assert verify["pr_ids_by_result"] == {"waiting-for-base": [1], "agent-verified": [2]}
+
+
 def test_service_changed_paths_empty_when_no_diff_cached(store):
     store.save_pr(_clean_merge_pr(1))
     data.refresh()
