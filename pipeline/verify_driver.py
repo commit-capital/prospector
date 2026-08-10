@@ -218,8 +218,20 @@ def prefetch_store(src: Path, store: Path) -> None:
         check=True, env=launcher_env())
 
 
+def daemon_available() -> bool:
+    """True when the local Docker daemon answers. A daemon that is not running
+    fails an image query exactly as a missing image does, so this separates an
+    outage that lifts on its own from a base this machine has never prepared —
+    two conditions with different remedies."""
+    p = subprocess.run(["docker", "version", "--format", "{{.Server.Version}}"],
+                       capture_output=True, env=launcher_env())
+    return p.returncode == 0
+
+
 def image_exists(image: str) -> bool:
-    """True when `image` is present in the local Docker daemon."""
+    """True when `image` is present in the local Docker daemon. Meaningful only
+    while `daemon_available()` holds — an unreachable daemon reports every image
+    as absent."""
     p = subprocess.run(["docker", "image", "inspect", image],
                        capture_output=True, env=launcher_env())
     return p.returncode == 0

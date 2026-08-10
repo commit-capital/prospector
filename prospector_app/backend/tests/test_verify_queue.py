@@ -232,11 +232,66 @@ def test_recover_orphans_marks_only_running(store):
     store.edit_pr(1).record_verify_request("running", queued_at=_now(),
                                            started_at=_now())
     store.edit_pr(2).record_verify_request("queued", queued_at=_now())
-    assert verify_worker.recover_orphans() == [1]
+    assert verify_worker.recover_orphans() == ([1], [])
     req = store.load_pr(1).verify_request
     assert req["status"] == "error"
     assert req["error_kind"] == "interrupted"
     assert store.load_pr(2).verify_request["status"] == "queued"
+
+
+def test_recover_orphans_requeues_a_run_that_never_reached_the_sandbox(store):
+    """A restart during preflight/blind/author interrupted nothing of the PR's
+    own verification — no phase container ran its code — so the request goes
+    back in the queue rather than waiting for an operator to notice it."""
+    store.edit_pr(1).record_verify_request("running", queued_at=_now(),
+                                           started_at=_now(), step="blind")
+    assert verify_worker.recover_orphans() == ([], [1])
+    req = store.load_pr(1).verify_request
+    assert req["status"] == "queued"
+    assert req["attempts"] == 1
+
+
+def test_recover_orphans_errors_a_run_that_reached_the_sandbox(store):
+    """From the sandbox step on, a phase container has already run the PR's
+    code. Re-firing that silently repeats the expensive half, so it stays the
+    operator's deliberate re-queue."""
+    store.edit_pr(1).record_verify_request("running", queued_at=_now(),
+                                           started_at=_now(), step="sandbox")
+    assert verify_worker.recover_orphans() == ([1], [])
+    assert store.load_pr(1).verify_request["error_kind"] == "interrupted"
+
+
+def test_recover_orphans_stops_requeueing_a_run_that_keeps_dying(store):
+    """A worker crashing in the same pre-sandbox step would re-queue forever.
+    Past the attempt cap the interruption is the operator's to look at."""
+    store.edit_pr(1).record_verify_request(
+        "running", queued_at=_now(), started_at=_now(), step="blind",
+        attempts=verify_worker.RESTART_MAX_ATTEMPTS)
+    assert verify_worker.recover_orphans() == ([1], [])
+    assert store.load_pr(1).verify_request["status"] == "error"
+
+
+def test_a_base_waiter_is_not_picked_up_while_the_daemon_is_down(store, monkeypatch):
+    """A parked request re-preflights once a minute. While the daemon is down
+    every one of those pickups reaches the same verdict, so the pickup is
+    skipped on one cheap probe instead of spawning a run per parked request."""
+    rested = (datetime.now(timezone.utc) - timedelta(
+        seconds=verify_worker.BASE_RETRY_SECONDS + 5)).isoformat()
+    _park(store, 1, queued_at="2026-07-16T00:00:00+00:00", checked_at=rested)
+    data.refresh()
+    monkeypatch.setattr(verify_worker.verify_driver, "daemon_available", lambda: False)
+    assert verify_worker.next_queued() is None
+    monkeypatch.setattr(verify_worker.verify_driver, "daemon_available", lambda: True)
+    assert verify_worker.next_queued() == 1
+
+
+def test_a_queued_request_is_picked_up_even_while_the_daemon_is_down(store, monkeypatch):
+    """The daemon probe gates only the parked base-waiters it explains. A fresh
+    queued request still runs, so its preflight records why it cannot proceed."""
+    store.edit_pr(1).record_verify_request("queued", queued_at=_now())
+    data.refresh()
+    monkeypatch.setattr(verify_worker.verify_driver, "daemon_available", lambda: False)
+    assert verify_worker.next_queued() == 1
 
 
 def test_recover_orphans_leaves_another_hosts_run_alone(store):
@@ -249,7 +304,7 @@ def test_recover_orphans_leaves_another_hosts_run_alone(store):
     store.edit_pr(2).record_verify_request(
         "running", queued_at=_now(), started_at=_now(),
         host=socket.gethostname())
-    assert verify_worker.recover_orphans() == [2]
+    assert verify_worker.recover_orphans() == ([2], [])
     assert store.load_pr(1).verify_request["status"] == "running"
     assert store.load_pr(2).verify_request["status"] == "error"
 
