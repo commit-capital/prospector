@@ -62,8 +62,10 @@ REFRESH_AFTER_HOURS = 24.0
 
 # The steps a restart may resume: at each of them the run has committed nothing
 # and no phase container has run the PR's code, so re-queueing repeats only
-# cheap work. From "sandbox" on, the expensive half has already executed.
-RESUMABLE_STEPS = ("preflight", "blind", "author")
+# cheap work. "claimed" is the store's own pickup stamp, written before the
+# orchestrator starts. From "sandbox" on, the expensive half has already
+# executed.
+RESUMABLE_STEPS = ("claimed", "preflight", "blind", "author")
 
 # How many restarts a request may be resumed through. Past the cap the
 # interruption is the operator's to look at: a worker that keeps dying in the

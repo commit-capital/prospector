@@ -239,6 +239,16 @@ def test_recover_orphans_marks_only_running(store):
     assert store.load_pr(2).verify_request["status"] == "queued"
 
 
+def test_recover_orphans_requeues_a_claim_the_orchestrator_never_took_up(store):
+    """`claimed` is the step the store's compare-and-swap writes at pickup,
+    before the orchestrator starts. A restart in that window interrupted a run
+    that had not begun, so the claim goes back in the queue."""
+    store.edit_pr(1).record_verify_request("running", queued_at=_now(),
+                                           started_at=_now(), step="claimed")
+    assert verify_worker.recover_orphans() == ([], [1])
+    assert store.load_pr(1).verify_request["status"] == "queued"
+
+
 def test_recover_orphans_requeues_a_run_that_never_reached_the_sandbox(store):
     """A restart during preflight/blind/author interrupted nothing of the PR's
     own verification — no phase container ran its code — so the request goes
