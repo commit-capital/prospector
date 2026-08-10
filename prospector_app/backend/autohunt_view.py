@@ -44,13 +44,64 @@ class AutohuntSummary(TypedDict):
     verify: AutohuntResultCounts
 
 
+class VerifyBaseHealth(TypedDict):
+    base_sha: str | None
+    tier: int | None
+    pinned_at: str | None
+    age_hours: float | None
+    stale: bool
+    refresh_ok: bool | None
+    refresh_error: str | None
+    refresh_failures: int
+
+
 class AutohuntStatus(TypedDict):
     enabled: bool
     runner: dict
+    base: VerifyBaseHealth
     security_pool: int
     verify_pool: int
     security_failed: list[int]
     verify_failed: list[VerifyFailed]
+
+
+# How far past the worker's daily refresh window a pin may drift before the app
+# calls it stale. One missed refresh is a hiccup; two consecutive misses mean
+# the lane has stopped tracking the default branch.
+STALE_AFTER_HOURS = 2 * verify_worker.REFRESH_AFTER_HOURS
+
+
+def base_health() -> VerifyBaseHealth:
+    """The pinned base's health for the Control tab: what is pinned, how old it
+    is, and how the worker's daily refresh last went.
+
+    `stale` needs an age to be true, so a pin with no timestamp — or none at all
+    — reports False. A malformed stamp is not evidence the lane is broken, and a
+    false alarm here is what teaches an operator to stop reading this line."""
+    reg = data.store().load_verify_base()
+    sha = reg.get("base_sha")
+    tier = reg.get("tier")
+    pinned_at = reg.get("pinned_at")
+    age: float | None = None
+    if isinstance(pinned_at, str):
+        try:
+            age = round((datetime.now(timezone.utc)
+                         - datetime.fromisoformat(pinned_at)).total_seconds() / 3600, 1)
+        except ValueError:
+            age = None
+    failures = reg.get("refresh_failures")
+    ok = reg.get("refresh_ok")
+    error = reg.get("refresh_error")
+    return {
+        "base_sha": str(sha)[:12] if sha else None,
+        "tier": tier if isinstance(tier, int) else None,
+        "pinned_at": pinned_at if isinstance(pinned_at, str) else None,
+        "age_hours": age,
+        "stale": age is not None and age > STALE_AFTER_HOURS,
+        "refresh_ok": ok if isinstance(ok, bool) else None,
+        "refresh_error": error if isinstance(error, str) else None,
+        "refresh_failures": failures if isinstance(failures, int) else 0,
+    }
 
 
 # ledger phase -> the lane name the panel renders
@@ -63,7 +114,10 @@ def status() -> AutohuntStatus:
     state; the pool counts are computed from the shared snapshot with the same
     gates and failure-memory the hunter picks by. A PR parked in
     `security_failed` is not counted in `security_pool` — it is not awaiting
-    pickup, and renders separately as a failed chip. `verify_failed` lists every
+    pickup, and renders separately as a failed chip. `base` carries the pinned
+    base's health, so a lane whose daily pin refresh has been failing shows up
+    next to the runner rather than only in the runs ledger.
+    `verify_failed` lists every
     verify request that ended in error, auto-queued or operator-queued alike —
     the hunter never re-fires an errored request, so each waits for an operator
     re-queue regardless of who queued it — tagged with its `source` ("auto" for
@@ -83,6 +137,7 @@ def status() -> AutohuntStatus:
     return {
         "enabled": bool(newest.get("autohunt")),
         "runner": verify_queue.runner_status(),
+        "base": base_health(),
         "security_pool": sum(1 for n, pr in prs.items()
                              if n not in failed_set and gates.blocked_on_security(pr)),
         "verify_pool": sum(1 for pr in prs.values() if verify_worker.auto_verifiable(pr)),

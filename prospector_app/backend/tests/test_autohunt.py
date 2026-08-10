@@ -15,6 +15,12 @@ from prospector_app.backend import verify_worker
 HEAD = "a" * 40
 
 
+def _iso_hours_ago(hours: float) -> str:
+    from datetime import datetime, timedelta, timezone
+    return (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+
+
+
 def _clean_merge_pr(n: int, *, pain: float = 0.0) -> dict:
     """A gate-clean merge-disposition PR record (the shape test_gates._pr
     uses) with one explicit linked issue carrying `pain`."""
@@ -499,3 +505,61 @@ def test_summary_ignores_non_hunt_phases(store):
     s = autohunt_view.summary(days=None)
     assert s["security"]["total"] == 0
     assert s["verify"]["total"] == 0
+
+
+class TestBaseHealth:
+    """The pinned base's health, surfaced so a verify lane that has silently
+    stopped tracking master is visible rather than inferred from a queue full
+    of parked requests."""
+
+    def _pin(self, store, **extra: object) -> None:
+        store.save_verify_base({"base_sha": "a" * 40, "tier": 1,
+                                "pinned_at": _now(), "baseline_failing": [],
+                                "baseline_captured_at": _now(), **extra})
+
+    def test_a_fresh_pin_is_healthy(self, store):
+        from prospector_app.backend import autohunt_view
+        self._pin(store)
+        base = autohunt_view.status()["base"]
+        assert base["base_sha"] == "a" * 12
+        assert base["tier"] == 1
+        assert base["stale"] is False
+        assert base["refresh_failures"] == 0
+
+    def test_a_pin_one_day_old_is_not_yet_stale(self, store):
+        """One missed daily refresh is a hiccup, not a broken lane."""
+        from prospector_app.backend import autohunt_view
+        self._pin(store, pinned_at=_iso_hours_ago(30))
+        assert autohunt_view.status()["base"]["stale"] is False
+
+    def test_a_pin_well_past_the_refresh_window_is_stale(self, store):
+        from prospector_app.backend import autohunt_view
+        self._pin(store, pinned_at=_iso_hours_ago(72))
+        base = autohunt_view.status()["base"]
+        assert base["stale"] is True
+        assert base["age_hours"] == pytest.approx(72, abs=1)
+
+    def test_a_failing_refresh_carries_its_error_and_run_length(self, store):
+        from prospector_app.backend import autohunt_view
+        self._pin(store, refresh_ok=False, refresh_failures=3,
+                  refresh_error="CalledProcessError: no space left on device")
+        base = autohunt_view.status()["base"]
+        assert base["refresh_failures"] == 3
+        assert base["refresh_ok"] is False
+        assert "no space left" in base["refresh_error"]
+
+    def test_an_unpinned_machine_reports_no_base(self, store):
+        from prospector_app.backend import autohunt_view
+        base = autohunt_view.status()["base"]
+        assert base["base_sha"] is None
+        assert base["stale"] is False
+        assert base["age_hours"] is None
+
+    def test_an_unparseable_pin_timestamp_does_not_read_as_stale(self, store):
+        """A malformed stamp is not evidence the lane is broken, and a false
+        alarm on the Control tab trains the operator to ignore it."""
+        from prospector_app.backend import autohunt_view
+        self._pin(store, pinned_at="not-a-timestamp")
+        base = autohunt_view.status()["base"]
+        assert base["age_hours"] is None
+        assert base["stale"] is False

@@ -41,6 +41,7 @@ from prospector_app.backend.jobs import PIPELINE_PY, REPO_ROOT
 
 if TYPE_CHECKING:
     from pipeline.model import Pr
+    from pipeline.store import Store
 
 POLL_SECONDS = 15.0
 
@@ -175,17 +176,34 @@ def base_refresh_due(reg: dict, now: datetime) -> bool:
     return True
 
 
+def _record_refresh(st: Store, ok: bool, error: str | None, failures: int) -> None:
+    """Stamp the refresh outcome onto the pin: whether the last attempt
+    succeeded, its error, the consecutive-failure run, and the once-per-day
+    attempt stamp. Written after prepare_base returns, because prepare_base
+    full-replaces the registry with the fields it owns."""
+    st.save_verify_base({
+        **st.load_verify_base(), "refresh_attempted_at": _now(), "refresh_ok": ok,
+        "refresh_error": error, "refresh_failures": 0 if ok else failures + 1})
+
+
 def maybe_refresh_base() -> None:
     """The daily pin refresh: when the pin is a day old and upstream's default
     branch has moved, re-run prepare_base so verification tracks master within
     ~24h. The attempt stamps refresh_attempted_at BEFORE the work at most once
     per calendar day (success or failure); a failure keeps the old pin and the
-    queue proceeds on it; every attempt lands in the runs ledger."""
+    queue proceeds on it; every attempt lands in the runs ledger.
+
+    The outcome is also stamped onto the pin itself, where the app reads it: a
+    lane that has silently stopped tracking master is worth showing, and a
+    ledger entry is not a surface anyone watches. An unmoved default branch is a
+    healthy refresh — there was nothing to move to."""
     try:
         st = data.store()
         reg = st.load_verify_base()
         if not base_refresh_due(reg, datetime.now(timezone.utc)):
             return
+        failures = reg.get("refresh_failures")
+        failures = failures if isinstance(failures, int) else 0
         st.save_verify_base({**reg, "refresh_attempted_at": _now()})
         entry: dict = {"phase": "verify:pin-refresh", "started": _now(),
                        "stats": {"from": str(reg.get("base_sha"))[:12]}}
@@ -193,14 +211,17 @@ def maybe_refresh_base() -> None:
             sha = verify_driver.resolve_base_sha()
             if sha == reg.get("base_sha"):
                 entry["stats"].update(ok=True, unmoved=True)
+                _record_refresh(st, True, None, failures)
                 return
             print(f"[verify-worker] daily pin refresh: "
                   f"{str(reg.get('base_sha'))[:12]} -> {sha[:12]}", flush=True)
             verify_driver.prepare_base(st, base_sha=sha, tier=int(reg.get("tier", 1)))
-            st.save_verify_base({**st.load_verify_base(), "refresh_attempted_at": _now()})
+            _record_refresh(st, True, None, failures)
             entry["stats"].update(ok=True, to=sha[:12])
         except Exception as e:
-            entry["stats"].update(ok=False, error=f"{type(e).__name__}: {str(e)[:200]}")
+            detail = f"{type(e).__name__}: {str(e)[:200]}"
+            entry["stats"].update(ok=False, error=detail)
+            _record_refresh(st, False, detail, failures)
             traceback.print_exc()
         finally:
             entry["finished"] = _now()

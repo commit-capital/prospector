@@ -1,8 +1,8 @@
 # Verify sandbox base GC — reclaiming pinned-base artifacts
 
 > Design record. Once built, current behavior is defined by
-> `pipeline/verify_gc.py`, `pipeline/verify_driver.py`, `pipeline/verify_pr.py`,
-> and `prospector_app/backend/verify_worker.py`.
+> `pipeline/verify_gc.py`, `pipeline/verify_driver.py`, and
+> `prospector_app/backend/verify_worker.py`.
 
 `verify_driver.py prepare-base` builds two durable artifacts per pin: a
 `pr-verify-base:<sha12>-t<tier>` Docker image (~3.5GB) and a scrubbed clone
@@ -35,11 +35,12 @@ Manual recovery (prune dangling, `docker rmi` all but the pinned tag, `rm -rf`
 all but the pinned clone) took the docker disk 56G → 6.5G and the host 24G →
 2.1G. Without retention this recurs in roughly ten more re-pins.
 
-## Three defects, one pass
+## Three defects
 
 Retention is the cause. The other two are what made a full disk take a day to
-diagnose: a misleading park message and an invisible failure. All three are
-fixed here.
+diagnose: a misleading park message and an invisible failure. The park message
+is #73's, merged separately; retention and the invisible failure are this
+change.
 
 ## Concurrency: who touches these artifacts
 
@@ -87,16 +88,22 @@ delete a clone that a surviving image of another tier still needs. Keeping or
 dropping a whole SHA keeps the two in lockstep.
 
 ```
-list_generations()                -> list[Generation]   # shells to docker + scans SCRATCH/base
-plan(gens, pinned_sha)            -> Plan               # PURE — the policy
-collect(store, *, dry_run=False)  -> dict               # orchestrates; NEVER raises
+list_generations()                     -> list[Generation]  # shells to docker + scans SCRATCH/base
+plan(gens, pinned_sha)                 -> Plan              # PURE — the policy
+collect(pinned_sha, *, dry_run=False)  -> dict              # orchestrates; NEVER raises
 ```
 
+`collect` takes the pinned SHA rather than a `Store`, so nothing in this module
+depends on the store layer.
+
 `plan` keeps the pinned SHA plus the most recently created other SHA;
-everything else is reclaimable. Creation times come from `docker image inspect
---format '{{.Created}}'`, truncated to whole seconds by regex before parsing —
-Docker emits nanosecond precision, which `datetime.fromisoformat` rejects. A
-clone dir with no surviving image falls back to its directory mtime.
+everything else is reclaimable. Creation times come from `docker image ls
+--format '{{.Tag}}\t{{.CreatedAt}}'`, whose leading three whitespace-separated
+fields parse as `%Y-%m-%d %H:%M:%S %z` (the trailing timezone abbreviation has
+no strptime directive and is dropped). One call, and each line carries its own
+tag, so a tag that disappears mid-survey cannot misalign a timestamp onto its
+neighbour. A clone dir with no surviving image falls back to its directory
+mtime.
 
 `plan` never places the pinned SHA in the delete set regardless of what the
 timestamps say. That is an explicit invariant with its own test, not an
@@ -120,9 +127,11 @@ leftovers. Both builder implementations are covered:
   `builder prune` accepts. The 24h window protects the build that just finished
   and any concurrent one.
 
-`collect` wraps all of it and returns `{"ok": bool, "freed_shas": [...],
-"error": ...}`. A GC failure is logged and never propagates — it must not be
-able to fail a pin.
+`collect` wraps all of it and returns `{"ok": bool, "keep": [...],
+"reclaimed": [...], "error": ...}`. A generation counts as reclaimed only once
+every one of its images is gone, so an image a live phase container still holds
+keeps its clone too — that run reads both. A GC failure is logged and never
+propagates; it must not be able to fail a pin.
 
 ### Call sites
 
@@ -137,25 +146,19 @@ one, and the old pin becomes the kept previous generation.
 
 `verify_driver.py gc [--dry-run]` exposes the same path for manual reclaim.
 
-## Daemon probe
+## Daemon probe — delivered by #73
 
-`verify_driver.daemon_reachable() -> bool`, via `docker version --format
-'{{.Server.Version}}'` — which fails when the daemon is down but the client
-binary is present.
+Telling a stopped daemon apart from a base this machine never prepared is
+`verify_driver.daemon_available()`, which #73 landed on main while this work was
+in review. Its treatment goes further than a message fix: `verify_pr` consults
+the daemon before the image inventory means anything and parks through
+`_no_daemon`, which does not spend the `WAITING_FOR_BASE_MAX_HOURS` budget —
+that budget bounds a base an operator must prepare, and no amount of waiting
+makes a stopped daemon answer. `next_queued` also holds parked base-waiters back
+during an outage on one probe per scan, and `recover_orphans` re-queues a
+restart that interrupted nothing.
 
-`verify_pr._run_inner` calls it only on the negative path, when the clone or
-image check has already failed, and selects the park message:
-
-- daemon reachable — the existing text: not found in the local Docker daemon,
-  run `prepare-base` on this machine.
-- daemon unreachable — the local Docker daemon is unreachable; the base image
-  may well be present, so start the daemon (`colima start`) rather than
-  re-pinning.
-
-Both still park as `waiting-for-base`, which is the right behavior for a
-transient daemon outage. Only the text changes. The clone-missing branch gets
-the same treatment: a dead daemon says nothing about whether the clone is
-there, so that message must not imply a re-pin either.
+Nothing here re-implements it.
 
 ## Refresh health in the Control tab
 
@@ -198,7 +201,6 @@ hatch for an operator who needs to reclaim by hand.
   generation is reclaimed; a clone with no image is handled; malformed or
   missing timestamps do not crash and do not endanger the pin.
 - `collect`'s never-raise contract, with a `subprocess.run` that throws.
-- The daemon probe, one test per branch of the park message.
 - `maybe_refresh_base` failure-counter behavior, alongside the existing refresh
   tests.
 
@@ -207,5 +209,5 @@ hatch for an operator who needs to reclaim by hand.
 - **No locking or in-use probing** between the app's `compile_preflight` threads
   and the worker's GC. The keep-newest rule covers the race without new
   cross-thread coordination.
-- **No change to `WAITING_FOR_BASE_MAX_HOURS` or the retry cadence.** That
-  behavior was correct during the incident; the message was what lied.
+- **No change to `WAITING_FOR_BASE_MAX_HOURS`, the retry cadence, or any part of
+  the daemon-outage path.** #73 owns that.
