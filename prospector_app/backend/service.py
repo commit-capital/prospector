@@ -442,6 +442,13 @@ def query_prs(spec: dict, sort: str | None = None, direction: str | None = None,
             "match_ids": [r["number"] for r in rows]}
 
 
+def count_prs(specs: list[dict]) -> list[int]:
+    """Match totals for a batch of filter specs, one total per spec in order.
+    Each spec is evaluated by query_prs, so a total always agrees with the
+    Explorer's result set for the same spec."""
+    return [query_prs(spec, limit=0)["total"] for spec in specs]
+
+
 # ---------------------------------------------------------------------------
 # Cluster board + detail.
 # ---------------------------------------------------------------------------

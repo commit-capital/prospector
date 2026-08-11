@@ -32,7 +32,8 @@ const router = createBrowserRouter([
     path: "/",
     element: <App />,
     children: [
-      { index: true, lazy: lazyView(() => import("./views/ClusterBoard")) },
+      { index: true, lazy: lazyView(() => import("./views/Home")) },
+      { path: "clusters", lazy: lazyView(() => import("./views/ClusterBoard")) },
       { path: "clusters/:id", lazy: lazyView(() => import("./views/ClusterDetail")) },
       { path: "explore", lazy: lazyView(() => import("./views/PRExplorer")) },
       { path: "differ", lazy: lazyView(() => import("./views/PRDiffer")) },
