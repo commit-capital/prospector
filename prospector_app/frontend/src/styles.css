@@ -1278,3 +1278,6 @@ tr.row-done:hover > td { opacity: 1; }
 .home-sample-issues { flex: 0 0 auto; min-width: 90px; text-align: right; }
 .home-show-all { margin-top: 4px; align-self: flex-end; color: var(--accent); text-decoration: none; }
 .home-show-all:hover { text-decoration: underline; }
+.home-loading { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; color: var(--muted); font-size: 12.5px; }
+.home-count-loading { animation: count-pulse 1.2s ease-in-out infinite; }
+@keyframes count-pulse { 0%, 100% { opacity: .55; } 50% { opacity: .2; } }

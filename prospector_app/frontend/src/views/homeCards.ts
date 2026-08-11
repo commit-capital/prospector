@@ -34,9 +34,9 @@ function checksPass(...keys: string[]): CheckClause[] {
 // Every check key the checks rollup carries, required to pass.
 export const ALL_CHECKS_PASS: CheckClause[] = checksPass(...CHECK_DEFS.map((d) => d.key));
 
-// The cards, most actionable first. Counts and samples come from the backend
-// matcher (POST /api/prs/query), so each card's number is exactly the row
-// count the Explorer shows when its link opens.
+// The cards, most actionable first. Counts come from POST /api/prs/counts and
+// samples from POST /api/prs/query — the same backend matcher — so each card's
+// number is exactly the row count the Explorer shows when its link opens.
 export const HOME_CARDS: HomeCard[] = [
   {
     key: "ready",

@@ -5,6 +5,10 @@ import { LinkedIssues } from "../components/LinkedIssues";
 import { PRLink } from "../components/PRLink";
 import { exploreHref, HOME_CARDS, SAMPLE_QUERY, type HomeCard } from "./homeCards";
 
+// While the backend snapshot is cold-loading, counts come back null with
+// loading:true — re-ask on this cadence until real numbers arrive.
+const COUNTS_POLL_MS = 1500;
+
 // One sample PR inside a Home card: number (opens the detail flyout), title,
 // Community Pain Score, and the issues the PR fixes (open the issue flyout).
 function SamplePR({ r }: { r: PRRow }) {
@@ -26,13 +30,18 @@ function SamplePR({ r }: { r: PRRow }) {
 }
 
 // One Home card row: the headline count + title link into the Explorer, and
-// the card's highest-pain member PRs sampled inline underneath.
-function HomeCardRow({ card, sample }: { card: HomeCard; sample: QueryResult | null }) {
+// the card's highest-pain member PRs sampled inline underneath. `count` is
+// null until the counts poll lands; `sample` is null until the sample query
+// (started once the counts land) resolves.
+function HomeCardRow({ card, count, sample }: { card: HomeCard; count: number | null; sample: QueryResult | null }) {
   const href = exploreHref(card);
+  const total = sample ? sample.total : count;
   return (
     <div className={"act-card home-card" + (card.lead ? " act-card-lead" : "")}>
       <Link to={href} className="home-card-head act-card-clickable" title="Open these PRs in the PR Explorer">
-        <div className="act-card-n">{sample ? sample.total : "…"}</div>
+        <div className={"act-card-n" + (total === null ? " home-count-loading" : "")}>
+          {total ?? "…"}
+        </div>
         <div className="home-card-text">
           <div className="act-card-l">{card.title}</div>
           <div className="small muted home-card-blurb">{card.blurb}</div>
@@ -46,21 +55,45 @@ function HomeCardRow({ card, sample }: { card: HomeCard; sample: QueryResult | n
           </Link>
         </div>
       )}
-      {sample && sample.total === 0 && (
-        <div className="home-card-sample muted small">None right now.</div>
-      )}
+      {total === 0 && <div className="home-card-sample muted small">None right now.</div>}
     </div>
   );
 }
 
 export default function Home() {
+  const [counts, setCounts] = useState<number[] | null>(null);
   const [samples, setSamples] = useState<QueryResult[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => {
-    Promise.all(HOME_CARDS.map((c) => api.queryPrs(c.spec, SAMPLE_QUERY)))
-      .then(setSamples)
-      .catch((e: unknown) => setErr(e instanceof Error ? e.message : String(e)));
+    let cancelled = false;
+    let timer: number | undefined;
+    const load = () => {
+      api.prCounts(HOME_CARDS.map((c) => c.spec))
+        .then((r) => {
+          if (cancelled) return;
+          if (r.counts) setCounts(r.counts);
+          else timer = window.setTimeout(load, COUNTS_POLL_MS);
+        })
+        .catch((e: unknown) => {
+          if (!cancelled) setErr(e instanceof Error ? e.message : String(e));
+        });
+    };
+    load();
+    return () => { cancelled = true; window.clearTimeout(timer); };
   }, []);
+  // Each card's inline sample. Fetched only once the counts poll has landed —
+  // the snapshot is published by then, so these queries serve from memory.
+  useEffect(() => {
+    if (counts === null) return;
+    let cancelled = false;
+    Promise.all(HOME_CARDS.map((c) => api.queryPrs(c.spec, SAMPLE_QUERY)))
+      .then((r) => { if (!cancelled) setSamples(r); })
+      .catch((e: unknown) => {
+        if (!cancelled) setErr(e instanceof Error ? e.message : String(e));
+      });
+    return () => { cancelled = true; };
+  }, [counts]);
+  const loading = counts === null && !err;
   return (
     <div className="home">
       <div className="home-head">
@@ -71,9 +104,15 @@ export default function Home() {
         </div>
       </div>
       {err && <div className="error">Failed to load PRs: {err}</div>}
+      {loading && (
+        <div className="home-loading" role="status">
+          <span className="spinner" /> Loading PR data…
+        </div>
+      )}
       <div className="home-cards">
         {HOME_CARDS.map((card, i) => (
-          <HomeCardRow key={card.key} card={card} sample={samples ? samples[i] : null} />
+          <HomeCardRow key={card.key} card={card} count={counts ? counts[i] : null}
+            sample={samples ? samples[i] : null} />
         ))}
       </div>
     </div>

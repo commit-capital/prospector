@@ -213,17 +213,23 @@ def prs_query(payload: dict = Body(...)):
     )
 
 
-MAX_PR_COUNT_SPECS = 20  # bounds one counts request
+MAX_PR_COUNT_SPECS = 20  # bounds one counts request; the Home screen sends a handful of specs
 
 
 @app.post("/api/prs/counts")
 def prs_counts(payload: dict = Body(...)):
-    """Match totals for a batch of filter specs. Body: {specs: [spec, ...]}."""
+    """Match totals for a batch of filter specs. Body: {specs: [spec, ...]}.
+    While the store snapshot is still cold-loading, answers immediately with
+    {"counts": null, "loading": true} — the load continues in the background
+    and the Home screen polls, showing a loading state, so the request never
+    pins a connection for the duration of the load."""
     specs = payload.get("specs")
     if not isinstance(specs, list) or len(specs) > MAX_PR_COUNT_SPECS:
         raise HTTPException(422, f"specs must be a list of at most {MAX_PR_COUNT_SPECS} filter specs")
     if not all(isinstance(s, dict) for s in specs):
         raise HTTPException(422, "each spec must be a filter-spec object")
+    if data.snapshot_loading():
+        return {"counts": None, "loading": True}
     return {"counts": service.count_prs(specs)}
 
 
