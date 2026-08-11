@@ -128,6 +128,28 @@ def test_background_freshen_error_keeps_last_snapshot(monkeypatch):
     assert set(data._prs) == {1}  # the error was swallowed; the snapshot is intact
 
 
+def test_snapshot_loading_kicks_background_load_without_blocking(monkeypatch):
+    store = _FakeStore()
+    store.add(1, "2026-01-01T00:00:00.000000+00:00")
+    monkeypatch.setattr(data, "_store", store)
+    monkeypatch.setattr(data, "_loaded", False)
+    monkeypatch.setattr(data, "_pr_watermark", None)
+    monkeypatch.setattr(data, "_clu_watermark", None)
+
+    assert data.snapshot_loading()  # unloaded: reports loading, kicks the load
+    for _ in range(100):            # the background thread publishes the snapshot
+        if data._loaded:
+            break
+        time.sleep(0.02)
+    assert not data.snapshot_loading()  # published: never loading again
+    assert set(data.prs()) == {1}       # readers serve the published snapshot
+
+
+def test_snapshot_loading_false_once_loaded(monkeypatch):
+    monkeypatch.setattr(data, "_loaded", True)
+    assert not data.snapshot_loading()
+
+
 def test_author_stats_sums_baseline_and_live_snapshot(tmp_path, monkeypatch):
     from pipeline.store import Store
     store = Store(tmp_path)

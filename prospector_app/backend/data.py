@@ -133,6 +133,31 @@ def _ensure() -> None:
     threading.Thread(target=run, daemon=True, name="store-freshen").start()
 
 
+def snapshot_loading() -> bool:
+    """True while the one cold full-load has not yet published a snapshot.
+    Kicks that load on a background daemon thread (single-flighted on
+    `_check_lock`), so a caller can answer its request immediately and poll
+    instead of holding a request thread for the whole load. Once the snapshot
+    is published this is False forever — readers then serve from memory."""
+    global _loaded, _last_check
+    if _loaded:
+        return False
+    if _check_lock.acquire(blocking=False):
+        def run() -> None:
+            global _loaded, _last_check
+            try:
+                _freshen(full=True)
+                _loaded = True
+                _last_check = time.monotonic()
+            except Exception:
+                pass  # keep unloaded; the next call retries
+            finally:
+                _check_lock.release()
+
+        threading.Thread(target=run, daemon=True, name="store-cold-load").start()
+    return True
+
+
 def prs() -> dict[int, Pr]:
     _ensure()
     return _prs

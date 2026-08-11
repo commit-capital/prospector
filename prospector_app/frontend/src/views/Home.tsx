@@ -102,14 +102,31 @@ function exploreHref(card: HomeCard): string {
   return `/explore?${params}`;
 }
 
+// While the backend snapshot is cold-loading, counts come back null with
+// loading:true — re-ask on this cadence until real numbers arrive.
+const COUNTS_POLL_MS = 1500;
+
 export default function Home() {
   const [counts, setCounts] = useState<number[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => {
-    api.prCounts(HOME_CARDS.map((c) => c.spec))
-      .then((r) => setCounts(r.counts))
-      .catch((e: unknown) => setErr(e instanceof Error ? e.message : String(e)));
+    let cancelled = false;
+    let timer: number | undefined;
+    const load = () => {
+      api.prCounts(HOME_CARDS.map((c) => c.spec))
+        .then((r) => {
+          if (cancelled) return;
+          if (r.counts) setCounts(r.counts);
+          else timer = window.setTimeout(load, COUNTS_POLL_MS);
+        })
+        .catch((e: unknown) => {
+          if (!cancelled) setErr(e instanceof Error ? e.message : String(e));
+        });
+    };
+    load();
+    return () => { cancelled = true; window.clearTimeout(timer); };
   }, []);
+  const loading = counts === null && !err;
   return (
     <div className="home">
       <div className="home-head">
@@ -119,6 +136,11 @@ export default function Home() {
         </div>
       </div>
       {err && <div className="error">Failed to load counts: {err}</div>}
+      {loading && (
+        <div className="home-loading" role="status">
+          <span className="spinner" /> Loading PR data…
+        </div>
+      )}
       <div className="act-cards home-cards">
         {HOME_CARDS.map((card, i) => (
           <Link
@@ -127,7 +149,9 @@ export default function Home() {
             className={"act-card act-card-clickable home-card" + (card.lead ? " act-card-lead" : "")}
             title="Open these PRs in the PR Explorer"
           >
-            <div className="act-card-n">{counts ? counts[i] : "…"}</div>
+            <div className={"act-card-n" + (counts ? "" : " home-count-loading")}>
+              {counts ? counts[i] : "…"}
+            </div>
             <div className="act-card-l">{card.title}</div>
             <div className="small muted home-card-blurb">{card.blurb}</div>
           </Link>

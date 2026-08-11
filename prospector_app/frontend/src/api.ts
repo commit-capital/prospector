@@ -1009,8 +1009,9 @@ export const api = {
 
   // Match totals for a batch of filter specs, one total per spec in order —
   // backs the Home screen's cards, so a card's count always agrees with the
-  // Explorer result set its link opens.
-  prCounts: async (specs: FilterSpec[]): Promise<{ counts: number[] }> => {
+  // Explorer result set its link opens. While the backend snapshot is still
+  // cold-loading, counts is null and loading is true; the caller polls.
+  prCounts: async (specs: FilterSpec[]): Promise<{ counts: number[] | null; loading?: boolean }> => {
     const url = "/api/prs/counts";
     const r = await fetch(url, {
       method: "POST", headers: { "Content-Type": "application/json" },
