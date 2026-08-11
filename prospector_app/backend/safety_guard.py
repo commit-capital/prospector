@@ -64,7 +64,8 @@ def assert_read_only(argv: list[str]) -> None:
 def run(argv: list[str], *, timeout: int = 120, text: bool = True) -> subprocess.CompletedProcess:
     """Run a read-only command. Raises WriteAttemptBlocked if it looks like a write."""
     assert_read_only(argv)
-    return subprocess.run(argv, capture_output=True, text=text, timeout=timeout)
+    return subprocess.run(argv, capture_output=True, text=text, timeout=timeout,
+                          env=operator_env())
 
 
 def operator_env(base: dict[str, str] | None = None) -> dict[str, str]:

@@ -4,10 +4,20 @@ parsing) lives in the callers; this module only fetches and parses."""
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+from collections.abc import Mapping
 from typing import Any
 
 from pipeline.settings import REPO
+
+
+def operator_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Environment for GitHub reads authenticated by the local ``gh`` login."""
+    env = dict(os.environ if base is None else base)
+    env.pop("GH_TOKEN", None)
+    env.pop("GITHUB_TOKEN", None)
+    return env
 
 
 def gh_api(path: str, *, timeout: int = 60) -> Any | None:
@@ -15,7 +25,8 @@ def gh_api(path: str, *, timeout: int = 60) -> Any | None:
     timeout, unparseable body)."""
     try:
         res = subprocess.run(["gh", "api", path],
-                             capture_output=True, text=True, timeout=timeout)
+                             capture_output=True, text=True, timeout=timeout,
+                             env=operator_env())
     except (subprocess.SubprocessError, OSError):
         return None
     if res.returncode != 0:
@@ -36,7 +47,8 @@ def gh_graphql(query: str, *, timeout: int = 60) -> dict | None:
     `data` object is returned regardless of exit code."""
     try:
         res = subprocess.run(["gh", "api", "graphql", "-f", f"query={query}"],
-                             capture_output=True, text=True, timeout=timeout)
+                             capture_output=True, text=True, timeout=timeout,
+                             env=operator_env())
     except (subprocess.SubprocessError, OSError):
         return None
     try:
