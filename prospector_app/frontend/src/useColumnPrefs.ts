@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { COLUMNS, type ColumnDef } from "./components/explorer/columns";
 import { useExec } from "./ExecContext";
 
@@ -18,9 +18,6 @@ export function useColumnPrefs(): {
   visibleColumns: ColumnDef[];
 } {
   const { review } = useExec();
-  // Columns gated on a backend capability drop out entirely when it's absent (no
-  // external review provider → no Greptile column, and it never appears in toggles).
-  const available = COLUMNS.filter((c) => c.capability !== "review" || review.provider !== "none");
   const [overrides, setOverrides] = useState<Record<string, boolean>>(read);
   // Persist whenever the override map changes — survives reloads; private-mode safe.
   useEffect(() => {
@@ -32,6 +29,14 @@ export function useColumnPrefs(): {
   const toggle = (k: string) =>
     setOverrides((prev) => ({ ...prev, [k]: !(prev[k] ?? DEFAULTS[k] ?? false) }));
   const reset = () => setOverrides({});
-  const visibleColumns = available.filter((c) => c.fixed || isOn(c.key));
+  // Columns gated on a backend capability drop out entirely when it's absent (no
+  // external review provider → no Greptile column, and it never appears in
+  // toggles). Memoized for a stable identity across renders — the PR Explorer
+  // keys its memoized table rows on this array, so it must only change when the
+  // selection does.
+  const visibleColumns = useMemo(
+    () => COLUMNS.filter((c) => c.capability !== "review" || review.provider !== "none")
+      .filter((c) => c.fixed || (overrides[c.key] ?? DEFAULTS[c.key] ?? false)),
+    [overrides, review.provider]);
   return { isOn, toggle, reset, visibleColumns };
 }
