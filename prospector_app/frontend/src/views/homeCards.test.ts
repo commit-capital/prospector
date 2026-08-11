@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { CHECK_DEFS } from "../components/explorer/checkDefs.ts";
 import {
-  ALL_CHECKS_PASS, exploreHref, HOME_CARDS, SAMPLE_QUERY, type HomeCard,
+  ALL_CHECKS_PASS, exploreHref, HOME_CARDS, painLabel, SAMPLE_LIMIT, SAMPLE_QUERY,
+  type HomeCard,
 } from "./homeCards.ts";
 
 test("card keys are unique", () => {
@@ -43,4 +44,16 @@ test("card samples ask for the highest-pain PRs first", () => {
   assert.equal(SAMPLE_QUERY.sort, "pain");
   assert.equal(SAMPLE_QUERY.direction, "desc");
   assert.ok(SAMPLE_QUERY.limit > 0);
+});
+
+test("the sample query fetches exactly the table's row budget", () => {
+  assert.equal(SAMPLE_QUERY.limit, SAMPLE_LIMIT);
+});
+
+test("painLabel formats a score to two decimals and hides missing ones", () => {
+  assert.equal(painLabel(3.2), "🔥 3.20");
+  assert.equal(painLabel(12.345), "🔥 12.35");
+  assert.equal(painLabel(0), "");
+  assert.equal(painLabel(null), "");
+  assert.equal(painLabel(undefined), "");
 });

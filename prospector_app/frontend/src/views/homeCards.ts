@@ -15,9 +15,15 @@ export interface HomeCard {
   lead?: boolean;
 }
 
-// How many sample PRs each card fetches and shows inline; the "Show all"
-// link opens the full set in the Explorer.
-export const SAMPLE_LIMIT = 4;
+// How many sample PRs each card fetches into the table on its right side;
+// the "Show all" link opens the full set in the Explorer.
+export const SAMPLE_LIMIT = 6;
+
+// The Community Pain Score cell label for a sample PR row; empty when the
+// PR carries no pain score.
+export function painLabel(pain: number | null | undefined): string {
+  return pain ? `🔥 ${pain.toFixed(2)}` : "";
+}
 
 // The query options behind each card's inline sample: its highest-pain PRs
 // first, so the card leads with the members the community is waiting on.

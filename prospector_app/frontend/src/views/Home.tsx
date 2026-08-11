@@ -3,36 +3,39 @@ import { Link } from "react-router";
 import { api, type PRRow, type QueryResult } from "../api";
 import { LinkedIssues } from "../components/LinkedIssues";
 import { PRLink } from "../components/PRLink";
-import { exploreHref, HOME_CARDS, SAMPLE_QUERY, type HomeCard } from "./homeCards";
+import { exploreHref, HOME_CARDS, painLabel, SAMPLE_QUERY, type HomeCard } from "./homeCards";
 
 // While the backend snapshot is cold-loading, counts come back null with
 // loading:true — re-ask on this cadence until real numbers arrive.
 const COUNTS_POLL_MS = 1500;
 
-// One sample PR inside a Home card: number (opens the detail flyout), title,
-// Community Pain Score, and the issues the PR fixes (open the issue flyout).
+// One sample PR row in a Home card's table: number (opens the detail flyout),
+// title, Community Pain Score, and the issues the PR fixes (open the issue
+// flyout).
 function SamplePR({ r }: { r: PRRow }) {
-  const pain = r.pain_score;
   return (
-    <div className="home-sample-row">
-      <PRLink n={r.number} className="home-sample-pr mono" />
-      <span className="home-sample-title" title={r.summary?.one_liner ?? undefined}>
+    <tr className="home-sample-row">
+      <td className="home-sample-pr">
+        <PRLink n={r.number} className="mono" />
+      </td>
+      <td className="home-sample-title" title={r.summary?.one_liner ?? undefined}>
         {r.title ?? "(no title)"}
-      </span>
-      <span className="home-sample-pain mono small" title="Community Pain Score — linked-issue pain + PR engagement">
-        {pain ? `🔥 ${pain.toFixed(2)}` : ""}
-      </span>
-      <span className="home-sample-issues small">
+      </td>
+      <td className="home-sample-pain mono small" title="Community Pain Score — linked-issue pain + PR engagement">
+        {painLabel(r.pain_score)}
+      </td>
+      <td className="home-sample-issues small">
         <LinkedIssues issues={r.issues} limit={3} />
-      </span>
-    </div>
+      </td>
+    </tr>
   );
 }
 
-// One Home card row: the headline count + title link into the Explorer, and
-// the card's highest-pain member PRs sampled inline underneath. `count` is
-// null until the counts poll lands; `sample` is null until the sample query
-// (started once the counts land) resolves.
+// One Home card row, two columns wide: the headline count + title on the left
+// link into the Explorer, and a small table of the card's highest-pain member
+// PRs fills the right side. `count` is null until the counts poll lands;
+// `sample` is null until the sample query (started once the counts land)
+// resolves.
 function HomeCardRow({ card, count, sample }: { card: HomeCard; count: number | null; sample: QueryResult | null }) {
   const href = exploreHref(card);
   const total = sample ? sample.total : count;
@@ -47,15 +50,21 @@ function HomeCardRow({ card, count, sample }: { card: HomeCard; count: number | 
           <div className="small muted home-card-blurb">{card.blurb}</div>
         </div>
       </Link>
-      {sample && sample.total > 0 && (
-        <div className="home-card-sample">
-          {sample.items.map((r) => <SamplePR key={r.number} r={r} />)}
-          <Link to={href} className="home-show-all small">
-            Show all {sample.total} in the Explorer →
-          </Link>
-        </div>
-      )}
-      {total === 0 && <div className="home-card-sample muted small">None right now.</div>}
+      <div className="home-card-side">
+        {sample && sample.total > 0 && (
+          <>
+            <table className="home-sample-table">
+              <tbody>
+                {sample.items.map((r) => <SamplePR key={r.number} r={r} />)}
+              </tbody>
+            </table>
+            <Link to={href} className="home-show-all small">
+              Show all {sample.total} in the Explorer →
+            </Link>
+          </>
+        )}
+        {total === 0 && <div className="muted small">None right now.</div>}
+      </div>
     </div>
   );
 }
