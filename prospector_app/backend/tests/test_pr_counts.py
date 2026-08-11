@@ -1,5 +1,5 @@
-# prospector_app/backend/tests/test_home_counts.py
-"""POST /api/prs/counts — batch match totals backing the Home screen's cards."""
+# prospector_app/backend/tests/test_pr_counts.py
+"""POST /api/prs/counts — batch match totals, one per filter spec."""
 from fastapi.testclient import TestClient
 
 from pipeline import model

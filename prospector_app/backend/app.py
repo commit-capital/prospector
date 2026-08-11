@@ -213,7 +213,7 @@ def prs_query(payload: dict = Body(...)):
     )
 
 
-MAX_PR_COUNT_SPECS = 20  # bounds one counts request; the Home screen sends a handful of specs
+MAX_PR_COUNT_SPECS = 20  # bounds one counts request
 
 
 @app.post("/api/prs/counts")
