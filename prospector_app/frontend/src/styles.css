@@ -1249,15 +1249,35 @@ tr.row-done:hover > td { opacity: 1; }
 .closeout-head:first-of-type { margin-top: 14px; }
 .fixed-row-detail td { background: var(--panel); }
 
-/* Home screen: headline cards linking into the PR Explorer. */
+/* Home screen: one full-width card per row, each sampling its highest-pain
+   member PRs inline and linking into the PR Explorer. */
 .home { max-width: 1080px; }
 .home-head { margin-bottom: 16px; }
 .home-head h2 { margin: 0 0 4px; }
-.home-cards .home-card {
-  flex: 1 1 260px; max-width: 360px; display: block;
-  text-decoration: none; color: var(--text); background: var(--panel);
+.home-cards { display: flex; flex-direction: column; gap: 10px; }
+.home-cards .home-card { padding: 0; background: var(--panel); overflow: hidden; }
+.home-card-head {
+  display: flex; align-items: baseline; gap: 14px; padding: 10px 12px;
+  text-decoration: none; color: var(--text);
 }
-.home-card-blurb { margin-top: 8px; line-height: 1.4; }
+.home-card-head .act-card-n { min-width: 44px; text-align: right; }
+.home-card-text { flex: 1; min-width: 0; }
+.home-card-blurb { margin-top: 4px; line-height: 1.4; }
+.home-card-sample {
+  border-top: 1px solid var(--border); padding: 6px 12px 8px;
+  display: flex; flex-direction: column; gap: 3px;
+}
+.home-sample-row { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.home-sample-pr { flex: 0 0 auto; color: var(--accent); text-decoration: none; }
+.home-sample-pr:hover { text-decoration: underline; }
+.home-sample-title {
+  flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font-size: 12.5px;
+}
+.home-sample-pain { flex: 0 0 auto; min-width: 64px; text-align: right; color: var(--muted); }
+.home-sample-issues { flex: 0 0 auto; min-width: 90px; text-align: right; }
+.home-show-all { margin-top: 4px; align-self: flex-end; color: var(--accent); text-decoration: none; }
+.home-show-all:hover { text-decoration: underline; }
 .home-loading { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; color: var(--muted); font-size: 12.5px; }
 .home-count-loading { animation: count-pulse 1.2s ease-in-out infinite; }
 @keyframes count-pulse { 0%, 100% { opacity: .55; } 50% { opacity: .2; } }
