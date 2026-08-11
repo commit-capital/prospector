@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
 import { api, type FilterSpec, type PRRow, type QueryResult, type DeepResult } from "../api";
+import type { CellCtx, ColumnDef } from "../components/explorer/columns";
+import { reuseRows } from "../components/explorer/rowReuse";
 import { PresetChips } from "../components/explorer/PresetChips";
 import { FilterControls } from "../components/explorer/FilterControls";
 import { ColumnToggles } from "../components/explorer/ColumnToggles";
@@ -56,12 +58,62 @@ function readSpec(params: URLSearchParams): FilterSpec {
   try { return JSON.parse(params.get(SPEC_PARAM) || "{}"); } catch { return {}; }
 }
 
+// One PR row, memoized. The table can hold thousands of rows (page size
+// "All"), and rendering them all costs seconds — a row re-renders only when
+// one of its own inputs changes, keeping Explorer-wide state changes (an open
+// filter popout, a search keystroke, another row's selection) off the rows.
+// Every prop is identity-stable across such renders: `r` survives refetches
+// via reuseRows, `visibleColumns` is memoized in useColumnPrefs, and the
+// callbacks are stable by construction in PRExplorer. Row-open clicks are
+// delegated to the <tbody> (via `data-pr`), so the row carries no URL-derived
+// handlers of its own.
+const PrRow = memo(function PrRow({ r, visibleColumns, isSelected, isOpen, cellCtx, onToggle }: {
+  r: PRRow;
+  visibleColumns: ColumnDef[];
+  isSelected: boolean;
+  isOpen: boolean;
+  cellCtx: CellCtx;
+  onToggle: (n: number) => void;
+}) {
+  return (
+    <tr data-pr={r.number}
+      className={`rowlink ${isSelected ? "sel" : ""} ${isOpen ? "row-open" : ""}`}>
+      <td onClick={stopRowOpen}>
+        <input type="checkbox" checked={isSelected} onChange={() => onToggle(r.number)} />
+      </td>
+      {visibleColumns.map((col) => (
+        <td key={col.key} className={col.cellClass} onClick={col.stopOpen ? stopRowOpen : undefined}>
+          {col.cell(r, cellCtx)}
+        </td>
+      ))}
+    </tr>
+  );
+});
+
 export default function PRExplorer() {
   const [params, setParams] = useSearchParams();
   const spec = useMemo(() => readSpec(params), [params]);
   const searchQ = params.get(Q_PARAM) ?? "";
   const { openPR, addPane, prs: openPrs } = usePRFlyout();
+  // Row-open clicks are delegated to the <tbody>: openPR/addPane re-derive
+  // from the URL on every search-param change, and the delegated handler reads
+  // the current pair at click time while the memoized rows carry no
+  // URL-derived props. Interactive cells stop propagation (stopRowOpen),
+  // which suppresses the delegated handler just like a row-level one.
   const rowOpen = makeRowOpen(openPR, addPane);
+  const rowFromEvent = (e: React.MouseEvent<HTMLTableSectionElement>): number | null => {
+    const tr = (e.target as HTMLElement).closest("tr[data-pr]");
+    if (!(tr instanceof HTMLTableRowElement) || !tr.dataset.pr) return null;
+    return Number(tr.dataset.pr);
+  };
+  const onRowClick = (e: React.MouseEvent<HTMLTableSectionElement>) => {
+    const n = rowFromEvent(e);
+    if (n !== null) rowOpen(n).onClick(e);
+  };
+  const onRowAuxClick = (e: React.MouseEvent<HTMLTableSectionElement>) => {
+    const n = rowFromEvent(e);
+    if (n !== null) rowOpen(n).onAuxClick(e);
+  };
   const { isOn: colOn, toggle: toggleCol, reset: resetCols, visibleColumns } = useColumnPrefs();
   const { setVisiblePrs } = useAgentPane();
   const [page, setPage] = useState(1);
@@ -141,6 +193,11 @@ export default function PRExplorer() {
     sort: sortKey || undefined, direction: dir || undefined,
     offset: (page - 1) * effectivePageSize, limit: effectivePageSize,
   };
+  // The latest result, readable outside the render cycle: reuseRows folds each
+  // fresh fetch onto whatever is currently shown, so unchanged rows keep their
+  // object identity and their memoized <PrRow> skips re-rendering.
+  const resRef = useRef(res);
+  useEffect(() => { resRef.current = res; }, [res]);
   useEffect(() => {
     const key = queryCacheKey(specKey, sortKey, dir, page, pageSize, deepKey);
     let cancelled = false;
@@ -148,8 +205,9 @@ export default function PRExplorer() {
     setLoading(true);
     api.queryPrs(effSpec, queryOpts).then((r) => {
       if (cancelled) return; // superseded by a newer query (filter/sort/page changed again)
-      lastQuery = { key, result: r };
-      setRes(r);
+      const merged = reuseRows(resRef.current, r);
+      lastQuery = { key, result: merged };
+      setRes(merged);
       setLoading(false);
     }).catch(() => {
       // Leave any already-visible data in place — a failed refresh shouldn't
@@ -160,10 +218,13 @@ export default function PRExplorer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [specKey, sortKey, dir, page, pageSize, deepKey]);
 
-  const refetch = () => api.queryPrs(effSpec, queryOpts).then((r) => {
-    lastQuery = { key: queryCacheKey(specKey, sortKey, dir, page, pageSize, deepKey), result: r };
-    setRes(r);
-  });
+  const refetch = useCallback(() => api.queryPrs(effSpec, queryOpts).then((r) => {
+    const merged = reuseRows(resRef.current, r);
+    lastQuery = { key: queryCacheKey(specKey, sortKey, dir, page, pageSize, deepKey), result: merged };
+    setRes(merged);
+    // effSpec/queryOpts are rebuilt each render but fully determined by these keys
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [specKey, sortKey, dir, page, pageSize, deepKey]);
 
   // Let the agent pane see the same filtered set the operator is looking at, so
   // "review these" doesn't need the PR numbers spelled out (#355). Every matching
@@ -182,11 +243,13 @@ export default function PRExplorer() {
   const allSelected = matchIds.length > 0 && matchIds.every((n) => selected.has(n));
   const pageSelected = pageIds.length > 0 && pageIds.every((n) => selected.has(n));
   const pageSomeSelected = pageIds.some((n) => selected.has(n));
-  const toggle = (n: number) => setSelected((s) => {
+  // Identity-stable (functional updater, no captured state) — it is a prop of
+  // every memoized row.
+  const toggle = useCallback((n: number) => setSelected((s) => {
     const next = new Set(s);
     if (next.has(n)) next.delete(n); else next.add(n);
     return next;
-  });
+  }), []);
   const setPageSelected = (on: boolean) => setSelected((s) => {
     const next = new Set(s);
     for (const n of pageIds) { if (on) next.add(n); else next.delete(n); }
@@ -222,11 +285,14 @@ export default function PRExplorer() {
     window.scrollTo({ top: 0 });
   };
 
-  const ackResponse = async (pr: number) => {
+  const ackResponse = useCallback(async (pr: number) => {
     await api.ackResponse(pr);
     await refetch();
-  };
-  const cellCtx = { deepReasons, ackResponse };
+  }, [refetch]);
+  // Memoized for the same reason as `toggle`: its identity is a prop of every
+  // memoized row.
+  const cellCtx: CellCtx = useMemo(
+    () => ({ deepReasons, ackResponse }), [deepReasons, ackResponse]);
   return (
     <div className="pr-explorer">
       <div className="explorer-head">
@@ -322,23 +388,12 @@ export default function PRExplorer() {
             );
           })}
         </tr></thead>
-        <tbody>
-          {rows.map((r: PRRow) => {
-            const ro = rowOpen(r.number);
-            return (
-              <tr key={r.number} {...ro}
-                className={`${ro.className} ${selected.has(r.number) ? "sel" : ""} ${openPrs.includes(r.number) ? "row-open" : ""}`}>
-                <td onClick={stopRowOpen}>
-                  <input type="checkbox" checked={selected.has(r.number)} onChange={() => toggle(r.number)} />
-                </td>
-                {visibleColumns.map((col) => (
-                  <td key={col.key} className={col.cellClass} onClick={col.stopOpen ? stopRowOpen : undefined}>
-                    {col.cell(r, cellCtx)}
-                  </td>
-                ))}
-              </tr>
-            );
-          })}
+        <tbody onClick={onRowClick} onAuxClick={onRowAuxClick}>
+          {rows.map((r: PRRow) => (
+            <PrRow key={r.number} r={r} visibleColumns={visibleColumns}
+              isSelected={selected.has(r.number)} isOpen={openPrs.includes(r.number)}
+              cellCtx={cellCtx} onToggle={toggle} />
+          ))}
         </tbody>
       </table>
 

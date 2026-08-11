@@ -12,7 +12,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node --test \"src/**/*.test.ts\""
   },
   "dependencies": {
     "html2canvas-pro": "^2.3.2",

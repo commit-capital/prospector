@@ -5,6 +5,13 @@ function prPageUrl(n: number): string {
   return `/prs/${n}`;
 }
 
+/** The spreadable props `makeRowOpen` builds for one row's `<tr>`. */
+export interface RowOpenProps {
+  className: string;
+  onClick: (e: MouseEvent) => void;
+  onAuxClick: (e: MouseEvent) => void;
+}
+
 /** Shared click semantics for a whole clickable PR row.
  *
  *  - plain click → open the PR in the detail flyout (replaces the stack)
@@ -17,7 +24,7 @@ export function makeRowOpen(
   openPR: (n: number) => void,
   addPane?: (n: number) => void,
   onModSelect?: (n: number) => void,
-) {
+): (n: number) => RowOpenProps {
   return (n: number) => ({
     className: "rowlink",
     onClick: (e: MouseEvent) => {
