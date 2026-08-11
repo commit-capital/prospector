@@ -1248,3 +1248,13 @@ tr.row-done:hover > td { opacity: 1; }
 .closeout-head { font-size: 16px; margin: 26px 0 8px; }
 .closeout-head:first-of-type { margin-top: 14px; }
 .fixed-row-detail td { background: var(--panel); }
+
+/* Home screen: headline cards linking into the PR Explorer. */
+.home { max-width: 1080px; }
+.home-head { margin-bottom: 16px; }
+.home-head h2 { margin: 0 0 4px; }
+.home-cards .home-card {
+  flex: 1 1 260px; max-width: 360px; display: block;
+  text-decoration: none; color: var(--text); background: var(--panel);
+}
+.home-card-blurb { margin-top: 8px; line-height: 1.4; }

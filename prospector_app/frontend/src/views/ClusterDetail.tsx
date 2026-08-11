@@ -507,7 +507,7 @@ export default function ClusterDetail() {
   return (
     <div className="detail">
       <div className="detail-head">
-        <Link to="/" className="back">← Clusters</Link>
+        <Link to="/clusters" className="back">← Clusters</Link>
         <h1>Cluster {cd.cluster_id}: {cd.root_problem}</h1>
         <p className="muted">
           <InfoTip entry={clusterStateEntry(cd.state)} cue={false} focusable={false}>

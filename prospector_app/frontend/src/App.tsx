@@ -35,7 +35,8 @@ const VIEW_NAMES: [string, string][] = [
   ["/control", "Control"],
   ["/activity", "Activity"],
   ["/tables", "Tables"],
-  ["/", "Clusters"],
+  ["/clusters", "Clusters"],
+  ["/", "Home"],
 ];
 
 function viewName(pathname: string): string {
@@ -265,7 +266,8 @@ export default function App() {
         <header className="topbar">
           <Brand />
           <nav>
-            <NavLink to="/" end>Clusters</NavLink>
+            <NavLink to="/" end>🏠 Home</NavLink>
+            <NavLink to="/clusters">Clusters</NavLink>
             <NavLink to="/explore">🔭 PR Explorer</NavLink>
             <NavLink to="/differ">🔬 PR Differ</NavLink>
             <NavLink to="/issues">🐛 Issues</NavLink>
