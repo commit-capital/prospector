@@ -8,7 +8,7 @@ from pipeline import gh
 
 
 def _fake_run(stdout="", returncode=0):
-    def run(argv, *, capture_output=True, text=True, timeout=60):
+    def run(argv, *, capture_output=True, text=True, timeout=60, env=None):
         return types.SimpleNamespace(returncode=returncode, stdout=stdout, stderr="")
     return run
 
@@ -50,9 +50,24 @@ def test_gh_api_none_on_subprocess_error(monkeypatch):
     assert gh.gh_api("x") is None
 
 
+def test_gh_api_uses_operator_login_environment(monkeypatch):
+    monkeypatch.setenv("GH_TOKEN", "expired-app-token")
+    monkeypatch.setenv("GITHUB_TOKEN", "expired-actions-token")
+    seen = {}
+
+    def run(argv, *, capture_output=True, text=True, timeout=60, env=None):
+        seen["env"] = env
+        return types.SimpleNamespace(returncode=0, stdout='{"ok": true}', stderr="")
+
+    monkeypatch.setattr(gh.subprocess, "run", run)
+    assert gh.gh_api("x") == {"ok": True}
+    assert "GH_TOKEN" not in seen["env"]
+    assert "GITHUB_TOKEN" not in seen["env"]
+
+
 def test_fetch_pr_uses_pulls_path(monkeypatch):
     seen = {}
-    def run(argv, *, capture_output=True, text=True, timeout=60):
+    def run(argv, *, capture_output=True, text=True, timeout=60, env=None):
         seen["path"] = argv[2]
         return types.SimpleNamespace(returncode=0, stdout='{"number": 7}', stderr="")
     monkeypatch.setattr(gh.subprocess, "run", run)
@@ -80,7 +95,7 @@ def test_check_runs_empty_on_failure(monkeypatch):
 
 def test_check_runs_empty_on_falsy_sha(monkeypatch):
     called = {"n": 0}
-    def run(argv, *, capture_output=True, text=True, timeout=60):
+    def run(argv, *, capture_output=True, text=True, timeout=60, env=None):
         called["n"] += 1
         return types.SimpleNamespace(returncode=0, stdout="{}", stderr="")
     monkeypatch.setattr(gh.subprocess, "run", run)
@@ -91,6 +106,22 @@ def test_check_runs_empty_on_falsy_sha(monkeypatch):
 def test_gh_graphql_parses_object(monkeypatch):
     monkeypatch.setattr(gh.subprocess, "run", _fake_run('{"data": {"x": 1}}'))
     assert gh.gh_graphql("query {}") == {"data": {"x": 1}}
+
+
+def test_gh_graphql_uses_operator_login_environment(monkeypatch):
+    monkeypatch.setenv("GH_TOKEN", "expired-app-token")
+    monkeypatch.setenv("GITHUB_TOKEN", "expired-actions-token")
+    seen = {}
+
+    def run(argv, *, capture_output=True, text=True, timeout=60, env=None):
+        seen["env"] = env
+        return types.SimpleNamespace(
+            returncode=0, stdout='{"data": {"viewer": {"login": "operator"}}}', stderr="")
+
+    monkeypatch.setattr(gh.subprocess, "run", run)
+    assert gh.gh_graphql("query {}") == {"data": {"viewer": {"login": "operator"}}}
+    assert "GH_TOKEN" not in seen["env"]
+    assert "GITHUB_TOKEN" not in seen["env"]
 
 
 def test_gh_graphql_none_on_nonzero_exit_with_unparseable_body(monkeypatch):

@@ -49,6 +49,21 @@ def test_allowed(argv):
     sg.assert_read_only(argv)  # must not raise
 
 
+def test_read_run_uses_operator_login_environment(monkeypatch):
+    monkeypatch.setenv("GH_TOKEN", "expired-app-token")
+    monkeypatch.setenv("GITHUB_TOKEN", "expired-actions-token")
+    seen = {}
+
+    def fake_run(argv, **kwargs):
+        seen["env"] = kwargs["env"]
+        return type("Result", (), {"returncode": 0, "stdout": "{}", "stderr": ""})()
+
+    monkeypatch.setattr(sg.subprocess, "run", fake_run)
+    sg.run(["gh", "api", "repos/test-owner/test-repo"])
+    assert "GH_TOKEN" not in seen["env"]
+    assert "GITHUB_TOKEN" not in seen["env"]
+
+
 # --- sanctioned bot-write path -------------------------------------------
 BOT_OK = [
     ["gh", "pr", "comment", "123", "--body", "thanks"],
