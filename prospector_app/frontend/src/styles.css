@@ -1258,3 +1258,6 @@ tr.row-done:hover > td { opacity: 1; }
   text-decoration: none; color: var(--text); background: var(--panel);
 }
 .home-card-blurb { margin-top: 8px; line-height: 1.4; }
+.home-loading { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; color: var(--muted); font-size: 12.5px; }
+.home-count-loading { animation: count-pulse 1.2s ease-in-out infinite; }
+@keyframes count-pulse { 0%, 100% { opacity: .55; } 50% { opacity: .2; } }

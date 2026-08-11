@@ -42,6 +42,10 @@ export function FeedbackButton() {
   );
 }
 
+// Longest the "Open Issue" flow waits for AI title/body generation before
+// opening the issue with the raw description instead.
+const GENERATE_TIMEOUT_MS = 12000;
+
 function FeedbackModal({
   target,
   pageUrl,
@@ -130,12 +134,17 @@ function FeedbackModal({
       }
     }
 
-    // Generate a polished title + body from the description
+    // Generate a polished title + body from the description. The wait is
+    // capped so a busy backend can't leave the opened tab blank — on timeout
+    // the issue opens with the raw description.
     setLoadingPhase("generating");
     let title = "";
     let body = description;
     try {
-      const result = await api.generateFeedback(description.trim());
+      const timeout = new Promise<never>((_, reject) => {
+        window.setTimeout(() => reject(new Error("generate timed out")), GENERATE_TIMEOUT_MS);
+      });
+      const result = await Promise.race([api.generateFeedback(description.trim()), timeout]);
       title = result.title || "";
       body = result.body || description;
     } catch { /* fallback: use raw description as body */ }
