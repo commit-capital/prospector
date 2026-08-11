@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router";
 import { api, type FilterSpec, type PRRow, type QueryResult, type DeepResult } from "../api";
 import { PresetChips } from "../components/explorer/PresetChips";
@@ -61,7 +61,7 @@ export default function PRExplorer() {
   const spec = useMemo(() => readSpec(params), [params]);
   const searchQ = params.get(Q_PARAM) ?? "";
   const { openPR, addPane, prs: openPrs } = usePRFlyout();
-  const rowOpen = makeRowOpen(openPR, addPane);
+  const rowOpen = useMemo(() => makeRowOpen(openPR, addPane), [openPR, addPane]);
   const { isOn: colOn, toggle: toggleCol, reset: resetCols, visibleColumns } = useColumnPrefs();
   const { setVisiblePrs } = useAgentPane();
   const [page, setPage] = useState(1);
@@ -160,10 +160,13 @@ export default function PRExplorer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [specKey, sortKey, dir, page, pageSize, deepKey]);
 
-  const refetch = () => api.queryPrs(effSpec, queryOpts).then((r) => {
+  // Stable identity so the memoized row cells (via cellCtx) survive unrelated
+  // re-renders; effSpec/queryOpts derive from exactly these keys.
+  const refetch = useCallback(() => api.queryPrs(effSpec, queryOpts).then((r) => {
     lastQuery = { key: queryCacheKey(specKey, sortKey, dir, page, pageSize, deepKey), result: r };
     setRes(r);
-  });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [specKey, sortKey, dir, page, pageSize, deepKey]);
 
   // Let the agent pane see the same filtered set the operator is looking at, so
   // "review these" doesn't need the PR numbers spelled out (#355). Every matching
@@ -175,18 +178,18 @@ export default function PRExplorer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [res]);
 
-  const rows = res?.items ?? [];
+  const rows = useMemo(() => res?.items ?? [], [res]);
   const matchIds = res?.match_ids ?? [];
   const pageIds = rows.map((r: PRRow) => r.number);
   // The header checkbox scopes to the current page; "Select all N matching" escalates across pages.
   const allSelected = matchIds.length > 0 && matchIds.every((n) => selected.has(n));
   const pageSelected = pageIds.length > 0 && pageIds.every((n) => selected.has(n));
   const pageSomeSelected = pageIds.some((n) => selected.has(n));
-  const toggle = (n: number) => setSelected((s) => {
+  const toggle = useCallback((n: number) => setSelected((s) => {
     const next = new Set(s);
     if (next.has(n)) next.delete(n); else next.add(n);
     return next;
-  });
+  }), []);
   const setPageSelected = (on: boolean) => setSelected((s) => {
     const next = new Set(s);
     for (const n of pageIds) { if (on) next.add(n); else next.delete(n); }
@@ -222,11 +225,31 @@ export default function PRExplorer() {
     window.scrollTo({ top: 0 });
   };
 
-  const ackResponse = async (pr: number) => {
+  const ackResponse = useCallback(async (pr: number) => {
     await api.ackResponse(pr);
     await refetch();
-  };
-  const cellCtx = { deepReasons, ackResponse };
+  }, [refetch]);
+  const cellCtx = useMemo(() => ({ deepReasons, ackResponse }), [deepReasons, ackResponse]);
+  // The row cells are the expensive part of a render — at the "All" page size
+  // this is thousands of rows times ~20 cells — so they rebuild only when the
+  // data or a row-visible input changes, not on every unrelated state change
+  // (opening a filter popout, a pending bulk dialog, the loading flag).
+  const bodyRows = useMemo(() => rows.map((r: PRRow) => {
+    const ro = rowOpen(r.number);
+    return (
+      <tr key={r.number} {...ro}
+        className={`${ro.className} ${selected.has(r.number) ? "sel" : ""} ${openPrs.includes(r.number) ? "row-open" : ""}`}>
+        <td onClick={stopRowOpen}>
+          <input type="checkbox" checked={selected.has(r.number)} onChange={() => toggle(r.number)} />
+        </td>
+        {visibleColumns.map((col) => (
+          <td key={col.key} className={col.cellClass} onClick={col.stopOpen ? stopRowOpen : undefined}>
+            {col.cell(r, cellCtx)}
+          </td>
+        ))}
+      </tr>
+    );
+  }), [rows, visibleColumns, selected, openPrs, rowOpen, cellCtx, toggle]);
   return (
     <div className="pr-explorer">
       <div className="explorer-head">
@@ -322,24 +345,7 @@ export default function PRExplorer() {
             );
           })}
         </tr></thead>
-        <tbody>
-          {rows.map((r: PRRow) => {
-            const ro = rowOpen(r.number);
-            return (
-              <tr key={r.number} {...ro}
-                className={`${ro.className} ${selected.has(r.number) ? "sel" : ""} ${openPrs.includes(r.number) ? "row-open" : ""}`}>
-                <td onClick={stopRowOpen}>
-                  <input type="checkbox" checked={selected.has(r.number)} onChange={() => toggle(r.number)} />
-                </td>
-                {visibleColumns.map((col) => (
-                  <td key={col.key} className={col.cellClass} onClick={col.stopOpen ? stopRowOpen : undefined}>
-                    {col.cell(r, cellCtx)}
-                  </td>
-                ))}
-              </tr>
-            );
-          })}
-        </tbody>
+        <tbody>{bodyRows}</tbody>
       </table>
 
       <div className="pager">

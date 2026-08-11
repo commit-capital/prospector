@@ -40,6 +40,7 @@ _clusters: dict[int, Cluster] = {}
 _pr_to_clusters_idx: dict[int, list[int]] = {}
 _pr_watermark: str | None = None
 _clu_watermark: str | None = None
+_generation = 0
 _loaded = False
 _last_check = 0.0
 _check_lock = threading.Lock()  # single-flights the freshen; never held by a reader
@@ -65,32 +66,41 @@ def _index_pr_to_clusters(clusters: dict[int, Cluster]) -> dict[int, list[int]]:
 
 def _freshen(full: bool = False) -> None:
     """Refetch the rows changed since the last watermark (everything when `full`)
-    and republish the snapshot. Builds new dicts and rebinds the module globals —
-    an atomic swap under the GIL, so a concurrent reader sees a whole old or whole
-    new snapshot, never a half-mutated one and never blocks."""
-    global _prs, _clusters, _pr_to_clusters_idx, _pr_watermark, _clu_watermark, _author_table
+    and republish the snapshot. A change builds new dicts and rebinds the module
+    globals — an atomic swap under the GIL, so a concurrent reader sees a whole
+    old or whole new snapshot, never a half-mutated one and never blocks. A
+    freshen that finds nothing changed keeps the current dict objects, so the
+    snapshot's identity (and `generation()`) only moves when its contents do."""
+    global _prs, _clusters, _pr_to_clusters_idx, _pr_watermark, _clu_watermark, \
+        _author_table, _generation
     # full starts from empty (a true replace — drops rows deleted since), so the
     # watermark resets to the fetched max; incremental merges the delta onto the
     # current snapshot and advances the watermark.
     pr_delta, pr_hi = _store.prs_since(None if full else _pr_watermark)
     clu_delta, clu_deleted, clu_hi = _store.clusters_since(None if full else _clu_watermark)
 
-    new_prs = dict(pr_delta) if full else {**_prs, **pr_delta}
-    _prs = new_prs
+    prs_changed = full or bool(pr_delta)
+    clusters_changed = full or bool(clu_delta) or bool(clu_deleted)
+
+    if prs_changed:
+        _prs = dict(pr_delta) if full else {**_prs, **pr_delta}
     if pr_hi:
         _pr_watermark = pr_hi if (full or _pr_watermark is None) else max(_pr_watermark, pr_hi)
 
-    new_clusters = dict(clu_delta) if full else {**_clusters, **clu_delta}
-    # A recluster soft-deletes clusters; the tombstones ride the same watermark and
-    # arrive as deleted ids, so drop them — the snapshot tracks removals, not just
-    # inserts and updates.
-    for cid in clu_deleted:
-        new_clusters.pop(cid, None)
-    _clusters = new_clusters
-    _pr_to_clusters_idx = _index_pr_to_clusters(new_clusters)
+    if clusters_changed:
+        new_clusters = dict(clu_delta) if full else {**_clusters, **clu_delta}
+        # A recluster soft-deletes clusters; the tombstones ride the same watermark
+        # and arrive as deleted ids, so drop them — the snapshot tracks removals,
+        # not just inserts and updates.
+        for cid in clu_deleted:
+            new_clusters.pop(cid, None)
+        _clusters = new_clusters
+        _pr_to_clusters_idx = _index_pr_to_clusters(new_clusters)
     if clu_hi:
         _clu_watermark = clu_hi if (full or _clu_watermark is None) else max(_clu_watermark, clu_hi)
-    _author_table = None  # PR snapshot changed → recompute the leaderboard lazily
+    if prs_changed or clusters_changed:
+        _author_table = None  # PR snapshot changed → recompute the leaderboard lazily
+        _generation += 1
 
 
 def _ensure() -> None:
@@ -126,6 +136,15 @@ def _ensure() -> None:
 def prs() -> dict[int, Pr]:
     _ensure()
     return _prs
+
+
+def generation() -> int:
+    """Monotonic identity of the published snapshot: advances whenever a freshen
+    publishes a change, and always on an explicit `refresh()`. Two equal reads
+    mean the snapshot (PRs, clusters, author table) is the same; callers key
+    snapshot-derived caches on it. Reads the counter as-is — `prs()` is what
+    triggers loading."""
+    return _generation
 
 
 def clusters() -> dict[int, Cluster]:
@@ -209,9 +228,17 @@ def refresh() -> None:
     call on an action path; a cold snapshot still loads
     in full because the watermark starts None. Cluster removals arrive as tombstones
     on the same watermark, so they drop here too."""
-    global _loaded, _last_check, _author_baseline
+    global _loaded, _last_check, _author_baseline, _author_table, _generation
     with _check_lock:
-        _author_baseline = None  # re-read the baseline registry (may have been recaptured)
+        # Re-read the baseline registry (it may have been recaptured) and drop the
+        # leaderboard folded from it, even when the PR snapshot itself is unchanged.
+        _author_baseline = None
+        _author_table = None
         _freshen()
+        # An explicit refresh means "make the next read reflect now", so bump the
+        # snapshot identity even when the store rows are unchanged — the reloaded
+        # author baseline (and anything else keyed on generation()) must be
+        # recomputed.
+        _generation += 1
         _loaded = True
         _last_check = time.monotonic()

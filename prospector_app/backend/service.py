@@ -368,6 +368,30 @@ _DEFAULT_DESC = {"pr", "greptile", "safety", "updated", "loc", "files",
                  "checks", "merge", "age", "author_rate", "pain", "issues"}
 
 
+# A pr_row is a pure projection of its store record, the cluster index, the
+# author table, and repo config — plus the current UTC date (age and staleness
+# windows) — except `responses`, which the query loop overlays fresh below.
+# Building one walks every gate and freshness window, so rebuilding the whole
+# corpus per list query costs seconds at a few thousand PRs; rows are cached
+# here instead, filled lazily per PR, and the cache is replaced wholesale when
+# the snapshot (generation + object identity) or the date moves. The object
+# identity guards callers that swap `data.prs` out from under the generation
+# counter (tests); the generation guards id() reuse across snapshot swaps.
+_ROW_CACHE: dict[int, dict] = {}
+_ROW_CACHE_KEY: tuple[int, int, str] | None = None
+
+
+def _row_cache(snap: dict[int, Pr]) -> dict[int, dict]:
+    global _ROW_CACHE, _ROW_CACHE_KEY
+    key = (data.generation(), id(snap), datetime.now(timezone.utc).date().isoformat())
+    if _ROW_CACHE_KEY != key:
+        # Rebind rather than clear: a query that started under the old key keeps
+        # filling (and reading) the dict it already holds, coherently.
+        _ROW_CACHE = {}
+        _ROW_CACHE_KEY = key
+    return _ROW_CACHE
+
+
 def query_prs(spec: dict, sort: str | None = None, direction: str | None = None,
               offset: int = 0, limit: int = 50) -> dict:
     """The one PR list endpoint's engine. `spec` is a filter spec (see filters.py);
@@ -383,9 +407,11 @@ def query_prs(spec: dict, sort: str | None = None, direction: str | None = None,
         eff = {**base, **{k: v for k, v in eff.items()
                           if k not in ("max_files", "max_total_lines", "max_effective_loc",
                                        "age_days", "max_score")}}
+    snap = data.prs()
+    cache = _row_cache(snap)
     rows = []
     state_spec = eff.get("state")
-    for n, rec in data.prs().items():
+    for n, rec in snap.items():
         if state_spec == "all":
             pass
         elif state_spec == "closed":
@@ -396,8 +422,17 @@ def query_prs(spec: dict, sort: str | None = None, direction: str | None = None,
         # by response, widen to any state so that pushback still surfaces.
         elif rec.state != "open" and not eff.get("responses"):
             continue
-        row = pr_row(n, rec)
-        if row is not None and filters.matches(row, eff):
+        row = cache.get(n)
+        if row is None:
+            row = pr_row(n, rec)
+            if row is None:
+                continue
+            cache[n] = row
+        # Response signals and their acks live outside the snapshot (registry +
+        # store, own short-TTL caches), so overlay them fresh on the cached row —
+        # an ack must drop the PR from the responses queue on the very next query.
+        row = {**row, "responses": responses.for_pr(n)}
+        if filters.matches(row, eff):
             rows.append(row)
     key = _SORT_KEYS.get(sort or "", _SORT_KEYS["pr"])
     reverse = direction == "desc" if direction in ("asc", "desc") else (sort or "pr") in _DEFAULT_DESC
