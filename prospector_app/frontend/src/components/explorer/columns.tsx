@@ -15,7 +15,7 @@ import { LinkedIssues } from "../LinkedIssues";
 // are shown (the profile's trusted_authors list, surfaced per-row as trusted_author).
 
 // Extra context a cell may need beyond its row (kept minimal + explicit).
-interface CellCtx {
+export interface CellCtx {
   deepReasons: Map<number, string>;
   // Mark a PR's response signal as seen (#537); the ack is shared, so it
   // clears the row from the `responses` filter for every operator.
