@@ -5,7 +5,7 @@ import { useExec } from "../../ExecContext";
 
 export type BulkAction = "CLOSE" | "CLOSE_DUP" | "CLOSE_FIXED" | "CLOSE_STALE"
   | "CLOSE_OVERSIZED" | "REQUEST_CHANGES" | "COMMENT" | "GREPTILE_RETRIGGER"
-  | "QUEUE_VERIFY" | "MERGE";
+  | "QUEUE_VERIFY" | "RUN_SECURITY" | "MERGE";
 
 const ACTS: { v: BulkAction; label: string }[] = [
   { v: "CLOSE_DUP", label: "close — dup of" },
@@ -16,6 +16,7 @@ const ACTS: { v: BulkAction; label: string }[] = [
   { v: "REQUEST_CHANGES", label: "request changes" },
   { v: "COMMENT", label: "comment" },
   { v: "QUEUE_VERIFY", label: "queue for verification" },
+  { v: "RUN_SECURITY", label: "run security reviews" },
   { v: "MERGE", label: "merge" },
 ];
 
@@ -31,7 +32,7 @@ export function BulkActionBar({ selected, onApply }:
   if (selected.length === 0) return null;
   const isMerge = action === "MERGE";
   const postsComment = action !== "MERGE" && action !== "GREPTILE_RETRIGGER"
-    && action !== "QUEUE_VERIFY";
+    && action !== "QUEUE_VERIFY" && action !== "RUN_SECURITY";
   const actions = review.retrigger
     ? [...ACTS.slice(0, -1), { v: "GREPTILE_RETRIGGER" as const, label: `re-trigger ${review.label}` }, ACTS.at(-1)!]
     : ACTS;
@@ -80,6 +81,9 @@ export function BulkActionBar({ selected, onApply }:
       )}
       {action === "QUEUE_VERIFY" && (
         <span className="muted small">queues each PR for the sandbox verifier — a local queue, nothing posted upstream</span>
+      )}
+      {action === "RUN_SECURITY" && (
+        <span className="muted small">starts a background security review for each PR — two run at a time</span>
       )}
       {isMerge && <span className="muted small">merge posts no comment — each PR is gated individually</span>}
       <button className="btn-primary sm"

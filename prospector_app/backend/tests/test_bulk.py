@@ -138,6 +138,32 @@ def test_queue_verify_queues_in_dry_run_mode(monkeypatch):
     assert done_summary([e for e in evs if e["event"] == "done"][0]) == {"queued": 1}
 
 
+def test_run_security_schedules_background_jobs_in_the_per_pr_dispatch(monkeypatch):
+    jobs_started = []
+    scheduled = []
+
+    def fake_start(kind, cluster=None, pr=None, count=None):
+        assert kind == "security-review"
+        if pr == 2:
+            raise ValueError("a security-review job for PR 2 is already running")
+        job = {"id": pr + 100, "pr": pr}
+        jobs_started.append(job)
+        return job
+
+    monkeypatch.setattr(bulk.jobs, "start_job", fake_start)
+    monkeypatch.setattr(bulk.jobs, "schedule_job", scheduled.append)
+    monkeypatch.setattr(executor, "mint_bot_token",
+                        lambda: (_ for _ in ()).throw(AssertionError("must not mint")))
+
+    evs = _drain(bulk.run_bulk([1, 2, 3], "RUN_SECURITY", dry_run=False))
+
+    results = [json.loads(e["data"]) for e in evs if e["event"] == "result"]
+    assert [r["status"] for r in results] == ["queued", "skipped", "queued"]
+    assert scheduled == jobs_started
+    assert done_summary([e for e in evs if e["event"] == "done"][0]) == {
+        "queued": 2, "skipped": 1}
+
+
 def test_cap_rejects_oversized_batch(monkeypatch):
     evs = _drain(bulk.run_bulk(list(range(1, 1002)), "CLOSE", dry_run=True))
     err = [e for e in evs if e["event"] == "error"]

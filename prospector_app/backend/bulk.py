@@ -1,18 +1,19 @@
 # prospector_app/backend/bulk.py
 """Apply one triage action to many PRs, streamed as SSE.
 
-Bulk is pure orchestration: it loops the SELECTED PR numbers through the same
-per-PR executor functions the single-PR action bar uses, so every per-PR gate
-(gates.merge_eligibility, the configured-bot empty-token write-gate, threat/secret
-blocks, freshness) and every per-PR activity-log entry are reused unchanged.
-There is no bulk-specific write path and no way to bypass a gate.
+Bulk is pure orchestration: it loops the selected PR numbers through the same
+per-PR executor, queue, and allowlisted-job paths used elsewhere in the app.
+Upstream writes retain their per-PR gates and activity-log entries, and local
+verification/security work retains its normal queue and job controls.
 """
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from typing import Any
 
 from prospector_app.backend import executor
+from prospector_app.backend import jobs
 from prospector_app.backend import models
 from prospector_app.backend import review_refresh
 from prospector_app.backend import training
@@ -49,7 +50,7 @@ async def run_bulk(prs: list[int], action: str, *, comment: str | None = None,
                    comments: dict[int, str] | None = None,
                    canonical: int | None = None, method: str = "squash",
                    reason: str | None = None, tags: list[str] | None = None,
-                   dry_run: bool = True):
+                   dry_run: bool = True) -> AsyncIterator[dict[str, Any]]:
     """Yield {'event','data'} SSE frames: one 'result' per PR, then 'done' with a
     summary. A too-large batch yields a single 'error' and stops.
 
@@ -61,14 +62,23 @@ async def run_bulk(prs: list[int], action: str, *, comment: str | None = None,
         yield {"event": "error", "data": f"batch of {len(prs)} exceeds cap of {CAP}"}
         return
 
-    # Queueing for verification is a local store write — no upstream token.
-    token = None if dry_run or action == "QUEUE_VERIFY" else executor.mint_bot_token()
+    # Local background actions use no upstream token.
+    token = None if dry_run or action in ("QUEUE_VERIFY", "RUN_SECURITY") else executor.mint_bot_token()
     summary: dict[str, int] = {}
     bookkeeping_errors: list[str] = []
     for n in prs:
         pr_comment = (comments or {}).get(n) or comment
         try:
-            if action == "QUEUE_VERIFY":
+            if action == "RUN_SECURITY":
+                try:
+                    job = jobs.start_job("security-review", pr=n)
+                    jobs.schedule_job(job)
+                    res = {"pr": n, "action": action, "status": "queued",
+                           "detail": f"security review queued as background job #{job['id']}"}
+                except ValueError as e:
+                    res = {"pr": n, "action": action, "status": "skipped",
+                           "detail": str(e)}
+            elif action == "QUEUE_VERIFY":
                 # A local write to the shared verify queue; the sandbox worker
                 # picks it up. Nothing is posted upstream, so dry-run does not
                 # apply. The pre-check's operator-readable refusal (already in

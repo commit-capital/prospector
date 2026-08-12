@@ -65,6 +65,27 @@ def test_second_concurrent_security_review_same_pr_rejected():
     jobs.start_job("security-review", pr=4343)
 
 
+def test_security_job_scheduler_bounds_concurrency(monkeypatch):
+    active = 0
+    peak = 0
+
+    async def fake_run_job(job):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0)
+        active -= 1
+
+    monkeypatch.setattr(jobs, "run_job", fake_run_job)
+
+    async def run_batch():
+        await asyncio.gather(*(jobs._run_scheduled_job(
+            {"id": n, "kind": "security-review"}) for n in range(5)))
+
+    asyncio.run(run_batch())
+    assert peak == 2
+
+
 def test_threat_scan_pr_spec_is_listed_and_needs_pr():
     specs = {s["kind"]: s for s in jobs.list_specs()}
     assert "threat-scan-pr" in specs
