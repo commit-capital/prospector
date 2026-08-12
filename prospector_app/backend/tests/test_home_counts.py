@@ -75,7 +75,11 @@ def test_counts_report_loading_while_snapshot_cold_loads(monkeypatch):
         r = c.post("/api/prs/counts", json={"specs": [{}]})
         assert r.status_code == 200
         assert r.json() == {"counts": None, "loading": True}
-        assert started.wait(timeout=5)  # the endpoint kicked the load in the background
+        for _ in range(1000):  # generous headroom for the daemon thread to get scheduled
+            if started.is_set():  # under -n auto, every core runs a full worker process,
+                break             # so scheduling can lag well past a hardcoded few seconds
+            time.sleep(0.02)
+        assert started.is_set(), "the endpoint never kicked the load onto a background thread"
     finally:
         release.set()
     for _ in range(100):  # wait for the daemon thread to release the freshen lock
