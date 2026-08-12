@@ -31,6 +31,7 @@ const VIEW_NAMES: [string, string][] = [
   ["/explore", "PR Explorer"],
   ["/differ", "PR Differ"],
   ["/issues", "Issues"],
+  ["/alerts", "Alerts"],
   ["/action-items", "Action Items"],
   ["/control", "Control"],
   ["/activity", "Activity"],
@@ -271,6 +272,7 @@ export default function App() {
             <NavLink to="/explore">🔭 PR Explorer</NavLink>
             <NavLink to="/differ">🔬 PR Differ</NavLink>
             <NavLink to="/issues">🐛 Issues</NavLink>
+            <NavLink to="/alerts">🛡️ Alerts</NavLink>
             <NavLink to="/action-items">🗂️ Action Items</NavLink>
             <NavLink to="/control">🎛️ Control</NavLink>
             <NavLink to="/activity">📋 Activity</NavLink>

@@ -43,6 +43,7 @@ const router = createBrowserRouter([
       { path: "control", lazy: lazyView(() => import("./views/ControlPanel")) },
       { path: "action-items", lazy: lazyView(() => import("./views/ActionItems")) },
       { path: "issues", lazy: lazyView(() => import("./views/Issues")) },
+      { path: "alerts", lazy: lazyView(() => import("./views/Alerts")) },
       { path: "activity", lazy: lazyView(() => import("./views/Activity")) },
       { path: "tables", lazy: lazyView(() => import("./views/Tables")) },
       { path: "tables/:name", lazy: lazyView(() => import("./views/TableDetail")) },

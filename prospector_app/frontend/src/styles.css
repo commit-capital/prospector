@@ -1295,3 +1295,18 @@ tr.row-done:hover > td { opacity: 1; }
 .home-loading { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; color: var(--muted); font-size: 12.5px; }
 .home-count-loading { animation: count-pulse 1.2s ease-in-out infinite; }
 @keyframes count-pulse { 0%, 100% { opacity: .55; } 50% { opacity: .2; } }
+
+/* --- Alerts tab (🛡️): table + side detail panel ------------------------- */
+.alerts-layout { display: flex; gap: 16px; align-items: flex-start; }
+.alerts-layout .table-wrap { flex: 1; min-width: 0; overflow-x: auto; }
+.alert-detail { width: 340px; flex-shrink: 0; background: var(--panel);
+  border: 1px solid var(--border); border-radius: 8px; padding: 12px;
+  position: sticky; top: calc(var(--topbar-h, 48px) + 8px); }
+.alert-detail h3 { margin: 0; font-size: 15px; }
+.alert-detail h4 { margin: 12px 0 4px; font-size: 13px; }
+.alert-detail .detail-head { display: flex; justify-content: space-between; align-items: baseline; }
+.alert-detail .detail-section { border-top: 1px solid var(--border); margin-top: 10px; padding-top: 6px; }
+.alert-detail textarea { width: 100%; box-sizing: border-box; margin: 6px 0; }
+.alert-detail .form-row { display: flex; gap: 8px; margin: 6px 0; align-items: center; }
+.alert-detail .callout { margin-top: 8px; }
+.callout.ok { border-color: var(--green, #2da44e); color: var(--green, #2da44e); }
