@@ -74,6 +74,14 @@ class Pr:
         return self._meta().get("state")
 
     @property
+    def unresolvable(self) -> bool:
+        """True when GitHub reports this PR's number cannot resolve to a
+        PullRequest — the PR was deleted upstream (e.g. a spam scrub). Set by
+        the live sweep; an unresolvable PR is excluded from every sweep target
+        set, since no fetch can ever reach it again."""
+        return bool(self._meta().get("unresolvable"))
+
+    @property
     def head_sha(self) -> str | None:
         """The committed head SHA. Not overlaid: the freshness check compares the
         live head against this committed value, so it always mirrors the DB."""
@@ -600,6 +608,22 @@ class Pr:
             if has_tests is not None:
                 signals["has_tests"] = has_tests
             _stamp(self.rec, "signals", signals, None)
+        self._persist()
+
+    def record_unresolvable(self) -> None:
+        """Mark this PR unresolvable upstream — GitHub reports its number cannot
+        resolve to a PullRequest (the PR was deleted, e.g. a spam scrub). Stamps
+        `meta.unresolvable` and moves an open `meta.state` to closed, so the PR
+        leaves the active queue and every live-sweep target set. A merged or
+        closed state is kept. Idempotent: an already-marked record with a
+        non-open state is left unwritten."""
+        meta = dict(self.section("meta") or {})
+        if meta.get("unresolvable") and meta.get("state") != "open":
+            return
+        meta["unresolvable"] = True
+        if meta.get("state") == "open":
+            meta["state"] = "closed"
+        _stamp(self.rec, "meta", meta, None)
         self._persist()
 
 

@@ -578,6 +578,13 @@ select { background: var(--panel); border: 1px solid var(--border); color: var(-
 .difffile { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-bottom: 14px; }
 .difffile-head { background: var(--panel); padding: 8px 12px; font-family: ui-monospace, monospace; font-size: 12px; border-bottom: 1px solid var(--border); }
 .rawdiff { background: var(--panel); padding: 12px; overflow: auto; font-size: 12px; }
+/* raw-fallback diff lines (merge/combined diffs): block spans so the add/del
+   tint covers the full row, colored with the theme's green/red tokens */
+.rawdiff-line { display: block; }
+.rawdiff-add { background: color-mix(in srgb, var(--green) 14%, transparent); }
+.rawdiff-del { background: color-mix(in srgb, var(--red) 14%, transparent); }
+.rawdiff-hunk { background: var(--panel2); color: var(--muted); }
+.rawdiff-meta { color: var(--muted); }
 .widget-wrap { padding: 0 12px; }
 .pager { display: flex; gap: 14px; align-items: center; justify-content: center; margin: 18px 0; }
 .pager button { background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 5px 12px; cursor: pointer; }

@@ -18,6 +18,20 @@ from prospector_app.backend import executor  # noqa: E402
 from prospector_app.backend import safety_guard  # noqa: E402
 
 
+def _add_body_args(parser: argparse.ArgumentParser, *, required: bool) -> None:
+    """--body and --body-file, mutually exclusive.
+
+    A long, multi-paragraph --body travels as literal newlines inside the Bash
+    command string, which the caller's dontAsk permission allowlist can fail to
+    recognize as one call to this command. --body-file instead passes a path —
+    always one line — straight through to the real `gh` invocation, which reads
+    the file itself.
+    """
+    group = parser.add_mutually_exclusive_group(required=required)
+    group.add_argument("--body")
+    group.add_argument("--body-file")
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="gh-write",
@@ -30,26 +44,26 @@ def _parser() -> argparse.ArgumentParser:
     pr_edit = pr_actions.add_parser("edit")
     pr_edit.add_argument("number", type=int)
     pr_edit.add_argument("--title")
-    pr_edit.add_argument("--body")
+    _add_body_args(pr_edit, required=False)
     pr_comment = pr_actions.add_parser("comment")
     pr_comment.add_argument("number", type=int)
-    pr_comment.add_argument("--body", required=True)
+    _add_body_args(pr_comment, required=True)
 
     issue = subjects.add_parser("issue")
     issue_actions = issue.add_subparsers(dest="action", required=True)
     issue_create = issue_actions.add_parser("create")
     issue_create.add_argument("--title", required=True)
-    issue_create.add_argument("--body", required=True)
+    _add_body_args(issue_create, required=True)
     issue_create.add_argument("--label", action="append", default=[])
     issue_reopen = issue_actions.add_parser("reopen")
     issue_reopen.add_argument("number", type=int)
     issue_comment = issue_actions.add_parser("comment")
     issue_comment.add_argument("number", type=int)
-    issue_comment.add_argument("--body", required=True)
+    _add_body_args(issue_comment, required=True)
     issue_edit = issue_actions.add_parser("edit")
     issue_edit.add_argument("number", type=int)
     issue_edit.add_argument("--title")
-    issue_edit.add_argument("--body")
+    _add_body_args(issue_edit, required=False)
 
     run = subjects.add_parser("run")
     run_actions = run.add_subparsers(dest="action", required=True)
@@ -59,36 +73,44 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _body_argv(args: argparse.Namespace, parser: argparse.ArgumentParser) -> list[str]:
+    if args.body is not None:
+        return ["--body", args.body]
+    if args.body_file is not None:
+        if not Path(args.body_file).is_file():
+            parser.error(f"body file not found: {args.body_file}")
+        return ["--body-file", args.body_file]
+    return []
+
+
 def build_gh_argv(argv: list[str]) -> list[str]:
     parser = _parser()
     args = parser.parse_args(argv)
 
     if args.subject == "pr" and args.action == "edit":
-        if args.title is None and args.body is None:
-            parser.error("pr edit requires --title and/or --body")
+        if args.title is None and args.body is None and args.body_file is None:
+            parser.error("pr edit requires --title and/or --body/--body-file")
         cmd = ["gh", "pr", "edit", str(args.number)]
         if args.title is not None:
             cmd += ["--title", args.title]
-        if args.body is not None:
-            cmd += ["--body", args.body]
+        cmd += _body_argv(args, parser)
     elif args.subject == "pr" and args.action == "comment":
-        cmd = ["gh", "pr", "comment", str(args.number), "--body", args.body]
+        cmd = ["gh", "pr", "comment", str(args.number), *_body_argv(args, parser)]
     elif args.subject == "issue" and args.action == "create":
-        cmd = ["gh", "issue", "create", "--title", args.title, "--body", args.body]
+        cmd = ["gh", "issue", "create", "--title", args.title, *_body_argv(args, parser)]
         for label in args.label:
             cmd += ["--label", label]
     elif args.subject == "issue" and args.action == "reopen":
         cmd = ["gh", "issue", "reopen", str(args.number)]
     elif args.subject == "issue" and args.action == "comment":
-        cmd = ["gh", "issue", "comment", str(args.number), "--body", args.body]
+        cmd = ["gh", "issue", "comment", str(args.number), *_body_argv(args, parser)]
     elif args.subject == "issue" and args.action == "edit":
-        if args.title is None and args.body is None:
-            parser.error("issue edit requires --title and/or --body")
+        if args.title is None and args.body is None and args.body_file is None:
+            parser.error("issue edit requires --title and/or --body/--body-file")
         cmd = ["gh", "issue", "edit", str(args.number)]
         if args.title is not None:
             cmd += ["--title", args.title]
-        if args.body is not None:
-            cmd += ["--body", args.body]
+        cmd += _body_argv(args, parser)
     elif args.subject == "run" and args.action == "rerun":
         cmd = ["gh", "run", "rerun", str(args.run_id)]
         if args.failed:
