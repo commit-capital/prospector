@@ -125,7 +125,13 @@ export interface QueryResult {
   match_ids: number[];
 }
 
-export interface BulkResult { pr: number; action: string; status: string; detail: string }
+export interface BulkResult {
+  pr: number;
+  action: string;
+  status: string;
+  detail: string;
+  job_id?: number;
+}
 
 export type ClusterState =
   | "needs-analysis" | "awaiting-authors" | "needs-first-party-work"
