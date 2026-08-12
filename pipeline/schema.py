@@ -34,7 +34,9 @@ _JSON = JSON().with_variant(JSONB, "postgresql")
 #     save a record carrying that kind).
 # 10 — PRs carry a fix_request section (the autofix queue), which older
 #     validators drop as an unknown section rather than round-tripping.
-STORE_SCHEMA_VERSION = 10
+# 11 — the alerts table (GitHub code-scanning / dependabot / secret-scanning
+#     alert family) plus the "alert" runs-ledger kind.
+STORE_SCHEMA_VERSION = 11
 
 # saved_at is a microsecond-resolution ISO timestamp stamped on every save — when
 # the store row was last written (distinct from `updated_at`, which mirrors the
@@ -83,6 +85,22 @@ issue_clusters = Table(
     Column("saved_at", String, index=True),
 )
 
+# GitHub repository security alerts (code scanning / Dependabot / secret
+# scanning), one row per alert. `id` is the stable synthetic key
+# alert_store.alert_id(source, number); the per-source alert number rides in
+# the `number` mirror column.
+alerts = Table(
+    "alerts", METADATA,
+    Column("id", Integer, primary_key=True),
+    Column("data", _JSON, nullable=False),
+    Column("source", String, index=True),
+    Column("number", Integer, index=True),
+    Column("state", String, index=True),
+    Column("severity", String, index=True),
+    Column("updated_at", String),
+    Column("saved_at", String, index=True),
+)
+
 activity = Table(
     "activity", METADATA,
     Column("rowid", Integer, primary_key=True, autoincrement=True),
@@ -107,7 +125,7 @@ chat_messages = Table(
 runs = Table(
     "runs", METADATA,
     Column("rowid", Integer, primary_key=True, autoincrement=True),
-    Column("kind", String, index=True),  # "pr" or "issue" ledger
+    Column("kind", String, index=True),  # "pr", "issue", or "alert" ledger
     Column("data", _JSON, nullable=False),
     Column("ts", String, index=True),
 )
@@ -225,4 +243,15 @@ def mirror_issue_cluster(rec: dict) -> dict:
         "id": rec["id"],
         "canonical": rec.get("canonical"),
         "updated_at": rec.get("checked_at"),
+    }
+
+
+def mirror_alert(rec: dict) -> dict:
+    meta = rec.get("meta") or {}
+    return {
+        "source": meta.get("source"),
+        "number": meta.get("number"),
+        "state": meta.get("state"),
+        "severity": meta.get("severity"),
+        "updated_at": meta.get("updated_at"),
     }
