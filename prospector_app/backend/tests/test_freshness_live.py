@@ -24,7 +24,7 @@ def _store_pr(n=1, state="open", head=HEAD, ci="passing", mergeable=True, grepti
 def _patch(monkeypatch, store, live):
     monkeypatch.setattr(data, "prs", lambda: store)
     monkeypatch.setattr(data, "refresh", lambda: None)
-    monkeypatch.setattr(freshness_live, "live_states", lambda prs: live)
+    monkeypatch.setattr(freshness_live, "live_states", lambda prs: (live, set()))
     # check() persists observed drift to the shared store; neutralize that
     # side-effect here — these tests cover the divergence comparison only.
     monkeypatch.setattr(freshness_live, "persist_live", lambda *a, **k: [])
@@ -102,7 +102,7 @@ def test_live_states_parses_diffstat_and_has_tests(monkeypatch):
             "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]}}
     monkeypatch.setattr(freshness_live.live_prs, "gh_graphql",
                         lambda query: {"data": {"repository": {"p0": node}}})
-    out = freshness_live.live_states([1])
+    out, _ = freshness_live.live_states([1])
     assert out[1]["diffstat"] == {"additions": 40, "deletions": 6, "changed_files": 2}
     assert out[1]["has_tests"] is True
     assert out[1]["ci"] == "passing"   # existing parse still works
@@ -115,7 +115,7 @@ def test_live_states_has_tests_false_without_test_files(monkeypatch):
             "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]}}
     monkeypatch.setattr(freshness_live.live_prs, "gh_graphql",
                         lambda query: {"data": {"repository": {"p0": node}}})
-    assert freshness_live.live_states([2])[2]["has_tests"] is False
+    assert freshness_live.live_states([2])[0][2]["has_tests"] is False
 
 
 def test_live_states_omits_incomplete_diffstat(monkeypatch):
@@ -124,7 +124,7 @@ def test_live_states_omits_incomplete_diffstat(monkeypatch):
             "changedFiles": 1, "files": {"nodes": []}, "commits": {"nodes": []}}
     monkeypatch.setattr(freshness_live.live_prs, "gh_graphql",
                         lambda query: {"data": {"repository": {"p0": node}}})
-    assert freshness_live.live_states([2]) == {}
+    assert freshness_live.live_states([2]) == ({}, set())
 
 
 def test_live_states_skips_failed_chunk(monkeypatch, caplog):
@@ -132,7 +132,7 @@ def test_live_states_skips_failed_chunk(monkeypatch, caplog):
     monkeypatch.setattr(freshness_live.live_prs, "gh_graphql", lambda query: None)
     with caplog.at_level(logging.WARNING, logger="pipeline.live_prs"):
         out = freshness_live.live_states([1, 2, 3])
-    assert out == {}
+    assert out == ({}, set())
     assert any("live PR fetch failed" in r.message for r in caplog.records)
 
 
@@ -144,11 +144,39 @@ def test_live_states_keeps_resolved_aliases_when_one_errors(monkeypatch, caplog)
             "files": {"nodes": [{"path": "src/app.ts"}]},
             "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]}}
     envelope = {"data": {"repository": {"p0": node, "p1": None}},
-                "errors": [{"type": "NOT_FOUND",
+                "errors": [{"type": "NOT_FOUND", "path": ["repository", "p1"],
                             "message": "Could not resolve to a PullRequest with the number of 10241."}]}
     monkeypatch.setattr(freshness_live.live_prs, "gh_graphql", lambda query: envelope)
     with caplog.at_level(logging.WARNING, logger="pipeline.live_prs"):
-        out = freshness_live.live_states([1, 10241])
+        out, not_found = freshness_live.live_states([1, 10241])
     assert 1 in out and out[1]["state"] == "open"
     assert 10241 not in out
+    assert not_found == {10241}
     assert any("GraphQL error" in r.message for r in caplog.records)
+
+
+def test_live_states_not_found_requires_the_not_found_type(monkeypatch):
+    """Only an explicit NOT_FOUND error retires its alias — a transient error
+    (rate limit, server hiccup) on the same shape leaves the number eligible
+    for retry."""
+    envelope = {"data": {"repository": {"p0": None, "p1": None}},
+                "errors": [{"type": "NOT_FOUND", "path": ["repository", "p0"],
+                            "message": "Could not resolve to a PullRequest with the number of 4818."},
+                           {"type": "RATE_LIMITED", "path": ["repository", "p1"],
+                            "message": "API rate limit exceeded"}]}
+    monkeypatch.setattr(freshness_live.live_prs, "gh_graphql", lambda query: envelope)
+    facts, not_found = freshness_live.live_states([4818, 5000])
+    assert facts == {}
+    assert not_found == {4818}
+
+
+def test_live_states_not_found_ignores_a_repository_level_error(monkeypatch):
+    """A NOT_FOUND on the repository itself (path ["repository"]) names no PR —
+    nothing is marked, the whole batch just stays missing."""
+    envelope = {"data": {"repository": None},
+                "errors": [{"type": "NOT_FOUND", "path": ["repository"],
+                            "message": "Could not resolve to a Repository."}]}
+    monkeypatch.setattr(freshness_live.live_prs, "gh_graphql", lambda query: envelope)
+    facts, not_found = freshness_live.live_states([1, 2])
+    assert facts == {}
+    assert not_found == set()

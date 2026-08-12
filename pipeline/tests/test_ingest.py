@@ -30,7 +30,7 @@ GH_PR = {
 @pytest.fixture(autouse=True)
 def _no_live_network(monkeypatch):
     """Unit tests opt into live facts explicitly; ordinary ingest tests stay offline."""
-    monkeypatch.setattr(ingest.live_prs, "fetch", lambda prs: {})
+    monkeypatch.setattr(ingest.live_prs, "fetch", lambda prs: ({}, set()))
 
 
 class TestMetaFromGh:
@@ -393,11 +393,11 @@ class TestTargetedIngest:
         monkeypatch.setattr(ingest, "load_issue_links", lambda **_: {})
         monkeypatch.setattr(
             ingest.live_prs, "fetch",
-            lambda prs: {6002: {"head": "newsha", "ci": "passing",
-                                "mergeable": "MERGEABLE",
-                                "diffstat": {"additions": 8, "deletions": 2,
-                                             "changed_files": 3},
-                                "has_tests": False}})
+            lambda prs: ({6002: {"head": "newsha", "ci": "passing",
+                                 "mergeable": "MERGEABLE",
+                                 "diffstat": {"additions": 8, "deletions": 2,
+                                              "changed_files": 3},
+                                 "has_tests": False}}, set()))
         rc = ingest.main(["--new", "--store", str(tmp_path)])
         assert rc == 0
         assert store.load_pr(6002).signals["diffstat"] == {
