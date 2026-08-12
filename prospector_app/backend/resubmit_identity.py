@@ -15,6 +15,7 @@ import os
 import shlex
 
 from pipeline import settings
+from pipeline.gh import operator_env
 
 MACHINE_USER_ENV = "PROSPECTOR_RESUBMIT_MACHINE_USER"
 
@@ -23,14 +24,6 @@ def uses_machine_user(env: dict[str, str] | None = None) -> bool:
     """Whether this invocation was explicitly launched by the autofix worker."""
     source = os.environ if env is None else env
     return source.get(MACHINE_USER_ENV) == "1"
-
-
-def operator_env(base: dict[str, str] | None = None) -> dict[str, str]:
-    """Authenticate as the local operator, never the injected GitHub App."""
-    env = dict(os.environ if base is None else base)
-    env.pop("GH_TOKEN", None)
-    env.pop("GITHUB_TOKEN", None)
-    return env
 
 
 def push_env(base: dict[str, str] | None = None) -> dict[str, str]:
