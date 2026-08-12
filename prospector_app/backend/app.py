@@ -21,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 
 from prospector_app.backend import activity
+from prospector_app.backend import alerts as alerts_mod
 from prospector_app.backend import autohunt_view
 from prospector_app.backend import bulk
 from prospector_app.backend import caps
@@ -731,6 +732,67 @@ def reopen_issue(n: int, dry_run: bool = True):
     the configured bot (gated + logged). The inverse of the issue-close endpoints."""
     token = None if dry_run else executor.mint_bot_token()
     return executor.reopen_issue(n, token=token, dry_run=dry_run)
+
+
+# --- GitHub security alerts (code scanning / Dependabot / secret scanning) ---
+
+@app.get("/api/alerts")
+def list_alerts():
+    """Every ingested repository-security alert with its normalized state,
+    severity, fix-scan verdict, and candidate PR/issue links."""
+    return {"items": alerts_mod.list_alerts()}
+
+
+@app.post("/api/alerts/query")
+def alerts_query(payload: dict = Body(default_factory=dict)):
+    """Paginated Alerts-table endpoint. Body: {q?, sort?, direction?, source?,
+    state?, severity?, verdict?, offset?, limit?}; verdict "none" selects
+    unscanned alerts. See alerts.query_alerts for per-field semantics."""
+    return alerts_mod.query_alerts(
+        q=payload.get("q") or "",
+        sort=payload.get("sort"), direction=payload.get("direction"),
+        source=payload.get("source"), state=payload.get("state"),
+        severity=payload.get("severity"), verdict=payload.get("verdict"),
+        offset=int(payload.get("offset", 0)),
+        limit=min(int(payload.get("limit", 50)), 500),
+    )
+
+
+@app.get("/api/alerts/caps")
+def alerts_caps():
+    """Per-source read availability, probed as the bot: false means the feature
+    is disabled on the repository or the App lacks the permission."""
+    sources = alerts_mod.sources_available()
+    return {"available": any(sources.values()), "sources": sources}
+
+
+@app.post("/api/alerts/caps/refresh")
+def alerts_caps_refresh():
+    alerts_mod.refresh_sources()
+    sources = alerts_mod.sources_available()
+    return {"available": any(sources.values()), "sources": sources}
+
+
+# {source}/{n} matches any two path segments, so this stays registered after
+# every literal /api/alerts/* route.
+@app.get("/api/alerts/{source}/{n}")
+def alert_detail(source: str, n: int):
+    """One alert's detail — full meta, fix-scan evidence, links, and the valid
+    dismissal reasons for its source — for the alert detail panel."""
+    d = alerts_mod.get_alert(source, n)
+    if d is None:
+        raise HTTPException(404, f"alert {source}#{n} not in store")
+    return d
+
+
+@app.post("/api/execute/alert/{source}/{n}/dismiss")
+def dismiss_alert(source: str, n: int, payload: models.AlertDismissBody = Body(...),
+                  dry_run: bool = True):
+    """Dismiss/resolve alert {source}#{n} upstream as the configured bot (gated
+    by alert_gates.dismiss_eligibility + logged). Body: {reason, comment?}."""
+    token = None if dry_run else executor.mint_bot_token()
+    return executor.dismiss_alert(source, n, payload.reason, payload.comment or "",
+                                  token=token, dry_run=dry_run)
 
 
 @app.post("/api/review/pr/{n}")

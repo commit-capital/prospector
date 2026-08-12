@@ -136,6 +136,25 @@ def test_dismiss_live_success_persists_state(seeded, logged, monkeypatch):
     assert logged[-1]["dry_run"] is False and logged[-1]["kind"] == "alert-dismiss"
 
 
+def test_routes_list_query_detail_and_dismiss(seeded, logged):
+    from fastapi.testclient import TestClient
+    from prospector_app.backend import app as appmod
+    c = TestClient(appmod.app, raise_server_exceptions=False)
+    r = c.get("/api/alerts")
+    assert r.status_code == 200 and len(r.json()["items"]) == 3
+    r = c.post("/api/alerts/query", json={"source": "dependabot"})
+    assert r.status_code == 200 and r.json()["total"] == 1
+    r = c.get("/api/alerts/code-scanning/1")
+    assert r.status_code == 200 and r.json()["rule_id"] == "js/xss"
+    assert c.get("/api/alerts/code-scanning/99").status_code == 404
+    r = c.post("/api/execute/alert/code-scanning/1/dismiss",
+               json={"reason": "won't fix", "comment": "accepted risk"})
+    assert r.status_code == 200 and r.json()["status"] == "dry-run"
+    r = c.post("/api/execute/alert/code-scanning/1/dismiss",
+               json={"reason": "won't fix"})
+    assert r.status_code == 200 and r.json()["status"] == "blocked"
+
+
 def test_dismiss_live_failure_reports_error(seeded, logged, monkeypatch):
     class Fail:
         returncode = 1
