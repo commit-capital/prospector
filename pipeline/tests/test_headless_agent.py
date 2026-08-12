@@ -61,3 +61,25 @@ def test_fill_is_single_pass_so_a_token_inside_a_value_is_not_re_substituted():
     out = ha.fill('("__TITLE__") lens __LENS__',
                   {"__TITLE__": "fix __LENS__ handling", "__LENS__": "scope"})
     assert out == '("fix __LENS__ handling") lens scope'
+
+
+def test_flags_edit_root_scopes_edit_and_write():
+    flags = ha._flags(False, edit_root="/tmp/wt")
+    allowed = flags[flags.index("--allowedTools") + 1]
+    assert "Edit(/tmp/wt/**)" in allowed
+    assert "Write(/tmp/wt/**)" in allowed
+    assert "Bash(git diff:*)" in allowed
+    i = flags.index("--disallowedTools")
+    disallowed = flags[i + 1:flags.index("--permission-mode")]
+    assert "Edit" not in disallowed
+    assert "Write" not in disallowed
+    assert "Task" in disallowed
+
+
+def test_flags_default_stays_read_only():
+    flags = ha._flags(False)
+    allowed = flags[flags.index("--allowedTools") + 1]
+    assert "Edit" not in allowed
+    i = flags.index("--disallowedTools")
+    disallowed = flags[i + 1:flags.index("--permission-mode")]
+    assert "Edit" in disallowed and "Write" in disallowed
