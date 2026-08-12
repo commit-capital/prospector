@@ -282,6 +282,7 @@ def test_writable_chat_process_uses_operator_environment(temp_store, tmp_path, m
     monkeypatch.setattr(chat, "system_prompt", lambda: "SYS")
     monkeypatch.setenv("GH_TOKEN", "expired-session-token")
     monkeypatch.setenv("GITHUB_TOKEN", "other-expired-session-token")
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     captured = {}
 
     class FakeProc:
