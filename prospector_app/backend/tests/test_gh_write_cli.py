@@ -51,6 +51,43 @@ def test_rejects_unadvertised_operations_and_flags(argv):
         cli.build_gh_argv(argv)
 
 
+@pytest.mark.parametrize(("argv_tail", "prefix"), [
+    (["pr", "edit", "12"], ["gh", "pr", "edit", "12"]),
+    (["pr", "comment", "12"], ["gh", "pr", "comment", "12"]),
+    (["issue", "create", "--title", "Bug"], ["gh", "issue", "create"]),
+    (["issue", "comment", "13"], ["gh", "issue", "comment", "13"]),
+    (["issue", "edit", "13"], ["gh", "issue", "edit", "13"]),
+])
+def test_body_file_passes_path_through(tmp_path, argv_tail, prefix):
+    """A long body travels as a file path (always one line), never as literal
+    newlines in the command — the shape that trips the caller's dontAsk
+    permission allowlist."""
+    cli = _load()
+    body_file = tmp_path / "body.md"
+    body_file.write_text("line one\n\nline two\n")
+    cmd = cli.build_gh_argv([*argv_tail, "--body-file", str(body_file)])
+    assert cmd[:len(prefix)] == prefix
+    assert "--body-file" in cmd
+    assert str(body_file) in cmd
+    assert "--body" not in cmd
+
+
+def test_body_file_and_body_are_mutually_exclusive(tmp_path):
+    cli = _load()
+    body_file = tmp_path / "body.md"
+    body_file.write_text("text")
+    with pytest.raises(SystemExit):
+        cli.build_gh_argv(
+            ["pr", "edit", "12", "--body", "inline", "--body-file", str(body_file)]
+        )
+
+
+def test_body_file_must_exist():
+    cli = _load()
+    with pytest.raises(SystemExit):
+        cli.build_gh_argv(["pr", "comment", "12", "--body-file", "/no/such/file.md"])
+
+
 def test_mints_for_each_invocation(monkeypatch, capsys):
     cli = _load()
     monkeypatch.setenv("GH_TOKEN", "expired-session-token")
