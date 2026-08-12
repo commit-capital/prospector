@@ -2063,6 +2063,29 @@ class TestFixEligibility:
         assert ok is False
         assert "fixable_gates" in why
 
+    def test_resolve_needs_no_profile_optin(self, monkeypatch):
+        # A resolve parks for operator approval, so it needs no fixable_gates.
+        self._profile(monkeypatch)
+        ok, why = gates.fix_eligibility(_pr(), "resolve",
+                                        changed_paths=["src/a.ts"])
+        assert ok is True, why
+
+    def test_codeowners_blocks_resolving_on_a_gated_path(self, monkeypatch):
+        # Callers pass the conflicted paths: a resolution is agent-authored
+        # content, held to the same owner bar as a fix.
+        self._gated(monkeypatch)
+        ok, why = gates.fix_eligibility(_pr(), "resolve",
+                                        changed_paths=["infra/main.tf"])
+        assert ok is False
+        assert "CODEOWNERS" in why and "@core" in why
+
+    def test_deny_glob_blocks_resolve(self, monkeypatch):
+        self._profile(monkeypatch, deny_globs=("skills/**",))
+        ok, why = gates.fix_eligibility(_pr(), "resolve",
+                                        changed_paths=["skills/agent/SKILL.md"])
+        assert ok is False
+        assert "withholds from autofix" in why
+
 
 class TestFixHuntable:
     """The idle hunter's own bar, on top of fix_eligibility. It picks PRs a human

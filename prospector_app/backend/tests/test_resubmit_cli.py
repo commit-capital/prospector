@@ -128,11 +128,18 @@ def test_fork_ssh_url_raises_on_deleted_fork():
         resubmit.fork_ssh_url(_pr(headRepository={}))
 
 
-# --- argparse surface: push always requires an explicit content/rewrite mode -----
+# --- push flags: each mode demands its own explicit form ------------------------
 
-def test_push_requires_a_commit_message():
-    with pytest.raises(SystemExit):
-        resubmit.main(["42", "push"])  # -m/--message is required
+def test_push_requires_a_commit_message(tmp_path, monkeypatch, capsys):
+    # An edit-mode push must name its commit message; only a merge-mode push is
+    # flagless, because its commit already exists.
+    monkeypatch.setattr(resubmit, "WORKTREE_ROOT", tmp_path / "resubmit")
+    (tmp_path / "resubmit").mkdir(parents=True)
+    resubmit._write_meta(42, {"pr": 42, "branch": "fix", "head_sha": "a" * 40,
+                              "fork": "url", "repo": "contrib/test-repo",
+                              "mode": "edit"})
+    assert resubmit.main(["42", "push"]) == 2
+    assert "require -m" in capsys.readouterr().err
 
 
 def test_unknown_action_is_rejected():
@@ -650,3 +657,98 @@ def test_push_target_refuses_any_ref_that_is_not_the_head(branch):
 def test_push_target_refuses_a_closed_pr():
     with pytest.raises(RuntimeError, match="not open"):
         resubmit.assert_push_target(_pr(state="CLOSED"), "fix")
+
+
+# --- merge mode: resolve conflicts inside a merge commit, rewriting no history ---
+
+def _wire_merge(monkeypatch, tmp_path: Path, repos: dict) -> None:
+    _wire_rebase(monkeypatch, tmp_path, repos)
+    monkeypatch.setattr(resubmit, "_log_merge", lambda *args, **kwargs: None)
+
+
+def _capture_state(pr: int) -> dict:
+    import contextlib
+    import io
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        assert resubmit.cmd_state(pr) == 0
+    return json.loads(buf.getvalue())
+
+
+def test_prepare_merge_pauses_on_conflicts_and_state_reports_them(monkeypatch, tmp_path):
+    repos = _make_rebase_repos(tmp_path)
+    _wire_merge(monkeypatch, tmp_path, repos)
+    assert resubmit.cmd_prepare(42, merge=True) == 0
+    meta = resubmit._read_meta(42)
+    assert meta["mode"] == "merge"
+    assert meta["phase"] == "conflicted"
+    state = _capture_state(42)
+    assert state["phase"] == "conflicted"
+    assert state["conflicts"] == ["one.txt"]
+    assert state["worktree"] == str(resubmit._worktree(42))
+    assert state["base_branch"] == "master"
+
+
+def test_merge_continue_refuses_markers_and_stray_edits(monkeypatch, tmp_path):
+    repos = _make_rebase_repos(tmp_path)
+    _wire_merge(monkeypatch, tmp_path, repos)
+    resubmit.cmd_prepare(42, merge=True)
+    wt = resubmit._worktree(42)
+    # markers still present
+    assert resubmit.cmd_continue(42) == 10
+    (wt / "one.txt").write_text("resolved one\n")
+    (wt / "stray.txt").write_text("agent wandered\n")
+    assert resubmit.cmd_continue(42) == 10
+    (wt / "stray.txt").unlink()
+    assert resubmit.cmd_continue(42) == 0
+    assert resubmit._read_meta(42)["phase"] == "ready"
+
+
+def test_merge_diff_when_ready_is_change_relative_to_base(monkeypatch, tmp_path, capsys):
+    repos = _make_rebase_repos(tmp_path)
+    _wire_merge(monkeypatch, tmp_path, repos)
+    resubmit.cmd_prepare(42, merge=True)
+    (resubmit._worktree(42) / "one.txt").write_text("resolved one\n")
+    resubmit.cmd_continue(42)
+    capsys.readouterr()
+    assert resubmit.cmd_diff(42) == 0
+    out = capsys.readouterr().out
+    assert "resolved one" in out
+    assert out.startswith("diff ")
+
+
+def test_merge_push_needs_no_flags_and_lands_a_merge_commit(monkeypatch, tmp_path):
+    repos = _make_rebase_repos(tmp_path)
+    _wire_merge(monkeypatch, tmp_path, repos)
+    resubmit.cmd_prepare(42, merge=True)
+    (resubmit._worktree(42) / "one.txt").write_text("resolved one\n")
+    resubmit.cmd_continue(42)
+    assert resubmit.cmd_push(42, None, False, None) == 0
+    check = tmp_path / "check"
+    _git(tmp_path, "clone", "--branch", "fix", repos["fork"].as_uri(), str(check))
+    head_parents = _git(check, "rev-list", "--parents", "-n", "1", "HEAD").stdout.split()
+    assert len(head_parents) == 3  # merge commit: itself + two parents
+    assert repos["old_head"] in head_parents
+    assert (check / "one.txt").read_text() == "resolved one\n"
+
+
+def test_merge_push_refuses_flags(monkeypatch, tmp_path, capsys):
+    repos = _make_rebase_repos(tmp_path)
+    _wire_merge(monkeypatch, tmp_path, repos)
+    resubmit.cmd_prepare(42, merge=True)
+    (resubmit._worktree(42) / "one.txt").write_text("resolved one\n")
+    resubmit.cmd_continue(42)
+    assert resubmit.cmd_push(42, "a message", False, None) == 2
+    assert resubmit.cmd_push(42, None, False, repos["old_head"]) == 2
+    assert "no -m and no" in capsys.readouterr().err
+
+
+def test_merge_push_refuses_when_head_moved(monkeypatch, tmp_path):
+    repos = _make_rebase_repos(tmp_path)
+    _wire_merge(monkeypatch, tmp_path, repos)
+    resubmit.cmd_prepare(42, merge=True)
+    (resubmit._worktree(42) / "one.txt").write_text("resolved one\n")
+    resubmit.cmd_continue(42)
+    monkeypatch.setattr(resubmit, "_gh_json",
+                        lambda pr: _pr(headRefOid="f" * 40, baseRefOid=repos["stale_base"]))
+    assert resubmit.cmd_push(42, None, False, None) == 6

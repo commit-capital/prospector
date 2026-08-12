@@ -114,7 +114,17 @@ the phases rather than in them: a per-PR `fix_request` section any app queues an
 the worker on `TRIAGE_FIX_WORKER=1` drains, pushing to the contributor's head
 branch as the machine user. Actions are `update` (merge the base in), `rebase`
 (replay onto current base behind a pinned lease), and `fix` (an agent authors a
-change against a failing gate). `gates.fix_eligibility` is the ONE policy —
+change against a failing gate). A mechanical `rebase` that pauses on real
+conflicts escalates — for operator-clicked requests only, never the hunter's —
+to a fourth action, `resolve`: a locked-down agent resolves the conflicted
+paths inside a merge of current base into the head (`resubmit prepare --merge`
++ `pipeline/resolve_conflicts.py`), the result passes the compile preflight,
+and it parks as `awaiting-review` with a per-file rationale, keeping its
+worktree like `fix`. `gates.fix_eligibility` holds `resolve` to the CODEOWNERS
+and deny-glob bar over the conflicted paths, with no profile opt-in; a resolve
+never autopushes regardless of `TRIAGE_FIX_AUTOPUSH`, and approval pushes the
+kept merge commit with no history rewrite. `gates.fix_eligibility` is the ONE
+policy —
 fail-closed on a malicious threat verdict, any recorded RED security verdict, a
 CODEOWNERS-gated path, a path the profile's `autofix.deny_globs` names, a
 non-open PR, and (for `fix`) a profile naming no `autofix.fixable_gates`. It

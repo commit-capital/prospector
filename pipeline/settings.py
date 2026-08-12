@@ -155,8 +155,11 @@ REVIEW_THRESHOLD: int | None = int(_review_threshold) if _review_threshold else 
 
 # The autofix actions a fix request may carry. `update` merges the base branch
 # into the PR head, `rebase` rebases onto current base behind a pinned lease,
-# and `fix` has an agent author a change against a failing gate.
-FIX_ACTIONS: tuple[str, ...] = ("update", "rebase", "fix")
+# `fix` has an agent author a change against a failing gate, and `resolve` has
+# an agent resolve merge conflicts inside a merge of the base into the head —
+# recorded on requests the worker escalates from a conflicted rebase, never
+# queued directly.
+FIX_ACTIONS: tuple[str, ...] = ("update", "rebase", "fix", "resolve")
 
 # The machine user that pushes to contributor PR head branches: a GitHub *user*
 # account holding push access on REPO, distinct from the App identity in

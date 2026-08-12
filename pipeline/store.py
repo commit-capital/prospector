@@ -61,8 +61,9 @@ VERIFY_REQUEST_SOURCES = {"operator", "auto"}
 
 # What an autofix request asks the fix worker to do on the PR's head branch:
 # merge the base branch in so checks re-run against current base code, rebase
-# onto current base behind a pinned lease to clear a conflict, or have an agent
-# author a change against a failing gate.
+# onto current base behind a pinned lease to clear a conflict, have an agent
+# author a change against a failing gate, or resolve a base merge's conflicts
+# with agent-authored content parked for review.
 FIX_ACTIONS = set(settings.FIX_ACTIONS)
 
 # The lifecycle of a fix request: queued in any app, picked up and run by the

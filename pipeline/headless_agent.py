@@ -7,7 +7,9 @@ CLAUDE.md / hooks / plugins / skills / MCP) + --setting-sources "" (load no
 settings file, so no repo grant or deny reaches this agent) + --permission-mode
 dontAsk (never prompt, silently deny anything off the allowlist) + a read-only
 toolset. Unlike the chat agent we do NOT grant `gh issue create`; ANALYZE only
-needs read-only gh to cite already-landed upstream fixes.
+needs read-only gh to cite already-landed upstream fixes. An opt-in `edit_root`
+grants Edit/Write scoped to a single worktree plus read-only git, for the
+conflict resolver.
 """
 from __future__ import annotations
 
@@ -47,11 +49,24 @@ _DISALLOWED = [
 ]
 
 
-def _flags(allow_gh: bool) -> list[str]:
+# Read-only git the conflict resolver may run inside its worktree to see both
+# sides of a conflict. No push, no commit — the resubmit tool owns every git
+# write.
+_GIT_READ_ALLOW = [
+    "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(git status:*)",
+]
+
+
+def _flags(allow_gh: bool, edit_root: str | None = None) -> list[str]:
     tools = ["Read", "Grep", "Glob", *(_GH_ALLOW if allow_gh else [])]
+    disallowed = list(_DISALLOWED)
+    if edit_root:
+        root = edit_root.rstrip("/")
+        tools += [f"Edit({root}/**)", f"Write({root}/**)", *_GIT_READ_ALLOW]
+        disallowed = [t for t in disallowed if t not in ("Edit", "Write")]
     return [
         "--allowedTools", ",".join(tools),
-        "--disallowedTools", *_DISALLOWED,
+        "--disallowedTools", *disallowed,
         "--permission-mode", "dontAsk",
         "--safe-mode",
         "--setting-sources", "",
@@ -154,11 +169,14 @@ def extract_json(text: str) -> dict:
 
 
 def run_agent(prompt: str, *, allow_gh: bool, cwd: str, system_prompt: str | None = None,
-              model: str | None = None, on_event=None, timeout: int = 1200) -> str:
+              model: str | None = None, on_event=None, timeout: int = 1200,
+              edit_root: str | None = None) -> str:
     """Spawn headless claude, stream its output through parse_stream, return the
     final text. `model` pins a specific model (e.g. a cheap Haiku for mechanical
-    work); None uses the CLI default. Raises RuntimeError on a non-zero exit."""
-    cmd = [CLAUDE_BIN, "-p", prompt, *_flags(allow_gh),
+    work); None uses the CLI default. `edit_root` grants Edit/Write scoped to
+    that directory (plus read-only git). Raises RuntimeError on a non-zero
+    exit."""
+    cmd = [CLAUDE_BIN, "-p", prompt, *_flags(allow_gh, edit_root),
            "--output-format", "stream-json", "--verbose", "--include-partial-messages"]
     if model:
         cmd += ["--model", model]
