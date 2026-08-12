@@ -34,7 +34,9 @@ _JSON = JSON().with_variant(JSONB, "postgresql")
 #     save a record carrying that kind).
 # 10 — PRs carry a fix_request section (the autofix queue), which older
 #     validators drop as an unknown section rather than round-tripping.
-STORE_SCHEMA_VERSION = 10
+# 11 — fix_request.action gains "resolve" (an agent-resolved base merge),
+#     which older validators refuse to save.
+STORE_SCHEMA_VERSION = 11
 
 # saved_at is a microsecond-resolution ISO timestamp stamped on every save — when
 # the store row was last written (distinct from `updated_at`, which mirrors the
