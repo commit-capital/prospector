@@ -521,6 +521,11 @@ export interface VerifyRunner {
  *  base behind a pinned lease, `fix` has an agent author a change. */
 export type FixAction = "update" | "rebase" | "fix";
 
+/** Every action a request can carry: the three queueable actions plus
+ *  `resolve`, which the worker records when it escalates a conflicted rebase
+ *  to an agent-authored merge resolution. */
+export type FixRequestAction = FixAction | "resolve";
+
 /** The autofix queue state for one PR: queued in any app, run by the fix
  *  worker on the machine holding the push key, parked as awaiting-review with
  *  the authored diff, approved by a human, then pushed. `refused` means a gate
@@ -528,7 +533,7 @@ export type FixAction = "update" | "rebase" | "fix";
 export interface FixRequest {
   status: "queued" | "running" | "awaiting-review" | "approved" | "pushing"
         | "pushed" | "refused" | "failed" | "cancelled";
-  action: FixAction;
+  action: FixRequestAction;
   source?: "operator" | "auto" | null;
   step?: string | null;
   queued_at?: string | null;
@@ -544,9 +549,9 @@ export interface FixRequest {
 }
 
 /** What the worker authored, carried on the request so the review view can
- *  show the diff before anything is pushed. A rebase refused on merge
- *  conflicts instead carries the paused worktree's conflict diff
- *  (merge_diff + conflict_paths), so the diff panel can show the
+ *  show the diff before anything is pushed. A conflicted rebase carries the
+ *  paused worktree's conflict diff (merge_diff + conflict_paths) — on a
+ *  refusal and on a parked `resolve` alike — so the diff panel can show the
  *  conflicted hunks. */
 export interface FixResult {
   patch?: string | null;
@@ -555,6 +560,8 @@ export interface FixResult {
   detail?: string | null;
   merge_diff?: string | null;
   conflict_paths?: string[] | null;
+  /** Per-file rationale from the conflict-resolution agent (action `resolve`). */
+  resolutions?: { path: string; rationale: string }[] | null;
   compile_preflight?: { exit?: number | null; refused?: string | null;
                         error?: string | null; error_excerpt?: string | null } | null;
 }
@@ -585,7 +592,7 @@ export interface FixQueueEntry {
   pr: number;
   title?: string | null;
   status: FixRequest["status"];
-  action: FixAction;
+  action: FixRequestAction;
   source?: "operator" | "auto" | null;
   queued_at?: string | null;
   base_sha?: string | null;

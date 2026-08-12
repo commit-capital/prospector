@@ -37,7 +37,8 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
   const [diff, setDiff] = useState<DiffResult | null>(null);
   const [diffLoading, setDiffLoading] = useState(true);
   // Which diff the Diff panel shows: the PR's own change, or the conflicted
-  // merge state a failed "Resolve merge conflicts" attempt paused on (#46).
+  // merge state a "Resolve merge conflicts" attempt paused on (#46) — carried
+  // by a refusal and by a parked agent resolution alike.
   const [diffMode, setDiffMode] = useState<"pr" | "merge">("pr");
   const [lineComment, setLineComment] = useState<{ file: string; line: number } | null>(null);
   const [retriggering, setRetriggering] = useState(false);
@@ -217,8 +218,9 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
   const sz = pr.size;
   const ci = pr.ci_checks ?? [];
 
-  // The conflict diff a refused "Resolve merge conflicts" attempt captured
-  // before its worktree was discarded — the Diff panel's second mode (#46).
+  // The conflict diff a "Resolve merge conflicts" attempt captured while its
+  // rebase was paused — the Diff panel's second mode (#46). Rides refusals and
+  // parked agent resolutions alike.
   const mergeDiff = pr.fix_request?.result?.merge_diff ?? null;
   const conflictPaths = pr.fix_request?.result?.conflict_paths ?? [];
 
@@ -549,7 +551,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
             </button>
             <button className={diffMode === "merge" ? "on" : ""} role="tab" aria-selected={diffMode === "merge"}
               onClick={() => setDiffMode("merge")}
-              title="The conflicted state the failed “Resolve merge conflicts” attempt paused on.">
+              title="The conflicted state a “Resolve merge conflicts” attempt paused on — the hunks before any resolution.">
               Merge diff
             </button>
           </div>
@@ -557,8 +559,8 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
         {diffMode === "merge" && mergeDiff ? (
           <>
             <div className="diff-note">
-              ⚠ Where this PR and the current base collide — the conflicted state the
-              “Resolve merge conflicts” attempt paused on
+              ⚠ Where this PR and the current base collide — the conflicted hunks a
+              “Resolve merge conflicts” attempt paused on, before any resolution
               {conflictPaths.length > 0 && <> ({conflictPaths.length} file{conflictPaths.length === 1 ? "" : "s"})</>},
               not the PR's own change.
             </div>
