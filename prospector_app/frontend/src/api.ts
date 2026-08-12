@@ -805,6 +805,47 @@ export interface IssueDetail extends IssueRow {
   cluster_label: string | null;
 }
 export interface IssueExecResult { issue: number; action: string; status: string; detail: string; canonical?: number | null; forced?: boolean }
+
+export type AlertSource = "code-scanning" | "dependabot" | "secret-scanning";
+export type AlertState = "open" | "dismissed" | "fixed";
+export type AlertSeverity = "critical" | "high" | "medium" | "low";
+export type AlertVerdict = "fixed" | "likely-fixed" | "not-fixed";
+export interface AlertLink { kind: "pr" | "issue"; number: number; how: string; note?: string | null; state?: string | null }
+export interface AlertRow {
+  id: number;
+  source: AlertSource;
+  number: number;
+  state: AlertState;
+  raw_state: string | null;
+  severity: AlertSeverity;
+  title: string | null;
+  rule_id: string | null;
+  package: string | null;
+  ecosystem: string | null;
+  manifest_path: string | null;
+  secret_type: string | null;
+  path: string | null;
+  start_line: number | null;
+  html_url: string;
+  created_at: string | null;
+  updated_at: string | null;
+  verdict: AlertVerdict | null;
+  action: string | null;
+  evidence: string | null;
+  links: AlertLink[];
+  link_count: number;
+  dismissed_reason: string | null;
+  quality: boolean;
+}
+/** Full alert detail for the side panel: the row plus the raw meta section and
+ *  the valid dismissal reasons for the alert's source. */
+export interface AlertDetail extends AlertRow {
+  meta: Record<string, unknown>;
+  dismiss_reasons: string[];
+}
+export interface AlertQueryResult { items: AlertRow[]; total: number; offset: number; limit: number }
+export interface AlertCaps { available: boolean; sources: Record<AlertSource, boolean> }
+export interface AlertDismissResult { source: AlertSource; alert: number; action: string; status: string; detail: string; reason: string; forced?: boolean }
 interface IssueDup {
   number: number;
   title: string | null;
@@ -917,6 +958,24 @@ export const api = {
   issuesAlreadyFixed: () =>
     get<{ fixed: IssueFixedItem[]; likely_fixed: IssueLikelyFixedItem[] }>("/api/issues/already-fixed"),
   getIssue: (n: number) => get<IssueDetail>(`/api/issues/${n}`),
+  listAlerts: () => get<{ items: AlertRow[] }>("/api/alerts"),
+  queryAlerts: (opts: {
+    q?: string; sort?: string; direction?: string; source?: string; state?: string;
+    severity?: string[]; verdict?: string; offset?: number; limit?: number;
+  } = {}) =>
+    fetch("/api/alerts/query", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(opts),
+    }).then((r) => r.json() as Promise<AlertQueryResult>),
+  alertCaps: () => get<AlertCaps>("/api/alerts/caps"),
+  getAlert: (source: AlertSource, n: number) => get<AlertDetail>(`/api/alerts/${source}/${n}`),
+  dismissAlert: async (source: AlertSource, n: number, reason: string, comment: string, dryRun: boolean) => {
+    const r = await fetch(`/api/execute/alert/${source}/${n}/dismiss?dry_run=${dryRun}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason, comment: comment || null }),
+    });
+    return r.json() as Promise<AlertDismissResult>;
+  },
   closeIssueDup: async (n: number, canonical: number | undefined, dryRun: boolean, comment?: string) => {
     const r = await fetch(`/api/execute/issue/${n}/close-dup?dry_run=${dryRun}`, {
       method: "POST", headers: { "Content-Type": "application/json" },

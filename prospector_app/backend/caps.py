@@ -44,6 +44,9 @@ def capabilities() -> dict:
             # in the executor, not by this login's perms
             "merge_upstream": executor.live_possible(),
             "review": _review_descriptor(),
+            # alert reads/writes run as the same App identity; per-source
+            # availability is probed separately by /api/alerts/caps
+            "alerts": {"available": executor.live_possible()},
         }
     return _cache
 

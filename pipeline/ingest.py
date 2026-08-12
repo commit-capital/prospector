@@ -435,7 +435,7 @@ def _targeted_ingest(store: Store, args: argparse.Namespace, started: str) -> in
     targets = _select_new_prs(gh_prs, set(existing_prs))
     issue_links = load_issue_links(prs=targets)
     print(f"open PRs: {len(gh_prs)} | targeting: {len(targets)}")
-    live = live_prs.fetch([int(pr["number"]) for pr in targets])
+    live, _ = live_prs.fetch([int(pr["number"]) for pr in targets])
     with store.batch():
         counts = _upsert_all(store, targets, issue_links, existing_prs, live_facts=live)
     upserted, drafts = counts["upserted"], counts["drafts"]
@@ -490,7 +490,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print("fetching open PRs…", flush=True)
     gh_prs = fetch_open_prs(args.max)
-    live = live_prs.fetch([int(pr["number"]) for pr in gh_prs])
+    live, _ = live_prs.fetch([int(pr["number"]) for pr in gh_prs])
     issue_links = load_issue_links(prs=gh_prs)
     print(f"open PRs: {len(gh_prs)} | PRs with issue links: {len(issue_links)}")
 

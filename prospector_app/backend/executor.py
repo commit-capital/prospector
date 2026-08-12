@@ -911,3 +911,65 @@ def close_issue_with_comment(n: int, action: models.IssueCloseBody, *, token: st
         close_argv=_issue_close_argv(n, reason, action.canonical),
         token=token, log_verb="issue-close",
         on_success=lambda: issues_mod.reflect_issue_state(n, "closed", reason))
+
+
+def dismiss_alert(source: str, number: int, reason: str, comment: str, *,
+                  token: str | None, dry_run: bool) -> dict:
+    """Dismiss/resolve a GitHub security alert upstream as the configured bot,
+    gated by alert_gates.dismiss_eligibility and logged to Activity. Code
+    scanning and Dependabot alerts PATCH to state=dismissed with a
+    dismissed_reason; secret scanning PATCHes to state=resolved with a
+    resolution. With no token every run is a dry-run."""
+    from alert_triage import alert_gates
+    from alert_triage.alert_store import alert_id
+    from prospector_app.backend import alerts as alerts_mod
+    from prospector_app.backend import alert_data
+    from prospector_app.backend.safety_guard import alert_bot_run
+
+    base = {"source": source, "alert": int(number), "action": "DISMISS_ALERT",
+            "reason": reason}
+    alerts_mod._sync_store_root()
+    try:
+        i = alert_id(source, int(number))
+    except KeyError:
+        return {**base, "status": "blocked", "detail": f"unknown alert source {source!r}"}
+    alert = alert_data.alerts().get(i)
+    if alert is None:
+        return {**base, "status": "blocked", "detail": f"alert {source}#{number} not in store"}
+    ok, why = alert_gates.dismiss_eligibility(alert, reason, comment)
+    if not ok:
+        res = {**base, "status": "blocked", "detail": f"dismiss gate: {why}"}
+        activity.record("alert-dismiss", identity=BOT_LOGIN, dry_run=dry_run, **res)
+        return res
+
+    if source == "secret-scanning":
+        fields = ["-f", "state=resolved", "-f", f"resolution={reason}"]
+        if comment.strip():
+            fields += ["-f", f"resolution_comment={comment.strip()}"]
+        new_state, new_raw = ("fixed" if reason == "revoked" else "dismissed"), "resolved"
+    else:
+        fields = ["-f", "state=dismissed", "-f", f"dismissed_reason={reason}"]
+        if comment.strip():
+            fields += ["-f", f"dismissed_comment={comment.strip()}"]
+        new_state, new_raw = "dismissed", "dismissed"
+    argv = ["gh", "api", "-X", "PATCH",
+            f"repos/{REPO}/{source}/alerts/{int(number)}", *fields]
+
+    if dry_run or not token:
+        res = {**base, "status": "dry-run",
+               "detail": f"would dismiss {source}#{number} ({reason})",
+               "forced": not token and not dry_run}
+        activity.record("alert-dismiss", identity=BOT_LOGIN, dry_run=True, **res)
+        return res
+
+    r = alert_bot_run(argv, token)
+    if r.returncode != 0:
+        detail = (r.stderr or "").strip()[-300:] or f"gh exited {r.returncode}"
+        res = {**base, "status": "error", "detail": detail}
+        activity.record("alert-dismiss", identity=BOT_LOGIN, dry_run=False, **res)
+        return res
+    alert_data.store().edit_alert(i).record_live_state(new_state, raw_state=new_raw)
+    alert_data.refresh()
+    res = {**base, "status": "executed", "detail": f"dismissed {source}#{number} ({reason})"}
+    activity.record("alert-dismiss", identity=BOT_LOGIN, dry_run=False, **res)
+    return res

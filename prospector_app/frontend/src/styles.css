@@ -578,6 +578,13 @@ select { background: var(--panel); border: 1px solid var(--border); color: var(-
 .difffile { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-bottom: 14px; }
 .difffile-head { background: var(--panel); padding: 8px 12px; font-family: ui-monospace, monospace; font-size: 12px; border-bottom: 1px solid var(--border); }
 .rawdiff { background: var(--panel); padding: 12px; overflow: auto; font-size: 12px; }
+/* raw-fallback diff lines (merge/combined diffs): block spans so the add/del
+   tint covers the full row, colored with the theme's green/red tokens */
+.rawdiff-line { display: block; }
+.rawdiff-add { background: color-mix(in srgb, var(--green) 14%, transparent); }
+.rawdiff-del { background: color-mix(in srgb, var(--red) 14%, transparent); }
+.rawdiff-hunk { background: var(--panel2); color: var(--muted); }
+.rawdiff-meta { color: var(--muted); }
 .widget-wrap { padding: 0 12px; }
 .pager { display: flex; gap: 14px; align-items: center; justify-content: center; margin: 18px 0; }
 .pager button { background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 5px 12px; cursor: pointer; }
@@ -1295,3 +1302,18 @@ tr.row-done:hover > td { opacity: 1; }
 .home-loading { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; color: var(--muted); font-size: 12.5px; }
 .home-count-loading { animation: count-pulse 1.2s ease-in-out infinite; }
 @keyframes count-pulse { 0%, 100% { opacity: .55; } 50% { opacity: .2; } }
+
+/* --- Alerts tab (🛡️): table + side detail panel ------------------------- */
+.alerts-layout { display: flex; gap: 16px; align-items: flex-start; }
+.alerts-layout .table-wrap { flex: 1; min-width: 0; overflow-x: auto; }
+.alert-detail { width: 340px; flex-shrink: 0; background: var(--panel);
+  border: 1px solid var(--border); border-radius: 8px; padding: 12px;
+  position: sticky; top: calc(var(--topbar-h, 48px) + 8px); }
+.alert-detail h3 { margin: 0; font-size: 15px; }
+.alert-detail h4 { margin: 12px 0 4px; font-size: 13px; }
+.alert-detail .detail-head { display: flex; justify-content: space-between; align-items: baseline; }
+.alert-detail .detail-section { border-top: 1px solid var(--border); margin-top: 10px; padding-top: 6px; }
+.alert-detail textarea { width: 100%; box-sizing: border-box; margin: 6px 0; }
+.alert-detail .form-row { display: flex; gap: 8px; margin: 6px 0; align-items: center; }
+.alert-detail .callout { margin-top: 8px; }
+.callout.ok { border-color: var(--green, #2da44e); color: var(--green, #2da44e); }
