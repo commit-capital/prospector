@@ -17,11 +17,15 @@ resulting tree goes through the compile preflight, and the request parks as
 `awaiting-review` with its evidence unless TRIAGE_FIX_AUTOPUSH names the action.
 So the hunter can be left on against a repository it never touches.
 
+A mechanical rebase that pauses on real conflicts escalates, for
+operator-clicked requests only, to an agent-authored merge resolution that
+parks as a `resolve` request for review.
+
 A parked mechanical request keeps no worktree — push_approved re-derives it
 against whatever base is current then, which is what stops a browsable backlog
 from accumulating clones or pushing a result proven against a base that has
-since moved. An agent-authored `fix` is not reproducible, so it keeps its tree
-and pushes the reviewed patch verbatim.
+since moved. An agent-authored `fix` or `resolve` is not reproducible, so it
+keeps its tree and pushes the reviewed change verbatim.
 
 With TRIAGE_FIX_AUTOHUNT=1 an empty queue turns the drain loop into a hunter: it
 queues the eligible PRs whose gates an autofix could plausibly clear, oldest
@@ -40,7 +44,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pipeline import compile_preflight, gates, settings, verify_driver
+from pipeline import compile_preflight, gates, resolve_conflicts, settings, verify_driver
 from pipeline.storekit import now as _now
 from prospector_app.backend import data, fix_queue, service
 from prospector_app.backend.resubmit_identity import worker_env
@@ -298,14 +302,18 @@ def _refuse(n: int, req: dict, reason: str, result: dict | None = None) -> None:
     data.refresh()
 
 
-def recheck_eligibility(n: int, action: str) -> tuple[bool, str]:
+def recheck_eligibility(n: int, action: str,
+                        conflict_paths: list[str] | None = None) -> tuple[bool, str]:
     """Re-run the autofix gate against the record as it stands now. A request
     can sit in the queue while a threat scan or security review lands, so the
-    gate that allowed the queue click is re-asked before the worker acts."""
+    gate that allowed the queue click is re-asked before the worker acts. A
+    `resolve` is judged on its conflicted paths — the only content the agent
+    authored."""
     rec = data.store().load_pr(n)
     if rec is None:
         return False, f"PR #{n} left the store"
-    return gates.fix_eligibility(rec, action, service.changed_paths(rec))
+    paths = conflict_paths if action == "resolve" else service.changed_paths(rec)
+    return gates.fix_eligibility(rec, action, paths)
 
 
 def run_one(n: int) -> None:
@@ -371,17 +379,7 @@ def _probe(n: int, claimed: dict, action: str) -> str | None:
         # — it is an unfinished merge. Nothing downstream may treat it as one.
         paused = _conflicted_state(n)
         if paused is not None:
-            merge_diff = _conflict_diff(n)
-            _resubmit(n, "abort")
-            files = ", ".join(paused[:5])
-            more = f" (and {len(paused) - 5} more)" if len(paused) > 5 else ""
-            _refuse(n, claimed,
-                    f"This PR's changes and the current base both edit the same lines "
-                    f"in {len(paused)} file(s), and git can't combine them on its own: "
-                    f"{files}{more}. Resolving that needs a person who knows which "
-                    f"version is right — ask the author to rebase.",
-                    result={"merge_diff": merge_diff, "conflict_paths": paused}
-                           if merge_diff else None)
+            _agent_resolve(n, claimed, paused)
             return None
         diff = _resubmit(n, "diff")
         if diff.returncode != 0:
@@ -393,6 +391,123 @@ def _probe(n: int, claimed: dict, action: str) -> str | None:
         _refuse(n, claimed, f"the {action} produced no change to push")
         return None
     return patch
+
+
+def _conflict_refusal(paused: list[str]) -> str:
+    files = ", ".join(paused[:5])
+    more = f" (and {len(paused) - 5} more)" if len(paused) > 5 else ""
+    return (f"This PR's changes and the current base both edit the same lines "
+            f"in {len(paused)} file(s), and git can't combine them on its own: "
+            f"{files}{more}. Resolving that needs a person who knows which "
+            f"version is right — ask the author to rebase.")
+
+
+def _running_step(n: int, claimed: dict, step: str) -> None:
+    data.store().edit_pr(n).record_fix_request(
+        "running", "resolve", queued_at=claimed.get("queued_at"),
+        started_at=claimed.get("started_at"), step=step,
+        source=claimed.get("source"), host=socket.gethostname(),
+        head_sha=claimed.get("against_head_sha"))
+    data.refresh()
+
+
+def _agent_resolve(n: int, claimed: dict, paused: list[str]) -> None:
+    """Escalate a rebase that paused on conflicts to an agent-authored merge
+    resolution, parking the result as a `resolve` request for operator review.
+
+    Only operator-clicked requests escalate — the hunter's picks refuse, so
+    unattended agent time is never spent without a human having asked. Every
+    exit path writes a terminal status and leaves no paused git state behind;
+    the one worktree that survives is the parked resolution's, kept because an
+    agent's edits are not mechanically re-derivable."""
+    merge_diff = _conflict_diff(n)
+    _resubmit(n, "abort")
+    evidence = ({"merge_diff": merge_diff, "conflict_paths": paused}
+                if merge_diff else None)
+    if claimed.get("source") == "auto":
+        _refuse(n, claimed, _conflict_refusal(paused), result=evidence)
+        return
+    rec = data.store().load_pr(n)
+    if rec is None:
+        _refuse(n, claimed, f"PR #{n} left the store")
+        return
+    ok, why = gates.fix_eligibility(rec, "resolve", paused)
+    if not ok:
+        _refuse(n, claimed,
+                f"{_conflict_refusal(paused)} An agent resolution was withheld: {why}.",
+                result=evidence)
+        return
+
+    prepared = _resubmit(n, "prepare", "--merge")
+    if prepared.returncode != 0:
+        _settle(n, claimed, prepared.returncode,
+                (prepared.stderr or prepared.stdout).strip())
+        return
+    state_r = _resubmit(n, "state")
+    try:
+        st = json.loads(state_r.stdout or "{}")
+    except ValueError:
+        st = {}
+    worktree = st.get("worktree")
+    conflicts = [str(c) for c in (st.get("conflicts") or [])]
+    if not worktree or not conflicts:
+        # The merge did not pause where the rebase did; nothing to resolve here.
+        _resubmit(n, "abort")
+        _refuse(n, claimed, _conflict_refusal(paused), result=evidence)
+        return
+
+    _running_step(n, claimed, "agent resolving conflicts")
+    try:
+        verdict = resolve_conflicts.resolve(
+            worktree, conflicts, pr=n, title=rec.title or "",
+            body=rec.body or "", base_branch=str(st.get("base_branch") or ""))
+    except (RuntimeError, ValueError) as e:
+        _resubmit(n, "abort")
+        _refuse(n, claimed,
+                f"{_conflict_refusal(paused)} The agent attempt did not land: {e}.",
+                result=evidence)
+        return
+    if "give_up" in verdict:
+        _resubmit(n, "abort")
+        _refuse(n, claimed,
+                f"{_conflict_refusal(paused)} The agent declined to guess: "
+                f"{verdict['give_up']}",
+                result=evidence)
+        return
+
+    cont = _resubmit(n, "continue")
+    if cont.returncode != 0:
+        _resubmit(n, "abort")
+        _refuse(n, claimed,
+                f"{_conflict_refusal(paused)} The agent's resolution did not pass the "
+                f"merge checks: {(cont.stderr or cont.stdout).strip()[:500]}",
+                result=evidence)
+        return
+    diff = _resubmit(n, "diff")
+    if diff.returncode != 0 or not (diff.stdout or "").strip():
+        _resubmit(n, "abort")
+        _fail(n, claimed, f"reading the resolved diff failed: "
+                          f"{(diff.stderr or diff.stdout).strip()[:500]}")
+        return
+    patch = diff.stdout.strip()
+
+    _running_step(n, claimed, "compile preflight")
+    pf = _preflight(n, patch)
+    if pf is not None:
+        pf_ok, pf_why = gates.compile_preflight_gate(pf)
+        if not pf_ok:
+            _resubmit(n, "abort")
+            _refuse(n, claimed, plain_preflight(pf),
+                    result={"patch": patch[-TAIL_CHARS:], "compile_preflight": pf,
+                            "detail": pf_why, "merge_diff": merge_diff,
+                            "conflict_paths": paused})
+            return
+
+    result = {"patch": patch[-TAIL_CHARS:], "compile_preflight": pf,
+              "resolutions": verdict["resolutions"], "conflict_paths": paused,
+              "merge_diff": merge_diff,
+              "message": "Merge current base, conflicts agent-resolved"}
+    _park(n, claimed, "resolve", result, socket.gethostname())
 
 
 def _park(n: int, claimed: dict, action: str, result: dict, host: str) -> None:
@@ -494,7 +609,11 @@ def push_approved(n: int) -> None:
     if claimed is None:
         return
     action = claimed.get("action") or "fix"
-    ok, why = recheck_eligibility(n, action)
+    conflict_paths: list[str] | None = None
+    if action == "resolve":
+        raw_paths = (claimed.get("result") or {}).get("conflict_paths")
+        conflict_paths = [str(p) for p in raw_paths] if raw_paths else []
+    ok, why = recheck_eligibility(n, action, conflict_paths)
     if not ok:
         _resubmit(n, "abort")
         _refuse(n, claimed, f"no longer eligible for {action}: {why}")
@@ -520,8 +639,10 @@ def push_approved(n: int) -> None:
 
 def _push(n: int, req: dict, action: str, result: dict) -> None:
     # `update` merges against current base and pushes in one command, so it is
-    # its own re-derivation; the other actions push a tree already prepared.
+    # its own re-derivation; the other actions push a tree already prepared. A
+    # `resolve` worktree already holds its merge commit, so its push is flagless.
     args = (["update"] if action == "update" else
+            ["push"] if action == "resolve" else
             ["push", "--confirm-rewrite", str(req.get("against_head_sha") or "")]
             if action == "rebase" else
             ["push", "-m", str(result.get("message") or _commit_message(action))])
