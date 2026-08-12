@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { useLocation } from "react-router";
 import { api, type FeedbackTarget } from "../api";
 import { buildIssueUrl } from "../feedbackUrl";
@@ -35,9 +36,14 @@ export function FeedbackButton() {
       >
         🐞 Feedback
       </button>
-      {open && (
-        <FeedbackModal target={target} pageUrl={pageUrl} onClose={() => setOpen(false)} />
-      )}
+      {/* The button sits in the sticky topbar, whose z-index creates a stacking
+          context that caps every descendant beneath the PR flyout. The portal
+          mounts the overlay under document.body, where its own z-index applies. */}
+      {open &&
+        createPortal(
+          <FeedbackModal target={target} pageUrl={pageUrl} onClose={() => setOpen(false)} />,
+          document.body,
+        )}
     </>
   );
 }
