@@ -25,6 +25,14 @@ A conflicting PR uses the same isolated worktree and a pinned rebase transaction
     resubmit <pr> diff                 # review the resolution / final range-diff
     resubmit <pr> push --confirm-rewrite <old-head-sha>
 
+A conflicting PR can instead take a merge-commit resolution — merge the base
+into the head and resolve inside the merge commit, rewriting no history:
+    resubmit <pr> prepare --merge      # partial clone + merge base into head
+    #   ...if it pauses, resolve only the printed conflicted paths...
+    resubmit <pr> continue             # stage those paths + commit the merge
+    resubmit <pr> diff                 # the PR's whole change vs current base
+    resubmit <pr> push                 # normal push, lease-pinned to the old head
+
 `update` is a standalone action on the same selected identity — it merges the
 base branch into the PR's head so CI re-runs against current base code, writing
 none of its own content. It needs no prepare:
@@ -204,8 +212,29 @@ def _rebase_in_progress(wt: Path) -> bool:
     return any((Path(git_dir) / name).exists() for name in ("rebase-merge", "rebase-apply"))
 
 
-def _print_conflicts(pr: int, wt: Path, paths: list[str]) -> None:
-    print(f"rebase of PR #{pr} paused on {len(paths)} conflicted path(s):")
+def _merge_in_progress(wt: Path) -> bool:
+    git_dir = _git_text(["rev-parse", "--absolute-git-dir"], wt)
+    return (Path(git_dir) / "MERGE_HEAD").exists()
+
+
+def _stray_changes(wt: Path) -> list[str]:
+    """Porcelain entries that are not cleanly staged: untracked files and
+    worktree-side modifications. After a merge's conflicted paths are staged,
+    any of these is content beyond the conflict resolution."""
+    r = _git(["status", "--porcelain"], wt)
+    if r.returncode != 0:
+        raise RuntimeError(f"git status failed: {r.stderr.strip()}")
+    out: list[str] = []
+    for line in r.stdout.splitlines():
+        if not line:
+            continue
+        if line.startswith("??") or (len(line) > 1 and line[1] != " "):
+            out.append(line[3:])
+    return out
+
+
+def _print_conflicts(pr: int, wt: Path, paths: list[str], what: str = "rebase") -> None:
+    print(f"{what} of PR #{pr} paused on {len(paths)} conflicted path(s):")
     for path in paths:
         print(f"  {path}")
     print(f"  resolve only those files under: {wt}")
@@ -243,7 +272,41 @@ def _start_rebase(pr: int, meta: dict, wt: Path) -> int:
     return _mark_rebase_ready(pr, meta, wt)
 
 
-def cmd_prepare(pr: int, rebase: bool = False) -> int:
+def _mark_merge_ready(pr: int, meta: dict, wt: Path) -> int:
+    new_sha = _git_text(["rev-parse", "HEAD"], wt)
+    meta.update({"phase": "ready", "new_head_sha": new_sha})
+    _write_meta(pr, meta)
+    print(f"merged {meta['base_branch']} ({meta['base_sha'][:8]}) into PR #{pr}:")
+    print(f"  head: {meta['head_sha'][:8]} → {new_sha[:8]} (merge commit, no rewrite)")
+    print(f"  inspect: prospector_app/agent/resubmit {pr} diff")
+    print(f"  then: prospector_app/agent/resubmit {pr} push")
+    return 0
+
+
+def _start_merge(pr: int, meta: dict, wt: Path) -> int:
+    r = _git(["merge", "--no-edit", "-m",
+              f"Merge branch '{meta['base_branch']}' into {meta['branch']}",
+              meta["base_sha"]], wt, extra_env={"GIT_EDITOR": "true"})
+    paths = _conflicted_paths(wt)
+    if paths:
+        meta["phase"] = "conflicted"
+        _write_meta(pr, meta)
+        _print_conflicts(pr, wt, paths, what="merge")
+        return 0
+    if r.returncode != 0:
+        print(f"resubmit: merge failed: {r.stderr.strip() or r.stdout.strip()}", file=sys.stderr)
+        _cleanup(pr)
+        return 9
+    after = _git_text(["rev-parse", "HEAD"], wt)
+    if after == meta["head_sha"]:
+        print(f"resubmit: PR #{pr} is already up to date with {meta['base_branch']}; "
+              "nothing to resolve.")
+        _cleanup(pr)
+        return 5
+    return _mark_merge_ready(pr, meta, wt)
+
+
+def cmd_prepare(pr: int, rebase: bool = False, merge: bool = False) -> int:
     info = _gh_json(pr)
     ok, reason = eligibility(info)
     if not ok:
@@ -256,11 +319,12 @@ def cmd_prepare(pr: int, rebase: bool = False) -> int:
 
     branch, sha = info["headRefName"], info["headRefOid"]
     url = fork_ssh_url(info)
-    # Ordinary content edits keep the existing cheap one-commit clone. Rebase mode
-    # fetches commit/tree history but lazily downloads blobs, which is enough to find
-    # a real merge base without making every resubmit pay for it.
+    history = rebase or merge
+    # Ordinary content edits keep the existing cheap one-commit clone. Rebase and
+    # merge modes fetch commit/tree history but lazily download blobs, which is
+    # enough to find a real merge base without making every resubmit pay for it.
     clone_args = (["git", "clone", "--filter=blob:none", "--single-branch", "--no-tags",
-                   "--branch", branch, url, str(wt)] if rebase else
+                   "--branch", branch, url, str(wt)] if history else
                   ["git", "clone", "--depth", "1", "--branch", branch, url, str(wt)])
     r = subprocess.run(
         clone_args,
@@ -272,11 +336,11 @@ def cmd_prepare(pr: int, rebase: bool = False) -> int:
     meta = {
         "pr": pr, "branch": branch, "head_sha": sha, "fork": url,
         "repo": (info.get("headRepository") or {}).get("nameWithOwner"),
-        "mode": "rebase" if rebase else "edit",
+        "mode": "merge" if merge else "rebase" if rebase else "edit",
     }
     _write_meta(pr, meta)
 
-    if rebase:
+    if history:
         cloned_head = _git_text(["rev-parse", "HEAD"], wt)
         if cloned_head != sha:
             print(f"resubmit: PR #{pr} head moved while preparing ({sha[:8]} → "
@@ -298,10 +362,10 @@ def cmd_prepare(pr: int, rebase: bool = False) -> int:
         # The pin is whatever the base branch actually points at right now, read
         # from the ref we just fetched. The API's baseRefOid is NOT that: it is
         # the base commit the PR was opened or last synced against, so on any PR
-        # whose base has moved — every PR a rebase is for — it names an older
-        # commit. Only the head is re-checked here, because pushing over a head
-        # that moved would clobber the author; a base that moved just means the
-        # rebase lands one or two commits behind, which is what every PR is.
+        # whose base has moved — every PR a rebase or merge is for — it names an
+        # older commit. Only the head is re-checked here, because pushing over a
+        # head that moved would clobber the author; a base that moved just means
+        # the result lands one or two commits behind, which is what every PR is.
         base_sha = _git_text(["rev-parse", f"refs/remotes/upstream/{base}"], wt)
         live = _gh_json(pr)
         if live.get("headRefOid") != sha:
@@ -310,6 +374,13 @@ def cmd_prepare(pr: int, rebase: bool = False) -> int:
                   "against the author's latest head.", file=sys.stderr)
             _cleanup(pr)
             return 6
+        if merge:
+            meta.update({"base_branch": base, "base_sha": base_sha, "phase": "merging"})
+            _write_meta(pr, meta)
+            print(f"prepared PR #{pr} for a conflict-resolving merge — {reason}")
+            print(f"  fork branch: {meta['repo']} @ {branch} ({sha[:8]})")
+            print(f"  base: {base} ({base_sha[:8]})")
+            return _start_merge(pr, meta, wt)
         merge_base = _git_text(["merge-base", sha, base_sha], wt)
         merges = _git_text(["rev-list", "--merges", f"{merge_base}..{sha}"], wt)
         if merges:
@@ -343,6 +414,8 @@ def cmd_continue(pr: int) -> int:
         print(f"resubmit: PR #{pr} was not prepared (run `resubmit {pr} prepare --rebase` first)",
               file=sys.stderr)
         return 2
+    if meta.get("mode") == "merge":
+        return _continue_merge(pr, meta, wt)
     if meta.get("mode") != "rebase":
         print(f"resubmit: PR #{pr} is prepared for a content edit, not a rebase.", file=sys.stderr)
         return 2
@@ -386,6 +459,49 @@ def cmd_continue(pr: int) -> int:
               file=sys.stderr)
         return 9
     return _mark_rebase_ready(pr, meta, wt)
+
+
+def _continue_merge(pr: int, meta: dict, wt: Path) -> int:
+    """Stage a paused merge's resolved conflict paths and commit the merge.
+    Refuses fail-closed on remaining markers, still-unmerged paths, or any edit
+    beyond the conflicted paths — the resolution is the only content this mode
+    ever commits."""
+    if meta.get("phase") == "ready" and not _merge_in_progress(wt):
+        return _mark_merge_ready(pr, meta, wt)
+    if not _merge_in_progress(wt):
+        print(f"resubmit: PR #{pr} has no merge waiting to continue.", file=sys.stderr)
+        return 2
+    paths = _conflicted_paths(wt)
+    if not paths:
+        print(f"resubmit: merge of PR #{pr} is paused but has no conflicted paths; abort "
+              "rather than guessing at Git's state.", file=sys.stderr)
+        return 9
+    check = _git(["diff", "--check", "--", *paths], wt)
+    if check.returncode != 0:
+        print("resubmit: conflict markers or whitespace errors remain; nothing was staged:",
+              file=sys.stderr)
+        print(check.stdout.strip() or check.stderr.strip(), file=sys.stderr)
+        return 10
+    stray = [p for p in _stray_changes(wt) if p not in set(paths)]
+    if stray:
+        print("resubmit: the worktree carries edits beyond the conflicted paths; "
+              f"refusing to stage them: {', '.join(stray[:10])}", file=sys.stderr)
+        return 10
+    add = _git(["add", "--", *paths], wt)
+    if add.returncode != 0:
+        print(f"resubmit: staging resolved paths failed: {add.stderr.strip()}", file=sys.stderr)
+        return 4
+    still_unmerged = _conflicted_paths(wt)
+    if still_unmerged:
+        print(f"resubmit: these paths are still unresolved: {', '.join(still_unmerged)}",
+              file=sys.stderr)
+        return 10
+    commit = _git(["commit", "--no-edit"], wt, extra_env={"GIT_EDITOR": "true"})
+    if commit.returncode != 0:
+        print(f"resubmit: concluding the merge failed: "
+              f"{commit.stderr.strip() or commit.stdout.strip()}", file=sys.stderr)
+        return 9
+    return _mark_merge_ready(pr, meta, wt)
 
 
 def _live_push_preflight(pr: int, meta: dict, *, check_base: bool,
@@ -495,6 +611,53 @@ def _push_rebase(pr: int, meta: dict, confirm_rewrite: str | None, dry_run: bool
     return 0
 
 
+def _push_merge(pr: int, meta: dict, dry_run: bool) -> int:
+    wt = _worktree(pr)
+    if meta.get("phase") != "ready" or _merge_in_progress(wt):
+        print(f"resubmit: merge of PR #{pr} is not complete; resolve/continue it or abort.",
+              file=sys.stderr)
+        return 9
+    stray = _stray_changes(wt)
+    if stray:
+        print("resubmit: merged worktree carries unreviewed edits; continue or abort "
+              f"rather than pushing them: {', '.join(stray[:10])}", file=sys.stderr)
+        return 9
+    _, rc = _live_push_preflight(pr, meta, check_base=True, wt=wt)
+    if rc:
+        return rc
+    new_sha = _git_text(["rev-parse", "HEAD"], wt)
+    if new_sha != meta.get("new_head_sha"):
+        print(f"resubmit: local head changed after the merge "
+              f"({meta.get('new_head_sha', '')[:8]} → {new_sha[:8]}); nothing pushed.",
+              file=sys.stderr)
+        return 9
+    ff = _git(["merge-base", "--is-ancestor", meta["head_sha"], new_sha], wt)
+    if ff.returncode != 0:
+        print("resubmit: merged head does not contain the author's commits; nothing pushed.",
+              file=sys.stderr)
+        return 9
+    lease = f"--force-with-lease=refs/heads/{meta['branch']}:{meta['head_sha']}"
+    if dry_run:
+        print(f"[dry-run] would push merge commit {new_sha[:8]} to {meta['repo']} "
+              f"@ {meta['branch']} (fast-forward from {meta['head_sha'][:8]})")
+    else:
+        push = _git(["push", lease, "origin", f"HEAD:{meta['branch']}"], wt)
+        if push.returncode != 0:
+            print(f"resubmit: lease-protected push to {meta['repo']} @ {meta['branch']} "
+                  f"failed: {push.stderr.strip()}", file=sys.stderr)
+            return 7
+    _log_merge(pr, meta, new_sha, dry_run)
+    _cleanup(pr)
+    if dry_run:
+        print(f"[dry-run] conflict-resolving merge for PR #{pr} logged; remote branch untouched.")
+    else:
+        print(f"resolved PR #{pr}'s conflicts as {actor_label()}: merged "
+              f"{meta['base_branch']} into {meta['branch']} "
+              f"({meta['head_sha'][:8]} → {new_sha[:8]}).")
+        print("  Greptile + CI re-run on the push.")
+    return 0
+
+
 def cmd_push(pr: int, message: str | None, dry_run: bool,
              confirm_rewrite: str | None = None) -> int:
     wt = _worktree(pr)
@@ -502,6 +665,13 @@ def cmd_push(pr: int, message: str | None, dry_run: bool,
     if not meta:
         print(f"resubmit: PR #{pr} was not prepared (run `resubmit {pr} prepare` first)", file=sys.stderr)
         return 2
+    if meta.get("mode") == "merge":
+        if message or confirm_rewrite:
+            print("resubmit: a conflict-resolving merge push takes no -m and no "
+                  "--confirm-rewrite; the merge commit already exists and no history "
+                  "is rewritten.", file=sys.stderr)
+            return 2
+        return _push_merge(pr, meta, dry_run)
     if meta.get("mode") == "rebase":
         if message:
             print("resubmit: a completed rebase already has commits; use "
@@ -578,6 +748,23 @@ def cmd_diff(pr: int) -> int:
     if not meta:
         print(f"resubmit: PR #{pr} was not prepared (run `resubmit {pr} prepare` first)", file=sys.stderr)
         return 2
+    if meta.get("mode") == "merge":
+        if _merge_in_progress(wt) or _conflicted_paths(wt):
+            r = _git(["diff", "--no-color"], wt)
+            if r.returncode != 0:
+                print(f"resubmit: git diff failed: {r.stderr.strip()}", file=sys.stderr)
+                return 4
+            print(r.stdout.strip() or "resubmit: merge is paused, but no working diff is visible.")
+            return 0
+        if meta.get("phase") != "ready":
+            print(f"resubmit: merge of PR #{pr} is not ready to inspect.", file=sys.stderr)
+            return 9
+        r = _git(["diff", "--no-color", meta["base_sha"], "HEAD"], wt)
+        if r.returncode != 0:
+            print(f"resubmit: git diff failed: {r.stderr.strip()}", file=sys.stderr)
+            return 4
+        print(r.stdout, end="")
+        return 0
     if meta.get("mode") == "rebase":
         paths = _conflicted_paths(wt)
         if paths or _rebase_in_progress(wt):
@@ -732,27 +919,33 @@ def cmd_update(pr: int, dry_run: bool, probe: bool = False) -> int:
 
 
 def cmd_state(pr: int) -> int:
-    """Print the prepared state as JSON: {mode, phase, conflicts}.
+    """Print the prepared state as JSON:
+    {mode, phase, conflicts, worktree, base_branch}.
 
-    `prepare --rebase` exits 0 whether the rebase finished or PAUSED on
-    conflicts — the pause is a normal, resumable stop, not an error. So the exit
-    code alone cannot tell "ready to push" from "stopped, a human must resolve
-    these", and any non-interactive caller needs this to tell them apart."""
+    `prepare --rebase` and `prepare --merge` exit 0 whether the transaction
+    finished or PAUSED on conflicts — the pause is a normal, resumable stop, not
+    an error. So the exit code alone cannot tell "ready to push" from "stopped,
+    someone must resolve these", and any non-interactive caller needs this to
+    tell them apart. `worktree` is where a resolver edits the conflicted
+    paths."""
     meta = _read_meta(pr)
     if not meta:
-        print(json.dumps({"phase": "none", "mode": None, "conflicts": []}))
+        print(json.dumps({"phase": "none", "mode": None, "conflicts": [],
+                          "worktree": None, "base_branch": None}))
         return 0
     wt = _worktree(pr)
     conflicts: list[str] = []
     phase = meta.get("phase") or ("ready" if meta.get("mode") == "edit" else "unknown")
-    if wt.exists() and meta.get("mode") == "rebase":
+    if wt.exists() and meta.get("mode") in ("rebase", "merge"):
         try:
             conflicts = _conflicted_paths(wt)
         except RuntimeError:
             conflicts = []
         if conflicts:
             phase = "conflicted"
-    print(json.dumps({"phase": phase, "mode": meta.get("mode"), "conflicts": conflicts}))
+    print(json.dumps({"phase": phase, "mode": meta.get("mode"), "conflicts": conflicts,
+                      "worktree": str(wt) if wt.exists() else None,
+                      "base_branch": meta.get("base_branch")}))
     return 0
 
 
@@ -791,6 +984,18 @@ def _log_rebase(pr: int, meta: dict, new_sha: str, dry_run: bool) -> None:
         print(f"resubmit: warning — rebase activity log failed: {e}", file=sys.stderr)
 
 
+def _log_merge(pr: int, meta: dict, new_sha: str, dry_run: bool) -> None:
+    """Append the conflict-resolving base merge to the app activity log."""
+    try:
+        from prospector_app.backend import activity
+        activity.record("resubmit", pr=pr, action="RESOLVE_CONFLICTS", repo=meta.get("repo"),
+                        branch=meta.get("branch"), base=meta.get("base_branch"),
+                        base_sha=meta.get("base_sha"), from_sha=meta.get("head_sha"),
+                        to_sha=new_sha, dry_run=dry_run)
+    except Exception as e:  # noqa: BLE001 — never let audit logging break the push
+        print(f"resubmit: warning — merge activity log failed: {e}", file=sys.stderr)
+
+
 def _log_update(pr: int, info: dict, from_sha: str, to_sha: str | None, dry_run: bool) -> None:
     """Append the branch update to the app activity log under the selected user.
 
@@ -816,11 +1021,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("pr", type=int, help="the upstream PR number")
     sub = p.add_subparsers(dest="action", required=True)
     prep = sub.add_parser("prepare", help="preflight + clone the fork's head branch to edit")
-    prep.add_argument("--rebase", action="store_true",
-                      help="fetch both histories and rebase the PR onto its pinned base")
-    sub.add_parser("continue", help="stage resolved conflict paths and continue a prepared rebase")
+    prep_mode = prep.add_mutually_exclusive_group()
+    prep_mode.add_argument("--rebase", action="store_true",
+                           help="fetch both histories and rebase the PR onto its pinned base")
+    prep_mode.add_argument("--merge", action="store_true",
+                           help="fetch both histories and merge the base into the PR head, "
+                                "pausing on conflicts")
+    sub.add_parser("continue",
+                   help="stage resolved conflict paths and continue a prepared rebase or merge")
     pushp = sub.add_parser("push", help="commit the edits and push to the fork branch")
-    push_mode = pushp.add_mutually_exclusive_group(required=True)
+    push_mode = pushp.add_mutually_exclusive_group()
     push_mode.add_argument("-m", "--message", help="commit message for an ordinary content edit")
     push_mode.add_argument("--confirm-rewrite", metavar="OLD_HEAD_SHA",
                            help="acknowledge the exact old head before a rebased rewrite")
@@ -838,7 +1048,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.action == "prepare":
-            return cmd_prepare(args.pr, args.rebase)
+            return cmd_prepare(args.pr, args.rebase, args.merge)
         if args.action == "continue":
             return cmd_continue(args.pr)
         if args.action == "push":
