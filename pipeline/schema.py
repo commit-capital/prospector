@@ -36,7 +36,9 @@ _JSON = JSON().with_variant(JSONB, "postgresql")
 #     validators drop as an unknown section rather than round-tripping.
 # 11 — the alerts table (GitHub code-scanning / dependabot / secret-scanning
 #     alert family) plus the "alert" runs-ledger kind.
-STORE_SCHEMA_VERSION = 11
+# 12 — fix_request.action gains "resolve" (an agent-resolved base merge),
+#     which older validators refuse to save.
+STORE_SCHEMA_VERSION = 12
 
 # saved_at is a microsecond-resolution ISO timestamp stamped on every save — when
 # the store row was last written (distinct from `updated_at`, which mirrors the

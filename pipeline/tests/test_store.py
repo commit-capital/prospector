@@ -116,6 +116,16 @@ class TestPRValidation:
         with pytest.raises(ValidationError, match="greptile_review.findings\\[\\].class"):
             store.save_pr(rec)
 
+    def test_fix_request_accepts_resolve_action(self, store):
+        rec = _pr(fix_request={"status": "awaiting-review", "action": "resolve"})
+        store.save_pr(rec)
+        assert store.load_pr(1234).raw["fix_request"]["action"] == "resolve"
+
+    def test_fix_request_rejects_unknown_action(self, store):
+        rec = _pr(fix_request={"status": "queued", "action": "amend"})
+        with pytest.raises(ValidationError, match="fix_request.action"):
+            store.save_pr(rec)
+
 
 class TestForwardCompatibility:
     """A record written by newer code (carrying a section this checkout doesn't

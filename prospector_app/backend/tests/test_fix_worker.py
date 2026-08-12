@@ -9,6 +9,8 @@ since moved.
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from pipeline import profile, settings
@@ -242,3 +244,119 @@ def test_approving_a_fix_pushes_the_reviewed_patch_verbatim(store, monkeypatch):
 
     assert store.load_pr(1).fix_request["status"] == "pushed"
     assert not any(a[0] in ("prepare", "update") for a in probe.calls)
+
+
+# --- a conflicted rebase escalates to an agent-authored merge resolution --------
+
+class _ConflictedResubmit:
+    """A resubmit whose rebase pauses on conflicts and whose merge prepare
+    pauses on the same paths; continue/diff then succeed."""
+
+    def __init__(self, tmp_path):
+        self.calls = []
+        self.wt = str(tmp_path / "wt")
+        self.merged = False
+
+    def __call__(self, n, *args):
+        self.calls.append(args)
+        rc, out = 0, ""
+        if args[0] == "state":
+            out = json.dumps({
+                "phase": "ready" if self.merged else "conflicted",
+                "mode": "merge" if self.merged else "rebase",
+                "conflicts": [] if self.merged else ["one.txt"],
+                "worktree": self.wt, "base_branch": "master"})
+        elif args[0] == "diff":
+            out = ("diff --git a/one.txt b/one.txt\n+resolved" if self.merged
+                   else "diff --git a/one.txt b/one.txt\n+<<<<<<< conflict")
+        elif args[0] == "continue":
+            self.merged = True
+        return type("R", (), {"returncode": rc, "stdout": out, "stderr": ""})()
+
+
+def test_conflicted_rebase_escalates_to_agent_and_parks_resolve(store, monkeypatch, tmp_path):
+    fix_queue.queue_pr(1, "rebase")
+    fake = _ConflictedResubmit(tmp_path)
+    monkeypatch.setattr(fix_worker, "_resubmit", fake)
+    monkeypatch.setattr(fix_worker.resolve_conflicts, "resolve",
+                        lambda wt, paths, **kw: {"resolutions": [
+                            {"path": "one.txt", "rationale": "kept both"}]})
+
+    fix_worker.run_one(1)
+
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "awaiting-review"
+    assert req["action"] == "resolve"
+    assert req["result"]["resolutions"][0]["rationale"] == "kept both"
+    assert req["result"]["conflict_paths"] == ["one.txt"]
+    assert req["result"]["merge_diff"].startswith("diff ")
+    assert "resolved" in req["result"]["patch"]
+    assert ("continue",) in fake.calls
+    assert not _pushed(fake)
+    # the parked worktree is kept: no abort after the merge was prepared
+    after_merge = fake.calls[fake.calls.index(("prepare", "--merge")):]
+    assert ("abort",) not in after_merge
+
+
+def test_auto_queued_conflicted_rebase_keeps_the_refusal(store, monkeypatch, tmp_path):
+    fix_queue.queue_pr(1, "rebase", source="auto")
+    fake = _ConflictedResubmit(tmp_path)
+    monkeypatch.setattr(fix_worker, "_resubmit", fake)
+    called = []
+    monkeypatch.setattr(fix_worker.resolve_conflicts, "resolve",
+                        lambda *a, **kw: called.append(1))
+
+    fix_worker.run_one(1)
+
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "refused"
+    assert not called
+    assert ("prepare", "--merge") not in fake.calls
+
+
+def test_agent_give_up_refuses_with_reason(store, monkeypatch, tmp_path):
+    fix_queue.queue_pr(1, "rebase")
+    fake = _ConflictedResubmit(tmp_path)
+    monkeypatch.setattr(fix_worker, "_resubmit", fake)
+    monkeypatch.setattr(fix_worker.resolve_conflicts, "resolve",
+                        lambda wt, paths, **kw: {"give_up": "the sides contradict"})
+
+    fix_worker.run_one(1)
+
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "refused"
+    assert "the sides contradict" in req["refused_reason"]
+    after_merge = fake.calls[fake.calls.index(("prepare", "--merge")):]
+    assert ("abort",) in after_merge
+
+
+def test_resolve_preflight_failure_refuses_and_aborts(store, monkeypatch, tmp_path):
+    fix_queue.queue_pr(1, "rebase")
+    fake = _ConflictedResubmit(tmp_path)
+    monkeypatch.setattr(fix_worker, "_resubmit", fake)
+    monkeypatch.setattr(fix_worker.resolve_conflicts, "resolve",
+                        lambda wt, paths, **kw: {"resolutions": [
+                            {"path": "one.txt", "rationale": "kept both"}]})
+    monkeypatch.setattr(fix_worker, "_preflight",
+                        lambda n, patch: {"exit": 1, "error_excerpt": "boom"})
+
+    fix_worker.run_one(1)
+
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "refused"
+    after_merge = fake.calls[fake.calls.index(("prepare", "--merge")):]
+    assert ("abort",) in after_merge
+
+
+def test_approved_resolve_pushes_the_kept_tree_without_rederiving(store, monkeypatch):
+    store.load_pr(1).record_fix_request(
+        "approved", "resolve", queued_at=NOW,
+        result={"patch": "diff", "conflict_paths": ["one.txt"]}, head_sha=HEAD)
+    data.refresh()
+    probe = _Probe()
+    monkeypatch.setattr(fix_worker, "_resubmit", probe)
+
+    fix_worker.push_approved(1)
+
+    assert probe.calls == [("push",)]
+    assert store.load_pr(1).fix_request["status"] == "pushed"

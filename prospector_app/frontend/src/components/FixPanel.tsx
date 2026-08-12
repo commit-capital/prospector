@@ -104,15 +104,19 @@ function RequestStrip({ req, runner }: { req: FixRequest; runner: FixRunner | nu
           <div className="vb-headline">
             {req.status === "approved"
               ? "Approved — waiting for the runner to push"
-              : proven
-                ? `Conflicts resolvable — this ${req.action} applies cleanly`
-                : `A ${req.action} is ready for your review`}
+              : req.action === "resolve"
+                ? "An agent resolved the merge conflicts — review & approve"
+                : proven
+                  ? `Conflicts resolvable — this ${req.action} applies cleanly`
+                  : `A ${req.action} is ready for your review`}
             {req.status === "approved" && offlineChip}
           </div>
           <div className="vb-detail">
             Nothing has been pushed to the contributor's branch yet.
             {pf && pf.exit === 0 && " Compile preflight passed."}
             {req.result?.message && ` Commit message: “${req.result.message}”.`}
+            {req.action === "resolve" &&
+              " The conflicted hunks are in the Diff panel below — switch it to “Merge diff”."}
             {mechanical && req.base_sha &&
               ` Proven against base ${req.base_sha.slice(0, 8)}; pushing re-runs it against
                 current base first.`}
@@ -247,6 +251,16 @@ export function FixBody({ req, runner }: { req: FixRequest | null; runner: FixRu
   return (
     <>
       <RequestStrip req={req} runner={runner} />
+      {req.result?.resolutions && req.result.resolutions.length > 0 && (
+        <div className="small" style={{ marginTop: 8 }}>
+          <div className="muted">How each conflict was resolved:</div>
+          <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+            {req.result.resolutions.map((r) => (
+              <li key={r.path}><code>{r.path}</code> — {r.rationale}</li>
+            ))}
+          </ul>
+        </div>
+      )}
       {showPatch && (
         <>
           <div className="small muted" style={{ marginTop: 8 }}>
