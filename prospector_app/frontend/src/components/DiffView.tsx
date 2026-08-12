@@ -2,6 +2,20 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { parseDiff, Diff, Hunk, getChangeKey, type HunkData, type ChangeData, type ChangeEventArgs } from "react-diff-view";
 import "react-diff-view/style/index.css";
 import { useAgentPane } from "./AgentPane";
+import { classifyRawDiff } from "./rawDiffLines";
+
+/** Per-line colored rendering for diffs react-diff-view cannot parse — the
+ *  combined format of a merge/conflict diff most of all. Each line is a block
+ *  span so its add/del tint spans the full row width. */
+function RawDiff({ diffText }: { diffText: string }) {
+  return (
+    <pre className="rawdiff">
+      {classifyRawDiff(diffText).map((l, i) => (
+        <span key={i} className={`rawdiff-line rawdiff-${l.kind}`}>{l.text || " "}</span>
+      ))}
+    </pre>
+  );
+}
 
 interface Menu { x: number; y: number; file: string; line: number; key: string }
 
@@ -29,7 +43,7 @@ export function DiffView({ diffText, onComment, blobUrl }: {
   }, []);
 
   if (!diffText) return <div className="muted pad">No diff available.</div>;
-  if (files.length === 0) return <pre className="rawdiff">{diffText}</pre>;
+  if (files.length === 0) return <RawDiff diffText={diffText} />;
 
   const openMenu = (file: string, change: ChangeData) => {
     const ln = "newLineNumber" in change ? change.newLineNumber : change.lineNumber;
