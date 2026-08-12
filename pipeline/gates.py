@@ -449,14 +449,18 @@ def fix_eligibility(pr: Pr, action: str,
       - a PR that is not open
       - a `fix` action where the profile names no fixable gates, i.e. the
         deployment has not opted into agent-authored changes
-      - a `fix` action on a CODEOWNERS-gated path
+      - a `fix` or `resolve` action on a CODEOWNERS-gated path
 
-    CODEOWNERS blocks `fix` alone. It routes *merges* to owners, and it keeps
-    doing that server-side no matter what lands on the branch — so `update` and
-    `rebase`, which author no content of their own, are how a gated PR gets
-    ready for the owner review it needs. Only agent-authored content is
-    withheld, because that is new code an owner would be reviewing on the
-    strength of the bot having written it.
+    CODEOWNERS blocks `fix` and `resolve` alone. It routes *merges* to owners,
+    and it keeps doing that server-side no matter what lands on the branch — so
+    `update` and `rebase`, which author no content of their own, are how a
+    gated PR gets ready for the owner review it needs. Only agent-authored
+    content is withheld, because that is new code an owner would be reviewing
+    on the strength of the bot having written it.
+
+    `resolve` carries agent-authored conflict resolutions; callers pass the
+    conflicted paths as `changed_paths`, and it needs no profile opt-in because
+    every resolution parks for operator approval before anything is pushed.
 
     A repository that also wants the mechanical actions off some surface names
     it in autofix.deny_globs, which blocks every action. Agent-executed
@@ -471,7 +475,7 @@ def fix_eligibility(pr: Pr, action: str,
     if pr.security_verdict == "RED":
         return False, "security review returned RED"
     if changed_paths is not None:
-        if action == "fix":
+        if action in ("fix", "resolve"):
             hm = codeowners.human_merge(changed_paths)
             if hm:
                 owners = " ".join(hm["owners"])
