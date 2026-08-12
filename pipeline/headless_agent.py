@@ -18,6 +18,8 @@ import shutil
 import signal
 import subprocess
 
+from pipeline.gh import operator_env
+
 CLAUDE_BIN = shutil.which("claude") or "claude"
 
 
@@ -164,7 +166,7 @@ def run_agent(prompt: str, *, allow_gh: bool, cwd: str, system_prompt: str | Non
         cmd += ["--append-system-prompt", system_prompt]
     proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True,
-                            start_new_session=True)
+                            start_new_session=True, env=operator_env())
     assert proc.stdout is not None
     text = parse_stream(proc.stdout, on_event=on_event)
     try:

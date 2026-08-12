@@ -22,6 +22,7 @@ import os
 import re
 import subprocess
 
+from pipeline.gh import operator_env
 from pipeline.settings import BOT_LOGIN
 
 ALLOWED_BINARIES = {"gh", "git", "claude", "python", "python3"}
@@ -66,14 +67,6 @@ def run(argv: list[str], *, timeout: int = 120, text: bool = True) -> subprocess
     assert_read_only(argv)
     return subprocess.run(argv, capture_output=True, text=text, timeout=timeout,
                           env=operator_env())
-
-
-def operator_env(base: dict[str, str] | None = None) -> dict[str, str]:
-    """Environment for read-only operator GitHub commands and the chat process."""
-    env = dict(base if base is not None else os.environ)
-    env.pop("GH_TOKEN", None)
-    env.pop("GITHUB_TOKEN", None)
-    return env
 
 
 # ---------------------------------------------------------------------------

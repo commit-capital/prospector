@@ -7,6 +7,7 @@ import types
 from prospector_app.backend import data
 from prospector_app.backend import executor
 from prospector_app.backend import models
+from prospector_app.backend import service
 
 
 def _ok(stdout=""):
@@ -102,7 +103,7 @@ def test_merge_reflects_merged(monkeypatch):
     from pipeline import gates
     monkeypatch.setattr(data, "pr_to_clusters", lambda: {123: [5]})
     monkeypatch.setattr(data, "prs", lambda: {123: types.SimpleNamespace(meta={}, head_sha="deadbeef", linked_issues=[])})
-    monkeypatch.setattr(executor, "_changed_paths", lambda n: [])
+    monkeypatch.setattr(service, "live_changed_paths", lambda n: [])
     monkeypatch.setattr(gates, "merge_eligibility", lambda rec, changed_paths=None, override_reason=None: (True, "ok"))
     monkeypatch.setattr(executor, "_preflight", lambda *a, **k: (True, ""))
     monkeypatch.setattr(executor, "mint_bot_token", lambda: "tok_realish")

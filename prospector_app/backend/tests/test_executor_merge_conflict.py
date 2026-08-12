@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from prospector_app.backend import data
 from prospector_app.backend import executor
+from prospector_app.backend import service
 from pipeline import gates
 
 
@@ -12,7 +13,7 @@ def _setup(monkeypatch, mergeable_state):
     rec = SimpleNamespace(head_sha="h", linked_issues=[])
     monkeypatch.setattr(data, "prs", lambda: {5: rec})
     monkeypatch.setattr(data, "pr_to_clusters", lambda: {})
-    monkeypatch.setattr(executor, "_changed_paths", lambda n: [])
+    monkeypatch.setattr(service, "live_changed_paths", lambda n: [])
     monkeypatch.setattr(gates, "merge_eligibility", lambda rec, **k: (True, "passed all checks run"))
     monkeypatch.setattr(executor, "_pr_live",
                         lambda n: {"state": "open", "merged": False, "head": "h",

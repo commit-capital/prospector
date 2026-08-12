@@ -20,6 +20,7 @@ from collections.abc import Callable
 from urllib.parse import quote
 
 from pipeline import settings
+from pipeline.gh import operator_env
 
 _HUNK_RE = re.compile(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
@@ -53,7 +54,8 @@ class MasterTree:
             res = subprocess.run(
                 ["gh", "api", f"repos/{self.repo}/contents/{quote(path)}",
                  "-H", "Accept: application/vnd.github.raw+json"],
-                capture_output=True, text=True, errors="replace", timeout=60)
+                capture_output=True, text=True, errors="replace", timeout=60,
+                env=operator_env())
         except (subprocess.SubprocessError, OSError):
             self._failures += 1
             return None

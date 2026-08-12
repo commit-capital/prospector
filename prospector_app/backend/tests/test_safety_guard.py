@@ -52,6 +52,7 @@ def test_allowed(argv):
 def test_read_run_uses_operator_login_environment(monkeypatch):
     monkeypatch.setenv("GH_TOKEN", "expired-app-token")
     monkeypatch.setenv("GITHUB_TOKEN", "expired-actions-token")
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     seen = {}
 
     def fake_run(argv, **kwargs):

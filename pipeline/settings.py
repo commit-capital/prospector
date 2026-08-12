@@ -70,10 +70,11 @@ def default_branch() -> str:
     configured = os.environ.get("TRIAGE_DEFAULT_BRANCH")
     if configured:
         return configured
+    from pipeline.gh import operator_env  # deferred: gh.py imports REPO from here
     try:
         r = subprocess.run(
             ["gh", "api", f"repos/{REPO}", "--jq", ".default_branch"],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True, text=True, timeout=15, env=operator_env(),
         )
     except (OSError, subprocess.SubprocessError):
         return "main"

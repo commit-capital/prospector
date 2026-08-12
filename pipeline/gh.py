@@ -13,10 +13,17 @@ from pipeline.settings import REPO
 
 
 def operator_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
-    """Environment for GitHub reads authenticated by the local ``gh`` login."""
+    """Environment for GitHub reads authenticated by the local ``gh`` login.
+
+    Strips GH_TOKEN/GITHUB_TOKEN so `gh` falls back to the operator's keyring
+    login instead of a possibly-stale token left over in the parent process's
+    environment. Skipped on a GitHub Actions runner (GITHUB_ACTIONS=true) —
+    there is no keyring login to fall back to there, and GH_TOKEN is the
+    sanctioned, freshly-injected read identity for that job, not a stale one."""
     env = dict(os.environ if base is None else base)
-    env.pop("GH_TOKEN", None)
-    env.pop("GITHUB_TOKEN", None)
+    if env.get("GITHUB_ACTIONS") != "true":
+        env.pop("GH_TOKEN", None)
+        env.pop("GITHUB_TOKEN", None)
     return env
 
 

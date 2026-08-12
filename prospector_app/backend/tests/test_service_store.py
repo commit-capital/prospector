@@ -327,7 +327,7 @@ class TestServiceRows:
         # An Easy-Lane PR: clean signals, never analyzed, never security-reviewed.
         patched({1: _pr()})
         monkeypatch.setattr(service, "_greptile_and_ci", lambda n, sha: (None, []))
-        monkeypatch.setattr(service, "_live_changed_paths", lambda n: None)
+        monkeypatch.setattr(service, "live_changed_paths", lambda n: None)
         rec = service.data.prs()[1]
         rec.raw["meta"]["body"] = ""  # skip the live body fetch
         gate = service.pr_detail(1)["merge_gate"]
@@ -342,7 +342,7 @@ class TestServiceRows:
         rec.raw["meta"]["body"] = ""
         patched({1: rec})
         monkeypatch.setattr(service, "_greptile_and_ci", lambda n, sha: (None, []))
-        monkeypatch.setattr(service, "_live_changed_paths", lambda n: None)
+        monkeypatch.setattr(service, "live_changed_paths", lambda n: None)
         gate = service.pr_detail(1)["merge_gate"]
         assert gate["ok"] is True
         assert gate["overridable"] is False
@@ -354,7 +354,7 @@ class TestServiceRows:
         rec.raw["meta"]["body"] = ""
         patched({1: rec})
         monkeypatch.setattr(service, "_greptile_and_ci", lambda n, sha: (None, []))
-        monkeypatch.setattr(service, "_live_changed_paths", lambda n: None)
+        monkeypatch.setattr(service, "live_changed_paths", lambda n: None)
         gate = service.pr_detail(1)["merge_gate"]
         assert gate["ok"] is False and "greptile" in gate["reason"]
 
@@ -363,7 +363,7 @@ class TestServiceRows:
         rec.raw["meta"]["body"] = ""
         patched({1: rec})
         monkeypatch.setattr(service, "_greptile_and_ci", lambda n, sha: (None, []))
-        monkeypatch.setattr(service, "_live_changed_paths",
+        monkeypatch.setattr(service, "live_changed_paths",
                             lambda n: [".github/workflows/ci.yml", "src/other.ts"])
         gate = service.pr_detail(1)["merge_gate"]
         assert gate["ok"] is False and "code owner" in gate["reason"]
@@ -414,7 +414,7 @@ class TestPrDetailDegradesOnLiveFailure:
         import subprocess
         patched({1: _pr(analysis=_analysis(), security=_green())})
         monkeypatch.setattr(service, "_greptile_and_ci", lambda n, sha: (None, []))
-        monkeypatch.setattr(service, "_live_changed_paths", lambda n: None)
+        monkeypatch.setattr(service, "live_changed_paths", lambda n: None)
         # _pr() has no meta.body, so body_fut fires the live gh fetch — make it
         # raise the way a 30s `gh` timeout does.
         def timeout(n):
@@ -434,7 +434,7 @@ class TestPrDetailDegradesOnLiveFailure:
         patched({1: _pr(analysis=_analysis(), security=_green())})
         rec = service.data.prs()[1]
         rec.raw["meta"]["body"] = ""               # ingested → skip the live body fetch
-        monkeypatch.setattr(service, "_live_changed_paths", lambda n: None)
+        monkeypatch.setattr(service, "live_changed_paths", lambda n: None)
         def boom(n, sha):
             raise RuntimeError("worker unreachable")
         monkeypatch.setattr(service, "_greptile_and_ci", boom)
@@ -452,7 +452,7 @@ class TestPrDetailDegradesOnLiveFailure:
         monkeypatch.setattr(service, "_greptile_and_ci", lambda n, sha: (None, []))
         def boom(n, sha):
             raise RuntimeError("gh files API unreachable")
-        monkeypatch.setattr(service, "_live_changed_paths", boom)
+        monkeypatch.setattr(service, "live_changed_paths", boom)
 
         row = service.pr_detail(1)
 
@@ -466,7 +466,7 @@ class TestPrDetailDegradesOnLiveFailure:
         rec = service.data.prs()[1]
         rec.raw["meta"]["body"] = ""
         monkeypatch.setattr(service, "_greptile_and_ci", lambda n, sha: (None, []))
-        monkeypatch.setattr(service, "_live_changed_paths", lambda n: None)
+        monkeypatch.setattr(service, "live_changed_paths", lambda n: None)
         assert service.pr_detail(1)["live_refresh_failed"] == []
 
 

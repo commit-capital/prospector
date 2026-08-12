@@ -141,10 +141,11 @@ def _human_merge_cached(rec: Pr) -> tuple[bool, dict | None]:
     return True, codeowners.human_merge(testpaths.changed_paths(text))
 
 
-def _live_changed_paths(n: int) -> list[str] | None:
+def live_changed_paths(n: int) -> list[str] | None:
     """The PR's changed-file list from GitHub — authoritative for the
     CODEOWNERS check and the risk tier when no diff is cached. None when the
-    fetch fails."""
+    fetch fails — never asserted as "no paths changed", so a caller can tell
+    a failed fetch apart from a PR that genuinely touches nothing gated."""
     r = run(["gh", "api", "--paginate", f"repos/{REPO}/pulls/{n}/files",
              "--jq", ".[].filename"], timeout=60)
     if r.returncode != 0:
@@ -652,7 +653,7 @@ def pr_detail(n: int) -> dict | None:
     with ThreadPoolExecutor(max_workers=3) as pool:
         detail_fut = pool.submit(_greptile_and_ci, n, rec.head_sha)
         # authoritative CODEOWNERS + tier source; live file list only when uncached (#15/#26)
-        paths_fut = None if hm_known else pool.submit(_live_changed_paths, n)
+        paths_fut = None if hm_known else pool.submit(live_changed_paths, n)
         body_fut = pool.submit(_pr_body_live, n) if body is None else None  # ingested lazily
 
         # Resolve each future on its own — a timeout/failure on any one degrades to

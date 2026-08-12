@@ -53,6 +53,7 @@ def test_gh_api_none_on_subprocess_error(monkeypatch):
 def test_gh_api_uses_operator_login_environment(monkeypatch):
     monkeypatch.setenv("GH_TOKEN", "expired-app-token")
     monkeypatch.setenv("GITHUB_TOKEN", "expired-actions-token")
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     seen = {}
 
     def run(argv, *, capture_output=True, text=True, timeout=60, env=None):
@@ -63,6 +64,15 @@ def test_gh_api_uses_operator_login_environment(monkeypatch):
     assert gh.gh_api("x") == {"ok": True}
     assert "GH_TOKEN" not in seen["env"]
     assert "GITHUB_TOKEN" not in seen["env"]
+
+
+def test_operator_env_keeps_token_on_a_github_actions_runner(monkeypatch):
+    # No keyring login exists on a fresh Actions runner — GH_TOKEN there is the
+    # sanctioned, freshly-injected read identity, not a stale one (#92).
+    monkeypatch.setenv("GH_TOKEN", "runner-token")
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    env = gh.operator_env()
+    assert env["GH_TOKEN"] == "runner-token"
 
 
 def test_fetch_pr_uses_pulls_path(monkeypatch):
@@ -111,6 +121,7 @@ def test_gh_graphql_parses_object(monkeypatch):
 def test_gh_graphql_uses_operator_login_environment(monkeypatch):
     monkeypatch.setenv("GH_TOKEN", "expired-app-token")
     monkeypatch.setenv("GITHUB_TOKEN", "expired-actions-token")
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     seen = {}
 
     def run(argv, *, capture_output=True, text=True, timeout=60, env=None):

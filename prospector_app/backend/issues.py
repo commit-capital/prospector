@@ -112,8 +112,7 @@ def _live_pr_states(numbers: list[int]) -> dict[int, str]:
         query = f'query {{ repository(owner: "{owner}", name: "{name}") {{ {fields} }} }}'
         repo: dict = {}
         try:
-            res = subprocess.run(["gh", "api", "graphql", "-f", f"query={query}"],
-                                 capture_output=True, text=True, timeout=20)
+            res = run(["gh", "api", "graphql", "-f", f"query={query}"], timeout=20)
             if res.returncode == 0:
                 repo = (json.loads(res.stdout).get("data") or {}).get("repository") or {}
         except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
