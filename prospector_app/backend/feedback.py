@@ -23,6 +23,7 @@ from typing import TypedDict
 
 from pipeline import settings
 from prospector_app.backend import instance
+from prospector_app.backend import safety_guard
 
 LABELS = ["app"]
 
@@ -51,6 +52,7 @@ def operator_login() -> str | None:
         r = subprocess.run(
             ["gh", "api", "user", "--jq", ".login"],
             capture_output=True, text=True, timeout=10,
+            env=safety_guard.operator_env(),
         )
     except (OSError, subprocess.SubprocessError):
         return None

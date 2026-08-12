@@ -28,6 +28,7 @@ from prospector_app.backend import activity
 from prospector_app.backend import data
 from prospector_app.backend import decisions
 from prospector_app.backend import models
+from prospector_app.backend import service
 from prospector_app.backend.safety_guard import bot_merge_run, bot_run, run
 from pipeline import review_policy
 from pipeline.settings import BOT_LOGIN, REPO
@@ -209,15 +210,6 @@ def _preflight(n: int, rec: Pr | None, *, check_head: bool,
     if check_mergeable and live.get("mergeable_state") == "dirty":
         return False, "PR now has merge conflicts — needs a rebase before it can merge"
     return True, ""
-
-
-def _changed_paths(n: int) -> list[str]:
-    """Live list of changed file paths for a PR (read-only, paginated)."""
-    r = run(["gh", "api", "--paginate", f"repos/{REPO}/pulls/{n}/files",
-             "--jq", ".[].filename"], timeout=60)
-    if r.returncode != 0:
-        return []
-    return [ln.strip() for ln in r.stdout.splitlines() if ln.strip()]
 
 
 def _is_bot_login(login: str | None) -> bool:
@@ -672,7 +664,8 @@ def merge_pr(n: int, method: str = "squash", *, dry_run: bool, reason: str | Non
     reason = (reason or "").strip() or None
     rec = data.prs().get(int(n))
     # Live changed-file list so the gate can refuse CODEOWNERS-gated PRs (#15/#26).
-    paths = _changed_paths(n)
+    # None on a failed fetch, never asserted as an empty list of paths.
+    paths = service.live_changed_paths(n)
     ok, why = (gates.merge_eligibility(rec, changed_paths=paths, override_reason=reason)
                if rec else (False, "PR not in store"))
     if not ok:

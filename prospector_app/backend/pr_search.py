@@ -14,6 +14,7 @@ import re
 
 from pipeline import review_policy
 from prospector_app.backend import chat  # reuse CLAUDE_BIN, isolation_flags, REPO_ROOT, system_prompt
+from prospector_app.backend import safety_guard
 from prospector_app.backend import subproc
 
 # Fields the query vocabulary carries only when Greptile is the configured review
@@ -145,7 +146,7 @@ async def search_to_spec(query: str) -> dict:
            "--append-system-prompt", chat.system_prompt()]
     proc = await subproc.spawn(
         cmd, cwd=chat.REPO_ROOT, stderr=asyncio.subprocess.DEVNULL,
-        start_new_session=True)
+        start_new_session=True, env=safety_guard.operator_env())
     out, _ = await proc.communicate()
     try:
         envelope = json.loads(out.decode("utf-8", "replace"))

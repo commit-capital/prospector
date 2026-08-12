@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pipeline import diffpaths
+from pipeline.gh import operator_env
 from pipeline.settings import REPO
 
 if TYPE_CHECKING:
@@ -60,7 +61,8 @@ def _fetch_changed_paths(pr: int) -> list[str] | None:
     when the listing is unavailable."""
     res = subprocess.run(["gh", "api", f"repos/{REPO}/pulls/{pr}/files",
                           "--paginate", "--jq", ".[].filename"],
-                         capture_output=True, text=True, timeout=120)
+                         capture_output=True, text=True, timeout=120,
+                         env=operator_env())
     if res.returncode != 0:
         return None
     return [ln.strip() for ln in res.stdout.splitlines() if ln.strip()]
@@ -87,7 +89,8 @@ def _synthesize_diff(pr: int) -> str | None:
     headers with +/- counts only."""
     res = subprocess.run(["gh", "api", f"repos/{REPO}/pulls/{pr}/files",
                           "--paginate", "--jq", ".[]"],
-                         capture_output=True, text=True, timeout=120)
+                         capture_output=True, text=True, timeout=120,
+                         env=operator_env())
     if res.returncode != 0:
         return None
     parts = []
@@ -131,7 +134,8 @@ def fetch_diff_paths(pr: int, head_sha: str, diffs_dir: Path | None = None,
                 return diffpaths.changed_paths(body)
             return _fetch_changed_paths(pr)
     res = subprocess.run(["gh", "pr", "diff", str(pr), "--repo", REPO],
-                         capture_output=True, text=True, timeout=120)
+                         capture_output=True, text=True, timeout=120,
+                         env=operator_env())
     text = res.stdout if res.returncode == 0 else _synthesize_diff(pr)
     if text is None:
         return None

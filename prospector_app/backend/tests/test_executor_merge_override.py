@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from prospector_app.backend import caps
 from prospector_app.backend import data
 from prospector_app.backend import executor
+from prospector_app.backend import service
 from pipeline import gates
 
 
@@ -32,7 +33,7 @@ def _setup(monkeypatch, events: list, *, verdict="YELLOW", overridable=True):
     monkeypatch.setattr(data, "pr_to_clusters", lambda: {})
     monkeypatch.setattr(data, "store", lambda: _Store(events))
     monkeypatch.setattr(data, "refresh", lambda: None)
-    monkeypatch.setattr(executor, "_changed_paths", lambda n: [])
+    monkeypatch.setattr(service, "live_changed_paths", lambda n: [])
     # gate: YELLOW blocks unless a reason is supplied; GREEN always passes
     monkeypatch.setattr(
         gates, "merge_eligibility",

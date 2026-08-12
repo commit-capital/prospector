@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 
 from prospector_app.backend import chat  # CLAUDE_BIN, isolation_flags, REPO_ROOT, APP_ROOT, system_prompt
 from prospector_app.backend import data
+from prospector_app.backend import safety_guard
 from prospector_app.backend import service
 from prospector_app.backend import subproc
 from prospector_app.backend import testpaths
@@ -145,7 +146,7 @@ async def _judge_batch(query: str, records: list[dict], sem: asyncio.Semaphore) 
     async with sem:
         proc = await subproc.spawn(
             cmd, cwd=chat.REPO_ROOT, stderr=asyncio.subprocess.DEVNULL,
-            start_new_session=True)
+            start_new_session=True, env=safety_guard.operator_env())
         out, _ = await proc.communicate()
     try:
         env = json.loads(out.decode("utf-8", "replace"))

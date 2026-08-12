@@ -36,7 +36,7 @@ from pipeline import greptile
 from pipeline import live_prs
 from pipeline import model
 from pipeline import review_policy
-from pipeline.gh import fetch_pr, gh_json
+from pipeline.gh import fetch_pr, gh_json, operator_env
 from pipeline.settings import REPO
 from pipeline.store import Store
 from pipeline.storekit import now as _now
@@ -311,7 +311,7 @@ def fetch_open_prs(max_n: int | None = None) -> list[dict]:
     while True:
         res = subprocess.run(
             ["gh", "api", f"repos/{REPO}/pulls?state=open&per_page=100&page={page}"],
-            capture_output=True, text=True, timeout=120)
+            capture_output=True, text=True, timeout=120, env=operator_env())
         if res.returncode != 0:
             raise RuntimeError(f"gh api failed: {res.stderr.strip()[:300]}")
         batch = json.loads(res.stdout)

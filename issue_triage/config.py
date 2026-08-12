@@ -3,6 +3,8 @@ import json
 import subprocess
 from pathlib import Path
 
+from pipeline.gh import operator_env
+
 # re-exported for issue_triage modules
 from pipeline.settings import REPO as REPO
 from pipeline.settings import REPO_NAME as REPO_NAME
@@ -21,7 +23,7 @@ def gh_read(path, params=None):
     cmd = ["gh", "api", "-X", "GET", path]
     for k, v in (params or {}).items():
         cmd += ["-f", f"{k}={v}"]
-    out = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    out = subprocess.run(cmd, capture_output=True, text=True, check=True, env=operator_env())
     return json.loads(out.stdout)
 
 
@@ -39,7 +41,7 @@ def gh_graphql(query: str, variables: dict[str, str] | None = None) -> dict:
     cmd = ["gh", "api", "graphql", "-f", f"query={query}"]
     for k, v in (variables or {}).items():
         cmd += ["-f", f"{k}={v}"]
-    out = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    out = subprocess.run(cmd, capture_output=True, text=True, check=True, env=operator_env())
     payload = json.loads(out.stdout)
     if payload.get("errors"):
         raise RuntimeError(f"GraphQL query failed: {payload['errors']}")
