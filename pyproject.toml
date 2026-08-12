@@ -42,7 +42,7 @@ dev = [
 # pipeline.*, prospector_app.backend.*, issue_triage.*. Each package sits at its
 # natural path under the repo root, so no package-dir remapping is needed. New
 # modules need no change — they're submodules of an already-registered package.
-packages = ["pipeline", "prospector_app", "prospector_app.backend", "issue_triage"]
+packages = ["alert_triage", "pipeline", "prospector_app", "prospector_app.backend", "issue_triage"]
 
 [tool.pytest.ini_options]
 # One command runs all three suites. importlib import-mode avoids pytest's
@@ -57,7 +57,7 @@ packages = ["pipeline", "prospector_app", "prospector_app.backend", "issue_triag
 # single worker via an xdist_group marker on test_postgres_backend.py — which
 # only binds under `--dist loadgroup` (plain `load` ignores the marker); ungrouped
 # tests still spread across all workers under loadgroup, exactly like load.
-testpaths = ["pipeline/tests", "prospector_app/backend/tests", "issue_triage/tests"]
+testpaths = ["pipeline/tests", "prospector_app/backend/tests", "issue_triage/tests", "alert_triage/tests"]
 addopts = "--import-mode=importlib -n auto --dist loadgroup"
 
 [tool.ruff]
