@@ -74,6 +74,7 @@ async def run_bulk(prs: list[int], action: str, *, comment: str | None = None,
                     job = jobs.start_job("security-review", pr=n)
                     jobs.schedule_job(job)
                     res = {"pr": n, "action": action, "status": "queued",
+                           "job_id": job["id"],
                            "detail": f"security review queued as background job #{job['id']}"}
                 except ValueError as e:
                     res = {"pr": n, "action": action, "status": "skipped",

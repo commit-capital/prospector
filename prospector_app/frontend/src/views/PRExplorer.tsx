@@ -419,7 +419,8 @@ export default function PRExplorer() {
       {pending && (
         <BulkConfirmDialog {...pending} selected={[...selected]} rows={rows}
           onClose={() => setPending(null)}
-          onDone={() => { clearSel(); refetch(); }} />
+          onDone={() => { clearSel(); refetch(); }}
+          onJobsFinished={refetch} />
       )}
     </div>
   );

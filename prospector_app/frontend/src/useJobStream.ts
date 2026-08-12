@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
+import { attachJobStream } from "./jobStream";
 
 export interface JobStreamState {
   log: string[];
@@ -22,25 +23,23 @@ export function useJobStream(
 ): JobStreamState & { start: (url: string) => void } {
   const [log, setLog] = useState<string[]>([]);
   const [running, setRunning] = useState(false);
-  const esRef = useRef<EventSource | null>(null);
+  const closeRef = useRef<(() => void) | null>(null);
   // always call the latest onDone without re-subscribing the EventSource for it
   const onDoneRef = useRef(onDone);
   useEffect(() => { onDoneRef.current = onDone; });
 
   const attach = (url: string) => {
-    esRef.current?.close();
+    closeRef.current?.();
     setRunning(true);
-    const es = new EventSource(url);
-    esRef.current = es;
-    es.addEventListener("log", (e: MessageEvent) => setLog((l) => [...l, e.data]));
-    es.addEventListener("done", (e: MessageEvent) => {
-      const { status } = JSON.parse(e.data) as { status: string };
-      setLog((l) => [...l, `■ ${status}`]);
-      es.close();
-      setRunning(false);
-      onDoneRef.current?.(status);
+    closeRef.current = attachJobStream(url, {
+      onLog: (line) => setLog((l) => [...l, line]),
+      onDone: ({ status }) => {
+        setLog((l) => [...l, `■ ${status}`]);
+        setRunning(false);
+        onDoneRef.current?.(status);
+      },
+      onError: () => setRunning(false),
     });
-    es.onerror = () => { es.close(); setRunning(false); };
   };
 
   useEffect(() => {
@@ -54,7 +53,7 @@ export function useJobStream(
         .sort((a, b) => b.id - a.id)[0];
       if (match) { setLog([]); attach(`/api/jobs/${match.id}/stream`); }
     }).catch(() => {});
-    return () => { cancelled = true; esRef.current?.close(); };
+    return () => { cancelled = true; closeRef.current?.(); };
   }, [kind, target.pr, target.cluster]);
 
   const start = (url: string) => {

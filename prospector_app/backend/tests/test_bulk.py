@@ -159,6 +159,7 @@ def test_run_security_schedules_background_jobs_in_the_per_pr_dispatch(monkeypat
 
     results = [json.loads(e["data"]) for e in evs if e["event"] == "result"]
     assert [r["status"] for r in results] == ["queued", "skipped", "queued"]
+    assert [r.get("job_id") for r in results] == [101, None, 103]
     assert scheduled == jobs_started
     assert done_summary([e for e in evs if e["event"] == "done"][0]) == {
         "queued": 2, "skipped": 1}

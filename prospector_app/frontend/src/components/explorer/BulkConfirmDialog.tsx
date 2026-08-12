@@ -1,16 +1,27 @@
 import { useEffect, useState } from "react";
 import { api, type PRRow, type BulkResult } from "../../api";
 import { useExec } from "../../ExecContext";
+import { useJobGroup } from "../../useJobGroup";
 import { GitHubPRLink } from "../GitHubPRLink";
 import type { BulkAction } from "./BulkActionBar";
 
-export function BulkConfirmDialog({ action, comment, canonical, perPr = false, selected, rows, onClose, onDone }:
+function chipTone(status: string): string {
+  if (status === "done" || status === "executed" || status === "merged") return "green";
+  if (status === "failed" || status === "error" || status === "blocked") return "red";
+  if (status === "running") return "blue";
+  if (status === "tracking-lost") return "amber";
+  return "muted";
+}
+
+export function BulkConfirmDialog({ action, comment, canonical, perPr = false, selected, rows, onClose, onDone,
+  onJobsFinished }:
   { action: BulkAction; comment: string; canonical?: number; perPr?: boolean; selected: number[];
-    rows: PRRow[]; onClose: () => void; onDone: () => void }) {
+    rows: PRRow[]; onClose: () => void; onDone: () => void; onJobsFinished?: () => void }) {
   const { botLogin, dryRun } = useExec();
   const [running, setRunning] = useState(false);
   const [results, setResults] = useState<Record<number, BulkResult>>({});
   const [summary, setSummary] = useState<Record<string, number> | null>(null);
+  const securityJobs = useJobGroup(onJobsFinished);
 
   // `rows` is only the currently-loaded page, but `selected` can span every page
   // ("select all N matching"). Snapshot what's already on hand, then fetch the
@@ -36,6 +47,23 @@ export function BulkConfirmDialog({ action, comment, canonical, perPr = false, s
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const postsComment = action !== "MERGE" && action !== "GREPTILE_RETRIGGER"
+    && action !== "QUEUE_VERIFY" && action !== "RUN_SECURITY";
+  const localQueue = action === "QUEUE_VERIFY";
+  const backgroundSecurity = action === "RUN_SECURITY";
+  const localAction = localQueue || backgroundSecurity;
+  const displayedResult = (result: BulkResult): BulkResult => {
+    const job = securityJobs.byKey[result.pr];
+    return job ? { ...result, status: job.status, detail: job.detail } : result;
+  };
+  const visibleSummary = backgroundSecurity && summary
+    ? Object.values(results).reduce<Record<string, number>>((counts, rawResult) => {
+        const result = displayedResult(rawResult);
+        counts[result.status] = (counts[result.status] ?? 0) + 1;
+        return counts;
+      }, {})
+    : summary;
+
   if (targets === null) {
     return (
       <div className="modal-backdrop">
@@ -48,14 +76,9 @@ export function BulkConfirmDialog({ action, comment, canonical, perPr = false, s
   }
 
   const count = targets.length;
-  const doneCount = Object.keys(results).length;
-  const postsComment = action !== "MERGE" && action !== "GREPTILE_RETRIGGER"
-    && action !== "QUEUE_VERIFY" && action !== "RUN_SECURITY";
+  const submittedCount = Object.keys(results).length;
   // Queueing for verification is a local store write, so the dry/live posting
   // mode does not apply to it.
-  const localQueue = action === "QUEUE_VERIFY";
-  const backgroundSecurity = action === "RUN_SECURITY";
-  const localAction = localQueue || backgroundSecurity;
   const blockedMerges = action === "MERGE"
     ? targets.filter((r) => r.merge_gate && !r.merge_gate.ok) : [];
 
@@ -75,7 +98,11 @@ export function BulkConfirmDialog({ action, comment, canonical, perPr = false, s
       { prs: targets.map((r) => r.number), action, comment: postsComment ? comment : undefined,
         comments: perPr && postsComment ? perPrComments : undefined,
         canonical, dry_run: dryRun },
-      (r) => setResults((prev) => ({ ...prev, [r.pr]: r })),
+      (r) => {
+        setResults((prev) => ({ ...prev, [r.pr]: r }));
+        if (!backgroundSecurity || r.status !== "queued" || r.job_id === undefined) return;
+        securityJobs.track(r.pr, r.job_id);
+      },
       (s) => { setSummary(s); setRunning(false); onDone(); },
     );
   };
@@ -86,7 +113,16 @@ export function BulkConfirmDialog({ action, comment, canonical, perPr = false, s
     <div className="modal-backdrop" onClick={() => { if (!running) onClose(); }}>
       <div className="modal bulk-confirm" onClick={(e) => e.stopPropagation()}>
         <h3>{action} — {count} PR(s) {localQueue ? "(local verify queue)" : backgroundSecurity ? "(background jobs)" : dryRun ? "(dry run)" : `LIVE as ${botLogin}`}</h3>
-        {running && <div className="bulk-progress">Running… {doneCount} of {count} done</div>}
+        {running && <div className="bulk-progress">Starting… {submittedCount} of {count} submitted</div>}
+        {backgroundSecurity && summary && (
+          <div className="bulk-progress">
+            {securityJobs.jobCount === 0
+              ? "No new security reviews were started"
+              : securityJobs.allFinished
+                ? `All ${securityJobs.jobCount} started security reviews finished`
+                : `Security reviews… ${securityJobs.finishedCount} of ${securityJobs.jobCount} finished`}
+          </div>
+        )}
         {localQueue && (
           <div className="muted small bulk-perpr-note">
             🧪 Queues each PR for sandbox verification. The verify worker picks them up
@@ -108,13 +144,16 @@ export function BulkConfirmDialog({ action, comment, canonical, perPr = false, s
         )}
         <ul className="bulk-targets">
           {targets.map((r) => {
-            const res = results[r.number];
+            const rawResult = results[r.number];
+            const res = rawResult ? displayedResult(rawResult) : undefined;
             const gate = action === "MERGE" ? r.merge_gate : undefined;
+            const resultFinished = res && (!backgroundSecurity || res.job_id === undefined
+              || securityJobs.byKey[r.number]?.finished);
             return (
-              <li key={r.number} className={res ? "bulk-target-done" : undefined}>
+              <li key={r.number} className={resultFinished ? "bulk-target-done" : undefined}>
                 <GitHubPRLink n={r.number} url={r.url} className="num" /> {r.title}
                 {gate && !gate.ok && <span className="chip chip-red" title={gate.reason}>blocked</span>}
-                {res && <span className={`chip chip-${res.status === "executed" || res.status === "merged" || res.status === "queued" ? "green" : res.status === "error" || res.status === "blocked" ? "red" : "muted"}`} title={res.detail ?? undefined}>{res.status}</span>}
+                {res && <span className={`chip chip-${chipTone(res.status)}`} title={res.detail ?? undefined}>{res.status}</span>}
                 {perPr && postsComment && (
                   perPrComments[r.number]
                     ? <div className="muted small bulk-pr-comment" title={perPrComments[r.number]}>📮 {perPrComments[r.number].replace(/\s+/g, " ").slice(0, 80)}…</div>
@@ -124,15 +163,17 @@ export function BulkConfirmDialog({ action, comment, canonical, perPr = false, s
             );
           })}
         </ul>
-        {summary
-          ? <div className="bulk-summary">{Object.entries(summary).map(([k, v]) => `${v} ${k}`).join(" · ")}</div>
+        {visibleSummary
+          ? <div className="bulk-summary">{Object.entries(visibleSummary).map(([k, v]) => `${v} ${k}`).join(" · ")}</div>
           : <div className="modal-actions">
               <button className="btn-secondary" onClick={onClose} disabled={running}>Cancel</button>
               <button className={`btn-primary ${!dryRun && !localAction ? "btn-live" : ""}`} onClick={run} disabled={running}>
                 {running ? "Running…" : localQueue ? `Queue ${count}` : backgroundSecurity ? `Start ${count}` : dryRun ? "Run (dry)" : `● Apply to ${count}`}
               </button>
             </div>}
-        {summary && <div className="modal-actions"><button className="btn-primary" onClick={onClose}>Done</button></div>}
+        {summary && <div className="modal-actions"><button className="btn-primary" onClick={onClose}>
+          {backgroundSecurity && securityJobs.jobCount > 0 && !securityJobs.allFinished ? "Close" : "Done"}
+        </button></div>}
       </div>
     </div>
   );
