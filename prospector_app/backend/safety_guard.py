@@ -126,6 +126,20 @@ def assert_chat_bot_write(argv: list[str]) -> None:
         raise WriteAttemptBlocked(f"not an allowlisted chat bot write: {joined!r}")
 
 
+ALERT_WRITE_ALLOW = [
+    re.compile(r"^gh\s+api\s+(?:-X\s*PATCH|--method[=\s]+PATCH)\s+"
+               r"repos/\S+/(?:code-scanning|dependabot|secret-scanning)/alerts/\d+\b"),
+]
+
+
+def assert_alert_bot_write(argv: list[str]) -> None:
+    if not argv or argv[0].rsplit("/", 1)[-1] != "gh":
+        raise WriteAttemptBlocked("alert writes must use gh")
+    joined = " ".join(argv)
+    if not any(p.search(joined) for p in ALERT_WRITE_ALLOW):
+        raise WriteAttemptBlocked(f"not an allowlisted alert write: {joined!r}")
+
+
 _MERGE_RE = re.compile(r"^gh\s+pr\s+merge\s+\d+\b")
 
 
@@ -148,6 +162,13 @@ def chat_bot_run(argv: list[str], token: str, *, timeout: int = 60) -> subproces
     """Run a validated embedded-agent write with a non-empty bot token."""
     token = _require_bot_token(token, "write")
     assert_chat_bot_write(argv)
+    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=bot_env(token))
+
+
+def alert_bot_run(argv: list[str], token: str, *, timeout: int = 60) -> subprocess.CompletedProcess:
+    """Run a sanctioned alert dismissal/resolution as the configured bot."""
+    token = _require_bot_token(token, "dismiss an alert")
+    assert_alert_bot_write(argv)
     return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=bot_env(token))
 
 
