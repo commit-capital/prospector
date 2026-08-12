@@ -122,18 +122,11 @@ def normalize_secret_scanning(raw: dict, locations: list[dict]) -> dict:
 
 
 def _paged(path: str, token: str, source: str) -> list[dict]:
-    """Fetch every page of an alert list endpoint (100/page). The 100-page
-    backstop bounds a runaway loop at 10,000 alerts; exhausting it raises
-    rather than returning a silently truncated corpus."""
-    out: list[dict] = []
-    for page in range(1, 101):
-        rows = config.gh_alert_read(
-            path, token, {"per_page": "100", "page": str(page)}, source=source)
-        assert isinstance(rows, list)
-        out += rows
-        if len(rows) < 100:
-            return out
-    raise RuntimeError(f"{source}: fetch exceeded the 100-page backstop ({len(out)} alerts)")
+    """Fetch every page of an alert list endpoint (100/page), via gh's own
+    Link-header pagination — Dependabot's endpoint paginates by cursor and
+    rejects a `page` number, so a numbered-page loop cannot work across the
+    three sources."""
+    return config.gh_alert_read_all(path, token, {"per_page": "100"}, source=source)
 
 
 def _secret_locations(number: int, token: str) -> list[dict]:

@@ -53,20 +53,38 @@ def _token_env(token: str) -> dict[str, str]:
     return env
 
 
-def gh_alert_read(path: str, token: str, params: dict[str, str] | None = None,
-                  *, source: str = "") -> object:
-    """Run a read-only `gh api -X GET` as the bot and return the parsed JSON.
-
-    Raises SourceUnavailable on an HTTP 403/404 (feature disabled or permission
-    missing) and CalledProcessError on any other failure.
-    """
-    cmd = ["gh", "api", "-X", "GET", path]
-    for k, v in (params or {}).items():
-        cmd += ["-f", f"{k}={v}"]
+def _run_gh_read(cmd: list[str], token: str, source: str) -> str:
+    """Run one read-only gh invocation, returning stdout. Raises
+    SourceUnavailable on an HTTP 403/404 (feature disabled or permission
+    missing) and CalledProcessError on any other failure."""
     r = subprocess.run(cmd, capture_output=True, text=True, env=_token_env(token))
     if r.returncode != 0:
         err = (r.stderr or "").strip()
         if "HTTP 404" in err or "HTTP 403" in err:
-            raise SourceUnavailable(source or path, err.splitlines()[0] if err else "unavailable")
+            raise SourceUnavailable(source, err.splitlines()[0] if err else "unavailable")
         raise subprocess.CalledProcessError(r.returncode, cmd, r.stdout, r.stderr)
-    return json.loads(r.stdout)
+    return r.stdout
+
+
+def gh_alert_read(path: str, token: str, params: dict[str, str] | None = None,
+                  *, source: str = "") -> object:
+    """Run a read-only `gh api -X GET` as the bot and return the parsed JSON."""
+    cmd = ["gh", "api", "-X", "GET", path]
+    for k, v in (params or {}).items():
+        cmd += ["-f", f"{k}={v}"]
+    return json.loads(_run_gh_read(cmd, token, source or path))
+
+
+def gh_alert_read_all(path: str, token: str, params: dict[str, str] | None = None,
+                      *, source: str = "") -> list[dict]:
+    """Fetch every page of a list endpoint as the bot and return the
+    concatenated rows. Pagination is gh's own Link-header following
+    (`--paginate`, with `--slurp` collecting the pages into one JSON array of
+    page-arrays) — the one mechanism that works across all three alert
+    sources, since Dependabot's endpoint paginates by cursor and rejects a
+    `page` number."""
+    cmd = ["gh", "api", "-X", "GET", "--paginate", "--slurp", path]
+    for k, v in (params or {}).items():
+        cmd += ["-f", f"{k}={v}"]
+    pages = json.loads(_run_gh_read(cmd, token, source or path))
+    return [row for page in pages for row in page]

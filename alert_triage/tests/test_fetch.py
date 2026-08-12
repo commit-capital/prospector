@@ -139,13 +139,26 @@ def test_secret_scanning_open_stays_open():
     assert meta["state"] == "open"
 
 
-def test_paged_stops_on_short_page(monkeypatch):
-    calls: list[str] = []
+def test_paged_uses_gh_link_pagination_and_flattens(monkeypatch):
+    """The pager must delegate pagination to gh (--paginate) rather than send a
+    page number — Dependabot's endpoint paginates by cursor and rejects
+    `page` — and flatten the --slurp array-of-pages into one row list."""
+    import subprocess
 
-    def fake_read(path, token, params=None, *, source=""):
-        calls.append(params["page"])
-        return [{"n": i} for i in range(100)] if params["page"] == "1" else [{"n": 1}]
+    seen: dict = {}
 
-    monkeypatch.setattr(fetch_alerts.config, "gh_alert_read", fake_read)
+    def fake_run(cmd, capture_output, text, env):
+        seen["cmd"] = cmd
+
+        class R:
+            returncode = 0
+            stdout = json.dumps([[{"n": i} for i in range(100)], [{"n": 100}]])
+            stderr = ""
+        return R()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
     rows = fetch_alerts._paged("repos/o/r/dependabot/alerts", "tok", "dependabot")
-    assert len(rows) == 101 and calls == ["1", "2"]
+    assert len(rows) == 101 and rows[-1] == {"n": 100}
+    assert "--paginate" in seen["cmd"] and "--slurp" in seen["cmd"]
+    assert not any(a.startswith("page=") for a in seen["cmd"])
+    assert "per_page=100" in seen["cmd"]
