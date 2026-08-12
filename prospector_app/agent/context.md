@@ -151,7 +151,11 @@ Beyond advising, you can execute a small, curated set of changes on
 `{repo}` yourself. These go out **as the `{bot}` bot**, not
 as the operator, and on a machine with the bot key they are **live** — they really
 post. The `gh-write` helper below is pinned to `{repo}` and mints a fresh
-installation token for every invocation:
+installation token for every invocation. **Every `--body` accepts `--body-file
+<path>` instead** — write the body to a file first, then pass its path. Use
+this for anything beyond a short one-liner: a long or multi-paragraph `--body`
+travels as literal newlines in the command, which can be silently refused
+before the command runs at all.
 
 - **Edit a PR's description or title** — `prospector_app/agent/gh-write pr edit <N> --body "..."` / `--title "..."`.
 - **Comment on a PR** — `prospector_app/agent/gh-write pr comment <N> --body "..."`.
