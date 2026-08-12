@@ -28,14 +28,17 @@ back**.
 
 - **Accessor:** `pipeline/store.py` over `pipeline/storekit.py`. This is the
   ONLY accessor — never hand-write rows. `issue_triage/issue_store.py` mirrors it
-  for issues over the same `storekit` core.
+  for issues, and `alert_triage/alert_store.py` for GitHub security alerts, over
+  the same `storekit` core.
 - **Schema** (`pipeline/schema.py`): a row per PR and per cluster (the fact
   sections `meta / signals / drift / summary / cluster / analysis / security /
   issues / threat` ride in a JSON `data` column alongside mirror
   columns and a `saved_at` write-stamp), a `runs` ledger, singleton `registries`
   rows (durable threat blocklist + incident log, action items, the live-sweep
   timestamp), and the app's own `activity` and `chat_messages` tables. Issues
-  add `issues` / `issue_clusters`.
+  add `issues` / `issue_clusters`; security alerts add `alerts` (one row per
+  code-scanning / Dependabot / secret-scanning alert, keyed by a synthetic
+  source+number id, read and actioned as the bot App).
 - **Backend selection** (`storekit.resolve_url`): an explicit `--store DIR`
   (tests, CLI) → `sqlite:///DIR/store.db`; else `TRIAGE_STORE_URL` (a shared
   SQL database) verbatim; else a local SQLite default under the store's own
