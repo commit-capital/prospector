@@ -249,6 +249,7 @@ def mirror_issue_cluster(rec: dict) -> dict:
 def mirror_alert(rec: dict) -> dict:
     meta = rec.get("meta") or {}
     return {
+        "id": rec["id"],
         "source": meta.get("source"),
         "number": meta.get("number"),
         "state": meta.get("state"),
