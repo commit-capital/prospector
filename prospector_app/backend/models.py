@@ -105,6 +105,13 @@ class IssueCommentBody(BaseModel):
     comment: str = ""
 
 
+class AlertDismissBody(BaseModel):
+    # The per-source reason vocabulary lives in alert_triage.alert_gates
+    # (DISMISS_REASONS); the gate validates it, so this stays a plain string.
+    reason: str
+    comment: str | None = None
+
+
 class BulkExecuteBody(BaseModel):
     prs: list[int] = []
     action: str = "CLOSE"

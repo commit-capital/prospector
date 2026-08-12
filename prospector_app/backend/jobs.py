@@ -105,6 +105,17 @@ JOB_SPECS: dict[str, JobSpec] = {
                               str(REPO_ROOT / "issue_triage" / "find_fixed.py"),
                               "--limit", str(n)],
     },
+    "alert-ingest": {
+        "label": "Alert ingest (refresh security alerts as the bot · read-only)",
+        "argv": [*PIPELINE_PY, "-u", str(REPO_ROOT / "alert_triage" / "alert_ingest.py")],
+    },
+    "alert-find-fixed": {
+        "label": "Alert find-fixed (detect already-fixed alerts · agentic · gh-heavy)",
+        "needs_count": True,
+        "argv_fn": lambda n: [*PIPELINE_PY, "-u",
+                              str(REPO_ROOT / "alert_triage" / "find_fixed.py"),
+                              "--limit", str(n)],
+    },
     "threat-scan": {
         "label": "Threat scan (deterministic · fetches uncached diffs · read-only)",
         "argv": [*PIPELINE_PY, "-u", str(REPO_ROOT / "pipeline" / "threat_scan.py")],
