@@ -8,7 +8,6 @@ Run:  uv run uvicorn prospector_app.backend.app:app --reload --port 8787   (from
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 from collections.abc import AsyncIterator
@@ -538,10 +537,9 @@ async def jobs_run(kind: str, cluster: int | None = None, pr: int | None = None,
         job = jobs.start_job(kind, cluster, pr, count)
     except ValueError as e:
         raise HTTPException(400, str(e))
-    # Scheduled independent of this request's SSE stream (#683) — the job runs
-    # to completion even if this connection is dropped (tab closed, page
-    # navigated away).
-    asyncio.create_task(jobs.run_job(job))
+    # The retained background task runs independently of this request's SSE
+    # stream (#683) and completes if the connection closes.
+    jobs.schedule_job(job)
     return EventSourceResponse(jobs.attach_job(job))
 
 

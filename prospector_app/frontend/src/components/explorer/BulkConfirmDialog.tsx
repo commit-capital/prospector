@@ -50,10 +50,12 @@ export function BulkConfirmDialog({ action, comment, canonical, perPr = false, s
   const count = targets.length;
   const doneCount = Object.keys(results).length;
   const postsComment = action !== "MERGE" && action !== "GREPTILE_RETRIGGER"
-    && action !== "QUEUE_VERIFY";
+    && action !== "QUEUE_VERIFY" && action !== "RUN_SECURITY";
   // Queueing for verification is a local store write, so the dry/live posting
   // mode does not apply to it.
   const localQueue = action === "QUEUE_VERIFY";
+  const backgroundSecurity = action === "RUN_SECURITY";
+  const localAction = localQueue || backgroundSecurity;
   const blockedMerges = action === "MERGE"
     ? targets.filter((r) => r.merge_gate && !r.merge_gate.ok) : [];
 
@@ -83,12 +85,18 @@ export function BulkConfirmDialog({ action, comment, canonical, perPr = false, s
   return (
     <div className="modal-backdrop" onClick={() => { if (!running) onClose(); }}>
       <div className="modal bulk-confirm" onClick={(e) => e.stopPropagation()}>
-        <h3>{action} — {count} PR(s) {localQueue ? "(local verify queue)" : dryRun ? "(dry run)" : `LIVE as ${botLogin}`}</h3>
+        <h3>{action} — {count} PR(s) {localQueue ? "(local verify queue)" : backgroundSecurity ? "(background jobs)" : dryRun ? "(dry run)" : `LIVE as ${botLogin}`}</h3>
         {running && <div className="bulk-progress">Running… {doneCount} of {count} done</div>}
         {localQueue && (
           <div className="muted small bulk-perpr-note">
             🧪 Queues each PR for sandbox verification. The verify worker picks them up
             from the shared queue; nothing is posted upstream.
+          </div>
+        )}
+        {backgroundSecurity && (
+          <div className="muted small bulk-perpr-note">
+            🛡️ Starts one deep security review per PR, with two reviews running at a
+            time. The jobs continue if this dialog or page is closed.
           </div>
         )}
         {postsComment && (perPr
@@ -120,8 +128,8 @@ export function BulkConfirmDialog({ action, comment, canonical, perPr = false, s
           ? <div className="bulk-summary">{Object.entries(summary).map(([k, v]) => `${v} ${k}`).join(" · ")}</div>
           : <div className="modal-actions">
               <button className="btn-secondary" onClick={onClose} disabled={running}>Cancel</button>
-              <button className={`btn-primary ${!dryRun && !localQueue ? "btn-live" : ""}`} onClick={run} disabled={running}>
-                {running ? "Running…" : localQueue ? `Queue ${count}` : dryRun ? "Run (dry)" : `● Apply to ${count}`}
+              <button className={`btn-primary ${!dryRun && !localAction ? "btn-live" : ""}`} onClick={run} disabled={running}>
+                {running ? "Running…" : localQueue ? `Queue ${count}` : backgroundSecurity ? `Start ${count}` : dryRun ? "Run (dry)" : `● Apply to ${count}`}
               </button>
             </div>}
         {summary && <div className="modal-actions"><button className="btn-primary" onClick={onClose}>Done</button></div>}
