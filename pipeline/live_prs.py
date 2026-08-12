@@ -37,14 +37,38 @@ def _diffstat(node: dict) -> dict | None:
     return {"additions": values[0], "deletions": values[1], "changed_files": values[2]}
 
 
-def fetch(prs: list[int]) -> dict[int, dict]:
-    """Fetch live head-bound facts for ``prs``; omit entries GitHub did not return.
+def _not_found_numbers(errors: list, chunk: list[int]) -> set[int]:
+    """The PR numbers in ``chunk`` whose alias GitHub reported NOT_FOUND. An
+    error's path names the failing alias (["repository", "pN"]), and the alias
+    index maps back to the requested number. Only an explicit NOT_FOUND type
+    with a per-alias path qualifies — a repository-level error or a transient
+    type (rate limit, server error) marks nothing."""
+    numbers: set[int] = set()
+    for err in errors:
+        err = err or {}
+        if err.get("type") != "NOT_FOUND":
+            continue
+        path = err.get("path")
+        if (isinstance(path, list) and len(path) == 2 and path[0] == "repository"
+                and isinstance(path[1], str) and path[1][:1] == "p"
+                and path[1][1:].isdigit()):
+            idx = int(path[1][1:])
+            if idx < len(chunk):
+                numbers.add(int(chunk[idx]))
+    return numbers
 
-    Callers compare the returned keys with their requested IDs. A partial result
-    is useful—the facts that arrived can be persisted while missing IDs remain
-    eligible for a retry.
+
+def fetch(prs: list[int]) -> tuple[dict[int, dict], set[int]]:
+    """Fetch live head-bound facts for ``prs``.
+
+    Returns ``(facts, not_found)``: facts keyed by PR number, plus the requested
+    numbers GitHub explicitly reported NOT_FOUND — the PR no longer exists
+    upstream (scrubbed/deleted), a deterministic verdict callers may act on.
+    A number in neither is a transient miss (failed request, other GraphQL
+    error) and remains eligible for a retry.
     """
     out: dict[int, dict] = {}
+    not_found: set[int] = set()
     for i in range(0, len(prs), CHUNK_SIZE):
         chunk = prs[i:i + CHUNK_SIZE]
         payload = gh_graphql(_query(chunk))
@@ -54,9 +78,10 @@ def fetch(prs: list[int]) -> dict[int, dict]:
             continue
         errors = payload.get("errors")
         if errors:
-            # Partial envelope: the erroring aliases (e.g. a PR scrubbed from
-            # GitHub) come back as null nodes and are omitted from the result;
-            # every resolved alias in the batch is still used.
+            # Partial envelope: the erroring aliases come back as null nodes
+            # and are omitted from the facts; every resolved alias in the
+            # batch is still used, and NOT_FOUND aliases are reported.
+            not_found |= _not_found_numbers(errors, chunk)
             _log.warning("live PR fetch: %d GraphQL error(s) in batch %d-%d; first: %s",
                          len(errors), chunk[0], chunk[-1],
                          (errors[0] or {}).get("message", "?"))
@@ -82,4 +107,4 @@ def fetch(prs: list[int]) -> dict[int, dict]:
                 "diffstat": diffstat,
                 "has_tests": diffpaths.has_tests(paths),
             }
-    return out
+    return out, not_found

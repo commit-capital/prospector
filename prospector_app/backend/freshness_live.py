@@ -46,8 +46,10 @@ def _live_state(lv: dict) -> str | None:
     return "merged" if lv.get("merged") else (lv.get("state") or None)
 
 
-def live_states(prs: list[int]) -> dict[int, dict]:
-    """Batched live {state, merged, head, mergeable, ci, diffstat, has_tests} per PR via GraphQL."""
+def live_states(prs: list[int]) -> tuple[dict[int, dict], set[int]]:
+    """Batched live {state, merged, head, mergeable, ci, diffstat, has_tests} per
+    PR via GraphQL, plus the set of requested numbers GitHub reports NOT_FOUND
+    (the PR was deleted upstream)."""
     return live_prs.fetch(prs)
 
 
@@ -59,7 +61,7 @@ def check(prs: list[int]) -> dict:
     the active queue/cluster and into the 'resolved' lane — we don't just flag
     the divergence, we move the PR through our data set."""
     prs = [int(n) for n in prs][:300]
-    live = live_states(prs)
+    live, _ = live_states(prs)
     committed: dict[int, Pr] = data.prs()
     items = []
     for n in prs:
@@ -148,15 +150,32 @@ def persist_live(live: dict[int, dict], committed: dict[int, Pr]) -> list[int]:
     return sorted(changed)
 
 
+# --- retire PRs deleted upstream --------------------------------------------
+def retire_unresolvable(prs: set[int], committed: dict[int, Pr]) -> list[int]:
+    """Mark each store-known PR in `prs` unresolvable — GitHub reports the number
+    cannot resolve to a PullRequest, so the PR is gone upstream (e.g. a spam
+    scrub). An open one is closed in the same write; later sweeps drop the PR
+    from their target sets. Returns the PRs marked, sorted."""
+    store = data.store()
+    retired: list[int] = []
+    for n in sorted(prs):
+        if n not in committed:
+            continue
+        store.edit_pr(n).record_unresolvable()
+        retired.append(n)
+    return retired
+
+
 # --- the launch / manual sweep ---------------------------------------------
 def sweep(prs: list[int] | None = None) -> dict:
     """Fetch live state for the open PR universe (or a given subset) and persist any
     drift into the shared store. Reads the committed snapshot the app already
     loaded (`data.prs()`) — no second bulk download — and targets PRs the store
     thinks are open (`state`), so a PR reopened upstream (state now open) is still
-    re-checked. A complete full-corpus pass stamps the shared `live_sweep`
-    singleton. Returns attempted/checked counts, changed and failed PR IDs,
-    completion, and fetched_at."""
+    re-checked. A PR GitHub reports NOT_FOUND is retired (closed + marked
+    unresolvable) and counts as handled, not failed. A complete full-corpus pass
+    stamps the shared `live_sweep` singleton. Returns attempted/checked counts,
+    changed, failed, and retired PR IDs, completion, and fetched_at."""
     from prospector_app.backend import activity
     snapshot = data.prs()
     full_sweep = prs is None
@@ -164,24 +183,32 @@ def sweep(prs: list[int] | None = None) -> dict:
         # store-open PRs, plus the PRs we've closed — a closed PR is off the open
         # set, so re-checking the closed-by-us set is how an upstream reopen lands
         # back in the store (and surfaces in the reopened-after-close panel).
-        targets = sorted({n for n, pr in snapshot.items() if pr.state == "open"}
-                         | {n for n in activity.closed_by_us_prs() if n in snapshot})
+        # Unresolvable PRs are gone upstream; no fetch can reach them.
+        targets = sorted({n for n, pr in snapshot.items()
+                          if pr.state == "open" and not pr.unresolvable}
+                         | {n for n in activity.closed_by_us_prs()
+                            if n in snapshot and not snapshot[n].unresolvable})
     else:
         targets = [int(n) for n in prs if int(n) in snapshot]
     target_set = set(targets)
-    live = {n: facts for n, facts in live_states(targets).items() if n in target_set}
-    missing = sorted(set(targets) - set(live))
+    fetched, nf = live_states(targets)
+    live = {n: facts for n, facts in fetched.items() if n in target_set}
+    not_found = nf & target_set
+    missing = sorted(target_set - set(live) - not_found)
     if missing:
-        live.update({n: facts for n, facts in live_states(missing).items() if n in target_set})
-    missing = sorted(set(targets) - set(live))
+        fetched, nf = live_states(missing)
+        live.update({n: facts for n, facts in fetched.items() if n in target_set})
+        not_found |= nf & target_set
+    retired = retire_unresolvable(not_found, snapshot)
+    missing = sorted(target_set - set(live) - not_found)
     changed = persist_live(live, snapshot)
     swept_at = _now()
     complete = not missing
     if full_sweep and complete:
         data.store().save_live_sweep({"swept_at": swept_at})
     return {"attempted": len(targets), "checked": len(live), "changed": len(changed),
-            "prs": changed, "failed": missing, "complete": complete,
-            "fetched_at": swept_at}
+            "prs": changed, "failed": missing, "retired": retired,
+            "complete": complete, "fetched_at": swept_at}
 
 
 def last_swept_at() -> str | None:

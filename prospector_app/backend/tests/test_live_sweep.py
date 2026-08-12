@@ -31,7 +31,7 @@ def _wire(tmp_path, monkeypatch, seed, live):
     for rec in seed:
         st.save_pr(rec)
     monkeypatch.setattr(data, "_store", st)
-    monkeypatch.setattr(freshness_live, "live_states", lambda prs: live)
+    monkeypatch.setattr(freshness_live, "live_states", lambda prs: (live, set()))
     data.refresh()
     return st
 
@@ -101,10 +101,10 @@ def test_sweep_retries_missing_prs_before_marking_complete(tmp_path, monkeypatch
     def fetch(prs):
         calls.append(prs)
         if len(calls) == 1:
-            return {5: {"state": "open", "merged": False, "head": HEAD,
-                        "mergeable": "MERGEABLE"}}
-        return {6: {"state": "open", "merged": False, "head": HEAD,
-                    "mergeable": "MERGEABLE"}}
+            return ({5: {"state": "open", "merged": False, "head": HEAD,
+                         "mergeable": "MERGEABLE"}}, set())
+        return ({6: {"state": "open", "merged": False, "head": HEAD,
+                     "mergeable": "MERGEABLE"}}, set())
 
     monkeypatch.setattr(freshness_live, "live_states", fetch)
     res = freshness_live.sweep()
@@ -121,8 +121,8 @@ def test_partial_sweep_does_not_advance_completion_marker(tmp_path, monkeypatch)
     st.save_live_sweep({"swept_at": prior})
     monkeypatch.setattr(
         freshness_live, "live_states",
-        lambda prs: {5: {"state": "open", "merged": False, "head": HEAD,
-                         "mergeable": "MERGEABLE"}} if 5 in prs else {})
+        lambda prs: ({5: {"state": "open", "merged": False, "head": HEAD,
+                          "mergeable": "MERGEABLE"}} if 5 in prs else {}, set()))
 
     res = freshness_live.sweep()
 
@@ -239,6 +239,53 @@ def test_sweep_does_not_stamp_signals_from_a_moved_head(tmp_path, monkeypatch):
     assert rec.mergeable is True
     assert rec.signals.get("diffstat") is None
     assert res["changed"] == 0
+
+
+def test_sweep_retires_scrubbed_pr(tmp_path, monkeypatch):
+    """A number GitHub reports NOT_FOUND is gone upstream: the sweep closes it,
+    marks it unresolvable, counts it handled (not failed), and still completes."""
+    st = _wire(tmp_path, monkeypatch, [_raw(5, "open")], {})
+    monkeypatch.setattr(freshness_live, "live_states", lambda prs: ({}, {5}))
+    res = freshness_live.sweep()
+    rec = st.load_pr(5)
+    assert rec.state == "closed"
+    assert rec.unresolvable is True
+    assert res["retired"] == [5] and res["failed"] == []
+    assert res["complete"] is True
+    assert st.load_live_sweep()["swept_at"] == res["fetched_at"]
+
+
+def test_sweep_retires_scrubbed_closed_by_us_pr_without_reopening(tmp_path, monkeypatch):
+    """A closed-by-us PR that got scrubbed keeps its closed state and gains the
+    unresolvable mark, so the reopen re-check stops targeting it."""
+    from prospector_app.backend import activity
+    st = _wire(tmp_path, monkeypatch, [_raw(8, "closed")], {})
+    monkeypatch.setattr(activity, "closed_by_us_prs", lambda: [8])
+    monkeypatch.setattr(freshness_live, "live_states", lambda prs: ({}, set(prs)))
+    res = freshness_live.sweep()
+    rec = st.load_pr(8)
+    assert rec.state == "closed" and rec.unresolvable is True
+    assert res["retired"] == [8] and res["complete"] is True
+
+
+def test_sweep_excludes_retired_prs_from_targets(tmp_path, monkeypatch):
+    """An unresolvable PR is off both target sets — the open set and the
+    closed-by-us reopen re-check — so later sweeps never re-query it."""
+    from prospector_app.backend import activity
+    gone = _raw(8, "closed")
+    gone["meta"]["unresolvable"] = True
+    _wire(tmp_path, monkeypatch, [gone, _raw(5, "open")],
+          {5: {"state": "open", "merged": False, "head": HEAD, "mergeable": "MERGEABLE"}})
+    calls: list[list[int]] = []
+    monkeypatch.setattr(
+        freshness_live, "live_states",
+        lambda prs: (calls.append(list(prs)) or (
+            {5: {"state": "open", "merged": False, "head": HEAD,
+                 "mergeable": "MERGEABLE"}}, set())))
+    monkeypatch.setattr(activity, "closed_by_us_prs", lambda: [8])
+    res = freshness_live.sweep()
+    assert calls and all(8 not in c for c in calls)
+    assert res["complete"] is True and res["failed"] == []
 
 
 def test_sweep_skips_write_when_diffstat_unchanged(tmp_path, monkeypatch):
