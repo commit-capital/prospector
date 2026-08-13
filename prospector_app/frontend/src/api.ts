@@ -1496,4 +1496,4 @@ export interface RunState {
 }
 
 export interface JobSpec { kind: string; label: string; needs_cluster: boolean; needs_pr?: boolean; needs_count?: boolean }
-export interface JobRec { id: number; kind: string; cluster: number | null; pr?: number | null; count?: number | null; status: string; label: string; started: string; returncode: number | null }
+export interface JobRec { id: number; kind: string; cluster: number | null; pr?: number | null; count?: number | null; status: "queued" | "running" | "done" | "failed"; label: string; started: string; returncode: number | null }

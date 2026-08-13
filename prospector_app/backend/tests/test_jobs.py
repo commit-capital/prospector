@@ -28,7 +28,7 @@ def test_triage_without_cluster_rejected():
 
 def test_second_concurrent_triage_same_cluster_rejected():
     jobs.JOBS.clear()
-    jobs.start_job("triage-cluster", 203)  # left "running"
+    jobs.start_job("triage-cluster", 203)  # left active
     with pytest.raises(ValueError):
         jobs.start_job("triage-cluster", 203)
     # a different cluster is fine
@@ -49,6 +49,7 @@ def test_security_review_argv_includes_pr_and_script():
     assert argv[-2:] == ["--pr", "4242"]
     assert any(a.endswith("security_review.py") for a in argv)
     assert job["pr"] == 4242
+    assert job["status"] == "queued"
 
 
 def test_security_review_without_pr_rejected():
@@ -58,7 +59,7 @@ def test_security_review_without_pr_rejected():
 
 def test_second_concurrent_security_review_same_pr_rejected():
     jobs.JOBS.clear()
-    jobs.start_job("security-review", pr=4242)  # left "running"
+    jobs.start_job("security-review", pr=4242)  # left active
     with pytest.raises(ValueError):
         jobs.start_job("security-review", pr=4242)
     # a different PR is fine
@@ -109,7 +110,7 @@ def test_threat_scan_pr_without_pr_rejected():
 
 def test_second_concurrent_threat_scan_pr_same_pr_rejected():
     jobs.JOBS.clear()
-    jobs.start_job("threat-scan-pr", pr=4242)  # left "running"
+    jobs.start_job("threat-scan-pr", pr=4242)  # left active
     with pytest.raises(ValueError):
         jobs.start_job("threat-scan-pr", pr=4242)
     # a different PR is fine
@@ -245,3 +246,58 @@ def test_reattach_after_abandoning_stream_sees_full_history():
 
     events = asyncio.run(run())
     assert [e["data"] for e in events if e["event"] == "log"] == ["line1", "line2"]
+
+
+def test_attach_job_group_replays_and_follows_statuses():
+    async def run():
+        queued = _bare_job(id=1, status="queued")
+        finished = _bare_job(id=2, status="done", returncode=0)
+        events = []
+
+        async def consume():
+            async for event in jobs.attach_job_group([queued, finished]):
+                events.append(event)
+
+        consumer = asyncio.create_task(consume())
+        await asyncio.sleep(0)
+        queued["status"] = "running"
+        jobs._emit(queued, "$ review")
+        while len(events) < 3:
+            await asyncio.sleep(0)
+        queued["status"] = "done"
+        queued["returncode"] = 0
+        queued["_wake"].set()
+        await consumer
+        return events
+
+    events = asyncio.run(run())
+    updates = [json.loads(event["data"]) for event in events if event["event"] == "job"]
+    assert updates == [
+        {"id": 1, "status": "queued", "returncode": None},
+        {"id": 2, "status": "done", "returncode": 0},
+        {"id": 1, "status": "running", "returncode": None},
+        {"id": 1, "status": "done", "returncode": 0},
+    ]
+    assert json.loads(events[-1]["data"]) == {"jobs": 2}
+
+
+def test_job_group_route_streams_all_requested_jobs_once():
+    from fastapi.testclient import TestClient
+    from prospector_app.backend import app as appmod
+
+    jobs.JOBS.clear()
+    first = jobs.start_job("selftest")
+    second = jobs.start_job("selftest")
+    for job in (first, second):
+        job["status"] = "done"
+        job["returncode"] = 0
+
+    response = TestClient(appmod.app).get(
+        "/api/jobs/stream/group",
+        params=[("job_id", first["id"]), ("job_id", second["id"]),
+                ("job_id", first["id"])],
+    )
+
+    assert response.status_code == 200
+    assert response.text.count("event: job") == 2
+    assert "event: done" in response.text
