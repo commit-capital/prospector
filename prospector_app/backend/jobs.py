@@ -48,7 +48,7 @@ class JobSpec(TypedDict):
     max_concurrency: NotRequired[int]
 
 
-JobStatus = Literal["running", "done", "failed"]
+JobStatus = Literal["queued", "running", "done", "failed"]
 
 
 class JobView(TypedDict):
@@ -197,7 +197,7 @@ def start_job(kind: str, cluster: int | None = None, pr: int | None = None,
     target = pr if spec.get("needs_pr") else (count if spec.get("needs_count") else cluster)
     if (spec.get("needs_cluster") or spec.get("needs_pr")) and any(
             j["kind"] == kind and (j["pr"] if spec.get("needs_pr") else j["cluster"]) == target
-            and j["status"] == "running"
+            and j["status"] in ("queued", "running")
             for j in JOBS.values()):
         raise ValueError(f"a {kind} job for {'PR' if spec.get('needs_pr') else 'cluster'} "
                          f"{target} is already running")
@@ -212,7 +212,7 @@ def start_job(kind: str, cluster: int | None = None, pr: int | None = None,
     _counter["n"] += 1
     job: Job = {
         "id": _counter["n"], "kind": kind, "cluster": cluster, "pr": pr, "count": count,
-        "label": spec["label"], "status": "running", "log": [],
+        "label": spec["label"], "status": "queued", "log": [],
         "started": datetime.now().isoformat(), "returncode": None,
         "_argv": argv, "_wake": asyncio.Event(),
     }
@@ -236,6 +236,7 @@ async def run_job(job: Job) -> None:
     away from the page that started it neither stops nor orphans it (#683).
     The runner continuously drains the child's stdout pipe."""
     argv = job["_argv"]
+    job["status"] = "running"
     _emit(job, f"$ {' '.join(str(a)[:60] for a in argv[:4])}…")
     try:
         proc = await subproc.spawn(argv, cwd=REPO_ROOT, stderr=asyncio.subprocess.STDOUT)
@@ -293,7 +294,39 @@ async def attach_job(job: Job) -> AsyncIterator[dict[str, str]]:
         while i < len(job["log"]):
             yield {"event": "log", "data": job["log"][i]}
             i += 1
-        if job["status"] != "running":
+        if job["status"] not in ("queued", "running"):
             break
         await job["_wake"].wait()
     yield {"event": "done", "data": json.dumps({"returncode": job["returncode"], "status": job["status"]})}
+
+
+async def attach_job_group(group: list[Job]) -> AsyncIterator[dict[str, str]]:
+    """Stream status changes for several jobs over one SSE connection.
+
+    The initial state of every job is replayed, so attaching after a fast job
+    finishes is safe. Job logs stay on the per-job stream; this connection
+    carries the lifecycle updates bulk callers need.
+    """
+    previous: dict[int, tuple[JobStatus, int | None]] = {}
+    while True:
+        # Capture each current Event before reading state. An emit racing this
+        # snapshot sets the captured Event, so the next pass cannot miss it.
+        wakes = [job["_wake"] for job in group]
+        active = False
+        for job in group:
+            state = (job["status"], job["returncode"])
+            if previous.get(job["id"]) != state:
+                previous[job["id"]] = state
+                yield {"event": "job", "data": json.dumps({
+                    "id": job["id"], "status": job["status"],
+                    "returncode": job["returncode"],
+                })}
+            active = active or job["status"] in ("queued", "running")
+        if not active:
+            break
+        waiters = [asyncio.create_task(wake.wait()) for wake in wakes]
+        _, pending = await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+        for waiter in pending:
+            waiter.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+    yield {"event": "done", "data": json.dumps({"jobs": len(group)})}

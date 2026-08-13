@@ -94,6 +94,7 @@ export function BulkConfirmDialog({ action, comment, canonical, perPr = false, s
 
   const run = async () => {
     setRunning(true);
+    const startedJobs: Array<{ key: number; jobId: number }> = [];
     await api.executeBulk(
       { prs: targets.map((r) => r.number), action, comment: postsComment ? comment : undefined,
         comments: perPr && postsComment ? perPrComments : undefined,
@@ -101,9 +102,9 @@ export function BulkConfirmDialog({ action, comment, canonical, perPr = false, s
       (r) => {
         setResults((prev) => ({ ...prev, [r.pr]: r }));
         if (!backgroundSecurity || r.status !== "queued" || r.job_id === undefined) return;
-        securityJobs.track(r.pr, r.job_id);
+        startedJobs.push({ key: r.pr, jobId: r.job_id });
       },
-      (s) => { setSummary(s); setRunning(false); onDone(); },
+      (s) => { securityJobs.track(startedJobs); setSummary(s); setRunning(false); onDone(); },
     );
   };
 

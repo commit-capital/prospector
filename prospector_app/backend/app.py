@@ -554,6 +554,21 @@ async def jobs_stream(job_id: int):
     return EventSourceResponse(jobs.attach_job(job))
 
 
+@app.get("/api/jobs/stream/group")
+async def jobs_group_stream(job_id: list[int] = Query(...)) -> EventSourceResponse:
+    """Follow several background jobs through one browser connection."""
+    if not job_id:
+        raise HTTPException(400, "at least one job id is required")
+    if len(job_id) > bulk.CAP:
+        raise HTTPException(400, f"job group exceeds cap of {bulk.CAP}")
+    ids = list(dict.fromkeys(job_id))
+    group = [jobs.JOBS.get(i) for i in ids]
+    missing = [i for i, job in zip(ids, group, strict=True) if job is None]
+    if missing:
+        raise HTTPException(404, f"no such job(s): {', '.join(map(str, missing))}")
+    return EventSourceResponse(jobs.attach_job_group([job for job in group if job is not None]))
+
+
 # ---------------------------------------------------------------------------
 # Upstream execution as the configured bot (M6). Dry-run unless a bot key is present.
 # ---------------------------------------------------------------------------

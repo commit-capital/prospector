@@ -271,14 +271,14 @@ export default function ClusterDetail() {
       // showing nothing just because a fresh load lost the original stream.
       const memberPrs = new Set(d.prs.map((r) => r.number));
       api.jobsList().then((jd) => {
-        const running = jd.jobs.filter((j) => j.status === "running");
-        const clusterJob = running.filter((j) => j.kind === "triage-cluster" && j.cluster === Number(id))
+        const active = jd.jobs.filter((j) => j.status === "queued" || j.status === "running");
+        const clusterJob = active.filter((j) => j.kind === "triage-cluster" && j.cluster === Number(id))
           .sort((a, b) => b.id - a.id)[0];
         if (clusterJob) {
           attachRerun(`/api/jobs/${clusterJob.id}/stream`,
             `↻ reattached to job #${clusterJob.id} — replaying its output so far…`);
         }
-        const secJob = running.filter((j) => j.kind === "security-review" && j.pr != null && memberPrs.has(j.pr))
+        const secJob = active.filter((j) => j.kind === "security-review" && j.pr != null && memberPrs.has(j.pr))
           .sort((a, b) => b.id - a.id)[0];
         if (secJob?.pr != null) {
           attachSecurityJob(`/api/jobs/${secJob.id}/stream`, secJob.pr,

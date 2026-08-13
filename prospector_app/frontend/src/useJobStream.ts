@@ -47,7 +47,7 @@ export function useJobStream(
     api.jobsList().then((d) => {
       if (cancelled) return;
       const match = d.jobs
-        .filter((j) => j.kind === kind && j.status === "running"
+        .filter((j) => j.kind === kind && (j.status === "queued" || j.status === "running")
           && (target.pr === undefined || j.pr === target.pr)
           && (target.cluster === undefined || j.cluster === target.cluster))
         .sort((a, b) => b.id - a.id)[0];
