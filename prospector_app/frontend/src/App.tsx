@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { Component, lazy, Suspense, useEffect, useState, type ErrorInfo, type ReactNode } from "react";
 import { NavLink, Outlet, useLocation, useSearchParams } from "react-router";
 import { ExecProvider, useExec, type Toast } from "./ExecContext";
 import { RepoMetaProvider, useRepoMeta } from "./RepoMetaContext";
@@ -6,22 +6,74 @@ import { FeedbackButton } from "./components/FeedbackButton";
 import { AgentPaneProvider } from "./components/AgentPane";
 import { isReachable, subscribeHealth, pingHealth } from "./health";
 import { api } from "./api";
+import { loadWithRecovery } from "./lazyLoad";
 import { timeAgo } from "./timeAgo";
 
-const PRFlyout = lazy(async () => ({
+const PRFlyout = lazy(() => loadWithRecovery("pr-flyout", async () => ({
   default: (await import("./components/PRFlyout")).PRFlyout,
-}));
-const IssueFlyout = lazy(async () => ({
+})));
+const IssueFlyout = lazy(() => loadWithRecovery("issue-flyout", async () => ({
   default: (await import("./components/IssueFlyout")).IssueFlyout,
-}));
+})));
+
+type FlyoutLoadBoundaryProps = {
+  children: ReactNode;
+  onDismiss: () => void;
+};
+
+type FlyoutLoadBoundaryState = {
+  error: Error | null;
+};
+
+class FlyoutLoadBoundary extends Component<FlyoutLoadBoundaryProps, FlyoutLoadBoundaryState> {
+  state: FlyoutLoadBoundaryState = { error: null };
+
+  static getDerivedStateFromError(error: unknown): FlyoutLoadBoundaryState {
+    return { error: error instanceof Error ? error : new Error(String(error)) };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo): void {
+    console.error("Flyout module failed to load", error, info.componentStack);
+  }
+
+  render(): ReactNode {
+    if (!this.state.error) return this.props.children;
+    return (
+      <>
+        <div className="flyout-scrim" onClick={this.props.onDismiss} />
+        <aside className="flyout flyout-load-error" role="alert" aria-label="Details failed to load">
+          <h2>Couldn&rsquo;t open details</h2>
+          <p>This part of the cockpit didn&rsquo;t load. Reload the page to try again.</p>
+          <div className="flyout-load-actions">
+            <button className="btn-primary" onClick={() => window.location.reload()}>Reload</button>
+            <button className="btn-secondary" onClick={this.props.onDismiss}>Dismiss</button>
+          </div>
+          <details>
+            <summary>Technical details</summary>
+            <code>{this.state.error.message}</code>
+          </details>
+        </aside>
+      </>
+    );
+  }
+}
 
 function Flyouts() {
-  const [params] = useSearchParams();
+  const [params, setParams] = useSearchParams();
+  const flyoutKey = `${params.get("pr") ?? ""}:${params.get("issue") ?? ""}`;
+  const dismiss = (): void => {
+    const next = new URLSearchParams(params);
+    next.delete("pr");
+    next.delete("issue");
+    setParams(next, { replace: true });
+  };
   return (
-    <Suspense fallback={null}>
-      {params.has("pr") && <PRFlyout />}
-      {params.has("issue") && <IssueFlyout />}
-    </Suspense>
+    <FlyoutLoadBoundary key={flyoutKey} onDismiss={dismiss}>
+      <Suspense fallback={null}>
+        {params.has("pr") && <PRFlyout />}
+        {params.has("issue") && <IssueFlyout />}
+      </Suspense>
+    </FlyoutLoadBoundary>
   );
 }
 
