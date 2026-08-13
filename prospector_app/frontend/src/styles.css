@@ -423,6 +423,12 @@ select { background: var(--panel); border: 1px solid var(--border); color: var(-
 .flyout-close:hover { background: var(--red); color: #fff; }
 .flyout-body { overflow-y: auto; padding: 16px 18px 60px; flex: 1; }
 .flyout-count { margin-right: auto; align-self: center; font-size: 12px; color: var(--muted); }
+.flyout-load-error { padding: 28px; display: block; }
+.flyout-load-error h2 { margin: 0 0 8px; }
+.flyout-load-error p { color: var(--muted); line-height: 1.5; }
+.flyout-load-actions { display: flex; gap: 8px; margin: 20px 0; }
+.flyout-load-error details { color: var(--muted); font-size: 12px; }
+.flyout-load-error details code { display: block; margin-top: 8px; white-space: pre-wrap; }
 
 /* stacked panes (#20): compare multiple PRs top-to-bottom */
 .flyout-panes { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; }
