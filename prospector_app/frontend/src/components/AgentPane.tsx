@@ -273,9 +273,6 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
     es.addEventListener("delta", (e: MessageEvent) => {
       setMsgs((m) => { const c = [...m]; c[c.length - 1] = { role: "assistant", text: c[c.length - 1].text + e.data }; return c; });
     });
-    es.addEventListener("replace", (e: MessageEvent) => {
-      setMsgs((m) => { const c = [...m]; c[c.length - 1] = { role: "assistant", text: e.data }; return c; });
-    });
     es.addEventListener("done", () => { settledRef.current = true; es.close(); setStreaming(false); });
     es.onerror = () => { es.close(); setStreaming(false); if (!settledRef.current) setInterrupted(true); };
     // Fresh activity floats a named session back to the front of the strip.

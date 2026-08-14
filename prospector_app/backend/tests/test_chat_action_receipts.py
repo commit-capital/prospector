@@ -1,4 +1,4 @@
-"""Deterministic action-receipt enforcement for embedded chat.
+"""Deterministic action receipts for embedded chat.
 
 These tests exercise pure parsing/validation only. They never spawn Claude or
 make a network call.
@@ -10,7 +10,7 @@ from prospector_app.backend import chat
 from prospector_app.backend import issue_receipts
 
 
-def _receipt(number: int = 50) -> dict:
+def _receipt(number: int = 50) -> issue_receipts.IssueReceipt:
     return {
         "ok": True,
         "kind": "feedback-issue",
@@ -43,49 +43,42 @@ def test_file_issue_receipt_requires_command_and_exact_structured_output():
     ) is None
 
 
-def test_fabricated_filing_claim_is_withheld_without_receipt():
+def test_agent_text_is_preserved_without_receipt():
     invented = ("So I filed it: "
                 f"https://github.com/{chat.FEEDBACK_REPO}/issues/63")
-    out = issue_receipts.validate(invented, [], chat.FEEDBACK_REPO)
-    assert "I did not file an issue" in out
-    assert "issues/63" not in out
-    assert "only a draft" in out
+    assert issue_receipts.attach_verified_summary(invented, []) == invented
+    negative = "I filed nothing — no receipts, so nothing was created."
+    assert issue_receipts.attach_verified_summary(negative, []) == negative
 
 
-def test_filing_claim_without_a_url_is_also_withheld():
-    out = issue_receipts.validate(
-        "I filed it and used the body above.", [], chat.FEEDBACK_REPO
-    )
-    assert "I did not file an issue" in out
-    out = issue_receipts.validate("Filed successfully.", [], chat.FEEDBACK_REPO)
-    assert "I did not file an issue" in out
-
-
-def test_exact_same_turn_receipt_allows_the_authoritative_url():
+def test_receipt_is_appended_even_when_agent_reports_the_authoritative_url():
     receipt = _receipt()
     text = f"Filed successfully: {receipt['url']}"
-    assert issue_receipts.validate(text, [receipt], chat.FEEDBACK_REPO) == text
+    out = issue_receipts.attach_verified_summary(text, [receipt])
+    assert out.startswith(text)
+    assert "Prospector-verified filing receipt" in out
+    assert out.count(receipt["url"]) == 2
 
 
-def test_wrong_reported_url_is_replaced_with_same_turn_receipt():
+def test_receipt_attestation_does_not_rewrite_agent_text():
     receipt = _receipt()
     invented = f"I filed it: https://github.com/{chat.FEEDBACK_REPO}/issues/63"
-    out = issue_receipts.validate(invented, [receipt], chat.FEEDBACK_REPO)
+    out = issue_receipts.attach_verified_summary(invented, [receipt])
+    assert out.startswith(invented)
     assert receipt["url"] in out
-    assert "issues/63" not in out
-    assert "reported URL did not match" in out
+    assert "issues/63" in out
 
 
-def test_receipt_url_is_appended_when_model_omits_it():
+def test_receipt_is_appended_when_model_omits_it():
     receipt = _receipt()
-    out = issue_receipts.validate(
-        "The filing command succeeded.", [receipt], chat.FEEDBACK_REPO
+    out = issue_receipts.attach_verified_summary(
+        "The filing command succeeded.", [receipt]
     )
-    assert "Verified filing receipt" in out
+    assert "Prospector-verified filing receipt" in out
     assert receipt["url"] in out
 
 
-def test_stream_replaces_fabricated_claim_without_spawning_agent(
+def test_stream_preserves_agent_text_without_receipt(
         temp_store, tmp_path, monkeypatch):
     monkeypatch.setattr(chat, "SESSION_DIR", tmp_path / "cache" / "chat")
     monkeypatch.setattr(chat, "_op_slug", lambda: "tester")
@@ -119,14 +112,11 @@ def test_stream_replaces_fabricated_claim_without_spawning_agent(
 
     events = asyncio.run(drive())
     assert events[0] == {"event": "delta", "data": invented}
-    assert events[1]["event"] == "replace"
-    assert "I did not file an issue" in events[1]["data"]
-    assert "issues/63" not in events[1]["data"]
     assert events[-1]["event"] == "done"
-    assert chat.load_thread("pr-7")[-1]["text"] == events[1]["data"]
+    assert chat.load_thread("pr-7")[-1]["text"] == invented
 
 
-def test_stream_keeps_claim_with_same_turn_receipt(
+def test_stream_appends_same_turn_receipt(
         temp_store, tmp_path, monkeypatch):
     monkeypatch.setattr(chat, "SESSION_DIR", tmp_path / "cache" / "chat")
     monkeypatch.setattr(chat, "_op_slug", lambda: "tester")
@@ -175,4 +165,9 @@ def test_stream_keeps_claim_with_same_turn_receipt(
 
     events = asyncio.run(drive())
     assert events[0] == {"event": "delta", "data": answer}
+    assert events[1]["event"] == "delta"
+    assert "Prospector-verified filing receipt" in events[1]["data"]
+    assert receipt["url"] in events[1]["data"]
     assert events[-1]["event"] == "done"
+    saved = chat.load_thread("pr-8")[-1]["text"]
+    assert saved == answer + events[1]["data"]

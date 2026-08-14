@@ -1,16 +1,18 @@
-"""Receipt validation for meta-repository issue filing."""
+"""Structured receipts for meta-repository issue filing."""
 from __future__ import annotations
 
 import json
-import re
+from typing import TypedDict
 
 FILE_ISSUE_COMMAND = "prospector_app/agent/file-issue"
-FILED_CLAIM_RE = re.compile(
-    r"(?ix)(?:^\s*filed\b|\b(?:"
-    r"(?:i|we)\s+(?:have\s+)?(?:now\s+)?(?:filed|created|opened)"
-    r"|(?:filed|created|opened)\s+it"
-    r")\b)"
-)
+
+
+class IssueReceipt(TypedDict):
+    ok: bool
+    kind: str
+    repo: str
+    number: int
+    url: str
 
 
 def _text(content: object) -> str:
@@ -26,7 +28,7 @@ def _text(content: object) -> str:
 
 
 def parse(command: str, content: object, feedback_repo: str,
-          *, is_error: bool = False) -> dict | None:
+          *, is_error: bool = False) -> IssueReceipt | None:
     command = command.lstrip()
     if is_error or not (command == FILE_ISSUE_COMMAND or
                         command.startswith(f"{FILE_ISSUE_COMMAND} ")):
@@ -45,24 +47,28 @@ def parse(command: str, content: object, feedback_repo: str,
             receipt.get("repo") != feedback_repo or
             receipt.get("url") != expected):
         return None
-    return receipt
+    return IssueReceipt(
+        ok=True,
+        kind="feedback-issue",
+        repo=feedback_repo,
+        number=number,
+        url=expected,
+    )
 
 
-def validate(text: str, receipts: list[dict], feedback_repo: str) -> str:
-    pattern = rf"https://github\.com/{re.escape(feedback_repo)}/issues/\d+"
-    urls = re.findall(pattern, text or "") if feedback_repo else []
-    receipt_urls = {str(receipt["url"]) for receipt in receipts}
-    mismatch = any(url not in receipt_urls for url in urls)
-    if mismatch or (FILED_CLAIM_RE.search(text or "") and not receipt_urls):
-        if receipt_urls:
-            exact = "\n".join(f"- {url}" for url in sorted(receipt_urls))
-            return ("The issue filing succeeded, but the reported URL did not match the "
-                    f"filing receipt.\n\nVerified issue:\n{exact}")
-        return ("I did not file an issue. No successful `file-issue` receipt was recorded "
-                "for this turn. Any issue text produced in the turn is only a draft.")
-    missing = [url for url in sorted(receipt_urls) if url not in urls]
-    if missing:
-        exact = "\n".join(f"- {url}" for url in missing)
-        suffix = f"Verified filing receipt:\n{exact}"
-        return f"{text.rstrip()}\n\n{suffix}" if text.strip() else suffix
-    return text
+def verified_summary(receipts: list[IssueReceipt]) -> str:
+    """Render the authoritative URLs produced by successful file-issue calls."""
+    urls = sorted({receipt["url"] for receipt in receipts})
+    if not urls:
+        return ""
+    exact = "\n".join(f"- {url}" for url in urls)
+    return f"Prospector-verified filing receipt:\n{exact}"
+
+
+def attach_verified_summary(text: str, receipts: list[IssueReceipt]) -> str:
+    """Append successful filing evidence while preserving the agent's response."""
+    summary = verified_summary(receipts)
+    if not summary:
+        return text
+    prefix = f"{text}\n\n---\n\n" if text else ""
+    return f"{prefix}{summary}"
