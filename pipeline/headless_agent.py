@@ -19,6 +19,7 @@ import re
 import shutil
 import signal
 import subprocess
+import threading
 
 from pipeline.gh import operator_env
 
@@ -172,21 +173,37 @@ def run_agent(prompt: str, *, allow_gh: bool, cwd: str, system_prompt: str | Non
               model: str | None = None, on_event=None, timeout: int = 1200,
               edit_root: str | None = None) -> str:
     """Spawn headless claude, stream its output through parse_stream, return the
-    final text. `model` pins a specific model (e.g. a cheap Haiku for mechanical
-    work); None uses the CLI default. `edit_root` grants Edit/Write scoped to
-    that directory (plus read-only git). Raises RuntimeError on a non-zero
-    exit."""
-    cmd = [CLAUDE_BIN, "-p", prompt, *_flags(allow_gh, edit_root),
+    final text. The prompt travels over stdin — it can embed a whole PR diff,
+    and argv has an OS size cap. `model` pins a specific model (e.g. a cheap
+    Haiku for mechanical work); None uses the CLI default. `edit_root` grants
+    Edit/Write scoped to that directory (plus read-only git). Raises
+    RuntimeError on a non-zero exit."""
+    cmd = [CLAUDE_BIN, "-p", *_flags(allow_gh, edit_root),
            "--output-format", "stream-json", "--verbose", "--include-partial-messages"]
     if model:
         cmd += ["--model", model]
     if system_prompt:
         cmd += ["--append-system-prompt", system_prompt]
-    proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE,
+    proc = subprocess.Popen(cmd, cwd=cwd, stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True,
                             start_new_session=True, env=operator_env())
-    assert proc.stdout is not None
+    assert proc.stdin is not None and proc.stdout is not None
+
+    # Fed from a thread while this thread drains stdout, so neither pipe can
+    # fill and deadlock the pair.
+    def _feed(stdin=proc.stdin) -> None:
+        try:
+            stdin.write(prompt)
+        except BrokenPipeError:
+            pass
+        finally:
+            stdin.close()
+
+    feeder = threading.Thread(target=_feed, daemon=True)
+    feeder.start()
     text = parse_stream(proc.stdout, on_event=on_event)
+    feeder.join(timeout=60)
     try:
         proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:

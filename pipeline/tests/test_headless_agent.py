@@ -83,3 +83,55 @@ def test_flags_default_stays_read_only():
     i = flags.index("--disallowedTools")
     disallowed = flags[i + 1:flags.index("--permission-mode")]
     assert "Edit" in disallowed and "Write" in disallowed
+
+
+class _FakeStdin:
+    def __init__(self):
+        self.chunks: list[str] = []
+        self.closed = False
+
+    def write(self, s: str) -> int:
+        self.chunks.append(s)
+        return len(s)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _FakeProc:
+    def __init__(self, cmd):
+        self.cmd = cmd
+        self.pid = 4242
+        self.returncode = 0
+        self.stdin = _FakeStdin()
+        self.stdout = iter([
+            json.dumps({"type": "stream_event", "event": {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": "ok"}}}),
+            json.dumps({"type": "result"}),
+        ])
+
+    def wait(self, timeout=None) -> int:
+        return self.returncode
+
+
+def test_run_agent_sends_the_prompt_over_stdin_not_argv(monkeypatch):
+    """A prompt embedding a large PR diff exceeds the OS argv limit, so the
+    prompt travels over stdin; argv carries only flags."""
+    procs: list[_FakeProc] = []
+
+    def fake_popen(cmd, **kwargs):
+        assert kwargs.get("stdin") == ha.subprocess.PIPE
+        proc = _FakeProc(cmd)
+        procs.append(proc)
+        return proc
+
+    monkeypatch.setattr(ha.subprocess, "Popen", fake_popen)
+    prompt = "review this diff\n" + "x" * 2_000_000
+    text = ha.run_agent(prompt, allow_gh=False, cwd="/tmp")
+    assert text == "ok"
+    (proc,) = procs
+    assert prompt not in proc.cmd
+    assert all(len(arg) < 100_000 for arg in proc.cmd)
+    assert "".join(proc.stdin.chunks) == prompt
+    assert proc.stdin.closed
