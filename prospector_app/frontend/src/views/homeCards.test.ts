@@ -11,6 +11,13 @@ test("card keys are unique", () => {
   assert.equal(new Set(keys).size, keys.length);
 });
 
+test("cards run from merge-ready down to the human-decision backstop", () => {
+  assert.deepEqual(
+    HOME_CARDS.map((c) => c.key),
+    ["ready", "verify-pending", "security-pending", "base-update", "nitpicks", "needs-human"],
+  );
+});
+
 test("ALL_CHECKS_PASS requires a pass on every rollup check", () => {
   assert.deepEqual(
     ALL_CHECKS_PASS,
