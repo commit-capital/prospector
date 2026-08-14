@@ -3,7 +3,7 @@ import { Link } from "react-router";
 import { api, type PRRow, type QueryResult } from "../api";
 import { LinkedIssues } from "../components/LinkedIssues";
 import { PRLink } from "../components/PRLink";
-import { exploreHref, HOME_CARDS, painLabel, SAMPLE_QUERY, type HomeCard } from "./homeCards";
+import { exploreHref, HOME_CARDS, painLabel, SAMPLE_ISSUE_LIMIT, SAMPLE_QUERY, type HomeCard } from "./homeCards";
 
 // While the backend snapshot is cold-loading, counts come back null with
 // loading:true — re-ask on this cadence until real numbers arrive.
@@ -25,7 +25,7 @@ function SamplePR({ r }: { r: PRRow }) {
         {painLabel(r.pain_score)}
       </td>
       <td className="home-sample-issues small">
-        <LinkedIssues issues={r.issues} limit={3} />
+        <LinkedIssues issues={r.issues} limit={SAMPLE_ISSUE_LIMIT} />
       </td>
     </tr>
   );
