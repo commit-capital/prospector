@@ -40,9 +40,11 @@ function checksPass(...keys: string[]): CheckClause[] {
 // Every check key the checks rollup carries, required to pass.
 export const ALL_CHECKS_PASS: CheckClause[] = checksPass(...CHECK_DEFS.map((d) => d.key));
 
-// The cards, most actionable first. Counts come from POST /api/prs/counts and
-// samples from POST /api/prs/query — the same backend matcher — so each card's
-// number is exactly the row count the Explorer shows when its link opens.
+// The cards, ordered by how close their PRs are to merge-ready: ready first,
+// then each card one step further from the finish line, with the human-decision
+// backstop last. Counts come from POST /api/prs/counts and samples from
+// POST /api/prs/query — the same backend matcher — so each card's number is
+// exactly the row count the Explorer shows when its link opens.
 export const HOME_CARDS: HomeCard[] = [
   {
     key: "ready",
@@ -57,6 +59,29 @@ export const HOME_CARDS: HomeCard[] = [
     sort: "updated",
     dir: "asc",
     lead: true,
+  },
+  {
+    key: "verify-pending",
+    title: "Awaiting verification",
+    blurb: "Security GREEN and otherwise clean, but dynamic verification has never run.",
+    spec: {
+      checks: [
+        ...checksPass("review", "ci", "mergeable", "secrets", "security"),
+        { key: "verify", status: "never_ran" },
+      ],
+      safety: "GREEN",
+    },
+  },
+  {
+    key: "security-pending",
+    title: "Awaiting security review",
+    blurb: "Clean on review, CI, conflicts, and secrets, but the deep security review has never run.",
+    spec: {
+      checks: [
+        ...checksPass("review", "ci", "mergeable", "secrets"),
+        { key: "security", status: "never_ran" },
+      ],
+    },
   },
   {
     key: "base-update",
@@ -79,29 +104,6 @@ export const HOME_CARDS: HomeCard[] = [
     spec: {
       checks: checksPass("ci", "mergeable"),
       greptile_severity: "nits",
-    },
-  },
-  {
-    key: "security-pending",
-    title: "Awaiting security review",
-    blurb: "Clean on review, CI, conflicts, and secrets, but the deep security review has never run.",
-    spec: {
-      checks: [
-        ...checksPass("review", "ci", "mergeable", "secrets"),
-        { key: "security", status: "never_ran" },
-      ],
-    },
-  },
-  {
-    key: "verify-pending",
-    title: "Awaiting verification",
-    blurb: "Security GREEN and otherwise clean, but dynamic verification has never run.",
-    spec: {
-      checks: [
-        ...checksPass("review", "ci", "mergeable", "secrets", "security"),
-        { key: "verify", status: "never_ran" },
-      ],
-      safety: "GREEN",
     },
   },
   {
