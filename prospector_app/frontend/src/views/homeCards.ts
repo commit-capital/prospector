@@ -19,6 +19,11 @@ export interface HomeCard {
 // the "Show all" link opens the full set in the Explorer.
 export const SAMPLE_LIMIT = 6;
 
+// How many linked issues a sample row lists before collapsing the rest into a
+// "+N" marker — the issues cell is a single fixed-width line sized to fit this
+// many links.
+export const SAMPLE_ISSUE_LIMIT = 2;
+
 // The Community Pain Score cell label for a sample PR row; empty when the
 // PR carries no pain score.
 export function painLabel(pain: number | null | undefined): string {

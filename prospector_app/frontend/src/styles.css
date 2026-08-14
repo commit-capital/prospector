@@ -1287,17 +1287,20 @@ tr.row-done:hover > td { opacity: 1; }
   justify-content: center;
 }
 .home-sample-table { width: 100%; table-layout: fixed; border-collapse: collapse; }
-.home-sample-table td { padding: 1px 0; vertical-align: baseline; }
+/* Every sample row is one line tall: each fixed-width cell keeps its content
+   on a single line and clips any overflow inside its own column. */
+.home-sample-table td {
+  padding: 1px 0; vertical-align: baseline;
+  white-space: nowrap; overflow: hidden;
+}
 .home-sample-table td + td { padding-left: 10px; }
-.home-sample-pr { width: 48px; }
+.home-sample-pr { width: 54px; }
 .home-sample-pr a { color: var(--accent); text-decoration: none; }
 .home-sample-pr a:hover { text-decoration: underline; }
-.home-sample-title {
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font-size: 12.5px;
-}
-.home-sample-pain { width: 64px; text-align: right; color: var(--muted); }
-.home-sample-issues { width: 90px; text-align: right; }
+.home-sample-title { text-overflow: ellipsis; font-size: 12.5px; }
+.home-sample-pain { width: 76px; text-align: right; color: var(--muted); }
+.home-sample-issues { width: 128px; text-align: right; }
+.home-sample-issues .issue-prs { flex-wrap: nowrap; justify-content: flex-end; max-width: 100%; }
 .home-show-all { margin-top: 4px; align-self: flex-end; color: var(--accent); text-decoration: none; }
 .home-show-all:hover { text-decoration: underline; }
 @media (max-width: 860px) {
