@@ -385,19 +385,22 @@ def run_one(n: int) -> int:
 
 
 def _finalize(n: int, rc: int, tail: str) -> None:
-    """A pickup must end terminal: if the orchestrator exited with the request
-    still `queued`/`running` (it crashed before recording a result), mark it
-    errored with the captured output — a pending leftover would be picked up
-    again next tick and crash-loop. A request another host claimed is left
-    alone: this pickup lost the claim race, and the running status is the
-    winner's live run."""
+    """A pickup must end terminal or deliberately parked. A `running` leftover,
+    or a `queued` one from a nonzero exit, means the orchestrator crashed
+    before recording a result — mark it errored with the captured output, since
+    a pending leftover would be picked up again next tick and crash-loop. A
+    `queued` request from a clean exit is the orchestrator's own transient-
+    failure re-queue and stays for the worker to re-pick. A request another
+    host claimed is left alone: this pickup lost the claim race, and the
+    running status is the winner's live run."""
     me = socket.gethostname()
     st = data.store()
     rec = st.load_pr(n)
     if rec is not None:
         req = rec.verify_request or {}
-        if (req.get("status") in ("queued", "running")
-                and req.get("host") in (None, me)):
+        status = req.get("status")
+        crashed = status == "running" or (status == "queued" and rc != 0)
+        if crashed and req.get("host") in (None, me):
             st.edit_pr(n).record_verify_request(
                 "error", queued_at=req.get("queued_at"),
                 started_at=req.get("started_at"), finished_at=_now(),

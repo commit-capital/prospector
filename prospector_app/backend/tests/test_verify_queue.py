@@ -356,6 +356,20 @@ def test_finalize_leaves_a_waiting_for_base_request_alone(store):
     assert store.load_pr(1).verify_request["status"] == "waiting-for-base"
 
 
+def test_finalize_leaves_a_deliberate_requeue_alone(store):
+    """A transient failure re-queues itself for the worker to re-pick (status
+    `queued` with the attempt count) and the orchestrator exits 0 — finalize
+    must not read that park as a crash and stamp it a terminal error."""
+    store.edit_pr(1).record_verify_request(
+        "queued", queued_at=_now(), error_kind="agent-failed",
+        error="the blind adequacy agent failed or returned unusable JSON",
+        attempts=1, host=socket.gethostname())
+    verify_worker._finalize(1, 0, "re-queued for retry (attempt 1 of 3)")
+    req = store.load_pr(1).verify_request
+    assert req["status"] == "queued"
+    assert req["attempts"] == 1
+
+
 def test_run_one_streams_and_finalizes(store, monkeypatch):
     """run_one spawns the orchestrator argv with --from-queue and finalizes.
     The subprocess is a stub that leaves the request `running`, so _finalize
