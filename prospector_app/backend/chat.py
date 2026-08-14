@@ -721,7 +721,7 @@ async def stream_chat(question: str, pr: int | None = None, cluster: int | None 
     parts: list[str] = []
     final_text: str | None = None
     tool_commands: dict[str, str] = {}
-    file_issue_receipts: list[dict] = []
+    file_issue_receipts: list[issue_receipts.IssueReceipt] = []
     last_pw = 0.0  # last partial-sidecar write time (throttled, #191)
     saw_result = False  # claude's own "this turn is done" signal
     stopped = False
@@ -779,9 +779,12 @@ async def stream_chat(question: str, pr: int | None = None, cluster: int | None 
 
         if saw_result:
             raw_text = "".join(parts)
-            final_text = issue_receipts.validate(raw_text, file_issue_receipts, FEEDBACK_REPO)
-            if final_text != raw_text:
-                yield {"event": "replace", "data": final_text}
+            final_text = issue_receipts.attach_verified_summary(
+                raw_text, file_issue_receipts
+            )
+            receipt_suffix = final_text[len(raw_text):]
+            if receipt_suffix:
+                yield {"event": "delta", "data": receipt_suffix}
     finally:
         # Runs on a clean finish AND on an abnormal teardown — an operator Stop
         # (the frontend closes its EventSource before it even calls /chat/stop)
@@ -798,8 +801,8 @@ async def stream_chat(question: str, pr: int | None = None, cluster: int | None 
         stopped = ctx_id not in _RUNNING
         _RUNNING.pop(ctx_id, None)
         if final_text is None:
-            final_text = issue_receipts.validate(
-                "".join(parts), file_issue_receipts, FEEDBACK_REPO
+            final_text = issue_receipts.attach_verified_summary(
+                "".join(parts), file_issue_receipts
             )
         _save(ctx_id, "assistant", final_text, captured_sid)
         _clear_partial(ctx_id)
