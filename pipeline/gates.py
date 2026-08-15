@@ -427,7 +427,8 @@ def merge_eligibility(pr: Pr, today: str | None = None,
 
 
 def fix_eligibility(pr: Pr, action: str,
-                    changed_paths: list[str] | None = None) -> tuple[bool, str]:
+                    changed_paths: list[str] | None = None, *,
+                    guided: bool = False) -> tuple[bool, str]:
     """Autofix gate — may the push bot act on this PR's head branch?
 
     Answers from stored facts alone, so any app instance can render the buttons
@@ -447,9 +448,16 @@ def fix_eligibility(pr: Pr, action: str,
         stays off the branch until an adversarial review says so again.
       - a path the profile's autofix.deny_globs names
       - a PR that is not open
-      - a `fix` action where the profile names no fixable gates, i.e. the
-        deployment has not opted into agent-authored changes
+      - an unguided `fix` action where the profile names no fixable gates, i.e.
+        the deployment has not opted into agent-authored changes
       - a `fix` or `resolve` action on a CODEOWNERS-gated path
+
+    `guided` says an operator typed the goal for this fix themselves, which is
+    the opt-in the profile's fixable gates otherwise supply: a named human
+    asking for a named change is the authorization, and the change parks for
+    that same human's approval before it is pushed. Guidance chooses the job
+    and nothing else — every other block above answers identically whatever was
+    typed, so it can never widen the bot's reach.
 
     CODEOWNERS blocks `fix` and `resolve` alone. It routes *merges* to owners,
     and it keeps doing that server-side no matter what lands on the branch — so
@@ -487,7 +495,7 @@ def fix_eligibility(pr: Pr, action: str,
         if denied:
             return False, ("touches a path the profile withholds from autofix: "
                            f"{', '.join(denied[:5])}")
-    if action == "fix" and not profile.active().autofix.fixable_gates:
+    if action == "fix" and not guided and not profile.active().autofix.fixable_gates:
         return False, ("the active profile names no autofix.fixable_gates, so "
                        "agent-authored fixes are not enabled for this repository")
     return True, f"eligible for {action}"

@@ -44,7 +44,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pipeline import compile_preflight, gates, resolve_conflicts, settings, verify_driver
+from pipeline import (author_fix, compile_preflight, diffpaths, gates, gh, profile,
+                      resolve_conflicts, review_fix, settings, verify_driver)
 from pipeline.storekit import now as _now
 from prospector_app.backend import data, fix_queue, service
 from prospector_app.backend.resubmit_identity import worker_env
@@ -273,6 +274,7 @@ def _settle(n: int, req: dict, rc: int, output: str) -> None:
         data.store().edit_pr(n).record_fix_request(
             "queued", req.get("action", "fix"), queued_at=req.get("queued_at"),
             attempts=attempts, source=req.get("source"), host=socket.gethostname(),
+            guidance=req.get("guidance"),
             error=f"attempt {attempts} did not stick, retrying: {output[-TAIL_CHARS:]}")
         data.refresh()
         print(f"[fix-worker] PR #{n} exited {rc}; re-queued (attempt {attempts}"
@@ -289,7 +291,7 @@ def _fail(n: int, req: dict, message: str) -> None:
         "failed", req.get("action", "fix"), queued_at=req.get("queued_at"),
         started_at=req.get("started_at"), finished_at=_now(),
         error=message[-TAIL_CHARS:], source=req.get("source"),
-        host=socket.gethostname())
+        guidance=req.get("guidance"), host=socket.gethostname())
     data.refresh()
 
 
@@ -298,22 +300,29 @@ def _refuse(n: int, req: dict, reason: str, result: dict | None = None) -> None:
         "refused", req.get("action", "fix"), queued_at=req.get("queued_at"),
         started_at=req.get("started_at"), finished_at=_now(),
         refused_reason=reason[-TAIL_CHARS:], result=result,
-        source=req.get("source"), host=socket.gethostname())
+        source=req.get("source"), guidance=req.get("guidance"),
+        host=socket.gethostname())
     data.refresh()
 
 
 def recheck_eligibility(n: int, action: str,
-                        conflict_paths: list[str] | None = None) -> tuple[bool, str]:
+                        paths: list[str] | None = None) -> tuple[bool, str]:
     """Re-run the autofix gate against the record as it stands now. A request
     can sit in the queue while a threat scan or security review lands, so the
-    gate that allowed the queue click is re-asked before the worker acts. A
-    `resolve` is judged on its conflicted paths — the only content the agent
-    authored."""
+    gate that allowed the queue click is re-asked before the worker acts.
+
+    `paths` overrides the PR's own changed paths with the content the agent
+    authored — a `resolve`'s conflicted paths, a `fix`'s finished patch — which
+    is the set that has to clear the gate for those actions. The stored
+    guidance carries the operator's mandate, so this asks exactly what the
+    queue click asked."""
     rec = data.store().load_pr(n)
     if rec is None:
         return False, f"PR #{n} left the store"
-    paths = conflict_paths if action == "resolve" else service.changed_paths(rec)
-    return gates.fix_eligibility(rec, action, paths)
+    guidance = (rec.fix_request or {}).get("guidance")
+    return gates.fix_eligibility(rec, action,
+                                 paths if paths is not None else service.changed_paths(rec),
+                                 guided=bool(guidance))
 
 
 def run_one(n: int) -> None:
@@ -330,6 +339,9 @@ def run_one(n: int) -> None:
         return
 
     try:
+        if action == "fix":
+            _author_fix(n, claimed)
+            return
         patch = _probe(n, claimed, action)
         if patch is None:
             return  # _probe wrote the terminal status
@@ -393,6 +405,147 @@ def _probe(n: int, claimed: dict, action: str) -> str | None:
     return patch
 
 
+DEFAULT_FIX_GOAL = ("Clear the failing gates on this pull request that a change "
+                    "to its code can clear.")
+
+
+def _fix_goal(rec: Pr, claimed: dict) -> tuple[str, list[dict], list[str]]:
+    """What the authoring agent is being asked to do, and the evidence it works
+    from: (goal, review findings, failing check names).
+
+    Operator guidance is the goal when it is present. Otherwise the goal is the
+    profile's fixable gates, described from the outstanding findings and the
+    failing checks — the two things the store can say are wrong with the code.
+
+    Findings are supplied only while the review verdict is current. A stale
+    verdict describes a head the author has moved past, so it would send the
+    agent after defects that may already be fixed."""
+    findings: list[dict] = []
+    section = rec.greptile_review or {}
+    if section and not rec.review_stale:
+        findings = [f for f in (section.get("findings") or []) if isinstance(f, dict)]
+    fixable = profile.active().autofix.fixable_gates
+    checks: list[str] = []
+    if rec.ci == "failing" and ("ci" in fixable or claimed.get("guidance")):
+        checks = [str(c.get("name")) for c in gh.check_runs(rec.head_sha or "")
+                  if c.get("conclusion") == "failure" and c.get("name")]
+    guidance = claimed.get("guidance")
+    if guidance:
+        return str(guidance), findings, checks
+    goals = []
+    if "review" in fixable and findings:
+        goals.append("Fix the outstanding review findings listed below.")
+    if "ci" in fixable and checks:
+        goals.append("Make the failing CI checks listed below pass.")
+    return ("\n".join(goals) or DEFAULT_FIX_GOAL), findings, checks
+
+
+def _prepared_worktree(n: int) -> str | None:
+    """The path of the worktree `prepare` just cloned, or None when the state
+    cannot be read."""
+    r = _resubmit(n, "state")
+    if r.returncode != 0:
+        return None
+    try:
+        return json.loads(r.stdout or "{}").get("worktree")
+    except ValueError:
+        return None
+
+
+def _author_fix(n: int, claimed: dict) -> None:
+    """Author a change against this PR's gates with an agent, review it with a
+    second one, and park the result for an operator to approve.
+
+    Nothing here reaches GitHub. The agent writes inside a clone of the
+    contributor's branch, the finished patch is held to the files the agent
+    reported, re-gated on the paths it really touched, refuted by a reviewer
+    that did not write it, and compiled — and only then does it park. Every
+    exit writes a terminal status; the worktree survives only on the parked
+    path, because an agent's edits cannot be re-derived at approval time."""
+    rec = data.store().load_pr(n)
+    if rec is None:
+        _refuse(n, claimed, f"PR #{n} left the store")
+        return
+    goal, findings, checks = _fix_goal(rec, claimed)
+
+    prepared = _resubmit(n, "prepare")
+    if prepared.returncode != 0:
+        _settle(n, claimed, prepared.returncode,
+                (prepared.stderr or prepared.stdout).strip())
+        return
+    worktree = _prepared_worktree(n)
+    if not worktree:
+        _resubmit(n, "abort")
+        _fail(n, claimed, "the prepared worktree could not be read")
+        return
+
+    _running_step(n, claimed, "agent authoring the fix", action="fix")
+    try:
+        verdict = author_fix.author(worktree, pr=n, title=rec.title or "",
+                                    body=rec.body or "", goal=goal,
+                                    findings=findings, ci_failures=checks)
+    except (RuntimeError, ValueError) as e:
+        _resubmit(n, "abort")
+        _refuse(n, claimed, f"The agent attempt did not land: {e}")
+        return
+    if "give_up" in verdict:
+        _resubmit(n, "abort")
+        _refuse(n, claimed, f"The agent declined to write a change: "
+                            f"{verdict['give_up']}")
+        return
+
+    diff = _resubmit(n, "diff")
+    if diff.returncode != 0:
+        _resubmit(n, "abort")
+        _fail(n, claimed, f"reading the authored diff failed: "
+                          f"{(diff.stderr or diff.stdout).strip()[:500]}")
+        return
+    patch = (diff.stdout or "").strip()
+    if not patch.startswith("diff "):
+        _resubmit(n, "abort")
+        _refuse(n, claimed, "The agent reported changes, but the worktree holds "
+                            "none — nothing was written.")
+        return
+    paths = diffpaths.changed_paths(patch)
+    try:
+        author_fix.assert_disclosed(verdict["changes"], paths)
+    except ValueError as e:
+        _resubmit(n, "abort")
+        _refuse(n, claimed, f"The authored change was not trusted: {e}",
+                result={"patch": patch[-TAIL_CHARS:]})
+        return
+    ok, why = recheck_eligibility(n, "fix", paths)
+    if not ok:
+        _resubmit(n, "abort")
+        _refuse(n, claimed, f"The change the agent wrote is not one the bot may "
+                            f"push: {why}", result={"patch": patch[-TAIL_CHARS:]})
+        return
+
+    _running_step(n, claimed, "reviewing the authored change", action="fix")
+    review = review_fix.review(worktree, patch, pr=n, goal=goal, findings=findings)
+    evidence = {"patch": patch[-TAIL_CHARS:], "changes": verdict["changes"],
+                "review_verdict": review}
+    if review["verdict"] != "safe":
+        _resubmit(n, "abort")
+        _refuse(n, claimed, f"The reviewing agent rejected the change: "
+                            f"{review['reason']}", result=evidence)
+        return
+
+    _running_step(n, claimed, "compile preflight", action="fix")
+    pf = _preflight(n, patch)
+    if pf is not None:
+        pf_ok, pf_why = gates.compile_preflight_gate(pf)
+        if not pf_ok:
+            _resubmit(n, "abort")
+            _refuse(n, claimed, plain_preflight(pf),
+                    result={**evidence, "compile_preflight": pf, "detail": pf_why})
+            return
+
+    result = {**evidence, "compile_preflight": pf,
+              "message": verdict["summary"] or _commit_message("fix")}
+    _park(n, claimed, "fix", result, socket.gethostname())
+
+
 def _conflict_refusal(paused: list[str]) -> str:
     files = ", ".join(paused[:5])
     more = f" (and {len(paused) - 5} more)" if len(paused) > 5 else ""
@@ -402,12 +555,12 @@ def _conflict_refusal(paused: list[str]) -> str:
             f"version is right — ask the author to rebase.")
 
 
-def _running_step(n: int, claimed: dict, step: str) -> None:
+def _running_step(n: int, claimed: dict, step: str, action: str = "resolve") -> None:
     data.store().edit_pr(n).record_fix_request(
-        "running", "resolve", queued_at=claimed.get("queued_at"),
+        "running", action, queued_at=claimed.get("queued_at"),
         started_at=claimed.get("started_at"), step=step,
-        source=claimed.get("source"), host=socket.gethostname(),
-        head_sha=claimed.get("against_head_sha"))
+        source=claimed.get("source"), guidance=claimed.get("guidance"),
+        host=socket.gethostname(), head_sha=claimed.get("against_head_sha"))
     data.refresh()
 
 
@@ -522,7 +675,8 @@ def _park(n: int, claimed: dict, action: str, result: dict, host: str) -> None:
     data.store().edit_pr(n).record_fix_request(
         "awaiting-review", action, queued_at=claimed.get("queued_at"),
         started_at=claimed.get("started_at"), result=result,
-        source=claimed.get("source"), host=host, base_sha=_base_sha(),
+        source=claimed.get("source"), guidance=claimed.get("guidance"),
+        host=host, base_sha=_base_sha(),
         head_sha=claimed.get("against_head_sha"))
     data.refresh()
 
@@ -609,11 +763,17 @@ def push_approved(n: int) -> None:
     if claimed is None:
         return
     action = claimed.get("action") or "fix"
-    conflict_paths: list[str] | None = None
+    authored: list[str] | None = None
+    result = claimed.get("result") or {}
     if action == "resolve":
-        raw_paths = (claimed.get("result") or {}).get("conflict_paths")
-        conflict_paths = [str(p) for p in raw_paths] if raw_paths else []
-    ok, why = recheck_eligibility(n, action, conflict_paths)
+        raw_paths = result.get("conflict_paths")
+        authored = [str(p) for p in raw_paths] if raw_paths else []
+    elif action == "fix":
+        # The agent's own paths, not the contributor's: the gate judges what
+        # this push would add to the branch.
+        authored = [str(c.get("path")) for c in (result.get("changes") or [])
+                    if c.get("path")]
+    ok, why = recheck_eligibility(n, action, authored)
     if not ok:
         _resubmit(n, "abort")
         _refuse(n, claimed, f"no longer eligible for {action}: {why}")
@@ -660,7 +820,8 @@ def _finish_pushed(n: int, req: dict, output: str, result: dict | None = None) -
     data.store().edit_pr(n).record_fix_request(
         "pushed", req.get("action", "fix"), queued_at=req.get("queued_at"),
         started_at=req.get("started_at"), finished_at=_now(), result=merged,
-        source=req.get("source"), host=socket.gethostname())
+        source=req.get("source"), guidance=req.get("guidance"),
+        host=socket.gethostname())
     data.refresh()
 
 

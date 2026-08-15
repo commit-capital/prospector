@@ -56,6 +56,32 @@ def test_queue_and_dequeue(store):
     assert req["queued_at"]  # carried across the transition
 
 
+def test_guidance_is_stored_for_the_worker_to_read(store):
+    # The worker on another machine authors from this text, so it has to survive
+    # the store round-trip — the operator is not there to repeat it.
+    fix_queue.queue_pr(1, "fix", guidance="drop the retry loop, keep the timeout")
+    req = store.load_pr(1).fix_request
+    assert req["guidance"] == "drop the retry loop, keep the timeout"
+
+
+def test_a_guided_fix_queues_without_a_profile_optin(store):
+    # The default profile names no fixable gates; the typed instruction is what
+    # authorizes this one.
+    fix_queue.queue_pr(1, "fix", guidance="rename the flag to --strict")
+    assert store.load_pr(1).fix_request["status"] == "queued"
+
+
+def test_an_unguided_fix_still_needs_the_profile_optin(store):
+    with pytest.raises(ValueError, match="fixable_gates"):
+        fix_queue.queue_pr(1, "fix")
+
+
+def test_blank_guidance_does_not_pass_as_an_instruction(store):
+    # Whitespace in the composer is an empty box, not a mandate.
+    with pytest.raises(ValueError, match="fixable_gates"):
+        fix_queue.queue_pr(1, "fix", guidance="   \n  ")
+
+
 def test_queue_refuses_unknown_action(store):
     with pytest.raises(ValueError, match="unknown autofix action"):
         fix_queue.queue_pr(1, "amend")
@@ -538,3 +564,26 @@ def test_a_broken_sandbox_reads_as_a_worker_problem():
 def test_a_real_compile_failure_says_so():
     why = fix_worker.plain_preflight({"exit": 1})
     assert "didn't compile" in why
+
+
+def test_the_queue_route_carries_guidance_from_the_composer(store):
+    from fastapi.testclient import TestClient
+
+    from prospector_app.backend import app as appmod
+
+    r = TestClient(appmod.app).post("/api/prs/1/fix/queue?action=fix",
+                                    json={"guidance": "bound the retry loop"})
+
+    assert r.status_code == 200, r.text
+    assert store.load_pr(1).fix_request["guidance"] == "bound the retry loop"
+
+
+def test_the_queue_route_still_takes_a_bare_mechanical_action(store):
+    from fastapi.testclient import TestClient
+
+    from prospector_app.backend import app as appmod
+
+    r = TestClient(appmod.app).post("/api/prs/1/fix/queue?action=update")
+
+    assert r.status_code == 200, r.text
+    assert store.load_pr(1).fix_request["action"] == "update"

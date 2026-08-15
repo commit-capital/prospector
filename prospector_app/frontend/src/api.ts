@@ -544,6 +544,9 @@ export interface FixRequest {
   result?: FixResult | null;
   host?: string | null;
   base_sha?: string | null;
+  /** The operator's own instruction for an agent-authored fix, and what
+   *  authorizes one where the profile names no fixable gates. */
+  guidance?: string | null;
   checked_at?: string | null;
   against_head_sha?: string | null;
 }
@@ -562,6 +565,12 @@ export interface FixResult {
   conflict_paths?: string[] | null;
   /** Per-file rationale from the conflict-resolution agent (action `resolve`). */
   resolutions?: { path: string; rationale: string }[] | null;
+  /** Per-file rationale from the authoring agent (action `fix`). */
+  changes?: { path: string; rationale: string }[] | null;
+  /** The refuting reviewer's judgment of an authored fix. Present on a parked
+   *  fix and on one it rejected — a rejection is the interesting half. */
+  review_verdict?: { verdict: "safe" | "unsafe"; reason: string;
+                     concerns: string[] } | null;
   compile_preflight?: { exit?: number | null; refused?: string | null;
                         error?: string | null; error_excerpt?: string | null } | null;
 }
@@ -1289,8 +1298,11 @@ export const api = {
     return body as { pr: number; status: string };
   },
   verifyRunner: () => get<VerifyRunner>("/api/verify/runner"),
-  queueFix: async (n: number, action: FixAction) => {
-    const r = await fetch(`/api/prs/${n}/fix/queue?action=${action}`, { method: "POST" });
+  queueFix: async (n: number, action: FixAction, guidance?: string) => {
+    const r = await fetch(`/api/prs/${n}/fix/queue?action=${action}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(guidance ? { guidance } : {}),
+    });
     const body = (await r.json().catch(() => null)) as { detail?: string; pr?: number; status?: string } | null;
     if (!r.ok) throw new Error(body?.detail ?? `queue ${action} → ${r.status}`);
     return body as { pr: number; action: FixAction; status: string };

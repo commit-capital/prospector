@@ -114,7 +114,15 @@ the phases rather than in them: a per-PR `fix_request` section any app queues an
 the worker on `TRIAGE_FIX_WORKER=1` drains, pushing to the contributor's head
 branch as the machine user. Actions are `update` (merge the base in), `rebase`
 (replay onto current base behind a pinned lease), and `fix` (an agent authors a
-change against a failing gate). A mechanical `rebase` that pauses on real
+change). A `fix` runs two agents inside a `resubmit prepare` clone:
+`pipeline/author_fix.py` writes the change against a goal — the operator's own
+typed guidance, else the profile's fixable gates read off the current review
+findings and failing checks — and `pipeline/review_fix.py` then tries to refute
+the finished patch from a fresh context with read-only tools. Only an explicit
+`safe` passes; a malformed, timed-out, or crashed reviewer reads as unsafe. In
+between, the patch is held to the files the agent reported
+(`author_fix.assert_disclosed`) and re-gated on the paths it really touched, so
+an agent cannot author its way onto a withheld path. A mechanical `rebase` that pauses on real
 conflicts escalates — for operator-clicked requests only, never the hunter's —
 to a fourth action, `resolve`: a locked-down agent resolves the conflicted
 paths inside a merge of current base into the head (`resubmit prepare --merge`
@@ -127,9 +135,13 @@ kept merge commit with no history rewrite. `gates.fix_eligibility` is the ONE
 policy —
 fail-closed on a malicious threat verdict, any recorded RED security verdict, a
 CODEOWNERS-gated path, a path the profile's `autofix.deny_globs` names, a
-non-open PR, and (for `fix`) a profile naming no `autofix.fixable_gates`. It
-bounds the bot's reach, not the merge boundary: an autofixed PR still faces
-`merge_eligibility` unchanged. Every action is probed before it is pushed —
+non-open PR, and (for an unguided `fix`) a profile naming no
+`autofix.fixable_gates`. Operator guidance is its own opt-in: a named human
+typing the goal authorizes the fix where the profile does not, and the change
+still parks for that same human's approval. Guidance chooses the job only —
+every other block answers identically whatever was typed, so it can never widen
+the bot's reach. That reach is what these blocks bound, not the merge boundary:
+an autofixed PR still faces `merge_eligibility` unchanged. Every action is probed before it is pushed —
 the mechanics run in full (`resubmit update --probe` for a base merge, `prepare
 --rebase` for a replay), the resulting tree goes through
 `compile_preflight.run_for_patch`, and the request parks as `awaiting-review`

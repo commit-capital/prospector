@@ -114,10 +114,10 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
     }, 10000);
     return () => window.clearInterval(t);
   }, [fixInFlight, prNum]);
-  const queueFix = async (action: FixActionName) => {
+  const queueFix = async (action: FixActionName, guidance?: string) => {
     if (fixBusy) return;
     setFixBusy(action);
-    try { await api.queueFix(prNum, action); } catch (e) { window.alert(String(e)); }
+    try { await api.queueFix(prNum, action, guidance); } catch (e) { window.alert(String(e)); }
     await reloadPr();
     setFixBusy(null);
   };

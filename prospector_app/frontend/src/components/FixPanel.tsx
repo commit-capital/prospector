@@ -1,5 +1,15 @@
+import { useState } from "react";
+
 import type { FixAction, FixRequest, FixRunner } from "../api";
 import { localDateTime, timeAgo } from "../timeAgo";
+
+/** What the composer starts with. The operator edits the goal; the bar beneath
+ *  it is not theirs to delete, so it lives in the agent's prompt and is shown
+ *  here only so they know what the change is being held to. */
+const DEFAULT_GOAL = "Fix the outstanding review feedback on this PR.";
+const PINNED_BAR = "Always applied: succeed only if the change is safe and "
+                 + "well-constructed, with no risk of introducing a bug or "
+                 + "destabilizing the system. Give up rather than guess.";
 
 /** Why an action cannot be queued right now, or null when it can be.
  *  Queueing is gated on a worker being reachable, NOT on this browser's backend
@@ -44,9 +54,10 @@ const HELP: Record<FixAction, string> = {
         + "SHAs — which collapses inline review comments anchored to the old ones, "
         + "and means anyone with the branch checked out needs a hard reset. It "
         + "parks for your review before any of that happens.",
-  fix: "Has an agent write a change against this PR's failing gates and park the "
-     + "diff for your review — nothing is pushed until you approve it. Only the "
-     + "gates the repository profile names as fixable are attempted.",
+  fix: "Has an agent write a change against this PR and park the diff for your "
+     + "review — nothing is pushed until you approve it. You say what to fix; a "
+     + "second agent that did not write it has to fail to find a reason to "
+     + "reject it, and the change has to compile, before it reaches your queue.",
 };
 
 /** The queue/run state strip: where an in-flight, parked, or failed autofix
@@ -178,10 +189,11 @@ export function FixAction({ req, runner, busy, resolved, onQueue, onDequeue, onA
   runner: FixRunner | null;
   busy: FixAction | "dequeue" | "approve" | null;
   resolved: boolean;
-  onQueue: (action: FixAction) => void;
+  onQueue: (action: FixAction, guidance?: string) => void;
   onDequeue: () => void;
   onApprove: () => void;
 }) {
+  const [goal, setGoal] = useState<string | null>(null);
   const status = req?.status;
   if (status === "running" || status === "pushing") {
     return <span className="chip chip-blue sm" title={`An autofix ${req?.action} is in flight for this PR.`}>
@@ -210,17 +222,37 @@ export function FixAction({ req, runner, busy, resolved, onQueue, onDequeue, onA
       </button>
     );
   }
+  const why = unavailable(runner, req, resolved);
+  if (goal != null) {
+    return (
+      <div className="fix-composer">
+        <textarea className="fix-goal" rows={3} value={goal} autoFocus
+          placeholder={DEFAULT_GOAL} onChange={(e) => setGoal(e.target.value)}
+          aria-label="What the agent should fix" />
+        <div className="muted small">{PINNED_BAR}</div>
+        <div className="row-actions">
+          <button className="btn-primary sm" disabled={busy != null || !goal.trim()}
+            onClick={() => onQueue("fix", goal.trim())}
+            title="Queue this for the autofix worker. The agent writes the change, a
+                   second agent reviews it, and it parks here for your approval.">
+            {busy === "fix" ? "Queuing…" : "🔧 Author this fix"}
+          </button>
+          <button className="btn-secondary sm" disabled={busy != null}
+            onClick={() => setGoal(null)}>Cancel</button>
+        </div>
+      </div>
+    );
+  }
   return (
     <>
-      {(["update", "rebase", "fix"] as FixAction[]).map((action) => {
-        const why = unavailable(runner, req, resolved);
-        return (
-          <button key={action} className="btn-secondary sm" disabled={busy != null || why != null}
-            onClick={() => onQueue(action)} title={why ?? HELP[action]}>
-            {busy === action ? "Queuing…" : LABEL[action]}
-          </button>
-        );
-      })}
+      {(["update", "rebase", "fix"] as FixAction[]).map((action) => (
+        <button key={action} className="btn-secondary sm"
+          disabled={busy != null || why != null}
+          onClick={() => (action === "fix" ? setGoal(DEFAULT_GOAL) : onQueue(action))}
+          title={why ?? HELP[action]}>
+          {busy === action ? "Queuing…" : LABEL[action]}
+        </button>
+      ))}
     </>
   );
 }
@@ -241,6 +273,7 @@ export function FixBody({ req, runner }: { req: FixRequest | null; runner: FixRu
     );
   }
   const pf = req.result?.compile_preflight;
+  const review = req.result?.review_verdict;
   const showPatch = req.result?.patch
     && (req.status === "awaiting-review" || req.status === "approved");
   // Raw command output, build errors and stack traces are for whoever is
@@ -251,6 +284,11 @@ export function FixBody({ req, runner }: { req: FixRequest | null; runner: FixRu
   return (
     <>
       <RequestStrip req={req} runner={runner} />
+      {req.guidance && (
+        <div className="small" style={{ marginTop: 8 }}>
+          <span className="muted">You asked for: </span>{req.guidance}
+        </div>
+      )}
       {req.result?.resolutions && req.result.resolutions.length > 0 && (
         <div className="small" style={{ marginTop: 8 }}>
           <div className="muted">How each conflict was resolved:</div>
@@ -259,6 +297,31 @@ export function FixBody({ req, runner }: { req: FixRequest | null; runner: FixRu
               <li key={r.path}><code>{r.path}</code> — {r.rationale}</li>
             ))}
           </ul>
+        </div>
+      )}
+      {req.result?.changes && req.result.changes.length > 0 && (
+        <div className="small" style={{ marginTop: 8 }}>
+          <div className="muted">What the agent changed:</div>
+          <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+            {req.result.changes.map((c) => (
+              <li key={c.path}><code>{c.path}</code> — {c.rationale}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {review && (
+        <div className="small" style={{ marginTop: 8 }}>
+          <span className="muted">
+            {review.verdict === "safe"
+              ? "A reviewing agent looked for a reason to reject this and found none: "
+              : "A reviewing agent rejected this: "}
+          </span>
+          {review.reason}
+          {review.concerns.length > 0 && (
+            <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+              {review.concerns.map((c) => <li key={c}>{c}</li>)}
+            </ul>
+          )}
         </div>
       )}
       {showPatch && (
