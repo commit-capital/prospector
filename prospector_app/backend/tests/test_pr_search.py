@@ -23,11 +23,14 @@ def test_review_field_docs_follow_provider(monkeypatch):
 
 def test_passes_known_fields():
     spec = pr_search.coerce({"disposition": "needs-human", "safety": "not-run",
-                             "greptile": {"op": "<", "value": 3}, "preset": "easy"})
+                             "greptile": {"op": "<", "value": 3}, "merge_ok": True,
+                             "has_summary": True, "has_issues": False})
     assert spec["disposition"] == "needs-human"
     assert spec["safety"] == "not-run"
     assert spec["greptile"] == {"op": "<", "value": 3}
-    assert spec["preset"] == "easy"
+    assert spec["merge_ok"] is True
+    assert spec["has_summary"] is True
+    assert spec["has_issues"] is False
 
 
 def test_drops_unknown_keys():
@@ -88,10 +91,10 @@ def test_search_route(monkeypatch):
     from prospector_app.backend import app as appmod
 
     async def fake(query):
-        assert "easy" in query
-        return {"preset": "easy", "greptile": {"op": "<", "value": 3}}
+        assert "leaf" in query
+        return {"risk_tier": 3, "greptile": {"op": "<", "value": 3}}
     monkeypatch.setattr(appmod.pr_search, "search_to_spec", fake)
     c = TestClient(appmod.app)
-    r = c.post("/api/prs/search", json={"query": "easy lane greptile under 3"})
+    r = c.post("/api/prs/search", json={"query": "leaf PRs greptile under 3"})
     assert r.status_code == 200
-    assert r.json()["spec"]["preset"] == "easy"
+    assert r.json()["spec"]["risk_tier"] == 3

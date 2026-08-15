@@ -28,10 +28,10 @@ _ENUMS = {
                     "close-stale", "needs-human"},
     "ci": {"passing", "failing", "unknown"},
     "threat": {"malicious", "suspicious", "clear"},
-    "preset": {"easy", "stale", "merge-ready", "needs-human"},
     "greptile_severity": {"defects", "nits", "clean"},
 }
-_BOOLS = {"conflicts", "has_tests", "trusted_author", "clean", "artifact_dominated", "greptile_stale"}
+_BOOLS = {"conflicts", "has_tests", "trusted_author", "clean", "artifact_dominated",
+          "greptile_stale", "merge_ok", "has_summary", "has_issues"}
 _NUMERIC = {"greptile", "score", "age_days"}
 _INTS = {"cluster", "max_files", "max_total_lines", "max_score", "risk_tier"}
 _OPS = {"<", "<=", "==", ">=", ">"}
@@ -125,6 +125,9 @@ Output ONLY a single JSON object, no prose. Allowed keys:
 - ci: passing|failing|unknown
 - threat: malicious|suspicious|clear   (supply-chain threat-scan verdict)
 - conflicts/has_tests/trusted_author/clean: booleans
+- merge_ok: boolean — the PR clears (true) or is blocked by (false) the human-merge gate
+- has_summary: boolean — an agent summary exists for the PR
+- has_issues: boolean — the PR has linked issues
 - artifact_dominated: boolean — diff is mostly generated noise (migration snapshots / locale bundles / lockfiles), e.g. "mostly generated", "all snapshots", "bloated by lockfiles"
 __REVIEW_FIELDS__- score/age_days: {{"op": "<|<=|==|>=|>", "value": <number>}}
 - max_files/max_total_lines/max_score: ints
@@ -133,7 +136,6 @@ __REVIEW_FIELDS__- score/age_days: {{"op": "<|<=|==|>=|>", "value": <number>}}
 - loc: {{"metric": "additions"|"deletions"|"both", "scope": "effective"|"all", "op": "<"|">", "value": <number>}}
     lines of code changed. scope "effective" = human-written lines (source+test, with generated artifacts like migration snapshots / locale bundles / lockfiles stripped); "all" = the raw diffstat. Default scope to "effective" unless they say "raw"/"total"/"including generated"; default metric to "both".
     e.g. "more than 500 real lines" => {{"metric":"both","scope":"effective","op":">","value":500}}
-- preset: easy|stale|merge-ready|needs-human  (use when the query names a lane)
 
 Omit any key you're unsure about. Reviewer query: {query}"""
 

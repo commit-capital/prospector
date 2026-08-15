@@ -1,7 +1,7 @@
 import type { CheckClause, FilterSpec } from "../api";
 // Explicit .ts extension so the node:test runner (type stripping, no bundler)
 // can resolve this runtime import when homeCards.test.ts loads the module.
-import { CHECK_DEFS } from "../components/explorer/checkDefs.ts";
+import { MERGE_READY_SPEC } from "../components/explorer/lanes.ts";
 
 // One Home card: a headline count over a filter spec, linking to the PR
 // Explorer with that spec (plus an optional sort) in the URL.
@@ -42,9 +42,6 @@ function checksPass(...keys: string[]): CheckClause[] {
   return keys.map((key) => ({ key, status: "pass" }));
 }
 
-// Every check key the checks rollup carries, required to pass.
-export const ALL_CHECKS_PASS: CheckClause[] = checksPass(...CHECK_DEFS.map((d) => d.key));
-
 // The cards, ordered by how close their PRs are to merge-ready: ready first,
 // then each card one step further from the finish line, with the human-decision
 // backstop last. Counts come from POST /api/prs/counts and samples from
@@ -55,12 +52,8 @@ export const HOME_CARDS: HomeCard[] = [
     key: "ready",
     title: "PRs ready to merge",
     blurb: "Every check green — review at the bar, CI passing, security GREEN, verified. Just merge.",
-    spec: {
-      checks: ALL_CHECKS_PASS,
-      greptile: { op: ">", value: 4 },
-      greptile_stale: false,
-      safety: "GREEN",
-    },
+    // The Explorer's Merge-ready lane is this same spec, so card and lane agree.
+    spec: MERGE_READY_SPEC,
     sort: "updated",
     dir: "asc",
     lead: true,
@@ -114,8 +107,8 @@ export const HOME_CARDS: HomeCard[] = [
   {
     key: "needs-human",
     title: "Need a human decision",
-    blurb: "Flagged needs-human or safety RED — only an operator call moves these forward.",
-    spec: { preset: "needs-human" },
+    blurb: "Flagged needs-human — only an operator call moves these forward.",
+    spec: { disposition: "needs-human" },
   },
 ];
 

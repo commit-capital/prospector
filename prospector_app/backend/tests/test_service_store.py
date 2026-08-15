@@ -484,15 +484,15 @@ class TestQueryPrs:
         assert out["match_ids"] == [2]
         assert out["items"][0]["number"] == 2
 
-    def test_query_preset_easy(self, patched, monkeypatch):
-        # Easy Lane = tier-3 leaf paths, small effective diff, no net test
-        # deletion, merge-eligible. The leaf PR qualifies; the auth-core (tier 0)
-        # and diffless (tier unknown) PRs don't, despite identical signals.
+    def test_query_by_risk_tier(self, patched, monkeypatch):
+        # Tier is path-derived: the leaf PR (tier 3) matches a tier-3 filter; the
+        # auth-core (tier 0) and diffless (tier unknown) PRs don't, despite
+        # identical signals.
         leaf = _diffed_pr(1, "easyhead-leaf", "ui/src/App.tsx", monkeypatch)
         core = _diffed_pr(2, "easyhead-core", "server/src/middleware/auth.ts", monkeypatch)
         nodiff = _pr(3, analysis=_analysis(), security=_green())
         patched({1: leaf, 2: core, 3: nodiff})
-        out = service.query_prs({"preset": "easy"})
+        out = service.query_prs({"risk_tier": 3})
         assert out["match_ids"] == [1]
 
     def test_pr_row_exposes_risk_tier(self, patched, monkeypatch):

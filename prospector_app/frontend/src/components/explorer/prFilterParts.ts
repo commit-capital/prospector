@@ -23,7 +23,20 @@ export function buildPrFilterParts(spec: FilterSpec, onChange: (next: FilterSpec
     parts.push({ key, label, onClear: () => onChange(omit(spec, ...keys)) });
   };
 
-  if (spec.preset) push("preset", `preset: ${spec.preset}`, "preset");
+  if (spec.q) push("q", `matches "${spec.q}"`, "q");
+  if (spec.numbers !== undefined) {
+    push("numbers", `PR # in (${spec.numbers.join(", ")})`, "numbers");
+  }
+  if (spec.risk_tier !== undefined) {
+    const tiers = Array.isArray(spec.risk_tier) ? spec.risk_tier : [spec.risk_tier];
+    push("risk_tier", `tier ${tiers.join(" or ")}`, "risk_tier");
+  }
+  if (spec.merge_ok === true) push("merge_ok", "merge gate: ready", "merge_ok");
+  if (spec.merge_ok === false) push("merge_ok", "merge gate: blocked", "merge_ok");
+  if (spec.has_summary === true) push("has_summary", "has agent summary", "has_summary");
+  if (spec.has_summary === false) push("has_summary", "no agent summary", "has_summary");
+  if (spec.has_issues === true) push("has_issues", "has linked issues", "has_issues");
+  if (spec.has_issues === false) push("has_issues", "no linked issues", "has_issues");
   if (spec.safety) push("safety", `safety ${joinEnum(spec.safety)}`, "safety");
   if (spec.disposition) push("disposition", `disposition: ${joinEnum(spec.disposition)}`, "disposition");
   if (spec.drift) push("drift", `drift: ${joinEnum(spec.drift)}`, "drift");
@@ -68,7 +81,7 @@ export function buildPrFilterParts(spec: FilterSpec, onChange: (next: FilterSpec
       : (LABELS[spec.responses] ?? spec.responses);
     push("responses", `response: ${label}`, "responses");
   }
-  if (spec.greptile !== undefined) push("greptile", `greptile < ${spec.greptile.value ?? "?"}`, "greptile");
+  if (spec.greptile !== undefined) push("greptile", `greptile ${spec.greptile.op} ${spec.greptile.value ?? "?"}`, "greptile");
   if (spec.greptile_stale === true) push("greptile_stale", "Greptile stale", "greptile_stale");
   if (spec.greptile_stale === false) push("greptile_stale", "Greptile current", "greptile_stale");
   if (spec.greptile_severity === "defects") push("greptile_severity", "Greptile flagged a real defect", "greptile_severity");

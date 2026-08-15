@@ -54,7 +54,7 @@ export function FilterControls({ spec, onChange }: {
         <option value="resubmitted">⤴ resubmitted</option>
       </select>
 
-      <button className="link-btn" onClick={() => onChange(spec.preset ? { preset: spec.preset } : {})}>Clear all</button>
+      <button className="link-btn" onClick={() => onChange({})}>Clear all</button>
     </div>
   );
 }

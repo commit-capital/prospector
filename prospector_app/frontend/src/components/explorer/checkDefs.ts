@@ -1,4 +1,4 @@
-import type { CheckStatus } from "../../api";
+import type { CheckClause, CheckStatus } from "../../api";
 
 // Mirrors the stable check keys prospector_app/backend/pr_checks.py assigns to
 // each row in a PR's checks rollup (`_c(key, name, ...)`) — the per-check
@@ -20,6 +20,10 @@ export const CHECK_DEFS: CheckDef[] = [
 export function checkLabel(key: string): string {
   return CHECK_DEFS.find((d) => d.key === key)?.label ?? key;
 }
+
+// Every check key the checks rollup carries, required to pass.
+export const ALL_CHECKS_PASS: CheckClause[] =
+  CHECK_DEFS.map((d) => ({ key: d.key, status: "pass" }));
 
 export const CHECK_STATUS_OPTS: { v: CheckStatus; label: string; short: string }[] = [
   { v: "pass", label: "Passed", short: "✓" },

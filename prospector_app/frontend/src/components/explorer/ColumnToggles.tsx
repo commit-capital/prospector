@@ -13,7 +13,7 @@ export function ColumnToggles({ isOn, toggle, reset }: {
     <div className="chips">
       <span className="label"><Term k="ui.columns">Columns</Term></span>
       {COLUMNS.filter((c) => !c.fixed && (c.capability !== "review" || review.provider !== "none")).map((c) => (
-        <button key={c.key} className={`chip preset ${isOn(c.key) ? "on" : ""}`}
+        <button key={c.key} className={`chip toggle ${isOn(c.key) ? "on" : ""}`}
           onClick={() => toggle(c.key)}>{c.label}</button>
       ))}
       <button className="link-btn" onClick={reset}>Reset</button>

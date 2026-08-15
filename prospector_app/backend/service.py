@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from pipeline.model import Pr
 
 from prospector_app.backend import data
-from prospector_app.backend import filters  # spec predicate + preset expanders
+from prospector_app.backend import filters  # spec predicate
 from prospector_app.backend import pr_checks
 from prospector_app.backend import responses
 from prospector_app.backend import suggest
@@ -395,19 +395,10 @@ def _row_cache(snap: dict[int, Pr]) -> dict[int, dict]:
 
 def query_prs(spec: dict, sort: str | None = None, direction: str | None = None,
               offset: int = 0, limit: int = 50) -> dict:
-    """The one PR list endpoint's engine. `spec` is a filter spec (see filters.py);
-    a `preset` key expands first, then the rest of the spec narrows on top. Returns
-    a page of rows plus match_ids (every matching PR number) so the UI can
+    """The one PR list endpoint's engine. `spec` is a filter spec (see filters.py).
+    Returns a page of rows plus match_ids (every matching PR number) so the UI can
     select-all across pages."""
     eff = dict(spec)
-    preset = eff.pop("preset", None)
-    if preset:
-        base = filters.expand_preset(preset, eff)
-        # caller's explicit fields win, except the preset's `any`/`safety_not`
-        # which must still apply — merge with preset as the base.
-        eff = {**base, **{k: v for k, v in eff.items()
-                          if k not in ("max_files", "max_total_lines", "max_effective_loc",
-                                       "age_days", "max_score")}}
     snap = data.prs()
     cache = _row_cache(snap)
     rows = []

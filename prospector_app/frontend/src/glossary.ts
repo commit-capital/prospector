@@ -114,7 +114,7 @@ export const TERMS: Record<string, GlossaryEntry> = {
   "ui.columns": { title: "Columns", meaning: "Show or hide table columns. Your choices are remembered in this browser." },
 
   // filter-row controls (the facet, not a single value)
-  "ui.lanes": { title: "Lanes", meaning: "One-click filters for the common triage queues. Pick a lane, then fine-tune with the filters below." },
+  "ui.lanes": { title: "Lanes", meaning: "Shorthand for the common triage queues: clicking a lane drops its filter set into the query, where every filter shows as its own chip you can edit or clear. The chip stays lit while the query still matches the lane exactly." },
   "ui.filters": { title: "Filters", meaning: "Narrow the list by safety, drift, disposition, author, cluster, and more. Combine freely; Clear all resets them." },
   "ui.bulk": { title: "Bulk actions", meaning: "Apply one triage action to every selected PR at once. Each write still passes its own per-PR gate and is logged to the activity feed." },
   "filter.drift": { title: "Drift", meaning: "Whether the PR still applies to the current default branch: applicable (merges clean), already-fixed (redundant), or conflicts (needs a rebase)." },
@@ -124,11 +124,11 @@ export const TERMS: Record<string, GlossaryEntry> = {
   "filter.paths": { title: "Path contains", meaning: "Filter to PRs that change a file whose path contains this text (case-insensitive substring), e.g. “billing” or “src/auth”. Derived from the cached diff." },
   "deep-search": { title: "Deep Search", meaning: "For open-ended queries no filter can express, an agent reads each PR in the current result set and judges it against your text. Matches are agent judgments — not deterministic — cached per query; hover a row's 🪄 why for the reason. Slower and costs tokens, so narrow with filters first.", note: "Judges on compact facts (title, description, changed files, summary, signals) — not the diff." },
 
-  // lanes / preset chips
-  "lane.easy": { title: "Easy Lane", meaning: "Leaf-surface (tier 3) PRs that are merge-eligible, small (effective lines under the limit), and don't net-delete tests — the fastest PRs for a human to clear. Tune the effective-LOC ceiling to the right." },
-  "lane.stale": { title: "Stale (lane)", meaning: "A filter bucket: old PRs with a low score, likely abandoned. A triage shortlist, not a verdict.", note: "Different from a stale analysis, which means the PR changed since we analyzed it." },
-  "lane.merge-ready": { title: "Merge-ready (lane)", meaning: "PRs that clear every gate and are ready to merge right now." },
-  "lane.needs-human": { title: "Needs human (lane)", meaning: "PRs the pipeline couldn't auto-decide — they need your call. The same as the needs-human disposition." },
+  // lane filter templates
+  "lane.easy": { title: "Easy Lane", meaning: "Merge-ready (every check green), and also tiny (under 20 effective lines), leaf-surface (tier 3), and a pipeline merge pick — the fastest possible approvals. Edit any of the dropped-in filters to widen it." },
+  "lane.stale": { title: "Stale (lane)", meaning: "Feedback stands and the author has gone quiet: review score below the bar, scored against the latest commit, with no PR update in over 30 days. A triage shortlist, not a verdict.", note: "Different from a stale analysis, which means the PR changed since we analyzed it." },
+  "lane.merge-ready": { title: "Merge-ready (lane)", meaning: "Every check green — review at the bar and current, CI passing, no conflicts, security GREEN, verified. The same query as the Home tab's “PRs ready to merge” card." },
+  "lane.needs-human": { title: "Needs human (lane)", meaning: "PRs the pipeline couldn't auto-decide — they need your call. The same as the needs-human disposition (a RED security verdict also lands here)." },
 
   // drift vs the current default branch (canonical states: applicable / already-fixed / conflicts)
   "drift.applicable": { title: "Drift: applicable", meaning: "The branch still merges cleanly onto the current default branch — worth acting on." },
