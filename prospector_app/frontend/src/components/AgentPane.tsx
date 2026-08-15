@@ -1,7 +1,8 @@
-import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type UIEvent } from "react";
 import { useLocation } from "react-router";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { shouldFollowChatAfterScroll } from "../chatScroll";
 import { useSpeechInput } from "../useSpeechInput";
 
 function MicIcon() {
@@ -199,6 +200,29 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
   // post-completion socket close, not an interruption.
   const settledRef = useRef(false);
   const logRef = useRef<HTMLDivElement>(null);
+  const followLatestRef = useRef(true);
+  const lastScrollTopRef = useRef(0);
+  const [followingLatest, setFollowingLatest] = useState(true);
+
+  const setFollowLatest = useCallback((following: boolean): void => {
+    followLatestRef.current = following;
+    setFollowingLatest(following);
+  }, []);
+
+  const scrollToLatest = useCallback((): void => {
+    const log = logRef.current;
+    if (!log) return;
+    log.scrollTop = log.scrollHeight;
+    lastScrollTopRef.current = log.scrollTop;
+    setFollowLatest(true);
+  }, [setFollowLatest]);
+
+  const handleLogScroll = useCallback((event: UIEvent<HTMLDivElement>): void => {
+    const log = event.currentTarget;
+    const following = shouldFollowChatAfterScroll(lastScrollTopRef.current, log);
+    lastScrollTopRef.current = log.scrollTop;
+    setFollowLatest(following);
+  }, [setFollowLatest]);
 
   const toggle = () => { const n = !open; setOpen(n); localStorage.setItem("agentpane-open", n ? "1" : "0"); };
   const startResize = (e: React.MouseEvent) => {
@@ -237,13 +261,19 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
   // load this thread's history when the subject or the active session changes
   useEffect(() => {
     const p = ctxParams();
-    fetch(`/api/chat/history?${p}`).then((r) => r.json()).then((d) => setMsgs(d.messages || []));
+    fetch(`/api/chat/history?${p}`).then((r) => r.json()).then((d) => {
+      setFollowLatest(true);
+      setMsgs(d.messages || []);
+    });
     clearAnchor();
     return () => esRef.current?.close();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [subj.kind, subj.id, effectiveActiveId]);
 
-  useEffect(() => { if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight; }, [msgs]);
+  useLayoutEffect(() => {
+    if (!open || !followLatestRef.current) return;
+    scrollToLatest();
+  }, [msgs, open, scrollToLatest]);
 
   // reserve left space for the sidebar (tracks the resizable width); collapses to
   // a thin rail. useLayoutEffect so the page never paints un-shifted first.
@@ -254,6 +284,7 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
   const send = useCallback((text: string) => {
     if (!text.trim() || streaming) return;
     speech.stop();
+    setFollowLatest(true);
     setMsgs((m) => [...m, { role: "user", text: (anchor ? `[${anchor.file}:${anchor.line}] ` : "") + text }, { role: "assistant", text: "" }]);
     setInput("");
     setStreaming(true);
@@ -283,7 +314,7 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
         .sort((a, b) => b.lastActiveAt - a.lastActiveAt));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [streaming, anchor, subj.kind, subj.id, effectiveActiveId, speech.stop, visiblePrs]);
+  }, [streaming, anchor, subj.kind, subj.id, effectiveActiveId, speech.stop, visiblePrs, setFollowLatest]);
 
   // Resume a cut-off turn: nudge the (still-resumable) claude session to continue
   // where it left off. The backend re-attaches via -r, so the agent keeps its
@@ -433,17 +464,24 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
               ))}
               <button className="ap-session-new" onClick={createSession} title="Start a new chat session">+ New</button>
             </div>
-            <div className="agentpane-log" ref={logRef}>
-              {msgs.length === 0 && <p className="muted small ap-hint">Ask anything about {displaySubj.label} — "is this safe to merge?", "what's the root cause here?". Click a diff line for a per-line popup.</p>}
-              {msgs.map((m, i) => (
-                <div key={i} className={`bubble ${m.role}`}>
-                  {m.role === "assistant"
-                    ? (m.text
-                        ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.text}</ReactMarkdown>
-                        : (streaming && i === msgs.length - 1 ? <span className="cursor">▋</span> : null))
-                    : linkifyUserText(m.text)}
-                </div>
-              ))}
+            <div className="agentpane-log-wrap">
+              <div className="agentpane-log" ref={logRef} onScroll={handleLogScroll}>
+                {msgs.length === 0 && <p className="muted small ap-hint">Ask anything about {displaySubj.label} — "is this safe to merge?", "what's the root cause here?". Click a diff line for a per-line popup.</p>}
+                {msgs.map((m, i) => (
+                  <div key={i} className={`bubble ${m.role}`}>
+                    {m.role === "assistant"
+                      ? (m.text
+                          ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.text}</ReactMarkdown>
+                          : (streaming && i === msgs.length - 1 ? <span className="cursor">▋</span> : null))
+                      : linkifyUserText(m.text)}
+                  </div>
+                ))}
+              </div>
+              {!followingLatest && msgs.length > 0 && (
+                <button className="ap-follow-latest" type="button" onClick={scrollToLatest}>
+                  <span aria-hidden="true">↓</span> {streaming ? "Follow live" : "Jump to latest"}
+                </button>
+              )}
             </div>
             {interrupted && !streaming && (
               <div className="ap-interrupted">
