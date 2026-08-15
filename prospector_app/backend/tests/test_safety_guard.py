@@ -152,10 +152,46 @@ def test_bot_merge_accepts_match_head_commit(monkeypatch):
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(sg.subprocess, "run", fake_run)
+    monkeypatch.setattr(sg, "assert_store_writes_safe", lambda: None)
     argv = ["gh", "pr", "merge", "123", "--repo", "x/y", "--squash",
             "--match-head-commit", "abc123def"]
     sg.bot_merge_run(argv, "tok_realish")
     assert seen["argv"] == argv
+
+
+def test_store_schema_status_blocks_an_older_checkout(monkeypatch):
+    monkeypatch.setattr(sg.schema, "STORE_SCHEMA_VERSION", 12)
+    monkeypatch.setattr(sg.storekit, "refresh_schema_guard", lambda engine: 13)
+
+    status = sg.store_schema_status()
+
+    assert status["code_version"] == 12
+    assert status["store_version"] == 13
+    assert status["write_block"] == (
+        "This server supports store schema v12, but the shared store is v13. "
+        "Live actions are disabled until this server checkout is updated."
+    )
+
+
+@pytest.mark.parametrize(("runner", "argv"), [
+    (sg.bot_run, ["gh", "pr", "close", "123"]),
+    (sg.chat_bot_run, ["gh", "pr", "edit", "123", "--title", "x"]),
+    (sg.alert_bot_run, ["gh", "api", "-X", "PATCH",
+                        "repos/o/r/dependabot/alerts/3", "-f", "state=dismissed"]),
+    (sg.bot_merge_run, ["gh", "pr", "merge", "123", "--squash"]),
+])
+def test_bot_write_paths_refuse_a_stale_store(monkeypatch, runner, argv):
+    monkeypatch.setattr(
+        sg, "store_schema_status",
+        lambda: {"code_version": 12, "store_version": 13, "write_block": "stale server"},
+    )
+    monkeypatch.setattr(
+        sg.subprocess, "run",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("subprocess must not run")),
+    )
+
+    with pytest.raises(sg.WriteAttemptBlocked, match="stale server"):
+        runner(argv, "tok_realish")
 
 
 def test_bot_merge_rejects_non_merge_even_with_token():

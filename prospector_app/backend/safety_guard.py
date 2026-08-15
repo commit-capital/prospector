@@ -14,14 +14,18 @@ Upstream writes go out only through the sanctioned bot paths below —
 `bot_run` (executor comments / closes / reopens / reviews), `chat_bot_run`
 (validated embedded-agent edits / comments / issue writes / workflow reruns), and
 `bot_merge_run` (squash-merge). All require a non-empty installation token and
-inject it via GH_TOKEN for that one subprocess.
+a server checkout compatible with the shared store, then inject the token via
+GH_TOKEN for that one subprocess.
 """
 from __future__ import annotations
 
 import os
 import re
 import subprocess
+from typing import TypedDict
 
+from pipeline import schema
+from pipeline import storekit
 from pipeline.gh import operator_env
 from pipeline.settings import BOT_LOGIN
 
@@ -47,7 +51,46 @@ _DENY = [
 
 
 class WriteAttemptBlocked(RuntimeError):
-    """Raised when a command looks like an upstream write."""
+    """Raised when a command cannot run through a sanctioned upstream path."""
+
+
+class StoreSchemaStatus(TypedDict):
+    code_version: int
+    store_version: int | None
+    write_block: str | None
+
+
+def store_schema_status() -> StoreSchemaStatus:
+    """Whether this checkout can safely write alongside the shared store."""
+    from prospector_app.backend import data
+
+    code_version = schema.STORE_SCHEMA_VERSION
+    try:
+        store_version = storekit.refresh_schema_guard(data.store().engine)
+    except Exception:
+        return {
+            "code_version": code_version,
+            "store_version": None,
+            "write_block": "Can't verify the shared store schema. Live actions are disabled.",
+        }
+    write_block = None
+    if store_version > code_version:
+        write_block = (
+            f"This server supports store schema v{code_version}, but the shared store is v{store_version}. "
+            "Live actions are disabled until this server checkout is updated."
+        )
+    return {
+        "code_version": code_version,
+        "store_version": store_version,
+        "write_block": write_block,
+    }
+
+
+def assert_store_writes_safe() -> None:
+    """Refuse upstream writes from code older than the shared store."""
+    status = store_schema_status()
+    if status["write_block"]:
+        raise WriteAttemptBlocked(status["write_block"])
 
 
 def assert_read_only(argv: list[str]) -> None:
@@ -155,6 +198,7 @@ def bot_run(argv: list[str], token: str, *, timeout: int = 60) -> subprocess.Com
     """Run a sanctioned bot write as the configured bot via GH_TOKEN."""
     token = _require_bot_token(token, "write")
     assert_bot_write(argv)
+    assert_store_writes_safe()
     return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=bot_env(token))
 
 
@@ -162,6 +206,7 @@ def chat_bot_run(argv: list[str], token: str, *, timeout: int = 60) -> subproces
     """Run a validated embedded-agent write with a non-empty bot token."""
     token = _require_bot_token(token, "write")
     assert_chat_bot_write(argv)
+    assert_store_writes_safe()
     return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=bot_env(token))
 
 
@@ -169,6 +214,7 @@ def alert_bot_run(argv: list[str], token: str, *, timeout: int = 60) -> subproce
     """Run a sanctioned alert dismissal/resolution as the configured bot."""
     token = _require_bot_token(token, "dismiss an alert")
     assert_alert_bot_write(argv)
+    assert_store_writes_safe()
     return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=bot_env(token))
 
 
@@ -182,6 +228,7 @@ def bot_merge_run(argv: list[str], token: str, *, timeout: int = 120) -> subproc
         raise WriteAttemptBlocked("merge must use gh")
     if not _MERGE_RE.match(" ".join(argv)):
         raise WriteAttemptBlocked(f"not a pr-merge command: {' '.join(argv)!r}")
+    assert_store_writes_safe()
     return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=bot_env(token))
 
 

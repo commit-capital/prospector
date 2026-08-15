@@ -1252,7 +1252,13 @@ export const api = {
     return get<ActivitySummary>(`/api/activity/summary?${qs}`);
   },
   trainingStats: () => get<{ count: number; with_reason: number; decisions: Record<string, number> }>("/api/training/stats"),
-  capabilities: () => get<{ login: string | null; merge_upstream: boolean; review: ReviewCap | null }>("/api/capabilities"),
+  capabilities: () => get<{
+    login: string | null;
+    merge_upstream: boolean;
+    review: ReviewCap | null;
+    store_schema: { code_version: number; store_version: number | null; write_block: string | null } | null;
+    write_block: string | null;
+  }>("/api/capabilities"),
   instance: () => get<{ branch: string | null; worktree: string | null }>("/api/instance"),
   meta: () => get<RepoMeta>("/api/meta"),
   mergePr: async (n: number, dryRun: boolean, method = "squash", reason?: string) => {

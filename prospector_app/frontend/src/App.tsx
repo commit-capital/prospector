@@ -148,8 +148,15 @@ function ScrollToTop() {
   return null;
 }
 
+function StoreWriteBanner() {
+  const { storeWriteBlock } = useExec();
+  if (!storeWriteBlock) return null;
+  return <div className="store-write-block" role="alert">⛔ {storeWriteBlock}</div>;
+}
+
 function IdentityPicker() {
-  const { identities, botLogin, identity, setIdentity, dryRun, setDryRun, livePossible, liveError, retryLive, pushToast } = useExec();
+  const { identities, botLogin, identity, setIdentity, dryRun, setDryRun, livePossible,
+    liveError, storeWriteBlock, retryLive, pushToast } = useExec();
   const [retrying, setRetrying] = useState(false);
   // Whether this machine can go live is probed once by the backend and cached
   // for its whole process lifetime — a key file added, an app installed, or a
@@ -165,7 +172,9 @@ function IdentityPicker() {
       setRetrying(false);
     }
   };
-  const dryRunTitle = livePossible
+  const dryRunTitle = storeWriteBlock
+    ? storeWriteBlock
+    : livePossible
     ? "Toggle dry-run / live posting"
     : `No ${botLogin} token on this machine — dry-run only${liveError ? ` (${liveError})` : ""}`;
   return (
@@ -177,7 +186,7 @@ function IdentityPicker() {
       <button
         className={`mode-badge ${dryRun ? "dry" : "live"}`}
         onClick={() => setDryRun(!dryRun)}
-        disabled={!livePossible}
+        disabled={!livePossible || !!storeWriteBlock}
         title={dryRunTitle}
       >
         {dryRun ? "DRY RUN" : "● LIVE"}
@@ -316,6 +325,7 @@ export default function App() {
       <ScrollToTop />
       <div className="app">
         <BackendBanner />
+        <StoreWriteBanner />
         <header className="topbar">
           <Brand />
           <nav>

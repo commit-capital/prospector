@@ -22,6 +22,8 @@ interface ExecState {
   // Why live mode isn't available (key missing, bad app id, no installation, …)
   // — from get-bot-token.sh's stderr, surfaced instead of silently discarded.
   liveError: string | null;
+  // A stale server checkout cannot safely act against a newer shared store.
+  storeWriteBlock: string | null;
   // Re-probes live_possible (see api.refreshIdentities) instead of waiting for
   // a backend restart — the probe is cached for the process's lifetime, so a
   // fix made after the first probe otherwise never takes effect. Resolves to
@@ -45,7 +47,7 @@ interface ExecState {
 const Ctx = createContext<ExecState>({
   identities: [], botLogin: "bot", identity: "", setIdentity: () => {},
   dryRun: true, setDryRun: () => {}, livePossible: false,
-  liveError: null, retryLive: async () => false,
+  liveError: null, storeWriteBlock: null, retryLive: async () => false,
   canMergeUpstream: false, login: null, review: NO_REVIEW,
   toasts: [], pushToast: () => {}, dismissToast: () => {}, actionTick: 0, reportResult: () => {},
 });
@@ -109,6 +111,7 @@ export function ExecProvider({ children }: { children: ReactNode }) {
   const [identity, setIdentity] = useState("");
   const [livePossible, setLivePossible] = useState(false);
   const [liveError, setLiveError] = useState<string | null>(null);
+  const [storeWriteBlock, setStoreWriteBlock] = useState<string | null>(null);
   // Persist dry-run/live per-tab so a full reload (e.g. a manual address-bar edit,
   // which tears down this provider) keeps the mode. sessionStorage not localStorage:
   // a reopened tab resets to dry-run, so live can't silently linger. "0" = live.
@@ -137,6 +140,8 @@ export function ExecProvider({ children }: { children: ReactNode }) {
     }).catch(() => {});
     api.capabilities().then((c) => {
       setCanMerge(c.merge_upstream); setLogin(c.login); setReview(c.review ?? NO_REVIEW);
+      setStoreWriteBlock(c.write_block);
+      if (c.write_block) setDryRun(true);
     }).catch(() => {});
   }, []);
 
@@ -155,11 +160,15 @@ export function ExecProvider({ children }: { children: ReactNode }) {
     setLivePossible(d.live_possible);
     setLiveError(d.live_error);
     if (!d.live_possible) setDryRun(true);
+    let writeBlock = storeWriteBlock;
     await api.capabilities().then((c) => {
       setCanMerge(c.merge_upstream); setLogin(c.login); setReview(c.review ?? NO_REVIEW);
+      setStoreWriteBlock(c.write_block);
+      writeBlock = c.write_block;
+      if (c.write_block) setDryRun(true);
     }).catch(() => {});
-    return d.live_possible;
-  }, []);
+    return d.live_possible && writeBlock === null;
+  }, [storeWriteBlock]);
 
   const dismissToast = useCallback((id: number) => setToasts((t) => t.filter((x) => x.id !== id)), []);
   const pushToast = useCallback((title: string, tone: Toast["tone"] = "muted",
@@ -194,21 +203,22 @@ export function ExecProvider({ children }: { children: ReactNode }) {
   // bump the tick so run-state/badges refetch and components clear stale chips,
   // and announce the mode change so it's never ambiguous which mode you're in.
   const setDryRunGuarded = useCallback((b: boolean) => {
-    const next = livePossible ? b : true;
+    const next = livePossible && !storeWriteBlock ? b : true;
     setDryRun(next);
     setActionTick((n) => n + 1);
     pushToast(
       next ? "Dry-run mode — actions only preview; nothing is posted."
            : `● LIVE mode — actions now post upstream as ${identities[0]?.id ?? "the configured bot"}.`,
       next ? "yellow" : "green");
-  }, [identities, livePossible, pushToast]);
+  }, [identities, livePossible, pushToast, storeWriteBlock]);
 
   const botLogin = identities[0]?.id ?? "bot";
 
   return (
     <Ctx.Provider value={{
       identities, botLogin, identity, setIdentity, dryRun, setDryRun: setDryRunGuarded, livePossible,
-      liveError, retryLive, canMergeUpstream, login, review, toasts, pushToast, dismissToast, actionTick, reportResult,
+      liveError, storeWriteBlock, retryLive, canMergeUpstream, login, review,
+      toasts, pushToast, dismissToast, actionTick, reportResult,
     }}>
       {children}
     </Ctx.Provider>
