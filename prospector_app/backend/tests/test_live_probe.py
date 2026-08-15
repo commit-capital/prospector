@@ -161,3 +161,34 @@ def test_refresh_route_reprobes_and_returns_fresh_identities(monkeypatch):
     assert body["live_possible"] is True
     assert body["live_error"] is None
     _reset_caches()
+
+
+def test_capabilities_disable_writes_when_server_schema_is_stale(monkeypatch):
+    _reset_caches()
+    executor._live_possible = True
+    monkeypatch.setattr(
+        caps, "store_schema_status",
+        lambda: {
+            "code_version": 12,
+            "store_version": 13,
+            "write_block": "stale server",
+        },
+    )
+    monkeypatch.setattr(
+        caps, "run",
+        lambda *a, **k: type(
+            "Result", (), {"returncode": 0, "stdout": "operator\n", "stderr": ""},
+        )(),
+    )
+
+    out = caps.capabilities()
+
+    assert out["merge_upstream"] is False
+    assert out["alerts"]["available"] is False
+    assert out["write_block"] == "stale server"
+    assert out["store_schema"] == {
+        "code_version": 12,
+        "store_version": 13,
+        "write_block": "stale server",
+    }
+    _reset_caches()

@@ -34,6 +34,8 @@ a:hover { text-decoration: underline; }
   text-align: center; font-weight: 600; font-size: 14px; }
 .backend-down code { background: rgba(255, 255, 255, 0.22); color: #fff;
   padding: 1px 6px; border-radius: 4px; font-size: 13px; }
+.store-write-block { background: var(--red); color: #fff; padding: 10px 20px;
+  text-align: center; font-weight: 700; font-size: 14px; }
 
 /* layout */
 .topbar { display: flex; align-items: center; gap: 24px; padding: 10px 20px;
