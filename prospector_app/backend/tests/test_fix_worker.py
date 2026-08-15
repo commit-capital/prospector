@@ -360,3 +360,212 @@ def test_approved_resolve_pushes_the_kept_tree_without_rederiving(store, monkeyp
 
     assert probe.calls == [("push",)]
     assert store.load_pr(1).fix_request["status"] == "pushed"
+
+
+# --- an agent-authored fix ------------------------------------------------------
+
+def _queue_fix(guidance: str | None = "bound the retry loop") -> None:
+    fix_queue.queue_pr(1, "fix", guidance=guidance)
+
+
+def _fix_probe() -> _Probe:
+    """A resubmit whose `prepare` leaves a readable worktree — what the fix path
+    reads the agent's edits out of."""
+    return _Probe(overrides={"state": (0, json.dumps({"phase": "prepared",
+                                                      "mode": "edit",
+                                                      "worktree": "/wt"}))})
+
+
+def _authored(monkeypatch, verdict: dict | None = None, capture: dict | None = None):
+    """Stub the authoring agent, recording the kwargs it was driven with."""
+    def fake_author(worktree, **kw):
+        if capture is not None:
+            capture.update(kw, worktree=worktree)
+        return verdict or {"summary": "Bound the retry loop",
+                           "changes": [{"path": "a.ts", "rationale": "added a cap"}]}
+    monkeypatch.setattr(fix_worker.author_fix, "author", fake_author)
+
+
+def _reviewed(monkeypatch, verdict: dict | None = None, capture: dict | None = None):
+    def fake_review(worktree, patch, **kw):
+        if capture is not None:
+            capture.update(kw, worktree=worktree, patch=patch)
+        return verdict or {"verdict": "safe", "reason": "local and bounded",
+                           "concerns": []}
+    monkeypatch.setattr(fix_worker.review_fix, "review", fake_review)
+
+
+def test_an_authored_fix_parks_with_its_rationale_and_pushes_nothing(store, monkeypatch):
+    _queue_fix()
+    probe = _fix_probe()
+    monkeypatch.setattr(fix_worker, "_resubmit", probe)
+    _authored(monkeypatch)
+    _reviewed(monkeypatch)
+
+    fix_worker.run_one(1)
+
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "awaiting-review"
+    assert req["action"] == "fix"
+    assert req["result"]["changes"][0]["rationale"] == "added a cap"
+    assert req["result"]["review_verdict"]["verdict"] == "safe"
+    assert req["result"]["message"] == "Bound the retry loop"
+    assert not _pushed(probe)
+
+
+def test_an_authored_fix_keeps_its_worktree(store, monkeypatch):
+    # An agent's edits are not mechanically re-derivable, so the approval pushes
+    # the tree the operator reviewed rather than authoring it again.
+    _queue_fix()
+    probe = _fix_probe()
+    monkeypatch.setattr(fix_worker, "_resubmit", probe)
+    _authored(monkeypatch)
+    _reviewed(monkeypatch)
+
+    fix_worker.run_one(1)
+
+    assert ("abort",) not in probe.calls
+
+
+def test_the_operators_guidance_becomes_the_agents_goal(store, monkeypatch):
+    _queue_fix("drop the retry loop, keep the timeout")
+    monkeypatch.setattr(fix_worker, "_resubmit", _fix_probe())
+    seen: dict = {}
+    _authored(monkeypatch, capture=seen)
+    _reviewed(monkeypatch)
+
+    fix_worker.run_one(1)
+
+    assert "drop the retry loop, keep the timeout" in seen["goal"]
+
+
+def test_an_unguided_fix_aims_at_the_outstanding_findings(store, monkeypatch):
+    rec = store.load_pr(1).raw
+    rec["greptile_review"] = {"severity": "defects", "against_head_sha": HEAD,
+                              "checked_at": NOW,
+                              "findings": [{"headline": "retry never exits",
+                                            "class": "substantive", "why": "still there"}]}
+    store.save_pr(rec)
+    data.refresh()
+    monkeypatch.setattr(
+        profile, "active",
+        lambda: profile.RepoProfile(autofix=profile.AutofixPolicy(fixable_gates=("review",))))
+    fix_queue.queue_pr(1, "fix")
+    monkeypatch.setattr(fix_worker, "_resubmit", _fix_probe())
+    seen: dict = {}
+    _authored(monkeypatch, capture=seen)
+    _reviewed(monkeypatch)
+
+    fix_worker.run_one(1)
+
+    assert seen["findings"][0]["headline"] == "retry never exits"
+
+
+def test_a_give_up_refuses_with_the_agents_reason(store, monkeypatch):
+    _queue_fix()
+    probe = _fix_probe()
+    monkeypatch.setattr(fix_worker, "_resubmit", probe)
+    _authored(monkeypatch, {"give_up": "the finding needs a product call"})
+    _reviewed(monkeypatch)
+
+    fix_worker.run_one(1)
+
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "refused"
+    assert "product call" in req["refused_reason"]
+    assert not _pushed(probe)
+    assert ("abort",) in probe.calls
+
+
+def test_a_rejected_change_refuses_and_keeps_the_patch_visible(store, monkeypatch):
+    # The operator should be able to see what the reviewer turned down.
+    _queue_fix()
+    probe = _fix_probe()
+    monkeypatch.setattr(fix_worker, "_resubmit", probe)
+    _authored(monkeypatch)
+    _reviewed(monkeypatch, {"verdict": "unsafe", "reason": "breaks parse() callers",
+                            "concerns": ["parse() now throws"]})
+
+    fix_worker.run_one(1)
+
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "refused"
+    assert "breaks parse() callers" in req["refused_reason"]
+    assert req["result"]["patch"].startswith("diff ")
+    assert req["result"]["review_verdict"]["concerns"] == ["parse() now throws"]
+    assert not _pushed(probe)
+
+
+def test_an_undisclosed_edit_refuses(store, monkeypatch):
+    # The patch touches a.ts; the agent only admitted to b.ts.
+    _queue_fix()
+    probe = _fix_probe()
+    monkeypatch.setattr(fix_worker, "_resubmit", probe)
+    _authored(monkeypatch, {"summary": "s",
+                            "changes": [{"path": "b.ts", "rationale": "r"}]})
+    _reviewed(monkeypatch)
+
+    fix_worker.run_one(1)
+
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "refused"
+    assert not _pushed(probe)
+
+
+def test_the_authored_patch_is_regated_on_the_paths_it_really_touched(store, monkeypatch):
+    # The queue-time gate judged the PR's existing paths. What the agent wrote is
+    # judged too, or an agent could author its way onto a withheld path.
+    _queue_fix()
+    monkeypatch.setattr(
+        profile, "active",
+        lambda: profile.RepoProfile(autofix=profile.AutofixPolicy(deny_globs=("*.ts",))))
+    probe = _fix_probe()
+    monkeypatch.setattr(fix_worker, "_resubmit", probe)
+    _authored(monkeypatch)
+    _reviewed(monkeypatch)
+
+    fix_worker.run_one(1)
+
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "refused"
+    assert "withholds from autofix" in req["refused_reason"]
+    assert not _pushed(probe)
+
+
+def test_the_reviewer_never_sees_a_patch_the_gate_already_refused(store, monkeypatch):
+    # Ordering matters for cost and for reach: a patch on a withheld path is not
+    # a judgment call, so it never reaches the reviewing agent.
+    _queue_fix()
+    monkeypatch.setattr(
+        profile, "active",
+        lambda: profile.RepoProfile(autofix=profile.AutofixPolicy(deny_globs=("*.ts",))))
+    monkeypatch.setattr(fix_worker, "_resubmit", _fix_probe())
+    _authored(monkeypatch)
+    seen: dict = {}
+    _reviewed(monkeypatch, capture=seen)
+
+    fix_worker.run_one(1)
+
+    assert store.load_pr(1).fix_request["status"] == "refused"
+    assert seen == {}
+
+
+def test_guidance_survives_the_claim_and_the_approval(store, monkeypatch):
+    # Guidance is what authorizes a fix where the profile names no fixable
+    # gates. Every transition rewrites the whole section, so if it is dropped
+    # anywhere the operator's own approved change refuses at the push.
+    _queue_fix("drop the retry loop")
+    monkeypatch.setattr(fix_worker, "_resubmit", _fix_probe())
+    _authored(monkeypatch)
+    _reviewed(monkeypatch)
+
+    fix_worker.run_one(1)
+    assert store.load_pr(1).fix_request["guidance"] == "drop the retry loop"
+
+    fix_queue.approve_pr(1)
+    probe = _fix_probe()
+    monkeypatch.setattr(fix_worker, "_resubmit", probe)
+    fix_worker.push_approved(1)
+
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "pushed", req.get("refused_reason")

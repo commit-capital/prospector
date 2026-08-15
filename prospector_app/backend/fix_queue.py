@@ -28,24 +28,32 @@ STALE_BEAT_SECONDS = 90.0
 IN_FLIGHT = ("queued", "running", "awaiting-review", "approved", "pushing")
 
 
-def queue_pr(n: int, action: str, source: str | None = None) -> dict:
+def queue_pr(n: int, action: str, source: str | None = None,
+             guidance: str | None = None) -> dict:
     """Mark PR `n` queued for `action`. Raises ValueError with the
     operator-readable reason when the pre-check refuses. `source` stamps who
-    queued it ("auto" for the idle hunter; the operator path passes None)."""
+    queued it ("auto" for the idle hunter; the operator path passes None).
+
+    `guidance` is the operator's own instruction for a `fix`: it becomes the
+    agent's goal, and it is the authorization for the action where the profile
+    names no fixable gates. Blank text is no instruction, so it is dropped
+    rather than stored as an empty mandate."""
     if action not in settings.FIX_ACTIONS:
         raise ValueError(f"unknown autofix action {action!r}; valid actions are "
                          f"{', '.join(settings.FIX_ACTIONS)}")
+    guidance = (guidance or "").strip() or None
     rec = data.store().load_pr(n)
     if rec is None:
         raise ValueError(f"PR #{n} not in store")
-    ok, why = gates.fix_eligibility(rec, action, service.changed_paths(rec))
+    ok, why = gates.fix_eligibility(rec, action, service.changed_paths(rec),
+                                    guided=guidance is not None)
     if not ok:
         raise ValueError(f"PR #{n} is not eligible for {action}: {why}")
     status = (rec.fix_request or {}).get("status")
     if status in IN_FLIGHT:
         raise ValueError(f"PR #{n} already has a {status} fix request")
     rec.record_fix_request("queued", action, queued_at=_now(), source=source,
-                           head_sha=rec.head_sha)
+                           guidance=guidance, head_sha=rec.head_sha)
     data.refresh()
     return {"pr": n, "action": action, "status": "queued"}
 
@@ -88,6 +96,7 @@ def approve_pr(n: int) -> dict:
     rec.record_fix_request("approved", req.get("action", "fix"),
                            queued_at=req.get("queued_at"), source=req.get("source"),
                            base_sha=req.get("base_sha"), result=req.get("result"),
+                           guidance=req.get("guidance"),
                            head_sha=req.get("against_head_sha"))
     data.refresh()
     return {"pr": n, "status": "approved"}

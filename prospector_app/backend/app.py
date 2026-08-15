@@ -294,12 +294,16 @@ def verify_runner():
 
 
 @app.post("/api/prs/{n}/fix/queue")
-def fix_queue_pr(n: int, action: str):
+def fix_queue_pr(n: int, action: str, payload: dict = Body(default={})):
     """Queue PR #n for an autofix action (update / rebase / fix). The request
     lands in the shared store; the autofix worker on the machine holding the
-    push identity picks it up."""
+    push identity picks it up.
+
+    `payload.guidance` is the operator's own instruction for a `fix`: it becomes
+    the authoring agent's goal, and it is what authorizes the action where the
+    profile names no fixable gates. It travels in the body because it is prose."""
     try:
-        return fix_queue.queue_pr(n, action)
+        return fix_queue.queue_pr(n, action, guidance=payload.get("guidance"))
     except ValueError as e:
         raise HTTPException(400, str(e))
 

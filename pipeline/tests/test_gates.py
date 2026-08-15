@@ -2063,6 +2063,23 @@ class TestFixEligibility:
         assert ok is False
         assert "fixable_gates" in why
 
+    def test_guided_fix_needs_no_profile_optin(self, monkeypatch):
+        # Operator guidance is its own mandate: the instruction IS the opt-in,
+        # so a deployment naming no fixable gates still honors a typed request.
+        self._profile(monkeypatch)
+        ok, why = gates.fix_eligibility(_pr(), "fix", changed_paths=["src/a.ts"],
+                                        guided=True)
+        assert ok is True, why
+
+    def test_guidance_does_not_widen_the_hard_blocks(self, monkeypatch):
+        # Guidance chooses the job, never the bot's reach. CODEOWNERS and the
+        # deny globs answer the same whatever the operator typed.
+        self._gated(monkeypatch, deny_globs=("skills/**",))
+        for paths in (["infra/main.tf"], ["skills/agent/SKILL.md"]):
+            ok, _ = gates.fix_eligibility(_pr(), "fix", changed_paths=paths,
+                                          guided=True)
+            assert ok is False, paths
+
     def test_resolve_needs_no_profile_optin(self, monkeypatch):
         # A resolve parks for operator approval, so it needs no fixable_gates.
         self._profile(monkeypatch)

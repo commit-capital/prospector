@@ -38,7 +38,10 @@ _JSON = JSON().with_variant(JSONB, "postgresql")
 #     alert family) plus the "alert" runs-ledger kind.
 # 12 — fix_request.action gains "resolve" (an agent-resolved base merge),
 #     which older validators refuse to save.
-STORE_SCHEMA_VERSION = 12
+# 13 — fix_request carries operator `guidance` for an agent-authored fix. An
+#     older worker claims the request, ignores the instruction, and authors
+#     against its own default goal instead.
+STORE_SCHEMA_VERSION = 13
 
 # saved_at is a microsecond-resolution ISO timestamp stamped on every save — when
 # the store row was last written (distinct from `updated_at`, which mirrors the
