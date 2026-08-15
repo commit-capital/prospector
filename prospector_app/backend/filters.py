@@ -1,7 +1,7 @@
 # prospector_app/backend/filters.py
 """Filter spec → boolean over a pr_row dict (service.pr_row shape).
 
-ONE place decides whether a PR matches a query. The UI's preset chips, the
+ONE place decides whether a PR matches a query. The UI's lane chips, the
 granular controls, and the agent search bar all produce a spec; this module is
 the single consumer. Pure functions, no store access — callers pass rows in.
 """
@@ -252,13 +252,15 @@ def matches(row: dict, spec: dict) -> bool:
                 return False
         elif row_tier != tier_spec:
             return False
-    if "removes_tests" in spec:
-        # net test deletion from the cached-diff size split; an unknown split
-        # (no cached diff) matches neither value
-        ss = row.get("size_split")
-        if ss is None or bool(ss.get("removes_tests")) != bool(spec["removes_tests"]):
-            return False
     if "merge_ok" in spec and bool((row.get("merge_gate") or {}).get("ok")) != bool(spec["merge_ok"]):
+        return False
+    if "has_summary" in spec:
+        # whether an agent summary exists for the PR (the CLUSTER phase's
+        # diff-grounded one-liner)
+        one_liner = (row.get("summary") or {}).get("one_liner")
+        if bool(one_liner) != bool(spec["has_summary"]):
+            return False
+    if "has_issues" in spec and bool(row.get("issues")) != bool(spec["has_issues"]):
         return False
     if spec.get("responses"):
         # how the community responded to our triage since we acted; "any" = a
@@ -272,44 +274,4 @@ def matches(row: dict, spec: dict) -> bool:
         want_list = want if isinstance(want, list) else [want]
         if not any(v == "any" or resp.get(v) for v in want_list):
             return False
-    if spec.get("safety_not") and (row.get("safety") or "").upper() == str(spec["safety_not"]).upper():
-        return False
-    if spec.get("drift_not_already_fixed") and row.get("drift_state") == "already-fixed":
-        return False
-    if "any" in spec and spec["any"]:
-        if not any(matches(row, sub) for sub in spec["any"]):
-            return False
     return True
-
-
-# Easy Lane's effective-LOC ceiling — a starting guess, tunable per-query via
-# the UI knob (`max_effective_loc`).
-EASY_LANE_MAX_EFFECTIVE_LOC = 150
-
-
-# Preset = a named base spec the UI chips expand to. Explicit user/agent fields
-# are merged on top by the caller, so a preset narrows, never overrides.
-def expand_preset(name: str, knobs: dict) -> dict:
-    """knobs: easy → {max_effective_loc}; stale → {age_days}."""
-    if name == "easy":
-        # leaf-surface (tier 3) PRs a human can clear fastest: small effective
-        # diff, no net test deletion, and merge-eligible (gates + CODEOWNERS,
-        # via the row's merge_gate)
-        return {"risk_tier": 3,
-                "removes_tests": False,
-                "merge_ok": True,
-                "loc": {"metric": "both", "scope": "effective", "op": "<=",
-                        "value": knobs.get("max_effective_loc", EASY_LANE_MAX_EFFECTIVE_LOC)}}
-    if name == "stale":
-        # The UI sends age_days as a {op,value} compare; a bare int is also
-        # accepted (defaults / tests). Either way the stale lane means ≥ N days.
-        age = knobs.get("age_days", 60)
-        days = age["value"] if isinstance(age, dict) else age
-        return {"age_days": {"op": ">=", "value": days},
-                "safety_not": "GREEN",
-                "any": [{"conflicts": True}, {"drift": "already-fixed"}]}
-    if name == "merge-ready":
-        return {"clean": True}
-    if name == "needs-human":
-        return {"any": [{"disposition": "needs-human"}, {"safety": "RED"}]}
-    return {}

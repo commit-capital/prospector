@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router";
 import { api, type FilterSpec, type PRRow, type QueryResult, type DeepResult } from "../api";
 import type { CellCtx, ColumnDef } from "../components/explorer/columns";
 import { reuseRows } from "../components/explorer/rowReuse";
-import { PresetChips } from "../components/explorer/PresetChips";
+import { LaneChips } from "../components/explorer/LaneChips";
 import { FilterControls } from "../components/explorer/FilterControls";
 import { ColumnToggles } from "../components/explorer/ColumnToggles";
 import { ExplorerSearchBar } from "../components/explorer/ExplorerSearchBar";
@@ -303,7 +303,7 @@ export default function PRExplorer() {
         </span>
       </div>
       <ExplorerSearchBar value={searchQ} onTextChange={setSearchText} onSpec={setSpec} onDeepSearch={runDeep} deepBusy={deepBusy} deepProgress={deepProgress} />
-      <PresetChips spec={spec} onChange={setSpec} />
+      <LaneChips spec={spec} onChange={setSpec} />
       <FilterControls spec={spec} onChange={setSpec} visibleColKeys={new Set(visibleColumns.map((c) => c.key))} />
       <ColumnToggles isOn={colOn} toggle={toggleCol} reset={resetCols} />
       <FilterSummary parts={buildPrFilterParts(spec, setSpec)} total={res?.total ?? null} />

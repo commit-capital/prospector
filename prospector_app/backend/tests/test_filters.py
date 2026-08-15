@@ -150,16 +150,6 @@ def test_files_count_compare():
     assert not filters.matches(_row(signals={"changed_files": None}), {"files": {"op": ">", "value": 1}})
 
 
-def test_preset_easy_expands():
-    spec = filters.expand_preset("easy", {})
-    assert spec["risk_tier"] == 3
-    assert spec["removes_tests"] is False and spec["merge_ok"] is True
-    assert spec["loc"] == {"metric": "both", "scope": "effective", "op": "<=",
-                           "value": filters.EASY_LANE_MAX_EFFECTIVE_LOC}
-    # the knob tunes the effective-LOC ceiling
-    assert filters.expand_preset("easy", {"max_effective_loc": 40})["loc"]["value"] == 40
-
-
 def test_risk_tier_filter():
     assert filters.matches(_row(risk_tier=3), {"risk_tier": 3})
     assert not filters.matches(_row(risk_tier=0), {"risk_tier": 3})
@@ -171,21 +161,6 @@ def test_risk_tier_filter():
     assert not filters.matches(_row(), {"risk_tier": 3})
 
 
-def test_removes_tests_filter():
-    kept = _row(size_split={"test": {"additions": 3, "deletions": 0, "files": 1},
-                            "non_test": {"additions": 5, "deletions": 1, "files": 1},
-                            "removes_tests": False})
-    deleter = _row(size_split={"test": {"additions": 0, "deletions": 9, "files": 1},
-                               "non_test": {"additions": 5, "deletions": 1, "files": 1},
-                               "removes_tests": True})
-    assert filters.matches(kept, {"removes_tests": False})
-    assert not filters.matches(deleter, {"removes_tests": False})
-    assert filters.matches(deleter, {"removes_tests": True})
-    # unknown split (no cached diff) matches neither value
-    assert not filters.matches(_row(), {"removes_tests": False})
-    assert not filters.matches(_row(), {"removes_tests": True})
-
-
 def test_merge_ok_filter():
     assert filters.matches(_row(merge_gate={"ok": True, "reason": ""}), {"merge_ok": True})
     assert not filters.matches(_row(merge_gate={"ok": False, "reason": "x"}), {"merge_ok": True})
@@ -194,36 +169,22 @@ def test_merge_ok_filter():
     assert not filters.matches(_row(), {"merge_ok": True})
 
 
-def test_preset_stale_and_merge_ready_and_needs_human():
-    assert filters.expand_preset("merge-ready", {})["clean"] is True
-    nh = filters.expand_preset("needs-human", {})
-    assert nh["any"]  # disjunction marker
-    stale = filters.expand_preset("stale", {"age_days": 60})
-    assert stale["age_days"]["op"] == ">=" and stale["age_days"]["value"] == 60
+def test_has_summary_filter():
+    with_summary = _row(summary={"one_liner": "Fixes the frobnicator", "primary_change": None})
+    empty_summary = _row(summary={"one_liner": None, "primary_change": None})
+    assert filters.matches(with_summary, {"has_summary": True})
+    assert not filters.matches(with_summary, {"has_summary": False})
+    assert filters.matches(_row(), {"has_summary": False})
+    assert filters.matches(empty_summary, {"has_summary": False})
+    assert not filters.matches(empty_summary, {"has_summary": True})
 
 
-def test_safety_not_excludes_value():
-    assert not filters.matches(_row(safety="RED"), {"safety_not": "RED"})
-    assert filters.matches(_row(safety="GREEN"), {"safety_not": "RED"})
-
-
-def test_any_disjunction():
-    # needs-human = disposition needs-human OR safety RED
-    spec = {"any": [{"disposition": "needs-human"}, {"safety": "RED"}]}
-    assert filters.matches(_row(disposition="needs-human", safety="GREEN"), spec)
-    assert filters.matches(_row(disposition="merge", safety="RED"), spec)
-    assert not filters.matches(_row(disposition="merge", safety="GREEN"), spec)
-
-
-def test_stale_preset_age_knob_accepts_dict_shape():
-    # The UI writes the stale age knob as a {op,value} compare. expand_preset must
-    # not double-wrap it — a 90-day-old not-GREEN conflicted PR must still match.
-    spec = filters.expand_preset("stale", {"age_days": {"op": ">=", "value": 90}})
-    assert spec["age_days"] == {"op": ">=", "value": 90}
-    row = _row(age_days=100, safety="YELLOW", signals={"conflicts": True})
-    assert filters.matches(row, spec)
-    # a bare int (defaults / tests) still works
-    assert filters.expand_preset("stale", {"age_days": 60})["age_days"] == {"op": ">=", "value": 60}
+def test_has_issues_filter():
+    linked = _row(issues=[{"number": 12}])
+    assert filters.matches(linked, {"has_issues": True})
+    assert not filters.matches(linked, {"has_issues": False})
+    assert filters.matches(_row(issues=[]), {"has_issues": False})
+    assert filters.matches(_row(), {"has_issues": False})
 
 
 def test_threat_filter_matches_row_verdict():

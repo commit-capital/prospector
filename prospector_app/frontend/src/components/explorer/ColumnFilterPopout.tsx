@@ -109,6 +109,43 @@ function setStatusForAllChecks(
   onChange(next);
 }
 
+// Path-based blast-radius tiers (0 = core … 3 = leaf); spec.risk_tier holds a
+// bare number for one selection, an array for several.
+const TIER_OPTS: { v: number; label: string }[] = [
+  { v: 0, label: "0 · core" },
+  { v: 1, label: "1 · governed" },
+  { v: 2, label: "2 · shared" },
+  { v: 3, label: "3 · leaf" },
+];
+
+function selectedTiers(spec: FilterSpec): number[] {
+  const t = spec.risk_tier;
+  if (t === undefined) return [];
+  return Array.isArray(t) ? t : [t];
+}
+
+// A yes/no/any select over one boolean spec field.
+function BoolFilter({ current, yesLabel, noLabel, onChange }: {
+  current: boolean | undefined;
+  yesLabel: string;
+  noLabel: string;
+  onChange: (v: boolean | undefined) => void;
+}) {
+  return (
+    <div className="cfp-row">
+      <select
+        className="cfp-select"
+        value={current === undefined ? "" : current ? "yes" : "no"}
+        onChange={(e) => onChange(e.target.value === "" ? undefined : e.target.value === "yes")}
+      >
+        <option value="">Any</option>
+        <option value="yes">{yesLabel}</option>
+        <option value="no">{noLabel}</option>
+      </select>
+    </div>
+  );
+}
+
 const RESPONSES_OPTS: { v: ResponsesFilter | ""; label: string }[] = [
   { v: "", label: "Any" },
   { v: "any", label: "any response" },
@@ -125,6 +162,105 @@ function renderContent(
   onChange: (next: FilterSpec) => void,
 ): ReactNode {
   switch (colKey) {
+    case "pr":
+      return (
+        <>
+          <div className="cfp-label">PR numbers (comma-separated)</div>
+          <input
+            type="text"
+            className="cfp-text"
+            placeholder="e.g. 6418, 7012"
+            defaultValue={(spec.numbers ?? []).join(", ")}
+            onChange={(e) => {
+              const nums = e.target.value.split(/[^0-9]+/).filter(Boolean).map(Number);
+              s("numbers", nums.length ? nums : undefined);
+            }}
+            autoFocus
+          />
+        </>
+      );
+
+    case "title":
+      return (
+        <>
+          <div className="cfp-label">Title / author / PR # contains</div>
+          <input
+            type="text"
+            className="cfp-text"
+            placeholder="text…"
+            value={spec.q ?? ""}
+            onChange={(e) => s("q", e.target.value || undefined)}
+            autoFocus
+          />
+        </>
+      );
+
+    case "tier": {
+      const selected = selectedTiers(spec);
+      return (
+        <>
+          <div className="cfp-label">Risk tier (blast radius of touched paths)</div>
+          <div className="cfp-opts">
+            <button
+              className={`cfp-opt${selected.length === 0 ? " active" : ""}`}
+              onClick={() => s("risk_tier", undefined)}
+            >Any</button>
+            {TIER_OPTS.map(({ v, label }) => (
+              <button
+                key={v}
+                className={`cfp-opt${selected.includes(v) ? " active" : ""}`}
+                onClick={() => {
+                  const next = selected.includes(v)
+                    ? selected.filter((x) => x !== v)
+                    : [...selected, v];
+                  s("risk_tier", next.length === 0 ? undefined : next.length === 1 ? next[0] : next);
+                }}
+              >{label}</button>
+            ))}
+          </div>
+        </>
+      );
+    }
+
+    case "merge":
+      return (
+        <>
+          <div className="cfp-label">Merge gate</div>
+          <BoolFilter
+            current={spec.merge_ok}
+            yesLabel="✓ ready"
+            noLabel="✗ blocked"
+            onChange={(v) => s("merge_ok", v)}
+          />
+        </>
+      );
+
+    case "summary":
+      return (
+        <>
+          <div className="cfp-label">Agent summary</div>
+          <BoolFilter
+            current={spec.has_summary}
+            yesLabel="Has a summary"
+            noLabel="No summary yet"
+            onChange={(v) => s("has_summary", v)}
+          />
+        </>
+      );
+
+    case "issues":
+      return (
+        <>
+          <div className="cfp-label">Linked issues</div>
+          <BoolFilter
+            current={spec.has_issues}
+            yesLabel="Has linked issues"
+            noLabel="No linked issues"
+            onChange={(v) => s("has_issues", v)}
+          />
+        </>
+      );
+
     case "safety":
       return (
         <>
@@ -520,8 +656,9 @@ export function ColumnFilterPopout({ colKey, spec, onChange, rect, onClose }: Co
 // Which columns have a column-header filter available?
 // eslint-disable-next-line react-refresh/only-export-components -- filter metadata co-located with the popout
 export const FILTERABLE_COLS = new Set([
+  "pr", "title", "tier", "merge", "summary", "issues",
   "safety", "disposition", "drift", "checks", "updated",
-  "score", "greptile", "age", "author_rate", "pain",
+  "greptile", "age", "author_rate", "pain",
   "loc", "files", "author", "cluster",
 ]);
 
@@ -529,6 +666,12 @@ export const FILTERABLE_COLS = new Set([
 // eslint-disable-next-line react-refresh/only-export-components -- filter predicate co-located with the popout
 export function isColFilterActive(colKey: string, spec: FilterSpec): boolean {
   switch (colKey) {
+    case "pr":          return spec.numbers !== undefined;
+    case "title":       return spec.q !== undefined;
+    case "tier":        return spec.risk_tier !== undefined;
+    case "merge":       return spec.merge_ok !== undefined;
+    case "summary":     return spec.has_summary !== undefined;
+    case "issues":      return spec.has_issues !== undefined;
     case "safety":      return spec.safety !== undefined;
     case "disposition": return spec.disposition !== undefined;
     case "drift":       return spec.drift !== undefined;

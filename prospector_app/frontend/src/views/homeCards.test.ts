@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CHECK_DEFS } from "../components/explorer/checkDefs.ts";
+import { ALL_CHECKS_PASS, CHECK_DEFS } from "../components/explorer/checkDefs.ts";
+import { LANES, MERGE_READY_SPEC } from "../components/explorer/lanes.ts";
 import {
-  ALL_CHECKS_PASS, exploreHref, HOME_CARDS, painLabel, SAMPLE_LIMIT, SAMPLE_QUERY,
+  exploreHref, HOME_CARDS, painLabel, SAMPLE_LIMIT, SAMPLE_QUERY,
   type HomeCard,
 } from "./homeCards.ts";
 
@@ -23,6 +24,30 @@ test("ALL_CHECKS_PASS requires a pass on every rollup check", () => {
     ALL_CHECKS_PASS,
     CHECK_DEFS.map((d) => ({ key: d.key, status: "pass" })),
   );
+});
+
+test("the ready card and the Merge-ready lane share one spec", () => {
+  const ready = HOME_CARDS.find((c) => c.key === "ready")!;
+  const lane = LANES.find((l) => l.key === "merge-ready")!;
+  assert.equal(ready.spec, MERGE_READY_SPEC);
+  assert.equal(lane.spec, MERGE_READY_SPEC);
+});
+
+test("every lane spec uses only fields the filter UI can represent", () => {
+  // The chip bar / column popouts cover these spec fields; a lane must never
+  // carry a field the operator can't see or edit after clicking it.
+  const representable = new Set([
+    "q", "author", "cluster", "cluster_none", "safety", "drift", "disposition",
+    "ci", "checks", "threat", "conflicts", "has_tests", "draft", "state",
+    "trusted_author", "clean", "greptile", "greptile_stale", "greptile_severity",
+    "age_days", "risk_tier", "responses", "loc", "files", "pain", "author_rate",
+    "artifact_dominated", "paths", "numbers", "merge_ok", "has_summary", "has_issues",
+  ]);
+  for (const lane of LANES) {
+    for (const field of Object.keys(lane.spec)) {
+      assert.ok(representable.has(field), `${lane.key} uses unrepresentable field ${field}`);
+    }
+  }
 });
 
 test("exploreHref round-trips the spec through the URL", () => {

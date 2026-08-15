@@ -30,7 +30,6 @@ export interface CheckClause {
 }
 
 export type NumCmp = { op: "<" | "<=" | "==" | ">=" | ">"; value: number };
-export type PresetName = "easy" | "stale" | "merge-ready" | "needs-human";
 
 /** Filter PRs by change size. `metric` picks added / removed / both (add+del);
  *  `scope` "effective" counts only human-written lines (source+test, generated
@@ -73,8 +72,10 @@ export interface FilterSpec {
   age_days?: NumCmp;
   max_files?: number;
   max_total_lines?: number;
-  max_effective_loc?: number;   // Easy Lane knob: effective-LOC ceiling
   risk_tier?: number | number[];  // path-based blast-radius tier (0 = core … 3 = leaf)
+  merge_ok?: boolean;        // the row's merge gate (gates.merge_eligibility) passes
+  has_summary?: boolean;     // an agent summary exists for the PR
+  has_issues?: boolean;      // the PR has linked issues
   responses?: ResponsesFilter | ResponsesFilter[];
   loc?: LocFilter;
   files?: FilesFilter;       // how many files a PR touches, greater-/less-than
@@ -82,8 +83,7 @@ export interface FilterSpec {
   author_rate?: NumCmp;          // filter by author's historical merge-rate (0–1 decimal)
   artifact_dominated?: boolean;  // diff is mostly generated noise (snapshots/locales/lockfiles)
   paths?: string;            // substring over a PR's changed file paths
-  numbers?: number[];        // restrict to a PR-number set (Deep Search results; transient, not in the URL)
-  preset?: PresetName;
+  numbers?: number[];        // restrict to a PR-number set (Deep Search overlay, or the PR-column filter)
 }
 
 /** One PR's verdict from Deep Search — the agent's match decision + a short why. */
