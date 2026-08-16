@@ -4,6 +4,8 @@ import importlib.util
 import json
 from pathlib import Path
 
+import pytest
+
 from prospector_app.backend import models
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -45,6 +47,71 @@ def test_close_pr_uses_executor_with_full_disposition(monkeypatch, capsys):
         comment="Closing this.",
     )
     assert json.loads(capsys.readouterr().out)["status"] == "executed"
+
+
+def test_close_pr_reads_multiline_comment_from_file(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    cli = _load("close-pr")
+    comment_file = tmp_path / "closing-comment.md"
+    comment_file.write_text("First paragraph.\n\nSecond paragraph.\n")
+    seen: dict[str, object] = {}
+
+    def close(
+        pr: int,
+        action: models.CloseAction,
+        *,
+        token: str,
+        dry_run: bool,
+    ) -> dict[str, object]:
+        seen.update(pr=pr, action=action, token=token, dry_run=dry_run)
+        return {"pr": pr, "status": "executed", "action": "CLOSE_FIXED"}
+
+    monkeypatch.setattr(cli.executor, "mint_bot_token", lambda: "bot-token")
+    monkeypatch.setattr(cli.executor, "execute_pr", close)
+
+    assert cli.main([
+        "7408", "--disposition", "fixed", "--upstream-pr", "8254",
+        "--comment-file", str(comment_file),
+    ]) == 0
+    assert seen["action"] == models.CloseAction(
+        action="CLOSE_FIXED",
+        upstream_pr=8254,
+        comment="First paragraph.\n\nSecond paragraph.\n",
+    )
+    assert json.loads(capsys.readouterr().out)["status"] == "executed"
+
+
+def test_close_pr_comment_inputs_are_mutually_exclusive(tmp_path: Path) -> None:
+    cli = _load("close-pr")
+    comment_file = tmp_path / "closing-comment.md"
+    comment_file.write_text("Closing.")
+
+    with pytest.raises(SystemExit):
+        cli.main([
+            "7408", "--disposition", "fixed", "--comment", "Closing.",
+            "--comment-file", str(comment_file),
+        ])
+
+
+def test_close_pr_comment_file_must_be_readable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cli = _load("close-pr")
+    missing = tmp_path / "missing.md"
+    monkeypatch.setattr(
+        cli.executor,
+        "mint_bot_token",
+        lambda: (_ for _ in ()).throw(AssertionError("token mint attempted")),
+    )
+
+    with pytest.raises(SystemExit):
+        cli.main([
+            "7408", "--disposition", "fixed", "--comment-file", str(missing),
+        ])
 
 
 def test_close_pr_refuses_when_a_fresh_bot_token_cannot_be_minted(monkeypatch, capsys):

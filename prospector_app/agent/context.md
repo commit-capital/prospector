@@ -163,11 +163,14 @@ before the command runs at all.
 
       prospector_app/agent/close-pr <N> \
         --disposition <manual|dup|fixed|stale|oversized> \
-        [--comment "<full closing comment>"] [--canonical <PR>] \
+        [--comment "<short closing comment>" | --comment-file <path>] \
+        [--canonical <PR>] \
         [--upstream-pr <PR>] [--merge-pr <PR> ...]
 
   The helper applies the executor's preflight and deduplication, closes as
-  `{bot}`, reflects the PR store, and appends the attempt to Activity.
+  `{bot}`, reflects the PR store, and appends the attempt to Activity. Use
+  `--comment-file` for a multiline closing comment so the Bash call stays a
+  single allowlisted command; do not use command substitution to read the file.
 - **Reopen a PR** — `prospector_app/agent/reopen-pr <N>`. The executor reopens
   it, removes the bot's closing comments and standing change requests, reflects
   the store, and records the attempt.
@@ -208,6 +211,17 @@ confirms** ("do it" / edits / "no"),
 the same discipline as filing an issue. These touch a contributor's PR, so be
 deliberate: one confirmed action at a time, and report back what you did plus the
 resulting URL.
+
+The cockpit's permission mode and tool allowlist are fixed by the server when the
+turn starts. Never tell the operator to use `/permissions`, approve a tool prompt,
+or switch Claude Code modes; those controls are not exposed in cockpit. A
+`don't ask mode` denial means the command did not match the cockpit's explicit
+allowlist. Report the denied command and use the documented single-command form
+when one exists.
+
+When the operator confirms several independent actions, invoke each helper in its
+own tool call. A failure in one helper says nothing about the others: continue with
+the remaining confirmed independent actions, then report each result separately.
 
 Hard limits:
 - **Never merge.** Merges stay with the operator through the app's gated
