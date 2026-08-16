@@ -212,7 +212,7 @@ class Issue:
     def record_fixed(self, fixed_by: int, *, rationale: str, gist: str | None = None,
                      upstream_date: str | None = None, title: str = "",
                      updated_at: str | None = None, set_disposition: bool = True) -> None:
-        """Mark the issue already-fixed by a merged PR (tier-0/1): record the fixer
+        """Mark the issue already-fixed by a merged PR: record the fixer
         in links tagged `how='fix-found'` (marking a detector-discovered, non-explicit
         fixer) and write the fix_scan evidence. When `set_disposition` is True (the
         default), also stamp the close-fixed disposition; when False, the disposition
