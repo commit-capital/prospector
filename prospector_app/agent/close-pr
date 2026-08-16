@@ -3,6 +3,7 @@
 
 Usage:
     close-pr <pr> --disposition manual --comment "<why>"
+    close-pr <pr> --disposition manual --comment-file <path>
     close-pr <pr> --disposition dup [--canonical <pr>] [--comment "<why>"]
     close-pr <pr> --disposition fixed [--upstream-pr <pr>] [--comment "<why>"]
     close-pr <pr> --disposition stale [--comment "<why>"]
@@ -43,7 +44,13 @@ def main(argv: list[str] | None = None) -> int:
         choices=tuple(_ACTION),
         help="the close semantics used for the comment and Activity action",
     )
-    p.add_argument("--comment", help="the closing comment")
+    comment = p.add_mutually_exclusive_group()
+    comment.add_argument("--comment", help="the closing comment")
+    comment.add_argument(
+        "--comment-file",
+        type=Path,
+        help="read the closing comment from this file",
+    )
     p.add_argument("--canonical", type=int, help="canonical PR for a duplicate")
     p.add_argument("--upstream-pr", type=int, help="merged PR containing the fix")
     p.add_argument("--upstream-commit", help="upstream commit containing the fix")
@@ -57,6 +64,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("--dup-reason", help="specific reason the canonical PR is preferred")
     args = p.parse_args(argv)
+
+    comment_text = args.comment
+    if args.comment_file is not None:
+        try:
+            comment_text = args.comment_file.read_text()
+        except OSError as e:
+            p.error(f"cannot read comment file {args.comment_file}: {e}")
 
     token = executor.mint_bot_token()
     if not token:
@@ -72,7 +86,7 @@ def main(argv: list[str] | None = None) -> int:
         upstream_date=args.upstream_date,
         merge_prs=args.merge_prs,
         dup_reason=args.dup_reason,
-        comment=args.comment,
+        comment=comment_text,
     )
     result = executor.execute_pr(args.pr, action, token=token, dry_run=False)
     print(json.dumps(result, sort_keys=True))

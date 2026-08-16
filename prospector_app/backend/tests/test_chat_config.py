@@ -329,6 +329,16 @@ def test_context_documents_upstream_writes_and_the_merge_limit():
     assert "cannot" in sp.lower() or "never" in sp.lower()
 
 
+def test_context_keeps_cockpit_permission_failures_actionable() -> None:
+    sp = chat.system_prompt()
+    assert "--comment-file" in sp
+    assert "do not use command substitution" in sp
+    assert "Never tell the operator to use `/permissions`" in sp
+    assert "those controls are not exposed in cockpit" in sp
+    assert "invoke each helper in its\nown tool call" in sp
+    assert "continue with\nthe remaining confirmed independent actions" in sp
+
+
 def test_context_documents_the_review_retrigger(monkeypatch):
     # Re-triggering the review is a bot comment carrying the provider's mention —
     # the prompt names the configured one so the agent doesn't have to guess it.
