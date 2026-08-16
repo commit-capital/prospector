@@ -28,12 +28,14 @@ if TYPE_CHECKING:
 
 VALID = {"fixed", "likely-fixed", "not-fixed"}
 _BODY_CLIP = 1500
+_CAUSAL_EVIDENCE_FIELDS = (
+    "reported_origin", "fix_hunk", "relationship", "before", "after", "current_path_check")
 
 # The canonical decision criteria, one bullet per tier — embedded in
 # FIND_FIXED_PROMPT and surfaced by the `bundle` CLI dump, so the policy is stated
 # exactly once.
 FIX_CRITERIA = """\
-- fixed: a specific MERGED pull request caused the described bug to become fixed. Find it by SYMPTOM, not by the issue number: search merged PRs for the error text / keywords / affected area (`gh pr list --state merged --search "..."`, `gh search prs`), narrow by the issue's subsystem to the likely files, and read the candidate PR's own diff (`gh pr diff <n> --repo __REPO__`). For the relevant hunk, identify the pre-merge behavior from its removed/context lines and evaluate the issue's stated inputs against it; the diff must change the result from the reported behavior to the expected behavior. Current default-branch code proves only the current state, not that this PR caused it. If the pre-merge code already produced the expected behavior, or the diff changes a different path or input case, this PR is not the fix. Set "fixed_by" to the PR number (and "upstream_date" if known). If you cannot establish that causal before/after change for a specific merged PR, do NOT use "fixed".
+- fixed: a specific MERGED pull request caused the described bug to become fixed. Find it by SYMPTOM, not by the issue number: search merged PRs for the error text / keywords / affected area (`gh pr list --state merged --search "..."`, `gh search prs`), narrow by the issue's subsystem to the likely files, and read the candidate PR's own diff (`gh pr diff <n> --repo __REPO__`). For the relevant hunk, identify the pre-merge behavior from its removed/context lines and evaluate the issue's stated inputs against it; the diff must change the result from the reported behavior to the expected behavior. Extract any file, function, producer, guard, or call path named by the issue's trace or root-cause analysis and inspect that origin on the current default branch. The fixing hunk must change that origin or have a concrete control/data-flow connection to it. A matching title, explicit issue reference, same subsystem, or change to another producer of the same symptom is not causal evidence. If the named origin can still produce the reported state for the issue's inputs, use "not-fixed" even when the candidate PR fixes a nearby path. Current default-branch code proves only the current state, not that this PR caused it. If the pre-merge code already produced the expected behavior, or the diff changes a different path or input case, this PR is not the fix. Set "fixed_by" to the PR number (and "upstream_date" if known). If you cannot establish that causal before/after change for a specific merged PR, do NOT use "fixed".
 - likely-fixed: the current default branch plainly no longer exhibits the described behavior, but you cannot attribute a specific merged PR. A human verifies before closing; do not set fixed_by.
 - not-fixed: the bug still appears present on the default branch, or there is not enough evidence to decide.""".replace("__REPO__", REPO)
 
@@ -46,9 +48,10 @@ For every entry whose `comments` count is nonzero, read the live thread with `gh
 Choose exactly one status per issue:
 __CRITERIA__
 
-Every bundled issue MUST get exactly one verdict: {"issue": <number>, "status": "fixed"|"likely-fixed"|"not-fixed", "fixed_by": <PR number or null>, "fixed_title": "<PR title or "">", "upstream_date": <"YYYY-MM-DD" or null>, "gist": "...", "rationale": "..."} — where:
+Every bundled issue MUST get exactly one verdict: {"issue": <number>, "status": "fixed"|"likely-fixed"|"not-fixed", "fixed_by": <PR number or null>, "fixed_title": "<PR title or "">", "upstream_date": <"YYYY-MM-DD" or null>, "gist": "...", "rationale": "...", "causal_evidence": <object or null>} — where:
 - "gist": 2-3 plain sentences restating what THIS issue actually is (the concrete bug), legible to someone who hasn't read the raw body.
 - "rationale": 2-4 sentences explaining the evidence. For "fixed", name the cited PR, the relevant removed/context line and its result for the issue's stated inputs, then the changed behavior that resolves the symptom. For "likely-fixed", say what on the default branch shows it is fixed and why no PR could be attributed.
+- "causal_evidence": required for "fixed" and null for other statuses. It is {"reported_origin": "<issue-named or traced file + function/producer>", "fix_hunk": "<candidate PR file + function/hunk>", "relationship": "<same path or concrete control/data-flow connection>", "before": "<result before the PR for the issue's inputs>", "after": "<result after the PR>", "current_path_check": "<why the reported origin cannot still produce the bug on the default branch>"}. Every value must be specific and non-empty.
 - "fixed_by"/"fixed_title"/"upstream_date" only for "fixed"; "issue" MUST equal the bundle entry's number.""".replace("__CRITERIA__", FIX_CRITERIA).replace("__REPO__", REPO)
 
 FIND_FIXED_FENCED_TAIL = """
@@ -104,46 +107,36 @@ def bundle(store: IssueStore, only: list[int] | None = None) -> list[dict]:
     return out
 
 
-def deterministic_fixed(store: IssueStore, pr_states: dict[int, str]) -> list[dict]:
-    """Tier-0: open, unscanned issues whose candidate_prs already name a MERGED
-    explicit/issue-ref fixer — mark them fixed with no agent. `pr_states` maps a PR
-    number to its state; a `subsystem` tag-match is never a fixer."""
-    out: list[dict] = []
-    for n, iss in store.all_issues().items():
-        if iss.state != "open" or is_current(iss, "fix_scan"):
-            continue
-        fixer = None
-        for c in iss.candidate_prs:
-            pr = c.get("pr")
-            if (c.get("how") in ("explicit", "issue-ref") and isinstance(pr, int)
-                    and pr_states.get(pr) == "merged"):
-                fixer = c
-                break
-        if fixer:
-            how = fixer["how"]
-            if how == "issue-ref":
-                rationale = f"This issue's text names merged PR #{fixer['pr']} as its fix."
-            else:
-                rationale = f"Merged PR #{fixer['pr']} explicitly references this issue."
-            out.append({"issue": n, "status": "fixed", "fixed_by": fixer["pr"],
-                        "fixed_title": fixer.get("title", ""), "rationale": rationale})
-    return out
+def verdict_error(verdict: dict[str, object]) -> str | None:
+    """Return the first contract error in an agent verdict, if any."""
+    status = verdict.get("status")
+    if status not in VALID:
+        return f"bad status {status!r}"
+    if status != "fixed":
+        return None
+    if not verdict.get("fixed_by"):
+        return "fixed verdict missing fixed_by"
+    evidence = verdict.get("causal_evidence")
+    if not isinstance(evidence, dict):
+        return "fixed verdict missing causal_evidence"
+    missing = [field for field in _CAUSAL_EVIDENCE_FIELDS
+               if not isinstance(evidence.get(field), str) or not evidence[field].strip()]
+    if missing:
+        return f"fixed verdict has incomplete causal_evidence: {', '.join(missing)}"
+    return None
 
 
 def apply_verdicts(store: IssueStore, verdicts: list[dict]) -> int:
-    """Apply the runner's per-issue verdicts. A "fixed" verdict must carry a
-    fixed_by (also enforced by the store on save)."""
+    """Apply per-issue verdicts after validating the agent evidence contract."""
     applied = 0
     for v in verdicts:
+        error = verdict_error(v)
+        if error is not None:
+            raise ValueError(f"issue #{v.get('issue', '?')}: {error}")
         status = v["status"]
-        if status not in VALID:
-            raise ValueError(f"bad status {status!r}")
         iss = store.edit_issue(int(v["issue"]))
         if status == "fixed":
-            fixed_by = v.get("fixed_by")
-            if not fixed_by:
-                raise ValueError(f"fixed verdict for #{v['issue']} missing fixed_by")
-            iss.record_fixed(int(fixed_by), rationale=v.get("rationale") or "",
+            iss.record_fixed(int(v["fixed_by"]), rationale=v.get("rationale") or "",
                              gist=v.get("gist"), upstream_date=v.get("upstream_date"),
                              title=v.get("fixed_title") or "",
                              set_disposition=disposition_outranks("close-fixed", iss.disposition))

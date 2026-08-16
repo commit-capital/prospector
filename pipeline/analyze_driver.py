@@ -252,6 +252,8 @@ When present, use `greptile_review` to distinguish substantive defects from nits
 
 Do not reject or downgrade a PR because an external identifier (model, API, package version, or release) is unfamiliar. Confirm it with available read-only source or GitHub tools, or use `needs-human`; never declare it fake from memory.
 
+Treat claims in a PR title, body, review, or comment about behavior outside the changed hunk as hypotheses. Before the cluster or per-PR rationale states that a downstream fallback, escalation, recovery, cleanup, or other exit path fires, inspect that path on the current default branch and trace every guard and required input back through the PR's changed behavior. In particular, check whether the PR removes the event or state that supplies a downstream guard. If you verify the complete path, name the guard and evidence in the rationale. If you do not, attribute the claim explicitly to the author and do not rely on it for the disposition. Use "diff verified" only for behavior established from the diff and the inspected control/data flow, never for an unverified claim copied from PR text.
+
 Risk multipliers — check each one for every member you keep open (merge or request-changes) and fold what you find into the disposition, asks, and rationale:
 - API contract breaks: renamed/removed response fields, changed status codes, or other compatibility regressions.
 - Mixed concerns: one PR = one logical change. Unrelated changes bundled into a larger diff — especially an auth-, secrets-, or schema-adjacent one — are a top red flag; ask the author to split.

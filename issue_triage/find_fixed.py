@@ -26,7 +26,6 @@ from issue_triage import issue_fixed_driver
 from issue_triage.issue_store import IssueStore
 from pipeline import headless_agent
 from pipeline.settings import REPO_ROOT
-from pipeline.store import Store
 
 _print_lock = threading.Lock()
 
@@ -64,10 +63,10 @@ def run_batch_agent(entries: list[dict]) -> list[dict]:
     in_batch = {e["number"] for e in entries}
     good = [v for v in verdicts
             if int(v.get("issue", -1)) in in_batch
-            and v.get("status") in issue_fixed_driver.VALID]
+            and issue_fixed_driver.verdict_error(v) is None]
     if len(good) < len(verdicts):
         _say(f"    ! {label}: dropped {len(verdicts) - len(good)} verdict(s) — "
-             "outside the batch or unknown status")
+             "outside the batch or invalid evidence")
     missing = sorted(in_batch - {int(v["issue"]) for v in good})
     if missing:
         _say(f"    ! {label}: {len(missing)} issue(s) got no verdict: "
@@ -95,13 +94,6 @@ def main(argv: list[str] | None = None) -> int:
                     help="issue store root (default: the shared store)")
     args = ap.parse_args(argv)
     store = IssueStore(args.store) if args.store else IssueStore()
-    # Tier-0: mark issues whose candidate_prs already name a merged explicit fixer
-    # (free, no agent). They then carry a current fix_scan and drop out of the wave.
-    pr_states = {n: p.state for n, p in Store().all_prs().items() if p.state is not None}
-    tier0 = issue_fixed_driver.deterministic_fixed(store, pr_states)
-    if tier0:
-        issue_fixed_driver.apply_verdicts(store, tier0)
-        _say(f"⓪ tier-0: {len(tier0)} issue(s) marked fixed by a merged explicit fixer.")
     cands = issue_fixed_driver.candidates(store)
     todo = cands[:args.limit]
     conc = max(1, args.concurrency)
