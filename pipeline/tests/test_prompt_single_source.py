@@ -66,6 +66,11 @@ class TestPlaceholders:
     def test_analyze_requires_whole_pr_coverage_before_close(self):
         assert "account for every substantive primary and secondary change" in ad.ANALYZE_PROMPT
 
+    def test_analyze_requires_downstream_claim_provenance(self):
+        assert "trace every guard and required input" in ad.ANALYZE_PROMPT
+        assert "attribute the claim explicitly to the author" in ad.ANALYZE_PROMPT
+        assert 'Use "diff verified" only' in ad.ANALYZE_PROMPT
+
 
 class TestDriversShipTheCanonicalText:
     def test_analyze_index_ships_the_prompt(self, tmp_path, monkeypatch):
