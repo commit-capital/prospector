@@ -22,7 +22,10 @@ what is already cached. Either way, PRs left without a diff are reported as
 `uncached` in the run ledger and left unscanned.
 
 The scan is idempotent: re-running re-derives the same verdicts and the
-registry merges rather than duplicates.
+registry merges rather than duplicates. The scan loop runs on one bound store
+connection, and a PR whose stored stamp already carries the derived verdict at
+its current head is left untouched — a re-run over the corpus reads and writes
+only the records whose verdict or head changed.
 
 Usage:
   uv run python threat_scan.py [--store DIR] [--only N[,N...]] [--no-fetch]
@@ -77,6 +80,17 @@ def fetch_missing_diffs(prs: dict[int, Pr], diffs_dir: Path, workers: int = 8,
     fetched, failed = diff_cache.fetch_diffs(manifest, workers=workers, store=store,
                                              diffs_dir=diffs_dir)
     return {"fetched": fetched, "fetch_failed": failed, "bump_exempt": len(exempt)}, exempt
+
+
+def already_stamped(rec: Pr, result: dict) -> bool:
+    """Whether `rec`'s stored threat stamp already carries `result` at the
+    record's current head — verdict, signatures, and detail all equal. Such a
+    record needs no write: threat currency is a head comparison, so re-stamping
+    the same verdict at the same head changes nothing a reader can observe."""
+    sec = rec.section("threat")
+    if not sec or sec.get("against_head_sha") != rec.head_sha:
+        return False
+    return all(sec.get(k) == result.get(k) for k in ("verdict", "signatures", "detail"))
 
 
 def scan_record(rec: Pr, registry: dict, diffs_dir: Path = diff_cache.DIFFS) -> dict | None:
@@ -148,53 +162,59 @@ def main(argv: list[str] | None = None) -> int:
     exempt: set[int] = set()
     if not args.no_fetch:
         fetch_stats, exempt = fetch_missing_diffs(prs, diffs_dir, store=store)
-        print(f"fetch: {fetch_stats}")
+        print(f"fetch: {fetch_stats}", flush=True)
 
     malicious: list[int] = []
     suspicious: list[int] = []
     uncached = 0
-    for n, rec in sorted(prs.items()):
-        result = scan_record(rec, registry, diffs_dir=diffs_dir)
-        if result is None:
-            head = rec.head_sha
-            if n not in exempt and not (diffs_dir / f"{head}.diff").exists():
-                uncached += 1
-            continue
-        # stamped through a fresh read: the scan runs long, and by write time
-        # the startup snapshot's copy no longer carries other phases' writes
-        store.edit_pr(n).set_threat(result)
-        if result["verdict"] == "malicious":
-            malicious.append(n)
-            author = rec.author
-            if author:
-                threats.block_actor(
-                    registry, author,
-                    reason=f"Malicious PR(s): {', '.join(result['signatures'])}",
-                    added=today, incidents=[n])
-            threats.record_incident(
-                registry, n, author, rec.head_sha,
-                result["signatures"], noticed=today)
-        elif result["verdict"] == "suspicious":
-            suspicious.append(n)
+    restamped = 0
+    # one bound connection for the whole loop: each per-PR read or write is a
+    # single round-trip on it, with no per-statement connect handshake
+    with store.batch():
+        for n, rec in sorted(prs.items()):
+            result = scan_record(rec, registry, diffs_dir=diffs_dir)
+            if result is None:
+                head = rec.head_sha
+                if n not in exempt and not (diffs_dir / f"{head}.diff").exists():
+                    uncached += 1
+                continue
+            if not already_stamped(rec, result):
+                # stamped through a fresh read: the scan runs long, and by write time
+                # the startup snapshot's copy no longer carries other phases' writes
+                store.edit_pr(n).set_threat(result)
+                restamped += 1
+            if result["verdict"] == "malicious":
+                malicious.append(n)
+                author = rec.author
+                if author:
+                    threats.block_actor(
+                        registry, author,
+                        reason=f"Malicious PR(s): {', '.join(result['signatures'])}",
+                        added=today, incidents=[n])
+                threats.record_incident(
+                    registry, n, author, rec.head_sha,
+                    result["signatures"], noticed=today)
+            elif result["verdict"] == "suspicious":
+                suspicious.append(n)
 
-        # A potential leaked credential is operationally urgent regardless of
-        # the PR's disposition — emit an action item for a human to confirm or
-        # dismiss (upsert: re-running the scan never reopens one already closed).
-        if "secret-leak" in result["signatures"]:
-            actions.upsert(action_items, actions.make_item(
-                "rotate-secret", pr=n, created=today,
-                summary=f"Potential secret leaked in PR #{n} ({rec.author or '?'})",
-                evidence=result["detail"].get("secret-leak", ""),
-                detail="A live-looking credential was committed in this PR's diff. "
-                       "Confirm it: if real, rotate the key at its provider and notify "
-                       "upstream — closing/merging the PR does not invalidate an "
-                       "already-pushed secret. Dismiss if it's a false positive "
-                       "(e.g. a public record id, not a credential)."))
+            # A potential leaked credential is operationally urgent regardless of
+            # the PR's disposition — emit an action item for a human to confirm or
+            # dismiss (upsert: re-running the scan never reopens one already closed).
+            if "secret-leak" in result["signatures"]:
+                actions.upsert(action_items, actions.make_item(
+                    "rotate-secret", pr=n, created=today,
+                    summary=f"Potential secret leaked in PR #{n} ({rec.author or '?'})",
+                    evidence=result["detail"].get("secret-leak", ""),
+                    detail="A live-looking credential was committed in this PR's diff. "
+                           "Confirm it: if real, rotate the key at its provider and notify "
+                           "upstream — closing/merging the PR does not invalidate an "
+                           "already-pushed secret. Dismiss if it's a false positive "
+                           "(e.g. a public record id, not a credential)."))
 
     store.save_threats(registry)
     store.save_action_items(action_items)
     secret_leaks = sum(1 for it in action_items["items"] if it["kind"] == "rotate-secret")
-    stats = {"scanned": len(prs), "malicious": len(malicious),
+    stats = {"scanned": len(prs), "restamped": restamped, "malicious": len(malicious),
              "suspicious": len(suspicious), "uncached": uncached,
              **fetch_stats,
              "blocked_actors": len(registry.get("actors", {})),

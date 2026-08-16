@@ -533,3 +533,73 @@ def test_secret_leak_no_false_positives():
 def test_secret_leak_catches_real_leaks():
     missed = [name for name, d in REAL_LEAK_DIFFS.items() if "secret-leak" not in threats.scan_diff(d)["signatures"]]
     assert not missed, f"missed real leaks: {missed}"
+
+
+class TestScanWriteEconomy:
+    """The scan runs over every PR in the store; a re-run must not pay a
+    read+write round-trip per PR whose stored verdict it merely re-derives."""
+
+    def _seed(self, store, n, author, head, diff_text, diffs_dir):
+        TestScanDriver._seed(self, store, n, author, head, diff_text, diffs_dir)
+
+    def _saved_at(self, store, n):
+        return store._prs.stamped(n)[1]
+
+    def test_rerun_with_unchanged_verdict_writes_nothing(self, tmp_path):
+        store = Store(tmp_path)
+        diffs = tmp_path / "diffs"; diffs.mkdir()
+        self._seed(store, 1, "alice", "shaA", CLEAN_DIFF, diffs)
+        self._seed(store, 2, "mallory", "shaB", PAYLOAD_DIFF, diffs)
+        threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs), "--no-fetch"])
+        first = {n: self._saved_at(store, n) for n in (1, 2)}
+        assert store.load_pr(2).threat_verdict == "malicious"
+
+        threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs), "--no-fetch"])
+        assert {n: self._saved_at(store, n) for n in (1, 2)} == first
+
+    def test_moved_head_is_rescanned_and_restamped(self, tmp_path):
+        store = Store(tmp_path)
+        diffs = tmp_path / "diffs"; diffs.mkdir()
+        self._seed(store, 1, "alice", "shaA", CLEAN_DIFF, diffs)
+        threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs), "--no-fetch"])
+        before = self._saved_at(store, 1)
+
+        # the author force-pushes a payload; INGEST moves the head
+        (diffs / "shaA2.diff").write_text(PAYLOAD_DIFF)
+        pr = store.edit_pr(1)
+        pr.set_meta({**pr.section("meta"), "head_sha": "shaA2"})
+        threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs), "--no-fetch"])
+
+        after = store.load_pr(1)
+        assert after.threat_verdict == "malicious"
+        assert after.section("threat")["against_head_sha"] == "shaA2"
+        assert self._saved_at(store, 1) != before
+
+    def test_changed_verdict_at_same_head_is_restamped(self, tmp_path):
+        store = Store(tmp_path)
+        diffs = tmp_path / "diffs"; diffs.mkdir()
+        self._seed(store, 1, "mallory", "shaA", CLEAN_DIFF, diffs)
+        threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs), "--no-fetch"])
+        assert store.load_pr(1).threat_verdict == "clear"
+
+        # the actor lands on the blocklist between runs; the same diff now reads malicious
+        reg = store.load_threats()
+        threats.block_actor(reg, "mallory", "prior attack", added="2026-06-12")
+        store.save_threats(reg)
+        threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs), "--no-fetch"])
+        assert store.load_pr(1).threat_verdict == "malicious"
+
+    def test_scan_loop_runs_on_one_bound_connection(self, tmp_path, monkeypatch):
+        store = Store(tmp_path)
+        diffs = tmp_path / "diffs"; diffs.mkdir()
+        self._seed(store, 1, "alice", "shaA", CLEAN_DIFF, diffs)
+        seen = []
+        real_scan = threat_scan.scan_record
+
+        def scan_noting_binding(rec, registry, diffs_dir):
+            seen.append(storekit._bound_conn(Store(tmp_path).engine) is not None)
+            return real_scan(rec, registry, diffs_dir=diffs_dir)
+
+        monkeypatch.setattr(threat_scan, "scan_record", scan_noting_binding)
+        threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs), "--no-fetch"])
+        assert seen == [True]
