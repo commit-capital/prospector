@@ -9,8 +9,7 @@ import { ALL_CHECKS_PASS } from "./checkDefs.ts";
 // sees only the plain filter fields.
 
 // Every gate green and ready to merge right now. The Home tab's "PRs ready to
-// merge" card uses this same spec, so the card's count and the lane's rows
-// always agree.
+// merge" card narrows this same spec to the pipeline's merge picks.
 export const MERGE_READY_SPEC: FilterSpec = {
   checks: ALL_CHECKS_PASS,
   greptile: { op: ">", value: 4 },
