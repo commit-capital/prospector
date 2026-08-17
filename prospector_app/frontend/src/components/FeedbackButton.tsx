@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useLocation } from "react-router";
 import { api, type FeedbackTarget } from "../api";
@@ -52,6 +52,10 @@ export function FeedbackButton() {
 // opening the issue with the raw description instead.
 const GENERATE_TIMEOUT_MS = 12000;
 
+// localStorage key holding the in-progress description, so a dismissed dialog
+// restores the user's text when it reopens.
+const DRAFT_KEY = "feedback-draft";
+
 function FeedbackModal({
   target,
   pageUrl,
@@ -61,7 +65,7 @@ function FeedbackModal({
   pageUrl: string;
   onClose: () => void;
 }) {
-  const [description, setDescription] = useState("");
+  const [description, setDescription] = useState(() => localStorage.getItem(DRAFT_KEY) ?? "");
   const [loading, setLoading] = useState(false);
   const [loadingPhase, setLoadingPhase] = useState<"screenshot" | "generating" | null>(null);
   const [clipOk, setClipOk] = useState<boolean | null>(null);
@@ -78,6 +82,13 @@ function FeedbackModal({
   useEffect(() => {
     localStorage.setItem("feedback-mic", String(speech.active));
   }, [speech.active]);
+
+  // Persist the draft as the user types, so no dismissal path (overlay click,
+  // Escape, Cancel, ✕) loses their work. Cleared once the issue actually opens.
+  useEffect(() => {
+    if (description) localStorage.setItem(DRAFT_KEY, description);
+    else localStorage.removeItem(DRAFT_KEY);
+  }, [description]);
 
   const toggleMic = () => { speech.toggle(); };
 
@@ -163,6 +174,8 @@ function FeedbackModal({
     } else {
       window.open(url, "_blank", "noopener,noreferrer");
     }
+    // The description now lives in the opened issue tab; drop the saved draft.
+    if (url) localStorage.removeItem(DRAFT_KEY);
     setLoading(false);
     setLoadingPhase(null);
 
@@ -173,8 +186,15 @@ function FeedbackModal({
     }
   };
 
+  // A click lands on the overlay whenever a drag that began inside the modal —
+  // selecting text in the textarea, dragging its resize handle — releases over
+  // the backdrop. Dismiss only when the press also started on the backdrop.
+  const pressStartedOnOverlay = useRef(false);
+  const handleOverlayMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    pressStartedOnOverlay.current = e.target === e.currentTarget;
+  };
   const handleOverlayClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (e.target === e.currentTarget) onClose();
+    if (e.target === e.currentTarget && pressStartedOnOverlay.current) onClose();
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -183,7 +203,12 @@ function FeedbackModal({
   };
 
   return (
-    <div className="feedback-overlay" onClick={handleOverlayClick} onKeyDown={handleKeyDown}>
+    <div
+      className="feedback-overlay"
+      onMouseDown={handleOverlayMouseDown}
+      onClick={handleOverlayClick}
+      onKeyDown={handleKeyDown}
+    >
       <div className="feedback-modal" role="dialog" aria-modal="true" aria-label="File a bug or feature request">
         <div className="feedback-modal-header">
           <span className="feedback-modal-title">🐞 File a bug or request</span>
