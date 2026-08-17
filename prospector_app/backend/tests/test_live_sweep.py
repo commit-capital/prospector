@@ -4,6 +4,7 @@ GitHub's truth without a per-machine overlay. The GraphQL fetch (live_states) is
 monkeypatched; these cover the persistence, targeting, and staleness logic."""
 from datetime import datetime, timedelta, timezone
 
+from pipeline import freshness
 from pipeline import gates
 from pipeline.store import Store
 from prospector_app.backend import data
@@ -82,6 +83,76 @@ def test_persist_live_skips_never_ingested_pr(tmp_path, monkeypatch):
         {99: {"state": "closed", "merged": False, "head": HEAD}}, data.prs())
     assert changed == []
     assert st.load_pr(99) is None
+
+
+class TestObservedHeadIsPersisted:
+    """The sweep sees a push long before an ingest fetches the diff behind it.
+    Recording the observed head is what makes every reader — gates, STATUS.md,
+    the chat agent, every view — read the PR's facts as stale at once."""
+
+    def test_head_only_push_is_written(self, tmp_path, monkeypatch):
+        # nothing else diverges: state, CI, and mergeability all still match.
+        st = _wire(tmp_path, monkeypatch, [_raw(5, "open")],
+                   {5: {"state": "open", "merged": False, "head": "NEW999",
+                        "mergeable": "MERGEABLE", "ci": "passing"}})
+        res = freshness_live.sweep()
+        assert res["changed"] == 1 and res["prs"] == [5]
+        assert st.load_pr(5).live_head_sha == "NEW999"
+
+    def test_the_push_stales_every_sha_bound_fact(self, tmp_path, monkeypatch):
+        st = _wire(tmp_path, monkeypatch, [_raw(5, "open")],
+                   {5: {"state": "open", "merged": False, "head": "NEW999",
+                        "mergeable": "MERGEABLE", "ci": "passing"}})
+        freshness_live.sweep()
+        assert freshness.stale_sections(st.load_pr(5)) == ["signals", "drift"]
+
+    def test_ingested_head_is_left_alone(self, tmp_path, monkeypatch):
+        # head_sha still means "the head we have a diff and signals for".
+        st = _wire(tmp_path, monkeypatch, [_raw(5, "open")],
+                   {5: {"state": "open", "merged": False, "head": "NEW999",
+                        "mergeable": "MERGEABLE", "ci": "passing"}})
+        freshness_live.sweep()
+        reloaded = st.load_pr(5)
+        assert reloaded.head_sha == HEAD
+        assert reloaded.section("signals")["against_head_sha"] == HEAD
+
+    def test_head_matching_the_ingested_head_writes_nothing(self, tmp_path, monkeypatch):
+        _wire(tmp_path, monkeypatch, [_raw(5, "open")],
+              {5: {"state": "open", "merged": False, "head": HEAD,
+                   "mergeable": "MERGEABLE", "ci": "passing"}})
+        assert freshness_live.sweep()["changed"] == 0
+
+    def test_a_second_sweep_at_the_same_head_writes_nothing(self, tmp_path, monkeypatch):
+        _wire(tmp_path, monkeypatch, [_raw(5, "open")],
+              {5: {"state": "open", "merged": False, "head": "NEW999",
+                   "mergeable": "MERGEABLE", "ci": "passing"}})
+        assert freshness_live.sweep()["changed"] == 1
+        assert freshness_live.sweep()["changed"] == 0
+
+    def test_a_revert_to_the_ingested_head_clears_the_observation(self, tmp_path, monkeypatch):
+        # force-push back to what we ingested: the facts are about this code
+        # again, so the stale marker has to come off or it never heals.
+        st = _wire(tmp_path, monkeypatch, [_raw(5, "open")],
+                   {5: {"state": "open", "merged": False, "head": "NEW999",
+                        "mergeable": "MERGEABLE", "ci": "passing"}})
+        freshness_live.sweep()
+        monkeypatch.setattr(freshness_live, "live_states",
+                            lambda prs: ({5: {"state": "open", "merged": False, "head": HEAD,
+                                              "mergeable": "MERGEABLE", "ci": "passing"}}, set()))
+        assert freshness_live.sweep()["changed"] == 1
+        reloaded = st.load_pr(5)
+        assert reloaded.live_head_sha is None
+        assert freshness.stale_sections(reloaded) == []
+
+    def test_signals_are_not_taken_from_an_unmatched_head(self, tmp_path, monkeypatch):
+        # CI/mergeability observed at NEW999 describe code we have not ingested.
+        st = _wire(tmp_path, monkeypatch, [_raw(5, "open", mergeable=True)],
+                   {5: {"state": "open", "merged": False, "head": "NEW999",
+                        "mergeable": "CONFLICTING", "ci": "failing"}})
+        freshness_live.sweep()
+        reloaded = st.load_pr(5)
+        assert reloaded.mergeable is True
+        assert reloaded.signals["ci"] == "passing"
 
 
 def test_sweep_stamps_last_swept_at(tmp_path, monkeypatch):
@@ -238,7 +309,10 @@ def test_sweep_does_not_stamp_signals_from_a_moved_head(tmp_path, monkeypatch):
     assert rec.ci == "passing"
     assert rec.mergeable is True
     assert rec.signals.get("diffstat") is None
-    assert res["changed"] == 0
+    # the moved head itself is recorded — that observation is the whole point of
+    # the write — but none of the signals observed alongside it are.
+    assert res["changed"] == 1
+    assert rec.live_head_sha == "new-head"
 
 
 def test_sweep_retires_scrubbed_pr(tmp_path, monkeypatch):

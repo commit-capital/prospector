@@ -25,6 +25,9 @@ class CloseAction(BaseModel):
     action: str
     pr: int | None = None
     override_action: str | None = None
+    # Post over a "the head moved since we analyzed this" refusal. Set by the
+    # operator confirming the drift the app just showed them.
+    override_stale: bool = False
     canonical: int | None = None
     upstream_pr: int | None = None
     upstream_commit: str | None = None
@@ -71,6 +74,7 @@ class ReviewBody(BaseModel):
     body: str = ""
     reason: str | None = None
     tags: list[str] | None = None
+    override_stale: bool = False
 
 
 class LineCommentBody(BaseModel):
@@ -78,6 +82,7 @@ class LineCommentBody(BaseModel):
     line: int = 0
     body: str = ""
     reason: str | None = None
+    override_stale: bool = False
 
 
 class IssueCloseDupBody(BaseModel):

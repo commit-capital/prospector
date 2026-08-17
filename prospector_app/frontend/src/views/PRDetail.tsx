@@ -19,6 +19,7 @@ import { useExec } from "../ExecContext";
 import { useRepoMeta } from "../RepoMetaContext";
 import { useFreshness } from "../useFreshness";
 import { FreshnessBar, FreshnessCallout } from "../components/Freshness";
+import { FactFreshnessPanel } from "../components/FactFreshness";
 import { useRunState } from "../useRunState";
 import { useJobStream } from "../useJobStream";
 import { LinkedIssues } from "../components/LinkedIssues";
@@ -351,6 +352,11 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
       <FreshnessCallout diverged={fresh.byPr[prNum]}
         onRerunAnalysis={pr.clusters.length ? runAnalyze : undefined}
         rerunning={analyzeJob.running} rerunLog={analyzeJob.log} />
+
+      {/* When each fact was computed and which commit it describes — so a
+          recommendation can be dated before anyone acts on it. */}
+      <FactFreshnessPanel facts={pr.fact_freshness} headSha={pr.head_sha}
+        liveHeadSha={pr.live_head_sha} />
 
       <section className="prc-section">
         <h3>Issues this may fix</h3>

@@ -162,6 +162,8 @@ export const TERMS: Record<string, GlossaryEntry> = {
   // freshness (the OTHER meaning of "stale")
   "freshness.stale": { title: "Stale analysis", meaning: "The PR changed since we analyzed it, so its analysis and security may be out of date. Re-run to refresh." },
   "freshness.current": { title: "Current", meaning: "Our analysis matches the PR's current head commit." },
+  "freshness.uningested": { title: "New commits upstream", meaning: "A live check found commits we haven't pulled in yet. Every fact on this PR describes the earlier code until INGEST catches up and the phases re-run.", note: "The facts themselves aren't wrong — they just describe code the author has moved past." },
+  "freshness.provenance": { title: "Where these facts come from", meaning: "Each pipeline fact — signals, analysis, security, verification, the review score — carries when it was computed and which commit it describes. A fact whose commit isn't the PR's current head is stale.", note: "This is what to check before acting on a recommendation." },
 
   // author responses since we acted
   "resp.reopened": { title: "Reopened", meaning: "The author reopened this PR after we closed it." },

@@ -76,7 +76,7 @@ def test_request_changes_review_captures_event_url(monkeypatch):
     """A request-changes review carries a body, so it deep-links to the review
     (read back from the reviews API — gh pr review prints no URL)."""
     monkeypatch.setattr(data, "pr_to_clusters", lambda: {123: [5]})
-    monkeypatch.setattr(executor, "_preflight", lambda *a, **k: (True, ""))
+    monkeypatch.setattr(executor, "_preflight", lambda *a, **k: executor.Preflight(True))
     monkeypatch.setattr(executor, "bot_run", lambda argv, token, **kw: _ok())
     monkeypatch.setattr(executor.activity, "record", lambda *a, **k: None)
     review_url = "https://github.com/test-owner/test-repo/pull/123#pullrequestreview-7"
@@ -105,7 +105,7 @@ def test_merge_reflects_merged(monkeypatch):
     monkeypatch.setattr(data, "prs", lambda: {123: types.SimpleNamespace(meta={}, head_sha="deadbeef", linked_issues=[])})
     monkeypatch.setattr(service, "live_changed_paths", lambda n: [])
     monkeypatch.setattr(gates, "merge_eligibility", lambda rec, changed_paths=None, override_reason=None: (True, "ok"))
-    monkeypatch.setattr(executor, "_preflight", lambda *a, **k: (True, ""))
+    monkeypatch.setattr(executor, "_preflight", lambda *a, **k: executor.Preflight(True))
     monkeypatch.setattr(executor, "mint_bot_token", lambda: "tok_realish")
     monkeypatch.setattr(executor, "bot_merge_run", lambda argv, token, **kw: _ok())
     monkeypatch.setattr(executor.activity, "record", lambda *a, **k: None)

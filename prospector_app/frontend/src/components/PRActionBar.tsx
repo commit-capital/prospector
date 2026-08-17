@@ -5,6 +5,7 @@ import { TagPicker } from "./TagPicker";
 import { RunBadge } from "./RunBadge";
 import { CommentEditor } from "./CommentEditor";
 import { landed, ExecResultChip } from "./execResult";
+import { StaleOverrideConfirm } from "./FactFreshness";
 
 const TONE_ICON = { green: "✅", yellow: "✋", red: "⛔", muted: "↪" } as const;
 
@@ -61,6 +62,9 @@ export function PRActionBar({ pr, runState, onActed }:
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ExecResult | null>(null);
+  // A refusal because the PR moved past the facts this action quotes. Holds the
+  // whole result so the confirm can name the drift and the detail.
+  const [staleBlock, setStaleBlock] = useState<ExecResult | null>(null);
   // Comment the configured bot will post — pre-filled with the default for the action,
   // editable. null edit = use the default.
   const [defComment, setDefComment] = useState("");
@@ -71,7 +75,7 @@ export function PRActionBar({ pr, runState, onActed }:
   const mergeGate = pr.merge_gate;
   const postsComment = action !== "MERGE";
 
-  useEffect(() => { setResult(null); }, [dryRun]); // eslint-disable-line react-hooks/set-state-in-effect -- clear stale chip on mode flip
+  useEffect(() => { setResult(null); setStaleBlock(null); }, [dryRun]); // eslint-disable-line react-hooks/set-state-in-effect -- clear stale chip on mode flip
   useEffect(() => { setEdited(null); }, [action, canonical]); // eslint-disable-line react-hooks/set-state-in-effect -- edit was for the old wording
   useEffect(() => { setOpenComment(isReviewEvent(action)); }, [action]); // eslint-disable-line react-hooks/set-state-in-effect -- match the editor open-state to the action
 
@@ -110,6 +114,32 @@ export function PRActionBar({ pr, runState, onActed }:
   const blocked = needsCanon || needsBody || mergeBlocked;
   const toggle = (t: string) => setTags((s) => s.includes(t) ? s.filter((x) => x !== t) : [...s, t]);
 
+  /** Post the selected action. `overrideStale` re-sends after the operator has
+   *  confirmed the drift the backend refused on; a stale refusal parks in
+   *  `staleBlock` and renders the confirm instead of a result chip. */
+  const post = async (overrideStale: boolean): Promise<void> => {
+    setBusy(true);
+    let r: ExecResult;
+    if (action === "MERGE") {
+      r = await api.mergePr(pr.number, dryRun, method, reason.trim() || undefined);
+    } else if (isReviewEvent(action)) {
+      r = await api.submitReview(pr.number, reviewEvent(action), commentText, dryRun,
+                                 reason || undefined, tags, overrideStale);
+    } else {
+      r = await api.executePr(pr.number, {
+        pr: pr.number, action, canonical: canonical ? Number(canonical) : undefined,
+        tags, reason: reason || undefined, comment: commentText || undefined,
+        override_stale: overrideStale,
+      }, dryRun);
+    }
+    setBusy(false);
+    if (r.status === "stale" && r.stale) { setStaleBlock(r); return; }
+    setStaleBlock(null);
+    setResult(r);
+    reportResult(r);
+    if (landed(r)) onActed?.();
+  };
+
   const fire = async () => {
     if (blocked) return;
     if (alreadyDone && !window.confirm(`#${pr.number} was already actioned at ${runState?.at}. Act again anyway?`)) return;
@@ -118,23 +148,7 @@ export function PRActionBar({ pr, runState, onActed }:
     else if (isClose(action)) confirmMsg = `Post this comment and close #${pr.number} as ${botLogin} (reopenable)?`;
     else confirmMsg = `Submit a "${reviewEvent(action)}" review on #${pr.number} as ${botLogin}?`;
     if (!dryRun && !window.confirm(confirmMsg)) return;
-
-    setBusy(true);
-    let r: ExecResult;
-    if (action === "MERGE") {
-      r = await api.mergePr(pr.number, dryRun, method, reason.trim() || undefined);
-    } else if (isReviewEvent(action)) {
-      r = await api.submitReview(pr.number, reviewEvent(action), commentText, dryRun, reason || undefined, tags);
-    } else {
-      r = await api.executePr(pr.number, {
-        pr: pr.number, action, canonical: canonical ? Number(canonical) : undefined,
-        tags, reason: reason || undefined, comment: commentText || undefined,
-      }, dryRun);
-    }
-    setResult(r);
-    setBusy(false);
-    reportResult(r);
-    if (landed(r)) onActed?.();
+    await post(false);
   };
 
   const reopen = async () => {
@@ -206,6 +220,13 @@ export function PRActionBar({ pr, runState, onActed }:
           {runState && !result && <RunBadge rs={runState} compact />}
           {result && <ExecResultChip result={result} />}
         </div>
+
+        {/* The PR moved past the facts this action quotes. Nothing was posted;
+            the operator confirms the drift or goes and re-analyzes. */}
+        {staleBlock?.stale && (
+          <StaleOverrideConfirm block={staleBlock.stale} detail={staleBlock.detail} busy={busy}
+            onCancel={() => setStaleBlock(null)} onConfirm={() => { void post(true); }} />
+        )}
 
         {action === "MERGE" && !mergeGate?.ok && mergeGate?.reason && (
           <div className="sug-verify" title="gates.merge_eligibility — this PR hasn't passed every check we ran on it.">
