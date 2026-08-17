@@ -4,8 +4,8 @@ Greptile posts a scored issue-level summary comment (`Confidence Score: N/5`,
 `Last reviewed commit: …/commit/<sha>`) plus inline review comments. These
 functions read that data via the gh transport and parse out the score, the
 reviewed commit SHA, and displayable review text — the gate input.
-`backfill_greptile_data` stamps the reviewed SHA onto open scored PRs missing
-it."""
+`backfill_greptile_data` stamps the reviewed SHA onto open scored PRs whose
+stored SHA is missing or anchored to a commit other than the current head."""
 from __future__ import annotations
 
 import hashlib
@@ -20,16 +20,20 @@ if TYPE_CHECKING:
     from pipeline.store import Store
 
 
-def prs_missing_greptile_data(store: Store, prs: dict[int, Pr] | None = None) -> list[int]:
-    """Open, scored PRs missing a reviewed SHA — the fact recovered from GitHub's
-    review/comment data. Sorted ascending so a backfill processes them
-    deterministically. `prs` lets a caller that already loaded the corpus this
-    run (e.g. a full ingest) reuse that snapshot instead of a second full scan;
-    it defaults to loading the corpus itself."""
+def prs_needing_greptile_data(store: Store, prs: dict[int, Pr] | None = None) -> list[int]:
+    """Open, scored PRs whose reviewed SHA is missing or anchored to a commit
+    other than the current head — the fact recovered from GitHub's
+    review/comment data. A head that moved after the SHA was captured selects
+    the PR for a re-read, so a Greptile re-review at the new head becomes
+    visible without a targeted refresh. Sorted ascending so a backfill
+    processes them deterministically. `prs` lets a caller that already loaded
+    the corpus this run (e.g. a full ingest) reuse that snapshot instead of a
+    second full scan; it defaults to loading the corpus itself."""
     corpus = prs if prs is not None else store.all_prs()
     return sorted(
         n for n, pr in corpus.items()
-        if pr.state == "open" and pr.greptile is not None and not pr.greptile_reviewed_sha
+        if pr.state == "open" and pr.greptile is not None
+        and (not pr.greptile_reviewed_sha or pr.greptile_reviewed_sha != pr.head_sha)
     )
 
 
@@ -180,25 +184,32 @@ def _is_greptile(actor: dict) -> bool:
 
 def backfill_greptile_data(store: Store, prs: dict[int, Pr] | None = None) -> dict:
     """Stamp the Greptile-reviewed commit SHA — and correct the confidence score
-    to Greptile's own — onto open scored PRs missing a reviewed SHA, so staleness
-    becomes known. Each PR is
+    to Greptile's own — onto open scored PRs whose reviewed SHA is missing or
+    off-head, so staleness becomes known and a re-review at the current head is
+    picked up. Each PR is
     independent: one whose verdict can't be fetched (404, no Greptile review, gh
-    hiccup) is skipped, never fatal. Persists per PR, so an interrupted run
-    resumes by re-selecting only the PRs still missing a SHA. `prs` is passed
-    through to `prs_missing_greptile_data` to reuse an already-loaded corpus
+    hiccup) is skipped, never fatal; one whose fetched verdict matches the
+    stored one (the head moved but Greptile has not re-reviewed) is skipped
+    without a write. Persists per PR, so an interrupted run resumes by
+    re-selecting only the PRs still missing or stale. `prs` is passed
+    through to `prs_needing_greptile_data` to reuse an already-loaded corpus
     snapshot. Returns {candidates, stamped, skipped}."""
-    numbers = prs_missing_greptile_data(store, prs)
+    numbers = prs_needing_greptile_data(store, prs)
     stamped = skipped = 0
     for i, n in enumerate(numbers, 1):
         score, sha = fetch_greptile_verdict(n)
         if sha:
             pr = store.edit_pr(n)
             sig = dict(pr.rec.get("signals") or {})
-            sig["greptile_reviewed_sha"] = sha
-            if score is not None:
-                sig["greptile"] = score
-            pr.set_signals(sig)
-            stamped += 1
+            if (sig.get("greptile_reviewed_sha") == sha
+                    and (score is None or sig.get("greptile") == score)):
+                skipped += 1
+            else:
+                sig["greptile_reviewed_sha"] = sha
+                if score is not None:
+                    sig["greptile"] = score
+                pr.set_signals(sig)
+                stamped += 1
         else:
             skipped += 1
         if i % 100 == 0 or i == len(numbers):

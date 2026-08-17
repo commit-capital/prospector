@@ -32,16 +32,19 @@ def _open_gh(n: int, sha: str):
             "head": {"sha": sha}, "base": {"ref": "master"}, "html_url": "u"}
 
 
-def test_prs_missing_greptile_data_selects_scored_missing_sha(tmp_path):
+def test_prs_needing_greptile_data_selects_missing_and_stale_sha(tmp_path):
     store = Store(str(tmp_path))
     # scored, no reviewed SHA → needs backfill
     ingest.upsert_pr(store, _open_gh(1, "h1"), greptile_override=5)
-    # scored, SHA already stored → skip
+    # scored, SHA anchored to the current head → skip
     ingest.upsert_pr(store, _open_gh(2, "h2"), greptile_override=4,
                      greptile_reviewed_sha="h2")
+    # scored, SHA anchored to a pre-rebase commit → needs a re-read
+    ingest.upsert_pr(store, _open_gh(3, "h3"), greptile_override=5,
+                     greptile_reviewed_sha="h3_old")
     # no Greptile score → skip (nothing to fetch)
     ingest.upsert_pr(store, _open_gh(4, "h4"), ci_override="passing")
-    assert greptile.prs_missing_greptile_data(store) == [1]
+    assert greptile.prs_needing_greptile_data(store) == [1, 3]
 
 
 def test_backfill_greptile_data_stamps_and_tolerates_failures(tmp_path, monkeypatch):
@@ -50,16 +53,51 @@ def test_backfill_greptile_data_stamps_and_tolerates_failures(tmp_path, monkeypa
     ingest.upsert_pr(store, _open_gh(2, "h2"), greptile_override=5)
     # PR 2 stands in for a 404 / no-Greptile-review PR — verdict is (None, None), no raise
     monkeypatch.setattr(greptile, "fetch_greptile_verdict",
-                        lambda n: (5, "rev1") if n == 1 else (None, None))
+                        lambda n: (5, "h1") if n == 1 else (None, None))
 
     stats = greptile.backfill_greptile_data(store)
 
     assert stats == {"candidates": 2, "stamped": 1, "skipped": 1}
-    assert store.load_pr(1).greptile_reviewed_sha == "rev1"
+    assert store.load_pr(1).greptile_reviewed_sha == "h1"
     assert store.load_pr(1).greptile == 5  # stored 4 corrected to Greptile's own
     assert store.load_pr(2).greptile_reviewed_sha is None
     # per-PR persistence makes it resumable: PR 1 is no longer a candidate
-    assert greptile.prs_missing_greptile_data(store) == [2]
+    assert greptile.prs_needing_greptile_data(store) == [2]
+
+
+def test_backfill_rereads_stale_reviewed_sha(tmp_path, monkeypatch):
+    """A reviewed SHA pinned to a pre-rebase commit is re-read by the bulk
+    backfill; Greptile's re-review at the current head replaces it (#121)."""
+    store = Store(str(tmp_path))
+    ingest.upsert_pr(store, _open_gh(1, "head_new"), greptile_override=4,
+                     greptile_reviewed_sha="head_old")
+    monkeypatch.setattr(greptile, "fetch_greptile_verdict", lambda n: (5, "head_new"))
+
+    stats = greptile.backfill_greptile_data(store)
+
+    assert stats == {"candidates": 1, "stamped": 1, "skipped": 0}
+    rec = store.load_pr(1)
+    assert rec.greptile_reviewed_sha == "head_new"
+    assert rec.greptile == 5
+    assert greptile.prs_needing_greptile_data(store) == []
+
+
+def test_backfill_skips_write_when_verdict_unchanged(tmp_path, monkeypatch):
+    """A stale-selected PR whose fetch returns the already-stored verdict
+    (the head moved but Greptile has not re-reviewed) is counted skipped and
+    its signals section is not rewritten."""
+    store = Store(str(tmp_path))
+    ingest.upsert_pr(store, _open_gh(1, "head_new"), greptile_override=5,
+                     greptile_reviewed_sha="head_old")
+    before = store.load_pr(1).section("signals")
+    monkeypatch.setattr(greptile, "fetch_greptile_verdict", lambda n: (5, "head_old"))
+
+    stats = greptile.backfill_greptile_data(store)
+
+    assert stats == {"candidates": 1, "stamped": 0, "skipped": 1}
+    assert store.load_pr(1).section("signals") == before
+    # still stale, so the next pass re-selects it
+    assert greptile.prs_needing_greptile_data(store) == [1]
 
 
 def test_greptile_score_overridden_from_greptile_verdict(tmp_path, monkeypatch):

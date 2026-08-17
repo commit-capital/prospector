@@ -464,7 +464,8 @@ def main(argv: list[str] | None = None) -> int:
                          "live CI and Greptile signals; skips the closed-state sweep")
     ap.add_argument("--backfill-greptile-data", action="store_true",
                     help="fetch the Greptile-reviewed commit SHA for open scored PRs "
-                         "missing it, so staleness becomes known; skips the full ingest")
+                         "missing it or holding one that is not the current head, so "
+                         "staleness becomes known; skips the full ingest")
     ap.add_argument("--skip-issues", action="store_true",
                     help="skip the issue ingest (issue_triage/issue_ingest.py) that a "
                          "full ingest chains after the PR sweep, so one refresh covers "
@@ -478,7 +479,8 @@ def main(argv: list[str] | None = None) -> int:
         if review_policy.active().provider != "greptile":
             print("Greptile is not the configured review provider — nothing to backfill.")
             return 0
-        print("backfilling Greptile reviewed-SHA for scored PRs missing it…", flush=True)
+        print("backfilling Greptile reviewed-SHA for scored PRs missing it or off-head…",
+              flush=True)
         stats = greptile.backfill_greptile_data(store)
         store.append_run({"phase": "backfill-greptile-data", "started": started,
                           "finished": _now(), "stats": stats})
@@ -519,10 +521,12 @@ def main(argv: list[str] | None = None) -> int:
 
     # A full ingest keeps the reviewed-SHA fact fresh too: chain the backfill
     # (its own run ledger entry) so a bulk-ingested PR doesn't read "not
-    # current" indefinitely. It self-scopes to open scored PRs missing a SHA,
-    # so a corpus with nothing to backfill costs one cheap store scan (#21).
+    # current" indefinitely. It self-scopes to open scored PRs whose SHA is
+    # missing or anchored off the current head, so a corpus with nothing to
+    # backfill costs one cheap store scan (#21).
     if review_policy.active().provider == "greptile":
-        print("backfilling Greptile reviewed-SHA for scored PRs missing it…", flush=True)
+        print("backfilling Greptile reviewed-SHA for scored PRs missing it or off-head…",
+              flush=True)
         backfill_started = _now()
         backfill_stats = greptile.backfill_greptile_data(store, existing_prs)
         store.append_run({"phase": "backfill-greptile-data", "started": backfill_started,
