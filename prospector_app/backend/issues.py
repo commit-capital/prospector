@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 from pipeline import profile
 from pipeline import storekit
 from pipeline.settings import REPO
+from prospector_app.backend import data
 from prospector_app.backend import issue_data
 from prospector_app.backend.filters import num_cmp
 from prospector_app.backend.safety_guard import run
@@ -86,7 +87,6 @@ def _store_pr_states() -> dict[int, str]:
     a candidate PR is absent only when it merged/closed before any ingest captured
     it open, and its /api/prs/{n} detail would then 404. The one seam tests stub to
     stay off the real PR snapshot."""
-    from prospector_app.backend import data
     return {n: pr.state for n, pr in data.prs().items() if pr.state}
 
 
@@ -208,6 +208,7 @@ def _row(iss: Issue, clusters_by_id: dict[int, IssueCluster], store_states: dict
         "number": iss.number,
         "title": iss.title,
         "author": iss.author,
+        "author_stats": data.author_stats(iss.author),
         "trusted_author": iss.author in profile.active().trusted_authors,
         "labels": iss.labels,
         "comments": iss.comments,

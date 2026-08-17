@@ -31,6 +31,7 @@ class _IssueSnapshotState:
     full_issues: dict[int, Issue] | None = None
     full_key: tuple[str | None, str | None] | None = None
     runs: list[storekit.RunRecord] = field(default_factory=list)
+    generation: int = 0
 
     def reset(self) -> None:
         self.store = None
@@ -41,6 +42,7 @@ class _IssueSnapshotState:
         self.full_issues = None
         self.full_key = None
         self.runs = []
+        self.generation += 1
 
     def invalidate_full(self) -> None:
         self.full_issues = None
@@ -86,6 +88,8 @@ def _freshen(full: bool = False) -> None:
         )
     if issue_delta or cluster_delta:
         _state.invalidate_full()
+    if full or issue_delta or cluster_delta:
+        _state.generation += 1
 
 
 _snapshot = LazySnapshot(_freshen, debounce=CHECK_DEBOUNCE)
@@ -113,6 +117,12 @@ def clusters() -> dict[int, IssueCluster]:
 def watermarks() -> tuple[str | None, str | None]:
     _snapshot.ensure()
     return _state.issue_watermark, _state.cluster_watermark
+
+
+def generation() -> int:
+    """Identity of the published issue snapshot, including store-root resets."""
+    _snapshot.ensure()
+    return _state.generation
 
 
 def runs() -> list[storekit.RunRecord]:

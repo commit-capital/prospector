@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router";
-import type { PRRow, PRResponses, ChecksRollup, AuthorStats, LocBreakdown } from "../../api";
+import type { PRRow, PRResponses, ChecksRollup, LocBreakdown } from "../../api";
 import { InfoTip, type InstanceWhy } from "../InfoTip";
 import { term, safetyEntry, dispositionEntry } from "../../glossary";
 import type { GlossaryEntry } from "../../glossary";
@@ -8,7 +8,7 @@ import { timeAgo } from "../../timeAgo";
 import { GreptileCell } from "./GreptileCell";
 import { GitHubPRLink } from "../GitHubPRLink";
 import { ConflictChip, DraftChip, TierChip, AckButton } from "../Chips";
-import { TRUSTED_AUTHOR_BADGE } from "../TrustedAuthor";
+import { AuthorHover } from "../AuthorHover";
 import { LinkedIssues } from "../LinkedIssues";
 
 // Visual aid: a star trails a trusted contributor's handle wherever authors
@@ -125,23 +125,6 @@ function locBody(b: LocBreakdown): ReactNode {
   );
 }
 
-function authorBody(a: AuthorStats, trusted: boolean): ReactNode {
-  const pct = pctOf(a.merge_rate);
-  const rows: [string, ReactNode][] = [];
-  if (pct != null) rows.push(["Merge rate", `${pct}%`]);
-  if (a.total != null) rows.push(["Total PRs", a.total]);
-  if (a.merged != null) rows.push(["Merged", a.merged]);
-  if (a.open != null) rows.push(["Open", a.open]);
-  if (a.closed_unmerged != null) rows.push(["Closed unmerged", a.closed_unmerged]);
-  if (a.comments != null) rows.push(["Comments", a.comments]);
-  return (
-    <div className="tip-rows">
-      <div className="tip-head">@{a.handle}{trusted ? ` ${TRUSTED_AUTHOR_BADGE}` : ""}</div>
-      {rows.map(([k, v]) => <div key={k} className="tip-row"><span>{k}</span><b>{v}</b></div>)}
-    </div>
-  );
-}
-
 function updatedBody(r: PRRow): ReactNode {
   const resp = r.responses;
   const acted = resp && (resp.reopened || resp.new_commits || resp.replied || resp.resubmitted);
@@ -231,14 +214,7 @@ export const COLUMNS: ColumnDef[] = [
       </>
     ) },
   { key: "author", label: "Author", defaultOn: true, term: "col.author", cellClass: "muted small",
-    cell: (r) => {
-      const a = r.author_stats;
-      const handle = r.author ?? "—";
-      const label = r.trusted_author ? `${handle}\u00A0${TRUSTED_AUTHOR_BADGE}` : handle;
-      return a
-        ? <InfoTip body={authorBody(a, !!r.trusted_author)} cue={false} focusable={false}><span>{label}</span></InfoTip>
-        : <>{label}</>;
-    } },
+    cell: (r) => <AuthorHover author={r.author} trusted={r.trusted_author} stats={r.author_stats} /> },
   { key: "updated", label: "Updated", defaultOn: true, term: "col.updated", cellClass: "muted small",
     stopOpen: true,
     cell: (r, ctx) => (
@@ -310,7 +286,7 @@ export const COLUMNS: ColumnDef[] = [
       const pct = pctOf(a?.merge_rate);
       if (pct == null) return "—";
       return (
-        <InfoTip body={a ? authorBody(a, !!r.trusted_author) : undefined} cue={false} focusable={false}><span>{pct}%</span></InfoTip>
+        <AuthorHover author={r.author} trusted={r.trusted_author} stats={a}><span>{pct}%</span></AuthorHover>
       );
     } },
   { key: "summary", label: "Agent Summary", defaultOn: false, term: "col.summary",

@@ -12,6 +12,7 @@ import { FilterSummary } from "../components/shared/FilterSummary";
 import { buildIssueFilterParts } from "../components/issues/issueFilterParts";
 import { IssueColumnFilterPopout, ISSUE_FILTERABLE_COLS, isIssueColFilterActive } from "../components/issues/IssueColumnFilterPopout";
 import { TrustedAuthorName } from "../components/TrustedAuthor";
+import { AuthorHover } from "../components/AuthorHover";
 
 const PAGE_SIZE = 50;
 type IssueSortKey = "number" | "title" | "author" | "pain" | "repro" | "dups" | "prs" | "disposition" | "subsystem";
@@ -560,7 +561,7 @@ function AllIssuesTable({
                 )}
               </td>
               <td>{r.title}{r.is_dup && r.canonical != null && <span className="muted small" title={`Duplicate of #${r.canonical}`}> · dup of <IssueLink n={r.canonical} /></span>}</td>
-              <td className="muted small"><TrustedAuthorName author={r.author} trusted={r.trusted_author} fallback="" /></td>
+              <td className="muted small"><AuthorHover author={r.author} trusted={r.trusted_author} stats={r.author_stats} fallback="" /></td>
               <td className="mono small">{r.pain != null ? r.pain.toFixed(2) : "—"}</td>
               <td><ReproChip grade={r.repro_grade} /></td>
               <td><DispositionChip d={r.disposition} /></td>

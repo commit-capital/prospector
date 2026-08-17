@@ -16,6 +16,12 @@ def _seed(tmp_path, monkeypatch):
     monkeypatch.setattr(issues, "_store_pr_states", lambda: {900: "open"})
     monkeypatch.setattr(issues, "_live_pr_states", lambda nums: {})
     monkeypatch.setattr(issues, "_live_state", lambda n: "open")
+    monkeypatch.setattr(issues.data, "author_stats", lambda handle: {
+        "handle": handle,
+        "url": f"https://github.com/{handle}",
+        "issues_filed": 2,
+        "issues_resolved": 1,
+    } if handle else None)
     st = issue_store.IssueStore(tmp_path)
     canon = st.create_issue(10, {"title": "crash on boot", "state": "open", "author": "al",
                                  "labels": ["bug"], "comments": 2, "reactions_total": 3,
@@ -44,6 +50,8 @@ def test_list_issues_enriches(tmp_path, monkeypatch):
     assert rows[10]["linked_pr_count"] == 1 and rows[10]["referenced_pr_count"] == 0
     assert rows[10]["cluster_size"] == 2 and rows[10]["is_dup"] is False  # canonical
     assert rows[10]["subsystem"] == "startup"
+    assert rows[10]["author_stats"]["issues_filed"] == 2
+    assert rows[10]["author_stats"]["issues_resolved"] == 1
     assert rows[11]["is_dup"] is True and rows[11]["canonical"] == 10
     assert rows[11]["duplicates"] == [10]
 

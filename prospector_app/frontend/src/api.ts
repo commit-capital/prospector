@@ -316,6 +316,8 @@ export interface AuthorStats {
   merged?: number;
   closed_unmerged?: number;
   comments?: number;
+  issues_filed?: number;
+  issues_resolved?: number;
 }
 
 interface SafetyFinding {
@@ -756,6 +758,7 @@ export interface IssueRow {
   title: string | null;
   author: string | null;
   trusted_author?: boolean;
+  author_stats?: AuthorStats | null;
   labels: string[];
   comments: number;
   reactions: number;

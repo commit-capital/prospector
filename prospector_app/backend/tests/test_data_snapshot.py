@@ -165,9 +165,23 @@ def test_author_stats_sums_baseline_and_live_snapshot(tmp_path, monkeypatch):
     monkeypatch.setattr(data, "_pr_watermark", None)
     monkeypatch.setattr(data, "_author_table", None)
     monkeypatch.setattr(data, "_author_baseline", None)
+    monkeypatch.setattr(data, "_author_issue_generation", None)
+    monkeypatch.setattr(data, "_issue_snapshot_generation", lambda: 1)
+    monkeypatch.setattr(data, "_issue_author_stats", lambda: {
+        "al": {"handle": "al", "url": "https://github.com/al",
+               "issues_filed": 3, "issues_resolved": 2},
+        "bo": {"handle": "Bo", "url": "https://github.com/Bo",
+               "issues_filed": 1, "issues_resolved": 0},
+    })
 
     row = data.author_stats("al")
     assert row["merged"] == 6          # 1 live merged + 5 baseline
     assert row["open"] == 1
+    assert row["issues_filed"] == 3
+    assert row["issues_resolved"] == 2
+    assert data.author_stats("bo") == {
+        "handle": "Bo", "url": "https://github.com/Bo",
+        "issues_filed": 1, "issues_resolved": 0,
+    }
     assert data.author_stats("nobody") is None
     assert data.author_stats(None) is None
