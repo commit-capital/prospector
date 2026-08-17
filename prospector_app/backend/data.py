@@ -11,7 +11,7 @@ from __future__ import annotations
 import threading
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 from pipeline import authors
 from pipeline import storekit
@@ -45,7 +45,42 @@ _loaded = False
 _last_check = 0.0
 _check_lock = threading.Lock()  # single-flights the freshen; never held by a reader
 _author_baseline: dict | None = None  # inner `authors` map, read once
-_author_table: dict[str, dict] | None = None  # per-snapshot leaderboard; invalidated on freshen
+_author_table: dict[str, dict] | None = None  # combined author profiles; invalidated on freshen
+_author_issue_generation: int | None = None
+
+
+class _IssueAuthorStats(TypedDict):
+    handle: str
+    url: str
+    issues_filed: int
+    issues_resolved: int
+
+
+def _issue_author_stats() -> dict[str, _IssueAuthorStats]:
+    """Filed and closed-as-resolved counts keyed by lowercased reporter handle."""
+    from prospector_app.backend import issue_data
+
+    out: dict[str, _IssueAuthorStats] = {}
+    for issue in issue_data.issues().values():
+        handle = issue.author
+        if not handle:
+            continue
+        key = handle.lower()
+        row = out.setdefault(key, {
+            "handle": handle,
+            "url": f"https://github.com/{handle}",
+            "issues_filed": 0,
+            "issues_resolved": 0,
+        })
+        row["issues_filed"] += 1
+        if issue.state == "closed":
+            row["issues_resolved"] += 1
+    return out
+
+
+def _issue_snapshot_generation() -> int:
+    from prospector_app.backend import issue_data
+    return issue_data.generation()
 
 
 def store() -> Store:
@@ -197,18 +232,26 @@ def pr_bodies(ns: list[int]) -> dict[int, str | None]:
 
 
 def author_stats(handle: str | None) -> dict | None:
-    """Per-author leaderboard stats for `handle` (store-derived, #453): the live
-    snapshot group-by folded with the historical baseline, computed once per
-    snapshot and memoized. None for a falsy handle or an author with no PRs on
-    either side."""
+    """Per-author PR and issue stats for `handle`, memoized by both snapshots."""
     if not handle:
         return None
     _ensure()
-    global _author_table, _author_baseline
-    if _author_table is None:
+    global _author_table, _author_baseline, _author_issue_generation
+    issue_generation = _issue_snapshot_generation()
+    if _author_table is None or _author_issue_generation != issue_generation:
         if _author_baseline is None:
             _author_baseline = _store.load_author_baseline().get("authors") or {}
         _author_table = authors.author_stats(_author_baseline, _prs)
+        for key, issue_stats in _issue_author_stats().items():
+            row = _author_table.setdefault(key, {
+                "handle": issue_stats["handle"],
+                "url": issue_stats["url"],
+            })
+            row.update({
+                "issues_filed": issue_stats["issues_filed"],
+                "issues_resolved": issue_stats["issues_resolved"],
+            })
+        _author_issue_generation = issue_generation
     return _author_table.get(handle.lower())
 
 
