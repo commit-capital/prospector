@@ -19,7 +19,7 @@ import logging
 import subprocess
 from pathlib import Path
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 if TYPE_CHECKING:
     from pipeline.model import Pr
@@ -30,6 +30,7 @@ from prospector_app.backend import decisions
 from prospector_app.backend import models
 from prospector_app.backend import service
 from prospector_app.backend.safety_guard import bot_merge_run, bot_run, run
+from pipeline import freshness
 from pipeline import review_policy
 from pipeline.settings import BOT_LOGIN, REPO
 
@@ -174,42 +175,97 @@ def _reflect_state(n: int, *, state: str | None, merged: bool = False) -> None:
     data.refresh()
 
 
+def _record_observed_head(n: int, head: str) -> None:
+    """Persist a head observed at write time into the shared store, so a push the
+    pipeline has not ingested reads stale for every operator rather than only in
+    the request that noticed it. A no-op when the PR has no store row."""
+    store = data.store()
+    if store.load_pr(n) is not None:
+        store.edit_pr(n).record_live_state(live_head_sha=head)
+    data.refresh()
+
+
+class Preflight(NamedTuple):
+    """The live re-check's verdict. `kind` names which check failed —
+    `merged | state | head | conflicts | unconfirmed` — so a caller can tell
+    stale evidence, which an operator may override, from a PR that is gone,
+    which nobody may. `observed_head` is the head the check read, carried so a
+    caller can describe the drift without fetching it again."""
+    ok: bool
+    message: str = ""
+    kind: str | None = None
+    observed_head: str | None = None
+
+
 def _preflight(n: int, rec: Pr | None, *, check_head: bool,
                check_mergeable: bool = False,
-               fail_closed: bool = False) -> tuple[bool, str]:
+               fail_closed: bool = False) -> Preflight:
     """Re-check the PR's live state right before a write (#11). The app acts
     on snapshotted data; by now the PR may have been merged, closed, its head
-    moved, or (for a merge) developed conflicts. Returns (ok, message).
+    moved, or (for a merge) developed conflicts.
 
     When GitHub is unreachable (`live is None`), the default is ok=True
     (fail-open) — a transient read failure shouldn't block a comment/close, and
     the write has its own errors. A caller that gates an IRREVERSIBLE action on
     the live head (merge) passes `fail_closed=True`: an unconfirmable head must
-    block, because merging blind would defeat the head-match check entirely."""
+    block, because merging blind would defeat the head-match check entirely.
+
+    A moved head is recorded on the way out, so every reader sees the PR's facts
+    as stale and not just this request."""
     live = _pr_live(n)
     if live is None:
         if fail_closed:
-            return False, ("couldn't confirm the PR's live state upstream — "
-                           "refusing to merge without re-checking the head")
-        return True, ""
+            return Preflight(False, "couldn't confirm the PR's live state upstream — "
+                                    "refusing to merge without re-checking the head",
+                             "unconfirmed")
+        return Preflight(True)
     if live.get("merged"):
         _reflect_state(n, state=live.get("state"), merged=True)
-        return False, "already merged upstream — your action is no longer needed"
+        return Preflight(False, "already merged upstream — your action is no longer needed",
+                         "merged")
     state = live.get("state")
     if state and state != "open":
         _reflect_state(n, state=state)
-        return False, f"PR is {state} upstream — no longer open"
+        return Preflight(False, f"PR is {state} upstream — no longer open", "state")
     if check_head and rec:
-        stored = rec.head_sha if rec is not None else None
+        stored = rec.head_sha
         head = live.get("head")
         if stored and head and head != stored:
-            return False, (f"head moved since analysis (was {stored[:7]}, now {head[:7]}) — "
-                           "re-ingest/re-analyze before merging")
+            _record_observed_head(n, head)
+            return Preflight(False, f"head moved since analysis (was {stored[:7]}, "
+                                    f"now {head[:7]}) — re-ingest and re-analyze first",
+                             "head", head)
     # A merge into a conflicting branch can't succeed — refuse it here even when
     # the stored gate was clean at analysis (#189).
     if check_mergeable and live.get("mergeable_state") == "dirty":
-        return False, "PR now has merge conflicts — needs a rebase before it can merge"
-    return True, ""
+        return Preflight(False, "PR now has merge conflicts — needs a rebase before it can merge",
+                         "conflicts")
+    return Preflight(True)
+
+
+def _stale_gate(n: int, base: dict, *, override: bool) -> tuple[dict | None, bool]:
+    """Hold an evidence-quoting write to the PR's live head. Returns
+    (refusal, overridden): a refusal dict to return as-is, else None to proceed,
+    and whether the caller is proceeding over a stale-evidence block.
+
+    A stale head refuses with status "stale" and a payload naming what moved and
+    which facts it invalidated, so the UI can offer a specific confirm.
+    `override` waves that through — and only that: every other block (merged,
+    closed, new conflicts) refuses regardless, because no confirmation makes a
+    write to a departed PR sensible."""
+    rec = data.prs().get(int(n))
+    pf = _preflight(n, rec, check_head=True)
+    if pf.ok:
+        return None, False
+    if pf.kind != "head":
+        return {**base, "status": "skipped", "detail": f"pre-flight: {pf.message}"}, False
+    if override:
+        return None, True
+    sections = [{"section": s, "checked_at": (rec.section(s) or {}).get("checked_at")}
+                for s in freshness.SHA_BOUND if rec is not None and rec.section(s)]
+    return {**base, "status": "stale", "detail": pf.message,
+            "stale": {"was": rec.head_sha if rec else None, "now": pf.observed_head,
+                      "sections": sections}}, False
 
 
 def _is_bot_login(login: str | None) -> bool:
@@ -274,6 +330,7 @@ def _note_bookkeeping_failure(res: dict, what: str, e: Exception) -> None:
 def _comment_then_close(n: int, *, base: dict, idempotency_key: str | None,
                         comment_argv: list[str], close_argv: list[str], token: str,
                         log_verb: str, capture_event_url: bool = False,
+                        stale_override: bool = False,
                         on_success: Callable[[], None] | None = None) -> dict:
     """Post a comment (skipped when the configured bot already left one matching
     `idempotency_key`), then close. `idempotency_key` is required and scopes the
@@ -287,7 +344,8 @@ def _comment_then_close(n: int, *, base: dict, idempotency_key: str | None,
     def _fail(detail: str) -> dict:
         res = {**base, "status": "error", "detail": detail}
         try:
-            activity.record(log_verb, identity=BOT_LOGIN, dry_run=False, **res)
+            activity.record(log_verb, identity=BOT_LOGIN, dry_run=False,
+                            stale_override=stale_override, **res)
         except Exception as e:  # the log write never masks the upstream failure
             _note_bookkeeping_failure(res, "activity log write failed", e)
         return res
@@ -320,7 +378,8 @@ def _comment_then_close(n: int, *, base: dict, idempotency_key: str | None,
         except Exception as e:
             _note_bookkeeping_failure(res, "post-close bookkeeping failed", e)
     try:
-        activity.record(log_verb, identity=BOT_LOGIN, dry_run=False, **res)
+        activity.record(log_verb, identity=BOT_LOGIN, dry_run=False,
+                        stale_override=stale_override, **res)
     except Exception as e:
         _note_bookkeeping_failure(res, "activity log write failed", e)
     return res
@@ -366,15 +425,17 @@ def execute_pr(n: int, action: models.CloseAction, *, token: str | None, dry_run
     comment = action.comment or decisions.default_comment(_backfill_dup_refs(n, action))
     plan = [f'comment: "{comment[:80]}…"', f"close #{n}"]
 
-    # live pre-flight: don't act on a PR that's already merged/closed (#11)
-    ok_pf, msg = _preflight(n, data.prs().get(int(n)), check_head=False)
-    if not ok_pf:
-        return {**base, "status": "skipped", "detail": f"pre-flight: {msg}"}
+    # live pre-flight: don't act on a PR that's already merged/closed, and don't
+    # state a disposition derived from a diff the author has moved past (#11)
+    refusal, overridden = _stale_gate(n, base, override=action.override_stale)
+    if refusal is not None:
+        return refusal
 
     # forced dry-run when no token
     if dry_run or not token:
         res = {**base, "status": "dry-run", "detail": "; ".join(plan), "forced": not token and not dry_run}
-        activity.record("execute", identity=BOT_LOGIN, dry_run=True, **res)
+        activity.record("execute", identity=BOT_LOGIN, dry_run=True,
+                        stale_override=overridden, **res)
         return res
 
     return _comment_then_close(
@@ -382,6 +443,7 @@ def execute_pr(n: int, action: models.CloseAction, *, token: str | None, dry_run
         comment_argv=["gh", "pr", "comment", str(n), "--repo", REPO, "--body", comment],
         close_argv=["gh", "pr", "close", str(n), "--repo", REPO],
         token=token, log_verb="execute", capture_event_url=True,
+        stale_override=overridden,
         on_success=lambda: _reflect_state(n, state="closed"))
 
 
@@ -534,23 +596,28 @@ def _latest_bot_review_url(n: int) -> str | None:
     return urls[-1] if urls else None
 
 
-def submit_review(n: int, event: str, body: str, *, token: str | None, dry_run: bool) -> dict:
-    """Submit a PR review (approve / request-changes / comment) as the configured bot."""
+def submit_review(n: int, event: str, body: str, *, token: str | None, dry_run: bool,
+                  override_stale: bool = False) -> dict:
+    """Submit a PR review (approve / request-changes / comment) as the configured bot.
+
+    A review states a verdict on the diff, so it is held to the PR's live head;
+    `override_stale` posts over that block and marks the activity entry."""
     flag = _REVIEW_FLAG.get(event)
     base = {"pr": int(n), "cluster_id": _cluster_id(n), "action": f"REVIEW:{event}"}
     if not flag:
         return {**base, "status": "error", "detail": f"unknown review event: {event}"}
     if event in ("comment", "request-changes") and not body.strip():
         return {**base, "status": "error", "detail": "a comment body is required for this review type"}
-    ok_pf, msg = _preflight(n, None, check_head=False)
-    if not ok_pf:
-        return {**base, "status": "skipped", "detail": f"pre-flight: {msg}"}
+    refusal, overridden = _stale_gate(n, base, override=override_stale)
+    if refusal is not None:
+        return refusal
     if dry_run or not token:
         effect = _REVIEW_EFFECT.get(event, f"a {event} review")
         detail = (f"would submit {effect} on #{n} as {BOT_LOGIN} — PR stays open, "
                   f"nothing written to the store" + (f"; comment: “{body[:50]}…”" if body.strip() else ""))
         res = {**base, "status": "dry-run", "detail": detail, "forced": not token and not dry_run}
-        activity.record("review", identity=BOT_LOGIN, dry_run=True, event=event, **res)
+        activity.record("review", identity=BOT_LOGIN, dry_run=True, event=event,
+                        stale_override=overridden, **res)
         return res
     argv = ["gh", "pr", "review", str(n), "--repo", REPO, flag]
     if body.strip():
@@ -568,22 +635,28 @@ def submit_review(n: int, event: str, body: str, *, token: str | None, dry_run: 
     except Exception as e:
         res = {**base, "status": "error",
                "detail": _public_exception_detail("review failed unexpectedly", e)}
-    activity.record("review", identity=BOT_LOGIN, dry_run=False, event=event, **res)
+    activity.record("review", identity=BOT_LOGIN, dry_run=False, event=event,
+                    stale_override=overridden, **res)
     return res
 
 
-def comment_line(n: int, file: str, line: int, body: str, *, token: str | None, dry_run: bool) -> dict:
-    """Post an inline review comment on a specific diff line as the configured bot."""
+def comment_line(n: int, file: str, line: int, body: str, *, token: str | None, dry_run: bool,
+                 override_stale: bool = False) -> dict:
+    """Post an inline review comment on a specific diff line as the configured bot.
+
+    The comment is anchored to a line of the diff, so it is held to the PR's live
+    head; `override_stale` posts over that block."""
     base = {"pr": int(n), "cluster_id": _cluster_id(n), "action": "LINE_COMMENT", "detail": f"{file}:{line}"}
     if not body.strip():
         return {**base, "status": "error", "detail": "comment body required"}
-    ok_pf, msg = _preflight(n, None, check_head=False)
-    if not ok_pf:
-        return {**base, "status": "skipped", "detail": f"pre-flight: {msg}"}
+    refusal, overridden = _stale_gate(n, base, override=override_stale)
+    if refusal is not None:
+        return refusal
     if dry_run or not token:
         res = {**base, "status": "dry-run", "detail": f"would comment on {file}:{line}: “{body[:50]}…”",
                "forced": not token and not dry_run}
-        activity.record("line_comment", identity=BOT_LOGIN, dry_run=True, **res)
+        activity.record("line_comment", identity=BOT_LOGIN, dry_run=True,
+                        stale_override=overridden, **res)
         return res
     head = (run(["gh", "api", f"repos/{REPO}/pulls/{n}", "--jq", ".head.sha"], timeout=30).stdout or "").strip()
     if not head:
@@ -603,7 +676,8 @@ def comment_line(n: int, file: str, line: int, body: str, *, token: str | None, 
     except Exception as e:
         res = {**base, "status": "error",
                "detail": _public_exception_detail("line comment failed unexpectedly", e)}
-    activity.record("line_comment", identity=BOT_LOGIN, dry_run=False, **res)
+    activity.record("line_comment", identity=BOT_LOGIN, dry_run=False,
+                    stale_override=overridden, **res)
     return res
 
 
@@ -612,15 +686,18 @@ def retrigger_greptile(n: int, *, token: str | None, dry_run: bool) -> dict:
     re-trigger its review.
 
     The bare mention is the provider's manual-review trigger: it re-runs the review
-    against the PR's current head with no new commit. Each call posts it again."""
+    against the PR's current head with no new commit. Each call posts it again.
+    Head-relative rather than evidence-quoting — a re-review is how a score that
+    trails the code catches up — so a moved head is a reason to run it, not to
+    hold it."""
     base = {"pr": int(n), "cluster_id": _cluster_id(n), "action": "GREPTILE_RETRIGGER"}
     mention = review_policy.active().retrigger_mention
     if mention is None:
         return {**base, "status": "skipped",
                 "detail": "the configured review provider has no re-trigger action"}
-    ok_pf, msg = _preflight(n, None, check_head=False)
-    if not ok_pf:
-        return {**base, "status": "skipped", "detail": f"pre-flight: {msg}"}
+    pf = _preflight(n, None, check_head=False)
+    if not pf.ok:
+        return {**base, "status": "skipped", "detail": f"pre-flight: {pf.message}"}
     if dry_run or not token:
         res = {**base, "status": "dry-run",
                "detail": f"would comment “{mention}” on #{n} as {BOT_LOGIN} to re-trigger the review",
@@ -687,10 +764,10 @@ def merge_pr(n: int, method: str = "squash", *, dry_run: bool, reason: str | Non
     # moved since we analyzed it (#11), or that now has merge conflicts (#189).
     # fail_closed: an unconfirmable live head blocks — the merge below pins to
     # the verified head, and we won't merge blind if we can't re-check it.
-    ok_pf, msg = _preflight(n, rec, check_head=True, check_mergeable=True,
-                            fail_closed=True)
-    if not ok_pf:
-        return {**base, "status": "blocked", "detail": f"pre-flight: {msg}"}
+    pf = _preflight(n, rec, check_head=True, check_mergeable=True,
+                    fail_closed=True)
+    if not pf.ok:
+        return {**base, "status": "blocked", "detail": f"pre-flight: {pf.message}"}
     if method not in ("merge", "squash", "rebase"):
         method = "squash"
     token = None if dry_run else mint_bot_token()

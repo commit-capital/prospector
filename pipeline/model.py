@@ -83,9 +83,24 @@ class Pr:
 
     @property
     def head_sha(self) -> str | None:
-        """The committed head SHA. Not overlaid: the freshness check compares the
-        live head against this committed value, so it always mirrors the DB."""
+        """The head SHA we have ingested a diff and signals for. Always mirrors
+        the DB, and is what every phase computes its facts against."""
         return self._meta().get("head_sha")
+
+    @property
+    def live_head_sha(self) -> str | None:
+        """The head GitHub reported at the last live observation. Written by the
+        app's live sweep, which sees a push long before an ingest fetches the
+        diff behind it; `meta` is rebuilt wholesale at ingest, so catching up
+        drops this field."""
+        return self._meta().get("live_head_sha")
+
+    @property
+    def effective_head_sha(self) -> str | None:
+        """The PR's head as last observed upstream, falling back to the ingested
+        head. Freshness tokens against this, so a push the sweep has seen makes
+        every sha-bound fact read stale for every consumer at once."""
+        return self.live_head_sha or self.head_sha
 
     @property
     def draft(self) -> bool:
@@ -586,19 +601,36 @@ class Pr:
                           ci: str | None = None,
                           mergeable: bool | None = None,
                           diffstat: dict | None = None,
-                          has_tests: bool | None = None) -> None:
+                          has_tests: bool | None = None,
+                          live_head_sha: str | None = None) -> None:
         """Persist GitHub-owned live facts into the shared store: the PR's
-        open/closed/merged `meta.state`, and its `signals` verdicts — `ci`,
-        `mergeable`, `diffstat` ({additions, deletions, changed_files}), and
-        `has_tests`. The app's live sweep and executor actions call this so
-        upstream drift is shared with every operator at once — no per-machine
-        overlay. Each touched section is restamped; signals keeps its
-        `against_head_sha`, so the freshness check still anchors it to the same
-        head. One validated write."""
+        open/closed/merged `meta.state`, the head GitHub reports
+        (`meta.live_head_sha`), and its `signals` verdicts — `ci`, `mergeable`,
+        `diffstat` ({additions, deletions, changed_files}), and `has_tests`. The
+        app's live sweep and executor actions call this so upstream drift is
+        shared with every operator at once — no per-machine overlay. Each touched
+        section is restamped; signals keeps its `against_head_sha`, so the
+        freshness check still anchors it to the same head. One validated write.
+
+        `live_head_sha` is the head as just observed upstream. It is retained
+        only while it differs from the ingested `head_sha`; an observation that
+        agrees clears it, so a force-push back to the ingested head heals the
+        freshness read instead of pinning it stale."""
+        meta_next = dict(self.section("meta") or {})
+        meta_dirty = False
         if state is not None:
-            meta = dict(self.section("meta") or {})
-            meta["state"] = state
-            _stamp(self.rec, "meta", meta, None)
+            meta_next["state"] = state
+            meta_dirty = True
+        if live_head_sha is not None:
+            observed = live_head_sha if live_head_sha != meta_next.get("head_sha") else None
+            if observed != meta_next.get("live_head_sha"):
+                if observed is None:
+                    meta_next.pop("live_head_sha", None)
+                else:
+                    meta_next["live_head_sha"] = observed
+                meta_dirty = True
+        if meta_dirty:
+            _stamp(self.rec, "meta", meta_next, None)
         if (ci is not None or mergeable is not None
                 or diffstat is not None or has_tests is not None):
             signals = dict(self.section("signals") or {})

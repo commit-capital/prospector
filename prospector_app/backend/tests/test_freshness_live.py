@@ -89,6 +89,46 @@ def test_ci_unknown_baseline_is_not_drift(monkeypatch):
     assert "ci" not in kinds
 
 
+class TestGreptileDivergence:
+    """The review provider's bar is a hard merge requirement, so a score against
+    an earlier commit is its own staleness — and its remedy is a review
+    re-trigger, not a re-analysis."""
+
+    def _pr(self, reviewed):
+        pr = _store_pr(1)
+        pr.rec["signals"]["greptile_reviewed_sha"] = reviewed
+        return pr
+
+    def test_flagged_when_greptile_reviewed_an_earlier_commit(self, monkeypatch):
+        _patch(monkeypatch, {1: self._pr(HEAD)},
+               {1: {"state": "open", "merged": False, "head": NEWHEAD,
+                    "mergeable": "MERGEABLE", "ci": "passing"}})
+        div = freshness_live.check([1])["items"][0]["diverged"]
+        grep = [d for d in div if d["kind"] == "greptile"]
+        assert grep and grep[0]["was"] == HEAD[:7] and grep[0]["now"] == NEWHEAD[:7]
+
+    def test_flagged_even_when_our_own_analysis_is_current(self, monkeypatch):
+        # the head has not moved since we analyzed; only Greptile is behind.
+        _patch(monkeypatch, {1: self._pr("older12")},
+               {1: {"state": "open", "merged": False, "head": HEAD,
+                    "mergeable": "MERGEABLE", "ci": "passing"}})
+        kinds = [d["kind"] for d in freshness_live.check([1])["items"][0]["diverged"]]
+        assert kinds == ["greptile"]
+
+    def test_quiet_when_greptile_is_current(self, monkeypatch):
+        _patch(monkeypatch, {1: self._pr(HEAD)},
+               {1: {"state": "open", "merged": False, "head": HEAD,
+                    "mergeable": "MERGEABLE", "ci": "passing"}})
+        assert freshness_live.check([1])["items"][0]["diverged"] == []
+
+    def test_quiet_when_greptile_never_reviewed(self, monkeypatch):
+        _patch(monkeypatch, {1: _store_pr(1)},
+               {1: {"state": "open", "merged": False, "head": NEWHEAD,
+                    "mergeable": "MERGEABLE", "ci": "passing"}})
+        kinds = [d["kind"] for d in freshness_live.check([1])["items"][0]["diverged"]]
+        assert kinds == ["head"]
+
+
 def test_unreachable_pr_marked_not_reachable(monkeypatch):
     _patch(monkeypatch, {1: _store_pr(1)}, {})  # live_states returns nothing
     item = freshness_live.check([1])["items"][0]

@@ -818,7 +818,8 @@ def dismiss_alert(source: str, n: int, payload: models.AlertDismissBody = Body(.
 @app.post("/api/review/pr/{n}")
 def submit_review(n: int, payload: models.ReviewBody = Body(...), dry_run: bool = True):
     token = None if dry_run else executor.mint_bot_token()
-    res = executor.submit_review(n, payload.event, payload.body, token=token, dry_run=dry_run)
+    res = executor.submit_review(n, payload.event, payload.body, token=token, dry_run=dry_run,
+                                 override_stale=payload.override_stale)
     training.capture(n, f"REVIEW:{payload.event}", reason=payload.reason, tags=payload.tags,
                      public_body=payload.body, dry_run=dry_run, result=res)
     return res
@@ -828,7 +829,8 @@ def submit_review(n: int, payload: models.ReviewBody = Body(...), dry_run: bool 
 def comment_line(n: int, payload: models.LineCommentBody = Body(...), dry_run: bool = True):
     token = None if dry_run else executor.mint_bot_token()
     res = executor.comment_line(n, payload.file, payload.line, payload.body,
-                                token=token, dry_run=dry_run)
+                                token=token, dry_run=dry_run,
+                                override_stale=payload.override_stale)
     training.capture(n, "LINE_COMMENT", reason=payload.reason, public_body=payload.body,
                      dry_run=dry_run, result=res)
     return res

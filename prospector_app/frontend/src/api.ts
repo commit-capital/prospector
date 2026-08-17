@@ -216,6 +216,8 @@ export interface PRRow {
   clean?: boolean;
   clean_reasons?: string[];
   stale_sections?: string[];
+  live_head_sha?: string | null;
+  fact_freshness?: FactFreshness[];
   issues?: IssueLink[];
   trusted_author?: boolean;
   proposed_action?: ProposedAction;
@@ -254,6 +256,24 @@ export interface LocBreakdown {
   by_category: Record<string, SizeBucket>;
 }
 export interface HumanMerge { required: boolean; paths: string[]; owners: string[] }
+// One sha-bound fact's provenance: when it was computed, the head it describes,
+// and whether it still holds. `why` is the short reason it doesn't.
+export interface FactFreshness {
+  section: string;
+  checked_at?: string | null;
+  against_head_sha?: string | null;
+  current: boolean;
+  why?: string | null;
+}
+
+// The executor's refusal payload when a write would quote facts the author has
+// moved past — mirrors executor._stale_gate.
+export interface StaleBlock {
+  was?: string | null;
+  now?: string | null;
+  sections: { section: string; checked_at?: string | null }[];
+}
+
 export interface Divergence { kind: string; was?: string; now?: string; message: string }
 export interface FreshnessItem { number: number; reachable: boolean; diverged: Divergence[]; state?: string; head?: string }
 
@@ -273,6 +293,9 @@ export interface CloseActionBody {
   comment?: string;
   reason?: string;
   tags?: string[];
+  // Post over a "head moved since we analyzed this" refusal, after the operator
+  // confirms the drift the app showed them.
+  override_stale?: boolean;
 }
 
 // Mirrors backend models.SuggestAccept (CloseAccept | ReviewAccept | MergeAccept),
@@ -1241,9 +1264,11 @@ export const api = {
     });
     return r.json();
   },
-  submitReview: async (n: number, event: string, body: string, dryRun: boolean, reason?: string, tags?: string[]) => {
+  submitReview: async (n: number, event: string, body: string, dryRun: boolean, reason?: string,
+                       tags?: string[], overrideStale?: boolean) => {
     const r = await fetch(`/api/review/pr/${n}?dry_run=${dryRun}`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ event, body, reason, tags }),
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ event, body, reason, tags, override_stale: overrideStale }),
     });
     return r.json() as Promise<ExecResult>;
   },
@@ -1278,9 +1303,11 @@ export const api = {
     const r = await fetch(`/api/merge/pr/${n}?dry_run=${dryRun}&method=${method}${q}`, { method: "POST" });
     return r.json() as Promise<ExecResult>;
   },
-  commentLine: async (n: number, file: string, line: number, body: string, dryRun: boolean) => {
+  commentLine: async (n: number, file: string, line: number, body: string, dryRun: boolean,
+                      overrideStale?: boolean) => {
     const r = await fetch(`/api/comment/pr/${n}?dry_run=${dryRun}`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ file, line, body }),
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ file, line, body, override_stale: overrideStale }),
     });
     return r.json() as Promise<ExecResult>;
   },
@@ -1485,7 +1512,9 @@ export interface ActionItem {
 
 export interface Identity { id: string; label: string; available: boolean; note: string | null }
 export interface IdentitiesResult { identities: Identity[]; live_possible: boolean; live_error: string | null }
-export interface ExecResult { pr: number; action: string; status: string; detail: string; forced?: boolean }
+// `status: "stale"` is a refusal the operator can confirm past: the write quotes
+// facts the author has moved beyond, and `stale` names the drift.
+export interface ExecResult { pr: number; action: string; status: string; detail: string; forced?: boolean; stale?: StaleBlock }
 
 /** One real action taken on a PR (close/merge/reopen/comment/review), from the
  *  activity log — the bot `identity` that posted it + the human `operator`. */
