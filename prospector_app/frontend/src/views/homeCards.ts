@@ -3,12 +3,18 @@ import type { CheckClause, FilterSpec } from "../api";
 // can resolve this runtime import when homeCards.test.ts loads the module.
 import { MERGE_READY_SPEC } from "../components/explorer/lanes.ts";
 
+// Which part of the Home layout a card renders in: the merge track column
+// (the pipeline's merge picks), the request-changes column beside it, or the
+// full-width human-decision backstop beneath both.
+export type HomeColumn = "merge" | "changes" | "backstop";
+
 // One Home card: a headline count over a filter spec, linking to the PR
 // Explorer with that spec (plus an optional sort) in the URL.
 export interface HomeCard {
   key: string;
   title: string;
   blurb: string;
+  column: HomeColumn;
   spec: FilterSpec;
   sort?: string;
   dir?: "asc" | "desc";
@@ -42,18 +48,24 @@ function checksPass(...keys: string[]): CheckClause[] {
   return keys.map((key) => ({ key, status: "pass" }));
 }
 
-// The cards, ordered by how close their PRs are to merge-ready: ready first,
-// then each card one step further from the finish line, with the human-decision
-// backstop last. Counts come from POST /api/prs/counts and samples from
+// The cards, grouped by Home column. The merge column holds only the
+// pipeline's merge picks — every spec carries disposition "merge", so a PR the
+// pipeline decided to close as a dup or send back for changes never appears —
+// ordered by how close each card's PRs are to merge-ready: ready first, then
+// each card one step further from the finish line. The changes column holds
+// the request-changes picks whose CI is already clean — asks worth relaying to
+// their authors now. The human-decision backstop renders full-width beneath
+// both. Counts come from POST /api/prs/counts and samples from
 // POST /api/prs/query — the same backend matcher — so each card's number is
 // exactly the row count the Explorer shows when its link opens.
 export const HOME_CARDS: HomeCard[] = [
   {
     key: "ready",
     title: "PRs ready to merge",
-    blurb: "Every check green — review at the bar, CI passing, security GREEN, verified. Just merge.",
-    // The Explorer's Merge-ready lane is this same spec, so card and lane agree.
-    spec: MERGE_READY_SPEC,
+    blurb: "A pipeline merge pick with every check green — review at the bar, CI passing, security GREEN, verified. Just merge.",
+    column: "merge",
+    // The Explorer's Merge-ready lane spec, narrowed to the pipeline's merge picks.
+    spec: { ...MERGE_READY_SPEC, disposition: "merge" },
     sort: "updated",
     dir: "asc",
     lead: true,
@@ -62,29 +74,34 @@ export const HOME_CARDS: HomeCard[] = [
     key: "verify-pending",
     title: "Awaiting verification",
     blurb: "Security GREEN and otherwise clean, but dynamic verification has never run.",
+    column: "merge",
     spec: {
       checks: [
         ...checksPass("review", "ci", "mergeable", "secrets", "security"),
         { key: "verify", status: "never_ran" },
       ],
       safety: "GREEN",
+      disposition: "merge",
     },
   },
   {
     key: "security-pending",
     title: "Awaiting security review",
     blurb: "Clean on review, CI, conflicts, and secrets, but the deep security review has never run.",
+    column: "merge",
     spec: {
       checks: [
         ...checksPass("review", "ci", "mergeable", "secrets"),
         { key: "security", status: "never_ran" },
       ],
+      disposition: "merge",
     },
   },
   {
     key: "base-update",
     title: "Just need a base update",
     blurb: "Green everywhere except merge conflicts — update the branch with the base and they can go fully green.",
+    column: "merge",
     spec: {
       checks: [
         ...checksPass("review", "ci", "tests", "secrets", "security", "verify"),
@@ -93,21 +110,38 @@ export const HOME_CARDS: HomeCard[] = [
       greptile: { op: ">", value: 4 },
       greptile_stale: false,
       safety: "GREEN",
+      disposition: "merge",
     },
   },
   {
+    key: "changes",
+    title: "Changes to request",
+    blurb: "CI passing and no conflicts, but the pipeline's pick is request-changes — relay the asks to the authors.",
+    column: "changes",
+    spec: {
+      checks: checksPass("ci", "mergeable"),
+      disposition: "request-changes",
+    },
+    lead: true,
+  },
+  {
     key: "nitpicks",
+    // The subset of the changes column whose review feedback is only nits —
+    // the cheapest asks to relay.
     title: "Just need nitpicks fixed",
     blurb: "CI passing, no conflicts, but the review left nits below the bar — a nitpick pass unblocks them.",
+    column: "changes",
     spec: {
       checks: checksPass("ci", "mergeable"),
       greptile_severity: "nits",
+      disposition: "request-changes",
     },
   },
   {
     key: "needs-human",
     title: "Need a human decision",
     blurb: "Flagged needs-human — only an operator call moves these forward.",
+    column: "backstop",
     spec: { disposition: "needs-human" },
   },
 ];

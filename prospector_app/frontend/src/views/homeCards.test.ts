@@ -12,11 +12,27 @@ test("card keys are unique", () => {
   assert.equal(new Set(keys).size, keys.length);
 });
 
-test("cards run from merge-ready down to the human-decision backstop", () => {
+test("cards run merge track first, then the changes column, then the backstop", () => {
   assert.deepEqual(
     HOME_CARDS.map((c) => c.key),
-    ["ready", "verify-pending", "security-pending", "base-update", "nitpicks", "needs-human"],
+    ["ready", "verify-pending", "security-pending", "base-update", "changes", "nitpicks", "needs-human"],
   );
+  assert.deepEqual(
+    HOME_CARDS.map((c) => c.column),
+    ["merge", "merge", "merge", "merge", "changes", "changes", "backstop"],
+  );
+});
+
+test("merge-column cards keep only the pipeline's merge picks", () => {
+  for (const card of HOME_CARDS.filter((c) => c.column === "merge")) {
+    assert.equal(card.spec.disposition, "merge", card.key);
+  }
+});
+
+test("changes-column cards keep only the request-changes picks", () => {
+  for (const card of HOME_CARDS.filter((c) => c.column === "changes")) {
+    assert.equal(card.spec.disposition, "request-changes", card.key);
+  }
 });
 
 test("ALL_CHECKS_PASS requires a pass on every rollup check", () => {
@@ -26,10 +42,10 @@ test("ALL_CHECKS_PASS requires a pass on every rollup check", () => {
   );
 });
 
-test("the ready card and the Merge-ready lane share one spec", () => {
+test("the ready card is the Merge-ready lane spec narrowed to merge picks", () => {
   const ready = HOME_CARDS.find((c) => c.key === "ready")!;
   const lane = LANES.find((l) => l.key === "merge-ready")!;
-  assert.equal(ready.spec, MERGE_READY_SPEC);
+  assert.deepEqual(ready.spec, { ...MERGE_READY_SPEC, disposition: "merge" });
   assert.equal(lane.spec, MERGE_READY_SPEC);
 });
 
@@ -61,9 +77,9 @@ test("exploreHref round-trips the spec through the URL", () => {
 
 test("exploreHref carries sort and dir only when the card sets them", () => {
   const sorted: HomeCard = {
-    key: "k", title: "t", blurb: "b", spec: {}, sort: "updated", dir: "asc",
+    key: "k", title: "t", blurb: "b", column: "merge", spec: {}, sort: "updated", dir: "asc",
   };
-  const unsorted: HomeCard = { key: "k", title: "t", blurb: "b", spec: {} };
+  const unsorted: HomeCard = { key: "k", title: "t", blurb: "b", column: "merge", spec: {} };
   const sortedParams = new URLSearchParams(exploreHref(sorted).slice("/explore?".length));
   assert.equal(sortedParams.get("sort"), "updated");
   assert.equal(sortedParams.get("dir"), "asc");

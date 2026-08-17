@@ -31,11 +31,11 @@ function SamplePR({ r }: { r: PRRow }) {
   );
 }
 
-// One Home card row, two columns wide: the headline count + title on the left
-// link into the Explorer, and a small table of the card's highest-pain member
-// PRs fills the right side. `count` is null until the counts poll lands;
-// `sample` is null until the sample query (started once the counts land)
-// resolves.
+// One Home card: the headline count + title link into the Explorer, and a
+// small table of the card's highest-pain member PRs fills the rest — below the
+// head inside a track column, to its right on the full-width backstop. `count`
+// is null until the counts poll lands; `sample` is null until the sample query
+// (started once the counts land) resolves.
 function HomeCardRow({ card, count, sample }: { card: HomeCard; count: number | null; sample: QueryResult | null }) {
   const href = exploreHref(card);
   const total = sample ? sample.total : count;
@@ -103,6 +103,15 @@ export default function Home() {
     return () => { cancelled = true; };
   }, [counts]);
   const loading = counts === null && !err;
+  // Counts and samples are index-aligned with the flat HOME_CARDS array, so
+  // each column looks a card's data up by its position there.
+  const renderCard = (card: HomeCard) => {
+    const i = HOME_CARDS.indexOf(card);
+    return (
+      <HomeCardRow key={card.key} card={card} count={counts ? counts[i] : null}
+        sample={samples ? samples[i] : null} />
+    );
+  };
   return (
     <div className="home">
       <div className="home-head">
@@ -118,11 +127,18 @@ export default function Home() {
           <span className="spinner" /> Loading PR data…
         </div>
       )}
+      <div className="home-columns">
+        <section className="home-col">
+          <div className="home-col-head muted">Merge track — the pipeline&apos;s merge picks</div>
+          {HOME_CARDS.filter((c) => c.column === "merge").map(renderCard)}
+        </section>
+        <section className="home-col">
+          <div className="home-col-head muted">Request changes — asks for the authors</div>
+          {HOME_CARDS.filter((c) => c.column === "changes").map(renderCard)}
+        </section>
+      </div>
       <div className="home-cards">
-        {HOME_CARDS.map((card, i) => (
-          <HomeCardRow key={card.key} card={card} count={counts ? counts[i] : null}
-            sample={samples ? samples[i] : null} />
-        ))}
+        {HOME_CARDS.filter((c) => c.column === "backstop").map(renderCard)}
       </div>
     </div>
   );

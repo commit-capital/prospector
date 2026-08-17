@@ -1268,17 +1268,26 @@ tr.row-done:hover > td { opacity: 1; }
 .closeout-head:first-of-type { margin-top: 14px; }
 .fixed-row-detail td { background: var(--panel); }
 
-/* Home screen: one full-width, two-column card per row — the headline count
-   and blurb on the left link into the PR Explorer, and a small table of the
-   card's highest-pain member PRs fills the right side. */
+/* Home screen: two side-by-side columns of cards — the merge track beside the
+   request-changes track — with the needs-human backstop full-width beneath
+   both. Inside a column a card stacks vertically (headline count and blurb on
+   top, the sample table of its highest-pain member PRs below); the backstop
+   card lays the two parts side by side. Every headline links into the PR
+   Explorer. */
 .home { max-width: 1080px; }
 .home-head { margin-bottom: 16px; }
 .home-head h2 { margin: 0 0 4px; }
+.home-columns { display: flex; gap: 12px; align-items: flex-start; margin-bottom: 10px; }
+.home-col { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+.home-col-head { text-transform: uppercase; letter-spacing: .04em; font-size: 10.5px; }
 .home-cards { display: flex; flex-direction: column; gap: 10px; }
-.home-cards .home-card {
+.home-card {
   padding: 0; background: var(--panel); overflow: hidden;
   display: flex; align-items: stretch;
 }
+.home-col .home-card { flex-direction: column; }
+.home-col .home-card-head { flex: 0 0 auto; }
+.home-col .home-card-side { border-left: none; border-top: 1px solid var(--border); }
 .home-card-head {
   flex: 0 0 320px; min-width: 0;
   display: flex; align-items: baseline; gap: 14px; padding: 10px 12px;
@@ -1310,7 +1319,8 @@ tr.row-done:hover > td { opacity: 1; }
 .home-show-all { margin-top: 4px; align-self: flex-end; color: var(--accent); text-decoration: none; }
 .home-show-all:hover { text-decoration: underline; }
 @media (max-width: 860px) {
-  .home-cards .home-card { flex-direction: column; }
+  .home-columns { flex-direction: column; }
+  .home-card { flex-direction: column; }
   .home-card-head { flex: 0 0 auto; }
   .home-card-side { border-left: none; border-top: 1px solid var(--border); }
 }
