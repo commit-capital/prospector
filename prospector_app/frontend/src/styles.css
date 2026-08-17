@@ -805,6 +805,17 @@ html.ap-resizing .agentpane { transition: none; }
 .fresh-callout div + div { margin-top: 4px; }
 .fresh-refreshed { font-size: 11.5px; }
 
+/* Per-fact provenance: when each pipeline fact was computed and which commit
+   it describes, so a recommendation can be dated before it's acted on. */
+.facts-table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 8px; }
+.facts-table th { text-align: left; font-weight: 600; color: var(--muted);
+  padding: 4px 8px; border-bottom: 1px solid var(--border); }
+.facts-table td { padding: 5px 8px; border-bottom: 1px solid var(--border); }
+.facts-table tr:last-child td { border-bottom: none; }
+.facts-table code { font-size: 11.5px; }
+.facts-table .fact-stale td:first-child { font-weight: 600; }
+.facts-table tr.fact-stale { background: color-mix(in srgb, var(--gold) 8%, transparent); }
+
 /* Action run-state (#10) — already-landed actions, log-backed */
 .run-badge { vertical-align: middle; white-space: nowrap; }
 

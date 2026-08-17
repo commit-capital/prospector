@@ -88,6 +88,15 @@ def check(prs: list[int]) -> dict:
             diverged.append({"kind": "head", "was": meta["head_sha"][:7], "now": lv["head"][:7],
                              "message": "new commits since this was analyzed — the diff may be out of date"})
 
+        # The review provider's bar is a hard merge requirement, so a score
+        # against an earlier commit is its own staleness — separate from `head`
+        # because the remedy is a review re-trigger, not a re-analysis.
+        grep_sha = sig.get("greptile_reviewed_sha")
+        if lv["head"] and grep_sha and grep_sha != lv["head"]:
+            diverged.append({"kind": "greptile", "was": grep_sha[:7], "now": lv["head"][:7],
+                             "message": "Greptile reviewed an earlier commit — its score may not "
+                                        "reflect the current diff"})
+
         if lv["mergeable"] == "CONFLICTING" and sig.get("mergeable"):
             diverged.append({"kind": "conflicts",
                              "message": "now has merge conflicts (was clean when this cluster was analyzed)"})
@@ -138,14 +147,25 @@ def persist_live(live: dict[int, dict], committed: dict[int, Pr]) -> list[int]:
             live_ht = lv.get("has_tests") if same_head else None
             has_tests_arg = (live_ht if live_ht is not None
                              and live_ht != sig.get("has_tests") else None)
+            # The observed head is the one fact worth writing when nothing else
+            # moved: it is what makes a push the pipeline has not ingested read
+            # stale everywhere. Retained only while it differs from the ingested
+            # head, so pass it whenever that retention would change.
+            observed_head = lv.get("head")
+            retained = (observed_head if observed_head and pr is not None
+                        and observed_head != pr.head_sha else None)
+            live_head_arg = (observed_head if observed_head and pr is not None
+                             and retained != pr.live_head_sha else None)
             if (state_arg is None and ci_arg is None and mergeable_arg is None
-                    and diffstat_arg is None and has_tests_arg is None):
+                    and diffstat_arg is None and has_tests_arg is None
+                    and live_head_arg is None):
                 continue
             if store.load_pr(n) is None:
                 continue
             store.edit_pr(n).record_live_state(
                 state=state_arg, ci=ci_arg, mergeable=mergeable_arg,
-                diffstat=diffstat_arg, has_tests=has_tests_arg)
+                diffstat=diffstat_arg, has_tests=has_tests_arg,
+                live_head_sha=live_head_arg)
             changed.append(n)
     return sorted(changed)
 
@@ -202,6 +222,10 @@ def sweep(prs: list[int] | None = None) -> dict:
     retired = retire_unresolvable(not_found, snapshot)
     missing = sorted(target_set - set(live) - not_found)
     changed = persist_live(live, snapshot)
+    # Publish what was just written before anyone reads again: the next sweep
+    # compares against it to stay idempotent, and the app serves the observed
+    # heads instead of waiting for the debounced background check.
+    data.refresh()
     swept_at = _now()
     complete = not missing
     if full_sweep and complete:

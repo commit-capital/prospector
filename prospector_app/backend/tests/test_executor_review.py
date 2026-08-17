@@ -7,7 +7,7 @@ from prospector_app.backend import executor
 
 def _patch(monkeypatch):
     monkeypatch.setattr(data, "pr_to_clusters", lambda: {1701: [1]})
-    monkeypatch.setattr(executor, "_preflight", lambda *a, **k: (True, ""))
+    monkeypatch.setattr(executor, "_preflight", lambda *a, **k: executor.Preflight(True))
     monkeypatch.setattr(executor.activity, "record", lambda *a, **k: None)
 
 

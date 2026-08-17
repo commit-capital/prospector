@@ -1,13 +1,23 @@
 """Freshness: the ONE implementation of 'is this fact still about the current
 code?'. A section is current iff it was computed against the PR's current
 head_sha (and optionally within a max-age window)."""
-from pipeline.freshness import SECTION_SCHEMA_VERSION, currency_failure, is_current, stale_sections
+from pipeline.freshness import (
+    UNINGESTED_PUSH,
+    SECTION_SCHEMA_VERSION,
+    currency_failure,
+    is_current,
+    stale_sections,
+    upstream_head_moved,
+)
 from pipeline.model import Pr
 
 
-def _pr(head="abc123", **sections) -> Pr:
-    rec = {"pr": 1, "meta": {"title": "t", "state": "open", "head_sha": head,
-                             "checked_at": "2026-06-10T00:00:00+00:00"}}
+def _pr(head="abc123", live=None, **sections) -> Pr:
+    meta = {"title": "t", "state": "open", "head_sha": head,
+            "checked_at": "2026-06-10T00:00:00+00:00"}
+    if live is not None:
+        meta["live_head_sha"] = live
+    rec = {"pr": 1, "meta": meta}
     rec.update(sections)
     return Pr(None, rec)
 
@@ -109,6 +119,72 @@ class TestStaleSections:
                  signals=_section(sha="abc123"),
                  analysis=_section(sha="NEW999"))
         assert stale_sections(pr) == ["signals"]
+
+
+class TestEffectiveHead:
+    """A live sweep records the head GitHub reports (meta.live_head_sha) without
+    re-ingesting the diff behind it. Freshness tokens against that observed head,
+    so a push nobody has ingested yet reads stale for every consumer."""
+
+    def test_uningested_push_makes_a_matching_fact_stale(self):
+        pr = _pr(head="abc123", live="NEW999", analysis=_section(sha="abc123"))
+        assert not is_current(pr, "analysis")
+
+    def test_live_head_equal_to_ingested_head_stays_current(self):
+        pr = _pr(head="abc123", live="abc123", analysis=_section(sha="abc123"))
+        assert is_current(pr, "analysis")
+
+    def test_absent_live_head_falls_back_to_the_ingested_head(self):
+        pr = _pr(head="abc123", analysis=_section(sha="abc123"))
+        assert is_current(pr, "analysis")
+
+    def test_one_push_stales_every_sha_bound_fact_at_once(self):
+        pr = _pr(head="abc123", live="NEW999",
+                 analysis=_section(sha="abc123"), security=_section(sha="abc123"),
+                 verify=_section(sha="abc123"))
+        assert stale_sections(pr) == ["analysis", "security", "verify"]
+
+    def test_reingest_clearing_the_observation_heals_the_read(self):
+        # ingest rebuilds meta at the new head, dropping live_head_sha; a fact
+        # re-run against that head is current again with nothing else cleared.
+        pr = _pr(head="NEW999", analysis=_section(sha="NEW999"))
+        assert is_current(pr, "analysis")
+        assert stale_sections(pr) == []
+
+    def test_meta_is_never_sha_bound_so_a_push_leaves_it_current(self):
+        pr = _pr(head="abc123", live="NEW999")
+        assert is_current(pr, "meta")
+
+
+class TestUpstreamHeadMoved:
+    def test_true_when_the_sweep_saw_a_newer_head(self):
+        assert upstream_head_moved(_pr(head="abc123", live="NEW999"))
+
+    def test_false_when_the_observation_agrees(self):
+        assert not upstream_head_moved(_pr(head="abc123", live="abc123"))
+
+    def test_false_when_never_observed(self):
+        assert not upstream_head_moved(_pr(head="abc123"))
+
+
+class TestStaleReasons:
+    """The two stale shapes need different operator responses, so they read
+    differently: re-run the phase vs re-ingest first."""
+
+    def test_uningested_push_names_the_push(self):
+        pr = _pr(head="abc123", live="NEW999", analysis=_section(sha="abc123"))
+        assert currency_failure(pr, "analysis") == UNINGESTED_PUSH
+
+    def test_fact_older_than_the_ingested_head_still_reads_earlier_head(self):
+        pr = _pr(head="abc123", live="NEW999", analysis=_section(sha="OLD000"))
+        assert "earlier head" in currency_failure(pr, "analysis")
+
+    def test_age_window_reason_survives_an_uningested_push(self):
+        # the push is the token failure and reports first; with no push, the age
+        # window is what fails and keeps its own phrasing.
+        pr = _pr(head="abc123", analysis=_section(at="2026-06-01T00:00:00+00:00"))
+        assert currency_failure(pr, "analysis", max_age_days=7,
+                                today="2026-06-10") == "9d old, outside the 7d window"
 
 
 class TestVerifyFreshness:
