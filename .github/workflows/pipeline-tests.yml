@@ -31,13 +31,10 @@ jobs:
       # exactly the committed lock rather than silently re-resolving.
       - name: Sync the locked environment
         run: uv sync --locked
-      # One command runs all three suites (pipeline/tests + issue_triage/tests +
-      # prospector_app/backend/tests).
-      # `-n0` runs serial: xdist (`-n auto` in addopts) is a wash on the 2-core
-      # runner — each worker re-imports the whole app stack, cancelling the split
-      # — while it halves wall time on developers' many-core machines.
+      # The repository's pytest addopts run all four suites across the available
+      # cores with loadgroup, which keeps the shared Postgres tests on one worker.
       - name: Run tests
-        run: uv run pytest -n0
+        run: uv run pytest
         env:
           TEST_POSTGRES_URL: postgresql+psycopg://postgres:pg@localhost:5432/postgres
 
