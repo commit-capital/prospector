@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from pipeline import storekit
-from issue_triage.issue_freshness import UPDATED_BOUND
+from issue_triage.issue_freshness import UPDATED_BOUND, is_current
 
 if TYPE_CHECKING:
     from issue_triage.issue_store import IssueStore
@@ -108,8 +108,17 @@ class Issue:
     def repro_score(self) -> int | None:
         return (self.rec.get("repro") or {}).get("score")
 
+    def _fixed_now(self) -> bool:
+        fs = self.rec.get("fix_scan") or {}
+        return (fs.get("status") == "fixed" and fs.get("fixed_by") is not None
+                and is_current(self, "fix_scan"))
+
     @property
     def disposition(self) -> str | None:
+        """close-fixed while the fix scan cites a merged fixer, else the stored
+        ANALYZE verdict. Derived, so a staled fact heals the read in place."""
+        if self._fixed_now():
+            return "close-fixed"
         return (self.rec.get("analysis") or {}).get("disposition")
 
     @property
@@ -118,15 +127,19 @@ class Issue:
 
     @property
     def fixed_by(self) -> int | None:
-        return (self.rec.get("analysis") or {}).get("fixed_by")
+        return (self.rec.get("fix_scan") or {}).get("fixed_by")
 
     @property
     def rationale(self) -> str | None:
+        if self._fixed_now():
+            return (self.rec.get("fix_scan") or {}).get("rationale")
         return (self.rec.get("analysis") or {}).get("rationale")
 
     @property
     def gist(self) -> str | None:
-        """Plain-language restatement of what the issue is (ANALYZE-written)."""
+        """Plain-language restatement of what the issue is."""
+        if self._fixed_now():
+            return (self.rec.get("fix_scan") or {}).get("gist")
         return (self.rec.get("analysis") or {}).get("gist")
 
     @property
@@ -211,19 +224,10 @@ class Issue:
 
     def record_fixed(self, fixed_by: int, *, rationale: str, gist: str | None = None,
                      upstream_date: str | None = None, title: str = "",
-                     updated_at: str | None = None, set_disposition: bool = True) -> None:
-        """Mark the issue already-fixed by a merged PR: record the fixer
-        in links tagged `how='fix-found'` (marking a detector-discovered, non-explicit
-        fixer) and write the fix_scan evidence. When `set_disposition` is True (the
-        default), also stamp the close-fixed disposition; when False, the disposition
-        is left untouched (a higher-precedence disposition already on the issue stays)
-        while the fix is still recorded. One persisted write."""
-        if set_disposition:
-            analysis: dict = {"disposition": "close-fixed", "rationale": rationale,
-                              "fixed_by": int(fixed_by)}
-            if gist:
-                analysis["gist"] = gist
-            _stamp(self.rec, "analysis", analysis, updated_at)
+                     updated_at: str | None = None) -> None:
+        """Record the fixer in links tagged `how='fix-found'` (a
+        detector-discovered, non-explicit fixer) plus the fix_scan evidence. The
+        close-fixed route follows from it on read. One persisted write."""
         candidates = list((self.rec.get("links") or {}).get("candidates") or [])
         if not any(c.get("pr") == int(fixed_by) and c.get("how") == "fix-found"
                    for c in candidates):

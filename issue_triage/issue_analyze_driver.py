@@ -18,7 +18,6 @@ from typing import TYPE_CHECKING
 
 from issue_triage.config import REPO
 from issue_triage.issue_freshness import is_current
-from issue_triage.issue_gates import disposition_outranks
 from issue_triage.issue_store import IssueStore
 from pipeline import profile
 from pipeline import storekit
@@ -118,9 +117,6 @@ def apply_verdicts(store: IssueStore, verdicts: list[dict]) -> int:
         if disp not in VALID:
             raise ValueError(f"bad disposition {disp!r}")
         iss = store.edit_issue(int(v["issue"]))
-        if iss.disposition == "close-fixed" and is_current(iss, "fix_scan") \
-                and not disposition_outranks(v["disposition"], "close-fixed"):
-            continue  # a current already-fixed finding stands unless a more-blocking disposition supersedes it
         iss.route_to(disp, v.get("rationale") or "", canonical=v.get("canonical"),
                      asks=v.get("asks"), gist=v.get("gist"))
         applied += 1

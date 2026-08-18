@@ -149,11 +149,3 @@ def test_cluster_state_needs_curation_when_unconfirmed(tmp_path):
     assert issue_gates.issue_cluster_state(cl, st.all_issues()) == "needs-curation"
 
 
-def test_disposition_outranks_matches_issue_precedence():
-    assert issue_gates.disposition_outranks("close-dup", "close-fixed")       # close-dup wins
-    assert not issue_gates.disposition_outranks("close-fixed", "close-dup")   # close-fixed loses to dup
-    assert issue_gates.disposition_outranks("close-fixed", "needs-human")     # a found fix beats needs-human
-    assert not issue_gates.disposition_outranks("needs-human", "close-fixed")  # needs-human loses to a found fix
-    assert issue_gates.disposition_outranks("close-fixed", "request-repro")   # a close beats keep-open
-    assert not issue_gates.disposition_outranks("request-repro", "close-fixed")  # keep-open loses to a close
-    assert issue_gates.disposition_outranks("close-fixed", None)              # None is always replaced

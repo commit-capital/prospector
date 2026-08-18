@@ -263,9 +263,7 @@ def get_issue(n: int) -> dict | None:
     row["body"] = i.body
     a = i.rec.get("analysis")
     row["analysis"] = a
-    a = a or {}
-    fixer = a.get("fixed_by")
-    canon = a.get("canonical")
+    fixer, canon = i.fixed_by, i.canonical
     row["fixed_comment"] = fixed_issue_comment(int(fixer)) if fixer else None
     row["dup_comment"] = dup_issue_comment(int(canon)) if canon else None
     cl = clusters.get(i.cluster_id) if i.cluster_id else None

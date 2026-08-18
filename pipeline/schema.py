@@ -41,7 +41,10 @@ _JSON = JSON().with_variant(JSONB, "postgresql")
 # 13 — fix_request carries operator `guidance` for an agent-authored fix. An
 #     older worker claims the request, ignores the instruction, and authors
 #     against its own default goal instead.
-STORE_SCHEMA_VERSION = 14
+# 15 — an issue's close-fixed route derives from its fix_scan; the find-fixed
+#      scan no longer stamps a close-fixed analysis (older readers see only the
+#      ANALYZE verdict and miss the fix).
+STORE_SCHEMA_VERSION = 15
 
 # saved_at is a microsecond-resolution ISO timestamp stamped on every save — when
 # the store row was last written (distinct from `updated_at`, which mirrors the
