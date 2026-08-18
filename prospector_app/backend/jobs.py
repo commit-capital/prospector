@@ -92,7 +92,7 @@ JOB_SPECS: dict[str, JobSpec] = {
         "argv": [*PIPELINE_PY, "-u", str(REPO_ROOT / "issue_triage" / "issue_ingest.py")],
     },
     "issue-analyze": {
-        "label": "Issue analyze (dispositions for pending issues · agentic)",
+        "label": "Issue analyze (dispositions for pending issues · agentic · no fix scan)",
         "needs_count": True,
         "argv_fn": lambda n: [*PIPELINE_PY, "-u",
                               str(REPO_ROOT / "issue_triage" / "analyze_issues.py"),

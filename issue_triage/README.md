@@ -32,7 +32,9 @@ gated and logged.**
   `/diagnose-issue-cluster` agent, not by a human; the human approval is the
   operator's at RESOLVE.
 - **Model** (`issue_model.py`): typed `Issue` / `IssueCluster` wrappers; every
-  mutator stamps freshness and persists in one validated write.
+  mutator stamps freshness and persists in one validated write. Each phase writes
+  only its own section; `Issue.disposition` derives on read — `close-fixed` while
+  `fix_scan` cites a merged fixer, else the stored ANALYZE verdict.
 - **Taxonomy**: the ONE subsystem-classification accessor in `pipeline/taxonomy.py`
   (vocabulary from the active repository profile, `pipeline/profile.py`; shared with
   PRs so issue↔PR linking lines up).

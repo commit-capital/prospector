@@ -19,7 +19,6 @@ from typing import TYPE_CHECKING
 
 from issue_triage.config import REPO
 from issue_triage.issue_freshness import is_current
-from issue_triage.issue_gates import disposition_outranks
 from issue_triage.issue_store import IssueStore
 from pipeline import storekit
 
@@ -138,8 +137,7 @@ def apply_verdicts(store: IssueStore, verdicts: list[dict]) -> int:
         if status == "fixed":
             iss.record_fixed(int(v["fixed_by"]), rationale=v.get("rationale") or "",
                              gist=v.get("gist"), upstream_date=v.get("upstream_date"),
-                             title=v.get("fixed_title") or "",
-                             set_disposition=disposition_outranks("close-fixed", iss.disposition))
+                             title=v.get("fixed_title") or "")
         else:
             iss.record_fix_scan(status, gist=v.get("gist"), rationale=v.get("rationale"))
         applied += 1

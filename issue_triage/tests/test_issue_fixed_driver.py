@@ -26,7 +26,7 @@ def test_apply_fixed_verdict_marks_close_fixed(tmp_path):
     assert any(c.get("how") == "fix-found" and c["pr"] == 42 for c in iss.candidate_prs)
 
 
-def test_apply_fixed_does_not_override_close_dup(tmp_path):
+def test_apply_fixed_outranks_a_stored_close_dup(tmp_path):
     st = issue_store.IssueStore(tmp_path)
     iss = st.create_issue(5, META)
     iss.route_to("close-dup", "dup of #4", canonical=4)
@@ -34,8 +34,9 @@ def test_apply_fixed_does_not_override_close_dup(tmp_path):
         {"issue": 5, "status": "fixed", "fixed_by": 42, "rationale": "#42 fixes it",
          "causal_evidence": CAUSAL_EVIDENCE}])
     got = st.load_issue(5)
-    assert got.disposition == "close-dup"        # close-dup outranks close-fixed
-    assert got.fix_scan["status"] == "fixed"     # evidence still recorded
+    assert got.disposition == "close-fixed"
+    assert got.fixed_by == 42
+    assert got.section("analysis")["disposition"] == "close-dup"
 
 
 def test_apply_fixed_sets_close_fixed_when_unranked_or_lower(tmp_path):
