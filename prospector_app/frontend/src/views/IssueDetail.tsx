@@ -30,6 +30,7 @@ function FlyoutIssueLink({ n }: { n: number }) {
 export function IssueDetailContent({ issue }: { issue: number }) {
   const [d, setD] = useState<IssueDetail>();
   const [err, setErr] = useState<string>();
+  const { prUrl } = useRepoMeta();
 
   useEffect(() => {
     api.getIssue(issue).then(setD).catch((e) => setErr(String(e)));
@@ -72,6 +73,10 @@ export function IssueDetailContent({ issue }: { issue: number }) {
           <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 6 }}>
             <DispositionChip d={a.disposition} />
             {a.canonical != null && <span className="muted small">duplicate of <FlyoutIssueLink n={a.canonical} /></span>}
+            {a.fixed_by != null && (
+              <span className="muted small">fixed by <a href={prUrl(a.fixed_by)} target="_blank" rel="noreferrer"
+                className="gh-pr-link" title="The merged PR the fix scan cites">#{a.fixed_by}</a></span>
+            )}
           </div>
           {a.rationale && <div style={{ whiteSpace: "pre-wrap" }}>{a.rationale}</div>}
           {a.asks && a.asks.length > 0 && (
