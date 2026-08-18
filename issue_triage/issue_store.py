@@ -78,6 +78,17 @@ def validate_issue_cluster(rec: dict) -> None:
         raise ValidationError("canonical: must be int or null")
 
 
+
+def _mirror_issue(rec: dict) -> dict:
+    """The issues table's mirror columns. The disposition column mirrors the
+    DERIVED disposition (issue_model.Issue.disposition); every fact lives in this
+    same row, so the column stays in step."""
+    from issue_triage import issue_model
+    row = schema.mirror_issue(rec)
+    row["disposition"] = issue_model.Issue(None, rec).disposition
+    return row
+
+
 class IssueStore:
     def __init__(self, root: Path | str | None = None):
         self.root = Path(root) if root is not None else DEFAULT_ROOT
@@ -88,7 +99,7 @@ class IssueStore:
             storekit.refresh_schema_guard(self.engine)
         self._issues: Collection[issue_model.Issue] = Collection(
             self.engine, schema.issues, "issue", validate_issue, self._issue_view,
-            schema.mirror_issue)
+            _mirror_issue)
         self._clusters: Collection[issue_model.IssueCluster] = Collection(
             self.engine, schema.issue_clusters, "id", validate_issue_cluster,
             self._cluster_view, schema.mirror_issue_cluster)

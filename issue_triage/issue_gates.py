@@ -16,26 +16,6 @@ from issue_triage.issue_freshness import is_current
 if TYPE_CHECKING:
     from issue_triage.issue_model import Issue, IssueCluster
 
-# Issue disposition precedence: the evidence-backed close proposals outrank the
-# generic needs-human flag (every close is still human-approved at execution, so
-# a stronger proposal surfacing costs nothing), and close-dup outranks
-# close-fixed. Lower index = higher precedence. The ONE place this order is
-# defined; the PR-side order is gates.DISPOSITION_PRECEDENCE and differs.
-DISPOSITION_PRECEDENCE: tuple[str, ...] = ("close-dup", "close-fixed", "needs-human")
-_DISPOSITION_RANK = {d: i for i, d in enumerate(DISPOSITION_PRECEDENCE)}
-
-
-def disposition_outranks(new: str, current: str | None) -> bool:
-    """True when issue disposition `new` should replace `current` under
-    DISPOSITION_PRECEDENCE. A disposition absent from the table (a keep-open
-    state such as request-repro or link-pr) ranks below every listed one, and a
-    None current is always replaced."""
-    if current is None:
-        return True
-    low = len(DISPOSITION_PRECEDENCE)
-    return _DISPOSITION_RANK.get(new, low) <= _DISPOSITION_RANK.get(current, low)
-
-
 def close_dup_allowed(issue: Issue, cluster: IssueCluster | None,
                       today: str | None = None) -> tuple[bool, str]:
     """Static gate (pipeline auto-recommend): an open, confirmed, fresh, curated
