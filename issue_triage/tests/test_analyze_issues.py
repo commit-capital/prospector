@@ -38,6 +38,21 @@ def test_analyze_batch_applies_only_valid_in_batch_verdicts(tmp_path, monkeypatc
     assert st.load_issue(99) is None
 
 
+def test_batch_runs_agent_with_gh_enabled(tmp_path, monkeypatch):
+    """ANALYZE reads GitHub, so it can resolve a candidate PR the store does not
+    carry rather than assume it is open."""
+    st = _seed(tmp_path, 1)
+    seen = {}
+
+    def fake_run(prompt, **kw):
+        seen.update(kw)
+        return _fenced([{"issue": 1, "disposition": "needs-human", "rationale": "r"}])
+
+    monkeypatch.setattr(analyze_issues.headless_agent, "run_agent", fake_run)
+    analyze_issues.analyze_batch(st, [1])
+    assert seen["allow_gh"] is True
+
+
 def test_analyze_batch_prompt_carries_bundle_path(tmp_path, monkeypatch):
     """The agent prompt embeds a readable bundle file holding exactly the batch."""
     st = _seed(tmp_path, 3)

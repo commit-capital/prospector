@@ -61,7 +61,7 @@ def run_batch_agent(entries: list[dict]) -> list[dict]:
         bundle_path = f.name
     prompt = (issue_analyze_driver.ANALYZE_PROMPT.replace("__BUNDLE_PATH__", bundle_path)
               + issue_analyze_driver.ANALYZE_FENCED_TAIL)
-    text = headless_agent.run_agent(prompt, allow_gh=False, cwd=str(REPO_ROOT),
+    text = headless_agent.run_agent(prompt, allow_gh=True, cwd=str(REPO_ROOT),
                                     on_event=on_event)
     verdicts = headless_agent.extract_json(text).get("verdicts") or []
     in_batch = {e["number"] for e in entries}
