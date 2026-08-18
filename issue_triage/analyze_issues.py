@@ -82,7 +82,8 @@ def analyze_batch(store: IssueStore, numbers: list[int]) -> int:
     """Bundle `numbers`, run one headless analyze agent over them, and apply its
     verdicts. Synchronous, single-batch convenience — the parallel `main` path
     keeps store I/O on its own thread. Returns how many verdicts were applied."""
-    entries = issue_analyze_driver.bundle(store, only=numbers)
+    entries = issue_analyze_driver.bundle(
+        store, only=numbers, pr_states=issue_analyze_driver.load_pr_states())
     good = run_batch_agent(entries)
     return issue_analyze_driver.apply_verdicts(store, good)
 
@@ -109,7 +110,8 @@ def main(argv: list[str] | None = None) -> int:
         _say("✓ nothing pending — analysis is current.")
         return 0
     # One store read up front; the workers see only their pre-built slice.
-    entries = issue_analyze_driver.bundle(store, only=todo)
+    entries = issue_analyze_driver.bundle(
+        store, only=todo, pr_states=issue_analyze_driver.load_pr_states())
     batches = [entries[i:i + args.batch] for i in range(0, len(entries), args.batch)]
     applied = 0
     failed_batches = 0
