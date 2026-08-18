@@ -64,7 +64,7 @@ def rank_pain(groups: list[dict], issues: dict[int, Issue]) -> dict[int, float]:
 
 
 def run(store: IssueStore) -> int:
-    """Rebuild the candidate clusters, preserving human-confirmed ones.
+    """Rebuild the candidate clusters, preserving the confirmed ones.
 
     Clusters whose curation is confirmed (a /diagnose-issue-cluster verdict) keep
     their membership, canonical, and id — only their pain is restamped, ranked in

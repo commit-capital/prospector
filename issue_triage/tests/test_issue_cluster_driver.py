@@ -55,7 +55,7 @@ def test_rerun_preserves_confirmed_curation(tmp_path):
     a.set_summary("auth", ["alphaId"])
     b = st.create_issue(5, {**META, "title": "beta"})
     b.set_summary("inbox", ["betaId"])
-    # a human-confirmed cluster joining them
+    # a confirmed cluster joining them
     cl = st.create_issue_cluster(1, "curated group")
     cl.set_members([4, 5])
     cl.record_curation({"confirmed": True, "canonical": 4})
