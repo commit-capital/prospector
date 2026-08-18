@@ -54,7 +54,7 @@ def close_dup_allowed(issue: Issue, cluster: IssueCluster | None,
     if canon == issue.number:
         return False, "canonical is the issue itself"
     if cluster is None or not (cluster.curation or {}).get("confirmed"):
-        return False, "cluster duplicates not human-confirmed (curation pending)"
+        return False, "cluster duplicates not confirmed (curation pending)"
     return True, "confirmed duplicate — ready to close"
 
 
