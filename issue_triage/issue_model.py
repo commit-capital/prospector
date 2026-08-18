@@ -144,6 +144,8 @@ class Issue:
 
     @property
     def asks(self) -> list | None:
+        if self._fixed_now():
+            return None
         return (self.rec.get("analysis") or {}).get("asks")
 
     @property

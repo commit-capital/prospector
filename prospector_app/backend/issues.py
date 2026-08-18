@@ -261,8 +261,16 @@ def get_issue(n: int) -> dict | None:
     clusters = issue_data.clusters()
     row = _row(i, clusters, _store_pr_states())
     row["body"] = i.body
-    a = i.rec.get("analysis")
-    row["analysis"] = a
+    # The effective verdict, matching row["disposition"]: while the fix scan cites
+    # a merged fixer it supplies the route, the rationale, and the gist.
+    row["analysis"] = None if i.disposition is None else {
+        "disposition": i.disposition,
+        "gist": i.gist,
+        "rationale": i.rationale,
+        "asks": i.asks,
+        "canonical": i.canonical,
+        "fixed_by": i.fixed_by,
+    }
     fixer, canon = i.fixed_by, i.canonical
     row["fixed_comment"] = fixed_issue_comment(int(fixer)) if fixer else None
     row["dup_comment"] = dup_issue_comment(int(canon)) if canon else None
