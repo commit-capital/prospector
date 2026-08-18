@@ -115,14 +115,16 @@ def test_bundle_only_restricts_to_named_issues(tmp_path):
     assert [e["number"] for e in b] == [6, 4]
 
 
-def test_analyze_close_dup_supersedes_current_close_fixed(tmp_path):
+def test_analyze_verdict_stored_under_a_current_fix_scan(tmp_path):
     st = issue_store.IssueStore(tmp_path)
     iss = st.create_issue(5, META)
     iss.record_fixed(42, rationale="already fixed by #42")
     assert issue_freshness.is_current(st.load_issue(5), "fix_scan")
     issue_analyze_driver.apply_verdicts(st, [
         {"issue": 5, "disposition": "close-dup", "canonical": 4, "rationale": "dup"}])
-    assert st.load_issue(5).disposition == "close-dup"  # close-dup outranks close-fixed
+    got = st.load_issue(5)
+    assert got.disposition == "close-fixed"
+    assert got.section("analysis")["disposition"] == "close-dup"
 
 
 def test_analyze_keep_open_does_not_supersede_current_close_fixed(tmp_path):

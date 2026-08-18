@@ -93,16 +93,28 @@ def test_record_fixed_link_is_idempotent(tmp_path):
     assert len(fix_links) == 1
 
 
-def test_record_fixed_without_disposition_keeps_analysis(tmp_path):
+def test_record_fixed_writes_evidence_not_analysis(tmp_path):
     st = issue_store.IssueStore(tmp_path)
     iss = st.create_issue(5, {"title": "t", "state": "open", "updated_at": "T1"})
     iss.route_to("close-dup", "dup", canonical=4)
-    iss.record_fixed(42, rationale="also fixed by #42", set_disposition=False)
+    iss.record_fixed(42, rationale="fixed by #42")
     got = st.load_issue(5)
-    assert got.disposition == "close-dup"          # higher-precedence disposition preserved
-    assert got.canonical == 4                       # and its canonical
-    assert got.fix_scan["status"] == "fixed"        # evidence still recorded
+    assert got.disposition == "close-fixed"
+    assert got.fixed_by == 42
+    assert got.rationale == "fixed by #42"
+    assert got.section("analysis")["disposition"] == "close-dup"  # ANALYZE's verdict untouched
+    assert got.canonical == 4
     assert any(c.get("how") == "fix-found" and c["pr"] == 42 for c in got.candidate_prs)
+
+
+def test_disposition_falls_back_when_fix_scan_goes_stale(tmp_path):
+    st = issue_store.IssueStore(tmp_path)
+    iss = st.create_issue(5, {"title": "t", "state": "open", "updated_at": "T1"})
+    iss.route_to("close-dup", "dup", canonical=4)
+    iss.record_fixed(42, rationale="fixed by #42")
+    assert st.load_issue(5).disposition == "close-fixed"
+    iss.set_meta({"title": "t", "state": "open", "updated_at": "T2"})  # new activity
+    assert st.load_issue(5).disposition == "close-dup"
 
 
 def test_record_fix_scan_touches_only_fix_scan(tmp_path):
