@@ -63,6 +63,42 @@ def test_batch_drops_fixed_verdict_without_causal_evidence(tmp_path, monkeypatch
     assert st.load_issue(1).fix_scan is None
 
 
+def test_main_retries_a_failed_batch(tmp_path, monkeypatch, capsys):
+    """A batch that fails once is retried, so a transient agent failure doesn't
+    silently leave its issues on a stale fix-scan."""
+    st = issue_store.IssueStore(tmp_path)
+    st.create_issue(5, META)
+    attempts = []
+
+    def fake_run(prompt, **kw):
+        attempts.append(prompt)
+        if len(attempts) == 1:
+            raise RuntimeError("boom")
+        return _fenced([{"issue": 5, "status": "not-fixed", "rationale": "still broken"}])
+
+    monkeypatch.setattr(find_fixed.headless_agent, "run_agent", fake_run)
+    find_fixed.main(["--store", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert len(attempts) == 2
+    assert "retrying 1 failed batch" in out
+    assert st.load_issue(5).fix_scan["status"] == "not-fixed"
+    assert issue_fixed_driver.candidates(st) == []
+
+
+def test_main_names_issues_left_unscanned(tmp_path, monkeypatch, capsys):
+    """An issue the agent skips inside an otherwise-successful batch is named,
+    not folded into the applied count."""
+    st = issue_store.IssueStore(tmp_path)
+    st.create_issue(5, META)
+    st.create_issue(6, META)
+    monkeypatch.setattr(find_fixed.headless_agent, "run_agent",
+                        lambda prompt, **kw: _fenced(
+                            [{"issue": 5, "status": "not-fixed", "rationale": "r"}]))
+    find_fixed.main(["--batch", "2", "--store", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert "1 of this run's issues have no current fix-scan: #6" in out
+
+
 def test_main_checks_merged_explicit_fixer_with_agent(tmp_path, monkeypatch):
     st = issue_store.IssueStore(tmp_path)
     iss = st.create_issue(5, META)

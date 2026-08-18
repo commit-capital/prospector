@@ -96,6 +96,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="issues per agent call (default 25)")
     ap.add_argument("--concurrency", type=int, default=8,
                     help="agent calls to run at once (default 8)")
+    ap.add_argument("--retries", type=int, default=2,
+                    help="extra passes over batches that failed (default 2)")
     ap.add_argument("--store", type=Path, default=None,
                     help="issue store root (default: the shared store)")
     args = ap.parse_args(argv)
@@ -112,34 +114,49 @@ def main(argv: list[str] | None = None) -> int:
     # One store read up front; the workers see only their pre-built slice.
     entries = issue_analyze_driver.bundle(
         store, only=todo, pr_states=issue_analyze_driver.load_pr_states())
-    batches = [entries[i:i + args.batch] for i in range(0, len(entries), args.batch)]
+    pending_batches = [entries[i:i + args.batch] for i in range(0, len(entries), args.batch)]
+    total = len(pending_batches)
     applied = 0
-    failed_batches = 0
-    done = 0
-    with ThreadPoolExecutor(max_workers=conc) as pool:
-        futures = {pool.submit(run_batch_agent, b): b for b in batches}
-        for fut in as_completed(futures):
-            label = _label(futures[fut])
-            done += 1
-            try:
-                good = fut.result()
-            except Exception as e:
-                failed_batches += 1
-                _say(f"    ! {label} failed, continuing: {e}  ({done}/{len(batches)})")
-                continue
-            # Serial on the main thread — the store is never touched concurrently.
-            n = issue_analyze_driver.apply_verdicts(store, good)
-            applied += n
-            _say(f"    ✓ {label}: {n} verdicts applied  ({done}/{len(batches)})")
+    for attempt in range(max(0, args.retries) + 1):
+        if not pending_batches:
+            break
+        if attempt:
+            _say(f"↻ retrying {len(pending_batches)} failed batch(es)…")
+        failed: list[list[dict]] = []
+        done = 0
+        with ThreadPoolExecutor(max_workers=conc) as pool:
+            futures = {pool.submit(run_batch_agent, b): b for b in pending_batches}
+            for fut in as_completed(futures):
+                label = _label(futures[fut])
+                done += 1
+                try:
+                    good = fut.result()
+                except Exception as e:
+                    failed.append(futures[fut])
+                    _say(f"    ! {label} failed: {e}  ({done}/{len(pending_batches)})")
+                    continue
+                # Serial on the main thread — the store is never touched concurrently.
+                n = issue_analyze_driver.apply_verdicts(store, good)
+                applied += n
+                _say(f"    ✓ {label}: {n} verdicts applied  ({done}/{len(pending_batches)})")
+        pending_batches = failed
+    # Named from the store, so it covers every way an issue can be left behind:
+    # an unrecovered batch, and a verdict the agent or the driver dropped.
+    missed = sorted(set(todo) & set(issue_analyze_driver.pending(store)))
     remaining = len(issue_analyze_driver.pending(store))
-    _say(f"✓ applied {applied} verdicts across {len(batches) - failed_batches}/"
-         f"{len(batches)} batches; {remaining} issues still pending analysis.")
+    _say(f"✓ applied {applied} verdicts across {total - len(pending_batches)}/"
+         f"{total} batches; {remaining} issues still pending analysis.")
+    if missed:
+        _say(f"    ! {len(missed)} of this run's issues have no current analysis: "
+             + " ".join(f"#{n}" for n in missed[:20])
+             + (" …" if len(missed) > 20 else ""))
     # A whole-run summary distinct from apply_verdicts' per-batch "analyze" entries
     # above: this one carries a real started/finished pair plus `attempted`, so
     # it's the sample a seconds-per-issue rate can be computed from.
     store.append_run({"phase": "analyze", "started": started, "finished": storekit.now(),
-                      "stats": {"applied": applied, "failed_batches": failed_batches,
-                                "attempted": len(todo)}})
+                      "stats": {"applied": applied,
+                                "failed_batches": len(pending_batches),
+                                "missed": len(missed), "attempted": len(todo)}})
     return 0 if applied else 1
 
 
