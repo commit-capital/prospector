@@ -37,9 +37,9 @@ if [[ -n "$stale_identifier_allowlist" ]]; then
   fail=1
 fi
 
-if git ls-files -- 'pr-training-data/*' 'docs/issue-briefings/*' 'patches/*' | grep -q .; then
+if git ls-files -- 'pr-training-data/*' 'docs/issue-briefings/*' 'patches/*' 'issue_triage/verdicts/*.json' | grep -q .; then
   echo "FAIL: tracked operating-data files:" >&2
-  git ls-files -- 'pr-training-data/*' 'docs/issue-briefings/*' 'patches/*' >&2
+  git ls-files -- 'pr-training-data/*' 'docs/issue-briefings/*' 'patches/*' 'issue_triage/verdicts/*.json' >&2
   fail=1
 fi
 
