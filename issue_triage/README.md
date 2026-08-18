@@ -28,7 +28,9 @@ gated and logged.**
   auto-recommend) and `close_dup_eligibility` (the app/executor pre-write gate —
   adds a live "canonical open or closed as fixed" check), plus the derived
   `issue_cluster_state`.
-  A close-as-dup requires a **human-confirmed** curation verdict.
+  A close-as-dup requires a **confirmed** curation verdict — written by the
+  `/diagnose-issue-cluster` agent, not by a human; the human approval is the
+  operator's at RESOLVE.
 - **Model** (`issue_model.py`): typed `Issue` / `IssueCluster` wrappers; every
   mutator stamps freshness and persists in one validated write. Each phase writes
   only its own section; `Issue.disposition` derives on read — `close-fixed` while
@@ -42,7 +44,7 @@ gated and logged.**
 | Phase | Module | What it does |
 |---|---|---|
 | INGEST | `issue_ingest.py` | fetch open issues (read-only) + compute deterministic `summary` / `repro` / `links` into the store |
-| CLUSTER | `issue_cluster_driver.py` | deterministic candidate clusters → membership + pain; flag oversized `needs_review`; **preserve human-confirmed clusters**, re-cluster only the rest |
+| CLUSTER | `issue_cluster_driver.py` | deterministic candidate clusters → membership + pain; flag oversized `needs_review`; **preserve confirmed clusters**, re-cluster only the rest |
 | (curate) | `/diagnose-issue-cluster` | agentic: confirm canonical / split false merges → writes the cluster `curation` section |
 | ANALYZE | `issue_analyze_driver.py` + `analyze_issues.py` | agentic per-issue disposition (`close-dup` / `request-repro` / `link-pr` / `needs-human`) run in parallel batches and committed back to the store |
 | GATE | `issue_gates.py` | close-dup eligibility, computed on read |
