@@ -90,6 +90,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="issues per agent call (default 6)")
     ap.add_argument("--concurrency", type=int, default=4,
                     help="agent calls to run at once (default 4)")
+    ap.add_argument("--retries", type=int, default=2,
+                    help="extra passes over batches that failed (default 2)")
     ap.add_argument("--store", type=Path, default=None,
                     help="issue store root (default: the shared store)")
     args = ap.parse_args(argv)
@@ -103,27 +105,41 @@ def main(argv: list[str] | None = None) -> int:
         _say("✓ nothing to scan — every open issue has a current fix-scan.")
         return 0
     entries = issue_fixed_driver.bundle(store, only=todo)
-    batches = [entries[i:i + args.batch] for i in range(0, len(entries), args.batch)]
+    pending_batches = [entries[i:i + args.batch] for i in range(0, len(entries), args.batch)]
+    total = len(pending_batches)
     applied = 0
-    failed_batches = 0
-    done = 0
-    with ThreadPoolExecutor(max_workers=conc) as pool:
-        futures = {pool.submit(run_batch_agent, b): b for b in batches}
-        for fut in as_completed(futures):
-            label = _label(futures[fut])
-            done += 1
-            try:
-                good = fut.result()
-            except Exception as e:
-                failed_batches += 1
-                _say(f"    ! {label} failed, continuing: {e}  ({done}/{len(batches)})")
-                continue
-            n = issue_fixed_driver.apply_verdicts(store, good)
-            applied += n
-            _say(f"    ✓ {label}: {n} verdicts applied  ({done}/{len(batches)})")
+    for attempt in range(max(0, args.retries) + 1):
+        if not pending_batches:
+            break
+        if attempt:
+            _say(f"↻ retrying {len(pending_batches)} failed batch(es)…")
+        failed: list[list[dict]] = []
+        done = 0
+        with ThreadPoolExecutor(max_workers=conc) as pool:
+            futures = {pool.submit(run_batch_agent, b): b for b in pending_batches}
+            for fut in as_completed(futures):
+                label = _label(futures[fut])
+                done += 1
+                try:
+                    good = fut.result()
+                except Exception as e:
+                    failed.append(futures[fut])
+                    _say(f"    ! {label} failed: {e}  ({done}/{len(pending_batches)})")
+                    continue
+                n = issue_fixed_driver.apply_verdicts(store, good)
+                applied += n
+                _say(f"    ✓ {label}: {n} verdicts applied  ({done}/{len(pending_batches)})")
+        pending_batches = failed
+    # Named from the store, so it covers every way an issue can be left behind:
+    # an unrecovered batch, and a verdict the agent or the driver dropped.
+    missed = sorted(set(todo) & set(issue_fixed_driver.candidates(store)))
     remaining = len(issue_fixed_driver.candidates(store))
-    _say(f"✓ applied {applied} verdicts across {len(batches) - failed_batches}/"
-         f"{len(batches)} batches; {remaining} issues still unscanned.")
+    _say(f"✓ applied {applied} verdicts across {total - len(pending_batches)}/"
+         f"{total} batches; {remaining} issues still unscanned.")
+    if missed:
+        _say(f"    ! {len(missed)} of this run's issues have no current fix-scan: "
+             + " ".join(f"#{n}" for n in missed[:20])
+             + (" …" if len(missed) > 20 else ""))
     return 0 if applied else 1
 
 

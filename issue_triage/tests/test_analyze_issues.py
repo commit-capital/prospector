@@ -88,11 +88,12 @@ def test_main_batches_and_reports(tmp_path, monkeypatch, capsys):
                         for e in bundle])
 
     monkeypatch.setattr(analyze_issues.headless_agent, "run_agent", fake_run)
-    rc = analyze_issues.main(["--limit", "4", "--batch", "2", "--store", str(tmp_path)])
+    rc = analyze_issues.main(["--limit", "4", "--batch", "2", "--retries", "0",
+                              "--store", str(tmp_path)])
     out = capsys.readouterr().out
     assert rc == 0
     assert len(calls) == 2                      # 4 issues in batches of 2
-    assert "failed, continuing: boom" in out
+    assert "failed: boom" in out
     st = issue_store.IssueStore(tmp_path)
     assert st.load_issue(1).disposition is None  # its batch raised
     assert st.load_issue(2).disposition is None
@@ -100,6 +101,42 @@ def test_main_batches_and_reports(tmp_path, monkeypatch, capsys):
     assert st.load_issue(4).disposition == "needs-human"
     assert st.load_issue(5).disposition is None  # beyond --limit
     assert len(issue_analyze_driver.pending(st)) == 3  # batch-1 pair + #5
+
+
+def test_main_retries_a_failed_batch(tmp_path, monkeypatch, capsys):
+    """A batch that fails once is retried, so a transient agent failure doesn't
+    silently leave its issues on stale analysis."""
+    _seed(tmp_path, 2)
+    attempts = []
+
+    def fake_run(prompt, **kw):
+        attempts.append(prompt)
+        if len(attempts) == 1:
+            raise RuntimeError("boom")
+        return _fenced([{"issue": 1, "disposition": "needs-human", "rationale": "r"},
+                        {"issue": 2, "disposition": "needs-human", "rationale": "r"}])
+
+    monkeypatch.setattr(analyze_issues.headless_agent, "run_agent", fake_run)
+    rc = analyze_issues.main(["--batch", "2", "--store", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert len(attempts) == 2
+    assert "retrying 1 failed batch" in out
+    st = issue_store.IssueStore(tmp_path)
+    assert st.load_issue(1).disposition == "needs-human"
+    assert issue_analyze_driver.pending(st) == []
+
+
+def test_main_names_issues_left_without_analysis(tmp_path, monkeypatch, capsys):
+    """An issue the agent skips inside an otherwise-successful batch is named,
+    not folded into the applied count."""
+    _seed(tmp_path, 2)
+    monkeypatch.setattr(analyze_issues.headless_agent, "run_agent",
+                        lambda prompt, **kw: _fenced(
+                            [{"issue": 1, "disposition": "needs-human", "rationale": "r"}]))
+    analyze_issues.main(["--batch", "2", "--store", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert "1 of this run's issues have no current analysis: #2" in out
 
 
 def test_main_records_run_with_attempted_count(tmp_path, monkeypatch):
