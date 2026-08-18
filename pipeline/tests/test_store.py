@@ -60,6 +60,11 @@ class TestPRRoundTrip:
         # the body is still persisted — load_pr returns the full record
         assert store.load_pr(1).body == "the full description"
 
+    def test_pr_states_maps_every_pr_to_its_state(self, store):
+        store.save_pr(_pr(1))
+        store.save_pr(_pr(2, meta=dict(_pr(2)["meta"], state="merged")))
+        assert store.pr_states() == {1: "open", 2: "merged"}
+
     def test_write_is_atomic_no_partial_file_on_validation_error(self, store):
         with pytest.raises(ValidationError):
             store.save_pr({"pr": 7})  # no meta

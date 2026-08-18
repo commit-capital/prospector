@@ -82,6 +82,28 @@ def test_bundle_carries_author_trust(tmp_path, monkeypatch):
     assert b[5]["author"] == "rando" and b[5]["trusted_author"] is False
 
 
+def test_bundle_annotates_candidate_pr_state(tmp_path):
+    """Each candidate PR carries its current state, so link-pr can require an open
+    one; a PR absent from the state map is "unknown", never open."""
+    st = issue_store.IssueStore(tmp_path)
+    iss = st.create_issue(5, META)
+    iss.set_links([{"pr": 7, "how": "explicit", "title": "fix"},
+                   {"pr": 8, "how": "fix-found", "title": "landed"},
+                   {"pr": 9, "how": "subsystem", "title": "gone"}])
+    b = issue_analyze_driver.bundle(st, pr_states={7: "open", 8: "merged"})
+    assert [(c["pr"], c["state"]) for c in b[0]["candidate_prs"]] == [
+        (7, "open"), (8, "merged"), (9, "unknown")]
+
+
+def test_bundle_without_pr_states_marks_every_candidate_unknown(tmp_path):
+    st = issue_store.IssueStore(tmp_path)
+    iss = st.create_issue(5, META)
+    iss.set_links([{"pr": 7, "how": "explicit", "title": "fix"}])
+    b = issue_analyze_driver.bundle(st)
+    assert b[0]["candidate_prs"] == [
+        {"pr": 7, "how": "explicit", "title": "fix", "state": "unknown"}]
+
+
 def test_bundle_only_restricts_to_named_issues(tmp_path):
     """`only` bundles exactly the named issues (unknown numbers skipped), letting
     the headless path batch pending issues across several calls."""

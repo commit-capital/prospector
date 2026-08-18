@@ -296,6 +296,16 @@ class Store:
                 live[cid] = c
         return live, deleted, hi
 
+    def pr_states(self) -> dict[int, str]:
+        """Every stored PR's current state, keyed by PR number. Reads the indexed
+        `state` mirror column alone, so a caller that needs nothing else never
+        pulls the JSON records."""
+        from sqlalchemy import select
+
+        def q(conn) -> list:
+            return conn.execute(select(schema.prs.c.pr, schema.prs.c.state)).all()
+        return {r[0]: r[1] for r in storekit.read_retrying(self.engine, q) if r[1]}
+
     def pr_bodies(self, ns: list[int]) -> dict[int, str | None]:
         """The stored `meta.body` for each of `ns` — the field `all_prs` omits —
         fetched on demand for the detail and deep-search paths. Reads the records
