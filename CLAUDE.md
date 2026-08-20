@@ -156,10 +156,13 @@ never a fresh agent attempt. Both can therefore be pushed by any autofix
 machine, not only the one that produced them. `TRIAGE_FIX_AUTOHUNT=1` lets an idle worker queue the mechanical actions
 itself, gated by `gates.fix_huntable` — the review provider's bar on top of
 `fix_eligibility`, and deliberately not `mergeable`, CI, or a GREEN security
-verdict, none of which a PR that needs updating can have. `TRIAGE_FIX_HUNT_FIX=1`
+verdict, none of which a PR that needs updating can have. Every hunted action
+gets one unattended attempt per head SHA — a terminal outcome rests the PR
+until the author pushes, and only an operator's re-queue retries the same
+head. `TRIAGE_FIX_HUNT_FIX=1`
 additionally lets the hunter queue unguided `fix` actions, on the inverse
 population — CI passing, mergeable, review score below the bar and scored at
-the current head — one attempt per head SHA, at most `TRIAGE_FIX_HUNT_LIMIT`
+the current head — at most `TRIAGE_FIX_HUNT_LIMIT`
 (default 3) in flight, and only where the profile names `autofix.fixable_gates`.
 A pushed `fix` re-triggers the review provider as the bot (Activity-logged) and
 starts the backend wait that ingests the fresh score.
