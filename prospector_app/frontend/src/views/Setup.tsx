@@ -149,7 +149,56 @@ export default function Setup() {
         );
       })}
 
+      <ShareSection />
+
       {error && <p className="chip chip-red sm">{error}</p>}
     </div>
+  );
+}
+
+/** Copies a ready-to-paste .env for onboarding a teammate. The store URL holds
+ *  the database password, so it ships only when the checkbox says so — and the
+ *  page says out loud what pasting it into a chat channel means. */
+function ShareSection() {
+  const [includeStore, setIncludeStore] = useState(false);
+  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
+
+  const copy = async () => {
+    try {
+      const { snippet } = await api.setupShare(includeStore);
+      await navigator.clipboard.writeText(snippet);
+      setState("copied");
+    } catch {
+      setState("failed");
+    }
+    setTimeout(() => setState("idle"), 3000);
+  };
+
+  return (
+    <section>
+      <h3>Share this deployment</h3>
+      <p className="muted small">
+        Copies a ready-to-paste <code>.env</code> for a teammate: the repo, bot
+        identity, and review config prefilled, plus instructions for the pieces
+        that only travel as files (the bot key, <code>profile.json</code>).
+      </p>
+      <label>
+        <input type="checkbox" checked={includeStore}
+          onChange={(e) => setIncludeStore(e.target.checked)} />
+        {" "}include store credentials
+      </label>
+      {includeStore && (
+        <p className="muted small">
+          ⚠ The store URL contains the database password. Pasting it into chat
+          puts that password in the channel's history — prefer sending that one
+          line through a password manager.
+        </p>
+      )}
+      <div>
+        <button onClick={() => void copy()}>
+          {state === "copied" ? "copied ✓" : state === "failed" ? "copy failed" : "copy setup for a teammate"}
+        </button>
+      </div>
+    </section>
   );
 }
