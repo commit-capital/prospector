@@ -2317,16 +2317,72 @@ class TestFixHuntable:
         assert ok is False
         assert "withholds from autofix" in why
 
-    def test_never_hunts_an_agent_authored_fix(self, monkeypatch):
-        # An agent-authored change is an operator's call. The hunter queues only
-        # the mechanical actions, and the gate says so rather than relying on the
-        # caller to remember.
-        self._profile(monkeypatch, fixable_gates=("ci",))
-        ok, why = gates.fix_huntable(self._stale(), "fix")
-        assert ok is False
-        assert "fix" in why
-
     def test_fix_allowed_once_gates_named(self, monkeypatch):
         self._profile(monkeypatch, fixable_gates=("ci",))
         ok, why = gates.fix_eligibility(_pr(), "fix")
         assert ok is True, why
+
+    def _below_bar(self, **over):
+        """A CI-passing, mergeable PR whose review score sits below the bar at
+        the current head — the population an agent-authored fix targets."""
+        return _pr(signals={"greptile": 4, "greptile_reviewed_sha": HEAD,
+                            "ci": "passing", "mergeable": True,
+                            "has_tests": True, "checked_at": NOW,
+                            "against_head_sha": HEAD}, **over)
+
+    def test_below_bar_clean_pr_is_fix_huntable(self, monkeypatch):
+        self._profile(monkeypatch, fixable_gates=("review",))
+        ok, why = gates.fix_huntable(self._below_bar(), "fix")
+        assert ok is True, why
+
+    def test_fix_hunt_requires_ci_passing(self, monkeypatch):
+        self._profile(monkeypatch, fixable_gates=("review",))
+        pr = self._below_bar()
+        pr.raw["signals"]["ci"] = "failing"
+        ok, why = gates.fix_huntable(pr, "fix")
+        assert ok is False
+        assert "CI" in why
+
+    def test_fix_hunt_requires_mergeable(self, monkeypatch):
+        self._profile(monkeypatch, fixable_gates=("review",))
+        pr = self._below_bar()
+        pr.raw["signals"]["mergeable"] = False
+        ok, why = gates.fix_huntable(pr, "fix")
+        assert ok is False
+        assert "merge" in why
+
+    def test_fix_hunt_skips_a_stale_score(self, monkeypatch):
+        # A stale score describes a head the author moved past; the remedy is a
+        # re-review, not a fix authored against outdated findings.
+        self._profile(monkeypatch, fixable_gates=("review",))
+        pr = self._below_bar()
+        pr.raw["signals"]["greptile_reviewed_sha"] = "b" * 40
+        ok, why = gates.fix_huntable(pr, "fix")
+        assert ok is False
+        assert "stale" in why.lower()
+
+    def test_fix_hunt_skips_an_unscored_pr(self, monkeypatch):
+        # With no score there are no findings to author against.
+        self._profile(monkeypatch, fixable_gates=("review",))
+        pr = self._below_bar()
+        pr.raw["signals"]["greptile"] = None
+        ok, why = gates.fix_huntable(pr, "fix")
+        assert ok is False
+
+    def test_fix_hunt_skips_a_pr_already_at_the_bar(self, monkeypatch):
+        self._profile(monkeypatch, fixable_gates=("review",))
+        pr = self._below_bar()
+        pr.raw["signals"]["greptile"] = 5
+        ok, why = gates.fix_huntable(pr, "fix")
+        assert ok is False
+
+    def test_fix_hunt_needs_the_profile_gate_named(self, monkeypatch):
+        self._profile(monkeypatch)
+        ok, why = gates.fix_huntable(self._below_bar(), "fix")
+        assert ok is False
+
+    def test_never_hunts_a_resolve(self, monkeypatch):
+        self._profile(monkeypatch, fixable_gates=("review",))
+        ok, why = gates.fix_huntable(self._below_bar(), "resolve")
+        assert ok is False
+        assert "resolve" in why

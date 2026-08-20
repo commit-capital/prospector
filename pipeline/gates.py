@@ -545,10 +545,11 @@ def fix_eligibility(pr: Pr, action: str,
     return True, f"eligible for {action}"
 
 
-# The autofix actions the idle hunter may queue on its own. An agent-authored
-# `fix` is an operator's call: it is new code, and nothing about a PR being out
-# of date argues for writing some.
-HUNTABLE_ACTIONS = ("update", "rebase")
+# The autofix actions the idle hunter may queue on its own. `update` and
+# `rebase` are mechanical; `fix` has an agent author a change, and the worker
+# additionally holds it behind the deployment's TRIAGE_FIX_HUNT_FIX opt-in and
+# an in-flight cap. A `resolve` is never queued directly by anyone.
+HUNTABLE_ACTIONS = ("update", "rebase", "fix")
 
 
 def fix_huntable(pr: Pr, action: str,
@@ -557,27 +558,43 @@ def fix_huntable(pr: Pr, action: str,
 
     fix_eligibility bounds which branches the push bot may touch at all. This is
     the narrower question of which PRs are worth spending sandbox time on
-    unprompted, and it adds one thing: a human-facing quality signal, in the form
-    of the configured review provider's bar.
+    unprompted, and its bar is per-action:
 
-    It asks for nothing that being out of date is what causes. `pr_clean` also
-    requires `mergeable` and passing CI, and both are false precisely on the PRs
-    this hunts — a conflicted branch and a CI run against a base that has since
-    moved. A current GREEN security verdict is impossible here for the same
-    reason: security_eligible gates the review behind pr_clean, so a conflicted
-    PR never earns a verdict at all. Requiring any of the three would leave the
-    hunt pool permanently empty.
+    - `update`/`rebase` exist to clear conflicts and a stale CI run, so they ask
+      for a human-facing quality signal — the review provider's bar — and for
+      nothing that being out of date is what causes (`pr_clean` requires
+      `mergeable` and passing CI, both false on exactly the PRs this hunts).
+    - `fix` targets the opposite population: a PR already mergeable with CI
+      passing whose review score sits below the bar, scored at the current
+      head. An unscored or stale review is excluded — its findings are absent
+      or describe a head the author moved past, and a re-review, not authored
+      code, is what moves those.
 
     The operator's own click answers to fix_eligibility alone; this bar governs
     only what the hunter starts by itself.
     """
     if action not in HUNTABLE_ACTIONS:
-        return False, (f"the hunter queues only {' and '.join(HUNTABLE_ACTIONS)}; "
+        return False, (f"the hunter queues only {', '.join(HUNTABLE_ACTIONS)}; "
                        f"a {action} is an operator's call")
     if not is_current(pr, "signals"):
         return False, "signals stale or missing, so the review bar is unknowable"
     blocker = review_policy.active().clean_blocker(pr)
-    if blocker:
+    if action == "fix":
+        if pr.ci != "passing":
+            return False, f"CI is {pr.ci or 'unknown'}, not passing"
+        if pr.mergeable is not True:
+            return False, "the PR does not merge cleanly"
+        fixable = profile.active().autofix.fixable_gates
+        review_fixable = ("review" in fixable and blocker is not None
+                          and pr.review_score is not None
+                          and pr.review_stale is not True)
+        ci_fixable = "ci" in fixable and pr.ci == "failing"
+        if not (review_fixable or ci_fixable):
+            if blocker is not None and pr.review_stale:
+                return False, ("the review score is stale — a re-review, not a "
+                               "fix, is what moves it")
+            return False, "no gate a fix could clear is failing"
+    elif blocker:
         return False, blocker
     return fix_eligibility(pr, action, changed_paths)
 
