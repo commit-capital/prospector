@@ -617,7 +617,7 @@ def _retrigger_review(n: int) -> None:
 
 **Files:**
 - Modify: `CLAUDE.md` (AUTOFIX paragraph), `profile.example.json` (autofix block comment already documents shape — confirm it needs no change), `.env.example` (document `TRIAGE_FIX_HUNT_FIX` / `TRIAGE_FIX_HUNT_LIMIT` beside the other fix switches)
-- Deployment (NOT committed; operator's machine, `/Users/workyworky/prospector`): `profile.json` autofix block, `.env` additions
+- Deployment (NOT committed; the operator's live checkout): `profile.json` autofix block, `.env` additions
 
 **Interfaces:** none — documentation and config.
 
@@ -625,7 +625,7 @@ def _retrigger_review(n: int) -> None:
 - [ ] **Step 2: Update `.env.example`** with the two new vars and one-line explanations.
 - [ ] **Step 3: Run all gates** — `uv run pytest && uv run ruff check . && uv run pyright pipeline issue_triage alert_triage prospector_app/backend review-new-pr/harness` → all clean. From `prospector_app/frontend`: no frontend changes, skip.
 - [ ] **Step 4: Commit** — `"Docs: autofix hunting for agent-authored fixes"`
-- [ ] **Step 5 (operator-confirmed, after merge/deploy):** add to `/Users/workyworky/prospector/profile.json`:
+- [ ] **Step 5 (operator-confirmed, after merge/deploy):** add to the live checkout's `profile.json`:
 
 ```json
 "autofix": {
@@ -639,7 +639,7 @@ def _retrigger_review(n: int) -> None:
 }
 ```
 
-and to `/Users/workyworky/prospector/.env`:
+and to the live checkout's root `.env`:
 
 ```
 TRIAGE_FIX_AUTOHUNT=1
