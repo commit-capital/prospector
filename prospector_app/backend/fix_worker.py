@@ -91,14 +91,14 @@ stop = threading.Event()
 
 def enabled() -> bool:
     """Whether THIS backend is the autofix runner. Deliberately an exact opt-in:
-    only the machine whose .env sets TRIAGE_FIX_WORKER=1 drains the queue."""
-    return settings.FIX_WORKER
+    a machine says so in its own .env."""
+    return settings.fix_worker_enabled()
 
 
 def enabled_autohunt() -> bool:
     """Whether the idle auto-hunt runs on this backend. An exact opt-in like
     enabled(), and meaningful only alongside it."""
-    return settings.FIX_AUTOHUNT
+    return settings.fix_autohunt()
 
 
 def key_safety_failure() -> str | None:
@@ -377,7 +377,7 @@ def run_one(n: int) -> None:
                 return
         result = {"patch": patch[-TAIL_CHARS:], "compile_preflight": pf,
                   "message": _commit_message(action)}
-        if action not in settings.FIX_AUTOPUSH:
+        if action not in settings.fix_autopush():
             _park(n, claimed, action, result, host)
             return
         _push(n, claimed, action, result)

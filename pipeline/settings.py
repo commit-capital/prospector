@@ -207,13 +207,27 @@ def parse_fix_autopush(raw: str | None) -> frozenset[str]:
     return frozenset(names)
 
 
-# The sandbox machine's autofix worker. Set on the machine that drains the fix
-# queue; every other app instance serves the same queue API and starts no worker.
-FIX_WORKER: bool = os.environ.get("TRIAGE_FIX_WORKER", "") == "1"
+# The autofix worker's three switches, read live rather than frozen at import:
+# the app writes them to .env and reloads, and a toggle that only took effect on
+# the next process start would not be the control it presents itself as.
 
-# Actions that skip `awaiting-review` once their preflight is clean.
-FIX_AUTOPUSH: frozenset[str] = parse_fix_autopush(os.environ.get("TRIAGE_FIX_AUTOPUSH"))
 
-# When "1", an idle fix worker queues eligible PRs itself instead of waiting for
-# an operator click.
-FIX_AUTOHUNT: bool = os.environ.get("TRIAGE_FIX_AUTOHUNT", "") == "1"
+def fix_worker_enabled() -> bool:
+    """Whether this machine drains the autofix queue."""
+    return os.environ.get("TRIAGE_FIX_WORKER", "") == "1"
+
+
+def fix_autopush() -> frozenset[str]:
+    """The actions that skip `awaiting-review` once their preflight is clean."""
+    return parse_fix_autopush(os.environ.get("TRIAGE_FIX_AUTOPUSH"))
+
+
+def fix_autohunt() -> bool:
+    """Whether an idle fix worker queues eligible PRs itself."""
+    return os.environ.get("TRIAGE_FIX_AUTOHUNT", "") == "1"
+
+
+# Reject a malformed TRIAGE_FIX_AUTOPUSH while the process is still starting.
+# parse_fix_autopush exits on an unknown action, and that belongs at boot rather
+# than at whichever read happens to reach it first.
+fix_autopush()

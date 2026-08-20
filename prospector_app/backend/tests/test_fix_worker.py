@@ -13,7 +13,7 @@ import json
 
 import pytest
 
-from pipeline import profile, settings
+from pipeline import profile
 from pipeline import store as S
 from prospector_app.backend import data, fix_queue, fix_worker
 
@@ -31,7 +31,7 @@ def store(tmp_path, monkeypatch):
                 "drift": {"state": "conflicts", "checked_at": NOW,
                           "against_head_sha": HEAD}})
     monkeypatch.setattr(data, "_store", st)
-    monkeypatch.setattr(settings, "FIX_AUTOPUSH", frozenset())
+    monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", "")
     monkeypatch.setattr(fix_worker, "_preflight", lambda n, patch: {"exit": 0})
     data.refresh()
     return st
@@ -92,7 +92,7 @@ def test_update_parks_for_review_and_pushes_nothing(store, monkeypatch):
 
 
 def test_update_pushes_when_autopush_names_it(store, monkeypatch):
-    monkeypatch.setattr(settings, "FIX_AUTOPUSH", frozenset({"update"}))
+    monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", "update")
     fix_queue.queue_pr(1, "update")
     probe = _Probe()
     monkeypatch.setattr(fix_worker, "_resubmit", probe)
