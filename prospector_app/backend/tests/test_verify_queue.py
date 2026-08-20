@@ -112,9 +112,21 @@ def test_queue_entries_lists_in_flight_ordered_and_labels_source(store):
     assert running == {"pr": 3, "title": "fix baz", "status": "running",
                        "source": None, "step": "commit",
                        "queued_at": "2026-05-01T00:00:00+00:00",
-                       "started_at": "2026-05-01T00:05:00+00:00"}
+                       "started_at": "2026-05-01T00:05:00+00:00",
+                       "host": None}
     assert older_queued["pr"] == 2 and older_queued["source"] is None
     assert newer_queued["pr"] == 1 and newer_queued["source"] == "auto"
+
+
+def test_queue_entries_carry_the_claiming_host(store):
+    # The queue table names the machine running each row, so an operator can
+    # tell a busy remote worker from a stuck one.
+    verify_queue.queue_pr(1)
+    store.claim_verify_request(1, host="mac-studio")
+    data.refresh()
+    [entry] = verify_queue.queue_entries()
+    assert entry["status"] == "running"
+    assert entry["host"] == "mac-studio"
 
 
 def test_queue_entries_excludes_terminal_requests(store):

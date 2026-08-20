@@ -68,6 +68,7 @@ class QueueEntry(TypedDict):
     step: str | None
     queued_at: str | None
     started_at: str | None
+    host: str | None
 
 
 # Live verify_request statuses that mean "in flight", ranked in the order the
@@ -90,12 +91,13 @@ def queue_entries() -> list[QueueEntry]:
             "pr": n, "title": rec.title, "status": status,
             "source": req.get("source"), "step": req.get("step"),
             "queued_at": req.get("queued_at"), "started_at": req.get("started_at"),
+            "host": req.get("host"),
         })
     out.sort(key=lambda e: (_QUEUE_STATUS_ORDER[e["status"]], str(e["queued_at"] or "")))
     return out
 
 
-def _beat_online(last: object) -> bool:
+def beat_online(last: object) -> bool:
     """Whether a heartbeat stamp is within STALE_BEAT_SECONDS."""
     if not isinstance(last, str):
         return False
@@ -122,7 +124,7 @@ def runner_status() -> dict:
     carries every known worker's liveness."""
     from prospector_app.backend import verify_worker
     records = worker_records(data.store().load_verify_worker())
-    hosts = [{"host": r.get("host"), "online": _beat_online(r.get("last_beat")),
+    hosts = [{"host": r.get("host"), "online": beat_online(r.get("last_beat")),
               "last_beat": r.get("last_beat"), "current_pr": r.get("current_pr"),
               "autohunt": bool(r.get("autohunt"))} for r in records]
     fresh: dict = hosts[0] if hosts else {}
