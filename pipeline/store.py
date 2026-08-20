@@ -56,8 +56,17 @@ VERIFY_ERROR_KINDS = {"refused-safety", "no-base", "fetch-error", "agent-failed"
                       "sandbox-error", "interrupted", "hold", "exception"}
 
 # Who queued a verification request: the idle auto-hunter stamps its picks
-# "auto"; the app's operator path leaves the field unset.
-VERIFY_REQUEST_SOURCES = {"operator", "auto"}
+# "auto", and "auto-resweep" on the lane that re-runs a concluded verification
+# whose independent repro the harness broke; the app's operator path leaves the
+# field unset.
+VERIFY_REQUEST_SOURCES = {"operator", "auto", "auto-resweep"}
+
+# The sources the hunter selected itself. The security-clearance precondition
+# (the sandbox never runs code no adversarial review cleared), the autohunt
+# run-ledger trigger, and the queue's operator-picks-first ordering all key on
+# this rather than on any single spelling, so a new hunter lane is covered by
+# each of them the moment it is added here.
+AUTO_REQUEST_SOURCES = {"auto", "auto-resweep"}
 
 # What an autofix request asks the fix worker to do on the PR's head branch:
 # merge the base branch in so checks re-run against current base code, rebase

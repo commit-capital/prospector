@@ -45,7 +45,16 @@ def _green(verdict="GREEN", **over):
 
 
 def _verified(**over):
-    return dict({"outcome": "verified-fix", "signals": {}, "findings": [], "tier": 0,
+    # Complete evidence by default: every attempted signal corroborated, the
+    # independent repro included — the bar gates.verify_signals_incomplete holds
+    # a verified-fix to. A test about a specific gap overrides `signals`.
+    return dict({"outcome": "verified-fix",
+                 "signals": {
+                     "blind_adequacy": {"repro_command": "node --test repro.mjs"},
+                     "independent_repro": {"ran": True, "exit_code": 20},
+                     "repro_reason_match": {"matches": True, "applicable": True,
+                                            "confidence": "high"}},
+                 "findings": [], "tier": 0,
                  "against_base_sha": "base1", "checked_at": NOW,
                  "against_head_sha": HEAD}, **over)
 

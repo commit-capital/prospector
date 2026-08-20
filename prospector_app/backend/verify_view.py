@@ -456,18 +456,30 @@ def _repro_step(blind: dict, repro: dict, rating: dict) -> VerifyStep | None:
         return _step("repro", label, "warn",
                      "A repro was authored but never ran — the evidence is "
                      "partial.", reasoning)
-    flag = gates.vacuous_path_filter(blind, repro)
+    flag = gates.misrooted_repro_config(blind, repro)
     if flag is not None:
         # Deterministic, so it outranks the judge's rating: a fooled judge must
         # not present the exit as corroboration.
         return _step("repro", label, "warn",
-                     "The repro exited as failing, but its command mixes "
-                     f"--config/--root with a path filter ({flag}) that repeats "
-                     "the rebased root — the runner resolves path filters "
-                     "against that root, so the filter matches no files and a "
-                     "'no test files' exit looks identical to a genuine "
-                     "failure. A harness defect in the command, not "
-                     "corroboration of the bug.", reasoning)
+                     "The repro exited as failing, but its command points "
+                     f"--config at a subdirectory config ({flag}) it never "
+                     "makes the runner's root — the runner keeps its root at "
+                     "the working directory, so the paths that config declares "
+                     "relative to itself resolve against the repo root and the "
+                     "suite dies at load having run zero tests. A harness "
+                     "defect in the command, not corroboration of the bug.",
+                     reasoning)
+    nflag = gates.vacuous_repro_name_filter(blind, repro)
+    if nflag is not None:
+        # Same precedence as the misrooted config above: deterministic, so it
+        # outranks the judge's reading of an exit that evaluated no assertion.
+        return _step("repro", label, "warn",
+                     "The repro exited 0, but its command carries a name filter "
+                     f"({nflag!r}) — a filter that matches no test title skips "
+                     "every test and exits 0, so the likeliest cause is that "
+                     "nothing ran at all rather than that the defect failed to "
+                     "reproduce. A harness defect in the command, not evidence "
+                     "about the PR.", reasoning)
     matches = rating.get("matches")
     if matches is True:
         return _step("repro", label, "pass",

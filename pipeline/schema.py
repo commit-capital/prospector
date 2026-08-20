@@ -49,7 +49,12 @@ _JSON = JSON().with_variant(JSONB, "postgresql")
 #      the top level and reports no pinned base, so it verifies nothing), and a
 #      PR carries a `security_run` claim (an older hunter ignores it and can
 #      spend a second agent review on a PR another machine is already reviewing).
-STORE_SCHEMA_VERSION = 16
+# 17 — verify_request.source gains "auto-resweep", the hunter lane that re-runs
+#      a concluded verification whose independent repro the harness broke (older
+#      validators refuse to save a record carrying that source, and older
+#      readers mistake it for an operator pick — skipping the security-clearance
+#      precondition and jumping the operator-first queue order).
+STORE_SCHEMA_VERSION = 17
 
 # saved_at is a microsecond-resolution ISO timestamp stamped on every save — when
 # the store row was last written (distinct from `updated_at`, which mirrors the
