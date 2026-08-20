@@ -90,6 +90,38 @@ state: dict[str, int | None] = {"current_pr": None}
 stop = threading.Event()
 
 
+# This backend's live worker threads. A restart reads them to tell a running
+# worker from a stopped one, so a flag toggled twice never leaves two drain
+# loops racing each other for pickups.
+_threads: list[threading.Thread] = []
+
+# How long shutdown waits for the loops to notice. A loop resting between polls
+# ends at once; one inside a run finishes it first, so a caller that times out
+# has signalled a stop, not failed to.
+SHUTDOWN_TIMEOUT = 5.0
+
+
+def running() -> bool:
+    """Whether this backend's worker threads are alive."""
+    return any(t.is_alive() for t in _threads)
+
+
+def shutdown(timeout: float = SHUTDOWN_TIMEOUT) -> bool:
+    """Signal the loops to end and wait up to `timeout` for them. Returns
+    whether they are stopped — False means the stop is signalled and the work in
+    flight is still finishing, which is not a failure."""
+    if not running():
+        _threads.clear()
+        return True
+    stop.set()
+    for t in _threads:
+        t.join(timeout=timeout)
+    if running():
+        return False
+    _threads.clear()
+    return True
+
+
 def enabled() -> bool:
     """Whether THIS backend drains the verification queue. Deliberately an exact
     opt-in: a machine needs the Docker sandbox and its own prepared base, so it
@@ -514,11 +546,19 @@ def _drain_loop() -> None:
 
 def startup() -> bool:
     """Start the heartbeat + drain threads when this backend is the runner.
-    Returns whether the worker started."""
+    Returns whether the worker is running afterwards, so calling it on a live
+    worker is a no-op rather than a second pair of loops."""
     if not enabled():
         return False
-    threading.Thread(target=_beat_loop, daemon=True, name="verify-worker-beat").start()
-    threading.Thread(target=_drain_loop, daemon=True, name="verify-worker").start()
+    if running():
+        return True
+    stop.clear()
+    _threads[:] = [
+        threading.Thread(target=_beat_loop, daemon=True, name="verify-worker-beat"),
+        threading.Thread(target=_drain_loop, daemon=True, name="verify-worker"),
+    ]
+    for t in _threads:
+        t.start()
     print(f"[verify-worker] enabled on {socket.gethostname()} "
           f"(poll every {POLL_SECONDS:.0f}s)", flush=True)
     return True
