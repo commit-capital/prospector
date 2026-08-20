@@ -28,8 +28,11 @@ since moved. An agent-authored `fix` or `resolve` is not reproducible, so it
 keeps its tree and pushes the reviewed change verbatim.
 
 With TRIAGE_FIX_AUTOHUNT=1 an empty queue turns the drain loop into a hunter: it
-queues the eligible PRs whose gates an autofix could plausibly clear, oldest
-community pain first. An operator-queued request always wins the next pick.
+queues the eligible PRs whose gates an autofix could plausibly clear. With
+TRIAGE_FIX_HUNT_FIX=1 on top, the hunter also queues agent-authored `fix`
+actions — one attempt per head, at most TRIAGE_FIX_HUNT_LIMIT in flight — for
+mergeable, CI-passing PRs scored below the review bar. An operator-queued
+request always wins the next pick.
 """
 from __future__ import annotations
 
@@ -47,7 +50,7 @@ from typing import TYPE_CHECKING
 from pipeline import (author_fix, compile_preflight, diffpaths, gates, gh, profile,
                       resolve_conflicts, review_fix, settings, verify_driver)
 from pipeline.storekit import now as _now
-from prospector_app.backend import data, fix_queue, service
+from prospector_app.backend import data, executor, fix_queue, review_refresh, service
 from prospector_app.backend.resubmit_identity import worker_env
 
 if TYPE_CHECKING:
@@ -344,7 +347,8 @@ def _fail(n: int, req: dict, message: str) -> None:
         "failed", req.get("action", "fix"), queued_at=req.get("queued_at"),
         started_at=req.get("started_at"), finished_at=_now(),
         error=message[-TAIL_CHARS:], source=req.get("source"),
-        guidance=req.get("guidance"), host=socket.gethostname())
+        guidance=req.get("guidance"), host=socket.gethostname(),
+        head_sha=req.get("against_head_sha"))
     data.refresh()
 
 
@@ -354,7 +358,7 @@ def _refuse(n: int, req: dict, reason: str, result: dict | None = None) -> None:
         started_at=req.get("started_at"), finished_at=_now(),
         refused_reason=reason[-TAIL_CHARS:], result=result,
         source=req.get("source"), guidance=req.get("guidance"),
-        host=socket.gethostname())
+        host=socket.gethostname(), head_sha=req.get("against_head_sha"))
     data.refresh()
 
 
@@ -507,14 +511,15 @@ def _prepared_worktree(n: int) -> str | None:
 
 def _author_fix(n: int, claimed: dict) -> None:
     """Author a change against this PR's gates with an agent, review it with a
-    second one, and park the result for an operator to approve.
+    second one, and park the result for an operator to approve — or push it
+    directly when TRIAGE_FIX_AUTOPUSH names `fix`.
 
-    Nothing here reaches GitHub. The agent writes inside a clone of the
-    contributor's branch, the finished patch is held to the files the agent
-    reported, re-gated on the paths it really touched, refuted by a reviewer
-    that did not write it, and compiled — and only then does it park. Every
-    exit writes a terminal status; the worktree survives only on the parked
-    path, because an agent's edits cannot be re-derived at approval time."""
+    The agent writes inside a clone of the contributor's branch, the finished
+    patch is held to the files the agent reported, re-gated on the paths it
+    really touched, refuted by a reviewer that did not write it, and compiled —
+    and only then does it park or push. Every exit writes a terminal status;
+    the worktree survives only on the parked path, because an agent's edits
+    cannot be re-derived at approval time."""
     rec = data.store().load_pr(n)
     if rec is None:
         _refuse(n, claimed, f"PR #{n} left the store")
@@ -609,7 +614,10 @@ def _author_fix(n: int, claimed: dict) -> None:
 
     result = {**evidence, "compile_preflight": pf,
               "message": verdict["summary"] or _commit_message("fix")}
-    _park(n, claimed, "fix", result, socket.gethostname())
+    if "fix" not in settings.fix_autopush():
+        _park(n, claimed, "fix", result, socket.gethostname())
+        return
+    _push(n, claimed, "fix", result)
 
 
 def _conflict_refusal(paused: list[str]) -> str:
@@ -925,41 +933,108 @@ def _finish_pushed(n: int, req: dict, output: str, result: dict | None = None) -
         "pushed", req.get("action", "fix"), queued_at=req.get("queued_at"),
         started_at=req.get("started_at"), finished_at=_now(), result=merged,
         source=req.get("source"), guidance=req.get("guidance"),
-        host=socket.gethostname())
+        host=socket.gethostname(), head_sha=req.get("against_head_sha"))
     data.refresh()
+    if req.get("action") == "fix":
+        try:
+            _retrigger_review(n)
+        except Exception:
+            traceback.print_exc()
+
+
+def _retrigger_review(n: int) -> None:
+    """Ask the review provider for a fresh score on the head a fix just pushed,
+    and start the backend wait that ingests it. The score is what stands between
+    the pushed fix and the merge bar, so the push is what asks. Best-effort: no
+    mintable token forces the executor's dry-run, and the PR waits for the next
+    scheduled ingest instead."""
+    token = executor.mint_bot_token()
+    baseline = review_refresh.capture(n) if token else None
+    res = executor.retrigger_greptile(n, token=token, dry_run=token is None)
+    if res.get("status") == "executed" and baseline is not None:
+        review_refresh.schedule(n, baseline)
+    print(f"[fix-worker] review retrigger for PR #{n}: {res.get('status')}",
+          flush=True)
+
+
+# Terminal fix_request statuses. A cancelled request counts as an attempt: an
+# operator saying no to this head is not an invitation to try it again.
+_TERMINAL = ("pushed", "refused", "failed", "cancelled")
+
+
+def _fix_attempted(pr: Pr) -> bool:
+    """Whether this PR's current head already had its unattended fix attempt.
+    The stamp a moved head no longer matches is what re-arms the PR."""
+    req = pr.fix_request or {}
+    return (req.get("action") == "fix" and req.get("status") in _TERMINAL
+            and pr.head_sha is not None
+            and req.get("against_head_sha") == pr.head_sha)
+
+
+def _auto_fixes_in_flight() -> int:
+    """How many hunter-queued fix requests sit anywhere between queued and
+    pushing. Operator-queued fixes are not counted against the hunter's cap."""
+    count = 0
+    for rec in data.prs().values():
+        req = rec.fix_request or {}
+        if (req.get("source") == "auto" and req.get("action") == "fix"
+                and req.get("status") in fix_queue.IN_FLIGHT):
+            count += 1
+    return count
 
 
 def auto_fixable(pr: Pr) -> str | None:
-    """The action the idle hunter would queue for this PR, or None. Only the
-    mechanical actions are hunted: an agent-authored fix is an operator's call,
-    never something the queue starts on its own.
+    """The action the idle hunter would queue for this PR, or None.
 
     A PR GitHub reports unmergeable needs its history replayed on current base,
     which is `rebase`; a PR whose drift scan says the base moved out from under
-    it needs `update`. Anything else is left alone.
+    it needs `update`. A PR clean on both may take an agent-authored `fix` when
+    the deployment opts in (TRIAGE_FIX_HUNT_FIX) and this head has not already
+    burned its one unattended attempt. Anything else is left alone.
 
     gates.fix_huntable is the bar, not fix_eligibility: unprompted sandbox time
-    goes to PRs a reviewer already rated, so a branch nobody has vouched for is
-    left for an operator to queue by hand."""
+    goes only where a stored quality signal argues the spend is worth it."""
     if (pr.fix_request or {}).get("status") in fix_queue.IN_FLIGHT:
         return None
     if pr.mergeable is False:
         action = "rebase"
     elif pr.drift_state == "conflicts":
         action = "update"
+    elif settings.fix_hunt_fix() and not _fix_attempted(pr):
+        action = "fix"
     else:
         return None
     ok, _ = gates.fix_huntable(pr, action, service.changed_paths(pr))
     return action if ok else None
 
 
+def _hunt_key(rec: Pr, action: str, n: int) -> tuple[int, int, float, int]:
+    """Hunt priority (ascending). Mechanical actions lead: they are cheap and
+    unblock the most. Fixes follow by how little they ask of the agent — a
+    nits-only review, then one point below the bar, then the rest — and by
+    community pain (descending) within a tier."""
+    if action != "fix":
+        return (0, 0, 0.0, n)
+    tier = (1 if rec.review_severity == "nits"
+            else 2 if rec.review_score == 4 else 3)
+    pain = float(service.pr_pain(rec).get("score") or 0.0)
+    return (1, tier, -pain, n)
+
+
 def next_auto() -> tuple[str, int] | None:
     """The idle hunter's next (action, PR), or None when nothing is eligible."""
-    for n, rec in sorted(data.prs().items()):
+    fix_slots = settings.fix_hunt_limit() - _auto_fixes_in_flight()
+    best: tuple[tuple[int, int, float, int], str, int] | None = None
+    for n, rec in data.prs().items():
         action = auto_fixable(rec)
-        if action is not None:
-            return action, n
-    return None
+        if action is None:
+            continue
+        if action == "fix" and fix_slots <= 0:
+            continue
+        key = _hunt_key(rec, action, n)
+        if best is None or key < best[0]:
+            best = (key, action, n)
+    return (best[1], best[2]) if best else None
 
 
 def _beat_loop() -> None:

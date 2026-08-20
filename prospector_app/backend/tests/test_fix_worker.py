@@ -627,3 +627,156 @@ def test_guidance_survives_the_claim_and_the_approval(store, monkeypatch):
 
     req = store.load_pr(1).fix_request
     assert req["status"] == "pushed", req.get("refused_reason")
+
+
+# --- terminal records keep their head stamp -------------------------------------
+
+def test_terminal_records_carry_the_head_they_ran_against(store, monkeypatch):
+    # The one-attempt-per-head guard reads the stamp off refused/failed/pushed
+    # records; a terminal record that dropped it would re-arm the PR instantly.
+    fix_queue.queue_pr(1, "update")
+    probe = _Probe(rc=8)  # base conflicts → refused
+    monkeypatch.setattr(fix_worker, "_resubmit", probe)
+    fix_worker.run_one(1)
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "refused"
+    assert req["against_head_sha"] == HEAD
+
+
+def test_refuse_records_the_claimed_head_not_the_current_one(store):
+    # The stamp is the head the run was pinned against, which is what the
+    # one-attempt guard compares — a head that moved mid-run must not be
+    # recorded as attempted.
+    fix_worker._refuse(1, {"action": "fix", "against_head_sha": "b" * 40}, "nope")
+    req = store.load_pr(1).fix_request
+    assert req["against_head_sha"] == "b" * 40
+
+
+# --- hunting agent-authored fixes -----------------------------------------------
+
+def _fixable_pr(n: int = 2) -> dict:
+    """A CI-passing, mergeable PR scored below the review bar at its current
+    head — what the fix hunt targets."""
+    return {"pr": n,
+            "meta": {"title": "below bar", "state": "open", "head_sha": HEAD},
+            "signals": {"greptile": 4, "greptile_reviewed_sha": HEAD,
+                        "ci": "passing", "mergeable": True,
+                        "checked_at": NOW, "against_head_sha": HEAD}}
+
+
+@pytest.fixture
+def fix_profile(monkeypatch):
+    p = profile.RepoProfile(autofix=profile.AutofixPolicy(fixable_gates=("review",)))
+    monkeypatch.setattr(profile, "active", lambda: p)
+
+
+def test_hunter_ignores_fix_without_the_opt_in(store, fix_profile, monkeypatch):
+    monkeypatch.delenv("TRIAGE_FIX_HUNT_FIX", raising=False)
+    store.save_pr(_fixable_pr())
+    data.refresh()
+    assert fix_worker.auto_fixable(data.prs()[2]) is None
+
+
+def test_hunter_queues_fix_with_the_opt_in(store, fix_profile, monkeypatch):
+    monkeypatch.setenv("TRIAGE_FIX_HUNT_FIX", "1")
+    store.save_pr(_fixable_pr())
+    data.refresh()
+    assert fix_worker.auto_fixable(data.prs()[2]) == "fix"
+
+
+def test_one_fix_attempt_per_head(store, fix_profile, monkeypatch):
+    monkeypatch.setenv("TRIAGE_FIX_HUNT_FIX", "1")
+    rec = _fixable_pr()
+    rec["fix_request"] = {"status": "refused", "action": "fix",
+                          "against_head_sha": HEAD}
+    store.save_pr(rec)
+    data.refresh()
+    assert fix_worker.auto_fixable(data.prs()[2]) is None
+    # A moved head re-arms the PR.
+    rec["fix_request"] = {"status": "refused", "action": "fix",
+                          "against_head_sha": "b" * 40}
+    store.save_pr(rec)
+    data.refresh()
+    assert fix_worker.auto_fixable(data.prs()[2]) == "fix"
+
+
+def test_fix_hunt_respects_the_in_flight_cap(store, fix_profile, monkeypatch):
+    monkeypatch.setenv("TRIAGE_FIX_HUNT_FIX", "1")
+    monkeypatch.setenv("TRIAGE_FIX_HUNT_LIMIT", "1")
+    running = _fixable_pr(3)
+    running["fix_request"] = {"status": "running", "action": "fix", "source": "auto"}
+    store.save_pr(running)
+    store.save_pr(_fixable_pr(2))
+    # Drop PR 1 below the mechanical hunt's review bar so only fixes compete.
+    one = store.load_pr(1).raw
+    one["signals"]["greptile"] = 4
+    store.save_pr(one)
+    data.refresh()
+    assert fix_worker.next_auto() is None
+
+
+def test_hunt_order_mechanical_then_nits_then_tiers(store, fix_profile, monkeypatch):
+    monkeypatch.setenv("TRIAGE_FIX_HUNT_FIX", "1")
+    # PR numbers deliberately run against the priority order, so a first-match
+    # scan by number would pick every one of these wrong.
+    three = _fixable_pr(2)
+    three["signals"]["greptile"] = 3
+    four = _fixable_pr(3)
+    nits = _fixable_pr(4)
+    nits["greptile_review"] = {"severity": "nits", "checked_at": NOW,
+                               "against_head_sha": HEAD}
+    for rec in (three, four, nits):
+        store.save_pr(rec)
+    data.refresh()
+    # PR 1 (unmergeable, bar met) is mechanical and wins outright.
+    assert fix_worker.next_auto() == ("rebase", 1)
+    one = store.load_pr(1).raw
+    one["fix_request"] = {"status": "running", "action": "rebase"}
+    store.save_pr(one)
+    data.refresh()
+    assert fix_worker.next_auto() == ("fix", 4)  # nits beat score tiers
+    nits2 = store.load_pr(4).raw
+    nits2["fix_request"] = {"status": "running", "action": "fix"}
+    store.save_pr(nits2)
+    data.refresh()
+    assert fix_worker.next_auto() == ("fix", 3)  # 4/5 beats 3/5
+
+
+def test_authored_fix_pushes_when_autopush_names_fix(store, monkeypatch):
+    monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", "fix")
+    monkeypatch.setattr(fix_worker, "_retrigger_review", lambda n: None)
+    _queue_fix()
+    probe = _fix_probe()
+    monkeypatch.setattr(fix_worker, "_resubmit", probe)
+    _authored(monkeypatch)
+    _reviewed(monkeypatch)
+
+    fix_worker.run_one(1)
+
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "pushed"
+    assert _pushed(probe)
+
+
+# --- a pushed fix asks for a fresh review ---------------------------------------
+
+def test_pushed_fix_retriggers_the_review(store, monkeypatch):
+    calls: list[int] = []
+    monkeypatch.setattr(fix_worker, "_retrigger_review", calls.append)
+    fix_worker._finish_pushed(1, {"action": "fix"}, "pushed ok")
+    assert calls == [1]
+
+
+def test_pushed_update_does_not_retrigger(store, monkeypatch):
+    calls: list[int] = []
+    monkeypatch.setattr(fix_worker, "_retrigger_review", calls.append)
+    fix_worker._finish_pushed(1, {"action": "update"}, "pushed ok")
+    assert calls == []
+
+
+def test_retrigger_failure_leaves_the_pushed_record(store, monkeypatch):
+    def boom(n: int) -> None:
+        raise RuntimeError("no network")
+    monkeypatch.setattr(fix_worker, "_retrigger_review", boom)
+    fix_worker._finish_pushed(1, {"action": "fix"}, "pushed ok")
+    assert store.load_pr(1).fix_request["status"] == "pushed"
