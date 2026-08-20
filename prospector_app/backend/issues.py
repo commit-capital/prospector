@@ -81,13 +81,18 @@ def issue_state(n: int) -> str | None:
     return iss.state if iss is not None else None
 
 
-def _store_pr_states() -> dict[int, str]:
+def _store_pr_states() -> tuple[dict[int, str], bool]:
     """PR number -> state (open/merged/closed) for every PR in the app's PR
-    store. The store keeps merged/closed PRs it once saw open, so most resolve here;
+    store, plus True while that snapshot is still cold-loading — the load runs
+    on a background thread and the states come back empty in the meantime, so
+    an issues read never pins a request thread on the full PR corpus. The store
+    keeps merged/closed PRs it once saw open, so most resolve here;
     a candidate PR is absent only when it merged/closed before any ingest captured
     it open, and its /api/prs/{n} detail would then 404. The one seam tests stub to
     stay off the real PR snapshot."""
-    return {n: pr.state for n, pr in data.prs().items() if pr.state}
+    if data.snapshot_loading():
+        return {}, True
+    return {n: pr.state for n, pr in data.prs().items() if pr.state}, False
 
 
 _STATE_TTL = 300.0
@@ -199,7 +204,7 @@ def _issue_linked_prs(iss: Issue, store_states: dict[int, str] | None,
 
 
 def _row(iss: Issue, clusters_by_id: dict[int, IssueCluster], store_states: dict[int, str] | None,
-         *, link_limit: int | None = None) -> dict:
+         *, link_limit: int | None = None, snapshot_loading: bool = False) -> dict:
     cid = iss.cluster_id
     cl = clusters_by_id.get(cid) if cid is not None else None
     members = cl.members if cl else [iss.number]
@@ -208,7 +213,9 @@ def _row(iss: Issue, clusters_by_id: dict[int, IssueCluster], store_states: dict
         "number": iss.number,
         "title": iss.title,
         "author": iss.author,
-        "author_stats": data.author_stats(iss.author),
+        # Author stats read the same PR snapshot, so they are withheld while it
+        # cold-loads.
+        "author_stats": None if snapshot_loading else data.author_stats(iss.author),
         "trusted_author": iss.author in profile.active().trusted_authors,
         "labels": iss.labels,
         "comments": iss.comments,
@@ -239,27 +246,32 @@ def _row(iss: Issue, clusters_by_id: dict[int, IssueCluster], store_states: dict
     }
 
 
-def list_issues() -> list[dict]:
+def list_issues() -> tuple[list[dict], bool]:
     """Every issue in the store, enriched with its dedup cluster, pain, repro
-    grade, and the PRs that may address it."""
+    grade, and the PRs that may address it — plus whether the PR-state hydration
+    of link chips and author stats is still pending behind the cold PR-snapshot
+    load."""
     _sync_store_root()
     issues = issue_data.full_issues()
     clusters = issue_data.clusters()
-    store_states = _store_pr_states()
-    return [_row(i, clusters, store_states) for i in issues.values()]
+    store_states, pr_states_loading = _store_pr_states()
+    return ([_row(i, clusters, store_states, snapshot_loading=pr_states_loading)
+             for i in issues.values()], pr_states_loading)
 
 
 def get_issue(n: int) -> dict | None:
     """One issue's detail: its table row plus body, the full analysis section
     (disposition, gist, rationale, asks, canonical), and its cluster's curated
-    label — what the issue flyout renders."""
+    label — what the issue flyout renders. While the PR snapshot is still
+    cold-loading, the linked-PR chips and author stats are served unhydrated."""
     _sync_store_root()
     issues = issue_data.full_issues()
     i = issues.get(int(n))
     if i is None:
         return None
     clusters = issue_data.clusters()
-    row = _row(i, clusters, _store_pr_states())
+    store_states, pr_states_loading = _store_pr_states()
+    row = _row(i, clusters, store_states, snapshot_loading=pr_states_loading)
     row["body"] = i.body
     # The effective verdict, matching row["disposition"]: while the fix scan cites
     # a merged fixer it supplies the route, the rationale, and the gist.
@@ -327,13 +339,18 @@ def query_issues(q: str = "", sort: str | None = None, direction: str | None = N
     the issue's labels); `repro_grade` accepts one value or a list (OR'd); `pain`,
     `dups` (duplicate count), and `linked_prs` (linked-PR count) are `{op, value}`
     numeric compares — see filters.num_cmp — and a missing row value never matches
-    one."""
+    one. While the PR snapshot is still cold-loading, the result carries
+    `pr_states_loading` true and answers immediately with unhydrated linked-PR
+    chips, no author stats, and (for sort=prs) no merged-fixer ranking — the
+    view refetches until the flag clears."""
     _sync_store_root()
     need_full = sort == "prs" or linked_prs is not None
     issues = issue_data.full_issues() if need_full else issue_data.issues()
     clusters = issue_data.clusters()
-    sort_states = _store_pr_states() if sort == "prs" else None
-    rows = [_row(i, clusters, sort_states, link_limit=0) for i in issues.values()]
+    store_states, pr_states_loading = _store_pr_states()
+    sort_states = store_states if sort == "prs" else None
+    rows = [_row(i, clusters, sort_states, link_limit=0, snapshot_loading=pr_states_loading)
+            for i in issues.values()]
     if disposition:
         rows = [r for r in rows if (r["disposition"] or "none") == disposition]
     if state and state != "all":
@@ -372,12 +389,13 @@ def query_issues(q: str = "", sort: str | None = None, direction: str | None = N
     total = len(rows)
     page = rows[offset:offset + limit]
     full = issue_data.load_full_issues([r["number"] for r in page])
-    store_states = _store_pr_states()
     hydrated = []
     for r in page:
         iss = full.get(r["number"])
-        hydrated.append(_row(iss, clusters, store_states, link_limit=6) if iss else r)
-    return {"items": hydrated, "total": total, "offset": offset, "limit": limit}
+        hydrated.append(_row(iss, clusters, store_states, link_limit=6,
+                             snapshot_loading=pr_states_loading) if iss else r)
+    return {"items": hydrated, "total": total, "offset": offset, "limit": limit,
+            "pr_states_loading": pr_states_loading}
 
 
 _dup_groups_cache: tuple[tuple[str | None, str | None], list[dict]] | None = None
@@ -386,7 +404,10 @@ _dup_groups_cache: tuple[tuple[str | None, str | None], list[dict]] | None = Non
 def duplicate_groups() -> list[dict]:
     """The curated close-as-dup worklist, grouped by canonical issue: each group is
     a set of confirmed duplicate issues to close against one canonical, with the
-    candidate PRs from every member cross-linked. Most painful first (#192)."""
+    candidate PRs from every member cross-linked. Most painful first (#192).
+    While the PR snapshot is still cold-loading, every candidate PR's state is
+    resolved live and `in_store` reads false; that result is served but never
+    cached, so the first read after the load hydrates from the store."""
     global _dup_groups_cache
     _sync_store_root()
     key = issue_data.watermarks()
@@ -395,7 +416,7 @@ def duplicate_groups() -> list[dict]:
     issues = issue_data.full_issues()
     clusters = issue_data.clusters()
     from issue_triage import issue_gates
-    store_states = _store_pr_states()
+    store_states, pr_states_loading = _store_pr_states()
     pending: list[tuple[IssueCluster, list[dict], Issue | None]] = []
     for cl in clusters.values():
         canon = cl.canonical
@@ -452,7 +473,8 @@ def duplicate_groups() -> list[dict]:
             "fixed_comment": fixed_issue_comment(fixer) if fixer is not None else None,
         })
     groups = sorted(groups, key=lambda g: -(g.get("pain") or 0))
-    _dup_groups_cache = (key, groups)
+    if not pr_states_loading:
+        _dup_groups_cache = (key, groups)
     return groups
 
 

@@ -13,7 +13,7 @@ def _seed(tmp_path, monkeypatch):
     in the PR store and open (opens in-app); anything else is off-store, its real
     state resolved live (stubbed here — never touches GitHub)."""
     monkeypatch.setattr(issues, "STORE_ROOT", tmp_path)
-    monkeypatch.setattr(issues, "_store_pr_states", lambda: {900: "open"})
+    monkeypatch.setattr(issues, "_store_pr_states", lambda: ({900: "open"}, False))
     monkeypatch.setattr(issues, "_live_pr_states", lambda nums: {})
     monkeypatch.setattr(issues, "_live_state", lambda n: "open")
     monkeypatch.setattr(issues.data, "author_stats", lambda handle: {
@@ -43,7 +43,9 @@ def _seed(tmp_path, monkeypatch):
 
 def test_list_issues_enriches(tmp_path, monkeypatch):
     _seed(tmp_path, monkeypatch)
-    rows = {r["number"]: r for r in issues.list_issues()}
+    row_list, pr_states_loading = issues.list_issues()
+    assert pr_states_loading is False
+    rows = {r["number"]: r for r in row_list}
     assert rows[10]["pain"] == 0.81 and rows[10]["repro_grade"] == "A"
     assert rows[10]["linked_prs"] == [
         {"pr": 900, "title": "fix boot", "how": "subsystem", "in_store": True, "state": "open"}]
@@ -64,7 +66,7 @@ def test_issue_rows_flag_trusted_authors(tmp_path, monkeypatch):
         lambda: issues.profile.RepoProfile(trusted_authors=("bo",)),
     )
 
-    rows = {r["number"]: r for r in issues.list_issues()}
+    rows = {r["number"]: r for r in issues.list_issues()[0]}
     assert rows[10]["trusted_author"] is False
     assert rows[11]["trusted_author"] is True
     assert issues.get_issue(11)["trusted_author"] is True
@@ -87,6 +89,57 @@ def test_query_issues_pages_and_trims_linked_prs(tmp_path, monkeypatch):
     assert row["linked_pr_count"] == 10
     assert row["referenced_pr_count"] == 1
     assert [p["pr"] for p in row["linked_prs"]] == [909, 900, 901, 902, 903, 904]
+
+
+def test_store_pr_states_cold_snapshot_returns_empty_loading(monkeypatch):
+    monkeypatch.setattr("prospector_app.backend.data.snapshot_loading", lambda: True)
+    assert issues._store_pr_states() == ({}, True)
+
+
+def test_store_pr_states_loaded_snapshot(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr("prospector_app.backend.data.snapshot_loading", lambda: False)
+    monkeypatch.setattr(
+        "prospector_app.backend.data.prs",
+        lambda: {900: SimpleNamespace(state="open"), 901: SimpleNamespace(state=None)})
+    assert issues._store_pr_states() == ({900: "open"}, False)
+
+
+def test_query_issues_serves_rows_while_pr_snapshot_loads(tmp_path, monkeypatch):
+    """While the PR snapshot cold-loads, the query answers immediately with
+    unhydrated linked-PR chips and no author stats (both come from that
+    snapshot), and pr_states_loading true so the view refetches."""
+    _seed(tmp_path, monkeypatch)
+    monkeypatch.setattr(issues, "_store_pr_states", lambda: ({}, True))
+    out = issues.query_issues()
+    assert out["pr_states_loading"] is True
+    assert out["total"] == 2
+    rows = {r["number"]: r for r in out["items"]}
+    assert rows[10]["linked_prs"] == [
+        {"pr": 900, "title": "fix boot", "how": "subsystem", "in_store": False, "state": None}]
+    assert rows[10]["author_stats"] is None
+
+
+def test_query_issues_reports_pr_states_loaded(tmp_path, monkeypatch):
+    _seed(tmp_path, monkeypatch)
+    out = issues.query_issues()
+    assert out["pr_states_loading"] is False
+    assert all(r["author_stats"] is not None for r in out["items"])
+
+
+def test_duplicate_groups_not_cached_while_pr_snapshot_loads(tmp_path, monkeypatch):
+    """A dup worklist built during the cold load (empty store states, chip
+    states resolved live) is served but never cached, so the first read after
+    the load hydrates in_store instead of replaying the unhydrated groups."""
+    _seed(tmp_path, monkeypatch)
+    loading = {"on": True}
+    monkeypatch.setattr(issues, "_store_pr_states",
+                        lambda: ({}, True) if loading["on"] else ({900: "open"}, False))
+    g = issues.duplicate_groups()[0]
+    assert [p["in_store"] for p in g["linked_prs"]] == [False]
+    loading["on"] = False
+    g = issues.duplicate_groups()[0]
+    assert [p["in_store"] for p in g["linked_prs"]] == [True]
 
 
 def test_query_issues_search_and_sort(tmp_path, monkeypatch):
@@ -146,7 +199,7 @@ def test_query_issues_sorts_prs_by_fix_evidence(tmp_path, monkeypatch):
     references, then total linked PRs — so a pile of subsystem tag-matches never
     outranks a real fixer."""
     st = _seed(tmp_path, monkeypatch)
-    monkeypatch.setattr(issues, "_store_pr_states", lambda: {900: "merged", 910: "open"})
+    monkeypatch.setattr(issues, "_store_pr_states", lambda: ({900: "merged", 910: "open"}, False))
     st.edit_issue(10).set_links([{"pr": 900, "title": "fix boot", "how": "explicit"}])
     st.edit_issue(11).set_links(
         [{"pr": n, "title": f"t{n}", "how": "subsystem"} for n in (901, 902, 903)])
@@ -166,7 +219,7 @@ def test_linked_prs_merged_explicit_leads(tmp_path, monkeypatch):
     sorts ahead of an open one, so a trim never hides the strongest fix evidence."""
     st = _seed(tmp_path, monkeypatch)
     monkeypatch.setattr(issues, "_store_pr_states",
-                        lambda: {900: "open", 901: "open", 902: "merged"})
+                        lambda: ({900: "open", 901: "open", 902: "merged"}, False))
     st.edit_issue(10).set_links([
         {"pr": 900, "title": "a", "how": "explicit"},
         {"pr": 901, "title": "b", "how": "subsystem"},
@@ -554,7 +607,7 @@ def test_issue_ref_ranks_between_explicit_and_subsystem(tmp_path, monkeypatch):
     tag-matches, and counts as reference-backed for the fix-evidence sort."""
     st = _seed(tmp_path, monkeypatch)
     monkeypatch.setattr(issues, "_store_pr_states",
-                        lambda: {900: "open", 901: "merged", 902: "open"})
+                        lambda: ({900: "open", 901: "merged", 902: "open"}, False))
     st.edit_issue(10).set_links([
         {"pr": 900, "title": "tag", "how": "subsystem"},
         {"pr": 901, "title": "named", "how": "issue-ref"},
@@ -570,7 +623,7 @@ def test_issue_ref_merged_outranks_open_explicit_in_sort(tmp_path, monkeypatch):
     """sort=prs puts an issue whose text names a now-merged PR above one whose
     only evidence is an open explicit fixer — merged evidence leads."""
     st = _seed(tmp_path, monkeypatch)
-    monkeypatch.setattr(issues, "_store_pr_states", lambda: {900: "merged", 910: "open"})
+    monkeypatch.setattr(issues, "_store_pr_states", lambda: ({900: "merged", 910: "open"}, False))
     st.edit_issue(10).set_links([{"pr": 900, "title": "named fix", "how": "issue-ref"}])
     st.edit_issue(11).set_links([{"pr": 910, "title": "open fix", "how": "explicit"}])
     out = issues.query_issues(sort="prs", direction="desc")
@@ -629,7 +682,7 @@ def test_fix_found_candidate_is_referenced_and_sorts_after_explicit(tmp_path, mo
         {"pr": 903, "title": "named in issue", "how": "issue-ref"},
         {"pr": 904, "title": "claims fix", "how": "explicit"},
     ])
-    row = {r["number"]: r for r in issues.list_issues()}[10]
+    row = {r["number"]: r for r in issues.list_issues()[0]}[10]
     assert row["referenced_pr_count"] == 3
     assert [p["pr"] for p in row["linked_prs"]] == [904, 902, 903, 901]
 
