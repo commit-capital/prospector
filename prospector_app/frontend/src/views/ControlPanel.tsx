@@ -66,9 +66,23 @@ function resultChip(phase: string, result: string | null | undefined): string {
 
 /** Chip tone for a queued/running/waiting-for-base verify request. */
 function queueStatusChip(status: string): string {
-  if (status === "running") return "chip chip-blue";
+  if (status === "running" || status === "pushing") return "chip chip-blue queue-running";
   if (status === "waiting-for-base") return "chip chip-amber";
   return "chip chip-muted";
+}
+
+/** For a running queue row: which machine holds the claim, and a warning when
+ *  that machine's worker heartbeat has gone quiet — a claimed run whose worker
+ *  stopped beating is stuck, not slow. */
+function RunningMeta({ host, online }: { host?: string | null; online: boolean }) {
+  if (!host) return null;
+  if (online) return <div className="muted small">on {host}</div>;
+  return (
+    <div className="small queue-warn"
+      title={`${host}'s worker has stopped heartbeating, so this run is not progressing. Restart the worker on ${host}, then re-queue if the row doesn't recover.`}>
+      on {host} — worker offline?
+    </div>
+  );
 }
 
 /** One phase's status at a glance: freshness chip up top, done/total progress
@@ -717,7 +731,13 @@ export default function ControlPanel() {
                 <tr><td colSpan={4} className="muted small">Nothing queued, waiting, or running.</td></tr>
               ) : verifyQueue.queue.map((e) => (
                 <tr key={e.pr}>
-                  <td><span className={queueStatusChip(e.status)}>{e.status}{e.step ? ` · ${e.step}` : ""}</span></td>
+                  <td>
+                    <span className={queueStatusChip(e.status)}>{e.status}{e.step ? ` · ${e.step}` : ""}</span>
+                    {e.status === "running" && (
+                      <RunningMeta host={e.host}
+                        online={(hunt?.status.runner.hosts ?? []).some((h) => h.host === e.host && h.online)} />
+                    )}
+                  </td>
                   <td className="mono">
                     <PRLink n={e.pr} />
                     {e.title && <div className="muted small">{e.title.slice(0, 60)}</div>}
@@ -798,7 +818,15 @@ export default function ControlPanel() {
                         {e.resolvable ? "✅ Conflicts resolvable" : "⚠ Needs a look"}
                       </span>
                     ) : (
-                      <span className={queueStatusChip(e.status)}>{e.status}</span>
+                      <>
+                        <span className={queueStatusChip(e.status)}>
+                          {e.status}{e.step && (e.status === "running" || e.status === "pushing") ? ` · ${e.step}` : ""}
+                        </span>
+                        {(e.status === "running" || e.status === "pushing") && (
+                          <RunningMeta host={e.host}
+                            online={(fixQueue.runner.hosts ?? []).some((h) => h.host === e.host && h.online)} />
+                        )}
+                      </>
                     )}
                   </td>
                   <td className="mono">
@@ -807,7 +835,7 @@ export default function ControlPanel() {
                   </td>
                   <td><span className="chip chip-muted sm">{e.action}</span></td>
                   <td><span className="chip chip-muted sm">{e.source === "auto" ? "auto" : "manual"}</span></td>
-                  <td className="muted small" title={fmt(e.queued_at)}>{ago(e.queued_at)}</td>
+                  <td className="muted small" title={fmt(e.started_at ?? e.queued_at)}>{ago(e.started_at ?? e.queued_at)}</td>
                   <td>
                     {e.status === "awaiting-review" && (
                       <div style={{ display: "flex", gap: 6 }}>

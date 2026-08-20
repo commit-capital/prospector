@@ -52,6 +52,7 @@ from prospector_app.backend import fix_queue
 from prospector_app.backend import fix_worker
 from prospector_app.backend import verify_queue
 from prospector_app.backend import verify_worker
+from prospector_app.backend import work_status
 
 from pipeline import greptile
 
@@ -344,6 +345,15 @@ def fix_runner():
     """Autofix-runner liveness plus this backend's push-identity configuration —
     what the app renders the actions' disabled reason from."""
     return fix_queue.runner_status()
+
+
+@app.get("/api/status/now")
+def status_now():
+    """What the system is doing right now, across every machine on this store —
+    the header status label's feed: active verify/fix runs with their step and
+    host, queued/parked counts, worker liveness, and this backend's running
+    jobs."""
+    return work_status.now()
 
 
 @app.get("/api/setup/readiness")
