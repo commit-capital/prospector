@@ -791,8 +791,11 @@ def reopen_issue(n: int, dry_run: bool = True):
 @app.get("/api/alerts")
 def list_alerts():
     """Every ingested repository-security alert with its normalized state,
-    severity, fix-scan verdict, and candidate PR/issue links."""
-    return {"items": alerts_mod.list_alerts()}
+    severity, fix-scan verdict, and candidate PR/issue links. While the PR
+    snapshot is still cold-loading, the link chips carry their recorded states
+    and pr_states_loading is true."""
+    rows, pr_states_loading = alerts_mod.list_alerts()
+    return {"items": rows, "pr_states_loading": pr_states_loading}
 
 
 @app.post("/api/alerts/query")

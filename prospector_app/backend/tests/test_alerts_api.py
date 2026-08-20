@@ -40,7 +40,7 @@ def seeded(tmp_path, monkeypatch):
          secret_type_display_name="GitHub PAT", severity="critical")
     monkeypatch.setattr(alerts_mod, "STORE_ROOT", tmp_path)
     monkeypatch.setattr(alerts_mod, "_synced_store_root", None)
-    monkeypatch.setattr(alerts_mod, "_store_pr_states", lambda: {10: "merged"})
+    monkeypatch.setattr(alerts_mod, "_store_pr_states", lambda: ({10: "merged"}, False))
     yield store, cs, dep
     alerts_mod.STORE_ROOT = None
     alerts_mod._synced_store_root = None
@@ -48,7 +48,8 @@ def seeded(tmp_path, monkeypatch):
 
 
 def test_list_alerts_rows(seeded):
-    rows = alerts_mod.list_alerts()
+    rows, pr_states_loading = alerts_mod.list_alerts()
+    assert pr_states_loading is False
     assert [r["number"] for r in rows] == [3, 2, 1]  # newest updated first
     dep = next(r for r in rows if r["source"] == "dependabot")
     assert dep["title"] == "Prototype pollution"
@@ -56,7 +57,32 @@ def test_list_alerts_rows(seeded):
     assert dep["links"][0]["state"] == "merged"  # hydrated from PR store
 
 
+def test_store_pr_states_cold_snapshot_returns_empty_loading(monkeypatch):
+    monkeypatch.setattr("prospector_app.backend.data.snapshot_loading", lambda: True)
+    assert alerts_mod._store_pr_states() == ({}, True)
+
+
+def test_store_pr_states_loaded_snapshot(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr("prospector_app.backend.data.snapshot_loading", lambda: False)
+    monkeypatch.setattr(
+        "prospector_app.backend.data.prs",
+        lambda: {10: SimpleNamespace(state="merged"), 11: SimpleNamespace(state=None)})
+    assert alerts_mod._store_pr_states() == ({10: "merged"}, False)
+
+
+def test_query_alerts_serves_rows_while_pr_snapshot_loads(seeded, monkeypatch):
+    monkeypatch.setattr(alerts_mod, "_store_pr_states", lambda: ({}, True))
+    out = alerts_mod.query_alerts()
+    assert out["pr_states_loading"] is True
+    assert out["total"] == 3
+    dep = next(r for r in out["items"] if r["source"] == "dependabot")
+    assert dep["links"][0]["state"] == "open"  # the recorded state, unhydrated
+
+
 def test_query_filters_and_sorts(seeded):
+    out = alerts_mod.query_alerts()
+    assert out["pr_states_loading"] is False
     out = alerts_mod.query_alerts(source="dependabot")
     assert [r["number"] for r in out["items"]] == [2] and out["total"] == 1
     out = alerts_mod.query_alerts(verdict="none")

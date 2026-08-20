@@ -886,7 +886,7 @@ export interface AlertDetail extends AlertRow {
   meta: Record<string, unknown>;
   dismiss_reasons: string[];
 }
-export interface AlertQueryResult { items: AlertRow[]; total: number; offset: number; limit: number }
+export interface AlertQueryResult { items: AlertRow[]; total: number; offset: number; limit: number; pr_states_loading: boolean }
 export interface AlertCaps { available: boolean; sources: Record<AlertSource, boolean> }
 export interface AlertDismissResult { source: AlertSource; alert: number; action: string; status: string; detail: string; reason: string; forced?: boolean }
 interface IssueDup {
@@ -1050,7 +1050,7 @@ export const api = {
   issuesAlreadyFixed: () =>
     get<{ fixed: IssueFixedItem[]; likely_fixed: IssueLikelyFixedItem[] }>("/api/issues/already-fixed"),
   getIssue: (n: number) => get<IssueDetail>(`/api/issues/${n}`),
-  listAlerts: () => get<{ items: AlertRow[] }>("/api/alerts"),
+  listAlerts: () => get<{ items: AlertRow[]; pr_states_loading: boolean }>("/api/alerts"),
   queryAlerts: (opts: {
     q?: string; sort?: string; direction?: string; source?: string; state?: string;
     severity?: string[]; verdict?: string; offset?: number; limit?: number;
