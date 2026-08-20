@@ -344,7 +344,8 @@ def _fail(n: int, req: dict, message: str) -> None:
         "failed", req.get("action", "fix"), queued_at=req.get("queued_at"),
         started_at=req.get("started_at"), finished_at=_now(),
         error=message[-TAIL_CHARS:], source=req.get("source"),
-        guidance=req.get("guidance"), host=socket.gethostname())
+        guidance=req.get("guidance"), host=socket.gethostname(),
+        head_sha=req.get("against_head_sha"))
     data.refresh()
 
 
@@ -354,7 +355,7 @@ def _refuse(n: int, req: dict, reason: str, result: dict | None = None) -> None:
         started_at=req.get("started_at"), finished_at=_now(),
         refused_reason=reason[-TAIL_CHARS:], result=result,
         source=req.get("source"), guidance=req.get("guidance"),
-        host=socket.gethostname())
+        host=socket.gethostname(), head_sha=req.get("against_head_sha"))
     data.refresh()
 
 
@@ -925,7 +926,7 @@ def _finish_pushed(n: int, req: dict, output: str, result: dict | None = None) -
         "pushed", req.get("action", "fix"), queued_at=req.get("queued_at"),
         started_at=req.get("started_at"), finished_at=_now(), result=merged,
         source=req.get("source"), guidance=req.get("guidance"),
-        host=socket.gethostname())
+        host=socket.gethostname(), head_sha=req.get("against_head_sha"))
     data.refresh()
 
 

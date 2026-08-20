@@ -627,3 +627,26 @@ def test_guidance_survives_the_claim_and_the_approval(store, monkeypatch):
 
     req = store.load_pr(1).fix_request
     assert req["status"] == "pushed", req.get("refused_reason")
+
+
+# --- terminal records keep their head stamp -------------------------------------
+
+def test_terminal_records_carry_the_head_they_ran_against(store, monkeypatch):
+    # The one-attempt-per-head guard reads the stamp off refused/failed/pushed
+    # records; a terminal record that dropped it would re-arm the PR instantly.
+    fix_queue.queue_pr(1, "update")
+    probe = _Probe(rc=8)  # base conflicts → refused
+    monkeypatch.setattr(fix_worker, "_resubmit", probe)
+    fix_worker.run_one(1)
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "refused"
+    assert req["against_head_sha"] == HEAD
+
+
+def test_refuse_records_the_claimed_head_not_the_current_one(store):
+    # The stamp is the head the run was pinned against, which is what the
+    # one-attempt guard compares — a head that moved mid-run must not be
+    # recorded as attempted.
+    fix_worker._refuse(1, {"action": "fix", "against_head_sha": "b" * 40}, "nope")
+    req = store.load_pr(1).fix_request
+    assert req["against_head_sha"] == "b" * 40
