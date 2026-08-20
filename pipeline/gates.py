@@ -345,6 +345,50 @@ def security_cleared(pr: Pr, today: str | None = None) -> bool:
             and pr.security_verdict == "GREEN")
 
 
+# The deterministic repro findings the harness owns: a command the runner could
+# not have reproduced anything with, whatever the PR does. Distinguishing these
+# from a repro that ran correctly and simply did not reproduce is what makes a
+# re-verify worth spending a sandbox on. `vacuous-repro-filter` is a retired
+# spelling that appears on stored records only; it named the same unrunnable
+# command `misrooted-repro-config` names, so it re-sweeps the same way.
+_HARNESS_REPRO_SIGNALS = ("misrooted-repro-config", "vacuous-repro-name-filter",
+                          "vacuous-repro-filter")
+
+
+def repro_harness_defect(pr: Pr) -> str | None:
+    """The harness-owned reason this PR's verified record carries no repro
+    corroboration — or None when the record corroborates, or when the gap is
+    evidence about the PR rather than about the command.
+
+    A verified outcome held back only by a repro the harness broke is worth
+    re-running: the command could not have reproduced anything, so the sandbox
+    spend buys real evidence. A repro that ran as written and did not reproduce
+    is a finding about the PR, and re-running it just reproduces the finding.
+
+    The distinguishing facts are the deterministic ones — a repro that never
+    ran, or a `_HARNESS_REPRO_SIGNALS` finding the driver stored from the
+    pre-committed command and the host-observed exit. The judge's own rating
+    never qualifies a record on its own: it reads the untrusted output tail.
+
+    Only a verified outcome qualifies; every other outcome has its own route."""
+    if pr.verify_outcome not in ("verified-fix", "agent-verified"):
+        return None
+    if verify_signals_incomplete(pr) is None:
+        return None
+    signals = pr.verify_signals
+    blind = signals.get("blind_adequacy") or {}
+    repro = signals.get("independent_repro") or {}
+    if blind.get("repro_command") and not repro.get("ran"):
+        skipped = repro.get("skipped_reason")
+        if skipped in (None, "", "host-path-in-command"):
+            return "an authored repro never ran"
+    for f in pr.verify_findings:
+        sig = f.get("signal")
+        if sig in _HARNESS_REPRO_SIGNALS:
+            return f"the repro command was unrunnable as written ({sig})"
+    return None
+
+
 def merge_eligibility(pr: Pr, today: str | None = None,
                       changed_paths: list[str] | None = None,
                       override_reason: str | None = None) -> tuple[bool, str]:
@@ -675,14 +719,109 @@ def vacuous_name_filter(blind: dict, host: dict) -> str | None:
     return m.group(1) if m else None
 
 
-# Runner flags that rebase the root the runner resolves path filters against:
-# vitest/jest `--config` (root becomes the config file's directory) and vitest
-# `--root` (root becomes the value itself).
-_REBASE_FLAGS = ("--config", "--root")
-
 # The name-filter flags of _NAME_FILTER_RE as tokens, for reading their values.
 _NAME_FILTER_FLAGS = ("-t", "-g", "--testNamePattern", "--test-name-pattern",
                       "--grep")
+
+# The token that names a test runner, matched on the basename so a package-manager
+# preamble (`pnpm --filter pkg exec vitest run …`) still identifies the segment.
+_RUNNER_NAMES = ("vitest", "jest", "mocha", "pytest", "ava", "tap")
+
+# Runner flags that set the root the runner resolves the config's own relative
+# paths against: vitest `--root`, jest `--rootDir`.
+_ROOT_FLAGS = ("--root", "--rootDir")
+
+# Shell operators that end one command inside a compound line.
+_SEGMENT_RE = re.compile(r"&&|\|\||[;|\n]")
+
+# A heredoc redirection and the delimiter word that closes it: `<<EOF`,
+# `<<-'EOF'`, `<< "EOF"`.
+_HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+
+# A `sh -c '<script>'` wrapper whose single quoted argument is the real command.
+_SHELL_C_RE = re.compile(r"^\s*(?:\S*/)?(?:ba|z|k|)sh\s+-[a-z]*c\s+")
+
+
+def _unwrap_shell_c(cmd: str) -> str:
+    """The script a `sh -c '<script>'` wrapper carries, or `cmd` unchanged when
+    it is not such a wrapper. The wrapper's own argv is one quoted token, so the
+    words the runner actually receives are inside it."""
+    m = _SHELL_C_RE.match(cmd)
+    if m is None:
+        return cmd
+    rest = cmd[m.end():].strip()
+    if len(rest) >= 2 and rest[0] in "'\"" and rest[-1] == rest[0]:
+        return rest[1:-1]
+    return cmd
+
+
+def _strip_heredocs(cmd: str) -> str:
+    """`cmd` with every heredoc body removed — the lines between a `<<WORD`
+    redirection and the line that closes it. A repro that authors its test
+    inline carries the whole file source in such a body; those lines are content
+    written to disk, never words the runner receives."""
+    lines = cmd.splitlines()
+    kept: list[str] = []
+    i = 0
+    while i < len(lines):
+        kept.append(lines[i])
+        delims = [m.group(2) for m in _HEREDOC_RE.finditer(lines[i])]
+        i += 1
+        for d in delims:
+            while i < len(lines) and lines[i].strip() != d:
+                i += 1
+            i += 1
+    return "\n".join(kept)
+
+
+def _runner_argv(cmd: str) -> list[str]:
+    """The words the test runner itself receives in `cmd` — the last segment of
+    a compound shell command that names a runner.
+
+    A repro that authors its test inline is compound: an `mkdir`, a
+    `cat > <path> <<EOF` heredoc carrying the file source, then the run. Only
+    the running segment's words are the runner's argv — the heredoc body is
+    file content and the redirect target is a shell operand, and #3192 wrote a
+    path through both that the runner was never given.
+
+    Falls back to the whole command when no segment names a runner."""
+    body = _strip_heredocs(_unwrap_shell_c(cmd))
+    segments = _SEGMENT_RE.split(body)
+    for seg in reversed(segments):
+        try:
+            toks = shlex.split(seg)
+        except ValueError:
+            continue
+        if any(posixpath.basename(t) in _RUNNER_NAMES for t in toks):
+            return toks
+    try:
+        return shlex.split(body)
+    except ValueError:
+        return []
+
+
+def _flag_value(toks: list[str], flag: str) -> str | None:
+    """The value of `flag` in `toks`, attached by space or by `=`."""
+    for i, t in enumerate(toks):
+        if t == flag and i + 1 < len(toks):
+            return toks[i + 1]
+        if t.startswith(f"{flag}="):
+            return t.split("=", 1)[1]
+    return None
+
+
+def _cds_into(cmd: str, d: str) -> bool:
+    """True iff a segment of `cmd` ahead of the run changes directory into `d`,
+    which makes the runner's working directory and the config's directory
+    agree."""
+    for seg in _SEGMENT_RE.split(_strip_heredocs(_unwrap_shell_c(cmd))):
+        try:
+            toks = shlex.split(seg)
+        except ValueError:
+            continue
+        if len(toks) >= 2 and toks[0] == "cd" and posixpath.normpath(toks[1]) == d:
+            return True
+    return False
 
 
 def _positional(toks: list[str]) -> list[str]:
@@ -721,11 +860,12 @@ def repro_targets_pr_test(repro_cmd: str, diff_text: str) -> str | None:
     run's output plays no part — and fail-safe by construction: a match only
     ever skips a run (verify_pr records skipped_reason
     "repro-targets-pr-test" and spends no sandbox time), so diff text can at
-    worst suppress its own PR's corroborating evidence."""
-    try:
-        toks = shlex.split(repro_cmd)
-    except ValueError:
-        return None
+    worst suppress its own PR's corroborating evidence.
+
+    Reads the runner's own argv (`_runner_argv`), so a repro that authors its
+    test inline is judged on the words the runner receives — the path it writes
+    the file to is a shell operand, not a target it runs."""
+    toks = _runner_argv(repro_cmd)
     changed_tests = [p for p in diffpaths.changed_paths(diff_text)
                      if diffpaths.is_test_path(p)]
     for t in _positional(toks):
@@ -743,15 +883,47 @@ def repro_targets_pr_test(repro_cmd: str, diff_text: str) -> str | None:
     return None
 
 
-def vacuous_path_filter(blind: dict, repro: dict) -> str | None:
-    """The path filter in the committed repro_command that repeats the root a
-    `--config`/`--root` flag in the same command rebases to, when the repro ran
-    and exited SENTINEL_TEST_FAIL — the signature of a filter that matched no
-    files (#9041: `--config server/vitest.config.ts` rebases vitest's root to
-    server/, so the filter `server/src/...` resolves to server/server/src/...,
-    the runner finds no test files and exits nonzero, and the host exit reads
-    as a reproduction). Returns None when the repro never ran, exited anything
-    else, or the command carries no such conflict.
+def vacuous_repro_name_filter(blind: dict, repro: dict) -> str | None:
+    """The name-filter value in the committed repro_command that matched no test
+    name, when the repro ran and exited SENTINEL_PASS with one present. Returns
+    None when the repro never ran, exited anything else, or carries no filter.
+
+    A runner given a name filter that matches nothing skips every test in the
+    file and exits 0, which on the unfixed base reads as "the defect did not
+    reproduce" — the same exit a genuinely non-reproducing repro gives, from a
+    run that evaluated no assertion at all. The titles this catches are the ones
+    a filter cannot match as written: an `it.each` template rendered per case,
+    or a title the base spells differently than the diff does.
+
+    A diagnostic fact, not a verdict: the repro corroborates nothing either way,
+    and this reads only trusted inputs — the pre-committed repro_command and the
+    host-observed exit — never the untrusted output tails."""
+    if not repro.get("ran") or repro.get("exit_code") != SENTINEL_PASS:
+        return None
+    cmd = blind.get("repro_command")
+    if not isinstance(cmd, str):
+        return None
+    vals = _name_filter_values(_runner_argv(cmd))
+    return vals[0] if vals else None
+
+
+def misrooted_repro_config(blind: dict, repro: dict) -> str | None:
+    """The `--config` value in the committed repro_command that names a config
+    in a subdirectory the command never makes the runner's root, when the repro
+    ran and exited SENTINEL_TEST_FAIL. Returns None when the repro never ran,
+    exited anything else, or the command carries no such config.
+
+    A runner loads the named config but keeps its root at the working
+    directory, so every path the config declares relative to itself —
+    `setupFiles`, `include`, aliases — resolves against the repo root instead
+    and the suite dies at load before a single test runs (#3192: `--config
+    server/vitest.config.ts` from the repo root turned that config's
+    `./src/__tests__/setup-supertest.ts` into `<root>/src/__tests__/…`, which
+    does not exist; the run reported zero tests in 53ms). The sandbox collapses
+    every non-zero test exit to SENTINEL_TEST_FAIL, so the host reads a
+    suite-load failure exactly as it reads a reproduction. A command that also
+    rebases to that directory — `--root <dir>`, or a `cd <dir>` ahead of the
+    run — makes the two agree and does not match.
 
     A diagnostic fact, not a verdict: the repro is corroborating evidence the
     outcome never turns on, and this reads only trusted inputs — the
@@ -763,29 +935,20 @@ def vacuous_path_filter(blind: dict, repro: dict) -> str | None:
     cmd = blind.get("repro_command")
     if not isinstance(cmd, str):
         return None
-    try:
-        toks = shlex.split(cmd)
-    except ValueError:
+    toks = _runner_argv(cmd)
+    cfg = _flag_value(toks, "--config") or _flag_value(toks, "-c")
+    if not cfg:
         return None
-    root: str | None = None
-    for i, t in enumerate(toks):
-        if t in _REBASE_FLAGS and i + 1 < len(toks):
-            flag, val = t, toks[i + 1]
-        elif t.startswith(tuple(f"{f}=" for f in _REBASE_FLAGS)):
-            flag, val = t.split("=", 1)
-        else:
-            continue
-        d = posixpath.dirname(val) if flag == "--config" else val
-        d = posixpath.normpath(d) if d else "."
-        if root is None and d != ".":
-            root = d
-    if root is None:
+    d = posixpath.normpath(posixpath.dirname(cfg))
+    if d in (".", "", "/") or d.startswith(".."):
         return None
-    prefix = root + "/"
-    for t in _positional(toks):
-        if posixpath.normpath(t).startswith(prefix):
-            return t
-    return None
+    for flag in _ROOT_FLAGS:
+        root = _flag_value(toks, flag)
+        if root is not None and posixpath.normpath(root) == d:
+            return None
+    if _cds_into(cmd, d):
+        return None
+    return cfg
 
 
 def _contained_dirty_green(host: dict, green_key: str) -> bool:
@@ -1057,15 +1220,16 @@ def verify_signals_incomplete(pr: Pr) -> str | None:
     the fix flipped its target test, but the file's suite did not come out
     clean, so the operator merges knowing which failures were waved through.
 
-    Signal 4 (the independent repro) is the one optional signal: a blind pass
-    that authored no repro_command attempted nothing, so nothing is incomplete.
-    When one WAS authored it must have run, the host's own facts about that run
-    must leave its exit meaning something, and the judge must have rated it
-    matching; a repro that never ran, ran unrated, or was rated not-matching is
-    partial evidence. merge_allowed refuses to auto-recommend on it; the app
+    Signal 4 (the independent repro) must corroborate: a verification whose
+    repro was never authored, never ran, ran unrated, or was rated not-matching
+    is partial evidence. merge_allowed refuses to auto-recommend on it; the app
     names it on the human path and in the verify panel. Operator decision
     2026-07-16: a verified-fix whose repro never executed (#7524, a harness path
     defect) must not present as full-confidence evidence at merge time.
+    Operator decision 2026-07-30: nor may one that authored no repro at all — an
+    author-shipped red->green attests only as far as the author's own test
+    reaches, so full-confidence evidence requires the independent repro to have
+    hit the defect on unfixed main too.
 
     Three host-observed facts settle Signal 4 ahead of the judge's rating,
     because each one drains the exit code of meaning and the rating is read
@@ -1073,7 +1237,7 @@ def verify_signals_incomplete(pr: Pr) -> str | None:
     sandbox's sentinel set (the phase container errored — a timeout, an OOM, an
     image fault), an exit of SENTINEL_PASS (the repro found the pinned base
     healthy, so it demonstrated no defect to corroborate), and a
-    vacuous_path_filter command (the filter matches no files, so the failing
+    misrooted_repro_config command (the runner dies at load, so the failing
     exit is the harness's defect). These read only trusted inputs — the
     pre-committed repro_command and the host-recorded exit — so a judge fooled
     by the untrusted tail cannot promote any of them to corroboration.
@@ -1100,7 +1264,13 @@ def verify_signals_incomplete(pr: Pr) -> str | None:
                 "a fully clean green")
     blind = signals.get("blind_adequacy") or {}
     if not blind.get("repro_command"):
-        return None
+        rejected = blind.get("repro_rejected")
+        if rejected:
+            return (f"no independent repro corroborates this fix — the one "
+                    f"authored was rejected before it ran: {rejected}")
+        return ("no independent repro was authored — the red->green rests "
+                "entirely on the author's own test, with nothing independent "
+                "confirming the defect exists on unfixed main")
     repro = signals.get("independent_repro") or {}
     if not repro.get("ran"):
         return "an independent repro was authored but never ran"
@@ -1113,12 +1283,13 @@ def verify_signals_incomplete(pr: Pr) -> str | None:
         return ("the independent repro passed against the pinned base — it "
                 "demonstrated no defect on unfixed main, so it corroborates "
                 "nothing")
-    vacuous = vacuous_path_filter(blind, repro)
-    if vacuous is not None:
-        return (f"the independent repro's command mixes --config/--root with a "
-                f"path filter that repeats the rebased root ({vacuous}) — the "
-                f"filter matches no files, so its failing exit is a harness "
-                f"defect rather than corroboration")
+    misrooted = misrooted_repro_config(blind, repro)
+    if misrooted is not None:
+        return (f"the independent repro's command points --config at a "
+                f"subdirectory config ({misrooted}) it never makes the runner's "
+                f"root — the config's own relative paths resolve against the "
+                f"repo root and the suite dies at load, so its failing exit is "
+                f"a harness defect rather than corroboration")
     rating = signals.get("repro_reason_match") or {}
     matches = rating.get("matches")
     if matches is True:

@@ -74,9 +74,10 @@ class TestReproHostFactsOutrankTheRating:
         why = gates.verify_signals_incomplete(pr)
         assert why is not None and "demonstrated no defect" in why
 
-    def test_a_vacuous_path_filter_is_incomplete(self):
-        # --config rebases the runner's root to server/, so the filter resolves
-        # to server/server/... and matches no files: a "no test files" exit is
+    def test_a_misrooted_config_is_incomplete(self):
+        # --config names a config in server/ that the command never makes the
+        # runner's root, so that config's own relative setupFiles resolve
+        # against the repo root and the suite dies at load: the failing exit is
         # indistinguishable from a genuine failure, and it is the harness's
         # defect rather than the PR's bug.
         pr = _pr(verify=_verified(signals=_repro(
@@ -84,11 +85,20 @@ class TestReproHostFactsOutrankTheRating:
                      "server/src/x.test.ts"),
             rating=MATCHING)))
         why = gates.verify_signals_incomplete(pr)
-        assert why is not None and "matches no files" in why
+        assert why is not None and "dies at load" in why
+
+    def test_a_config_the_command_roots_itself_at_still_corroborates(self):
+        # The same config, with the runner rooted where it lives: nothing is
+        # misrooted, so the failing exit means what it says.
+        pr = _pr(verify=_verified(signals=_repro(
+            command=("cd server && npx vitest run --config vitest.config.ts "
+                     "src/x.test.ts"),
+            rating=MATCHING)))
+        assert gates.verify_signals_incomplete(pr) is None
 
     def test_a_clean_failing_repro_still_corroborates(self):
         # The corroborating case the checks above must not swallow: a plain
-        # SENTINEL_TEST_FAIL on a command with no rebase conflict.
+        # SENTINEL_TEST_FAIL on a command with no config conflict.
         pr = _pr(verify=_verified(signals=_repro(rating=MATCHING)))
         assert gates.verify_signals_incomplete(pr) is None
 

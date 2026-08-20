@@ -488,7 +488,7 @@ Report:
 - faithful: does the whole-file test genuinely reproduce the claimed defect rather than fail for an unrelated reason?
 - claimed_symptom: the defect as claimed, in one line.
 - expected_red_signature: the specific assertion, error, or diagnostic you predict on the unfixed base.
-- repro_command: an independent repro against the pinned base WITHOUT this PR's diff. Never reference a test file or test name introduced by the PR. Use existing base code/tests or an inline script, with an explicit timeout. Paths must be repo-relative; when using `--config` or `--root`, make filters relative to that directory. Null if no faithful command is possible.
+- repro_command: an independent repro against the pinned base WITHOUT this PR's diff. Never reference a test file or test name the PR introduces. It does not have to be self-contained: author your test INTO the package's existing test directory — that project's config, setup files and fixtures then apply, so import its existing helpers (the embedded-database bootstrap, the supertest app factory, the render utilities) rather than rebuilding a harness. The shape that works: `cd <package> && cat > src/__tests__/<name>-repro.test.ts <<'EOF' … EOF` then run the runner from there; an inline `node -e` script is enough for pure logic or file content. Run from the repo root naming a repo-root path, or from inside the package naming a package-relative path. Do NOT pass `--config <subdir>/...`: the runner keeps its root at the working directory, so that config's own relative paths (`setupFiles`, `include`, aliases) resolve against the repo root and the suite dies at load having run zero tests — an exit indistinguishable from a genuine failure. Prefer authoring a file over a `-t` filter (one matching no title skips every test and exits 0, reading as "did not reproduce" from a run that evaluated nothing); give the command an explicit timeout; reach dev tools through the repo (`npx tsx`), never a bare global; declare the environment a test needs (`// @vitest-environment jsdom`). Null only when the defect genuinely needs a live model-driven agent, a real browser session, or an external service — "the harness would be laborious to build" is not such a case, since the harness is already in the repository next to the tests you read. Never invent a repro you do not believe in.
 - expected_repro_signature: the specific failure predicted for repro_command, or null with no command.
 - requires_live_agent: true only if reproducing this needs a live model-driven agent run (agent adapter plumbing, heartbeat counting). Such PRs are out of scope for this phase.""".replace("__REPO__", settings.REPO)
 
@@ -1350,17 +1350,29 @@ def commit_outcomes(store: Store, items: list[JudgeItem]) -> tuple[int, list[int
                             f"no repro ran, so the verdict carries no repro "
                             f"corroboration (the outcome never turns on it)"})
             repro = signals.get("independent_repro") or {}
-            pflag = gates.vacuous_path_filter(blind, repro)
+            pflag = gates.misrooted_repro_config(blind, repro)
             if pflag is not None:
                 findings.append({
-                    "signal": "vacuous-repro-filter",
-                    "note": f"the repro exited as failing while its command mixes "
-                            f"--config/--root with a path filter that repeats the "
-                            f"rebased root ({pflag}) — the runner resolves path "
-                            f"filters against that root, so such a filter matches "
-                            f"no files and a 'no test files' exit is "
-                            f"indistinguishable from a genuine failure; a harness "
-                            f"defect in the command, not corroboration of the bug",
+                    "signal": "misrooted-repro-config",
+                    "note": f"the repro exited as failing while its command points "
+                            f"--config at a subdirectory config ({pflag}) it never "
+                            f"makes the runner's root — the runner keeps its root "
+                            f"at the working directory, so the paths that config "
+                            f"declares relative to itself resolve against the repo "
+                            f"root and the suite dies at load having run zero "
+                            f"tests; a harness defect in the command, not "
+                            f"corroboration of the bug",
+                    "repro_command": blind.get("repro_command")})
+            nflag = gates.vacuous_repro_name_filter(blind, repro)
+            if nflag is not None:
+                findings.append({
+                    "signal": "vacuous-repro-name-filter",
+                    "note": f"the repro exited 0 while its command carries a name "
+                            f"filter ({nflag!r}) — a filter that matches no test "
+                            f"title skips every test and exits 0, so the likeliest "
+                            f"cause is that nothing ran at all rather than that the "
+                            f"defect failed to reproduce; a harness defect in the "
+                            f"command, not evidence about the PR",
                     "repro_command": blind.get("repro_command")})
             if authored and outcome != "agent-verified":
                 note = authored_attempt_note(authored, it.red_reason_match)

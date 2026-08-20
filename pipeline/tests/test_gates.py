@@ -964,7 +964,10 @@ class TestDirtyGreenContainment:
         assert ok is True and "incomplete" in reason
 
     def test_a_clean_verified_fix_is_still_complete_evidence(self):
-        pr = _pr(verify=_verified(signals={"red_green": _host()}))
+        pr = _pr(verify=_verified(signals={
+            "red_green": _host(),
+            **_repro_signals(rating={"matches": True, "applicable": True,
+                                     "confidence": "high"})}))
         assert gates.verify_signals_incomplete(pr) is None
 
 
@@ -1079,71 +1082,196 @@ def _repro(**over) -> dict:
     return dict({"ran": True, "exit_code": 20, "output_tail": ""}, **over)
 
 
-class TestVacuousPathFilter:
-    """A repro that exited as failing while its command mixes --config/--root
-    with a path filter that repeats the rebased root is the signature of a
-    filter that matched no files (#9041: `--config server/vitest.config.ts`
-    rebased vitest's root to server/, so the filter `server/src/...` matched
-    nothing, vitest exited nonzero on "No test files found", and the host
-    exit read as a reproduction). Diagnostic only, from trusted inputs alone —
-    the pre-committed repro_command and the host-observed exit."""
+class TestRunnerArgv:
+    """The words the runner itself receives, picked out of a compound repro
+    command. A repro that authors its test inline writes the whole file source
+    through a heredoc; those lines and the `cat >` target are shell operands the
+    runner never sees, and reading them as argv attributes paths to it that it
+    was never given (#3192)."""
 
-    R9041 = ('npx vitest run --config server/vitest.config.ts '
-             'server/src/__tests__/config-file.test.ts -t "field-specific error" '
-             '--testTimeout=10000')
+    # The #3192 shape: mkdir, an inline heredoc carrying the test source, then
+    # the run. The heredoc names server/src/... ; the runner is given src/... .
+    AUTHORED = (
+        "mkdir -p server/src/__tests__ && "
+        "cat > server/src/__tests__/repro-legacy-refs.test.ts <<'EOF'\n"
+        'import { expect, it } from "vitest";\n'
+        'it("repro", () => { expect(1).toBe(2); });\n'
+        "EOF\n"
+        "npx vitest run --config server/vitest.config.ts "
+        "src/__tests__/repro-legacy-refs.test.ts --testTimeout=20000")
 
-    def test_the_9041_shape_is_flagged(self):
-        blind = _blind(repro_command=self.R9041)
-        assert gates.vacuous_path_filter(blind, _repro()) == \
-            "server/src/__tests__/config-file.test.ts"
+    def test_only_the_running_segment_is_argv(self):
+        assert gates._runner_argv(self.AUTHORED) == [
+            "npx", "vitest", "run", "--config", "server/vitest.config.ts",
+            "src/__tests__/repro-legacy-refs.test.ts", "--testTimeout=20000"]
 
-    def test_every_rebase_spelling_is_recognized(self):
-        for cmd in (
-                "npx vitest run --config server/vitest.config.ts server/src/x.test.ts",
-                "npx vitest run --config=server/vitest.config.ts server/src/x.test.ts",
-                "npx vitest run --root server server/src/x.test.ts",
-                "npx vitest run --root=server server/src/x.test.ts",
-                "npx vitest run --config ./server/vitest.config.ts server/src/x.test.ts"):
-            got = gates.vacuous_path_filter(_blind(repro_command=cmd), _repro())
-            assert got == "server/src/x.test.ts", cmd
+    def test_the_heredoc_target_is_not_a_runner_argument(self):
+        assert "server/src/__tests__/repro-legacy-refs.test.ts" \
+            not in gates._runner_argv(self.AUTHORED)
 
-    def test_a_filter_relative_to_the_rebased_root_is_not_flagged(self):
-        cmd = "npx vitest run --config server/vitest.config.ts src/x.test.ts"
-        assert gates.vacuous_path_filter(_blind(repro_command=cmd), _repro()) is None
+    def test_a_shell_c_wrapper_is_unwrapped(self):
+        cmd = ("bash -lc 'cat > server/src/__tests__/x.test.ts <<\"EOF\"\n"
+               "content\nEOF\nnpx vitest run server/src/__tests__/x.test.ts'")
+        assert gates._runner_argv(cmd) == [
+            "npx", "vitest", "run", "server/src/__tests__/x.test.ts"]
 
-    def test_a_repo_root_config_rebases_nothing(self):
-        cmd = "npx vitest run --config vitest.config.ts server/src/x.test.ts"
-        assert gates.vacuous_path_filter(_blind(repro_command=cmd), _repro()) is None
+    def test_a_package_manager_preamble_still_names_the_runner(self):
+        cmd = ("pnpm --filter @acme/server exec vitest run src/x.test.ts "
+               '-t "a title"')
+        assert gates._runner_argv(cmd) == [
+            "pnpm", "--filter", "@acme/server", "exec", "vitest", "run",
+            "src/x.test.ts", "-t", "a title"]
 
-    def test_a_command_without_a_rebase_flag_is_not_flagged(self):
-        cmd = "npx vitest run server/src/x.test.ts"
-        assert gates.vacuous_path_filter(_blind(repro_command=cmd), _repro()) is None
+    def test_a_plain_invocation_is_its_own_argv(self):
+        cmd = "npx vitest run server/src/x.test.ts --testTimeout=20000"
+        assert gates._runner_argv(cmd) == [
+            "npx", "vitest", "run", "server/src/x.test.ts", "--testTimeout=20000"]
 
-    def test_a_name_filter_value_is_not_a_path_filter(self):
-        # The -t value is the flag's argument, not a path filter — even when it
-        # happens to start with the rebased root's name.
-        cmd = 'npx vitest run --config server/vitest.config.ts -t "server/thing"'
-        assert gates.vacuous_path_filter(_blind(repro_command=cmd), _repro()) is None
+    def test_a_command_naming_no_runner_falls_back_to_the_whole_command(self):
+        assert gates._runner_argv("node scripts/repro.mjs") == [
+            "node", "scripts/repro.mjs"]
 
-    def test_a_passing_repro_is_not_flagged(self):
-        blind = _blind(repro_command=self.R9041)
-        assert gates.vacuous_path_filter(blind, _repro(exit_code=0)) is None
+    def test_an_unparseable_command_yields_no_argv(self):
+        assert gates._runner_argv('npx vitest run "unbalanced') == []
 
-    def test_an_errored_repro_is_not_flagged(self):
-        blind = _blind(repro_command=self.R9041)
-        assert gates.vacuous_path_filter(blind, _repro(exit_code=137)) is None
+
+class TestVacuousReproNameFilter:
+    """A repro that exited 0 while carrying a name filter skipped every test
+    rather than failing to reproduce: the filter matched no title, so the run
+    evaluated no assertion and still exited the way a genuinely non-reproducing
+    repro does. Diagnostic only, from trusted inputs alone."""
+
+    def test_an_exit_zero_repro_with_a_name_filter_is_flagged(self):
+        cmd = ('npx vitest run packages/db/src/backup-lib.test.ts '
+               '-t "keeps the newest backup for each retained calendar month"')
+        assert gates.vacuous_repro_name_filter(
+            _blind(repro_command=cmd), _repro(exit_code=0)) == \
+            "keeps the newest backup for each retained calendar month"
+
+    def test_every_name_filter_spelling_is_recognized(self):
+        for cmd in ('npx vitest run x.test.ts -t "a title"',
+                    'npx vitest run x.test.ts --testNamePattern "a title"',
+                    'npx mocha x.test.js -g "a title"',
+                    'npx vitest run x.test.ts --testNamePattern="a title"'):
+            assert gates.vacuous_repro_name_filter(
+                _blind(repro_command=cmd), _repro(exit_code=0)) == "a title", cmd
+
+    def test_a_name_filter_only_inside_a_heredoc_is_not_flagged(self):
+        # The heredoc writes a test file whose source mentions -t; the runner is
+        # given no filter.
+        cmd = ("cat > src/x.test.ts <<'EOF'\n// run with -t \"a title\"\nEOF\n"
+               "npx vitest run src/x.test.ts")
+        assert gates.vacuous_repro_name_filter(
+            _blind(repro_command=cmd), _repro(exit_code=0)) is None
+
+    def test_an_exit_zero_repro_without_a_name_filter_is_not_flagged(self):
+        cmd = "npx vitest run server/src/x.test.ts --testTimeout=20000"
+        assert gates.vacuous_repro_name_filter(
+            _blind(repro_command=cmd), _repro(exit_code=0)) is None
+
+    def test_a_failing_repro_is_not_flagged(self):
+        # Exit 20 with a filter present is a filter that DID match and failed.
+        cmd = 'npx vitest run x.test.ts -t "a title"'
+        assert gates.vacuous_repro_name_filter(
+            _blind(repro_command=cmd), _repro(exit_code=20)) is None
 
     def test_a_repro_that_never_ran_is_not_flagged(self):
-        blind = _blind(repro_command=self.R9041)
-        assert gates.vacuous_path_filter(
+        cmd = 'npx vitest run x.test.ts -t "a title"'
+        assert gates.vacuous_repro_name_filter(
+            _blind(repro_command=cmd), _repro(ran=False, exit_code=None)) is None
+
+    def test_a_null_repro_command_is_not_flagged(self):
+        assert gates.vacuous_repro_name_filter(_blind(), _repro(exit_code=0)) is None
+
+
+class TestMisrootedReproConfig:
+    """A repro that exited as failing while its command points --config at a
+    subdirectory config it never makes the runner's root is a suite that died at
+    load, not a reproduction (#3192: `--config server/vitest.config.ts` from the
+    repo root left vitest's root at the repo root, so that config's
+    `./src/__tests__/setup-supertest.ts` resolved to `<root>/src/__tests__/…`,
+    which does not exist; vitest reported 0 tests and exited non-zero, and the
+    host exit read as a reproduction). Diagnostic only, from trusted inputs
+    alone — the pre-committed repro_command and the host-observed exit."""
+
+    R3192 = ('npx vitest run --config server/vitest.config.ts '
+             'src/__tests__/repro-managed-agents-legacy-refs.test.ts '
+             '--testTimeout=20000')
+
+    def test_the_3192_shape_is_flagged(self):
+        blind = _blind(repro_command=self.R3192)
+        assert gates.misrooted_repro_config(blind, _repro()) == \
+            "server/vitest.config.ts"
+
+    def test_every_config_spelling_is_recognized(self):
+        for cmd in (
+                "npx vitest run --config server/vitest.config.ts src/x.test.ts",
+                "npx vitest run --config=server/vitest.config.ts src/x.test.ts",
+                "npx vitest run --config ./server/vitest.config.ts src/x.test.ts",
+                "npx jest -c server/jest.config.js src/x.test.ts"):
+            assert gates.misrooted_repro_config(
+                _blind(repro_command=cmd), _repro()) is not None, cmd
+
+    def test_a_matching_root_flag_makes_the_two_agree(self):
+        for cmd in (
+                "npx vitest run --root server --config server/vitest.config.ts "
+                "src/x.test.ts",
+                "npx vitest run --root=server --config=server/vitest.config.ts "
+                "src/x.test.ts",
+                "npx jest --rootDir server -c server/jest.config.js src/x.test.ts"):
+            assert gates.misrooted_repro_config(
+                _blind(repro_command=cmd), _repro()) is None, cmd
+
+    def test_a_root_flag_naming_a_different_directory_still_flags(self):
+        cmd = ("npx vitest run --root ui --config server/vitest.config.ts "
+               "src/x.test.ts")
+        assert gates.misrooted_repro_config(
+            _blind(repro_command=cmd), _repro()) == "server/vitest.config.ts"
+
+    def test_a_cd_into_the_config_directory_makes_the_two_agree(self):
+        cmd = "cd server && npx vitest run --config vitest.config.ts src/x.test.ts"
+        assert gates.misrooted_repro_config(
+            _blind(repro_command=cmd), _repro()) is None
+
+    def test_a_repo_root_config_is_not_flagged(self):
+        cmd = "npx vitest run --config vitest.config.ts server/src/x.test.ts"
+        assert gates.misrooted_repro_config(
+            _blind(repro_command=cmd), _repro()) is None
+
+    def test_a_command_without_a_config_flag_is_not_flagged(self):
+        # The shape the prompt asks for: the repo-root runner, a repo-root path.
+        cmd = "npx vitest run server/src/__tests__/x.test.ts --testTimeout=20000"
+        assert gates.misrooted_repro_config(
+            _blind(repro_command=cmd), _repro()) is None
+
+    def test_a_config_named_only_in_a_heredoc_is_not_flagged(self):
+        # The heredoc writes a config into the file it authors; the runner is
+        # never passed one.
+        cmd = ("cat > server/vitest.config.ts <<'EOF'\n"
+               "--config server/vitest.config.ts\nEOF\n"
+               "npx vitest run server/src/x.test.ts")
+        assert gates.misrooted_repro_config(
+            _blind(repro_command=cmd), _repro()) is None
+
+    def test_a_passing_repro_is_not_flagged(self):
+        blind = _blind(repro_command=self.R3192)
+        assert gates.misrooted_repro_config(blind, _repro(exit_code=0)) is None
+
+    def test_an_errored_repro_is_not_flagged(self):
+        blind = _blind(repro_command=self.R3192)
+        assert gates.misrooted_repro_config(blind, _repro(exit_code=137)) is None
+
+    def test_a_repro_that_never_ran_is_not_flagged(self):
+        blind = _blind(repro_command=self.R3192)
+        assert gates.misrooted_repro_config(
             blind, _repro(ran=False, exit_code=None)) is None
 
     def test_a_null_repro_command_is_not_flagged(self):
-        assert gates.vacuous_path_filter(_blind(), _repro()) is None
+        assert gates.misrooted_repro_config(_blind(), _repro()) is None
 
     def test_an_unparseable_command_is_not_flagged(self):
-        blind = _blind(repro_command='npx vitest run --config server/v.ts "unbalanced')
-        assert gates.vacuous_path_filter(blind, _repro()) is None
+        blind = _blind(repro_command='npx vitest run --config server/v.ts "unbal')
+        assert gates.misrooted_repro_config(blind, _repro()) is None
 
 
 # A PR diff that adds a test file (with its test titles in added lines) and
@@ -1312,7 +1440,16 @@ class TestAuthoredLaneOutcome:
 
 
 def _verified(**over) -> dict:
-    return dict({"outcome": "verified-fix", "signals": {}, "findings": [], "tier": 0,
+    # Complete evidence by default: every attempted signal corroborated, the
+    # independent repro included — the bar verify_signals_incomplete holds a
+    # verified-fix to. A test about a specific gap overrides `signals`.
+    return dict({"outcome": "verified-fix",
+                 "signals": {
+                     "blind_adequacy": {"repro_command": "node --test repro.mjs"},
+                     "independent_repro": {"ran": True, "exit_code": 20},
+                     "repro_reason_match": {"matches": True, "applicable": True,
+                                            "confidence": "high"}},
+                 "findings": [], "tier": 0,
                  "against_base_sha": "base1", "checked_at": NOW,
                  "against_head_sha": HEAD}, **over)
 
@@ -1696,14 +1833,17 @@ def _repro_signals(*, repro_command: str | None = "node --test repro.mjs",
 
 
 class TestVerifySignalsIncomplete:
-    """An attempted signal that does not corroborate makes the verified evidence
-    partial: merge_allowed refuses to auto-recommend it, and merge_eligibility
-    stays open but names the gap (operator decision, 2026-07-16 — #7524's repro
-    never executed and hid behind a clean verified-fix)."""
+    """A signal that does not corroborate makes the verified evidence partial:
+    merge_allowed refuses to auto-recommend it, the "Dynamic verification" check
+    reads warn rather than pass, and merge_eligibility stays open but names the
+    gap. The independent repro must corroborate — never authoring one is itself
+    a gap (operator decision, 2026-07-30), since an author-shipped red->green
+    attests only as far as the author's own test reaches."""
 
-    def test_no_repro_authored_is_complete(self):
+    def test_no_repro_authored_is_incomplete(self):
         pr = _pr(verify=_verified(signals={"blind_adequacy": {"repro_command": None}}))
-        assert gates.verify_signals_incomplete(pr) is None
+        why = gates.verify_signals_incomplete(pr)
+        assert why is not None and "no independent repro was authored" in why
 
     def test_a_corroborating_repro_is_complete(self):
         pr = _pr(verify=_verified(signals=_repro_signals(
@@ -1748,24 +1888,27 @@ class TestVerifySignalsIncomplete:
         assert ok is True
         assert "incomplete" in why
 
-    def test_a_rejected_null_repro_is_complete(self):
+    def test_a_rejected_null_repro_is_incomplete_and_names_the_rejection(self):
         # The blind lane rejected the agent's repro pre-run and committed the
-        # verdict with the repro fields nulled: no repro was attempted, so the
-        # "repro ran and did not corroborate" blocker must not fire.
+        # verdict with the repro fields nulled. Nothing corroborated, and the
+        # gap names why the repro is missing rather than reading as unattempted.
         pr = _pr(verify=_verified(signals={"blind_adequacy": {
             "repro_command": None,
             "repro_rejected": "repro_command targets a test the PR itself "
                               "introduces ('src/x.test.ts')"}}))
-        assert gates.verify_signals_incomplete(pr) is None
+        why = gates.verify_signals_incomplete(pr)
+        assert why is not None
+        assert "rejected before it ran" in why
+        assert "src/x.test.ts" in why
 
-    def test_merge_allowed_passes_a_rejected_null_repro(self):
+    def test_merge_allowed_refuses_a_rejected_null_repro(self):
         pr = _pr(analysis=_merge_analysis(), security=_green(),
                  verify=_verified(signals={"blind_adequacy": {
                      "repro_command": None,
                      "repro_rejected": "repro_command targets a test the PR "
                                        "itself introduces ('src/x.test.ts')"}}))
         ok, why = gates.merge_allowed(pr, today="2026-06-10")
-        assert ok is True, why
+        assert ok is False and "incomplete" in why
 
 
 class TestCompilePreflightGate:
@@ -1919,8 +2062,10 @@ class TestLanesIncomplete:
             {"version": 1, "verify": {"compile_cmd": "c"}}, "t")
         monkeypatch.setattr(profile, "active", lambda: p)
         pr = self._pr({"outcome": "verified-fix", "against_base_sha": "x",
-                       "signals": {"blind_adequacy": {},
-                                   "lanes": {"compile": {"exit": 0, "ok": True}}}})
+                       "signals": {"lanes": {"compile": {"exit": 0, "ok": True}},
+                                   **_repro_signals(
+                                       rating={"matches": True, "applicable": True,
+                                               "confidence": "high"})}})
         assert gates.verify_signals_incomplete(pr) is None
 
     def test_a_failed_recorded_lane_is_incomplete_despite_a_verified_outcome(
@@ -1961,8 +2106,9 @@ class TestAgentVerifiedLanesIncomplete:
         monkeypatch.setattr(profile, "active", lambda: p)
         pr = _pr(verify=_verified(
             outcome="agent-verified",
-            signals={"blind_adequacy": {},
-                     "lanes": {"compile": {"exit": 0, "ok": True}}}))
+            signals={"lanes": {"compile": {"exit": 0, "ok": True}},
+                     **_repro_signals(rating={"matches": True, "applicable": True,
+                                              "confidence": "high"})}))
         ok, why = gates.merge_eligibility(pr, today="2026-06-10")
         assert ok is True
         assert "agent-authored" in why

@@ -115,7 +115,10 @@ def _repro_signals(*, exit_code):
 
 
 def test_current_verified_fix_passes_check():
-    chk = _verify_check(_pr(verify=_verify_section("verified-fix")))
+    # A clean bill needs every attempted signal corroborating, the independent
+    # repro included — so the fixture carries one that ran and was rated a match.
+    chk = _verify_check(_pr(verify=_verify_section(
+        "verified-fix", signals=_repro_signals(exit_code=20))))
     assert chk and chk["status"] == "pass" and chk["detail"] == "verified-fix"
 
 
@@ -143,6 +146,16 @@ def test_partial_evidence_never_promotes_a_failing_outcome():
     chk = _verify_check(_pr(verify=_verify_section(
         "agent-verified", signals=_repro_signals(exit_code=137))))
     assert chk and chk["status"] == "fail"
+
+
+def test_a_verified_fix_with_no_repro_authored_warns_not_passes():
+    # Operator decision 2026-07-30: a red->green with no independent repro at
+    # all attests only as far as the author's own test reaches, so it is
+    # partial evidence rather than a clean bill.
+    chk = _verify_check(_pr(verify=_verify_section("verified-fix", signals={
+        "blind_adequacy": {"repro_command": None}})))
+    assert chk and chk["status"] == "warn"
+    assert "no independent repro was authored" in chk["detail"]
 
 
 def test_current_blocking_outcomes_fail_check():

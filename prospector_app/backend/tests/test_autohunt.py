@@ -617,3 +617,140 @@ class TestBaseHealth:
         base = autohunt_view.status()["base"]["hosts"][0]
         assert base["age_hours"] is None
         assert base["stale"] is False
+
+
+# ---------------------------------------------------------------------------
+# The repro re-sweep lane: a concluded verification whose independent repro the
+# harness itself broke gets exactly one more sandbox run per head.
+
+def _verified(store: S.Store, n: int, *, signals: dict, findings=()) -> None:
+    rec = store.load_pr(n).raw
+    rec["verify"] = {"outcome": "verified-fix", "tier": 1, "signals": signals,
+                     "findings": list(findings), "against_base_sha": "b" * 40,
+                     "against_head_sha": HEAD, "checked_at": _now()}
+    store.save_pr(rec)
+
+
+_BROKEN_SIGNALS: dict = {
+    "blind_adequacy": {"repro_command": "npx vitest run --config server/v.ts x"},
+    "independent_repro": {"ran": True, "exit_code": 20},
+    "repro_reason_match": {"matches": False, "applicable": True,
+                           "confidence": "high"}}
+_MISROOTED = ({"signal": "misrooted-repro-config", "note": "unrunnable"},)
+
+
+def _broken_repro_pr(store: S.Store, n: int, *, pain: float = 0.0,
+                     findings=_MISROOTED) -> None:
+    """A GREEN-cleared PR whose verification concluded verified-fix but whose
+    independent repro the harness broke."""
+    store.save_pr(_clean_merge_pr(n, pain=pain))
+    _green(store, n)
+    _verified(store, n, signals=_BROKEN_SIGNALS, findings=findings)
+    data.refresh()
+
+
+def test_resweep_lane_picks_a_harness_broken_repro(store):
+    _broken_repro_pr(store, 1)
+    assert verify_worker.next_auto() == ("resweep", 1)
+
+
+def test_resweep_lane_orders_by_pain(store):
+    _broken_repro_pr(store, 1, pain=0.2)
+    _broken_repro_pr(store, 2, pain=0.9)
+    assert verify_worker.next_auto() == ("resweep", 2)
+
+
+def test_a_corroborated_verification_is_never_reswept(store):
+    store.save_pr(_clean_merge_pr(1))
+    _green(store, 1)
+    _verified(store, 1, signals={
+        "blind_adequacy": {"repro_command": "npx vitest run x"},
+        "independent_repro": {"ran": True, "exit_code": 20},
+        "repro_reason_match": {"matches": True, "applicable": True,
+                               "confidence": "high"}})
+    data.refresh()
+    assert verify_worker.next_auto() is None
+
+
+def test_a_repro_that_ran_correctly_and_did_not_reproduce_is_not_reswept(store):
+    """No harness signal: the command ran as written and the defect did not
+    show. That is evidence about the PR, and re-running only repeats it."""
+    _broken_repro_pr(store, 1, findings=())
+    assert verify_worker.next_auto() is None
+
+
+def test_a_never_authored_repro_is_not_reswept(store):
+    """Nothing was attempted, so there is no harness defect to clear — a re-run
+    re-derives the same null."""
+    store.save_pr(_clean_merge_pr(1))
+    _green(store, 1)
+    _verified(store, 1, signals={"blind_adequacy": {"repro_command": None}})
+    data.refresh()
+    assert verify_worker.next_auto() is None
+
+
+def test_an_authored_repro_that_never_ran_is_reswept(store):
+    store.save_pr(_clean_merge_pr(1))
+    _green(store, 1)
+    _verified(store, 1, signals={
+        "blind_adequacy": {"repro_command": "npx vitest run x"},
+        "independent_repro": {"ran": False, "exit_code": None}})
+    data.refresh()
+    assert verify_worker.next_auto() == ("resweep", 1)
+
+
+def test_a_repro_skipped_for_targeting_a_pr_test_is_not_reswept(store):
+    """A deliberate pre-run skip is a decision about the command's target, not
+    a harness defect — the retry already happened inside the blind lane."""
+    store.save_pr(_clean_merge_pr(1))
+    _green(store, 1)
+    _verified(store, 1, signals={
+        "blind_adequacy": {"repro_command": "npx vitest run x"},
+        "independent_repro": {"ran": False, "exit_code": None,
+                              "skipped_reason": "repro-targets-pr-test"}})
+    data.refresh()
+    assert verify_worker.next_auto() is None
+
+
+def test_the_resweep_is_spent_once_its_own_record_lands(store):
+    """The loop guard: after a re-sweep writes a record that is STILL broken,
+    the PR never queues itself again."""
+    _broken_repro_pr(store, 1)
+    assert verify_worker.next_auto() == ("resweep", 1)
+    store.load_pr(1).record_verify_request(
+        "done", queued_at=_now(), source=verify_worker.RESWEEP_SOURCE)
+    # The re-verified record lands after the re-sweep request was queued.
+    _verified(store, 1, signals=_BROKEN_SIGNALS, findings=_MISROOTED)
+    data.refresh()
+    assert verify_worker.next_auto() is None
+
+
+def test_the_retired_finding_spelling_still_resweeps(store):
+    """Records written before the finding was renamed carry the old signal for
+    the same unrunnable command, and must not be stranded by the rename."""
+    _broken_repro_pr(store, 1, findings=(
+        {"signal": "vacuous-repro-filter", "note": "unrunnable"},))
+    assert verify_worker.next_auto() == ("resweep", 1)
+
+
+def test_the_new_name_filter_finding_resweeps(store):
+    _broken_repro_pr(store, 1, findings=(
+        {"signal": "vacuous-repro-name-filter", "note": "matched no title"},))
+    assert verify_worker.next_auto() == ("resweep", 1)
+
+
+def test_an_in_flight_request_blocks_the_resweep(store):
+    _broken_repro_pr(store, 1)
+    store.load_pr(1).record_verify_request("queued", queued_at=_now())
+    data.refresh()
+    assert verify_worker.next_auto() is None
+
+
+def test_the_verify_lane_outranks_the_resweep_lane(store):
+    """An unverified candidate buys more than a second opinion on a concluded
+    one, however painful the concluded one is."""
+    _broken_repro_pr(store, 1, pain=0.9)
+    store.save_pr(_clean_merge_pr(2, pain=0.1))
+    _green(store, 2)
+    data.refresh()
+    assert verify_worker.next_auto() == ("verify", 2)

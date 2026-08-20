@@ -827,6 +827,32 @@ class TestBlindPromptSingleSource:
         assert "relative" in vd.BLIND_PROMPT.lower()
         assert "host path" in vd.BLIND_PROMPT.lower()
 
+    def test_prompt_forbids_a_subdirectory_config_flag(self):
+        # A `--config <subdir>/...` leaves the runner's root at the working
+        # directory, so that config's own relative setupFiles resolve against
+        # the repo root and the suite dies at load — an exit the host cannot
+        # tell from a reproduction (#3192, #9041).
+        assert "--config <subdir>/..." in vd.BLIND_PROMPT
+        assert "setupFiles" in vd.BLIND_PROMPT
+
+    def test_prompt_offers_the_repos_own_harness_instead_of_a_rebuilt_one(self):
+        # The declines that cost corroboration all read "I would have to
+        # reconstruct the harness" (#8873, #9078, #9535, #9549, #9579). The
+        # harness is already next to the tests the agent reads, so the prompt
+        # must say the repro need not be self-contained and may import it.
+        low = vd.BLIND_PROMPT.lower()
+        assert "does not have to be self-contained" in low
+        assert "existing test directory" in low
+        assert "import its existing helpers" in low
+
+    def test_prompt_keeps_declining_honest_but_narrow(self):
+        # Null stays the right answer for a defect no shell command reaches,
+        # and stays the WRONG answer for one that is merely laborious — the
+        # bar this phase exists to hold is "never invent a repro".
+        low = vd.BLIND_PROMPT.lower()
+        assert "laborious" in low
+        assert "never invent a repro" in low
+
 
 class _FakePopen:
     """Stands in for subprocess.Popen: serves `output` bytes through
@@ -1769,14 +1795,15 @@ class TestCommitOutcomes:
         assert got.verify_outcome == "verified-fix"
         assert [f for f in got.verify_findings if f.get("signal") == "vacuous-filter"] == []
 
-    def test_a_vacuous_repro_path_filter_records_a_dedicated_finding(
+    def test_a_misrooted_repro_config_records_a_dedicated_finding(
             self, tmp_path, diffs):
-        # The #9041 shape: --config rebases the runner's root, the path filter
-        # keeps the repo-root prefix, so the runner finds no files and exits
-        # nonzero — an exit indistinguishable from a genuine reproduction. The
-        # finding names the harness cause; the red->green outcome is untouched.
+        # The #3192 shape: --config names a subdirectory config the command
+        # never makes the runner's root, so that config's own relative
+        # setupFiles resolve against the repo root and the suite dies at load —
+        # an exit indistinguishable from a genuine reproduction. The finding
+        # names the harness cause; the red->green outcome is untouched.
         cmd = ('npx vitest run --config server/vitest.config.ts '
-               'server/src/__tests__/config-file.test.ts --testTimeout=10000')
+               'src/__tests__/repro-legacy-refs.test.ts --testTimeout=20000')
         s = _pinned(tmp_path)
         _pr(s, 1); _diff(diffs, "h1", "src/a.test.ts")
         self._ran(s, repro_cmd=cmd, repro_exit=20)
@@ -1785,22 +1812,22 @@ class TestCommitOutcomes:
         got = s.load_pr(1)
         assert got.verify_outcome == "verified-fix"
         vac = [f for f in got.verify_findings
-               if f.get("signal") == "vacuous-repro-filter"]
+               if f.get("signal") == "misrooted-repro-config"]
         assert len(vac) == 1
-        assert "server/src/__tests__/config-file.test.ts" in vac[0]["note"]
+        assert "server/vitest.config.ts" in vac[0]["note"]
         assert vac[0]["repro_command"] == cmd
 
-    def test_a_root_consistent_repro_filter_records_no_vacuous_finding(
+    def test_a_repo_root_repro_invocation_records_no_misrooted_finding(
             self, tmp_path, diffs):
         s = _pinned(tmp_path)
         _pr(s, 1); _diff(diffs, "h1", "src/a.test.ts")
-        self._ran(s, repro_cmd="npx vitest run --config server/vitest.config.ts "
-                               "src/x.test.ts", repro_exit=20)
+        self._ran(s, repro_cmd="npx vitest run server/src/x.test.ts "
+                               "--testTimeout=20000", repro_exit=20)
         ok, held, errs = vd.commit_outcomes(s, [self._judge()])
         assert (ok, held, errs) == (1, [], [])
         got = s.load_pr(1)
         assert [f for f in got.verify_findings
-                if f.get("signal") == "vacuous-repro-filter"] == []
+                if f.get("signal") == "misrooted-repro-config"] == []
 
     def test_patch_conflict_is_needs_rebase(self, tmp_path, diffs):
         s = _pinned(tmp_path)

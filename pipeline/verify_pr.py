@@ -43,7 +43,7 @@ from pipeline import gates
 from pipeline import headless_agent
 from pipeline import verify_driver
 from pipeline.settings import REPO_ROOT
-from pipeline.store import Store
+from pipeline.store import AUTO_REQUEST_SOURCES, Store
 from pipeline.storekit import now as _now
 from pipeline.verify_driver import AUTHOR_PROMPT, BLIND_PROMPT, JUDGE_PROMPT
 from pipeline.wire import AuthorItem, BlindItem, JudgeItem
@@ -434,7 +434,7 @@ def _run_inner(store: Store, rec: Pr, req: _Request) -> int:
     if rec.threat_verdict == "malicious":
         return _fail(req, "refused-safety",
                      "threat verdict is malicious — the sandbox never runs flagged code")
-    if req.source == "auto" and not gates.security_cleared(rec):
+    if req.source in AUTO_REQUEST_SOURCES and not gates.security_cleared(rec):
         return _fail(req, "refused-safety",
                      "auto-queued run requires a current GREEN security verdict — "
                      "the sandbox never executes code the idle hunter selected "
@@ -696,7 +696,7 @@ def run(store: Store, pr: int, *, from_queue: bool = False) -> int:
         "phase": "verify:single", "pr": pr, "started": started, "finished": _now(),
         "stats": {"status": status, "error_kind": request.get("error_kind"),
                   "outcome": outcome}}
-    if runnable and prior.get("source") == "auto":
+    if runnable and prior.get("source") in AUTO_REQUEST_SOURCES:
         entry["trigger"] = "autohunt"
     store.append_run(entry)
     return rc

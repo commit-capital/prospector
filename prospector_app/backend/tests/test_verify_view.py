@@ -27,11 +27,21 @@ def _pr(verify: dict | None = None) -> model.Pr:
     return model.Pr(None, rec)
 
 
+# Complete evidence: every attempted signal corroborated, the independent repro
+# included — the bar gates.verify_signals_incomplete holds a verified outcome to.
+# A test about a specific gap passes its own `signals`.
+CORROBORATED: dict = {
+    "blind_adequacy": {"repro_command": "node --test repro.mjs"},
+    "independent_repro": {"ran": True, "exit_code": 20},
+    "repro_reason_match": {"matches": True, "applicable": True,
+                           "confidence": "high"}}
+
+
 def _verify(outcome: str | None = "verified-fix", *, days_ago: int = 0,
             head: str = HEAD, **over) -> dict:
-    sec: dict = {"outcome": outcome, "tier": 1, "signals": {}, "findings": [],
-                 "against_base_sha": BASE, "against_head_sha": head,
-                 "checked_at": _now(days_ago)}
+    sec: dict = {"outcome": outcome, "tier": 1, "signals": dict(CORROBORATED),
+                 "findings": [], "against_base_sha": BASE,
+                 "against_head_sha": head, "checked_at": _now(days_ago)}
     sec.update(over)
     return sec
 
@@ -216,7 +226,7 @@ def test_request_fault_maps_error_kinds():
 
 
 def test_empty_signals_carry_no_story_or_cause():
-    d = verify_view.verify_detail(_pr(_verify("not-verified")))
+    d = verify_view.verify_detail(_pr(_verify("not-verified", signals={})))
     assert d is not None
     assert d["story"] == [] and d["cause"] is None
 
@@ -271,16 +281,17 @@ def test_vacuous_red_with_a_name_filter_names_the_filter():
     assert "did NOT fail" in red["note"]
 
 
-def test_vacuous_repro_path_filter_warns_even_when_the_judge_rated_it_matching():
-    # The #9041 shape: --config rebased the runner's root, the path filter kept
-    # the repo-root prefix, so the repro found no files and exited nonzero. The
-    # deterministic flag outranks the judge's rating — a fooled judge must not
-    # present the exit as corroboration.
+def test_misrooted_repro_config_warns_even_when_the_judge_rated_it_matching():
+    # The #3192 shape: --config named a subdirectory config the command never
+    # made the runner's root, so that config's own relative setupFiles resolved
+    # against the repo root and the suite died at load having run zero tests.
+    # The deterministic flag outranks the judge's rating — a fooled judge must
+    # not present the exit as corroboration.
     signals = {
         "blind_adequacy": {"faithful": True, "test_cmd": "npx vitest run x",
                            "repro_command": ("npx vitest run --config "
                                              "server/vitest.config.ts "
-                                             "server/src/__tests__/config-file.test.ts")},
+                                             "src/__tests__/repro-legacy.test.ts")},
         "red_green": {"apply_exit": 0, "red_exit": 20, "green_exit": 0},
         "independent_repro": {"ran": True, "exit_code": 20},
         "repro_reason_match": {"matches": True, "confidence": "high",
@@ -290,7 +301,7 @@ def test_vacuous_repro_path_filter_warns_even_when_the_judge_rated_it_matching()
     assert d is not None
     repro = next(s for s in d["story"] if s["key"] == "repro")
     assert repro["result"] == "warn"
-    assert "server/src/__tests__/config-file.test.ts" in repro["note"]
+    assert "server/vitest.config.ts" in repro["note"]
     assert "harness defect" in repro["note"]
 
 
@@ -492,7 +503,8 @@ class TestAgentVerifiedView:
     def test_agent_verified_copy_and_state(self):
         signals = {
             "blind_adequacy": {"has_test": False, "faithful": False, "test_cmd": None,
-                               "requires_live_agent": False, "reasoning": "no test"},
+                               "requires_live_agent": False, "reasoning": "no test",
+                               "repro_command": "node --test repro.mjs"},
             "red_green": {"apply_exit": 0, "red_exit": None, "green_exit": None},
             "authored_test": {"attempted": True, "can_author": True,
                               "test_cmd": "npx vitest run x.test.tsx",
@@ -503,6 +515,9 @@ class TestAgentVerifiedView:
                               "red_output_tail": "boom", "green_output_tail": "ok"},
             "red_reason_match": {"matches": True, "confidence": "high", "reasoning": "j"},
             "regress": {"ran": True, "exit_first": 0, "confirmed": False, "flake": False},
+            "independent_repro": {"ran": True, "exit_code": 20},
+            "repro_reason_match": {"matches": True, "applicable": True,
+                                   "confidence": "high"},
         }
         rec = _pr(_verify("agent-verified", signals=signals))
         v = verify_view.verify_detail(rec)

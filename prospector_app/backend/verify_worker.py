@@ -16,11 +16,12 @@ left behind.
 
 With TRIAGE_VERIFY_AUTOHUNT=1 an empty queue turns the drain loop into a
 hunter: it runs the headless security review on clean merge candidates that
-lack a current verdict (highest community pain first), and once none remain,
-auto-queues sandbox verification for candidates whose security verdict is a
-current GREEN — the sandbox never executes code the adversarial review has
-not cleared. Selection is pure gate policy; an operator-queued request always
-wins the next pick.
+lack a current verdict (highest community pain first), then auto-queues
+sandbox verification for candidates whose security verdict is a current GREEN
+— the sandbox never executes code the adversarial review has not cleared —
+and finally re-sweeps concluded verifications whose independent repro the
+harness itself broke, once each. Selection is pure gate policy; an
+operator-queued request always wins the next pick.
 """
 from __future__ import annotations
 
@@ -33,6 +34,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from pipeline import gates
+from pipeline import store
 from pipeline import verify_driver
 from pipeline.freshness import is_current
 from pipeline.storekit import now as _now
@@ -311,7 +313,8 @@ def next_queued() -> int | None:
                 continue
         else:
             continue
-        key = (req.get("source") == "auto", str(req.get("queued_at") or ""))
+        key = (req.get("source") in store.AUTO_REQUEST_SOURCES,
+               str(req.get("queued_at") or ""))
         if best_key is None or key < best_key:
             best_n, best_key = n, key
     return best_n
@@ -355,11 +358,55 @@ def auto_verifiable(pr: Pr) -> bool:
     return gates.verify_eligible(pr, _changed_paths(pr))
 
 
+# The `source` stamped on a re-sweep request. It is also the terminator: a PR
+# whose verify record was written after its own re-sweep request never re-sweeps
+# again, so one broken repro buys exactly one extra sandbox run per head.
+RESWEEP_SOURCE = "auto-resweep"
+
+
+def _resweep_spent(pr: Pr) -> bool:
+    """Whether this PR's current verify record already came out of a re-sweep:
+    the last request was one, and the record was written at or after it was
+    queued. A head that moves writes a fresh record and clears the ledger with
+    it, so the one retry is per head, not per PR forever."""
+    req = pr.verify_request or {}
+    if req.get("source") != RESWEEP_SOURCE:
+        return False
+    queued = str(req.get("queued_at") or "")
+    checked = str((pr.section("verify") or {}).get("checked_at") or "")
+    return bool(queued and checked and checked >= queued)
+
+
+def auto_resweepable(pr: Pr) -> bool:
+    """Whether the hunter may re-queue a PR whose verification concluded but
+    whose independent repro the harness broke (gates.repro_harness_defect).
+
+    Rules out everything auto_verifiable rules out except currency — the point
+    is a record that IS current — and refuses a PR whose one re-sweep is
+    already spent, so an unrunnable repro can never queue itself in a loop."""
+    if _resweep_spent(pr):
+        return False
+    status = (pr.verify_request or {}).get("status")
+    if status in ("queued", "running", "waiting-for-base", "error", "cancelled"):
+        return False
+    if not gates.security_cleared(pr):
+        return False
+    if not is_current(pr, "verify", max_age_days=gates.VERIFY_MAX_AGE_DAYS):
+        return False
+    if gates.repro_harness_defect(pr) is None:
+        return False
+    return gates.verify_eligible(pr, _changed_paths(pr))
+
+
 def next_auto() -> tuple[str, int] | None:
     """The idle hunt's next pick, or None: ("security", n) while any clean
-    merge candidate lacks a current security verdict, else ("verify", n) for
-    the best GREEN-cleared unverified candidate. Both lanes order by highest
-    community pain, then lowest PR number."""
+    merge candidate lacks a current security verdict, then ("verify", n) for
+    the best GREEN-cleared unverified candidate, then ("resweep", n) for a
+    concluded verification whose repro the harness broke. Every lane orders by
+    highest community pain, then lowest PR number.
+
+    Lane order is spend priority: a PR with no verification at all buys more
+    than a second opinion on one that already concluded."""
     prs = data.prs()
 
     def _key(item: tuple[int, Pr]) -> tuple[float, int]:
@@ -372,6 +419,9 @@ def next_auto() -> tuple[str, int] | None:
     verify_pool = [(n, pr) for n, pr in prs.items() if auto_verifiable(pr)]
     if verify_pool:
         return ("verify", min(verify_pool, key=_key)[0])
+    resweep_pool = [(n, pr) for n, pr in prs.items() if auto_resweepable(pr)]
+    if resweep_pool:
+        return ("resweep", min(resweep_pool, key=_key)[0])
     return None
 
 
@@ -421,11 +471,13 @@ def _run_security_claimed(n: int) -> int:
     return rc
 
 
-def auto_queue_verify(n: int) -> None:
+def auto_queue_verify(n: int, *, source: str = "auto") -> None:
     """Queue PR `n` for sandbox verification as an auto-pick. The drain loop
-    runs it on its next pick exactly like an operator-queued request."""
-    print(f"[autohunt] queueing PR #{n} for verification", flush=True)
-    verify_queue.queue_pr(n, source="auto")
+    runs it on its next pick exactly like an operator-queued request.
+    `source` is RESWEEP_SOURCE on the repro re-sweep lane, which is what stops
+    that lane picking the same PR twice."""
+    print(f"[autohunt] queueing PR #{n} for verification ({source})", flush=True)
+    verify_queue.queue_pr(n, source=source)
 
 
 def run_one(n: int) -> int:
@@ -535,6 +587,8 @@ def _drain_loop() -> None:
                 beat()
                 print(f"[autohunt] security review for PR #{n}", flush=True)
                 run_security(n)
+            elif lane == "resweep":
+                auto_queue_verify(n, source=RESWEEP_SOURCE)
             else:
                 auto_queue_verify(n)
         except Exception:
