@@ -713,3 +713,30 @@ def test_fix_hunt_respects_the_in_flight_cap(store, fix_profile, monkeypatch):
     store.save_pr(one)
     data.refresh()
     assert fix_worker.next_auto() is None
+
+
+def test_hunt_order_mechanical_then_nits_then_tiers(store, fix_profile, monkeypatch):
+    monkeypatch.setenv("TRIAGE_FIX_HUNT_FIX", "1")
+    # PR numbers deliberately run against the priority order, so a first-match
+    # scan by number would pick every one of these wrong.
+    three = _fixable_pr(2)
+    three["signals"]["greptile"] = 3
+    four = _fixable_pr(3)
+    nits = _fixable_pr(4)
+    nits["greptile_review"] = {"severity": "nits", "checked_at": NOW,
+                               "against_head_sha": HEAD}
+    for rec in (three, four, nits):
+        store.save_pr(rec)
+    data.refresh()
+    # PR 1 (unmergeable, bar met) is mechanical and wins outright.
+    assert fix_worker.next_auto() == ("rebase", 1)
+    one = store.load_pr(1).raw
+    one["fix_request"] = {"status": "running", "action": "rebase"}
+    store.save_pr(one)
+    data.refresh()
+    assert fix_worker.next_auto() == ("fix", 4)  # nits beat score tiers
+    nits2 = store.load_pr(4).raw
+    nits2["fix_request"] = {"status": "running", "action": "fix"}
+    store.save_pr(nits2)
+    data.refresh()
+    assert fix_worker.next_auto() == ("fix", 3)  # 4/5 beats 3/5

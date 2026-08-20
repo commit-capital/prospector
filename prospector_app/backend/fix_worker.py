@@ -984,17 +984,33 @@ def auto_fixable(pr: Pr) -> str | None:
     return action if ok else None
 
 
+def _hunt_key(rec: Pr, action: str, n: int) -> tuple[int, int, float, int]:
+    """Hunt priority (ascending). Mechanical actions lead: they are cheap and
+    unblock the most. Fixes follow by how little they ask of the agent — a
+    nits-only review, then one point below the bar, then the rest — and by
+    community pain (descending) within a tier."""
+    if action != "fix":
+        return (0, 0, 0.0, n)
+    tier = (1 if rec.review_severity == "nits"
+            else 2 if rec.review_score == 4 else 3)
+    pain = float(service.pr_pain(rec).get("score") or 0.0)
+    return (1, tier, -pain, n)
+
+
 def next_auto() -> tuple[str, int] | None:
     """The idle hunter's next (action, PR), or None when nothing is eligible."""
     fix_slots = settings.fix_hunt_limit() - _auto_fixes_in_flight()
-    for n, rec in sorted(data.prs().items()):
+    best: tuple[tuple[int, int, float, int], str, int] | None = None
+    for n, rec in data.prs().items():
         action = auto_fixable(rec)
         if action is None:
             continue
         if action == "fix" and fix_slots <= 0:
             continue
-        return action, n
-    return None
+        key = _hunt_key(rec, action, n)
+        if best is None or key < best[0]:
+            best = (key, action, n)
+    return (best[1], best[2]) if best else None
 
 
 def _beat_loop() -> None:
