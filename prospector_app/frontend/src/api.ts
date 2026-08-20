@@ -1004,6 +1004,14 @@ export type WorkerFlags = Record<string, string>;
 export const api = {
   setupReadiness: () =>
     get<{ readiness: SetupReadiness; flags: WorkerFlags }>("/api/setup/readiness"),
+  setupShare: async (includeStore: boolean) => {
+    const r = await fetch("/api/setup/share", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ include_store: includeStore }),
+    });
+    if (!r.ok) throw new Error(`/api/setup/share → ${r.status}`);
+    return r.json() as Promise<{ snippet: string }>;
+  },
   setSetupFlags: async (flags: WorkerFlags) => {
     const r = await fetch("/api/setup/flags", {
       method: "POST", headers: { "Content-Type": "application/json" },

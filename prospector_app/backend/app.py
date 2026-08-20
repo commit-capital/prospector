@@ -369,6 +369,13 @@ def setup_flags(body: models.WorkerFlags):
             "readiness": worker_readiness.report()}
 
 
+@app.post("/api/setup/share")
+def setup_share(body: models.ShareRequest):
+    """A ready-to-paste .env for onboarding a teammate onto this deployment.
+    POST, so the store URL is never in a request line even when opted in."""
+    return {"snippet": worker_control.share_snippet(include_store=body.include_store)}
+
+
 @app.get("/api/autohunt")
 def autohunt(days: int = Query(7, ge=1, le=400), all_time: bool = False,
              limit: int = Query(100, ge=1, le=autohunt_view.HISTORY_LIMIT_CAP)):

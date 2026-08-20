@@ -83,6 +83,19 @@ a:hover { text-decoration: underline; }
 .retry-live-btn:disabled { opacity: .6; cursor: default; }
 .feedback-btn { border: 1px solid var(--border); background: transparent; color: var(--muted); border-radius: 6px; padding: 3px 8px; font-size: 11px; cursor: pointer; white-space: nowrap; }
 .feedback-btn:hover { color: var(--text); border-color: var(--muted); }
+.settings-menu { position: relative; }
+.settings-btn { background: var(--panel2); border: 1px solid var(--border); border-radius: 6px;
+  padding: 3px 8px; cursor: pointer; font-size: 14px; line-height: 1; }
+.settings-btn:hover { border-color: var(--muted); }
+.settings-dropdown { position: absolute; right: 0; top: calc(100% + 6px); z-index: 900;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  min-width: 220px; padding: 8px; display: flex; flex-direction: column; gap: 8px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.18); }
+.settings-row { display: flex; align-items: center; gap: 6px; }
+.settings-row select { padding: 3px 6px; font-size: 12px; flex: 1; }
+.settings-sep { border-top: 1px solid var(--border); }
+.settings-link { color: var(--text); padding: 4px 6px; border-radius: 6px; font-size: 13px; }
+.settings-link:hover { background: var(--panel2); }
 
 /* Feedback modal */
 .feedback-overlay { position: fixed; inset: 0; z-index: 1000; background: rgba(0,0,0,0.45);
