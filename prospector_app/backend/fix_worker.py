@@ -50,7 +50,7 @@ from typing import TYPE_CHECKING
 from pipeline import (author_fix, compile_preflight, diffpaths, gates, gh, profile,
                       resolve_conflicts, review_fix, settings, verify_driver)
 from pipeline.storekit import now as _now
-from prospector_app.backend import data, fix_queue, service
+from prospector_app.backend import data, executor, fix_queue, review_refresh, service
 from prospector_app.backend.resubmit_identity import worker_env
 
 if TYPE_CHECKING:
@@ -935,6 +935,26 @@ def _finish_pushed(n: int, req: dict, output: str, result: dict | None = None) -
         source=req.get("source"), guidance=req.get("guidance"),
         host=socket.gethostname(), head_sha=req.get("against_head_sha"))
     data.refresh()
+    if req.get("action") == "fix":
+        try:
+            _retrigger_review(n)
+        except Exception:
+            traceback.print_exc()
+
+
+def _retrigger_review(n: int) -> None:
+    """Ask the review provider for a fresh score on the head a fix just pushed,
+    and start the backend wait that ingests it. The score is what stands between
+    the pushed fix and the merge bar, so the push is what asks. Best-effort: no
+    mintable token forces the executor's dry-run, and the PR waits for the next
+    scheduled ingest instead."""
+    token = executor.mint_bot_token()
+    baseline = review_refresh.capture(n) if token else None
+    res = executor.retrigger_greptile(n, token=token, dry_run=token is None)
+    if res.get("status") == "executed" and baseline is not None:
+        review_refresh.schedule(n, baseline)
+    print(f"[fix-worker] review retrigger for PR #{n}: {res.get('status')}",
+          flush=True)
 
 
 # Terminal fix_request statuses. A cancelled request counts as an attempt: an

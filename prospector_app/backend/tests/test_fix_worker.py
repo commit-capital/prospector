@@ -744,6 +744,7 @@ def test_hunt_order_mechanical_then_nits_then_tiers(store, fix_profile, monkeypa
 
 def test_authored_fix_pushes_when_autopush_names_fix(store, monkeypatch):
     monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", "fix")
+    monkeypatch.setattr(fix_worker, "_retrigger_review", lambda n: None)
     _queue_fix()
     probe = _fix_probe()
     monkeypatch.setattr(fix_worker, "_resubmit", probe)
@@ -755,3 +756,27 @@ def test_authored_fix_pushes_when_autopush_names_fix(store, monkeypatch):
     req = store.load_pr(1).fix_request
     assert req["status"] == "pushed"
     assert _pushed(probe)
+
+
+# --- a pushed fix asks for a fresh review ---------------------------------------
+
+def test_pushed_fix_retriggers_the_review(store, monkeypatch):
+    calls: list[int] = []
+    monkeypatch.setattr(fix_worker, "_retrigger_review", calls.append)
+    fix_worker._finish_pushed(1, {"action": "fix"}, "pushed ok")
+    assert calls == [1]
+
+
+def test_pushed_update_does_not_retrigger(store, monkeypatch):
+    calls: list[int] = []
+    monkeypatch.setattr(fix_worker, "_retrigger_review", calls.append)
+    fix_worker._finish_pushed(1, {"action": "update"}, "pushed ok")
+    assert calls == []
+
+
+def test_retrigger_failure_leaves_the_pushed_record(store, monkeypatch):
+    def boom(n: int) -> None:
+        raise RuntimeError("no network")
+    monkeypatch.setattr(fix_worker, "_retrigger_review", boom)
+    fix_worker._finish_pushed(1, {"action": "fix"}, "pushed ok")
+    assert store.load_pr(1).fix_request["status"] == "pushed"
