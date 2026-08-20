@@ -976,7 +976,48 @@ export interface TablePage {
   total: number;
 }
 
+/** One readiness check on this machine. `blocking` says whether failing it stops
+ *  the machine processing work at all — a missing push identity limits it to
+ *  verification rather than breaking it. */
+export interface SetupCheck {
+  key: string;
+  label: string;
+  ok: boolean;
+  detail: string;
+  remedy?: string | null;
+  blocking: boolean;
+}
+
+/** What the backend serving this page still needs before it can process work.
+ *  Always the local machine — the Setup view provisions the box you loaded it
+ *  from, and the Control tab is where the whole fleet is reported. */
+export interface SetupReadiness {
+  host: string;
+  checks: SetupCheck[];
+  ready: boolean;
+  autofix_ready: boolean;
+}
+
+/** The five worker lane switches, the only .env keys the app may write. */
+export type WorkerFlags = Record<string, string>;
+
 export const api = {
+  setupReadiness: () =>
+    get<{ readiness: SetupReadiness; flags: WorkerFlags }>("/api/setup/readiness"),
+  setSetupFlags: async (flags: WorkerFlags) => {
+    const r = await fetch("/api/setup/flags", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ flags }),
+    });
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({ detail: `${r.status}` }));
+      throw new Error(body.detail ?? `${r.status}`);
+    }
+    return r.json() as Promise<{
+      applied: { lanes: Record<string, string>; flags: WorkerFlags };
+      readiness: SetupReadiness;
+    }>;
+  },
   clusters: () => get<{ items: ClusterSummary[] }>("/api/clusters"),
   tables: () => get<{ tables: TableSummary[] }>("/api/tables"),
   tableRows: (name: string, query: string) =>

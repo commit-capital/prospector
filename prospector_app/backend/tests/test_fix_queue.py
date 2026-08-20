@@ -254,13 +254,13 @@ def test_key_safety_refuses_a_missing_key(tmp_path, monkeypatch):
 def test_startup_refuses_an_unsafe_key_without_taking_the_app_down(push_key, monkeypatch,
                                                                    capsys):
     push_key.chmod(0o644)
-    monkeypatch.setattr(settings, "FIX_WORKER", True)
+    monkeypatch.setenv("TRIAGE_FIX_WORKER", "1")
     assert fix_worker.startup() is False
     assert "NOT started" in capsys.readouterr().out
 
 
 def test_startup_skips_when_this_backend_is_not_the_runner(monkeypatch):
-    monkeypatch.setattr(settings, "FIX_WORKER", False)
+    monkeypatch.delenv("TRIAGE_FIX_WORKER", raising=False)
     assert fix_worker.startup() is False
 
 

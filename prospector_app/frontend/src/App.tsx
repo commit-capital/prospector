@@ -86,6 +86,7 @@ const VIEW_NAMES: [string, string][] = [
   ["/alerts", "Alerts"],
   ["/action-items", "Action Items"],
   ["/control", "Control"],
+  ["/setup", "Setup"],
   ["/activity", "Activity"],
   ["/tables", "Tables"],
   ["/clusters", "Clusters"],
@@ -337,6 +338,7 @@ export default function App() {
             <NavLink to="/alerts">🛡️ Alerts</NavLink>
             <NavLink to="/action-items">🗂️ Action Items</NavLink>
             <NavLink to="/control">🎛️ Control</NavLink>
+            <NavLink to="/setup">🛠️ Setup</NavLink>
             <NavLink to="/activity">📋 Activity</NavLink>
             <NavLink to="/tables">🗄️ Tables</NavLink>
           </nav>

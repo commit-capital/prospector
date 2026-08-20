@@ -43,6 +43,7 @@ const router = createBrowserRouter([
       { path: "easy", element: <LaneRedirect lane="easy" /> },
       { path: "stale", element: <LaneRedirect lane="stale" /> },
       { path: "control", lazy: lazyView(() => import("./views/ControlPanel")) },
+      { path: "setup", lazy: lazyView(() => import("./views/Setup")) },
       { path: "action-items", lazy: lazyView(() => import("./views/ActionItems")) },
       { path: "issues", lazy: lazyView(() => import("./views/Issues")) },
       { path: "alerts", lazy: lazyView(() => import("./views/Alerts")) },

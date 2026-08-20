@@ -24,6 +24,12 @@ uv run prospector serve --dev   # or: ./run-prospector.sh
 
 For a single-process setup without the dev servers, build the frontend once (`pnpm --dir prospector_app/frontend build`, or `npx -y pnpm@11 --dir prospector_app/frontend build` without a pnpm install) and run `uv run prospector serve`.
 
+To make a machine process work rather than just serve the UI — running
+verification sandboxes and autofix — run `./setup-worker-machine.sh` on it and
+watch the app's 🛠️ Setup tab go green. Any number of machines can; each holds
+its own sandbox base, and the queue claim is a compare-and-swap so two never
+pick up the same PR.
+
 `uv run prospector --help` lists every subcommand. The Clusters board in the web UI is the front door; `CLAUDE.md` (trust model and operating rules) and `ARCHITECTURE.md` (the data layer) are the two documents to read before going deeper. `STATUS.md` is a generated text snapshot of the store — regenerate it with `uv run prospector status`.
 
 ## How it works

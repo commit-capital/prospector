@@ -179,6 +179,6 @@ def runner_status() -> dict:
             "can_queue": online or settings.push_identity_configured(),
             "push_identity": settings.push_identity_configured(),
             "push_login": settings.PUSH_LOGIN or None,
-            "autopush": sorted(settings.FIX_AUTOPUSH),
+            "autopush": sorted(settings.fix_autopush()),
             "host": fresh.get("host"), "current_pr": fresh.get("current_pr"),
             "last_beat": fresh.get("last_beat"), "hosts": hosts}

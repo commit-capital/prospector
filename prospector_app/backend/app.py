@@ -23,6 +23,8 @@ from sse_starlette.sse import EventSourceResponse
 from prospector_app.backend import activity
 from prospector_app.backend import alerts as alerts_mod
 from prospector_app.backend import autohunt_view
+from prospector_app.backend import worker_control
+from prospector_app.backend import worker_readiness
 from prospector_app.backend import bulk
 from prospector_app.backend import caps
 from prospector_app.backend import chat
@@ -342,6 +344,29 @@ def fix_runner():
     """Autofix-runner liveness plus this backend's push-identity configuration —
     what the app renders the actions' disabled reason from."""
     return fix_queue.runner_status()
+
+
+@app.get("/api/setup/readiness")
+def setup_readiness():
+    """What THIS machine still needs before it can process work, plus the state
+    of its lane switches. Scoped to the backend serving the request — the Setup
+    view provisions the machine you loaded it from. Read-only, so the view polls
+    it while setup-worker-machine.sh runs."""
+    return {"readiness": worker_readiness.report(), "flags": worker_control.flags()}
+
+
+@app.post("/api/setup/flags")
+def setup_flags(body: models.WorkerFlags):
+    """Write this machine's worker lane switches to .env and reconcile the
+    running threads with them. Only the five lane switches are writable; any
+    other key is refused rather than skipped, so nothing here can reach the
+    store password or either credential path."""
+    try:
+        worker_control.set_flags(body.flags)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"applied": worker_control.apply(),
+            "readiness": worker_readiness.report()}
 
 
 @app.get("/api/autohunt")
