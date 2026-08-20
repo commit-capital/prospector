@@ -440,25 +440,21 @@ def _run_inner(store: Store, rec: Pr, req: _Request) -> int:
                      "the sandbox never executes code the idle hunter selected "
                      "itself without an adversarial review clearing it")
 
-    # The pinned base: sha + tier + captured baseline + clone + built image. All
-    # five come from one prepare-base run; missing any of them is a no-base. The
-    # clone and image are local to the machine that prepared the pin, so a pin
-    # prepared elsewhere is a no-base HERE until this machine runs prepare-base
-    # for the same SHA.
+    # This machine's pinned base: sha + tier + captured baseline + clone + built
+    # image. All five come from one prepare-base run here; missing any of them is
+    # a no-base. Each verification machine carries its own pin, so what another
+    # machine has prepared says nothing about what this one can boot.
     try:
         base = verify_driver.pinned_base(store)
         tier = verify_driver.pinned_tier(store)
         baseline = verify_driver.pinned_baseline(store)
     except RuntimeError as e:
         return _no_base(req, str(e))
-    prepared_on = store.load_verify_base().get("prepared_on")
-    elsewhere = (f" (the pin was prepared on {prepared_on})"
-                 if prepared_on and prepared_on != socket.gethostname() else "")
     image = verify_driver.base_image_tag(base, tier)
     clone = verify_driver.base_clone_dir(base)
     if not clone.is_dir():
         return _no_base(req,
-                        f"pinned base clone missing at {clone}{elsewhere} — run "
+                        f"pinned base clone missing at {clone} — run "
                         f"`verify_driver.py prepare-base` on this machine")
     # The daemon answers before its image inventory means anything: a stopped
     # daemon reports the pinned image as absent, which reads as a base this
@@ -469,8 +465,7 @@ def _run_inner(store: Store, rec: Pr, req: _Request) -> int:
     if not _image_exists(image):
         return _no_base(req,
                         f"base image {image} not found in the local Docker daemon"
-                        f"{elsewhere} — run `verify_driver.py prepare-base` on "
-                        f"this machine")
+                        f" — run `verify_driver.py prepare-base` on this machine")
     if verify_driver.pinned_suite(store):
         try:
             suite_config: Path | None = verify_driver.write_suite_config()

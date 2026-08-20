@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
-import { api, type JobSpec, type JobRec, type PipelineStatus, type Autohunt, type AutohuntResultCounts, type FilterSpec, type VerifyBaseHealth, type VerifyQueue, type FixQueue } from "../api";
+import { api, type JobSpec, type JobRec, type PipelineStatus, type Autohunt, type AutohuntResultCounts, type FilterSpec, type VerifyBaseHealth, type VerifyBaseHost, type VerifyQueue, type FixQueue } from "../api";
 import { useRepoMeta } from "../RepoMetaContext";
 import { PRLink } from "../components/PRLink";
 
@@ -122,14 +122,13 @@ function PhaseCard({ icon, label, lastRun, done, total, totalLabel, stale }: {
   );
 }
 
-/** The pinned sandbox base, beside the runner it belongs to. The verify lane
- *  stops the moment the pin goes bad, and the daily refresh that keeps it
- *  current fails quietly — so a stale pin or a run of failed refreshes reads as
- *  a red chip here rather than as a queue of parked requests. */
-function BaseHealth({ base }: { base: VerifyBaseHealth }) {
-  if (!base.base_sha) return <span className="muted small">no base pinned on the runner</span>;
+/** One machine's pinned sandbox base. That machine's verify lane stops the
+ *  moment its pin goes bad, and the daily refresh that keeps it current fails
+ *  quietly — so a stale pin or a run of failed refreshes reads as a red chip
+ *  here rather than as a queue of parked requests. */
+function HostBase({ base }: { base: VerifyBaseHost }) {
   const failing = base.refresh_failures > 0;
-  const detail = `base ${base.base_sha} · t${base.tier ?? "?"} · pinned ${ago(base.pinned_at)}`;
+  const detail = `${base.host} · base ${base.base_sha} · t${base.tier ?? "?"} · pinned ${ago(base.pinned_at)}`;
   if (!failing && !base.stale) return <span className="muted small">{detail}</span>;
   const why = failing
     ? `pin refresh failing · ${base.refresh_failures} ${base.refresh_failures === 1 ? "attempt" : "attempts"}`
@@ -139,6 +138,20 @@ function BaseHealth({ base }: { base: VerifyBaseHealth }) {
       <span className="chip chip-red sm" title={base.refresh_error ?? undefined}>{why}</span>
       {" "}<span className="muted small">{detail}</span>
     </span>
+  );
+}
+
+/** Every verification machine's pinned base, beside the runners they belong to.
+ *  Each machine prepares and refreshes its own, so each gets its own line —
+ *  a lagging machine shows up as itself. */
+function BaseHealth({ base }: { base: VerifyBaseHealth }) {
+  if (base.hosts.length === 0) {
+    return <span className="muted small">no base pinned on any runner</span>;
+  }
+  return (
+    <>
+      {base.hosts.map((h) => <HostBase key={h.host} base={h} />)}
+    </>
   );
 }
 

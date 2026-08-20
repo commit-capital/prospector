@@ -5,6 +5,7 @@ import copy
 import io
 import json
 import os
+import socket
 import subprocess
 import tracemalloc
 from pathlib import Path
@@ -336,7 +337,8 @@ def diffs(tmp_path, monkeypatch):
 
 def _pinned(tmp_path, base="base1", tier=0, baseline=()) -> Store:
     s = Store(tmp_path)
-    s.save_verify_base({"base_sha": base, "tier": tier, "pinned_at": NOW,
+    s.save_verify_base({"host": socket.gethostname(), "base_sha": base,
+                        "tier": tier, "pinned_at": NOW,
                         "baseline_failing": list(baseline),
                         "baseline_captured_at": NOW})
     return s
@@ -497,11 +499,11 @@ class TestPrepareBaseBaseline:
         s = Store(tmp_path)
         vd.prepare_base(s, base_sha="a" * 12, tier=0)
         assert phases == ["baseline"]
-        reg = s.load_verify_base()
+        reg = vd.local_pin(s)
         assert reg["baseline_failing"] == ["server/src/__tests__/x.test.ts"]
         assert reg["baseline_captured_at"]
         assert reg["suite"] is True
-        assert reg["prepared_on"]
+        assert reg["host"]
         assert reg["arch"]
 
     def test_a_profile_without_a_suite_pins_without_a_baseline_run(self, tmp_path, monkeypatch):
@@ -514,14 +516,15 @@ class TestPrepareBaseBaseline:
         s = Store(tmp_path)
         vd.prepare_base(s, base_sha="a" * 12, tier=0)
         assert phases == []
-        reg = s.load_verify_base()
+        reg = vd.local_pin(s)
         assert reg["suite"] is False
         assert reg["baseline_failing"] == []
         assert vd.pinned_suite(s) is False
 
     def test_a_pre_provenance_pin_reads_as_having_a_suite(self, tmp_path):
         s = Store(tmp_path)
-        s.save_verify_base({"base_sha": "b" * 12, "tier": 0, "pinned_at": NOW,
+        s.save_verify_base({"host": socket.gethostname(), "base_sha": "b" * 12,
+                            "tier": 0, "pinned_at": NOW,
                             "baseline_failing": [], "baseline_captured_at": NOW})
         assert vd.pinned_suite(s) is True
 
@@ -531,7 +534,7 @@ class TestPrepareBaseBaseline:
         s = Store(tmp_path)
         with pytest.raises(RuntimeError, match="refusing to pin"):
             vd.prepare_base(s, base_sha="a" * 12, tier=0)
-        assert s.load_verify_base()["base_sha"] is None
+        assert vd.local_pin(s)["base_sha"] is None
 
     def test_refuses_to_pin_on_an_unparsable_trailer(self, tmp_path, monkeypatch):
         self._quiet(tmp_path, monkeypatch)
@@ -574,7 +577,8 @@ class TestPrepareBaseGarbageCollection:
         events: list = []
         self._quiet(tmp_path, monkeypatch, events)
         s = Store(tmp_path)
-        s.save_verify_base({"base_sha": "o" * 12, "tier": 0, "pinned_at": NOW,
+        s.save_verify_base({"host": socket.gethostname(), "base_sha": "o" * 12,
+                            "tier": 0, "pinned_at": NOW,
                             "baseline_failing": [], "baseline_captured_at": NOW})
         monkeypatch.setattr(vd.verify_gc, "collect",
                             lambda pinned, **kw: events.append(("gc", pinned)) or {"ok": True})
@@ -589,7 +593,7 @@ class TestPrepareBaseGarbageCollection:
         monkeypatch.setattr(vd.verify_gc, "collect", boom)
         s = Store(tmp_path)
         assert vd.prepare_base(s, base_sha="a" * 12, tier=0)
-        assert s.load_verify_base()["base_sha"] == "a" * 12
+        assert vd.local_pin(s)["base_sha"] == "a" * 12
 
 
 class TestPinnedBaseline:

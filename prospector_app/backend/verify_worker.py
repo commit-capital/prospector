@@ -1,10 +1,12 @@
 """The sandbox-verification worker: drains queued verify_requests by running
 pipeline/verify_pr.py, one PR at a time, inside the app backend process.
 
-It runs ONLY where TRIAGE_VERIFY_WORKER=1 is set — the machine with the Docker
-sandbox and the pinned base image. Every other app backend serves the same
-queue/dequeue API but starts no worker; the queue lives in the shared store,
-so a click anywhere reaches the runner here within one poll tick.
+It runs where TRIAGE_VERIFY_WORKER=1 is set — a machine with the Docker sandbox
+and its own pinned base image. Every other app backend serves the same
+queue/dequeue API but starts no worker; the queue lives in the shared store, so
+a click anywhere reaches a runner within one poll tick. Any number of machines
+may run one: the store's claim is a compare-and-swap, so two workers never pick
+up the same PR.
 
 Two daemon threads: a heartbeat (writes the verify_worker registry every tick,
 so any app can show runner liveness) and the drain loop (orphan recovery,
@@ -60,6 +62,12 @@ TRANSIENT_RETRY_SECONDS = 600.0
 # How old the base pin must be before the daily refresh considers re-pinning.
 REFRESH_AFTER_HOURS = 24.0
 
+# How long another machine's claim on a security review is honoured. A review is
+# several agent runs deep, each capped at headless_agent's own timeout, so this
+# sits well past a slow one — it exists to free a PR whose machine died, not to
+# overtake one still working.
+SECURITY_CLAIM_SECONDS = 4 * 3600.0
+
 # The steps a restart may resume: at each of them the run has committed nothing
 # and no phase container has run the PR's code, so re-queueing repeats only
 # cheap work. "claimed" is the store's own pickup stamp, written before the
@@ -83,9 +91,9 @@ stop = threading.Event()
 
 
 def enabled() -> bool:
-    """Whether THIS backend is the verification runner. Deliberately an exact
-    opt-in: only the machine whose .env sets TRIAGE_VERIFY_WORKER=1 (the Mac
-    Studio with the sandbox) drains the queue."""
+    """Whether THIS backend drains the verification queue. Deliberately an exact
+    opt-in: a machine needs the Docker sandbox and its own prepared base, so it
+    says so in its own .env."""
     return os.environ.get("TRIAGE_VERIFY_WORKER") == "1"
 
 
@@ -155,10 +163,11 @@ def _rested(req: dict, seconds: float) -> bool:
 
 
 def base_refresh_due(reg: dict, now: datetime) -> bool:
-    """Whether the daily pin refresh should attempt now: a pin exists, is
-    older than REFRESH_AFTER_HOURS, and no attempt was made on today's date
-    (one attempt per day, success or failure). A machine without a pin never
-    builds one from here — the first pin is the operator's prepare-base."""
+    """Whether this machine's daily pin refresh should attempt now: its pin
+    exists, is older than REFRESH_AFTER_HOURS, and no attempt was made on
+    today's date (one attempt per day, success or failure). A machine without a
+    pin never builds one from here — the first pin is the operator's
+    prepare-base."""
     pinned_at = reg.get("pinned_at")
     if not reg.get("base_sha") or not isinstance(pinned_at, str):
         return False
@@ -179,21 +188,26 @@ def base_refresh_due(reg: dict, now: datetime) -> bool:
 
 
 def _record_refresh(st: Store, ok: bool, error: str | None, failures: int) -> None:
-    """Stamp the refresh outcome onto the pin: whether the last attempt
-    succeeded, its error, the consecutive-failure run, and the once-per-day
-    attempt stamp. Written after prepare_base returns, because prepare_base
-    full-replaces the registry with the fields it owns."""
+    """Stamp the refresh outcome onto this machine's pin: whether the last
+    attempt succeeded, its error, the consecutive-failure run, and the
+    once-per-day attempt stamp. Written after prepare_base returns, because
+    prepare_base full-replaces this host's record with the fields it owns."""
+    me = socket.gethostname()
     st.save_verify_base({
-        **st.load_verify_base(), "refresh_attempted_at": _now(), "refresh_ok": ok,
+        **st.load_verify_base(me), "host": me,
+        "refresh_attempted_at": _now(), "refresh_ok": ok,
         "refresh_error": error, "refresh_failures": 0 if ok else failures + 1})
 
 
 def maybe_refresh_base() -> None:
-    """The daily pin refresh: when the pin is a day old and upstream's default
-    branch has moved, re-run prepare_base so verification tracks master within
-    ~24h. The attempt stamps refresh_attempted_at BEFORE the work at most once
-    per calendar day (success or failure); a failure keeps the old pin and the
-    queue proceeds on it; every attempt lands in the runs ledger.
+    """The daily pin refresh: when this machine's pin is a day old and
+    upstream's default branch has moved, re-run prepare_base so verification
+    tracks master within ~24h. Each verification machine holds its own pin and
+    refreshes on its own cadence, so two machines sit a few hours apart at
+    worst; every run records the base it used (verify.against_base_sha). The
+    attempt stamps refresh_attempted_at BEFORE the work at most once per
+    calendar day (success or failure); a failure keeps the old pin and the queue
+    proceeds on it; every attempt lands in the runs ledger.
 
     The outcome is also stamped onto the pin itself, where the app reads it: a
     lane that has silently stopped tracking master is worth showing, and a
@@ -201,12 +215,13 @@ def maybe_refresh_base() -> None:
     healthy refresh — there was nothing to move to."""
     try:
         st = data.store()
-        reg = st.load_verify_base()
+        me = socket.gethostname()
+        reg = st.load_verify_base(me)
         if not base_refresh_due(reg, datetime.now(timezone.utc)):
             return
         failures = reg.get("refresh_failures")
         failures = failures if isinstance(failures, int) else 0
-        st.save_verify_base({**reg, "refresh_attempted_at": _now()})
+        st.save_verify_base({**reg, "host": me, "refresh_attempted_at": _now()})
         entry: dict = {"phase": "verify:pin-refresh", "started": _now(),
                        "stats": {"from": str(reg.get("base_sha"))[:12]}}
         try:
@@ -336,10 +351,28 @@ def run_security(n: int) -> int:
     verdict, so the exit code alone does not prove a verdict landed. A fresh
     pre-spawn recheck skips a PR another
     process already cleared since it was picked (snapshot lag). The runner
-    owns the verdict write, any RED flip, and the runs-ledger entry."""
-    rec = data.store().load_pr(n)
+    owns the verdict write, any RED flip, and the runs-ledger entry.
+
+    The store claim is what keeps two idle machines off one PR: a review costs
+    several agent runs, so losing the race means dropping the pick rather than
+    racing to a duplicate verdict. The claim is released whatever the run does,
+    so a failure leaves the PR free for the next attempt rather than parked."""
+    st = data.store()
+    rec = st.load_pr(n)
     if rec is None or not gates.blocked_on_security(rec):
         return 0
+    me = socket.gethostname()
+    if not st.claim_security_run(n, host=me, stale_after=SECURITY_CLAIM_SECONDS):
+        print(f"[autohunt] PR #{n} is already under review elsewhere", flush=True)
+        return 0
+    try:
+        return _run_security_claimed(n)
+    finally:
+        st.release_security_run(n, host=me)
+
+
+def _run_security_claimed(n: int) -> int:
+    """Spawn the security review for a PR this host holds the claim on."""
     security_failed.add(n)
     argv = [*PIPELINE_PY, "-u", str(REPO_ROOT / "pipeline" / "security_review.py"),
             "--pr", str(n), "--trigger", "autohunt"]
@@ -419,7 +452,29 @@ def _beat_loop() -> None:
         stop.wait(POLL_SECONDS)
 
 
+def release_stale_claims() -> list[int]:
+    """Drop this host's leftover security-review claims. A review does not
+    survive the worker's process, so at startup a claim in this host's name is a
+    restart's leftover; another host's is its live run. Returns what it freed."""
+    me = socket.gethostname()
+    st = data.store()
+    freed: list[int] = []
+    for n, rec in sorted(st.all_prs().items()):
+        if (rec.raw.get("security_run") or {}).get("host") != me:
+            continue
+        st.release_security_run(n, host=me)
+        freed.append(n)
+    return freed
+
+
 def _drain_loop() -> None:
+    try:
+        freed = release_stale_claims()
+        if freed:
+            print(f"[verify-worker] released security claims after restart: {freed}",
+                  flush=True)
+    except Exception:
+        traceback.print_exc()
     try:
         marked, requeued = recover_orphans()
         if marked:

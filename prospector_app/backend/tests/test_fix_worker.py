@@ -44,9 +44,12 @@ class _Probe:
                  overrides: dict | None = None):
         self.rc, self.stdout, self.calls = rc, stdout, []
         self.overrides = overrides or {}
+        self.applied: list[str] = []
 
-    def __call__(self, n, *args):
+    def __call__(self, n, *args, stdin: str | None = None):
         self.calls.append(args)
+        if args[0] == "apply" and stdin is not None:
+            self.applied.append(stdin)
         rc, out = self.overrides.get(args[0], (self.rc, self.stdout))
         return type("R", (), {"returncode": rc, "stdout": out, "stderr": "boom"})()
 
@@ -138,9 +141,13 @@ def test_a_parked_mechanical_request_keeps_no_worktree(store, monkeypatch):
 
 # --- approving re-proves before it pushes ---------------------------------------
 
-def _parked(store, action: str) -> None:
+PATCH = "diff --git a/a.ts b/a.ts\n@@ -1 +1 @@\n-old\n+new\n"
+
+
+def _parked(store, action: str, **result) -> None:
     store.load_pr(1).record_fix_request(
-        "approved", action, queued_at=NOW, result={"message": "m"}, head_sha=HEAD)
+        "approved", action, queued_at=NOW, result={"message": "m", **result},
+        head_sha=HEAD)
     data.refresh()
 
 
@@ -230,9 +237,57 @@ def test_the_queue_route_serves_the_reviewable_pile(store):
     assert "runner" in body
 
 
-def test_approving_a_fix_pushes_the_reviewed_patch_verbatim(store, monkeypatch):
-    # An agent-authored change is not reproducible: re-deriving it at approve
-    # time would push something the operator never saw.
+def test_approving_a_fix_re_applies_the_reviewed_patch_verbatim(store, monkeypatch):
+    # The bytes a person approved are the bytes that land: the push clones the
+    # head and applies the stored patch, and never runs the agent again.
+    monkeypatch.setattr(
+        profile, "active",
+        lambda: profile.RepoProfile(autofix=profile.AutofixPolicy(fixable_gates=("ci",))))
+    _parked(store, "fix", patch=PATCH)
+    probe = _Probe()
+    monkeypatch.setattr(fix_worker, "_resubmit", probe)
+
+    fix_worker.push_approved(1)
+
+    assert store.load_pr(1).fix_request["status"] == "pushed"
+    assert probe.applied == [PATCH]
+    assert ("prepare",) in probe.calls
+
+
+def test_any_machine_can_push_an_approved_fix(store, monkeypatch):
+    # The patch is rebuilt from the store, so the machine that authored it is
+    # not the only one that can push it.
+    monkeypatch.setattr(
+        profile, "active",
+        lambda: profile.RepoProfile(autofix=profile.AutofixPolicy(fixable_gates=("ci",))))
+    _parked(store, "fix", patch=PATCH)
+    rec = store.load_pr(1)
+    req = dict(rec.fix_request or {})
+    rec.record_fix_request("approved", "fix", queued_at=NOW, result=req["result"],
+                           host="some-other-machine", head_sha=HEAD)
+    data.refresh()
+    monkeypatch.setattr(fix_worker, "_resubmit", _Probe())
+
+    assert fix_worker.next_approved() == 1
+    fix_worker.push_approved(1)
+    assert store.load_pr(1).fix_request["status"] == "pushed"
+
+
+def test_a_resolve_is_left_to_the_machine_holding_its_merge(store, monkeypatch):
+    # The merge commit being approved lives in that machine's worktree; no other
+    # can rebuild it, so no other may claim the push.
+    _parked(store, "resolve")
+    rec = store.load_pr(1)
+    rec.record_fix_request("approved", "resolve", queued_at=NOW,
+                           result={"message": "m"}, host="some-other-machine",
+                           head_sha=HEAD)
+    data.refresh()
+
+    assert fix_worker.next_approved() is None
+
+
+def test_an_approved_fix_without_its_patch_refuses(store, monkeypatch):
+    # Nothing to re-apply means nothing to push — never a silent empty commit.
     monkeypatch.setattr(
         profile, "active",
         lambda: profile.RepoProfile(autofix=profile.AutofixPolicy(fixable_gates=("ci",))))
@@ -242,8 +297,8 @@ def test_approving_a_fix_pushes_the_reviewed_patch_verbatim(store, monkeypatch):
 
     fix_worker.push_approved(1)
 
-    assert store.load_pr(1).fix_request["status"] == "pushed"
-    assert not any(a[0] in ("prepare", "update") for a in probe.calls)
+    assert store.load_pr(1).fix_request["status"] == "refused"
+    assert not _pushed(probe)
 
 
 # --- a conflicted rebase escalates to an agent-authored merge resolution --------
@@ -413,9 +468,9 @@ def test_an_authored_fix_parks_with_its_rationale_and_pushes_nothing(store, monk
     assert not _pushed(probe)
 
 
-def test_an_authored_fix_keeps_its_worktree(store, monkeypatch):
-    # An agent's edits are not mechanically re-derivable, so the approval pushes
-    # the tree the operator reviewed rather than authoring it again.
+def test_an_authored_fix_parks_its_patch_and_drops_its_worktree(store, monkeypatch):
+    # The reviewed patch is the artifact, so the clone is released and the
+    # approval is not tied to this machine.
     _queue_fix()
     probe = _fix_probe()
     monkeypatch.setattr(fix_worker, "_resubmit", probe)
@@ -424,7 +479,10 @@ def test_an_authored_fix_keeps_its_worktree(store, monkeypatch):
 
     fix_worker.run_one(1)
 
-    assert ("abort",) not in probe.calls
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "awaiting-review"
+    assert req["result"]["patch"].startswith("diff ")
+    assert ("abort",) in probe.calls
 
 
 def test_the_operators_guidance_becomes_the_agents_goal(store, monkeypatch):

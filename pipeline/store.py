@@ -84,7 +84,21 @@ FIX_REQUEST_SOURCES = {"operator", "auto"}
 # round-trips newer records without loss
 PR_SECTIONS = ("meta", "signals", "drift", "summary", "cluster", "analysis", "security",
                "issues", "threat", "greptile_review", "verify", "verify_request",
-               "fix_request")
+               "fix_request", "security_run")
+
+
+def _older_than(stamp: object, seconds: float) -> bool:
+    """Whether an ISO timestamp is further back than `seconds`. An absent or
+    unparseable stamp reads as old: a claim that cannot say when it started is
+    one nothing can wait on."""
+    from datetime import datetime, timezone
+    if not isinstance(stamp, str):
+        return True
+    try:
+        at = datetime.fromisoformat(stamp)
+    except ValueError:
+        return True
+    return (datetime.now(timezone.utc) - at).total_seconds() > seconds
 
 
 def _mirror_pr(rec: dict) -> dict:
@@ -174,6 +188,9 @@ def validate_pr(rec: dict) -> None:
             raise ValidationError(
                 f"fix_request.source: {fr.get('source')!r} not in "
                 f"{sorted(FIX_REQUEST_SOURCES)}")
+    sr = rec.get("security_run")
+    if sr and not sr.get("host"):
+        raise ValidationError("security_run.host: required")
     d = rec.get("drift")
     if d and d.get("state") not in DRIFT_STATES:
         raise ValidationError(f"drift.state: {d.get('state')!r} not in {sorted(DRIFT_STATES)}")
@@ -553,20 +570,34 @@ class Store:
             raise ValidationError("author_baseline.authors: required dict")
         self._save_registry("author_baseline", registry)
 
-    def load_verify_base(self) -> dict:
-        """The base image the VERIFY phase is currently pinned to
-        (`{base_sha, tier, pinned_at, baseline_failing, baseline_captured_at}`) —
-        the main SHA it was built from, the tier it was built at, and the pinned
-        base's own failing-test set (the regress phase's exclusion list).
+    # One machine's absent pin. `baseline_failing` of None means no baseline was
+    # ever captured there — distinct from [], the suite passed clean.
+    _NO_PIN = {"base_sha": None, "tier": None, "pinned_at": None,
+               "baseline_failing": None, "baseline_captured_at": None}
+
+    def load_verify_base_hosts(self) -> dict[str, dict]:
+        """Every machine's pinned base, keyed by hostname (`{<hostname>:
+        {base_sha, tier, pinned_at, baseline_failing, baseline_captured_at}}`).
+
+        A pin names a Docker image and a scrubbed clone on that machine's own
+        disk, so each verification machine carries its own and tracks the
+        default branch on its own daily cadence. Pins are never pruned: a
+        machine that is merely offline still holds its artifacts.
+
+        A record written flat (one machine's pin with no `hosts` key) reads as a
+        single-entry map under the host that prepared it; that host name becomes
+        the key and is dropped from the record."""
+        reg = self._load_registry("verify_base", {"hosts": {}})
+        if "hosts" in reg:
+            return reg["hosts"]
+        host = reg.pop("prepared_on", None)
+        return {str(host): reg} if host else {}
+
+    def load_verify_base(self, host: str) -> dict:
+        """`host`'s pinned base, or the empty pin when that machine has none.
         verify_driver.prepare_base writes it; verify_pr reads the base SHA and
-        tier back to name the image it boots, and a re-pin makes every PR
-        verified against the old base stale, so re-queuing re-verifies it.
-        `baseline_failing` of None means no baseline was ever captured —
-        distinct from [], the suite passed clean."""
-        return self._load_registry(
-            "verify_base",
-            {"base_sha": None, "tier": None, "pinned_at": None,
-             "baseline_failing": None, "baseline_captured_at": None})
+        tier back to name the image it boots."""
+        return self.load_verify_base_hosts().get(host, dict(self._NO_PIN))
 
     def load_verify_worker(self) -> dict:
         """Sandbox verification-worker heartbeats, one record per host
@@ -692,21 +723,64 @@ class Store:
         storekit.stamp(rec, "fix_request", section, "against_head_sha", head)
         return section if self._prs.save_if(rec, stamp) else None
 
-    def save_verify_base(self, registry: dict) -> None:
-        """base_sha and tier are required: together they name one built image
-        (pr-verify-base:<sha12>-t<tier>), and a pin missing either names no
-        image the sandbox could boot. baseline_failing and baseline_captured_at
-        are required too: a pin without a captured baseline names no exclusion
-        set, and the regression gate fails closed by refusing the pin."""
-        if not registry.get("base_sha"):
+    def claim_security_run(self, n: int, *, host: str, stale_after: float) -> bool:
+        """Atomically claim PR `n`'s autohunt security review for `host` — a
+        compare-and-swap on the row's write-stamp, so two idle workers never both
+        spend an agent review on one PR. Returns whether the claim is held.
+
+        A claim this host already holds is its own restart's leftover, retaken
+        here. Another host's is honoured until `stale_after` seconds have passed,
+        which is what frees a PR whose machine died mid-review; the window is
+        sized well past a review so a slow one is never stolen."""
+        row = self._prs.stamped(n)
+        if row is None:
+            return False
+        rec, stamp = row
+        run = rec.get("security_run") or {}
+        holder = run.get("host")
+        if (holder is not None and holder != host
+                and not _older_than(run.get("started_at"), stale_after)):
+            return False
+        rec["security_run"] = {"host": host, "started_at": storekit.now()}
+        return self._prs.save_if(rec, stamp)
+
+    def release_security_run(self, n: int, *, host: str) -> None:
+        """Drop `host`'s claim on PR `n`'s security review. A claim another host
+        now holds is left alone: this one lost a reclaim race, and the winner's
+        review is live."""
+        row = self._prs.stamped(n)
+        if row is None:
+            return
+        rec, stamp = row
+        run = rec.get("security_run") or {}
+        if run.get("host") not in (None, host):
+            return
+        rec["security_run"] = None
+        self._prs.save_if(rec, stamp)
+
+    def save_verify_base(self, record: dict) -> None:
+        """Merge one machine's pin into the verify_base registry. host is
+        required: the clone and image a pin names are local to the machine that
+        built them, so a pin naming no machine tells another one nothing it can
+        act on. base_sha and tier are required because together they name one
+        built image (pr-verify-base:<sha12>-t<tier>), and a pin missing either
+        names no image the sandbox could boot. baseline_failing and
+        baseline_captured_at are required too: a pin without a captured baseline
+        names no exclusion set, and the regression gate fails closed by refusing
+        the pin."""
+        if not record.get("host"):
+            raise ValidationError("verify_base.host: required")
+        if not record.get("base_sha"):
             raise ValidationError("verify_base.base_sha: required")
-        if registry.get("tier") not in VERIFY_TIERS:
+        if record.get("tier") not in VERIFY_TIERS:
             raise ValidationError(
-                f"verify_base.tier: {registry.get('tier')!r} not in {sorted(VERIFY_TIERS)}")
-        baseline = registry.get("baseline_failing")
+                f"verify_base.tier: {record.get('tier')!r} not in {sorted(VERIFY_TIERS)}")
+        baseline = record.get("baseline_failing")
         if not isinstance(baseline, list) or not all(isinstance(f, str) for f in baseline):
             raise ValidationError(
                 "verify_base.baseline_failing: required list of test file paths")
-        if not registry.get("baseline_captured_at"):
+        if not record.get("baseline_captured_at"):
             raise ValidationError("verify_base.baseline_captured_at: required")
-        self._save_registry("verify_base", registry)
+        hosts = dict(self.load_verify_base_hosts())
+        hosts[str(record["host"])] = record
+        self._save_registry("verify_base", {"hosts": hosts})

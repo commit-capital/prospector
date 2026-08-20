@@ -736,6 +736,43 @@ def cmd_push(pr: int, message: str | None, dry_run: bool,
     return 0
 
 
+def cmd_apply(pr: int) -> int:
+    """Apply a patch read from stdin to the prepared worktree, committing and
+    pushing nothing. `git apply` lands whole or not at all, so a patch that no
+    longer fits the head leaves the clone untouched for `abort` to discard.
+
+    Only an ordinary content resubmit takes a patch: a prepared rebase or merge
+    already carries commits, and applying over them would push edits nobody
+    reviewed as part of that transaction."""
+    wt = _worktree(pr)
+    meta = _read_meta(pr)
+    if not meta:
+        print(f"resubmit: PR #{pr} was not prepared (run `resubmit {pr} prepare` first)",
+              file=sys.stderr)
+        return 2
+    if meta.get("mode") in ("rebase", "merge"):
+        print(f"resubmit: PR #{pr} is prepared for a {meta['mode']}, which carries its "
+              f"own commits; apply is for an ordinary content resubmit.", file=sys.stderr)
+        return 2
+    if not wt.is_dir():
+        print(f"resubmit: PR #{pr}'s prepared clone is gone from {wt}; "
+              f"run `resubmit {pr} prepare` again.", file=sys.stderr)
+        return 2
+    patch = sys.stdin.read()
+    if not patch.startswith("diff "):
+        print("resubmit: stdin carried no patch to apply.", file=sys.stderr)
+        return 2
+    r = subprocess.run(["git", "apply", "--whitespace=nowarn", "-"], cwd=str(wt),
+                       input=patch, capture_output=True, text=True, timeout=300,
+                       env=git_env())
+    if r.returncode != 0:
+        print(f"resubmit: the patch does not apply to PR #{pr}'s head: "
+              f"{(r.stderr or r.stdout).strip()}", file=sys.stderr)
+        return 9
+    print(f"applied {len(patch)} bytes to PR #{pr}'s prepared worktree")
+    return 0
+
+
 def cmd_diff(pr: int) -> int:
     """Print the diff of the agent's edits in the prepared worktree, so the operator
     can review exactly what `push` will commit. The clone is a separate repo under
@@ -1036,6 +1073,7 @@ def main(argv: list[str] | None = None) -> int:
                            help="acknowledge the exact old head before a rebased rewrite")
     pushp.add_argument("--dry-run", action="store_true",
                        help="complete locally but do not push (log it as a dry-run)")
+    sub.add_parser("apply", help="apply a patch from stdin to the prepared worktree")
     sub.add_parser("diff", help="show the diff of the edits authored in the worktree")
     updp = sub.add_parser("update", help="merge the base branch into the PR's head branch")
     updp.add_argument("--dry-run", action="store_true",
@@ -1053,6 +1091,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_continue(args.pr)
         if args.action == "push":
             return cmd_push(args.pr, args.message, args.dry_run, args.confirm_rewrite)
+        if args.action == "apply":
+            return cmd_apply(args.pr)
         if args.action == "diff":
             return cmd_diff(args.pr)
         if args.action == "update":

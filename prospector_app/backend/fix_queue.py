@@ -79,10 +79,13 @@ def dequeue_pr(n: int) -> dict:
 
 def approve_pr(n: int) -> dict:
     """Approve PR `n`'s authored fix for pushing. Only an `awaiting-review`
-    request can be approved; the worker picks the approval up on its next tick
-    and pushes from the worktree it already prepared. The approval is recorded
-    here rather than pushing inline, so an operator can approve from any machine
-    while the push stays on the one holding the key."""
+    request can be approved; a worker picks the approval up on its next tick and
+    rebuilds the tree before pushing. The approval is recorded here rather than
+    pushing inline, so an operator can approve from any machine while the push
+    stays on one holding the push key.
+
+    The authoring machine is carried across: a `resolve` holds its merge commit
+    in that machine's worktree, so only it can push one."""
     rec = data.store().load_pr(n)
     if rec is None:
         raise ValueError(f"PR #{n} not in store")
@@ -96,7 +99,7 @@ def approve_pr(n: int) -> dict:
     rec.record_fix_request("approved", req.get("action", "fix"),
                            queued_at=req.get("queued_at"), source=req.get("source"),
                            base_sha=req.get("base_sha"), result=req.get("result"),
-                           guidance=req.get("guidance"),
+                           guidance=req.get("guidance"), host=req.get("host"),
                            head_sha=req.get("against_head_sha"))
     data.refresh()
     return {"pr": n, "status": "approved"}

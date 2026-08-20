@@ -32,11 +32,14 @@ class TestBaseRefreshDue:
 
 
 class FakeStore:
+    """Holds one machine's pin — the refresh only ever reads and writes its
+    own, so the host argument selects nothing here."""
+
     def __init__(self, reg):
         self.reg = reg
         self.runs = []
 
-    def load_verify_base(self):
+    def load_verify_base(self, host):
         return dict(self.reg)
 
     def save_verify_base(self, reg):
@@ -67,7 +70,7 @@ class TestMaybeRefreshBase:
                 "baseline_failing": [],
                 "baseline_captured_at": "2026-07-22T12:00:00+00:00",
                 "suite": "test",
-                "prepared_on": "mac-studio",
+                "host": "mac-studio",
                 "arch": "arm64"
             })
         monkeypatch.setattr(verify_worker.verify_driver, "prepare_base", mock_prepare_base)
@@ -170,7 +173,7 @@ class TestMaybeRefreshBase:
         assert st.reg["refresh_failures"] == 0
 
     def test_preamble_failure_is_contained(self, monkeypatch):
-        """A preamble failure (load_verify_base raises) does not escape
+        """A preamble failure (the store is unreachable) does not escape
         maybe_refresh_base — the drain tick must always reach next_queued()."""
         def boom():
             raise RuntimeError("store unavailable")

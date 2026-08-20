@@ -44,7 +44,12 @@ _JSON = JSON().with_variant(JSONB, "postgresql")
 # 15 — an issue's close-fixed route derives from its fix_scan; the find-fixed
 #      scan no longer stamps a close-fixed analysis (older readers see only the
 #      ANALYZE verdict and miss the fix).
-STORE_SCHEMA_VERSION = 15
+# 16 — the verify_base registry is keyed by hostname (`{hosts: {<host>: pin}}`),
+#      one pin per verification machine (an older reader finds no `base_sha` at
+#      the top level and reports no pinned base, so it verifies nothing), and a
+#      PR carries a `security_run` claim (an older hunter ignores it and can
+#      spend a second agent review on a PR another machine is already reviewing).
+STORE_SCHEMA_VERSION = 16
 
 # saved_at is a microsecond-resolution ISO timestamp stamped on every save — when
 # the store row was last written (distinct from `updated_at`, which mirrors the

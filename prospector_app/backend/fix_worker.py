@@ -55,6 +55,13 @@ if TYPE_CHECKING:
 
 POLL_SECONDS = 15.0
 
+# Largest authored patch the queue will carry. The approve path re-applies these
+# exact bytes on whichever machine pushes, so a patch is stored whole or not at
+# all — a truncated one would neither apply nor show the operator what they are
+# approving. A change this large is past what an unattended agent should be
+# writing, so exceeding the cap refuses the request rather than trimming it.
+PATCH_CHARS = 200_000
+
 # Captured resubmit output kept on a request the worker has to mark failed.
 TAIL_CHARS = 4000
 
@@ -174,16 +181,28 @@ def next_queued() -> int | None:
 
 
 def next_approved() -> int | None:
-    """The oldest request an operator approved for pushing, or None."""
-    return _oldest("approved")
+    """The oldest request an operator approved for pushing, or None.
+
+    A `resolve` is skipped unless this machine authored it: the merge commit
+    being approved lives in that machine's worktree, and no other can rebuild
+    it. Every other action re-derives from the store, so any machine may push
+    one."""
+    return _oldest("approved", mine_only=("resolve",))
 
 
-def _oldest(status: str) -> int | None:
+def _oldest(status: str, mine_only: tuple[str, ...] = ()) -> int | None:
+    """The best PR at `status`, operator picks before auto-picks and oldest
+    first within each. An action named in `mine_only` is passed over unless this
+    machine recorded it (or the record names none, from before hosts were
+    stamped) — it depends on state only that machine holds."""
+    me = socket.gethostname()
     best_n: int | None = None
     best_key: tuple[bool, str] | None = None
     for n, rec in data.prs().items():
         req = rec.fix_request or {}
         if req.get("status") != status:
+            continue
+        if req.get("action") in mine_only and req.get("host") not in (None, me):
             continue
         if req.get("attempts") and not _rested(req, TRANSIENT_RETRY_SECONDS):
             continue
@@ -193,12 +212,14 @@ def _oldest(status: str) -> int | None:
     return best_n
 
 
-def _resubmit(pr: int, *args: str) -> subprocess.CompletedProcess[str]:
+def _resubmit(pr: int, *args: str,
+              stdin: str | None = None) -> subprocess.CompletedProcess[str]:
     """Run the resubmit helper, which owns every git mechanic and the push
     identity. The worker opts into its machine user here; interactive invocations
-    of the same helper retain the operator identity."""
+    of the same helper retain the operator identity. `stdin` feeds a patch to
+    `apply` down the pipe, so the reviewed bytes never land on disk."""
     return subprocess.run([str(RESUBMIT), str(pr), *args], cwd=str(REPO_ROOT),
-                          capture_output=True, text=True, timeout=1800,
+                          input=stdin, capture_output=True, text=True, timeout=1800,
                           env=worker_env())
 
 
@@ -506,24 +527,37 @@ def _author_fix(n: int, claimed: dict) -> None:
         _refuse(n, claimed, "The agent reported changes, but the worktree holds "
                             "none — nothing was written.")
         return
+    if len(patch) > PATCH_CHARS:
+        _resubmit(n, "abort")
+        _refuse(n, claimed, f"The agent wrote {len(patch)} characters of diff, past "
+                            f"the {PATCH_CHARS} the queue carries. A change this "
+                            f"large belongs to a person, not an unattended fix.")
+        return
+    if "\nBinary files " in patch or patch.startswith("Binary files "):
+        # A textual diff names a binary change without carrying it, so the
+        # reviewed bytes could not be re-applied at approval time.
+        _resubmit(n, "abort")
+        _refuse(n, claimed, "The agent changed a binary file, which the reviewed "
+                            "patch cannot carry.")
+        return
     paths = diffpaths.changed_paths(patch)
     try:
         author_fix.assert_disclosed(verdict["changes"], paths)
     except ValueError as e:
         _resubmit(n, "abort")
         _refuse(n, claimed, f"The authored change was not trusted: {e}",
-                result={"patch": patch[-TAIL_CHARS:]})
+                result={"patch": patch})
         return
     ok, why = recheck_eligibility(n, "fix", paths)
     if not ok:
         _resubmit(n, "abort")
         _refuse(n, claimed, f"The change the agent wrote is not one the bot may "
-                            f"push: {why}", result={"patch": patch[-TAIL_CHARS:]})
+                            f"push: {why}", result={"patch": patch})
         return
 
     _running_step(n, claimed, "reviewing the authored change", action="fix")
     review = review_fix.review(worktree, patch, pr=n, goal=goal, findings=findings)
-    evidence = {"patch": patch[-TAIL_CHARS:], "changes": verdict["changes"],
+    evidence = {"patch": patch, "changes": verdict["changes"],
                 "review_verdict": review}
     if review["verdict"] != "safe":
         _resubmit(n, "abort")
@@ -666,11 +700,13 @@ def _agent_resolve(n: int, claimed: dict, paused: list[str]) -> None:
 def _park(n: int, claimed: dict, action: str, result: dict, host: str) -> None:
     """Record a proven change for an operator to approve, pushing nothing.
 
-    A mechanical action's worktree is discarded here: push_approved re-derives it
-    against whatever base is current then, so holding one would only accumulate
-    clones on the sandbox machine while a browsable backlog sits unreviewed. An
-    agent-authored `fix` is not reproducible, so its tree stays."""
-    if action in gates.HUNTABLE_ACTIONS:
+    The worktree is discarded for every action push_approved can rebuild: a
+    mechanical one re-derives against whatever base is current then, and a `fix`
+    re-applies its reviewed patch to a fresh clone. Holding a clone would only
+    accumulate them on one machine while a browsable backlog sits unreviewed —
+    and would tie the approval to the machine that authored it. A `resolve` keeps
+    its tree, because the merge commit it holds is the thing being approved."""
+    if action != "resolve":
         _resubmit(n, "abort")
     data.store().edit_pr(n).record_fix_request(
         "awaiting-review", action, queued_at=claimed.get("queued_at"),
@@ -749,14 +785,19 @@ def _commit_message(action: str) -> str:
 
 
 def push_approved(n: int) -> None:
-    """Push a request an operator approved, re-deriving a mechanical change
-    against current base first.
+    """Push a request an operator approved, rebuilding its worktree first.
 
-    The stored result proves the change applied to the base it was measured
-    against, which an active repository moves past continuously. Re-running the
-    merge or rebase is what makes the approval mean "push this against main as it
-    stands now" rather than "replay a verdict from Tuesday" — and it fails loudly,
-    as a refusal naming the conflicting paths, when that is no longer possible."""
+    A mechanical change is re-derived against current base: the stored result
+    proves it applied to the base it was measured against, which an active
+    repository moves past continuously, so re-running the merge or rebase is what
+    makes the approval mean "push this against main as it stands now". A `fix`
+    re-applies the exact reviewed patch to a fresh clone of the head — the same
+    bytes a person approved, never a fresh agent attempt. Both fail loudly, as a
+    refusal naming what no longer fits, when the rebuild is not possible.
+
+    Any machine can push either one, so an approval is not held hostage by the
+    machine that authored it. A `resolve` is the exception: the merge commit in
+    its worktree is the artifact being approved, so its own machine pushes it."""
     host = socket.gethostname()
     claimed = data.store().claim_fix_request(n, host=host, statuses=("approved",),
                                              to_status="pushing")
@@ -794,7 +835,38 @@ def push_approved(n: int) -> None:
                     f"conflicts on {len(paused)} file(s): {', '.join(paused[:5])}. "
                     f"Nothing was pushed.")
             return
+    elif action == "fix" and not _rebuild_fix(n, claimed, result):
+        return
     _push(n, claimed, action, claimed.get("result") or {})
+
+
+def _rebuild_fix(n: int, claimed: dict, result: dict) -> bool:
+    """Clone the contributor's head and re-apply the reviewed patch, so this
+    machine holds the tree `_push` commits. Returns whether it stands ready.
+
+    The patch is the one a person approved, applied verbatim — no agent runs
+    here. `git apply` lands whole or not at all, so a refusal leaves nothing
+    half-written on the branch."""
+    patch = result.get("patch")
+    if not isinstance(patch, str) or not patch.startswith("diff "):
+        _refuse(n, claimed, "The reviewed patch is missing from this request, so "
+                            "there is nothing to push — re-queue the fix.")
+        return False
+    prepared = _resubmit(n, "prepare")
+    if prepared.returncode != 0:
+        _settle(n, claimed, prepared.returncode,
+                (prepared.stderr or prepared.stdout).strip())
+        return False
+    applied = _resubmit(n, "apply", stdin=patch)
+    if applied.returncode != 0:
+        _resubmit(n, "abort")
+        _refuse(n, claimed,
+                f"The reviewed change no longer applies to PR #{n}'s head. "
+                f"Nothing was pushed — re-queue the fix to author it again.",
+                result={**result, "output": (applied.stderr
+                                             or applied.stdout).strip()[-TAIL_CHARS:]})
+        return False
+    return True
 
 
 def _push(n: int, req: dict, action: str, result: dict) -> None:

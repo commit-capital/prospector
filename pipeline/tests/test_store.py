@@ -422,74 +422,166 @@ class TestVerifyValidation:
         assert s.load_pr(1).disposition == "merge"
 
 
+class TestSecurityRunClaim:
+    """The claim that keeps two idle hunters off one PR. A security review is
+    several agent runs deep, so a duplicate is expensive — the claim is a
+    compare-and-swap on the row's write-stamp, the same primitive the verify and
+    fix queues claim with."""
+
+    def _pr(self, tmp_path) -> Store:
+        s = Store(tmp_path)
+        s.save_pr({"pr": 1, "meta": {"title": "t", "state": "open", "head_sha": "h"}})
+        return s
+
+    def test_an_unclaimed_pr_is_claimable(self, tmp_path):
+        s = self._pr(tmp_path)
+        assert s.claim_security_run(1, host="mac", stale_after=3600) is True
+
+    def test_a_second_machine_loses_the_race(self, tmp_path):
+        s = self._pr(tmp_path)
+        assert s.claim_security_run(1, host="mac", stale_after=3600) is True
+        assert s.claim_security_run(1, host="linux", stale_after=3600) is False
+
+    def test_a_host_retakes_its_own_leftover(self, tmp_path):
+        """A review does not survive its process, so this host's own claim is a
+        restart's leftover rather than a live run."""
+        s = self._pr(tmp_path)
+        assert s.claim_security_run(1, host="mac", stale_after=3600) is True
+        assert s.claim_security_run(1, host="mac", stale_after=3600) is True
+
+    def test_a_claim_past_its_window_is_reclaimable(self, tmp_path):
+        """What frees a PR whose machine died mid-review."""
+        s = self._pr(tmp_path)
+        assert s.claim_security_run(1, host="mac", stale_after=3600) is True
+        assert s.claim_security_run(1, host="linux", stale_after=-1) is True
+
+    def test_releasing_frees_the_pr(self, tmp_path):
+        s = self._pr(tmp_path)
+        s.claim_security_run(1, host="mac", stale_after=3600)
+        s.release_security_run(1, host="mac")
+        assert s.claim_security_run(1, host="linux", stale_after=3600) is True
+
+    def test_releasing_leaves_another_hosts_claim_alone(self, tmp_path):
+        """A reclaim race loser must not free the winner's live review."""
+        s = self._pr(tmp_path)
+        s.claim_security_run(1, host="mac", stale_after=3600)
+        s.release_security_run(1, host="linux")
+        assert s.claim_security_run(1, host="linux", stale_after=3600) is False
+
+    def test_a_missing_pr_is_never_claimable(self, tmp_path):
+        assert Store(tmp_path).claim_security_run(9, host="mac", stale_after=3600) is False
+
+
 class TestVerifyBaseRegistry:
-    """The pin names the base image `run` looks for: its SHA and the tier it was
-    built at, plus the captured baseline that names the regress exclusion set.
-    base_sha, tier, baseline_failing, and baseline_captured_at are all
-    required, so a pin can never disagree with itself or omit the baseline."""
+    """A pin names the base image `run` looks for on ONE machine: its SHA and
+    the tier it was built at, plus the captured baseline that names the regress
+    exclusion set. host, base_sha, tier, baseline_failing and
+    baseline_captured_at are all required, so a pin can never disagree with
+    itself, omit the baseline, or fail to name the machine holding it."""
+
+    def _pin(self, **over) -> dict:
+        return {"host": "mac", "base_sha": "deadbeef", "tier": 1,
+                "pinned_at": "2026-07-14T00:00:00+00:00",
+                "baseline_failing": [], "baseline_captured_at": "2026-07-15",
+                **over}
 
     def test_default_is_unpinned(self, tmp_path):
-        assert Store(tmp_path).load_verify_base() == {"base_sha": None, "tier": None,
-                                                      "pinned_at": None,
-                                                      "baseline_failing": None,
-                                                      "baseline_captured_at": None}
+        assert Store(tmp_path).load_verify_base("mac") == {"base_sha": None, "tier": None,
+                                                           "pinned_at": None,
+                                                           "baseline_failing": None,
+                                                           "baseline_captured_at": None}
 
     def test_roundtrip(self, tmp_path):
         s = Store(tmp_path)
-        s.save_verify_base({"base_sha": "deadbeef", "tier": 1,
-                            "pinned_at": "2026-07-14T00:00:00+00:00",
-                            "baseline_failing": [], "baseline_captured_at": "2026-07-15"})
-        assert s.load_verify_base()["base_sha"] == "deadbeef"
-        assert s.load_verify_base()["tier"] == 1
+        s.save_verify_base(self._pin())
+        assert s.load_verify_base("mac")["base_sha"] == "deadbeef"
+        assert s.load_verify_base("mac")["tier"] == 1
 
     def test_tier_0_roundtrips(self, tmp_path):
         s = Store(tmp_path)
-        s.save_verify_base({"base_sha": "deadbeef", "tier": 0, "pinned_at": None,
-                            "baseline_failing": [], "baseline_captured_at": "2026-07-15"})
-        assert s.load_verify_base()["tier"] == 0
+        s.save_verify_base(self._pin(tier=0, pinned_at=None))
+        assert s.load_verify_base("mac")["tier"] == 0
+
+    def test_each_machine_keeps_its_own_pin(self, tmp_path):
+        """The clone and image a pin names are local, so one machine re-pinning
+        never invalidates what another has built."""
+        s = Store(tmp_path)
+        s.save_verify_base(self._pin(host="mac", base_sha="a" * 12))
+        s.save_verify_base(self._pin(host="linux", base_sha="b" * 12))
+        assert s.load_verify_base("mac")["base_sha"] == "a" * 12
+        assert s.load_verify_base("linux")["base_sha"] == "b" * 12
+        assert sorted(s.load_verify_base_hosts()) == ["linux", "mac"]
+
+    def test_a_machine_without_a_pin_reads_unpinned(self, tmp_path):
+        s = Store(tmp_path)
+        s.save_verify_base(self._pin(host="mac"))
+        assert s.load_verify_base("linux")["base_sha"] is None
+
+    def test_a_flat_pin_reads_as_the_machine_that_prepared_it(self, tmp_path):
+        """A pin written before the registry was keyed by hostname names its
+        machine in `prepared_on`, so that machine keeps the base it built."""
+        s = Store(tmp_path)
+        s._save_registry("verify_base",
+                         {"base_sha": "deadbeef", "tier": 1, "pinned_at": None,
+                          "baseline_failing": [], "baseline_captured_at": "2026-07-15",
+                          "prepared_on": "mac"})
+        assert list(s.load_verify_base_hosts()) == ["mac"]
+        assert s.load_verify_base("mac")["base_sha"] == "deadbeef"
+        assert "prepared_on" not in s.load_verify_base("mac")
+
+    def test_an_unattributable_flat_pin_reads_as_no_pin(self, tmp_path):
+        """No `prepared_on` names no machine, and a pin that cannot be matched to
+        a disk is one no machine may boot from."""
+        s = Store(tmp_path)
+        s._save_registry("verify_base",
+                         {"base_sha": "deadbeef", "tier": 1, "pinned_at": None,
+                          "baseline_failing": [], "baseline_captured_at": "2026-07-15"})
+        assert s.load_verify_base_hosts() == {}
+
+    def test_missing_host_rejected(self, tmp_path):
+        pin = self._pin()
+        del pin["host"]
+        with pytest.raises(ValidationError, match="host"):
+            Store(tmp_path).save_verify_base(pin)
 
     def test_blank_base_sha_rejected(self, tmp_path):
         with pytest.raises(ValidationError):
-            Store(tmp_path).save_verify_base({"base_sha": "", "tier": 0, "pinned_at": None,
-                                              "baseline_failing": [], "baseline_captured_at": "2026-07-15"})
+            Store(tmp_path).save_verify_base(self._pin(base_sha="", tier=0))
 
     def test_missing_tier_rejected(self, tmp_path):
+        pin = self._pin()
+        del pin["tier"]
         with pytest.raises(ValidationError):
-            Store(tmp_path).save_verify_base({"base_sha": "deadbeef", "pinned_at": None})
+            Store(tmp_path).save_verify_base(pin)
 
     def test_unknown_tier_rejected(self, tmp_path):
         with pytest.raises(ValidationError):
-            Store(tmp_path).save_verify_base({"base_sha": "deadbeef", "tier": 7,
-                                              "pinned_at": None,
-                                              "baseline_failing": [], "baseline_captured_at": "2026-07-15"})
+            Store(tmp_path).save_verify_base(self._pin(tier=7))
 
     def test_verify_base_requires_a_captured_baseline(self, tmp_path):
+        pin = self._pin(tier=0)
+        del pin["baseline_failing"]
         with pytest.raises(ValidationError, match="baseline_failing"):
-            Store(tmp_path).save_verify_base(
-                {"base_sha": "deadbeef", "tier": 0, "pinned_at": None,
-                 "baseline_captured_at": "2026-07-15"})
+            Store(tmp_path).save_verify_base(pin)
 
     def test_verify_base_baseline_must_be_a_list_of_paths(self, tmp_path):
         with pytest.raises(ValidationError, match="baseline_failing"):
             Store(tmp_path).save_verify_base(
-                {"base_sha": "deadbeef", "tier": 0, "pinned_at": None,
-                 "baseline_failing": "x.test.ts",
-                 "baseline_captured_at": "2026-07-15"})
+                self._pin(tier=0, baseline_failing="x.test.ts"))
 
     def test_verify_base_requires_the_baseline_timestamp(self, tmp_path):
+        pin = self._pin(tier=0)
+        del pin["baseline_captured_at"]
         with pytest.raises(ValidationError, match="baseline_captured_at"):
-            Store(tmp_path).save_verify_base(
-                {"base_sha": "deadbeef", "tier": 0, "pinned_at": None,
-                 "baseline_failing": []})
+            Store(tmp_path).save_verify_base(pin)
 
     def test_verify_base_an_all_green_baseline_is_a_valid_pin(self, tmp_path):
         s = Store(tmp_path)
-        s.save_verify_base({"base_sha": "deadbeef", "tier": 0, "pinned_at": None,
-                            "baseline_failing": [], "baseline_captured_at": "2026-07-15"})
-        assert s.load_verify_base()["baseline_failing"] == []
+        s.save_verify_base(self._pin(tier=0))
+        assert s.load_verify_base("mac")["baseline_failing"] == []
 
     def test_verify_base_default_has_no_baseline(self, tmp_path):
-        assert Store(tmp_path).load_verify_base()["baseline_failing"] is None
+        assert Store(tmp_path).load_verify_base("mac")["baseline_failing"] is None
 
 
 class TestResponseAcks:
