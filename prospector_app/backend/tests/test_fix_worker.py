@@ -780,3 +780,20 @@ def test_retrigger_failure_leaves_the_pushed_record(store, monkeypatch):
     monkeypatch.setattr(fix_worker, "_retrigger_review", boom)
     fix_worker._finish_pushed(1, {"action": "fix"}, "pushed ok")
     assert store.load_pr(1).fix_request["status"] == "pushed"
+
+
+def test_a_refused_rebase_is_not_hunted_again_at_the_same_head(store, monkeypatch):
+    # Without this the hunter ping-pongs on the lowest-numbered conflicted PRs,
+    # re-attempting the same refused rebase every sweep.
+    rec = store.load_pr(1).raw
+    rec["fix_request"] = {"status": "refused", "action": "rebase",
+                          "against_head_sha": HEAD, "source": "auto"}
+    store.save_pr(rec)
+    data.refresh()
+    assert fix_worker.auto_fixable(data.prs()[1]) is None
+    # A moved head re-arms the PR.
+    rec["fix_request"] = {"status": "refused", "action": "rebase",
+                          "against_head_sha": "b" * 40, "source": "auto"}
+    store.save_pr(rec)
+    data.refresh()
+    assert fix_worker.auto_fixable(data.prs()[1]) == "rebase"

@@ -28,9 +28,10 @@ since moved. An agent-authored `fix` or `resolve` is not reproducible, so it
 keeps its tree and pushes the reviewed change verbatim.
 
 With TRIAGE_FIX_AUTOHUNT=1 an empty queue turns the drain loop into a hunter: it
-queues the eligible PRs whose gates an autofix could plausibly clear. With
-TRIAGE_FIX_HUNT_FIX=1 on top, the hunter also queues agent-authored `fix`
-actions — one attempt per head, at most TRIAGE_FIX_HUNT_LIMIT in flight — for
+queues the eligible PRs whose gates an autofix could plausibly clear — every
+action one unattended attempt per head, so a refused run rests until the
+author pushes. With TRIAGE_FIX_HUNT_FIX=1 on top, the hunter also queues
+agent-authored `fix` actions — at most TRIAGE_FIX_HUNT_LIMIT in flight — for
 mergeable, CI-passing PRs scored below the review bar. An operator-queued
 request always wins the next pick.
 """
@@ -962,11 +963,15 @@ def _retrigger_review(n: int) -> None:
 _TERMINAL = ("pushed", "refused", "failed", "cancelled")
 
 
-def _fix_attempted(pr: Pr) -> bool:
-    """Whether this PR's current head already had its unattended fix attempt.
-    The stamp a moved head no longer matches is what re-arms the PR."""
+def _hunt_attempted(pr: Pr, action: str) -> bool:
+    """Whether this PR's current head already had its unattended attempt at
+    `action`. The stamp a moved head no longer matches is what re-arms the PR —
+    a refused rebase stays refused until the author pushes, so re-running it
+    every sweep would pin the hunter to the same few conflicted PRs. An
+    operator's click is not bound by this; re-queueing by hand is how a
+    restart-orphaned run is retried at the same head."""
     req = pr.fix_request or {}
-    return (req.get("action") == "fix" and req.get("status") in _TERMINAL
+    return (req.get("action") == action and req.get("status") in _TERMINAL
             and pr.head_sha is not None
             and req.get("against_head_sha") == pr.head_sha)
 
@@ -1000,9 +1005,11 @@ def auto_fixable(pr: Pr) -> str | None:
         action = "rebase"
     elif pr.drift_state == "conflicts":
         action = "update"
-    elif settings.fix_hunt_fix() and not _fix_attempted(pr):
+    elif settings.fix_hunt_fix():
         action = "fix"
     else:
+        return None
+    if _hunt_attempted(pr, action):
         return None
     ok, _ = gates.fix_huntable(pr, action, service.changed_paths(pr))
     return action if ok else None
