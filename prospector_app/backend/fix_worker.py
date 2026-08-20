@@ -28,8 +28,11 @@ since moved. An agent-authored `fix` or `resolve` is not reproducible, so it
 keeps its tree and pushes the reviewed change verbatim.
 
 With TRIAGE_FIX_AUTOHUNT=1 an empty queue turns the drain loop into a hunter: it
-queues the eligible PRs whose gates an autofix could plausibly clear, oldest
-community pain first. An operator-queued request always wins the next pick.
+queues the eligible PRs whose gates an autofix could plausibly clear. With
+TRIAGE_FIX_HUNT_FIX=1 on top, the hunter also queues agent-authored `fix`
+actions — one attempt per head, at most TRIAGE_FIX_HUNT_LIMIT in flight — for
+mergeable, CI-passing PRs scored below the review bar. An operator-queued
+request always wins the next pick.
 """
 from __future__ import annotations
 
@@ -930,24 +933,51 @@ def _finish_pushed(n: int, req: dict, output: str, result: dict | None = None) -
     data.refresh()
 
 
+# Terminal fix_request statuses. A cancelled request counts as an attempt: an
+# operator saying no to this head is not an invitation to try it again.
+_TERMINAL = ("pushed", "refused", "failed", "cancelled")
+
+
+def _fix_attempted(pr: Pr) -> bool:
+    """Whether this PR's current head already had its unattended fix attempt.
+    The stamp a moved head no longer matches is what re-arms the PR."""
+    req = pr.fix_request or {}
+    return (req.get("action") == "fix" and req.get("status") in _TERMINAL
+            and pr.head_sha is not None
+            and req.get("against_head_sha") == pr.head_sha)
+
+
+def _auto_fixes_in_flight() -> int:
+    """How many hunter-queued fix requests sit anywhere between queued and
+    pushing. Operator-queued fixes are not counted against the hunter's cap."""
+    count = 0
+    for rec in data.prs().values():
+        req = rec.fix_request or {}
+        if (req.get("source") == "auto" and req.get("action") == "fix"
+                and req.get("status") in fix_queue.IN_FLIGHT):
+            count += 1
+    return count
+
+
 def auto_fixable(pr: Pr) -> str | None:
-    """The action the idle hunter would queue for this PR, or None. Only the
-    mechanical actions are hunted: an agent-authored fix is an operator's call,
-    never something the queue starts on its own.
+    """The action the idle hunter would queue for this PR, or None.
 
     A PR GitHub reports unmergeable needs its history replayed on current base,
     which is `rebase`; a PR whose drift scan says the base moved out from under
-    it needs `update`. Anything else is left alone.
+    it needs `update`. A PR clean on both may take an agent-authored `fix` when
+    the deployment opts in (TRIAGE_FIX_HUNT_FIX) and this head has not already
+    burned its one unattended attempt. Anything else is left alone.
 
     gates.fix_huntable is the bar, not fix_eligibility: unprompted sandbox time
-    goes to PRs a reviewer already rated, so a branch nobody has vouched for is
-    left for an operator to queue by hand."""
+    goes only where a stored quality signal argues the spend is worth it."""
     if (pr.fix_request or {}).get("status") in fix_queue.IN_FLIGHT:
         return None
     if pr.mergeable is False:
         action = "rebase"
     elif pr.drift_state == "conflicts":
         action = "update"
+    elif settings.fix_hunt_fix() and not _fix_attempted(pr):
+        action = "fix"
     else:
         return None
     ok, _ = gates.fix_huntable(pr, action, service.changed_paths(pr))
@@ -956,10 +986,14 @@ def auto_fixable(pr: Pr) -> str | None:
 
 def next_auto() -> tuple[str, int] | None:
     """The idle hunter's next (action, PR), or None when nothing is eligible."""
+    fix_slots = settings.fix_hunt_limit() - _auto_fixes_in_flight()
     for n, rec in sorted(data.prs().items()):
         action = auto_fixable(rec)
-        if action is not None:
-            return action, n
+        if action is None:
+            continue
+        if action == "fix" and fix_slots <= 0:
+            continue
+        return action, n
     return None
 
 

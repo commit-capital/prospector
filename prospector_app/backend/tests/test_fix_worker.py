@@ -650,3 +650,66 @@ def test_refuse_records_the_claimed_head_not_the_current_one(store):
     fix_worker._refuse(1, {"action": "fix", "against_head_sha": "b" * 40}, "nope")
     req = store.load_pr(1).fix_request
     assert req["against_head_sha"] == "b" * 40
+
+
+# --- hunting agent-authored fixes -----------------------------------------------
+
+def _fixable_pr(n: int = 2) -> dict:
+    """A CI-passing, mergeable PR scored below the review bar at its current
+    head — what the fix hunt targets."""
+    return {"pr": n,
+            "meta": {"title": "below bar", "state": "open", "head_sha": HEAD},
+            "signals": {"greptile": 4, "greptile_reviewed_sha": HEAD,
+                        "ci": "passing", "mergeable": True,
+                        "checked_at": NOW, "against_head_sha": HEAD}}
+
+
+@pytest.fixture
+def fix_profile(monkeypatch):
+    p = profile.RepoProfile(autofix=profile.AutofixPolicy(fixable_gates=("review",)))
+    monkeypatch.setattr(profile, "active", lambda: p)
+
+
+def test_hunter_ignores_fix_without_the_opt_in(store, fix_profile, monkeypatch):
+    monkeypatch.delenv("TRIAGE_FIX_HUNT_FIX", raising=False)
+    store.save_pr(_fixable_pr())
+    data.refresh()
+    assert fix_worker.auto_fixable(data.prs()[2]) is None
+
+
+def test_hunter_queues_fix_with_the_opt_in(store, fix_profile, monkeypatch):
+    monkeypatch.setenv("TRIAGE_FIX_HUNT_FIX", "1")
+    store.save_pr(_fixable_pr())
+    data.refresh()
+    assert fix_worker.auto_fixable(data.prs()[2]) == "fix"
+
+
+def test_one_fix_attempt_per_head(store, fix_profile, monkeypatch):
+    monkeypatch.setenv("TRIAGE_FIX_HUNT_FIX", "1")
+    rec = _fixable_pr()
+    rec["fix_request"] = {"status": "refused", "action": "fix",
+                          "against_head_sha": HEAD}
+    store.save_pr(rec)
+    data.refresh()
+    assert fix_worker.auto_fixable(data.prs()[2]) is None
+    # A moved head re-arms the PR.
+    rec["fix_request"] = {"status": "refused", "action": "fix",
+                          "against_head_sha": "b" * 40}
+    store.save_pr(rec)
+    data.refresh()
+    assert fix_worker.auto_fixable(data.prs()[2]) == "fix"
+
+
+def test_fix_hunt_respects_the_in_flight_cap(store, fix_profile, monkeypatch):
+    monkeypatch.setenv("TRIAGE_FIX_HUNT_FIX", "1")
+    monkeypatch.setenv("TRIAGE_FIX_HUNT_LIMIT", "1")
+    running = _fixable_pr(3)
+    running["fix_request"] = {"status": "running", "action": "fix", "source": "auto"}
+    store.save_pr(running)
+    store.save_pr(_fixable_pr(2))
+    # Drop PR 1 below the mechanical hunt's review bar so only fixes compete.
+    one = store.load_pr(1).raw
+    one["signals"]["greptile"] = 4
+    store.save_pr(one)
+    data.refresh()
+    assert fix_worker.next_auto() is None
