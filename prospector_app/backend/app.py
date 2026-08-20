@@ -369,6 +369,13 @@ def setup_flags(body: models.WorkerFlags):
             "readiness": worker_readiness.report()}
 
 
+@app.post("/api/setup/share")
+def setup_share(body: models.ShareRequest):
+    """A ready-to-paste .env for onboarding a teammate onto this deployment.
+    POST, so the store URL is never in a request line even when opted in."""
+    return {"snippet": worker_control.share_snippet(include_store=body.include_store)}
+
+
 @app.get("/api/autohunt")
 def autohunt(days: int = Query(7, ge=1, le=400), all_time: bool = False,
              limit: int = Query(100, ge=1, le=autohunt_view.HISTORY_LIMIT_CAP)):
@@ -787,8 +794,11 @@ def reopen_issue(n: int, dry_run: bool = True):
 @app.get("/api/alerts")
 def list_alerts():
     """Every ingested repository-security alert with its normalized state,
-    severity, fix-scan verdict, and candidate PR/issue links."""
-    return {"items": alerts_mod.list_alerts()}
+    severity, fix-scan verdict, and candidate PR/issue links. While the PR
+    snapshot is still cold-loading, the link chips carry their recorded states
+    and pr_states_loading is true."""
+    rows, pr_states_loading = alerts_mod.list_alerts()
+    return {"items": rows, "pr_states_loading": pr_states_loading}
 
 
 @app.post("/api/alerts/query")

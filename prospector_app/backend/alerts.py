@@ -33,9 +33,15 @@ def _sync_store_root() -> None:
         _synced_store_root = normalized
 
 
-def _store_pr_states() -> dict[int, str]:
+def _store_pr_states() -> tuple[dict[int, str], bool]:
+    """Current PR states for the link chips, plus True while the PR snapshot
+    is still cold-loading. That load runs on a background thread and the
+    states come back empty in the meantime, so an alerts read never pins a
+    request thread on the full PR corpus."""
     from prospector_app.backend import data
-    return {n: pr.state for n, pr in data.prs().items() if pr.state}
+    if data.snapshot_loading():
+        return {}, True
+    return {n: pr.state for n, pr in data.prs().items() if pr.state}, False
 
 
 def _row(alert: Alert, pr_states: dict[int, str]) -> dict:
@@ -75,13 +81,14 @@ def _row(alert: Alert, pr_states: dict[int, str]) -> dict:
     }
 
 
-def list_alerts() -> list[dict]:
-    """Every alert in the store, newest update first."""
+def list_alerts() -> tuple[list[dict], bool]:
+    """Every alert in the store, newest update first, plus whether the PR-state
+    hydration of link chips is still pending behind the cold PR-snapshot load."""
     _sync_store_root()
-    pr_states = _store_pr_states()
+    pr_states, pr_states_loading = _store_pr_states()
     rows = [_row(a, pr_states) for a in alert_data.alerts().values()]
     rows.sort(key=lambda r: r["updated_at"] or "", reverse=True)
-    return rows
+    return rows, pr_states_loading
 
 
 def get_alert(source: str, number: int) -> dict | None:
@@ -95,7 +102,7 @@ def get_alert(source: str, number: int) -> dict | None:
     alert = alert_data.alerts().get(i)
     if alert is None:
         return None
-    row = _row(alert, _store_pr_states())
+    row = _row(alert, _store_pr_states()[0])
     meta = alert.section("meta") or {}
     row["meta"] = {k: v for k, v in meta.items()
                    if k not in ("checked_at",)}
@@ -127,7 +134,7 @@ def query_alerts(q: str = "", sort: str | None = None, direction: str | None = N
     (OR'd); `verdict` filters the fix-scan verdict, with "none" selecting
     unscanned alerts; `q` is a case-insensitive substring match over number,
     title, rule id, package, secret type, and path."""
-    rows = list_alerts()
+    rows, pr_states_loading = list_alerts()
     if source and source != "all":
         rows = [r for r in rows if r["source"] == source]
     if state and state != "all":
@@ -149,7 +156,8 @@ def query_alerts(q: str = "", sort: str | None = None, direction: str | None = N
     rows.sort(key=lambda r: (key(r), r["id"]), reverse=reverse)
     total = len(rows)
     return {"items": rows[offset:offset + limit], "total": total,
-            "offset": offset, "limit": limit}
+            "offset": offset, "limit": limit,
+            "pr_states_loading": pr_states_loading}
 
 
 _sources_cache: dict[str, bool] | None = None

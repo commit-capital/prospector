@@ -119,3 +119,39 @@ class TestReadiness:
         report = worker_readiness.report()
         assert report["ready"] is True
         assert report["autofix_ready"] is False
+
+
+class TestShareSnippet:
+    """The onboarding snippet: deployment facts travel, secrets and local paths
+    do not — unless the operator opts the store URL in."""
+
+    @pytest.fixture(autouse=True)
+    def deployment(self, monkeypatch):
+        monkeypatch.setenv("TRIAGE_REPO", "owner/name")
+        monkeypatch.setenv("TRIAGE_BOT_LOGIN", "the-bot")
+        monkeypatch.setenv("TRIAGE_STORE_URL",
+                           "postgresql+psycopg://user:sup3rsecret@host:6543/postgres")
+        monkeypatch.setenv("TRIAGE_BOT_KEY_FILE", "/Users/me/.config/app/key.pem")
+        monkeypatch.setenv("TRIAGE_PUSH_SSH_KEY_FILE", "/Users/me/.ssh/pushkey")
+
+    def test_prefills_the_deployment_facts(self):
+        snippet = worker_control.share_snippet()
+        assert "TRIAGE_REPO=owner/name" in snippet
+        assert "TRIAGE_BOT_LOGIN=the-bot" in snippet
+
+    def test_the_store_password_stays_home_by_default(self):
+        snippet = worker_control.share_snippet()
+        assert "sup3rsecret" not in snippet
+        assert "# TRIAGE_STORE_URL=" in snippet
+
+    def test_opting_in_ships_the_store_url(self):
+        snippet = worker_control.share_snippet(include_store=True)
+        assert "TRIAGE_STORE_URL=postgresql+psycopg://user:sup3rsecret@host:6543/postgres" in snippet
+
+    def test_local_credential_paths_never_travel(self):
+        """Another machine's paths would be wrong anyway; shipping them only
+        leaks how this machine is laid out."""
+        for include in (False, True):
+            snippet = worker_control.share_snippet(include_store=include)
+            assert "/Users/me/.config/app/key.pem" not in snippet
+            assert "/Users/me/.ssh/pushkey" not in snippet

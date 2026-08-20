@@ -226,21 +226,30 @@ export default function Alerts() {
 
   useEffect(() => {
     let active = true;
-    api.queryAlerts({
-      q,
-      sort: sortKey || undefined,
-      direction: sortDir || undefined,
-      source: sourceFilter || undefined,
-      state: stateFilter || "all",
-      verdict: verdictFilter || undefined,
-      offset: (page - 1) * PAGE_SIZE,
-      limit: PAGE_SIZE,
-    }).then((res) => {
-      if (active) setResult({ key: queryKey, items: res.items, total: res.total });
-    }).catch((e: Error) => {
-      if (active) setResult({ key: queryKey, items: [], total: 0, err: e.message });
-    });
-    return () => { active = false; };
+    let timer: number | undefined;
+    const run = () => {
+      api.queryAlerts({
+        q,
+        sort: sortKey || undefined,
+        direction: sortDir || undefined,
+        source: sourceFilter || undefined,
+        state: stateFilter || "all",
+        verdict: verdictFilter || undefined,
+        offset: (page - 1) * PAGE_SIZE,
+        limit: PAGE_SIZE,
+      }).then((res) => {
+        if (!active) return;
+        setResult({ key: queryKey, items: res.items, total: res.total });
+        // While the backend's PR snapshot is still cold-loading, the link
+        // chips lack current PR states — refetch quietly (same key, so the
+        // rows stay put) until they arrive.
+        if (res.pr_states_loading) timer = window.setTimeout(run, 2000);
+      }).catch((e: Error) => {
+        if (active) setResult({ key: queryKey, items: [], total: 0, err: e.message });
+      });
+    };
+    run();
+    return () => { active = false; if (timer !== undefined) window.clearTimeout(timer); };
   }, [q, sortKey, sortDir, sourceFilter, stateFilter, verdictFilter, page, generation, queryKey]);
 
   const rows = result?.items ?? [];
@@ -313,6 +322,13 @@ export default function Alerts() {
         <button className="btn-secondary sm" disabled={page <= 1 || loading} onClick={() => setPage(page - 1)}>Prev</button>
         <button className="btn-secondary sm" disabled={page >= pages || loading} onClick={() => setPage(page + 1)}>Next</button>
       </div>
+      {loading && !result && (
+        <div className="explorer-loading">
+          <span className="spinner explorer-loading-spinner" />
+          <span className="explorer-loading-label">Loading alerts…</span>
+        </div>
+      )}
+      {result && (
       <div className="alerts-layout">
         <div className="table-wrap">
         <table className="grid sortable alerts-table">
@@ -356,6 +372,7 @@ export default function Alerts() {
             onClose={() => setSelected(null)} onChanged={reload} />
         )}
       </div>
+      )}
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { Component, lazy, Suspense, useEffect, useState, type ErrorInfo, type ReactNode } from "react";
+import { Component, lazy, Suspense, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from "react";
 import { NavLink, Outlet, useLocation, useSearchParams } from "react-router";
 import { ExecProvider, useExec, type Toast } from "./ExecContext";
 import { RepoMetaProvider, useRepoMeta } from "./RepoMetaContext";
@@ -155,10 +155,51 @@ function StoreWriteBanner() {
   return <div className="store-write-block" role="alert">⛔ {storeWriteBlock}</div>;
 }
 
-function IdentityPicker() {
-  const { identities, botLogin, identity, setIdentity, dryRun, setDryRun, livePossible,
-    liveError, storeWriteBlock, retryLive, pushToast } = useExec();
+function DryRunBadge() {
+  const { botLogin, dryRun, setDryRun, livePossible, liveError, storeWriteBlock } = useExec();
+  const dryRunTitle = storeWriteBlock
+    ? storeWriteBlock
+    : livePossible
+    ? "Toggle dry-run / live posting"
+    : `No ${botLogin} token on this machine — dry-run only${liveError ? ` (${liveError})` : ""}`;
+  return (
+    <button
+      className={`mode-badge ${dryRun ? "dry" : "live"}`}
+      onClick={() => setDryRun(!dryRun)}
+      disabled={!livePossible || !!storeWriteBlock}
+      title={dryRunTitle}
+    >
+      {dryRun ? "DRY RUN" : "● LIVE"}
+    </button>
+  );
+}
+
+/** The ⚙️ menu: the header controls that are set once and left alone —
+ *  posting identity, the live-token re-probe, theme, and the utility pages.
+ *  What stays in the bar is what an operator touches mid-review: live sync,
+ *  the dry-run/live switch, and feedback. */
+function SettingsMenu() {
+  const { identities, botLogin, identity, setIdentity, livePossible,
+    liveError, retryLive, pushToast } = useExec();
+  const [open, setOpen] = useState(false);
   const [retrying, setRetrying] = useState(false);
+  const [theme, setTheme] = useState(document.documentElement.dataset.theme || "light");
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", away);
+    document.addEventListener("keydown", esc);
+    return () => {
+      document.removeEventListener("mousedown", away);
+      document.removeEventListener("keydown", esc);
+    };
+  }, [open]);
+
   // Whether this machine can go live is probed once by the backend and cached
   // for its whole process lifetime — a key file added, an app installed, or a
   // network blip cleared after that first probe otherwise never takes effect
@@ -173,30 +214,46 @@ function IdentityPicker() {
       setRetrying(false);
     }
   };
-  const dryRunTitle = storeWriteBlock
-    ? storeWriteBlock
-    : livePossible
-    ? "Toggle dry-run / live posting"
-    : `No ${botLogin} token on this machine — dry-run only${liveError ? ` (${liveError})` : ""}`;
+
+  const flipTheme = () => {
+    const next = theme === "dark" ? "light" : "dark";
+    document.documentElement.dataset.theme = next;
+    localStorage.setItem("app-theme", next);
+    setTheme(next);
+  };
+
   return (
-    <div className="identity-picker">
-      <span className="muted small">Posting as</span>
-      <select value={identity} onChange={(e) => setIdentity(e.target.value)} disabled={identities.length <= 1}>
-        {identities.map((i) => <option key={i.id} value={i.id}>{i.label}</option>)}
-      </select>
-      <button
-        className={`mode-badge ${dryRun ? "dry" : "live"}`}
-        onClick={() => setDryRun(!dryRun)}
-        disabled={!livePossible || !!storeWriteBlock}
-        title={dryRunTitle}
-      >
-        {dryRun ? "DRY RUN" : "● LIVE"}
+    <div className="settings-menu" ref={ref}>
+      <button className="settings-btn" onClick={() => setOpen(!open)} title="Settings"
+        aria-haspopup="menu" aria-expanded={open}>
+        ⚙️
       </button>
-      {!livePossible && (
-        <button className="retry-live-btn" onClick={retry} disabled={retrying}
-          title={`Re-check for a ${botLogin} token now, instead of restarting the backend.${liveError ? ` Last reason: ${liveError}` : ""}`}>
-          {retrying ? "↻ checking…" : "↻ retry"}
-        </button>
+      {open && (
+        <div className="settings-dropdown" role="menu">
+          <div className="settings-row">
+            <span className="muted small">Posting as</span>
+            <select value={identity} onChange={(e) => setIdentity(e.target.value)}
+              disabled={identities.length <= 1}>
+              {identities.map((i) => <option key={i.id} value={i.id}>{i.label}</option>)}
+            </select>
+          </div>
+          {!livePossible && (
+            <div className="settings-row">
+              <button className="retry-live-btn" onClick={retry} disabled={retrying}
+                title={`Re-check for a ${botLogin} token now, instead of restarting the backend.${liveError ? ` Last reason: ${liveError}` : ""}`}>
+                {retrying ? "↻ checking…" : `↻ retry ${botLogin} token`}
+              </button>
+            </div>
+          )}
+          <div className="settings-row">
+            <button className="theme-toggle" onClick={flipTheme} title="Toggle light/dark">
+              {theme === "dark" ? "☀️ light mode" : "🌙 dark mode"}
+            </button>
+          </div>
+          <div className="settings-sep" />
+          <NavLink to="/setup" className="settings-link" onClick={() => setOpen(false)}>🛠️ Setup</NavLink>
+          <NavLink to="/tables" className="settings-link" onClick={() => setOpen(false)}>🗄️ Tables</NavLink>
+        </div>
       )}
     </div>
   );
@@ -267,21 +324,6 @@ function Toasts() {
   );
 }
 
-function ThemeToggle() {
-  const [theme, setTheme] = useState(document.documentElement.dataset.theme || "light");
-  const flip = () => {
-    const next = theme === "dark" ? "light" : "dark";
-    document.documentElement.dataset.theme = next;
-    localStorage.setItem("app-theme", next);
-    setTheme(next);
-  };
-  return (
-    <button className="theme-toggle" onClick={flip} title="Toggle light/dark">
-      {theme === "dark" ? "☀️" : "🌙"}
-    </button>
-  );
-}
-
 // Loud, dismissable-by-recovery banner shown whenever the backend API can't be
 // reached. Polls /api/health (faster while down) so the page heals itself once
 // the backend is back up, without a manual refresh.
@@ -338,15 +380,13 @@ export default function App() {
             <NavLink to="/alerts">🛡️ Alerts</NavLink>
             <NavLink to="/action-items">🗂️ Action Items</NavLink>
             <NavLink to="/control">🎛️ Control</NavLink>
-            <NavLink to="/setup">🛠️ Setup</NavLink>
             <NavLink to="/activity">📋 Activity</NavLink>
-            <NavLink to="/tables">🗄️ Tables</NavLink>
           </nav>
           <div className="topbar-right">
             <LiveStatus />
-            <IdentityPicker />
+            <DryRunBadge />
             <FeedbackButton />
-            <ThemeToggle />
+            <SettingsMenu />
           </div>
         </header>
         <main className="content">

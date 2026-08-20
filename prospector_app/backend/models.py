@@ -147,6 +147,12 @@ class ClusterExecuteBody(BaseModel):
     dry_run: bool = True
 
 
+class ShareRequest(BaseModel):
+    """Whether the setup snippet ships the store URL. Off means the snippet
+    carries a placeholder and the password never leaves this machine."""
+    include_store: bool = False
+
+
 class WorkerFlags(BaseModel):
     """The worker lane switches the Setup view writes. Values are validated
     against the allowlist in worker_control, which is the one that matters —
