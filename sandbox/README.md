@@ -9,7 +9,11 @@ and holds zero secrets. Foundation for the VERIFY pipeline phase
 Any number of machines can run the sandbox. Each carries its own pinned base
 and tracks the default branch on its own daily cadence, and the queue claim is a
 compare-and-swap in the shared store, so two machines never pick up the same PR.
-Everything one machine needs, in order:
+
+**`./setup-worker-machine.sh` does all of the below**, idempotently, from a
+fresh clone; the app's 🛠️ Setup tab reports what a machine is still missing and
+flips its lane switches. The steps are listed here for anyone provisioning by
+hand or debugging a machine that will not come up:
 
 1. **A Docker daemon.** On macOS, Colima (or any runtime whose VM shares
    `$HOME` — the scratch root must be mountable; see `TRIAGE_VERIFY_SCRATCH`
