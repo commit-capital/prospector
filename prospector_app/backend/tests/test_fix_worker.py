@@ -740,3 +740,18 @@ def test_hunt_order_mechanical_then_nits_then_tiers(store, fix_profile, monkeypa
     store.save_pr(nits2)
     data.refresh()
     assert fix_worker.next_auto() == ("fix", 3)  # 4/5 beats 3/5
+
+
+def test_authored_fix_pushes_when_autopush_names_fix(store, monkeypatch):
+    monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", "fix")
+    _queue_fix()
+    probe = _fix_probe()
+    monkeypatch.setattr(fix_worker, "_resubmit", probe)
+    _authored(monkeypatch)
+    _reviewed(monkeypatch)
+
+    fix_worker.run_one(1)
+
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "pushed"
+    assert _pushed(probe)

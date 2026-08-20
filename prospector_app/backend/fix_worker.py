@@ -511,14 +511,15 @@ def _prepared_worktree(n: int) -> str | None:
 
 def _author_fix(n: int, claimed: dict) -> None:
     """Author a change against this PR's gates with an agent, review it with a
-    second one, and park the result for an operator to approve.
+    second one, and park the result for an operator to approve — or push it
+    directly when TRIAGE_FIX_AUTOPUSH names `fix`.
 
-    Nothing here reaches GitHub. The agent writes inside a clone of the
-    contributor's branch, the finished patch is held to the files the agent
-    reported, re-gated on the paths it really touched, refuted by a reviewer
-    that did not write it, and compiled — and only then does it park. Every
-    exit writes a terminal status; the worktree survives only on the parked
-    path, because an agent's edits cannot be re-derived at approval time."""
+    The agent writes inside a clone of the contributor's branch, the finished
+    patch is held to the files the agent reported, re-gated on the paths it
+    really touched, refuted by a reviewer that did not write it, and compiled —
+    and only then does it park or push. Every exit writes a terminal status;
+    the worktree survives only on the parked path, because an agent's edits
+    cannot be re-derived at approval time."""
     rec = data.store().load_pr(n)
     if rec is None:
         _refuse(n, claimed, f"PR #{n} left the store")
@@ -613,7 +614,10 @@ def _author_fix(n: int, claimed: dict) -> None:
 
     result = {**evidence, "compile_preflight": pf,
               "message": verdict["summary"] or _commit_message("fix")}
-    _park(n, claimed, "fix", result, socket.gethostname())
+    if "fix" not in settings.fix_autopush():
+        _park(n, claimed, "fix", result, socket.gethostname())
+        return
+    _push(n, claimed, "fix", result)
 
 
 def _conflict_refusal(paused: list[str]) -> str:
