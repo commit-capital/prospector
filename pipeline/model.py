@@ -404,8 +404,10 @@ class Pr:
                       findings: list[dict] | None = None, tier: int = 0,
                       base_sha: str, head_sha: str | None = None) -> None:
         """Record a VERIFY outcome. The section is stamped against BOTH the PR
-        head (freshness) and the pinned base `base_sha` (so re-pinning main
-        re-queues it). Its disposition consequence on a merge pick (escalate/
+        head (freshness) and the base `base_sha` the run booted, which names
+        what the outcome was proven against — each machine pins its own base
+        and tracks the default branch on its own cadence. Its disposition
+        consequence on a merge pick (escalate/
         deps-touched -> needs-human, not-verified/needs-rebase/regressed ->
         request-changes) is derived at read time by the disposition/rationale
         properties (gates.merge_demotion), so a re-run that clears the outcome

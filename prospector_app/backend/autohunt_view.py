@@ -44,7 +44,8 @@ class AutohuntSummary(TypedDict):
     verify: AutohuntResultCounts
 
 
-class VerifyBaseHealth(TypedDict):
+class VerifyBaseHost(TypedDict):
+    host: str
     base_sha: str | None
     tier: int | None
     pinned_at: str | None
@@ -53,6 +54,10 @@ class VerifyBaseHealth(TypedDict):
     refresh_ok: bool | None
     refresh_error: str | None
     refresh_failures: int
+
+
+class VerifyBaseHealth(TypedDict):
+    hosts: list[VerifyBaseHost]
 
 
 class AutohuntStatus(TypedDict):
@@ -71,14 +76,13 @@ class AutohuntStatus(TypedDict):
 STALE_AFTER_HOURS = 2 * verify_worker.REFRESH_AFTER_HOURS
 
 
-def base_health() -> VerifyBaseHealth:
-    """The pinned base's health for the Control tab: what is pinned, how old it
-    is, and how the worker's daily refresh last went.
+def _host_health(host: str, reg: dict) -> VerifyBaseHost:
+    """One machine's pin: what it holds, how old it is, and how its daily
+    refresh last went.
 
-    `stale` needs an age to be true, so a pin with no timestamp — or none at all
-    — reports False. A malformed stamp is not evidence the lane is broken, and a
-    false alarm here is what teaches an operator to stop reading this line."""
-    reg = data.store().load_verify_base()
+    `stale` needs an age to be true, so a pin with no timestamp reports False. A
+    malformed stamp is not evidence the lane is broken, and a false alarm here is
+    what teaches an operator to stop reading this line."""
     sha = reg.get("base_sha")
     tier = reg.get("tier")
     pinned_at = reg.get("pinned_at")
@@ -93,6 +97,7 @@ def base_health() -> VerifyBaseHealth:
     ok = reg.get("refresh_ok")
     error = reg.get("refresh_error")
     return {
+        "host": host,
         "base_sha": str(sha)[:12] if sha else None,
         "tier": tier if isinstance(tier, int) else None,
         "pinned_at": pinned_at if isinstance(pinned_at, str) else None,
@@ -102,6 +107,14 @@ def base_health() -> VerifyBaseHealth:
         "refresh_error": error if isinstance(error, str) else None,
         "refresh_failures": failures if isinstance(failures, int) else 0,
     }
+
+
+def base_health() -> VerifyBaseHealth:
+    """Every verification machine's pinned base, for the Control tab. Each
+    machine holds its own pin, so the panel reports each one. Ordered by
+    hostname, so the list does not reshuffle between polls."""
+    hosts = data.store().load_verify_base_hosts()
+    return {"hosts": [_host_health(h, hosts[h]) for h in sorted(hosts)]}
 
 
 # ledger phase -> the lane name the panel renders

@@ -244,6 +244,53 @@ def test_run_security_pre_spawn_recheck_skips_already_cleared(store, monkeypatch
     assert spawned["count"] == 0
 
 
+def test_run_security_declines_a_pr_another_machine_claimed(store, monkeypatch):
+    """Two idle hunters must not both spend a multi-agent review on one PR. The
+    claim is the store's, so losing it means dropping the pick."""
+    store.save_pr(_clean_merge_pr(1))
+    data.refresh()
+    assert store.claim_security_run(
+        1, host="some-other-machine",
+        stale_after=verify_worker.SECURITY_CLAIM_SECONDS) is True
+
+    def fake_popen(argv, **kw):
+        raise AssertionError("must not spawn a subprocess")
+
+    monkeypatch.setattr(verify_worker.subprocess, "Popen", fake_popen)
+    assert verify_worker.run_security(1) == 0
+
+
+def test_run_security_releases_its_claim_when_the_run_fails(store, monkeypatch):
+    """A failed review leaves the PR free for the next attempt — a claim that
+    outlived its run would park the PR until the window expired."""
+    store.save_pr(_clean_merge_pr(1))
+    data.refresh()
+
+    def boom(argv, **kw):
+        raise RuntimeError("spawn failed")
+
+    monkeypatch.setattr(verify_worker.subprocess, "Popen", boom)
+    with pytest.raises(RuntimeError):
+        verify_worker.run_security(1)
+    assert store.claim_security_run(
+        1, host="some-other-machine",
+        stale_after=verify_worker.SECURITY_CLAIM_SECONDS) is True
+
+
+def test_release_stale_claims_frees_this_hosts_leftovers(store):
+    """A review does not survive its process, so a claim in this host's name
+    after a restart is a leftover."""
+    import socket
+    store.save_pr(_clean_merge_pr(1))
+    store.save_pr(_clean_merge_pr(2))
+    store.claim_security_run(1, host=socket.gethostname(), stale_after=3600)
+    store.claim_security_run(2, host="some-other-machine", stale_after=3600)
+    data.refresh()
+
+    assert verify_worker.release_stale_claims() == [1]
+    assert store.claim_security_run(2, host="a-third-machine", stale_after=3600) is False
+
+
 def test_next_queued_ranks_operator_ahead_of_auto(store):
     """An operator click never waits behind an earlier auto-queued request:
     next_queued orders operator picks before auto picks regardless of age."""
@@ -508,19 +555,19 @@ def test_summary_ignores_non_hunt_phases(store):
 
 
 class TestBaseHealth:
-    """The pinned base's health, surfaced so a verify lane that has silently
-    stopped tracking master is visible rather than inferred from a queue full
-    of parked requests."""
+    """Each verification machine's pinned base, surfaced so a verify lane that
+    has silently stopped tracking master is visible rather than inferred from a
+    queue full of parked requests."""
 
-    def _pin(self, store, **extra: object) -> None:
-        store.save_verify_base({"base_sha": "a" * 40, "tier": 1,
+    def _pin(self, store, host: str = "mac-studio", **extra: object) -> None:
+        store.save_verify_base({"host": host, "base_sha": "a" * 40, "tier": 1,
                                 "pinned_at": _now(), "baseline_failing": [],
                                 "baseline_captured_at": _now(), **extra})
 
     def test_a_fresh_pin_is_healthy(self, store):
         from prospector_app.backend import autohunt_view
         self._pin(store)
-        base = autohunt_view.status()["base"]
+        base = autohunt_view.status()["base"]["hosts"][0]
         assert base["base_sha"] == "a" * 12
         assert base["tier"] == 1
         assert base["stale"] is False
@@ -530,12 +577,12 @@ class TestBaseHealth:
         """One missed daily refresh is a hiccup, not a broken lane."""
         from prospector_app.backend import autohunt_view
         self._pin(store, pinned_at=_iso_hours_ago(30))
-        assert autohunt_view.status()["base"]["stale"] is False
+        assert autohunt_view.status()["base"]["hosts"][0]["stale"] is False
 
     def test_a_pin_well_past_the_refresh_window_is_stale(self, store):
         from prospector_app.backend import autohunt_view
         self._pin(store, pinned_at=_iso_hours_ago(72))
-        base = autohunt_view.status()["base"]
+        base = autohunt_view.status()["base"]["hosts"][0]
         assert base["stale"] is True
         assert base["age_hours"] == pytest.approx(72, abs=1)
 
@@ -543,23 +590,30 @@ class TestBaseHealth:
         from prospector_app.backend import autohunt_view
         self._pin(store, refresh_ok=False, refresh_failures=3,
                   refresh_error="CalledProcessError: no space left on device")
-        base = autohunt_view.status()["base"]
+        base = autohunt_view.status()["base"]["hosts"][0]
         assert base["refresh_failures"] == 3
         assert base["refresh_ok"] is False
         assert "no space left" in base["refresh_error"]
 
-    def test_an_unpinned_machine_reports_no_base(self, store):
+    def test_a_store_no_machine_has_pinned_reports_no_base(self, store):
         from prospector_app.backend import autohunt_view
-        base = autohunt_view.status()["base"]
-        assert base["base_sha"] is None
-        assert base["stale"] is False
-        assert base["age_hours"] is None
+        assert autohunt_view.status()["base"]["hosts"] == []
+
+    def test_each_machine_reports_its_own_pin(self, store):
+        """Two machines drift a few hours apart by design, so a lagging one is
+        visible on its own row."""
+        from prospector_app.backend import autohunt_view
+        self._pin(store, host="mac-studio")
+        self._pin(store, host="devin-mbp", pinned_at=_iso_hours_ago(72))
+        hosts = autohunt_view.status()["base"]["hosts"]
+        assert [h["host"] for h in hosts] == ["devin-mbp", "mac-studio"]
+        assert [h["stale"] for h in hosts] == [True, False]
 
     def test_an_unparseable_pin_timestamp_does_not_read_as_stale(self, store):
         """A malformed stamp is not evidence the lane is broken, and a false
         alarm on the Control tab trains the operator to ignore it."""
         from prospector_app.backend import autohunt_view
         self._pin(store, pinned_at="not-a-timestamp")
-        base = autohunt_view.status()["base"]
+        base = autohunt_view.status()["base"]["hosts"][0]
         assert base["age_hours"] is None
         assert base["stale"] is False

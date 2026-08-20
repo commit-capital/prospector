@@ -5,6 +5,8 @@ sandbox are stubbed — gates.verify_outcome is exercised for real through
 verify_driver.commit_outcomes."""
 from __future__ import annotations
 
+import socket
+
 import pytest
 
 from pipeline import diff_cache
@@ -65,7 +67,8 @@ def pinned(store, tmp_path, monkeypatch):
     """A usable pinned base: registry + clone dir + image, with the diff cached
     and parseable, agents answering, and the sandbox stubbed to a clean run.
     The pin carries a suite, so the profile supplies a matching contract."""
-    store.save_verify_base({"base_sha": "b" * 40, "tier": 0, "pinned_at": _now(),
+    store.save_verify_base({"host": socket.gethostname(), "base_sha": "b" * 40,
+                            "tier": 0, "pinned_at": _now(),
                             "baseline_failing": [], "baseline_captured_at": _now()})
     monkeypatch.setattr(
         verify_driver.profile, "active",
@@ -309,7 +312,8 @@ def test_a_suite_pin_with_a_suiteless_profile_errors_loudly(store, pinned, monke
 
 def test_a_no_suite_pin_runs_without_a_contract(store, pinned, monkeypatch):
     monkeypatch.setattr(verify_driver.profile, "active", lambda: profile.GENERIC)
-    store.save_verify_base({"base_sha": "b" * 40, "tier": 0, "pinned_at": _now(),
+    store.save_verify_base({"host": socket.gethostname(), "base_sha": "b" * 40,
+                            "tier": 0, "pinned_at": _now(),
                             "baseline_failing": [], "baseline_captured_at": _now(),
                             "suite": False})
     assert vp.run(store, 1) == 0

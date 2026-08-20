@@ -300,7 +300,7 @@ def prepare_base(store: Store, *, base_sha: str | None = None, tier: int = 0) ->
     flight is reading; the second retires the outgoing generation once the new
     pin is saved."""
     sha = base_sha or resolve_base_sha()
-    collect_garbage(store.load_verify_base().get("base_sha"))
+    collect_garbage(local_pin(store).get("base_sha"))
     tag = build_base_image(sha, tier=tier)
 
     suite = profile.active().verify.suite
@@ -330,17 +330,12 @@ def prepare_base(store: Store, *, base_sha: str | None = None, tier: int = 0) ->
             print(f"baseline anomalies (nonzero vitest exit with no failing test): {anomalies}",
                   file=sys.stderr)
 
-    prior = store.load_verify_base()
-    host = socket.gethostname()
-    if prior.get("base_sha") and prior.get("prepared_on") not in (None, host):
-        print(f"replacing the pin prepared on {prior['prepared_on']} — that host's "
-              f"local clone and image no longer match the store's pin",
-              file=sys.stderr)
-    store.save_verify_base({"base_sha": sha, "tier": tier, "pinned_at": _now(),
+    store.save_verify_base({"host": socket.gethostname(), "base_sha": sha,
+                            "tier": tier, "pinned_at": _now(),
                             "baseline_failing": failed,
                             "baseline_captured_at": _now(),
                             "suite": suite is not None,
-                            "prepared_on": host, "arch": platform.machine()})
+                            "arch": platform.machine()})
     collect_garbage(sha)
     return tag
 
@@ -361,14 +356,21 @@ def changed_paths_for(rec: Pr) -> list[str]:
     return diffpaths.changed_paths(cached_diff_text(rec))
 
 
+def local_pin(store: Store) -> dict:
+    """This machine's pinned base. A pin names a Docker image and a clone on
+    local disk, so another machine's pin is not one this machine could boot."""
+    return store.load_verify_base(socket.gethostname())
+
+
 def _pin(store: Store) -> tuple[str, int]:
-    """The pinned base image: the main SHA it was built from and the tier it was
-    built at. Raises when either is absent — verification against no base is not
-    reproducible, and without the tier there is no image to name."""
-    reg = store.load_verify_base()
+    """This machine's pinned base image: the main SHA it was built from and the
+    tier it was built at. Raises when either is absent — verification against no
+    base is not reproducible, and without the tier there is no image to name."""
+    reg = local_pin(store)
     base, tier = reg.get("base_sha"), reg.get("tier")
     if not base or tier is None:
-        raise RuntimeError("no pinned base — run `verify_driver.py prepare-base` first")
+        raise RuntimeError("no pinned base on this machine — run "
+                           "`verify_driver.py prepare-base` here first")
     return str(base), int(tier)
 
 
@@ -389,7 +391,7 @@ def pinned_suite(store: Store) -> bool:
     `suite: false` was prepared for a repository with no verify.suite contract,
     so the regress leg is deliberately skipped; any other pin captured a
     baseline with the suite it names."""
-    return store.load_verify_base().get("suite") is not False
+    return local_pin(store).get("suite") is not False
 
 
 def pinned_baseline(store: Store) -> list[str]:
@@ -397,11 +399,11 @@ def pinned_baseline(store: Store) -> list[str]:
     list. Raises when the pin carries none: None (never captured) is not []
     (the suite passed clean), and the regress phase needs the exclusion set to
     tell a pre-existing failure from a regression."""
-    baseline = store.load_verify_base().get("baseline_failing")
+    baseline = local_pin(store).get("baseline_failing")
     if not isinstance(baseline, list):
         raise RuntimeError(
-            "pinned base has no captured baseline — run `verify_driver.py "
-            "prepare-base` first")
+            "this machine's pinned base has no captured baseline — run "
+            "`verify_driver.py prepare-base` here first")
     return [str(f) for f in baseline]
 
 
@@ -1449,7 +1451,7 @@ def main(argv: list[str] | None = None) -> int:
     store = Store(args.store) if args.store else Store()
 
     if args.cmd == "gc":
-        result = collect_garbage(store.load_verify_base().get("base_sha"),
+        result = collect_garbage(local_pin(store).get("base_sha"),
                                  dry_run=args.dry_run)
         verb = "would reclaim" if args.dry_run else "reclaimed"
         print(f"keeping {', '.join(result['keep']) or 'nothing'}; "
@@ -1458,7 +1460,7 @@ def main(argv: list[str] | None = None) -> int:
 
     tag = prepare_base(store, base_sha=args.base_sha, tier=args.tier)
     print(f"base image ready: {tag}")
-    reg = store.load_verify_base()
+    reg = local_pin(store)
     if reg.get("suite") is False:
         print("no verify.suite contract in the profile — pinned without a "
               "baseline; the regress leg is skipped for this repository")

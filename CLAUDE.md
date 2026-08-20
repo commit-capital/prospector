@@ -106,7 +106,7 @@ Phases (each idempotent; drivers own the deterministic half, Workflow scripts th
 - **2 ANALYZE** (`analyze_driver.py` + the analyze workflow) — per-cluster dispositions + outcome, stored verbatim; a merge pick's blockers (below-bar review, a security verdict, a verify outcome) derive its effective disposition at read time (`gates.merge_demotion` via `Pr.disposition`), so a re-run or signal refresh that clears the blocker heals the read with nothing re-stored.
 - **3 GATE** (`gates.py`) — which merge candidates are clean enough for security review.
 - **4 SECURITY** (`security_driver.py` + `workflows/security.js`) — 3-lens adversarial review + refuting verifier on gated merge candidates only; RED flips the PR to needs-human and reopens every cluster it belongs to.
-- **6 VERIFY** (`verify_driver.py` + `verify_pr.py`) — run the PR's test in a secretless Docker sandbox against a pinned default branch: red before the fix, green after, each phase in its own container. Dynamic verification never runs against a credentialed deployment. A green that exits failing is accepted only when its parsed failing set is contamination the red run already carried and none is named by the PR's test hunks (`gates.green_accepted`); that partial evidence never auto-recommends merge. A blind adequacy verdict commits before any run, and `gates.verify_outcome` computes the outcome from agent judgments plus host-observed exits. For a PR without tests, an agent may author new test files through a fail-closed validator; a confirmed red→green records `agent-verified`, which supports human `merge_eligibility` but never automatic `merge_allowed`. Configured compile/build lanes run over the patched tree; failures become `regressed`, infrastructure errors become `escalate`, and missing lane evidence is surfaced as incomplete. The worker refreshes its base pin daily after the default branch moves.
+- **6 VERIFY** (`verify_driver.py` + `verify_pr.py`) — run the PR's test in a secretless Docker sandbox against the machine's own pinned default branch: red before the fix, green after, each phase in its own container. Dynamic verification never runs against a credentialed deployment. A green that exits failing is accepted only when its parsed failing set is contamination the red run already carried and none is named by the PR's test hunks (`gates.green_accepted`); that partial evidence never auto-recommends merge. A blind adequacy verdict commits before any run, and `gates.verify_outcome` computes the outcome from agent judgments plus host-observed exits. For a PR without tests, an agent may author new test files through a fail-closed validator; a confirmed red→green records `agent-verified`, which supports human `merge_eligibility` but never automatic `merge_allowed`. Configured compile/build lanes run over the patched tree; failures become `regressed`, infrastructure errors become `escalate`, and missing lane evidence is surfaced as incomplete. Any number of machines run this phase: the queue claim is a compare-and-swap, each machine holds its own base pin (`verify_base` is keyed by hostname) and refreshes it daily after the default branch moves, and every result records the base it was proven against. The idle hunter claims a PR's security review the same way, so two machines never both spend one.
 - **7 RESOLVE** — human approves in the app; the executor acts upstream as `TRIAGE_BOT_LOGIN`.
 
 **AUTOFIX** (`prospector_app/backend/fix_queue.py` + `fix_worker.py`) sits beside
@@ -128,7 +128,8 @@ to a fourth action, `resolve`: a locked-down agent resolves the conflicted
 paths inside a merge of current base into the head (`resubmit prepare --merge`
 + `pipeline/resolve_conflicts.py`), the result passes the compile preflight,
 and it parks as `awaiting-review` with a per-file rationale, keeping its
-worktree like `fix`. `gates.fix_eligibility` holds `resolve` to the CODEOWNERS
+worktree — the only action that does, and so the only one whose approval its
+own machine must push. `gates.fix_eligibility` holds `resolve` to the CODEOWNERS
 and deny-glob bar over the conflicted paths, with no profile opt-in; a resolve
 never autopushes regardless of `TRIAGE_FIX_AUTOPUSH`, and approval pushes the
 kept merge commit with no history rewrite. `gates.fix_eligibility` is the ONE
@@ -146,11 +147,13 @@ the mechanics run in full (`resubmit update --probe` for a base merge, `prepare
 --rebase` for a replay), the resulting tree goes through
 `compile_preflight.run_for_patch`, and the request parks as `awaiting-review`
 with its evidence unless `TRIAGE_FIX_AUTOPUSH` names the action. A parked
-mechanical request keeps no worktree: `push_approved` re-derives it against
-current base and refuses if that no longer resolves, so an approval means "push
-this against base as it stands now" rather than replaying an older verdict. An
-agent-authored `fix` is not reproducible and so keeps its tree and its reviewed
-patch. `TRIAGE_FIX_AUTOHUNT=1` lets an idle worker queue the mechanical actions
+request keeps no worktree: `push_approved` rebuilds one. A mechanical request
+re-derives against current base and refuses if that no longer resolves, so an
+approval means "push this against base as it stands now" rather than replaying
+an older verdict; an agent-authored `fix` parks its whole reviewed patch and the
+approval clones the head and re-applies those exact bytes (`resubmit apply`),
+never a fresh agent attempt. Both can therefore be pushed by any autofix
+machine, not only the one that produced them. `TRIAGE_FIX_AUTOHUNT=1` lets an idle worker queue the mechanical actions
 itself, gated by `gates.fix_huntable` — the review provider's bar on top of
 `fix_eligibility`, and deliberately not `mergeable`, CI, or a GREEN security
 verdict, none of which a PR that needs updating can have. An agent-authored

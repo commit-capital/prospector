@@ -6,7 +6,10 @@ and holds zero secrets. Foundation for the VERIFY pipeline phase
 
 ## Setting up a verify machine
 
-One machine per store runs the sandbox; everything it needs, in order:
+Any number of machines can run the sandbox. Each carries its own pinned base
+and tracks the default branch on its own daily cadence, and the queue claim is a
+compare-and-swap in the shared store, so two machines never pick up the same PR.
+Everything one machine needs, in order:
 
 1. **A Docker daemon.** On macOS, Colima (or any runtime whose VM shares
    `$HOME` — the scratch root must be mountable; see `TRIAGE_VERIFY_SCRATCH`
@@ -20,14 +23,14 @@ One machine per store runs the sandbox; everything it needs, in order:
 3. **Pin a base:** `uv run python pipeline/verify_driver.py prepare-base
    [--tier 1]` — clones the pinned default-branch SHA, scrubs it, builds the
    per-batch base image, and (when the profile has a `verify.suite` contract)
-   captures the full-suite baseline. The pin lands in the shared store stamped
-   with this hostname; the clone and image are local, so every machine that
-   runs verification must prepare the same pin locally.
+   captures the full-suite baseline. The pin lands in the shared store under
+   this hostname; the clone and image it names are on local disk, so a machine
+   verifies only against the base it prepared itself.
 4. **Enable the worker:** set `TRIAGE_VERIFY_WORKER=1` (and optionally
-   `TRIAGE_VERIFY_AUTOHUNT=1`) in `.env` on THIS machine only, then restart
-   the app backend. Exactly one worker per store: the queue claim is
-   atomic, so a second worker is safe but redundant — it would need its own
-   local copy of the same pin to run anything.
+   `TRIAGE_VERIFY_AUTOHUNT=1`) in this machine's `.env`, then restart the app
+   backend. Two machines' pins sit a few hours apart at worst, and every run
+   records the base it used (`verify.against_base_sha`), so a result always
+   names what it was proven against. The Control tab lists each machine's pin.
 5. **Point the boot probe at this machine's sensitive services** via
    `TRIAGE_VERIFY_PROBE_DENY` (host:port entries that must be unreachable
    from the sandbox). Unset keeps `boot-probe.sh`'s built-in default.
@@ -37,8 +40,8 @@ One machine per store runs the sandbox; everything it needs, in order:
 Each pin leaves two durable artifacts keyed by its SHA: the
 `pr-verify-base:<sha12>-t<tier>` image (~3.5GB) and the scrubbed clone under
 `$TRIAGE_VERIFY_SCRATCH/base/<sha12>/` (~1.6GB, clone plus prefetched pnpm
-store). The worker re-pins daily, so `prepare-base` reclaims what it
-supersedes.
+store). Each worker re-pins its own machine daily, so `prepare-base` reclaims
+what it supersedes there.
 
 **A generation is a base SHA.** The clone is keyed by the SHA alone while the
 image tag also carries the tier, so retention keeps or drops a whole SHA — that

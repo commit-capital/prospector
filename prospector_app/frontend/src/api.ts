@@ -651,11 +651,12 @@ export interface AutohuntRun {
   result?: string | null;
 }
 
-/** The pinned sandbox base's health. `age_hours` and `stale` are null/false
- *  when no pin exists or its timestamp does not parse — a malformed stamp is
- *  not evidence the lane is broken. `refresh_failures` counts consecutive
- *  failed daily refreshes, reset by any successful one. */
-export interface VerifyBaseHealth {
+/** One machine's pinned sandbox base. `age_hours` and `stale` are null/false
+ *  when its timestamp does not parse — a malformed stamp is not evidence the
+ *  lane is broken. `refresh_failures` counts consecutive failed daily
+ *  refreshes, reset by any successful one. */
+export interface VerifyBaseHost {
+  host: string;
   base_sha?: string | null;
   tier?: number | null;
   pinned_at?: string | null;
@@ -664,6 +665,13 @@ export interface VerifyBaseHealth {
   refresh_ok?: boolean | null;
   refresh_error?: string | null;
   refresh_failures: number;
+}
+
+/** Every verification machine's pinned base. Each holds its own and tracks the
+ *  default branch on its own daily cadence, so they are reported side by side;
+ *  an empty list means no machine has prepared one. */
+export interface VerifyBaseHealth {
+  hosts: VerifyBaseHost[];
 }
 
 /** The idle hunter's live status: worker opt-in + liveness, pool sizes
