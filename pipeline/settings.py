@@ -227,6 +227,25 @@ def fix_autohunt() -> bool:
     return os.environ.get("TRIAGE_FIX_AUTOHUNT", "") == "1"
 
 
+def fix_hunt_fix() -> bool:
+    """Whether an idle fix worker may queue agent-authored `fix` actions on its
+    own. A separate opt-in from fix_autohunt: mechanical hunting and unattended
+    code authoring are different amounts of trust."""
+    return os.environ.get("TRIAGE_FIX_HUNT_FIX", "") == "1"
+
+
+def fix_hunt_limit() -> int:
+    """The most auto-queued `fix` requests allowed in flight at once. Each fix
+    spends two agents plus a compile preflight, so the hunter feeds them in
+    small batches; an unparseable or non-positive value reads as the default."""
+    raw = os.environ.get("TRIAGE_FIX_HUNT_LIMIT", "")
+    try:
+        n = int(raw)
+    except ValueError:
+        return 3
+    return n if n > 0 else 3
+
+
 # Reject a malformed TRIAGE_FIX_AUTOPUSH while the process is still starting.
 # parse_fix_autopush exits on an unknown action, and that belongs at boot rather
 # than at whichever read happens to reach it first.
