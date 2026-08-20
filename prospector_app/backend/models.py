@@ -145,3 +145,10 @@ class ClusterItem(BaseModel):
 class ClusterExecuteBody(BaseModel):
     items: list[ClusterItem] = []
     dry_run: bool = True
+
+
+class WorkerFlags(BaseModel):
+    """The worker lane switches the Setup view writes. Values are validated
+    against the allowlist in worker_control, which is the one that matters —
+    this only carries them."""
+    flags: dict[str, str]
