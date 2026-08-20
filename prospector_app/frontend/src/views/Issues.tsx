@@ -615,25 +615,34 @@ export default function Issues() {
 
   useEffect(() => {
     let active = true;
-    api.queryIssues({
-      q,
-      sort: sortKey || undefined,
-      direction: sortDir || undefined,
-      disposition: dispFilter || undefined,
-      state: stateFilter === "all" ? undefined : stateFilter,
-      offset: (page - 1) * PAGE_SIZE,
-      limit: PAGE_SIZE,
-      ...filterSpec,
-    }).then((d) => {
-      if (!active) return;
-      setRows(d.items);
-      setTotal(d.total);
-    }).catch((e) => {
-      if (active) setErr(String(e));
-    }).finally(() => {
-      if (active) setLoadingIssues(false);
-    });
-    return () => { active = false; };
+    let timer: number | undefined;
+    const run = () => {
+      api.queryIssues({
+        q,
+        sort: sortKey || undefined,
+        direction: sortDir || undefined,
+        disposition: dispFilter || undefined,
+        state: stateFilter === "all" ? undefined : stateFilter,
+        offset: (page - 1) * PAGE_SIZE,
+        limit: PAGE_SIZE,
+        ...filterSpec,
+      }).then((d) => {
+        if (!active) return;
+        setRows(d.items);
+        setTotal(d.total);
+        setLoadingIssues(false);
+        // While the backend's PR snapshot is still cold-loading, the rows lack
+        // PR states and author stats (and a Linked-PRs sort lacks its
+        // merged-fixer ranking) — refetch quietly until they hydrate.
+        if (d.pr_states_loading) timer = window.setTimeout(run, 2000);
+      }).catch((e) => {
+        if (!active) return;
+        setErr(String(e));
+        setLoadingIssues(false);
+      });
+    };
+    run();
+    return () => { active = false; if (timer !== undefined) window.clearTimeout(timer); };
   }, [q, page, sortKey, sortDir, dispFilter, stateFilter, filterSpec]);
 
   // An in-app navigation can add ?dup= while the page is already mounted

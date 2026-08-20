@@ -1029,7 +1029,7 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ description }),
     }).then((r) => r.json() as Promise<{ title: string; body: string }>),
-  listIssues: () => get<{ items: IssueRow[] }>("/api/issues"),
+  listIssues: () => get<{ items: IssueRow[]; pr_states_loading: boolean }>("/api/issues"),
   queryIssues: (opts: {
     q?: string; sort?: string; direction?: string; disposition?: string; state?: string;
     offset?: number; limit?: number;
@@ -1037,7 +1037,7 @@ export const api = {
     fetch("/api/issues/query", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(opts),
-    }).then((r) => r.json() as Promise<{ items: IssueRow[]; total: number; offset: number; limit: number }>),
+    }).then((r) => r.json() as Promise<{ items: IssueRow[]; total: number; offset: number; limit: number; pr_states_loading: boolean }>),
   issueDuplicates: () => get<{ groups: IssueDupGroup[] }>("/api/issues/duplicates"),
   issuesAlreadyFixed: () =>
     get<{ fixed: IssueFixedItem[]; likely_fixed: IssueLikelyFixedItem[] }>("/api/issues/already-fixed"),

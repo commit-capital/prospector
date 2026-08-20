@@ -684,8 +684,11 @@ def reopen_pr(n: int, dry_run: bool = True):
 @app.get("/api/issues")
 def list_issues():
     """Open GitHub issues enriched with their dedup cluster, pain, repro grade,
-    and the PRs that may address them (issue_triage projection)."""
-    return {"items": issues_mod.list_issues()}
+    and the PRs that may address them (issue_triage projection). While the PR
+    snapshot is still cold-loading, linked-PR chips and author stats come back
+    unhydrated and pr_states_loading is true."""
+    rows, pr_states_loading = issues_mod.list_issues()
+    return {"items": rows, "pr_states_loading": pr_states_loading}
 
 
 @app.post("/api/issues/query")
@@ -970,7 +973,7 @@ def activity_firehose(days: int = Query(30, le=400), all_time: bool = False,
     scope = activity.ActivityScope.from_selection(
         prs, pr_author=pr_author, operator=operator)
     scoped_prs = scope.prs(prs)
-    all_issues = [] if pr_author else issues_mod.list_issues()
+    all_issues = [] if pr_author else issues_mod.list_issues()[0]
     events = scope.events(activity.all_events())
     start_date = None
     if all_time:
