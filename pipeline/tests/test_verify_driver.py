@@ -2389,3 +2389,4 @@ class TestRunLanes:
         ev = {}
         assert vd._run_lanes(ev, None, Path("/tmp/x.patch")) is None
         assert "lanes" not in ev
+

@@ -66,8 +66,11 @@ already full can be recovered (the build is what fails when it is full, which
 would otherwise leave no path back), and again once the new pin is saved. The
 sweep also prunes what the two-stage build leaves behind — dangling images
 carrying the `prospector.verify-base=1` label that `Dockerfile.base` stamps on
-both its stages, and BuildKit cache unused for 24h. A sweep never fails a pin:
-its errors are reported and swallowed.
+both its stages, and BuildKit cache unused for 24h — and the sandbox image tags
+under `pr-verify:*` that neither the active profile's pnpm pin names nor any
+base image here records as its parent (`prospector.sandbox-image=<tag>`, stamped
+by `Dockerfile.base`), so a pin bump does not leave the old image behind. A
+sweep never fails a pin: its errors are reported and swallowed.
 
 To reclaim by hand, or to see what would go:
 
