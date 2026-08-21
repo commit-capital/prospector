@@ -46,10 +46,11 @@ import threading
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
-from pipeline import (author_fix, compile_preflight, diffpaths, gates, gh, profile,
-                      resolve_conflicts, review_fix, settings, verify_driver)
+from pipeline import (author_fix, compile_preflight, diffpaths, gates, gh, greptile,
+                      profile, resolve_conflicts, review_fix, review_policy, settings,
+                      verify_driver)
 from pipeline.storekit import now as _now
 from prospector_app.backend import data, executor, fix_queue, review_refresh, service
 from prospector_app.backend.resubmit_identity import worker_env
@@ -491,36 +492,78 @@ def _probe(n: int, claimed: dict, action: str) -> str | None:
 DEFAULT_FIX_GOAL = ("Clear the failing gates on this pull request that a change "
                     "to its code can clear.")
 
+# The review provider's summary as handed to the agent, bounded because it is
+# contributor-adjacent prose that rides into a prompt.
+REVIEW_SUMMARY_CHARS = 6000
 
-def _fix_goal(rec: Pr, claimed: dict) -> tuple[str, list[dict], list[str]]:
+
+class _FixBrief(NamedTuple):
+    goal: str
+    findings: list[dict]
+    checks: list[str]
+    review_summary: str
+
+
+def _review_summary(rec: Pr) -> str:
+    """The review provider's own prose on this PR at its current head, or "".
+    Greptile's scored summary comment explains the score and names the defects
+    it weighed, so a sub-bar PR with no inline finding still hands the agent
+    something concrete."""
+    if review_policy.active().provider != "greptile":
+        return ""
+    body, sha = greptile.fetch_greptile_summary_text(rec.number)
+    if not body or (sha and not (rec.head_sha or "").startswith(sha)):
+        return ""
+    return body[:REVIEW_SUMMARY_CHARS]
+
+
+def _fix_goal(rec: Pr, claimed: dict) -> _FixBrief:
     """What the authoring agent is being asked to do, and the evidence it works
-    from: (goal, review findings, failing check names).
+    from: the goal, the review findings, the failing check names, and the
+    review provider's summary.
 
     Operator guidance is the goal when it is present. Otherwise the goal is the
-    profile's fixable gates, described from the outstanding findings and the
-    failing checks — the two things the store can say are wrong with the code.
+    profile's fixable gates, described from the outstanding findings, the
+    provider's summary and the failing checks — what the store and the review
+    can say is wrong with the code.
 
-    Findings are supplied only while the review verdict is current. A stale
-    verdict describes a head the author has moved past, so it would send the
-    agent after defects that may already be fixed."""
+    Findings and the summary are supplied only while the review verdict is
+    current. A stale verdict describes a head the author has moved past, so it
+    would send the agent after defects that may already be fixed."""
     findings: list[dict] = []
     section = rec.greptile_review or {}
     if section and not rec.review_stale:
         findings = [f for f in (section.get("findings") or []) if isinstance(f, dict)]
     fixable = profile.active().autofix.fixable_gates
+    guidance = claimed.get("guidance")
+    summary = ""
+    if (("review" in fixable or guidance) and not rec.review_stale
+            and review_policy.active().clean_blocker(rec) is not None):
+        summary = _review_summary(rec)
     checks: list[str] = []
-    if rec.ci == "failing" and ("ci" in fixable or claimed.get("guidance")):
+    if rec.ci == "failing" and ("ci" in fixable or guidance):
         checks = [str(c.get("name")) for c in gh.check_runs(rec.head_sha or "")
                   if c.get("conclusion") == "failure" and c.get("name")]
-    guidance = claimed.get("guidance")
     if guidance:
-        return str(guidance), findings, checks
+        return _FixBrief(str(guidance), findings, checks, summary)
     goals = []
     if "review" in fixable and findings:
         goals.append("Fix the outstanding review findings listed below.")
+    if "review" in fixable and summary:
+        goals.append("Address the defects the review summary below describes.")
     if "ci" in fixable and checks:
         goals.append("Make the failing CI checks listed below pass.")
-    return ("\n".join(goals) or DEFAULT_FIX_GOAL), findings, checks
+    return _FixBrief("\n".join(goals) or DEFAULT_FIX_GOAL, findings, checks, summary)
+
+
+def _over_pr(pr_patch: Path, authored: str) -> str:
+    """The authored change as the sandbox must see it: the pull request's own
+    diff with the agent's edits appended, so the compile runs over the tree the
+    edits were written against."""
+    text = pr_patch.read_text()
+    if not text.endswith("\n"):
+        text += "\n"
+    return text + authored
 
 
 def _prepared_worktree(n: int) -> str | None:
@@ -550,7 +593,19 @@ def _author_fix(n: int, claimed: dict) -> None:
     if rec is None:
         _refuse(n, claimed, f"PR #{n} left the store")
         return
-    goal, findings, checks = _fix_goal(rec, claimed)
+    goal, findings, checks, review_summary = _fix_goal(rec, claimed)
+    if not (claimed.get("guidance") or findings or checks or review_summary):
+        _refuse(n, claimed, "Nothing to aim a fix at: the review left no findings "
+                            "and no summary for this head, and no check is failing.")
+        return
+    if not rec.head_sha:
+        _fail(n, claimed, "the PR has no recorded head SHA")
+        return
+    try:
+        pr_patch = verify_driver.fetch_patch(n, rec.head_sha)
+    except verify_driver.FetchFailure as e:
+        _fail(n, claimed, f"the pull request's diff could not be fetched: {e}")
+        return
 
     prepared = _resubmit(n, "prepare")
     if prepared.returncode != 0:
@@ -567,7 +622,9 @@ def _author_fix(n: int, claimed: dict) -> None:
     try:
         verdict = author_fix.author(worktree, pr=n, title=rec.title or "",
                                     body=rec.body or "", goal=goal,
-                                    findings=findings, ci_failures=checks)
+                                    findings=findings, ci_failures=checks,
+                                    review_summary=review_summary,
+                                    diff_path=str(pr_patch), head_sha=rec.head_sha)
     except (RuntimeError, ValueError) as e:
         _resubmit(n, "abort")
         _refuse(n, claimed, f"The agent attempt did not land: {e}")
@@ -619,7 +676,8 @@ def _author_fix(n: int, claimed: dict) -> None:
         return
 
     _running_step(n, claimed, "reviewing the authored change", action="fix")
-    review = review_fix.review(worktree, patch, pr=n, goal=goal, findings=findings)
+    review = review_fix.review(worktree, patch, pr=n, goal=goal, findings=findings,
+                               review_summary=review_summary)
     evidence = {"patch": patch, "changes": verdict["changes"],
                 "review_verdict": review}
     if review["verdict"] != "safe":
@@ -629,7 +687,7 @@ def _author_fix(n: int, claimed: dict) -> None:
         return
 
     _running_step(n, claimed, "compile preflight", action="fix")
-    pf = _preflight(n, patch)
+    pf = _preflight(n, _over_pr(pr_patch, patch))
     if pf is not None:
         pf_ok, pf_why = gates.compile_preflight_gate(pf)
         if not pf_ok:

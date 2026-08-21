@@ -78,3 +78,9 @@ def test_a_crashed_reviewer_reads_as_unsafe(monkeypatch):
 @pytest.mark.parametrize("reply", ["", "{}", json.dumps({"reason": "no verdict"})])
 def test_every_empty_shaped_answer_reads_as_unsafe(monkeypatch, reply):
     assert _run(monkeypatch, reply)["out"]["verdict"] == "unsafe"
+
+
+def test_the_review_summary_reaches_the_reviewer(monkeypatch):
+    r = _run(monkeypatch, json.dumps({"verdict": "safe", "reason": "ok"}),
+             review_summary="The guard misses terminalResultSeen.")
+    assert "misses terminalResultSeen" in r["calls"]["prompt"]
