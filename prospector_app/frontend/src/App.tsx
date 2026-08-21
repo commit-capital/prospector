@@ -88,6 +88,7 @@ const VIEW_NAMES: [string, string][] = [
   ["/action-items", "Action Items"],
   ["/control", "Control"],
   ["/setup", "Setup"],
+  ["/welcome", "First-time setup"],
   ["/activity", "Activity"],
   ["/tables", "Tables"],
   ["/clusters", "Clusters"],
@@ -435,10 +436,12 @@ function UnconfiguredRedirect() {
 }
 
 /** The tabs render only once there is something behind them: on an
- *  unconfigured checkout every one of them would meet the API's refusal. */
+ *  unconfigured checkout every one of them would meet the API's refusal, and
+ *  until /api/meta has answered it is not yet known which case this is. */
 function Nav() {
   const { meta } = useRepoMeta();
-  if (meta && !meta.configured) {
+  if (!meta) return <nav />;
+  if (!meta.configured) {
     return <nav><span className="muted small">first-time setup</span></nav>;
   }
   return (
@@ -453,6 +456,24 @@ function Nav() {
       <NavLink to="/control">🎛️ Control</NavLink>
       <NavLink to="/activity">📋 Activity</NavLink>
     </nav>
+  );
+}
+
+/** The routed page, held back until /api/meta has answered: whether the
+ *  checkout is configured decides between the wizard and the triage views, so
+ *  no view is committed to before that is known — and on an unconfigured
+ *  checkout, not until the redirect to the wizard has landed, so no triage
+ *  view mounts in the commit before it. */
+function Content() {
+  const { meta } = useRepoMeta();
+  const { pathname } = useLocation();
+  if (!meta) return null;
+  if (!meta.configured && pathname !== "/welcome") return null;
+  return (
+    <>
+      <InstanceBar />
+      <Outlet />
+    </>
   );
 }
 
@@ -489,8 +510,7 @@ export default function App() {
           </div>
         </header>
         <main className="content">
-          <InstanceBar />
-          <Outlet />
+          <Content />
         </main>
         <Toasts />
         <Flyouts />
