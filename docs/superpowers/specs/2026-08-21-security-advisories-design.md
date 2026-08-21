@@ -6,7 +6,7 @@
 ## Problem
 
 GitHub repository security advisories for `TRIAGE_REPO` are invisible to
-Prospector. On paperclip, ~80 human-reported advisories sit in `triage`
+Prospector. On the triaged repository, ~80 human-reported advisories sit in `triage`
 state. Many are duplicates of each other or of published advisories, and
 several describe behavior that has since been fixed on the default branch.
 Nobody knows which, because reading 80 reports of 6–16k characters each is
