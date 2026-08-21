@@ -5,11 +5,21 @@ import { MERGE_READY_SPEC } from "../components/explorer/lanes.ts";
 
 // Which part of the Home layout a card renders in: the merge track column
 // (the pipeline's merge picks), the request-changes column beside it, or the
-// full-width human-decision backstop beneath both.
+// full-width human-decision backstop beneath the columns.
 export type HomeColumn = "merge" | "changes" | "backstop";
 
+// A per-sample-row job button on a PR card: the Control-tab job to run for
+// that row's PR, with the button's label and hover hint.
+export interface HomeRowAction {
+  kind: "verify-pr" | "security-review";
+  label: string;
+  hint: string;
+}
+
 // One Home card: a headline count over a filter spec, linking to the PR
-// Explorer with that spec (plus an optional sort) in the URL.
+// Explorer with that spec (plus an optional sort) in the URL. `rowAction`
+// puts a run button on each sample row when a per-PR job is what moves the
+// card's PRs forward.
 export interface HomeCard {
   key: string;
   title: string;
@@ -19,6 +29,7 @@ export interface HomeCard {
   sort?: string;
   dir?: "asc" | "desc";
   lead?: boolean;
+  rowAction?: HomeRowAction;
 }
 
 // How many sample PRs each card fetches into the table on its right side;
@@ -83,6 +94,11 @@ export const HOME_CARDS: HomeCard[] = [
       safety: "GREEN",
       disposition: "merge",
     },
+    rowAction: {
+      kind: "verify-pr",
+      label: "verify",
+      hint: "Run sandbox verification for this PR — needs the Docker sandbox",
+    },
   },
   {
     key: "security-pending",
@@ -95,6 +111,11 @@ export const HOME_CARDS: HomeCard[] = [
         { key: "security", status: "never_ran" },
       ],
       disposition: "merge",
+    },
+    rowAction: {
+      kind: "security-review",
+      label: "review",
+      hint: "Run the deep security review for this PR",
     },
   },
   {
@@ -152,4 +173,53 @@ export function exploreHref(card: HomeCard): string {
   if (card.sort) params.set("sort", card.sort);
   if (card.dir) params.set("dir", card.dir);
   return `/explore?${params}`;
+}
+
+// The card-level job button on a Home issue card: the Control-tab job that
+// moves the card's issues forward, run with a count capped at `batch`.
+export interface HomeIssueAction {
+  kind: string;
+  label: string;
+  batch: number;
+}
+
+// The Analyze button's batch cap, matching the Control tab's issue-analyze
+// default.
+export const ISSUE_ANALYZE_BATCH = 200;
+
+// One Home issue card: a headline count over an Issues-view disposition
+// filter, linking there with that filter in the URL. `disposition` uses the
+// issues query API's vocabulary, where "none" selects unanalyzed issues.
+export interface HomeIssueCard {
+  key: string;
+  title: string;
+  blurb: string;
+  disposition: "close-fixed" | "none";
+  action?: HomeIssueAction;
+  lead?: boolean;
+}
+
+// The Issues column's cards: open issues whose triage pick is ready to act on,
+// and the backlog the issue pipeline has yet to look at. Counts and samples
+// come from POST /api/issues/query — the same matcher behind the Issues table —
+// so each card's number is exactly the row count its link opens.
+export const HOME_ISSUE_CARDS: HomeIssueCard[] = [
+  {
+    key: "issues-close-fixed",
+    title: "Issues to close as fixed",
+    blurb: "The triage pick is close-fixed — a merged PR already fixed each one. Review and close them as the bot.",
+    disposition: "close-fixed",
+    lead: true,
+  },
+  {
+    key: "issues-unanalyzed",
+    title: "Unanalyzed issues",
+    blurb: "Open issues the issue pipeline has never analyzed — run analysis to give each a triage pick.",
+    disposition: "none",
+    action: { kind: "issue-analyze", label: "Analyze", batch: ISSUE_ANALYZE_BATCH },
+  },
+];
+
+export function issuesHref(card: HomeIssueCard): string {
+  return `/issues?disposition=${encodeURIComponent(card.disposition)}`;
 }

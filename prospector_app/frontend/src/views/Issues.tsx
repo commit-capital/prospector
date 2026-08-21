@@ -597,7 +597,11 @@ export default function Issues() {
   const [page, setPage] = useState(1);
   const [sortKey, setSortKey] = useState<IssueSortKey | "">("pain");
   const [sortDir, setSortDir] = useState<SortDir | "">("desc");
-  const [dispFilter, setDispFilter] = useState("");
+  // ?disposition=<key> (e.g. a Home issue card link) lands the All-issues
+  // table pre-filtered to that triage disposition ("none" = unanalyzed).
+  const dispParam = sp.get("disposition");
+  const [dispFilter, setDispFilter] = useState(
+    dispParam !== null && DISP_FILTERS.some((f) => f.key === dispParam) ? dispParam : "");
   const [stateFilter, setStateFilter] = useState("open");
   // Per-column filters (author/pain/repro/subsystem/dups/linked-PRs/labels) —
   // the issue-side analog of PR Explorer's filter spec (#494).
