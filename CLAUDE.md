@@ -190,7 +190,13 @@ population — CI passing, mergeable, review score below the bar and scored at
 the current head — at most `TRIAGE_FIX_HUNT_LIMIT`
 (default 3) in flight, and only where the profile names `autofix.fixable_gates`.
 A pushed `fix` re-triggers the review provider as the bot (Activity-logged) and
-starts the backend wait that ingests the fresh score.
+starts the backend wait that ingests the fresh score. Every action that ends —
+refused, failed, parked for review, or pushed — appends a `fix:single` entry to
+the runs ledger carrying its action and its one-line reason, which is where an
+outcome outlives the `fix_request` the next queue click overwrites; the app's
+fix run history reads that lane, and `fix_history_backfill.py` seeds it from the
+endings a store already holds. The queue view itself holds an ending for half an
+hour, so a run that starts and finishes between two polls is still readable.
 
 **ALERTS** (`alert_triage/`) is a parallel family beside PRs and issues:
 GitHub code-scanning / Dependabot / secret-scanning alerts for `TRIAGE_REPO`,

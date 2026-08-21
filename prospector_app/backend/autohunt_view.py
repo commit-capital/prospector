@@ -1,6 +1,10 @@
 """The app's auto-hunt surface: the idle hunter's status (worker opt-in,
 pool sizes, failure memory), a windowed result summary, and its run history
-from the store's runs ledger."""
+from the store's runs ledger.
+
+The ledger read is shared: `history_window` serves the security and verify
+lanes this panel reports (HUNT_LANES) and the fix lane the autofix panel
+reports, selected by its `lanes` argument."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -24,6 +28,8 @@ class AutohuntRun(TypedDict):
     finished: str | None
     trigger: str | None
     result: str | None
+    action: str | None  # the fix lane's action; None in the other lanes
+    detail: str | None  # the fix lane's one line about the ending
 
 
 class VerifyFailed(TypedDict):
@@ -118,7 +124,12 @@ def base_health() -> VerifyBaseHealth:
 
 
 # ledger phase -> the lane name the panel renders
-_HISTORY_PHASES = {"security:review-one": "security", "verify:single": "verify"}
+_HISTORY_PHASES = {"security:review-one": "security", "verify:single": "verify",
+                   "fix:single": "fix"}
+
+# The lanes the auto-hunt panel reports. The fix lane has its own panel beside
+# the fix queue, and its runs are counted there.
+HUNT_LANES = frozenset({"security", "verify"})
 
 
 def status() -> AutohuntStatus:
@@ -161,10 +172,11 @@ def status() -> AutohuntStatus:
 
 def _result(lane: str, rec: dict) -> str | None:
     """One display word for what a run concluded: the security verdict, or —
-    for a verify run — the state it ended in.
+    for a verify or fix run — the state it ended in.
 
-    `done` is the only status whose run committed the entry's outcome, so it is
-    the only one that reports it. Every other state (a `waiting-for-base` park,
+    For a verify run, `done` is the only status whose run committed the entry's
+    outcome, so it is the only one that reports it. Every other state (a
+    `waiting-for-base` park,
     an `error:<kind>`, a cancel, a transient re-queue) is the state the run
     itself reached; an entry in that state can still carry an outcome stat, and
     that word belongs to whichever earlier run left it on the PR."""
@@ -173,6 +185,11 @@ def _result(lane: str, rec: dict) -> str | None:
         verdict = stats.get("verdict")
         return str(verdict) if verdict is not None else None
     status_ = stats.get("status")
+    if lane == "fix":
+        # A fix run's status IS its result: the worker writes the ledger entry
+        # from the terminal status it just recorded, so there is no later
+        # outcome to carry and no in-flight state to misreport.
+        return str(status_) if status_ is not None else None
     if status_ == "error":
         kind = stats.get("error_kind")
         return f"error:{kind}" if kind else "error"
@@ -217,11 +234,15 @@ def _row(rec: storekit.RunRecord, prs: dict[int, Pr],
     if lanes is not None and lane not in lanes:
         return None
     pr = prs.get(n)
+    stats = rec.raw.get("stats") or {}
+    fix = lane == "fix"
     return {
         "phase": lane, "pr": n,
         "title": pr.title if pr is not None else None,
         "started": rec.started, "finished": rec.finished,
-        "trigger": rec.raw.get("trigger"), "result": _result(lane, rec.raw)}
+        "trigger": rec.raw.get("trigger"), "result": _result(lane, rec.raw),
+        "action": str(stats.get("action")) if fix and stats.get("action") else None,
+        "detail": str(stats.get("detail")) if fix and stats.get("detail") else None}
 
 
 def history(limit: int = 50) -> list[AutohuntRun]:
@@ -233,7 +254,7 @@ def history(limit: int = 50) -> list[AutohuntRun]:
     prs = data.prs()
     out: list[AutohuntRun] = []
     for rec in reversed(data.runs(limit=HISTORY_TAIL)):
-        row = _row(rec, prs, None)
+        row = _row(rec, prs, HUNT_LANES)
         if row is None:
             continue
         out.append(row)
@@ -249,8 +270,8 @@ def history_window(days: int | None, limit: int = 100,
     HISTORY_LIMIT_CAP regardless of what's asked). Filters the ledger by its
     indexed `ts` column, so — unlike `history`'s bounded tail scan — every
     matching run in the window is found regardless of how it's interleaved
-    with other phases. `lanes` restricts the result to those lanes (None is
-    both security and verify)."""
+    with other phases. `lanes` restricts the result to those lanes; None is
+    every lane the ledger carries."""
     limit = min(limit, HISTORY_LIMIT_CAP)
     prs = data.prs()
     out: list[AutohuntRun] = []
@@ -279,7 +300,7 @@ def summary(days: int | None) -> AutohuntSummary:
         if not isinstance(rec, storekit.PhaseRun):
             continue
         lane = _HISTORY_PHASES.get(rec.phase)
-        if lane is None:
+        if lane not in HUNT_LANES:
             continue
         totals[lane] += 1
         result = _result(lane, rec.raw) or "—"
