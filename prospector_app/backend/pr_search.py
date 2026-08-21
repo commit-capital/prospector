@@ -13,13 +13,15 @@ import json
 import re
 
 from pipeline import review_policy
+from pipeline import reviewers
 from prospector_app.backend import chat  # reuse CLAUDE_BIN, isolation_flags, REPO_ROOT, system_prompt
 from prospector_app.backend import safety_guard
 from prospector_app.backend import subproc
 
-# Fields the query vocabulary carries only when Greptile is the configured review
-# provider — dropped from both the model prompt and coerce otherwise.
+# Fields the query vocabulary carries only when Greptile is an active reviewer —
+# dropped from both the model prompt and coerce otherwise.
 _GREPTILE_SEARCH_FIELDS = {"greptile", "greptile_stale", "greptile_severity"}
+_BAR_STATUSES = set(reviewers.BAR_STATUSES)
 
 _ENUMS = {
     "safety": {"GREEN", "YELLOW", "RED", "not-run"},
@@ -82,9 +84,16 @@ def coerce(raw) -> dict:
             c = _loc_cmp(v)
             if c:
                 out[k] = c
-    if review_policy.active().provider != "greptile":
+    if not review_policy.is_active("greptile"):
         for f in _GREPTILE_SEARCH_FIELDS:
             out.pop(f, None)
+    rs = raw.get("reviewer_status")
+    if isinstance(rs, dict):
+        active = {r.id for r in review_policy.active_reviewers()}
+        kept = {rid: v for rid, v in rs.items()
+                if rid in active and isinstance(v, str) and v in _BAR_STATUSES}
+        if kept:
+            out["reviewer_status"] = kept
     return out
 
 
@@ -110,9 +119,15 @@ _GREPTILE_FIELD_DOCS = """- greptile_stale: boolean — true = Greptile reviewed
 
 
 def _review_field_docs() -> str:
-    """The provider-specific query fields for the prompt — empty unless Greptile is
-    the configured review provider."""
-    return _GREPTILE_FIELD_DOCS if review_policy.active().provider == "greptile" else ""
+    """The reviewer query fields for the prompt: Greptile's score fields when it
+    is active, plus a per-reviewer status field for every active reviewer."""
+    docs = _GREPTILE_FIELD_DOCS if review_policy.is_active("greptile") else ""
+    active = review_policy.active_reviewers()
+    if active:
+        ids = ", ".join(r.id for r in active)
+        docs += ("- reviewer_status: {{\"<reviewer id>\": \"pass|fail|stale|pending\"}} — an automated "
+                 f"reviewer's or scanner's verdict at the head; ids: {ids}\n")
+    return docs
 
 
 _PROMPT = """Translate the reviewer's PR query into a JSON filter spec.

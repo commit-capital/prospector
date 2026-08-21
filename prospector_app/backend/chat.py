@@ -85,6 +85,7 @@ from prospector_app.backend import subproc
 from pipeline import settings
 from pipeline import profile
 from pipeline import review_policy
+from pipeline import reviewers
 from pipeline import schema
 from prospector_app.backend import service
 from pipeline import store
@@ -333,9 +334,9 @@ def system_prompt() -> str:
         raise RuntimeError(f"app agent context missing: {AGENT_CONTEXT} ({e})") from e
     if not text:
         raise RuntimeError(f"app agent context is empty: {AGENT_CONTEXT}")
-    policy = review_policy.active()
-    review_bar = (f"{policy.label} {policy.threshold}/{policy.score_max}"
-                  if policy.required else "none")
+    review_bar = review_policy.merge_bar_sentence()
+    mentions = [r.retrigger_mention for r in review_policy.active_reviewers(reviewers.REVIEW)
+                if r.retrigger_mention]
     harness = profile.active().harness
     template_parts = []
     if harness.pr_template_required:
@@ -349,8 +350,7 @@ def system_prompt() -> str:
                 .replace("{feedback_repo}", settings.feedback_repo() or "(none configured)")
                 .replace("{review_bar}", review_bar)
                 .replace("{pr_template}", pr_template)
-                .replace("{retrigger_mention}",
-                         policy.retrigger_mention or "(none configured)"))
+                .replace("{retrigger_mention}", ", ".join(mentions) or "(none configured)"))
 
 
 def _ctx_id(pr: int | None, cluster: int | None, issue: int | None = None,
@@ -577,10 +577,9 @@ def _cluster_context(cid: int) -> str:
     ]
     for r in d.get("prs", []):
         s = r.get("signals") or {}
-        g = s.get("greptile")
         lines.append(
             f"  - #{r.get('number')} \"{r.get('title')}\" @{r.get('author')} — "
-            f"greptile {g if g is not None else '?'}/5, CI {s.get('ci')}, "
+            f"{reviewers.summary_line((r.get('reviews') or {}).values())}, CI {s.get('ci')}, "
             f"mergeable {not s.get('conflicts')}, tests {s.get('has_tests')}, "
             f"+{s.get('additions')}/-{s.get('deletions')} over "
             f"{s.get('changed_files')} files"
@@ -766,10 +765,9 @@ def _visible_prs_context(numbers: list[int], total: int | None = None) -> str:
         if row is None:
             continue
         s = row.get("signals") or {}
-        g = s.get("greptile")
         lines.append(
             f"  - #{n} \"{row.get('title')}\" @{row.get('author')} — "
-            f"greptile {g if g is not None else '?'}/5, CI {s.get('ci')}, "
+            f"{reviewers.summary_line((row.get('reviews') or {}).values())}, CI {s.get('ci')}, "
             f"mergeable {not s.get('conflicts')}, tests {s.get('has_tests')}, "
             f"+{s.get('additions')}/-{s.get('deletions')} over "
             f"{s.get('changed_files')} files"

@@ -1,13 +1,17 @@
 import json
-import unittest.mock as mock
 
 from pipeline import greptile_read_driver as drv
 from pipeline.store import Store
+from pipeline.testsupport import greptile_entry
 
 
-def _pr(st, n, score, head="h1"):
+def _pr(st, n, score, head="h1", summary=None, findings=()):
     pr = st.create_pr(n, {"title": "t", "state": "open", "head_sha": head})
-    pr.set_signals({"greptile": score})
+    entry = greptile_entry(score, head)
+    entry["summary"] = summary
+    entry["findings"] = [{"body": b, "severity": None, "resolved": False, "outdated": False}
+                         for b in findings]
+    pr.set_reviews({"greptile": entry})
     return pr
 
 
@@ -43,10 +47,22 @@ def test_reread_before_reselects_current_but_superseded_verdicts(tmp_path):
 def test_write_batches_stamps_clean_when_no_findings(tmp_path):
     st = Store(tmp_path)
     _pr(st, 2, 3)
-    with mock.patch.object(drv, "fetch_greptile_review_data", return_value=("h1", [], [])):
-        res = drv.write_batches(st)
+    res = drv.write_batches(st)
     assert res["clean"] == 1 and res["batched"] == 0
     assert st.load_pr(2).greptile_review["severity"] == "clean"
+
+
+def test_write_batches_bundles_the_stored_entry(tmp_path, monkeypatch):
+    st = Store(tmp_path)
+    monkeypatch.setattr(drv, "BATCH_DIR", tmp_path / "batches")
+    _pr(st, 2, 3, summary="Confidence Score: 3/5 — the retry loop never exits",
+        findings=["Unbounded retry here."])
+    res = drv.write_batches(st)
+    assert res["clean"] == 0 and res["batched"] == 1
+    batch = json.loads((tmp_path / "batches" / "batch-000.json").read_text())
+    item = batch["items"][0]
+    assert item["pr"] == 2 and item["reviews"] == ["Confidence Score: 3/5 — the retry loop never exits"]
+    assert item["comments"] == ["Unbounded retry here."]
 
 
 def test_commit_greptile_dir_writes_section(tmp_path):

@@ -19,6 +19,8 @@ from typing import TYPE_CHECKING
 
 from prospector_app.backend import data
 from pipeline import live_prs
+from pipeline import review_policy
+from pipeline import reviewers
 
 if TYPE_CHECKING:
     from pipeline.model import Pr
@@ -88,14 +90,16 @@ def check(prs: list[int]) -> dict:
             diverged.append({"kind": "head", "was": meta["head_sha"][:7], "now": lv["head"][:7],
                              "message": "new commits since this was analyzed — the diff may be out of date"})
 
-        # The review provider's bar is a hard merge requirement, so a score
+        # Every active reviewer's bar is a hard merge requirement, so a verdict
         # against an earlier commit is its own staleness — separate from `head`
         # because the remedy is a review re-trigger, not a re-analysis.
-        grep_sha = sig.get("greptile_reviewed_sha")
-        if lv["head"] and grep_sha and grep_sha != lv["head"]:
-            diverged.append({"kind": "greptile", "was": grep_sha[:7], "now": lv["head"][:7],
-                             "message": "Greptile reviewed an earlier commit — its score may not "
-                                        "reflect the current diff"})
+        for r in review_policy.active_reviewers(reviewers.REVIEW):
+            reviewed = (rec.review_entry(r.id) or {}).get("reviewed_sha")
+            if lv["head"] and reviewed and reviewed != lv["head"]:
+                diverged.append({"kind": "review", "reviewer": r.id, "label": r.label,
+                                 "was": reviewed[:7], "now": lv["head"][:7],
+                                 "message": f"{r.label} reviewed an earlier commit — its verdict "
+                                            "may not reflect the current diff"})
 
         if lv["mergeable"] == "CONFLICTING" and sig.get("mergeable"):
             diverged.append({"kind": "conflicts",

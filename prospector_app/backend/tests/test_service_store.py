@@ -11,6 +11,7 @@ from prospector_app.backend import models
 from prospector_app.backend import pr_checks
 from prospector_app.backend import service
 from prospector_app.backend import suggest
+from pipeline.testsupport import reviews_section
 
 HEAD = "abc123"
 # Anchored to the real "now" so the security freshness window (≤7 days) never
@@ -25,9 +26,10 @@ def _pr(n=1, **over):
         "meta": {"title": f"fix {n}", "author": "alice", "state": "open", "draft": False,
                  "head_sha": HEAD, "url": f"https://x/pull/{n}",
                  "created_at": NOW, "updated_at": NOW, "checked_at": NOW},
-        "signals": {"greptile": 5, "ci": "passing", "mergeable": True, "has_tests": True,
+        "signals": {"ci": "passing", "mergeable": True, "has_tests": True,
                     "diffstat": {"additions": 5, "deletions": 1, "changed_files": 1},
                     "checked_at": NOW, "against_head_sha": HEAD},
+        "reviews": reviews_section(HEAD, NOW),
         "drift": {"state": "applicable", "checked_at": NOW, "against_head_sha": HEAD},
     }
     rec.update(over)
@@ -151,7 +153,7 @@ class TestSuggest:
         # Greptile < 5 derives request-changes with gap-closing asks — an
         # author-actionable card, not an operator BLOCKED card.
         rec = _pr(analysis=_analysis())
-        rec.raw["signals"]["greptile"] = 4
+        rec.raw["reviews"]["greptile"]["score"] = 4
         s = suggest.suggest_for_record(rec)
         assert s["action"] == "REQUEST_CHANGES"
 
@@ -296,12 +298,12 @@ class TestChecks:
         c = pr_checks.checks_for_record(_pr(security=_green()))
         assert c["passed"] == c["total"] > 0
 
-    def test_greptile_4_warns(self):
+    def test_greptile_4_fails_the_review_check(self):
         rec = _pr()
-        rec.raw["signals"]["greptile"] = 4
+        rec.raw["reviews"]["greptile"]["score"] = 4
         c = pr_checks.checks_for_record(rec)
-        grep = next(x for x in c["checks"] if x["name"] == "Greptile review")
-        assert grep["status"] == "warn"
+        review = next(x for x in c["checks"] if x["key"] == "review")
+        assert review["status"] == "fail" and "Greptile 4/5" in review["detail"]
 
     def test_stale_security_marked(self):
         rec = _pr(security=_green(against_head_sha="OLD"))
@@ -335,7 +337,7 @@ class TestServiceRows:
     def test_merge_gate_allows_clean_unanalyzed_pr(self, patched, monkeypatch):
         # An Easy-Lane PR: clean signals, never analyzed, never security-reviewed.
         patched({1: _pr()})
-        monkeypatch.setattr(service, "_greptile_and_ci", lambda n, sha: (None, []))
+        monkeypatch.setattr(service, "_ci_checks", lambda sha: [])
         monkeypatch.setattr(service, "live_changed_paths", lambda n: None)
         rec = service.data.prs()[1]
         rec.raw["meta"]["body"] = ""  # skip the live body fetch
@@ -350,7 +352,7 @@ class TestServiceRows:
         rec = _pr(verify=_verified(outcome=outcome))
         rec.raw["meta"]["body"] = ""
         patched({1: rec})
-        monkeypatch.setattr(service, "_greptile_and_ci", lambda n, sha: (None, []))
+        monkeypatch.setattr(service, "_ci_checks", lambda sha: [])
         monkeypatch.setattr(service, "live_changed_paths", lambda n: None)
         gate = service.pr_detail(1)["merge_gate"]
         assert gate["ok"] is True
@@ -359,10 +361,10 @@ class TestServiceRows:
 
     def test_merge_gate_blocks_dirty_pr(self, patched, monkeypatch):
         rec = _pr()
-        rec.raw["signals"]["greptile"] = 4
+        rec.raw["reviews"]["greptile"]["score"] = 4
         rec.raw["meta"]["body"] = ""
         patched({1: rec})
-        monkeypatch.setattr(service, "_greptile_and_ci", lambda n, sha: (None, []))
+        monkeypatch.setattr(service, "_ci_checks", lambda sha: [])
         monkeypatch.setattr(service, "live_changed_paths", lambda n: None)
         gate = service.pr_detail(1)["merge_gate"]
         assert gate["ok"] is False and "greptile" in gate["reason"]
@@ -371,7 +373,7 @@ class TestServiceRows:
         rec = _pr()
         rec.raw["meta"]["body"] = ""
         patched({1: rec})
-        monkeypatch.setattr(service, "_greptile_and_ci", lambda n, sha: (None, []))
+        monkeypatch.setattr(service, "_ci_checks", lambda sha: [])
         monkeypatch.setattr(service, "live_changed_paths",
                             lambda n: [".github/workflows/ci.yml", "src/other.ts"])
         gate = service.pr_detail(1)["merge_gate"]
@@ -422,7 +424,7 @@ class TestPrDetailDegradesOnLiveFailure:
     def test_live_body_timeout_still_returns_cached_row(self, patched, monkeypatch):
         import subprocess
         patched({1: _pr(analysis=_analysis(), security=_green())})
-        monkeypatch.setattr(service, "_greptile_and_ci", lambda n, sha: (None, []))
+        monkeypatch.setattr(service, "_ci_checks", lambda sha: [])
         monkeypatch.setattr(service, "live_changed_paths", lambda n: None)
         # _pr() has no meta.body, so body_fut fires the live gh fetch — make it
         # raise the way a 30s `gh` timeout does.
@@ -439,26 +441,28 @@ class TestPrDetailDegradesOnLiveFailure:
         assert row["body"] is None             # live body degraded to the ingested value
         assert "body" in row["live_refresh_failed"]
 
-    def test_live_greptile_ci_fetch_failure_degrades_row(self, patched, monkeypatch):
+    def test_live_ci_fetch_failure_degrades_row(self, patched, monkeypatch):
         patched({1: _pr(analysis=_analysis(), security=_green())})
         rec = service.data.prs()[1]
         rec.raw["meta"]["body"] = ""               # ingested → skip the live body fetch
         monkeypatch.setattr(service, "live_changed_paths", lambda n: None)
-        def boom(n, sha):
+        def boom(sha):
             raise RuntimeError("worker unreachable")
-        monkeypatch.setattr(service, "_greptile_and_ci", boom)
+        monkeypatch.setattr(service, "_ci_checks", boom)
 
         row = service.pr_detail(1)
 
         assert row is not None and row["number"] == 1
-        assert row["greptile"] is None and row["ci_checks"] == []
-        assert "greptile/ci" in row["live_refresh_failed"]
+        assert row["ci_checks"] == []
+        assert "ci" in row["live_refresh_failed"]
+        # Reviewer feedback comes from the store, so it survives the live failure.
+        assert row["reviews_detail"]["greptile"]["digest"]["status"] == "pass"
 
     def test_codeowners_fetch_failure_falls_back_to_cached_human_merge(self, patched, monkeypatch):
         patched({1: _pr(analysis=_analysis(), security=_green())})
         rec = service.data.prs()[1]
         rec.raw["meta"]["body"] = ""
-        monkeypatch.setattr(service, "_greptile_and_ci", lambda n, sha: (None, []))
+        monkeypatch.setattr(service, "_ci_checks", lambda sha: [])
         def boom(n, sha):
             raise RuntimeError("gh files API unreachable")
         monkeypatch.setattr(service, "live_changed_paths", boom)
@@ -474,7 +478,7 @@ class TestPrDetailDegradesOnLiveFailure:
         patched({1: _pr(analysis=_analysis(), security=_green())})
         rec = service.data.prs()[1]
         rec.raw["meta"]["body"] = ""
-        monkeypatch.setattr(service, "_greptile_and_ci", lambda n, sha: (None, []))
+        monkeypatch.setattr(service, "_ci_checks", lambda sha: [])
         monkeypatch.setattr(service, "live_changed_paths", lambda n: None)
         assert service.pr_detail(1)["live_refresh_failed"] == []
 

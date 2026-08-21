@@ -16,14 +16,16 @@ _DETAIL = {
     "prs": [
         {"number": 101, "title": "Fix parser", "author": "alice",
          "disposition": "merge",                   # must NOT leak
-         "signals": {"greptile": 5, "ci": "passing", "conflicts": False,
+         "signals": {"ci": "passing", "conflicts": False,
                    "has_tests": True, "additions": 40, "deletions": 3,
-                   "changed_files": 2}},
+                   "changed_files": 2},
+         "reviews": {"greptile": {"summary_line": "Greptile 5/5"}}},
         {"number": 102, "title": "Alt fix", "author": "bob",
          "disposition": "request-changes",
-         "signals": {"greptile": 4, "ci": "passing", "conflicts": True,
+         "signals": {"ci": "passing", "conflicts": True,
                    "has_tests": False, "additions": 120, "deletions": 10,
-                   "changed_files": 5}},
+                   "changed_files": 5},
+         "reviews": {"greptile": {"summary_line": "Greptile 4/5"}}},
     ],
 }
 
@@ -38,8 +40,8 @@ def test_neutral_facts_present():
     assert "Parser drops trailing commas" in out
     assert "#101" in out and "#102" in out
     assert "alice" in out and "bob" in out
-    assert "greptile 5" in out
-    assert "greptile 4" in out
+    assert "Greptile 5/5" in out
+    assert "Greptile 4/5" in out
 
 
 def test_verdict_does_not_leak():
@@ -211,11 +213,13 @@ def test_security_subjects_get_distinct_thread_keys():
 # filtered/viewing to in PR Explorer, without re-listing them in the question.
 _ROWS = {
     101: {"title": "Fix parser", "author": "alice", "disposition": "merge",
-          "signals": {"greptile": 5, "ci": "passing", "conflicts": False,
-                    "has_tests": True, "additions": 40, "deletions": 3, "changed_files": 2}},
+          "signals": {"ci": "passing", "conflicts": False,
+                    "has_tests": True, "additions": 40, "deletions": 3, "changed_files": 2},
+          "reviews": {"greptile": {"summary_line": "Greptile 5/5"}}},
     102: {"title": "Alt fix", "author": "bob", "disposition": "request-changes",
-          "signals": {"greptile": 4, "ci": "passing", "conflicts": True,
-                    "has_tests": False, "additions": 120, "deletions": 10, "changed_files": 5}},
+          "signals": {"ci": "passing", "conflicts": True,
+                    "has_tests": False, "additions": 120, "deletions": 10, "changed_files": 5},
+          "reviews": {"greptile": {"summary_line": "Greptile 4/5"}}},
 }
 
 
@@ -225,7 +229,7 @@ def test_visible_prs_context_neutral_facts():
     assert "2 PR(s)" in out
     assert "#101" in out and "#102" in out
     assert "alice" in out and "bob" in out
-    assert "greptile 5" in out and "greptile 4" in out
+    assert "Greptile 5/5" in out and "Greptile 4/5" in out
     assert "request-changes" not in out  # disposition *values* don't leak (same convention as cluster context)
 
 

@@ -57,7 +57,7 @@ from prospector_app.backend import verify_queue
 from prospector_app.backend import verify_worker
 from prospector_app.backend import work_status
 
-from pipeline import greptile
+from pipeline import reviewers
 from pipeline import settings
 
 class SurrogateSafeJSONResponse(JSONResponse):
@@ -515,8 +515,8 @@ def pr_actions(n: int):
 
 @app.get("/api/prs/{n}/history")
 def pr_history_endpoint(n: int):
-    """Condensed upstream activity for this PR — comments, reviews (Greptile's
-    score history flagged), commits, and reopen/close/force-push/rename
+    """Condensed upstream activity for this PR — comments, reviews (each
+    automated reviewer's flagged), commits, and reopen/close/force-push/rename
     events — read live from GitHub, oldest first. Powers the PR-detail history
     panel so a reviewer doesn't have to open GitHub to see the back-and-forth."""
     return {"items": pr_history.fetch_pr_history(n)}
@@ -527,12 +527,12 @@ def pr_diff(n: int):
     return service.get_diff(n)
 
 
-@app.get("/api/prs/{n}/greptile")
-def pr_greptile(n: int):
-    """This PR's Greptile review summary ({score, body}) — read directly from
-    GitHub on demand (e.g. a column hover) rather than on every list row. Returns
-    {} when Greptile left no review or the fetch failed."""
-    return greptile.fetch_greptile_feedback(n) or {}
+@app.get("/api/prs/{n}/reviews")
+def pr_reviews(n: int):
+    """Every automated reviewer's and scanner's stored entry + digest on this PR,
+    keyed by reviewer id — the column hover and the PR page's per-reviewer
+    blocks. {} when the PR is unknown."""
+    return {"reviews": service.reviews_detail(n)}
 
 
 @app.post("/api/freshness")
@@ -778,7 +778,8 @@ async def execute_bulk(payload: models.BulkExecuteBody = Body(...)):
         async for ev in bulk.run_bulk(
             payload.prs, payload.action, comment=payload.comment, comments=payload.comments,
             canonical=payload.canonical, method=payload.method,
-            reason=payload.reason, tags=payload.tags, dry_run=payload.dry_run,
+            reason=payload.reason, tags=payload.tags, reviewer=payload.reviewer,
+            dry_run=payload.dry_run,
         ):
             yield ev
     return EventSourceResponse(gen())
@@ -1024,17 +1025,20 @@ def comment_line(n: int, payload: models.LineCommentBody = Body(...), dry_run: b
     return res
 
 
-@app.post("/api/greptile/retrigger/pr/{n}")
-def retrigger_greptile(n: int, dry_run: bool = True):
-    """Post "@greptileai" on PR #n as the configured bot to re-trigger a Greptile
-    review — no new commit needed. Gated + logged like every bot write. Once the
-    post lands, a backend task waits for Greptile's new scored summary and
-    targeted-ingests it into the shared snapshot; no UI session is required."""
+@app.post("/api/reviews/{reviewer}/retrigger/pr/{n}")
+def retrigger_review(reviewer: str, n: int, dry_run: bool = True):
+    """Post the named reviewer's mention on PR #n as the configured bot to
+    re-trigger its review — no new commit needed. Gated + logged like every bot
+    write. Once the post lands, a backend task waits for the reviewer's fresh
+    verdict and targeted-ingests it into the shared snapshot; no UI session is
+    required. 404 for an unknown reviewer id."""
+    if reviewer not in reviewers.REVIEWERS:
+        raise HTTPException(status_code=404, detail=f"unknown reviewer {reviewer!r}")
     token = None if dry_run else executor.mint_bot_token()
-    baseline = review_refresh.capture(n) if token is not None else None
-    result = executor.retrigger_greptile(n, token=token, dry_run=dry_run)
+    baseline = review_refresh.capture(n, reviewer) if token is not None else None
+    result = executor.retrigger_review(n, reviewer, token=token, dry_run=dry_run)
     if result.get("status") == "executed" and baseline is not None:
-        review_refresh.schedule(n, baseline)
+        review_refresh.schedule(n, reviewer, baseline)
     return result
 
 

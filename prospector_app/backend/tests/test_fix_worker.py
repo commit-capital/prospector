@@ -16,6 +16,7 @@ import pytest
 from pipeline import profile
 from pipeline import store as S
 from prospector_app.backend import data, fix_queue, fix_worker
+from pipeline.testsupport import greptile_entry, reviews_section
 
 HEAD = "a" * 40
 NOW = "2026-06-10T00:00:00+00:00"
@@ -27,20 +28,19 @@ def store(tmp_path, monkeypatch):
     st = S.Store(tmp_path / "store")
     st.save_pr({"pr": 1,
                 "meta": {"title": "fix boom", "state": "open", "head_sha": HEAD},
-                "signals": {"greptile": 5, "ci": "failing", "mergeable": False,
+                "signals": {"ci": "failing", "mergeable": False,
                             "checked_at": NOW, "against_head_sha": HEAD},
+                "reviews": reviews_section(HEAD, NOW),
                 "drift": {"state": "conflicts", "checked_at": NOW,
                           "against_head_sha": HEAD}})
     monkeypatch.setattr(data, "_store", st)
     monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", "")
     monkeypatch.setattr(fix_worker, "_preflight", lambda n, patch: {"exit": 0})
-    # The fix path reads the PR's diff from GitHub for the agent and the sandbox,
-    # and the review provider's summary when the score is below the bar.
+    # The fix path reads the PR's diff from GitHub for the agent and the sandbox;
+    # the reviewers' summaries come from the stored reviews section.
     pr_patch = tmp_path / "pr.patch"
     pr_patch.write_text(PR_DIFF)
     monkeypatch.setattr(fix_worker.verify_driver, "fetch_patch", lambda pr, head: pr_patch)
-    monkeypatch.setattr(fix_worker.greptile, "fetch_greptile_summary_text",
-                        lambda n: (None, None))
     data.refresh()
     return st
 
@@ -72,7 +72,7 @@ def _pushed(probe: _Probe) -> bool:
 
 def test_hunter_requires_the_review_bar(store):
     rec = store.load_pr(1).raw
-    rec["signals"]["greptile"] = 4
+    rec["reviews"]["greptile"]["score"] = 4
     store.save_pr(rec)
     data.refresh()
     assert fix_worker.next_auto() is None
@@ -565,6 +565,7 @@ def test_the_operators_guidance_becomes_the_agents_goal(store, monkeypatch):
 
 def test_an_unguided_fix_aims_at_the_outstanding_findings(store, monkeypatch):
     rec = store.load_pr(1).raw
+    rec["reviews"]["greptile"]["score"] = 3
     rec["greptile_review"] = {"severity": "defects", "against_head_sha": HEAD,
                               "checked_at": NOW,
                               "findings": [{"headline": "retry never exits",
@@ -585,10 +586,13 @@ def test_an_unguided_fix_aims_at_the_outstanding_findings(store, monkeypatch):
     assert seen["findings"][0]["headline"] == "retry never exits"
 
 
-def _sub_bar_review(store, findings: list[dict] | None = None) -> None:
-    """A PR Greptile scored 3/5 at the current head, with the given digest."""
+def _sub_bar_review(store, findings: list[dict] | None = None,
+                    summary: str | None = None, reviewed_sha: str = HEAD) -> None:
+    """A PR Greptile scored 3/5 at `reviewed_sha`, with the given digest and
+    stored summary."""
     rec = store.load_pr(1).raw
-    rec["signals"].update({"greptile": 3, "greptile_reviewed_sha": HEAD})
+    rec["reviews"]["greptile"].update({"score": 3, "reviewed_sha": reviewed_sha,
+                                       "summary": summary})
     rec["greptile_review"] = {"severity": "defects" if findings else "clean",
                               "against_head_sha": HEAD, "checked_at": NOW,
                               "findings": findings or []}
@@ -599,13 +603,10 @@ def _sub_bar_review(store, findings: list[dict] | None = None) -> None:
 def test_the_review_summary_is_evidence_when_the_digest_has_no_findings(store, monkeypatch):
     # Greptile's reasons for a sub-bar score live in its summary comment, which
     # names defects even when it left no inline comment for the digest to carry.
-    _sub_bar_review(store)
+    _sub_bar_review(store, summary="The armSilenceTimer guard misses terminalResultSeen.")
     monkeypatch.setattr(
         profile, "active",
         lambda: profile.RepoProfile(autofix=profile.AutofixPolicy(fixable_gates=("review",))))
-    monkeypatch.setattr(fix_worker.greptile, "fetch_greptile_summary_text",
-                        lambda n: ("The armSilenceTimer guard misses terminalResultSeen.",
-                                   HEAD[:8]))
     fix_queue.queue_pr(1, "fix")
     monkeypatch.setattr(fix_worker, "_resubmit", _fix_probe())
     seen: dict = {}
@@ -621,12 +622,12 @@ def test_the_review_summary_is_evidence_when_the_digest_has_no_findings(store, m
 
 
 def test_a_summary_for_another_head_is_not_evidence(store, monkeypatch):
-    _sub_bar_review(store)
+    # A stale verdict describes a head the author moved past: its summary is not
+    # a fix goal, so the request refuses for want of evidence.
+    _sub_bar_review(store, summary="stale reasoning", reviewed_sha="b" * 40)
     monkeypatch.setattr(
         profile, "active",
         lambda: profile.RepoProfile(autofix=profile.AutofixPolicy(fixable_gates=("review",))))
-    monkeypatch.setattr(fix_worker.greptile, "fetch_greptile_summary_text",
-                        lambda n: ("stale reasoning", "b" * 8))
     fix_queue.queue_pr(1, "fix")
     probe = _fix_probe()
     monkeypatch.setattr(fix_worker, "_resubmit", probe)
@@ -839,9 +840,9 @@ def _fixable_pr(n: int = 2) -> dict:
     head — what the fix hunt targets."""
     return {"pr": n,
             "meta": {"title": "below bar", "state": "open", "head_sha": HEAD},
-            "signals": {"greptile": 4, "greptile_reviewed_sha": HEAD,
-                        "ci": "passing", "mergeable": True,
-                        "checked_at": NOW, "against_head_sha": HEAD}}
+            "signals": {"ci": "passing", "mergeable": True,
+                        "checked_at": NOW, "against_head_sha": HEAD},
+            "reviews": reviews_section(HEAD, NOW, greptile=greptile_entry(4, HEAD))}
 
 
 @pytest.fixture
@@ -889,7 +890,7 @@ def test_fix_hunt_respects_the_in_flight_cap(store, fix_profile, monkeypatch):
     store.save_pr(_fixable_pr(2))
     # Drop PR 1 below the mechanical hunt's review bar so only fixes compete.
     one = store.load_pr(1).raw
-    one["signals"]["greptile"] = 4
+    one["reviews"]["greptile"]["score"] = 4
     store.save_pr(one)
     data.refresh()
     assert fix_worker.next_auto() is None
@@ -900,7 +901,7 @@ def test_hunt_order_mechanical_then_nits_then_tiers(store, fix_profile, monkeypa
     # PR numbers deliberately run against the priority order, so a first-match
     # scan by number would pick every one of these wrong.
     three = _fixable_pr(2)
-    three["signals"]["greptile"] = 3
+    three["reviews"]["greptile"]["score"] = 3
     four = _fixable_pr(3)
     nits = _fixable_pr(4)
     nits["greptile_review"] = {"severity": "nits", "checked_at": NOW,

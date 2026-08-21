@@ -9,7 +9,7 @@ import os
 
 import pytest
 
-from pipeline import review_policy
+from pipeline import reviewers
 from pipeline import settings
 from prospector_app.backend import chat
 
@@ -71,7 +71,7 @@ def test_system_prompt_renders_configured_review_bar(monkeypatch):
     monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "greptile")
     monkeypatch.setenv("TRIAGE_REVIEW_THRESHOLD", str(4))
     sp = chat.system_prompt()
-    assert "Greptile 4/5" in sp
+    assert "Greptile at 4/5" in sp
     assert "{review_bar}" not in sp
 
 
@@ -344,7 +344,7 @@ def test_context_documents_the_review_retrigger(monkeypatch):
     # the prompt names the configured one so the agent doesn't have to guess it.
     sp = chat.system_prompt()
     assert "gh-write pr comment" in sp
-    assert review_policy.active().retrigger_mention == "@greptileai"
+    assert reviewers.GREPTILE.retrigger_mention == "@greptileai"
     assert "@greptileai" in sp
     assert "{retrigger_mention}" not in sp
     # A deployment whose provider has no re-trigger says so, rather than leaving a

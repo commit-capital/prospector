@@ -17,6 +17,8 @@ from prospector_app.backend import jobs
 from prospector_app.backend import models
 from prospector_app.backend import review_refresh
 from prospector_app.backend import training
+from pipeline import review_policy
+from pipeline import reviewers
 from prospector_app.backend import verify_queue
 
 CAP = 1000
@@ -50,6 +52,7 @@ async def run_bulk(prs: list[int], action: str, *, comment: str | None = None,
                    comments: dict[int, str] | None = None,
                    canonical: int | None = None, method: str = "squash",
                    reason: str | None = None, tags: list[str] | None = None,
+                   reviewer: str | None = None,
                    dry_run: bool = True) -> AsyncIterator[dict[str, Any]]:
     """Yield {'event','data'} SSE frames: one 'result' per PR, then 'done' with a
     summary. A too-large batch yields a single 'error' and stops.
@@ -93,11 +96,14 @@ async def run_bulk(prs: list[int], action: str, *, comment: str | None = None,
                            "detail": str(e)}
             elif action == "MERGE":
                 res = executor.merge_pr(n, method, dry_run=dry_run, reason=reason)
-            elif action == "GREPTILE_RETRIGGER":
-                baseline = review_refresh.capture(n) if token is not None else None
-                res = executor.retrigger_greptile(n, token=token, dry_run=dry_run)
+            elif action == "REVIEW_RETRIGGER":
+                rid = reviewer or next(
+                    (r.id for r in review_policy.active_reviewers(reviewers.REVIEW)
+                     if r.retrigger_mention), "")
+                baseline = review_refresh.capture(n, rid) if token is not None and rid else None
+                res = executor.retrigger_review(n, rid, token=token, dry_run=dry_run)
                 if res.get("status") == "executed" and baseline is not None:
-                    review_refresh.schedule(n, baseline)
+                    review_refresh.schedule(n, rid, baseline)
             elif action in _REVIEW:
                 res = executor.submit_review(n, _REVIEW[action], pr_comment or "",
                                              token=token, dry_run=dry_run)

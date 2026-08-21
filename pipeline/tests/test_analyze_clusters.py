@@ -6,6 +6,7 @@ import threading
 from pipeline import analyze_clusters
 from pipeline import analyze_driver as ad
 from pipeline.store import Store
+from pipeline.testsupport import reviews_section
 
 NOW = "2026-06-10T00:00:00+00:00"
 
@@ -13,8 +14,9 @@ NOW = "2026-06-10T00:00:00+00:00"
 def _pr(store, n, head="h1", author="a"):
     store.save_pr({"pr": n, "meta": {"title": f"t{n}", "author": author, "state": "open",
                                      "draft": False, "head_sha": head, "checked_at": NOW},
-                   "signals": {"greptile": 5, "ci": "passing", "mergeable": True,
+                   "signals": {"ci": "passing", "mergeable": True,
                                "checked_at": NOW, "against_head_sha": head},
+                   "reviews": reviews_section(head, NOW),
                    "drift": {"state": "applicable", "checked_at": NOW, "against_head_sha": head},
                    "summary": {"one_liner": f"does {n}", "subsystem": "ui", "mechanism": "m",
                                "identifiers": [], "paths": [], "primary_change": f"primary {n}",

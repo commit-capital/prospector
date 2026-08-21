@@ -7,6 +7,7 @@ import threading
 from pipeline import security_review as rs
 from pipeline.testsupport import set_section
 from pipeline.store import Store
+from pipeline.testsupport import reviews_section
 
 NOW = "2026-06-10T00:00:00+00:00"
 
@@ -17,8 +18,9 @@ def _eligible_pr(store, n=100, head="h1", cluster=1):
         "pr": n,
         "meta": {"title": f"t{n}", "author": "a", "state": "open", "draft": False,
                  "head_sha": head, "checked_at": NOW},
-        "signals": {"greptile": 5, "ci": "passing", "mergeable": True,
+        "signals": {"ci": "passing", "mergeable": True,
                     "checked_at": NOW, "against_head_sha": head},
+        "reviews": reviews_section(head, NOW),
         "drift": {"state": "applicable", "checked_at": NOW, "against_head_sha": head},
         "analysis": {"disposition": "merge", "rationale": "best",
                      "checked_at": NOW, "against_head_sha": head},
