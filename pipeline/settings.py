@@ -160,30 +160,41 @@ def profile_path() -> str:
     return os.environ.get("TRIAGE_PROFILE", "")
 
 
-def parse_review_provider(raw: str | None) -> str:
-    """The configured external code-review provider, normalised. "greptile"
-    reproduces the confidence-score merge bar; "none" requires no external review
-    (a repository with no such provider). Unknown values are a hard error so a
-    typo never silently disables the bar."""
-    provider = (raw or "none").strip().lower()
-    if provider not in ("greptile", "none"):
+def parse_review_provider(raw: str | None) -> tuple[str, tuple[str, ...]]:
+    """(mode, ids): "auto" detects active reviewers from the repository's PR
+    data, "none" requires no external review, "explicit" names exactly the
+    reviewer ids that gate (a comma list of pipeline.reviewers ids). An unknown
+    id is a hard error so a typo never silently disables a bar."""
+    from pipeline import reviewers
+    text = (raw or "auto").strip().lower()
+    if text in ("", "auto"):
+        return ("auto", ())
+    if text == "none":
+        return ("none", ())
+    ids = tuple(p.strip() for p in text.split(",") if p.strip())
+    unknown = [i for i in ids if i not in reviewers.REVIEWERS]
+    if unknown:
         raise SystemExit(
-            f"TRIAGE_REVIEW_PROVIDER must be 'greptile' or 'none' (got {provider!r}). "
-            "Set it in .env — see .env.example."
-        )
-    return provider
+            f"TRIAGE_REVIEW_PROVIDER: unknown reviewer(s) {unknown!r}; use 'auto', 'none', or a "
+            f"comma list of {sorted(reviewers.REVIEWERS)}. Set it in .env — see .env.example.")
+    return ("explicit", ids)
 
 
-def review_provider() -> str:
-    """External code-review provider whose verdict gates a clean merge (see
-    pipeline/review_policy.py for the profiles). Defaults to "none" so a fresh
-    checkout runs without assuming any provider."""
+def review_provider() -> tuple[str, tuple[str, ...]]:
+    """Which automated reviewers gate a clean merge (see pipeline/review_policy.py).
+    Defaults to "auto" so a fresh checkout gates on whatever the repository runs."""
     return parse_review_provider(os.environ.get("TRIAGE_REVIEW_PROVIDER"))
 
 
+def reviewer_active_days() -> int:
+    """How recently a reviewer must have posted on an open PR to count as active
+    in auto mode."""
+    raw = os.environ.get("TRIAGE_REVIEWER_ACTIVE_DAYS")
+    return int(raw) if raw else 14
+
+
 def review_threshold() -> int | None:
-    """Override of the review provider's pass threshold. None → the provider's
-    built-in bar (greptile → 5)."""
+    """Override of Greptile's pass score. None → 5."""
     raw = os.environ.get("TRIAGE_REVIEW_THRESHOLD")
     return int(raw) if raw else None
 

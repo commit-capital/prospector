@@ -599,3 +599,22 @@ class TestResponseAcks:
     def test_rejects_non_dict_acks(self, store):
         with pytest.raises(ValidationError):
             store.save_response_acks({"acks": []})
+
+
+def test_reviews_section_validates():
+    from pipeline import store as st
+    rec = {"pr": 1, "meta": {"title": "t", "state": "open", "head_sha": "h"},
+           "reviews": {"greptile": {"kind": "review", "score": 4, "findings": [], "checks": []},
+                       "checked_at": "x", "against_head_sha": "h"}}
+    st.validate_pr(rec)
+    with pytest.raises(ValidationError):
+        st.validate_pr(dict(rec, reviews={"greptile": {"kind": "bogus", "findings": []}}))
+    with pytest.raises(ValidationError):
+        st.validate_pr(dict(rec, reviews={"greptile": {"kind": "review", "findings": "nope"}}))
+
+
+def test_reviewers_registry_roundtrip(store):
+    assert store.load_reviewers() == {"seen": {}, "computed_at": None}
+    store.save_reviewers({"seen": {"greptile": {"last_observed_at": "2026-08-21T00:00:00Z", "prs": 3}},
+                          "computed_at": "2026-08-21T01:00:00Z"})
+    assert store.load_reviewers()["seen"]["greptile"]["prs"] == 3

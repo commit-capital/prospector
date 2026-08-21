@@ -416,7 +416,9 @@ def test_validate_allows_merge_with_overridden_red():
 def test_pr_read_properties(tmp_path):
     rec = _base_pr(5, "h1")
     rec["meta"].update({"author": "alice", "url": "u", "draft": False})
-    rec["signals"] = {"greptile": 5, "ci": "passing", "mergeable": True,
+    rec["signals"] = {"ci": "passing", "mergeable": True,
+                      "checked_at": "t", "against_head_sha": "h1"}
+    rec["reviews"] = {"greptile": {"kind": "review", "score": 5, "reviewed_sha": "h1"},
                       "checked_at": "t", "against_head_sha": "h1"}
     rec["analysis"] = {"disposition": "merge", "rationale": "ok", "asks": ["a"],
                        "checked_at": "t", "against_head_sha": "h1"}
@@ -590,7 +592,8 @@ def test_store_create_cluster(tmp_path):
 def test_pr_section_setters(tmp_path):
     st = _seed(tmp_path, _base_pr(1, "h1"))
     pr = st.edit_pr(1)
-    pr.set_signals({"greptile": 5, "ci": "passing", "mergeable": True})
+    pr.set_signals({"ci": "passing", "mergeable": True})
+    pr.set_reviews({"greptile": {"kind": "review", "score": 5}})
     pr.set_drift({"state": "applicable"})
     pr.set_issues([101, 102])
     pr.set_threat({"verdict": "clear", "signatures": []})
@@ -612,9 +615,10 @@ def test_apply_facts_single_save_writes_all_sections(tmp_path, monkeypatch):
     monkeypatch.setattr(st, "save_pr", lambda rec: (saves.append(1), orig(rec))[1])
     st.edit_pr(1).apply_facts(
         {"title": "t", "state": "open", "head_sha": "h1"},
-        signals={"greptile": 5, "ci": "passing"},
+        signals={"ci": "passing"},
         drift={"state": "applicable"},
         issues=[101, 102],
+        reviews={"greptile": {"kind": "review", "score": 5}},
     )
     assert len(saves) == 1  # one write for the whole ingest, not one per section
     rec = st.load_pr(1)
@@ -675,7 +679,7 @@ def test_greptile_stale_true_when_reviewed_sha_differs(tmp_path):
     rec = _base_pr(1, "headsha")
     st = _seed(tmp_path, rec)
     pr = st.edit_pr(1)
-    pr.set_signals({"greptile": 3, "greptile_reviewed_sha": "oldsha"})
+    pr.set_reviews({"greptile": {"kind": "review", "score": 3, "reviewed_sha": "oldsha"}})
     loaded = st.load_pr(1)
     assert loaded.greptile_reviewed_sha == "oldsha"
     assert loaded.greptile_stale is True
@@ -685,7 +689,7 @@ def test_greptile_stale_false_when_reviewed_sha_matches_head(tmp_path):
     rec = _base_pr(1, "abc123")
     st = _seed(tmp_path, rec)
     pr = st.edit_pr(1)
-    pr.set_signals({"greptile": 5, "greptile_reviewed_sha": "abc123"})
+    pr.set_reviews({"greptile": {"kind": "review", "score": 5, "reviewed_sha": "abc123"}})
     loaded = st.load_pr(1)
     assert loaded.greptile_stale is False
 
@@ -694,7 +698,7 @@ def test_greptile_stale_none_when_reviewed_sha_absent(tmp_path):
     rec = _base_pr(1, "head1")
     st = _seed(tmp_path, rec)
     pr = st.edit_pr(1)
-    pr.set_signals({"greptile": 4})
+    pr.set_reviews({"greptile": {"kind": "review", "score": 4}})
     loaded = st.load_pr(1)
     assert loaded.greptile_reviewed_sha is None
     assert loaded.greptile_stale is None
@@ -810,3 +814,20 @@ class TestRecordVerify:
         self._pr(s, disposition="close-stale").record_verify(
             "escalate", {}, base_sha="b")
         assert s.load_pr(1).disposition == "close-stale"
+
+
+def test_greptile_accessors_read_reviews_section():
+    from pipeline.model import Pr
+    pr = Pr(None, {"pr": 1, "meta": {"head_sha": "h2"},
+                   "reviews": {"greptile": {"kind": "review", "score": 4, "reviewed_sha": "h1"}}})
+    assert pr.greptile == 4 and pr.greptile_reviewed_sha == "h1" and pr.greptile_stale is True
+    assert pr.review_entry("greptile")["score"] == 4 and pr.review_entry("socket") is None
+    assert not hasattr(pr, "review_score")
+
+
+def test_stage_facts_stamps_reviews():
+    from pipeline.model import Pr
+    pr = Pr(None, {"pr": 1, "meta": {"head_sha": "h"}})
+    pr.stage_facts({"title": "t", "state": "open", "head_sha": "h"}, reviews={"greptile": {"kind": "review"}})
+    assert pr.rec["reviews"]["against_head_sha"] == "h" and "checked_at" in pr.rec["reviews"]
+    assert "reviews" in freshness.SHA_BOUND

@@ -57,7 +57,11 @@ _JSON = JSON().with_variant(JSONB, "postgresql")
 # 18 — the advisories table (GitHub repository security advisories, keyed by
 #      the base-21 integer of the GHSA id), projected by the Alerts tab's
 #      Advisories sub-view; older code has no accessor for it.
-STORE_SCHEMA_VERSION = 18
+# 19 — PR records carry a `reviews` section (every automated reviewer's and
+#      scanner's normalized feedback, keyed by reviewer id) and the `reviewers`
+#      registry records each bot's latest activity; an older reader finds no
+#      Greptile score in `signals` and judges every PR un-reviewed.
+STORE_SCHEMA_VERSION = 19
 
 # saved_at is a microsecond-resolution ISO timestamp stamped on every save — when
 # the store row was last written (distinct from `updated_at`, which mirrors the
