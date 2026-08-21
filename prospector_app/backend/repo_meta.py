@@ -28,6 +28,7 @@ class RepoMeta(TypedDict):
     default_branch: str
     display_name: str
     feedback_repo: str | None
+    agent_provider: str
     test_paths: TestPathRules
 
 
@@ -49,5 +50,6 @@ def meta() -> RepoMeta:
         "default_branch": settings.default_branch(),
         "display_name": settings.display_name(),
         "feedback_repo": settings.feedback_repo() or None,
+        "agent_provider": settings.agent_provider(),
         "test_paths": {"dir_pattern": tp.dir_pattern, "file_pattern": tp.file_pattern},
     }

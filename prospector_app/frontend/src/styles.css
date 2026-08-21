@@ -712,6 +712,9 @@ html.ap-resizing .agentpane { transition: none; }
 .ap-follow-latest:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .ap-hint { margin: 0; }
 .agentpane-input { display: flex; gap: 8px; }
+.ap-not-ready { display: flex; flex-direction: column; gap: 6px; align-items: flex-start;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+.ap-not-ready p { margin: 0; }
 .ap-input-wrap { position: relative; flex: 1; display: flex; }
 .ap-input-wrap textarea { flex: 1; background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 7px 30px 7px 10px; resize: none; font: inherit; }
 .ap-mic-btn { position: absolute; bottom: 6px; right: 6px; background: none; border: none;

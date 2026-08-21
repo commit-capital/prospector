@@ -1056,6 +1056,7 @@ export interface RepoMeta {
   default_branch: string;
   display_name: string;
   feedback_repo: string | null;
+  agent_provider: string;
   test_paths: { dir_pattern: string; file_pattern: string };
 }
 
@@ -1107,6 +1108,8 @@ export interface OnboardingState {
   bot_login: string;
   writes_ready: boolean;
   worker_ready: boolean;
+  /** The raw choice: null until the operator picks a provider. */
+  agent_provider: string | null;
   counts: { prs?: number; clusters?: number };
 }
 
@@ -1122,11 +1125,22 @@ export interface ProbeResult {
   store?: ProbeFinding;
   repo?: ProbeFinding;
   key_file?: ProbeFinding;
+  agent?: ProbeFinding;
+}
+
+/** Whether this machine can run the agent pane: the configured provider and,
+ *  for claude, the local CLI's presence and login. */
+export interface ChatReady {
+  provider: string;
+  ok: boolean;
+  problem?: string;
+  auth_method?: string;
+  subscription?: string;
 }
 
 /** One step of setup. `bundle` supplies `env` and `profile` in their place. */
 export interface OnboardingApplyBody {
-  step: "connect" | "writes" | "worker";
+  step: "connect" | "writes" | "worker" | "agent";
   env?: Record<string, string>;
   profile?: Record<string, unknown> | null;
   bundle?: string;
@@ -1141,8 +1155,9 @@ export const api = {
     return r.json() as Promise<{ bundle: string }>;
   },
   onboardingState: () => get<OnboardingState>("/api/onboarding/state"),
+  chatReady: () => get<ChatReady>("/api/chat/ready"),
   onboardingProbe: async (body: {
-    store_url?: string; repo?: string; key_file?: string;
+    store_url?: string; repo?: string; key_file?: string; agent?: boolean;
   }) => {
     const r = await fetch("/api/onboarding/probe", {
       method: "POST", headers: { "Content-Type": "application/json" },
