@@ -176,12 +176,19 @@ def apply(step: str, env: dict[str, str],
     return state()
 
 
+# The keys that decide which store the snapshot is built from; a write that
+# moves one rebuilds the store and drops the snapshot, any other keeps it.
+_STORE_KEYS = ("TRIAGE_REPO", "TRIAGE_STORE_URL")
+
+
 def reconfigure(applied: dict[str, str]) -> None:
     """Adopt written configuration in the running process. The ONE adoption
-    path: the environment, the two things built from it at import, and — when
-    the bot identity or its key moved — the executor's cached live probe."""
+    path: the environment, the two things built from it at import — the store
+    snapshot only when the write moved the store — and, when the bot identity
+    or its key moved, the executor's cached live probe."""
     os.environ.update(applied)
-    data.reset()
+    if set(_STORE_KEYS) & set(applied):
+        data.reset()
     settings.default_branch.cache_clear()
     profile.reset_cache()
     if {"TRIAGE_BOT_LOGIN", "TRIAGE_BOT_APP_ID", "TRIAGE_BOT_KEY_FILE"} & set(applied):
@@ -306,11 +313,18 @@ def state() -> dict[str, object]:
 
     counts: dict[str, int] = {}
     worker_ready = False
+    loading = False
     if settings.configured():
-        counts = {"prs": len(data.prs()), "clusters": len(data.clusters())}
+        # The cold snapshot load runs on its own thread; this answer reports
+        # `loading` and the caller polls, so a wizard step never holds a
+        # request open for the whole load.
+        loading = data.snapshot_loading()
+        if not loading:
+            counts = {"prs": len(data.prs()), "clusters": len(data.clusters())}
         worker_ready = bool(worker_readiness.report()["ready"])
     return {
         "configured": settings.configured(),
+        "loading": loading,
         "repo": settings.repo(),
         "display_name": settings.display_name(),
         "bot_login": settings.bot_login(),

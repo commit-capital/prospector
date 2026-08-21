@@ -67,6 +67,14 @@ export default function Welcome() {
     return () => clearTimeout(t);
   }, [load]);
 
+  // While the store snapshot is on its cold load the counts are not in yet;
+  // poll until they are.
+  useEffect(() => {
+    if (!state?.loading) return;
+    const t = window.setInterval(load, 2000);
+    return () => window.clearInterval(t);
+  }, [state?.loading, load]);
+
   if (error && !state) return <div className="pad"><p className="chip chip-red">{error}</p></div>;
   if (!state) return <div className="pad muted">reading this checkout…</div>;
 
@@ -169,9 +177,14 @@ function JoinBranch({ onDone, onBack }: { onDone: () => void; onBack: () => void
         deployment”. It carries a database password, so it should have reached
         you privately — not through a channel with history.
       </p>
-      <textarea className="welcome-paste" value={text} rows={10}
+      <textarea className="welcome-paste" value={text} rows={10} disabled={busy}
         placeholder={'{\n  "version": 1,\n  "env": { "TRIAGE_REPO": "…" }\n}'}
         onChange={(e) => setText(e.target.value)} />
+      {busy && (
+        <p className="chip chip-blue sm" role="status">
+          ⏳ Connecting — pointing this checkout at the repository and its store…
+        </p>
+      )}
       {carries && (
         <p className="muted small">
           This bundle carries: {carries.repo ? <><strong>{carries.repo}</strong></> : "a repository"}
@@ -432,14 +445,22 @@ function Ladder({ state, onChange }: { state: OnboardingState; onChange: () => v
   const name = state.display_name || state.repo;
   return (
     <>
-      <section className="setup-card setup-done">
-        <h3>✅ You can see {name}</h3>
-        <p className="muted small">
-          {state.counts.prs ?? 0} pull requests and {state.counts.clusters ?? 0}{" "}
-          clusters loaded from the store. <Link to="/">Go look around</Link> — or
-          keep going below.
-        </p>
-      </section>
+      {state.loading
+        ? <section className="setup-card">
+            <h3>⏳ Connected to {name} — loading its triage data…</h3>
+            <p className="muted small" role="status">
+              Reading every pull request and cluster from the store into memory.
+              A large deployment can take a minute; the steps below work meanwhile.
+            </p>
+          </section>
+        : <section className="setup-card setup-done">
+            <h3>✅ You can see {name}</h3>
+            <p className="muted small">
+              {state.counts.prs ?? 0} pull requests and {state.counts.clusters ?? 0}{" "}
+              clusters loaded from the store. <Link to="/">Go look around</Link> — or
+              keep going below.
+            </p>
+          </section>}
 
       {state.writes_ready
         ? <section className="setup-card setup-done">
@@ -465,7 +486,7 @@ function Ladder({ state, onChange }: { state: OnboardingState; onChange: () => v
               Analyze, test, and fix pull requests in a sandbox on this machine.
               Heavier, and meant for a computer you can leave running.
             </p>
-            <Link to="/setup">Set this computer up →</Link>
+            <Link to="/setup?provision=1">Set this computer up →</Link>
           </section>}
     </>
   );
