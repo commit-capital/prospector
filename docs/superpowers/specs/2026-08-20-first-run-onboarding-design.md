@@ -184,17 +184,28 @@ to `settings.bot_login()` with the rest of §1.
 `caps.py` reports the App-less state so the UI shows why write controls are
 absent, rather than showing them and failing.
 
-### 8. Operation-scoped target resolution
+### 8. The target is immutable once configured
 
-With accessors, `repo()` and `bot_login()` are re-read on every call, so a single
-upstream write could in principle straddle a configuration change: mint a token
-for one target, validate against a second, execute against a third.
+With accessors, `repo()` is re-read on every call, so a single upstream write
+could in principle straddle a configuration change: mint a token for one target,
+validate against a second, execute against a third.
 
-The executor and `safety_guard` therefore resolve the target once at the start of
-an operation and thread those values through mint → validate → execute. This is
-where the invariant belongs — at the operation boundary, where the race actually
-is. It is also an improvement on the current code, which re-reads a module global
-at each step and is safe only because nothing mutates it today.
+§5's allowlist closes that by construction rather than by threading a snapshot
+through the executor. Exactly two code paths mutate the environment at runtime:
+`worker_control.set_flags`, whose five keys are lane switches, and
+`onboarding.reconfigure`, which writes only what its step permitted. `TRIAGE_REPO`
+and `TRIAGE_STORE_URL` live solely in step 1, and step 1 is refused once
+`configured()` is true — so on a configured deployment no caller can move the
+target, and the executor's re-reads all see the same value.
+
+That is a property of the write surface, not of Python binding, so it is pinned
+by tests over `worker_control.WRITABLE` and `onboarding.STEP_KEYS` rather than
+left as an assumption.
+
+`bot_login()` does remain writable while configured, since the wizard reaches the
+bot identity after step 1. Its uses are attribution and comparison, never
+authorization — the token is what authorizes, and §7 refuses a write whose
+identity is empty.
 
 ### 9. The wizard
 
