@@ -29,6 +29,29 @@ def test_history_with_chat_id_reads_the_named_sessions_own_thread(
     assert [m["text"] for m in r2.json()["messages"]] == ["the default pr-42 thread"]
 
 
+def test_history_routes_security_subjects_to_their_own_threads(
+        temp_store, tmp_path, monkeypatch):
+    monkeypatch.setattr(chat, "SESSION_DIR", tmp_path / "cache" / "chat")
+    monkeypatch.setattr(chat, "_op_slug", lambda: "tester")
+    advisory_key = chat._ctx_id(None, None, advisory="GHSA-2222-2222-2223")
+    alert_key = chat._ctx_id(None, None, alert_source="dependabot", alert=17)
+    chat._save(advisory_key, "user", "advisory question", None)
+    chat._save(alert_key, "user", "alert question", None)
+
+    c = TestClient(appmod.app)
+    advisory = c.get(
+        "/api/chat/history", params={"advisory": "GHSA-2222-2222-2223"},
+    ).json()
+    alert = c.get(
+        "/api/chat/history", params={"alert_source": "dependabot", "alert": 17},
+    ).json()
+
+    assert advisory["ctx"] == advisory_key
+    assert [m["text"] for m in advisory["messages"]] == ["advisory question"]
+    assert alert["ctx"] == alert_key
+    assert [m["text"] for m in alert["messages"]] == ["alert question"]
+
+
 class _FinishedProc:
     """A process that's already exited, so stop_chat's cleanup has nothing to
     terminate — only the _RUNNING bookkeeping is under test here."""
