@@ -1455,13 +1455,13 @@ def build_image() -> str:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("cmd", choices=["prepare-base", "build-image", "gc"])
+    ap.add_argument("cmd", choices=["prepare-base", "build-image", "gc", "teardown"])
     ap.add_argument("--base-sha", default=None)
     ap.add_argument("--tier", type=int, default=0, choices=[0, 1],
                     help="the tier to build the base image at. verify_pr reads it "
                          "back from the pin.")
     ap.add_argument("--dry-run", action="store_true",
-                    help="gc only: report what would be reclaimed, remove nothing")
+                    help="gc and teardown: report what would go, remove nothing")
     ap.add_argument("--store", default=None)
     args = ap.parse_args(argv)
 
@@ -1470,6 +1470,22 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     store = Store(args.store) if args.store else Store()
+
+    if args.cmd == "teardown":
+        result = verify_gc.teardown(dry_run=args.dry_run)
+        verb = "would remove" if args.dry_run else "removed"
+        print(f"{verb} images: {', '.join(result['images']) or 'none'}")
+        if result["kept_images"]:
+            print(f"still held (a container is using them): {', '.join(result['kept_images'])}")
+        print(f"{verb} scratch: {result['scratch'] or 'nothing there'}")
+        if not args.dry_run:
+            host = socket.gethostname()
+            had = store.clear_verify_base(host)
+            print(f"cleared this machine's base pin ({host})" if had
+                  else f"no base pin recorded for {host}")
+        if result["error"]:
+            print(f"teardown did not complete: {result['error']}", file=sys.stderr)
+        return 0 if result["ok"] else 1
 
     if args.cmd == "gc":
         result = collect_garbage(local_pin(store).get("base_sha"),
