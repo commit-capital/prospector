@@ -52,3 +52,7 @@ issue_triage/SUMMARY.md
 # Local repository-policy profile (deployment data, never committed;
 # profile.example.json documents the shape)
 /profile.json
+
+# Per-checkout editor launch config: setup.sh generates it from
+# .claude/launch.example.json with this checkout's ports.
+/.claude/launch.json

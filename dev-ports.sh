@@ -90,3 +90,23 @@ claim_dev_ports() {
     echo "VITE_PORT=$vite"; } >> "$env_file"
   echo "→ ports    API $api / Vite $vite  ($verb $env_file)"
 }
+
+# The editor's launch config names the port it opens a preview on. That is one
+# number in a file every checkout shares, so each generates its own from the
+# tracked template — the same shape as .env.example and profile.example.json.
+# write_launch_config <repo-root>
+write_launch_config() {
+  local root=$1 template="$1/.claude/launch.example.json" out="$1/.claude/launch.json"
+  local api vite staged
+  [ -f "$template" ] || return 0
+  api="$(sed -n 's/^API_PORT=//p' "$root/.env" 2>/dev/null | tail -1)"
+  vite="$(sed -n 's/^VITE_PORT=//p' "$root/.env" 2>/dev/null | tail -1)"
+  : "${api:=8787}" "${vite:=5173}"
+  staged="$(mktemp "$(dirname "$out")/.launch.XXXXXX")"
+  # The quoted forms carry the port field, so the template parses as JSON on
+  # its own; unquoting here is what makes the generated port a number.
+  sed -e "s/\"__API_PORT__\"/$api/g" -e "s/\"__VITE_PORT__\"/$vite/g" \
+      -e "s/__API_PORT__/$api/g" -e "s/__VITE_PORT__/$vite/g" "$template" >"$staged"
+  mv "$staged" "$out"
+  echo "→ launch   editor preview on API $api / Vite $vite  ($out)"
+}

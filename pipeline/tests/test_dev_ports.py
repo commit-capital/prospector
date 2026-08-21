@@ -7,6 +7,7 @@ belong to the checkout it was copied from.
 """
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -45,6 +46,25 @@ def claim(root: Path, env_file: Path) -> str:
     r = subprocess.run(
         ["bash", "-c",
          f'source "{HELPER}"; claim_dev_ports "{root}" "{env_file}"'],
+        capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    return r.stdout
+
+
+def seed_template(root: Path) -> None:
+    """A worktree of this repo has the tracked template; the tmpdir stands-in
+    needs it copied. Using the real one means these tests also prove the
+    template itself is well formed."""
+    (root / ".claude").mkdir(exist_ok=True)
+    (root / ".claude" / "launch.example.json").write_text(
+        (ROOT / ".claude" / "launch.example.json").read_text())
+
+
+def write_launch(root: Path) -> str:
+    """Generate this checkout's editor launch config, as setup.sh does."""
+    seed_template(root)
+    r = subprocess.run(
+        ["bash", "-c", f'source "{HELPER}"; write_launch_config "{root}"'],
         capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     return r.stdout
@@ -131,3 +151,40 @@ def test_two_inherited_worktrees_do_not_collide_with_each_other(repo):
     assert ports(tree / ".env") != ports(second / ".env")
     assert ports(tree / ".env") != ("8788", "5174")
     assert ports(second / ".env") != ("8788", "5174")
+
+
+def test_launch_config_is_generated_with_this_worktree_s_ports(repo, tmp_path):
+    """`.claude/launch.json` declares the port the editor opens its preview on.
+    It is one static number in a file every worktree shares, so it can only be
+    right for one of them unless each generates its own."""
+    primary, tree = repo
+    (tree / ".env").write_text(ENV_BODY + "API_PORT=8791\nVITE_PORT=5177\n")
+    write_launch(tree)
+    doc = json.loads((tree / ".claude" / "launch.json").read_text())
+    by_name = {c["name"]: c for c in doc["configurations"]}
+    assert by_name["app"]["port"] == 8791
+    assert by_name["app-dev"]["port"] == 5177
+
+
+def test_the_launch_port_matches_the_port_its_command_binds(repo):
+    """A declared port the command does not actually listen on sends the editor
+    at a closed socket."""
+    primary, tree = repo
+    (tree / ".env").write_text(ENV_BODY + "API_PORT=8791\nVITE_PORT=5177\n")
+    write_launch(tree)
+    doc = json.loads((tree / ".claude" / "launch.json").read_text())
+    app = next(c for c in doc["configurations"] if c["name"] == "app")
+    assert "8791" in " ".join(app["runtimeArgs"])
+
+
+def test_generating_a_launch_config_leaves_no_placeholders(repo):
+    primary, tree = repo
+    (tree / ".env").write_text(ENV_BODY + "API_PORT=8791\nVITE_PORT=5177\n")
+    write_launch(tree)
+    assert "__" not in (tree / ".claude" / "launch.json").read_text()
+
+
+def test_the_launch_template_is_itself_valid_json():
+    """It is a .json file; an editor or linter opening it should not choke on
+    an unsubstituted placeholder."""
+    json.loads((ROOT / ".claude" / "launch.example.json").read_text())

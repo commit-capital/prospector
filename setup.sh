@@ -74,3 +74,4 @@ fi
 
 source "$ROOT/dev-ports.sh"
 claim_dev_ports "$ROOT" "$ENV_FILE"
+write_launch_config "$ROOT"
