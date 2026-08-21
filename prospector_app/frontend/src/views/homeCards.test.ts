@@ -3,7 +3,8 @@ import { test } from "node:test";
 import { ALL_CHECKS_PASS, CHECK_DEFS } from "../components/explorer/checkDefs.ts";
 import { LANES, MERGE_READY_SPEC } from "../components/explorer/lanes.ts";
 import {
-  exploreHref, HOME_CARDS, painLabel, SAMPLE_LIMIT, SAMPLE_QUERY,
+  exploreHref, HOME_CARDS, HOME_ISSUE_CARDS, ISSUE_ANALYZE_BATCH, issuesHref,
+  painLabel, SAMPLE_LIMIT, SAMPLE_QUERY,
   type HomeCard,
 } from "./homeCards.ts";
 
@@ -96,6 +97,43 @@ test("card samples ask for the highest-pain PRs first", () => {
 
 test("the sample query fetches exactly the table's row budget", () => {
   assert.equal(SAMPLE_QUERY.limit, SAMPLE_LIMIT);
+});
+
+test("issue card keys are unique and disjoint from PR card keys", () => {
+  const keys = [...HOME_CARDS.map((c) => c.key), ...HOME_ISSUE_CARDS.map((c) => c.key)];
+  assert.equal(new Set(keys).size, keys.length);
+});
+
+test("the issue cards cover the close-fixed picks and the unanalyzed backlog", () => {
+  assert.deepEqual(HOME_ISSUE_CARDS.map((c) => c.key), ["issues-close-fixed", "issues-unanalyzed"]);
+  assert.deepEqual(HOME_ISSUE_CARDS.map((c) => c.disposition), ["close-fixed", "none"]);
+});
+
+test("only the unanalyzed card runs a job, and it runs issue-analyze", () => {
+  const actions = Object.fromEntries(HOME_ISSUE_CARDS.map((c) => [c.key, c.action ?? null]));
+  assert.equal(actions["issues-close-fixed"], null);
+  assert.deepEqual(actions["issues-unanalyzed"],
+    { kind: "issue-analyze", label: "Analyze", batch: ISSUE_ANALYZE_BATCH });
+});
+
+test("issuesHref carries the card's disposition filter", () => {
+  for (const card of HOME_ISSUE_CARDS) {
+    const href = issuesHref(card);
+    assert.ok(href.startsWith("/issues?"));
+    const params = new URLSearchParams(href.slice("/issues?".length));
+    assert.equal(params.get("disposition"), card.disposition);
+  }
+});
+
+test("row actions run the per-PR phase that unblocks the card, and only there", () => {
+  const byKey = Object.fromEntries(HOME_CARDS.map((c) => [c.key, c.rowAction?.kind ?? null]));
+  assert.equal(byKey["verify-pending"], "verify-pr");
+  assert.equal(byKey["security-pending"], "security-review");
+  for (const card of HOME_CARDS) {
+    if (card.key !== "verify-pending" && card.key !== "security-pending") {
+      assert.equal(card.rowAction, undefined, card.key);
+    }
+  }
 });
 
 test("painLabel formats a score to two decimals and hides missing ones", () => {
