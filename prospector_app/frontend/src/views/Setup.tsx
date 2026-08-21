@@ -282,9 +282,9 @@ function ShareSection() {
 
   return (
     <section className="setup-card setup-share">
-      <h3>🤝 Share this deployment</h3>
+      <h3>🤝 Invite a member to this project</h3>
       <p className="muted small">
-        About a teammate's machine, not this one. Copies everything a fresh
+        Copies everything a fresh
         checkout needs to join this deployment: the repo, bot identity, review
         config, the store URL, and this deployment's <code>profile.json</code>.
         Your teammate pastes it into the setup wizard their app opens on first
