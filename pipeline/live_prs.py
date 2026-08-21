@@ -1,30 +1,32 @@
 """Batched GitHub facts for current PR heads.
 
 One GraphQL request covers up to 40 PRs and returns the inexpensive signals that
-share the PR head as their freshness boundary: state, mergeability, CI, aggregate
-diffstat, and the first page of changed paths for test-presence classification.
+share the PR head as their freshness boundary: state, mergeability, the head's
+check runs and statuses (CI, with reviewer-owned runs carried separately for the
+reviewer adapters), aggregate diffstat, the first page of changed paths for
+test-presence classification, and the PR's updatedAt for the incremental feed.
 """
 from __future__ import annotations
 
 import logging
 
-from pipeline import settings
+from pipeline import ci_signal
 from pipeline import diffpaths
+from pipeline import settings
 from pipeline.gh import gh_graphql
 
 _log = logging.getLogger(__name__)
 
 CHUNK_SIZE = 40
 
-_CI_NORM = {"SUCCESS": "passing", "FAILURE": "failing", "ERROR": "failing",
-            "PENDING": "pending", "EXPECTED": "pending"}
-
 
 def _query(prs: list[int]) -> str:
-    fields = ("number state merged headRefOid mergeable "
+    fields = ("number state merged headRefOid mergeable updatedAt "
               "additions deletions changedFiles "
               "files(first: 100) { nodes { path } } "
-              "commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }")
+              "commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes { "
+              "__typename ... on CheckRun { name status conclusion title summary detailsUrl url "
+              "checkSuite { app { slug } } } ... on StatusContext { context state } } } } } } }")
     aliases = " ".join(f"p{i}: pullRequest(number: {int(n)}) {{ {fields} }}"
                        for i, n in enumerate(prs))
     return f'query {{ repository(owner: "{settings.repo_owner()}", name: "{settings.repo_name()}") {{ {aliases} }} }}'
@@ -95,7 +97,9 @@ def fetch(prs: list[int]) -> tuple[dict[int, dict], set[int]]:
                 _log.warning("live PR fetch returned incomplete diffstat for PR #%d", n)
                 continue
             commits = ((node.get("commits") or {}).get("nodes")) or [{}]
-            rollup = (commits[0] or {}).get("commit", {}).get("statusCheckRollup") or {}
+            rollup = ((commits[0] or {}).get("commit") or {}).get("statusCheckRollup") or {}
+            runs, statuses = ci_signal.from_graphql_contexts(
+                (rollup.get("contexts") or {}).get("nodes") or [])
             file_nodes = ((node.get("files") or {}).get("nodes")) or []
             paths = [f.get("path") for f in file_nodes if f.get("path")]
             out[int(n)] = {
@@ -103,7 +107,10 @@ def fetch(prs: list[int]) -> tuple[dict[int, dict], set[int]]:
                 "merged": bool(node.get("merged")),
                 "head": node.get("headRefOid"),
                 "mergeable": node.get("mergeable"),
-                "ci": _CI_NORM.get(rollup.get("state") or ""),
+                "updated_at": node.get("updatedAt"),
+                "ci": ci_signal.verdict(runs, statuses),
+                "check_runs": runs,
+                "statuses": statuses,
                 "diffstat": diffstat,
                 "has_tests": diffpaths.has_tests(paths),
             }

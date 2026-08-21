@@ -1,5 +1,5 @@
 """Thin transport over `gh api`: run the CLI, parse its JSON, return None on any
-failure so callers degrade gracefully. Domain logic (CI verdicts, Greptile
+failure so callers degrade gracefully. Domain logic (CI verdicts, reviewer
 parsing) lives in the callers; this module only fetches and parses."""
 from __future__ import annotations
 
@@ -89,17 +89,17 @@ def fetch_pr(n: int) -> dict | None:
 
 
 def check_runs(sha: str) -> list[dict]:
-    """The commit's CI check runs from GitHub as `[{name, conclusion, status}]`,
-    deduped by (name, conclusion), superseded re-runs dropped via filter=latest.
-    Empty when `sha` is falsy, GitHub has no checks for it, or the fetch fails."""
+    """The commit's check runs from GitHub as `[{app, name, status, conclusion,
+    title, summary, url}]`, deduped by (name, conclusion), superseded re-runs
+    dropped via filter=latest. Empty when `sha` is falsy, GitHub has no checks
+    for it, or the fetch fails."""
+    from pipeline import ci_signal
     if not sha:
         return []
     data = gh_json(f"repos/{settings.repo()}/commits/{sha}/check-runs?per_page=100&filter=latest")
     seen: set[tuple[str | None, str | None]] = set()
     out: list[dict] = []
-    for r in (data or {}).get("check_runs", []):
-        item = {"name": r.get("name"), "conclusion": r.get("conclusion"),
-                "status": r.get("status")}
+    for item in ci_signal.from_rest_check_runs((data or {}).get("check_runs", [])):
         key = (item["name"], item["conclusion"])
         if key not in seen:
             seen.add(key)

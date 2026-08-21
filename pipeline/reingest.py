@@ -1,7 +1,7 @@
 """Reingest ONE PR against its current head SHA: refresh its facts, then bring
 only the sections that went stale back to the current head. Stops at ANALYZE.
 
-Deterministic first: `ingest.refresh_prs` re-fetches signals / CI / Greptile and
+Deterministic first: `ingest.refresh_prs` re-fetches signals / CI / reviewer feeds and
 re-stamps signals + drift at the live head — on its own enough to clear a
 resubmitted PR's drift block for the human merge gate (`gates.merge_eligibility`
 does not require analysis freshness). When that still leaves `summary` or
@@ -148,7 +148,7 @@ def run(store: Store, pr: int) -> int:
 def _run(store: Store, pr: int) -> int:
     _say(f"▶ Reingesting PR #{pr}")
 
-    # 1. Refresh facts from GitHub (signals/CI/Greptile → signals+drift re-stamped
+    # 1. Refresh facts from GitHub (signals/CI/reviewers → signals+reviews+drift re-stamped
     #    at the live head). Deterministic; a moved head auto-stales summary/analysis.
     _say("① Refreshing the PR from GitHub…")
     r = ingest.refresh_prs(store, [pr])[0]
