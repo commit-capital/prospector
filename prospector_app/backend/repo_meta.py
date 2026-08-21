@@ -37,12 +37,12 @@ def meta() -> RepoMeta:
     from."""
     tp = profile.active().test_paths
     return {
-        "repo": settings.REPO,
-        "owner": settings.REPO_OWNER,
-        "name": settings.REPO_NAME,
-        "url": settings.REPO_URL,
+        "repo": settings.repo(),
+        "owner": settings.repo_owner(),
+        "name": settings.repo_name(),
+        "url": settings.repo_url(),
         "default_branch": settings.default_branch(),
-        "display_name": settings.DISPLAY_NAME,
-        "feedback_repo": settings.FEEDBACK_REPO or None,
+        "display_name": settings.display_name(),
+        "feedback_repo": settings.feedback_repo() or None,
         "test_paths": {"dir_pattern": tp.dir_pattern, "file_pattern": tp.file_pattern},
     }

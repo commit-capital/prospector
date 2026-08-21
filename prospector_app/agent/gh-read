@@ -11,7 +11,7 @@ it shells out to `gh api` with the method hardcoded to GET and the endpoint buil
 from fixed strings, so there is no way to turn it into a write.
 
 Two things the agent can't otherwise see — a file's exact bytes at a ref, and a
-tree-wide code search — both plain GETs against the upstream repo (settings.REPO):
+tree-wide code search — both plain GETs against the upstream repo (settings.repo()):
 
 Usage:
     prospector_app/agent/gh-read file <path>            # raw file at the default branch
@@ -51,7 +51,7 @@ def _run(argv: list[str]) -> int:
 def read_file(path: str, ref: str | None) -> int:
     # Method is fixed (a GET; no -X), so this can only read. A leading slash would
     # make an absolute API path — strip it so the endpoint stays repo-scoped.
-    endpoint = f"repos/{settings.REPO}/contents/{path.lstrip('/')}"
+    endpoint = f"repos/{settings.repo()}/contents/{path.lstrip('/')}"
     if ref:
         endpoint += f"?ref={ref}"
     return _run(["gh", "api", endpoint, "-H", "Accept: application/vnd.github.raw"])
@@ -59,7 +59,7 @@ def read_file(path: str, ref: str | None) -> int:
 
 def search_code(query: str) -> int:
     # Scope the search to the upstream repo unless the caller already qualified it.
-    q = query if "repo:" in query else f"{query} repo:{settings.REPO}"
+    q = query if "repo:" in query else f"{query} repo:{settings.repo()}"
     return _run(["gh", "api", "-X", "GET", "search/code", "-f", f"q={q}"])
 
 

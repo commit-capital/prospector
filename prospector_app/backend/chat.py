@@ -78,13 +78,13 @@ from prospector_app.backend import issues
 from prospector_app.backend import issue_receipts
 from prospector_app.backend import safety_guard
 from prospector_app.backend import subproc
+from pipeline import settings
 from pipeline import profile
 from pipeline import review_policy
 from pipeline import schema
 from prospector_app.backend import service
 from pipeline import store
 from pipeline import storekit
-from pipeline.settings import BOT_LOGIN, DISPLAY_NAME, FEEDBACK_REPO, REPO
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 APP_ROOT = Path(__file__).resolve().parents[1]
@@ -119,7 +119,7 @@ _GH_ALLOW = [
 ]
 
 # Curated upstream writes ride one narrow helper that validates the operation,
-# pins --repo to REPO, and mints an installation token for each invocation. PR
+# pins --repo to settings.repo(), and mints an installation token for each invocation. PR
 # close/reopen/review and issue close use their executor helpers below so those
 # attempts are also recorded in Activity.
 _GH_WRITE_ALLOW = ["Bash(prospector_app/agent/gh-write:*)"]
@@ -313,9 +313,9 @@ def system_prompt() -> str:
         template_parts.append(
             "recommended: " + ", ".join(harness.pr_template_recommended))
     pr_template = "; ".join(template_parts) or "(none configured)"
-    return (text.replace("{display_name}", DISPLAY_NAME)
-                .replace("{repo}", REPO).replace("{bot}", BOT_LOGIN)
-                .replace("{feedback_repo}", FEEDBACK_REPO or "(none configured)")
+    return (text.replace("{display_name}", settings.display_name())
+                .replace("{repo}", settings.repo()).replace("{bot}", settings.bot_login())
+                .replace("{feedback_repo}", settings.feedback_repo() or "(none configured)")
                 .replace("{review_bar}", review_bar)
                 .replace("{pr_template}", pr_template)
                 .replace("{retrigger_mention}",
@@ -652,7 +652,7 @@ def _build_context(pr: int | None, cluster: int | None, issue: int | None,
         return _cluster_context(cluster)
     if issue:
         return _issue_context(issue)
-    return (f"CONTEXT: Prospector, triaging the open PRs on {REPO} "
+    return (f"CONTEXT: Prospector, triaging the open PRs on {settings.repo()} "
             "grouped into clusters. Answer the operator's general question about the codebase or triage.")
 
 
@@ -764,7 +764,7 @@ async def stream_chat(question: str, pr: int | None = None, cluster: int | None 
                     command = tool_commands.get(c.get("tool_use_id"), "")
                     is_error = bool(c.get("is_error"))
                     receipt = issue_receipts.parse(
-                        command, c.get("content"), FEEDBACK_REPO, is_error=is_error
+                        command, c.get("content"), settings.feedback_repo(), is_error=is_error
                     )
                     if receipt is not None:
                         file_issue_receipts.append(receipt)

@@ -13,7 +13,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
-from pipeline.settings import REPO  # noqa: E402
+from pipeline import settings  # noqa: E402
 from prospector_app.backend import executor  # noqa: E402
 from prospector_app.backend import safety_guard  # noqa: E402
 
@@ -117,7 +117,7 @@ def build_gh_argv(argv: list[str]) -> list[str]:
             cmd.append("--failed")
     else:
         parser.error("unsupported write")
-    return [*cmd, "--repo", REPO]
+    return [*cmd, "--repo", settings.repo()]
 
 
 def _bad_credentials(stdout: str, stderr: str) -> bool:

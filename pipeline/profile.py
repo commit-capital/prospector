@@ -463,8 +463,8 @@ def _load(path_str: str) -> RepoProfile:
 def active() -> RepoProfile:
     """The configured repository profile. Reads settings on each call (cheap;
     the parsed file is cached per path) so tests can monkeypatch
-    settings.PROFILE_PATH without cache invalidation. Profiles do not change
+    settings.profile_path() without cache invalidation. Profiles do not change
     mid-run."""
-    if not settings.PROFILE_PATH:
+    if not settings.profile_path():
         return GENERIC
-    return _load(settings.PROFILE_PATH)
+    return _load(settings.profile_path())

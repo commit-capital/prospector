@@ -59,7 +59,7 @@ class TestPlaceholders:
         from pipeline import taxonomy
         filled = cd.summarize_prompt()
         assert ", ".join(taxonomy.subsystem_names()) in filled
-        assert settings.REPO in filled
+        assert settings.repo() in filled
         assert "__SUBSYSTEMS__" not in filled
         assert "__REPO__" not in filled
 

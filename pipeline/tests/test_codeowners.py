@@ -3,7 +3,6 @@
 Runs under the fixture profile (root conftest); the generic-default tests
 clear PROFILE_PATH per test — the same consumer against two profiles."""
 from pipeline import codeowners as co
-from pipeline import settings
 
 
 class TestFixtureProfile:
@@ -29,7 +28,7 @@ class TestFixtureProfile:
 
 class TestGenericDefault:
     def test_nothing_gated(self, monkeypatch):
-        monkeypatch.setattr(settings, "PROFILE_PATH", "")
+        monkeypatch.setenv("TRIAGE_PROFILE", "")
         assert not co.is_gated(".github/workflows/pr.yml")
         assert not co.is_gated("package.json")
         assert co.human_merge([".github/workflows/ci.yml", "package.json"]) is None

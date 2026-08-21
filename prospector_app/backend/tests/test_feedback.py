@@ -4,12 +4,11 @@ import asyncio
 import json
 import subprocess
 
-from pipeline import settings
 from prospector_app.backend import feedback
 
 
 def test_target_uses_configured_repo(monkeypatch):
-    monkeypatch.setattr(settings, "FEEDBACK_REPO", "someone/elsewhere")
+    monkeypatch.setenv("PROSPECTOR_FEEDBACK_REPO", "someone/elsewhere")
     monkeypatch.setattr(feedback, "operator_login", lambda: "tester")
     monkeypatch.setattr(feedback.instance, "instance", lambda: {"branch": "feat/x", "worktree": "wt"})
     t = feedback.target()
@@ -22,7 +21,7 @@ def test_target_uses_configured_repo(monkeypatch):
 
 
 def test_target_repo_none_when_unconfigured(monkeypatch):
-    monkeypatch.setattr(settings, "FEEDBACK_REPO", "")
+    monkeypatch.setenv("PROSPECTOR_FEEDBACK_REPO", "")
     monkeypatch.setattr(feedback, "operator_login", lambda: None)
     monkeypatch.setattr(feedback.instance, "instance", lambda: {"branch": None, "worktree": None})
     t = feedback.target()

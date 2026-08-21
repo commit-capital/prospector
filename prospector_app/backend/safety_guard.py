@@ -24,10 +24,10 @@ import re
 import subprocess
 from typing import TypedDict
 
+from pipeline import settings
 from pipeline import schema
 from pipeline import storekit
 from pipeline.gh import operator_env
-from pipeline.settings import BOT_LOGIN
 
 ALLOWED_BINARIES = {"gh", "git", "claude", "python", "python3"}
 
@@ -189,7 +189,7 @@ _MERGE_RE = re.compile(r"^gh\s+pr\s+merge\s+\d+\b")
 def _require_bot_token(token: str | None, action: str) -> str:
     if not token or not token.strip():
         raise WriteAttemptBlocked(
-            f"refusing to {action} without a {BOT_LOGIN} token (would fall back to default login)"
+            f"refusing to {action} without a {settings.bot_login()} token (would fall back to default login)"
         )
     return token
 

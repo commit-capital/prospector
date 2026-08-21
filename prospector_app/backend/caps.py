@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from prospector_app.backend.safety_guard import run
 from prospector_app.backend.safety_guard import store_schema_status
+from pipeline import settings
 from pipeline import review_policy
-from pipeline.settings import BOT_LOGIN
 
 _cache: dict | None = None
 
@@ -42,7 +42,7 @@ def capabilities() -> dict:
         write_ready = store_schema["write_block"] is None
         _cache = {
             "login": login,
-            "bot": BOT_LOGIN,
+            "bot": settings.bot_login(),
             # Writes go out as the configured app and require a current store
             # schema; per-PR policy remains in the executor.
             "merge_upstream": live and write_ready,

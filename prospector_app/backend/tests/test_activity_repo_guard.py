@@ -19,7 +19,7 @@ def test_first_write_stamps_the_store(tmp_path):
     eng = _engine(tmp_path)
     assert storekit.stamped_repo(eng) is None
     storekit.assert_repo(eng)
-    assert storekit.stamped_repo(eng) == settings.REPO
+    assert storekit.stamped_repo(eng) == settings.repo()
 
 
 def test_matching_repo_is_allowed(tmp_path):
@@ -31,7 +31,7 @@ def test_matching_repo_is_allowed(tmp_path):
 def test_foreign_repo_is_refused(tmp_path, monkeypatch):
     eng = _engine(tmp_path)
     storekit.assert_repo(eng)   # stamped with the configured repo
-    monkeypatch.setattr(settings, "REPO", "other-owner/other-repo")
+    monkeypatch.setenv("TRIAGE_REPO", "other-owner/other-repo")
     with pytest.raises(storekit.ForeignRepoError, match="refusing to write"):
         storekit.assert_repo(eng)
 
@@ -39,7 +39,7 @@ def test_foreign_repo_is_refused(tmp_path, monkeypatch):
 def test_escape_hatch_downgrades_to_a_warning(tmp_path, monkeypatch, capsys):
     eng = _engine(tmp_path)
     storekit.assert_repo(eng)
-    monkeypatch.setattr(settings, "REPO", "other-owner/other-repo")
+    monkeypatch.setenv("TRIAGE_REPO", "other-owner/other-repo")
     monkeypatch.setattr(settings, "STORE_ALLOW_FOREIGN_REPO", True)
     storekit._FOREIGN_WARNED.clear()
     storekit.assert_repo(eng)   # does not raise
@@ -54,6 +54,6 @@ def test_record_refuses_a_foreign_repo_write(tmp_path, monkeypatch):
     monkeypatch.setattr(activity, "operator", lambda: {"name": "T", "email": None})
     activity.record("issue-close", issue=10, action="CLOSE_ISSUE_DUP", status="executed")
 
-    monkeypatch.setattr(settings, "REPO", "other-owner/other-repo")
+    monkeypatch.setenv("TRIAGE_REPO", "other-owner/other-repo")
     with pytest.raises(storekit.ForeignRepoError):
         activity.record("issue-close", issue=389, action="CLOSE_ISSUE_DUP", status="executed")

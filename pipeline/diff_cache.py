@@ -25,9 +25,9 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from pipeline import settings
 from pipeline import diffpaths
 from pipeline.gh import operator_env
-from pipeline.settings import REPO
 
 if TYPE_CHECKING:
     from pipeline.store import Store
@@ -59,7 +59,7 @@ def _store_save(store: Store, rows: list[tuple[str, int | None, str]]) -> None:
 def _fetch_changed_paths(pr: int) -> list[str] | None:
     """Every changed path from GitHub's paginated per-file listing, or None
     when the listing is unavailable."""
-    res = subprocess.run(["gh", "api", f"repos/{REPO}/pulls/{pr}/files",
+    res = subprocess.run(["gh", "api", f"repos/{settings.repo()}/pulls/{pr}/files",
                           "--paginate", "--jq", ".[].filename"],
                          capture_output=True, text=True, timeout=120,
                          env=operator_env())
@@ -87,7 +87,7 @@ def _synthesize_diff(pr: int) -> str | None:
     """GitHub refuses .diff for PRs over 20k lines (HTTP 406). Rebuild one from
     the per-file listing; files past GitHub's per-file patch limit appear as
     headers with +/- counts only."""
-    res = subprocess.run(["gh", "api", f"repos/{REPO}/pulls/{pr}/files",
+    res = subprocess.run(["gh", "api", f"repos/{settings.repo()}/pulls/{pr}/files",
                           "--paginate", "--jq", ".[]"],
                          capture_output=True, text=True, timeout=120,
                          env=operator_env())
@@ -133,7 +133,7 @@ def fetch_diff_paths(pr: int, head_sha: str, diffs_dir: Path | None = None,
             if len(body) < MAX_DIFF_BYTES:
                 return diffpaths.changed_paths(body)
             return _fetch_changed_paths(pr)
-    res = subprocess.run(["gh", "pr", "diff", str(pr), "--repo", REPO],
+    res = subprocess.run(["gh", "pr", "diff", str(pr), "--repo", settings.repo()],
                          capture_output=True, text=True, timeout=120,
                          env=operator_env())
     text = res.stdout if res.returncode == 0 else _synthesize_diff(pr)

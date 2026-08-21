@@ -30,9 +30,9 @@ from prospector_app.backend import decisions
 from prospector_app.backend import models
 from prospector_app.backend import service
 from prospector_app.backend.safety_guard import bot_merge_run, bot_run, run
+from pipeline import settings
 from pipeline import freshness
 from pipeline import review_policy
-from pipeline.settings import BOT_LOGIN, REPO
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GET_TOKEN = REPO_ROOT / "pipeline" / "get-bot-token.sh"
@@ -123,11 +123,11 @@ def refresh_live() -> None:
 def identities() -> dict:
     live = live_possible()
     error = None if live else mint_error()
-    note = None if live else (f"no {BOT_LOGIN} token on this machine — dry-run only"
+    note = None if live else (f"no {settings.bot_login()} token on this machine — dry-run only"
                               + (f" ({error})" if error else ""))
     return {
         "identities": [
-            {"id": BOT_LOGIN, "label": f"{BOT_LOGIN} (bot)", "available": live, "note": note},
+            {"id": settings.bot_login(), "label": f"{settings.bot_login()} (bot)", "available": live, "note": note},
         ],
         "live_possible": live,
         "live_error": error,
@@ -141,7 +141,7 @@ def _effective_action(a: models.CloseAction) -> str:
 def _pr_live(n: int) -> dict | None:
     """Live {state, head, merged, mergeable_state} for a PR, or None if GitHub is
     unreachable. `mergeable_state` is "dirty" when the branch now conflicts."""
-    r = run(["gh", "api", f"repos/{REPO}/pulls/{n}",
+    r = run(["gh", "api", f"repos/{settings.repo()}/pulls/{n}",
              "--jq", "{state: .state, head: .head.sha, merged: .merged, mergeable_state: .mergeable_state}"], timeout=30)
     if r.returncode != 0:
         return None
@@ -273,7 +273,7 @@ def _is_bot_login(login: str | None) -> bool:
     GitHub App's actions under the `[bot]`-suffixed login (`triagebot[bot]`),
     while TRIAGE_BOT_LOGIN is the bare App slug — accept either form, on either
     side."""
-    return bool(login) and login.removesuffix("[bot]") == BOT_LOGIN.removesuffix("[bot]")
+    return bool(login) and login.removesuffix("[bot]") == settings.bot_login().removesuffix("[bot]")
 
 
 def _jq_rows(stdout: str | None) -> list[dict]:
@@ -298,7 +298,7 @@ def _has_bot_comment(n: int, contains: str | None = None) -> bool:
     the login and the substring are matched in Python: the REST login carries the
     `[bot]` suffix, and jq's `contains("…")` takes a quoted literal, so a body
     holding a quote or backslash cannot be searched for through the filter."""
-    r = run(["gh", "api", f"repos/{REPO}/issues/{n}/comments",
+    r = run(["gh", "api", f"repos/{settings.repo()}/issues/{n}/comments",
              "--jq", '.[] | {login: .user.login, body: .body}'], timeout=30)
     bodies = [row.get("body") for row in _jq_rows(r.stdout)
               if _is_bot_login(row.get("login"))]
@@ -344,7 +344,7 @@ def _comment_then_close(n: int, *, base: dict, idempotency_key: str | None,
     def _fail(detail: str) -> dict:
         res = {**base, "status": "error", "detail": detail}
         try:
-            activity.record(log_verb, identity=BOT_LOGIN, dry_run=False,
+            activity.record(log_verb, identity=settings.bot_login(), dry_run=False,
                             stale_override=stale_override, **res)
         except Exception as e:  # the log write never masks the upstream failure
             _note_bookkeeping_failure(res, "activity log write failed", e)
@@ -378,7 +378,7 @@ def _comment_then_close(n: int, *, base: dict, idempotency_key: str | None,
         except Exception as e:
             _note_bookkeeping_failure(res, "post-close bookkeeping failed", e)
     try:
-        activity.record(log_verb, identity=BOT_LOGIN, dry_run=False,
+        activity.record(log_verb, identity=settings.bot_login(), dry_run=False,
                         stale_override=stale_override, **res)
     except Exception as e:
         _note_bookkeeping_failure(res, "activity log write failed", e)
@@ -434,21 +434,21 @@ def execute_pr(n: int, action: models.CloseAction, *, token: str | None, dry_run
     # forced dry-run when no token
     if dry_run or not token:
         res = {**base, "status": "dry-run", "detail": "; ".join(plan), "forced": not token and not dry_run}
-        activity.record("execute", identity=BOT_LOGIN, dry_run=True,
+        activity.record("execute", identity=settings.bot_login(), dry_run=True,
                         stale_override=overridden, **res)
         return res
 
     return _comment_then_close(
         n, base=base, idempotency_key=_comment_marker(comment),
-        comment_argv=["gh", "pr", "comment", str(n), "--repo", REPO, "--body", comment],
-        close_argv=["gh", "pr", "close", str(n), "--repo", REPO],
+        comment_argv=["gh", "pr", "comment", str(n), "--repo", settings.repo(), "--body", comment],
+        close_argv=["gh", "pr", "close", str(n), "--repo", settings.repo()],
         token=token, log_verb="execute", capture_event_url=True,
         stale_override=overridden,
         on_success=lambda: _reflect_state(n, state="closed"))
 
 
 def _bot_comment_ids(n: int) -> list[int]:
-    r = run(["gh", "api", f"repos/{REPO}/issues/{n}/comments",
+    r = run(["gh", "api", f"repos/{settings.repo()}/issues/{n}/comments",
              "--jq", '.[] | {login: .user.login, id: .id}'], timeout=30)
     if r.returncode != 0:
         return []
@@ -462,7 +462,7 @@ def _bot_change_request_ids(n: int) -> list[int]:
     A request-changes is a PR *review* (pulls/{n}/reviews), not an issue
     comment, so deleting issue comments on reopen leaves its "here's what to
     fix" body visible — the cause of #70. These get dismissed on reopen."""
-    r = run(["gh", "api", "--paginate", f"repos/{REPO}/pulls/{n}/reviews",
+    r = run(["gh", "api", "--paginate", f"repos/{settings.repo()}/pulls/{n}/reviews",
              "--jq", '.[] | {login: .user.login, id: .id, state: .state}'], timeout=30)
     if r.returncode != 0:
         return []
@@ -481,21 +481,21 @@ def reopen_pr(n: int, *, token: str | None, dry_run: bool) -> dict:
                 "detail": "would reopen + remove bot comment(s) + dismiss any request-changes review",
                 "forced": not token and not dry_run}
     try:
-        rr = bot_run(["gh", "pr", "reopen", str(n), "--repo", REPO], token)
+        rr = bot_run(["gh", "pr", "reopen", str(n), "--repo", settings.repo()], token)
         if rr.returncode != 0:
             res = {**base, "status": "error", "detail": f"reopen failed: {rr.stderr.strip()[:160]}"}
-            activity.record("reopen", identity=BOT_LOGIN, dry_run=False, **res)
+            activity.record("reopen", identity=settings.bot_login(), dry_run=False, **res)
             return res
         removed = 0
         for cid in _bot_comment_ids(n):
-            dr = bot_run(["gh", "api", "--method", "DELETE", f"repos/{REPO}/issues/comments/{cid}"], token)
+            dr = bot_run(["gh", "api", "--method", "DELETE", f"repos/{settings.repo()}/issues/comments/{cid}"], token)
             if dr.returncode == 0:
                 removed += 1
         # withdraw any standing request-changes so reopening leaves a clean slate
         dismissed = 0
         for rid in _bot_change_request_ids(n):
             dn = bot_run(["gh", "api", "--method", "PUT",
-                          f"repos/{REPO}/pulls/{n}/reviews/{rid}/dismissals",
+                          f"repos/{settings.repo()}/pulls/{n}/reviews/{rid}/dismissals",
                           "-f", "message=Reopened during triage — earlier change request withdrawn.",
                           "-f", "event=DISMISS"], token)
             if dn.returncode == 0:
@@ -503,14 +503,14 @@ def reopen_pr(n: int, *, token: str | None, dry_run: bool) -> dict:
     except Exception as e:
         res = {**base, "status": "error",
                "detail": _public_exception_detail("reopen failed unexpectedly", e)}
-        activity.record("reopen", identity=BOT_LOGIN, dry_run=False, **res)
+        activity.record("reopen", identity=settings.bot_login(), dry_run=False, **res)
         return res
     detail = f"reopened + removed {removed} bot comment(s)"
     if dismissed:
         detail += f" + dismissed {dismissed} request-changes review(s)"
     res = {**base, "status": "reopened", "detail": detail}
     _reflect_state(n, state="open")
-    activity.record("reopen", identity=BOT_LOGIN, dry_run=False, **res)
+    activity.record("reopen", identity=settings.bot_login(), dry_run=False, **res)
     return res
 
 
@@ -526,24 +526,24 @@ def reopen_issue(n: int, *, token: str | None, dry_run: bool) -> dict:
         return {**base, "status": "dry-run", "detail": "would reopen + remove bot comment(s)",
                 "forced": not token and not dry_run}
     try:
-        rr = bot_run(["gh", "issue", "reopen", str(n), "--repo", REPO], token)
+        rr = bot_run(["gh", "issue", "reopen", str(n), "--repo", settings.repo()], token)
         if rr.returncode != 0:
             res = {**base, "status": "error", "detail": f"reopen failed: {rr.stderr.strip()[:160]}"}
-            activity.record("issue-reopen", identity=BOT_LOGIN, dry_run=False, **res)
+            activity.record("issue-reopen", identity=settings.bot_login(), dry_run=False, **res)
             return res
         removed = 0
         for cid in _bot_comment_ids(n):
-            dr = bot_run(["gh", "api", "--method", "DELETE", f"repos/{REPO}/issues/comments/{cid}"], token)
+            dr = bot_run(["gh", "api", "--method", "DELETE", f"repos/{settings.repo()}/issues/comments/{cid}"], token)
             if dr.returncode == 0:
                 removed += 1
     except Exception as e:
         res = {**base, "status": "error",
                "detail": _public_exception_detail("issue reopen failed unexpectedly", e)}
-        activity.record("issue-reopen", identity=BOT_LOGIN, dry_run=False, **res)
+        activity.record("issue-reopen", identity=settings.bot_login(), dry_run=False, **res)
         return res
     res = {**base, "status": "reopened", "detail": f"reopened + removed {removed} bot comment(s)"}
     issues_mod.reflect_issue_state(n, "open")
-    activity.record("issue-reopen", identity=BOT_LOGIN, dry_run=False, **res)
+    activity.record("issue-reopen", identity=settings.bot_login(), dry_run=False, **res)
     return res
 
 
@@ -555,25 +555,25 @@ def comment_issue(n: int, action: models.IssueCommentBody, *, token: str | None,
     comment = (action.comment or "").strip()
     if not comment:
         res = {**base, "status": "error", "detail": "comment is empty"}
-        activity.record("issue-comment", identity=BOT_LOGIN, dry_run=dry_run, **res)
+        activity.record("issue-comment", identity=settings.bot_login(), dry_run=dry_run, **res)
         return res
     if dry_run or not token:
         res = {**base, "status": "dry-run", "detail": f'comment: "{comment[:80]}…"',
                "forced": not token and not dry_run}
-        activity.record("issue-comment", identity=BOT_LOGIN, dry_run=True, **res)
+        activity.record("issue-comment", identity=settings.bot_login(), dry_run=True, **res)
         return res
     try:
-        r = bot_run(["gh", "issue", "comment", str(n), "--repo", REPO, "--body", comment], token)
+        r = bot_run(["gh", "issue", "comment", str(n), "--repo", settings.repo(), "--body", comment], token)
     except Exception as e:
         res = {**base, "status": "error",
                "detail": _public_exception_detail("issue comment failed unexpectedly", e)}
-        activity.record("issue-comment", identity=BOT_LOGIN, dry_run=False, **res)
+        activity.record("issue-comment", identity=settings.bot_login(), dry_run=False, **res)
         return res
     if r.returncode != 0:
         res = {**base, "status": "error", "detail": f"comment failed: {r.stderr.strip()[:160]}"}
     else:
         res = {**base, "status": "executed", "detail": "comment posted"}
-    activity.record("issue-comment", identity=BOT_LOGIN, dry_run=False, **res)
+    activity.record("issue-comment", identity=settings.bot_login(), dry_run=False, **res)
     return res
 
 
@@ -589,7 +589,7 @@ def _latest_bot_review_url(n: int) -> str | None:
     """html_url of the configured bot's most recent review on a PR — the deep-link
     anchor for a review that carries a body (request-changes / comment). `gh pr
     review` prints no URL, so we read it back from the reviews API."""
-    r = run(["gh", "api", f"repos/{REPO}/pulls/{n}/reviews?per_page=100",
+    r = run(["gh", "api", f"repos/{settings.repo()}/pulls/{n}/reviews?per_page=100",
              "--jq", '.[] | {login: .user.login, url: .html_url}'], timeout=30)
     urls = [row["url"] for row in _jq_rows(r.stdout)
             if _is_bot_login(row.get("login")) and isinstance(row.get("url"), str)]
@@ -613,13 +613,13 @@ def submit_review(n: int, event: str, body: str, *, token: str | None, dry_run: 
         return refusal
     if dry_run or not token:
         effect = _REVIEW_EFFECT.get(event, f"a {event} review")
-        detail = (f"would submit {effect} on #{n} as {BOT_LOGIN} — PR stays open, "
+        detail = (f"would submit {effect} on #{n} as {settings.bot_login()} — PR stays open, "
                   f"nothing written to the store" + (f"; comment: “{body[:50]}…”" if body.strip() else ""))
         res = {**base, "status": "dry-run", "detail": detail, "forced": not token and not dry_run}
-        activity.record("review", identity=BOT_LOGIN, dry_run=True, event=event,
+        activity.record("review", identity=settings.bot_login(), dry_run=True, event=event,
                         stale_override=overridden, **res)
         return res
-    argv = ["gh", "pr", "review", str(n), "--repo", REPO, flag]
+    argv = ["gh", "pr", "review", str(n), "--repo", settings.repo(), flag]
     if body.strip():
         argv += ["--body", body]
     try:
@@ -635,7 +635,7 @@ def submit_review(n: int, event: str, body: str, *, token: str | None, dry_run: 
     except Exception as e:
         res = {**base, "status": "error",
                "detail": _public_exception_detail("review failed unexpectedly", e)}
-    activity.record("review", identity=BOT_LOGIN, dry_run=False, event=event,
+    activity.record("review", identity=settings.bot_login(), dry_run=False, event=event,
                     stale_override=overridden, **res)
     return res
 
@@ -655,13 +655,13 @@ def comment_line(n: int, file: str, line: int, body: str, *, token: str | None, 
     if dry_run or not token:
         res = {**base, "status": "dry-run", "detail": f"would comment on {file}:{line}: “{body[:50]}…”",
                "forced": not token and not dry_run}
-        activity.record("line_comment", identity=BOT_LOGIN, dry_run=True,
+        activity.record("line_comment", identity=settings.bot_login(), dry_run=True,
                         stale_override=overridden, **res)
         return res
-    head = (run(["gh", "api", f"repos/{REPO}/pulls/{n}", "--jq", ".head.sha"], timeout=30).stdout or "").strip()
+    head = (run(["gh", "api", f"repos/{settings.repo()}/pulls/{n}", "--jq", ".head.sha"], timeout=30).stdout or "").strip()
     if not head:
         return {**base, "status": "error", "detail": "could not resolve head sha"}
-    argv = ["gh", "api", "--method", "POST", f"repos/{REPO}/pulls/{n}/comments",
+    argv = ["gh", "api", "--method", "POST", f"repos/{settings.repo()}/pulls/{n}/comments",
             "-f", f"body={body}", "-f", f"commit_id={head}", "-f", f"path={file}",
             "-F", f"line={int(line)}", "-f", "side=RIGHT"]
     try:
@@ -676,7 +676,7 @@ def comment_line(n: int, file: str, line: int, body: str, *, token: str | None, 
     except Exception as e:
         res = {**base, "status": "error",
                "detail": _public_exception_detail("line comment failed unexpectedly", e)}
-    activity.record("line_comment", identity=BOT_LOGIN, dry_run=False,
+    activity.record("line_comment", identity=settings.bot_login(), dry_run=False,
                     stale_override=overridden, **res)
     return res
 
@@ -700,12 +700,12 @@ def retrigger_greptile(n: int, *, token: str | None, dry_run: bool) -> dict:
         return {**base, "status": "skipped", "detail": f"pre-flight: {pf.message}"}
     if dry_run or not token:
         res = {**base, "status": "dry-run",
-               "detail": f"would comment “{mention}” on #{n} as {BOT_LOGIN} to re-trigger the review",
+               "detail": f"would comment “{mention}” on #{n} as {settings.bot_login()} to re-trigger the review",
                "forced": not token and not dry_run}
-        activity.record("greptile_retrigger", identity=BOT_LOGIN, dry_run=True, **res)
+        activity.record("greptile_retrigger", identity=settings.bot_login(), dry_run=True, **res)
         return res
     try:
-        r = bot_run(["gh", "pr", "comment", str(n), "--repo", REPO, "--body", mention], token)
+        r = bot_run(["gh", "pr", "comment", str(n), "--repo", settings.repo(), "--body", mention], token)
         if r.returncode != 0:
             res = {**base, "status": "error", "detail": r.stderr.strip()[:160]}
         else:
@@ -716,7 +716,7 @@ def retrigger_greptile(n: int, *, token: str | None, dry_run: bool) -> dict:
     except Exception as e:
         res = {**base, "status": "error",
                "detail": _public_exception_detail("review retrigger failed unexpectedly", e)}
-    activity.record("greptile_retrigger", identity=BOT_LOGIN, dry_run=False, **res)
+    activity.record("greptile_retrigger", identity=settings.bot_login(), dry_run=False, **res)
     return res
 
 
@@ -772,14 +772,14 @@ def merge_pr(n: int, method: str = "squash", *, dry_run: bool, reason: str | Non
         method = "squash"
     token = None if dry_run else mint_bot_token()
     if dry_run or not token:
-        detail = f"would merge #{n} (--{method}) as {BOT_LOGIN}"
+        detail = f"would merge #{n} (--{method}) as {settings.bot_login()}"
         if override_pending:
             detail += " after logging the security-YELLOW override"
         if verify_override_pending:
             detail += " after logging the verify-escalate override"
         res = {**base, "status": "dry-run", "detail": detail,
                "forced": not token and not dry_run}
-        activity.record("merge", identity=BOT_LOGIN, dry_run=True, **res)
+        activity.record("merge", identity=settings.bot_login(), dry_run=True, **res)
         _credit_merge_closed_issues(rec, n, dry_run=True)
         return res
     # Compile preflight, live path only: (current default-branch HEAD + this
@@ -795,7 +795,7 @@ def merge_pr(n: int, method: str = "squash", *, dry_run: bool, reason: str | Non
         base["compile_preflight"] = {**pf, "ok": ok_cp}
         if not ok_cp:
             res = {**base, "status": "blocked", "detail": f"compile preflight: {why_cp}"}
-            activity.record("merge", identity=BOT_LOGIN, dry_run=False, **res)
+            activity.record("merge", identity=settings.bot_login(), dry_run=False, **res)
             return res
     if override_pending or verify_override_pending:
         from prospector_app.backend import caps  # deferred: caps imports executor
@@ -811,7 +811,7 @@ def merge_pr(n: int, method: str = "squash", *, dry_run: bool, reason: str | Non
     # refuses server-side when the live head no longer matches, closing the
     # window between the pre-flight head read above and this call — a force-push
     # in that window can't land unverified code.
-    argv = ["gh", "pr", "merge", str(n), "--repo", REPO, f"--{method}"]
+    argv = ["gh", "pr", "merge", str(n), "--repo", settings.repo(), f"--{method}"]
     if rec is not None and rec.head_sha:
         argv += ["--match-head-commit", rec.head_sha]
     try:
@@ -823,7 +823,7 @@ def merge_pr(n: int, method: str = "squash", *, dry_run: bool, reason: str | Non
                "detail": _public_exception_detail("merge failed unexpectedly", e)}
     if res["status"] == "merged":
         _reflect_state(n, state="closed", merged=True)
-    activity.record("merge", identity=BOT_LOGIN, dry_run=False, **res)
+    activity.record("merge", identity=settings.bot_login(), dry_run=False, **res)
     if res["status"] == "merged":
         _credit_merge_closed_issues(rec, n, dry_run=False)
     return res
@@ -854,10 +854,10 @@ def _credit_merge_closed_issues(rec: Pr | None, pr: int, *, dry_run: bool) -> No
         base = {"issue": m, "action": "CLOSE_ISSUE_FIXED", "fixed_by": int(pr), "via": "merge"}
         if dry_run:
             res = {**base, "status": "dry-run", "detail": f"would close #{m} as fixed by merged #{pr}"}
-            activity.record("issue-close", identity=BOT_LOGIN, dry_run=True, **res)
+            activity.record("issue-close", identity=settings.bot_login(), dry_run=True, **res)
             continue
         res = {**base, "status": "closed", "detail": f"closed by merge of #{pr}"}
-        activity.record("issue-close", identity=BOT_LOGIN, dry_run=False, **res)
+        activity.record("issue-close", identity=settings.bot_login(), dry_run=False, **res)
         issues_mod.reflect_issue_state(m, "closed", "completed")
 
 
@@ -865,7 +865,7 @@ def _issue_close_argv(n: int, reason: str, canonical: int | None) -> list[str]:
     """The argv that closes issue `n` upstream with GitHub state_reason `reason`. A
     'duplicate' close carries --duplicate-of when the canonical is known, so GitHub
     records the marked_as_duplicate link on the canonical issue."""
-    argv = ["gh", "issue", "close", str(n), "--repo", REPO, "--reason", reason]
+    argv = ["gh", "issue", "close", str(n), "--repo", settings.repo(), "--reason", reason]
     if reason == "duplicate" and canonical is not None:
         argv += ["--duplicate-of", str(canonical)]
     return argv
@@ -888,20 +888,20 @@ def close_issue(n: int, action: models.IssueCloseDupBody, *, token: str | None, 
     ok, reason = issues_mod.close_dup_gate(int(n))
     if not ok:
         res = {**base, "status": "blocked", "detail": f"close-dup gate: {reason}"}
-        activity.record("issue-close", identity=BOT_LOGIN, dry_run=dry_run, **res)
+        activity.record("issue-close", identity=settings.bot_login(), dry_run=dry_run, **res)
         return res
     comment = action.comment or issues_mod.dup_issue_comment(canonical)
     plan = [f'comment: "{comment[:80]}…"', f"close issue #{n}"]
 
     if dry_run or not token:
         res = {**base, "status": "dry-run", "detail": "; ".join(plan), "forced": not token and not dry_run}
-        activity.record("issue-close", identity=BOT_LOGIN, dry_run=True, **res)
+        activity.record("issue-close", identity=settings.bot_login(), dry_run=True, **res)
         return res
 
     # issues and PRs share the issues/comments endpoint
     return _comment_then_close(
         n, base=base, idempotency_key=f"#{canonical}" if canonical else _comment_marker(comment),
-        comment_argv=["gh", "issue", "comment", str(n), "--repo", REPO, "--body", comment],
+        comment_argv=["gh", "issue", "comment", str(n), "--repo", settings.repo(), "--body", comment],
         close_argv=_issue_close_argv(n, "duplicate", canonical),
         token=token, log_verb="issue-close",
         on_success=lambda: issues_mod.reflect_issue_state(n, "closed", "duplicate"))
@@ -918,20 +918,20 @@ def close_issue_fixed(n: int, action: models.IssueCloseFixedBody, *, token: str 
     ok, reason = issues_mod.close_fixed_gate(int(n), fixed_by)
     if not ok:
         res = {**base, "status": "blocked", "detail": f"close-fixed gate: {reason}"}
-        activity.record("issue-close", identity=BOT_LOGIN, dry_run=dry_run, **res)
+        activity.record("issue-close", identity=settings.bot_login(), dry_run=dry_run, **res)
         return res
     comment = action.comment or issues_mod.fixed_issue_comment(fixed_by)
     plan = [f'comment: "{comment[:80]}…"', f"close issue #{n} as fixed by #{fixed_by}"]
 
     if dry_run or not token:
         res = {**base, "status": "dry-run", "detail": "; ".join(plan), "forced": not token and not dry_run}
-        activity.record("issue-close", identity=BOT_LOGIN, dry_run=True, **res)
+        activity.record("issue-close", identity=settings.bot_login(), dry_run=True, **res)
         return res
 
     # issues and PRs share the issues/comments endpoint
     return _comment_then_close(
         n, base=base, idempotency_key=f"#{fixed_by}",
-        comment_argv=["gh", "issue", "comment", str(n), "--repo", REPO, "--body", comment],
+        comment_argv=["gh", "issue", "comment", str(n), "--repo", settings.repo(), "--body", comment],
         close_argv=_issue_close_argv(n, "completed", None),
         token=token, log_verb="issue-close",
         on_success=lambda: issues_mod.reflect_issue_state(n, "closed", "completed"))
@@ -968,7 +968,7 @@ def close_issue_with_comment(n: int, action: models.IssueCloseBody, *, token: st
     ok, why = issues_mod.close_gate(int(n), disp, action.comment, action.fixed_by, action.canonical)
     if not ok:
         res = {**base, "status": "blocked", "detail": f"close gate: {why}"}
-        activity.record("issue-close", identity=BOT_LOGIN, dry_run=dry_run, **res)
+        activity.record("issue-close", identity=settings.bot_login(), dry_run=dry_run, **res)
         return res
     comment = (action.comment or "").strip()
     if not comment and disp == "fixed" and action.fixed_by is not None:
@@ -979,12 +979,12 @@ def close_issue_with_comment(n: int, action: models.IssueCloseBody, *, token: st
 
     if dry_run or not token:
         res = {**base, "status": "dry-run", "detail": "; ".join(plan), "forced": not token and not dry_run}
-        activity.record("issue-close", identity=BOT_LOGIN, dry_run=True, **res)
+        activity.record("issue-close", identity=settings.bot_login(), dry_run=True, **res)
         return res
 
     return _comment_then_close(
         n, base=base, idempotency_key=_comment_marker(comment),
-        comment_argv=["gh", "issue", "comment", str(n), "--repo", REPO, "--body", comment],
+        comment_argv=["gh", "issue", "comment", str(n), "--repo", settings.repo(), "--body", comment],
         close_argv=_issue_close_argv(n, reason, action.canonical),
         token=token, log_verb="issue-close",
         on_success=lambda: issues_mod.reflect_issue_state(n, "closed", reason))
@@ -1016,7 +1016,7 @@ def dismiss_alert(source: str, number: int, reason: str, comment: str, *,
     ok, why = alert_gates.dismiss_eligibility(alert, reason, comment)
     if not ok:
         res = {**base, "status": "blocked", "detail": f"dismiss gate: {why}"}
-        activity.record("alert-dismiss", identity=BOT_LOGIN, dry_run=dry_run, **res)
+        activity.record("alert-dismiss", identity=settings.bot_login(), dry_run=dry_run, **res)
         return res
 
     if source == "secret-scanning":
@@ -1030,23 +1030,23 @@ def dismiss_alert(source: str, number: int, reason: str, comment: str, *,
             fields += ["-f", f"dismissed_comment={comment.strip()}"]
         new_state, new_raw = "dismissed", "dismissed"
     argv = ["gh", "api", "-X", "PATCH",
-            f"repos/{REPO}/{source}/alerts/{int(number)}", *fields]
+            f"repos/{settings.repo()}/{source}/alerts/{int(number)}", *fields]
 
     if dry_run or not token:
         res = {**base, "status": "dry-run",
                "detail": f"would dismiss {source}#{number} ({reason})",
                "forced": not token and not dry_run}
-        activity.record("alert-dismiss", identity=BOT_LOGIN, dry_run=True, **res)
+        activity.record("alert-dismiss", identity=settings.bot_login(), dry_run=True, **res)
         return res
 
     r = alert_bot_run(argv, token)
     if r.returncode != 0:
         detail = (r.stderr or "").strip()[-300:] or f"gh exited {r.returncode}"
         res = {**base, "status": "error", "detail": detail}
-        activity.record("alert-dismiss", identity=BOT_LOGIN, dry_run=False, **res)
+        activity.record("alert-dismiss", identity=settings.bot_login(), dry_run=False, **res)
         return res
     alert_data.store().edit_alert(i).record_live_state(new_state, raw_state=new_raw)
     alert_data.refresh()
     res = {**base, "status": "executed", "detail": f"dismissed {source}#{number} ({reason})"}
-    activity.record("alert-dismiss", identity=BOT_LOGIN, dry_run=False, **res)
+    activity.record("alert-dismiss", identity=settings.bot_login(), dry_run=False, **res)
     return res

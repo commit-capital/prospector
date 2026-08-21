@@ -10,11 +10,11 @@ from prospector_app.backend import repo_meta
 
 def test_meta_derives_from_settings():
     m = repo_meta.meta()
-    assert m["repo"] == settings.REPO
+    assert m["repo"] == settings.repo()
     assert m["repo"] == f"{m['owner']}/{m['name']}"
     assert m["url"] == f"https://github.com/{m['repo']}"
     assert m["default_branch"] == "trunk"
-    assert m["display_name"] == settings.DISPLAY_NAME
+    assert m["display_name"] == settings.display_name()
     assert m["feedback_repo"] == "test-owner/test-meta-repo"
 
 
@@ -26,7 +26,7 @@ def test_no_deployment_literals():
 
 
 def test_feedback_repo_none_when_unconfigured(monkeypatch):
-    monkeypatch.setattr(settings, "FEEDBACK_REPO", "")
+    monkeypatch.setenv("PROSPECTOR_FEEDBACK_REPO", "")
     assert repo_meta.meta()["feedback_repo"] is None
 
 

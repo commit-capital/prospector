@@ -21,7 +21,7 @@ pytestmark = [
 
 @pytest.fixture
 def store(monkeypatch):
-    monkeypatch.setattr("pipeline.settings.STORE_URL", PG_URL)
+    monkeypatch.setenv("TRIAGE_STORE_URL", PG_URL)
     eng = storekit.get_engine(PG_URL)
     schema.METADATA.drop_all(eng)
     schema.METADATA.create_all(eng)
@@ -63,7 +63,7 @@ def test_importer_into_postgres(tmp_path, monkeypatch):
     (src / "prs").mkdir(parents=True)
     import json
     (src / "prs" / "5.json").write_text(json.dumps(_pr()))
-    monkeypatch.setattr("pipeline.settings.STORE_URL", PG_URL)
+    monkeypatch.setenv("TRIAGE_STORE_URL", PG_URL)
     eng = storekit.get_engine(PG_URL)
     schema.METADATA.drop_all(eng)
     schema.METADATA.create_all(eng)

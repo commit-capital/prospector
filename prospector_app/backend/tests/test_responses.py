@@ -11,6 +11,7 @@ from pipeline.store import Store
 from prospector_app.backend import responses
 from prospector_app.backend import service
 from prospector_app.backend import data
+from pipeline import settings
 
 ACT = "2026-06-10T00:00:00+00:00"          # when we acted
 BEFORE = "2026-06-09T00:00:00Z"
@@ -28,7 +29,7 @@ def _reopen(login, at, typename="User"):
             "actor": {"login": login, "__typename": typename}, "createdAt": at}
 
 
-SAME_REPO = f"{responses.REPO_OWNER}/{responses.REPO_NAME}"
+SAME_REPO = f"{settings.repo_owner()}/{settings.repo_name()}"
 
 
 def _cross_ref(new_pr_number, new_pr_author, event_at, pr_created_at=None,
@@ -65,7 +66,7 @@ class TestClassify:
         # The shape GraphQL actually returns: an app's login is bare and its
         # type is Bot. `coderabbitai` and `greptile-apps` reach us exactly so.
         sig = responses.classify(ACT, "comment", state="open",
-                                 comments=[_comment(responses.BOT_LOGIN, AFTER, typename="Bot"),
+                                 comments=[_comment(settings.bot_login(), AFTER, typename="Bot"),
                                            _comment("greptile-apps", AFTER, typename="Bot"),
                                            _comment("coderabbitai", AFTER, typename="Bot")],
                                  reopens=[], commit_dates=[])
@@ -107,7 +108,7 @@ class TestClassify:
         # We reopened it (as the bot) and it's open — bot reopen ignored, and a
         # comment/merge-kind action means no close-state-flip either.
         sig = responses.classify(ACT, "reopen", state="open",
-                                 comments=[], reopens=[_reopen(responses.BOT_LOGIN, AFTER)],
+                                 comments=[], reopens=[_reopen(settings.bot_login(), AFTER)],
                                  commit_dates=[])
         assert sig is None
 

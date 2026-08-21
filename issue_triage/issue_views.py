@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from issue_triage.issue_store import IssueStore
-from pipeline.settings import BOT_LOGIN, DISPLAY_NAME
+from pipeline import settings
 
 if TYPE_CHECKING:
     from issue_triage.issue_model import IssueCluster
@@ -40,9 +40,9 @@ def status_md(store: IssueStore) -> str:
     dup_issues = sum(1 for i in issues.values() if i.disposition == "close-dup")
     repro_issues = sum(1 for i in issues.values() if i.disposition == "request-repro")
     lines = [
-        f"# {DISPLAY_NAME} Issue Triage — Status", "",
+        f"# {settings.display_name()} Issue Triage — Status", "",
         "_Generated from the issue store. Suggested actions only; closes run through "
-        f"the app executor as {BOT_LOGIN}, gated on confirmed curation._", "",
+        f"the app executor as {settings.bot_login()}, gated on confirmed curation._", "",
         "| What we found | Count |", "|---|---|",
         f"| Open issues | {len(issues)} |",
         f"| Clusters | {len(cls)} |",

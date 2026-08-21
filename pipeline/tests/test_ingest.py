@@ -6,7 +6,6 @@ import pytest
 
 from pipeline import greptile
 from pipeline import ingest
-from pipeline import settings
 from pipeline.testsupport import set_section
 from pipeline.store import Store
 
@@ -425,7 +424,7 @@ class TestTargetedIngest:
         assert store.runs()[-1].raw["stats"]["upserted"] == 1
 
     def test_refresh_skips_greptile_fetch_when_no_provider(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(settings, "REVIEW_PROVIDER", "none")
+        monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "none")
         store = Store(tmp_path)
         b = dict(GH_PR, number=7003, head={"sha": "s3"})
         monkeypatch.setattr(ingest, "fetch_pr", lambda n: b)
@@ -480,7 +479,7 @@ class TestTargetedIngest:
         assert ingest.main(["--new", "--store", str(tmp_path)]) == 0
         assert len(calls) == 1  # targeted mode does not chain the backfill
 
-        monkeypatch.setattr(settings, "REVIEW_PROVIDER", "none")
+        monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "none")
         assert ingest.main(["--store", str(tmp_path), "--skip-issues"]) == 0
         assert len(calls) == 1  # no review provider — nothing to backfill
 

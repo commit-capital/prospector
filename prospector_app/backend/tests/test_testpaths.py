@@ -1,4 +1,4 @@
-from pipeline import profile, settings
+from pipeline import profile
 from prospector_app.backend import testpaths as tp
 
 
@@ -101,7 +101,7 @@ def test_classify_path():
 
 
 def test_classify_path_generic_default_has_no_migrations_rule(monkeypatch):
-    monkeypatch.setattr(settings, "PROFILE_PATH", "")
+    monkeypatch.setenv("TRIAGE_PROFILE", "")
     assert tp.classify_path("packages/db/src/migrations/meta/0072_snapshot.json") == "source"
     assert tp.classify_path("drizzle/meta/0001_snapshot.json") == "source"
     assert tp.classify_path("pnpm-lock.yaml") == "lockfile"

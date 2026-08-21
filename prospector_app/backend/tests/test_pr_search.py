@@ -1,11 +1,10 @@
 """pr_search.coerce(): raw model JSON → a safe filter spec. Never raises; drops
 unknown keys, clamps enums/ops, so a hallucinated field can't reach the engine."""
-from pipeline import settings
 from prospector_app.backend import pr_search
 
 
 def test_coerce_drops_greptile_fields_when_no_provider(monkeypatch):
-    monkeypatch.setattr(settings, "REVIEW_PROVIDER", "none")
+    monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "none")
     spec = pr_search.coerce({"greptile": {"op": "<", "value": 5}, "greptile_stale": True,
                              "greptile_severity": "defects", "ci": "passing"})
     assert "greptile" not in spec
@@ -15,9 +14,9 @@ def test_coerce_drops_greptile_fields_when_no_provider(monkeypatch):
 
 
 def test_review_field_docs_follow_provider(monkeypatch):
-    monkeypatch.setattr(settings, "REVIEW_PROVIDER", "greptile")
+    monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "greptile")
     assert "greptile_severity" in pr_search._review_field_docs()
-    monkeypatch.setattr(settings, "REVIEW_PROVIDER", "none")
+    monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "none")
     assert pr_search._review_field_docs() == ""
 
 

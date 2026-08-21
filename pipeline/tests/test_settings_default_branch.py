@@ -45,7 +45,7 @@ def test_discovers_from_github_and_caches(monkeypatch):
     assert settings.default_branch() == "release"
     assert settings.default_branch() == "release"
     assert len(calls) == 1
-    assert f"repos/{settings.REPO}" in calls[0]
+    assert f"repos/{settings.repo()}" in calls[0]
 
 
 def test_falls_back_to_main_when_gh_is_unavailable(monkeypatch):

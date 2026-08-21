@@ -1,11 +1,11 @@
-from pipeline import diffpaths, profile, settings
+from pipeline import diffpaths, profile
 
 
 class TestIsTestPathProfiles:
     """is_test_path against two profiles — the generic default and an override."""
 
     def test_generic_default_recognizes_common_conventions(self, monkeypatch):
-        monkeypatch.setattr(settings, "PROFILE_PATH", "")
+        monkeypatch.setenv("TRIAGE_PROFILE", "")
         assert diffpaths.is_test_path("src/foo.test.ts")
         assert not diffpaths.is_test_path("qa/x.py")
 

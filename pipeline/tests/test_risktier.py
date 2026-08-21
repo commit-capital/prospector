@@ -2,7 +2,7 @@
 
 Runs under the fixture profile (root conftest); the generic-default tests
 clear PROFILE_PATH per test — the same consumer against two profiles."""
-from pipeline import risktier, settings
+from pipeline import risktier
 
 
 class TestFixtureProfile:
@@ -39,13 +39,13 @@ class TestFixtureProfile:
 
 class TestGenericDefault:
     def test_supply_chain_is_tier0(self, monkeypatch):
-        monkeypatch.setattr(settings, "PROFILE_PATH", "")
+        monkeypatch.setenv("TRIAGE_PROFILE", "")
         for p in (".github/workflows/ci.yml", "package.json", "uv.lock",
                   "Cargo.lock", "go.sum", "pyproject.toml"):
             assert risktier.classify_path(p) == 0, p
 
     def test_everything_else_defaults_except_tests(self, monkeypatch):
-        monkeypatch.setattr(settings, "PROFILE_PATH", "")
+        monkeypatch.setenv("TRIAGE_PROFILE", "")
         assert risktier.classify_path("server/core/locks.ts") == 2
         assert risktier.classify_path("docs/guide.md") == 2          # no tier3 globs
         assert risktier.classify_path("src/foo.test.ts") == 3        # test convention holds

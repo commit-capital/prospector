@@ -80,7 +80,7 @@ class TablePage(TypedDict):
 
 def _engine() -> storekit.Engine:
     """The shared store engine (same DB as the PR/issue store), re-resolved each
-    call so a test that repoints settings.STORE_URL is honored; storekit caches
+    call so a test that repoints settings.store_url() is honored; storekit caches
     one engine per URL."""
     return storekit.get_engine(storekit.resolve_url(None, store.DEFAULT_ROOT))
 

@@ -3,7 +3,7 @@ implementations (checks._tier0_is_clean, verdict.gate_decision, app
 merge_concerns)."""
 import pytest
 
-from pipeline import gates, profile, settings
+from pipeline import gates, profile
 from pipeline.model import Cluster, Pr
 from pipeline.store import Store
 
@@ -82,7 +82,7 @@ class TestPRClean:
 
     def test_none_provider_ignores_review(self, monkeypatch):
         # No provider configured: a PR with no review score is still clean.
-        monkeypatch.setattr(settings, "REVIEW_PROVIDER", "none")
+        monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "none")
         rec = _pr()
         del rec.raw["signals"]["greptile"]
         ok, reasons = gates.pr_clean(rec, today="2026-06-10")

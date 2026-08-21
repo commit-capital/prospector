@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import logging
 
+from pipeline import settings
 from pipeline import diffpaths
 from pipeline.gh import gh_graphql
-from pipeline.settings import REPO_NAME, REPO_OWNER
 
 _log = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ def _query(prs: list[int]) -> str:
               "commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }")
     aliases = " ".join(f"p{i}: pullRequest(number: {int(n)}) {{ {fields} }}"
                        for i, n in enumerate(prs))
-    return f'query {{ repository(owner: "{REPO_OWNER}", name: "{REPO_NAME}") {{ {aliases} }} }}'
+    return f'query {{ repository(owner: "{settings.repo_owner()}", name: "{settings.repo_name()}") {{ {aliases} }} }}'
 
 
 def _diffstat(node: dict) -> dict | None:

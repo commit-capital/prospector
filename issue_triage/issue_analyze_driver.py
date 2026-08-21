@@ -16,7 +16,6 @@ import json
 import sys
 from typing import TYPE_CHECKING
 
-from issue_triage.config import REPO
 from issue_triage.issue_freshness import is_current
 from issue_triage.issue_store import IssueStore
 from pipeline import profile
@@ -48,7 +47,7 @@ __CRITERIA__
 Every bundled issue MUST get exactly one verdict: {"issue": <number>, "disposition": "...", "canonical": <number or null>, "gist": "...", "rationale": "...", "asks": ["..."]} — where:
 - "gist": 2-3 plain sentences restating what THIS issue actually is (the concrete bug or request), legible to someone who hasn't read the raw body. Describe the issue, not your decision.
 - "rationale": 2-4 sentences explaining WHY this disposition — the evidence you used (cluster/canonical, repro grade, candidate PRs, whether it's a bug vs feature). Name the canonical PR/issue for close-dup and link-pr.
-- "asks" only for request-repro, "canonical" only for close-dup, and "issue" MUST equal the bundle entry's number.""".replace("__CRITERIA__", DISPOSITION_CRITERIA).replace("__REPO__", REPO)
+- "asks" only for request-repro, "canonical" only for close-dup, and "issue" MUST equal the bundle entry's number.""".replace("__CRITERIA__", DISPOSITION_CRITERIA)
 
 ANALYZE_FENCED_TAIL = """
 

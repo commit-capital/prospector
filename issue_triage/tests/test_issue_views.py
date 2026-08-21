@@ -4,7 +4,7 @@ from issue_triage import issue_views
 
 
 def test_status_md_lists_top_pain_clusters(tmp_path, monkeypatch):
-    monkeypatch.setattr(issue_views, "DISPLAY_NAME", "Example Project")
+    monkeypatch.setenv("TRIAGE_DISPLAY_NAME", "Example Project")
     st = issue_store.IssueStore(tmp_path)
     st.create_issue(5, {"title": "Crash", "state": "open", "updated_at": "T"})
     cl = st.create_issue_cluster(1, "Crash cluster")
