@@ -34,6 +34,12 @@ DESCRIPTIONS: dict[str, str] = {
               "record in `data`.",
     "issue_clusters": "Issue clusters; `canonical` names the representative "
                       "issue and `data` carries the members.",
+    "alerts": "One row per GitHub code-scanning / Dependabot / secret-scanning "
+              "alert; `data` holds meta, candidate PR links, and the fix-scan "
+              "verdict.",
+    "advisories": "One row per GitHub repository security advisory (GHSA); "
+                  "`data` holds meta, candidate PR links, and the fix-scan "
+                  "verdict (fixed / duplicate / …).",
     "activity": "Append-only audit trail of Prospector actions — merges, closes, "
                 "reopens, handoffs (live and dry-run).",
     "chat_messages": "Persisted Prospector chat-agent transcript, one row per message.",

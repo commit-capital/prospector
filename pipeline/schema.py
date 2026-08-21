@@ -6,7 +6,7 @@ be queried without parsing JSON. Keep mirror columns in sync with the record:
 each is read from the record on every save."""
 from __future__ import annotations
 
-from sqlalchemy import JSON, Boolean, Column, Integer, MetaData, String, Table
+from sqlalchemy import JSON, BigInteger, Boolean, Column, Integer, MetaData, String, Table
 from sqlalchemy.dialects.postgresql import JSONB
 
 METADATA = MetaData()
@@ -54,7 +54,10 @@ _JSON = JSON().with_variant(JSONB, "postgresql")
 #      validators refuse to save a record carrying that source, and older
 #      readers mistake it for an operator pick — skipping the security-clearance
 #      precondition and jumping the operator-first queue order).
-STORE_SCHEMA_VERSION = 17
+# 18 — the advisories table (GitHub repository security advisories, keyed by
+#      the base-21 integer of the GHSA id), projected by the Alerts tab's
+#      Advisories sub-view; older code has no accessor for it.
+STORE_SCHEMA_VERSION = 18
 
 # saved_at is a microsecond-resolution ISO timestamp stamped on every save — when
 # the store row was last written (distinct from `updated_at`, which mirrors the
@@ -113,6 +116,20 @@ alerts = Table(
     Column("data", _JSON, nullable=False),
     Column("source", String, index=True),
     Column("number", Integer, index=True),
+    Column("state", String, index=True),
+    Column("severity", String, index=True),
+    Column("updated_at", String),
+    Column("saved_at", String, index=True),
+)
+
+# GitHub repository security advisories, one row per GHSA id. `id` is
+# advisory_store.advisory_id(ghsa_id): the twelve GHSA symbols read as one
+# base-21 integer, so the key decodes back to the id it came from.
+advisories = Table(
+    "advisories", METADATA,
+    Column("id", BigInteger, primary_key=True),
+    Column("data", _JSON, nullable=False),
+    Column("ghsa_id", String, index=True),
     Column("state", String, index=True),
     Column("severity", String, index=True),
     Column("updated_at", String),
@@ -270,6 +287,17 @@ def mirror_alert(rec: dict) -> dict:
         "id": rec["id"],
         "source": meta.get("source"),
         "number": meta.get("number"),
+        "state": meta.get("state"),
+        "severity": meta.get("severity"),
+        "updated_at": meta.get("updated_at"),
+    }
+
+
+def mirror_advisory(rec: dict) -> dict:
+    meta = rec.get("meta") or {}
+    return {
+        "id": rec["id"],
+        "ghsa_id": meta.get("ghsa_id"),
         "state": meta.get("state"),
         "severity": meta.get("severity"),
         "updated_at": meta.get("updated_at"),
