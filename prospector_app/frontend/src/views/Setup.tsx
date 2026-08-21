@@ -201,17 +201,15 @@ function WorkerSection(
   );
 }
 
-/** Copies a ready-to-paste .env for onboarding a teammate. The store URL holds
- *  the database password, so it ships only when the checkbox says so — and the
- *  page says out loud what pasting it into a chat channel means. */
+/** Copies the deployment bundle a teammate pastes into their setup wizard. It
+ *  carries the store URL, so it is a credential and the card says so. */
 function ShareSection() {
-  const [includeStore, setIncludeStore] = useState(false);
   const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
 
   const copy = async () => {
     try {
-      const { snippet } = await api.setupShare(includeStore);
-      await navigator.clipboard.writeText(snippet);
+      const { bundle } = await api.setupShare();
+      await navigator.clipboard.writeText(bundle);
       setState("copied");
     } catch {
       setState("failed");
@@ -223,24 +221,16 @@ function ShareSection() {
     <section className="setup-card setup-share">
       <h3>🤝 Share this deployment</h3>
       <p className="muted small">
-        About a teammate's machine, not this one. Copies a ready-to-paste{" "}
-        <code>.env</code> pointing theirs at this deployment: the repo, bot
-        identity, and review config prefilled. The bot key PEM and{" "}
-        <code>profile.json</code> are files — the snippet names them and how to
-        get them, and they travel to your teammate separately.
+        About a teammate's machine, not this one. Copies everything a fresh
+        checkout needs to join this deployment: the repo, bot identity, review
+        config, the store URL, and this deployment's <code>profile.json</code>.
+        Your teammate pastes it into the setup wizard their app opens on first
+        run.
       </p>
-      <label>
-        <input type="checkbox" checked={includeStore}
-          onChange={(e) => setIncludeStore(e.target.checked)} />
-        {" "}include store credentials
-      </label>
-      {includeStore && (
-        <p className="muted small">
-          ⚠ The store URL contains the database password. Pasting it into chat
-          puts that password in the channel's history — prefer sending that one
-          line through a password manager.
-        </p>
-      )}
+      <p className="setup-warn small">
+        ⚠ This carries the database password. Send it through a password manager
+        or a direct message — never a channel with history.
+      </p>
       <div>
         <button onClick={() => void copy()}>
           {state === "copied" ? "copied ✓" : state === "failed" ? "copy failed" : "copy setup for a teammate"}

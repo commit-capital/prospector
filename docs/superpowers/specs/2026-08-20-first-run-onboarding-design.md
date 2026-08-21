@@ -94,7 +94,7 @@ created SQLite file. An unconfigured Prospector renders as a working Prospector
 watching an empty repository.
 
 One middleware in `app.py` is the whole remedy. When `settings.configured()` is
-false, every `/api/*` request returns `503 {"unconfigured": true}` except:
+false, every `/api/*` request returns `409 {"unconfigured": true}` except:
 
 - `/api/onboarding/*`
 - `/api/meta`
@@ -313,7 +313,7 @@ tree green; none depends on a later one to be correct.
 
 - `settings`: each accessor reads the current environment; `configured()` on a
   well-formed repo, a malformed one, and unset.
-- The gate: an unconfigured app 503s a sample of `/api/*` routes, and serves
+- The gate: an unconfigured app 409s a sample of `/api/*` routes, and serves
   `/api/meta`, `/api/onboarding/state`, and the SPA. A configured app serves all.
   This is the regression test for `{"items":[]}` from an accidental SQLite file.
 - `apply`: writes `.env` and `profile.json`; refuses a key outside the step's

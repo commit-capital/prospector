@@ -455,7 +455,7 @@ EOF
 
 **Interfaces:**
 - Consumes: `settings.configured()` from Task 1.
-- Produces: the `/api/*` 503 refusal; `/api/meta` gains `configured: bool`.
+- Produces: the `/api/*` 409 refusal; `/api/meta` gains `configured: bool`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -495,7 +495,7 @@ class TestUnconfigured:
     @pytest.mark.parametrize("path", GATED)
     def test_api_routes_refuse(self, unconfigured, path):
         r = unconfigured.get(path)
-        assert r.status_code == 503
+        assert r.status_code == 409
         assert r.json()["unconfigured"] is True
 
     def test_meta_is_served_so_the_spa_can_route(self, unconfigured):
@@ -527,7 +527,7 @@ exists, so it cannot be forgotten.
 uv run pytest prospector_app/backend/tests/test_unconfigured_gate.py -q
 ```
 
-Expected: the `TestUnconfigured` API-route cases fail with 200 instead of 503 —
+Expected: the `TestUnconfigured` API-route cases fail with 200 instead of 409 —
 which is precisely the bug this gate exists to prevent.
 
 - [ ] **Step 3: Add the middleware**
@@ -551,7 +551,7 @@ async def require_configured(request, call_next):
     path = request.url.path
     if (path.startswith("/api/") and not settings.configured()
             and not path.startswith(_UNCONFIGURED_OK)):
-        return JSONResponse({"unconfigured": True}, status_code=503)
+        return JSONResponse({"unconfigured": True}, status_code=409)
     return await call_next(request)
 ```
 
@@ -2061,7 +2061,7 @@ afterwards.
 - [ ] **Step 2: Confirm each state**
 
 - Unconfigured: the app lands on `/welcome` from any URL; the two branch cards
-  render; `/api/clusters` returns 503 in the network log.
+  render; `/api/clusters` returns 409 in the network log.
 - Join: pasting a bundle copied from a configured instance's Setup tab configures
   the app and shows the "You can see …" rung with real counts.
 - Junk paste: a 400 with a readable message, not a stack trace.

@@ -94,8 +94,10 @@ app.add_middleware(
 
 
 # Paths that answer before this checkout has a deployment target: the wizard's
-# own surface, and the metadata the SPA routes on.
-_UNCONFIGURED_OK = ("/api/onboarding/", "/api/meta")
+# own surface, the metadata the SPA routes on, and the liveness probe — the
+# frontend reads 503 as "the server is down", which an unconfigured but running
+# backend is not.
+_UNCONFIGURED_OK = ("/api/onboarding/", "/api/meta", "/api/health")
 
 
 @app.middleware("http")
@@ -105,11 +107,16 @@ async def require_configured(request, call_next):
     An unconfigured process reaches the local SQLite fallback and answers list
     routes with empty results, which reads as a configured Prospector watching
     an empty repository. Refusing in one place means a route added later
-    inherits it."""
+    inherits it.
+
+    409 rather than 503: the server is up and its state conflicts with the
+    request. The frontend reads 502/503/504 as the backend being unreachable
+    and covers the page with an outage banner, which would be the wrong story
+    on a checkout that is merely waiting to be set up."""
     path = request.url.path
     if (path.startswith("/api/") and not path.startswith(_UNCONFIGURED_OK)
             and not settings.configured()):
-        return JSONResponse({"unconfigured": True}, status_code=503)
+        return JSONResponse({"unconfigured": True}, status_code=409)
     return await call_next(request)
 
 
@@ -177,7 +184,14 @@ def _launch_fix_worker():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "clusters": len(data.clusters()), "prs": len(data.prs())}
+    """Liveness, plus what the snapshot holds. Answers without loading the
+    snapshot when there is no deployment target: the frontend polls this to
+    decide whether the backend is up, so it has to be cheap and truthful on a
+    checkout whose store is whatever a stale .env last named."""
+    if not settings.configured():
+        return {"ok": True, "configured": False, "clusters": 0, "prs": 0}
+    return {"ok": True, "configured": True,
+            "clusters": len(data.clusters()), "prs": len(data.prs())}
 
 
 @app.get("/api/instance")

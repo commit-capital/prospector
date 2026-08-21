@@ -1,5 +1,5 @@
 import { Component, lazy, Suspense, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from "react";
-import { NavLink, Outlet, useLocation, useSearchParams } from "react-router";
+import { NavLink, Outlet, useLocation, useNavigate, useSearchParams } from "react-router";
 import { ExecProvider, useExec, type Toast } from "./ExecContext";
 import { RepoMetaProvider, useRepoMeta } from "./RepoMetaContext";
 import { FeedbackButton } from "./components/FeedbackButton";
@@ -349,6 +349,43 @@ function BackendBanner() {
   );
 }
 
+/** An unconfigured checkout has no data to show and its API refuses every call,
+ *  so the wizard is the only page reachable until it has a deployment target.
+ *  It stays reachable afterwards: the ladder's later steps run there. */
+function UnconfiguredRedirect() {
+  const { meta } = useRepoMeta();
+  const { pathname } = useLocation();
+  const navigate = useNavigate();
+  useEffect(() => {
+    if (meta && !meta.configured && pathname !== "/welcome") {
+      navigate("/welcome", { replace: true });
+    }
+  }, [meta, pathname, navigate]);
+  return null;
+}
+
+/** The tabs render only once there is something behind them: on an
+ *  unconfigured checkout every one of them would meet the API's refusal. */
+function Nav() {
+  const { meta } = useRepoMeta();
+  if (meta && !meta.configured) {
+    return <nav><span className="muted small">first-time setup</span></nav>;
+  }
+  return (
+    <nav>
+      <NavLink to="/" end>🏠 Home</NavLink>
+      <NavLink to="/clusters">Clusters</NavLink>
+      <NavLink to="/explore">🔭 PR Explorer</NavLink>
+      <NavLink to="/differ">🔬 PR Differ</NavLink>
+      <NavLink to="/issues">🐛 Issues</NavLink>
+      <NavLink to="/alerts">🛡️ Alerts</NavLink>
+      <NavLink to="/action-items">🗂️ Action Items</NavLink>
+      <NavLink to="/control">🎛️ Control</NavLink>
+      <NavLink to="/activity">📋 Activity</NavLink>
+    </nav>
+  );
+}
+
 export default function App() {
   // Expose the topbar's (wrap-variable) height as a CSS var so page-scrolled
   // sticky headers — like the cluster page's diff grid — sit just beneath it.
@@ -366,22 +403,13 @@ export default function App() {
     <ExecProvider>
       <AgentPaneProvider>
       <ScrollToTop />
+      <UnconfiguredRedirect />
       <div className="app">
         <BackendBanner />
         <StoreWriteBanner />
         <header className="topbar">
           <Brand />
-          <nav>
-            <NavLink to="/" end>🏠 Home</NavLink>
-            <NavLink to="/clusters">Clusters</NavLink>
-            <NavLink to="/explore">🔭 PR Explorer</NavLink>
-            <NavLink to="/differ">🔬 PR Differ</NavLink>
-            <NavLink to="/issues">🐛 Issues</NavLink>
-            <NavLink to="/alerts">🛡️ Alerts</NavLink>
-            <NavLink to="/action-items">🗂️ Action Items</NavLink>
-            <NavLink to="/control">🎛️ Control</NavLink>
-            <NavLink to="/activity">📋 Activity</NavLink>
-          </nav>
+          <Nav />
           <div className="topbar-right">
             <LiveStatus />
             <DryRunBadge />
