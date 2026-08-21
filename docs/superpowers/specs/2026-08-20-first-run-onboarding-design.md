@@ -171,8 +171,8 @@ version it saw.
 
 ### 7. App-less deployments
 
-"Easy" at the GitHub App step means skipping it: read Paperclip with your own
-`gh` login, write nothing. `bot_login()` is then `""`.
+"Easy" at the GitHub App step means skipping it: read the repository with your
+own `gh` login, write nothing. `bot_login()` is then `""`.
 
 Writes are already inert — no App means no key file, so `executor.live_possible()`
 finds no mintable token and forces dry-run. This adds the explicit refusal rather
@@ -236,7 +236,7 @@ Full with the cost of each stated:
 Then the ladder, each rung opt-in:
 
 1. **See the data.** Ends with evidence — "3,000 PRs loaded. You can *see*
-   Paperclip." Next: configure writes. Or stop here.
+   the repository." Next: configure writes. Or stop here.
 2. **Write to the repository.** The bot App's id and PEM path, verified by
    minting a token. Ends with the bot login it authenticated as. Next: run
    automated tasks. Or stop here.
