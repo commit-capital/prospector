@@ -2,20 +2,23 @@
 // Prospector bootstrap — the `npx github:commit-capital/prospector` entry.
 // Takes a bare machine to a running app: checks git and Node, installs uv if
 // missing, clones the repository (or reuses a checkout it is run from), runs
-// setup.sh, and starts `uv run prospector serve --dev`.
-import { spawnSync } from "node:child_process";
+// setup.sh, starts `uv run prospector serve --dev`, and opens the app in the
+// browser once it answers.
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import process from "node:process";
 
 const REPO_URL = "https://github.com/commit-capital/prospector.git";
-const USAGE = `Usage: npx github:commit-capital/prospector [dir] [--no-serve]
+const USAGE = `Usage: npx github:commit-capital/prospector [dir] [--no-serve] [--no-open]
 
   dir         where to clone (default: ./prospector; reused if it is
               already a Prospector checkout, as is the current directory)
   --no-serve  set up but don't start the app
+  --no-open   start the app but don't open it in the browser
 `;
+const FLAGS = new Set(["--no-serve", "--no-open"]);
 
 const cyan = (s) => (process.stdout.isTTY ? `\x1b[36m${s}\x1b[0m` : s);
 const red = (s) => (process.stderr.isTTY ? `\x1b[31m${s}\x1b[0m` : s);
@@ -57,8 +60,9 @@ if (args.includes("--help") || args.includes("-h")) {
   process.exit(0);
 }
 const serve = !args.includes("--no-serve");
+const open = !args.includes("--no-open");
 const positional = args.filter((a) => !a.startsWith("-"));
-if (positional.length > 1 || args.some((a) => a.startsWith("-") && a !== "--no-serve")) {
+if (positional.length > 1 || args.some((a) => a.startsWith("-") && !FLAGS.has(a))) {
   fail(`unrecognized arguments\n\n${USAGE}`);
 }
 
@@ -116,6 +120,48 @@ if (!serve) {
   log(`ready — start the app with: cd ${dir} && uv run prospector serve --dev`);
   process.exit(0);
 }
-log("starting the app — open the printed frontend URL (Ctrl-C stops it)");
-const served = run("uv", ["run", "prospector", "serve", "--dev"], { cwd: dir });
-process.exit(served.status ?? 0);
+// The frontend port setup.sh claimed for this checkout, from the last
+// VITE_PORT line of its .env; 5173 when none is named.
+const vitePort = () => {
+  try {
+    const lines = readFileSync(join(dir, ".env"), "utf8").match(/^VITE_PORT=(\d+)$/gm);
+    return lines ? Number(lines.at(-1).split("=")[1]) : 5173;
+  } catch {
+    return 5173;
+  }
+};
+
+// Resolves true once the URL answers, false after a minute of silence.
+const waitFor = async (url) => {
+  for (let i = 0; i < 60; i++) {
+    try {
+      await fetch(url, { signal: AbortSignal.timeout(2000) });
+      return true;
+    } catch {
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  }
+  return false;
+};
+
+const openBrowser = (url) => {
+  const opener = process.platform === "darwin" ? "open" : "xdg-open";
+  const child = spawn(opener, [url], { stdio: "ignore", detached: true, env });
+  child.on("error", () => log(`open ${url} in your browser`));
+  child.unref();
+};
+
+log(`starting the app${open ? " and opening it in your browser" : " — open the printed frontend URL"} (Ctrl-C stops it)`);
+const served = spawn("uv", ["run", "prospector", "serve", "--dev"], { cwd: dir, stdio: "inherit", env });
+served.on("exit", (code) => process.exit(code ?? 0));
+if (open) {
+  const url = `http://localhost:${vitePort()}/`;
+  waitFor(url).then((up) => {
+    if (up) {
+      openBrowser(url);
+      log(`opened ${url}`);
+    } else {
+      log(`the app did not answer at ${url} yet — open it yourself once it prints the frontend URL`);
+    }
+  });
+}

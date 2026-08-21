@@ -16,8 +16,9 @@ the [README](../README.md); this is the detail.
   verification).
 
 The `npx github:commit-capital/prospector` bootstrap checks git and Node,
-installs uv if it is missing, clones the repository, and runs the same
-`setup.sh` documented below.
+installs uv if it is missing, clones the repository, runs the same `setup.sh`
+documented below, and opens the app in your browser once it is serving
+(`--no-open` to skip that, `--no-serve` to stop after setup).
 
 ## Install and run
 
