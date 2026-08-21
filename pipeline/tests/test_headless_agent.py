@@ -63,11 +63,20 @@ def test_fill_is_single_pass_so_a_token_inside_a_value_is_not_re_substituted():
     assert out == '("fix __LENS__ handling") lens scope'
 
 
-def test_flags_edit_root_scopes_edit_and_write():
-    flags = ha._flags(False, edit_root="/tmp/wt")
+def test_flags_edit_root_scopes_edit_and_write(tmp_path):
+    # A rule path with one leading slash resolves against the project root; the
+    # double slash is the CLI's filesystem-absolute form, and a rule naming a
+    # symlink never matches, so the root is named by its target.
+    real = tmp_path / "wt"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    flags = ha._flags(False, edit_root=f"{link}/")
     allowed = flags[flags.index("--allowedTools") + 1]
-    assert "Edit(/tmp/wt/**)" in allowed
-    assert "Write(/tmp/wt/**)" in allowed
+    target = real.resolve()
+    assert f"Edit(/{target}/**)" in allowed
+    assert f"Write(/{target}/**)" in allowed
+    assert f"Edit({link}/**)" not in allowed
     assert "Bash(git diff:*)" in allowed
     i = flags.index("--disallowedTools")
     disallowed = flags[i + 1:flags.index("--permission-mode")]
