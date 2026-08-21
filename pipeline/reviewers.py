@@ -206,7 +206,7 @@ def _greptile_parse(feed: PrFeed, head_sha: str | None, previous: dict | None) -
                     or (latest_review or {}).get("commit")
                     or next((t.get("original_commit") or t.get("commit") for t in reversed(threads)
                              if t.get("original_commit") or t.get("commit")), None))
-        findings = [_finding(t, None, _first_line(t.get("body"))) for t in threads]
+        findings = [_finding(t, None, _first_line(strip_html(t.get("body") or ""))) for t in threads]
         observed = _max_at((summary_c or {}).get("updated_at"), (summary_c or {}).get("at"),
                            (latest_review or {}).get("at"),
                            *[t.get("at") for t in threads])

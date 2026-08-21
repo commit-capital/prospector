@@ -1,7 +1,7 @@
 # Bot reviewers: every automated PR reviewer and scanner, detected and gated
 
 **Date:** 2026-08-21
-**Status:** design approved pending implementation plan
+**Status:** implemented (plan: `docs/superpowers/plans/2026-08-21-bot-reviewers.md`)
 
 ## Problem
 
@@ -276,8 +276,9 @@ their own severities.
   all pass; fail when any fails; warn when any stale/pending; na when none
   active), detail naming each; new `scans` row aggregates scanner bars the same
   way. `checkDefs` gains `scans`.
-- `filters.py`: new spec keys `review_status: {<id>: pass|fail|stale|pending}`
-  and `scan_status: {<id>: ...}`; the three Greptile keys stay.
+- `filters.py`: one new spec key `reviewer_status: {<id>: pass|fail|stale|pending}`
+  covering both kinds (the Review and Scans popouts each write the ids of their
+  own kind into it); the three Greptile keys stay.
   `pr_search` vocabulary lists them when the reviewer is active.
 - Routes: `GET /api/prs/{n}/reviews` (stored section + bars);
   `POST /api/reviews/{reviewer}/retrigger/pr/{n}` replaces the Greptile route;

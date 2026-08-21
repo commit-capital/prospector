@@ -14,8 +14,12 @@ proposes merging anything with an open flag.
 
 ## Deployment configuration
 
-- **Review bar:** `TRIAGE_REVIEW_PROVIDER=greptile` at 5/5 — a best-but-below-5
-  PR routes to request-changes, never merge.
+- **Review bar:** `TRIAGE_REVIEW_PROVIDER=auto` — every automated reviewer and
+  scanner the repository runs gates at its own bar (Greptile at 5/5; CodeRabbit
+  with no open Critical/Major finding; Superagent with no open P1/P2 and a
+  passing scan; Socket with no new dependency alerts). A PR any of them blocks
+  routes to request-changes, never merge. `pipeline/reviewers.py` is the
+  registry; a reviewer that goes quiet for 14 days stops gating on its own.
 - **Store:** a shared Supabase Postgres via `TRIAGE_STORE_URL` (transaction
   pooler, port 6543), one store for every operator machine.
 - **Repository profile:** the gitignored `profile.json` at the repo root

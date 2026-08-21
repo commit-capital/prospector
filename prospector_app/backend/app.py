@@ -746,7 +746,7 @@ def refresh_identities():
 def get_capabilities():
     c = caps.capabilities()
     return {"login": c.get("login"), "merge_upstream": c.get("merge_upstream", False),
-            "review": c.get("review"), "store_schema": c.get("store_schema"),
+            "reviewers": c.get("reviewers") or [], "store_schema": c.get("store_schema"),
             "write_block": c.get("write_block")}
 
 

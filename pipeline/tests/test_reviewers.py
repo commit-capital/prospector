@@ -281,3 +281,12 @@ class TestProjections:
         assert seen["greptile"] == {"last_observed_at": "2026-08-20T00:00:00Z", "prs": 1}
         assert seen["socket"]["last_observed_at"] == "2026-08-21T00:00:00Z"
         assert "coderabbit" not in seen
+
+
+def test_greptile_finding_title_drops_its_html_badge():
+    feed = _feed(threads=[{"id": 1, "login": "greptile-apps[bot]", "path": "w.ts", "line": 3,
+                           "body": '<a href="#"><img alt="P1" src="https://x/p1.svg"></a> **logic:** retry never exits\n\nmore',
+                           "commit": HEAD, "original_commit": HEAD, "resolved": False, "outdated": False,
+                           "at": "2026-08-21T00:00:00Z", "url": "t"}])
+    e = reviewers.parse(reviewers.GREPTILE, feed, HEAD, None)
+    assert e["findings"][0]["title"] == "**logic:** retry never exits"
