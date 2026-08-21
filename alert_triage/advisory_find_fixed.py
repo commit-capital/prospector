@@ -64,16 +64,24 @@ def _say(msg: str) -> None:
         print(msg, flush=True)
 
 
+def _needs_agent(a: advisory_model.Advisory, *, rescan: bool) -> bool:
+    current = is_current(a, "fix_scan", max_age_days=FIX_SCAN_MAX_AGE_DAYS)
+    if not current:
+        return True
+    return rescan and (a.fix_scan or {}).get("by") != "deterministic"
+
+
 def _open_unscanned(store: AdvisoryStore, *, rescan: bool = False
                     ) -> list[tuple[int, advisory_model.Advisory]]:
     return [(i, a) for i, a in store.all_advisories().items()
-            if a.state in OPEN_STATES
-            and (rescan or not is_current(a, "fix_scan", max_age_days=FIX_SCAN_MAX_AGE_DAYS))]
+            if a.state in OPEN_STATES and _needs_agent(a, rescan=rescan)]
 
 
 def candidates(store: AdvisoryStore, *, rescan: bool = False) -> list[int]:
     """Open advisories lacking a current fix_scan, highest severity first, then
-    newest. `rescan` takes every open advisory, current verdict or not."""
+    newest. `rescan` also takes those holding a current agent verdict; a
+    current deterministic verdict stands, since a rerun of tier 0 gives the
+    same answer."""
     ranked = sorted(_open_unscanned(store, rescan=rescan),
                     key=lambda t: t[1].created_at or "", reverse=True)
     ranked.sort(key=lambda t: _SEVERITY_RANK.get(t[1].severity or "", 5))
