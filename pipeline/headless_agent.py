@@ -15,6 +15,7 @@ conflict resolver and the fix author; the rule names the worktree in the CLI's
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping, Sequence
 import os
 import re
 import shutil
@@ -65,8 +66,9 @@ _GIT_READ_ALLOW = [
 ]
 
 
-def _flags(allow_gh: bool, edit_root: str | None = None) -> list[str]:
-    tools = ["Read", "Grep", "Glob", *(_GH_ALLOW if allow_gh else [])]
+def _flags(allow_gh: bool, edit_root: str | None = None,
+           allow: Sequence[str] = ()) -> list[str]:
+    tools = ["Read", "Grep", "Glob", *(_GH_ALLOW if allow_gh else []), *allow]
     disallowed = list(_DISALLOWED)
     if edit_root:
         # A rule path beginning with one slash resolves against the project
@@ -184,23 +186,29 @@ def extract_json(text: str) -> dict:
 
 def run_agent(prompt: str, *, allow_gh: bool, cwd: str, system_prompt: str | None = None,
               model: str | None = None, on_event=None, timeout: int = 1200,
-              edit_root: str | None = None) -> str:
+              edit_root: str | None = None, allow: Sequence[str] = (),
+              env_extra: Mapping[str, str] | None = None) -> str:
     """Spawn headless claude, stream its output through parse_stream, return the
     final text. The prompt travels over stdin — it can embed a whole PR diff,
     and argv has an OS size cap. `model` pins a specific model (e.g. a cheap
     Haiku for mechanical work); None uses the CLI default. `edit_root` grants
-    Edit/Write scoped to that directory (plus read-only git). Raises
-    RuntimeError on a non-zero exit."""
-    cmd = [CLAUDE_BIN, "-p", *_flags(allow_gh, edit_root),
+    Edit/Write scoped to that directory (plus read-only git). `allow` adds
+    permission rules on top of the read-only set, such as `Bash(<tool>:*)` for
+    one more host command; `env_extra` is merged into the agent's environment,
+    which its Bash commands inherit. Raises RuntimeError on a non-zero exit."""
+    cmd = [CLAUDE_BIN, "-p", *_flags(allow_gh, edit_root, allow),
            "--output-format", "stream-json", "--verbose", "--include-partial-messages"]
     if model:
         cmd += ["--model", model]
     if system_prompt:
         cmd += ["--append-system-prompt", system_prompt]
+    env = operator_env()
+    if env_extra:
+        env.update(env_extra)
     proc = subprocess.Popen(cmd, cwd=cwd, stdin=subprocess.PIPE,
                             stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True,
-                            start_new_session=True, env=operator_env())
+                            start_new_session=True, env=env)
     assert proc.stdin is not None and proc.stdout is not None
 
     # Fed from a thread while this thread drains stdout, so neither pipe can

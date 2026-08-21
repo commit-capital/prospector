@@ -152,3 +152,24 @@ def test_run_agent_sends_the_prompt_over_stdin_not_argv(monkeypatch):
     assert all(len(arg) < 100_000 for arg in proc.cmd)
     assert "".join(proc.stdin.chunks) == prompt
     assert proc.stdin.closed
+
+
+def test_flags_allow_adds_rules_on_top_of_the_read_only_set():
+    flags = ha._flags(False, allow=["Bash(/x/sandbox-check:*)"])
+    allowed = flags[flags.index("--allowedTools") + 1].split(",")
+    assert "Bash(/x/sandbox-check:*)" in allowed
+    assert "Read" in allowed and not any(a.startswith("Edit") for a in allowed)
+
+
+def test_run_agent_merges_env_extra_into_the_agents_environment(monkeypatch):
+    seen: dict = {}
+
+    def fake_popen(cmd, **kwargs):
+        seen.update(kwargs)
+        return _FakeProc(cmd)
+
+    monkeypatch.setattr(ha.subprocess, "Popen", fake_popen)
+    ha.run_agent("hi", allow_gh=False, cwd="/tmp",
+                 env_extra={"PROSPECTOR_CHECK_PR": "7"})
+    assert seen["env"]["PROSPECTOR_CHECK_PR"] == "7"
+    assert "PATH" in seen["env"]

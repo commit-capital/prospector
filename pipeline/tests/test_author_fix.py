@@ -18,9 +18,10 @@ def _run(monkeypatch, reply: str, **over) -> dict:
     calls: dict = {}
 
     def fake_run_agent(prompt, *, allow_gh, cwd, edit_root=None, timeout=0,
-                       on_event=None, system_prompt=None, model=None):
+                       on_event=None, system_prompt=None, model=None, allow=(),
+                       env_extra=None):
         calls.update(prompt=prompt, allow_gh=allow_gh, cwd=cwd, edit_root=edit_root,
-                     timeout=timeout)
+                     timeout=timeout, allow=list(allow), env_extra=env_extra)
         return reply
 
     monkeypatch.setattr(headless_agent, "run_agent", fake_run_agent)
@@ -89,6 +90,37 @@ def test_a_change_entry_without_a_path_is_rejected(monkeypatch):
     with pytest.raises(ValueError):
         _run(monkeypatch, json.dumps({"summary": "s",
                                       "changes": [{"rationale": "no path"}]}))
+
+
+def test_the_review_summary_reaches_the_prompt_as_untrusted_evidence(monkeypatch):
+    r = _run(monkeypatch, json.dumps({"summary": "s", "changes": []}),
+             review_summary="The armSilenceTimer guard misses terminalResultSeen.")
+    prompt = r["calls"]["prompt"]
+    assert "misses terminalResultSeen" in prompt
+    assert "review provider's summary" in prompt.lower()
+
+
+def test_without_a_diff_the_agent_has_no_host_command_and_is_told_so(monkeypatch):
+    r = _run(monkeypatch, json.dumps({"summary": "s", "changes": []}))
+    assert r["calls"]["allow"] == []
+    assert r["calls"]["env_extra"] is None
+    assert "no installed dependencies" in r["calls"]["prompt"]
+    assert author_fix.CHECK_TOOL not in r["calls"]["prompt"]
+
+
+def test_the_diff_file_unlocks_the_sandbox_check_and_pins_its_tree(monkeypatch):
+    r = _run(monkeypatch, json.dumps({"summary": "s", "changes": []}),
+             diff_path="/scratch/patches/abc.patch", head_sha="a" * 40)
+    prompt = r["calls"]["prompt"]
+    assert "/scratch/patches/abc.patch" in prompt
+    assert f"{author_fix.CHECK_TOOL} typecheck" in prompt
+    assert r["calls"]["allow"] == [f"Bash({author_fix.CHECK_TOOL}:*)"]
+    env = r["calls"]["env_extra"]
+    assert env["PROSPECTOR_CHECK_PR"] == "7"
+    assert env["PROSPECTOR_CHECK_HEAD"] == "a" * 40
+    assert env["PROSPECTOR_CHECK_WORKTREE"] == "/wt"
+    assert env["PROSPECTOR_CHECK_PR_PATCH"] == "/scratch/patches/abc.patch"
+    assert env["PROSPECTOR_PYTHON"]
 
 
 # --- the disclosure check ------------------------------------------------------

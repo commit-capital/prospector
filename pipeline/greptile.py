@@ -111,6 +111,20 @@ def fetch_greptile_summary(n: int) -> tuple[int | None, str | None]:
     return _parse_greptile_summary([c for c in comments if _is_greptile(c)])
 
 
+def fetch_greptile_summary_text(n: int) -> tuple[str | None, str | None]:
+    """The body of Greptile's latest scored summary comment on PR n and the
+    reviewed SHA its footer names — the prose behind the score, which names the
+    defects Greptile weighed even when it left no inline comment. Returns
+    (None, None) when no scored summary exists or GitHub is unreachable."""
+    comments = gh_list(f"repos/{settings.repo()}/issues/{n}/comments?per_page=100")
+    if not comments:
+        return None, None
+    c, _score, sha = _latest_scored_summary([c for c in comments if _is_greptile(c)])
+    if c is None:
+        return None, None
+    return str(c.get("body") or ""), sha
+
+
 def fetch_greptile_verdict(n: int) -> tuple[int | None, str | None]:
     """Greptile's own (score, reviewed_sha) for PR n, direct from GitHub — the
     gate input. The score and authoritative reviewed SHA come from the
