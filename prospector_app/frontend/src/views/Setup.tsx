@@ -260,16 +260,21 @@ function WorkerSection(
 }
 
 /** Copies the deployment bundle a teammate pastes into their setup wizard. It
- *  carries the store URL, so it is a credential and the card says so. */
+ *  carries the store URL, so it is a credential and the card says so. The
+ *  bot's private key rides along only when the checkbox opts in. */
 function ShareSection() {
   const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
+  const [includeKey, setIncludeKey] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
 
   const copy = async () => {
+    setProblem(null);
     try {
-      const { bundle } = await api.setupShare();
+      const { bundle } = await api.setupShare(includeKey);
       await navigator.clipboard.writeText(bundle);
       setState("copied");
-    } catch {
+    } catch (e) {
+      setProblem(e instanceof Error ? e.message : String(e));
       setState("failed");
     }
     setTimeout(() => setState("idle"), 3000);
@@ -285,14 +290,22 @@ function ShareSection() {
         Your teammate pastes it into the setup wizard their app opens on first
         run.
       </p>
+      <label className="small">
+        <input type="checkbox" checked={includeKey}
+          onChange={(e) => setIncludeKey(e.target.checked)} />
+        {" "}Also let the teammate act as the bot — includes the App's private
+        key, so approved actions execute for real from their machine too.
+      </label>
       <p className="setup-warn small">
-        ⚠ This carries the database password. Send it through a password manager
-        or a direct message — never a channel with history.
+        ⚠ This carries the database password{includeKey ? " and the bot's private key" : ""}.
+        Send it through a password manager or a direct message — never a
+        channel with history.
       </p>
       <div>
         <button onClick={() => void copy()}>
           {state === "copied" ? "copied ✓" : state === "failed" ? "copy failed" : "copy setup for a teammate"}
         </button>
+        {problem && <span className="chip chip-red sm">{problem}</span>}
       </div>
     </section>
   );

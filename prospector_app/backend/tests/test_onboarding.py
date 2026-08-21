@@ -32,6 +32,20 @@ def files(tmp_path, monkeypatch):
     return env, prof
 
 
+PEM = "-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAK\n-----END RSA PRIVATE KEY-----\n"
+
+
+@pytest.fixture
+def keyed(tmp_path, monkeypatch):
+    """A readable bot key on this machine, and an isolated place for a joiner
+    to file one under."""
+    pem = tmp_path / "sharer.pem"
+    pem.write_text(PEM)
+    monkeypatch.setenv("TRIAGE_BOT_KEY_FILE", str(pem))
+    monkeypatch.setattr(onboarding, "KEY_DIR", tmp_path / "keys")
+    return pem
+
+
 @pytest.fixture
 def adopting(tmp_path, monkeypatch):
     """Like `files`, but the process really adopts what it writes — which is
@@ -94,20 +108,75 @@ class TestJoin:
         monkeypatch.setenv("TRIAGE_STORE_URL", "sqlite:///team.db")
         monkeypatch.setenv("TRIAGE_BOT_LOGIN", "acme-bot")
         monkeypatch.setenv("TRIAGE_BOT_APP_ID", "12345")
-        bundle_env, doc = onboarding.parse_bundle(
-            json.dumps(onboarding.build_bundle()))
+        b = onboarding.parse_bundle(json.dumps(onboarding.build_bundle()))
         monkeypatch.delenv("TRIAGE_REPO", raising=False)
         env, _ = files
-        onboarding.apply("join", bundle_env, doc)
+        onboarding.apply("join", b.env, b.profile)
         text = env.read_text()
         assert "TRIAGE_REPO=acme/widgets" in text
         assert "TRIAGE_BOT_LOGIN=acme-bot" in text
         assert "TRIAGE_BOT_APP_ID=12345" in text
+        assert "TRIAGE_BOT_KEY_FILE" not in text
 
     def test_join_is_refused_once_configured(self, files, monkeypatch):
         monkeypatch.setenv("TRIAGE_REPO", "acme/widgets")
         with pytest.raises(ValueError, match="already configured"):
             onboarding.apply("join", {"TRIAGE_REPO": "attacker/repo"}, None)
+
+
+class TestJoinWithKey:
+    """A bundle the sharer chose to put the bot's key in makes the joiner's
+    machine a keyed one: the key is filed outside the repo, owner-only, and
+    named in .env."""
+
+    JOIN = {"TRIAGE_REPO": "acme/widgets", "TRIAGE_BOT_LOGIN": "acme-bot",
+            "TRIAGE_BOT_APP_ID": "12345"}
+
+    def test_the_key_is_filed_and_named(self, files, keyed, monkeypatch):
+        monkeypatch.delenv("TRIAGE_REPO", raising=False)
+        env, _ = files
+        onboarding.apply("join", dict(self.JOIN), None, bot_key_pem=PEM)
+        installed = onboarding.KEY_DIR / "acme-bot" / "private-key.pem"
+        assert installed.read_text() == PEM
+        assert installed.stat().st_mode & 0o777 == 0o600
+        assert installed.parent.stat().st_mode & 0o777 == 0o700
+        assert f"TRIAGE_BOT_KEY_FILE={installed}" in env.read_text()
+
+    def test_the_key_lives_outside_the_checkout(self):
+        assert onboarding.KEY_DIR.resolve() != onboarding.settings.REPO_ROOT
+        assert onboarding.settings.REPO_ROOT not in onboarding.KEY_DIR.resolve().parents
+
+    def test_the_key_needs_a_login_to_be_filed_under(self, files, keyed, monkeypatch):
+        monkeypatch.delenv("TRIAGE_REPO", raising=False)
+        with pytest.raises(ValueError, match="TRIAGE_BOT_LOGIN"):
+            onboarding.apply("join", {"TRIAGE_REPO": "acme/widgets"}, None,
+                             bot_key_pem=PEM)
+
+    def test_text_that_is_not_a_private_key_is_refused(self, files, keyed, monkeypatch):
+        monkeypatch.delenv("TRIAGE_REPO", raising=False)
+        with pytest.raises(ValueError, match="private key"):
+            onboarding.apply("join", dict(self.JOIN), None, bot_key_pem="hello")
+        assert not (onboarding.KEY_DIR / "acme-bot").exists()
+
+    def test_a_key_travels_only_in_a_bundle(self, files, keyed, monkeypatch):
+        monkeypatch.setenv("TRIAGE_REPO", "acme/widgets")
+        with pytest.raises(ValueError, match="bundle"):
+            onboarding.apply("writes", {"TRIAGE_BOT_LOGIN": "acme-bot"}, None,
+                             bot_key_pem=PEM)
+
+    def test_the_key_path_is_never_client_writable_in_join(self):
+        assert "TRIAGE_BOT_KEY_FILE" not in onboarding.STEP_KEYS["join"]
+
+    def test_the_filed_key_is_removed_when_the_env_write_fails(
+            self, files, keyed, monkeypatch):
+        monkeypatch.delenv("TRIAGE_REPO", raising=False)
+
+        def boom(updates):
+            raise OSError("disk full")
+        monkeypatch.setattr(env_file, "write", boom)
+        with pytest.raises(OSError):
+            onboarding.apply("join", dict(self.JOIN), None, bot_key_pem=PEM)
+        assert not (onboarding.KEY_DIR / "acme-bot" / "private-key.pem").exists()
 
 
 class TestValidation:
@@ -154,10 +223,32 @@ class TestBundle:
         prof.write_text(json.dumps(PROFILE))
         monkeypatch.setenv("TRIAGE_PROFILE", str(prof))
         text = json.dumps(onboarding.build_bundle())
-        env, doc = onboarding.parse_bundle(text)
-        assert env["TRIAGE_REPO"] == "acme/widgets"
-        assert env["TRIAGE_STORE_URL"] == "sqlite:///team.db"
-        assert doc == PROFILE
+        b = onboarding.parse_bundle(text)
+        assert b.env["TRIAGE_REPO"] == "acme/widgets"
+        assert b.env["TRIAGE_STORE_URL"] == "sqlite:///team.db"
+        assert b.profile == PROFILE
+        assert b.bot_key_pem is None
+
+    def test_the_key_travels_only_on_request(self, keyed, monkeypatch):
+        monkeypatch.setenv("TRIAGE_REPO", "acme/widgets")
+        monkeypatch.setenv("TRIAGE_BOT_LOGIN", "acme-bot")
+        assert "bot_key_pem" not in onboarding.build_bundle()
+        with_key = onboarding.build_bundle(include_key=True)
+        assert with_key["bot_key_pem"] == PEM
+        assert onboarding.parse_bundle(json.dumps(with_key)).bot_key_pem == PEM
+
+    def test_including_a_key_this_machine_lacks_is_refused(self, monkeypatch):
+        monkeypatch.setenv("TRIAGE_REPO", "acme/widgets")
+        monkeypatch.setenv("TRIAGE_BOT_LOGIN", "acme-bot")
+        monkeypatch.setenv("TRIAGE_BOT_KEY_FILE", "/nonexistent/key.pem")
+        with pytest.raises(ValueError, match="key"):
+            onboarding.build_bundle(include_key=True)
+
+    def test_including_a_key_without_a_login_is_refused(self, keyed, monkeypatch):
+        monkeypatch.setenv("TRIAGE_REPO", "acme/widgets")
+        monkeypatch.delenv("TRIAGE_BOT_LOGIN", raising=False)
+        with pytest.raises(ValueError, match="TRIAGE_BOT_LOGIN"):
+            onboarding.build_bundle(include_key=True)
 
     def test_an_unknown_version_is_refused_with_what_it_saw(self):
         with pytest.raises(ValueError, match="version 99"):
@@ -307,6 +398,46 @@ class TestRoutes:
                         json={"step": "join", "bundle": bundle})
         assert r.status_code == 200
         assert r.json()["configured"] is True
+
+    def test_a_keyed_bundle_files_the_key_over_http(
+            self, adopting, keyed, monkeypatch):
+        from fastapi.testclient import TestClient
+        from prospector_app.backend import app as app_mod
+        monkeypatch.delenv("TRIAGE_REPO", raising=False)
+        client = TestClient(app_mod.app, raise_server_exceptions=False)
+        bundle = json.dumps({"version": 1,
+                             "env": {"TRIAGE_REPO": "acme/widgets",
+                                     "TRIAGE_BOT_LOGIN": "acme-bot",
+                                     "TRIAGE_BOT_APP_ID": "12345"},
+                             "profile": PROFILE, "bot_key_pem": PEM})
+        r = client.post("/api/onboarding/apply",
+                        json={"step": "join", "bundle": bundle})
+        assert r.status_code == 200
+        installed = onboarding.KEY_DIR / "acme-bot" / "private-key.pem"
+        assert installed.read_text() == PEM
+        assert os.environ["TRIAGE_BOT_KEY_FILE"] == str(installed)
+
+    def test_share_includes_the_key_only_when_asked(self, keyed, monkeypatch):
+        from fastapi.testclient import TestClient
+        from prospector_app.backend import app as app_mod
+        monkeypatch.setenv("TRIAGE_REPO", "acme/widgets")
+        monkeypatch.setenv("TRIAGE_BOT_LOGIN", "acme-bot")
+        client = TestClient(app_mod.app, raise_server_exceptions=False)
+        plain = client.post("/api/setup/share", json={}).json()["bundle"]
+        assert "bot_key_pem" not in plain
+        keyed_bundle = client.post("/api/setup/share",
+                                   json={"include_key": True}).json()["bundle"]
+        assert json.loads(keyed_bundle)["bot_key_pem"] == PEM
+
+    def test_sharing_a_key_this_machine_lacks_is_a_400(self, monkeypatch):
+        from fastapi.testclient import TestClient
+        from prospector_app.backend import app as app_mod
+        monkeypatch.setenv("TRIAGE_REPO", "acme/widgets")
+        monkeypatch.setenv("TRIAGE_BOT_LOGIN", "acme-bot")
+        monkeypatch.setenv("TRIAGE_BOT_KEY_FILE", "/nonexistent/key.pem")
+        client = TestClient(app_mod.app, raise_server_exceptions=False)
+        r = client.post("/api/setup/share", json={"include_key": True})
+        assert r.status_code == 400
 
     def test_a_bad_bundle_is_a_400_not_a_500(self, files, monkeypatch):
         from fastapi.testclient import TestClient

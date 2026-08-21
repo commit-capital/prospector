@@ -17,6 +17,7 @@ import os
 import re
 import subprocess
 from pathlib import Path
+from typing import NamedTuple
 
 from pipeline import profile, settings
 from prospector_app.backend import data, env_file
@@ -24,6 +25,11 @@ from prospector_app.backend import data, env_file
 BUNDLE_VERSION = 1
 
 PROFILE_PATH = settings.REPO_ROOT / "profile.json"
+
+# Where a joiner files the bot's private key when a bundle carries one: under
+# the user's config dir, outside the checkout and the environment, one
+# subdirectory per bot login.
+KEY_DIR = Path.home() / ".config" / "prospector"
 
 _REPO_RE = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+\Z")
 
@@ -82,17 +88,58 @@ def _validated(step: str, updates: dict[str, str]) -> dict[str, str]:
     return clean
 
 
+class Bundle(NamedTuple):
+    """What a pasted bundle carries: the env mapping, the profile document, and
+    the bot's private key when the sharer chose to include it."""
+    env: dict[str, str]
+    profile: dict[str, object] | None
+    bot_key_pem: str | None
+
+
+def _check_key(login: str, pem: str) -> None:
+    """Raises ValueError unless `pem` is a PEM private key and `login` a name
+    it can be filed under."""
+    if not login:
+        raise ValueError("a bundle carrying the bot key must also carry TRIAGE_BOT_LOGIN")
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", login):
+        raise ValueError(f"TRIAGE_BOT_LOGIN is not a name a key can be filed under: {login!r}")
+    if "-----BEGIN" not in pem or "PRIVATE KEY-----" not in pem:
+        raise ValueError("the bundle's bot_key_pem is not a PEM private key")
+
+
+def _file_key(login: str, pem: str) -> Path:
+    """Write the bot's private key under KEY_DIR for `login`, owner-only, and
+    return its path."""
+    folder = KEY_DIR / login
+    folder.mkdir(parents=True, exist_ok=True)
+    folder.chmod(0o700)
+    path = folder / "private-key.pem"
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(pem if pem.endswith("\n") else pem + "\n")
+    path.chmod(0o600)
+    return path
+
+
 def apply(step: str, env: dict[str, str],
-          profile_doc: dict[str, object] | None) -> dict[str, object]:
+          profile_doc: dict[str, object] | None,
+          bot_key_pem: str | None = None) -> dict[str, object]:
     """Write one step's configuration and adopt it in this process.
 
     Everything is validated before anything is written. `profile.json` goes
     first so a profile the parser would reject at boot never reaches disk; if
     the `.env` write then fails, the previous profile is put back, because a
     checkout whose policy file belongs to one deployment and whose `.env` names
-    another is worse than either failure alone.
+    another is worse than either failure alone. A bot key rides only in a
+    `join` bundle: it is filed under KEY_DIR after the profile and before
+    `.env` names it, and put back as it was if the `.env` write fails.
     """
     clean = _validated(step, env)
+    login = clean.get("TRIAGE_BOT_LOGIN", "")
+    if bot_key_pem is not None:
+        if step != "join":
+            raise ValueError("a bot key travels only in a pasted bundle")
+        _check_key(login, bot_key_pem)
     previous: str | None = None
     if profile_doc is not None:
         # The profile parser exits the process on a bad document, which is right
@@ -104,7 +151,14 @@ def apply(step: str, env: dict[str, str],
             raise ValueError(str(e))
         previous = PROFILE_PATH.read_text() if PROFILE_PATH.exists() else None
         PROFILE_PATH.write_text(json.dumps(profile_doc, indent=2) + "\n")
+    key_path: Path | None = None
+    previous_key: str | None = None
     try:
+        if bot_key_pem is not None:
+            candidate = KEY_DIR / login / "private-key.pem"
+            previous_key = candidate.read_text() if candidate.is_file() else None
+            key_path = _file_key(login, bot_key_pem)
+            clean["TRIAGE_BOT_KEY_FILE"] = str(key_path)
         env_file.write(clean)
     except OSError:
         if profile_doc is not None:
@@ -112,6 +166,11 @@ def apply(step: str, env: dict[str, str],
                 PROFILE_PATH.unlink(missing_ok=True)
             else:
                 PROFILE_PATH.write_text(previous)
+        if key_path is not None:
+            if previous_key is None:
+                key_path.unlink(missing_ok=True)
+            else:
+                key_path.write_text(previous_key)
         raise
     reconfigure(clean)
     return state()
@@ -119,19 +178,26 @@ def apply(step: str, env: dict[str, str],
 
 def reconfigure(applied: dict[str, str]) -> None:
     """Adopt written configuration in the running process. The ONE adoption
-    path: the environment, then the two things built from it at import."""
+    path: the environment, the two things built from it at import, and — when
+    the bot identity or its key moved — the executor's cached live probe."""
     os.environ.update(applied)
     data.reset()
     settings.default_branch.cache_clear()
     profile.reset_cache()
+    if {"TRIAGE_BOT_LOGIN", "TRIAGE_BOT_APP_ID", "TRIAGE_BOT_KEY_FILE"} & set(applied):
+        from prospector_app.backend import executor
+        executor.refresh_live()
 
 
-def build_bundle() -> dict[str, object]:
+def build_bundle(include_key: bool = False) -> dict[str, object]:
     """This deployment, as one thing a teammate can paste.
 
     Carries the store URL and the whole profile, because a bundle needing a
     second out-of-band step is the problem it exists to solve. It is therefore a
-    credential, and the UI offering it says so.
+    credential, and the UI offering it says so. With `include_key`, also the
+    bot's private key, read from this machine's TRIAGE_BOT_KEY_FILE, so the
+    joiner's machine executes approved writes too; raises ValueError when this
+    machine has no readable key or no bot login to file it under.
     """
     env = {k: os.environ[k].strip() for k in _BUNDLE_KEYS
            if os.environ.get(k, "").strip()}
@@ -142,12 +208,21 @@ def build_bundle() -> dict[str, object]:
     if path.is_file():
         loaded = json.loads(path.read_text())
         doc = loaded if isinstance(loaded, dict) else None
-    return {"version": BUNDLE_VERSION, "env": env, "profile": doc}
+    bundle: dict[str, object] = {"version": BUNDLE_VERSION, "env": env, "profile": doc}
+    if include_key:
+        if not env.get("TRIAGE_BOT_LOGIN"):
+            raise ValueError("no TRIAGE_BOT_LOGIN to file the key under on the other side")
+        key_file = os.environ.get("TRIAGE_BOT_KEY_FILE", "").strip()
+        key_path = Path(key_file).expanduser() if key_file else None
+        if key_path is None or not key_path.is_file():
+            raise ValueError("this machine has no readable bot key to share")
+        bundle["bot_key_pem"] = key_path.read_text()
+    return bundle
 
 
-def parse_bundle(text: str) -> tuple[dict[str, str], dict[str, object] | None]:
-    """The env mapping and profile document a bundle carries. Raises ValueError
-    on anything that is not a bundle of a version this checkout reads."""
+def parse_bundle(text: str) -> Bundle:
+    """What a bundle carries. Raises ValueError on anything that is not a
+    bundle of a version this checkout reads."""
     try:
         doc = json.loads(text)
     except json.JSONDecodeError:
@@ -163,8 +238,10 @@ def parse_bundle(text: str) -> tuple[dict[str, str], dict[str, object] | None]:
     if not isinstance(env, dict):
         raise ValueError("not a Prospector bundle: env is not an object")
     prof = doc.get("profile")
-    return ({str(k): str(v) for k, v in env.items()},
-            prof if isinstance(prof, dict) else None)
+    pem = doc.get("bot_key_pem")
+    return Bundle({str(k): str(v) for k, v in env.items()},
+                  prof if isinstance(prof, dict) else None,
+                  pem if isinstance(pem, str) and pem.strip() else None)
 
 
 def _probe_store(url: str) -> dict[str, object]:
