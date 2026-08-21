@@ -1,4 +1,4 @@
-"""The ONE 'is this alert-fact still about the current alert?' check.
+"""The ONE 'is this fact still about the current alert or advisory?' check.
 
 An alert fact is current iff it exists, was computed against the alert's current
 meta.updated_at (GitHub bumps updated_at on state changes and new instances),
@@ -10,12 +10,18 @@ while the alert itself is quiet.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import Protocol
 
 from pipeline.storekit import is_current_core
 
-if TYPE_CHECKING:
-    from alert_triage.alert_model import Alert
+
+class Stamped(Protocol):
+    """A store record whose fact sections carry `against_updated_at`."""
+
+    def section(self, name: str) -> dict | None: ...
+
+    @property
+    def updated_at(self) -> str | None: ...
 
 # Sections whose facts are tied to the alert's content at a specific updated_at.
 UPDATED_BOUND = ("links", "fix_scan")
@@ -26,7 +32,7 @@ SECTION_SCHEMA_VERSION: dict[str, int] = {}
 FIX_SCAN_MAX_AGE_DAYS = 7
 
 
-def is_current(alert: Alert, section: str, max_age_days: int | None = None,
+def is_current(alert: Stamped, section: str, max_age_days: int | None = None,
                today: str | None = None) -> bool:
     sec = alert.section(section)
     token_field = "against_updated_at" if section in UPDATED_BOUND else None
