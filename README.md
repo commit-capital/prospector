@@ -73,7 +73,7 @@ disables the external-review requirement.
 | `pipeline/` | The store (`store/`), the phase drivers, `gates.py` / `freshness.py` / `taxonomy.py` / `profile.py`, the Workflow scripts, the `prospector` CLI (`cli.py`), and `views.py` (generates `STATUS.md`). |
 | `prospector_app/` | The web app: `backend/` (FastAPI), `frontend/` (React/Vite), and `agent/` (Ask-pane helpers and operating context). |
 | `issue_triage/` | The **issue** pipeline, on the same substrate as `pipeline/`: its own validated store (`store/`), `issue_freshness.py` / `issue_gates.py` / `issue_model.py` over the shared `pipeline/storekit.py`, and phase drivers (INGEST → CLUSTER → ANALYZE). Imports `pipeline/taxonomy.py`; the app Issues tab projects its store. |
-| `alert_triage/` | The **security-alert** pipeline, on the same substrate: GitHub code-scanning / Dependabot / secret-scanning alerts for `TRIAGE_REPO`, read and actioned as the bot App. `alert_store.py` / `alert_model.py` / `alert_freshness.py` / `alert_gates.py` over the shared `pipeline/storekit.py`, plus `alert_ingest.py` (fetch + deterministic PR linking) and `alert_fixed_driver.py` / `find_fixed.py` (the tiered already-fixed pass). The app 🛡️ Alerts tab projects its store; secret values are never stored. |
+| `alert_triage/` | The **security-alert** pipeline, on the same substrate: GitHub code-scanning / Dependabot / secret-scanning alerts for `TRIAGE_REPO`, read and actioned as the bot App. `alert_store.py` / `alert_model.py` / `alert_freshness.py` / `alert_gates.py` over the shared `pipeline/storekit.py`, plus `alert_ingest.py` (fetch + deterministic PR linking) and `alert_fixed_driver.py` / `find_fixed.py` (the tiered already-fixed pass). Plus `advisory_store.py` / `advisory_model.py` / `advisory_ingest.py` / `advisory_find_fixed.py` for repository security advisories (read-only; no upstream write path) and `security_sweep.py`, the one Control-tab `security-sweep` job over both. The app 🛡️ Alerts tab projects both stores, opening on its Advisories sub-view; secret values are never stored. |
 
 ## Configuration
 
@@ -106,9 +106,10 @@ uv run python issue_triage/issue_store_migrate.py dump @env <output-dir>
    - **Code scanning alerts**: read & write (🛡️ Alerts tab — optional; ingest + dismissal)
    - **Dependabot alerts**: read & write (🛡️ Alerts tab — optional)
    - **Secret scanning alerts**: read & write (🛡️ Alerts tab — optional)
+   - **Repository security advisories**: read (🛡️ Alerts → Advisories — optional)
 
-   The three alert permissions are optional: without them the 🛡️ Alerts tab
-   reports each source unavailable and everything else works unchanged.
+   The alert and advisory permissions are optional: without them the 🛡️ Alerts
+   tab reports each source unavailable and everything else works unchanged.
 2. Keep the app install-restricted (**Only on this account**) and install it on the `TRIAGE_REPO` owner, granting the triaged repo. `pipeline/get-bot-token.sh` selects the installation whose account is the owner of `TRIAGE_REPO`, so a stray installation elsewhere is never used — but there's no reason to allow one.
 3. Generate a private key in the app settings and save the PEM outside the repo (e.g. `~/.config/<app>/private-key.pem`), then wire `.env`:
    - `TRIAGE_BOT_APP_ID` — the app's numeric id (on the app's settings page)

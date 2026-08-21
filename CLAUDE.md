@@ -185,6 +185,22 @@ token. Secret values are never fetched or stored — only type + file locations.
 GitHub secret scanning (secrets already in the repo) is deliberately separate
 from `threats.py` (incoming PR diffs); they are never coupled. The app 🛡️
 Alerts tab projects this store.
+**Advisories** are the family's second collection: GitHub repository security
+advisories (`advisory_store.py` / `advisory_model.py`, table `advisories` keyed
+by `advisory_id(ghsa)`, the GHSA's twelve symbols as one base-21 integer, stamped
+`against_updated_at`; states `triage / draft / published / closed / withdrawn`,
+with `OPEN_STATES = {triage, draft}` the ones find-fixed judges).
+`advisory_ingest.py` lists every state as the bot — the App needs the
+repository-security-advisories read permission, and a missing one marks the
+source unavailable like any alert source. `advisory_find_fixed.py` applies one
+deterministic tier-0 rule (a summary reading "CVE ID follow-up for existing
+GHSA-…" is a `duplicate` of that GHSA) and then headless-agent waves that
+receive a roster of every advisory for duplicate detection and return `fixed`
+(with a named default-branch commit), `likely-fixed`, `duplicate` (with
+`duplicate_of`, never itself), or `not-fixed`. There is no upstream write path
+for advisories. `security_sweep.py` runs alert ingest → alert find-fixed →
+advisory ingest → advisory find-fixed as the one Control-tab `security-sweep`
+job. The 🛡️ Alerts tab opens on its Advisories sub-view.
 
 See `pipeline/workflows/README.md` for the exact run commands. Run phases from the CLI or the app Control tab; `views.py` regenerates `STATUS.md` from the store.
 
