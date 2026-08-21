@@ -301,3 +301,12 @@ def test_job_group_route_streams_all_requested_jobs_once():
     assert response.status_code == 200
     assert response.text.count("event: job") == 2
     assert "event: done" in response.text
+
+
+def test_security_sweep_replaces_the_alert_jobs():
+    assert "alert-ingest" not in jobs.JOB_SPECS and "alert-find-fixed" not in jobs.JOB_SPECS
+    spec = jobs.JOB_SPECS["security-sweep"]
+    assert spec.get("needs_count") is True
+    argv = spec["argv_fn"](7)
+    assert argv[-3:] == [str(jobs.REPO_ROOT / "alert_triage" / "security_sweep.py"),
+                         "--limit", "7"]
