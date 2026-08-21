@@ -14,14 +14,9 @@ like it applied.
 from __future__ import annotations
 
 import os
-import tempfile
-from pathlib import Path
 
 from pipeline import settings
-from prospector_app.backend import fix_worker, verify_worker
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-ENV_PATH = REPO_ROOT / ".env"
+from prospector_app.backend import env_file, fix_worker, verify_worker
 
 # The only keys this module may write. Each is a worker lane switch — nothing
 # here names a credential, a path, or the store.
@@ -54,43 +49,14 @@ def _validated(updates: dict[str, str]) -> dict[str, str]:
     return clean
 
 
-def _rewrite(text: str, updates: dict[str, str]) -> str:
-    """`text` with each update applied to its own line, every other line kept
-    byte for byte. A key the file does not mention is appended; one it comments
-    out is replaced in place, so the commented example in .env.example becomes
-    the live setting rather than a duplicate below it."""
-    lines = text.splitlines(keepends=True)
-    remaining = dict(updates)
-    for i, line in enumerate(lines):
-        bare = line.lstrip("#").strip()
-        key = bare.split("=", 1)[0].strip() if "=" in bare else ""
-        if key not in remaining:
-            continue
-        ending = "\n" if line.endswith("\n") else ""
-        lines[i] = f"{key}={remaining.pop(key)}{ending}"
-    if remaining:
-        if lines and not lines[-1].endswith("\n"):
-            lines.append("\n")
-        lines.append("\n# Worker lanes, set from the app's Setup view.\n")
-        lines.extend(f"{k}={v}\n" for k, v in remaining.items())
-    return "".join(lines)
-
-
 def set_flags(updates: dict[str, str]) -> dict[str, str]:
     """Write `updates` to `.env` and to this process's environment. Returns the
     flags as they now stand.
 
-    The file is replaced whole from a temporary sibling, so a failed write
-    leaves the previous .env intact rather than a half-written one — this file
-    holds the store password, and a truncated one costs more than a failed
-    toggle."""
+    The allowlist is this module's whole job; env_file owns putting the result
+    on disk without disturbing the rest of the file."""
     clean = _validated(updates)
-    text = ENV_PATH.read_text() if ENV_PATH.exists() else ""
-    with tempfile.NamedTemporaryFile("w", dir=ENV_PATH.parent, delete=False) as tmp:
-        tmp.write(_rewrite(text, clean))
-        staged = Path(tmp.name)
-    staged.chmod(0o600)
-    staged.replace(ENV_PATH)
+    env_file.write(clean)
     os.environ.update(clean)
     return flags()
 
