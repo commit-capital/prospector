@@ -80,6 +80,14 @@ def test_flags_default_stays_read_only():
     flags = ha._flags(False)
     allowed = flags[flags.index("--allowedTools") + 1]
     assert "Edit" not in allowed
+    assert "Bash(" not in allowed
+
+
+def test_flags_never_admit_raw_gh_api_and_route_reads_through_gh_read():
+    flags = ha._flags(True)
+    allowed = flags[flags.index("--allowedTools") + 1].split(",")
+    assert not any(a.startswith("Bash(gh api") for a in allowed)
+    assert any(a.endswith("/prospector_app/agent/gh-read:*)") for a in allowed)
     i = flags.index("--disallowedTools")
     disallowed = flags[i + 1:flags.index("--permission-mode")]
     assert "Edit" in disallowed and "Write" in disallowed

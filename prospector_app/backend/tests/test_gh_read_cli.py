@@ -77,3 +77,28 @@ def test_a_trailing_write_flag_is_rejected(tmp_path):
     r = _run(_fake_gh(tmp_path / "bin"), ["file", "foo", "-X", "PUT"])
     assert r.returncode != 0
     assert r.stdout == ""  # gh never ran
+
+
+def test_commits_is_a_get_scoped_to_the_repo_path(tmp_path):
+    r = _run(_fake_gh(tmp_path / "bin"), ["commits", "/server/src/routes/agents.ts", "--limit", "5"])
+    assert r.returncode == 0, r.stderr
+    argv = r.stdout.splitlines()
+    assert argv[:4] == ["api", "-X", "GET", "repos/test-owner/test-repo/commits"]
+    assert "path=server/src/routes/agents.ts" in argv and "per_page=5" in argv
+    assert "PATCH" not in argv and "POST" not in argv and "PUT" not in argv
+
+
+def test_commits_limit_is_clamped_to_github_page_size(tmp_path):
+    r = _run(_fake_gh(tmp_path / "bin"), ["commits", "README.md", "--limit", "500"])
+    assert "per_page=100" in r.stdout.splitlines()
+
+
+def test_commit_is_a_plain_get_of_one_sha(tmp_path):
+    r = _run(_fake_gh(tmp_path / "bin"), ["commit", "c647b8cc2ea6"])
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.splitlines() == ["api", "repos/test-owner/test-repo/commits/c647b8cc2ea6"]
+
+
+def test_commit_refuses_anything_but_a_sha(tmp_path):
+    r = _run(_fake_gh(tmp_path / "bin"), ["commit", "../../rate_limit"])
+    assert r.returncode == 2 and r.stdout == ""

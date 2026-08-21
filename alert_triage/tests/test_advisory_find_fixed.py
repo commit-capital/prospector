@@ -43,6 +43,16 @@ def test_candidates_open_unscanned_severity_then_newest(tmp_path):
     assert ff.candidates(store) == [advisory_id(G3), advisory_id(G2), advisory_id(G1)]
 
 
+def test_rescan_takes_every_open_advisory(tmp_path):
+    store = AdvisoryStore(tmp_path)
+    _seed(store, G1)
+    scanned = _seed(store, G2, severity="high")
+    scanned.record_fix_scan("not-fixed", by="agent")
+    _seed(store, G3, state="published")
+    assert ff.candidates(store) == [advisory_id(G1)]
+    assert ff.candidates(store, rescan=True) == [advisory_id(G2), advisory_id(G1)]
+
+
 def test_tier0_cve_follow_up_is_a_duplicate(tmp_path):
     store = AdvisoryStore(tmp_path)
     _seed(store, G1, summary=f"CVE ID follow-up for existing {G2} (not a new disclosure)")
