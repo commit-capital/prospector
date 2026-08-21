@@ -13,6 +13,8 @@ parameter is a validated integer cluster id.
                     `count` lowest-id pending issues (store writes only, nothing
                     upstream)
   - issue-find-fixed : detect already-fixed open issues (gh-heavy, pain-ranked waves)
+  - security-sweep : alert ingest → alert find-fixed → advisory ingest → advisory
+                     find-fixed, one process (bot reads, store writes, agents)
   - analyze-clusters : ANALYZE phase — parallel per-cluster dispositions for the
                         `count` lowest-id pending clusters (gh reads only, store
                         writes; no upstream writes)
@@ -105,15 +107,11 @@ JOB_SPECS: dict[str, JobSpec] = {
                               str(REPO_ROOT / "issue_triage" / "find_fixed.py"),
                               "--limit", str(n)],
     },
-    "alert-ingest": {
-        "label": "Alert ingest (refresh security alerts as the bot · read-only)",
-        "argv": [*PIPELINE_PY, "-u", str(REPO_ROOT / "alert_triage" / "alert_ingest.py")],
-    },
-    "alert-find-fixed": {
-        "label": "Alert find-fixed (detect already-fixed alerts · agentic · gh-heavy)",
+    "security-sweep": {
+        "label": "Security sweep (alerts + advisories: ingest as the bot, then find-fixed · agentic · gh-heavy)",
         "needs_count": True,
         "argv_fn": lambda n: [*PIPELINE_PY, "-u",
-                              str(REPO_ROOT / "alert_triage" / "find_fixed.py"),
+                              str(REPO_ROOT / "alert_triage" / "security_sweep.py"),
                               "--limit", str(n)],
     },
     "threat-scan": {

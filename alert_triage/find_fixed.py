@@ -3,7 +3,7 @@ waves: apply the deterministic tier-0 verdicts first, then bundle the remaining
 open, unscanned alerts (highest severity first), run the canonical FIND-FIXED
 prompt through gh-enabled headless claudes (several batches at once), and
 commit the verdicts back to the store. Run from the app Control tab (the
-`alert-find-fixed` job) or the CLI. Progress prints one line per step; the app
+`security-sweep` job) or the CLI. Progress prints one line per step; the app
 streams it as SSE.
 
 Store I/O stays on the calling thread — the candidate scan and bundle build
