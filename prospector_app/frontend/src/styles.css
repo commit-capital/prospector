@@ -650,6 +650,12 @@ select { background: var(--panel); border: 1px solid var(--border); color: var(-
 .jobspecs { display: flex; flex-direction: column; gap: 8px; margin-bottom: 18px; }
 .jobspec { display: flex; align-items: center; gap: 10px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; }
 .jobspec-label { flex: 1; }
+
+/* suggested actions — Control-tab jobs surfaced on the view they feed */
+.suggest-bar { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.suggest-card { display: flex; align-items: center; gap: 10px; background: color-mix(in srgb, var(--gold) 8%, var(--panel)); border: 1px solid var(--gold); border-radius: 8px; padding: 6px 12px; }
+.suggest-card-text { flex: 1; min-width: 0; }
+.suggest-tail { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: ui-monospace, monospace; }
 .joblog { background: var(--term-bg); color: var(--term-fg); border: 1px solid var(--border); border-radius: 8px; padding: 12px; height: 280px; overflow-y: auto; font-family: ui-monospace, monospace; font-size: 12px; margin-bottom: 18px; }
 .logline { white-space: pre-wrap; padding: 1px 0; border-bottom: 1px solid rgba(255,255,255,.05); }
 

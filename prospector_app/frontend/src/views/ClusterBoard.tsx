@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router";
 import { api, type ClusterState, type ClusterSummary, type Disposition, type PainBreakdown } from "../api";
 import { SafetyRollupChip } from "../components/Chips";
 import { InfoTip } from "../components/InfoTip";
+import { SuggestedActions } from "../components/SuggestedActions";
 import { clusterStateEntry, dispositionEntry } from "../glossary";
 
 // Chip label + colour per state; the plain-language explanation lives in the
@@ -190,6 +191,7 @@ export default function ClusterBoard() {
 
   return (
     <div className="board">
+      <SuggestedActions view="prs" />
       <div className="board-controls">
         <div className="segmented">
           {FILTERS.map((f) => (

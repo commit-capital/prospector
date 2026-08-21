@@ -13,6 +13,7 @@ import { FilterSummary } from "../components/shared/FilterSummary";
 import { buildPrFilterParts } from "../components/explorer/prFilterParts";
 import { ColumnFilterPopout, FILTERABLE_COLS, isColFilterActive } from "../components/explorer/ColumnFilterPopout";
 import { InfoTip, Term } from "../components/InfoTip";
+import { SuggestedActions } from "../components/SuggestedActions";
 import { term } from "../glossary";
 import { usePRFlyout } from "../usePRFlyout";
 import { makeRowOpen, stopRowOpen } from "../rowOpen";
@@ -302,6 +303,7 @@ export default function PRExplorer() {
           {res ? `${res.total} match` : null}
         </span>
       </div>
+      <SuggestedActions view="prs" />
       <ExplorerSearchBar value={searchQ} onTextChange={setSearchText} onSpec={setSpec} onDeepSearch={runDeep} deepBusy={deepBusy} deepProgress={deepProgress} />
       <LaneChips spec={spec} onChange={setSpec} />
       <FilterControls spec={spec} onChange={setSpec} visibleColKeys={new Set(visibleColumns.map((c) => c.key))} />

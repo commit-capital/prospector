@@ -1622,7 +1622,22 @@ export const api = {
     return r.json() as Promise<ActionItem>;
   },
   pipelineStatus: () => get<PipelineStatus>("/api/pipeline/status"),
+  suggestedActions: (view: SuggestedActionView) =>
+    get<{ items: SuggestedAction[] }>(`/api/actions/suggested?view=${view}`),
 };
+
+export type SuggestedActionView = "prs" | "issues" | "alerts";
+
+/** One Control-tab job worth running now, surfaced on the view whose data it
+ * feeds; `count` is the default batch size for jobs that take one. */
+export interface SuggestedAction {
+  kind: string;
+  title: string;
+  reason: string;
+  last_run: string | null;
+  count: number | null;
+  estimate_seconds: number | null;
+}
 
 interface PipelinePhase {
   phase: string;

@@ -48,6 +48,7 @@ from prospector_app.backend import repo_meta
 from prospector_app.backend import review_refresh
 from prospector_app.backend import responses as responses_mod
 from prospector_app.backend import service
+from prospector_app.backend import suggested_actions
 from prospector_app.backend import tables
 from prospector_app.backend import training
 from prospector_app.backend import fix_queue
@@ -1041,6 +1042,16 @@ def retrigger_greptile(n: int, dry_run: bool = True):
 def pipeline_status_get():
     """Pipeline phase timing + PR coverage stats for the Control Panel."""
     return pipeline_status.status()
+
+
+@app.get("/api/actions/suggested")
+def actions_suggested(view: str):
+    """Per-tab suggested pipeline actions — Control-tab jobs worth running now,
+    surfaced on the view whose data they feed."""
+    try:
+        return {"items": suggested_actions.suggestions(view)}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @app.get("/api/training/stats")
