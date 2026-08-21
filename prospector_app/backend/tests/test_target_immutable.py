@@ -28,6 +28,7 @@ def test_no_step_can_move_the_target_once_configured(key, monkeypatch):
             onboarding.apply(step, {key: "attacker/repo"}, None)
 
 
-def test_the_target_lives_in_exactly_one_step():
-    holders = [s for s, keys in onboarding.STEP_KEYS.items() if "TRIAGE_REPO" in keys]
-    assert holders == ["connect"]
+def test_the_target_lives_only_in_steps_that_close_once_configured():
+    for key in ("TRIAGE_REPO", "TRIAGE_STORE_URL"):
+        holders = {s for s, keys in onboarding.STEP_KEYS.items() if key in keys}
+        assert holders == set(onboarding.CLOSED_ONCE_CONFIGURED)

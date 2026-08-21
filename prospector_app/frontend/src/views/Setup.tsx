@@ -12,11 +12,28 @@ const COMMAND = "./setup-worker-machine.sh";
  *  readiness check that must pass first — the autofix lane is meaningless
  *  without a push identity, so its control says so rather than failing later. */
 const SWITCHES: { key: string; label: string; hint: string; needs?: string }[] = [
-  { key: "TRIAGE_VERIFY_WORKER", label: "Run verification", hint: "drain the sandbox verify queue" },
-  { key: "TRIAGE_VERIFY_AUTOHUNT", label: "Hunt while idle", hint: "security-review and verify clean candidates unprompted" },
-  { key: "TRIAGE_FIX_WORKER", label: "Run autofix", hint: "drain the fix queue", needs: "push_identity" },
-  { key: "TRIAGE_FIX_AUTOHUNT", label: "Queue fixes while idle", hint: "find PRs needing a rebase or base merge", needs: "push_identity" },
+  { key: "TRIAGE_VERIFY_WORKER", label: "Test pull requests",
+    hint: "run each queued pull request's tests in a sandbox to prove the fix works — failing before the change, passing after" },
+  { key: "TRIAGE_VERIFY_AUTOHUNT", label: "Look for work on its own",
+    hint: "when the queue is empty, pick clean pull requests and run security reviews and verification on them unprompted" },
+  { key: "TRIAGE_FIX_WORKER", label: "Prepare fixes",
+    hint: "update, rebase, and draft fixes for contributors' branches — each result is parked here for approval before anything is pushed",
+    needs: "push_identity" },
+  { key: "TRIAGE_FIX_AUTOHUNT", label: "Queue fixes on its own",
+    hint: "notice pull requests that have fallen behind their base branch and queue the update or rebase itself",
+    needs: "push_identity" },
 ];
+
+/** What each readiness check's subject is for, in words for someone meeting it
+ *  for the first time. Keyed by the check keys `worker_readiness.checks` emits. */
+const EXPLAIN: Record<string, string> = {
+  docker: "A container runtime. Every test and build runs inside a disposable container, so pull-request code never runs directly on this machine.",
+  sandbox_image: "The locked-down container image those runs use — it carries no credentials and blocks the network.",
+  base_pin: "This machine's own copy of the repository's default branch, the before/after baseline every verification is proven against.",
+  verify_flag: "The background process that picks up queued verification work.",
+  push_identity: "A dedicated GitHub user whose SSH key pushes fixes to contributors' branches. Only autofix needs it.",
+  fix_flag: "The background process that prepares branch updates, rebases, and fixes.",
+};
 
 /** The lane flags whose presence means this machine has been signed up to
  *  process work. Readiness answers "can it run right now", which a provisioned
@@ -27,8 +44,11 @@ function CheckRow({ check }: { check: SetupCheck }) {
   const tone = check.ok ? "chip chip-green sm" : check.blocking ? "chip chip-red sm" : "chip chip-amber sm";
   return (
     <tr>
-      <td><span className={tone}>{check.ok ? "ready" : check.blocking ? "missing" : "optional"}</span></td>
-      <td>{check.label}</td>
+      <td><span className={tone}>{check.ok ? "ready" : check.blocking ? "needed" : "optional"}</span></td>
+      <td>
+        {check.label}
+        {EXPLAIN[check.key] && <div className="muted small">{EXPLAIN[check.key]}</div>}
+      </td>
       <td className="muted small">
         {check.detail}
         {check.remedy && <> — <strong>{check.remedy}</strong></>}
@@ -68,11 +88,12 @@ export default function Setup() {
     return () => { live = false; if (timer != null) clearTimeout(timer); };
   }, [load]);
 
-  async function toggle(key: string, on: boolean) {
-    setBusy(key);
+  async function toggle(updates: Record<string, boolean>) {
+    setBusy(Object.keys(updates).join(","));
     setError(null);
     try {
-      const r = await api.setSetupFlags({ [key]: on ? "1" : "" });
+      const r = await api.setSetupFlags(
+        Object.fromEntries(Object.entries(updates).map(([k, on]) => [k, on ? "1" : ""])));
       setFlags(r.applied.flags);
       setReadiness(r.readiness);
     } catch (e) {
@@ -124,34 +145,62 @@ function ProvisionBanner({ onStart }: { onStart: () => void }) {
 }
 
 /** Everything about this machine as a work processor: whether it is running,
- *  what it still needs, and which lanes it drains. */
+ *  what it still needs, and which work it does. A machine that has never opted
+ *  in gets a first-time framing; a signed-up machine gets its status plainly. */
 function WorkerSection(
   { readiness, flags, busy, onToggle }: {
     readiness: SetupReadiness;
     flags: WorkerFlags;
     busy: string | null;
-    onToggle: (key: string, on: boolean) => void;
+    onToggle: (updates: Record<string, boolean>) => void;
   },
 ) {
   const [copied, setCopied] = useState(false);
   const byKey = Object.fromEntries(readiness.checks.map((c) => [c.key, c]));
   const blockers = readiness.checks.filter((c) => !c.ok && c.blocking);
+  const optedIn = OPT_IN_FLAGS.some((k) => flags[k] === "1");
+  const available = SWITCHES.filter(
+    (s) => s.needs == null || byKey[s.needs] == null || byKey[s.needs].ok);
+  const allOn = available.length > 0 && available.every((s) => flags[s.key] === "1");
 
   return (
     <>
-      <h3>
-        {readiness.ready
-          ? <span className="chip chip-green">processing work</span>
-          : <span className="chip chip-red">not processing work</span>}
-        {" "}
-        {readiness.autofix_ready && <span className="chip chip-green">autofix on</span>}
-      </h3>
+      {optedIn && (
+        <h3>
+          {readiness.ready
+            ? <span className="chip chip-green">processing work</span>
+            : <span className="chip chip-red">not processing work</span>}
+          {" "}
+          {readiness.autofix_ready && <span className="chip chip-green">autofix on</span>}
+        </h3>
+      )}
+
+      {!optedIn && (
+        <p className="muted small">
+          To process pull requests and issues, this machine runs their tests,
+          security reviews, and fixes inside disposable containers. Here is
+          everything that takes, and where this machine stands on each piece:
+        </p>
+      )}
+      {optedIn && blockers.length > 0 && (
+        <p className="muted small">
+          This machine has signed up for work but cannot process it right now —
+          the {blockers.length === 1 ? "row marked" : "rows marked"} “needed”
+          below {blockers.length === 1 ? "says" : "say"} why.
+        </p>
+      )}
+
+      <table className="rows">
+        <tbody>
+          {readiness.checks.map((c) => <CheckRow key={c.key} check={c} />)}
+        </tbody>
+      </table>
 
       {blockers.length > 0 && (
         <section>
           <p>
-            {blockers.length === 1 ? "One thing is" : `${blockers.length} things are`} missing.
-            One command fixes all of them — run it in your own terminal, from the repo root:
+            One command installs everything missing and turns the work on — run
+            it in your own terminal, from the repo root:
           </p>
           <pre className="log-tail">{COMMAND}</pre>
           <button
@@ -160,24 +209,33 @@ function WorkerSection(
             {copied ? "copied" : "copy command"}
           </button>
           <p className="muted small">
-            It installs what is missing, builds this machine's own sandbox base,
-            and turns the lanes on. Re-running it on a ready machine changes nothing.
+            First-time setup takes roughly 10&nbsp;GB of disk and 15–30 minutes,
+            most of it building this machine's sandbox base — the rows above turn
+            green as it works through them. While the worker is on, its container
+            runtime keeps a virtual machine running that reserves 12&nbsp;GB of
+            memory. Re-running the command on a ready machine changes nothing.
           </p>
         </section>
       )}
 
-      <h3>This machine</h3>
-      <table className="rows">
-        <tbody>
-          {readiness.checks.map((c) => <CheckRow key={c.key} check={c} />)}
-        </tbody>
-      </table>
-
-      <h3>Lanes</h3>
+      <h3>What work should this machine do?</h3>
       <p className="muted small">
-        Written to this machine's <code>.env</code> and applied to the running
-        worker immediately. Only these switches are writable from here.
+        Saved on this machine and applied immediately. Choices that need
+        something not yet set up stay off until it is.
       </p>
+      <div>
+        <label>
+          <input
+            type="checkbox"
+            checked={allOn}
+            disabled={busy != null || available.length === 0}
+            onChange={(e) =>
+              onToggle(Object.fromEntries(available.map((s) => [s.key, e.target.checked])))}
+          />
+          {" "}<strong>Everything it can</strong>
+        </label>
+        {" "}<span className="muted small">all of the below</span>
+      </div>
       {SWITCHES.map((s) => {
         const blocked = s.needs != null && byKey[s.needs] != null && !byKey[s.needs].ok;
         return (
@@ -187,12 +245,12 @@ function WorkerSection(
                 type="checkbox"
                 checked={flags[s.key] === "1"}
                 disabled={busy != null || blocked}
-                onChange={(e) => onToggle(s.key, e.target.checked)}
+                onChange={(e) => onToggle({ [s.key]: e.target.checked })}
               />
               {" "}{s.label}
             </label>
             {" "}<span className="muted small">
-              {blocked ? `needs ${byKey[s.needs!].label.toLowerCase()}` : s.hint}
+              {blocked ? `needs the ${byKey[s.needs!].label.toLowerCase()} above` : s.hint}
             </span>
           </div>
         );

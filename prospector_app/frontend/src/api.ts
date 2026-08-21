@@ -1140,7 +1140,7 @@ export interface ChatReady {
 
 /** One step of setup. `bundle` supplies `env` and `profile` in their place. */
 export interface OnboardingApplyBody {
-  step: "connect" | "writes" | "worker" | "agent";
+  step: "connect" | "join" | "writes" | "worker" | "agent";
   env?: Record<string, string>;
   profile?: Record<string, unknown> | null;
   bundle?: string;
