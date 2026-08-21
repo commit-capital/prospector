@@ -52,8 +52,8 @@ later write gate would trip over.
   key, `data JSON`, mirrors `ghsa_id, state, severity, updated_at`, and
   `saved_at`. `schema.STORE_SCHEMA_VERSION` bumps.
 - `advisory_id(ghsa: str) -> int`: the twelve symbols after `GHSA-` read as
-  a base-23 integer over GitHub's fixed alphabet `23456789cfghjkmpqrvwx`.
-  Bijective, so `ghsa_of(id: int) -> str` decodes it; max value ≈ 2.2e16,
+  a base-21 integer over GitHub's fixed alphabet `23456789cfghjkmpqrvwx`.
+  Bijective, so `ghsa_of(id: int) -> str` decodes it; max value ≈ 7.4e15,
   inside 64 bits. Unknown symbols raise `ValueError`.
 - Sections and stamping mirror `Alert`: `meta` (stamped `checked_at`),
   `links` and `fix_scan` (stamped `checked_at` + `against_updated_at` =
