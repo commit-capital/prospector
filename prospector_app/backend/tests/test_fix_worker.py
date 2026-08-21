@@ -962,6 +962,80 @@ def test_retrigger_failure_leaves_the_pushed_record(store, monkeypatch):
     assert store.load_pr(1).fix_request["status"] == "pushed"
 
 
+def test_a_failed_ending_is_hunted_again_once_it_cools(store, monkeypatch):
+    # A failure is the machine's, not a verdict on the code: the PR rests only
+    # for the cooldown, then a recovered worker picks it back up unprompted.
+    from datetime import datetime, timedelta, timezone
+    rec = store.load_pr(1).raw
+    just_now = datetime.now(timezone.utc).isoformat()
+    rec["fix_request"] = {"status": "failed", "action": "rebase", "source": "auto",
+                          "against_head_sha": HEAD, "finished_at": just_now,
+                          "error": "the autofix worker restarted mid-run"}
+    store.save_pr(rec)
+    data.refresh()
+    assert fix_worker.auto_fixable(data.prs()[1]) is None
+    long_ago = (datetime.now(timezone.utc) - timedelta(
+        seconds=fix_worker.FAILED_RETRY_COOLDOWN_SECONDS + 60)).isoformat()
+    rec["fix_request"]["finished_at"] = long_ago
+    store.save_pr(rec)
+    data.refresh()
+    assert fix_worker.auto_fixable(data.prs()[1]) == "rebase"
+
+
+def test_an_agent_that_does_not_land_is_a_failure_not_a_verdict(store, monkeypatch):
+    _queue_fix()
+    probe = _fix_probe()
+    monkeypatch.setattr(fix_worker, "_resubmit", probe)
+    monkeypatch.setattr(fix_worker.author_fix, "author",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            RuntimeError("claude did not exit within 1800s")))
+    _reviewed(monkeypatch)
+
+    fix_worker.run_one(1)
+
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "failed" and "1800s" in req["error"]
+    assert ("abort",) in probe.calls and not _pushed(probe)
+
+
+def test_a_reviewer_without_a_verdict_fails_the_request_and_keeps_the_patch(store,
+                                                                            monkeypatch):
+    _queue_fix()
+    probe = _fix_probe()
+    monkeypatch.setattr(fix_worker, "_resubmit", probe)
+    _authored(monkeypatch)
+    _reviewed(monkeypatch, {"verdict": "unsafe", "concerns": [], "failed": True,
+                            "reason": "the reviewing agent did not finish: timeout"})
+
+    fix_worker.run_one(1)
+
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "failed" and "did not finish" in req["error"]
+    assert req["result"]["patch"].startswith("diff --git")
+    assert not _pushed(probe)
+
+
+def test_a_broken_sandbox_fails_while_a_failed_compile_refuses(store, monkeypatch):
+    # Same gate outcome — nothing is pushed — but a sandbox that could not run
+    # is the machine's problem and the hunter may retry it; a compile that ran
+    # and failed is a verdict on the change.
+    for pf, status in (({"cmd": "pnpm -r typecheck", "error": "docker: daemon down"},
+                        "failed"),
+                       ({"cmd": "pnpm -r typecheck", "exit": 20, "error_excerpt": "TS2345"},
+                        "refused")):
+        _queue_fix()
+        monkeypatch.setattr(fix_worker, "_resubmit", _fix_probe())
+        _authored(monkeypatch)
+        _reviewed(monkeypatch)
+        monkeypatch.setattr(fix_worker, "_preflight", lambda n, patch, pf=pf: pf)
+
+        fix_worker.run_one(1)
+
+        req = store.load_pr(1).fix_request
+        assert req["status"] == status, pf
+        assert req["result"]["compile_preflight"] == pf
+
+
 def test_a_refused_rebase_is_not_hunted_again_at_the_same_head(store, monkeypatch):
     # Without this the hunter ping-pongs on the lowest-numbered conflicted PRs,
     # re-attempting the same refused rebase every sweep.

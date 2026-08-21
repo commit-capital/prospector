@@ -108,8 +108,11 @@ def _prompt(worktree: str, patch: str, pr: int, goal: str,
     })
 
 
-def _unsafe(reason: str) -> dict:
-    return {"verdict": "unsafe", "reason": reason, "concerns": []}
+def _unsafe(reason: str, failed: bool = False) -> dict:
+    out: dict = {"verdict": "unsafe", "reason": reason, "concerns": []}
+    if failed:
+        out["failed"] = True
+    return out
 
 
 def review(worktree: str, patch: str, *, pr: int, goal: str,
@@ -120,18 +123,22 @@ def review(worktree: str, patch: str, *, pr: int, goal: str,
 
     Only a well-formed, explicit `safe` returns safe; every other outcome,
     including a failure of the reviewer itself, returns unsafe with what went
-    wrong as the reason."""
+    wrong as the reason. A reviewer that never reached a verdict — it crashed,
+    timed out, or answered without one — also carries `failed: True`, so the
+    caller can tell a judgment on the change from the machine's failure to
+    judge it."""
     try:
         text = headless_agent.run_agent(
             _prompt(worktree, patch, pr, goal, findings, review_summary),
             allow_gh=False, cwd=worktree, edit_root=None,
             timeout=AGENT_TIMEOUT_SECONDS, on_event=on_event)
     except RuntimeError as e:
-        return _unsafe(f"the reviewing agent did not finish: {e}")
+        return _unsafe(f"the reviewing agent did not finish: {e}", failed=True)
     try:
         verdict = headless_agent.extract_json(text)
     except ValueError:
-        return _unsafe(f"the reviewing agent gave no usable verdict: {text[-300:]}")
+        return _unsafe(f"the reviewing agent gave no usable verdict: {text[-300:]}",
+                       failed=True)
     if verdict.get("verdict") != "safe":
         raw = verdict.get("concerns")
         concerns = [str(c) for c in raw] if isinstance(raw, list) else []
