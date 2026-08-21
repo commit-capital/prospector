@@ -159,7 +159,7 @@ def key_safety_failure() -> str | None:
     if mode & (stat.S_IRWXG | stat.S_IRWXO):
         return (f"TRIAGE_PUSH_SSH_KEY_FILE is group/world-accessible: {key} "
                 f"(chmod 600 it)")
-    scratch = settings.VERIFY_SCRATCH.resolve()
+    scratch = settings.verify_scratch().resolve()
     resolved = key.resolve()
     if resolved == scratch or scratch in resolved.parents:
         return (f"TRIAGE_PUSH_SSH_KEY_FILE lives under the sandbox scratch root "
@@ -840,7 +840,7 @@ def _preflight(n: int, patch: str) -> dict | None:
     reaches the contributor's branch."""
     rec = data.store().load_pr(n)
     head = (rec.head_sha if rec else "") or ""
-    scratch = settings.VERIFY_SCRATCH / "autofix"
+    scratch = settings.verify_scratch() / "autofix"
     scratch.mkdir(parents=True, exist_ok=True)
     path = scratch / f"pr-{n}.patch"
     path.write_text(patch + "\n")

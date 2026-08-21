@@ -29,7 +29,7 @@ from pathlib import Path
 
 from pipeline import settings
 
-SCRATCH = settings.VERIFY_SCRATCH
+SCRATCH = settings.verify_scratch()
 
 # The image repository prepare_base tags, and the tag shape it uses.
 BASE_REPO = "pr-verify-base"

@@ -266,7 +266,7 @@ Cluster outcome:
 - "close-out": everything closes.
 - "blocked-on-decision": needs a product/architecture decision first — name it.
 
-Prefer the tested, narrowest correct implementation with the stronger configured review signal. Use `trusted` only as a tiebreaker after correctness, tests, and review quality. Then prefer clean mergeability and recent maintenance. Pick one winner among competing implementations and close the rest as duplicates; state close tie-breakers. Before crediting a superset, use `already_on_master` and read-only source checks to confirm its extra work has not landed already. Unconfirmed extra work is not an advantage. Copy each member's head_sha from the bundle into the output.""".replace("__REPO__", settings.REPO).replace("__MERGE_BAR__", merge_bar_sentence())
+Prefer the tested, narrowest correct implementation with the stronger configured review signal. Use `trusted` only as a tiebreaker after correctness, tests, and review quality. Then prefer clean mergeability and recent maintenance. Pick one winner among competing implementations and close the rest as duplicates; state close tie-breakers. Before crediting a superset, use `already_on_master` and read-only source checks to confirm its extra work has not landed already. Unconfirmed extra work is not an advantage. Copy each member's head_sha from the bundle into the output.""".replace("__REPO__", settings.repo()).replace("__MERGE_BAR__", merge_bar_sentence())
 
 # The headless (run_agent/extract_json) output instruction the single-cluster triage
 # path appends to ANALYZE_PROMPT — the fenced-block analogue of the workflow's

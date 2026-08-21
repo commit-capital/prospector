@@ -50,7 +50,7 @@ def test_import_into_configured_store(tmp_path, monkeypatch):
     src = tmp_path / "json"
     pr, _cl = _write_json_store(src)
     cfg_db = tmp_path / "configured" / "store.db"
-    monkeypatch.setattr("pipeline.settings.STORE_URL", f"sqlite:///{cfg_db}")
+    monkeypatch.setenv("TRIAGE_STORE_URL", f"sqlite:///{cfg_db}")
     store_migrate.import_pr_store(src, store_migrate.dest_store("@env"))
     from pipeline.store import Store
     assert Store().load_pr(5).raw == pr

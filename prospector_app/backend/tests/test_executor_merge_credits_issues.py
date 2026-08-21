@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 from prospector_app.backend import executor
 from prospector_app.backend import issues as issues_mod
+from pipeline import settings
 
 
 def _capture(monkeypatch, *, states=None):
@@ -34,7 +35,7 @@ def test_merge_credits_each_explicit_open_issue(monkeypatch):
     executor._credit_merge_closed_issues(rec, 8722, dry_run=False)
 
     assert recorded == [{
-        "kind": "issue-close", "identity": executor.BOT_LOGIN, "dry_run": False,
+        "kind": "issue-close", "identity": settings.bot_login(), "dry_run": False,
         "issue": 8723, "action": "CLOSE_ISSUE_FIXED", "fixed_by": 8722, "via": "merge",
         "status": "closed", "detail": "closed by merge of #8722",
     }]

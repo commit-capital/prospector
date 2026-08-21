@@ -66,7 +66,7 @@ def target() -> FeedbackTarget:
     PROSPECTOR_FEEDBACK_REPO is unset, which hides the button."""
     inst = instance.instance()
     return {
-        "repo": settings.FEEDBACK_REPO or None,
+        "repo": settings.feedback_repo() or None,
         "assignee": operator_login(),
         "labels": LABELS,
         "branch": inst.get("branch"),

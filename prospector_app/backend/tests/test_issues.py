@@ -6,6 +6,7 @@ from issue_triage import issue_store
 from prospector_app.backend import issues
 from prospector_app.backend import models
 from prospector_app.backend import safety_guard
+from pipeline import settings
 
 
 def _seed(tmp_path, monkeypatch):
@@ -386,7 +387,7 @@ def test_close_issue_live_closes_as_duplicate_of_canonical(tmp_path, monkeypatch
     monkeypatch.setattr(executor, "bot_run", lambda argv, token, **kw: (calls.append(argv), _Ok())[1])
     res = executor.close_issue(11, models.IssueCloseDupBody(canonical=10), token="tok", dry_run=False)
     assert res["status"] == "executed"
-    assert ["gh", "issue", "close", "11", "--repo", executor.REPO,
+    assert ["gh", "issue", "close", "11", "--repo", settings.repo(),
             "--reason", "duplicate", "--duplicate-of", "10"] in calls
 
 
@@ -457,7 +458,7 @@ def test_reopen_issue_live_reopens_deletes_comment_and_reflects_open(tmp_path, m
     monkeypatch.setattr(executor, "bot_run", lambda argv, token, **kw: (calls.append(argv), _Ok())[1])
     res = executor.reopen_issue(11, token="tok", dry_run=False)
     assert res["status"] == "reopened"
-    assert ["gh", "issue", "reopen", "11", "--repo", executor.REPO] in calls
+    assert ["gh", "issue", "reopen", "11", "--repo", settings.repo()] in calls
     assert any("comments/555" in " ".join(c) for c in calls)          # bot comment removed
     assert issue_store.IssueStore(tmp_path).load_issue(11).state == "open"
 
@@ -570,7 +571,7 @@ def test_has_bot_comment_scopes_by_substring(monkeypatch):
     Python, so a body containing quotes or backslashes is searched correctly."""
     import json
 
-    monkeypatch.setattr(executor, "BOT_LOGIN", "triagebot")
+    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triagebot")
 
     class _R:
         stdout = "\n".join(json.dumps(row) for row in [

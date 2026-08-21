@@ -24,7 +24,7 @@ from pathlib import Path
 from prospector_app.backend import activity
 from prospector_app.backend import data
 from prospector_app.backend.safety_guard import run
-from pipeline.settings import BOT_LOGIN, REPO_NAME, REPO_OWNER
+from pipeline import settings
 
 _log = logging.getLogger(__name__)
 
@@ -34,7 +34,7 @@ SNIPPET_LEN = 160
 
 # Logins that are us, never a community response. Other automation is recognised
 # from the actor's type rather than listed here (`_is_human`).
-BOTS = {BOT_LOGIN}
+BOTS = {settings.bot_login()}
 
 
 def _dt(ts: str | None) -> datetime | None:
@@ -134,7 +134,7 @@ def classify(action_at: str, action_kind: str, *, state: str,
     # opened a fresh PR as redo). A cross-ref from another repository (e.g. the
     # author's fork of an unrelated project) carries a bare, non-comparable PR
     # number and is never a resubmission of this PR.
-    this_repo = repo or f"{REPO_OWNER}/{REPO_NAME}"
+    this_repo = repo or f"{settings.repo_owner()}/{settings.repo_name()}"
     resubmitted = False
     resubmitted_pr: int | None = None
     resubmitted_at: str | None = None
@@ -205,7 +205,7 @@ def _query(prs: list[int]) -> str:
               "commits(last: 10) { nodes { commit { committedDate oid } } }")
     aliases = " ".join(f"p{i}: pullRequest(number: {int(n)}) {{ {fields} }}"
                        for i, n in enumerate(prs))
-    return f'query {{ repository(owner: "{REPO_OWNER}", name: "{REPO_NAME}") {{ {aliases} }} }}'
+    return f'query {{ repository(owner: "{settings.repo_owner()}", name: "{settings.repo_name()}") {{ {aliases} }} }}'
 
 
 def _span(chunk: list[int]) -> str:

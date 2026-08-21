@@ -6,7 +6,6 @@ import tempfile
 
 import pytest
 
-from pipeline import settings
 
 
 @pytest.fixture(autouse=True)
@@ -14,8 +13,8 @@ def _greptile_profile(monkeypatch):
     """These tests were written against the greptile deployment (Greptile columns,
     filters, checks). Pin the greptile review profile so they assert that surface
     regardless of the `none` default; no-provider tests override explicitly."""
-    monkeypatch.setattr(settings, "REVIEW_PROVIDER", "greptile")
-    monkeypatch.setattr(settings, "REVIEW_THRESHOLD", None)
+    monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "greptile")
+    monkeypatch.delenv("TRIAGE_REVIEW_THRESHOLD", raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -40,11 +39,11 @@ def _cold_data_snapshot(monkeypatch):
 def temp_store(monkeypatch):
     """Point the shared store engine at a throwaway SQLite DB so activity/chat
     tests never touch the real store. Returns the URL; activity._engine() and
-    chat._engine() resolve to this DB via settings.STORE_URL."""
+    chat._engine() resolve to this DB via settings.store_url()."""
     from pipeline import schema
     from pipeline import storekit
     url = f"sqlite:///{tempfile.mkdtemp()}/t.db"
-    monkeypatch.setattr("pipeline.settings.STORE_URL", url)
+    monkeypatch.setenv("TRIAGE_STORE_URL", url)
     storekit.get_engine(url)  # warm the cache
     schema.METADATA.create_all(storekit.get_engine(url))
     return url

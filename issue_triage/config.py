@@ -5,12 +5,22 @@ from pathlib import Path
 
 from pipeline.gh import operator_env
 
-# re-exported for issue_triage modules
-from pipeline.settings import REPO as REPO
-from pipeline.settings import REPO_NAME as REPO_NAME
-from pipeline.settings import REPO_OWNER as REPO_OWNER
+from pipeline import settings
 
 ROOT = Path(__file__).resolve().parent
+
+
+# Read through here from issue_triage modules.
+def repo() -> str:
+    return settings.repo()
+
+
+def repo_owner() -> str:
+    return settings.repo_owner()
+
+
+def repo_name() -> str:
+    return settings.repo_name()
 
 
 def gh_read(path, params=None):

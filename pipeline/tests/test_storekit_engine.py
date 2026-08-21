@@ -12,12 +12,12 @@ def test_resolve_url_from_path(tmp_path):
 
 
 def test_resolve_url_none_uses_settings(monkeypatch):
-    monkeypatch.setattr("pipeline.settings.STORE_URL", "postgresql+psycopg://x/y")
+    monkeypatch.setenv("TRIAGE_STORE_URL", "postgresql+psycopg://x/y")
     assert storekit.resolve_url(None, default_path="/tmp/d") == "postgresql+psycopg://x/y"
 
 
 def test_resolve_url_none_falls_back_to_default_path(monkeypatch):
-    monkeypatch.setattr("pipeline.settings.STORE_URL", None)
+    monkeypatch.delenv("TRIAGE_STORE_URL", raising=False)
     assert storekit.resolve_url(None, default_path="/tmp/d") == "sqlite:////tmp/d/store.db"
 
 

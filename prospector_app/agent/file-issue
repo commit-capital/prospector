@@ -34,7 +34,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # the `pipeline` package rather than relying on the editable install.
 sys.path.insert(0, str(REPO_ROOT))
 
-from pipeline.settings import FEEDBACK_REPO  # noqa: E402
+from pipeline import settings  # noqa: E402
 
 
 def operator_env() -> dict[str, str]:
@@ -60,12 +60,12 @@ def main(argv: list[str] | None = None) -> int:
                    help="a label to apply (repeatable)")
     args = p.parse_args(argv)
 
-    if not FEEDBACK_REPO:
+    if not settings.feedback_repo():
         print("file-issue: no meta-repo configured (PROSPECTOR_FEEDBACK_REPO is unset)",
               file=sys.stderr)
         return 2
 
-    cmd = ["gh", "issue", "create", "--repo", FEEDBACK_REPO, "--title", args.title]
+    cmd = ["gh", "issue", "create", "--repo", settings.feedback_repo(), "--title", args.title]
     if args.body_file:
         path = Path(args.body_file)
         if not path.is_file():
@@ -84,7 +84,7 @@ def main(argv: list[str] | None = None) -> int:
     # A receipt requires gh's canonical URL for the configured repository.
     url = r.stdout.strip()
     match = re.fullmatch(
-        rf"https://github\.com/{re.escape(FEEDBACK_REPO)}/issues/(\d+)/?", url
+        rf"https://github\.com/{re.escape(settings.feedback_repo())}/issues/(\d+)/?", url
     )
     if match is None:
         print(f"file-issue: unexpected success output from gh: {url!r}", file=sys.stderr)
@@ -92,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps({
         "ok": True,
         "kind": "feedback-issue",
-        "repo": FEEDBACK_REPO,
+        "repo": settings.feedback_repo(),
         "number": int(match.group(1)),
         "url": url.rstrip("/"),
     }, separators=(",", ":")))

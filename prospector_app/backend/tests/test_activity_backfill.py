@@ -11,6 +11,7 @@ from pipeline.store import Store
 from prospector_app.backend import activity
 from prospector_app.backend import activity_backfill as ab
 from prospector_app.backend import data
+from pipeline import settings
 
 
 def _gh(payloads: dict[str, str]):
@@ -48,9 +49,9 @@ def test_bot_closes_filters_to_the_bot_actor(monkeypatch):
     ])
     monkeypatch.setattr(ab, "run", _gh({
         "page=1": page1,
-        "/issues/11/events": json.dumps({"actor": f"{ab.BOT_LOGIN}[bot]", "at": "2026-07-27T18:59:26Z"}) + "\n",
+        "/issues/11/events": json.dumps({"actor": f"{settings.bot_login()}[bot]", "at": "2026-07-27T18:59:26Z"}) + "\n",
         "/issues/12/events": json.dumps({"actor": "some-human", "at": "2026-07-27T19:00:00Z"}) + "\n",
-        "/issues/13/events": json.dumps({"actor": ab.BOT_LOGIN, "at": "2026-07-27T19:01:00Z"}) + "\n",
+        "/issues/13/events": json.dumps({"actor": settings.bot_login(), "at": "2026-07-27T19:01:00Z"}) + "\n",
     }))
     assert ab.bot_closes("2026-07-27T18:50:00Z", "2026-07-27T19:10:00Z") == [
         {"pr": 11, "closed_at": "2026-07-27T18:59:26Z"},

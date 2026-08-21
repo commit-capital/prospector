@@ -49,7 +49,7 @@ def test_import_into_configured_store(tmp_path, monkeypatch):
     src = tmp_path / "json"
     issue, _cl = _write_json_store(src)
     cfg_db = tmp_path / "configured" / "store.db"
-    monkeypatch.setattr("pipeline.settings.STORE_URL", f"sqlite:///{cfg_db}")
+    monkeypatch.setenv("TRIAGE_STORE_URL", f"sqlite:///{cfg_db}")
     issue_store_migrate.import_issue_store(src, issue_store_migrate.dest_store("@env"))
     from issue_triage.issue_store import IssueStore
     assert IssueStore().load_issue(5).raw == issue

@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING
 from pipeline import freshness  # pipeline modules (path set up by data import)
 from pipeline import gates
 from pipeline import settings
-from pipeline.settings import BOT_LOGIN
 from prospector_app.backend import models
 
 if TYPE_CHECKING:
@@ -223,7 +222,7 @@ def _suggest_inner(rec: Pr, disposition: str | None = None,
         # path to landing it when the terminal step is a human code-owner merge.
         if human_merge and human_merge.get("required"):
             owners = " + ".join(human_merge.get("owners", []))
-            reason += (f". Even with that cleared, {BOT_LOGIN} can't merge this — "
+            reason += (f". Even with that cleared, {settings.bot_login()} can't merge this — "
                        f"CODEOWNERS requires a code-owner merge ({owners}).")
         return {"action": "BLOCKED", "label": "Merge blocked", "tone": "yellow",
                 "rationale": reason, "accept": None,

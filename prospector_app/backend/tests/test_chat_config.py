@@ -60,7 +60,7 @@ def test_agent_has_its_own_context_not_the_dev_claude_md(monkeypatch):
     # its prompt — not the dev CLAUDE.md.
     assert chat.AGENT_CONTEXT.name == "context.md"
     assert chat.AGENT_CONTEXT.parent.name == "agent"
-    monkeypatch.setattr(chat, "DISPLAY_NAME", "Example Project")
+    monkeypatch.setenv("TRIAGE_DISPLAY_NAME", "Example Project")
     sp = chat.system_prompt()
     assert "Example Project Prospector" in sp
     assert "{display_name}" not in sp
@@ -68,8 +68,8 @@ def test_agent_has_its_own_context_not_the_dev_claude_md(monkeypatch):
 
 
 def test_system_prompt_renders_configured_review_bar(monkeypatch):
-    monkeypatch.setattr(settings, "REVIEW_PROVIDER", "greptile")
-    monkeypatch.setattr(settings, "REVIEW_THRESHOLD", 4)
+    monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "greptile")
+    monkeypatch.setenv("TRIAGE_REVIEW_THRESHOLD", str(4))
     sp = chat.system_prompt()
     assert "Greptile 4/5" in sp
     assert "{review_bar}" not in sp
@@ -303,8 +303,8 @@ def test_context_has_critic_and_issue_guidance():
 def test_context_documents_upstream_writes_and_the_merge_limit():
     sp = chat.system_prompt()
     # The prompt interpolates the configured deployment identity and repo.
-    assert chat.BOT_LOGIN in sp
-    assert chat.REPO in sp
+    assert settings.bot_login() in sp
+    assert settings.repo() in sp
     assert "{bot}" not in sp and "{repo}" not in sp
     assert "gh-write pr edit" in sp
     assert "gh-write run rerun" in sp
@@ -349,7 +349,7 @@ def test_context_documents_the_review_retrigger(monkeypatch):
     assert "{retrigger_mention}" not in sp
     # A deployment whose provider has no re-trigger says so, rather than leaving a
     # bare placeholder for the agent to invent a mention from.
-    monkeypatch.setattr(settings, "REVIEW_PROVIDER", "none")
+    monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "none")
     sp = chat.system_prompt()
     assert "@greptileai" not in sp
     assert "{retrigger_mention}" not in sp

@@ -7,6 +7,7 @@ from prospector_app.backend import executor
 from prospector_app.backend import issues
 from prospector_app.backend import models
 from issue_triage import issue_store
+from pipeline import settings
 
 
 def _seed(tmp_path, monkeypatch):
@@ -150,8 +151,8 @@ def test_close_issue_with_comment_live_posts_and_closes(tmp_path, monkeypatch):
         10, models.IssueCloseBody(disposition="completed", comment="closing as done"),
         token="tok", dry_run=False)
     assert res["status"] == "executed"
-    assert ["gh", "issue", "comment", "10", "--repo", executor.REPO, "--body", "closing as done"] in calls
-    assert ["gh", "issue", "close", "10", "--repo", executor.REPO, "--reason", "completed"] in calls
+    assert ["gh", "issue", "comment", "10", "--repo", settings.repo(), "--body", "closing as done"] in calls
+    assert ["gh", "issue", "close", "10", "--repo", settings.repo(), "--reason", "completed"] in calls
 
 
 # --- executor: fixed / dup attribution + templated comment ---
@@ -205,7 +206,7 @@ def test_close_issue_fixed_live_posts_template_and_closes_completed(tmp_path, mo
     assert res["status"] == "executed"
     comment_argv = next(c for c in calls if c[2] == "comment")
     assert "#123" in comment_argv[-1]  # templated "fixed by #123" body
-    assert ["gh", "issue", "close", "10", "--repo", executor.REPO, "--reason", "completed"] in calls
+    assert ["gh", "issue", "close", "10", "--repo", settings.repo(), "--reason", "completed"] in calls
 
 
 def test_close_issue_dup_live_posts_template_and_closes_duplicate_of(tmp_path, monkeypatch):
@@ -219,7 +220,7 @@ def test_close_issue_dup_live_posts_template_and_closes_duplicate_of(tmp_path, m
     assert res["status"] == "executed"
     comment_argv = next(c for c in calls if c[2] == "comment")
     assert "#20" in comment_argv[-1]  # templated "duplicate of #20" body
-    assert ["gh", "issue", "close", "10", "--repo", executor.REPO,
+    assert ["gh", "issue", "close", "10", "--repo", settings.repo(),
             "--reason", "duplicate", "--duplicate-of", "20"] in calls
 
 

@@ -18,7 +18,7 @@ from prospector_app.backend import activity
 from prospector_app.backend import data
 from prospector_app.backend.executor import CLOSE_ACTIONS
 from prospector_app.backend.safety_guard import run
-from pipeline.settings import BOT_LOGIN, REPO
+from pipeline import settings
 
 
 # Bound on closed-PR listing pages (100 PRs each) walked per query. The walk
@@ -59,7 +59,7 @@ def _closed_page(page: int) -> list[dict]:
     """One page of the repo's closed PRs, newest-updated first, as
     ``[{number, closed_at, merged_at, updated_at}]``."""
     r = run(["gh", "api",
-             f"repos/{REPO}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page={page}",
+             f"repos/{settings.repo()}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page={page}",
              "--jq", "[.[] | {number, closed_at, merged_at, updated_at}]"], timeout=60)
     if r.returncode != 0:
         raise RuntimeError(f"closed-PR listing failed: {r.stderr.strip()[:200]}")
@@ -74,14 +74,14 @@ def _is_bot(login: str | None) -> bool:
     """Whether an API-reported login is the configured bot. GitHub reports a
     GitHub App actor under its "[bot]"-suffixed login (``triagebot[bot]``),
     so both that form and the bare configured login count."""
-    return login is not None and login.removesuffix("[bot]") == BOT_LOGIN.removesuffix("[bot]")
+    return login is not None and login.removesuffix("[bot]") == settings.bot_login().removesuffix("[bot]")
 
 
 def _last_close_event(n: int) -> dict | None:
     """PR ``n``'s latest upstream ``closed`` event as ``{actor, at}``, or None
     when the PR has none (or the events read fails). The jq filter emits one
     JSON object per close event across pages; the last line wins."""
-    r = run(["gh", "api", "--paginate", f"repos/{REPO}/issues/{n}/events",
+    r = run(["gh", "api", "--paginate", f"repos/{settings.repo()}/issues/{n}/events",
              "--jq", '.[] | select(.event=="closed") | {actor: .actor.login, at: .created_at}'],
             timeout=60)
     if r.returncode != 0:
@@ -125,7 +125,7 @@ def backfill(closes: list[dict], *, action: str, live: bool) -> list[dict]:
         return entries
     store = data.store()
     for fields in entries:
-        activity.record("execute", identity=BOT_LOGIN, dry_run=False, **fields)
+        activity.record("execute", identity=settings.bot_login(), dry_run=False, **fields)
         n = int(fields["pr"])
         rec = store.load_pr(n)
         if rec is not None and rec.state == "open":

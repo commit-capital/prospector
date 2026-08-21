@@ -39,6 +39,7 @@ from prospector_app.backend import issues as issues_mod
 from prospector_app.backend import jobs
 from prospector_app.backend import freshness_live
 from prospector_app.backend import models
+from prospector_app.backend import onboarding
 from prospector_app.backend import pipeline_status
 from prospector_app.backend import pr_history
 from prospector_app.backend import pr_search
@@ -55,6 +56,7 @@ from prospector_app.backend import verify_worker
 from prospector_app.backend import work_status
 
 from pipeline import greptile
+from pipeline import settings
 
 class SurrogateSafeJSONResponse(JSONResponse):
     """JSON render that survives unpaired UTF-16 surrogates. GitHub text (review
@@ -90,6 +92,33 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Paths that answer before this checkout has a deployment target: the wizard's
+# own surface, the metadata the SPA routes on, and the liveness probe — the
+# frontend reads 503 as "the server is down", which an unconfigured but running
+# backend is not.
+_UNCONFIGURED_OK = ("/api/onboarding/", "/api/meta", "/api/health")
+
+
+@app.middleware("http")
+async def require_configured(request, call_next):
+    """Refuse every API call until a deployment target exists.
+
+    An unconfigured process reaches the local SQLite fallback and answers list
+    routes with empty results, which reads as a configured Prospector watching
+    an empty repository. Refusing in one place means a route added later
+    inherits it.
+
+    409 rather than 503: the server is up and its state conflicts with the
+    request. The frontend reads 502/503/504 as the backend being unreachable
+    and covers the page with an outage banner, which would be the wrong story
+    on a checkout that is merely waiting to be set up."""
+    path = request.url.path
+    if (path.startswith("/api/") and not path.startswith(_UNCONFIGURED_OK)
+            and not settings.configured()):
+        return JSONResponse({"unconfigured": True}, status_code=409)
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -156,7 +185,14 @@ def _launch_fix_worker():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "clusters": len(data.clusters()), "prs": len(data.prs())}
+    """Liveness, plus what the snapshot holds. Answers without loading the
+    snapshot when there is no deployment target: the frontend polls this to
+    decide whether the backend is up, so it has to be cheap and truthful on a
+    checkout whose store is whatever a stale .env last named."""
+    if not settings.configured():
+        return {"ok": True, "configured": False, "clusters": 0, "prs": 0}
+    return {"ok": True, "configured": True,
+            "clusters": len(data.clusters()), "prs": len(data.prs())}
 
 
 @app.get("/api/instance")
@@ -359,6 +395,36 @@ def fix_runner():
     return fix_queue.runner_status()
 
 
+@app.get("/api/onboarding/state")
+def onboarding_state():
+    """Where this checkout stands on the setup ladder. Answers on an
+    unconfigured checkout — it is what the wizard reads to know what to ask."""
+    return onboarding.state()
+
+
+@app.post("/api/onboarding/probe")
+def onboarding_probe(body: models.OnboardingProbe):
+    """Check candidate configuration without writing any of it."""
+    return onboarding.probe(body.store_url, body.repo, body.key_file)
+
+
+@app.post("/api/onboarding/apply")
+def onboarding_apply(body: models.OnboardingApply):
+    """Write one step's configuration and adopt it in this process."""
+    env, profile_doc = body.env, body.profile
+    if body.bundle is not None:
+        try:
+            env, profile_doc = onboarding.parse_bundle(body.bundle)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+    try:
+        return onboarding.apply(body.step, env, profile_doc)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except OSError as e:
+        raise HTTPException(500, f"could not write configuration: {e}")
+
+
 @app.get("/api/status/now")
 def status_now():
     """What the system is doing right now, across every machine on this store —
@@ -392,10 +458,11 @@ def setup_flags(body: models.WorkerFlags):
 
 
 @app.post("/api/setup/share")
-def setup_share(body: models.ShareRequest):
-    """A ready-to-paste .env for onboarding a teammate onto this deployment.
-    POST, so the store URL is never in a request line even when opted in."""
-    return {"snippet": worker_control.share_snippet(include_store=body.include_store)}
+def setup_share():
+    """Everything a teammate's fresh checkout needs to join this deployment,
+    as one thing they paste into their setup wizard. POST, so the store URL is
+    never in a request line."""
+    return {"bundle": json.dumps(onboarding.build_bundle(), indent=2)}
 
 
 @app.get("/api/autohunt")
