@@ -460,6 +460,13 @@ def _load(path_str: str) -> RepoProfile:
     return parse_profile(payload, str(path))
 
 
+def reset_cache() -> None:
+    """Drop the parsed-profile cache so a rewritten file at the same path is read
+    again. `_load` is keyed by path, so a same-path rewrite is otherwise
+    invisible."""
+    _load.cache_clear()
+
+
 def active() -> RepoProfile:
     """The configured repository profile. Reads settings on each call (cheap;
     the parsed file is cached per path) so tests can monkeypatch
