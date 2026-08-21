@@ -164,9 +164,10 @@ function ProvisionBanner({ onStart }: { onStart: () => void }) {
   );
 }
 
-/** Everything about this machine as a work processor: whether it is running,
- *  what it still needs, and which work it does. A machine that has never opted
- *  in gets a first-time framing; a signed-up machine gets its status plainly. */
+/** One card for everything about this machine as a work processor: whether it
+ *  is running, what it still needs, and which work it does. A machine that has
+ *  never opted in gets a first-time framing; a signed-up machine gets its
+ *  status plainly. */
 function WorkerSection(
   { readiness, flags, busy, onToggle }: {
     readiness: SetupReadiness;
@@ -185,16 +186,20 @@ function WorkerSection(
   const allOn = available.length > 0 && available.every((s) => flags[s.key] === "1");
 
   return (
-    <>
-      {optedIn && (
-        <h3>
-          {readiness.ready
-            ? <span className="chip chip-green">processing work</span>
-            : <span className="chip chip-red">not processing work</span>}
-          {" "}
-          {readiness.autofix_ready && <span className="chip chip-green">autofix on</span>}
-        </h3>
-      )}
+    <section className="setup-card setup-queues">
+      <h3>
+        ⚙️ Automatic Work Queues
+        {optedIn && (
+          <>
+            {" "}
+            {readiness.ready
+              ? <span className="chip chip-green">processing work</span>
+              : <span className="chip chip-red">not processing work</span>}
+            {" "}
+            {readiness.autofix_ready && <span className="chip chip-green">autofix on</span>}
+          </>
+        )}
+      </h3>
 
       {!optedIn && (
         <p className="muted small">
@@ -239,7 +244,7 @@ function WorkerSection(
         </tbody>
       </table>
 
-      <h3>What work should this machine do?</h3>
+      <h4>What work should this machine do?</h4>
       <p className="muted small">
         Saved on this machine and applied immediately. Choices that need
         something not yet set up stay off until it is.
@@ -286,7 +291,7 @@ function WorkerSection(
           onStart={() => onToggle(Object.fromEntries(available.map((s) => [s.key, true])))}
         />
       )}
-    </>
+    </section>
   );
 }
 
