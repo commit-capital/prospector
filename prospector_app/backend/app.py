@@ -21,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 
 from prospector_app.backend import activity
+from prospector_app.backend import advisories as advisories_mod
 from prospector_app.backend import alerts as alerts_mod
 from prospector_app.backend import autohunt_view
 from prospector_app.backend import worker_control
@@ -839,6 +840,39 @@ def alerts_caps_refresh():
     alerts_mod.refresh_sources()
     sources = alerts_mod.sources_available()
     return {"available": any(sources.values()), "sources": sources}
+
+
+# --- GitHub repository security advisories (read-only) ---
+
+@app.get("/api/advisories")
+def list_advisories():
+    """Every ingested repository security advisory with its state, severity,
+    fix-scan verdict, and candidate PR links."""
+    rows, pr_states_loading = advisories_mod.list_advisories()
+    return {"items": rows, "pr_states_loading": pr_states_loading}
+
+
+@app.post("/api/advisories/query")
+def advisories_query(payload: dict = Body(default_factory=dict)):
+    """Paginated Advisories-table endpoint. Body: {q?, sort?, direction?,
+    state?, verdict?, offset?, limit?}; verdict "none" selects unscanned."""
+    return advisories_mod.query_advisories(
+        q=payload.get("q") or "",
+        sort=payload.get("sort"), direction=payload.get("direction"),
+        state=payload.get("state"), verdict=payload.get("verdict"),
+        offset=int(payload.get("offset", 0)),
+        limit=min(int(payload.get("limit", 50)), 500),
+    )
+
+
+@app.get("/api/advisories/{ghsa}")
+def advisory_detail(ghsa: str):
+    """One advisory's detail — the row plus its description, CWE ids, version
+    range, and the full fix-scan section."""
+    d = advisories_mod.get_advisory(ghsa)
+    if d is None:
+        raise HTTPException(404, f"advisory {ghsa} not in store")
+    return d
 
 
 # {source}/{n} matches any two path segments, so this stays registered after
