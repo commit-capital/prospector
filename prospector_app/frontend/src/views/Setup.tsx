@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "react-router";
 import { api, type SetupCheck, type SetupReadiness, type WorkerFlags } from "../api";
 import { useRepoMeta } from "../RepoMetaContext";
 
@@ -62,7 +63,10 @@ export default function Setup() {
   const [flags, setFlags] = useState<WorkerFlags>({});
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [expanded, setExpanded] = useState(false);
+  // `?provision=1` opens the provisioning steps directly — the wizard's
+  // "Set this computer up" link lands here already expanded.
+  const [params] = useSearchParams();
+  const [expanded, setExpanded] = useState(params.get("provision") === "1");
 
   const load = useCallback(async () => {
     try {
