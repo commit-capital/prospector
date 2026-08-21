@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "react-router";
 import { api, type SetupCheck, type SetupReadiness, type WorkerFlags } from "../api";
 import { useRepoMeta } from "../RepoMetaContext";
 
@@ -62,7 +63,10 @@ export default function Setup() {
   const [flags, setFlags] = useState<WorkerFlags>({});
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [expanded, setExpanded] = useState(false);
+  // `?provision=1` opens the provisioning steps directly — the wizard's
+  // "Set this computer up" link lands here already expanded.
+  const [params] = useSearchParams();
+  const [expanded, setExpanded] = useState(params.get("provision") === "1");
 
   const load = useCallback(async () => {
     try {
@@ -139,7 +143,7 @@ function ProvisionBanner({ onStart }: { onStart: () => void }) {
         on pull requests, issues, and advisories in a sandboxed environment on
         this machine.
       </p>
-      <button onClick={onStart}>set this computer up</button>
+      <button className="btn-primary" onClick={onStart}>set this computer up</button>
     </section>
   );
 }
@@ -190,12 +194,6 @@ function WorkerSection(
         </p>
       )}
 
-      <table className="rows">
-        <tbody>
-          {readiness.checks.map((c) => <CheckRow key={c.key} check={c} />)}
-        </tbody>
-      </table>
-
       {blockers.length > 0 && (
         <section>
           <p>
@@ -203,20 +201,26 @@ function WorkerSection(
             it in your own terminal, from the repo root:
           </p>
           <pre className="log-tail">{COMMAND}</pre>
-          <button
+          <button className="btn-secondary"
             onClick={() => { void navigator.clipboard.writeText(COMMAND); setCopied(true); }}
           >
             {copied ? "copied" : "copy command"}
           </button>
           <p className="muted small">
             First-time setup takes roughly 10&nbsp;GB of disk and 15–30 minutes,
-            most of it building this machine's sandbox base — the rows above turn
+            most of it building this machine's sandbox base — the rows below turn
             green as it works through them. While the worker is on, its container
             runtime keeps a virtual machine running that reserves 12&nbsp;GB of
             memory. Re-running the command on a ready machine changes nothing.
           </p>
         </section>
       )}
+
+      <table className="rows">
+        <tbody>
+          {readiness.checks.map((c) => <CheckRow key={c.key} check={c} />)}
+        </tbody>
+      </table>
 
       <h3>What work should this machine do?</h3>
       <p className="muted small">
@@ -302,7 +306,7 @@ function ShareSection() {
         channel with history.
       </p>
       <div>
-        <button onClick={() => void copy()}>
+        <button className="btn-secondary" onClick={() => void copy()}>
           {state === "copied" ? "copied ✓" : state === "failed" ? "copy failed" : "copy setup for a teammate"}
         </button>
         {problem && <span className="chip chip-red sm">{problem}</span>}
