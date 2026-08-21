@@ -1,0 +1,19 @@
+{
+  "name": "prospector-triage",
+  "version": "0.1.0",
+  "description": "Bootstrap for Prospector — PR and issue triage for overflowing GitHub repositories. Installs prerequisites, clones the repo, and launches the app.",
+  "bin": {
+    "prospector-triage": "bin/bootstrap.mjs"
+  },
+  "files": [
+    "bin"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/commit-capital/prospector.git"
+  },
+  "license": "MIT"
+}
