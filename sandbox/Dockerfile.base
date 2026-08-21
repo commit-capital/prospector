@@ -22,10 +22,14 @@ ARG BASE_IMAGE=pr-verify:local
 FROM ${BASE_IMAGE} AS builder
 
 # Marks every image this file produces as ours, so verify_gc's dangling-image
-# prune is scoped to base builds and reaches nothing else on the daemon. It is
-# repeated per stage because a LABEL applies to the stage that declares it, and
-# under the classic builder each stage leaves its own image behind.
-LABEL prospector.verify-base=1
+# prune is scoped to base builds and reaches nothing else on the daemon, and
+# records the sandbox image it was built FROM, so verify_gc keeps that tag
+# while this image lives. Both are repeated per stage because a LABEL applies
+# to the stage that declares it, and under the classic builder each stage
+# leaves its own image behind. (An ARG declared before FROM is out of scope
+# inside a stage until it is redeclared.)
+ARG BASE_IMAGE
+LABEL prospector.verify-base=1 prospector.sandbox-image=${BASE_IMAGE}
 
 ARG TIER=0
 
@@ -53,7 +57,8 @@ RUN if [ "$TIER" = "1" ]; then \
 
 FROM ${BASE_IMAGE}
 
-LABEL prospector.verify-base=1
+ARG BASE_IMAGE
+LABEL prospector.verify-base=1 prospector.sandbox-image=${BASE_IMAGE}
 
 # The installed tree only — the store stays behind in the builder. pnpm's
 # isolated linker hardlinks node_modules/.pnpm into the store, and a hardlink

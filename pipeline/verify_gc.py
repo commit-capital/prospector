@@ -1,4 +1,5 @@
-"""Garbage collection for the verify sandbox's pinned-base artifacts.
+"""Garbage collection for the verify sandbox's pinned-base artifacts and the
+sandbox image tags no pin names any more.
 
 Every `verify_driver.prepare_base` run leaves two durable artifacts keyed by the
 pinned SHA: a `pr-verify-base:<sha12>-t<tier>` image and a scrubbed clone under
@@ -33,6 +34,11 @@ SCRATCH = settings.verify_scratch()
 
 # The image repository prepare_base tags, and the tag shape it uses.
 BASE_REPO = "pr-verify-base"
+# The hardened sandbox image's repository (`verify_driver.sandbox_image` names
+# one tag per pnpm pin) and the label every base image carries naming the
+# sandbox tag it was built FROM.
+SANDBOX_REPO = "pr-verify"
+SANDBOX_LABEL = "prospector.sandbox-image"
 _TAG_RE = re.compile(r"^([0-9a-f]{12})-t(\d+)$")
 _SHA12_RE = re.compile(r"^[0-9a-f]{12}$")
 
@@ -105,6 +111,39 @@ def _base_images() -> dict[str, list[tuple[str, datetime | None]]]:
     return out
 
 
+def sandbox_images() -> list[str]:
+    """Every `pr-verify:*` tag present in the local Docker daemon, whatever pnpm
+    pin each was built for. Empty when the daemon cannot answer."""
+    p = subprocess.run(
+        ["docker", "image", "ls", "--filter", f"reference={SANDBOX_REPO}",
+         "--format", "{{.Repository}}:{{.Tag}}"],
+        capture_output=True, text=True, env=_env())
+    if p.returncode != 0:
+        return []
+    return [t for t in (line.strip() for line in p.stdout.splitlines())
+            if t and not t.endswith(":<none>")]
+
+
+def _is_parent_of_a_base_image(tag: str) -> bool:
+    """True when a base image in the daemon records `tag` as the sandbox image
+    it was built FROM."""
+    p = subprocess.run(
+        ["docker", "image", "ls", "--filter", f"label={SANDBOX_LABEL}={tag}", "-q"],
+        capture_output=True, text=True, env=_env())
+    return p.returncode == 0 and bool(p.stdout.strip())
+
+
+def sandbox_plan(tags: list[str], current: str,
+                 parents: set[str]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """(keep, remove) over the sandbox tags present. The active profile's tag is
+    kept by identity, built or not; so is any tag a base image here names as its
+    parent, which is what lets two deployments pinning different pnpm versions
+    share one daemon. Everything else in the repository is occupancy."""
+    keep = [current] + sorted(t for t in tags if t != current and t in parents)
+    remove = tuple(t for t in tags if t not in keep)
+    return tuple(keep), remove
+
+
 def _clone_dirs() -> dict[str, Path]:
     """Every base clone directory under the scratch root, by SHA. This is the
     directory build_base_image builds its context in — the clone and the
@@ -173,7 +212,7 @@ def plan(generations: list[Generation], pinned_sha: str | None) -> Plan:
 
 
 def _rmi(image: str) -> bool:
-    """Remove one base image, reporting whether it went. Deliberately un-forced:
+    """Remove one image, reporting whether it went. Deliberately un-forced:
     every sandbox container runs --rm, so the only thing that holds a reference
     is a phase container running right now, and refusing there is correct."""
     p = subprocess.run(["docker", "rmi", image], capture_output=True, text=True,
@@ -194,15 +233,19 @@ def _prune_build_leftovers() -> None:
                    capture_output=True, text=True, env=_env())
 
 
-def collect(pinned_sha: str | None, *, dry_run: bool = False) -> dict:
-    """Sweep every base generation outside the retention rule, then reclaim the
-    build-side leftovers. Returns `{ok, keep, reclaimed, error}`.
+def collect(pinned_sha: str | None, *, sandbox_tag: str | None = None,
+            dry_run: bool = False) -> dict:
+    """Sweep every base generation outside the retention rule, the sandbox
+    tags outside `sandbox_plan` (when `sandbox_tag` names the active one), then
+    reclaim the build-side leftovers. Returns
+    `{ok, keep, reclaimed, sandbox_reclaimed, error}`.
 
     This runs inside prepare_base, so it never raises: a pin that succeeded must
     not be undone by a failure to tidy up after it. A generation is reported
     reclaimed only once every one of its images is gone — an image a live phase
     container still holds keeps its clone too, because that run reads both."""
-    result: dict = {"ok": True, "keep": [], "reclaimed": [], "error": None}
+    result: dict = {"ok": True, "keep": [], "reclaimed": [], "sandbox_reclaimed": [],
+                    "error": None}
     try:
         generations = list_generations()
         p = plan(generations, pinned_sha)
@@ -221,6 +264,13 @@ def collect(pinned_sha: str | None, *, dry_run: bool = False) -> dict:
                 except OSError:
                     continue
             result["reclaimed"].append(sha)
+        if sandbox_tag is not None:
+            tags = sandbox_images()
+            parents = {t for t in tags if t != sandbox_tag and _is_parent_of_a_base_image(t)}
+            _, doomed_tags = sandbox_plan(tags, sandbox_tag, parents)
+            for tag in doomed_tags:
+                if dry_run or _rmi(tag):
+                    result["sandbox_reclaimed"].append(tag)
         if not dry_run:
             _prune_build_leftovers()
     except (OSError, subprocess.SubprocessError) as e:
@@ -231,7 +281,7 @@ def collect(pinned_sha: str | None, *, dry_run: bool = False) -> dict:
 
 def teardown(*, dry_run: bool = False) -> dict:
     """Remove every base artifact this machine holds — all generations, the
-    pinned one included — plus the hardened sandbox image and the scratch root.
+    pinned one included — plus every hardened sandbox image and the scratch root.
     Returns `{ok, images, kept_images, clones, scratch, error}`: `images` went,
     `kept_images` would not (a phase container still holds them), `clones` and
     `scratch` name what was removed from disk. With `dry_run`, reports what
@@ -241,7 +291,8 @@ def teardown(*, dry_run: bool = False) -> dict:
                     "scratch": None, "error": None}
     try:
         wanted = [tag for tags in _base_images().values() for tag, _ in tags]
-        wanted.append(verify_driver.sandbox_image())
+        # The daemon's listing plus the pinned tag, which may not be built yet.
+        wanted += sorted(set(sandbox_images()) | {verify_driver.sandbox_image()})
         clones = list(_clone_dirs().values())
         if dry_run:
             result["images"] = wanted

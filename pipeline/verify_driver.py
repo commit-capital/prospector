@@ -246,19 +246,27 @@ def image_exists(image: str) -> bool:
     return p.returncode == 0
 
 
+def sandbox_images() -> list[str]:
+    return verify_gc.sandbox_images()
+
+
 def collect_garbage(pinned_sha: str | None, *, dry_run: bool = False) -> dict:
     """Reclaim base artifacts outside the retention rule, reporting the result.
     Wrapped so that tidying up can never fail the pin it runs alongside."""
     try:
-        result = verify_gc.collect(pinned_sha, dry_run=dry_run)
+        result = verify_gc.collect(pinned_sha, sandbox_tag=sandbox_image(), dry_run=dry_run)
     except Exception as e:
-        result = {"ok": False, "keep": [], "reclaimed": [],
+        result = {"ok": False, "keep": [], "reclaimed": [], "sandbox_reclaimed": [],
                   "error": f"{type(e).__name__}: {e}"}
     if result.get("error"):
         print(f"base GC did not complete: {result['error']}", file=sys.stderr)
-    elif result.get("reclaimed"):
-        print(f"base GC reclaimed {len(result['reclaimed'])} generation(s): "
-              f"{', '.join(result['reclaimed'])}", file=sys.stderr)
+    else:
+        if result.get("reclaimed"):
+            print(f"base GC reclaimed {len(result['reclaimed'])} generation(s): "
+                  f"{', '.join(result['reclaimed'])}", file=sys.stderr)
+        if result.get("sandbox_reclaimed"):
+            print(f"base GC reclaimed sandbox image(s): "
+                  f"{', '.join(result['sandbox_reclaimed'])}", file=sys.stderr)
     return result
 
 
@@ -1491,8 +1499,9 @@ def main(argv: list[str] | None = None) -> int:
         result = collect_garbage(local_pin(store).get("base_sha"),
                                  dry_run=args.dry_run)
         verb = "would reclaim" if args.dry_run else "reclaimed"
+        gone = result["reclaimed"] + result.get("sandbox_reclaimed", [])
         print(f"keeping {', '.join(result['keep']) or 'nothing'}; "
-              f"{verb} {', '.join(result['reclaimed']) or 'nothing'}")
+              f"{verb} {', '.join(gone) or 'nothing'}")
         return 0 if result["ok"] else 1
 
     tag = prepare_base(store, base_sha=args.base_sha, tier=args.tier)
