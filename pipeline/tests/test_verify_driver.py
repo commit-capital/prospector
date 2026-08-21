@@ -172,6 +172,21 @@ class TestScrub:
             vd.assert_scrubbed(src)
 
 
+class TestSandboxImageTag:
+    def test_tag_is_keyed_by_the_profile_pnpm_pin(self, monkeypatch):
+        p = profile.RepoProfile(verify=profile.VerifyPolicy(pnpm_version="10.4.1"))
+        monkeypatch.setattr(vd.profile, "active", lambda: p)
+        assert vd.sandbox_image() == "pr-verify:pnpm-10.4.1"
+
+    def test_two_pins_are_two_images(self, monkeypatch):
+        tags = set()
+        for v in ("9.15.4", "10.4.1"):
+            p = profile.RepoProfile(verify=profile.VerifyPolicy(pnpm_version=v))
+            monkeypatch.setattr(vd.profile, "active", lambda p=p: p)
+            tags.add(vd.sandbox_image())
+        assert len(tags) == 2
+
+
 class TestBaseImageTag:
     def test_tag_is_pinned_to_sha_and_tier(self):
         tag = vd.base_image_tag("deadbeefcafebabe1234", 1)
