@@ -54,6 +54,7 @@ from prospector_app.backend import verify_queue
 from prospector_app.backend import verify_worker
 
 from pipeline import greptile
+from pipeline import settings
 
 class SurrogateSafeJSONResponse(JSONResponse):
     """JSON render that survives unpaired UTF-16 surrogates. GitHub text (review
@@ -89,6 +90,26 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Paths that answer before this checkout has a deployment target: the wizard's
+# own surface, and the metadata the SPA routes on.
+_UNCONFIGURED_OK = ("/api/onboarding/", "/api/meta")
+
+
+@app.middleware("http")
+async def require_configured(request, call_next):
+    """Refuse every API call until a deployment target exists.
+
+    An unconfigured process reaches the local SQLite fallback and answers list
+    routes with empty results, which reads as a configured Prospector watching
+    an empty repository. Refusing in one place means a route added later
+    inherits it."""
+    path = request.url.path
+    if (path.startswith("/api/") and not path.startswith(_UNCONFIGURED_OK)
+            and not settings.configured()):
+        return JSONResponse({"unconfigured": True}, status_code=503)
+    return await call_next(request)
 
 
 @app.middleware("http")

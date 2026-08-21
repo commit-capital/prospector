@@ -951,6 +951,7 @@ export interface FeedbackTarget {
  *  title, and repo-naming copy derive from this (backend /api/meta, cached once
  *  at bootstrap by RepoMetaProvider). */
 export interface RepoMeta {
+  configured: boolean;
   repo: string;
   owner: string;
   name: string;
