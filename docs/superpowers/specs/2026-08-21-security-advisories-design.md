@@ -69,8 +69,7 @@ later write gate would trip over.
   `verdict == duplicate`, forbidden otherwise), `fix_commit` (a default-branch
   SHA, required for `fixed`), `evidence` (short text). Validated on write.
 - `links.candidates`: the `link_prs` output shape, text-ref signal only
-  (GHSA id, CVE id, and distinctive summary tokens against open and merged PR
-  bodies). There is no file path to diff-overlap against until an agent
+  (GHSA id and CVE id against open and merged PR bodies). There is no file path to diff-overlap against until an agent
   names one, and v1 does not feed that back.
 
 ### Ingest — `alert_triage/advisory_ingest.py`

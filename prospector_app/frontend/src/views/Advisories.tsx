@@ -113,6 +113,7 @@ function DetailPanel({ ghsa, onClose }: { ghsa: string; onClose: () => void }) {
             <h4>Report</h4>
             <div className="markdown small">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{d.description.slice(0, 20000)}</ReactMarkdown>
+              {d.description.length > 20000 && <p className="muted small">Report truncated at 20,000 characters — open on GitHub for the full text.</p>}
             </div>
           </div>
         </>

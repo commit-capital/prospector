@@ -185,6 +185,7 @@ token. Secret values are never fetched or stored — only type + file locations.
 GitHub secret scanning (secrets already in the repo) is deliberately separate
 from `threats.py` (incoming PR diffs); they are never coupled. The app 🛡️
 Alerts tab projects this store.
+
 **Advisories** are the family's second collection: GitHub repository security
 advisories (`advisory_store.py` / `advisory_model.py`, table `advisories` keyed
 by `advisory_id(ghsa)`, the GHSA's twelve symbols as one base-21 integer, stamped

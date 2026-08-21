@@ -20,8 +20,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from alert_triage.advisory_store import (ADVISORY_VERDICTS, GHSA_ALPHABET, OPEN_STATES,
-                                         AdvisoryStore)
+from alert_triage.advisory_store import (ADVISORY_VERDICTS, GHSA_ALPHABET, GHSA_PATTERN,
+                                         OPEN_STATES, AdvisoryStore)
 from alert_triage.alert_freshness import FIX_SCAN_MAX_AGE_DAYS, is_current
 from alert_triage.config import REPO
 from pipeline import headless_agent
@@ -154,14 +154,31 @@ def _verdict_id(v: dict) -> int | None:
     return None
 
 
+def _well_formed(v: dict, ghsa: str) -> bool:
+    """The store's per-verdict field rules, checked before any write so one
+    malformed verdict cannot abort a batch."""
+    verdict = v.get("verdict")
+    target = v.get("duplicate_of")
+    if verdict == "duplicate":
+        return (isinstance(target, str) and GHSA_PATTERN.fullmatch(target) is not None
+                and target != ghsa)
+    if target:
+        return False
+    if verdict == "fixed":
+        commit = v.get("fix_commit")
+        return isinstance(commit, str) and len(commit) >= 7
+    return True
+
+
 def filter_batch_verdicts(entries: list[dict], verdicts: list[dict]) -> list[dict]:
-    """Keep verdicts for ids in this batch with a known verdict word, with the
-    id coerced to an int."""
-    in_batch = {e["id"] for e in entries}
+    """Keep verdicts for ids in this batch with a known verdict word and
+    store-valid fields, with the id coerced to an int."""
+    ghsa_by_id = {e["id"]: e.get("ghsa_id") or "" for e in entries}
     kept: list[dict] = []
     for v in verdicts:
         i = _verdict_id(v)
-        if i is None or i not in in_batch or v.get("verdict") not in ADVISORY_VERDICTS:
+        if (i is None or i not in ghsa_by_id or v.get("verdict") not in ADVISORY_VERDICTS
+                or not _well_formed(v, ghsa_by_id[i])):
             continue
         kept.append({**v, "id": i})
     return kept

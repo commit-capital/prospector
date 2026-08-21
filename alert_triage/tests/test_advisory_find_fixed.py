@@ -100,14 +100,21 @@ def test_apply_verdicts_validates_and_records(tmp_path):
 
 
 def test_filter_batch_verdicts_drops_foreign_and_unknown():
-    entries = [{"id": 1}, {"id": 2}]
+    entries = [{"id": 1, "ghsa_id": G1}, {"id": 2, "ghsa_id": G2}]
     raw = [{"id": 1, "verdict": "not-fixed"}, {"id": 3, "verdict": "fixed"},
            {"id": 2, "verdict": "resolved"}, {"verdict": "fixed"},
-           {"id": "2", "verdict": "fixed"}, {"id": 2.0, "verdict": "likely-fixed"},
+           {"id": "2", "verdict": "fixed", "fix_commit": "c647b8cc2ea6"},
+           {"id": 2.0, "verdict": "likely-fixed"},
            {"id": "abc", "verdict": "fixed"}, {"id": None, "verdict": "fixed"},
-           {"id": True, "verdict": "fixed"}]
+           {"id": True, "verdict": "fixed"},
+           {"id": 1, "verdict": "duplicate", "duplicate_of": G1},
+           {"id": 1, "verdict": "duplicate", "duplicate_of": "GHSA-xxxx"},
+           {"id": 1, "verdict": "fixed"},
+           {"id": 1, "verdict": "not-fixed", "duplicate_of": G2},
+           {"id": 1, "verdict": "duplicate", "duplicate_of": G2}]
     assert ff.filter_batch_verdicts(entries, raw) == [
         {"id": 1, "verdict": "not-fixed"},
-        {"id": 2, "verdict": "fixed"},
+        {"id": 2, "verdict": "fixed", "fix_commit": "c647b8cc2ea6"},
         {"id": 2, "verdict": "likely-fixed"},
+        {"id": 1, "verdict": "duplicate", "duplicate_of": G2},
     ]
