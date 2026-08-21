@@ -406,7 +406,8 @@ def onboarding_state():
 @app.post("/api/onboarding/probe")
 def onboarding_probe(body: models.OnboardingProbe):
     """Check candidate configuration without writing any of it."""
-    return onboarding.probe(body.store_url, body.repo, body.key_file)
+    return onboarding.probe(body.store_url, body.repo, body.key_file,
+                            agent=body.agent)
 
 
 @app.post("/api/onboarding/apply")
@@ -611,6 +612,14 @@ def default_comment(action: str, canonical: int | None = None,
 # ---------------------------------------------------------------------------
 # Live agent chat (M3).
 # ---------------------------------------------------------------------------
+@app.get("/api/chat/ready")
+def chat_ready():
+    """Whether this machine can run the agent pane — the provider and, for
+    claude, the local CLI's presence and login. The pane renders its fix-it
+    empty state from this."""
+    return chat.readiness()
+
+
 @app.get("/api/chat/history")
 def chat_history(pr: int | None = None, cluster: int | None = None, issue: int | None = None,
                  chat_id: str | None = None):

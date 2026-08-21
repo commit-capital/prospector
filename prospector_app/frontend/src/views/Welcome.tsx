@@ -10,6 +10,7 @@ import { useRepoMeta } from "../RepoMetaContext";
 
 type Branch = "join" | "new" | null;
 type Pick = "easy" | "full" | null;
+type AgentPick = "claude" | "none" | null;
 
 export default function Welcome() {
   const [state, setState] = useState<OnboardingState | null>(null);
@@ -154,6 +155,61 @@ function EasyOrFull(
   );
 }
 
+/** This machine's agent readiness (the local claude CLI), probed while
+ *  `active`. */
+function useAgentProbe(active: boolean): ProbeFinding | undefined {
+  const [found, setFound] = useState<ProbeFinding | undefined>();
+  useEffect(() => {
+    if (!active) return;
+    let stale = false;
+    void api.onboardingProbe({ agent: true })
+      .then((r) => { if (!stale) setFound(r.agent); })
+      .catch(() => { if (!stale) setFound(undefined); });
+    return () => { stale = true; };
+  }, [active]);
+  return found;
+}
+
+/** The agent-provider choice: who backs the “Ask the agent” sidebar. Probes
+ *  this machine's claude CLI as soon as that option is picked. `title` is the
+ *  fork heading; the ladder rung omits it, its card already carries one. */
+function AgentChooser({ pick, onPick, title }: {
+  pick: AgentPick; onPick: (p: "claude" | "none") => void; title?: string;
+}) {
+  const found = useAgentProbe(pick === "claude");
+  return (
+    <div className="welcome-fork">
+      {title && <h4>{title}</h4>}
+      <label className={pick === "claude" ? "fork-opt on" : "fork-opt"}>
+        <input type="radio" checked={pick === "claude"} onChange={() => onPick("claude")} />
+        {" "}<strong>Use your Claude account</strong>
+        {" "}<span className="muted small">
+          the “Ask the agent” sidebar runs the Claude Code CLI on this computer,
+          under your own login.
+        </span>
+        {pick === "claude" && <>{" "}<Finding found={found} /></>}
+        {pick === "claude" && found && !found.ok && (
+          <p className="muted small">
+            You can fix this later — the sidebar shows what to do.
+          </p>
+        )}
+      </label>
+      <label className="fork-opt" title="Not supported yet">
+        <input type="radio" checked={false} disabled readOnly />
+        {" "}<strong>Connect your Codex account</strong>
+        {" "}<span className="muted small">not supported yet.</span>
+      </label>
+      <label className={pick === "none" ? "fork-opt on" : "fork-opt"}>
+        <input type="radio" checked={pick === "none"} onChange={() => onPick("none")} />
+        {" "}<strong>No agent support</strong>
+        {" "}<span className="muted small">
+          hides the sidebar; you can turn it on later from this page.
+        </span>
+      </label>
+    </div>
+  );
+}
+
 function Finding({ found }: { found: ProbeFinding | undefined }) {
   if (!found) return null;
   if (found.ok) {
@@ -172,13 +228,14 @@ function NewBranch({ onDone, onBack }: { onDone: () => void; onBack: () => void 
   const [storeUrl, setStoreUrl] = useState("");
   const [storeFound, setStoreFound] = useState<ProbeFinding | undefined>();
   const [app, setApp] = useState<Pick>(null);
+  const [agent, setAgent] = useState<AgentPick>(null);
   const [botLogin, setBotLogin] = useState("");
   const [appId, setAppId] = useState("");
   const [keyFile, setKeyFile] = useState("");
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
 
-  const ready = repo.includes("/") && store != null && app != null
+  const ready = repo.includes("/") && store != null && app != null && agent != null
     && (store === "easy" || storeUrl.trim() !== "")
     && (app === "easy" || (botLogin.trim() !== "" && keyFile.trim() !== ""));
 
@@ -197,6 +254,11 @@ function NewBranch({ onDone, onBack }: { onDone: () => void; onBack: () => void 
             TRIAGE_BOT_APP_ID: appId.trim(),
             TRIAGE_BOT_KEY_FILE: keyFile.trim(),
           },
+        });
+      }
+      if (agent != null) {
+        await api.onboardingApply({
+          step: "agent", env: { TRIAGE_AGENT_PROVIDER: agent },
         });
       }
       onDone();
@@ -283,6 +345,8 @@ function NewBranch({ onDone, onBack }: { onDone: () => void; onBack: () => void 
         </div>
       )}
 
+      <AgentChooser pick={agent} onPick={setAgent} title="In-app agent support" />
+
       {problem && <p className="chip chip-red sm">{problem}</p>}
       <div className="welcome-actions">
         <button disabled={!ready || busy} onClick={() => void submit()}>
@@ -318,6 +382,8 @@ function Ladder({ state, onChange }: { state: OnboardingState; onChange: () => v
           </section>
         : <WritesStep name={name} onDone={onChange} />}
 
+      <AgentStep state={state} onDone={onChange} />
+
       {state.worker_ready
         ? <section className="setup-card setup-done">
             <h3>✅ This computer runs automated tasks</h3>
@@ -334,6 +400,82 @@ function Ladder({ state, onChange }: { state: OnboardingState; onChange: () => v
             <Link to="/setup">Set this computer up →</Link>
           </section>}
     </>
+  );
+}
+
+/** The agent rung: pick who backs the “Ask the agent” sidebar, or show the
+ *  standing choice with this machine's readiness. */
+function AgentStep({ state, onDone }: { state: OnboardingState; onDone: () => void }) {
+  const chosen: AgentPick =
+    state.agent_provider === "claude" || state.agent_provider === "none"
+      ? state.agent_provider : null;
+  const [pick, setPick] = useState<AgentPick>(chosen);
+  const [editing, setEditing] = useState(chosen == null);
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const found = useAgentProbe(!editing && chosen === "claude");
+
+  const apply = async () => {
+    if (pick == null) return;
+    setBusy(true);
+    setProblem(null);
+    try {
+      await api.onboardingApply({ step: "agent", env: { TRIAGE_AGENT_PROVIDER: pick } });
+      setEditing(false);
+      onDone();
+    } catch (e) {
+      setProblem(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!editing && chosen === "claude") {
+    return (
+      <section className="setup-card setup-done">
+        <h3>✅ The “Ask the agent” sidebar uses your Claude account</h3>
+        <p className="muted small">
+          It runs the Claude Code CLI on this computer, under your own login.
+          {" "}<Finding found={found} />
+          {found && !found.ok && found.problem === "not logged in" && (
+            <> Run <code>claude auth login</code> in a terminal to finish.</>
+          )}
+          {" "}<button className="link-btn" onClick={() => setEditing(true)}>change</button>
+        </p>
+      </section>
+    );
+  }
+  if (!editing && chosen === "none") {
+    return (
+      <section className="setup-card setup-done">
+        <h3>✅ In-app agent support is off</h3>
+        <p className="muted small">
+          The “Ask the agent” sidebar is hidden.
+          {" "}<button className="link-btn" onClick={() => setEditing(true)}>change</button>
+        </p>
+      </section>
+    );
+  }
+  return (
+    <section className="setup-card">
+      <h3>Optional: in-app agent support</h3>
+      <p className="muted small">
+        The “Ask the agent” sidebar answers questions about the app, a PR, or
+        the codebase. It needs an AI account on this computer.
+      </p>
+      <AgentChooser pick={pick} onPick={setPick} />
+      {problem && <p className="chip chip-red sm">{problem}</p>}
+      <div className="welcome-actions">
+        <button disabled={busy || pick == null} onClick={() => void apply()}>
+          {busy ? "saving…" : "save"}
+        </button>
+        {chosen != null && (
+          <button className="btn-secondary" onClick={() => { setPick(chosen); setEditing(false); }}>
+            cancel
+          </button>
+        )}
+      </div>
+    </section>
   );
 }
 

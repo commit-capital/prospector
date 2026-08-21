@@ -75,6 +75,17 @@ def display_name() -> str:
     return os.environ.get("TRIAGE_DISPLAY_NAME") or repo_name()
 
 
+def agent_provider() -> str:
+    """Which AI backs the app's in-chat agent pane: "claude" (the operator's
+    local Claude Code CLI, under their own login) or "none" (no agent pane).
+    Defaults to "claude"; an unrecognized value reads as "none", failing toward
+    no agent rather than spawning a CLI the operator did not pick."""
+    raw = os.environ.get("TRIAGE_AGENT_PROVIDER", "").strip().lower()
+    if not raw:
+        return "claude"
+    return raw if raw in ("claude", "none") else "none"
+
+
 def feedback_repo() -> str:
     """"owner/name" the app's 🐞 Feedback button files issues into. Empty
     disables the button — feedback about this tool must never land on the

@@ -195,6 +195,50 @@ class TestProbe:
         assert not prof.exists()
 
 
+class TestAgentStep:
+    def test_writes_the_provider_choice_while_configured(self, files, monkeypatch):
+        monkeypatch.setenv("TRIAGE_REPO", "acme/widgets")
+        env, _ = files
+        onboarding.apply("agent", {"TRIAGE_AGENT_PROVIDER": "claude"}, None)
+        assert "TRIAGE_AGENT_PROVIDER=claude" in env.read_text()
+
+    def test_none_turns_agent_support_off(self, files, monkeypatch):
+        monkeypatch.setenv("TRIAGE_REPO", "acme/widgets")
+        env, _ = files
+        onboarding.apply("agent", {"TRIAGE_AGENT_PROVIDER": "none"}, None)
+        assert "TRIAGE_AGENT_PROVIDER=none" in env.read_text()
+
+    def test_an_unsupported_provider_is_refused(self, files, monkeypatch):
+        monkeypatch.setenv("TRIAGE_REPO", "acme/widgets")
+        with pytest.raises(ValueError, match="claude.*none"):
+            onboarding.apply("agent", {"TRIAGE_AGENT_PROVIDER": "codex"}, None)
+
+    def test_probe_reports_agent_readiness(self, monkeypatch):
+        from prospector_app.backend import chat
+        monkeypatch.setattr(chat, "readiness",
+                            lambda: {"provider": "claude", "ok": True})
+        found = onboarding.probe(store_url=None, repo=None, key_file=None,
+                                 agent=True)
+        assert found["agent"] == {"provider": "claude", "ok": True}
+
+    def test_state_reports_no_choice_until_one_is_made(self, monkeypatch):
+        monkeypatch.delenv("TRIAGE_REPO", raising=False)
+        monkeypatch.delenv("TRIAGE_AGENT_PROVIDER", raising=False)
+        assert onboarding.state()["agent_provider"] is None
+
+    def test_state_reports_the_recorded_choice(self, monkeypatch):
+        monkeypatch.delenv("TRIAGE_REPO", raising=False)
+        monkeypatch.setenv("TRIAGE_AGENT_PROVIDER", "none")
+        assert onboarding.state()["agent_provider"] == "none"
+
+    def test_the_choice_never_travels_in_a_bundle(self, monkeypatch):
+        """Agent auth is the local CLI's login, so each machine picks for
+        itself."""
+        monkeypatch.setenv("TRIAGE_REPO", "owner/name")
+        monkeypatch.setenv("TRIAGE_AGENT_PROVIDER", "claude")
+        assert "TRIAGE_AGENT_PROVIDER" not in onboarding.build_bundle()["env"]
+
+
 class TestBundleContents:
     """Deployment facts travel; this machine's own layout does not."""
 

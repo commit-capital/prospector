@@ -2,7 +2,9 @@ import { createContext, useCallback, useContext, useEffect, useLayoutEffect, use
 import { useLocation } from "react-router";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { api, type ChatReady } from "../api";
 import { shouldFollowChatAfterScroll } from "../chatScroll";
+import { useRepoMeta } from "../RepoMetaContext";
 import { useSpeechInput } from "../useSpeechInput";
 
 function MicIcon() {
@@ -104,6 +106,10 @@ export function AgentPaneProvider({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(localStorage.getItem("agentpane-open") !== "0");
   const [pending, setPending] = useState<string | null>(null);
   const [visiblePrs, setVisiblePrs] = useState<number[] | null>(null);
+  const { meta } = useRepoMeta();
+  // No pane on an unconfigured checkout (the wizard is the only page and the
+  // chat API refuses there) or when the deployment turned agent support off.
+  const enabled = !!meta && meta.configured && meta.agent_provider !== "none";
 
   const askAbout = useCallback((file: string, line: number, question?: string) => {
     setAnchor({ file, line });
@@ -115,8 +121,10 @@ export function AgentPaneProvider({ children }: { children: ReactNode }) {
   return (
     <Ctx.Provider value={{ anchor, open, setOpen, askAbout, clearAnchor, visiblePrs, setVisiblePrs }}>
       {children}
-      <AgentPane anchor={anchor} open={open} setOpen={setOpen} clearAnchor={clearAnchor}
-        pending={pending} clearPending={() => setPending(null)} visiblePrs={visiblePrs} />
+      {enabled && (
+        <AgentPane anchor={anchor} open={open} setOpen={setOpen} clearAnchor={clearAnchor}
+          pending={pending} clearPending={() => setPending(null)} visiblePrs={visiblePrs} />
+      )}
     </Ctx.Provider>
   );
 }
@@ -276,10 +284,29 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
   }, [msgs, open, scrollToLatest]);
 
   // reserve left space for the sidebar (tracks the resizable width); collapses to
-  // a thin rail. useLayoutEffect so the page never paints un-shifted first.
+  // a thin rail. useLayoutEffect so the page never paints un-shifted first. The
+  // cleanup gives the space back when the pane unmounts (agent support off).
   useLayoutEffect(() => {
     document.documentElement.style.setProperty("--ap-w", open ? `${paneW}px` : "38px");
+    return () => { document.documentElement.style.removeProperty("--ap-w"); };
   }, [open, paneW]);
+
+  // Whether this machine can run the agent at all — the local claude CLI's
+  // presence and login. Checked once per pane-open; not-ready swaps the
+  // composer for a fix-it notice with a re-check.
+  const [ready, setReady] = useState<ChatReady | null>(null);
+  const [checkingReady, setCheckingReady] = useState(false);
+  const checkReady = useCallback(() => {
+    setCheckingReady(true);
+    api.chatReady().then(setReady).catch(() => setReady(null))
+      .finally(() => setCheckingReady(false));
+  }, []);
+  useEffect(() => {
+    if (!open) return;
+    let stale = false;
+    api.chatReady().then((r) => { if (!stale) setReady(r); }).catch(() => {});
+    return () => { stale = true; };
+  }, [open]);
 
   const send = useCallback((text: string) => {
     if (!text.trim() || streaming) return;
@@ -489,6 +516,24 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
                 <button className="ap-resume" onClick={resume}>Resume</button>
               </div>
             )}
+            {ready && !ready.ok ? (
+              <div className="ap-not-ready">
+                <p className="muted small">
+                  The agent runs the <b>Claude Code CLI</b> on this computer, under
+                  your own login.{" "}
+                  {ready.problem === "claude CLI not on PATH"
+                    ? <>It isn't installed here — <a href="https://claude.com/claude-code"
+                        target="_blank" rel="noreferrer">install Claude Code</a>, then check again.</>
+                    : ready.problem === "not logged in"
+                      ? <>It isn't logged in — run <code>claude auth login</code> in a
+                          terminal, then check again.</>
+                      : <>It didn't answer a status check ({ready.problem ?? "unknown"}).</>}
+                </p>
+                <button className="btn-secondary sm" disabled={checkingReady} onClick={checkReady}>
+                  {checkingReady ? "checking…" : "Check again"}
+                </button>
+              </div>
+            ) : (
             <div className="agentpane-input">
               <div className="ap-input-wrap">
                 <textarea rows={2} placeholder={streaming ? "Agent is thinking…" : `Ask about ${displaySubj.label}…`}
@@ -510,6 +555,7 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
                 ? <button className="btn-stop sm" onClick={stop} title="Stop the agent (Esc)">■ Stop</button>
                 : <button className="btn-primary sm" disabled={!input.trim()} onClick={() => send(input)}>Send</button>}
             </div>
+            )}
             {speech.error && <div className="ap-mic-error">Mic error: {speech.error}. Check browser permissions.</div>}
           </div>
           <div className="agentpane-resize" onMouseDown={startResize} title="Drag to resize width" />

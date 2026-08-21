@@ -66,6 +66,7 @@ import json
 import os
 import shutil
 import signal
+import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -93,6 +94,33 @@ SESSION_DIR = APP_ROOT / "cache" / "chat"
 AGENT_CONTEXT = APP_ROOT / "agent" / "context.md"
 CLAUDE_BIN = shutil.which("claude") or "claude"
 DIFF_BUDGET = 16000
+
+
+def readiness() -> dict[str, object]:
+    """Whether this machine can run the agent pane: the configured provider,
+    and — for "claude" — the local CLI's presence and login. The binary is
+    looked up fresh so an install made while the app runs is seen. Failures
+    report a category, never raw command output."""
+    provider = settings.agent_provider()
+    if provider != "claude":
+        return {"provider": provider, "ok": False, "problem": "agent support is off"}
+    found = shutil.which("claude")
+    if found is None:
+        return {"provider": "claude", "ok": False, "problem": "claude CLI not on PATH"}
+    try:
+        r = subprocess.run([found, "auth", "status", "--json"],
+                           capture_output=True, text=True, timeout=15)
+        status = json.loads(r.stdout)
+        logged_in = bool(status.get("loggedIn"))
+    except (OSError, subprocess.SubprocessError) as e:
+        return {"provider": "claude", "ok": False, "problem": type(e).__name__}
+    except json.JSONDecodeError:
+        return {"provider": "claude", "ok": False, "problem": "unrecognized auth status"}
+    if not logged_in:
+        return {"provider": "claude", "ok": False, "problem": "not logged in"}
+    return {"provider": "claude", "ok": True,
+            "auth_method": str(status.get("authMethod") or ""),
+            "subscription": str(status.get("subscriptionType") or "")}
 
 # The agent's read `gh` allowlist: read-only PR/issue/search commands. Every write
 # lives elsewhere — the curated UPSTREAM writes (_GH_WRITE_ALLOW, as the bot) are
