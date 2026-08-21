@@ -2,7 +2,6 @@ import json
 import unittest.mock as mock
 
 from pipeline import greptile_read_driver as drv
-from pipeline import settings
 from pipeline.store import Store
 
 
@@ -22,7 +21,7 @@ def test_candidates_only_sub5_without_current_review(tmp_path):
 
 
 def test_candidates_empty_when_no_review_provider(tmp_path, monkeypatch):
-    monkeypatch.setattr(settings, "REVIEW_PROVIDER", "none")
+    monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "none")
     st = Store(tmp_path)
     _pr(st, 2, 3)                    # sub-5 would be a candidate under greptile
     assert drv.candidates(st) == []

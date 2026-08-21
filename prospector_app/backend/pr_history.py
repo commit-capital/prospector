@@ -7,8 +7,8 @@ from __future__ import annotations
 import json
 from typing import Any, TypedDict
 
+from pipeline import settings
 from pipeline.greptile import parse_confidence_score
-from pipeline.settings import REPO, REPO_NAME, REPO_OWNER
 from prospector_app.backend.safety_guard import run
 
 SNIPPET_LEN = 200
@@ -48,7 +48,7 @@ def _query(n: int) -> str:
         "... on RenamedTitleEvent { createdAt actor { login } currentTitle previousTitle } "
         "} }"
     )
-    return (f'query {{ repository(owner: "{REPO_OWNER}", name: "{REPO_NAME}") {{ '
+    return (f'query {{ repository(owner: "{settings.repo_owner()}", name: "{settings.repo_name()}") {{ '
             f"pullRequest(number: {int(n)}) {{ {fields} }} }} }}")
 
 
@@ -101,7 +101,7 @@ def _commit_items(node: dict[str, Any]) -> list[HistoryItem]:
         out.append({
             "kind": "commit", "at": commit.get("committedDate"),
             "actor": (commit.get("author") or {}).get("name"), "summary": message,
-            "url": f"https://github.com/{REPO}/commit/{oid}" if oid else None,
+            "url": f"https://github.com/{settings.repo()}/commit/{oid}" if oid else None,
             "state": None, "greptile_score": None,
         })
     return out

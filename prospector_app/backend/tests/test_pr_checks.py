@@ -1,6 +1,6 @@
 """Checks rollup surfaces the threat gate (gates.pr_clean): a committed secret
 is a failing check, so the merge block is visible, not just in clean_reasons."""
-from pipeline import model, settings
+from pipeline import model
 from prospector_app.backend import pr_checks
 
 HEAD = "abc123"
@@ -88,7 +88,7 @@ def test_greptile_review_check_at_bar():
 
 
 def test_review_check_omitted_when_no_provider(monkeypatch):
-    monkeypatch.setattr(settings, "REVIEW_PROVIDER", "none")
+    monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "none")
     assert _review_check(_pr()) is None
 
 

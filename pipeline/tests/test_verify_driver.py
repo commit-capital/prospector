@@ -283,16 +283,16 @@ class TestPrepareBase:
 
         def fake_gh_json(path: str) -> dict[str, object] | None:
             seen.append(path)
-            if path == f"repos/{settings.REPO}":
+            if path == f"repos/{settings.repo()}":
                 return {"default_branch": "master"}
-            if path == f"repos/{settings.REPO}/commits/master":
+            if path == f"repos/{settings.repo()}/commits/master":
                 return {"sha": "deadbeefcafebabe1234"}
             return None
 
         monkeypatch.setattr(vd.gh, "gh_json", fake_gh_json)
 
         assert vd.resolve_base_sha() == "deadbeefcafebabe1234"
-        assert f"repos/{settings.REPO}/commits/master" in seen
+        assert f"repos/{settings.repo()}/commits/master" in seen
 
     def test_refuses_a_repo_whose_default_branch_it_cannot_read(self, monkeypatch):
         monkeypatch.setattr(vd.gh, "gh_json", lambda path: None)

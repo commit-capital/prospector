@@ -1,8 +1,7 @@
 """Repo-root pytest config: make every test session hermetic against a developer's
 real .env. Set before any project module imports settings (which loads .env).
 
-`settings` requires TRIAGE_REPO and TRIAGE_BOT_LOGIN (no defaults), so supply
-deliberately fake identity values here. They are intentionally NOT the real
+The identity values here are deliberately fake and intentionally NOT the real
 deployment's repo/bot — a test that silently depends on the real identity fails
 here, which is the point. setdefault so a real shell export still wins."""
 import os

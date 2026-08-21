@@ -3,7 +3,7 @@
 The suite runs under the fixture profile (root conftest sets TRIAGE_PROFILE);
 the generic-default tests clear PROFILE_PATH per test. Together these run the
 same consumer against two materially different profiles."""
-from pipeline import settings, taxonomy
+from pipeline import taxonomy
 
 
 class TestFixtureProfile:
@@ -24,9 +24,9 @@ class TestFixtureProfile:
 
 class TestGenericDefault:
     def test_vocabulary_is_just_other(self, monkeypatch):
-        monkeypatch.setattr(settings, "PROFILE_PATH", "")
+        monkeypatch.setenv("TRIAGE_PROFILE", "")
         assert taxonomy.subsystem_names() == ["other"]
 
     def test_everything_classifies_other(self, monkeypatch):
-        monkeypatch.setattr(settings, "PROFILE_PATH", "")
+        monkeypatch.setenv("TRIAGE_PROFILE", "")
         assert taxonomy.classify("clean up stale lock on checkout") == "other"

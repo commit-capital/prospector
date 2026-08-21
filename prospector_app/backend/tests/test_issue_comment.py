@@ -2,6 +2,7 @@
 configured bot without closing it. Reversible (the bot can delete its own
 comment) and shares the issues/comments endpoint with the close paths."""
 from prospector_app.backend import executor, models
+from pipeline import settings
 
 
 def test_comment_issue_dry_run_plans_without_writing():
@@ -34,7 +35,7 @@ def test_comment_issue_live_posts(monkeypatch):
     monkeypatch.setattr(executor, "bot_run", _fake_bot_run)
     res = executor.comment_issue(410, models.IssueCommentBody(comment="ping"), token="tok", dry_run=False)
     assert res["status"] == "executed"
-    assert calls == [["gh", "issue", "comment", "410", "--repo", executor.REPO, "--body", "ping"]]
+    assert calls == [["gh", "issue", "comment", "410", "--repo", settings.repo(), "--body", "ping"]]
     assert len(recorded) == 1
 
 

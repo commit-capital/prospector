@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from pipeline import settings
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -35,7 +36,7 @@ def test_builds_only_curated_commands_and_pins_repo(argv, prefix):
     cli = _load()
     cmd = cli.build_gh_argv(argv)
     assert cmd[:len(prefix)] == prefix
-    assert cmd[-2:] == ["--repo", cli.REPO]
+    assert cmd[-2:] == ["--repo", settings.repo()]
 
 
 @pytest.mark.parametrize("argv", [

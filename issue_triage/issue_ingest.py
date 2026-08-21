@@ -35,7 +35,7 @@ def _meta(raw: dict) -> dict:
         "thumbs_up": raw.get("thumbs_up", 0),
         "created_at": raw.get("created_at"),
         "updated_at": raw.get("updated_at"),
-        "url": f"https://github.com/{config.REPO}/issues/{raw['number']}",
+        "url": f"https://github.com/{config.repo()}/issues/{raw['number']}",
     }
 
 

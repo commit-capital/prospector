@@ -127,7 +127,7 @@ def test_bundle_flags_live_comment_evidence(tmp_path):
 def test_prompt_embeds_criteria_and_placeholders():
     assert issue_fixed_driver.FIX_CRITERIA in issue_fixed_driver.FIND_FIXED_PROMPT
     assert "__BUNDLE_PATH__" in issue_fixed_driver.FIND_FIXED_PROMPT
-    assert "__REPO__" not in issue_fixed_driver.FIND_FIXED_PROMPT  # substituted at module load
+    assert "__REPO__" in issue_fixed_driver.FIND_FIXED_PROMPT
     assert "pre-merge behavior" in issue_fixed_driver.FIX_CRITERIA
     assert "already produced the expected behavior" in issue_fixed_driver.FIX_CRITERIA
     assert "change to another producer of the same symptom" in issue_fixed_driver.FIX_CRITERIA

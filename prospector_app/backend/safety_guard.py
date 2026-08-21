@@ -24,10 +24,10 @@ import re
 import subprocess
 from typing import TypedDict
 
+from pipeline import settings
 from pipeline import schema
 from pipeline import storekit
 from pipeline.gh import operator_env
-from pipeline.settings import BOT_LOGIN
 
 ALLOWED_BINARIES = {"gh", "git", "claude", "python", "python3"}
 
@@ -186,10 +186,21 @@ def assert_alert_bot_write(argv: list[str]) -> None:
 _MERGE_RE = re.compile(r"^gh\s+pr\s+merge\s+\d+\b")
 
 
+def _require_bot_identity(action: str) -> str:
+    """The configured bot login. A deployment set up without a GitHub App has
+    none, and a write attributed to nobody is refused rather than attempted."""
+    login = settings.bot_login()
+    if not login:
+        raise WriteAttemptBlocked(
+            f"refusing to {action}: no bot identity is configured")
+    return login
+
+
 def _require_bot_token(token: str | None, action: str) -> str:
+    login = _require_bot_identity(action)
     if not token or not token.strip():
         raise WriteAttemptBlocked(
-            f"refusing to {action} without a {BOT_LOGIN} token (would fall back to default login)"
+            f"refusing to {action} without a {login} token (would fall back to default login)"
         )
     return token
 

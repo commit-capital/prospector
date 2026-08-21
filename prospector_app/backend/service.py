@@ -24,6 +24,7 @@ from prospector_app.backend import testpaths
 from prospector_app.backend import verify_view
 from prospector_app.backend.safety_guard import run
 
+from pipeline import settings
 from pipeline import codeowners  # pipeline (path set up by data import)
 from pipeline import gh
 from pipeline import greptile
@@ -31,7 +32,6 @@ from pipeline import freshness
 from pipeline import gates
 from pipeline import profile
 from pipeline import risktier
-from pipeline.settings import BOT_LOGIN, REPO
 
 CACHE_DIR = Path(__file__).resolve().parents[1] / "cache"
 DIFF_CACHE = CACHE_DIR / "diffs"
@@ -146,7 +146,7 @@ def live_changed_paths(n: int) -> list[str] | None:
     CODEOWNERS check and the risk tier when no diff is cached. None when the
     fetch fails — never asserted as "no paths changed", so a caller can tell
     a failed fetch apart from a PR that genuinely touches nothing gated."""
-    r = run(["gh", "api", "--paginate", f"repos/{REPO}/pulls/{n}/files",
+    r = run(["gh", "api", "--paginate", f"repos/{settings.repo()}/pulls/{n}/files",
              "--jq", ".[].filename"], timeout=60)
     if r.returncode != 0:
         return None
@@ -155,7 +155,7 @@ def live_changed_paths(n: int) -> list[str] | None:
 
 def _pr_body_live(n: int) -> str | None:
     """Fetch a PR body from GitHub — the lazy fallback when it wasn't ingested."""
-    res = run(["gh", "api", f"repos/{REPO}/pulls/{n}", "--jq", ".body"], timeout=30)
+    res = run(["gh", "api", f"repos/{settings.repo()}/pulls/{n}", "--jq", ".body"], timeout=30)
     return res.stdout.strip() if res.returncode == 0 else None
 
 
@@ -471,7 +471,7 @@ def count_prs(specs: list[dict]) -> list[int]:
 
 # Known bot logins whose PR comments and reactions don't represent community pain.
 # `[bot]`-suffixed logins are checked dynamically; this covers named service accounts.
-_BOT_LOGINS: frozenset[str] = frozenset({BOT_LOGIN, "github-actions"})
+_BOT_LOGINS: frozenset[str] = frozenset({settings.bot_login(), "github-actions"})
 
 
 def _is_bot_author(login: str | None) -> bool:
@@ -739,7 +739,7 @@ MAX_FILES_API = 100  # cap reconstructed diffs so huge PRs stay responsive
 
 def _diff_from_files_api(n: int) -> dict:
     """Fallback for PRs whose diff `gh pr diff` refuses (>300 files / HTTP 406)."""
-    res = run(["gh", "api", f"repos/{REPO}/pulls/{n}/files?per_page=100", "--paginate"], timeout=120)
+    res = run(["gh", "api", f"repos/{settings.repo()}/pulls/{n}/files?per_page=100", "--paginate"], timeout=120)
     if res.returncode != 0 or not res.stdout.strip():
         return {"diff": "", "error": "could not fetch file list", "file_count": 0,
                 "truncated": False, "source": "files-api"}
@@ -773,7 +773,7 @@ def get_diff(n: int) -> dict:
     cached = DIFF_CACHE / f"{sha}.diff"
     if cached.exists():
         return {"diff": cached.read_text(), "source": "cache"}
-    res = run(["gh", "pr", "diff", str(n), "--repo", REPO], timeout=120)
+    res = run(["gh", "pr", "diff", str(n), "--repo", settings.repo()], timeout=120)
     if res.returncode == 0 and res.stdout.strip():
         cached.write_text(res.stdout)
         return {"diff": res.stdout, "source": "gh"}

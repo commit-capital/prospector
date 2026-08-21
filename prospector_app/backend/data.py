@@ -87,6 +87,29 @@ def store() -> Store:
     return _store
 
 
+def reset() -> None:
+    """Rebuild the store against the current configuration and drop the
+    snapshot, so the next read loads from wherever the store now points.
+
+    Takes `_check_lock` for the same reason `refresh` does: the background
+    freshener must not be mid-publish into the dicts this empties."""
+    global _store, _pr_watermark, _clu_watermark, _loaded, _last_check, \
+        _generation, _author_baseline, _author_table, _author_issue_generation
+    with _check_lock:
+        _store = Store()
+        _prs.clear()
+        _clusters.clear()
+        _pr_to_clusters_idx.clear()
+        _pr_watermark = None
+        _clu_watermark = None
+        _loaded = False
+        _last_check = 0.0
+        _generation += 1
+        _author_baseline = None
+        _author_table = None
+        _author_issue_generation = None
+
+
 def _index_pr_to_clusters(clusters: dict[int, Cluster]) -> dict[int, list[int]]:
     """Map each PR to the sorted list of clusters it belongs to. A PR may straddle
     several clusters (#196)."""

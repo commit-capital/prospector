@@ -2,7 +2,7 @@
 code search. Driven end-to-end as a subprocess (how the sandboxed agent invokes
 it) against a fake `gh` on PATH that echoes its argv, so the tests assert the
 security-relevant invariant — the HTTP method is hardcoded to GET and the endpoint
-is scoped to settings.REPO — without touching the network."""
+is scoped to settings.repo() — without touching the network."""
 import subprocess
 import sys
 from pathlib import Path

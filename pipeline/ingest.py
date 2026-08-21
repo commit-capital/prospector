@@ -31,13 +31,13 @@ import subprocess
 import sys
 from typing import TYPE_CHECKING, TypedDict
 
+from pipeline import settings
 from pipeline import diffpaths
 from pipeline import greptile
 from pipeline import live_prs
 from pipeline import model
 from pipeline import review_policy
 from pipeline.gh import fetch_pr, gh_json, operator_env
-from pipeline.settings import REPO
 from pipeline.store import Store
 from pipeline.storekit import now as _now
 
@@ -292,8 +292,8 @@ def gh_ci_status(sha: str) -> str | None:
     caller then keeps the stored value. Best-effort: a gh hiccup never breaks a
     refresh. Combines the check-runs API (filter=latest drops superseded re-runs)
     and the legacy commit-status API."""
-    runs = gh_json(f"repos/{REPO}/commits/{sha}/check-runs?per_page=100&filter=latest")
-    status = gh_json(f"repos/{REPO}/commits/{sha}/status")
+    runs = gh_json(f"repos/{settings.repo()}/commits/{sha}/check-runs?per_page=100&filter=latest")
+    status = gh_json(f"repos/{settings.repo()}/commits/{sha}/status")
     if runs is None and status is None:
         return None  # couldn't reach GitHub at all — keep the stored verdict
     check_runs = (runs or {}).get("check_runs", [])
@@ -310,7 +310,7 @@ def fetch_open_prs(max_n: int | None = None) -> list[dict]:
     page = 1
     while True:
         res = subprocess.run(
-            ["gh", "api", f"repos/{REPO}/pulls?state=open&per_page=100&page={page}"],
+            ["gh", "api", f"repos/{settings.repo()}/pulls?state=open&per_page=100&page={page}"],
             capture_output=True, text=True, timeout=120, env=operator_env())
         if res.returncode != 0:
             raise RuntimeError(f"gh api failed: {res.stderr.strip()[:300]}")

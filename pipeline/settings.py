@@ -3,8 +3,12 @@
 Every pipeline and app module reads these from here instead of re-declaring a
 literal, so pointing the whole system at a different repository is a matter of
 setting a few environment variables rather than editing a dozen files. No identity
-is baked into the source: TRIAGE_REPO and TRIAGE_BOT_LOGIN are required (a clear
-error if unset). Set them all in .env — see .env.example.
+is baked into the source. Set them in .env — see .env.example.
+
+Each value is read from the environment on the call, so configuration written to
+.env while the app runs takes effect without a restart. `configured()` answers
+whether this checkout has a deployment target at all; a checkout without one
+reads empty everywhere and its API refuses to serve.
 """
 from __future__ import annotations
 
@@ -36,29 +40,46 @@ def load_env_file(path: Path = REPO_ROOT / ".env") -> bool:
 
 load_env_file()
 
-# "owner/name" of the upstream repository being triaged. Read-only fetches and
-# every upstream write target this repo. Required — there is no default, so the
-# system can never silently act against the wrong repo.
-_repo = os.environ.get("TRIAGE_REPO")
-if not _repo or "/" not in _repo:
-    raise SystemExit(
-        "TRIAGE_REPO is required and must be 'owner/name' (e.g. octocat/hello-world). "
-        "Set it in .env — see .env.example."
-    )
-REPO: str = _repo
-REPO_OWNER, REPO_NAME = REPO.split("/", 1)
+def configured() -> bool:
+    """Whether this checkout has a deployment target. The ONE predicate the
+    unconfigured gate and the onboarding wizard both read."""
+    return "/" in os.environ.get("TRIAGE_REPO", "")
 
-# GitHub web URL of the upstream repository — the base every PR/issue/blob link
-# is built from.
-REPO_URL: str = f"https://github.com/{REPO}"
 
-# Human-facing product name for the app (tab title, headings). Defaults to
-# the repository's short name.
-DISPLAY_NAME: str = os.environ.get("TRIAGE_DISPLAY_NAME") or REPO_NAME
+def repo() -> str:
+    """"owner/name" of the upstream repository being triaged. Read-only fetches
+    and every upstream write target it. Empty until the deployment is
+    configured, which makes those calls fail rather than reach another repo."""
+    return os.environ.get("TRIAGE_REPO", "")
 
-# "owner/name" the app's 🐞 Feedback button files issues into. Empty disables
-# the button — feedback about this tool must never land on the triaged upstream.
-FEEDBACK_REPO: str = os.environ.get("PROSPECTOR_FEEDBACK_REPO", "")
+
+def repo_owner() -> str:
+    target = repo()
+    return target.split("/", 1)[0] if "/" in target else ""
+
+
+def repo_name() -> str:
+    target = repo()
+    return target.split("/", 1)[1] if "/" in target else ""
+
+
+def repo_url() -> str:
+    """GitHub web URL of the upstream repository — the base every PR/issue/blob
+    link is built from."""
+    return f"https://github.com/{repo()}"
+
+
+def display_name() -> str:
+    """Human-facing product name for the app (tab title, headings). Defaults to
+    the repository's short name."""
+    return os.environ.get("TRIAGE_DISPLAY_NAME") or repo_name()
+
+
+def feedback_repo() -> str:
+    """"owner/name" the app's 🐞 Feedback button files issues into. Empty
+    disables the button — feedback about this tool must never land on the
+    triaged upstream."""
+    return os.environ.get("PROSPECTOR_FEEDBACK_REPO", "")
 
 
 @lru_cache(maxsize=1)
@@ -67,13 +88,13 @@ def default_branch() -> str:
     set; otherwise discovered once from GitHub via `gh` and cached for the
     process. Falls back to "main" when discovery is unavailable (offline, no gh
     auth)."""
-    configured = os.environ.get("TRIAGE_DEFAULT_BRANCH")
-    if configured:
-        return configured
+    pinned = os.environ.get("TRIAGE_DEFAULT_BRANCH")
+    if pinned:
+        return pinned
     from pipeline.gh import operator_env  # deferred: gh.py imports REPO from here
     try:
         r = subprocess.run(
-            ["gh", "api", f"repos/{REPO}", "--jq", ".default_branch"],
+            ["gh", "api", f"repos/{repo()}", "--jq", ".default_branch"],
             capture_output=True, text=True, timeout=15, env=operator_env(),
         )
     except (OSError, subprocess.SubprocessError):
@@ -81,21 +102,18 @@ def default_branch() -> str:
     out = r.stdout.strip()
     return out if r.returncode == 0 and out else "main"
 
-# Login of the GitHub App identity the app executes upstream writes as.
-# Required — writes must be attributed to a known identity.
-_bot_login = os.environ.get("TRIAGE_BOT_LOGIN")
-if not _bot_login:
-    raise SystemExit(
-        "TRIAGE_BOT_LOGIN is required (the GitHub App login that upstream writes "
-        "post as). Set it in .env — see .env.example."
-    )
-BOT_LOGIN: str = _bot_login
+def bot_login() -> str:
+    """Login of the GitHub App identity the app executes upstream writes as.
+    Empty when no App is configured; a write attributed to nobody is refused."""
+    return os.environ.get("TRIAGE_BOT_LOGIN", "")
 
-# SQLAlchemy URL for the backing store. Unset → each Store falls back to a local
-# SQLite file under its root (dev, CI, OSS-solo). Set it to a shared PostgreSQL
-# database (e.g. postgresql+psycopg://…) to point the whole team at one store.
-# SQLite and PostgreSQL are the supported store dialects.
-STORE_URL: str | None = os.environ.get("TRIAGE_STORE_URL") or None
+
+def store_url() -> str | None:
+    """SQLAlchemy URL for the backing store. None → each Store falls back to a
+    local SQLite file under its root (dev, CI, OSS-solo). Set it to a shared
+    PostgreSQL database (e.g. postgresql+psycopg://…) to point the whole team at
+    one store. SQLite and PostgreSQL are the supported store dialects."""
+    return os.environ.get("TRIAGE_STORE_URL") or None
 
 # When "1", a checkout whose schema.STORE_SCHEMA_VERSION is behind the store's
 # stamp may still write — the guard's refusal downgrades to a stderr warning.
@@ -112,10 +130,11 @@ STORE_ALLOW_FOREIGN_REPO: bool = os.environ.get("TRIAGE_STORE_ALLOW_FOREIGN_REPO
 # per-repo directory so two triaged repositories on one machine never share
 # base trees. Must live under $HOME on macOS+Colima: Colima's virtiofs shares
 # only $HOME, so a path outside it is invisible to the VM that runs Docker.
-_verify_scratch = os.environ.get("TRIAGE_VERIFY_SCRATCH", "")
-VERIFY_SCRATCH: Path = (
-    Path(_verify_scratch).expanduser() if _verify_scratch
-    else Path.home() / ".pr-triage-verify" / f"{REPO_OWNER}-{REPO_NAME}")
+def verify_scratch() -> Path:
+    scratch = os.environ.get("TRIAGE_VERIFY_SCRATCH", "")
+    if scratch:
+        return Path(scratch).expanduser()
+    return Path.home() / ".pr-triage-verify" / f"{repo_owner()}-{repo_name()}"
 
 # Comma-separated host:port entries the sandbox boot probe must FAIL to reach
 # (this machine's sensitive host services, e.g. a credentialed local server).
@@ -126,7 +145,8 @@ VERIFY_PROBE_DENY: str = os.environ.get("TRIAGE_VERIFY_PROBE_DENY", "")
 # repository's policy vocabulary (pipeline/profile.py owns the schema and
 # validation). Relative paths resolve against the repo root. Empty selects the
 # built-in generic default profile.
-PROFILE_PATH: str = os.environ.get("TRIAGE_PROFILE", "")
+def profile_path() -> str:
+    return os.environ.get("TRIAGE_PROFILE", "")
 
 
 def parse_review_provider(raw: str | None) -> str:
@@ -143,15 +163,18 @@ def parse_review_provider(raw: str | None) -> str:
     return provider
 
 
-# External code-review provider whose verdict gates a clean merge (see
-# pipeline/review_policy.py for the profiles). Defaults to "none" so a fresh
-# checkout runs without assuming any provider.
-REVIEW_PROVIDER: str = parse_review_provider(os.environ.get("TRIAGE_REVIEW_PROVIDER"))
+def review_provider() -> str:
+    """External code-review provider whose verdict gates a clean merge (see
+    pipeline/review_policy.py for the profiles). Defaults to "none" so a fresh
+    checkout runs without assuming any provider."""
+    return parse_review_provider(os.environ.get("TRIAGE_REVIEW_PROVIDER"))
 
-# Optional override of the review provider's pass threshold. Unset → the
-# provider's built-in bar (greptile → 5).
-_review_threshold = os.environ.get("TRIAGE_REVIEW_THRESHOLD")
-REVIEW_THRESHOLD: int | None = int(_review_threshold) if _review_threshold else None
+
+def review_threshold() -> int | None:
+    """Override of the review provider's pass threshold. None → the provider's
+    built-in bar (greptile → 5)."""
+    raw = os.environ.get("TRIAGE_REVIEW_THRESHOLD")
+    return int(raw) if raw else None
 
 # The autofix actions a fix request may carry. `update` merges the base branch
 # into the PR head, `rebase` rebases onto current base behind a pinned lease,

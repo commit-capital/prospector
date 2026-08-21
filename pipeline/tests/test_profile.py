@@ -51,37 +51,37 @@ VALID = {
 
 class TestActive:
     def test_unset_selects_generic_default(self, monkeypatch):
-        monkeypatch.setattr(settings, "PROFILE_PATH", "")
+        monkeypatch.setenv("TRIAGE_PROFILE", "")
         assert profile.active() is profile.GENERIC
         assert profile.active().subsystem_names() == ["other"]
 
     def test_path_selects_parsed_file(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(settings, "PROFILE_PATH", write(tmp_path, VALID))
+        monkeypatch.setenv("TRIAGE_PROFILE", str(write(tmp_path, VALID)))
         assert profile.active().subsystem_names() == ["engine", "brakes", "other"]
         assert profile.active().subsystems[0].match_terms == ("fuel pump", "crankshaft")
 
     def test_same_path_returns_cached_object(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(settings, "PROFILE_PATH", write(tmp_path, VALID))
+        monkeypatch.setenv("TRIAGE_PROFILE", str(write(tmp_path, VALID)))
         assert profile.active() is profile.active()
 
     def test_relative_path_resolves_against_repo_root(self, monkeypatch):
-        monkeypatch.setattr(settings, "PROFILE_PATH", "no-such-profile.json")
+        monkeypatch.setenv("TRIAGE_PROFILE", "no-such-profile.json")
         with pytest.raises(SystemExit) as e:
             profile.active()
         assert str(settings.REPO_ROOT) in str(e.value)
 
     def test_missing_file_is_a_hard_error(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(settings, "PROFILE_PATH", str(tmp_path / "gone.json"))
+        monkeypatch.setenv("TRIAGE_PROFILE", str(str(tmp_path / "gone.json")))
         with pytest.raises(SystemExit, match="file not found"):
             profile.active()
 
     def test_invalid_json_is_a_hard_error(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(settings, "PROFILE_PATH", write(tmp_path, "{nope"))
+        monkeypatch.setenv("TRIAGE_PROFILE", str(write(tmp_path, "{nope")))
         with pytest.raises(SystemExit, match="invalid JSON"):
             profile.active()
 
     def test_unreadable_file_is_a_hard_error(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(settings, "PROFILE_PATH", str(tmp_path))  # a directory
+        monkeypatch.setenv("TRIAGE_PROFILE", str(str(tmp_path)))  # a directory
         with pytest.raises(SystemExit, match="unreadable"):
             profile.active()
 
@@ -173,7 +173,7 @@ class TestParse:
 
 class TestSections:
     def test_risk_tiers_parse(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(settings, "PROFILE_PATH", write(tmp_path, VALID))
+        monkeypatch.setenv("TRIAGE_PROFILE", str(write(tmp_path, VALID)))
         rt = profile.active().risk_tiers
         assert rt.tier0_globs == ("core/**", "package.json")
         assert rt.tier1_globs == ("db/schema/**",)
@@ -182,7 +182,7 @@ class TestSections:
         assert rt.default_tier == 2
 
     def test_codeowners_parse(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(settings, "PROFILE_PATH", write(tmp_path, VALID))
+        monkeypatch.setenv("TRIAGE_PROFILE", str(write(tmp_path, VALID)))
         co = profile.active().codeowners
         assert co.gated_globs == (".github/**", "package.json")
         assert co.owners == ("@owner-a", "@owner-b")
@@ -207,7 +207,7 @@ class TestSections:
         assert p.codeowners == profile.GENERIC.codeowners
 
     def test_pr3_sections_parse(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(settings, "PROFILE_PATH", write(tmp_path, VALID))
+        monkeypatch.setenv("TRIAGE_PROFILE", str(write(tmp_path, VALID)))
         p = profile.active()
         assert p.trusted_authors == ("good-dev",)
         assert p.automation_bots == ("dependabot[bot]", "robo-bump[bot]")
@@ -240,7 +240,7 @@ class TestSections:
         assert p.codeowners.owners != ()
 
     def test_harness_parses(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(settings, "PROFILE_PATH", write(tmp_path, VALID))
+        monkeypatch.setenv("TRIAGE_PROFILE", str(write(tmp_path, VALID)))
         h = profile.active().harness
         assert h.pr_template_required == ("Summary",)
         assert h.pr_template_recommended == ("Testing",)

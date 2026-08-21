@@ -44,7 +44,7 @@ Rules:
 - root_problem: describe the shared problem concretely (not a category label).
 - confidence: high = same primary mechanism/identifiers; medium = same primary problem, different mechanism; low = plausible but summary-level only.
 
-Return ONLY a JSON object (no prose): {{"clusters": [{{"root_problem": ..., "prs": [...], "confidence": ...}}]}}. Output it as a ```json fenced block.""".replace("__REPO__", settings.REPO)
+Return ONLY a JSON object (no prose): {{"clusters": [{{"root_problem": ..., "prs": [...], "confidence": ...}}]}}. Output it as a ```json fenced block.""".replace("__REPO__", settings.repo())
 
 
 def _say(msg: str) -> None:

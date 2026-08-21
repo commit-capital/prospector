@@ -1002,6 +1002,7 @@ export interface FeedbackTarget {
  *  title, and repo-naming copy derive from this (backend /api/meta, cached once
  *  at bootstrap by RepoMetaProvider). */
 export interface RepoMeta {
+  configured: boolean;
   repo: string;
   owner: string;
   name: string;
@@ -1049,19 +1050,71 @@ export interface SetupReadiness {
   autofix_ready: boolean;
 }
 
-/** The five worker lane switches, the only .env keys the app may write. */
+/** The five worker lane switches, the only .env keys the lane writer may touch. */
 export type WorkerFlags = Record<string, string>;
+
+/** Where this checkout stands on the setup ladder. */
+export interface OnboardingState {
+  configured: boolean;
+  repo: string;
+  display_name: string;
+  bot_login: string;
+  writes_ready: boolean;
+  worker_ready: boolean;
+  counts: { prs?: number; clusters?: number };
+}
+
+/** One thing `probe` looked at. `problem` is a category, never raw error text. */
+export interface ProbeFinding {
+  ok: boolean;
+  problem?: string;
+  prs?: number;
+  clusters?: number;
+}
+
+export interface ProbeResult {
+  store?: ProbeFinding;
+  repo?: ProbeFinding;
+  key_file?: ProbeFinding;
+}
+
+/** One step of setup. `bundle` supplies `env` and `profile` in their place. */
+export interface OnboardingApplyBody {
+  step: "connect" | "writes" | "worker";
+  env?: Record<string, string>;
+  profile?: Record<string, unknown> | null;
+  bundle?: string;
+}
 
 export const api = {
   setupReadiness: () =>
     get<{ readiness: SetupReadiness; flags: WorkerFlags }>("/api/setup/readiness"),
-  setupShare: async (includeStore: boolean) => {
-    const r = await fetch("/api/setup/share", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ include_store: includeStore }),
-    });
+  setupShare: async () => {
+    const r = await fetch("/api/setup/share", { method: "POST" });
     if (!r.ok) throw new Error(`/api/setup/share → ${r.status}`);
-    return r.json() as Promise<{ snippet: string }>;
+    return r.json() as Promise<{ bundle: string }>;
+  },
+  onboardingState: () => get<OnboardingState>("/api/onboarding/state"),
+  onboardingProbe: async (body: {
+    store_url?: string; repo?: string; key_file?: string;
+  }) => {
+    const r = await fetch("/api/onboarding/probe", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error(`/api/onboarding/probe → ${r.status}`);
+    return r.json() as Promise<ProbeResult>;
+  },
+  onboardingApply: async (body: OnboardingApplyBody) => {
+    const r = await fetch("/api/onboarding/apply", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      const problem = await r.json().catch(() => ({ detail: `${r.status}` }));
+      throw new Error(problem.detail ?? `${r.status}`);
+    }
+    return r.json() as Promise<OnboardingState>;
   },
   setSetupFlags: async (flags: WorkerFlags) => {
     const r = await fetch("/api/setup/flags", {

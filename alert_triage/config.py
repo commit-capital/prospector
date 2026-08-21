@@ -13,13 +13,22 @@ import os
 import subprocess
 from pathlib import Path
 
-from pipeline.settings import REPO as REPO
-from pipeline.settings import REPO_NAME as REPO_NAME
-from pipeline.settings import REPO_OWNER as REPO_OWNER
+from pipeline import settings
 from pipeline.settings import REPO_ROOT
 
 ROOT = Path(__file__).resolve().parent
 GET_TOKEN = REPO_ROOT / "pipeline" / "get-bot-token.sh"
+
+def repo() -> str:
+    return settings.repo()
+
+
+def repo_owner() -> str:
+    return settings.repo_owner()
+
+
+def repo_name() -> str:
+    return settings.repo_name()
 
 
 class SourceUnavailable(RuntimeError):

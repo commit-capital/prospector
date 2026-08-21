@@ -24,6 +24,7 @@ from pathlib import Path
 
 from issue_triage import issue_fixed_driver
 from issue_triage.issue_store import IssueStore
+from pipeline import settings
 from pipeline import headless_agent
 from pipeline.settings import REPO_ROOT
 
@@ -56,6 +57,7 @@ def run_batch_agent(entries: list[dict]) -> list[dict]:
         f.write(json.dumps(entries, indent=1))
         bundle_path = f.name
     prompt = (issue_fixed_driver.FIND_FIXED_PROMPT.replace("__BUNDLE_PATH__", bundle_path)
+              .replace("__REPO__", settings.repo())
               + issue_fixed_driver.FIND_FIXED_FENCED_TAIL)
     text = headless_agent.run_agent(prompt, allow_gh=True, cwd=str(REPO_ROOT),
                                     on_event=on_event)

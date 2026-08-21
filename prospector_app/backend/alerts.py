@@ -177,7 +177,7 @@ def sources_available() -> dict[str, bool]:
                 continue
             try:
                 alert_config.gh_alert_read(
-                    f"repos/{alert_config.REPO}/{source}/alerts", token,
+                    f"repos/{alert_config.repo()}/{source}/alerts", token,
                     {"per_page": "1"}, source=source)
                 probed[source] = True
             except Exception:
