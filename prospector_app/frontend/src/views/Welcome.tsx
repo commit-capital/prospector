@@ -120,10 +120,33 @@ function BackLink({ onBack }: { onBack: () => void }) {
   );
 }
 
+/** What a pasted bundle carries, read from its JSON so the page can say so
+ *  before anything is written; null while the text is not a bundle yet. */
+function describeBundle(text: string): { repo: string; store: boolean; profile: boolean; bot: string; key: boolean } | null {
+  try {
+    const doc: unknown = JSON.parse(text);
+    if (typeof doc !== "object" || doc === null || !("env" in doc)) return null;
+    const env = (doc as { env: unknown }).env;
+    if (typeof env !== "object" || env === null) return null;
+    const e = env as Record<string, unknown>;
+    const pem = (doc as { bot_key_pem?: unknown }).bot_key_pem;
+    return {
+      repo: typeof e.TRIAGE_REPO === "string" ? e.TRIAGE_REPO : "",
+      store: typeof e.TRIAGE_STORE_URL === "string" && e.TRIAGE_STORE_URL !== "",
+      profile: "profile" in doc && (doc as { profile: unknown }).profile != null,
+      bot: typeof e.TRIAGE_BOT_LOGIN === "string" ? e.TRIAGE_BOT_LOGIN : "",
+      key: typeof pem === "string" && pem.trim() !== "",
+    };
+  } catch {
+    return null;
+  }
+}
+
 function JoinBranch({ onDone, onBack }: { onDone: () => void; onBack: () => void }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  const carries = describeBundle(text);
 
   const submit = async () => {
     setBusy(true);
@@ -149,6 +172,18 @@ function JoinBranch({ onDone, onBack }: { onDone: () => void; onBack: () => void
       <textarea className="welcome-paste" value={text} rows={10}
         placeholder={'{\n  "version": 1,\n  "env": { "TRIAGE_REPO": "…" }\n}'}
         onChange={(e) => setText(e.target.value)} />
+      {carries && (
+        <p className="muted small">
+          This bundle carries: {carries.repo ? <><strong>{carries.repo}</strong></> : "a repository"}
+          {carries.store ? " · a shared store" : ""}
+          {carries.profile ? " · its repository profile" : ""}
+          {carries.bot ? <> · the bot identity <code>{carries.bot}</code></> : ""}
+          {carries.key && (
+            <> · <strong>🔑 the bot's private key</strong> — approved actions will
+              execute for real from this machine</>
+          )}
+        </p>
+      )}
       {problem && <p className="chip chip-red sm">{problem}</p>}
       <div className="welcome-actions">
         <button disabled={busy || text.trim() === ""} onClick={() => void submit()}>

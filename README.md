@@ -19,8 +19,8 @@ npx github:commit-capital/prospector
 
 One command: it installs [`uv`](https://docs.astral.sh/uv/) if missing, clones
 the repository, sets up the pinned Python environment and the frontend, and
-starts the app. You need macOS or Linux with `git` and Node ≥ 24 — everything
-else is fetched for you. (Sign in the [`gh` CLI](https://cli.github.com/)
+starts the app in your browser. You need macOS or Linux with `git` and Node
+≥ 24 — everything else is fetched for you. (Sign in the [`gh` CLI](https://cli.github.com/)
 before your first ingest; Docker is needed only for sandboxed fix
 verification.)
 

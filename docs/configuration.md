@@ -84,3 +84,13 @@ Only machines that should execute live writes get the key; the app id and
 login are not secrets. Verify the wiring with `bash pipeline/get-bot-token.sh`
 (needs `node` and `jq`) — it prints a one-hour installation token on success
 and a specific error naming the missing piece otherwise.
+
+**Sharing the identity with a teammate.** The 🛠️ Setup tab's "Share this
+deployment" bundle always carries the bot login and app id, so a joiner's
+writes are attributed the same way. Ticking *Also let the teammate act as the
+bot* adds the private key itself: the joiner's app files it owner-only at
+`~/.config/prospector/<login>/private-key.pem`, outside the checkout, and sets
+`TRIAGE_BOT_KEY_FILE` to that path, so their machine executes approved writes
+too. The bundle already carries the store password, so it is a credential
+either way — send it through a password manager or a direct message, never a
+channel with history.

@@ -155,6 +155,13 @@ class OnboardingProbe(BaseModel):
     agent: bool = False
 
 
+class SetupShare(BaseModel):
+    """What to put in the deployment bundle beyond the deployment itself.
+    `include_key` adds the bot's private key, so the joiner's machine executes
+    approved writes."""
+    include_key: bool = False
+
+
 class OnboardingApply(BaseModel):
     """One step of setup. `bundle` is a teammate's pasted deployment bundle;
     when it is present it supplies `env` and `profile` in their place."""
