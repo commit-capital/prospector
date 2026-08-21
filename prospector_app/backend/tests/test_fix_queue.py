@@ -157,6 +157,19 @@ def test_approve_refuses_when_the_head_moved(store):
         fix_queue.approve_pr(1)
 
 
+def test_queue_entries_carry_running_progress(store):
+    # The queue table's answer to "is it doing anything?": a claimed request's
+    # step, start time, and the machine holding it all reach the row.
+    fix_queue.queue_pr(1, "update")
+    store.claim_fix_request(1, host="mac-studio")
+    data.refresh()
+    [entry] = fix_queue.queue_entries()
+    assert entry["status"] == "running"
+    assert entry["step"] == "claimed"
+    assert entry["host"] == "mac-studio"
+    assert entry["started_at"]
+
+
 # --- runner status --------------------------------------------------------------
 
 def test_runner_status_reports_push_identity(store, push_key):

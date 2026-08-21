@@ -75,6 +75,28 @@ a:hover { text-decoration: underline; }
 .topbar-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
 .identity-picker { display: flex; align-items: center; gap: 6px; }
 .identity-picker select { padding: 3px 6px; font-size: 12px; }
+.work-status { position: relative; }
+.work-status-label { display: inline-flex; align-items: center; gap: 5px;
+  border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px;
+  font-size: 11px; color: var(--muted); white-space: nowrap; cursor: default; }
+.work-status-label.busy { color: var(--accent); border-color: var(--accent); }
+.work-status-label.stuck { color: var(--yellow); border-color: var(--yellow); }
+.work-status-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor;
+  animation: work-pulse 1.6s ease-in-out infinite; }
+@keyframes work-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+.work-status-flyout { display: none; position: absolute; right: 0; top: calc(100% + 6px);
+  z-index: 900; min-width: 300px; max-width: 420px; padding: 8px 10px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .18); font-size: 12px; }
+.work-status:hover .work-status-flyout { display: block; }
+.work-status-row { display: flex; justify-content: space-between; gap: 14px;
+  padding: 3px 0; white-space: nowrap; }
+.work-status-row + .work-status-row { border-top: 1px solid var(--border); }
+.work-status-ok { color: var(--green); }
+.work-status-stuck { color: var(--yellow); }
+.queue-warn { color: var(--yellow); }
+.queue-running { animation: work-pulse-soft 2s ease-in-out infinite; }
+@keyframes work-pulse-soft { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
 .live-status { border: 1px solid var(--border); background: transparent; color: var(--muted); border-radius: 6px; padding: 3px 8px; font-size: 11px; cursor: pointer; white-space: nowrap; }
 .live-status:hover:not(:disabled) { color: var(--text); border-color: var(--muted); }
 .live-status:disabled { opacity: .6; cursor: default; }

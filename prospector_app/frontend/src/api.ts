@@ -539,6 +539,16 @@ export interface VerifyRunner {
   host?: string | null;
   current_pr?: number | null;
   last_beat?: string | null;
+  hosts: RunnerHost[];
+}
+
+/** One machine's worker heartbeat, from either lane's registry. */
+export interface RunnerHost {
+  host?: string | null;
+  online: boolean;
+  last_beat?: string | null;
+  current_pr?: number | null;
+  autohunt: boolean;
 }
 
 /** An autofix action the push bot may run on a contributor's PR head branch.
@@ -615,6 +625,7 @@ export interface FixRunner {
   host?: string | null;
   current_pr?: number | null;
   last_beat?: string | null;
+  hosts: RunnerHost[];
 }
 
 /** One row of the autofix queue. `resolvable` is the claim a parked row makes:
@@ -628,6 +639,9 @@ export interface FixQueueEntry {
   status: FixRequest["status"];
   action: FixRequestAction;
   source?: "operator" | "auto" | null;
+  step?: string | null;
+  started_at?: string | null;
+  host?: string | null;
   queued_at?: string | null;
   base_sha?: string | null;
   resolvable: boolean;
@@ -720,6 +734,43 @@ export interface VerifyQueueEntry {
   step?: string | null;
   queued_at?: string | null;
   started_at?: string | null;
+  host?: string | null;
+}
+
+/** One in-flight run anywhere on the deployment, for the header status label.
+ *  `worker_online` asks whether the claiming host's worker is still beating —
+ *  a claimed run whose worker went quiet is stuck, not slow. */
+export interface WorkActive {
+  lane: "verify" | "fix";
+  pr: number;
+  title?: string | null;
+  action?: string | null;
+  step?: string | null;
+  host?: string | null;
+  started_at?: string | null;
+  source?: string | null;
+  worker_online: boolean;
+}
+
+/** One lane's worker heartbeat on one machine, for the header flyout. */
+export interface WorkWorker {
+  lane: "verify" | "fix";
+  host?: string | null;
+  online: boolean;
+  last_beat?: string | null;
+  current_pr?: number | null;
+  autohunt: boolean;
+}
+
+/** What the system is doing right now, across every machine on this store —
+ *  the header status label's feed. `jobs` is this backend's own Control-tab
+ *  jobs; everything else is deployment-wide via the shared store. */
+export interface WorkStatus {
+  active: WorkActive[];
+  queued: { verify: number; fix: number };
+  awaiting_review: number;
+  workers: WorkWorker[];
+  jobs: { running: number; labels: string[] };
 }
 
 /** The sandbox-verification queue: PRs currently in flight, plus verify-only
@@ -1461,6 +1512,7 @@ export const api = {
   },
   fixRunner: () => get<FixRunner>("/api/fix/runner"),
   fixQueue: () => get<FixQueue>("/api/fix/queue"),
+  workStatus: () => get<WorkStatus>("/api/status/now"),
   autohunt: (days = 7, allTime = false, limit = 100) => {
     const qs = new URLSearchParams({ days: String(days), limit: String(limit) });
     if (allTime) qs.set("all_time", "true");

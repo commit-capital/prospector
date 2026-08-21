@@ -403,6 +403,7 @@ def run_one(n: int) -> None:
         patch = _probe(n, claimed, action)
         if patch is None:
             return  # _probe wrote the terminal status
+        _running_step(n, claimed, "compile preflight", action=action)
         pf = _preflight(n, patch)
         if pf is not None:
             pf_ok, pf_why = gates.compile_preflight_gate(pf)
@@ -432,12 +433,14 @@ def _probe(n: int, claimed: dict, action: str) -> str | None:
     if action == "update":
         # A base merge is one atomic resubmit command, so its probe is the same
         # command stopped before the push rather than a prepare/diff pair.
+        _running_step(n, claimed, "merging base in", action=action)
         r = _resubmit(n, "update", "--probe")
         if r.returncode != 0:
             _settle(n, claimed, r.returncode, (r.stderr or r.stdout).strip())
             return None
         patch = (r.stdout or "").strip()
     else:
+        _running_step(n, claimed, "rebasing onto base", action=action)
         prepared = _resubmit(n, "prepare", *(["--rebase"] if action == "rebase" else []))
         if prepared.returncode != 0:
             _settle(n, claimed, prepared.returncode,

@@ -139,6 +139,64 @@ def test_a_parked_mechanical_request_keeps_no_worktree(store, monkeypatch):
     assert any(a[0] == "abort" for a in probe.calls), "the prepared tree is discarded"
 
 
+# --- a mechanical run reports where it is ---------------------------------------
+
+class _StepReader(_Probe):
+    """A probe that also records the stored fix_request step at each call, so a
+    test can assert the step was written BEFORE the slow command ran."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.steps: dict[tuple, str | None] = {}
+
+    def __call__(self, n, *args, stdin: str | None = None):
+        self.steps[args] = (data.store().load_pr(1).fix_request or {}).get("step")
+        return super().__call__(n, *args, stdin=stdin)
+
+
+def test_an_update_reports_its_steps_while_it_runs(store, monkeypatch):
+    # The merge probe and the compile preflight are the minutes-long halves of a
+    # mechanical update; each announces itself so the queue row never sits on
+    # "claimed" while the worker is busy.
+    fix_queue.queue_pr(1, "update")
+    probe = _StepReader()
+    monkeypatch.setattr(fix_worker, "_resubmit", probe)
+    seen_at_preflight: list[str | None] = []
+    monkeypatch.setattr(
+        fix_worker, "_preflight",
+        lambda n, patch: (seen_at_preflight.append(
+            (data.store().load_pr(1).fix_request or {}).get("step")) or {"exit": 0}))
+
+    fix_worker.run_one(1)
+
+    assert probe.steps[("update", "--probe")] == "merging base in"
+    assert seen_at_preflight == ["compile preflight"]
+    assert store.load_pr(1).fix_request["status"] == "awaiting-review"
+
+
+def test_a_rebase_reports_its_steps_while_it_runs(store, monkeypatch):
+    fix_queue.queue_pr(1, "rebase")
+    probe = _StepReader(overrides={"state": (0, '{"phase": "ready", "conflicts": []}')})
+    monkeypatch.setattr(fix_worker, "_resubmit", probe)
+
+    fix_worker.run_one(1)
+
+    assert probe.steps[("prepare", "--rebase")] == "rebasing onto base"
+    assert store.load_pr(1).fix_request["status"] == "awaiting-review"
+
+
+def test_a_step_write_keeps_the_requests_action(store, monkeypatch):
+    # The step writer replaces the whole fix_request section, so the action has
+    # to be carried through it — a row must never flip to another action's name
+    # mid-run.
+    fix_queue.queue_pr(1, "update")
+    monkeypatch.setattr(fix_worker, "_resubmit", _Probe())
+
+    fix_worker.run_one(1)
+
+    assert store.load_pr(1).fix_request["action"] == "update"
+
+
 # --- approving re-proves before it pushes ---------------------------------------
 
 PATCH = "diff --git a/a.ts b/a.ts\n@@ -1 +1 @@\n-old\n+new\n"

@@ -129,6 +129,8 @@ def queue_entries() -> list[dict]:
         out.append({
             "pr": n, "title": rec.title, "status": status,
             "action": req.get("action"), "source": req.get("source"),
+            "step": req.get("step"), "started_at": req.get("started_at"),
+            "host": req.get("host"),
             "queued_at": req.get("queued_at"), "base_sha": req.get("base_sha"),
             "resolvable": status == "awaiting-review" and (pf is None or pf.get("exit") == 0),
         })
@@ -136,7 +138,7 @@ def queue_entries() -> list[dict]:
     return out
 
 
-def _beat_online(last: object) -> bool:
+def beat_online(last: object) -> bool:
     """Whether a heartbeat stamp is within STALE_BEAT_SECONDS."""
     if not isinstance(last, str):
         return False
@@ -169,7 +171,7 @@ def runner_status() -> dict:
     push identity exists."""
     from prospector_app.backend import fix_worker
     records = worker_records(data.store().load_fix_worker())
-    hosts = [{"host": r.get("host"), "online": _beat_online(r.get("last_beat")),
+    hosts = [{"host": r.get("host"), "online": beat_online(r.get("last_beat")),
               "last_beat": r.get("last_beat"), "current_pr": r.get("current_pr"),
               "autohunt": bool(r.get("autohunt"))} for r in records]
     online = any(h["online"] for h in hosts)

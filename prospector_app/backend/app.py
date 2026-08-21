@@ -53,6 +53,7 @@ from prospector_app.backend import fix_queue
 from prospector_app.backend import fix_worker
 from prospector_app.backend import verify_queue
 from prospector_app.backend import verify_worker
+from prospector_app.backend import work_status
 
 from pipeline import greptile
 from pipeline import settings
@@ -410,6 +411,15 @@ def onboarding_apply(body: models.OnboardingApply):
         raise HTTPException(400, str(e))
     except OSError as e:
         raise HTTPException(500, f"could not write configuration: {e}")
+
+
+@app.get("/api/status/now")
+def status_now():
+    """What the system is doing right now, across every machine on this store —
+    the header status label's feed: active verify/fix runs with their step and
+    host, queued/parked counts, worker liveness, and this backend's running
+    jobs."""
+    return work_status.now()
 
 
 @app.get("/api/setup/readiness")

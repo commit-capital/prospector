@@ -5,9 +5,10 @@ import { RepoMetaProvider, useRepoMeta } from "./RepoMetaContext";
 import { FeedbackButton } from "./components/FeedbackButton";
 import { AgentPaneProvider } from "./components/AgentPane";
 import { isReachable, subscribeHealth, pingHealth } from "./health";
-import { api } from "./api";
+import { api, type WorkStatus } from "./api";
 import { loadWithRecovery } from "./lazyLoad";
 import { timeAgo } from "./timeAgo";
+import { workStatusLabel } from "./workStatusLabel";
 
 const PRFlyout = lazy(() => loadWithRecovery("pr-flyout", async () => ({
   default: (await import("./components/PRFlyout")).PRFlyout,
@@ -259,6 +260,75 @@ function SettingsMenu() {
   );
 }
 
+// "fix #908 · rebase · 4m" — what the system is doing right now, on any machine
+// sharing this store. Hover for per-machine detail; the label alone answers
+// "is anything happening?" without opening the Control tab.
+function WorkStatusBadge() {
+  const [status, setStatus] = useState<WorkStatus | null>(null);
+  const agoPhrase = (iso?: string | null) => {
+    const t = timeAgo(iso);
+    return t === "just now" || t === "—" ? t : `${t} ago`;
+  };
+  useEffect(() => {
+    const load = () => api.workStatus().then(setStatus).catch(() => {});
+    load();
+    const t = setInterval(load, 15_000);
+    return () => clearInterval(t);
+  }, []);
+  if (!status) return null;
+  const busy = status.active.length > 0 || status.jobs.running > 0;
+  const stuck = status.active.some((a) => !a.worker_online);
+  const queuedTotal = status.queued.verify + status.queued.fix;
+  return (
+    <div className="work-status">
+      <span className={`work-status-label${stuck ? " stuck" : busy ? " busy" : ""}`}>
+        {busy && <span className="work-status-dot" aria-hidden="true" />}
+        {workStatusLabel(status)}
+      </span>
+      <div className="work-status-flyout" role="tooltip">
+        {status.active.map((a) => (
+          <div key={`${a.lane}-${a.pr}`} className="work-status-row">
+            <span>{a.lane === "verify" ? "🧪" : "🔧"} {a.lane} <b>#{a.pr}</b>
+              {a.action ? ` · ${a.action}` : ""}{a.step ? ` · ${a.step}` : ""}</span>
+            <span className={a.worker_online ? "muted" : "work-status-stuck"}>
+              {a.host ?? "?"} · {a.worker_online
+                ? `started ${agoPhrase(a.started_at)}`
+                : "worker offline — run is stuck"}
+            </span>
+          </div>
+        ))}
+        {status.jobs.labels.map((label) => (
+          <div key={label} className="work-status-row">
+            <span>⚙️ job · {label}</span>
+            <span className="muted">this machine</span>
+          </div>
+        ))}
+        {(queuedTotal > 0 || status.awaiting_review > 0) && (
+          <div className="work-status-row">
+            <span className="muted">
+              {status.queued.verify > 0 && `${status.queued.verify} queued for verify`}
+              {status.queued.verify > 0 && (status.queued.fix > 0 || status.awaiting_review > 0) && " · "}
+              {status.queued.fix > 0 && `${status.queued.fix} queued for fix`}
+              {status.queued.fix > 0 && status.awaiting_review > 0 && " · "}
+              {status.awaiting_review > 0 && `${status.awaiting_review} fix awaiting review`}
+            </span>
+          </div>
+        )}
+        {status.workers.length === 0 ? (
+          <div className="work-status-row"><span className="muted">no workers have ever connected to this store</span></div>
+        ) : status.workers.map((w) => (
+          <div key={`${w.lane}-${w.host}`} className="work-status-row">
+            <span className="muted">{w.lane} worker · {w.host ?? "?"}</span>
+            <span className={w.online ? "work-status-ok" : "muted"}>
+              {w.online ? "online" : `offline · last beat ${agoPhrase(w.last_beat)}`}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // "live · 2m" — when this machine last pulled live PR state (open/closed/merged)
 // from GitHub. Refreshes on launch (background sweep); click to re-pull now.
 function LiveStatus() {
@@ -411,6 +481,7 @@ export default function App() {
           <Brand />
           <Nav />
           <div className="topbar-right">
+            <WorkStatusBadge />
             <LiveStatus />
             <DryRunBadge />
             <FeedbackButton />
