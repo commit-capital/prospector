@@ -187,7 +187,8 @@ def _park(store, n, *, queued_at, checked_at):
     store.save_pr(rec)
 
 
-def test_worker_retries_waiting_for_base_after_rest(store):
+def test_worker_retries_waiting_for_base_after_rest(store, monkeypatch):
+    monkeypatch.setattr(verify_worker.verify_driver, "daemon_available", lambda: True)
     rested = (datetime.now(timezone.utc)
               - timedelta(seconds=verify_worker.BASE_RETRY_SECONDS + 5)).isoformat()
     _park(store, 1, queued_at="2026-07-16T00:00:00+00:00", checked_at=rested)

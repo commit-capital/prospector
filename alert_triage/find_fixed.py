@@ -75,6 +75,7 @@ def run_batch_agent(entries: list[dict]) -> list[dict]:
         f.write(json.dumps(entries, indent=1))
         bundle_path = f.name
     prompt = (alert_fixed_driver.FIND_FIXED_PROMPT.replace("__BUNDLE_PATH__", bundle_path)
+              .replace("__GH_READ__", headless_agent.GH_READ)
               .replace("__REPO__", settings.repo())
               + alert_fixed_driver.FIND_FIXED_FENCED_TAIL)
     text = headless_agent.run_agent(prompt, allow_gh=True, cwd=str(REPO_ROOT),

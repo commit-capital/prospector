@@ -446,10 +446,13 @@ To read a **file's exact bytes** at a ref, or run a **tree-wide code search** (r
     prospector_app/agent/gh-read file .gitattributes          # raw file on the default branch
     prospector_app/agent/gh-read file Dockerfile --ref <sha>  # …at a branch/tag/SHA
     prospector_app/agent/gh-read search 'eol=lf'              # code search, auto-scoped to the repo
+    prospector_app/agent/gh-read commits server/src/app.ts    # newest commits touching a path
+    prospector_app/agent/gh-read commit <sha>                 # one commit with its patches
 
 `file` prints the raw contents and errors with a 404 if the path doesn't exist (so
-you can tell "no such file" apart from an empty one); `search` prints GitHub's JSON.
-Both are GET-only against `{repo}`. Reach for these to confirm what's
+you can tell "no such file" apart from an empty one); `search` prints GitHub's JSON;
+`commits` prints one `sha date subject` line per commit, newest first; `commit` prints
+the commit's JSON with its patches. All are GET-only against `{repo}`. Reach for these to confirm what's
 actually on the branch — e.g. whether a `.gitattributes` exists — instead of
 inferring it from PR search.
 

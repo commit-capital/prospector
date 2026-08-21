@@ -22,6 +22,7 @@ import subprocess
 import threading
 
 from pipeline.gh import operator_env
+from pipeline.settings import REPO_ROOT
 
 CLAUDE_BIN = shutil.which("claude") or "claude"
 
@@ -35,12 +36,17 @@ def fill(template: str, subs: dict[str, object]) -> str:
     pattern = re.compile("|".join(re.escape(k) for k in subs))
     return pattern.sub(lambda m: str(subs[m.group(0)]), template)
 
-# Read-only gh the analyst may use to find an already-landed upstream fix.
+# Read-only gh the analyst may use to find an already-landed upstream fix. Raw
+# `gh api` is never allowlisted: a later `-X` overrides an earlier one, so no
+# prefix rule can hold it to GET. Raw contents, code search, a path's commit
+# history, and a single commit come through prospector_app/agent/gh-read, which
+# fixes the method and builds the endpoint itself (the chat agent's window too).
+GH_READ = str(REPO_ROOT / "prospector_app" / "agent" / "gh-read")
 _GH_ALLOW = [
     "Bash(gh pr view:*)", "Bash(gh pr diff:*)", "Bash(gh pr list:*)",
     "Bash(gh pr checks:*)", "Bash(gh issue view:*)", "Bash(gh issue list:*)",
     "Bash(gh search prs:*)", "Bash(gh search issues:*)",
-    "Bash(gh api repos/:*)", "Bash(git log:*)",
+    f"Bash({GH_READ}:*)", "Bash(git log:*)",
 ]
 _DISALLOWED = [
     "Task", "Edit", "Write", "NotebookEdit",

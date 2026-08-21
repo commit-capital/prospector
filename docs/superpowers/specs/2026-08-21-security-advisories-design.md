@@ -76,7 +76,9 @@ later write gate would trip over.
 
 One module: fetch, normalize, upsert.
 
-- Lists all four states as the bot via `config.gh_alert_read_all`
+- Lists every state as the bot via `config.gh_alert_read_all`; an advisory that
+  is `closed` and was never published was only ever a draft and is not stored
+  (a stored one that closes that way is removed on the next ingest)
   (`gh api -X GET --paginate --slurp`, which already follows the cursor
   pagination this endpoint uses). A 403/404 raises `SourceUnavailable`, and
   the sweep records the source as unavailable and continues.
