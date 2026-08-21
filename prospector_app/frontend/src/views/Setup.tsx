@@ -190,12 +190,6 @@ function WorkerSection(
         </p>
       )}
 
-      <table className="rows">
-        <tbody>
-          {readiness.checks.map((c) => <CheckRow key={c.key} check={c} />)}
-        </tbody>
-      </table>
-
       {blockers.length > 0 && (
         <section>
           <p>
@@ -210,13 +204,19 @@ function WorkerSection(
           </button>
           <p className="muted small">
             First-time setup takes roughly 10&nbsp;GB of disk and 15–30 minutes,
-            most of it building this machine's sandbox base — the rows above turn
+            most of it building this machine's sandbox base — the rows below turn
             green as it works through them. While the worker is on, its container
             runtime keeps a virtual machine running that reserves 12&nbsp;GB of
             memory. Re-running the command on a ready machine changes nothing.
           </p>
         </section>
       )}
+
+      <table className="rows">
+        <tbody>
+          {readiness.checks.map((c) => <CheckRow key={c.key} check={c} />)}
+        </tbody>
+      </table>
 
       <h3>What work should this machine do?</h3>
       <p className="muted small">
