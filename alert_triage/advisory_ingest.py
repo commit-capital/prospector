@@ -53,7 +53,7 @@ def normalize(raw: dict) -> dict:
 def fetch(token: str) -> list[dict]:
     """Every advisory in every state, normalized. Raises SourceUnavailable on
     a 403/404 (the App lacks the advisory read permission)."""
-    rows = config.gh_alert_read_all(f"repos/{config.REPO}/security-advisories", token,
+    rows = config.gh_alert_read_all(f"repos/{config.repo()}/security-advisories", token,
                                     {"per_page": "100"}, source=SOURCE)
     return [normalize(r) for r in rows]
 

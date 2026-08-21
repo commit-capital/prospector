@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, type SetupCheck, type SetupReadiness, type WorkerFlags } from "../api";
+import { useRepoMeta } from "../RepoMetaContext";
 
 /** How often the readiness rows re-check while the page is open. Fast enough
  *  that rows turn green as setup-worker-machine.sh works through its steps. */
@@ -16,6 +17,11 @@ const SWITCHES: { key: string; label: string; hint: string; needs?: string }[] =
   { key: "TRIAGE_FIX_WORKER", label: "Run autofix", hint: "drain the fix queue", needs: "push_identity" },
   { key: "TRIAGE_FIX_AUTOHUNT", label: "Queue fixes while idle", hint: "find PRs needing a rebase or base merge", needs: "push_identity" },
 ];
+
+/** The lane flags whose presence means this machine has been signed up to
+ *  process work. Readiness answers "can it run right now", which a provisioned
+ *  machine fails whenever Docker is down; opting in is what these record. */
+const OPT_IN_FLAGS = ["TRIAGE_VERIFY_WORKER", "TRIAGE_FIX_WORKER"];
 
 function CheckRow({ check }: { check: SetupCheck }) {
   const tone = check.ok ? "chip chip-green sm" : check.blocking ? "chip chip-red sm" : "chip chip-amber sm";
@@ -36,7 +42,7 @@ export default function Setup() {
   const [flags, setFlags] = useState<WorkerFlags>({});
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [expanded, setExpanded] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -79,8 +85,7 @@ export default function Setup() {
   if (error && !readiness) return <div className="pad"><p className="chip chip-red">{error}</p></div>;
   if (!readiness) return <div className="pad muted">reading this machine…</div>;
 
-  const byKey = Object.fromEntries(readiness.checks.map((c) => [c.key, c]));
-  const blockers = readiness.checks.filter((c) => !c.ok && c.blocking);
+  const optedIn = OPT_IN_FLAGS.some((k) => flags[k] === "1");
 
   return (
     <div className="pad">
@@ -90,6 +95,50 @@ export default function Setup() {
         work is provisioned on its own; the Control tab reports the whole fleet.
       </p>
 
+      {optedIn || expanded
+        ? <WorkerSection readiness={readiness} flags={flags} busy={busy} onToggle={toggle} />
+        : <ProvisionBanner onStart={() => setExpanded(true)} />}
+
+      <ShareSection />
+
+      {error && <p className="chip chip-red sm">{error}</p>}
+    </div>
+  );
+}
+
+/** The offer a machine that has never opted in sees in place of the worker
+ *  controls: what accepting costs, and one button that reveals the rest. */
+function ProvisionBanner({ onStart }: { onStart: () => void }) {
+  const { meta } = useRepoMeta();
+  return (
+    <section className="setup-card setup-offer">
+      <h3>⚙️ Provision this computer to run automated tasks{meta && <> on {meta.display_name}</>}</h3>
+      <p className="muted small">
+        Runs a heavy background process that analyzes, tests, fixes, and iterates
+        on pull requests, issues, and advisories in a sandboxed environment on
+        this machine.
+      </p>
+      <button onClick={onStart}>set this computer up</button>
+    </section>
+  );
+}
+
+/** Everything about this machine as a work processor: whether it is running,
+ *  what it still needs, and which lanes it drains. */
+function WorkerSection(
+  { readiness, flags, busy, onToggle }: {
+    readiness: SetupReadiness;
+    flags: WorkerFlags;
+    busy: string | null;
+    onToggle: (key: string, on: boolean) => void;
+  },
+) {
+  const [copied, setCopied] = useState(false);
+  const byKey = Object.fromEntries(readiness.checks.map((c) => [c.key, c]));
+  const blockers = readiness.checks.filter((c) => !c.ok && c.blocking);
+
+  return (
+    <>
       <h3>
         {readiness.ready
           ? <span className="chip chip-green">processing work</span>
@@ -138,7 +187,7 @@ export default function Setup() {
                 type="checkbox"
                 checked={flags[s.key] === "1"}
                 disabled={busy != null || blocked}
-                onChange={(e) => void toggle(s.key, e.target.checked)}
+                onChange={(e) => onToggle(s.key, e.target.checked)}
               />
               {" "}{s.label}
             </label>
@@ -148,25 +197,19 @@ export default function Setup() {
           </div>
         );
       })}
-
-      <ShareSection />
-
-      {error && <p className="chip chip-red sm">{error}</p>}
-    </div>
+    </>
   );
 }
 
-/** Copies a ready-to-paste .env for onboarding a teammate. The store URL holds
- *  the database password, so it ships only when the checkbox says so — and the
- *  page says out loud what pasting it into a chat channel means. */
+/** Copies the deployment bundle a teammate pastes into their setup wizard. It
+ *  carries the store URL, so it is a credential and the card says so. */
 function ShareSection() {
-  const [includeStore, setIncludeStore] = useState(false);
   const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
 
   const copy = async () => {
     try {
-      const { snippet } = await api.setupShare(includeStore);
-      await navigator.clipboard.writeText(snippet);
+      const { bundle } = await api.setupShare();
+      await navigator.clipboard.writeText(bundle);
       setState("copied");
     } catch {
       setState("failed");
@@ -175,25 +218,19 @@ function ShareSection() {
   };
 
   return (
-    <section>
-      <h3>Share this deployment</h3>
+    <section className="setup-card setup-share">
+      <h3>🤝 Share this deployment</h3>
       <p className="muted small">
-        Copies a ready-to-paste <code>.env</code> for a teammate: the repo, bot
-        identity, and review config prefilled, plus instructions for the pieces
-        that only travel as files (the bot key, <code>profile.json</code>).
+        About a teammate's machine, not this one. Copies everything a fresh
+        checkout needs to join this deployment: the repo, bot identity, review
+        config, the store URL, and this deployment's <code>profile.json</code>.
+        Your teammate pastes it into the setup wizard their app opens on first
+        run.
       </p>
-      <label>
-        <input type="checkbox" checked={includeStore}
-          onChange={(e) => setIncludeStore(e.target.checked)} />
-        {" "}include store credentials
-      </label>
-      {includeStore && (
-        <p className="muted small">
-          ⚠ The store URL contains the database password. Pasting it into chat
-          puts that password in the channel's history — prefer sending that one
-          line through a password manager.
-        </p>
-      )}
+      <p className="setup-warn small">
+        ⚠ This carries the database password. Send it through a password manager
+        or a direct message — never a channel with history.
+      </p>
       <div>
         <button onClick={() => void copy()}>
           {state === "copied" ? "copied ✓" : state === "failed" ? "copy failed" : "copy setup for a teammate"}

@@ -150,10 +150,11 @@ def test_analyze_reevaluates_stale_close_fixed(tmp_path):
 
 def test_prompt_and_criteria_are_shared_canon():
     """The headless batch prompt embeds the canonical criteria bullets, asks for
-    both a gist and a rationale, and keeps the per-call bundle placeholder."""
+    both a gist and a rationale, and keeps the per-call placeholders its caller
+    substitutes."""
     assert issue_analyze_driver.DISPOSITION_CRITERIA in issue_analyze_driver.ANALYZE_PROMPT
     assert "__BUNDLE_PATH__" in issue_analyze_driver.ANALYZE_PROMPT
-    assert "__REPO__" not in issue_analyze_driver.ANALYZE_PROMPT
+    assert "__REPO__" in issue_analyze_driver.ANALYZE_PROMPT
     assert '"gist"' in issue_analyze_driver.ANALYZE_PROMPT
     assert '"rationale"' in issue_analyze_driver.ANALYZE_PROMPT
     for disp in sorted(issue_analyze_driver.VALID):

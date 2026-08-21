@@ -54,9 +54,8 @@ _PROFILES: dict[str, ReviewPolicy] = {"greptile": _GREPTILE, "none": _NONE}
 
 
 def active() -> ReviewPolicy:
-    """The configured review policy. Reads settings on each call (cheap) so tests
-    can monkeypatch settings.REVIEW_PROVIDER without cache invalidation."""
-    base = _PROFILES[settings.REVIEW_PROVIDER]
-    if base.required and settings.REVIEW_THRESHOLD is not None:
-        return replace(base, threshold=settings.REVIEW_THRESHOLD)
+    """The configured review policy, read from settings on each call."""
+    base = _PROFILES[settings.review_provider()]
+    if base.required and settings.review_threshold() is not None:
+        return replace(base, threshold=settings.review_threshold())
     return base

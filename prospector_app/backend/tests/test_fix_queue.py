@@ -38,7 +38,7 @@ def push_key(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "PUSH_LOGIN", "test-push-bot")
     monkeypatch.setattr(settings, "PUSH_EMAIL", "1+test-push-bot@users.noreply.github.com")
     monkeypatch.setattr(settings, "PUSH_SSH_KEY_FILE", key)
-    monkeypatch.setattr(settings, "VERIFY_SCRATCH", tmp_path / "scratch")
+    monkeypatch.setenv("TRIAGE_VERIFY_SCRATCH", str(tmp_path / "scratch"))
     return key
 
 
@@ -252,7 +252,7 @@ def test_key_safety_refuses_a_key_under_the_sandbox_scratch_root(tmp_path, monke
     monkeypatch.setattr(settings, "PUSH_LOGIN", "test-push-bot")
     monkeypatch.setattr(settings, "PUSH_EMAIL", "1+b@users.noreply.github.com")
     monkeypatch.setattr(settings, "PUSH_SSH_KEY_FILE", key)
-    monkeypatch.setattr(settings, "VERIFY_SCRATCH", scratch)
+    monkeypatch.setenv("TRIAGE_VERIFY_SCRATCH", str(scratch))
     assert "sandbox scratch root" in (fix_worker.key_safety_failure() or "")
 
 
@@ -260,7 +260,7 @@ def test_key_safety_refuses_a_missing_key(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "PUSH_LOGIN", "test-push-bot")
     monkeypatch.setattr(settings, "PUSH_EMAIL", "1+b@users.noreply.github.com")
     monkeypatch.setattr(settings, "PUSH_SSH_KEY_FILE", tmp_path / "absent")
-    monkeypatch.setattr(settings, "VERIFY_SCRATCH", tmp_path / "scratch")
+    monkeypatch.setenv("TRIAGE_VERIFY_SCRATCH", str(tmp_path / "scratch"))
     assert "unreadable" in (fix_worker.key_safety_failure() or "")
 
 

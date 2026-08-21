@@ -8,15 +8,16 @@ import json
 
 from prospector_app.backend import chat
 from prospector_app.backend import issue_receipts
+from pipeline import settings
 
 
 def _receipt(number: int = 50) -> issue_receipts.IssueReceipt:
     return {
         "ok": True,
         "kind": "feedback-issue",
-        "repo": chat.FEEDBACK_REPO,
+        "repo": settings.feedback_repo(),
         "number": number,
-        "url": f"https://github.com/{chat.FEEDBACK_REPO}/issues/{number}",
+        "url": f"https://github.com/{settings.feedback_repo()}/issues/{number}",
     }
 
 
@@ -25,27 +26,27 @@ def test_file_issue_receipt_requires_command_and_exact_structured_output():
     parsed = issue_receipts.parse(
         'prospector_app/agent/file-issue --title "t" --body "b"',
         json.dumps(receipt),
-        chat.FEEDBACK_REPO,
+        settings.feedback_repo(),
     )
     assert parsed == receipt
 
     assert issue_receipts.parse(
-        "gh issue create --title t", json.dumps(receipt), chat.FEEDBACK_REPO
+        "gh issue create --title t", json.dumps(receipt), settings.feedback_repo()
     ) is None
     assert issue_receipts.parse(
         'prospector_app/agent/file-issue --title "t" --body "b"',
         json.dumps({**receipt, "url": receipt["url"] + "9"}),
-        chat.FEEDBACK_REPO,
+        settings.feedback_repo(),
     ) is None
     assert issue_receipts.parse(
         'prospector_app/agent/file-issue --title "t" --body "b"',
-        json.dumps(receipt), chat.FEEDBACK_REPO, is_error=True,
+        json.dumps(receipt), settings.feedback_repo(), is_error=True,
     ) is None
 
 
 def test_agent_text_is_preserved_without_receipt():
     invented = ("So I filed it: "
-                f"https://github.com/{chat.FEEDBACK_REPO}/issues/63")
+                f"https://github.com/{settings.feedback_repo()}/issues/63")
     assert issue_receipts.attach_verified_summary(invented, []) == invented
     negative = "I filed nothing — no receipts, so nothing was created."
     assert issue_receipts.attach_verified_summary(negative, []) == negative
@@ -62,7 +63,7 @@ def test_receipt_is_appended_even_when_agent_reports_the_authoritative_url():
 
 def test_receipt_attestation_does_not_rewrite_agent_text():
     receipt = _receipt()
-    invented = f"I filed it: https://github.com/{chat.FEEDBACK_REPO}/issues/63"
+    invented = f"I filed it: https://github.com/{settings.feedback_repo()}/issues/63"
     out = issue_receipts.attach_verified_summary(invented, [receipt])
     assert out.startswith(invented)
     assert receipt["url"] in out
@@ -84,7 +85,7 @@ def test_stream_preserves_agent_text_without_receipt(
     monkeypatch.setattr(chat, "_op_slug", lambda: "tester")
     monkeypatch.setattr(chat, "_bot_token", lambda: None)
     monkeypatch.setattr(chat, "system_prompt", lambda: "SYS")
-    invented = f"I filed it: https://github.com/{chat.FEEDBACK_REPO}/issues/63"
+    invented = f"I filed it: https://github.com/{settings.feedback_repo()}/issues/63"
 
     class FakeProc:
         pid = 1

@@ -45,10 +45,10 @@ from pipeline.wire import BlindItem, JudgeItem
 if TYPE_CHECKING:
     from issue_triage.issue_store import IssueStore
 
-# Host scratch root (settings.VERIFY_SCRATCH; TRIAGE_VERIFY_SCRATCH overrides).
+# Host scratch root (settings.verify_scratch(); TRIAGE_VERIFY_SCRATCH overrides).
 # It MUST live under $HOME on macOS+Colima: Colima's virtiofs shares only $HOME,
 # so a bare mktemp -d is invisible to the VM that builds the image.
-SCRATCH = settings.VERIFY_SCRATCH
+SCRATCH = settings.verify_scratch()
 SANDBOX = Path(__file__).resolve().parents[1] / "sandbox"
 
 # The hardened sandbox image. Dockerfile.base builds FROM it, and the Tier 1
@@ -126,13 +126,13 @@ def resolve_base_sha() -> str:
     """Upstream's default-branch HEAD, read through the operator's gh login. The
     branch is asked for rather than named because it is a property of the repo
     TRIAGE_REPO points at."""
-    repo = gh.gh_json(f"repos/{settings.REPO}")
+    repo = gh.gh_json(f"repos/{settings.repo()}")
     branch = (repo or {}).get("default_branch")
     if not branch:
-        raise RuntimeError(f"cannot resolve {settings.REPO}'s default branch")
-    data = gh.gh_json(f"repos/{settings.REPO}/commits/{branch}")
+        raise RuntimeError(f"cannot resolve {settings.repo()}'s default branch")
+    data = gh.gh_json(f"repos/{settings.repo()}/commits/{branch}")
     if not data or not data.get("sha"):
-        raise RuntimeError(f"cannot resolve {settings.REPO} {branch} HEAD")
+        raise RuntimeError(f"cannot resolve {settings.repo()} {branch} HEAD")
     return str(data["sha"])
 
 
@@ -270,7 +270,7 @@ def build_base_image(sha: str, *, tier: int) -> str:
     src.parent.mkdir(parents=True, exist_ok=True)
     pnpm_store.mkdir(parents=True, exist_ok=True)
 
-    subprocess.run(["git", "clone", f"https://github.com/{settings.REPO}.git", str(src)],
+    subprocess.run(["git", "clone", f"https://github.com/{settings.repo()}.git", str(src)],
                    check=True, env=launcher_env())
     subprocess.run(["git", "-C", str(src), "checkout", "--detach", sha],
                    check=True, env=launcher_env())
@@ -490,7 +490,7 @@ Report:
 - expected_red_signature: the specific assertion, error, or diagnostic you predict on the unfixed base.
 - repro_command: an independent repro against the pinned base WITHOUT this PR's diff. Never reference a test file or test name the PR introduces. It does not have to be self-contained: author your test INTO the package's existing test directory — that project's config, setup files and fixtures then apply, so import its existing helpers (the embedded-database bootstrap, the supertest app factory, the render utilities) rather than rebuilding a harness. The shape that works: `cd <package> && cat > src/__tests__/<name>-repro.test.ts <<'EOF' … EOF` then run the runner from there; an inline `node -e` script is enough for pure logic or file content. Run from the repo root naming a repo-root path, or from inside the package naming a package-relative path. Do NOT pass `--config <subdir>/...`: the runner keeps its root at the working directory, so that config's own relative paths (`setupFiles`, `include`, aliases) resolve against the repo root and the suite dies at load having run zero tests — an exit indistinguishable from a genuine failure. Prefer authoring a file over a `-t` filter (one matching no title skips every test and exits 0, reading as "did not reproduce" from a run that evaluated nothing); give the command an explicit timeout; reach dev tools through the repo (`npx tsx`), never a bare global; declare the environment a test needs (`// @vitest-environment jsdom`). Null only when the defect genuinely needs a live model-driven agent, a real browser session, or an external service — "the harness would be laborious to build" is not such a case, since the harness is already in the repository next to the tests you read. Never invent a repro you do not believe in.
 - expected_repro_signature: the specific failure predicted for repro_command, or null with no command.
-- requires_live_agent: true only if reproducing this needs a live model-driven agent run (agent adapter plumbing, heartbeat counting). Such PRs are out of scope for this phase.""".replace("__REPO__", settings.REPO)
+- requires_live_agent: true only if reproducing this needs a live model-driven agent run (agent adapter plumbing, heartbeat counting). Such PRs are out of scope for this phase.""".replace("__REPO__", settings.repo())
 
 
 AUTHOR_PROMPT = """Author a reproduction test for PR #__PR__ ("__TITLE__") from open-source __REPO__ — contributions from untrusted parties. Diff at __DIFF_PATH__ — Read it.
@@ -514,7 +514,7 @@ Rules for the authored test:
 Report:
 - can_author, files (path + FULL file contents).
 - expected_red_signature: the failure output you predict your test produces on the unfixed base — the assertion message, error type, or diagnostic. Be specific; it is committed to the store before any run and checked against what actually happens.
-- confidence, reasoning.""".replace("__REPO__", settings.REPO)
+- confidence, reasoning.""".replace("__REPO__", settings.repo())
 
 
 def commit_blind(store: Store, items: list[BlindItem]) -> tuple[int, list[str]]:
@@ -792,7 +792,7 @@ def fetch_patch(pr: int, head_sha: str) -> Path:
     stderr = ""
     for backoff in (*FETCH_BACKOFF_SECONDS, None):
         p = subprocess.run(
-            ["gh", "api", f"repos/{settings.REPO}/pulls/{pr}",
+            ["gh", "api", f"repos/{settings.repo()}/pulls/{pr}",
              "-H", "Accept: application/vnd.github.v3.diff"],
             capture_output=True, text=True, env=launcher_env())
         if p.returncode == 0:
@@ -1220,7 +1220,7 @@ Judge TWO questions:
 
 2. repro_reason_match: when independent_repro.ran is true, does the repro's own output (independent_repro.output_tail) match __EXPECTED_REPRO__ — did the repro fail for the RIGHT reason, or did it exit non-zero for an unrelated one (a test-framework timeout, an import or compile error, a bad mock)? A repro that merely runs too long and times out exits the same way a genuine assertion failure does, and that is not corroboration. Set applicable to false (matches null) when independent_repro.ran is false or __EXPECTED_REPRO__ is null.
 
-For both, rate the match and say how confident you are. Confidence is not a formality — fuzzy output matching is the weakest link in this chain, so `low` is the honest answer when the output is thin, generic, or absent. Report any finding worth a human's attention, including a repro that failed for the wrong reason even when red_reason_match itself is clean.""".replace("__REPO__", settings.REPO)
+For both, rate the match and say how confident you are. Confidence is not a formality — fuzzy output matching is the weakest link in this chain, so `low` is the honest answer when the output is thin, generic, or absent. Report any finding worth a human's attention, including a repro that failed for the wrong reason even when red_reason_match itself is clean.""".replace("__REPO__", settings.repo())
 
 
 def authored_attempt_note(authored: dict, red_match: dict) -> str | None:

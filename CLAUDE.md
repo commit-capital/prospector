@@ -86,7 +86,32 @@ bot-authenticated chat writes and feedback issue filing do not. Executor
 enforcement lives in
 `prospector_app/backend/safety_guard.py`: an allowlist that permits only
 comment/close/reopen/review as the configured bot plus the dedicated
-`bot_merge_run` path, and refuses any write with an empty token.
+`bot_merge_run` path, and refuses any write with an empty token or an empty
+`TRIAGE_BOT_LOGIN` — a deployment configured without a GitHub App is legal,
+reads normally, and writes nothing.
+
+**Two writers touch `.env`, each with its own allowlist.**
+`worker_control.set_flags` writes the five worker lane switches and nothing
+else. `prospector_app/backend/onboarding.py` writes deployment configuration
+for the setup wizard, allowlisted per step: `connect` (`TRIAGE_REPO`,
+`TRIAGE_STORE_URL`, the profile path, and presentation/review config, plus
+`profile.json` itself), `writes` (the bot identity and key path), and `worker`
+(the contributor-push identity). **`connect` is refused once
+`settings.configured()` is true**, so a working deployment cannot be pointed at
+another repository or another database through the HTTP surface; `writes` and
+`worker` stay open because the wizard reaches them after `connect` has already
+configured the app. Both writers share `env_file.py`, which replaces the file
+whole from a temporary sibling. `settings` reads every deployment value from
+the environment on the call, so `onboarding.reconfigure` — the ONE adoption
+path — makes a write take effect in the running process by updating the
+environment and then resetting the store singleton and the two caches built
+from configuration at import.
+
+A checkout with no `TRIAGE_REPO` boots and serves the wizard: one middleware in
+`app.py` answers `409 {"unconfigured": true}` to every `/api/*` route except
+`/api/onboarding/*`, `/api/meta`, and `/api/health`, so an unconfigured process
+can never answer a list route with an empty result from the local SQLite
+fallback and read as a configured Prospector watching an empty repository.
 
 ## The pipeline (`pipeline/`)
 

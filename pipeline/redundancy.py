@@ -38,7 +38,7 @@ class MasterTree:
 
     _MAX_FAILURES = 5
 
-    def __init__(self, repo: str = settings.REPO) -> None:
+    def __init__(self, repo: str = settings.repo()) -> None:
         self.repo = repo
         self._cache: dict[str, str | None] = {}
         self._failures = 0

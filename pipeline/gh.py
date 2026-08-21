@@ -8,8 +8,8 @@ import os
 import subprocess
 from collections.abc import Mapping
 from typing import Any
+from pipeline import settings
 
-from pipeline.settings import REPO
 
 
 def operator_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
@@ -84,8 +84,8 @@ def gh_list(path: str) -> list[dict] | None:
 
 
 def fetch_pr(n: int) -> dict | None:
-    """One PR's raw gh object (`repos/REPO/pulls/{n}`), or None if unreachable."""
-    return gh_json(f"repos/{REPO}/pulls/{int(n)}")
+    """One PR's raw gh object (`repos/<repo>/pulls/{n}`), or None if unreachable."""
+    return gh_json(f"repos/{settings.repo()}/pulls/{int(n)}")
 
 
 def check_runs(sha: str) -> list[dict]:
@@ -94,7 +94,7 @@ def check_runs(sha: str) -> list[dict]:
     Empty when `sha` is falsy, GitHub has no checks for it, or the fetch fails."""
     if not sha:
         return []
-    data = gh_json(f"repos/{REPO}/commits/{sha}/check-runs?per_page=100&filter=latest")
+    data = gh_json(f"repos/{settings.repo()}/commits/{sha}/check-runs?per_page=100&filter=latest")
     seen: set[tuple[str | None, str | None]] = set()
     out: list[dict] = []
     for r in (data or {}).get("check_runs", []):

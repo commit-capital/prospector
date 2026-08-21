@@ -12,15 +12,20 @@ Prerequisites: macOS or Linux; `git`; [`uv`](https://docs.astral.sh/uv/) (it fet
 # 1. clone this repo, then from its root:
 ./setup.sh                      # uv-locked Python env + frontend deps (idempotent)
 
-# 2. configure the target repository
-cp .env.example .env            # then set TRIAGE_REPO=owner/name (and see Configuration below)
-
-# 3. pull the open PRs into the store (read-only; local SQLite by default)
-uv run prospector ingest
-
-# 4. run the app and open the printed frontend URL
+# 2. run the app and open the printed frontend URL
 uv run prospector serve --dev   # or: ./run-prospector.sh
 ```
+
+On a checkout with no deployment configured, the app opens a setup wizard
+instead of the triage tabs. It takes either route: paste the bundle a teammate
+copies from their 🛠️ Setup tab under "Share this deployment" — which carries
+the repository, the store, and the repository profile, so one paste is enough —
+or answer a few questions to point Prospector at a repository of your own,
+where each decision offers an option that works immediately and one that costs
+a few minutes. Setup then proceeds one opt-in step at a time: see the
+repository, then let a bot write to it, then optionally run automated tasks on
+this machine. `/.env.example` documents every option for editing the file
+directly; you do not need it to get started.
 
 For a single-process setup without the dev servers, build the frontend once (`pnpm --dir prospector_app/frontend build`, or `npx -y pnpm@11 --dir prospector_app/frontend build` without a pnpm install) and run `uv run prospector serve`.
 

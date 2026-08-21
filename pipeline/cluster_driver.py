@@ -104,7 +104,7 @@ def summarize_prompt() -> str:
     call so the shipped prompt always reflects the configuration;
     `__BATCH_PATH__` remains for the per-call fill."""
     return (SUMMARIZE_PROMPT
-            .replace("__REPO__", settings.REPO)
+            .replace("__REPO__", settings.repo())
             .replace("__SUBSYSTEMS__", ", ".join(taxonomy.subsystem_names())))
 
 
@@ -212,7 +212,7 @@ def write_cluster_units(store: Store, chunk: int = 55) -> dict:
                                      "prs": prs[i:i + chunk]}))
             units.append(str(p))
             idx += 1
-    (CLUSTER_UNIT_DIR / "index.json").write_text(json.dumps({"count": len(units), "units": units, "repo": settings.REPO}))
+    (CLUSTER_UNIT_DIR / "index.json").write_text(json.dumps({"count": len(units), "units": units, "repo": settings.repo()}))
     warning = stale_ingest_warning(store)
     if warning:
         print(f"  ! stale-input warning: {warning}", file=sys.stderr)
@@ -546,7 +546,7 @@ def assign_units(store: Store, sample_n: int = 4) -> dict:
                                  "existing_clusters": cl_by_sub.get(sub, []),
                                  "new_prs": new_by_sub[sub]}))
         units.append(str(p))
-    (ASSIGN_UNIT_DIR / "index.json").write_text(json.dumps({"count": len(units), "units": units, "repo": settings.REPO}))
+    (ASSIGN_UNIT_DIR / "index.json").write_text(json.dumps({"count": len(units), "units": units, "repo": settings.repo()}))
     return {"count": len(units), "new_prs": sum(len(v) for v in new_by_sub.values())}
 
 
@@ -658,7 +658,7 @@ def straddle_units(store: Store, chunk: int = 55) -> dict:
                                      "prs": prs[i:i + chunk]}))
             units.append(str(p))
             idx += 1
-    (STRADDLE_UNIT_DIR / "index.json").write_text(json.dumps({"count": len(units), "units": units, "repo": settings.REPO}))
+    (STRADDLE_UNIT_DIR / "index.json").write_text(json.dumps({"count": len(units), "units": units, "repo": settings.repo()}))
     return {"count": len(units), "prs": sum(len(v) for v in by_sub.values())}
 
 

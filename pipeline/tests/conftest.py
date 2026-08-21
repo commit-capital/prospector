@@ -1,6 +1,5 @@
 import pytest
 
-from pipeline import settings
 
 
 @pytest.fixture(autouse=True)
@@ -8,8 +7,8 @@ def _greptile_profile(monkeypatch):
     """This suite was written against the greptile deployment's 5/5 merge bar. Pin
     the greptile review profile so every legacy test asserts that bar regardless of
     the `none` default; tests exercising the no-provider path override explicitly."""
-    monkeypatch.setattr(settings, "REVIEW_PROVIDER", "greptile")
-    monkeypatch.setattr(settings, "REVIEW_THRESHOLD", None)
+    monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "greptile")
+    monkeypatch.delenv("TRIAGE_REVIEW_THRESHOLD", raising=False)
 
 
 @pytest.fixture(autouse=True)

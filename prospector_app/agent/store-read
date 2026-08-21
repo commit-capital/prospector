@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -95,10 +96,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.what == "activity":
         # The activity log lives in the same DB as the store but is read through
         # the app's activity module, which resolves its engine from
-        # settings.STORE_URL — point that at the --store root when given.
+        # settings.store_url() — point that at the --store root when given.
         if args.store:
-            from pipeline import settings
-            settings.STORE_URL = f"sqlite:///{Path(args.store)}/store.db"
+            os.environ["TRIAGE_STORE_URL"] = f"sqlite:///{Path(args.store)}/store.db"
         from prospector_app.backend import activity
         if args.target == "recent":
             print(json.dumps(activity.recent(args.limit), indent=2, sort_keys=True))

@@ -11,8 +11,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from pipeline import settings
 from pipeline import gh
-from pipeline.settings import REPO_NAME, REPO_OWNER
 
 if TYPE_CHECKING:
     from pipeline.model import Pr
@@ -95,7 +95,7 @@ def _now() -> str:
 
 def _page_query(cursor: str | None) -> str:
     after = f'"{cursor}"' if cursor else "null"
-    return (f'query {{ repository(owner: "{REPO_OWNER}", name: "{REPO_NAME}") {{ '
+    return (f'query {{ repository(owner: "{settings.repo_owner()}", name: "{settings.repo_name()}") {{ '
             f'pullRequests(first: 100, after: {after}, states: [OPEN CLOSED MERGED], '
             'orderBy: {field: CREATED_AT, direction: ASC}) { '
             'pageInfo { hasNextPage endCursor } '

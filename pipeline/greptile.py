@@ -12,8 +12,8 @@ import hashlib
 import re
 from typing import TYPE_CHECKING
 
+from pipeline import settings
 from pipeline.gh import gh_list
-from pipeline.settings import REPO
 
 if TYPE_CHECKING:
     from pipeline.model import Pr
@@ -43,13 +43,13 @@ def fetch_greptile_review_data(n: int) -> tuple[str | None, list[dict], list[dic
     commit_id, or an inline comment's original_commit_id when the review reports
     none. Returns (None, [], []) when Greptile has not reviewed or GitHub is
     unreachable."""
-    reviews = gh_list(f"repos/{REPO}/pulls/{n}/reviews?per_page=100")
+    reviews = gh_list(f"repos/{settings.repo()}/pulls/{n}/reviews?per_page=100")
     if reviews is None:
         return None, [], []
     greptile_reviews = [r for r in reviews if _is_greptile(r)]
     if not greptile_reviews:
         return None, [], []
-    comments = gh_list(f"repos/{REPO}/pulls/{n}/comments?per_page=100") or []
+    comments = gh_list(f"repos/{settings.repo()}/pulls/{n}/comments?per_page=100") or []
     greptile_comments = [c for c in comments if _is_greptile(c)]
     sha = None
     for r in reversed(greptile_reviews):
@@ -101,11 +101,11 @@ def _parse_greptile_summary(comments: list[dict]) -> tuple[int | None, str | Non
 
 def fetch_greptile_summary(n: int) -> tuple[int | None, str | None]:
     """Greptile's confidence score and reviewed SHA for PR n, read from its
-    issue-level summary comment (`repos/REPO/issues/{n}/comments`) — the surface
+    issue-level summary comment (`repos/settings.repo()/issues/{n}/comments`) — the surface
     that holds the numeric score and the authoritative 'last reviewed commit'.
     Returns (None, None) when Greptile posted no scored summary or GitHub is
     unreachable."""
-    comments = gh_list(f"repos/{REPO}/issues/{n}/comments?per_page=100")
+    comments = gh_list(f"repos/{settings.repo()}/issues/{n}/comments?per_page=100")
     if not comments:
         return None, None
     return _parse_greptile_summary([c for c in comments if _is_greptile(c)])
@@ -143,7 +143,7 @@ def fetch_greptile_feedback(n: int) -> dict | None:
     summary comment — the single-PR display surface. Returns
     `{score, body, commit_id}` (body as displayable text), or None when Greptile
     posted no scored summary or GitHub is unreachable."""
-    comments = gh_list(f"repos/{REPO}/issues/{n}/comments?per_page=100")
+    comments = gh_list(f"repos/{settings.repo()}/issues/{n}/comments?per_page=100")
     if not comments:
         return None
     c, score, sha = _latest_scored_summary([x for x in comments if _is_greptile(x)])

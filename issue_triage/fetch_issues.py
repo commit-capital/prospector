@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import subprocess
 
-from issue_triage.config import REPO, REPO_NAME, REPO_OWNER, gh_graphql, gh_read
+from issue_triage.config import gh_graphql, gh_read, repo, repo_name, repo_owner
 
 # GraphQL issues connection: one page of 100 open issues + a cursor. Fields are
 # named to normalize onto the same shape normalize_issue produces from REST, so
@@ -104,7 +104,7 @@ def fetch_all(max_pages: int = 60, max_issues: int | None = None) -> list[dict]:
     rows: list[dict] = []
     cursor: str | None = None
     for _ in range(max_pages):
-        variables = {"owner": REPO_OWNER, "name": REPO_NAME}
+        variables = {"owner": repo_owner(), "name": repo_name()}
         if cursor:
             variables["cursor"] = cursor
         conn = gh_graphql(_ISSUES_QUERY, variables)["repository"]["issues"]
@@ -127,6 +127,6 @@ def fetch_issue(n: int) -> dict | None:
     fetch fails (deleted, transferred, or a transient API error) so the caller
     keeps its stored record untouched."""
     try:
-        return normalize_issue(gh_read(f"repos/{REPO}/issues/{n}"))
+        return normalize_issue(gh_read(f"repos/{repo()}/issues/{n}"))
     except subprocess.CalledProcessError:
         return None

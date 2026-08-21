@@ -17,9 +17,9 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from pipeline import settings
 from pipeline import profile
 from pipeline import storekit
-from pipeline.settings import REPO
 from prospector_app.backend import data
 from prospector_app.backend import issue_data
 from prospector_app.backend.filters import num_cmp
@@ -110,7 +110,7 @@ def _live_pr_states(numbers: list[int]) -> dict[int, str]:
     now = time.time()
     want = sorted({n for n in numbers
                    if n not in _pr_state_cache or now - _pr_state_cache[n][0] >= _STATE_TTL})
-    owner, name = REPO.split("/")
+    owner, name = settings.repo().split("/")
     for i in range(0, len(want), _STATE_BATCH):
         batch = want[i:i + _STATE_BATCH]
         fields = " ".join(f"p{n}: pullRequest(number: {n}) {{ state }}" for n in batch)
@@ -224,7 +224,7 @@ def _row(iss: Issue, clusters_by_id: dict[int, IssueCluster], store_states: dict
         "created_at": iss.created_at,
         "updated_at": iss.updated_at,
         "state": iss.state,
-        "url": iss.url or f"https://github.com/{REPO}/issues/{iss.number}",
+        "url": iss.url or f"https://github.com/{settings.repo()}/issues/{iss.number}",
         "subsystem": iss.subsystem or (cl.subsystem if cl else None),
         "repro_grade": iss.repro_grade,
         "repro_score": iss.repro_score,
@@ -432,7 +432,7 @@ def duplicate_groups() -> list[dict]:
                 dups.append({"number": n, "title": iss.title, "author": iss.author,
                              "trusted_author": iss.author in profile.active().trusted_authors,
                              "repro_grade": iss.repro_grade,
-                             "url": f"https://github.com/{REPO}/issues/{n}"})
+                             "url": f"https://github.com/{settings.repo()}/issues/{n}"})
         if not dups:
             continue
         canon_iss = issues.get(canon)
@@ -460,7 +460,7 @@ def duplicate_groups() -> list[dict]:
         groups.append({
             "canonical": canon,
             "canonical_title": canon_iss.title if canon_iss else None,
-            "canonical_url": f"https://github.com/{REPO}/issues/{canon}",
+            "canonical_url": f"https://github.com/{settings.repo()}/issues/{canon}",
             "cluster": cl.id,
             "label": (cl.curation or {}).get("label"),
             "pain": cl.pain,
@@ -507,7 +507,7 @@ def already_fixed() -> dict[str, list[dict]]:
             likely.append({"number": n, "title": iss.title,
                            "gist": scan.get("gist"), "rationale": scan.get("rationale"),
                            "pain": pain_of(iss),
-                           "url": f"https://github.com/{REPO}/issues/{n}"})
+                           "url": f"https://github.com/{settings.repo()}/issues/{n}"})
     fixer_states = _live_pr_states(sorted({pr for _, pr, _ in fixed_candidates}))
     fixed: list[dict] = []
     for n, pr, scan in fixed_candidates:
@@ -519,8 +519,8 @@ def already_fixed() -> dict[str, list[dict]]:
                       "upstream_date": scan.get("upstream_date"),
                       "pain": pain_of(iss),
                       "comment": fixed_issue_comment(pr),
-                      "url": f"https://github.com/{REPO}/issues/{n}",
-                      "fixer_url": f"https://github.com/{REPO}/pull/{pr}"})
+                      "url": f"https://github.com/{settings.repo()}/issues/{n}",
+                      "fixer_url": f"https://github.com/{settings.repo()}/pull/{pr}"})
     fixed.sort(key=lambda g: -(g.get("pain") or 0))
     likely.sort(key=lambda g: -(g.get("pain") or 0))
     return {"fixed": fixed, "likely_fixed": likely}
@@ -529,7 +529,7 @@ def already_fixed() -> dict[str, list[dict]]:
 def _live_state(n: int) -> str | None:
     """Issue `n`'s current upstream state ("open"/"closed") fetched live from
     GitHub, or None when the fetch fails."""
-    r = run(["gh", "api", f"repos/{REPO}/issues/{n}", "--jq", ".state"], timeout=30)
+    r = run(["gh", "api", f"repos/{settings.repo()}/issues/{n}", "--jq", ".state"], timeout=30)
     if r.returncode != 0:
         return None
     return r.stdout.strip() or None

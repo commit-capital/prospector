@@ -23,8 +23,8 @@ from typing import TYPE_CHECKING
 from alert_triage.advisory_store import (ADVISORY_VERDICTS, GHSA_ALPHABET, GHSA_PATTERN,
                                          OPEN_STATES, AdvisoryStore)
 from alert_triage.alert_freshness import FIX_SCAN_MAX_AGE_DAYS, is_current
-from alert_triage.config import REPO
 from pipeline import headless_agent
+from pipeline import settings
 from pipeline import storekit
 from pipeline.settings import REPO_ROOT
 
@@ -50,7 +50,7 @@ For each advisory, locate the described code on the default branch with read-onl
 Choose exactly one verdict per advisory:
 __CRITERIA__
 
-Every bundled advisory MUST get exactly one verdict: {"id": <bundle id>, "verdict": "fixed"|"likely-fixed"|"not-fixed"|"duplicate", "duplicate_of": "GHSA-…" (duplicate only), "fix_commit": "<sha>" (fixed only), "evidence": "2-4 sentences naming what you read and what it showed", "links": [{"kind": "pr", "number": <n>, "how": "agent"}]}.""".replace("__CRITERIA__", CRITERIA).replace("__REPO__", REPO)
+Every bundled advisory MUST get exactly one verdict: {"id": <bundle id>, "verdict": "fixed"|"likely-fixed"|"not-fixed"|"duplicate", "duplicate_of": "GHSA-…" (duplicate only), "fix_commit": "<sha>" (fixed only), "evidence": "2-4 sentences naming what you read and what it showed", "links": [{"kind": "pr", "number": <n>, "how": "agent"}]}.""".replace("__CRITERIA__", CRITERIA)
 
 FENCED_TAIL = """
 
@@ -201,7 +201,8 @@ def run_batch_agent(entries: list[dict], roster_rows: list[dict]) -> list[dict]:
             "w", suffix=".json", prefix="advisory-find-fixed-", delete=False) as f:
         f.write(json.dumps({"advisories": entries, "roster": roster_rows}, indent=1))
         bundle_path = f.name
-    prompt = PROMPT.replace("__BUNDLE_PATH__", bundle_path) + FENCED_TAIL
+    prompt = (PROMPT.replace("__BUNDLE_PATH__", bundle_path)
+              .replace("__REPO__", settings.repo()) + FENCED_TAIL)
     try:
         text = headless_agent.run_agent(prompt, allow_gh=True, cwd=str(REPO_ROOT),
                                         on_event=on_event)

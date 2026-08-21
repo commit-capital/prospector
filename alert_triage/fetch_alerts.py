@@ -135,7 +135,7 @@ def _secret_locations(number: int, token: str) -> list[dict]:
     alert itself is still worth storing."""
     try:
         rows = config.gh_alert_read(
-            f"repos/{config.REPO}/secret-scanning/alerts/{number}/locations",
+            f"repos/{config.repo()}/secret-scanning/alerts/{number}/locations",
             token, {"per_page": str(_LOCATION_CAP)}, source="secret-scanning")
     except Exception:
         return []
@@ -151,7 +151,7 @@ def _secret_locations(number: int, token: str) -> list[dict]:
 def fetch_source(source: str, token: str) -> list[dict]:
     """Every alert of one source (all states), normalized. Raises
     SourceUnavailable when the repository/App lacks the feature or permission."""
-    raws = _paged(f"repos/{config.REPO}/{source}/alerts", token, source)
+    raws = _paged(f"repos/{config.repo()}/{source}/alerts", token, source)
     if source == "code-scanning":
         return [normalize_code_scanning(r) for r in raws]
     if source == "dependabot":

@@ -64,7 +64,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
 from pipeline import settings  # noqa: E402
-from pipeline.settings import REPO  # noqa: E402
+from pipeline import settings  # noqa: E402
 from prospector_app.backend.resubmit_identity import (  # noqa: E402
     actor_label,
     git_env,
@@ -104,7 +104,7 @@ def assert_push_target(info: dict, branch: str) -> None:
 def _gh_json(pr: int) -> dict:
     """Read the PR's preflight fields as the operator. Raises on a gh failure."""
     r = subprocess.run(
-        ["gh", "pr", "view", str(pr), "--repo", REPO, "--json", _PR_FIELDS],
+        ["gh", "pr", "view", str(pr), "--repo", settings.repo(), "--json", _PR_FIELDS],
         capture_output=True, text=True, timeout=60, env=operator_env())
     if r.returncode != 0:
         raise RuntimeError(f"gh pr view #{pr} failed: {r.stderr.strip() or r.stdout.strip()}")
@@ -123,7 +123,7 @@ def fork_ssh_url(info: dict) -> str:
 
 def upstream_ssh_url() -> str:
     """The configured upstream repository, fetched with the selected SSH identity."""
-    return f"git@github.com:{REPO}.git"
+    return f"git@github.com:{settings.repo()}.git"
 
 
 def eligibility(info: dict) -> tuple[bool, str]:

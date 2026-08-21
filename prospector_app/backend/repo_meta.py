@@ -20,6 +20,7 @@ class TestPathRules(TypedDict):
 
 
 class RepoMeta(TypedDict):
+    configured: bool
     repo: str
     owner: str
     name: str
@@ -34,15 +35,19 @@ def meta() -> RepoMeta:
     """The configured repository's identity, web URL, default branch, display
     name, the repo app feedback files into (None disables feedback), and
     the active profile's test-path rules the frontend compiles its matchers
-    from."""
+    from.
+
+    Answers on a checkout with no deployment target too — `configured` is what
+    the frontend routes on, and every other field reads empty there."""
     tp = profile.active().test_paths
     return {
-        "repo": settings.REPO,
-        "owner": settings.REPO_OWNER,
-        "name": settings.REPO_NAME,
-        "url": settings.REPO_URL,
+        "configured": settings.configured(),
+        "repo": settings.repo(),
+        "owner": settings.repo_owner(),
+        "name": settings.repo_name(),
+        "url": settings.repo_url(),
         "default_branch": settings.default_branch(),
-        "display_name": settings.DISPLAY_NAME,
-        "feedback_repo": settings.FEEDBACK_REPO or None,
+        "display_name": settings.display_name(),
+        "feedback_repo": settings.feedback_repo() or None,
         "test_paths": {"dir_pattern": tp.dir_pattern, "file_pattern": tp.file_pattern},
     }

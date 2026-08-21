@@ -45,13 +45,14 @@ _SCHEMAS_LOCK = threading.Lock()
 def resolve_url(root: Path | str | None, default_path: Path | str | None = None) -> str:
     """The SQLAlchemy URL a store should use. An explicit `root` always maps to a
     local SQLite file under it (tests + CLI --store, never the shared DB). A None
-    root consults settings.STORE_URL, then falls back to a SQLite file under
+    root consults settings.store_url(), then falls back to a SQLite file under
     `default_path` (the store's default root)."""
     if root is not None:
         return f"sqlite:///{Path(root)}/store.db"
     from pipeline import settings
-    if settings.STORE_URL:
-        return settings.STORE_URL
+    configured = settings.store_url()
+    if configured:
+        return configured
     if default_path is None:
         raise ValueError("resolve_url: default_path required when root and STORE_URL are both unset")
     return f"sqlite:///{Path(default_path)}/store.db"
@@ -436,7 +437,7 @@ def _stamp_repo(engine: Engine, repo: str) -> None:
 
 
 def assert_repo(engine: Engine) -> None:
-    """Refuse a write when settings.REPO differs from the store's stamped repo,
+    """Refuse a write when settings.repo() differs from the store's stamped repo,
     stamping an unstamped store on the way through. An activity row records a bare
     PR/issue number, so a process pointed at a scratch repo — an end-to-end test
     driving the real executor — would otherwise write rows indistinguishable from
@@ -444,11 +445,11 @@ def assert_repo(engine: Engine) -> None:
     from pipeline import settings
     stamped = stamped_repo(engine)
     if stamped is None:
-        _stamp_repo(engine, settings.REPO)
+        _stamp_repo(engine, settings.repo())
         return
-    if stamped == settings.REPO:
+    if stamped == settings.repo():
         return
-    msg = (f"this process targets {settings.REPO!r} but the store is stamped "
+    msg = (f"this process targets {settings.repo()!r} but the store is stamped "
            f"{stamped!r} — refusing to write rows that would be indistinguishable "
            f"from {stamped!r}'s (TRIAGE_STORE_ALLOW_FOREIGN_REPO=1 overrides)")
     if not settings.STORE_ALLOW_FOREIGN_REPO:

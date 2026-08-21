@@ -173,10 +173,10 @@ def sources_available() -> dict[str, bool]:
         token = executor.mint_bot_token()
         probed: dict[str, bool] = {}
         paths = {
-            "code-scanning": f"repos/{alert_config.REPO}/code-scanning/alerts",
-            "dependabot": f"repos/{alert_config.REPO}/dependabot/alerts",
-            "secret-scanning": f"repos/{alert_config.REPO}/secret-scanning/alerts",
-            "advisory": f"repos/{alert_config.REPO}/security-advisories",
+            "code-scanning": f"repos/{alert_config.repo()}/code-scanning/alerts",
+            "dependabot": f"repos/{alert_config.repo()}/dependabot/alerts",
+            "secret-scanning": f"repos/{alert_config.repo()}/secret-scanning/alerts",
+            "advisory": f"repos/{alert_config.repo()}/security-advisories",
         }
         for source, path in paths.items():
             if token is None:

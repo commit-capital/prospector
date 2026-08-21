@@ -29,13 +29,13 @@ def _fake_run(monkeypatch, rows: list[dict]) -> list[list[str]]:
 # --- _is_bot_login -----------------------------------------------------------
 
 def test_is_bot_login_accepts_bare_and_suffixed(monkeypatch):
-    monkeypatch.setattr(executor, "BOT_LOGIN", "triagebot")
+    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triagebot")
     assert executor._is_bot_login("triagebot")
     assert executor._is_bot_login("triagebot[bot]")
 
 
 def test_is_bot_login_rejects_other_actors(monkeypatch):
-    monkeypatch.setattr(executor, "BOT_LOGIN", "triagebot")
+    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triagebot")
     assert not executor._is_bot_login("greptile-apps[bot]")
     assert not executor._is_bot_login("some-human")
     assert not executor._is_bot_login("triagebot2[bot]")  # prefix is not identity
@@ -45,7 +45,7 @@ def test_is_bot_login_rejects_other_actors(monkeypatch):
 
 def test_is_bot_login_tolerates_suffixed_configuration(monkeypatch):
     # a deployment that sets TRIAGE_BOT_LOGIN with the suffix still matches both
-    monkeypatch.setattr(executor, "BOT_LOGIN", "triagebot[bot]")
+    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triagebot[bot]")
     assert executor._is_bot_login("triagebot")
     assert executor._is_bot_login("triagebot[bot]")
 
@@ -53,7 +53,7 @@ def test_is_bot_login_tolerates_suffixed_configuration(monkeypatch):
 # --- _has_bot_comment --------------------------------------------------------
 
 def test_has_bot_comment_matches_suffixed_rest_login(monkeypatch):
-    monkeypatch.setattr(executor, "BOT_LOGIN", "triagebot")
+    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triagebot")
     calls = _fake_run(monkeypatch, [
         {"login": "some-human", "body": "thanks!"},
         {"login": "triagebot[bot]", "body": "Closing as duplicate of #12."},
@@ -63,7 +63,7 @@ def test_has_bot_comment_matches_suffixed_rest_login(monkeypatch):
 
 
 def test_has_bot_comment_contains_scopes_to_bot_comments_only(monkeypatch):
-    monkeypatch.setattr(executor, "BOT_LOGIN", "triagebot")
+    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triagebot")
     _fake_run(monkeypatch, [
         {"login": "some-human", "body": "Closing as duplicate of #12."},
         {"login": "triagebot[bot]", "body": "re-triggered review"},
@@ -73,13 +73,13 @@ def test_has_bot_comment_contains_scopes_to_bot_comments_only(monkeypatch):
 
 
 def test_has_bot_comment_false_when_no_bot_comment(monkeypatch):
-    monkeypatch.setattr(executor, "BOT_LOGIN", "triagebot")
+    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triagebot")
     _fake_run(monkeypatch, [{"login": "some-human", "body": "hi"}])
     assert executor._has_bot_comment(101) is False
 
 
 def test_has_bot_comment_false_on_garbage_output(monkeypatch):
-    monkeypatch.setattr(executor, "BOT_LOGIN", "triagebot")
+    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triagebot")
     monkeypatch.setattr(executor, "run", lambda argv, timeout=30: types.SimpleNamespace(
         returncode=1, stdout="gh: Not Found", stderr=""))
     assert executor._has_bot_comment(101) is False
@@ -88,7 +88,7 @@ def test_has_bot_comment_false_on_garbage_output(monkeypatch):
 # --- _bot_comment_ids --------------------------------------------------------
 
 def test_bot_comment_ids_filters_by_tolerant_login(monkeypatch):
-    monkeypatch.setattr(executor, "BOT_LOGIN", "triagebot")
+    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triagebot")
     calls = _fake_run(monkeypatch, [
         {"login": "triagebot[bot]", "id": 11},
         {"login": "greptile-apps[bot]", "id": 22},
@@ -99,7 +99,7 @@ def test_bot_comment_ids_filters_by_tolerant_login(monkeypatch):
 
 
 def test_bot_comment_ids_empty_on_error(monkeypatch):
-    monkeypatch.setattr(executor, "BOT_LOGIN", "triagebot")
+    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triagebot")
     monkeypatch.setattr(executor, "run", lambda argv, timeout=30: types.SimpleNamespace(
         returncode=1, stdout="", stderr="boom"))
     assert executor._bot_comment_ids(101) == []
@@ -108,7 +108,7 @@ def test_bot_comment_ids_empty_on_error(monkeypatch):
 # --- _bot_change_request_ids -------------------------------------------------
 
 def test_bot_change_request_ids_filters_login_and_state(monkeypatch):
-    monkeypatch.setattr(executor, "BOT_LOGIN", "triagebot")
+    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triagebot")
     calls = _fake_run(monkeypatch, [
         {"login": "triagebot[bot]", "id": 1, "state": "COMMENTED"},
         {"login": "coderabbitai[bot]", "id": 2, "state": "CHANGES_REQUESTED"},
@@ -119,7 +119,7 @@ def test_bot_change_request_ids_filters_login_and_state(monkeypatch):
 
 
 def test_bot_change_request_ids_empty_on_error(monkeypatch):
-    monkeypatch.setattr(executor, "BOT_LOGIN", "triagebot")
+    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triagebot")
     monkeypatch.setattr(executor, "run", lambda argv, timeout=30: types.SimpleNamespace(
         returncode=1, stdout="", stderr="boom"))
     assert executor._bot_change_request_ids(101) == []
@@ -128,7 +128,7 @@ def test_bot_change_request_ids_empty_on_error(monkeypatch):
 # --- _latest_bot_review_url --------------------------------------------------
 
 def test_latest_bot_review_url_returns_last_bot_review(monkeypatch):
-    monkeypatch.setattr(executor, "BOT_LOGIN", "triagebot")
+    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triagebot")
     _fake_run(monkeypatch, [
         {"login": "triagebot[bot]", "url": "https://gh/r/1"},
         {"login": "greptile-apps[bot]", "url": "https://gh/r/2"},
@@ -138,6 +138,6 @@ def test_latest_bot_review_url_returns_last_bot_review(monkeypatch):
 
 
 def test_latest_bot_review_url_none_when_no_bot_review(monkeypatch):
-    monkeypatch.setattr(executor, "BOT_LOGIN", "triagebot")
+    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triagebot")
     _fake_run(monkeypatch, [{"login": "greptile-apps[bot]", "url": "https://gh/r/2"}])
     assert executor._latest_bot_review_url(101) is None
