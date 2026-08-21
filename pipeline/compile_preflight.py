@@ -41,6 +41,15 @@ def run_for_patch(pr: int, head_sha: str, patch: Path) -> dict | None:
     cmd = profile.active().verify.compile_cmd
     if cmd is None:
         return None
+    return run_command_for_patch(pr, head_sha, patch, cmd)
+
+
+def run_command_for_patch(pr: int, head_sha: str, patch: Path, cmd: str) -> dict:
+    """The sandbox record for `cmd` run over current default-branch HEAD with
+    `patch` applied — the compile preflight's mechanics under a caller-chosen
+    command, which is how the fix author's sandbox check runs the profile's
+    test runner over named test files. Fail-safe shape, fail-closed content:
+    every failure lands in the record; nothing raises into the caller."""
     t0 = time.monotonic()
     result: dict = {"cmd": cmd, "pr": pr, "head_sha": head_sha}
     try:

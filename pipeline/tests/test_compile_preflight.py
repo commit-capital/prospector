@@ -168,3 +168,34 @@ class TestPhaseDeclared:
         text = (SANDBOX / "sandbox-run.sh").read_text()
         m = re.search(r"^  ([a-z|-]*green[a-z|-]*)\)$", text, re.MULTILINE)
         assert m is not None and "compile" in m.group(1).split("|")
+
+
+class TestRunCommandForPatch:
+    def test_a_callers_command_runs_without_a_configured_compile_cmd(
+            self, monkeypatch, tmp_path):
+        # The fix author's sandbox check runs the profile's test runner through
+        # this seam; a deployment with no compile_cmd still has a test runner.
+        monkeypatch.setattr(profile, "active", lambda: profile.parse_profile(
+            {"version": 1}, "t"))
+        calls: list = []
+        patch = _patch_file(tmp_path, SRC_DIFF)
+        monkeypatch.setattr(verify_driver, "resolve_base_sha", lambda: BASE)
+        monkeypatch.setattr(verify_driver, "image_exists", lambda tag: True)
+
+        def fake_run(phase, image, **kw):
+            calls.append((phase, kw))
+            return 0, "ok"
+        monkeypatch.setattr(verify_driver, "run_phase", fake_run)
+        res = compile_preflight.run_command_for_patch(
+            7, "a" * 40, patch, "npx vitest run src/app.test.ts")
+        assert res["exit"] == 0 and res["cmd"] == "npx vitest run src/app.test.ts"
+        phase, kw = calls[0]
+        assert phase == "compile" and kw["test_cmd"] == "npx vitest run src/app.test.ts"
+        assert kw["patch"] == patch
+
+    def test_nothing_raises_into_the_caller(self, monkeypatch, tmp_path):
+        patch = _patch_file(tmp_path, SRC_DIFF)
+        monkeypatch.setattr(verify_driver, "resolve_base_sha",
+                            lambda: (_ for _ in ()).throw(RuntimeError("no docker")))
+        res = compile_preflight.run_command_for_patch(7, "a" * 40, patch, "x")
+        assert "error" in res and "exit" not in res

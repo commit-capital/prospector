@@ -146,8 +146,20 @@ branch as the machine user. Actions are `update` (merge the base in), `rebase`
 change). A `fix` runs two agents inside a `resubmit prepare` clone:
 `pipeline/author_fix.py` writes the change against a goal — the operator's own
 typed guidance, else the profile's fixable gates read off the current review
-findings and failing checks — and `pipeline/review_fix.py` then tries to refute
-the finished patch from a fresh context with read-only tools. Only an explicit
+findings, the review provider's own scored summary (Greptile's reasons for a
+sub-bar score, which name defects even when it left no inline comment) and the
+failing checks — and `pipeline/review_fix.py` then tries to refute the finished
+patch from a fresh context with read-only tools. A `fix` with no guidance, no
+findings, no summary and no failing check refuses before any agent runs. The
+clone is the head commit alone, so the agent is handed the PR's diff against its
+base as a host file, and it may run exactly one host command,
+`prospector_app/agent/sandbox-check` (`typecheck` or `test <test files>`), which
+runs the profile's compile command or test runner inside the verify sandbox over
+current default-branch HEAD + the PR diff + the agent's current edits
+(`prospector_app/backend/sandbox_check.py`, pins read from `PROSPECTOR_CHECK_*`
+set by `author_fix`, never argv); the host runs none of the contributor's code,
+and the agent gets no other Bash. The compile preflight on the finished patch
+measures that same composed tree. Only an explicit
 `safe` passes; a malformed, timed-out, or crashed reviewer reads as unsafe. In
 between, the patch is held to the files the agent reported
 (`author_fix.assert_disclosed`) and re-gated on the paths it really touched, so

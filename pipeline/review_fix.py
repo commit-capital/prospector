@@ -34,7 +34,7 @@ whether it may be.
 The bot was asked to:
 __GOAL__
 
-__FINDINGS__The worktree at __WORKTREE__ holds the code this change applies to. Read
+__FINDINGS____SUMMARY__The worktree at __WORKTREE__ holds the code this change applies to. Read
 whatever you need there.
 
 Your job is to REFUTE this change — to find the reason it must not be pushed.
@@ -66,6 +66,10 @@ Your final message must be exactly one JSON object, nothing else:
 """
 
 
+# The review provider's summary is prose the reviewer reads for context only.
+SUMMARY_CHARS = 4000
+
+
 def _clip(patch: str) -> str:
     """The patch, truncating the middle when it is enormous — a smuggled edit
     would sit at the end, so the end is kept."""
@@ -85,12 +89,20 @@ def _findings_block(findings: list[dict] | None) -> str:
     return "\n".join(lines) + "\n\n"
 
 
+def _summary_block(review_summary: str) -> str:
+    if not review_summary.strip():
+        return ""
+    return ("The review summary it was aimed at:\n"
+            + review_summary.strip()[:SUMMARY_CHARS] + "\n\n")
+
+
 def _prompt(worktree: str, patch: str, pr: int, goal: str,
-            findings: list[dict] | None) -> str:
+            findings: list[dict] | None, review_summary: str) -> str:
     return headless_agent.fill(PROMPT, {
         "__PR__": pr,
         "__GOAL__": goal.strip(),
         "__FINDINGS__": _findings_block(findings),
+        "__SUMMARY__": _summary_block(review_summary),
         "__WORKTREE__": worktree,
         "__PATCH__": _clip(patch),
     })
@@ -101,7 +113,7 @@ def _unsafe(reason: str) -> dict:
 
 
 def review(worktree: str, patch: str, *, pr: int, goal: str,
-           findings: list[dict] | None = None,
+           findings: list[dict] | None = None, review_summary: str = "",
            on_event: Callable[[tuple], None] | None = None) -> dict:
     """Judge `patch` against `goal`, returning
     {"verdict": "safe"|"unsafe", "reason": str, "concerns": list[str]}.
@@ -111,7 +123,7 @@ def review(worktree: str, patch: str, *, pr: int, goal: str,
     wrong as the reason."""
     try:
         text = headless_agent.run_agent(
-            _prompt(worktree, patch, pr, goal, findings),
+            _prompt(worktree, patch, pr, goal, findings, review_summary),
             allow_gh=False, cwd=worktree, edit_root=None,
             timeout=AGENT_TIMEOUT_SECONDS, on_event=on_event)
     except RuntimeError as e:

@@ -19,6 +19,7 @@ from prospector_app.backend import data, fix_queue, fix_worker
 
 HEAD = "a" * 40
 NOW = "2026-06-10T00:00:00+00:00"
+PR_DIFF = "diff --git a/pr.ts b/pr.ts\n+pr\n"
 
 
 @pytest.fixture
@@ -33,6 +34,13 @@ def store(tmp_path, monkeypatch):
     monkeypatch.setattr(data, "_store", st)
     monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", "")
     monkeypatch.setattr(fix_worker, "_preflight", lambda n, patch: {"exit": 0})
+    # The fix path reads the PR's diff from GitHub for the agent and the sandbox,
+    # and the review provider's summary when the score is below the bar.
+    pr_patch = tmp_path / "pr.patch"
+    pr_patch.write_text(PR_DIFF)
+    monkeypatch.setattr(fix_worker.verify_driver, "fetch_patch", lambda pr, head: pr_patch)
+    monkeypatch.setattr(fix_worker.greptile, "fetch_greptile_summary_text",
+                        lambda n: (None, None))
     data.refresh()
     return st
 
@@ -575,6 +583,120 @@ def test_an_unguided_fix_aims_at_the_outstanding_findings(store, monkeypatch):
     fix_worker.run_one(1)
 
     assert seen["findings"][0]["headline"] == "retry never exits"
+
+
+def _sub_bar_review(store, findings: list[dict] | None = None) -> None:
+    """A PR Greptile scored 3/5 at the current head, with the given digest."""
+    rec = store.load_pr(1).raw
+    rec["signals"].update({"greptile": 3, "greptile_reviewed_sha": HEAD})
+    rec["greptile_review"] = {"severity": "defects" if findings else "clean",
+                              "against_head_sha": HEAD, "checked_at": NOW,
+                              "findings": findings or []}
+    store.save_pr(rec)
+    data.refresh()
+
+
+def test_the_review_summary_is_evidence_when_the_digest_has_no_findings(store, monkeypatch):
+    # Greptile's reasons for a sub-bar score live in its summary comment, which
+    # names defects even when it left no inline comment for the digest to carry.
+    _sub_bar_review(store)
+    monkeypatch.setattr(
+        profile, "active",
+        lambda: profile.RepoProfile(autofix=profile.AutofixPolicy(fixable_gates=("review",))))
+    monkeypatch.setattr(fix_worker.greptile, "fetch_greptile_summary_text",
+                        lambda n: ("The armSilenceTimer guard misses terminalResultSeen.",
+                                   HEAD[:8]))
+    fix_queue.queue_pr(1, "fix")
+    monkeypatch.setattr(fix_worker, "_resubmit", _fix_probe())
+    seen: dict = {}
+    _authored(monkeypatch, capture=seen)
+    reviewed: dict = {}
+    _reviewed(monkeypatch, capture=reviewed)
+
+    fix_worker.run_one(1)
+
+    assert "misses terminalResultSeen" in seen["review_summary"]
+    assert "review summary" in seen["goal"]
+    assert "misses terminalResultSeen" in reviewed["review_summary"]
+
+
+def test_a_summary_for_another_head_is_not_evidence(store, monkeypatch):
+    _sub_bar_review(store)
+    monkeypatch.setattr(
+        profile, "active",
+        lambda: profile.RepoProfile(autofix=profile.AutofixPolicy(fixable_gates=("review",))))
+    monkeypatch.setattr(fix_worker.greptile, "fetch_greptile_summary_text",
+                        lambda n: ("stale reasoning", "b" * 8))
+    fix_queue.queue_pr(1, "fix")
+    probe = _fix_probe()
+    monkeypatch.setattr(fix_worker, "_resubmit", probe)
+    _authored(monkeypatch)
+    _reviewed(monkeypatch)
+
+    fix_worker.run_one(1)
+
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "refused" and "Nothing to aim" in req["refused_reason"]
+    assert ("prepare",) not in probe.calls
+
+
+def test_a_fix_with_nothing_to_aim_at_refuses_before_any_agent_runs(store, monkeypatch):
+    _sub_bar_review(store)
+    monkeypatch.setattr(
+        profile, "active",
+        lambda: profile.RepoProfile(autofix=profile.AutofixPolicy(fixable_gates=("review",))))
+    fix_queue.queue_pr(1, "fix")
+    probe = _fix_probe()
+    monkeypatch.setattr(fix_worker, "_resubmit", probe)
+    _authored(monkeypatch, verdict=None,
+              capture=None)
+    monkeypatch.setattr(fix_worker.author_fix, "author",
+                        lambda *a, **k: pytest.fail("agent ran with no evidence"))
+
+    fix_worker.run_one(1)
+
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "refused" and "Nothing to aim" in req["refused_reason"]
+    assert probe.calls == []
+
+
+def test_the_agent_gets_the_pr_diff_and_the_sandbox_sees_pr_plus_edits(store, monkeypatch,
+                                                                       tmp_path):
+    _queue_fix()
+    monkeypatch.setattr(fix_worker, "_resubmit", _fix_probe())
+    seen: dict = {}
+    _authored(monkeypatch, capture=seen)
+    _reviewed(monkeypatch)
+    preflighted: list[str] = []
+    monkeypatch.setattr(fix_worker, "_preflight",
+                        lambda n, patch: (preflighted.append(patch), {"exit": 0})[1])
+
+    fix_worker.run_one(1)
+
+    assert seen["diff_path"].endswith("pr.patch") and seen["head_sha"] == HEAD
+    # The agent's edits were written against the PR's tree, so the sandbox
+    # applies the PR's diff first and the edits after it.
+    (patch,) = preflighted
+    assert patch.startswith(PR_DIFF)
+    assert patch.endswith("diff --git a/a.ts b/a.ts\n+x")
+
+
+def test_a_pr_diff_that_cannot_be_fetched_fails_the_request_before_the_agent(store,
+                                                                             monkeypatch):
+    _queue_fix()
+    probe = _fix_probe()
+    monkeypatch.setattr(fix_worker, "_resubmit", probe)
+    monkeypatch.setattr(fix_worker.verify_driver, "fetch_patch",
+                        lambda pr, head: (_ for _ in ()).throw(
+                            fix_worker.verify_driver.FetchFailure("gh down")))
+    monkeypatch.setattr(fix_worker.author_fix, "author",
+                        lambda *a, **k: pytest.fail("agent ran without the PR diff"))
+
+    fix_worker.run_one(1)
+
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "failed" and "gh down" in req["error"]
+    assert probe.calls == []
 
 
 def test_a_give_up_refuses_with_the_agents_reason(store, monkeypatch):

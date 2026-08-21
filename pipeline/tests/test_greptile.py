@@ -1,5 +1,7 @@
 """Greptile-from-GitHub scraping: parse score/SHA/review text from gh data.
 gh_list is monkeypatched — no real network."""
+import unittest.mock as mock
+
 from pipeline import greptile
 
 
@@ -194,3 +196,29 @@ class TestFetchGreptileFeedback:
         import unittest.mock as mock
         with mock.patch.object(greptile, "gh_list", return_value=comments):
             assert greptile.fetch_greptile_feedback(5984) is None
+
+
+class TestFetchGreptileSummaryText:
+    def test_returns_the_scored_summary_body_and_its_footer_sha(self):
+        comments = [
+            {"user": {"login": "greptile-apps[bot]"}, "body": "earlier, unscored"},
+            {"user": {"login": "greptile-apps[bot]"},
+             "body": "<h3>Greptile Summary</h3>\nThe guard misses terminalResultSeen.\n"
+                     "<h3>Confidence Score: 3/5</h3>\nLast reviewed commit: "
+                     "https://github.com/o/r/commit/3bc15948abc"},
+            {"user": {"login": "someone"}, "body": "Confidence Score: 5/5"},
+        ]
+        with mock.patch.object(greptile, "gh_list", return_value=comments):
+            body, sha = greptile.fetch_greptile_summary_text(5365)
+        assert body is not None and "misses terminalResultSeen" in body
+        assert sha == "3bc15948abc"
+
+    def test_no_scored_summary_is_none(self):
+        with mock.patch.object(greptile, "gh_list",
+                               return_value=[{"user": {"login": "greptile-apps[bot]"},
+                                              "body": "just a note"}]):
+            assert greptile.fetch_greptile_summary_text(1) == (None, None)
+
+    def test_github_unreachable_is_none(self):
+        with mock.patch.object(greptile, "gh_list", return_value=None):
+            assert greptile.fetch_greptile_summary_text(1) == (None, None)

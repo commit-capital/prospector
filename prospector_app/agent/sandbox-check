@@ -1,0 +1,6 @@
+#!/bin/sh
+# The fix-authoring agent's sandbox check: the project's typecheck or test
+# runner over (default branch + PR diff + the agent's edits) inside the verify
+# sandbox. The worker names its own interpreter in PROSPECTOR_PYTHON so the
+# module resolves from the app's environment.
+exec "${PROSPECTOR_PYTHON:-python3}" -m prospector_app.backend.sandbox_check "$@"
