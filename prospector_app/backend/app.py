@@ -332,12 +332,24 @@ def fix_approve_pr(n: int):
 
 
 @app.get("/api/fix/queue")
-def fix_queue_status():
+def fix_queue_status(days: int = Query(7, ge=1, le=400), all_time: bool = False,
+                     limit: int = Query(100, ge=1, le=autohunt_view.HISTORY_LIMIT_CAP)):
     """The autofix queue: every PR with a request in flight, the ones proven and
-    waiting for a decision first. This is the browsable pre-tested backlog —
-    approving a row re-runs its merge or rebase against current base before
-    anything reaches the contributor's branch."""
-    return {"queue": fix_queue.queue_entries(), "runner": fix_queue.runner_status()}
+    waiting for a decision first, then the requests that ended in the last half
+    hour. This is the browsable pre-tested backlog — approving a row re-runs its
+    merge or rebase against current base before anything reaches the
+    contributor's branch.
+
+    `history` is fix-only run history from the runs ledger over the selected
+    window, which is where an ending goes once it ages out of the queue itself.
+    Pass `all_time=true` to span the whole ledger regardless of `days`."""
+    window = None if all_time else days
+    return {
+        "queue": fix_queue.queue_entries(),
+        "runner": fix_queue.runner_status(),
+        "history": autohunt_view.history_window(window, limit=limit,
+                                                lanes=frozenset({"fix"})),
+    }
 
 
 @app.get("/api/fix/runner")
@@ -398,7 +410,8 @@ def autohunt(days: int = Query(7, ge=1, le=400), all_time: bool = False,
     return {
         "status": autohunt_view.status(),
         "summary": autohunt_view.summary(window),
-        "history": autohunt_view.history_window(window, limit=limit),
+        "history": autohunt_view.history_window(window, limit=limit,
+                                                lanes=autohunt_view.HUNT_LANES),
     }
 
 

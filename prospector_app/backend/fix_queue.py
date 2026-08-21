@@ -13,6 +13,7 @@ compile preflight — all of which fail closed there.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import TypedDict
 
 from pipeline import gates, settings
 from pipeline.storekit import now as _now
@@ -110,32 +111,96 @@ def approve_pr(n: int) -> dict:
 _QUEUE_STATUS_ORDER = {"awaiting-review": 0, "pushing": 1, "running": 2,
                        "approved": 3, "queued": 4}
 
+# The statuses an ended request holds, and how long one keeps its place in the
+# queue view after it ends. A mechanical action runs for a minute or two and
+# writes its terminal status the moment it concludes, so an ending that is not
+# held here is an ending nobody sees — the row is simply absent from the next
+# poll. Holding it keeps the result where the work was watched.
+FINISHED_STATUSES = ("pushed", "refused", "failed", "cancelled")
+RECENT_SECONDS = 1800.0
 
-def queue_entries() -> list[dict]:
+
+class FixQueueEntry(TypedDict):
+    pr: int
+    title: str | None
+    status: str
+    action: str | None
+    source: str | None
+    step: str | None
+    queued_at: str | None
+    started_at: str | None
+    finished_at: str | None
+    host: str | None
+    base_sha: str | None
+    guidance: str | None
+    detail: str | None
+    conflict_paths: list[str]
+    resolvable: bool
+
+
+def _detail(req: dict) -> str | None:
+    """The one line worth reading about where this request stands: why it was
+    refused, what it failed on, or the message a proven change carries."""
+    for key in ("refused_reason", "error"):
+        text = req.get(key)
+        if isinstance(text, str) and text.strip():
+            return text
+    message = (req.get("result") or {}).get("message")
+    return message if isinstance(message, str) and message.strip() else None
+
+
+def _recent(req: dict) -> bool:
+    """Whether an ended request finished within RECENT_SECONDS. A request with
+    no finished stamp is not recent — dating an ending by `now` would pin a
+    long-dead request to the top of the view for good."""
+    stamp = req.get("finished_at")
+    if not isinstance(stamp, str):
+        return False
+    try:
+        at = datetime.fromisoformat(stamp)
+    except ValueError:
+        return False
+    return (datetime.now(timezone.utc) - at).total_seconds() < RECENT_SECONDS
+
+
+def _entry(n: int, title: str | None, req: dict) -> FixQueueEntry:
+    result = req.get("result") or {}
+    pf = result.get("compile_preflight")
+    status = str(req.get("status"))
+    paths = result.get("conflict_paths")
+    return {
+        "pr": n, "title": title, "status": status,
+        "action": req.get("action"), "source": req.get("source"),
+        "step": req.get("step"), "started_at": req.get("started_at"),
+        "finished_at": req.get("finished_at"), "host": req.get("host"),
+        "queued_at": req.get("queued_at"), "base_sha": req.get("base_sha"),
+        "guidance": req.get("guidance"), "detail": _detail(req),
+        "conflict_paths": [str(p) for p in paths] if isinstance(paths, list) else [],
+        "resolvable": status == "awaiting-review" and (pf is None or pf.get("exit") == 0),
+    }
+
+
+def queue_entries() -> list[FixQueueEntry]:
     """Every PR with an autofix request in flight, the reviewable ones first and
-    oldest-queued first within each status.
+    oldest-queued first within each status, followed by the requests that ended
+    within RECENT_SECONDS, newest ending first.
 
-    `resolvable` is the claim the row makes: the action produced a change and
-    the compile preflight did not reject it. A deployment configuring no
-    verify.compile_cmd records None, which is not a failure — the merge or
+    `resolvable` is the claim a reviewable row makes: the action produced a
+    change and the compile preflight did not reject it. A deployment configuring
+    no verify.compile_cmd records None, which is not a failure — the merge or
     rebase resolving is the claim, and the build check corroborates it."""
-    out: list[dict] = []
+    live: list[FixQueueEntry] = []
+    finished: list[FixQueueEntry] = []
     for n, rec in data.prs().items():
         req = rec.fix_request or {}
         status = req.get("status")
-        if status not in _QUEUE_STATUS_ORDER:
-            continue
-        pf = (req.get("result") or {}).get("compile_preflight")
-        out.append({
-            "pr": n, "title": rec.title, "status": status,
-            "action": req.get("action"), "source": req.get("source"),
-            "step": req.get("step"), "started_at": req.get("started_at"),
-            "host": req.get("host"),
-            "queued_at": req.get("queued_at"), "base_sha": req.get("base_sha"),
-            "resolvable": status == "awaiting-review" and (pf is None or pf.get("exit") == 0),
-        })
-    out.sort(key=lambda e: (_QUEUE_STATUS_ORDER[e["status"]], str(e["queued_at"] or "")))
-    return out
+        if status in _QUEUE_STATUS_ORDER:
+            live.append(_entry(n, rec.title, req))
+        elif status in FINISHED_STATUSES and _recent(req):
+            finished.append(_entry(n, rec.title, req))
+    live.sort(key=lambda e: (_QUEUE_STATUS_ORDER[e["status"]], str(e["queued_at"] or "")))
+    finished.sort(key=lambda e: str(e["finished_at"] or ""), reverse=True)
+    return live + finished
 
 
 def beat_online(last: object) -> bool:

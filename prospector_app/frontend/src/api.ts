@@ -628,11 +628,13 @@ export interface FixRunner {
   hosts: RunnerHost[];
 }
 
-/** One row of the autofix queue. `resolvable` is the claim a parked row makes:
- *  the action produced a change and the compile preflight did not reject it.
- *  `base_sha` is the base it was proven against — approving re-runs the action
- *  against whatever base is current then, so this dates the proof rather than
- *  gating it. */
+/** One row of the autofix queue: a request in flight, or one that ended within
+ *  the last half hour and is held here so a run finishing between two polls is
+ *  still readable. `finished_at` is what tells the two apart. `resolvable` is
+ *  the claim a parked row makes: the action produced a change and the compile
+ *  preflight did not reject it. `base_sha` is the base it was proven against —
+ *  approving re-runs the action against whatever base is current then, so this
+ *  dates the proof rather than gating it. */
 export interface FixQueueEntry {
   pr: number;
   title?: string | null;
@@ -641,28 +643,41 @@ export interface FixQueueEntry {
   source?: "operator" | "auto" | null;
   step?: string | null;
   started_at?: string | null;
+  finished_at?: string | null;
   host?: string | null;
   queued_at?: string | null;
   base_sha?: string | null;
+  /** The operator's own instruction for an agent-authored fix. */
+  guidance?: string | null;
+  /** The one line worth reading about where this request stands: why it was
+   *  refused, what it failed on, or the message a proven change carries. */
+  detail?: string | null;
+  /** The paths a conflicted rebase paused on — what an agent resolve would be
+   *  asked to settle. Empty on every other ending. */
+  conflict_paths: string[];
   resolvable: boolean;
 }
 
 export interface FixQueue {
   queue: FixQueueEntry[];
   runner: FixRunner;
+  history: AutohuntRun[];
 }
 
-/** One security/verify run from the store's runs ledger, normalized for the
- *  auto-hunt panel. `trigger` is "autohunt" on hunter-fired runs, null on
- *  operator-fired or unstamped entries. */
+/** One security, verify, or fix run from the store's runs ledger, normalized
+ *  for the panel that reports its lane. `trigger` is "autohunt" on hunter-fired
+ *  runs, null on operator-fired or unstamped entries. `action` and `detail`
+ *  belong to the fix lane and are null in the other two. */
 export interface AutohuntRun {
-  phase: "security" | "verify";
+  phase: "security" | "verify" | "fix";
   pr: number;
   title?: string | null;
   started?: string | null;
   finished?: string | null;
   trigger?: string | null;
   result?: string | null;
+  action?: FixRequestAction | null;
+  detail?: string | null;
 }
 
 /** One machine's pinned sandbox base. `age_hours` and `stale` are null/false
@@ -1458,7 +1473,11 @@ export const api = {
     return body as { pr: number; status: string };
   },
   fixRunner: () => get<FixRunner>("/api/fix/runner"),
-  fixQueue: () => get<FixQueue>("/api/fix/queue"),
+  fixQueue: (days = 7, allTime = false, limit = 100) => {
+    const qs = new URLSearchParams({ days: String(days), limit: String(limit) });
+    if (allTime) qs.set("all_time", "true");
+    return get<FixQueue>(`/api/fix/queue?${qs}`);
+  },
   workStatus: () => get<WorkStatus>("/api/status/now"),
   autohunt: (days = 7, allTime = false, limit = 100) => {
     const qs = new URLSearchParams({ days: String(days), limit: String(limit) });

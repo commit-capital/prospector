@@ -343,6 +343,26 @@ def _settle(n: int, req: dict, rc: int, output: str) -> None:
     _refuse(n, req, reason, result={"output": output[-TAIL_CHARS:]})
 
 
+def _log_run(n: int, req: dict, status: str, detail: str | None = None,
+             host: str | None = None) -> None:
+    """Append this run's ending to the runs ledger. A PR carries one
+    fix_request, which the next queue click overwrites — the ledger is where an
+    action's outcome survives that, and what the app's fix history reads.
+
+    Best-effort: a ledger append that fails must not cost the operator the
+    terminal status the caller has already written."""
+    entry = {
+        "phase": "fix:single", "pr": n, "started": req.get("started_at"),
+        "finished": _now(),
+        "trigger": "autohunt" if req.get("source") == "auto" else None,
+        "stats": {"status": status, "action": req.get("action", "fix"),
+                  "detail": detail, "host": host or socket.gethostname()}}
+    try:
+        data.store().append_run(entry)
+    except Exception:
+        traceback.print_exc()
+
+
 def _fail(n: int, req: dict, message: str) -> None:
     data.store().edit_pr(n).record_fix_request(
         "failed", req.get("action", "fix"), queued_at=req.get("queued_at"),
@@ -351,6 +371,7 @@ def _fail(n: int, req: dict, message: str) -> None:
         guidance=req.get("guidance"), host=socket.gethostname(),
         head_sha=req.get("against_head_sha"))
     data.refresh()
+    _log_run(n, req, "failed", message[-TAIL_CHARS:])
 
 
 def _refuse(n: int, req: dict, reason: str, result: dict | None = None) -> None:
@@ -361,6 +382,7 @@ def _refuse(n: int, req: dict, reason: str, result: dict | None = None) -> None:
         source=req.get("source"), guidance=req.get("guidance"),
         host=socket.gethostname(), head_sha=req.get("against_head_sha"))
     data.refresh()
+    _log_run(n, req, "refused", reason[-TAIL_CHARS:])
 
 
 def recheck_eligibility(n: int, action: str,
@@ -759,6 +781,8 @@ def _park(n: int, claimed: dict, action: str, result: dict, host: str) -> None:
         host=host, base_sha=_base_sha(),
         head_sha=claimed.get("against_head_sha"))
     data.refresh()
+    _log_run(n, {**claimed, "action": action}, "awaiting-review",
+             result.get("message"), host=host)
 
 
 def _base_sha() -> str | None:
@@ -939,6 +963,7 @@ def _finish_pushed(n: int, req: dict, output: str, result: dict | None = None) -
         source=req.get("source"), guidance=req.get("guidance"),
         host=socket.gethostname(), head_sha=req.get("against_head_sha"))
     data.refresh()
+    _log_run(n, req, "pushed", merged.get("message"))
     if req.get("action") == "fix":
         try:
             _retrigger_review(n)

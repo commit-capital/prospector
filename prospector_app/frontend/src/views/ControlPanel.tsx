@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import { api, type JobSpec, type JobRec, type PipelineStatus, type Autohunt, type AutohuntResultCounts, type FilterSpec, type VerifyBaseHealth, type VerifyBaseHost, type VerifyQueue, type FixQueue } from "../api";
 import { useRepoMeta } from "../RepoMetaContext";
@@ -48,9 +48,10 @@ function agoColor(iso: string | null | undefined): string {
   return "chip chip-red";
 }
 
-/** Chip tone for a hunt run's result: security verdicts map straight to their
- *  color; verify outcomes are green when the fix is confirmed, red on
- *  error/regression, amber for every in-between state. */
+/** Chip tone for a run's result: security verdicts map straight to their
+ *  color; a fix run's result is its terminal status, so it takes the same tone
+ *  the queue row does; verify outcomes are green when the fix is confirmed, red
+ *  on error/regression, amber for every in-between state. */
 function resultChip(phase: string, result: string | null | undefined): string {
   if (!result) return "chip chip-muted";
   if (phase === "security") {
@@ -59,9 +60,29 @@ function resultChip(phase: string, result: string | null | undefined): string {
     if (result === "RED") return "chip chip-red";
     return "chip chip-muted";
   }
+  if (phase === "fix") return fixStatusChip(result);
   if (result === "verified-fix" || result === "agent-verified") return "chip chip-green";
   if (result.startsWith("error") || result === "regressed") return "chip chip-red";
   return "chip chip-amber";
+}
+
+/** How long a running action has been going, ticking between polls. A
+ *  mechanical rebase takes a minute or two, which "just now" cannot show. */
+function elapsed(startedAt: string | null | undefined, now: number): string {
+  if (!startedAt) return "—";
+  const s = Math.max(0, Math.round((now - new Date(startedAt).getTime()) / 1000));
+  if (s < 60) return `${s}s`;
+  return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
+}
+
+/** Chip tone for an autofix row: a live status reads as progress, an ending
+ *  reads as its outcome. */
+function fixStatusChip(status: string): string {
+  if (status === "pushed") return "chip chip-green";
+  if (status === "failed") return "chip chip-red";
+  if (status === "refused") return "chip chip-amber";
+  if (status === "cancelled") return "chip chip-muted";
+  return queueStatusChip(status);
 }
 
 /** Chip tone for a queued/running/waiting-for-base verify request. */
@@ -234,10 +255,17 @@ export default function ControlPanel() {
   const [verifyQueueRange, setVerifyQueueRange] = useState<HuntRangeOpt>(HUNT_RANGE_OPTIONS[0]);
   const [verifyHistoryExpanded, setVerifyHistoryExpanded] = useState(false);
   const [fixQueue, setFixQueue] = useState<FixQueue | null>(null);
+  const [fixQueueRange, setFixQueueRange] = useState<HuntRangeOpt>(HUNT_RANGE_OPTIONS[0]);
+  const [fixHistoryExpanded, setFixHistoryExpanded] = useState(false);
   const [fixBusy, setFixBusy] = useState<number | null>(null);
   const [fixError, setFixError] = useState<string | null>(null);
+  const [now, setNow] = useState<number>(() => Date.now());
 
-  const refreshFixQueue = () => api.fixQueue().then(setFixQueue).catch(() => {});
+  const fixRunning = (fixQueue?.queue ?? []).some(
+    (e) => e.status === "running" || e.status === "pushing");
+
+  const refreshFixQueue = () =>
+    api.fixQueue(fixQueueRange.days, fixQueueRange.allTime).then(setFixQueue).catch(() => {});
 
   /** Approve or discard one parked change. The push itself happens on the
    *  worker's next tick, so this reloads rather than reporting a landed push. */
@@ -246,6 +274,22 @@ export default function ControlPanel() {
     setFixError(null);
     try {
       await (kind === "approve" ? api.approveFix(pr) : api.dequeueFix(pr));
+      await refreshFixQueue();
+    } catch (e) {
+      setFixError(String(e));
+    } finally {
+      setFixBusy(null);
+    }
+  };
+
+  /** Re-queue a rebase that the hunter refused on conflicts, as the operator.
+   *  An operator-queued rebase that pauses on the same conflicts escalates to
+   *  the agent resolver instead of refusing, and parks the result for review. */
+  const escalateFix = async (pr: number) => {
+    setFixBusy(pr);
+    setFixError(null);
+    try {
+      await api.queueFix(pr, "rebase");
       await refreshFixQueue();
     } catch (e) {
       setFixError(String(e));
@@ -312,11 +356,22 @@ export default function ControlPanel() {
     return () => clearInterval(t);
   }, [verifyQueueRange]);
 
+  // A mechanical action runs for a minute or two, so an in-flight queue is
+  // polled fast enough to show it moving through its steps; an idle one is not.
   useEffect(() => {
     refreshFixQueue();
-    const t = setInterval(refreshFixQueue, 30_000);
+    const t = setInterval(refreshFixQueue, fixRunning ? 10_000 : 30_000);
     return () => clearInterval(t);
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- refreshFixQueue is re-made every render; the range and the in-flight state are what change the poll
+  }, [fixQueueRange, fixRunning]);
+
+  // Elapsed time on a running row ticks between polls, so the seconds count up
+  // rather than jumping. Nothing running, nothing to tick.
+  useEffect(() => {
+    if (!fixRunning) return;
+    const t = setInterval(() => setNow(Date.now()), 1_000);
+    return () => clearInterval(t);
+  }, [fixRunning]);
 
   const sweepReconcile = async () => {
     setReconBusy(true);
@@ -800,62 +855,139 @@ export default function ControlPanel() {
         <>
           <div className="muted small" style={{ marginBottom: 8 }}>
             Proven in the sandbox, pushed to nobody. Approving re-runs the merge or
-            rebase against current base before anything reaches the branch.
+            rebase against current base before anything reaches the branch. A run that
+            ends keeps its place here for half an hour, then moves to the run history.
           </div>
           <table className="grid compact">
             <thead><tr><th>Status</th><th>PR</th><th>Action</th><th>Source</th><th>Since</th><th></th></tr></thead>
             <tbody>
               {fixQueue.queue.length === 0 ? (
-                <tr><td colSpan={6} className="muted small">Nothing queued, running, or waiting for review.</td></tr>
-              ) : fixQueue.queue.map((e) => (
-                <tr key={e.pr}>
-                  <td>
-                    {e.status === "awaiting-review" ? (
-                      <span className={e.resolvable ? "chip chip-green sm" : "chip chip-amber sm"}
-                        title={e.resolvable
-                          ? "The action produced a change and the compile preflight did not reject it."
-                          : "The change is parked, but its compile preflight did not pass."}>
-                        {e.resolvable ? "✅ Conflicts resolvable" : "⚠ Needs a look"}
-                      </span>
-                    ) : (
-                      <>
-                        <span className={queueStatusChip(e.status)}>
-                          {e.status}{e.step && (e.status === "running" || e.status === "pushing") ? ` · ${e.step}` : ""}
+                <tr><td colSpan={6} className="muted small">Nothing queued, running, waiting for review, or finished recently.</td></tr>
+              ) : fixQueue.queue.map((e) => {
+                const live = e.status === "running" || e.status === "pushing";
+                const ended = e.finished_at != null;
+                const detail = live && e.action === "fix" && e.guidance
+                  ? `goal: \u201c${e.guidance}\u201d` : e.detail;
+                return (
+                <Fragment key={e.pr}>
+                  <tr>
+                    <td>
+                      {e.status === "awaiting-review" ? (
+                        <span className={e.resolvable ? "chip chip-green sm" : "chip chip-amber sm"}
+                          title={e.resolvable
+                            ? "The action produced a change and the compile preflight did not reject it."
+                            : "The change is parked, but its compile preflight did not pass."}>
+                          {e.resolvable ? "\u2705 Conflicts resolvable" : "\u26a0 Needs a look"}
                         </span>
-                        {(e.status === "running" || e.status === "pushing") && (
-                          <RunningMeta host={e.host}
-                            online={(fixQueue.runner.hosts ?? []).some((h) => h.host === e.host && h.online)} />
-                        )}
-                      </>
-                    )}
-                  </td>
-                  <td className="mono">
-                    <PRLink n={e.pr} />
-                    {e.title && <div className="muted small">{e.title.slice(0, 60)}</div>}
-                  </td>
-                  <td><span className="chip chip-muted sm">{e.action}</span></td>
-                  <td><span className="chip chip-muted sm">{e.source === "auto" ? "auto" : "manual"}</span></td>
-                  <td className="muted small" title={fmt(e.started_at ?? e.queued_at)}>{ago(e.started_at ?? e.queued_at)}</td>
-                  <td>
-                    {e.status === "awaiting-review" && (
+                      ) : (
+                        <>
+                          <span className={fixStatusChip(e.status)}>
+                            {e.status}{e.step && live ? ` \u00b7 ${e.step}` : ""}
+                          </span>
+                          {live && (
+                            <RunningMeta host={e.host}
+                              online={(fixQueue.runner.hosts ?? []).some((h) => h.host === e.host && h.online)} />
+                          )}
+                        </>
+                      )}
+                    </td>
+                    <td className="mono">
+                      <PRLink n={e.pr} />
+                      {e.title && <div className="muted small">{e.title.slice(0, 60)}</div>}
+                    </td>
+                    <td><span className="chip chip-muted sm">{e.action}</span></td>
+                    <td><span className="chip chip-muted sm">{e.source === "auto" ? "auto" : "manual"}</span></td>
+                    <td className="muted small" title={fmt(e.finished_at ?? e.started_at ?? e.queued_at)}>
+                      {live ? elapsed(e.started_at, now)
+                        : ended ? ago(e.finished_at)
+                        : ago(e.started_at ?? e.queued_at)}
+                    </td>
+                    <td>
                       <div style={{ display: "flex", gap: 6 }}>
-                        <button className="btn-primary sm" disabled={fixBusy != null}
-                          onClick={() => runFixAction(e.pr, "approve")}
-                          title={`Push this ${e.action} to PR #${e.pr} as the machine user.`}>
-                          {fixBusy === e.pr ? "…" : "✓ Push"}
-                        </button>
-                        <button className="btn-secondary sm" disabled={fixBusy != null}
-                          onClick={() => runFixAction(e.pr, "discard")}
-                          title="Discard this proven change without pushing it.">
-                          ✕
-                        </button>
+                        {e.status === "awaiting-review" && (
+                          <>
+                            <button className="btn-primary sm" disabled={fixBusy != null}
+                              onClick={() => runFixAction(e.pr, "approve")}
+                              title={`Push this ${e.action} to PR #${e.pr} as the machine user.`}>
+                              {fixBusy === e.pr ? "\u2026" : "\u2713 Push"}
+                            </button>
+                            <button className="btn-secondary sm" disabled={fixBusy != null}
+                              onClick={() => runFixAction(e.pr, "discard")}
+                              title="Discard this proven change without pushing it.">
+                              \u2715
+                            </button>
+                          </>
+                        )}
+                        {e.status === "refused" && e.conflict_paths.length > 0 && (
+                          <button className="btn-secondary sm" disabled={fixBusy != null}
+                            onClick={() => escalateFix(e.pr)}
+                            title={`Re-queue the rebase as you rather than the hunter. An operator-queued rebase that pauses on these conflicts hands them to the agent resolver, and the result parks here for your review. Conflicted: ${e.conflict_paths.join(", ")}`}>
+                            {fixBusy === e.pr ? "\u2026" : "\u2934 Escalate to agent resolve"}
+                          </button>
+                        )}
                       </div>
-                    )}
-                  </td>
-                </tr>
-              ))}
+                    </td>
+                  </tr>
+                  {detail && (
+                    <tr>
+                      <td />
+                      <td colSpan={5} className="muted small" style={{ paddingTop: 0 }}>{detail}</td>
+                    </tr>
+                  )}
+                </Fragment>
+              )})}
             </tbody>
           </table>
+
+          <div className="jobspec-label" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 12 }}>
+            <span className="muted small">
+              run history \u00b7 {fixQueueRange.allTime ? "all time" : `last ${fixQueueRange.days} days`}
+            </span>
+            <div className="act-range-picker">
+              {HUNT_RANGE_OPTIONS.map((opt) => (
+                <button key={opt.label}
+                  className={`act-range-btn${fixQueueRange.label === opt.label ? " act-range-btn-active" : ""}`}
+                  onClick={() => setFixQueueRange(opt)}>
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <button className="btn-secondary sm" style={{ marginTop: 4 }}
+            onClick={() => setFixHistoryExpanded((v) => !v)}>
+            {fixHistoryExpanded ? "\u25be Hide run history" : `\u25b8 Show run history (${fixQueue.history.length})`}
+          </button>
+
+          {fixHistoryExpanded && (
+            <table className="grid compact" style={{ marginTop: 10 }}>
+              <thead><tr><th>When</th><th>PR</th><th>Action</th><th>Result</th><th>Source</th></tr></thead>
+              <tbody>
+                {fixQueue.history.length === 0 ? (
+                  <tr><td colSpan={5} className="muted small">No autofix runs in this window.</td></tr>
+                ) : fixQueue.history.map((r, i) => (
+                  <Fragment key={`${r.pr}-${r.finished ?? i}`}>
+                    <tr>
+                      <td className="muted small" title={fmt(r.finished ?? r.started)}>{ago(r.finished ?? r.started)}</td>
+                      <td className="mono">
+                        <PRLink n={r.pr} />
+                        {r.title && <div className="muted small">{r.title.slice(0, 60)}</div>}
+                      </td>
+                      <td><span className="chip chip-muted sm">{r.action ?? "\u2014"}</span></td>
+                      <td><span className={resultChip("fix", r.result)}>{r.result ?? "\u2014"}</span></td>
+                      <td><span className="chip chip-muted sm">{r.trigger === "autohunt" ? "auto" : "manual"}</span></td>
+                    </tr>
+                    {r.detail && (
+                      <tr>
+                        <td />
+                        <td colSpan={4} className="muted small" style={{ paddingTop: 0 }}>{r.detail}</td>
+                      </tr>
+                    )}
+                  </Fragment>
+                ))}
+              </tbody>
+            </table>
+          )}
           {fixError && <div className="muted small" style={{ marginTop: 6 }}>{fixError}</div>}
         </>
       ) : (
