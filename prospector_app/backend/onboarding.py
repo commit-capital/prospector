@@ -36,7 +36,12 @@ STEP_KEYS: dict[str, tuple[str, ...]] = {
                 "PROSPECTOR_FEEDBACK_REPO"),
     "writes": ("TRIAGE_BOT_LOGIN", "TRIAGE_BOT_APP_ID", "TRIAGE_BOT_KEY_FILE"),
     "worker": ("TRIAGE_PUSH_LOGIN", "TRIAGE_PUSH_EMAIL", "TRIAGE_PUSH_SSH_KEY_FILE"),
+    "agent": ("TRIAGE_AGENT_PROVIDER",),
 }
+
+# The agent pane's backends. The wizard also lists Codex, rendered as not
+# supported yet; writing it is refused here until a backend exists.
+_AGENT_PROVIDERS = ("claude", "none")
 
 # What the bundle carries to a teammate: everything a fresh checkout needs to
 # point itself at this deployment, plus the bot identity so its writes are
@@ -62,6 +67,11 @@ def _validated(step: str, updates: dict[str, str]) -> dict[str, str]:
     target = clean.get("TRIAGE_REPO")
     if target is not None and not _REPO_RE.match(target):
         raise ValueError(f"TRIAGE_REPO must be owner/name, not {target!r}")
+    provider = clean.get("TRIAGE_AGENT_PROVIDER")
+    if provider is not None and provider not in _AGENT_PROVIDERS:
+        raise ValueError(
+            f"TRIAGE_AGENT_PROVIDER must be one of {', '.join(_AGENT_PROVIDERS)}, "
+            f"not {provider!r}")
     return clean
 
 
@@ -183,13 +193,13 @@ def _probe_repo(target: str) -> dict[str, object]:
 
 
 def probe(store_url: str | None, repo: str | None,
-          key_file: str | None) -> dict[str, object]:
+          key_file: str | None, agent: bool = False) -> dict[str, object]:
     """Check candidate configuration without committing any of it.
 
     Diagnosing these is the wizard's job, so nothing here raises to the caller:
-    an unreachable store, an unreadable repository, and a missing PEM are
-    findings. Failures report a category, never raw exception text or the store
-    URL.
+    an unreachable store, an unreadable repository, a missing PEM, and an
+    absent or logged-out claude CLI are findings. Failures report a category,
+    never raw exception text or the store URL.
     """
     found: dict[str, object] = {}
     if store_url:
@@ -200,6 +210,9 @@ def probe(store_url: str | None, repo: str | None,
         path = Path(key_file).expanduser()
         found["key_file"] = ({"ok": True} if path.is_file()
                              else {"ok": False, "problem": "no file at that path"})
+    if agent:
+        from prospector_app.backend import chat
+        found["agent"] = chat.readiness()
     return found
 
 
@@ -219,5 +232,8 @@ def state() -> dict[str, object]:
         "bot_login": settings.bot_login(),
         "writes_ready": bool(settings.bot_login()) and executor.live_possible(),
         "worker_ready": worker_ready,
+        # The raw choice, not the effective provider: None means the operator
+        # has never picked, which is what makes the wizard's agent rung ask.
+        "agent_provider": os.environ.get("TRIAGE_AGENT_PROVIDER", "").strip() or None,
         "counts": counts,
     }

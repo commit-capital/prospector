@@ -152,6 +152,7 @@ class OnboardingProbe(BaseModel):
     store_url: str | None = None
     repo: str | None = None
     key_file: str | None = None
+    agent: bool = False
 
 
 class OnboardingApply(BaseModel):
