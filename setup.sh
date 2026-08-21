@@ -72,26 +72,5 @@ if [ -n "$primary" ] && [ "$primary" != "$ROOT" ] \
   echo "→ config   seeded repository profile from $primary_profile"
 fi
 
-if ! grep -q '^API_PORT=' "$ENV_FILE"; then
-  claimed_api=" " claimed_vite=" "
-  while IFS= read -r wt; do
-    sib="$wt/.env"
-    [ "$sib" = "$ENV_FILE" ] && continue
-    [ -f "$sib" ] || continue
-    claimed_api+="$(sed -n 's/^API_PORT=//p' "$sib") "
-    claimed_vite+="$(sed -n 's/^VITE_PORT=//p' "$sib") "
-  done < <(git -C "$ROOT" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p')
-
-  free_port() { ! lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1; }
-  for offset in $(seq 0 99); do
-    api=$((8787 + offset)) vite=$((5173 + offset))
-    case "$claimed_api" in *" $api "*) continue;; esac
-    case "$claimed_vite" in *" $vite "*) continue;; esac
-    if free_port "$api" && free_port "$vite"; then break; fi
-  done
-
-  { echo "# Per-worktree dev ports — appended by setup.sh; edit to override."
-    echo "API_PORT=$api"
-    echo "VITE_PORT=$vite"; } >> "$ENV_FILE"
-  echo "→ ports    API $api / Vite $vite  (appended to $ENV_FILE)"
-fi
+source "$ROOT/dev-ports.sh"
+claim_dev_ports "$ROOT" "$ENV_FILE"
