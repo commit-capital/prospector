@@ -19,9 +19,12 @@ export default defineConfig(({ mode }) => {
     // Expose the backend port to the client so the "backend unreachable" banner
     // can name it (see src/health.ts / App.tsx).
     define: { __API_PORT__: JSON.stringify(String(apiPort)) },
-    // Read `.env` from the repo root so one file drives both the Vite port and
-    // the backend port (see pipeline/devserve.py).
-    envDir: repoRoot,
+    // The repo-root `.env` is read once, above, via loadEnv; envDir stays off so
+    // Vite itself neither loads nor watches that file. The app reads nothing from
+    // import.meta.env, and the onboarding wizard rewrites `.env` on every apply —
+    // a watched env file restarts the dev server, severing in-flight proxied
+    // responses. A port change takes effect on the next manual dev-server start.
+    envDir: false,
     server: {
       port: vitePort,
       // Fail loudly on a port collision instead of silently bumping to the next

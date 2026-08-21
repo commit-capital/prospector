@@ -622,25 +622,31 @@ def chat_ready():
 
 @app.get("/api/chat/history")
 def chat_history(pr: int | None = None, cluster: int | None = None, issue: int | None = None,
-                 chat_id: str | None = None):
-    # `chat_id` selects an operator-named session's own thread (#343) instead of
-    # the default one-thread-per-subject; omitted, this is unchanged.
-    ctx_id = chat._thread_key(chat_id, pr, cluster, issue)
+                 advisory: str | None = None, alert_source: str | None = None,
+                 alert: int | None = None,
+                 chat_id: str | None = None) -> dict[str, object]:
+    # `chat_id` selects an operator-named session's own thread (#343). Without
+    # one, the subject selects its default thread.
+    ctx_id = chat._thread_key(chat_id, pr, cluster, issue, advisory, alert_source, alert)
     return {"messages": chat.load_thread(ctx_id), "session": chat._session_id(ctx_id), "ctx": ctx_id}
 
 
 @app.get("/api/chat")
 async def chat_stream(q: str, pr: int | None = None, cluster: int | None = None,
                       issue: int | None = None,
+                      advisory: str | None = None, alert_source: str | None = None,
+                      alert: int | None = None,
                       file: str | None = None, line: int | None = None,
                       prs: str | None = None, prs_total: int | None = None,
-                      chat_id: str | None = None):
+                      chat_id: str | None = None) -> EventSourceResponse:
     # `prs` is a comma-separated PR-number list — the operator's currently
     # visible/filtered view (#355), e.g. from PR Explorer. `prs_total` carries
     # the true match count when the frontend truncated the list before sending.
     pr_list = [int(x) for x in prs.split(",") if x.strip().isdigit()] if prs else None
-    async def gen():
+    async def gen() -> AsyncIterator[dict[str, str]]:
         async for ev in chat.stream_chat(q, pr=pr, cluster=cluster, issue=issue,
+                                         advisory=advisory, alert_source=alert_source,
+                                         alert=alert,
                                          file=file, line=line,
                                          prs=pr_list, prs_total=prs_total, chat_id=chat_id):
             yield ev
@@ -649,9 +655,13 @@ async def chat_stream(q: str, pr: int | None = None, cluster: int | None = None,
 
 @app.post("/api/chat/stop")
 def chat_stop(pr: int | None = None, cluster: int | None = None, issue: int | None = None,
-              chat_id: str | None = None):
+              advisory: str | None = None, alert_source: str | None = None,
+              alert: int | None = None,
+              chat_id: str | None = None) -> dict[str, bool]:
     """Interrupt the in-flight answer for this thread (#14)."""
-    return {"stopped": chat.stop_chat(pr=pr, cluster=cluster, issue=issue, chat_id=chat_id)}
+    return {"stopped": chat.stop_chat(
+        pr=pr, cluster=cluster, issue=issue, advisory=advisory,
+        alert_source=alert_source, alert=alert, chat_id=chat_id)}
 
 
 # ---------------------------------------------------------------------------

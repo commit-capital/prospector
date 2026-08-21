@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api, type AdvisoryDetail, type AdvisoryRow, type AdvisorySeverity, type AdvisoryState, type AdvisoryVerdict, type AlertCaps } from "../api";
@@ -139,6 +140,7 @@ const VERDICT_FILTERS = [
 ];
 
 export default function Advisories() {
+  const [params, setParams] = useSearchParams();
   const [caps, setCaps] = useState<AlertCaps | null>(null);
   const [q, setQ] = useState("");
   const [page, setPage] = useState(1);
@@ -146,7 +148,7 @@ export default function Advisories() {
   const [sortDir, setSortDir] = useState<SortDir | "">("desc");
   const [stateFilter, setStateFilter] = useState("open");
   const [verdictFilter, setVerdictFilter] = useState("");
-  const [selected, setSelected] = useState<string | null>(null);
+  const selected = params.get("advisory");
   const queryKey = JSON.stringify([q, sortKey, sortDir, stateFilter, verdictFilter, page]);
   const [result, setResult] = useState<{ key: string; items: AdvisoryRow[]; total: number; err?: string } | null>(null);
 
@@ -188,6 +190,19 @@ export default function Advisories() {
   const start = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
   const end = Math.min(page * PAGE_SIZE, total);
   const unavailable = caps !== null && !caps.sources.advisory;
+  const selectAdvisory = (ghsa: string): void => {
+    const next = new URLSearchParams(params);
+    next.set("security", "advisories");
+    next.set("advisory", ghsa);
+    next.delete("alert_source");
+    next.delete("alert");
+    setParams(next);
+  };
+  const closeAdvisory = (): void => {
+    const next = new URLSearchParams(params);
+    next.delete("advisory");
+    setParams(next);
+  };
 
   return (
     <>
@@ -242,7 +257,7 @@ export default function Advisories() {
               </tr></thead>
               <tbody>
                 {rows.map((r) => (
-                  <tr key={r.id} className={`rowlink ${selected === r.ghsa_id ? "row-selected" : ""}`} onClick={() => setSelected(r.ghsa_id)}>
+                  <tr key={r.id} className={`rowlink ${selected === r.ghsa_id ? "row-selected" : ""}`} onClick={() => selectAdvisory(r.ghsa_id)}>
                     <td className="mono small">
                       <a href={r.html_url} target="_blank" rel="noreferrer" className="gh-pr-link" title="Open on GitHub ↗" onClick={stopRowOpen}>{r.ghsa_id}</a>
                     </td>
@@ -261,7 +276,7 @@ export default function Advisories() {
               </tbody>
             </table>
           </div>
-          {selected && <DetailPanel ghsa={selected} onClose={() => setSelected(null)} />}
+          {selected && <DetailPanel ghsa={selected} onClose={closeAdvisory} />}
         </div>
       )}
     </>
