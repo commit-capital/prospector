@@ -9,7 +9,8 @@ dontAsk (never prompt, silently deny anything off the allowlist) + a read-only
 toolset. Unlike the chat agent we do NOT grant `gh issue create`; ANALYZE only
 needs read-only gh to cite already-landed upstream fixes. An opt-in `edit_root`
 grants Edit/Write scoped to a single worktree plus read-only git, for the
-conflict resolver.
+conflict resolver and the fix author; the rule names the worktree in the CLI's
+`//absolute` form, since a single leading slash is project-root-relative.
 """
 from __future__ import annotations
 
@@ -68,7 +69,13 @@ def _flags(allow_gh: bool, edit_root: str | None = None) -> list[str]:
     tools = ["Read", "Grep", "Glob", *(_GH_ALLOW if allow_gh else [])]
     disallowed = list(_DISALLOWED)
     if edit_root:
-        root = edit_root.rstrip("/")
+        # A rule path beginning with one slash resolves against the project
+        # root; "//" is the CLI's filesystem-absolute form. The CLI matches it
+        # against the path the agent passes, and a rule naming a symlink never
+        # matches, so the rule names the resolved root and the caller's worktree
+        # path must itself be free of symlinks. Under dontAsk a rule that fails
+        # to match is a silent denial of every edit.
+        root = "/" + os.path.realpath(edit_root).rstrip("/")
         tools += [f"Edit({root}/**)", f"Write({root}/**)", *_GIT_READ_ALLOW]
         disallowed = [t for t in disallowed if t not in ("Edit", "Write")]
     return [
