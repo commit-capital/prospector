@@ -32,7 +32,7 @@ uv run prospector serve --dev   # or: ./run-prospector.sh
 
 On a checkout with no deployment configured, the app opens a setup wizard
 instead of the triage tabs. It takes either route: paste the bundle a teammate
-copies from their 🛠️ Setup tab under "Share this deployment" — which carries
+copies from their 🛠️ Setup tab under "Invite a member to this project" — which carries
 the repository, the store, and the repository profile, so one paste is enough —
 or answer a few questions to point Prospector at a repository of your own,
 where each decision offers an option that works immediately and one that costs
