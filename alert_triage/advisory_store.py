@@ -141,6 +141,9 @@ class AdvisoryStore:
     def all_advisories(self) -> dict[int, advisory_model.Advisory]:
         return self._advisories.all()
 
+    def delete_advisories(self, ids: list[int]) -> None:
+        self._advisories.delete_many(ids)
+
     def advisories_since(self, watermark: str | None
                          ) -> tuple[dict[int, advisory_model.Advisory], str | None]:
         return self._advisories.since(watermark)

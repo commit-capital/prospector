@@ -107,6 +107,26 @@ def test_the_primary_never_yields_its_own_ports(repo):
     assert ports(primary / ".env") == ("8788", "5174")
 
 
+def test_a_worktree_never_takes_the_primary_s_default_pair(repo):
+    """A primary whose .env names no ports serves on 8787/5173; that pair is
+    the primary's even though no .env line says so."""
+    primary, tree = repo
+    (primary / ".env").write_text(ENV_BODY)
+    (tree / ".env").write_text(ENV_BODY)
+    claim(tree, tree / ".env")
+    api, vite = ports(tree / ".env")
+    assert api and vite
+    assert (api, vite) != ("8787", "5173")
+
+
+def test_a_pair_matching_the_primary_s_defaults_moves(repo):
+    primary, tree = repo
+    (primary / ".env").write_text(ENV_BODY)
+    (tree / ".env").write_text(ENV_BODY + "API_PORT=8787\nVITE_PORT=5173\n")
+    claim(tree, tree / ".env")
+    assert ports(tree / ".env") != ("8787", "5173")
+
+
 def test_a_hand_picked_pair_is_left_alone(repo):
     """The comment says "edit to override", so a port nobody else claims stays
     exactly as the operator set it."""

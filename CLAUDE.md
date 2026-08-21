@@ -222,7 +222,8 @@ advisories (`advisory_store.py` / `advisory_model.py`, table `advisories` keyed
 by `advisory_id(ghsa)`, the GHSA's twelve symbols as one base-21 integer, stamped
 `against_updated_at`; states `triage / draft / published / closed / withdrawn`,
 with `OPEN_STATES = {triage, draft}` the ones find-fixed judges).
-`advisory_ingest.py` lists every state as the bot — the App needs the
+`advisory_ingest.py` lists every state as the bot and leaves out any advisory
+that was only ever a draft (closed without being published) — the App needs the
 repository-security-advisories read permission, and a missing one marks the
 source unavailable like any alert source. `advisory_find_fixed.py` applies one
 deterministic tier-0 rule (a summary reading "CVE ID follow-up for existing

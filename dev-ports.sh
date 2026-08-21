@@ -7,11 +7,13 @@
 # naming the ports of the checkout it was copied from — which is exactly the
 # case this has to correct.
 #
-# A port pair is left alone unless another worktree's `.env` names one of its
-# numbers. A hand-picked port ("edit to override") is nobody else's, so it
-# stays; an inherited one collides with the checkout it came from, so it moves.
-# The primary checkout never yields: copies flow outward from it, so it is the
-# one that was there first.
+# A port pair is left alone unless another checkout claims one of its numbers:
+# a sibling worktree's `.env` naming it, or the primary's effective pair — the
+# ports its `.env` names, else the 8787/5173 defaults its servers bind. A
+# hand-picked port ("edit to override") is nobody else's, so it stays; an
+# inherited one collides with the checkout it came from, so it moves. The
+# primary checkout never yields: copies flow outward from it, so it is the one
+# that was there first.
 
 # Every port named by a worktree other than $2, as a space-padded string.
 _dp_claimed_by_others() {
@@ -63,19 +65,30 @@ _dp_pick() {
 claim_dev_ports() {
   local root=$1 env_file=$2
   local mine_api mine_vite claimed_api claimed_vite offset api vite verb
+  local primary p_api p_vite
   mine_api="$(sed -n 's/^API_PORT=//p' "$env_file" 2>/dev/null | tail -1)"
   mine_vite="$(sed -n 's/^VITE_PORT=//p' "$env_file" 2>/dev/null | tail -1)"
   claimed_api="$(_dp_claimed_by_others "$root" "$env_file" API_PORT)"
   claimed_vite="$(_dp_claimed_by_others "$root" "$env_file" VITE_PORT)"
 
+  primary="$(_dp_primary "$root")"
+  if [ -n "$primary" ] && [ "$(_dp_realpath "$root")" != "$(_dp_realpath "$primary")" ]; then
+    # The primary's servers bind the pair its .env names, else 8787/5173 —
+    # that pair is taken even when no .env line says so.
+    p_api="$(sed -n 's/^API_PORT=//p' "$primary/.env" 2>/dev/null | tail -1)"
+    p_vite="$(sed -n 's/^VITE_PORT=//p' "$primary/.env" 2>/dev/null | tail -1)"
+    claimed_api+="${p_api:-8787} "
+    claimed_vite+="${p_vite:-5173} "
+  fi
+
   verb="appended to"
   if [ -n "$mine_api" ]; then
-    # Ports already named. Keep them unless another worktree names one of the
+    # Ports already named. Keep them unless another checkout claims one of the
     # same numbers, which is what an inherited .env looks like. The primary
     # keeps its own either way.
-    case " $(_dp_realpath "$root") " in
-      " $(_dp_realpath "$(_dp_primary "$root")") ") return 0;;
-    esac
+    if [ -n "$primary" ] && [ "$(_dp_realpath "$root")" = "$(_dp_realpath "$primary")" ]; then
+      return 0
+    fi
     case "$claimed_api" in *" $mine_api "*) ;; *)
       case "$claimed_vite" in *" $mine_vite "*) ;; *) return 0;; esac;;
     esac
