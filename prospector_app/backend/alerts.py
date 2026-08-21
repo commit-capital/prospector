@@ -164,21 +164,26 @@ _sources_cache: dict[str, bool] | None = None
 
 
 def sources_available() -> dict[str, bool]:
-    """Which alert sources this deployment can actually read, probed once per
-    process with a 1-item list as the bot. No mintable token ⇒ all False."""
+    """Which alert sources and the advisory feed this deployment can read,
+    probed once per process with a 1-item list as the bot. No mintable token
+    ⇒ all False."""
     global _sources_cache
     if _sources_cache is None:
         from prospector_app.backend import executor
         token = executor.mint_bot_token()
         probed: dict[str, bool] = {}
-        for source in ("code-scanning", "dependabot", "secret-scanning"):
+        paths = {
+            "code-scanning": f"repos/{alert_config.repo()}/code-scanning/alerts",
+            "dependabot": f"repos/{alert_config.repo()}/dependabot/alerts",
+            "secret-scanning": f"repos/{alert_config.repo()}/secret-scanning/alerts",
+            "advisory": f"repos/{alert_config.repo()}/security-advisories",
+        }
+        for source, path in paths.items():
             if token is None:
                 probed[source] = False
                 continue
             try:
-                alert_config.gh_alert_read(
-                    f"repos/{alert_config.repo()}/{source}/alerts", token,
-                    {"per_page": "1"}, source=source)
+                alert_config.gh_alert_read(path, token, {"per_page": "1"}, source=source)
                 probed[source] = True
             except Exception:
                 probed[source] = False

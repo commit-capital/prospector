@@ -5,6 +5,7 @@ import { useExec } from "../ExecContext";
 import { useRepoMeta } from "../RepoMetaContext";
 import { stopRowOpen } from "../rowOpen";
 import { cycleSort, type SortDir } from "../sortCycle";
+import Advisories from "./Advisories";
 
 const PAGE_SIZE = 50;
 type AlertSortKey = "number" | "source" | "severity" | "title" | "state" | "verdict" | "links" | "updated";
@@ -200,7 +201,7 @@ const VERDICT_FILTERS = [
   { key: "none", label: "Unscanned" },
 ];
 
-export default function Alerts() {
+function AlertsTable() {
   const [caps, setCaps] = useState<AlertCaps | null>(null);
   const [q, setQ] = useState("");
   const [page, setPage] = useState(1);
@@ -268,11 +269,10 @@ export default function Alerts() {
   const start = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
   const end = Math.min(page * PAGE_SIZE, total);
 
-  const unavailable = caps !== null && !caps.available;
+  const unavailable = caps !== null && !(["code-scanning", "dependabot", "secret-scanning"] as AlertSource[]).some((s) => caps.sources[s]);
 
   return (
-    <div className="view alerts-view">
-      <h2>🛡️ Alerts</h2>
+    <>
       <p className="muted small">
         GitHub repository security &amp; quality alerts — code scanning, Dependabot, and
         GitHub secret scanning (secrets already in the repo; the per-PR threat scan of
@@ -287,7 +287,7 @@ export default function Alerts() {
           Control tab once access is granted.
         </div>
       )}
-      {caps?.available && (
+      {caps !== null && (
         <p className="muted small">
           Sources: {(["code-scanning", "dependabot", "secret-scanning"] as AlertSource[]).map((s) => (
             <span key={s}>{SOURCE_CHIP[s].label}: {caps.sources[s] ? "✓" : "✗"}{"  "}</span>
@@ -373,6 +373,22 @@ export default function Alerts() {
         )}
       </div>
       )}
+    </>
+  );
+}
+
+type Section = "advisories" | "alerts";
+
+export default function Alerts() {
+  const [section, setSection] = useState<Section>("advisories");
+  return (
+    <div className="view alerts-view">
+      <h2>🛡️ Alerts</h2>
+      <div className="segmented" title="Advisories are privately reported vulnerabilities; alerts are automated scanner findings">
+        <button className={section === "advisories" ? "on" : ""} onClick={() => setSection("advisories")}>Advisories</button>
+        <button className={section === "alerts" ? "on" : ""} onClick={() => setSection("alerts")}>Alerts</button>
+      </div>
+      {section === "advisories" ? <Advisories /> : <AlertsTable />}
     </div>
   );
 }
