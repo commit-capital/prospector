@@ -413,14 +413,14 @@ def onboarding_probe(body: models.OnboardingProbe):
 @app.post("/api/onboarding/apply")
 def onboarding_apply(body: models.OnboardingApply):
     """Write one step's configuration and adopt it in this process."""
-    env, profile_doc = body.env, body.profile
+    env, profile_doc, key_pem = body.env, body.profile, None
     if body.bundle is not None:
         try:
-            env, profile_doc = onboarding.parse_bundle(body.bundle)
+            env, profile_doc, key_pem = onboarding.parse_bundle(body.bundle)
         except ValueError as e:
             raise HTTPException(400, str(e))
     try:
-        return onboarding.apply(body.step, env, profile_doc)
+        return onboarding.apply(body.step, env, profile_doc, bot_key_pem=key_pem)
     except ValueError as e:
         raise HTTPException(400, str(e))
     except OSError as e:
@@ -460,11 +460,17 @@ def setup_flags(body: models.WorkerFlags):
 
 
 @app.post("/api/setup/share")
-def setup_share():
+def setup_share(body: models.SetupShare | None = None):
     """Everything a teammate's fresh checkout needs to join this deployment,
     as one thing they paste into their setup wizard. POST, so the store URL is
-    never in a request line."""
-    return {"bundle": json.dumps(onboarding.build_bundle(), indent=2)}
+    never in a request line. `include_key` adds the bot's private key; refused
+    with a 400 when this machine has none to give."""
+    include_key = bool(body and body.include_key)
+    try:
+        bundle = onboarding.build_bundle(include_key=include_key)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"bundle": json.dumps(bundle, indent=2)}
 
 
 @app.get("/api/autohunt")

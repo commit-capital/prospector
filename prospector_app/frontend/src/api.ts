@@ -1149,9 +1149,17 @@ export interface OnboardingApplyBody {
 export const api = {
   setupReadiness: () =>
     get<{ readiness: SetupReadiness; flags: WorkerFlags }>("/api/setup/readiness"),
-  setupShare: async () => {
-    const r = await fetch("/api/setup/share", { method: "POST" });
-    if (!r.ok) throw new Error(`/api/setup/share → ${r.status}`);
+  /** The deployment bundle a teammate pastes. `includeKey` adds the bot's
+   *  private key, so their machine executes approved writes too. */
+  setupShare: async (includeKey: boolean) => {
+    const r = await fetch("/api/setup/share", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ include_key: includeKey }),
+    });
+    if (!r.ok) {
+      const problem = await r.json().catch(() => ({ detail: `${r.status}` }));
+      throw new Error(problem.detail ?? `${r.status}`);
+    }
     return r.json() as Promise<{ bundle: string }>;
   },
   onboardingState: () => get<OnboardingState>("/api/onboarding/state"),

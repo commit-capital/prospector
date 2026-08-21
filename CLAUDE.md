@@ -95,8 +95,12 @@ reads normally, and writes nothing.
 else. `prospector_app/backend/onboarding.py` writes deployment configuration
 for the setup wizard, allowlisted per step: `connect` (`TRIAGE_REPO`,
 `TRIAGE_STORE_URL`, the profile path, and presentation/review config, plus
-`profile.json` itself), `writes` (the bot identity and key path), and `worker`
-(the contributor-push identity). **`connect` is refused once
+`profile.json` itself), `join` (a pasted bundle: the `connect` keys plus the bot
+identity, and, when the sharer opted in, the bot's private key — which the app
+files owner-only at `~/.config/prospector/<login>/private-key.pem` and names in
+`TRIAGE_BOT_KEY_FILE` itself; the key *path* is never client-writable there),
+`writes` (the bot identity and key path), and `worker`
+(the contributor-push identity). **`connect` and `join` are refused once
 `settings.configured()` is true**, so a working deployment cannot be pointed at
 another repository or another database through the HTTP surface; `writes` and
 `worker` stay open because the wizard reaches them after `connect` has already
