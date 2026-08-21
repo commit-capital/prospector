@@ -43,6 +43,7 @@ def capabilities() -> dict:
         _cache = {
             "login": login,
             "bot": settings.bot_login(),
+            "bot_configured": bool(settings.bot_login()),
             # Writes go out as the configured app and require a current store
             # schema; per-PR policy remains in the executor.
             "merge_upstream": live and write_ready,
