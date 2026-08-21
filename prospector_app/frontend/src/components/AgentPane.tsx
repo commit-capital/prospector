@@ -61,9 +61,15 @@ interface LegacyChatSession {
   lastActiveAt: number;
 }
 
+// The session list and the active session belong to a deployment, so their
+// keys carry the repository: two deployments served from one origin (two
+// checkouts taking turns on a port) never hand each other their threads. The
+// bare keys are the pre-scoping stores — read once when a scoped one is
+// absent, removed on the first scoped save.
 const SESSIONS_KEY = "agentpane-sessions-v2";
 const LEGACY_SESSIONS_KEY = "agentpane-sessions-v1";
 const ACTIVE_SESSION_KEY = "agentpane-active-session";
+const scopedKey = (base: string, repo: string): string => `${base}@${repo}`;
 const MAX_STORED_SESSIONS = 20;
 const MAX_VISIBLE_SESSION_PILLS = 6;
 
@@ -100,11 +106,18 @@ function migrateLegacySession(session: LegacyChatSession): ChatSession {
   };
 }
 
-function loadSessions(): ChatSession[] {
-  const sessions = storedArray(SESSIONS_KEY);
-  if (sessions !== null) return sessions as ChatSession[];
+function loadSessions(repo: string): ChatSession[] {
+  const scoped = storedArray(scopedKey(SESSIONS_KEY, repo));
+  if (scoped !== null) return scoped as ChatSession[];
+  const unscoped = storedArray(SESSIONS_KEY);
+  if (unscoped !== null) return unscoped as ChatSession[];
   return (storedArray(LEGACY_SESSIONS_KEY) ?? [])
     .map((session) => migrateLegacySession(session as LegacyChatSession));
+}
+
+function loadActiveSessionId(repo: string): string | null {
+  return localStorage.getItem(scopedKey(ACTIVE_SESSION_KEY, repo))
+    || localStorage.getItem(ACTIVE_SESSION_KEY) || null;
 }
 
 function newSessionId(): string {
@@ -173,6 +186,8 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
   pending: string | null; clearPending: () => void; visiblePrs: number[] | null;
 }) {
   const loc = useLocation();
+  const { meta } = useRepoMeta();
+  const repo = meta?.repo ?? "";
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
@@ -183,19 +198,22 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
   // shown, or null for the default "whatever page I'm on" thread (unchanged
   // behavior for an operator who never opens the strip). `effectiveActiveId`
   // guards against a stale id left over from a session removed on another tab.
-  const [sessions, setSessions] = useState<ChatSession[]>(() => loadSessions());
+  const [sessions, setSessions] = useState<ChatSession[]>(() => loadSessions(repo));
   const [activeSessionId, setActiveSessionId] = useState<string | null>(
-    () => localStorage.getItem(ACTIVE_SESSION_KEY) || null);
+    () => loadActiveSessionId(repo));
   const activeSession = activeSessionId ? sessions.find((s) => s.id === activeSessionId) ?? null : null;
   const effectiveActiveId = activeSession ? activeSessionId : null;
   useEffect(() => {
-    localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions));
+    localStorage.setItem(scopedKey(SESSIONS_KEY, repo), JSON.stringify(sessions));
+    localStorage.removeItem(SESSIONS_KEY);
     localStorage.removeItem(LEGACY_SESSIONS_KEY);
-  }, [sessions]);
+  }, [sessions, repo]);
   useEffect(() => {
-    if (effectiveActiveId) localStorage.setItem(ACTIVE_SESSION_KEY, effectiveActiveId);
-    else localStorage.removeItem(ACTIVE_SESSION_KEY);
-  }, [effectiveActiveId]);
+    const key = scopedKey(ACTIVE_SESSION_KEY, repo);
+    if (effectiveActiveId) localStorage.setItem(key, effectiveActiveId);
+    else localStorage.removeItem(key);
+    localStorage.removeItem(ACTIVE_SESSION_KEY);
+  }, [effectiveActiveId, repo]);
   // Subject stays frozen while streaming or while the thread has messages, so navigating
   // the UI doesn't reset an active conversation. The pane re-anchors to the current URL
   // only when the thread is empty — on first load or after "New chat". A named session
