@@ -17,7 +17,8 @@
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text);
-  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  accent-color: var(--accent); }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
@@ -365,6 +366,15 @@ select { background: var(--panel); border: 1px solid var(--border); color: var(-
 .dispo-stale { font-size: 11.5px; color: var(--yellow); margin-top: 3px; }
 
 /* buttons */
+/* Every button uses the app's typeface. Unclassed buttons get the panel look
+   as a zero-specificity baseline (:where), so any context rule outranks it. */
+button { font: inherit; }
+button:where(:not([class])) { background: var(--panel2); color: var(--text);
+  border: 1px solid color-mix(in srgb, var(--text) 20%, var(--border));
+  border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+button:where(:not([class])):hover:not(:disabled) { background: color-mix(in srgb, var(--text) 7%, var(--panel2)); }
+button:where(:not([class])):disabled { opacity: .5; cursor: not-allowed; }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .btn-primary { background: var(--accent); color: #fff; border: none; border-radius: 8px; padding: 8px 14px; cursor: pointer; font-weight: 600; }
 .btn-primary:hover:not(:disabled) { filter: brightness(1.07); }
 .btn-primary:active:not(:disabled) { filter: brightness(.95); }
@@ -1408,7 +1418,7 @@ tr.row-done:hover > td { opacity: 1; }
 .fix-goal:focus { outline: none; border-color: var(--accent); }
 .fix-composer .row-actions { display: flex; gap: 6px; }
 
-/* --- Setup tab (🛠️): the provisioning offer and the deployment-share card -- */
+/* --- Setup tab (🛠️): the provisioning offer and the invite-a-member card -- */
 .setup-card { border: 1px solid var(--border); border-radius: 10px;
   padding: 14px 16px; margin: 12px 0; background: var(--panel); }
 .setup-card > h3 { margin: 0 0 6px; font-size: 14px; }

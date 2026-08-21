@@ -173,9 +173,9 @@ function JoinBranch({ onDone, onBack }: { onDone: () => void; onBack: () => void
     <section className="setup-card">
       <h3>Paste the setup bundle</h3>
       <p className="muted small">
-        Your teammate copies it from their Setup tab, under “Share this
-        deployment”. It carries a database password, so it should have reached
-        you privately — not through a channel with history.
+        Your teammate copies it from their Setup tab, under “Invite a member
+        to this project”. It carries a database password, so it should have
+        reached you privately — not through a channel with history.
       </p>
       <textarea className="welcome-paste" value={text} rows={10} disabled={busy}
         placeholder={'{\n  "version": 1,\n  "env": { "TRIAGE_REPO": "…" }\n}'}
@@ -199,7 +199,7 @@ function JoinBranch({ onDone, onBack }: { onDone: () => void; onBack: () => void
       )}
       {problem && <p className="chip chip-red sm">{problem}</p>}
       <div className="welcome-actions">
-        <button disabled={busy || text.trim() === ""} onClick={() => void submit()}>
+        <button className="btn-primary" disabled={busy || text.trim() === ""} onClick={() => void submit()}>
           {busy ? "connecting…" : "connect"}
         </button>
         <BackLink onBack={onBack} />
@@ -430,7 +430,7 @@ function NewBranch({ onDone, onBack }: { onDone: () => void; onBack: () => void 
 
       {problem && <p className="chip chip-red sm">{problem}</p>}
       <div className="welcome-actions">
-        <button disabled={!ready || busy} onClick={() => void submit()}>
+        <button className="btn-primary" disabled={!ready || busy} onClick={() => void submit()}>
           {busy ? "setting up…" : "set up Prospector"}
         </button>
         <BackLink onBack={onBack} />
@@ -555,7 +555,7 @@ function AgentStep({ state, onDone }: { state: OnboardingState; onDone: () => vo
       <AgentChooser pick={pick} onPick={setPick} />
       {problem && <p className="chip chip-red sm">{problem}</p>}
       <div className="welcome-actions">
-        <button disabled={busy || pick == null} onClick={() => void apply()}>
+        <button className="btn-primary" disabled={busy || pick == null} onClick={() => void apply()}>
           {busy ? "saving…" : "save"}
         </button>
         {chosen != null && (
@@ -628,7 +628,7 @@ function WritesStep({ name, onDone }: { name: string; onDone: () => void }) {
       </div>
       {problem && <p className="chip chip-red sm">{problem}</p>}
       <div className="welcome-actions">
-        <button
+        <button className="btn-primary"
           disabled={busy || botLogin.trim() === "" || keyFile.trim() === ""}
           onClick={() => void submit()}>
           {busy ? "checking…" : "enable writes"}
