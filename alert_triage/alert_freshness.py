@@ -1,12 +1,12 @@
 """The ONE 'is this fact still about the current alert or advisory?' check.
 
-An alert fact is current iff it exists, was computed against the alert's current
-meta.updated_at (GitHub bumps updated_at on state changes and new instances),
-and is within any max-age window. The comparison engine is
+A record's fact is current iff it exists, was computed against the record's
+current meta.updated_at (GitHub bumps updated_at on state changes and new
+instances), and is within any max-age window. The comparison engine is
 pipeline/storekit.is_current_core, shared with the PR and issue freshness
 checks. The fixed-pass additionally bounds fix_scan by FIX_SCAN_MAX_AGE_DAYS:
-alerts are fixed by the *repository* moving, so a verdict refreshes on age even
-while the alert itself is quiet.
+alerts and advisories are fixed by the *repository* moving, so a verdict
+refreshes on age even while the record itself is quiet.
 """
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ class Stamped(Protocol):
     @property
     def updated_at(self) -> str | None: ...
 
-# Sections whose facts are tied to the alert's content at a specific updated_at.
+# Sections whose facts are tied to the record's content at a specific updated_at.
 UPDATED_BOUND = ("links", "fix_scan")
 
 # Per-section producer-logic version; bump to mark every existing instance stale.

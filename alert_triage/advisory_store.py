@@ -37,7 +37,7 @@ ADVISORY_SECTIONS = ("meta", "links", "fix_scan")
 
 def advisory_id(ghsa: str) -> int:
     """The store key for a GHSA id. Raises ValueError on a malformed id."""
-    if not _GHSA.match(ghsa or ""):
+    if not _GHSA.fullmatch(ghsa or ""):
         raise ValueError(f"not a GHSA id: {ghsa!r}")
     n = 0
     for ch in ghsa[5:].replace("-", ""):
@@ -46,6 +46,8 @@ def advisory_id(ghsa: str) -> int:
 
 
 def ghsa_of(i: int) -> str:
+    if not 0 <= i < 21 ** 12:
+        raise ValueError(f"not an advisory key: {i!r}")
     digits = []
     for _ in range(12):
         i, r = divmod(i, 21)
@@ -88,9 +90,12 @@ def validate_advisory(rec: dict) -> None:
             raise ValidationError(f"fix_scan.by: {fs.get('by')!r} not in {sorted(VERDICT_BY)}")
         target = fs.get("duplicate_of")
         if verdict == "duplicate":
-            if not target or not _GHSA.match(target):
+            if not target or not _GHSA.fullmatch(target):
                 raise ValidationError("fix_scan.duplicate_of: a GHSA id is required "
                                       "for a duplicate verdict")
+            if target == meta["ghsa_id"]:
+                raise ValidationError("fix_scan.duplicate_of: an advisory cannot "
+                                      "duplicate itself")
         elif target:
             raise ValidationError("fix_scan.duplicate_of: only a duplicate verdict names one")
         commit = fs.get("fix_commit")

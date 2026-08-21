@@ -23,7 +23,6 @@ def test_mirror_advisory_projects_hot_fields():
         "severity": "high", "updated_at": "2026-08-20T00:00:00Z"}
 
 
-
 def _meta(ghsa: str = "GHSA-7f7c-55pc-67wg", **over) -> dict:
     meta = {
         "ghsa_id": ghsa, "state": "triage", "severity": "high",
@@ -42,9 +41,13 @@ def _rec(ghsa: str = "GHSA-7f7c-55pc-67wg", **meta_over) -> dict:
     return {"id": advisory_id(ghsa), "meta": _meta(ghsa, **meta_over)}
 
 
-def test_alphabet_is_githubs_21_symbols():
-    assert GHSA_ALPHABET == "23456789cfghjkmpqrvwx"
+def test_every_symbol_round_trips_at_every_position():
     assert len(set(GHSA_ALPHABET)) == 21
+    for pos in range(12):
+        for ch in GHSA_ALPHABET:
+            body = "2" * pos + ch + "2" * (11 - pos)
+            g = f"GHSA-{body[:4]}-{body[4:8]}-{body[8:]}"
+            assert ghsa_of(advisory_id(g)) == g
 
 
 def test_advisory_id_round_trips_and_orders():
@@ -56,8 +59,15 @@ def test_advisory_id_round_trips_and_orders():
     assert advisory_id("GHSA-xxxx-xxxx-xxxx") < 2 ** 63
 
 
+def test_ghsa_of_rejects_keys_outside_the_id_space():
+    for i in (21 ** 12, -1):
+        with pytest.raises(ValueError):
+            ghsa_of(i)
+
+
 @pytest.mark.parametrize("bad", ["GHSA-7f7c-55pc-67w", "GHSA-7f7c-55pc-67w1",
-                                 "ghsa-7f7c-55pc-67wg", "CVE-2026-41679", ""])
+                                 "ghsa-7f7c-55pc-67wg", "GHSA-7f7c-55pc-67wg\n",
+                                 "CVE-2026-41679", ""])
 def test_advisory_id_rejects_malformed(bad):
     with pytest.raises(ValueError):
         advisory_id(bad)
@@ -87,6 +97,11 @@ def test_validate_fix_scan_shape_rules():
     fixed_without_commit["fix_scan"] = {"verdict": "fixed", "by": "agent"}
     with pytest.raises(ValidationError, match="fix_commit"):
         validate_advisory(fixed_without_commit)
+    self_dup = _rec()
+    self_dup["fix_scan"] = {"verdict": "duplicate", "by": "agent",
+                            "duplicate_of": "GHSA-7f7c-55pc-67wg"}
+    with pytest.raises(ValidationError, match="duplicate itself"):
+        validate_advisory(self_dup)
     stray_target = _rec()
     stray_target["fix_scan"] = {"verdict": "not-fixed", "by": "agent",
                                 "duplicate_of": "GHSA-2222-2222-2223"}
