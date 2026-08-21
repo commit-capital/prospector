@@ -227,3 +227,38 @@ def collect(pinned_sha: str | None, *, dry_run: bool = False) -> dict:
         result["ok"] = False
         result["error"] = f"{type(e).__name__}: {e}"
     return result
+
+
+def teardown(*, dry_run: bool = False) -> dict:
+    """Remove every base artifact this machine holds — all generations, the
+    pinned one included — plus the hardened sandbox image and the scratch root.
+    Returns `{ok, images, kept_images, clones, scratch, error}`: `images` went,
+    `kept_images` would not (a phase container still holds them), `clones` and
+    `scratch` name what was removed from disk. With `dry_run`, reports what
+    would go and removes nothing. Never raises."""
+    from pipeline import verify_driver
+    result: dict = {"ok": True, "images": [], "kept_images": [], "clones": [],
+                    "scratch": None, "error": None}
+    try:
+        wanted = [tag for tags in _base_images().values() for tag, _ in tags]
+        wanted.append(verify_driver.sandbox_image())
+        clones = list(_clone_dirs().values())
+        if dry_run:
+            result["images"] = wanted
+            result["clones"] = [str(c) for c in clones]
+            result["scratch"] = str(SCRATCH) if SCRATCH.exists() else None
+            return result
+        for image in wanted:
+            (result["images"] if _rmi(image) else result["kept_images"]).append(image)
+        for clone in clones:
+            shutil.rmtree(clone, ignore_errors=True)
+            result["clones"].append(str(clone))
+        if SCRATCH.exists():
+            shutil.rmtree(SCRATCH)
+            result["scratch"] = str(SCRATCH)
+        _prune_build_leftovers()
+        result["ok"] = not result["kept_images"]
+    except (OSError, subprocess.SubprocessError) as e:
+        result["ok"] = False
+        result["error"] = f"{type(e).__name__}: {e}"
+    return result

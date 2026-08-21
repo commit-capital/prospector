@@ -60,6 +60,14 @@ watch the app's 🛠️ Setup tab go green. Any number of machines can; each hol
 its own sandbox base, and the queue claim is a compare-and-swap so two never
 pick up the same PR.
 
+To take a machine back out, the Setup tab's **Unprovision this computer** card
+stops the work in one click (every lane off; one click brings it back) and,
+expanded, composes the reverse of the setup command for you to run:
+`./teardown-worker-machine.sh [--artifacts] [--vm] [--packages]` — lane
+switches off always; `--artifacts` removes this machine's base images, sandbox
+image, scratch clone, and base pin; `--vm` deletes the Colima VM; `--packages`
+uninstalls colima and docker (never gh, jq, or node).
+
 ## Repository layout
 
 | Folder | Purpose |

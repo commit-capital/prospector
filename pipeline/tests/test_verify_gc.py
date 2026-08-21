@@ -317,3 +317,54 @@ class TestCollect:
         result = gc.collect("a" * 12)
         assert (tmp_path / "base" / ("c" * 12)).is_dir()
         assert result["reclaimed"] == []
+
+
+class TestTeardown:
+    """Unprovisioning removes every base generation, the sandbox image, and the
+    scratch root — the pinned SHA included, since the pin goes with them."""
+
+    def _stub(self, monkeypatch, tmp_path, *, rmi_ok=True):
+        removed: list[str] = []
+        pruned: list[int] = []
+        scratch = tmp_path / "scratch"
+        (scratch / "base" / ("a" * 12) / "src").mkdir(parents=True)
+        (scratch / "base" / ("b" * 12)).mkdir(parents=True)
+        (scratch / "other-file").write_text("x")
+        monkeypatch.setattr(gc, "SCRATCH", scratch)
+        monkeypatch.setattr(gc, "_base_images", lambda: {
+            "a" * 12: [(f"pr-verify-base:{'a' * 12}-t1", NOW)],
+            "b" * 12: [(f"pr-verify-base:{'b' * 12}-t0", NOW),
+                        (f"pr-verify-base:{'b' * 12}-t1", NOW)]})
+        monkeypatch.setattr(gc, "_rmi", lambda image: (removed.append(image), rmi_ok)[1])
+        monkeypatch.setattr(gc, "_prune_build_leftovers", lambda: pruned.append(1))
+        from pipeline import verify_driver
+        monkeypatch.setattr(verify_driver, "sandbox_image", lambda: "pr-verify:pnpm-9.9.9")
+        return removed, pruned, scratch
+
+    def test_removes_every_generation_the_sandbox_image_and_the_scratch_root(
+            self, monkeypatch, tmp_path):
+        removed, pruned, scratch = self._stub(monkeypatch, tmp_path)
+        r = gc.teardown()
+        assert r["ok"] is True
+        assert sorted(removed) == sorted([
+            f"pr-verify-base:{'a' * 12}-t1", f"pr-verify-base:{'b' * 12}-t0",
+            f"pr-verify-base:{'b' * 12}-t1", "pr-verify:pnpm-9.9.9"])
+        assert sorted(r["images"]) == sorted(removed)
+        assert not scratch.exists()
+        assert r["scratch"] == str(scratch)
+        assert pruned == [1]
+
+    def test_dry_run_removes_nothing_and_reports_everything(self, monkeypatch, tmp_path):
+        removed, pruned, scratch = self._stub(monkeypatch, tmp_path)
+        r = gc.teardown(dry_run=True)
+        assert removed == [] and pruned == []
+        assert scratch.exists()
+        assert len(r["images"]) == 4 and r["scratch"] == str(scratch)
+
+    def test_an_image_that_will_not_go_is_reported_not_hidden(self, monkeypatch, tmp_path):
+        removed, _, scratch = self._stub(monkeypatch, tmp_path, rmi_ok=False)
+        r = gc.teardown()
+        assert r["ok"] is False
+        assert r["images"] == []
+        assert len(r["kept_images"]) == 4
+        assert not scratch.exists()
