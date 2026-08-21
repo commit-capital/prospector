@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "react-router";
 import { api, type AlertCaps, type AlertDetail, type AlertDismissResult, type AlertRow, type AlertSeverity, type AlertSource, type AlertVerdict } from "../api";
 import { PRLink } from "../components/PRLink";
 import { useExec } from "../ExecContext";
@@ -83,6 +84,10 @@ function location(r: AlertRow): string {
   if (r.source === "dependabot") return r.manifest_path ?? "—";
   if (r.path) return r.start_line != null ? `${r.path}:${r.start_line}` : r.path;
   return "—";
+}
+
+function isAlertSource(value: string | null): value is AlertSource {
+  return value !== null && value in SOURCE_CHIP;
 }
 
 // The dismissal form inside the detail panel: reason picker (per-source
@@ -202,6 +207,7 @@ const VERDICT_FILTERS = [
 ];
 
 function AlertsTable() {
+  const [params, setParams] = useSearchParams();
   const [caps, setCaps] = useState<AlertCaps | null>(null);
   const [q, setQ] = useState("");
   const [page, setPage] = useState(1);
@@ -210,7 +216,11 @@ function AlertsTable() {
   const [sourceFilter, setSourceFilter] = useState("");
   const [stateFilter, setStateFilter] = useState("open");
   const [verdictFilter, setVerdictFilter] = useState("");
-  const [selected, setSelected] = useState<{ source: AlertSource; number: number } | null>(null);
+  const selectedSource = params.get("alert_source");
+  const selectedNumber = params.get("alert");
+  const selected = isAlertSource(selectedSource) && selectedNumber !== null && /^\d+$/.test(selectedNumber)
+    ? { source: selectedSource, number: Number(selectedNumber) }
+    : null;
   const [generation, setGeneration] = useState(0);
   // One result object per completed fetch, keyed by the query params it was
   // fetched for; "loading" is derived by comparing keys, so the effect never
@@ -270,6 +280,20 @@ function AlertsTable() {
   const end = Math.min(page * PAGE_SIZE, total);
 
   const unavailable = caps !== null && !(["code-scanning", "dependabot", "secret-scanning"] as AlertSource[]).some((s) => caps.sources[s]);
+  const selectAlert = (source: AlertSource, number: number): void => {
+    const next = new URLSearchParams(params);
+    next.set("security", "alerts");
+    next.set("alert_source", source);
+    next.set("alert", String(number));
+    next.delete("advisory");
+    setParams(next);
+  };
+  const closeAlert = (): void => {
+    const next = new URLSearchParams(params);
+    next.delete("alert_source");
+    next.delete("alert");
+    setParams(next);
+  };
 
   return (
     <>
@@ -346,7 +370,7 @@ function AlertsTable() {
           <tbody>
             {rows.map((r) => (
               <tr key={r.id} className={`rowlink ${selected && selected.source === r.source && selected.number === r.number ? "row-selected" : ""}`}
-                  onClick={() => setSelected({ source: r.source, number: r.number })}>
+                  onClick={() => selectAlert(r.source, r.number)}>
                 <td className="mono">
                   <a href={r.html_url} target="_blank" rel="noreferrer" className="gh-pr-link"
                      title="Open this alert on GitHub ↗" onClick={stopRowOpen}>#{r.number}</a>
@@ -369,7 +393,7 @@ function AlertsTable() {
         </div>
         {selected && (
           <DetailPanel source={selected.source} number={selected.number}
-            onClose={() => setSelected(null)} onChanged={reload} />
+            onClose={closeAlert} onChanged={reload} />
         )}
       </div>
       )}
@@ -380,13 +404,24 @@ function AlertsTable() {
 type Section = "advisories" | "alerts";
 
 export default function Alerts() {
-  const [section, setSection] = useState<Section>("advisories");
+  const [params, setParams] = useSearchParams();
+  const section: Section = params.has("advisory")
+    ? "advisories"
+    : params.has("alert") || params.get("security") === "alerts" ? "alerts" : "advisories";
+  const selectSection = (nextSection: Section): void => {
+    const next = new URLSearchParams(params);
+    next.set("security", nextSection);
+    next.delete("advisory");
+    next.delete("alert_source");
+    next.delete("alert");
+    setParams(next);
+  };
   return (
     <div className="view alerts-view">
       <h2>🛡️ Alerts</h2>
       <div className="segmented" title="Advisories are privately reported vulnerabilities; alerts are automated scanner findings">
-        <button className={section === "advisories" ? "on" : ""} onClick={() => setSection("advisories")}>Advisories</button>
-        <button className={section === "alerts" ? "on" : ""} onClick={() => setSection("alerts")}>Alerts</button>
+        <button className={section === "advisories" ? "on" : ""} onClick={() => selectSection("advisories")}>Advisories</button>
+        <button className={section === "alerts" ? "on" : ""} onClick={() => selectSection("alerts")}>Alerts</button>
       </div>
       {section === "advisories" ? <Advisories /> : <AlertsTable />}
     </div>

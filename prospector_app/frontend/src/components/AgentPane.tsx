@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useLayoutEffect, use
 import { useLocation } from "react-router";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { addSubjectParams, subjectFromLocation, type AgentSubject } from "../agentSubject";
 import { api, type ChatReady } from "../api";
 import { shouldFollowChatAfterScroll } from "../chatScroll";
 import { useRepoMeta } from "../RepoMetaContext";
@@ -41,11 +42,18 @@ interface Msg { role: "user" | "assistant"; text: string }
 
 // A named conversation thread (#343), independent of whatever the operator is
 // currently viewing — created via "+ New", switched between via the sessions
-// strip. subjKind/subjId are frozen at creation so the session keeps asking
+// strip. Its subject is frozen at creation so the session keeps asking
 // about its own subject even after the operator navigates elsewhere. Persisted
 // to localStorage only (no cross-device sync); the backend thread itself is
 // addressed by `id` as an opaque chat_id and needs no record of the label.
 interface ChatSession {
+  id: string;
+  label: string;
+  subject: AgentSubject;
+  lastActiveAt: number;
+}
+
+interface LegacyChatSession {
   id: string;
   label: string;
   subjKind: "pr" | "cluster" | "issue" | "general";
@@ -53,19 +61,50 @@ interface ChatSession {
   lastActiveAt: number;
 }
 
-const SESSIONS_KEY = "agentpane-sessions-v1";
+const SESSIONS_KEY = "agentpane-sessions-v2";
+const LEGACY_SESSIONS_KEY = "agentpane-sessions-v1";
 const ACTIVE_SESSION_KEY = "agentpane-active-session";
 const MAX_STORED_SESSIONS = 20;
 const MAX_VISIBLE_SESSION_PILLS = 6;
 
-function loadSessions(): ChatSession[] {
+function storedArray(key: string): unknown[] | null {
   try {
-    const raw = localStorage.getItem(SESSIONS_KEY);
-    const parsed: unknown = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? (parsed as ChatSession[]) : [];
+    const raw = localStorage.getItem(key);
+    if (raw === null) return null;
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
   }
+}
+
+function migrateLegacySession(session: LegacyChatSession): ChatSession {
+  const number = Number(session.subjId);
+  let subject: AgentSubject;
+  switch (session.subjKind) {
+    case "pr":
+      subject = { kind: "pr", key: `pr:${number}`, number, label: session.label };
+      break;
+    case "cluster":
+      subject = { kind: "cluster", key: `cluster:${number}`, number, label: session.label };
+      break;
+    case "issue":
+      subject = { kind: "issue", key: `issue:${number}`, number, label: session.label };
+      break;
+    case "general":
+      subject = { kind: "general", key: "general", label: session.label };
+      break;
+  }
+  return {
+    id: session.id, label: session.label, subject, lastActiveAt: session.lastActiveAt,
+  };
+}
+
+function loadSessions(): ChatSession[] {
+  const sessions = storedArray(SESSIONS_KEY);
+  if (sessions !== null) return sessions as ChatSession[];
+  return (storedArray(LEGACY_SESSIONS_KEY) ?? [])
+    .map((session) => migrateLegacySession(session as LegacyChatSession));
 }
 
 function newSessionId(): string {
@@ -129,17 +168,6 @@ export function AgentPaneProvider({ children }: { children: ReactNode }) {
   );
 }
 
-function subjectFromLocation(pathname: string, search: string) {
-  const sp = new URLSearchParams(search);
-  const pr = sp.get("pr");
-  if (pr) return { kind: "pr" as const, id: Number(pr), label: `PR #${pr}` };
-  const issue = sp.get("issue");
-  if (issue) return { kind: "issue" as const, id: Number(issue), label: `issue #${issue}` };
-  const m = pathname.match(/^\/clusters\/(\d+)/);
-  if (m) return { kind: "cluster" as const, id: Number(m[1]), label: `cluster ${m[1]}` };
-  return { kind: "general" as const, id: null, label: "this app or codebase" };
-}
-
 function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, visiblePrs }: {
   anchor: Anchor | null; open: boolean; setOpen: (b: boolean) => void; clearAnchor: () => void;
   pending: string | null; clearPending: () => void; visiblePrs: number[] | null;
@@ -160,7 +188,10 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
     () => localStorage.getItem(ACTIVE_SESSION_KEY) || null);
   const activeSession = activeSessionId ? sessions.find((s) => s.id === activeSessionId) ?? null : null;
   const effectiveActiveId = activeSession ? activeSessionId : null;
-  useEffect(() => { localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions)); }, [sessions]);
+  useEffect(() => {
+    localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions));
+    localStorage.removeItem(LEGACY_SESSIONS_KEY);
+  }, [sessions]);
   useEffect(() => {
     if (effectiveActiveId) localStorage.setItem(ACTIVE_SESSION_KEY, effectiveActiveId);
     else localStorage.removeItem(ACTIVE_SESSION_KEY);
@@ -176,27 +207,28 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
   // is never possible for the pane to show a conversation with no selected pill.
   const visibleSessions = sessions
     .filter((s) => s.id === effectiveActiveId
-      || (s.subjKind === liveSubj.kind && s.subjId === liveSubj.id))
+      || s.subject.key === liveSubj.key)
     .slice(0, MAX_VISIBLE_SESSION_PILLS);
   const [frozenSubj, setFrozenSubj] = useState(liveSubj);
   const hasConversation = msgs.length > 0;
   if (!activeSession && !streaming && !hasConversation
-      && (frozenSubj.kind !== liveSubj.kind || frozenSubj.id !== liveSubj.id))
+      && frozenSubj.key !== liveSubj.key)
     setFrozenSubj(liveSubj);
   const subj = activeSession
-    ? { kind: activeSession.subjKind, id: activeSession.subjId, label: activeSession.label }
+    ? { ...activeSession.subject, label: activeSession.label }
     : (streaming || hasConversation) ? frozenSubj : liveSubj;
   // Whatever PR list the operator is currently viewing (e.g. PR Explorer's
   // active filters) rides along regardless of subject — including when a PR's
   // flyout happens to be open on top of that list, which does NOT mean the
   // operator has abandoned the broader list they were browsing (#507). Purely
-  // cosmetic; the thread/history key (subj.kind, subj.id) is unaffected, so
+  // cosmetic; the thread/history key (subj.key) is unaffected, so
   // switching filters or peeking at a flyout never fragments the chat.
   const displaySubj = visiblePrs && visiblePrs.length
     ? (subj.kind === "general"
         ? { ...subj, label: `the ${visiblePrs.length} filtered PR${visiblePrs.length === 1 ? "" : "s"}` }
         : { ...subj, label: `${subj.label} (+${visiblePrs.length} filtered PR${visiblePrs.length === 1 ? "" : "s"} in view)` })
     : subj;
+  const securitySubject = subj.kind === "alert" || subj.kind === "advisory";
   const [paneW, setPaneW] = useState(() => Number(localStorage.getItem("agentpane-w")) || 360);
   // A turn that was cut off before the backend sent its `done` event (server
   // reload, dropped connection, killed subprocess). Distinct from a clean finish
@@ -259,9 +291,7 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
 
   const ctxParams = () => {
     const p = new URLSearchParams();
-    if (subj.kind === "pr") p.set("pr", String(subj.id));
-    else if (subj.kind === "cluster") p.set("cluster", String(subj.id));
-    else if (subj.kind === "issue") p.set("issue", String(subj.id));
+    addSubjectParams(p, subj);
     if (effectiveActiveId) p.set("chat_id", effectiveActiveId);
     return p;
   };
@@ -276,7 +306,7 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
     clearAnchor();
     return () => esRef.current?.close();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [subj.kind, subj.id, effectiveActiveId]);
+  }, [subj.key, effectiveActiveId]);
 
   useLayoutEffect(() => {
     if (!open || !followLatestRef.current) return;
@@ -341,7 +371,7 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
         .sort((a, b) => b.lastActiveAt - a.lastActiveAt));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [streaming, anchor, subj.kind, subj.id, effectiveActiveId, speech.stop, visiblePrs, setFollowLatest]);
+  }, [streaming, anchor, subj.key, effectiveActiveId, speech.stop, visiblePrs, setFollowLatest]);
 
   // Resume a cut-off turn: nudge the (still-resumable) claude session to continue
   // where it left off. The backend re-attaches via -r, so the agent keeps its
@@ -361,7 +391,7 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
     const p = ctxParams();
     fetch(`/api/chat/stop?${p}`, { method: "POST" }).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [streaming, subj.kind, subj.id, effectiveActiveId]);
+  }, [streaming, subj.key, effectiveActiveId]);
 
   // Start a brand-new named session (#343): a fresh backend thread (new chat_id)
   // rather than just clearing the visible log, so the agent stops resuming a
@@ -376,7 +406,7 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
     speech.stop();
     const s = subjectFromLocation(loc.pathname, loc.search);
     const session: ChatSession = {
-      id: newSessionId(), label: s.label, subjKind: s.kind, subjId: s.id, lastActiveAt: Date.now(),
+      id: newSessionId(), label: s.label, subject: s, lastActiveAt: Date.now(),
     };
     setSessions((prev) => [session, ...prev].slice(0, MAX_STORED_SESSIONS));
     setActiveSessionId(session.id);
@@ -493,7 +523,13 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
             </div>
             <div className="agentpane-log-wrap">
               <div className="agentpane-log" ref={logRef} onScroll={handleLogScroll}>
-                {msgs.length === 0 && <p className="muted small ap-hint">Ask anything about {displaySubj.label} — "is this safe to merge?", "what's the root cause here?". Click a diff line for a per-line popup.</p>}
+                {msgs.length === 0 && (
+                  <p className="muted small ap-hint">
+                    Ask anything about {displaySubj.label} — {securitySubject
+                      ? <>"is this still exploitable?", "do you agree with the find-fixed result?".</>
+                      : <>"is this safe to merge?", "what's the root cause here?". Click a diff line for a per-line popup.</>}
+                  </p>
+                )}
                 {msgs.map((m, i) => (
                   <div key={i} className={`bubble ${m.role}`}>
                     {m.role === "assistant"
