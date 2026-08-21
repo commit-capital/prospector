@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router";
 import { api, type IssueRow, type IssueDupGroup, type IssuePR, type IssueExecResult, type IssueDisposition, type IssueTriageDisposition, type IssueFilterSpec, type IssueLikelyFixedItem } from "../api";
 import { PRLink } from "../components/PRLink";
 import { GitHubPRLink } from "../components/GitHubPRLink";
+import { SuggestedActions } from "../components/SuggestedActions";
 import { useExec } from "../ExecContext";
 import { useIssueFlyout } from "../useIssueFlyout";
 import { useRepoMeta } from "../RepoMetaContext";
@@ -723,6 +724,8 @@ export default function Issues() {
           {botLogin} — reversible, gated, and logged like every other write.
         </p>
       </div>
+
+      <SuggestedActions view="issues" />
 
       <div className="board-controls">
         <div className="segmented">

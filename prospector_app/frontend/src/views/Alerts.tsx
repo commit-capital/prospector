@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router";
 import { api, type AlertCaps, type AlertDetail, type AlertDismissResult, type AlertRow, type AlertSeverity, type AlertSource, type AlertVerdict } from "../api";
 import { PRLink } from "../components/PRLink";
+import { SuggestedActions } from "../components/SuggestedActions";
 import { useExec } from "../ExecContext";
 import { useRepoMeta } from "../RepoMetaContext";
 import { stopRowOpen } from "../rowOpen";
@@ -405,6 +406,9 @@ type Section = "advisories" | "alerts";
 
 export default function Alerts() {
   const [params, setParams] = useSearchParams();
+  // Bumped when a suggested job finishes — remounts the active section so its
+  // table refetches with the job's freshly written data.
+  const [dataGen, setDataGen] = useState(0);
   const section: Section = params.has("advisory")
     ? "advisories"
     : params.has("alert") || params.get("security") === "alerts" ? "alerts" : "advisories";
@@ -419,11 +423,12 @@ export default function Alerts() {
   return (
     <div className="view alerts-view">
       <h2>🛡️ Alerts</h2>
+      <SuggestedActions view="alerts" onActionDone={() => setDataGen((g) => g + 1)} />
       <div className="segmented" title="Advisories are privately reported vulnerabilities; alerts are automated scanner findings">
         <button className={section === "advisories" ? "on" : ""} onClick={() => selectSection("advisories")}>Advisories</button>
         <button className={section === "alerts" ? "on" : ""} onClick={() => selectSection("alerts")}>Alerts</button>
       </div>
-      {section === "advisories" ? <Advisories /> : <AlertsTable />}
+      {section === "advisories" ? <Advisories key={dataGen} /> : <AlertsTable key={dataGen} />}
     </div>
   );
 }
