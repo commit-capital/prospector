@@ -1,0 +1,18 @@
+{
+  "_comment": "Template for .claude/launch.json, which setup.sh generates per checkout with that checkout's ports (see dev-ports.sh). Edit this file, not the generated one — a regenerate overwrites it. __API_PORT__ and __VITE_PORT__ are substituted from .env.",
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "app",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-c", "set -a; [ -f .env ] && source .env; set +a; exec uv run uvicorn prospector_app.backend.app:app --port \"${API_PORT:-__API_PORT__}\" --log-level warning"],
+      "port": "__API_PORT__"
+    },
+    {
+      "name": "app-dev",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-c", "FRONTEND=prospector_app/frontend; source frontend-toolchain.sh && exec \"${PNPM[@]}\" --dir \"$FRONTEND\" dev"],
+      "port": "__VITE_PORT__"
+    }
+  ]
+}
