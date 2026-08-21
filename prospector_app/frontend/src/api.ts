@@ -938,8 +938,39 @@ export interface AlertDetail extends AlertRow {
   dismiss_reasons: string[];
 }
 export interface AlertQueryResult { items: AlertRow[]; total: number; offset: number; limit: number; pr_states_loading: boolean }
-export interface AlertCaps { available: boolean; sources: Record<AlertSource, boolean> }
+export interface AlertCaps { available: boolean; sources: Record<AlertSource | "advisory", boolean> }
 export interface AlertDismissResult { source: AlertSource; alert: number; action: string; status: string; detail: string; reason: string; forced?: boolean }
+export type AdvisoryState = "triage" | "draft" | "published" | "closed" | "withdrawn";
+export type AdvisorySeverity = AlertSeverity | "unknown";
+export type AdvisoryVerdict = "fixed" | "likely-fixed" | "not-fixed" | "duplicate";
+export interface AdvisoryRow {
+  id: number;
+  ghsa_id: string;
+  state: AdvisoryState;
+  severity: AdvisorySeverity;
+  summary: string | null;
+  reporter: string | null;
+  cve_id: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  html_url: string;
+  verdict: AdvisoryVerdict | null;
+  by: "deterministic" | "agent" | null;
+  duplicate_of: string | null;
+  fix_commit: string | null;
+  evidence: string | null;
+  links: AlertLink[];
+  link_count: number;
+}
+/** Detail for the side panel: the row plus the report body and the full fix-scan section. */
+export interface AdvisoryDetail extends AdvisoryRow {
+  description: string;
+  cwe_ids: string[];
+  vulnerable_range: string | null;
+  patched_versions: string | null;
+  fix_scan: Record<string, unknown> | null;
+}
+export interface AdvisoryQueryResult { items: AdvisoryRow[]; total: number; offset: number; limit: number; pr_states_loading: boolean }
 interface IssueDup {
   number: number;
   title: string | null;
@@ -1112,6 +1143,15 @@ export const api = {
     }).then((r) => r.json() as Promise<AlertQueryResult>),
   alertCaps: () => get<AlertCaps>("/api/alerts/caps"),
   getAlert: (source: AlertSource, n: number) => get<AlertDetail>(`/api/alerts/${source}/${n}`),
+  queryAdvisories: (opts: {
+    q?: string; sort?: string; direction?: string; state?: string | string[]; verdict?: string;
+    offset?: number; limit?: number;
+  } = {}) =>
+    fetch("/api/advisories/query", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(opts),
+    }).then((r) => r.json() as Promise<AdvisoryQueryResult>),
+  getAdvisory: (ghsa: string) => get<AdvisoryDetail>(`/api/advisories/${ghsa}`),
   dismissAlert: async (source: AlertSource, n: number, reason: string, comment: string, dryRun: boolean) => {
     const r = await fetch(`/api/execute/alert/${source}/${n}/dismiss?dry_run=${dryRun}`, {
       method: "POST", headers: { "Content-Type": "application/json" },
