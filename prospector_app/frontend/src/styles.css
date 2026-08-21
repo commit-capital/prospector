@@ -1376,3 +1376,13 @@ tr.row-done:hover > td { opacity: 1; }
   resize: vertical; }
 .fix-goal:focus { outline: none; border-color: var(--accent); }
 .fix-composer .row-actions { display: flex; gap: 6px; }
+
+/* --- Setup tab (🛠️): the provisioning offer and the deployment-share card -- */
+.setup-card { border: 1px solid var(--border); border-radius: 10px;
+  padding: 14px 16px; margin: 12px 0; background: var(--panel); }
+.setup-card > h3 { margin: 0 0 6px; font-size: 14px; }
+.setup-card > p { margin: 0 0 10px; }
+.setup-offer { border-color: var(--accent); }
+/* Sits well below the machine's own controls: this card is about a different
+   computer, and the gap is what says so. */
+.setup-share { margin-top: 34px; }

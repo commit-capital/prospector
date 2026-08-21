@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, type SetupCheck, type SetupReadiness, type WorkerFlags } from "../api";
+import { useRepoMeta } from "../RepoMetaContext";
 
 /** How often the readiness rows re-check while the page is open. Fast enough
  *  that rows turn green as setup-worker-machine.sh works through its steps. */
@@ -16,6 +17,11 @@ const SWITCHES: { key: string; label: string; hint: string; needs?: string }[] =
   { key: "TRIAGE_FIX_WORKER", label: "Run autofix", hint: "drain the fix queue", needs: "push_identity" },
   { key: "TRIAGE_FIX_AUTOHUNT", label: "Queue fixes while idle", hint: "find PRs needing a rebase or base merge", needs: "push_identity" },
 ];
+
+/** The lane flags whose presence means this machine has been signed up to
+ *  process work. Readiness answers "can it run right now", which a provisioned
+ *  machine fails whenever Docker is down; opting in is what these record. */
+const OPT_IN_FLAGS = ["TRIAGE_VERIFY_WORKER", "TRIAGE_FIX_WORKER"];
 
 function CheckRow({ check }: { check: SetupCheck }) {
   const tone = check.ok ? "chip chip-green sm" : check.blocking ? "chip chip-red sm" : "chip chip-amber sm";
@@ -36,7 +42,7 @@ export default function Setup() {
   const [flags, setFlags] = useState<WorkerFlags>({});
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [expanded, setExpanded] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -79,8 +85,7 @@ export default function Setup() {
   if (error && !readiness) return <div className="pad"><p className="chip chip-red">{error}</p></div>;
   if (!readiness) return <div className="pad muted">reading this machine…</div>;
 
-  const byKey = Object.fromEntries(readiness.checks.map((c) => [c.key, c]));
-  const blockers = readiness.checks.filter((c) => !c.ok && c.blocking);
+  const optedIn = OPT_IN_FLAGS.some((k) => flags[k] === "1");
 
   return (
     <div className="pad">
@@ -90,6 +95,50 @@ export default function Setup() {
         work is provisioned on its own; the Control tab reports the whole fleet.
       </p>
 
+      {optedIn || expanded
+        ? <WorkerSection readiness={readiness} flags={flags} busy={busy} onToggle={toggle} />
+        : <ProvisionBanner onStart={() => setExpanded(true)} />}
+
+      <ShareSection />
+
+      {error && <p className="chip chip-red sm">{error}</p>}
+    </div>
+  );
+}
+
+/** The offer a machine that has never opted in sees in place of the worker
+ *  controls: what accepting costs, and one button that reveals the rest. */
+function ProvisionBanner({ onStart }: { onStart: () => void }) {
+  const { meta } = useRepoMeta();
+  return (
+    <section className="setup-card setup-offer">
+      <h3>⚙️ Provision this computer to run automated tasks{meta && <> on {meta.display_name}</>}</h3>
+      <p className="muted small">
+        Runs a heavy background process that analyzes, tests, fixes, and iterates
+        on pull requests, issues, and advisories in a sandboxed environment on
+        this machine.
+      </p>
+      <button onClick={onStart}>set this computer up</button>
+    </section>
+  );
+}
+
+/** Everything about this machine as a work processor: whether it is running,
+ *  what it still needs, and which lanes it drains. */
+function WorkerSection(
+  { readiness, flags, busy, onToggle }: {
+    readiness: SetupReadiness;
+    flags: WorkerFlags;
+    busy: string | null;
+    onToggle: (key: string, on: boolean) => void;
+  },
+) {
+  const [copied, setCopied] = useState(false);
+  const byKey = Object.fromEntries(readiness.checks.map((c) => [c.key, c]));
+  const blockers = readiness.checks.filter((c) => !c.ok && c.blocking);
+
+  return (
+    <>
       <h3>
         {readiness.ready
           ? <span className="chip chip-green">processing work</span>
@@ -138,7 +187,7 @@ export default function Setup() {
                 type="checkbox"
                 checked={flags[s.key] === "1"}
                 disabled={busy != null || blocked}
-                onChange={(e) => void toggle(s.key, e.target.checked)}
+                onChange={(e) => onToggle(s.key, e.target.checked)}
               />
               {" "}{s.label}
             </label>
@@ -148,11 +197,7 @@ export default function Setup() {
           </div>
         );
       })}
-
-      <ShareSection />
-
-      {error && <p className="chip chip-red sm">{error}</p>}
-    </div>
+    </>
   );
 }
 
@@ -175,12 +220,14 @@ function ShareSection() {
   };
 
   return (
-    <section>
-      <h3>Share this deployment</h3>
+    <section className="setup-card setup-share">
+      <h3>🤝 Share this deployment</h3>
       <p className="muted small">
-        Copies a ready-to-paste <code>.env</code> for a teammate: the repo, bot
-        identity, and review config prefilled, plus instructions for the pieces
-        that only travel as files (the bot key, <code>profile.json</code>).
+        About a teammate's machine, not this one. Copies a ready-to-paste{" "}
+        <code>.env</code> pointing theirs at this deployment: the repo, bot
+        identity, and review config prefilled. The bot key PEM and{" "}
+        <code>profile.json</code> are files — the snippet names them and how to
+        get them, and they travel to your teammate separately.
       </p>
       <label>
         <input type="checkbox" checked={includeStore}
