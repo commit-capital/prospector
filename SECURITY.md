@@ -29,5 +29,5 @@ disclosure, and credit reporters who want attribution.
 Prospector is a local, single-operator tool. Its backend has no application
 authentication and must not be exposed to an untrusted network. Anyone who can
 reach a keyed backend may be able to read triage data or invoke controlled
-upstream actions. See the root `README.md` and `CLAUDE.md` for the full trust and
-write-path model.
+upstream actions. See `CLAUDE.md` and `docs/operations.md` for the full trust
+and write-path model.

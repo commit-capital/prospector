@@ -6,8 +6,8 @@ the easiest to review.
 
 ## Set up a development checkout
 
-Prerequisites and configuration are documented in the root `README.md`. From a
-fresh clone:
+Prerequisites are documented in `docs/setup.md` and configuration in
+`docs/configuration.md`. From a fresh clone:
 
 ```bash
 ./setup.sh
