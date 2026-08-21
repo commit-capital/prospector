@@ -67,16 +67,34 @@ def test_unchanged_reingest_writes_nothing(tmp_path):
     assert advisory_ingest.ingest_records(store, metas, PRS, {}) == 0
 
 
-def test_closed_advisory_keeps_prior_links_and_fix_scan(tmp_path):
+def test_never_published_closed_advisory_is_not_stored(tmp_path):
+    store = AdvisoryStore(tmp_path)
+    closed = advisory_ingest.normalize({**RAW, "state": "closed",
+                                        "closed_at": "2026-08-21T00:00:00Z"})
+    assert advisory_ingest.ingest_records(store, [closed], PRS, {}) == 0
+    assert store.all_advisories() == {}
+
+
+def test_closing_a_stored_draft_removes_it(tmp_path):
+    store = AdvisoryStore(tmp_path)
+    advisory_ingest.ingest_records(store, [advisory_ingest.normalize(RAW)], PRS, {})
+    closed = advisory_ingest.normalize({**RAW, "state": "closed",
+                                        "updated_at": "2026-08-21T00:00:00Z"})
+    assert advisory_ingest.ingest_records(store, [closed], [], {}) == 0
+    assert store.load_advisory(advisory_id("GHSA-7f7c-55pc-67wg")) is None
+
+
+def test_published_advisory_keeps_prior_links_and_fix_scan(tmp_path):
     store = AdvisoryStore(tmp_path)
     advisory_ingest.ingest_records(store, [advisory_ingest.normalize(RAW)], PRS, {})
     a = store.edit_advisory(advisory_id("GHSA-7f7c-55pc-67wg"))
     a.record_fix_scan("not-fixed", by="agent")
-    closed = advisory_ingest.normalize({**RAW, "state": "closed",
-                                        "updated_at": "2026-08-21T00:00:00Z"})
-    assert advisory_ingest.ingest_records(store, [closed], [], {}) == 1
+    published = advisory_ingest.normalize({**RAW, "state": "published",
+                                           "published_at": "2026-08-21T00:00:00Z",
+                                           "updated_at": "2026-08-21T00:00:00Z"})
+    assert advisory_ingest.ingest_records(store, [published], [], {}) == 1
     back = store.load_advisory(a.id)
-    assert back is not None and back.state == "closed"
+    assert back is not None and back.state == "published"
     assert [c["number"] for c in back.candidates] == [10]
     assert back.verdict == "not-fixed"
 
