@@ -16,7 +16,7 @@ from alert_triage import advisory_ingest
 from alert_triage import alert_ingest
 from alert_triage import find_fixed
 
-Step = tuple[str, Callable[[list[str] | None], object], bool]
+Step = tuple[str, Callable[[list[str] | None], int | None], bool]
 
 # (name, entry point, takes --limit)
 STEPS: list[Step] = [
@@ -39,7 +39,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"▶ {name}", flush=True)
         step_argv = (["--limit", str(args.limit)] if takes_limit else []) + store_args
         try:
-            run(step_argv)
+            rc = run(step_argv)
+            if isinstance(rc, int) and rc != 0:
+                failed += 1
+                print(f"  ! {name} exited {rc}", flush=True)
         except SystemExit as e:
             if e.code not in (0, None):
                 failed += 1

@@ -108,13 +108,13 @@ _DEFAULT_DESC = {"severity", "updated", "created", "links"}
 def query_advisories(q: str = "", sort: str | None = None, direction: str | None = None,
                      state: str | list[str] | None = None, verdict: str | None = None,
                      offset: int = 0, limit: int = 50) -> dict:
-    """Paginated table query. `state` is one value or a list (OR'd; "all"/None
-    = everything); `verdict` filters the fix-scan verdict, "none" selecting
-    unscanned; `q` is a case-insensitive substring over ghsa, summary,
-    reporter, and CVE id."""
+    """Paginated table query. `state` is one value or a list (OR'd; "all" in
+    either form, or None, = everything); `verdict` filters the fix-scan
+    verdict, "none" selecting unscanned; `q` is a case-insensitive substring
+    over ghsa, summary, reporter, and CVE id."""
     rows, loading = list_advisories()
-    if state and state != "all":
-        wanted = state if isinstance(state, list) else [state]
+    wanted = [s for s in (state if isinstance(state, list) else [state]) if s]
+    if wanted and "all" not in wanted:
         rows = [r for r in rows if r["state"] in wanted]
     if verdict:
         rows = [r for r in rows if (r["verdict"] or "none") == verdict]

@@ -59,6 +59,8 @@ def test_list_rows_newest_first_with_verdict_fields(seeded):
 
 def test_query_filters_state_verdict_and_text(seeded):
     assert [r["ghsa_id"] for r in adv_mod.query_advisories(state="triage")["items"]] == [G1, G2]
+    assert len(adv_mod.query_advisories(state=["all", "triage"])["items"]) == 3
+    assert [r["ghsa_id"] for r in adv_mod.query_advisories(state=["triage", "closed"])["items"]] == [G1, G2]
     assert [r["ghsa_id"] for r in adv_mod.query_advisories(verdict="duplicate")["items"]] == [G2]
     assert [r["ghsa_id"] for r in adv_mod.query_advisories(verdict="none")["items"]] == [G3]
     assert [r["ghsa_id"] for r in adv_mod.query_advisories(q="bob")["items"]] == [G2]
