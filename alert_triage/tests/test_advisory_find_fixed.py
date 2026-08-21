@@ -54,6 +54,18 @@ def test_tier0_cve_follow_up_is_a_duplicate(tmp_path):
                     "evidence": f"The summary names itself a CVE-id follow-up for {G2}."}]
 
 
+@pytest.mark.parametrize("target", [
+    G1,                                    # its own id
+    "ghsa-2222-2222-2224",                 # lowercase
+    "GHSA-2222-2222-2224-zzzz",            # over-long token
+])
+def test_tier0_ignores_self_malformed_and_overlong_targets(tmp_path, target):
+    store = AdvisoryStore(tmp_path)
+    _seed(store, G1, summary=f"CVE ID follow-up for existing {target}")
+    _seed(store, G2, state="published")
+    assert ff.deterministic_duplicates(store) == []
+
+
 def test_bundle_and_roster(tmp_path):
     store = AdvisoryStore(tmp_path)
     a = _seed(store, G1, severity="high", summary="SSRF")
@@ -90,5 +102,12 @@ def test_apply_verdicts_validates_and_records(tmp_path):
 def test_filter_batch_verdicts_drops_foreign_and_unknown():
     entries = [{"id": 1}, {"id": 2}]
     raw = [{"id": 1, "verdict": "not-fixed"}, {"id": 3, "verdict": "fixed"},
-           {"id": 2, "verdict": "resolved"}, {"verdict": "fixed"}]
-    assert ff.filter_batch_verdicts(entries, raw) == [{"id": 1, "verdict": "not-fixed"}]
+           {"id": 2, "verdict": "resolved"}, {"verdict": "fixed"},
+           {"id": "2", "verdict": "fixed"}, {"id": 2.0, "verdict": "likely-fixed"},
+           {"id": "abc", "verdict": "fixed"}, {"id": None, "verdict": "fixed"},
+           {"id": True, "verdict": "fixed"}]
+    assert ff.filter_batch_verdicts(entries, raw) == [
+        {"id": 1, "verdict": "not-fixed"},
+        {"id": 2, "verdict": "fixed"},
+        {"id": 2, "verdict": "likely-fixed"},
+    ]

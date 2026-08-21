@@ -1,5 +1,7 @@
 """advisory_ingest: payload normalization, upsert-on-change, links for open
 states only."""
+import pytest
+
 from alert_triage import advisory_ingest
 from alert_triage.advisory_store import AdvisoryStore, advisory_id
 
@@ -38,6 +40,17 @@ def test_normalize_reporter_falls_back_to_collaborator_then_author():
     assert advisory_ingest.normalize(raw)["reporter"] == "vikychoi"
 
 
+@pytest.mark.parametrize("over, field, expected", [
+    ({"vulnerabilities": []}, "vulnerable_range", None),
+    ({"vulnerabilities": []}, "patched_versions", None),
+    ({"author": None, "credits": [], "collaborating_users": []}, "reporter", None),
+    ({"credits": [{"type": "reporter"}], "collaborating_users": [{"login": "bennati"}]},
+     "reporter", "bennati"),
+])
+def test_normalize_missing_payload_pieces(over, field, expected):
+    assert advisory_ingest.normalize({**RAW, **over})[field] == expected
+
+
 def test_new_advisory_lands_with_meta_and_text_ref_links(tmp_path):
     store = AdvisoryStore(tmp_path)
     metas = [advisory_ingest.normalize(RAW)]
@@ -66,3 +79,12 @@ def test_closed_advisory_keeps_prior_links_and_fix_scan(tmp_path):
     assert back is not None and back.state == "closed"
     assert [c["number"] for c in back.candidates] == [10]
     assert back.verdict == "not-fixed"
+
+
+def test_withdrawn_advisory_lands_without_links(tmp_path):
+    store = AdvisoryStore(tmp_path)
+    meta = advisory_ingest.normalize({**RAW, "state": "withdrawn"})
+    assert advisory_ingest.ingest_records(store, [meta], PRS, {}) == 1
+    a = store.load_advisory(advisory_id("GHSA-7f7c-55pc-67wg"))
+    assert a is not None and a.state == "withdrawn"
+    assert a.candidates == []

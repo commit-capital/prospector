@@ -10,11 +10,10 @@ import argparse
 from alert_triage import advisory_model
 from alert_triage import config
 from alert_triage import link_prs
-from alert_triage.advisory_store import AdvisoryStore, advisory_id
+from alert_triage.advisory_store import OPEN_STATES, AdvisoryStore, advisory_id
 from pipeline.storekit import now as _now
 
 SOURCE = "advisory"
-OPEN_STATES = {"triage", "draft"}
 _SEVERITIES = {"critical", "high", "medium", "low"}
 
 

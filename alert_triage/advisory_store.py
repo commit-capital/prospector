@@ -25,10 +25,11 @@ DEFAULT_ROOT = Path(__file__).resolve().parent / "store"
 
 # GitHub's fixed GHSA symbol set, in value order.
 GHSA_ALPHABET = "23456789cfghjkmpqrvwx"
-_GHSA = re.compile(rf"^GHSA(?:-[{GHSA_ALPHABET}]{{4}}){{3}}$")
+GHSA_PATTERN = re.compile(rf"^GHSA(?:-[{GHSA_ALPHABET}]{{4}}){{3}}$")
 _VALUE = {ch: i for i, ch in enumerate(GHSA_ALPHABET)}
 
-ADVISORY_STATES = {"triage", "draft", "published", "closed"}
+ADVISORY_STATES = {"triage", "draft", "published", "closed", "withdrawn"}
+OPEN_STATES = {"triage", "draft"}
 ADVISORY_SEVERITIES = {"critical", "high", "medium", "low", "unknown"}
 ADVISORY_VERDICTS = {"fixed", "likely-fixed", "not-fixed", "duplicate"}
 VERDICT_BY = {"deterministic", "agent"}
@@ -37,7 +38,7 @@ ADVISORY_SECTIONS = ("meta", "links", "fix_scan")
 
 def advisory_id(ghsa: str) -> int:
     """The store key for a GHSA id. Raises ValueError on a malformed id."""
-    if not _GHSA.fullmatch(ghsa or ""):
+    if not GHSA_PATTERN.fullmatch(ghsa or ""):
         raise ValueError(f"not a GHSA id: {ghsa!r}")
     n = 0
     for ch in ghsa[5:].replace("-", ""):
@@ -90,7 +91,7 @@ def validate_advisory(rec: dict) -> None:
             raise ValidationError(f"fix_scan.by: {fs.get('by')!r} not in {sorted(VERDICT_BY)}")
         target = fs.get("duplicate_of")
         if verdict == "duplicate":
-            if not target or not _GHSA.fullmatch(target):
+            if not target or not GHSA_PATTERN.fullmatch(target):
                 raise ValidationError("fix_scan.duplicate_of: a GHSA id is required "
                                       "for a duplicate verdict")
             if target == meta["ghsa_id"]:
