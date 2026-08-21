@@ -39,6 +39,7 @@ from prospector_app.backend import issues as issues_mod
 from prospector_app.backend import jobs
 from prospector_app.backend import freshness_live
 from prospector_app.backend import models
+from prospector_app.backend import onboarding
 from prospector_app.backend import pipeline_status
 from prospector_app.backend import pr_history
 from prospector_app.backend import pr_search
@@ -367,6 +368,36 @@ def fix_runner():
     return fix_queue.runner_status()
 
 
+@app.get("/api/onboarding/state")
+def onboarding_state():
+    """Where this checkout stands on the setup ladder. Answers on an
+    unconfigured checkout — it is what the wizard reads to know what to ask."""
+    return onboarding.state()
+
+
+@app.post("/api/onboarding/probe")
+def onboarding_probe(body: models.OnboardingProbe):
+    """Check candidate configuration without writing any of it."""
+    return onboarding.probe(body.store_url, body.repo, body.key_file)
+
+
+@app.post("/api/onboarding/apply")
+def onboarding_apply(body: models.OnboardingApply):
+    """Write one step's configuration and adopt it in this process."""
+    env, profile_doc = body.env, body.profile
+    if body.bundle is not None:
+        try:
+            env, profile_doc = onboarding.parse_bundle(body.bundle)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+    try:
+        return onboarding.apply(body.step, env, profile_doc)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except OSError as e:
+        raise HTTPException(500, f"could not write configuration: {e}")
+
+
 @app.get("/api/setup/readiness")
 def setup_readiness():
     """What THIS machine still needs before it can process work, plus the state
@@ -391,10 +422,11 @@ def setup_flags(body: models.WorkerFlags):
 
 
 @app.post("/api/setup/share")
-def setup_share(body: models.ShareRequest):
-    """A ready-to-paste .env for onboarding a teammate onto this deployment.
-    POST, so the store URL is never in a request line even when opted in."""
-    return {"snippet": worker_control.share_snippet(include_store=body.include_store)}
+def setup_share():
+    """Everything a teammate's fresh checkout needs to join this deployment,
+    as one thing they paste into their setup wizard. POST, so the store URL is
+    never in a request line."""
+    return {"bundle": json.dumps(onboarding.build_bundle(), indent=2)}
 
 
 @app.get("/api/autohunt")

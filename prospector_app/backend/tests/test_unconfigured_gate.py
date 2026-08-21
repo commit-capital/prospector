@@ -38,7 +38,6 @@ class TestUnconfigured:
         assert r.status_code == 200
         assert r.json()["configured"] is False
 
-    @pytest.mark.xfail(reason="the onboarding route lands in Task 7", strict=True)
     def test_onboarding_state_is_served(self, unconfigured):
         r = unconfigured.get("/api/onboarding/state")
         assert r.status_code == 200

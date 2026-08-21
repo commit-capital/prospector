@@ -7,6 +7,7 @@ cannot be retargeted at another repository or another database over HTTP.
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -29,6 +30,24 @@ def files(tmp_path, monkeypatch):
     monkeypatch.setattr(onboarding, "PROFILE_PATH", prof)
     monkeypatch.setattr(onboarding, "reconfigure", lambda applied: None)
     return env, prof
+
+
+@pytest.fixture
+def adopting(tmp_path, monkeypatch):
+    """Like `files`, but the process really adopts what it writes — which is
+    what a route test is for. Puts the suite's own configuration back after,
+    since adoption updates os.environ and repoints the store."""
+    from prospector_app.backend import data
+    env = tmp_path / ".env"
+    env.write_text(ENV)
+    prof = tmp_path / "profile.json"
+    monkeypatch.setattr(env_file, "ENV_PATH", env)
+    monkeypatch.setattr(onboarding, "PROFILE_PATH", prof)
+    before = dict(os.environ)
+    yield env, prof
+    os.environ.clear()
+    os.environ.update(before)
+    data.reset()
 
 
 class TestStepAllowlist:
@@ -174,3 +193,70 @@ class TestProbe:
         onboarding.probe(store_url="sqlite:///probe.db", repo=None, key_file=None)
         assert env.read_text() == before
         assert not prof.exists()
+
+
+class TestBundleContents:
+    """Deployment facts travel; this machine's own layout does not."""
+
+    @pytest.fixture(autouse=True)
+    def deployment(self, monkeypatch):
+        monkeypatch.setenv("TRIAGE_REPO", "owner/name")
+        monkeypatch.setenv("TRIAGE_BOT_LOGIN", "the-bot")
+        monkeypatch.setenv("TRIAGE_STORE_URL",
+                           "postgresql+psycopg://user:sup3rsecret@host:6543/postgres")
+        monkeypatch.setenv("TRIAGE_BOT_KEY_FILE", "/Users/me/.config/app/key.pem")
+        monkeypatch.setenv("TRIAGE_PUSH_SSH_KEY_FILE", "/Users/me/.ssh/pushkey")
+
+    def test_prefills_the_deployment_facts(self):
+        env = onboarding.build_bundle()["env"]
+        assert env["TRIAGE_REPO"] == "owner/name"
+        assert env["TRIAGE_BOT_LOGIN"] == "the-bot"
+
+    def test_carries_the_store_url_so_one_paste_is_enough(self):
+        env = onboarding.build_bundle()["env"]
+        assert env["TRIAGE_STORE_URL"] == (
+            "postgresql+psycopg://user:sup3rsecret@host:6543/postgres")
+
+    def test_local_credential_paths_never_travel(self):
+        """Another machine's paths would be wrong anyway; shipping them only
+        leaks how this machine is laid out."""
+        text = json.dumps(onboarding.build_bundle())
+        assert "/Users/me/.config/app/key.pem" not in text
+        assert "/Users/me/.ssh/pushkey" not in text
+
+
+class TestRoutes:
+    def test_apply_from_a_bundle_configures_an_unconfigured_app(
+            self, adopting, monkeypatch):
+        from fastapi.testclient import TestClient
+        from prospector_app.backend import app as app_mod
+        monkeypatch.delenv("TRIAGE_REPO", raising=False)
+        client = TestClient(app_mod.app, raise_server_exceptions=False)
+        bundle = json.dumps({"version": 1,
+                             "env": {"TRIAGE_REPO": "acme/widgets"},
+                             "profile": PROFILE})
+        r = client.post("/api/onboarding/apply",
+                        json={"step": "connect", "bundle": bundle})
+        assert r.status_code == 200
+        assert r.json()["configured"] is True
+
+    def test_a_bad_bundle_is_a_400_not_a_500(self, files, monkeypatch):
+        from fastapi.testclient import TestClient
+        from prospector_app.backend import app as app_mod
+        monkeypatch.delenv("TRIAGE_REPO", raising=False)
+        client = TestClient(app_mod.app, raise_server_exceptions=False)
+        r = client.post("/api/onboarding/apply",
+                        json={"step": "connect", "bundle": "hello"})
+        assert r.status_code == 400
+        assert "not a Prospector bundle" in r.json()["detail"]
+
+    def test_retargeting_a_configured_app_is_refused(self, files, monkeypatch):
+        from fastapi.testclient import TestClient
+        from prospector_app.backend import app as app_mod
+        monkeypatch.setenv("TRIAGE_REPO", "acme/widgets")
+        client = TestClient(app_mod.app, raise_server_exceptions=False)
+        r = client.post("/api/onboarding/apply",
+                        json={"step": "connect",
+                              "env": {"TRIAGE_REPO": "attacker/repo"}})
+        assert r.status_code == 400
+        assert "already configured" in r.json()["detail"]

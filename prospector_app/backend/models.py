@@ -147,10 +147,20 @@ class ClusterExecuteBody(BaseModel):
     dry_run: bool = True
 
 
-class ShareRequest(BaseModel):
-    """Whether the setup snippet ships the store URL. Off means the snippet
-    carries a placeholder and the password never leaves this machine."""
-    include_store: bool = False
+class OnboardingProbe(BaseModel):
+    """Candidate configuration to check without committing any of it."""
+    store_url: str | None = None
+    repo: str | None = None
+    key_file: str | None = None
+
+
+class OnboardingApply(BaseModel):
+    """One step of setup. `bundle` is a teammate's pasted deployment bundle;
+    when it is present it supplies `env` and `profile` in their place."""
+    step: str
+    env: dict[str, str] = {}
+    profile: dict[str, object] | None = None
+    bundle: str | None = None
 
 
 class WorkerFlags(BaseModel):
