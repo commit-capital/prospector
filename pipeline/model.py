@@ -13,7 +13,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from pipeline import gates
-from pipeline import review_policy
 from pipeline import storekit
 
 if TYPE_CHECKING:
@@ -147,15 +146,23 @@ class Pr:
         return self.rec.get("signals")
 
     @property
+    def reviews(self) -> dict | None:
+        """Every automated reviewer's normalized feedback on this PR, keyed by
+        reviewer id (pipeline.reviewers), stamped against the head it was read at."""
+        return self.rec.get("reviews")
+
+    def review_entry(self, reviewer_id: str) -> dict | None:
+        entry = (self.rec.get("reviews") or {}).get(reviewer_id)
+        return entry if isinstance(entry, dict) else None
+
+    @property
     def greptile(self) -> int | None:
-        return (self.rec.get("signals") or {}).get("greptile")
+        return (self.review_entry("greptile") or {}).get("score")
 
     @property
     def greptile_reviewed_sha(self) -> str | None:
-        """The commit_id of the Greptile review — which commit Greptile actually
-        analyzed. None when unknown (Greptile hasn't reviewed or we haven't
-        fetched this PR's review yet)."""
-        return (self.rec.get("signals") or {}).get("greptile_reviewed_sha")
+        """The commit Greptile's score describes; None when unknown."""
+        return (self.review_entry("greptile") or {}).get("reviewed_sha")
 
     @property
     def greptile_severity(self) -> str | None:
@@ -180,41 +187,6 @@ class Pr:
         if not reviewed:
             return None
         return reviewed != self.head_sha
-
-    @property
-    def review_score(self) -> int | None:
-        """The active review provider's numeric score, provider-neutral. None when
-        no provider is configured or it has not scored this PR."""
-        if review_policy.active().provider == "greptile":
-            return self.greptile
-        return None
-
-    @property
-    def review_reviewed_sha(self) -> str | None:
-        """Commit the active review provider scored, or None."""
-        if review_policy.active().provider == "greptile":
-            return self.greptile_reviewed_sha
-        return None
-
-    @property
-    def review_section(self) -> str | None:
-        """Store section holding the active provider's review digest, or None."""
-        return review_policy.active().section
-
-    @property
-    def review_stale(self) -> bool | None:
-        """True when the provider's score predates the PR head. None when unknown
-        or no provider is configured."""
-        if review_policy.active().provider == "greptile":
-            return self.greptile_stale
-        return None
-
-    @property
-    def review_severity(self) -> str | None:
-        """Severity of the active provider's findings digest, or None."""
-        if review_policy.active().provider == "greptile":
-            return self.greptile_severity
-        return None
 
     @property
     def ci(self) -> str | None:
@@ -545,16 +517,23 @@ class Pr:
         _stamp(self.rec, "issues", {"linked": linked}, None)
         self._persist()
 
+    def set_reviews(self, payload: dict, *, head_sha: str | None = None) -> None:
+        """Stamp every reviewer's entries against the head they were read at."""
+        _stamp(self.rec, "reviews", payload, head_sha)
+        self._persist()
+
     def apply_facts(self, meta: dict, *, signals: dict | None = None,
-                    drift: dict | None = None, issues: list | None = None) -> None:
+                    drift: dict | None = None, issues: list | None = None,
+                    reviews: dict | None = None) -> None:
         """Stamp the gh-owned fact sections and persist them in one save.
         `meta` is always set; `signals`, `drift`, and `issues` are set only when
         provided. A single write lands a PR's whole ingest atomically."""
-        self.stage_facts(meta, signals=signals, drift=drift, issues=issues)
+        self.stage_facts(meta, signals=signals, drift=drift, issues=issues, reviews=reviews)
         self._persist()
 
     def stage_facts(self, meta: dict, *, signals: dict | None = None,
-                    drift: dict | None = None, issues: list | None = None) -> None:
+                    drift: dict | None = None, issues: list | None = None,
+                    reviews: dict | None = None) -> None:
         """Stamp ingest-owned facts in memory without persisting.
 
         Bulk ingest stages the corpus and saves it in chunks; single-PR callers
@@ -567,6 +546,8 @@ class Pr:
             _stamp(self.rec, "drift", drift, None)
         if issues is not None:
             _stamp(self.rec, "issues", {"linked": issues}, None)
+        if reviews is not None:
+            _stamp(self.rec, "reviews", reviews, None)
 
     def set_threat(self, result: dict) -> None:
         """Set the threat-scan verdict section."""
