@@ -867,7 +867,7 @@ export default function ControlPanel() {
                 const live = e.status === "running" || e.status === "pushing";
                 const ended = e.finished_at != null;
                 const detail = live && e.action === "fix" && e.guidance
-                  ? `goal: \u201c${e.guidance}\u201d` : e.detail;
+                  ? `goal: “${e.guidance}”` : e.detail;
                 return (
                 <Fragment key={e.pr}>
                   <tr>
@@ -877,12 +877,12 @@ export default function ControlPanel() {
                           title={e.resolvable
                             ? "The action produced a change and the compile preflight did not reject it."
                             : "The change is parked, but its compile preflight did not pass."}>
-                          {e.resolvable ? "\u2705 Conflicts resolvable" : "\u26a0 Needs a look"}
+                          {e.resolvable ? "✅ Conflicts resolvable" : "⚠ Needs a look"}
                         </span>
                       ) : (
                         <>
                           <span className={fixStatusChip(e.status)}>
-                            {e.status}{e.step && live ? ` \u00b7 ${e.step}` : ""}
+                            {e.status}{e.step && live ? ` · ${e.step}` : ""}
                           </span>
                           {live && (
                             <RunningMeta host={e.host}
@@ -909,12 +909,12 @@ export default function ControlPanel() {
                             <button className="btn-primary sm" disabled={fixBusy != null}
                               onClick={() => runFixAction(e.pr, "approve")}
                               title={`Push this ${e.action} to PR #${e.pr} as the machine user.`}>
-                              {fixBusy === e.pr ? "\u2026" : "\u2713 Push"}
+                              {fixBusy === e.pr ? "…" : "✓ Push"}
                             </button>
                             <button className="btn-secondary sm" disabled={fixBusy != null}
                               onClick={() => runFixAction(e.pr, "discard")}
                               title="Discard this proven change without pushing it.">
-                              \u2715
+                              ✕
                             </button>
                           </>
                         )}
@@ -922,7 +922,7 @@ export default function ControlPanel() {
                           <button className="btn-secondary sm" disabled={fixBusy != null}
                             onClick={() => escalateFix(e.pr)}
                             title={`Re-queue the rebase as you rather than the hunter. An operator-queued rebase that pauses on these conflicts hands them to the agent resolver, and the result parks here for your review. Conflicted: ${e.conflict_paths.join(", ")}`}>
-                            {fixBusy === e.pr ? "\u2026" : "\u2934 Escalate to agent resolve"}
+                            {fixBusy === e.pr ? "…" : "⤴ Escalate to agent resolve"}
                           </button>
                         )}
                       </div>
@@ -941,7 +941,7 @@ export default function ControlPanel() {
 
           <div className="jobspec-label" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 12 }}>
             <span className="muted small">
-              run history \u00b7 {fixQueueRange.allTime ? "all time" : `last ${fixQueueRange.days} days`}
+              run history · {fixQueueRange.allTime ? "all time" : `last ${fixQueueRange.days} days`}
             </span>
             <div className="act-range-picker">
               {HUNT_RANGE_OPTIONS.map((opt) => (
@@ -956,7 +956,7 @@ export default function ControlPanel() {
 
           <button className="btn-secondary sm" style={{ marginTop: 4 }}
             onClick={() => setFixHistoryExpanded((v) => !v)}>
-            {fixHistoryExpanded ? "\u25be Hide run history" : `\u25b8 Show run history (${fixQueue.history.length})`}
+            {fixHistoryExpanded ? "▾ Hide run history" : `▸ Show run history (${fixQueue.history.length})`}
           </button>
 
           {fixHistoryExpanded && (
@@ -973,8 +973,8 @@ export default function ControlPanel() {
                         <PRLink n={r.pr} />
                         {r.title && <div className="muted small">{r.title.slice(0, 60)}</div>}
                       </td>
-                      <td><span className="chip chip-muted sm">{r.action ?? "\u2014"}</span></td>
-                      <td><span className={resultChip("fix", r.result)}>{r.result ?? "\u2014"}</span></td>
+                      <td><span className="chip chip-muted sm">{r.action ?? "—"}</span></td>
+                      <td><span className={resultChip("fix", r.result)}>{r.result ?? "—"}</span></td>
                       <td><span className="chip chip-muted sm">{r.trigger === "autohunt" ? "auto" : "manual"}</span></td>
                     </tr>
                     {r.detail && (
