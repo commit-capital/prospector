@@ -1,5 +1,6 @@
 """INGEST for repository security advisories: list every advisory as the bot,
-normalize, and upsert the changed ones with recomputed candidate PR links.
+normalize, and upsert the changed ones with recomputed candidate PR links,
+leaving out any that was only ever a draft.
 `ingest_records` is pure and unit-tested; `main` adds the token mint, the live
 fetch, and the PR-corpus join. Mirrors alert_triage/alert_ingest.py.
 """
@@ -63,18 +64,31 @@ def _meta_unchanged(existing: advisory_model.Advisory, meta: dict) -> bool:
     return stored is not None and all(stored.get(k) == v for k, v in meta.items())
 
 
+def only_ever_a_draft(meta: dict) -> bool:
+    """A closed advisory that was never published: a report or draft that
+    went nowhere, with nothing left to triage or to be a duplicate of."""
+    return meta.get("state") == "closed" and not meta.get("published_at")
+
+
 def ingest_records(store: AdvisoryStore, metas: list[dict], prs: list[dict],
                    diffs: dict[str, str]) -> int:
     """Upsert each advisory whose meta changed, recomputing candidate links for
-    the open states. Existing fact sections ride along. Returns the count."""
+    the open states. Advisories that were only ever a draft are not stored,
+    and a stored one that has since closed that way is removed. Existing fact
+    sections ride along. Returns the count written."""
     if not metas:
         return 0
     existing = store.all_advisories()
     written = 0
+    gone: list[int] = []
     with store.batch():
         for meta in metas:
             i = advisory_id(meta["ghsa_id"])
             prev = existing.get(i)
+            if only_ever_a_draft(meta):
+                if prev is not None:
+                    gone.append(i)
+                continue
             if prev is not None and _meta_unchanged(prev, meta):
                 continue
             links = (link_prs.candidates_for(meta, prs, diffs)
@@ -82,6 +96,8 @@ def ingest_records(store: AdvisoryStore, metas: list[dict], prs: list[dict],
             adv = prev or advisory_model.Advisory(store, {"id": i})
             adv.apply_facts(meta, links=links)
             written += 1
+        if gone:
+            store.delete_advisories(gone)
     return written
 
 
@@ -109,7 +125,9 @@ def main(argv: list[str] | None = None) -> int:
     store.append_run({"phase": "advisory-ingest", "started": started, "finished": _now(),
                       "stats": {"fetched": {SOURCE: len(metas)}, "unavailable": [],
                                 "upserted": n}})
-    print(f"ingested {len(metas)} advisories ({n} changed, written)")
+    kept = sum(1 for m in metas if not only_ever_a_draft(m))
+    print(f"ingested {kept} advisories ({n} changed, written; "
+          f"{len(metas) - kept} only-ever-draft left out)")
     return 0
 
 

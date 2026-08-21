@@ -126,7 +126,7 @@ const STATE_FILTERS: { key: string; label: string; states: string[] }[] = [
   { key: "open", label: "Triage + draft", states: ["triage", "draft"] },
   { key: "triage", label: "Triage", states: ["triage"] },
   { key: "published", label: "Published", states: ["published"] },
-  { key: "closed", label: "Closed / withdrawn", states: ["closed", "withdrawn"] },
+  { key: "withdrawn", label: "Withdrawn", states: ["withdrawn"] },
   { key: "", label: "All", states: [] },
 ];
 const VERDICT_FILTERS = [
