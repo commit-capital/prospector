@@ -143,7 +143,7 @@ function ProvisionBanner({ onStart }: { onStart: () => void }) {
         on pull requests, issues, and advisories in a sandboxed environment on
         this machine.
       </p>
-      <button onClick={onStart}>set this computer up</button>
+      <button className="btn-primary" onClick={onStart}>set this computer up</button>
     </section>
   );
 }
@@ -201,7 +201,7 @@ function WorkerSection(
             it in your own terminal, from the repo root:
           </p>
           <pre className="log-tail">{COMMAND}</pre>
-          <button
+          <button className="btn-secondary"
             onClick={() => { void navigator.clipboard.writeText(COMMAND); setCopied(true); }}
           >
             {copied ? "copied" : "copy command"}
@@ -306,7 +306,7 @@ function ShareSection() {
         channel with history.
       </p>
       <div>
-        <button onClick={() => void copy()}>
+        <button className="btn-secondary" onClick={() => void copy()}>
           {state === "copied" ? "copied ✓" : state === "failed" ? "copy failed" : "copy setup for a teammate"}
         </button>
         {problem && <span className="chip chip-red sm">{problem}</span>}
