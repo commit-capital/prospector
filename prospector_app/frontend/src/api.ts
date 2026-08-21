@@ -1103,6 +1103,9 @@ export type WorkerFlags = Record<string, string>;
 /** Where this checkout stands on the setup ladder. */
 export interface OnboardingState {
   configured: boolean;
+  /** The store snapshot is still on its cold load; `counts` is empty until
+   *  it lands, and the wizard polls. */
+  loading: boolean;
   repo: string;
   display_name: string;
   bot_login: string;

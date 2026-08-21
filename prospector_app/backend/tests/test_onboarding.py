@@ -352,6 +352,56 @@ class TestAgentStep:
         assert "TRIAGE_AGENT_PROVIDER" not in onboarding.build_bundle()["env"]
 
 
+class TestReconfigure:
+    """Adopting a write rebuilds the store snapshot only when the write moved
+    the store: a one-line preference change must not cost a cold reload."""
+
+    @pytest.fixture
+    def resets(self, monkeypatch):
+        from prospector_app.backend import data
+        calls: list[int] = []
+        monkeypatch.setattr(data, "reset", lambda: calls.append(1))
+        before = dict(os.environ)
+        yield calls
+        os.environ.clear()
+        os.environ.update(before)
+
+    def test_a_new_store_target_resets_the_snapshot(self, resets):
+        onboarding.reconfigure({"TRIAGE_REPO": "acme/widgets"})
+        assert resets == [1]
+
+    def test_a_new_store_url_resets_the_snapshot(self, resets):
+        onboarding.reconfigure({"TRIAGE_STORE_URL": "sqlite:///team.db"})
+        assert resets == [1]
+
+    def test_a_preference_leaves_the_snapshot_alone(self, resets):
+        onboarding.reconfigure({"TRIAGE_AGENT_PROVIDER": "claude"})
+        onboarding.reconfigure({"TRIAGE_BOT_LOGIN": "acme-bot"})
+        assert resets == []
+
+
+class TestStateWhileLoading:
+    def test_reports_loading_and_no_counts_until_the_snapshot_lands(self, monkeypatch):
+        from prospector_app.backend import data, worker_readiness
+        monkeypatch.setenv("TRIAGE_REPO", "acme/widgets")
+        monkeypatch.setattr(data, "snapshot_loading", lambda: True)
+        monkeypatch.setattr(worker_readiness, "report", lambda: {"ready": False})
+        st = onboarding.state()
+        assert st["loading"] is True
+        assert st["counts"] == {}
+
+    def test_reports_counts_once_loaded(self, monkeypatch):
+        from prospector_app.backend import data, worker_readiness
+        monkeypatch.setenv("TRIAGE_REPO", "acme/widgets")
+        monkeypatch.setattr(data, "snapshot_loading", lambda: False)
+        monkeypatch.setattr(data, "prs", lambda: {1: object(), 2: object()})
+        monkeypatch.setattr(data, "clusters", lambda: {7: object()})
+        monkeypatch.setattr(worker_readiness, "report", lambda: {"ready": False})
+        st = onboarding.state()
+        assert st["loading"] is False
+        assert st["counts"] == {"prs": 2, "clusters": 1}
+
+
 class TestBundleContents:
     """Deployment facts travel; this machine's own layout does not."""
 
