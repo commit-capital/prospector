@@ -38,9 +38,9 @@ if [ ! -e "$FRONTEND/node_modules/.modules.yaml" ]; then
   ( cd "$FRONTEND" && "${PNPM[@]}" install --frozen-lockfile )
 fi
 
-# Per-worktree dev ports in the single root .env. Append the pair only if absent
-# so operator-set vars (TRIAGE_STORE_URL, …) are preserved. Each worktree is its
-# own checkout with its own root .env, so concurrent app instances don't collide.
+# One root .env per checkout: operator vars plus this worktree's dev ports.
+# claim_dev_ports (sourced below) gives each checkout a port pair no sibling
+# and not the primary holds, so concurrent app instances don't collide.
 ENV_FILE="$ROOT/.env"
 touch "$ENV_FILE"
 primary="$(git -C "$ROOT" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | head -1)"
