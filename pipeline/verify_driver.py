@@ -54,7 +54,14 @@ SANDBOX = Path(__file__).resolve().parents[1] / "sandbox"
 # The hardened sandbox image. Dockerfile.base builds FROM it, and the Tier 1
 # prefetch fetches from inside it — so the pnpm that writes the store and the
 # pnpm that reads it are the same binary on the same platform.
-SANDBOX_IMAGE = "pr-verify:local"
+
+
+def sandbox_image() -> str:
+    """The hardened sandbox image's tag, keyed by the pnpm version the active
+    profile pins — the version the image bakes into corepack's cache — so
+    deployments on one machine whose profiles pin different versions each keep
+    their own image."""
+    return f"pr-verify:pnpm-{profile.active().verify.pnpm_version}"
 
 DIFFS = Path(__file__).resolve().parent / "cache" / "diffs"
 
@@ -197,7 +204,7 @@ def prefetch_store(src: Path, store: Path) -> None:
     """Populate `store` with the dependencies `src`'s lockfile pins, so the image
     build installs them with no network.
 
-    The fetch runs inside SANDBOX_IMAGE, which is what makes the store readable by
+    The fetch runs inside the sandbox image, which is what makes the store readable by
     the build that consumes it. A lockfile gates optional dependencies on `os` and
     `cpu`, and a pnpm store is versioned by pnpm major, so fetching from the image
     resolves both against the platform and the pnpm that will read the store. It
@@ -214,7 +221,7 @@ def prefetch_store(src: Path, store: Path) -> None:
     subprocess.run(
         ["docker", "run", "--rm",
          "-v", f"{src}:/work/src", "-v", f"{store}:/work/pnpm-store",
-         SANDBOX_IMAGE, "bash", "-lc",
+         sandbox_image(), "bash", "-lc",
          "pnpm fetch --dir /work/src --store-dir /work/pnpm-store"
          " && rm -rf /work/src/node_modules"],
         check=True, env=launcher_env())
@@ -283,6 +290,7 @@ def build_base_image(sha: str, *, tier: int) -> str:
     tag = base_image_tag(sha, tier)
     subprocess.run(
         ["docker", "build", "--network", "none", "-t", tag, "--build-arg", f"TIER={tier}",
+         "--build-arg", f"BASE_IMAGE={sandbox_image()}",
          "-f", str(SANDBOX / "Dockerfile.base"), str(ctx)],
         check=True, env=launcher_env())
     return tag
@@ -1433,15 +1441,16 @@ def _reopen_clusters_on_escalate(store: Store, n: int, *, was_merge: bool) -> No
 
 
 def build_image() -> str:
-    """Build the hardened sandbox image (SANDBOX_IMAGE) with the profile's pnpm
-    pin baked into corepack's cache. Returns the tag."""
+    """Build the hardened sandbox image with the profile's pnpm pin baked into
+    corepack's cache, under the tag that names that pin. Returns the tag."""
     pnpm = profile.active().verify.pnpm_version
+    tag = sandbox_image()
     subprocess.run(
-        ["docker", "build", "-t", SANDBOX_IMAGE,
+        ["docker", "build", "-t", tag,
          "--build-arg", f"PNPM_VERSION={pnpm}",
          "-f", str(SANDBOX / "Dockerfile"), str(SANDBOX)],
         check=True, env=launcher_env())
-    return SANDBOX_IMAGE
+    return tag
 
 
 def main(argv: list[str] | None = None) -> int:

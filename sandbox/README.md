@@ -23,7 +23,8 @@ hand or debugging a machine that will not come up:
    (`colima start --memory 12`).
 2. **Build the hardened image:** `uv run python pipeline/verify_driver.py
    build-image` — bakes the profile's pnpm pin (`verify.pnpm_version`) into
-   `pr-verify:local`.
+   `pr-verify:pnpm-<version>`, a tag per pinned version, so deployments on one
+   machine with different pins keep separate images.
 3. **Pin a base:** `uv run python pipeline/verify_driver.py prepare-base
    [--tier 1]` — clones the pinned default-branch SHA, scrubs it, builds the
    per-batch base image, and (when the profile has a `verify.suite` contract)
@@ -230,7 +231,7 @@ dependencies. `tier` is a property of the batch's base image, chosen by
 - **Tier 0 (default):** the base image carries no installed dependencies.
 - **Tier 1:** `Dockerfile.base` bakes those pinned dependencies into the base
   image, installed **offline** from a prefetched pnpm store. `prepare-base` runs
-  `pnpm fetch` into a store dir from inside `pr-verify:local` — the same image,
+  `pnpm fetch` into a store dir from inside the sandbox image — the same image,
   and so the same platform and pnpm, that installs from the store;
   `Dockerfile.base` COPYs it and runs `pnpm install --offline
   --frozen-lockfile` under `--network none`, which makes egress during

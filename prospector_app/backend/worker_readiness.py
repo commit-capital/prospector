@@ -41,7 +41,7 @@ def _docker_daemon() -> tuple[bool, str, str]:
 
 
 def _sandbox_image() -> tuple[bool, str, str]:
-    tag = verify_driver.SANDBOX_IMAGE
+    tag = verify_driver.sandbox_image()
     if not verify_driver.daemon_available():
         return False, "cannot look: the Docker daemon is not answering", "start Docker"
     if not verify_driver.image_exists(tag):
