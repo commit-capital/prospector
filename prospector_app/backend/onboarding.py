@@ -4,11 +4,11 @@ The ONE config write path. `worker_control` writes five lane switches and must
 stay that narrow; onboarding needs the deployment target, the bot identity, and
 the push identity, so it carries its own allowlist scoped by step.
 
-Step 1's keys name the repository and the store. They are writable only while
-`settings.configured()` is false, which is what stops a configured deployment
-from being retargeted at another repository or another database by an API
-caller. Steps 2 and 3 stay open because the wizard reaches them after step 1 has
-already configured the app.
+The connect and join steps name the repository and the store. They are writable
+only while `settings.configured()` is false, which is what stops a configured
+deployment from being retargeted at another repository or another database by an
+API caller. The writes and worker steps stay open because the wizard reaches
+them after the deployment target is already configured.
 """
 from __future__ import annotations
 
@@ -48,15 +48,22 @@ _AGENT_PROVIDERS = ("claude", "none")
 # attributed the same way.
 _BUNDLE_KEYS = STEP_KEYS["connect"] + ("TRIAGE_BOT_LOGIN", "TRIAGE_BOT_APP_ID")
 
+# The paste-a-bundle path writes exactly what a bundle carries.
+STEP_KEYS["join"] = _BUNDLE_KEYS
+
+# The steps that name the repository and the store, refused on a configured
+# deployment so it cannot be retargeted over HTTP.
+CLOSED_ONCE_CONFIGURED: tuple[str, ...] = ("connect", "join")
+
 
 def _validated(step: str, updates: dict[str, str]) -> dict[str, str]:
     """`updates`, proved writable for `step`. Raises ValueError on an unknown
-    step, a key outside it, a step-1 write to a configured deployment, or a
-    malformed repository."""
+    step, a key outside it, a connect or join write to a configured deployment,
+    or a malformed repository."""
     allowed = STEP_KEYS.get(step)
     if allowed is None:
         raise ValueError(f"not a step: {step}")
-    if step == "connect" and settings.configured():
+    if step in CLOSED_ONCE_CONFIGURED and settings.configured():
         raise ValueError(
             "this deployment is already configured; the repository and store "
             "are not writable from here")

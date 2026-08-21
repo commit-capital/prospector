@@ -88,6 +88,28 @@ class TestStepAllowlist:
             onboarding.apply("whatever", {}, None)
 
 
+class TestJoin:
+    def test_a_real_bundle_lands_whole(self, files, monkeypatch):
+        monkeypatch.setenv("TRIAGE_REPO", "acme/widgets")
+        monkeypatch.setenv("TRIAGE_STORE_URL", "sqlite:///team.db")
+        monkeypatch.setenv("TRIAGE_BOT_LOGIN", "acme-bot")
+        monkeypatch.setenv("TRIAGE_BOT_APP_ID", "12345")
+        bundle_env, doc = onboarding.parse_bundle(
+            json.dumps(onboarding.build_bundle()))
+        monkeypatch.delenv("TRIAGE_REPO", raising=False)
+        env, _ = files
+        onboarding.apply("join", bundle_env, doc)
+        text = env.read_text()
+        assert "TRIAGE_REPO=acme/widgets" in text
+        assert "TRIAGE_BOT_LOGIN=acme-bot" in text
+        assert "TRIAGE_BOT_APP_ID=12345" in text
+
+    def test_join_is_refused_once_configured(self, files, monkeypatch):
+        monkeypatch.setenv("TRIAGE_REPO", "acme/widgets")
+        with pytest.raises(ValueError, match="already configured"):
+            onboarding.apply("join", {"TRIAGE_REPO": "attacker/repo"}, None)
+
+
 class TestValidation:
     def test_a_malformed_repo_is_refused(self, files, monkeypatch):
         monkeypatch.delenv("TRIAGE_REPO", raising=False)
@@ -277,10 +299,12 @@ class TestRoutes:
         monkeypatch.delenv("TRIAGE_REPO", raising=False)
         client = TestClient(app_mod.app, raise_server_exceptions=False)
         bundle = json.dumps({"version": 1,
-                             "env": {"TRIAGE_REPO": "acme/widgets"},
+                             "env": {"TRIAGE_REPO": "acme/widgets",
+                                     "TRIAGE_BOT_LOGIN": "acme-bot",
+                                     "TRIAGE_BOT_APP_ID": "12345"},
                              "profile": PROFILE})
         r = client.post("/api/onboarding/apply",
-                        json={"step": "connect", "bundle": bundle})
+                        json={"step": "join", "bundle": bundle})
         assert r.status_code == 200
         assert r.json()["configured"] is True
 

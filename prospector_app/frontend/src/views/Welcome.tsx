@@ -12,6 +12,39 @@ type Branch = "join" | "new" | null;
 type Pick = "easy" | "full" | null;
 type AgentPick = "claude" | "none" | null;
 
+/** The onboarding state once the backend answers again, or null after ~10s of
+ *  unreachability. */
+async function stateWhenBack(): Promise<OnboardingState | null> {
+  for (let tries = 0; tries < 20; tries++) {
+    await new Promise((r) => setTimeout(r, 500));
+    try {
+      return await api.onboardingState();
+    } catch {
+      // still restarting
+    }
+  }
+  return null;
+}
+
+/** Apply one onboarding step, riding out a dev-server restart: the step's
+ *  `.env` write restarts Vite, which can sever the response of the very
+ *  request that caused it after the backend has already adopted the write. A
+ *  fetch that dies at the network level (TypeError) is therefore
+ *  indeterminate — ask the server where it stands once it answers again, and
+ *  let `landed` decide whether the step took. */
+async function applyRidingRestart(
+  body: OnboardingApplyBody,
+  landed: (s: OnboardingState) => boolean,
+): Promise<void> {
+  try {
+    await api.onboardingApply(body);
+  } catch (e) {
+    if (!(e instanceof TypeError)) throw e;
+    const state = await stateWhenBack();
+    if (!state || !landed(state)) throw e;
+  }
+}
+
 export default function Welcome() {
   const [state, setState] = useState<OnboardingState | null>(null);
   const [branch, setBranch] = useState<Branch>(null);
@@ -96,7 +129,7 @@ function JoinBranch({ onDone, onBack }: { onDone: () => void; onBack: () => void
     setBusy(true);
     setProblem(null);
     try {
-      await api.onboardingApply({ step: "connect", bundle: text });
+      await applyRidingRestart({ step: "join", bundle: text }, (s) => s.configured);
       onDone();
     } catch (e) {
       setProblem(e instanceof Error ? e.message : String(e));
@@ -245,16 +278,16 @@ function NewBranch({ onDone, onBack }: { onDone: () => void; onBack: () => void 
     try {
       const env: Record<string, string> = { TRIAGE_REPO: repo.trim() };
       if (store === "full") env.TRIAGE_STORE_URL = storeUrl.trim();
-      await api.onboardingApply({ step: "connect", env });
+      await applyRidingRestart({ step: "connect", env }, (s) => s.configured);
       if (app === "full") {
-        await api.onboardingApply({
+        await applyRidingRestart({
           step: "writes",
           env: {
             TRIAGE_BOT_LOGIN: botLogin.trim(),
             TRIAGE_BOT_APP_ID: appId.trim(),
             TRIAGE_BOT_KEY_FILE: keyFile.trim(),
           },
-        });
+        }, (s) => s.bot_login === botLogin.trim());
       }
       if (agent != null) {
         await api.onboardingApply({
@@ -499,7 +532,7 @@ function WritesStep({ name, onDone }: { name: string; onDone: () => void }) {
       },
     };
     try {
-      await api.onboardingApply(body);
+      await applyRidingRestart(body, (s) => s.bot_login === botLogin.trim());
       onDone();
     } catch (e) {
       setProblem(e instanceof Error ? e.message : String(e));
