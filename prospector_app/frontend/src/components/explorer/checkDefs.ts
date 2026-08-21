@@ -3,12 +3,14 @@ import type { CheckClause, CheckStatus } from "../../api";
 // Mirrors the stable check keys prospector_app/backend/pr_checks.py assigns to
 // each row in a PR's checks rollup (`_c(key, name, ...)`) — the per-check
 // filter (#578) matches on these, not the display name, since the name varies
-// with the configured review provider / default branch.
+// with the default branch. `review` aggregates every active code reviewer's
+// bar and `scans` every active security scanner's.
 export interface CheckDef { key: string; label: string }
 
 export const CHECK_DEFS: CheckDef[] = [
-  { key: "review", label: "Review score" },
+  { key: "review", label: "Code review" },
   { key: "ci", label: "CI" },
+  { key: "scans", label: "Security scans" },
   { key: "mergeable", label: "No merge conflicts" },
   { key: "tests", label: "Includes tests" },
   { key: "drift", label: "Still applies to base branch" },

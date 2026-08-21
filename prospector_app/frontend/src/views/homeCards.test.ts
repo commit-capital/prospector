@@ -55,7 +55,7 @@ test("every lane spec uses only fields the filter UI can represent", () => {
   const representable = new Set([
     "q", "author", "cluster", "cluster_none", "safety", "drift", "disposition",
     "ci", "checks", "threat", "conflicts", "has_tests", "draft", "state",
-    "trusted_author", "clean", "greptile", "greptile_stale", "greptile_severity",
+    "trusted_author", "clean", "greptile", "greptile_stale", "greptile_severity", "reviewer_status",
     "age_days", "risk_tier", "responses", "loc", "files", "pain", "author_rate",
     "artifact_dominated", "paths", "numbers", "merge_ok", "has_summary", "has_issues",
   ]);

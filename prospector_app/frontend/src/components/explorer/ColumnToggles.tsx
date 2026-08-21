@@ -8,11 +8,11 @@ export function ColumnToggles({ isOn, toggle, reset }: {
   toggle: (k: string) => void;
   reset: () => void;
 }) {
-  const { review } = useExec();
+  const { activeReviewers } = useExec();
   return (
     <div className="chips">
       <span className="label"><Term k="ui.columns">Columns</Term></span>
-      {COLUMNS.filter((c) => !c.fixed && (c.capability !== "review" || review.provider !== "none")).map((c) => (
+      {COLUMNS.filter((c) => !c.fixed && (!c.capability || activeReviewers(c.capability).length > 0)).map((c) => (
         <button key={c.key} className={`chip toggle ${isOn(c.key) ? "on" : ""}`}
           onClick={() => toggle(c.key)}>{c.label}</button>
       ))}

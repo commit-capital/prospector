@@ -13,9 +13,9 @@ function chipTone(status: string): string {
   return "muted";
 }
 
-export function BulkConfirmDialog({ action, comment, canonical, perPr = false, selected, rows, onClose, onDone,
+export function BulkConfirmDialog({ action, comment, canonical, perPr = false, reviewer, selected, rows, onClose, onDone,
   onJobsFinished }:
-  { action: BulkAction; comment: string; canonical?: number; perPr?: boolean; selected: number[];
+  { action: BulkAction; comment: string; canonical?: number; perPr?: boolean; reviewer?: string; selected: number[];
     rows: PRRow[]; onClose: () => void; onDone: () => void; onJobsFinished?: () => void }) {
   const { botLogin, dryRun } = useExec();
   const [running, setRunning] = useState(false);
@@ -47,7 +47,7 @@ export function BulkConfirmDialog({ action, comment, canonical, perPr = false, s
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const postsComment = action !== "MERGE" && action !== "GREPTILE_RETRIGGER"
+  const postsComment = action !== "MERGE" && action !== "REVIEW_RETRIGGER"
     && action !== "QUEUE_VERIFY" && action !== "RUN_SECURITY";
   const localQueue = action === "QUEUE_VERIFY";
   const backgroundSecurity = action === "RUN_SECURITY";
@@ -98,7 +98,7 @@ export function BulkConfirmDialog({ action, comment, canonical, perPr = false, s
     await api.executeBulk(
       { prs: targets.map((r) => r.number), action, comment: postsComment ? comment : undefined,
         comments: perPr && postsComment ? perPrComments : undefined,
-        canonical, dry_run: dryRun },
+        canonical, reviewer, dry_run: dryRun },
       (r) => {
         setResults((prev) => ({ ...prev, [r.pr]: r }));
         if (!backgroundSecurity || r.status !== "queued" || r.job_id === undefined) return;

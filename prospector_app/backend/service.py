@@ -373,9 +373,25 @@ def _author_rate(r: dict) -> float:
 # (#180); the engine sorts server-side so it spans all pages, not just the
 # visible one. Keys that can be absent push their row to the end of an ascending
 # sort via a leading `(is_missing, …)` tuple.
+_BAR_RANK = {"fail": 0, "stale": 1, "pending": 2, "na": 3, "pass": 4}
+
+
+def _reviewer_rank(r: dict, kind: str) -> tuple[int, int]:
+    """Sort key over a row's reviewer digests of `kind`: the worst bar first,
+    then Greptile's score; rows with no digest of that kind sort last."""
+    digests = [d for d in (r.get("reviews") or {}).values() if d.get("kind") == kind]
+    if not digests:
+        return (-1, -1)
+    worst = min(_BAR_RANK.get(d.get("status") or "na", 3) for d in digests)
+    score = next((d.get("score") for d in digests if d.get("score") is not None), None)
+    return (worst, score if score is not None else -1)
+
+
 _SORT_KEYS = {
     "pr": lambda r: r["number"],
     "greptile": lambda r: (r["signals"] or {}).get("greptile") or -1,
+    "review": lambda r: _reviewer_rank(r, "review"),
+    "scans": lambda r: _reviewer_rank(r, "scanner"),
     "safety": lambda r: _SAFETY_RANK.get(r["safety"], 0),
     "updated": lambda r: r["updated_at"] or "",
     "author": lambda r: (r["author"] or "").lower(),
@@ -396,7 +412,7 @@ _SORT_KEYS = {
         1 for issue in r.get("issues") or []
         if issue.get("how") in ("explicit", "fix-found", "issue-ref")),
 }
-_DEFAULT_DESC = {"pr", "greptile", "safety", "updated", "loc", "files",
+_DEFAULT_DESC = {"pr", "greptile", "review", "scans", "safety", "updated", "loc", "files",
                  "checks", "merge", "age", "author_rate", "pain", "issues"}
 
 

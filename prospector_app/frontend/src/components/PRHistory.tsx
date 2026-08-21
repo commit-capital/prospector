@@ -4,18 +4,18 @@ import { Collapsible } from "./Collapsible";
 import { timeAgo } from "../timeAgo";
 
 const KIND_ICON: Record<string, string> = {
-  comment: "💬", review: "📝", greptile_review: "🔍", commit: "🔨",
+  comment: "💬", review: "📝", bot_review: "🔍", commit: "🔨",
   reopened: "♻️", closed: "🚫", force_push: "⏫", renamed: "✏️",
 };
 
 const KIND_VERB: Record<string, string> = {
-  comment: "commented", review: "reviewed", greptile_review: "reviewed",
+  comment: "commented", review: "reviewed", bot_review: "reviewed",
   commit: "pushed", reopened: "reopened this PR", closed: "closed this PR",
   force_push: "force-pushed the branch", renamed: "renamed this PR",
 };
 
-/** Condensed upstream activity for one PR — comments, reviews (Greptile's
- *  score history flagged), commits, and reopen/close/force-push/rename
+/** Condensed upstream activity for one PR — comments, reviews (each automated
+ *  reviewer's flagged), commits, and reopen/close/force-push/rename
  *  events, oldest first — so a reviewer can follow the back-and-forth
  *  without leaving the app. Hidden while loading finds nothing. */
 export function PRHistory({ pr }: { pr: number }) {
@@ -36,8 +36,8 @@ export function PRHistory({ pr }: { pr: number }) {
       <Collapsible summary={<>🕘 History <span className="count">{items.length}</span></>}>
         <ul className="pr-history-list">
           {items.map((it, i) => {
-            const body = it.kind === "greptile_review" && it.greptile_score != null
-              ? `confidence ${it.greptile_score}/5`
+            const body = it.kind === "bot_review" && it.score != null
+              ? `confidence ${it.score}/5`
               : it.summary;
             return (
               <li key={`${it.at}-${i}`} className="ph-row">
