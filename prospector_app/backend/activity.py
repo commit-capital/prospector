@@ -12,7 +12,7 @@ down by teammate.
 Every event carries a semantic top-level ``kind`` (#40) so aggregation is a
 ``Counter`` over one field, not a string-parse of ``action``:
 
-    merge | close | comment | reopen | undo | handoff | reconcile
+    merge | close | comment | resubmit | reopen | undo | handoff | reconcile
       | issue-close | issue-reopen
 
 PR kinds and issue kinds are disjoint, so ``summarize`` never mixes the two —
@@ -61,7 +61,7 @@ def _engine() -> storekit.Engine:
 
 
 # The semantic vocabulary (#40). Aggregation groups on these.
-KINDS = ("merge", "close", "comment", "reopen", "undo", "handoff", "reconcile",
+KINDS = ("merge", "close", "comment", "resubmit", "reopen", "undo", "handoff", "reconcile",
          "issue-close", "issue-reopen", "alert-dismiss")
 
 
@@ -146,14 +146,18 @@ def close_reason(event: dict) -> str | None:
 
 
 def normalize(event: dict) -> dict:
-    """Return a copy of ``event`` with a canonical ``kind`` and, for closes, a
-    ``reason``. Used on read so legacy rows expose the new shape."""
+    """Return the canonical read shape, including recorded branch transitions."""
     out = dict(event)
     out["kind"] = canonical_kind(event)
+    branch_transition = isinstance(out.get("from_sha"), str) and isinstance(out.get("to_sha"), str)
+    if branch_transition:
+        out["kind"] = "resubmit"
     if out["kind"] == "close" and not out.get("reason"):
         r = close_reason(event)
         if r:
             out["reason"] = r
+    if branch_transition and not out.get("status"):
+        out["status"] = "dry-run" if out.get("dry_run") else "executed"
     return out
 
 

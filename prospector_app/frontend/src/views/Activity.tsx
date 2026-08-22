@@ -9,12 +9,13 @@ import { InfoTip } from "../components/InfoTip";
 import { localDateTime } from "../timeAgo";
 import { term } from "../glossary";
 
-const KIND_ICON: Record<string, string> = { merge: "🔀", close: "📮", comment: "💬", reopen: "↩", undo: "⤺", handoff: "📤", reconcile: "♻️", "issue-close": "🎫" };
+const KIND_ICON: Record<string, string> = { merge: "🔀", close: "📮", comment: "💬", resubmit: "🔄", reopen: "↩", undo: "⤺", handoff: "📤", reconcile: "♻️", "issue-close": "🎫" };
 const KIND_TIP: Record<string, string> = {
   merge: "A PR was merged upstream as {bot}.",
   close: "A PR was closed (with a comment) as {bot} — reopenable.",
   "issue-close": "A GitHub issue was closed (with a comment) as {bot} — as a duplicate or as fixed by a merged PR.",
   comment: "A comment was posted on a PR as {bot}.",
+  resubmit: "A contributor PR branch was updated through the guarded resubmit flow.",
   reopen: "A closed PR was reopened and the bot's closing comment removed.",
   undo: "A prior action was reversed.",
   handoff: "A batch of approved actions was emitted in one handoff.",

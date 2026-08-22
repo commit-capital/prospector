@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from prospector_app.backend import activity
 from prospector_app.backend import resubmit_identity
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -657,6 +658,33 @@ def test_push_target_refuses_any_ref_that_is_not_the_head(branch):
 def test_push_target_refuses_a_closed_pr():
     with pytest.raises(RuntimeError, match="not open"):
         resubmit.assert_push_target(_pr(state="CLOSED"), "fix")
+
+
+@pytest.mark.parametrize(("dry_run", "status"), [(False, "executed"), (True, "dry-run")])
+def test_activity_loggers_set_terminal_status(
+    monkeypatch: pytest.MonkeyPatch, dry_run: bool, status: str,
+) -> None:
+    recorded: list[dict[str, object]] = []
+
+    def capture(kind: str, **fields: object) -> dict[str, object]:
+        row = {"kind": kind, **fields}
+        recorded.append(row)
+        return row
+
+    monkeypatch.setattr(activity, "record", capture)
+    meta = {
+        "repo": "contrib/test-repo", "branch": "fix", "base_branch": "main",
+        "base_sha": "b" * 40, "head_sha": "a" * 40,
+        "old_commit_count": 1, "new_commit_count": 1,
+    }
+    info = _pr()
+
+    resubmit._log(42, meta, "c" * 40, "fix it", dry_run)
+    resubmit._log_rebase(42, meta, "c" * 40, dry_run)
+    resubmit._log_merge(42, meta, "c" * 40, dry_run)
+    resubmit._log_update(42, info, "a" * 40, "c" * 40, dry_run)
+
+    assert [row["status"] for row in recorded] == [status] * 4
 
 
 # --- merge mode: resolve conflicts inside a merge commit, rewriting no history ---
