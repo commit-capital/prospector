@@ -1477,6 +1477,11 @@ def cluster_state(cluster: Cluster, prs: dict[int, Pr], today: str | None = None
     # a moved head on any actively-routed PR sends the cluster back to analysis
     if any(r.section("analysis") and not is_current(r, "analysis") for r in active):
         return "needs-analysis"
+    # an active member with no proposal row joined after the analysis — the
+    # stored outcome never considered it (#137); analyze_driver.pending applies
+    # the same coverage check, so the chip and the driver's queue agree
+    if any(cluster.proposal_for(r.n) is None for r in active):
+        return "needs-analysis"
     if outcome in ("awaiting-authors", "needs-first-party-work", "blocked-on-decision"):
         return outcome
     if outcome == "close-out":

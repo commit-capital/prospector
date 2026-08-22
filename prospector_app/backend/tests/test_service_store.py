@@ -82,8 +82,14 @@ def _diffed_pr(n, head, path, monkeypatch):
 
 
 def _cluster(prs, outcome="merge-ready", cid=7):
+    # one proposal row per member, mirroring commit_analysis, which always
+    # writes them alongside the outcome
+    proposals = [{"pr": r.n,
+                  "disposition": (r.section("analysis") or {}).get("disposition")
+                  or "merge"}
+                 for r in prs]
     rec = {"id": cid, "root_problem": "x", "prs": [r.n for r in prs],
-           "outcome": outcome, "checked_at": NOW}
+           "outcome": outcome, "proposals": proposals, "checked_at": NOW}
     return model.Cluster(None, rec)
 
 

@@ -151,15 +151,20 @@ def _active_members(store: Store, cluster: Cluster,
 
 
 def pending(store: Store) -> list[Cluster]:
-    """Clusters with no outcome yet, or with any active member whose analysis
-    is missing/stale (head moved, or membership changed since last run)."""
+    """Clusters needing (re-)analysis: no outcome yet, an active member whose
+    analysis is missing/stale (head moved), or an active member with no
+    proposal row in this cluster. A PR that joins after an analysis may carry
+    a current per-PR analysis from another cluster or a standalone pass, so
+    the proposal-coverage check is what detects the membership change (#137)."""
     prs = store.all_prs()
     out = []
     for cid, c in sorted(store.all_clusters().items()):
         members = _active_members(store, c, prs)
         if not members:
             continue
-        if c.outcome is None or any(not is_current(r, "analysis") for r in members):
+        if (c.outcome is None
+                or any(not is_current(r, "analysis") for r in members)
+                or any(c.proposal_for(r.n) is None for r in members)):
             out.append(c)
     return out
 
@@ -242,6 +247,8 @@ Decide per PR (every member MUST get exactly one):
 - "needs-human": product decision or judgment we can't make here — explain why.
 
 Close dispositions apply to the whole PR. Before `close-dup` or `close-fixed`, account for every substantive primary and secondary change; if the canonical or upstream fix covers only one concern, keep the PR open (usually `request-changes` to split it) or use `needs-human`.
+
+A cluster's members may fix more than one distinct defect in the same subsystem. Judge each defect on its own: a close-dup canonical must fix the SAME defect as the PR it closes, so never fold the fix for one defect into close-dup of a PR that fixes another. Check the canonical's own disposition before closing duplicates against it: when the canonical is needs-human or otherwise has no path to merge and the member is an independently landable fix, keep the member open (merge or request-changes) rather than stranding the only fix for a live defect behind a blocked canonical. Surface cross-PR functional dependencies in the rationale and asks: when part of a member's change is inert until a separate unmerged fix lands (e.g. a threshold value whose trigger a different defect keeps from firing), name the dependency explicitly and do not credit the inert portion when comparing candidates.
 
 A `trusted` member (a maintainer named in the repository profile) is NEVER given a close disposition — no close-dup, close-fixed, or close-stale. A maintainer's open PR is intentional; if it is not the winner, use "request-changes" (with specific asks) or "needs-human". The commit validator rejects a close on a trusted member.
 

@@ -27,7 +27,15 @@ def _pr(store, n, greptile=5, ci="passing", mergeable=True, disposition="merge")
 def _cluster(store, cid, prs, outcome="merge-ready"):
     store.save_cluster({"id": cid, "root_problem": "x", "prs": [],
                         "outcome": outcome, "checked_at": NOW})
-    store.edit_cluster(cid).set_members(prs)   # wires cluster.prs AND each pr.cluster_ids
+    cl = store.edit_cluster(cid)
+    cl.set_members(prs)   # wires cluster.prs AND each pr.cluster_ids
+    # one proposal row per member, mirroring commit_analysis, which always
+    # writes them alongside the outcome
+    cl.set_proposals([
+        {"pr": n,
+         "disposition": (store.load_pr(n).section("analysis") or {}).get("disposition")
+         or "merge"}
+        for n in prs])
     return store.load_cluster(cid)
 
 
