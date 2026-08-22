@@ -319,6 +319,8 @@ def commit_clusters(store: Store, proposed: list[dict],
             cid = best_id
             cl = store.edit_cluster(cid)
             cl.set_root_problem(p.get("root_problem", ""))
+            if mset - set(cl.prs):
+                cl.set_outcome(None)   # membership grew → re-analyze this cluster
             updated.append(cid)
         else:
             cid = next_id
