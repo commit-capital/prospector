@@ -91,7 +91,9 @@ a:hover { text-decoration: underline; }
   box-shadow: 0 4px 14px rgba(0, 0, 0, .18); font-size: 12px; }
 .work-status:hover .work-status-flyout { display: block; }
 .work-status-row { display: flex; justify-content: space-between; gap: 14px;
-  padding: 3px 0; white-space: nowrap; }
+  padding: 3px 0; }
+.work-status-row > span { min-width: 0; overflow-wrap: anywhere; }
+.work-status-row > span + span { text-align: right; }
 .work-status-row + .work-status-row { border-top: 1px solid var(--border); }
 .work-status-ok { color: var(--green); }
 .work-status-stuck { color: var(--yellow); }
