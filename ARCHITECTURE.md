@@ -64,7 +64,9 @@ I/O — every board/list read serves from module-level dicts (`_prs`, `_clusters
   last `saved_at` watermark, via `store.prs_since` / `store.clusters_since`, and
   atomically rebinds the module globals (a GIL-protected swap — readers never see
   a half-mutated snapshot).
-- **Off the request path** (`_ensure`): one blocking cold load on first call;
+- **Off the request path** (`_ensure`): one blocking cold load on first call
+  (read in pages of `storekit.BULK_PAGE_ROWS` rows, so no single statement
+  ships the whole table inside the server's statement timeout);
   after that a background daemon thread refreshes at most once per
   `CHECK_DEBOUNCE` (10s). A slow store can never block or wedge a request — it
   only lets the snapshot lag by up to `CHECK_DEBOUNCE` seconds. `refresh()` (and

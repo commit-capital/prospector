@@ -330,6 +330,12 @@ class Store:
         only changed PRs. See storekit Collection.since."""
         return self._prs.since(watermark, omit_paths=[("meta", "body")])
 
+    def prs_matching(self, path: tuple[str, ...], values: list[str]) -> dict[int, model.Pr]:
+        """The PRs whose record holds one of `values` at `path` — e.g.
+        `(("fix_request", "status"), ["running", "pushing"])` — filtered
+        server-side. See storekit Collection.where_json."""
+        return self._prs.where_json(path, values)
+
     def clusters_since(self, watermark: str | None
                        ) -> tuple[dict[int, model.Cluster], list[int], str | None]:
         """Clusters written at or after `watermark` (all when None), split into live

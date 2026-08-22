@@ -467,3 +467,30 @@ def test_request_view_carries_source(store):
     view = verify_view.verify_request_view(store.load_pr(1))
     assert view is not None
     assert view["source"] == "auto"
+
+
+def test_recover_orphans_reads_only_running_requests(store, monkeypatch):
+    """Startup recovery filters on the request status server-side: it never
+    pulls every PR record over the wire to find the handful mid-run."""
+    store.save_pr({"pr": 2, "meta": {"title": "idle", "state": "open",
+                                     "head_sha": "b" * 40}})
+    store.edit_pr(1).record_verify_request("running", queued_at=_now(),
+                                           started_at=_now(), step="sandbox")
+    monkeypatch.setattr(S.Store, "all_prs",
+                        lambda self: pytest.fail("recovery pulled every PR record"))
+    assert verify_worker.recover_orphans() == ([1], [])
+    assert store.load_pr(1).verify_request["status"] == "error"
+
+
+def test_release_stale_claims_reads_only_this_hosts_claims(store, monkeypatch):
+    store.save_pr({"pr": 2, "meta": {"title": "idle", "state": "open",
+                                     "head_sha": "b" * 40}})
+    store.save_pr({"pr": 3, "meta": {"title": "theirs", "state": "open",
+                                     "head_sha": "c" * 40}})
+    assert store.claim_security_run(1, host=socket.gethostname(), stale_after=3600)
+    assert store.claim_security_run(3, host="some-other-machine", stale_after=3600)
+    monkeypatch.setattr(S.Store, "all_prs",
+                        lambda self: pytest.fail("recovery pulled every PR record"))
+    assert verify_worker.release_stale_claims() == [1]
+    assert store.load_pr(1).raw.get("security_run") is None
+    assert store.load_pr(3).raw["security_run"]["host"] == "some-other-machine"

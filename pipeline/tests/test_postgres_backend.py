@@ -115,3 +115,23 @@ def test_concurrent_registry_saves_never_collide_on_postgres(store):
     assert errors == []
     # The second writer's merge may lose the first's entry; the row itself is whole.
     assert set(store.load_verify_worker()["hosts"]) & {"first", "second"}
+
+
+def test_where_json_filters_on_jsonb_path_on_postgres(store):
+    store.save_pr(dict(_pr(5), fix_request={"status": "running", "action": "update"}))
+    store.save_pr(dict(_pr(6), fix_request={"status": "queued", "action": "update"}))
+    store.save_pr(_pr(7))
+    hits = store.prs_matching(("fix_request", "status"), ["running", "pushing"])
+    assert set(hits) == {5}
+    assert hits[5].fix_request["action"] == "update"
+
+
+def test_bulk_reads_page_on_postgres(store, monkeypatch):
+    monkeypatch.setattr(storekit, "BULK_PAGE_ROWS", 2)
+    for n in range(1, 6):
+        store.save_pr(_pr(n))
+    assert list(store.all_prs()) == [1, 2, 3, 4, 5]
+    records, high = store.prs_since(None)
+    assert set(records) == {1, 2, 3, 4, 5}
+    assert high is not None
+    assert store.prs_since(high)[0] == {}

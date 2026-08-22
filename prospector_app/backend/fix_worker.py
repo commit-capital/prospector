@@ -190,11 +190,10 @@ def recover_orphans() -> list[int]:
     me = socket.gethostname()
     st = data.store()
     with st.batch():
-        for n, rec in sorted(st.all_prs().items()):
+        in_flight = st.prs_matching(("fix_request", "status"), ["running", "pushing"])
+        for n, rec in sorted(in_flight.items()):
             req = rec.fix_request or {}
             status = req.get("status")
-            if status not in ("running", "pushing"):
-                continue
             if req.get("host") not in (None, me):
                 continue
             note = ("the autofix worker restarted mid-run — nothing was pushed; re-queue to retry"
