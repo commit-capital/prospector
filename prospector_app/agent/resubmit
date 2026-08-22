@@ -64,7 +64,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
 from pipeline import settings  # noqa: E402
-from pipeline import settings  # noqa: E402
 from prospector_app.backend.resubmit_identity import (  # noqa: E402
     actor_label,
     git_env,
@@ -1003,7 +1002,8 @@ def _log(pr: int, meta: dict, new_sha: str, message: str, dry_run: bool) -> None
         from prospector_app.backend import activity
         activity.record("resubmit", pr=pr, action="RESUBMIT", repo=meta.get("repo"),
                         branch=meta.get("branch"), from_sha=meta.get("head_sha"),
-                        to_sha=new_sha, message=message, dry_run=dry_run)
+                        to_sha=new_sha, message=message, dry_run=dry_run,
+                        status="dry-run" if dry_run else "executed")
     except Exception as e:  # noqa: BLE001 — never let audit logging break the push
         print(f"resubmit: warning — activity log failed: {e}", file=sys.stderr)
 
@@ -1016,7 +1016,8 @@ def _log_rebase(pr: int, meta: dict, new_sha: str, dry_run: bool) -> None:
                         branch=meta.get("branch"), base=meta.get("base_branch"),
                         base_sha=meta.get("base_sha"), from_sha=meta.get("head_sha"),
                         to_sha=new_sha, old_commit_count=meta.get("old_commit_count"),
-                        new_commit_count=meta.get("new_commit_count"), dry_run=dry_run)
+                        new_commit_count=meta.get("new_commit_count"), dry_run=dry_run,
+                        status="dry-run" if dry_run else "executed")
     except Exception as e:  # noqa: BLE001 — never let audit logging break the push
         print(f"resubmit: warning — rebase activity log failed: {e}", file=sys.stderr)
 
@@ -1028,7 +1029,8 @@ def _log_merge(pr: int, meta: dict, new_sha: str, dry_run: bool) -> None:
         activity.record("resubmit", pr=pr, action="RESOLVE_CONFLICTS", repo=meta.get("repo"),
                         branch=meta.get("branch"), base=meta.get("base_branch"),
                         base_sha=meta.get("base_sha"), from_sha=meta.get("head_sha"),
-                        to_sha=new_sha, dry_run=dry_run)
+                        to_sha=new_sha, dry_run=dry_run,
+                        status="dry-run" if dry_run else "executed")
     except Exception as e:  # noqa: BLE001 — never let audit logging break the push
         print(f"resubmit: warning — merge activity log failed: {e}", file=sys.stderr)
 
@@ -1044,7 +1046,8 @@ def _log_update(pr: int, info: dict, from_sha: str, to_sha: str | None, dry_run:
         activity.record("resubmit", pr=pr, action="UPDATE_BRANCH",
                         repo=(info.get("headRepository") or {}).get("nameWithOwner"),
                         branch=info.get("headRefName"), base=info.get("baseRefName"),
-                        from_sha=from_sha, to_sha=to_sha, dry_run=dry_run)
+                        from_sha=from_sha, to_sha=to_sha, dry_run=dry_run,
+                        status="dry-run" if dry_run else "executed")
     except Exception as e:  # noqa: BLE001 — never let audit logging break the merge
         print(f"resubmit: warning — activity log failed: {e}", file=sys.stderr)
 

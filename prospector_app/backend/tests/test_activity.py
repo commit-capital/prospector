@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
+import pytest
+
 from prospector_app.backend import activity
 from prospector_app.backend import app as appmod
 from prospector_app.backend import data
@@ -140,6 +142,24 @@ def test_recent_normalizes_legacy_archive_rows(temp_store):
     ])
     [ev] = activity.recent()
     assert ev["kind"] == "close" and ev["reason"] == "stale"
+
+
+@pytest.mark.parametrize(("dry_run", "status"), [(False, "executed"), (True, "dry-run")])
+def test_normalize_backfills_branch_transition(dry_run: bool, status: str) -> None:
+    out = activity.normalize({
+        "kind": "comment", "action": "RESOLVE_CONFLICTS", "dry_run": dry_run,
+        "from_sha": "a" * 40, "to_sha": "b" * 40,
+    })
+    assert out["kind"] == "resubmit"
+    assert out["status"] == status
+
+
+def test_normalize_preserves_explicit_resubmit_status() -> None:
+    out = activity.normalize({
+        "kind": "resubmit", "action": "REBASE", "status": "error",
+        "from_sha": "a" * 40, "to_sha": "b" * 40,
+    })
+    assert out["status"] == "error"
 
 
 def test_slug_is_filesystem_safe_and_attributable():
