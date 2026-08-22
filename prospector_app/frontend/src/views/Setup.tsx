@@ -262,6 +262,10 @@ function WorkerSection(
       {byKey.push_identity != null && !byKey.push_identity.ok && (
         <PushIdentitySection onDone={onChanged} />
       )}
+      {byKey.fix_policy != null && !byKey.fix_policy.ok
+        && (byKey.push_identity == null || byKey.push_identity.ok) && (
+        <ProfileSection onDone={onChanged} />
+      )}
 
       <h4>What work should this machine do?</h4>
       <p className="muted small">
@@ -617,6 +621,50 @@ function PastePushIdentity({ onDone }: { onDone: () => void }) {
         </button>
       </div>
     </div>
+  );
+}
+
+/** A share bundle pasted on a configured machine whose push identity is
+ *  already in place: only the sharer's repository profile is taken, which is
+ *  where the agent-fix opt-in lives. Shown only while the agent-fix policy row
+ *  is not met, since the push-identity card's paste covers the rest. */
+function ProfileSection({ onDone }: { onDone: () => void }) {
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+
+  const submit = async () => {
+    setBusy(true); setProblem(null);
+    try {
+      await api.onboardingApply({ step: "profile", bundle: text });
+      onDone();
+    } catch (e) {
+      setProblem(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="setup-card">
+      <h3>📋 Repository profile</h3>
+      <p className="muted small">
+        Drafting fixes unattended needs the profile to name which failing gates
+        the agent may work on (autofix.fixable_gates). Paste a share bundle from a
+        machine whose profile does — “copy setup for a teammate” on its Setup tab;
+        neither key needs ticking. Only the profile is taken from it here; the
+        repository, store, and push identity stay as they are.
+      </p>
+      <textarea className="welcome-paste" value={text} rows={8} disabled={busy}
+        placeholder={'{\n  "version": 2,\n  "profile": { … }\n}'}
+        onChange={(e) => setText(e.target.value)} />
+      {problem && <p className="chip chip-red sm">{problem}</p>}
+      <div className="welcome-actions">
+        <button className="btn-primary" disabled={busy || text.trim() === ""} onClick={() => void submit()}>
+          {busy ? "saving…" : "use this profile"}
+        </button>
+      </div>
+    </section>
   );
 }
 

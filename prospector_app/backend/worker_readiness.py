@@ -89,8 +89,8 @@ def _fix_policy() -> tuple[bool, str, str]:
     gates = profile.active().autofix.fixable_gates
     if not gates:
         return False, "profile.json names no autofix.fixable_gates", \
-            ("paste a share bundle from a machine whose profile names them, or add "
-             "autofix.fixable_gates to profile.json")
+            ("paste a share bundle from a machine whose profile names them in the "
+             "card below, or add autofix.fixable_gates to profile.json")
     return True, f"profile names fixable gates: {', '.join(gates)}", ""
 
 
