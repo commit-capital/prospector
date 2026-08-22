@@ -285,9 +285,15 @@ def plain_reason(rc: int, output: str) -> str:
     the command actually said, which is at least a sentence rather than a
     traceback."""
     mapped = _PLAIN_EXITS.get(rc)
+    first = next((ln.strip() for ln in output.splitlines() if ln.strip()), "")
+    if rc == 9 and first.startswith("resubmit: "):
+        # Exit 9 covers every way a rebase can stop short — merge commits in the
+        # history, a missing base, a paused replay — and the command's own
+        # sentence names which. Only its own sentence rides along: anything else
+        # on the first line is command noise.
+        return f"{mapped} {first.removeprefix('resubmit: ')}"
     if mapped:
         return mapped
-    first = next((ln.strip() for ln in output.splitlines() if ln.strip()), "")
     first = first.removeprefix("resubmit: ")
     return first or f"The {rc and 'action failed' or 'action failed'} (exit {rc})."
 
@@ -740,8 +746,9 @@ def _agent_resolve(n: int, claimed: dict, paused: list[str]) -> None:
     """Escalate a rebase that paused on conflicts to an agent-authored merge
     resolution, parking the result as a `resolve` request for operator review.
 
-    Only operator-clicked requests escalate — the hunter's picks refuse, so
-    unattended agent time is never spent without a human having asked. Every
+    An operator-clicked request escalates; the hunter's pick escalates only
+    under TRIAGE_FIX_HUNT_RESOLVE, and refuses otherwise, so unattended agent
+    time on a merge nobody asked for is its own opt-in. Every
     exit path writes a terminal status and leaves no paused git state behind;
     the one worktree that survives is the parked resolution's, kept because an
     agent's edits are not mechanically re-derivable."""
@@ -749,7 +756,7 @@ def _agent_resolve(n: int, claimed: dict, paused: list[str]) -> None:
     _resubmit(n, "abort")
     evidence = ({"merge_diff": merge_diff, "conflict_paths": paused}
                 if merge_diff else None)
-    if claimed.get("source") == "auto":
+    if claimed.get("source") == "auto" and not settings.fix_hunt_resolve():
         _refuse(n, claimed, _conflict_refusal(paused), result=evidence)
         return
     rec = data.store().load_pr(n)
@@ -1092,10 +1099,13 @@ def _hunt_attempted(pr: Pr, action: str) -> bool:
     re-run every sweep would pin the hunter to the same few conflicted PRs. A
     failed ending rests it for FAILED_RETRY_COOLDOWN_SECONDS only: it says
     nothing about the code, so the PR is not rested on it. The stamp a moved
-    head no longer matches re-arms the PR either way. An operator's click is
-    not bound by any of this."""
+    head no longer matches re-arms the PR either way. A `resolve` is what a
+    hunted rebase became when it paused on conflicts, so its ending rests the
+    rebase hunt the same way. An operator's click is not bound by any of
+    this."""
     req = pr.fix_request or {}
-    if not (req.get("action") == action and pr.head_sha is not None
+    done = {action, "resolve"} if action == "rebase" else {action}
+    if not (req.get("action") in done and pr.head_sha is not None
             and req.get("against_head_sha") == pr.head_sha):
         return False
     status = req.get("status")
@@ -1146,8 +1156,8 @@ def auto_fixable(pr: Pr) -> str | None:
 
 
 def _hunt_key(rec: Pr, action: str, n: int) -> tuple[int, int, float, int]:
-    """Hunt priority (ascending). Mechanical actions lead: they are cheap and
-    unblock the most. Fixes follow by how little they ask of the agent — a
+    """Hunt priority within an action kind (ascending). Mechanical actions
+    order by PR number. Fixes order by how little they ask of the agent — a
     nits-only review, then a Greptile score one point below the bar, then the
     rest — and by community pain (descending) within a tier."""
     if action != "fix":
@@ -1163,19 +1173,28 @@ def _hunt_key(rec: Pr, action: str, n: int) -> tuple[int, int, float, int]:
 
 
 def next_auto() -> tuple[str, int] | None:
-    """The idle hunter's next (action, PR), or None when nothing is eligible."""
+    """The idle hunter's next (action, PR), or None when nothing is eligible.
+
+    A `fix` leads while one of the TRIAGE_FIX_HUNT_LIMIT slots is free, so the
+    agent lane stays filled while the mechanical backlog drains around it; a
+    parked fix holds its slot until someone decides on it, which is what bounds
+    the unattended spend. With the slots full the mechanical pool runs."""
     fix_slots = settings.fix_hunt_limit() - _auto_fixes_in_flight()
-    best: tuple[tuple[int, int, float, int], str, int] | None = None
+    best_fix: tuple[tuple[int, int, float, int], int] | None = None
+    best_mech: tuple[tuple[int, int, float, int], str, int] | None = None
     for n, rec in data.prs().items():
         action = auto_fixable(rec)
         if action is None:
             continue
-        if action == "fix" and fix_slots <= 0:
-            continue
         key = _hunt_key(rec, action, n)
-        if best is None or key < best[0]:
-            best = (key, action, n)
-    return (best[1], best[2]) if best else None
+        if action == "fix":
+            if fix_slots > 0 and (best_fix is None or key < best_fix[0]):
+                best_fix = (key, n)
+        elif best_mech is None or key < best_mech[0]:
+            best_mech = (key, action, n)
+    if best_fix is not None:
+        return ("fix", best_fix[1])
+    return (best_mech[1], best_mech[2]) if best_mech else None
 
 
 def _beat_loop() -> None:

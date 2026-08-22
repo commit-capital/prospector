@@ -435,6 +435,24 @@ def test_auto_queued_conflicted_rebase_keeps_the_refusal(store, monkeypatch, tmp
     assert ("prepare", "--merge") not in fake.calls
 
 
+def test_auto_queued_conflicted_rebase_escalates_when_opted_in(store, monkeypatch, tmp_path):
+    monkeypatch.setenv("TRIAGE_FIX_HUNT_RESOLVE", "1")
+    fix_queue.queue_pr(1, "rebase", source="auto")
+    fake = _ConflictedResubmit(tmp_path)
+    monkeypatch.setattr(fix_worker, "_resubmit", fake)
+    monkeypatch.setattr(fix_worker.resolve_conflicts, "resolve",
+                        lambda wt, paths, **kw: {"resolutions": [
+                            {"path": "one.txt", "rationale": "kept both"}]})
+
+    fix_worker.run_one(1)
+
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "awaiting-review"
+    assert req["action"] == "resolve"
+    assert req["source"] == "auto"
+    assert not _pushed(fake)
+
+
 def test_agent_give_up_refuses_with_reason(store, monkeypatch, tmp_path):
     fix_queue.queue_pr(1, "rebase")
     fake = _ConflictedResubmit(tmp_path)
@@ -881,6 +899,35 @@ def test_one_fix_attempt_per_head(store, fix_profile, monkeypatch):
     assert fix_worker.auto_fixable(data.prs()[2]) == "fix"
 
 
+def test_mechanical_pool_runs_while_the_fix_slots_are_full(store, fix_profile, monkeypatch):
+    monkeypatch.setenv("TRIAGE_FIX_HUNT_FIX", "1")
+    monkeypatch.setenv("TRIAGE_FIX_HUNT_LIMIT", "1")
+    parked = _fixable_pr(3)
+    parked["fix_request"] = {"status": "awaiting-review", "action": "fix", "source": "auto"}
+    store.save_pr(parked)
+    store.save_pr(_fixable_pr(2))
+    data.refresh()
+    # PR 2 is a fix candidate and PR 1 a rebase; the one slot is held by PR 3.
+    assert fix_worker.next_auto() == ("rebase", 1)
+
+
+def test_a_resolve_ending_rests_the_rebase_hunt(store):
+    rec = store.load_pr(1).raw
+    rec["fix_request"] = {"status": "refused", "action": "resolve",
+                          "against_head_sha": rec["meta"]["head_sha"]}
+    store.save_pr(rec)
+    data.refresh()
+    assert fix_worker._hunt_attempted(data.prs()[1], "rebase") is True
+
+
+def test_plain_reason_names_why_a_rebase_stopped():
+    out = "resubmit: PR #7 contains merge commits; automatic rebasing refuses to flatten that history."
+    assert fix_worker.plain_reason(9, out) == (
+        "The rebase couldn't be completed automatically. PR #7 contains merge commits; "
+        "automatic rebasing refuses to flatten that history.")
+    assert fix_worker.plain_reason(9, "") == "The rebase couldn't be completed automatically."
+
+
 def test_fix_hunt_respects_the_in_flight_cap(store, fix_profile, monkeypatch):
     monkeypatch.setenv("TRIAGE_FIX_HUNT_FIX", "1")
     monkeypatch.setenv("TRIAGE_FIX_HUNT_LIMIT", "1")
@@ -896,7 +943,7 @@ def test_fix_hunt_respects_the_in_flight_cap(store, fix_profile, monkeypatch):
     assert fix_worker.next_auto() is None
 
 
-def test_hunt_order_mechanical_then_nits_then_tiers(store, fix_profile, monkeypatch):
+def test_hunt_order_fix_first_then_nits_then_tiers(store, fix_profile, monkeypatch):
     monkeypatch.setenv("TRIAGE_FIX_HUNT_FIX", "1")
     # PR numbers deliberately run against the priority order, so a first-match
     # scan by number would pick every one of these wrong.
@@ -909,12 +956,7 @@ def test_hunt_order_mechanical_then_nits_then_tiers(store, fix_profile, monkeypa
     for rec in (three, four, nits):
         store.save_pr(rec)
     data.refresh()
-    # PR 1 (unmergeable, bar met) is mechanical and wins outright.
-    assert fix_worker.next_auto() == ("rebase", 1)
-    one = store.load_pr(1).raw
-    one["fix_request"] = {"status": "running", "action": "rebase"}
-    store.save_pr(one)
-    data.refresh()
+    # A fix slot is free, so the agent lane leads PR 1's rebase.
     assert fix_worker.next_auto() == ("fix", 4)  # nits beat score tiers
     nits2 = store.load_pr(4).raw
     nits2["fix_request"] = {"status": "running", "action": "fix"}

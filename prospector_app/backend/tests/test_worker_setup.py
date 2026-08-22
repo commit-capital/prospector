@@ -58,11 +58,12 @@ class TestSetFlags:
         with pytest.raises(ValueError, match="TRIAGE_VERIFY_WORKER"):
             worker_control.set_flags({"TRIAGE_VERIFY_WORKER": "yes"})
 
-    def test_the_hunt_fix_switch_is_a_lane_switch(self, env_path):
-        worker_control.set_flags({"TRIAGE_FIX_HUNT_FIX": "1"})
-        assert "TRIAGE_FIX_HUNT_FIX=1" in env_path.read_text()
-        with pytest.raises(ValueError, match="TRIAGE_FIX_HUNT_FIX"):
-            worker_control.set_flags({"TRIAGE_FIX_HUNT_FIX": "yes"})
+    @pytest.mark.parametrize("key", ["TRIAGE_FIX_HUNT_FIX", "TRIAGE_FIX_HUNT_RESOLVE"])
+    def test_the_hunt_opt_ins_are_lane_switches(self, env_path, key):
+        worker_control.set_flags({key: "1"})
+        assert f"{key}=1" in env_path.read_text()
+        with pytest.raises(ValueError, match=key):
+            worker_control.set_flags({key: "yes"})
 
     def test_a_refused_write_leaves_the_file_untouched(self, env_path):
         before = env_path.read_text()
