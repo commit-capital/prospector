@@ -104,8 +104,8 @@ if [ "$VERIFY_ONLY" = 0 ]; then
     FLAGS='{"TRIAGE_VERIFY_WORKER": "1", "TRIAGE_VERIFY_AUTOHUNT": "1", "TRIAGE_FIX_WORKER": "1"}'
   else
     warn "no contributor-push identity configured — enabling verification only."
-    warn "Set TRIAGE_PUSH_LOGIN, TRIAGE_PUSH_EMAIL and TRIAGE_PUSH_SSH_KEY_FILE"
-    warn "to run autofix too. Each machine needs its own copy of that key."
+    warn "Set one up on the app's Setup tab (or TRIAGE_PUSH_LOGIN, TRIAGE_PUSH_EMAIL"
+    warn "and TRIAGE_PUSH_SSH_KEY_FILE in .env) to run autofix too."
   fi
 fi
 FLAGS="$FLAGS" uv run python -c "

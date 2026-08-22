@@ -76,12 +76,11 @@ def _base_pin() -> tuple[bool, str, str]:
 
 def _push_identity() -> tuple[bool, str, str]:
     if not settings.push_identity_configured():
-        return False, "no contributor-push identity", \
-            "set TRIAGE_PUSH_LOGIN, TRIAGE_PUSH_EMAIL and TRIAGE_PUSH_SSH_KEY_FILE"
+        return False, "no contributor-push identity", "set one up in the card below"
     failure = fix_worker.key_safety_failure()
     if failure is not None:
         return False, failure, "fix the key, then restart the worker"
-    return True, f"pushes as {settings.PUSH_LOGIN}", ""
+    return True, f"pushes as {settings.push_login()}", ""
 
 
 def _verify_flag() -> tuple[bool, str, str]:

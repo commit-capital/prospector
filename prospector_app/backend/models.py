@@ -159,8 +159,23 @@ class OnboardingProbe(BaseModel):
 class SetupShare(BaseModel):
     """What to put in the deployment bundle beyond the deployment itself.
     `include_key` adds the bot's private key, so the joiner's machine executes
-    approved writes."""
+    approved writes; `include_push_key` adds the contributor-push identity with
+    its SSH private key, so the joiner's machine runs autofix."""
     include_key: bool = False
+    include_push_key: bool = False
+
+
+class PushKeyRequest(BaseModel):
+    """Whose contributor-push key to generate (or show) on this machine."""
+    login: str
+
+
+class PushProbe(BaseModel):
+    """A key to hold against GitHub: which account it authenticates, and
+    whether that is `login`. `key_file` names an existing key; absent, the
+    one generated here for `login`."""
+    login: str
+    key_file: str | None = None
 
 
 class OnboardingApply(BaseModel):

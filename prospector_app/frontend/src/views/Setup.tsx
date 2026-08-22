@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router";
-import { api, type SetupCheck, type SetupReadiness, type WorkerFlags } from "../api";
+import {
+  api,
+  type PushAccount,
+  type PushKeyInfo,
+  type SetupCheck,
+  type SetupReadiness,
+  type WorkerFlags,
+} from "../api";
 import { useRepoMeta } from "../RepoMetaContext";
 
 /** How often the readiness rows re-check while the page is open. Fast enough
@@ -44,7 +51,7 @@ const EXPLAIN: Record<string, string> = {
   sandbox_image: "The locked-down container image those runs use — it carries no credentials and blocks the network.",
   base_pin: "This machine's own copy of the repository's default branch, the before/after baseline every verification is proven against.",
   verify_flag: "The background process that picks up queued verification work.",
-  push_identity: "A dedicated GitHub user whose SSH key pushes fixes to contributors' branches. Only autofix needs it.",
+  push_identity: "The GitHub user account — yours or a dedicated one — whose SSH key pushes fixes to contributors' branches. Only autofix needs it.",
   fix_flag: "The background process that prepares branch updates, rebases, and fixes.",
 };
 
@@ -137,7 +144,8 @@ export default function Setup() {
       </p>
 
       {optedIn || expanded || provisioned
-        ? <WorkerSection readiness={readiness} flags={flags} busy={busy} onToggle={toggle} />
+        ? <WorkerSection readiness={readiness} flags={flags} busy={busy} onToggle={toggle}
+            onChanged={() => void load()} />
         : <ProvisionBanner onStart={() => setExpanded(true)} />}
 
       <ShareSection />
@@ -169,11 +177,12 @@ function ProvisionBanner({ onStart }: { onStart: () => void }) {
  *  never opted in gets a first-time framing; a signed-up machine gets its
  *  status plainly. */
 function WorkerSection(
-  { readiness, flags, busy, onToggle }: {
+  { readiness, flags, busy, onToggle, onChanged }: {
     readiness: SetupReadiness;
     flags: WorkerFlags;
     busy: string | null;
     onToggle: (updates: Record<string, boolean>) => void;
+    onChanged: () => void;
   },
 ) {
   const [copied, setCopied] = useState(false);
@@ -243,6 +252,10 @@ function WorkerSection(
           {readiness.checks.map((c) => <CheckRow key={c.key} check={c} />)}
         </tbody>
       </table>
+
+      {byKey.push_identity != null && !byKey.push_identity.ok && (
+        <PushIdentitySection onDone={onChanged} />
+      )}
 
       <h4>What work should this machine do?</h4>
       <p className="muted small">
@@ -368,18 +381,247 @@ function UnprovisionSection(
   );
 }
 
+type PushPath = "me" | "paste" | "dedicated";
+
+/** Setting up the account autofix pushes as, on this machine. Three ways in —
+ *  the operator's own account, a bundle pasted from a machine that has one,
+ *  or a dedicated account — and every one ends the same way: GitHub names the
+ *  account a key authenticates before the identity is written. */
+function PushIdentitySection({ onDone }: { onDone: () => void }) {
+  const [path, setPath] = useState<PushPath | null>(null);
+  const options: { key: PushPath; label: string; hint: string }[] = [
+    { key: "me", label: "Push fixes as me",
+      hint: "fixes land under your own GitHub account, through a new key made here just for Prospector" },
+    { key: "paste", label: "Paste one from another machine",
+      hint: "a teammate's share bundle with “also let the teammate's machine push fixes” ticked" },
+    { key: "dedicated", label: "Use a dedicated account",
+      hint: "a separate GitHub user you create, so the key here reaches only this repository and fixes are attributed to it" },
+  ];
+  return (
+    <section className="setup-card">
+      <h3>🔑 Contributor-push identity</h3>
+      <p className="muted small">
+        Autofix pushes branch updates, rebases, and fixes to contributors'
+        branches as a GitHub user account, through an SSH key this machine
+        holds — only git pushes, never the API. Whose account?
+      </p>
+      {options.map((o) => (
+        <div key={o.key}>
+          <label>
+            <input type="radio" name="push-path" checked={path === o.key}
+              onChange={() => setPath(o.key)} />
+            {" "}{o.label}
+          </label>
+          {" "}<span className="muted small">{o.hint}</span>
+        </div>
+      ))}
+      {path === "me" && <KeyFlow mode="me" onDone={onDone} />}
+      {path === "dedicated" && <KeyFlow mode="dedicated" onDone={onDone} />}
+      {path === "paste" && <PastePushIdentity onDone={onDone} />}
+    </section>
+  );
+}
+
+/** Generate (or name) a key, have the operator attach its public half to the
+ *  account, and write the identity once GitHub greets that login. */
+function KeyFlow({ mode, onDone }: { mode: "me" | "dedicated"; onDone: () => void }) {
+  const [login, setLogin] = useState("");
+  const [account, setAccount] = useState<PushAccount | null>(null);
+  const [key, setKey] = useState<PushKeyInfo | null>(null);
+  const [ownKey, setOwnKey] = useState(false);
+  const [keyFile, setKeyFile] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (mode !== "me") return;
+    let live = true;
+    api.pushAccount().then((a) => { if (live) { setAccount(a); setLogin(a.login); } })
+      .catch((e: unknown) => { if (live) setProblem(e instanceof Error ? e.message : String(e)); });
+    return () => { live = false; };
+  }, [mode]);
+
+  const lookUp = async () => {
+    setBusy("lookup"); setProblem(null);
+    try {
+      setAccount(await api.pushAccount(login.trim()));
+    } catch (e) {
+      setProblem(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const generate = async () => {
+    if (!account) return;
+    setBusy("key"); setProblem(null);
+    try {
+      setKey(await api.pushKey(account.login));
+    } catch (e) {
+      setProblem(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const check = async () => {
+    if (!account) return;
+    const file = ownKey ? keyFile.trim() : key?.path;
+    if (!file) return;
+    setBusy("probe"); setProblem(null);
+    try {
+      const probe = await api.pushProbe(account.login, ownKey ? file : undefined);
+      if (!probe.ok) { setProblem(probe.problem ?? "GitHub did not confirm the key"); return; }
+      await api.onboardingApply({
+        step: "worker",
+        env: { TRIAGE_PUSH_LOGIN: account.login, TRIAGE_PUSH_EMAIL: account.email,
+          TRIAGE_PUSH_SSH_KEY_FILE: file },
+      });
+      onDone();
+    } catch (e) {
+      setProblem(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const keysUrl = "https://github.com/settings/ssh/new";
+  return (
+    <div className="welcome-field">
+      {mode === "me" && (
+        <p className="muted small">
+          Fixes land as you, and this key — passphrase-less, held on this
+          machine — reaches every repository your account can push to. Fine for
+          a computer you control; a dedicated account bounds it to this one.
+        </p>
+      )}
+      {mode === "dedicated" && (
+        <ol className="muted small">
+          <li>Create the GitHub user (its own email; turn on 2FA, “Keep my email
+            addresses private”, and “Block command line pushes that expose my email”).</li>
+          <li>Add it to the repository as an <strong>outside collaborator with
+            Write</strong> — maintainer edits unlock on push access to the base repo.</li>
+          <li>Name it here, then generate a key below and add the public half to
+            {" "}<em>that</em> account's SSH keys.</li>
+        </ol>
+      )}
+      {mode === "dedicated" && (
+        <div>
+          <label htmlFor="push-login">Account login</label>{" "}
+          <input id="push-login" value={login} placeholder="my-triage-pusher"
+            onChange={(e) => { setLogin(e.target.value); setAccount(null); setKey(null); }} />
+          {" "}
+          <button className="btn-secondary" disabled={busy != null || login.trim() === ""}
+            onClick={() => void lookUp()}>
+            {busy === "lookup" ? "looking…" : "look up"}
+          </button>
+        </div>
+      )}
+      {account && (
+        <p className="small">
+          <strong>{account.login}</strong> · commits as <code>{account.email}</code>
+        </p>
+      )}
+      {account && !ownKey && !key && (
+        <button className="btn-primary" disabled={busy != null} onClick={() => void generate()}>
+          {busy === "key" ? "generating…" : "generate a key on this machine"}
+        </button>
+      )}
+      {account && key && !ownKey && (
+        <>
+          <p className="small">
+            Add this public key to {mode === "me" ? "your" : <><code>{account.login}</code>'s</>} account
+            at <a href={keysUrl} target="_blank" rel="noreferrer">github.com/settings/ssh/new</a>
+            {mode === "dedicated" && " (signed in as that account)"}:
+          </p>
+          <pre className="log-tail">{key.public_key}</pre>
+          <button className="btn-secondary"
+            onClick={() => { void navigator.clipboard.writeText(key.public_key); setCopied(true); }}>
+            {copied ? "copied" : "copy public key"}
+          </button>
+          <p className="muted small">Private half: <code>{key.path}</code>, owner-only, never leaves this machine unless you share it.</p>
+        </>
+      )}
+      {account && (
+        <p>
+          <button className="link-btn" onClick={() => setOwnKey(!ownKey)}>
+            {ownKey ? "▾" : "▸"} Use an existing passphrase-less key instead…
+          </button>
+        </p>
+      )}
+      {account && ownKey && (
+        <div>
+          <label htmlFor="push-key-file">Private key file</label>{" "}
+          <input id="push-key-file" value={keyFile} placeholder="~/.ssh/prospector-push"
+            onChange={(e) => setKeyFile(e.target.value)} />
+        </div>
+      )}
+      {account && (key || (ownKey && keyFile.trim() !== "")) && (
+        <div className="welcome-actions">
+          <button className="btn-primary" disabled={busy != null} onClick={() => void check()}>
+            {busy === "probe" ? "asking GitHub…" : "I added it — check and save"}
+          </button>
+          <span className="muted small">asks GitHub which account the key opens, then writes the identity</span>
+        </div>
+      )}
+      {problem && <p className="chip chip-red sm">{problem}</p>}
+    </div>
+  );
+}
+
+/** A share bundle pasted on a configured machine: only its contributor-push
+ *  identity is taken. */
+function PastePushIdentity({ onDone }: { onDone: () => void }) {
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+
+  const submit = async () => {
+    setBusy(true); setProblem(null);
+    try {
+      await api.onboardingApply({ step: "worker", bundle: text });
+      onDone();
+    } catch (e) {
+      setProblem(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="welcome-field">
+      <p className="muted small">
+        Your teammate ticks “also let the teammate's machine push fixes” under
+        “Invite a member to this project” on their Setup tab. Only the push
+        identity is taken from it here; the repository and store stay as they are.
+      </p>
+      <textarea className="welcome-paste" value={text} rows={8} disabled={busy}
+        placeholder={'{\n  "version": 2,\n  "push": { "login": "…" }\n}'}
+        onChange={(e) => setText(e.target.value)} />
+      {problem && <p className="chip chip-red sm">{problem}</p>}
+      <div className="welcome-actions">
+        <button className="btn-primary" disabled={busy || text.trim() === ""} onClick={() => void submit()}>
+          {busy ? "saving…" : "use this identity"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /** Copies the deployment bundle a teammate pastes into their setup wizard. It
  *  carries the store URL, so it is a credential and the card says so. The
  *  bot's private key rides along only when the checkbox opts in. */
 function ShareSection() {
   const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
   const [includeKey, setIncludeKey] = useState(false);
+  const [includePushKey, setIncludePushKey] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
 
   const copy = async () => {
     setProblem(null);
     try {
-      const { bundle } = await api.setupShare(includeKey);
+      const { bundle } = await api.setupShare(includeKey, includePushKey);
       await navigator.clipboard.writeText(bundle);
       setState("copied");
     } catch (e) {
@@ -405,8 +647,19 @@ function ShareSection() {
         {" "}Also let the teammate act as the bot — includes the App's private
         key, so approved actions execute for real from their machine too.
       </label>
+      <label className="small">
+        <input type="checkbox" checked={includePushKey}
+          onChange={(e) => setIncludePushKey(e.target.checked)} />
+        {" "}Also let the teammate's machine push fixes — includes this machine's
+        contributor-push identity and its SSH private key, so they can turn on
+        autofix. Each copy widens where a credential with push to contributors'
+        branches lives.
+      </label>
       <p className="setup-warn small">
-        ⚠ This carries the database password{includeKey ? " and the bot's private key" : ""}.
+        ⚠ This carries the database password
+        {includeKey && includePushKey ? ", the bot's private key, and the contributor-push SSH key"
+          : includeKey ? " and the bot's private key"
+          : includePushKey ? " and the contributor-push SSH key" : ""}.
         Send it through a password manager or a direct message — never a
         channel with history.
       </p>

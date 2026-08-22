@@ -27,11 +27,14 @@ own branches while still being unable to reach the triage repository.
 - **Pushes to contributor PR head branches** use one shared `resubmit` flow with
   caller-selected identity. Interactive chat resubmits run as the confirming
   operator after dropping the injected App token. The unattended autofix worker
-  explicitly selects the machine user in `TRIAGE_PUSH_LOGIN`, a GitHub *user*
-  authenticating by its pinned SSH key alone (`TRIAGE_PUSH_SSH_KEY_FILE`), with
-  no API token. Pushing to a fork head branch rides "Allow edits from
-  maintainers", which grants push to maintainer *users*, so an App installation
-  token can never do it. `assert_push_target` refuses any ref that is not the open
+  explicitly selects the contributor-push user in `TRIAGE_PUSH_LOGIN` — a GitHub
+  *user* account, the operator's own or a dedicated one, authenticating by its
+  pinned SSH key alone (`TRIAGE_PUSH_SSH_KEY_FILE`), with no API token. The
+  Setup tab's push-identity card generates that key and accepts it only after
+  GitHub's `ssh -T` greeting names the login being written
+  (`prospector_app/backend/push_identity.py`). Pushing to a fork head branch
+  rides "Allow edits from maintainers", which grants push to maintainer
+  *users*, so an App installation token can never do it. `assert_push_target` refuses any ref that is not the open
   PR's own head — a repository ruleset targets branches and grants bypass to
   actors, so it cannot scope a restriction to one account, and this is where the
   user's reach is actually bounded. With the worker identity unset every
@@ -98,9 +101,11 @@ for the setup wizard, allowlisted per step: `connect` (`TRIAGE_REPO`,
 `profile.json` itself), `join` (a pasted bundle: the `connect` keys plus the bot
 identity, and, when the sharer opted in, the bot's private key — which the app
 files owner-only at `~/.config/prospector/<login>/private-key.pem` and names in
-`TRIAGE_BOT_KEY_FILE` itself; the key *path* is never client-writable there),
-`writes` (the bot identity and key path), and `worker`
-(the contributor-push identity). **`connect` and `join` are refused once
+`TRIAGE_BOT_KEY_FILE` itself — and the contributor-push identity with its SSH
+private key, filed the same way at `~/.config/prospector/<login>/push-key`; the
+key *paths* are never client-writable there), `writes` (the bot identity and
+key path), and `worker` (the contributor-push identity — the three values
+together or none, or the `push` section of a pasted bundle alone). **`connect` and `join` are refused once
 `settings.configured()` is true**, so a working deployment cannot be pointed at
 another repository or another database through the HTTP surface; `writes` and
 `worker` stay open because the wizard reaches them after `connect` has already

@@ -60,6 +60,16 @@ watch the app's 🛠️ Setup tab go green. Any number of machines can; each hol
 its own sandbox base, and the queue claim is a compare-and-swap so two never
 pick up the same PR.
 
+Autofix additionally needs a **contributor-push identity** on the machine: a
+GitHub user account — your own, or a dedicated one — whose SSH key pushes
+updates, rebases, and fixes to contributors' branches. The Setup tab's
+*Contributor-push identity* card sets one up: it generates a key for Prospector
+alone, you add the public half to the account, and GitHub confirms which account
+the key authenticates before anything is written. A teammate who already has one
+can tick *also let the teammate's machine push fixes* on their share card, and
+the pasted bundle carries it — into the first-run wizard on a fresh checkout,
+or into the same card on a machine that is already set up.
+
 To take a machine back out, the Setup tab's **Unprovision this computer** card
 stops the work in one click (every lane off; one click brings it back) and,
 expanded, composes the reverse of the setup command for you to run:
