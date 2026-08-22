@@ -453,8 +453,12 @@ def push_identity_probe(body: models.PushProbe):
     """Ask GitHub which account a key authenticates and whether it is `login`.
     Read-only: writing the identity is the `worker` onboarding step."""
     login = body.login.strip()
-    path = (Path(body.key_file).expanduser() if body.key_file and body.key_file.strip()
-            else push_identity.key_path(login))
+    try:
+        path = (push_identity.operator_key_file(body.key_file)
+                if body.key_file and body.key_file.strip()
+                else push_identity.key_path(login))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     return push_identity.probe_key(path, login)
 
 

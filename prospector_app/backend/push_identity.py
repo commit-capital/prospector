@@ -81,6 +81,17 @@ def key_path(login: str) -> Path:
     return onboarding.KEY_DIR / login / KEY_NAME
 
 
+def operator_key_file(raw: str) -> Path:
+    """A key path the operator named, normalized and held under their home
+    directory — the only place a key this machine pushes with may come from.
+    Raises ValueError for anything else."""
+    home = os.path.realpath(os.path.expanduser("~"))
+    candidate = os.path.realpath(os.path.expanduser(raw.strip()))
+    if candidate != home and not candidate.startswith(home + os.sep):
+        raise ValueError(f"the key must live under your home directory ({home})")
+    return Path(candidate)
+
+
 def public_key(path: Path) -> str:
     """The public half of the key at `path`. Raises ValueError when ssh-keygen
     cannot read it — a missing file, or a passphrase it cannot supply."""

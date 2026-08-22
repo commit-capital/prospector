@@ -109,3 +109,22 @@ def test_probe_names_a_key_it_cannot_read_unattended(tmp_path, monkeypatch):
     monkeypatch.setattr(push_identity.subprocess, "run", guarded)
     p = push_identity.probe_key(key, "octocat")
     assert p["ok"] is False and "passphrase" in (p["problem"] or "")
+
+
+class TestOperatorKeyFile:
+    def test_a_path_under_home_resolves(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        (tmp_path / ".ssh").mkdir()
+        assert push_identity.operator_key_file("~/.ssh/k") == (tmp_path / ".ssh" / "k").resolve()
+
+    def test_a_path_outside_home_is_refused(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        (tmp_path / "home").mkdir()
+        with pytest.raises(ValueError, match="home directory"):
+            push_identity.operator_key_file("/etc/ssh/ssh_host_ed25519_key")
+
+    def test_a_traversal_out_of_home_is_refused(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        (tmp_path / "home").mkdir()
+        with pytest.raises(ValueError):
+            push_identity.operator_key_file("~/../outside")
