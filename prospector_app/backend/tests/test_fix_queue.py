@@ -11,13 +11,13 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from pipeline import profile
-from pipeline import settings
 from pipeline import store as S
 from pipeline.storekit import now as _now
 from prospector_app.backend import data
 from prospector_app.backend import fix_queue
 from prospector_app.backend import fix_worker
 from prospector_app.backend import resubmit_identity
+from pipeline.testsupport import reviews_section
 
 
 @pytest.fixture
@@ -35,9 +35,9 @@ def push_key(tmp_path, monkeypatch):
     key = tmp_path / "id_ed25519"
     key.write_text("key\n")
     key.chmod(0o600)
-    monkeypatch.setattr(settings, "PUSH_LOGIN", "test-push-bot")
-    monkeypatch.setattr(settings, "PUSH_EMAIL", "1+test-push-bot@users.noreply.github.com")
-    monkeypatch.setattr(settings, "PUSH_SSH_KEY_FILE", key)
+    monkeypatch.setenv("TRIAGE_PUSH_LOGIN", "test-push-bot")
+    monkeypatch.setenv("TRIAGE_PUSH_EMAIL", "1+test-push-bot@users.noreply.github.com")
+    monkeypatch.setenv("TRIAGE_PUSH_SSH_KEY_FILE", str(key))
     monkeypatch.setenv("TRIAGE_VERIFY_SCRATCH", str(tmp_path / "scratch"))
     return key
 
@@ -180,7 +180,7 @@ def test_runner_status_reports_push_identity(store, push_key):
 
 
 def test_runner_status_without_a_push_identity(store, monkeypatch):
-    monkeypatch.setattr(settings, "PUSH_LOGIN", "")
+    monkeypatch.delenv("TRIAGE_PUSH_LOGIN", raising=False)
     st = fix_queue.runner_status()
     assert st["push_identity"] is False
     assert st["push_login"] is None
@@ -190,7 +190,7 @@ def test_a_laptop_can_queue_while_the_worker_holds_the_key(store, monkeypatch):
     # The whole point of a shared queue: an operator clicks from a machine with
     # no push credential at all, and the machine that has one does the work.
     # can_queue must follow the WORKER, never this backend's own config.
-    monkeypatch.setattr(settings, "PUSH_LOGIN", "")
+    monkeypatch.delenv("TRIAGE_PUSH_LOGIN", raising=False)
     store.save_fix_worker({"host": "sandbox-box", "last_beat": _now(),
                            "current_pr": None, "autohunt": False})
     st = fix_queue.runner_status()
@@ -200,7 +200,7 @@ def test_a_laptop_can_queue_while_the_worker_holds_the_key(store, monkeypatch):
 
 
 def test_cannot_queue_when_no_worker_has_ever_been_seen(store, monkeypatch):
-    monkeypatch.setattr(settings, "PUSH_LOGIN", "")
+    monkeypatch.delenv("TRIAGE_PUSH_LOGIN", raising=False)
     st = fix_queue.runner_status()
     assert st["can_queue"] is False
 
@@ -216,7 +216,7 @@ def test_the_worker_machine_can_queue_before_its_first_beat(store, push_key):
 def test_a_stale_worker_beat_stops_queueing(store, monkeypatch):
     # A worker that stopped beating cannot drain, so a queued action would sit
     # forever — say so rather than accepting the click.
-    monkeypatch.setattr(settings, "PUSH_LOGIN", "")
+    monkeypatch.delenv("TRIAGE_PUSH_LOGIN", raising=False)
     old_beat = (datetime.now(timezone.utc)
                 - timedelta(seconds=fix_queue.STALE_BEAT_SECONDS + 60)).isoformat()
     store.save_fix_worker({"host": "sandbox-box", "last_beat": old_beat,
@@ -232,7 +232,7 @@ def test_key_safety_passes_for_a_private_key_outside_the_scratch_root(push_key):
 
 
 def test_key_safety_refuses_an_unconfigured_identity(monkeypatch):
-    monkeypatch.setattr(settings, "PUSH_LOGIN", "")
+    monkeypatch.delenv("TRIAGE_PUSH_LOGIN", raising=False)
     assert "no contributor-push identity" in (fix_worker.key_safety_failure() or "")
 
 
@@ -249,17 +249,17 @@ def test_key_safety_refuses_a_key_under_the_sandbox_scratch_root(tmp_path, monke
     key = scratch / "keys" / "id_ed25519"
     key.write_text("key\n")
     key.chmod(0o600)
-    monkeypatch.setattr(settings, "PUSH_LOGIN", "test-push-bot")
-    monkeypatch.setattr(settings, "PUSH_EMAIL", "1+b@users.noreply.github.com")
-    monkeypatch.setattr(settings, "PUSH_SSH_KEY_FILE", key)
+    monkeypatch.setenv("TRIAGE_PUSH_LOGIN", "test-push-bot")
+    monkeypatch.setenv("TRIAGE_PUSH_EMAIL", "1+b@users.noreply.github.com")
+    monkeypatch.setenv("TRIAGE_PUSH_SSH_KEY_FILE", str(key))
     monkeypatch.setenv("TRIAGE_VERIFY_SCRATCH", str(scratch))
     assert "sandbox scratch root" in (fix_worker.key_safety_failure() or "")
 
 
 def test_key_safety_refuses_a_missing_key(tmp_path, monkeypatch):
-    monkeypatch.setattr(settings, "PUSH_LOGIN", "test-push-bot")
-    monkeypatch.setattr(settings, "PUSH_EMAIL", "1+b@users.noreply.github.com")
-    monkeypatch.setattr(settings, "PUSH_SSH_KEY_FILE", tmp_path / "absent")
+    monkeypatch.setenv("TRIAGE_PUSH_LOGIN", "test-push-bot")
+    monkeypatch.setenv("TRIAGE_PUSH_EMAIL", "1+b@users.noreply.github.com")
+    monkeypatch.setenv("TRIAGE_PUSH_SSH_KEY_FILE", str(tmp_path / "absent"))
     monkeypatch.setenv("TRIAGE_VERIFY_SCRATCH", str(tmp_path / "scratch"))
     assert "unreadable" in (fix_worker.key_safety_failure() or "")
 
@@ -329,9 +329,10 @@ def test_hunter_queues_a_rebase_for_an_unmergeable_pr(store):
     # The review score is part of the hunt bar (gates.fix_huntable): unprompted
     # sandbox time goes to PRs a reviewer already rated.
     rec = store.load_pr(1).raw
-    rec["signals"] = {"greptile": 5, "mergeable": False,
+    rec["signals"] = {"mergeable": False,
                       "checked_at": "2026-06-10T00:00:00+00:00",
                       "against_head_sha": "a" * 40}
+    rec["reviews"] = reviews_section("a" * 40, "2026-06-10T00:00:00+00:00")
     store.save_pr(rec)
     data.refresh()
     assert fix_worker.next_auto() == ("rebase", 1)

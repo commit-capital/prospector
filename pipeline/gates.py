@@ -22,7 +22,7 @@ import re
 import shlex
 from typing import TYPE_CHECKING
 
-from pipeline import codeowners, diffpaths, profile, review_policy, settings
+from pipeline import codeowners, diffpaths, profile, review_policy, reviewers, settings
 from pipeline.freshness import currency_failure, is_current
 
 if TYPE_CHECKING:
@@ -226,13 +226,18 @@ def pr_clean(pr: Pr, today: str | None = None) -> tuple[bool, list[str]]:
     if not is_current(pr, "signals"):
         reasons.append("signals stale or missing")
     else:
-        blocker = review_policy.active().clean_blocker(pr)
-        if blocker:
-            reasons.append(blocker)
         if pr.ci != "passing":
             reasons.append(f"ci {pr.ci}")
         if not pr.mergeable:
             reasons.append("merge conflicts")
+    if review_policy.active_reviewers():
+        if not is_current(pr, "reviews"):
+            reasons.append("reviews stale or missing")
+        else:
+            for b in (review_policy.clean_blockers(pr, reviewers.REVIEW)
+                      + review_policy.clean_blockers(pr, reviewers.SCANNER)):
+                if b.bar.reason:
+                    reasons.append(b.bar.reason)
     if not is_current(pr, "drift"):
         reasons.append("drift stale or missing")
     elif pr.drift_state != "applicable":
@@ -561,14 +566,16 @@ def fix_huntable(pr: Pr, action: str,
     unprompted, and its bar is per-action:
 
     - `update`/`rebase` exist to clear conflicts and a stale CI run, so they ask
-      for a human-facing quality signal — the review provider's bar — and for
-      nothing that being out of date is what causes (`pr_clean` requires
-      `mergeable` and passing CI, both false on exactly the PRs this hunts).
+      for a human-facing quality signal — every active reviewer's and scanner's
+      bar — and for nothing that being out of date is what causes (`pr_clean`
+      requires `mergeable` and passing CI, both false on exactly the PRs this
+      hunts).
     - `fix` targets the opposite population: a PR already mergeable with CI
-      passing whose review score sits below the bar, scored at the current
-      head. An unscored or stale review is excluded — its findings are absent
-      or describe a head the author moved past, and a re-review, not authored
-      code, is what moves those.
+      passing that an active reviewer fails at the current head. A pending or
+      stale review is excluded — its findings are absent or describe a head the
+      author moved past, and a re-review, not authored code, is what moves
+      those. A scanner block excludes the PR outright: a security finding is a
+      human's call.
 
     The operator's own click answers to fix_eligibility alone; this bar governs
     only what the hunter starts by itself.
@@ -576,26 +583,30 @@ def fix_huntable(pr: Pr, action: str,
     if action not in HUNTABLE_ACTIONS:
         return False, (f"the hunter queues only {', '.join(HUNTABLE_ACTIONS)}; "
                        f"a {action} is an operator's call")
-    if not is_current(pr, "signals"):
-        return False, "signals stale or missing, so the review bar is unknowable"
-    blocker = review_policy.active().clean_blocker(pr)
+    if not is_current(pr, "signals") or (
+            review_policy.active_reviewers() and not is_current(pr, "reviews")):
+        return False, "signals or reviews stale or missing, so the review bar is unknowable"
+    review_blockers = review_policy.clean_blockers(pr, reviewers.REVIEW)
+    scanner_blockers = review_policy.clean_blockers(pr, reviewers.SCANNER)
     if action == "fix":
         if pr.ci != "passing":
             return False, f"CI is {pr.ci or 'unknown'}, not passing"
         if pr.mergeable is not True:
             return False, "the PR does not merge cleanly"
+        if scanner_blockers:
+            return False, (f"{scanner_blockers[0].bar.reason} — a security finding is a "
+                           "human's call, not a fix target")
         fixable = profile.active().autofix.fixable_gates
-        review_fixable = ("review" in fixable and blocker is not None
-                          and pr.review_score is not None
-                          and pr.review_stale is not True)
+        failing = [b for b in review_blockers if b.bar.status == reviewers.FAIL]
+        review_fixable = "review" in fixable and bool(failing)
         ci_fixable = "ci" in fixable and pr.ci == "failing"
         if not (review_fixable or ci_fixable):
-            if blocker is not None and pr.review_stale:
-                return False, ("the review score is stale — a re-review, not a "
-                               "fix, is what moves it")
+            if review_blockers and not failing:
+                return False, ("the review is stale or pending — a re-review, not a fix, "
+                               "is what moves it")
             return False, "no gate a fix could clear is failing"
-    elif blocker:
-        return False, blocker
+    elif review_blockers or scanner_blockers:
+        return False, (review_blockers + scanner_blockers)[0].bar.reason or "review bar not met"
     return fix_eligibility(pr, action, changed_paths)
 
 
@@ -1386,16 +1397,20 @@ def forced_disposition(pr: Pr) -> tuple[str, str] | None:
     return min(routes, key=lambda r: _DISPOSITION_RANK[r[0]])
 
 
-def bar_asks(reasons: list[str]) -> list[str]:
-    """Turn a PR's clean-gate failures into actionable author asks."""
-    policy = review_policy.active()
-    label = policy.label.lower()
+def bar_asks(reasons: list[str], pr: Pr | None = None) -> list[str]:
+    """Turn a PR's clean-gate failures into actionable author asks. With `pr`,
+    each active reviewer's blocker supplies its own ask."""
+    by_reason: dict[str, str | None] = {}
+    if pr is not None:
+        for kind in reviewers.KINDS:
+            for b in review_policy.clean_blockers(pr, kind):
+                if b.bar.reason:
+                    by_reason[b.bar.reason] = b.bar.ask
     asks = []
     for r in reasons:
-        if policy.required and label and r.startswith(label):
-            asks.append(f"{policy.label} review is {r.split()[-1]} — address its review "
-                        f"comments so it reaches {policy.threshold}/{policy.score_max} "
-                        "(our merge bar).")
+        if r in by_reason:
+            if by_reason[r]:
+                asks.append(by_reason[r])
         elif r.startswith("ci"):
             asks.append("CI is not green — fix the failing/unknown checks.")
         elif "conflict" in r:
@@ -1418,7 +1433,8 @@ def bar_asks(reasons: list[str]) -> list[str]:
 # Staleness never demotes: an unmeasured gate proves nothing, and the fail-closed
 # merge gates (merge_allowed / merge_eligibility via pr_clean) refuse stale facts
 # on their own.
-_STALE_BAR_REASONS = frozenset({"signals stale or missing", "drift stale or missing"})
+_STALE_BAR_REASONS = frozenset({"signals stale or missing", "reviews stale or missing",
+                                "drift stale or missing"})
 
 
 def merge_demotion(pr: Pr) -> tuple[str, str | None, list[str]] | None:
@@ -1444,7 +1460,7 @@ def merge_demotion(pr: Pr) -> tuple[str, str | None, list[str]] | None:
         return (forced[0], forced[1], [])
     return ("request-changes",
             forced[1] if forced is not None else None,
-            bar_asks(bar) if bar else [])
+            bar_asks(bar, pr) if bar else [])
 
 
 # ---------------------------------------------------------------------------

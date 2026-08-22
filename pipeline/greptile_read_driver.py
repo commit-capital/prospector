@@ -1,11 +1,11 @@
 """Phase GREPTILE READ (driver — deterministic half).
 
-Selects open sub-5 PRs whose Greptile findings have not been semantically read
-against the current head, writes per-batch bundles (Greptile review/comment text
-+ diff path) for workflows/greptile_read.js, and commits the agents' verdicts to
-the store's greptile_review section. The agent classifies each finding
-substantive-vs-nitpick; a PR whose Greptile fetch yields no findings is stamped
-`clean` here without an agent call.
+Selects open below-bar PRs whose Greptile findings have not been semantically
+read against the current head, writes per-batch bundles (the stored Greptile
+entry's summary + inline findings + diff path) for workflows/greptile_read.js,
+and commits the agents' verdicts to the store's greptile_review section. The
+agent classifies each finding substantive-vs-nitpick; a PR whose stored entry
+holds no findings is stamped `clean` here without an agent call.
 """
 from __future__ import annotations
 
@@ -18,7 +18,6 @@ from typing import TYPE_CHECKING
 from pipeline import freshness
 from pipeline import review_policy
 from pipeline.diff_cache import DIFFS  # canonical diffs dir
-from pipeline.greptile import fetch_greptile_review_data
 from pipeline.store import Store
 
 if TYPE_CHECKING:
@@ -63,19 +62,20 @@ def _parse_iso(ts: str | None) -> datetime | None:
 
 
 def candidates(store: Store, reread_before: str | None = None) -> list[int]:
-    """Open PRs with Greptile score < 5 whose greptile_review is absent or stale.
-    When `reread_before` (an ISO-8601 timestamp) is given, also re-select PRs whose
-    verdict was stamped before it — the hook for refreshing verdicts left by a
-    superseded prompt, which head-based freshness alone cannot detect.
+    """Open PRs scored below Greptile's bar whose greptile_review is absent or
+    stale. When `reread_before` (an ISO-8601 timestamp) is given, also re-select
+    PRs whose verdict was stamped before it — the hook for refreshing verdicts
+    left by a superseded prompt, which head-based freshness alone cannot detect.
 
-    Empty unless Greptile is the configured review provider — there are no
-    Greptile verdicts to read otherwise."""
-    if review_policy.active().provider != "greptile":
+    Empty unless Greptile is an active reviewer — there are no Greptile verdicts
+    to read otherwise."""
+    if not review_policy.is_active("greptile"):
         return []
+    threshold = review_policy.greptile_threshold()
     cutoff = _parse_iso(reread_before)
     out = []
     for n, pr in store.all_prs().items():
-        if pr.state != "open" or pr.greptile is None or pr.greptile >= 5:
+        if pr.state != "open" or pr.greptile is None or pr.greptile >= threshold:
             continue
         gr = pr.greptile_review
         if gr is None or not freshness.is_current(pr, "greptile_review"):
@@ -87,32 +87,35 @@ def candidates(store: Store, reread_before: str | None = None) -> list[int]:
     return sorted(out)
 
 
-def _bundle_item(pr: Pr, reviews: list[dict], comments: list[dict]) -> dict:
+def _bundle_item(pr: Pr, reviews: list[str], comments: list[str]) -> dict:
     return {"pr": pr.number, "head_sha": pr.head_sha,
-            "reviews": [r.get("body") for r in reviews if r.get("body")],
-            "comments": [c.get("body") for c in comments if c.get("body")],
+            "reviews": [r for r in reviews if r],
+            "comments": [c for c in comments if c],
             "diff_path": str(DIFFS / f"{pr.head_sha}.diff")}
 
 
 def write_batches(store: Store, batch_size: int = 8, reread_before: str | None = None) -> dict:
-    """Fetch each candidate's Greptile findings, stamp `clean` directly when there
-    are none, and write the rest as per-batch bundles + index.json for the
-    workflow. `reread_before` forwards to `candidates` to also refresh verdicts
-    stamped before a superseded prompt. Returns `{candidates, batched, clean}`."""
+    """Read each candidate's stored Greptile entry, stamp `clean` directly when it
+    holds no findings and no summary, and write the rest as per-batch bundles +
+    index.json for the workflow. `reread_before` forwards to `candidates` to also
+    refresh verdicts stamped before a superseded prompt. Returns
+    `{candidates, batched, clean}`."""
     BATCH_DIR.mkdir(parents=True, exist_ok=True)
     items, clean = [], 0
     for n in candidates(store, reread_before):
         pr = store.load_pr(n)
         if pr is None:
             continue
-        _sha, reviews, comments = fetch_greptile_review_data(n)
-        texts = [r.get("body") for r in reviews] + [c.get("body") for c in comments]
-        if not any(texts):
+        entry = pr.review_entry("greptile") or {}
+        summary = entry.get("summary") or ""
+        findings = [str(f.get("body") or "") for f in entry.get("findings") or []
+                    if isinstance(f, dict)]
+        if not summary and not any(findings):
             pr = store.edit_pr(n)
             pr.set_greptile_review({"severity": "clean", "findings": [], "summary": "no Greptile findings"})
             clean += 1
             continue
-        items.append(_bundle_item(pr, reviews, comments))
+        items.append(_bundle_item(pr, [summary], findings))
     batches = [items[i:i + batch_size] for i in range(0, len(items), batch_size)]
     paths = []
     for i, batch in enumerate(batches):

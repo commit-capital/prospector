@@ -15,9 +15,9 @@ function ago(at?: string | null): string {
 }
 
 const LABEL: Record<string, string> = {
-  signals: "Signals", drift: "Drift", summary: "Summary", cluster: "Cluster",
-  analysis: "Analysis", security: "Security review", greptile_review: "Greptile review",
-  verify: "Verification",
+  signals: "Signals", reviews: "Reviewer feedback", drift: "Drift", summary: "Summary",
+  cluster: "Cluster", analysis: "Analysis", security: "Security review",
+  greptile_review: "Greptile read", verify: "Verification",
 };
 
 /** Provenance for every fact the PR carries: when each was computed, the head it

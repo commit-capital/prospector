@@ -66,41 +66,43 @@ def test_merge_routes_to_merge_pr_and_reports_blocked(monkeypatch):
     assert s["merged"] == 1 and s["blocked"] == 1
 
 
-def test_greptile_retrigger_routes_and_schedules_refresh(monkeypatch):
+def test_review_retrigger_routes_and_schedules_refresh(monkeypatch):
     baselines = {1: object(), 2: object()}
     seen = []
     scheduled = []
     monkeypatch.setattr(executor, "mint_bot_token", lambda: "tok")
-    monkeypatch.setattr(bulk.review_refresh, "capture", lambda n: baselines[n])
-    monkeypatch.setattr(executor, "retrigger_greptile",
-                        lambda n, *, token, dry_run: seen.append((n, token, dry_run)) or
-                        {"pr": n, "action": "GREPTILE_RETRIGGER", "status": "executed"})
+    monkeypatch.setattr(bulk.review_refresh, "capture", lambda n, rid: baselines[n])
+    monkeypatch.setattr(executor, "retrigger_review",
+                        lambda n, rid, *, token, dry_run: seen.append((n, rid, token, dry_run)) or
+                        {"pr": n, "action": "REVIEW_RETRIGGER", "status": "executed"})
     monkeypatch.setattr(bulk.review_refresh, "schedule",
-                        lambda n, baseline: scheduled.append((n, baseline)))
+                        lambda n, rid, baseline: scheduled.append((n, rid, baseline)))
 
-    evs = _drain(bulk.run_bulk([1, 2], "GREPTILE_RETRIGGER", dry_run=False))
+    evs = _drain(bulk.run_bulk([1, 2], "REVIEW_RETRIGGER", dry_run=False))
 
-    assert seen == [(1, "tok", False), (2, "tok", False)]
-    assert scheduled == [(1, baselines[1]), (2, baselines[2])]
+    # No reviewer named: the first active review reviewer with a mention (Greptile
+    # under the pinned profile) is the one re-triggered.
+    assert seen == [(1, "greptile", "tok", False), (2, "greptile", "tok", False)]
+    assert scheduled == [(1, "greptile", baselines[1]), (2, "greptile", baselines[2])]
     done = [e for e in evs if e["event"] == "done"][0]
     assert done_summary(done) == {"executed": 2}
 
 
-def test_greptile_retrigger_dry_run_does_not_capture_or_schedule(monkeypatch):
+def test_review_retrigger_dry_run_does_not_capture_or_schedule(monkeypatch):
     monkeypatch.setattr(executor, "mint_bot_token",
                         lambda: (_ for _ in ()).throw(AssertionError("must not mint")))
     monkeypatch.setattr(bulk.review_refresh, "capture",
-                        lambda n: (_ for _ in ()).throw(AssertionError("must not capture")))
+                        lambda n, rid: (_ for _ in ()).throw(AssertionError("must not capture")))
     monkeypatch.setattr(bulk.review_refresh, "schedule",
                         lambda *args: (_ for _ in ()).throw(AssertionError("must not schedule")))
     seen = []
-    monkeypatch.setattr(executor, "retrigger_greptile",
-                        lambda n, *, token, dry_run: seen.append((n, token, dry_run)) or
-                        {"pr": n, "action": "GREPTILE_RETRIGGER", "status": "dry-run"})
+    monkeypatch.setattr(executor, "retrigger_review",
+                        lambda n, rid, *, token, dry_run: seen.append((n, rid, token, dry_run)) or
+                        {"pr": n, "action": "REVIEW_RETRIGGER", "status": "dry-run"})
 
-    _drain(bulk.run_bulk([1], "GREPTILE_RETRIGGER", dry_run=True))
+    _drain(bulk.run_bulk([1], "REVIEW_RETRIGGER", reviewer="coderabbit", dry_run=True))
 
-    assert seen == [(1, None, True)]
+    assert seen == [(1, "coderabbit", None, True)]
 
 
 def test_queue_verify_routes_to_the_verify_queue_without_a_token(monkeypatch):

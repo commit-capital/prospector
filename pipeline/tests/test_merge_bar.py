@@ -6,6 +6,7 @@ merge read with nothing to re-run. The board chip derives the same way
 (gates.cluster_state)."""
 from pipeline import gates
 from pipeline.store import Store
+from pipeline.testsupport import greptile_entry, reviews_section
 
 NOW = "2026-06-10T00:00:00+00:00"
 
@@ -13,8 +14,9 @@ NOW = "2026-06-10T00:00:00+00:00"
 def _pr(store, n, greptile=5, ci="passing", mergeable=True, disposition="merge"):
     rec = {"pr": n, "meta": {"title": f"t{n}", "author": "a", "state": "open",
                              "draft": False, "head_sha": "h1", "checked_at": NOW},
-           "signals": {"greptile": greptile, "ci": ci, "mergeable": mergeable,
+           "signals": {"ci": ci, "mergeable": mergeable,
                        "checked_at": NOW, "against_head_sha": "h1"},
+           "reviews": reviews_section("h1", NOW, greptile=greptile_entry(greptile, "h1")),
            "drift": {"state": "applicable" if mergeable else "conflicts",
                      "checked_at": NOW, "against_head_sha": "h1"},
            "analysis": {"disposition": disposition, "rationale": "best",
@@ -110,7 +112,7 @@ def test_signal_refresh_restores_the_merge_read(tmp_path):
     _pr(s, 1, greptile=4)
     assert s.load_pr(1).disposition == "request-changes"
     rec = s.load_pr(1)
-    rec.raw["signals"]["greptile"] = 5
+    rec.raw["reviews"]["greptile"]["score"] = 5
     s.save_pr(rec)
     assert s.load_pr(1).disposition == "merge"
     assert s.load_pr(1).asks is None

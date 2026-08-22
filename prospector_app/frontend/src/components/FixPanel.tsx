@@ -169,7 +169,7 @@ function RequestStrip({ req, runner }: { req: FixRequest; runner: FixRunner | nu
         <span className="vb-icon">✓</span>
         <div>
           <div className="vb-headline">
-            Pushed {req.action} as {runner?.push_login ?? "the machine user"}
+            Pushed {req.action} as {runner?.push_login ?? "the contributor-push user"}
           </div>
           <div className="vb-detail">
             The review provider and CI re-run on the push.
@@ -265,8 +265,8 @@ export function FixBody({ req, runner }: { req: FixRequest | null; runner: FixRu
     return (
       <div className="muted small">
         No autofix has been queued for this PR. Queueing one has the
-        {runner?.push_login ? ` ${runner.push_login}` : " machine user"} account act on the
-        contributor's branch — never your own account.
+        {runner?.push_login ? ` ${runner.push_login}` : " contributor-push"} account act on
+        the contributor's branch.
         {runner != null && !runner.can_queue
           && " No worker has been seen against this store, so nothing would run yet."}
       </div>

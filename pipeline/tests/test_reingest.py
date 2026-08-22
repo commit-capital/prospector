@@ -4,13 +4,15 @@ from pipeline import ingest
 from pipeline import reingest
 from pipeline.store import Store
 from pipeline.testsupport import set_section
+from pipeline.testsupport import greptile_entry
 
 
 def _upsert(store, n, sha, *, greptile=5, ci="passing", state="open"):
     ingest.upsert_pr(store, {"number": n, "title": f"pr {n}", "user": {"login": "a"},
                              "state": state, "head": {"sha": sha}, "base": {"ref": "master"},
                              "html_url": "u"},
-                     ci_override=ci, greptile_override=greptile)
+                     ci_override=ci,
+                     reviews_override={"greptile": greptile_entry(greptile, sha)})
     store.load_pr(n).record_live_state(mergeable=True)  # the live sweep owns mergeable
 
 

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pipeline import gates
+from pipeline import reviewers
 from pipeline import schema
 from pipeline import settings
 from pipeline import storekit
@@ -91,8 +92,8 @@ FIX_REQUEST_SOURCES = {"operator", "auto"}
 # every per-PR record section this code knows; an unknown section is preserved
 # through save (with a stderr notice) so a checkout behind the store schema
 # round-trips newer records without loss
-PR_SECTIONS = ("meta", "signals", "drift", "summary", "cluster", "analysis", "security",
-               "issues", "threat", "greptile_review", "verify", "verify_request",
+PR_SECTIONS = ("meta", "signals", "reviews", "drift", "summary", "cluster", "analysis",
+               "security", "issues", "threat", "greptile_review", "verify", "verify_request",
                "fix_request", "security_run")
 
 
@@ -231,6 +232,19 @@ def validate_pr(rec: dict) -> None:
                 raise ValidationError(
                     f"greptile_review.findings[].class: {f.get('class')!r} not in "
                     f"{sorted(GREPTILE_FINDING_CLASSES)}")
+    rv = rec.get("reviews")
+    if rv:
+        for rid, entry in rv.items():
+            if rid not in reviewers.REVIEWERS:
+                continue
+            if not isinstance(entry, dict) or entry.get("kind") not in reviewers.KINDS:
+                raise ValidationError(
+                    f"reviews.{rid}.kind: {(entry or {}).get('kind') if isinstance(entry, dict) else entry!r} "
+                    f"not in {list(reviewers.KINDS)}")
+            for field_name in ("findings", "checks"):
+                val = entry.get(field_name, [])
+                if not isinstance(val, list) or not all(isinstance(x, dict) for x in val):
+                    raise ValidationError(f"reviews.{rid}.{field_name}: must be a list of dicts")
 
 
 def validate_cluster(rec: dict) -> None:
@@ -493,6 +507,14 @@ class Store:
             index_elements=[schema.registries.c.name], set_={"data": data})
         with self.engine.begin() as conn:
             conn.execute(stmt)
+
+    def load_reviewers(self) -> dict:
+        """Each automated reviewer's latest observed activity over the open
+        corpus — what `review_policy` auto-detection reads."""
+        return self._load_registry("reviewers", {"seen": {}, "computed_at": None})
+
+    def save_reviewers(self, registry: dict) -> None:
+        self._save_registry("reviewers", registry)
 
     def load_threats(self) -> dict:
         return self._load_registry("threats", {"actors": {}, "incidents": []})

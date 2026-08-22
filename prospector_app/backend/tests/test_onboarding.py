@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 
 import pytest
 
@@ -439,7 +440,7 @@ class TestRoutes:
         from prospector_app.backend import app as app_mod
         monkeypatch.delenv("TRIAGE_REPO", raising=False)
         client = TestClient(app_mod.app, raise_server_exceptions=False)
-        bundle = json.dumps({"version": 1,
+        bundle = json.dumps({"version": onboarding.BUNDLE_VERSION,
                              "env": {"TRIAGE_REPO": "acme/widgets",
                                      "TRIAGE_BOT_LOGIN": "acme-bot",
                                      "TRIAGE_BOT_APP_ID": "12345"},
@@ -455,7 +456,7 @@ class TestRoutes:
         from prospector_app.backend import app as app_mod
         monkeypatch.delenv("TRIAGE_REPO", raising=False)
         client = TestClient(app_mod.app, raise_server_exceptions=False)
-        bundle = json.dumps({"version": 1,
+        bundle = json.dumps({"version": onboarding.BUNDLE_VERSION,
                              "env": {"TRIAGE_REPO": "acme/widgets",
                                      "TRIAGE_BOT_LOGIN": "acme-bot",
                                      "TRIAGE_BOT_APP_ID": "12345"},
@@ -509,3 +510,107 @@ class TestRoutes:
                               "env": {"TRIAGE_REPO": "attacker/repo"}})
         assert r.status_code == 400
         assert "already configured" in r.json()["detail"]
+
+
+PUSH_KEY = ("-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n"
+            "-----END OPENSSH PRIVATE KEY-----\n")
+
+
+class TestPushIdentityInBundle:
+    """The contributor-push identity travels only on request, as the key's
+    bytes, and lands filed owner-only outside the checkout."""
+
+    @pytest.fixture
+    def pushing(self, tmp_path, monkeypatch):
+        key = tmp_path / "sharer-push-key"
+        key.write_text(PUSH_KEY)
+        monkeypatch.setenv("TRIAGE_REPO", "acme/widgets")
+        monkeypatch.setenv("TRIAGE_PUSH_LOGIN", "acme-pusher")
+        monkeypatch.setenv("TRIAGE_PUSH_EMAIL", "9+acme-pusher@users.noreply.github.com")
+        monkeypatch.setenv("TRIAGE_PUSH_SSH_KEY_FILE", str(key))
+        monkeypatch.setattr(onboarding, "KEY_DIR", tmp_path / "keys")
+        return key
+
+    def test_travels_only_on_request(self, pushing):
+        assert "push" not in onboarding.build_bundle()
+        b = onboarding.build_bundle(include_push_key=True)
+        assert b["push"] == {"login": "acme-pusher",
+                             "email": "9+acme-pusher@users.noreply.github.com",
+                             "ssh_key": PUSH_KEY}
+        parsed = onboarding.parse_bundle(json.dumps(b))
+        assert parsed.push == onboarding.PushIdentity(
+            "acme-pusher", "9+acme-pusher@users.noreply.github.com", PUSH_KEY)
+
+    def test_the_key_path_itself_never_travels(self, pushing):
+        assert str(pushing) not in json.dumps(onboarding.build_bundle(include_push_key=True))
+
+    def test_a_machine_without_one_refuses_to_share_it(self, monkeypatch):
+        monkeypatch.setenv("TRIAGE_REPO", "acme/widgets")
+        for k in onboarding.PUSH_KEYS:
+            monkeypatch.delenv(k, raising=False)
+        with pytest.raises(ValueError, match="contributor-push"):
+            onboarding.build_bundle(include_push_key=True)
+
+    def test_join_files_the_key_and_names_all_three(self, files, pushing, tmp_path, monkeypatch):
+        monkeypatch.delenv("TRIAGE_REPO")
+        env, _ = files
+        b = onboarding.parse_bundle(json.dumps(onboarding.build_bundle(include_push_key=True)))
+        onboarding.apply_bundle("join", b)
+        filed = tmp_path / "keys" / "acme-pusher" / "push-key"
+        assert filed.read_text() == PUSH_KEY
+        assert stat.S_IMODE(filed.stat().st_mode) == 0o600
+        text = env.read_text()
+        assert "TRIAGE_PUSH_LOGIN=acme-pusher\n" in text
+        assert "TRIAGE_PUSH_EMAIL=9+acme-pusher@users.noreply.github.com\n" in text
+        assert f"TRIAGE_PUSH_SSH_KEY_FILE={filed}\n" in text
+
+    def test_worker_takes_only_the_push_section_on_a_configured_machine(
+            self, files, pushing, tmp_path):
+        env, _ = files
+        bundle = onboarding.build_bundle(include_push_key=True)
+        bundle["env"]["TRIAGE_REPO"] = "other/repo"
+        onboarding.apply_bundle("worker", onboarding.parse_bundle(json.dumps(bundle)))
+        text = env.read_text()
+        assert "TRIAGE_PUSH_LOGIN=acme-pusher\n" in text
+        assert "other/repo" not in text
+
+    def test_worker_refuses_a_bundle_carrying_none(self, files, pushing):
+        b = onboarding.parse_bundle(json.dumps(onboarding.build_bundle()))
+        with pytest.raises(ValueError, match="no contributor-push identity"):
+            onboarding.apply_bundle("worker", b)
+
+    def test_the_pasted_path_is_never_client_writable(self, files, pushing, tmp_path):
+        b = onboarding.build_bundle(include_push_key=True)
+        b["env"]["TRIAGE_PUSH_SSH_KEY_FILE"] = "/etc/passwd"
+        onboarding.apply_bundle("worker", onboarding.parse_bundle(json.dumps(b)))
+        assert "/etc/passwd" not in files[0].read_text()
+
+    def test_text_that_is_not_a_private_key_is_refused(self, files, pushing):
+        b = onboarding.build_bundle(include_push_key=True)
+        b["push"]["ssh_key"] = "ssh-ed25519 AAAA public-half"
+        with pytest.raises(ValueError, match="private key"):
+            onboarding.apply_bundle("worker", onboarding.parse_bundle(json.dumps(b)))
+
+    def test_the_filed_key_is_removed_when_the_env_write_fails(
+            self, files, pushing, tmp_path, monkeypatch):
+        def boom(updates):
+            raise OSError("disk full")
+        monkeypatch.setattr(env_file, "write", boom)
+        b = onboarding.parse_bundle(json.dumps(onboarding.build_bundle(include_push_key=True)))
+        with pytest.raises(OSError):
+            onboarding.apply_bundle("worker", b)
+        assert not (tmp_path / "keys" / "acme-pusher" / "push-key").exists()
+
+
+class TestWorkerStep:
+    def test_writes_all_three_while_configured(self, files, monkeypatch):
+        monkeypatch.setenv("TRIAGE_REPO", "acme/widgets")
+        onboarding.apply("worker", {"TRIAGE_PUSH_LOGIN": "me", "TRIAGE_PUSH_EMAIL": "1+me@users.noreply.github.com",
+                                    "TRIAGE_PUSH_SSH_KEY_FILE": "/Users/me/.config/prospector/me/push-key"}, None)
+        assert "TRIAGE_PUSH_LOGIN=me\n" in files[0].read_text()
+
+    def test_a_partial_triple_is_refused(self, files, monkeypatch):
+        monkeypatch.setenv("TRIAGE_REPO", "acme/widgets")
+        with pytest.raises(ValueError, match="all three"):
+            onboarding.apply("worker", {"TRIAGE_PUSH_LOGIN": "me"}, None)
+        assert "TRIAGE_PUSH_LOGIN" not in files[0].read_text()

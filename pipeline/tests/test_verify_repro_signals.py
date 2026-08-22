@@ -3,6 +3,7 @@ shape of its command — settle whether the repro corroborates, ahead of the
 judge's rating of an output tail the exit no longer explains."""
 from pipeline import gates
 from pipeline.model import Pr
+from pipeline.testsupport import reviews_section
 
 
 HEAD = "abc123"
@@ -18,9 +19,10 @@ def _pr(**over) -> Pr:
         "pr": 1,
         "meta": {"title": "t", "author": "a", "state": "open", "draft": False,
                  "head_sha": HEAD, "checked_at": NOW},
-        "signals": {"greptile": 5, "ci": "passing", "mergeable": True,
+        "signals": {"ci": "passing", "mergeable": True,
                     "has_tests": True, "checked_at": NOW,
                     "against_head_sha": HEAD},
+        "reviews": reviews_section(HEAD, NOW),
         "drift": {"state": "applicable", "checked_at": NOW,
                   "against_head_sha": HEAD},
     }

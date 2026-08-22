@@ -1,10 +1,18 @@
 import json
 
-from pipeline import greptile
+import pytest
+
 from pipeline import ingest
+from pipeline.review_fetch import PrFeed
 from pipeline.testsupport import set_section
 from pipeline.freshness import SECTION_SCHEMA_VERSION
 from pipeline.store import Store
+
+
+@pytest.fixture(autouse=True)
+def _offline_feed(monkeypatch):
+    """Tests opt into a feed explicitly; the default stays offline."""
+    monkeypatch.setattr(ingest.review_fetch, "fetch_feeds", lambda numbers: {})
 
 
 def _seed(store: Store, n: int, sha: str):
@@ -12,7 +20,7 @@ def _seed(store: Store, n: int, sha: str):
     ingest.upsert_pr(store, {"number": n, "title": "x", "user": {"login": "a"},
                              "state": "open", "head": {"sha": sha},
                              "base": {"ref": "master"}, "html_url": "u"},
-                     ci_override="passing", greptile_override=5)
+                     ci_override="passing", reviews_override=_reviews(5, sha))
     sec_payloads = {
         "summary": {"one_liner": "x", "schema_version": SECTION_SCHEMA_VERSION["summary"]},
         "analysis": {"disposition": "merge", "rationale": "x"},
@@ -20,6 +28,21 @@ def _seed(store: Store, n: int, sha: str):
     }
     for sec in ("summary", "analysis", "security"):
         set_section(store, n, sec, sec_payloads[sec], against_head_sha=sha)
+
+
+def _reviews(score: int, sha: str) -> dict:
+    return {"greptile": {"kind": "review", "score": score, "reviewed_sha": sha,
+                         "findings": [], "checks": [], "extra": {}}, "pr_updated_at": "t"}
+
+
+def _feed(n: int, sha: str, score: int | None) -> PrFeed:
+    runs = [{"app": "github-actions", "name": "Build", "status": "completed",
+             "conclusion": "success", "title": None, "summary": None, "url": None}]
+    if score is not None:
+        runs.append({"app": "greptile-apps", "name": "Greptile Review", "status": "completed",
+                     "conclusion": "failure", "title": f"Confidence {score}/5", "summary": "",
+                     "url": "u"})
+    return PrFeed(pr=n, head_sha=sha, updated_at="t2", check_runs=runs)
 
 
 def _fake_gh(sha: str):
@@ -32,107 +55,40 @@ def _open_gh(n: int, sha: str):
             "head": {"sha": sha}, "base": {"ref": "master"}, "html_url": "u"}
 
 
-def test_prs_needing_greptile_data_selects_missing_and_stale_sha(tmp_path):
+def test_greptile_score_overridden_from_the_feed(tmp_path, monkeypatch):
+    """A stored score can lag Greptile's on-PR verdict; the feed's verdict at
+    the head wins, along with the reviewed SHA (#431 — the false sub-5
+    merge-block)."""
     store = Store(str(tmp_path))
-    # scored, no reviewed SHA → needs backfill
-    ingest.upsert_pr(store, _open_gh(1, "h1"), greptile_override=5)
-    # scored, SHA anchored to the current head → skip
-    ingest.upsert_pr(store, _open_gh(2, "h2"), greptile_override=4,
-                     greptile_reviewed_sha="h2")
-    # scored, SHA anchored to a pre-rebase commit → needs a re-read
-    ingest.upsert_pr(store, _open_gh(3, "h3"), greptile_override=5,
-                     greptile_reviewed_sha="h3_old")
-    # no Greptile score → skip (nothing to fetch)
-    ingest.upsert_pr(store, _open_gh(4, "h4"), ci_override="passing")
-    assert greptile.prs_needing_greptile_data(store) == [1, 3]
-
-
-def test_backfill_greptile_data_stamps_and_tolerates_failures(tmp_path, monkeypatch):
-    store = Store(str(tmp_path))
-    ingest.upsert_pr(store, _open_gh(1, "h1"), greptile_override=4)
-    ingest.upsert_pr(store, _open_gh(2, "h2"), greptile_override=5)
-    # PR 2 stands in for a 404 / no-Greptile-review PR — verdict is (None, None), no raise
-    monkeypatch.setattr(greptile, "fetch_greptile_verdict",
-                        lambda n: (5, "h1") if n == 1 else (None, None))
-
-    stats = greptile.backfill_greptile_data(store)
-
-    assert stats == {"candidates": 2, "stamped": 1, "skipped": 1}
-    assert store.load_pr(1).greptile_reviewed_sha == "h1"
-    assert store.load_pr(1).greptile == 5  # stored 4 corrected to Greptile's own
-    assert store.load_pr(2).greptile_reviewed_sha is None
-    # per-PR persistence makes it resumable: PR 1 is no longer a candidate
-    assert greptile.prs_needing_greptile_data(store) == [2]
-
-
-def test_backfill_rereads_stale_reviewed_sha(tmp_path, monkeypatch):
-    """A reviewed SHA pinned to a pre-rebase commit is re-read by the bulk
-    backfill; Greptile's re-review at the current head replaces it (#121)."""
-    store = Store(str(tmp_path))
-    ingest.upsert_pr(store, _open_gh(1, "head_new"), greptile_override=4,
-                     greptile_reviewed_sha="head_old")
-    monkeypatch.setattr(greptile, "fetch_greptile_verdict", lambda n: (5, "head_new"))
-
-    stats = greptile.backfill_greptile_data(store)
-
-    assert stats == {"candidates": 1, "stamped": 1, "skipped": 0}
-    rec = store.load_pr(1)
-    assert rec.greptile_reviewed_sha == "head_new"
-    assert rec.greptile == 5
-    assert greptile.prs_needing_greptile_data(store) == []
-
-
-def test_backfill_skips_write_when_verdict_unchanged(tmp_path, monkeypatch):
-    """A stale-selected PR whose fetch returns the already-stored verdict
-    (the head moved but Greptile has not re-reviewed) is counted skipped and
-    its signals section is not rewritten."""
-    store = Store(str(tmp_path))
-    ingest.upsert_pr(store, _open_gh(1, "head_new"), greptile_override=5,
-                     greptile_reviewed_sha="head_old")
-    before = store.load_pr(1).section("signals")
-    monkeypatch.setattr(greptile, "fetch_greptile_verdict", lambda n: (5, "head_old"))
-
-    stats = greptile.backfill_greptile_data(store)
-
-    assert stats == {"candidates": 1, "stamped": 0, "skipped": 1}
-    assert store.load_pr(1).section("signals") == before
-    # still stale, so the next pass re-selects it
-    assert greptile.prs_needing_greptile_data(store) == [1]
-
-
-def test_greptile_score_overridden_from_greptile_verdict(tmp_path, monkeypatch):
-    """A stored greptileScore can lag Greptile's on-PR verdict; when Greptile's
-    own score (scraped from the issue summary) differs, it wins, along with the
-    reviewed SHA (#431 — the false sub-5 merge-block)."""
-    store = Store(str(tmp_path))
-    ingest.upsert_pr(store, _fake_gh("c1c162ed"), greptile_override=4)
+    ingest.upsert_pr(store, _fake_gh("c1c162ed"), reviews_override=_reviews(4, "older"))
 
     class R:
         returncode = 0
         stdout = json.dumps(_fake_gh("c1c162ed"))
     monkeypatch.setattr(ingest.subprocess, "run", lambda *a, **k: R())
-    monkeypatch.setattr(ingest, "gh_ci_status", lambda sha: "passing")
-    monkeypatch.setattr(greptile, "fetch_greptile_verdict", lambda n: (5, "c1c162ed"))
+    monkeypatch.setattr(ingest.review_fetch, "fetch_feeds",
+                        lambda numbers: {7: _feed(7, "c1c162ed", 5)})
 
     ingest.refresh_prs(store, [7])
 
     rec = store.load_pr(7)
     assert rec.greptile == 5
     assert rec.greptile_reviewed_sha == "c1c162ed"
+    assert rec.ci == "passing"
 
 
-def test_greptile_score_kept_when_verdict_absent(tmp_path, monkeypatch):
-    """No Greptile verdict available (never reviewed / unreachable) → the
-    stored score stands rather than being wiped."""
+def test_greptile_score_kept_when_feed_unavailable(tmp_path, monkeypatch):
+    """No feed (GitHub unreachable) → the stored entry stands rather than being
+    wiped, and CI falls back to the REST verdict."""
     store = Store(str(tmp_path))
-    ingest.upsert_pr(store, _fake_gh("sha1"), greptile_override=4)
+    ingest.upsert_pr(store, _fake_gh("sha1"), reviews_override=_reviews(4, "sha1"))
 
     class R:
         returncode = 0
         stdout = json.dumps(_fake_gh("sha1"))
     monkeypatch.setattr(ingest.subprocess, "run", lambda *a, **k: R())
+    monkeypatch.setattr(ingest.review_fetch, "fetch_feeds", lambda numbers: {})
     monkeypatch.setattr(ingest, "gh_ci_status", lambda sha: "passing")
-    monkeypatch.setattr(greptile, "fetch_greptile_verdict", lambda n: (None, None))
 
     ingest.refresh_prs(store, [7])
 
@@ -170,8 +126,8 @@ def test_moved_head_recomputes_diff_signals_before_restamping(tmp_path, monkeypa
         has_tests=False)
     moved = dict(_fake_gh("new_sha"), additions=86, deletions=1, changed_files=2)
     monkeypatch.setattr(ingest, "fetch_pr", lambda n: moved)
-    monkeypatch.setattr(ingest, "gh_ci_status", lambda sha: "passing")
-    monkeypatch.setattr(greptile, "fetch_greptile_verdict", lambda n: (5, "new_sha"))
+    monkeypatch.setattr(ingest.review_fetch, "fetch_feeds",
+                        lambda numbers: {7: _feed(7, "new_sha", 5)})
     from pipeline import diff_cache
     monkeypatch.setattr(
         diff_cache, "fetch_diff_paths",
@@ -195,8 +151,8 @@ def test_github_ci_overrides_stored_verdict(tmp_path, monkeypatch):
         returncode = 0
         stdout = json.dumps(_fake_gh("sha1"))
     monkeypatch.setattr(ingest.subprocess, "run", lambda *a, **k: R())
+    monkeypatch.setattr(ingest.review_fetch, "fetch_feeds", lambda numbers: {})
     monkeypatch.setattr(ingest, "gh_ci_status", lambda sha: "passing")
-    monkeypatch.setattr(greptile, "fetch_greptile_verdict", lambda n: (None, None))
 
     ingest.refresh_prs(store, [7])
 
@@ -212,8 +168,8 @@ def test_keeps_stored_ci_when_github_has_no_verdict(tmp_path, monkeypatch):
         returncode = 0
         stdout = json.dumps(_fake_gh("sha1"))
     monkeypatch.setattr(ingest.subprocess, "run", lambda *a, **k: R())
+    monkeypatch.setattr(ingest.review_fetch, "fetch_feeds", lambda numbers: {})
     monkeypatch.setattr(ingest, "gh_ci_status", lambda sha: None)
-    monkeypatch.setattr(greptile, "fetch_greptile_verdict", lambda n: (None, None))
 
     ingest.refresh_prs(store, [7])
 

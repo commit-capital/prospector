@@ -48,9 +48,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
-from pipeline import (author_fix, compile_preflight, diffpaths, gates, gh, greptile,
-                      profile, resolve_conflicts, review_fix, review_policy, settings,
-                      verify_driver)
+from pipeline import (author_fix, compile_preflight, diffpaths, freshness, gates, gh,
+                      profile, resolve_conflicts, review_fix, review_policy, reviewers,
+                      settings, verify_driver)
 from pipeline.storekit import now as _now
 from prospector_app.backend import data, executor, fix_queue, review_refresh, service
 from prospector_app.backend.resubmit_identity import worker_env
@@ -147,9 +147,10 @@ def key_safety_failure() -> str | None:
     alone, and live outside the sandbox scratch root — properties asserted at
     startup rather than assumed."""
     if not settings.push_identity_configured():
-        return ("no contributor-push identity is configured: set TRIAGE_PUSH_LOGIN, "
-                "TRIAGE_PUSH_EMAIL and TRIAGE_PUSH_SSH_KEY_FILE in .env")
-    key = settings.PUSH_SSH_KEY_FILE
+        return ("no contributor-push identity is configured: set one up on the "
+                "Setup tab, or TRIAGE_PUSH_LOGIN, TRIAGE_PUSH_EMAIL and "
+                "TRIAGE_PUSH_SSH_KEY_FILE in .env")
+    key = settings.push_ssh_key_file()
     assert key is not None  # push_identity_configured() proved it
     try:
         mode = key.stat().st_mode
@@ -502,7 +503,7 @@ def _probe(n: int, claimed: dict, action: str) -> str | None:
 DEFAULT_FIX_GOAL = ("Clear the failing gates on this pull request that a change "
                     "to its code can clear.")
 
-# The review provider's summary as handed to the agent, bounded because it is
+# The reviewers' summaries as handed to the agent, bounded because they are
 # contributor-adjacent prose that rides into a prompt.
 REVIEW_SUMMARY_CHARS = 6000
 
@@ -515,41 +516,41 @@ class _FixBrief(NamedTuple):
 
 
 def _review_summary(rec: Pr) -> str:
-    """The review provider's own prose on this PR at its current head, or "".
-    Greptile's scored summary comment explains the score and names the defects
-    it weighed, so a sub-bar PR with no inline finding still hands the agent
-    something concrete."""
-    if review_policy.active().provider != "greptile":
-        return ""
-    body, sha = greptile.fetch_greptile_summary_text(rec.number)
-    if not body or (sha and not (rec.head_sha or "").startswith(sha)):
-        return ""
-    return body[:REVIEW_SUMMARY_CHARS]
+    """Every active review reviewer's own prose on this PR whose bar fails at the
+    current head, or "". A reviewer's summary explains its verdict and names the
+    defects it weighed, so a sub-bar PR with no inline finding still hands the
+    agent something concrete."""
+    parts: list[str] = []
+    for r in review_policy.active_reviewers(reviewers.REVIEW):
+        entry = rec.review_entry(r.id)
+        if (entry and entry.get("summary")
+                and review_policy.bar(rec, r).status == reviewers.FAIL):
+            parts.append(f"## {r.label}\n{entry['summary']}")
+    return "\n\n".join(parts)[:REVIEW_SUMMARY_CHARS]
 
 
 def _fix_goal(rec: Pr, claimed: dict) -> _FixBrief:
     """What the authoring agent is being asked to do, and the evidence it works
     from: the goal, the review findings, the failing check names, and the
-    review provider's summary.
+    reviewers' summaries.
 
     Operator guidance is the goal when it is present. Otherwise the goal is the
     profile's fixable gates, described from the outstanding findings, the
-    provider's summary and the failing checks — what the store and the review
+    reviewers' summaries and the failing checks — what the store and the reviews
     can say is wrong with the code.
 
-    Findings and the summary are supplied only while the review verdict is
-    current. A stale verdict describes a head the author has moved past, so it
-    would send the agent after defects that may already be fixed."""
+    Findings and summaries come only from active review reviewers whose bar
+    fails at the current head. A stale or pending verdict describes a head the
+    author has moved past (or none yet), so it would send the agent after
+    defects that may already be fixed."""
+    read = rec.greptile_review if freshness.is_current(rec, "greptile_review") else None
     findings: list[dict] = []
-    section = rec.greptile_review or {}
-    if section and not rec.review_stale:
-        findings = [f for f in (section.get("findings") or []) if isinstance(f, dict)]
+    for r in review_policy.active_reviewers(reviewers.REVIEW):
+        if review_policy.bar(rec, r).status == reviewers.FAIL:
+            findings.extend(reviewers.findings_for_fix(r, rec.review_entry(r.id), rec.head_sha, read))
     fixable = profile.active().autofix.fixable_gates
     guidance = claimed.get("guidance")
-    summary = ""
-    if (("review" in fixable or guidance) and not rec.review_stale
-            and review_policy.active().clean_blocker(rec) is not None):
-        summary = _review_summary(rec)
+    summary = _review_summary(rec) if ("review" in fixable or guidance) else ""
     checks: list[str] = []
     if rec.ci == "failing" and ("ci" in fixable or guidance):
         checks = [str(c.get("name")) for c in gh.check_runs(rec.head_sha or "")
@@ -1043,18 +1044,21 @@ def _finish_pushed(n: int, req: dict, output: str, result: dict | None = None) -
 
 
 def _retrigger_review(n: int) -> None:
-    """Ask the review provider for a fresh score on the head a fix just pushed,
-    and start the backend wait that ingests it. The score is what stands between
-    the pushed fix and the merge bar, so the push is what asks. Best-effort: no
-    mintable token forces the executor's dry-run, and the PR waits for the next
-    scheduled ingest instead."""
+    """Ask every active review reviewer with a mention for a fresh verdict on the
+    head a fix just pushed, and start the backend wait that ingests it. The
+    verdict is what stands between the pushed fix and the merge bar, so the push
+    is what asks. Best-effort: no mintable token forces the executor's dry-run,
+    and the PR waits for the next scheduled ingest instead."""
     token = executor.mint_bot_token()
-    baseline = review_refresh.capture(n) if token else None
-    res = executor.retrigger_greptile(n, token=token, dry_run=token is None)
-    if res.get("status") == "executed" and baseline is not None:
-        review_refresh.schedule(n, baseline)
-    print(f"[fix-worker] review retrigger for PR #{n}: {res.get('status')}",
-          flush=True)
+    for r in review_policy.active_reviewers(reviewers.REVIEW):
+        if not r.retrigger_mention:
+            continue
+        baseline = review_refresh.capture(n, r.id) if token else None
+        res = executor.retrigger_review(n, r.id, token=token, dry_run=token is None)
+        if res.get("status") == "executed" and baseline is not None:
+            review_refresh.schedule(n, r.id, baseline)
+        print(f"[fix-worker] {r.label} retrigger for PR #{n}: {res.get('status')}",
+              flush=True)
 
 
 # Terminal fix_request statuses. A cancelled request counts as an attempt: an
@@ -1145,12 +1149,16 @@ def auto_fixable(pr: Pr) -> str | None:
 def _hunt_key(rec: Pr, action: str, n: int) -> tuple[int, int, float, int]:
     """Hunt priority (ascending). Mechanical actions lead: they are cheap and
     unblock the most. Fixes follow by how little they ask of the agent — a
-    nits-only review, then one point below the bar, then the rest — and by
-    community pain (descending) within a tier."""
+    nits-only review, then a Greptile score one point below the bar, then the
+    rest — and by community pain (descending) within a tier."""
     if action != "fix":
         return (0, 0, 0.0, n)
-    tier = (1 if rec.review_severity == "nits"
-            else 2 if rec.review_score == 4 else 3)
+    read = rec.greptile_review if freshness.is_current(rec, "greptile_review") else None
+    sevs = {reviewers.severity(r, rec.review_entry(r.id), read)
+            for r in review_policy.active_reviewers(reviewers.REVIEW)}
+    nits_only = "nits" in sevs and "defects" not in sevs
+    tier = (1 if nits_only
+            else 2 if rec.greptile == review_policy.greptile_threshold() - 1 else 3)
     pain = float(service.pr_pain(rec).get("score") or 0.0)
     return (1, tier, -pain, n)
 
@@ -1239,6 +1247,6 @@ def startup() -> bool:
     ]
     for t in _threads:
         t.start()
-    print(f"[fix-worker] enabled on {socket.gethostname()} as {settings.PUSH_LOGIN} "
+    print(f"[fix-worker] enabled on {socket.gethostname()} as {settings.push_login()} "
           f"(poll every {POLL_SECONDS:.0f}s)", flush=True)
     return True

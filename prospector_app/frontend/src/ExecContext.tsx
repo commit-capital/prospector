@@ -1,12 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
-import { api, type Identity, type ExecResult, type IssueExecResult, type ReviewCap } from "./api";
-
-// The no-provider default until /api/capabilities resolves (and when the backend
-// runs with no external review provider). Hides all Greptile UI.
-const NO_REVIEW: ReviewCap = {
-  provider: "none", label: "", threshold: null, score_max: null,
-  retrigger: false, stale_tracking: false,
-};
+import { api, type Identity, type ExecResult, type IssueExecResult, type ReviewerCap, type ReviewerKind } from "./api";
 
 export interface Effect { label: string; value: string }
 export interface Toast { id: number; title: string; detail?: string; effects?: Effect[]; tone: "green" | "red" | "yellow" | "muted" }
@@ -31,9 +24,11 @@ interface ExecState {
   retryLive: () => Promise<boolean>;
   canMergeUpstream: boolean;
   login: string | null;
-  // The configured external review provider (Greptile / none). UI hides its
-  // Greptile column, filter, detail card, and retrigger when provider is "none".
-  review: ReviewCap;
+  // Every automated reviewer and scanner the backend knows, with whether it
+  // gates this repository. The Review/Scans columns, filters, PR-page blocks
+  // and re-trigger controls render only for active ones.
+  reviewers: ReviewerCap[];
+  activeReviewers: (kind?: ReviewerKind) => ReviewerCap[];
   // global action feedback + refresh signal (#67/#69). Any action site calls
   // reportResult(res) to surface a toast and, if something actually landed,
   // bump actionTick so run-state badges across the app refetch.
@@ -48,7 +43,7 @@ const Ctx = createContext<ExecState>({
   identities: [], botLogin: "bot", identity: "", setIdentity: () => {},
   dryRun: true, setDryRun: () => {}, livePossible: false,
   liveError: null, storeWriteBlock: null, retryLive: async () => false,
-  canMergeUpstream: false, login: null, review: NO_REVIEW,
+  canMergeUpstream: false, login: null, reviewers: [], activeReviewers: () => [],
   toasts: [], pushToast: () => {}, dismissToast: () => {}, actionTick: 0, reportResult: () => {},
 });
 
@@ -70,7 +65,7 @@ function friendlyAction(action: string): string {
   }
   const map: Record<string, string> = {
     CLOSE: "close", CLOSE_DUP: "close (dup)", CLOSE_FIXED: "close (already-fixed)",
-    CLOSE_STALE: "close (stale)", MERGE: "merge", GREPTILE_RETRIGGER: "Greptile re-trigger",
+    CLOSE_STALE: "close (stale)", MERGE: "merge", REVIEW_RETRIGGER: "review re-trigger",
   };
   return map[action] ?? action.toLowerCase().replace(/_/g, " ");
 }
@@ -123,7 +118,10 @@ export function ExecProvider({ children }: { children: ReactNode }) {
   }, [dryRun]);
   const [canMergeUpstream, setCanMerge] = useState(false);
   const [login, setLogin] = useState<string | null>(null);
-  const [review, setReview] = useState<ReviewCap>(NO_REVIEW);
+  const [reviewers, setReviewers] = useState<ReviewerCap[]>([]);
+  const activeReviewers = useCallback(
+    (kind?: ReviewerKind) => reviewers.filter((r) => r.active && (kind === undefined || r.kind === kind)),
+    [reviewers]);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [actionTick, setActionTick] = useState(0);
   const nextId = useRef(1);
@@ -139,7 +137,7 @@ export function ExecProvider({ children }: { children: ReactNode }) {
       if (!d.live_possible) setDryRun(true);
     }).catch(() => {});
     api.capabilities().then((c) => {
-      setCanMerge(c.merge_upstream); setLogin(c.login); setReview(c.review ?? NO_REVIEW);
+      setCanMerge(c.merge_upstream); setLogin(c.login); setReviewers(c.reviewers ?? []);
       setStoreWriteBlock(c.write_block);
       if (c.write_block) setDryRun(true);
     }).catch(() => {});
@@ -162,7 +160,7 @@ export function ExecProvider({ children }: { children: ReactNode }) {
     if (!d.live_possible) setDryRun(true);
     let writeBlock = storeWriteBlock;
     await api.capabilities().then((c) => {
-      setCanMerge(c.merge_upstream); setLogin(c.login); setReview(c.review ?? NO_REVIEW);
+      setCanMerge(c.merge_upstream); setLogin(c.login); setReviewers(c.reviewers ?? []);
       setStoreWriteBlock(c.write_block);
       writeBlock = c.write_block;
       if (c.write_block) setDryRun(true);
@@ -217,7 +215,7 @@ export function ExecProvider({ children }: { children: ReactNode }) {
   return (
     <Ctx.Provider value={{
       identities, botLogin, identity, setIdentity, dryRun, setDryRun: setDryRunGuarded, livePossible,
-      liveError, storeWriteBlock, retryLive, canMergeUpstream, login, review,
+      liveError, storeWriteBlock, retryLive, canMergeUpstream, login, reviewers, activeReviewers,
       toasts, pushToast, dismissToast, actionTick, reportResult,
     }}>
       {children}

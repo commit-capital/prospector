@@ -4,8 +4,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from pipeline import greptile
+from pipeline import ci_signal
 from pipeline import ingest
+from pipeline.review_fetch import PrFeed
 from pipeline.testsupport import set_section
 from pipeline.store import Store
 
@@ -30,6 +31,23 @@ GH_PR = {
 def _no_live_network(monkeypatch):
     """Unit tests opt into live facts explicitly; ordinary ingest tests stay offline."""
     monkeypatch.setattr(ingest.live_prs, "fetch", lambda prs: ({}, set()))
+    monkeypatch.setattr(ingest.review_fetch, "fetch_feeds", lambda numbers: {})
+
+
+def _greptile_feed(n: int, sha: str, score: int = 5) -> PrFeed:
+    """A feed whose Greptile check at `sha` names `score`."""
+    return PrFeed(pr=n, head_sha=sha, updated_at="2026-06-09T00:00:00Z", check_runs=[
+        {"app": "greptile-apps", "name": "Greptile Review", "status": "completed",
+         "conclusion": "success" if score == 5 else "failure",
+         "title": f"Confidence {score}/5", "summary": "", "url": "u"},
+        {"app": "github-actions", "name": "Build", "status": "completed",
+         "conclusion": "success", "title": None, "summary": None, "url": None}])
+
+
+def _reviews(score: int = 5, sha: str = "deadbeef") -> dict:
+    return {"greptile": {"kind": "review", "score": score, "reviewed_sha": sha,
+                         "findings": [], "checks": [], "extra": {}},
+            "pr_updated_at": "2026-06-09T00:00:00Z"}
 
 
 class TestMetaFromGh:
@@ -79,44 +97,44 @@ class TestCiFromGithubData:
     def test_all_checks_success_is_passing(self):
         runs = [{"status": "completed", "conclusion": "success"},
                 {"status": "completed", "conclusion": "success"}]
-        assert ingest._ci_from_github_data(runs, []) == "passing"
+        assert ci_signal.verdict(runs, []) == "passing"
 
     def test_any_failed_run_is_failing(self):
         runs = [{"status": "completed", "conclusion": "success"},
                 {"status": "completed", "conclusion": "failure"}]
-        assert ingest._ci_from_github_data(runs, []) == "failing"
+        assert ci_signal.verdict(runs, []) == "failing"
 
     def test_incomplete_run_is_pending(self):
         runs = [{"status": "completed", "conclusion": "success"},
                 {"status": "in_progress", "conclusion": None}]
-        assert ingest._ci_from_github_data(runs, []) == "pending"
+        assert ci_signal.verdict(runs, []) == "pending"
 
     def test_skipped_and_neutral_do_not_fail(self):
         runs = [{"status": "completed", "conclusion": "skipped"},
                 {"status": "completed", "conclusion": "neutral"},
                 {"status": "completed", "conclusion": "success"}]
-        assert ingest._ci_from_github_data(runs, []) == "passing"
+        assert ci_signal.verdict(runs, []) == "passing"
 
     def test_failure_outranks_pending(self):
         runs = [{"status": "in_progress", "conclusion": None},
                 {"status": "completed", "conclusion": "failure"}]
-        assert ingest._ci_from_github_data(runs, []) == "failing"
+        assert ci_signal.verdict(runs, []) == "failing"
 
     def test_legacy_status_failure_is_failing(self):
-        assert ingest._ci_from_github_data([], [{"state": "failure"}]) == "failing"
-        assert ingest._ci_from_github_data([], [{"state": "error"}]) == "failing"
+        assert ci_signal.verdict([], [{"state": "failure"}]) == "failing"
+        assert ci_signal.verdict([], [{"state": "error"}]) == "failing"
 
     def test_legacy_status_pending_is_pending(self):
-        assert ingest._ci_from_github_data([], [{"state": "pending"}]) == "pending"
+        assert ci_signal.verdict([], [{"state": "pending"}]) == "pending"
 
     def test_combines_check_runs_and_statuses(self):
         runs = [{"status": "completed", "conclusion": "success"}]
         statuses = [{"state": "success"}]
-        assert ingest._ci_from_github_data(runs, statuses) == "passing"
+        assert ci_signal.verdict(runs, statuses) == "passing"
 
     def test_no_signal_returns_none(self):
         # GitHub has nothing to say → caller keeps the stored value.
-        assert ingest._ci_from_github_data([], []) is None
+        assert ci_signal.verdict([], []) is None
 
 
 class TestIssueLinks:
@@ -186,30 +204,24 @@ class TestIssueLinks:
 
 class TestBuildSignals:
     def test_override_copies_existing(self):
-        sig = ingest._build_signals(existing_signals={"greptile": 4, "mergeable": True},
-                                    ci_override="passing",
-                                    greptile_override=5, greptile_reviewed_sha="deadbeef")
-        assert sig == {"greptile": 5, "mergeable": True, "ci": "passing",
-                       "greptile_reviewed_sha": "deadbeef"}
+        sig = ingest._build_signals(existing_signals={"mergeable": True},
+                                    ci_override="passing")
+        assert sig == {"mergeable": True, "ci": "passing"}
 
     def test_no_override_is_none(self):
-        assert ingest._build_signals(existing_signals=None, ci_override=None,
-                                     greptile_override=None,
-                                     greptile_reviewed_sha=None) is None
+        assert ingest._build_signals(existing_signals=None, ci_override=None) is None
 
     def test_no_override_leaves_existing_unwritten(self):
         # The bulk path passes no overrides; stored signals stay untouched.
-        assert ingest._build_signals(existing_signals={"greptile": 5},
-                                     ci_override=None, greptile_override=None,
-                                     greptile_reviewed_sha=None) is None
+        assert ingest._build_signals(existing_signals={"ci": "passing"},
+                                     ci_override=None) is None
 
     def test_refresh_drops_diff_fields_when_fresh_values_are_unavailable(self):
         sig = ingest._build_signals(
             existing_signals={"ci": "failing", "has_tests": False,
                               "diffstat": {"additions": 1, "deletions": 0,
                                            "changed_files": 1}},
-            ci_override="passing", greptile_override=None,
-            greptile_reviewed_sha=None)
+            ci_override="passing")
         assert sig == {"ci": "passing"}
 
 
@@ -259,20 +271,20 @@ class TestUpsert:
         ingest.upsert_pr(store, dict(GH_PR, draft=True))
         assert store.load_pr(5001).raw["meta"]["draft"] is True
 
-    def test_greptile_reviewed_sha_override_stored(self, tmp_path):
+    def test_reviews_override_stored_and_stamped(self, tmp_path):
         store = Store(tmp_path)
-        ingest.upsert_pr(store, GH_PR, greptile_reviewed_sha="abc000ff")
+        ingest.upsert_pr(store, GH_PR, reviews_override=_reviews(4, "abc000ff"))
         rec = store.load_pr(5001)
-        assert rec.section("signals")["greptile_reviewed_sha"] == "abc000ff"
+        assert rec.greptile == 4 and rec.greptile_reviewed_sha == "abc000ff"
+        assert rec.section("reviews")["against_head_sha"] == "deadbeef"
+        assert rec.section("reviews")["pr_updated_at"] == "2026-06-09T00:00:00Z"
 
     def test_applies_overrides(self, tmp_path):
         st = Store(tmp_path)
-        ingest.upsert_pr(st, GH_PR, ci_override="passing",
-                         greptile_override=5, greptile_reviewed_sha="deadbeef")
+        ingest.upsert_pr(st, GH_PR, ci_override="passing", reviews_override=_reviews())
         sig = st.load_pr(5001).signals
         assert sig["ci"] == "passing"
-        assert sig["greptile"] == 5
-        assert sig["greptile_reviewed_sha"] == "deadbeef"
+        assert st.load_pr(5001).greptile == 5
         # overrides also derive drift from the fresh signals
         assert st.load_pr(5001).section("drift")["state"] == "applicable"
 
@@ -281,16 +293,15 @@ class TestUpsert:
         ingest.upsert_pr(st, GH_PR)
         assert st.load_pr(5001).signals is None
 
-    def test_bulk_reingest_preserves_existing_signals(self, tmp_path):
-        # A corpus re-upsert carries no overrides, so signals stamped earlier
-        # (live sweep, Greptile scrape, single-PR refresh) survive untouched.
+    def test_bulk_reingest_preserves_existing_sections(self, tmp_path):
+        # A corpus re-upsert carries no overrides, so signals and reviews stamped
+        # earlier (live sweep, single-PR refresh) survive untouched.
         store = Store(tmp_path)
-        ingest.upsert_pr(store, GH_PR, greptile_override=5,
-                         greptile_reviewed_sha="deadbeef")
+        ingest.upsert_pr(store, GH_PR, ci_override="passing", reviews_override=_reviews())
         ingest.upsert_pr(store, GH_PR)
-        sig = store.load_pr(5001).section("signals")
-        assert sig["greptile"] == 5
-        assert sig["greptile_reviewed_sha"] == "deadbeef"
+        rec = store.load_pr(5001)
+        assert rec.ci == "passing"
+        assert rec.greptile == 5 and rec.greptile_reviewed_sha == "deadbeef"
 
 
 class TestUpsertAll:
@@ -306,7 +317,7 @@ class TestUpsertAll:
 
     def test_reuses_snapshot_and_writes_bounded_chunks(self, tmp_path, monkeypatch):
         st = Store(tmp_path)
-        ingest.upsert_pr(st, GH_PR, greptile_override=5)
+        ingest.upsert_pr(st, GH_PR, reviews_override=_reviews())
         existing = st.all_prs()
         prs = [dict(GH_PR, number=n, head={"sha": f"sha-{n}"})
                for n in (5001, 5002, 5003)]
@@ -412,8 +423,8 @@ class TestTargetedIngest:
         monkeypatch.setattr(ingest, "fetch_pr",
                             lambda n: fetched.append(n) or b)
         monkeypatch.setattr(ingest, "load_issue_links", lambda **_: {})
-        monkeypatch.setattr(ingest, "gh_ci_status", lambda sha: "passing")
-        monkeypatch.setattr(greptile, "fetch_greptile_verdict", lambda n: (5, "s2"))
+        monkeypatch.setattr(ingest.review_fetch, "fetch_feeds",
+                            lambda numbers: {7002: _greptile_feed(7002, "s2")})
         rc = ingest.main(["--prs", "7002", "--store", str(tmp_path)])
         assert rc == 0
         assert fetched == [7002]
@@ -423,18 +434,30 @@ class TestTargetedIngest:
         assert rec.greptile_reviewed_sha == "s2"
         assert store.runs()[-1].raw["stats"]["upserted"] == 1
 
-    def test_refresh_skips_greptile_fetch_when_no_provider(self, tmp_path, monkeypatch):
+    def test_refresh_stores_every_reviewer_regardless_of_policy(self, tmp_path, monkeypatch):
+        # Detection needs the data, so a reviewer's entry is stored even when the
+        # policy does not gate on it.
         monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "none")
         store = Store(tmp_path)
         b = dict(GH_PR, number=7003, head={"sha": "s3"})
         monkeypatch.setattr(ingest, "fetch_pr", lambda n: b)
-        monkeypatch.setattr(ingest, "gh_ci_status", lambda sha: "passing")
         monkeypatch.setattr(ingest, "load_issue_links", lambda **_: {})
-        monkeypatch.setattr(greptile, "fetch_greptile_verdict",
-                            lambda n: pytest.fail("must not fetch Greptile when provider is none"))
+        monkeypatch.setattr(ingest.review_fetch, "fetch_feeds",
+                            lambda numbers: {7003: _greptile_feed(7003, "s3", 4)})
         out = ingest.refresh_prs(store, [7003])
         assert out[0]["pr"] == 7003
-        assert store.load_pr(7003).greptile is None
+        rec = store.load_pr(7003)
+        assert rec.greptile == 4 and rec.ci == "passing"
+
+    def test_refresh_falls_back_to_rest_ci_without_a_feed(self, tmp_path, monkeypatch):
+        store = Store(tmp_path)
+        b = dict(GH_PR, number=7004, head={"sha": "s4"})
+        monkeypatch.setattr(ingest, "fetch_pr", lambda n: b)
+        monkeypatch.setattr(ingest, "load_issue_links", lambda **_: {})
+        monkeypatch.setattr(ingest, "gh_ci_status", lambda sha: "failing")
+        ingest.refresh_prs(store, [7004])
+        rec = store.load_pr(7004)
+        assert rec.ci == "failing" and rec.reviews is None
 
     def test_main_prs_and_new_refreshes_only_absent_requested(self, tmp_path, monkeypatch):
         store = Store(tmp_path)
@@ -464,24 +487,47 @@ class TestTargetedIngest:
         assert ingest.main(["--new", "--store", str(tmp_path)]) == 0
         assert calls == [[]]
 
-    def test_main_full_chains_greptile_backfill(self, tmp_path, monkeypatch):
-        """A full ingest backfills the Greptile reviewed-SHA after the PR sweep
-        (#21); targeted modes and a non-Greptile provider do not."""
+    def test_main_full_recomputes_reviewers_registry(self, tmp_path, monkeypatch):
+        """A full ingest records each reviewer's latest activity over the open
+        corpus — the registry auto-detection reads."""
+        store = Store(tmp_path)
         monkeypatch.setattr(ingest, "fetch_open_prs", lambda mx=None: [GH_PR])
         monkeypatch.setattr(ingest, "load_issue_links", lambda **_: {})
-        calls: list[object] = []
-        monkeypatch.setattr(greptile, "backfill_greptile_data",
-                            lambda store, prs=None: calls.append(store) or {"candidates": 0,
-                                                                             "stamped": 0, "skipped": 0})
-
+        monkeypatch.setattr(ingest.review_fetch, "fetch_feeds",
+                            lambda numbers: {5001: _greptile_feed(5001, "deadbeef")})
         assert ingest.main(["--store", str(tmp_path), "--skip-issues"]) == 0
-        assert len(calls) == 1
-        assert ingest.main(["--new", "--store", str(tmp_path)]) == 0
-        assert len(calls) == 1  # targeted mode does not chain the backfill
+        seen = store.load_reviewers()["seen"]
+        assert seen["greptile"]["prs"] == 1 and seen["greptile"]["last_observed_at"]
+        assert store.load_pr(5001).greptile == 5
 
-        monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "none")
-        assert ingest.main(["--store", str(tmp_path), "--skip-issues"]) == 0
-        assert len(calls) == 1  # no review provider — nothing to backfill
+    def test_upsert_all_rereads_conversation_only_when_needed(self, tmp_path, monkeypatch):
+        st = Store(tmp_path)
+        ingest.upsert_pr(st, GH_PR, reviews_override=_reviews())
+        existing = st.all_prs()
+        asked: list[list[int]] = []
+        monkeypatch.setattr(ingest.review_fetch, "fetch_feeds",
+                            lambda numbers: asked.append(list(numbers)) or {})
+        facts = {5001: {"head": "deadbeef", "updated_at": "2026-06-09T00:00:00Z", "ci": "passing",
+                        "mergeable": "MERGEABLE", "check_runs": [], "statuses": [],
+                        "diffstat": {"additions": 1, "deletions": 0, "changed_files": 1},
+                        "has_tests": False}}
+        with st.batch():
+            ingest._upsert_all(st, [GH_PR], issue_links={}, existing_prs=existing, live_facts=facts)
+        assert asked == []
+        assert st.load_pr(5001).greptile == 5
+        facts[5001]["updated_at"] = "2026-06-10T00:00:00Z"
+        with st.batch():
+            ingest._upsert_all(st, [GH_PR], issue_links={}, existing_prs=st.all_prs(), live_facts=facts)
+        assert asked == [[5001]]
+
+    def test_needs_conversation(self):
+        from pipeline.model import Pr
+        assert ingest.needs_conversation(None, "h", "t1") is True
+        pr = Pr(None, {"pr": 1, "meta": {"head_sha": "h"},
+                       "reviews": {"pr_updated_at": "t1", "against_head_sha": "h"}})
+        assert ingest.needs_conversation(pr, "h", "t1") is False
+        assert ingest.needs_conversation(pr, "h2", "t1") is True
+        assert ingest.needs_conversation(pr, "h", "t2") is True
 
     def test_main_full_loads_pr_corpus_once(self, tmp_path, monkeypatch):
         monkeypatch.setattr(ingest, "fetch_open_prs", lambda mx=None: [GH_PR])
@@ -514,18 +560,18 @@ class TestTargetedIngest:
 
 
 class TestRefreshPrs:
-    def test_refreshes_ci_and_greptile(self, tmp_path, monkeypatch):
+    def test_refreshes_ci_and_reviewers_from_the_feed(self, tmp_path, monkeypatch):
         import json as _json
         st = Store(tmp_path)
 
         monkeypatch.setattr(ingest, "load_issue_links", lambda **_: {})
-        monkeypatch.setattr(ingest, "gh_ci_status", lambda sha: "passing")
-        monkeypatch.setattr(greptile, "fetch_greptile_verdict", lambda n: (5, "deadbeef"))
+        monkeypatch.setattr(ingest.review_fetch, "fetch_feeds",
+                            lambda numbers: {5001: _greptile_feed(5001, "deadbeef", 4)})
         monkeypatch.setattr(ingest.subprocess, "run",
                             lambda *a, **k: SimpleNamespace(returncode=0, stdout=_json.dumps(GH_PR)))
 
         ingest.refresh_prs(st, [5001])
-        sig = st.load_pr(5001).signals
-        assert sig["ci"] == "passing"
-        assert sig["greptile"] == 5
-        assert sig["greptile_reviewed_sha"] == "deadbeef"
+        rec = st.load_pr(5001)
+        # Greptile's failing threshold check is the reviewer's verdict, not CI.
+        assert rec.ci == "passing"
+        assert rec.greptile == 4 and rec.greptile_reviewed_sha == "deadbeef"

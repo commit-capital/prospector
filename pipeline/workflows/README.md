@@ -135,6 +135,9 @@ though a leaked credential still raises a rotate-secret action item.
 
 ### GREPTILE READ
 
+Reads the Greptile entry the ingest stored for each below-bar PR (its summary
+comment and inline findings) and classifies every finding substantive-vs-nitpick.
+
 ```
 uv run python pipeline/greptile_read_driver.py write-batches
 # run the workflow: greptile_read.js  (writes /tmp/pipeline-greptile-out)

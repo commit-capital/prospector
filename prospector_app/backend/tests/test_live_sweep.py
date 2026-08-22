@@ -10,6 +10,7 @@ from pipeline.store import Store
 from prospector_app.backend import data
 from prospector_app.backend import freshness_live
 from prospector_app.backend import service
+from pipeline.testsupport import reviews_section
 
 HEAD = "abc123"
 
@@ -19,8 +20,9 @@ def _raw(n, state="open", mergeable=True):
                               "head_sha": HEAD, "url": "x", "created_at": "2026-06-10T00:00:00+00:00",
                               "updated_at": "2026-06-10T00:00:00+00:00",
                               "checked_at": "2026-06-10T00:00:00+00:00"},
-            "signals": {"greptile": 5, "ci": "passing", "mergeable": mergeable,
+            "signals": {"ci": "passing", "mergeable": mergeable,
                         "checked_at": "2026-06-10T00:00:00+00:00", "against_head_sha": HEAD},
+            "reviews": reviews_section(HEAD, "2026-06-10T00:00:00+00:00"),
             "drift": {"state": "applicable", "checked_at": "2026-06-10T00:00:00+00:00",
                       "against_head_sha": HEAD}}
 
@@ -104,7 +106,7 @@ class TestObservedHeadIsPersisted:
                    {5: {"state": "open", "merged": False, "head": "NEW999",
                         "mergeable": "MERGEABLE", "ci": "passing"}})
         freshness_live.sweep()
-        assert freshness.stale_sections(st.load_pr(5)) == ["signals", "drift"]
+        assert freshness.stale_sections(st.load_pr(5)) == ["signals", "reviews", "drift"]
 
     def test_ingested_head_is_left_alone(self, tmp_path, monkeypatch):
         # head_sha still means "the head we have a diff and signals for".

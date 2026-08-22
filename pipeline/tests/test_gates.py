@@ -3,7 +3,7 @@ implementations (checks._tier0_is_clean, verdict.gate_decision, app
 merge_concerns)."""
 import pytest
 
-from pipeline import gates, profile
+from pipeline import gates, profile, review_policy
 from pipeline.model import Cluster, Pr
 from pipeline.store import Store
 
@@ -17,12 +17,25 @@ def _pr(**over) -> Pr:
         "pr": 1,
         "meta": {"title": "t", "author": "a", "state": "open", "draft": False,
                  "head_sha": HEAD, "checked_at": NOW},
-        "signals": {"greptile": 5, "ci": "passing", "mergeable": True, "has_tests": True,
+        "signals": {"ci": "passing", "mergeable": True, "has_tests": True,
                     "checked_at": NOW, "against_head_sha": HEAD},
+        "reviews": _reviews(),
         "drift": {"state": "applicable", "checked_at": NOW, "against_head_sha": HEAD},
     }
     rec.update(over)
     return Pr(None, rec)
+
+
+def _greptile(score: int | None = 5, sha: str | None = HEAD) -> dict:
+    return {"kind": "review", "score": score, "reviewed_sha": sha, "findings": [],
+            "checks": [], "extra": {}}
+
+
+def _reviews(**entries) -> dict:
+    """A current reviews section: Greptile at the bar unless overridden."""
+    section = {"greptile": _greptile(), **entries}
+    section.update({"checked_at": NOW, "against_head_sha": HEAD})
+    return section
 
 
 def _merge_analysis(**over):
@@ -76,7 +89,7 @@ class TestPRClean:
 
     def test_greptile_must_be_5(self):
         rec = _pr()
-        rec.raw["signals"]["greptile"] = 4
+        rec.raw["reviews"]["greptile"]["score"] = 4
         ok, reasons = gates.pr_clean(rec, today="2026-06-10")
         assert not ok and any("greptile" in r for r in reasons)
 
@@ -84,7 +97,7 @@ class TestPRClean:
         # No provider configured: a PR with no review score is still clean.
         monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "none")
         rec = _pr()
-        del rec.raw["signals"]["greptile"]
+        del rec.raw["reviews"]["greptile"]
         ok, reasons = gates.pr_clean(rec, today="2026-06-10")
         assert ok and reasons == []
 
@@ -139,7 +152,7 @@ class TestSecurityEligible:
 
     def test_dirty_pr_not_eligible(self):
         rec = _pr(analysis=_merge_analysis())
-        rec.raw["signals"]["greptile"] = 3
+        rec.raw["reviews"]["greptile"]["score"] = 3
         assert not gates.security_eligible(rec, today="2026-06-10")
 
     def test_stale_analysis_not_eligible(self):
@@ -190,7 +203,7 @@ class TestMergeEligibility:
 
     def test_greptile_below_5_blocks(self):
         rec = _pr()
-        rec.raw["signals"]["greptile"] = 4
+        rec.raw["reviews"]["greptile"]["score"] = 4
         ok, reason = gates.merge_eligibility(rec, today="2026-06-10")
         assert not ok and "greptile" in reason
 
@@ -317,7 +330,7 @@ class TestBlockedOnSecurity:
     def test_not_clean_is_not_blocked_on_security(self):
         # Greptile < 5 is the blocker, not security — re-running SECURITY won't help.
         rec = _pr(analysis=_merge_analysis())
-        rec.raw["signals"]["greptile"] = 4
+        rec.raw["reviews"]["greptile"]["score"] = 4
         assert not gates.blocked_on_security(rec, today="2026-06-10")
 
     def test_non_merge_disposition_is_not_blocked_on_security(self):
@@ -1472,9 +1485,7 @@ class TestVerifyEligible:
         assert gates.verify_eligible(pr, ["src/a.ts"], today="2026-06-10") is False
 
     def test_dirty_pr_is_not_eligible(self):
-        pr = _pr(analysis=_merge_analysis(),
-                 signals={"greptile": 4, "ci": "passing", "mergeable": True,
-                          "checked_at": NOW, "against_head_sha": HEAD})
+        pr = _pr(analysis=_merge_analysis(), reviews=_reviews(greptile=_greptile(4)))
         assert gates.verify_eligible(pr, ["src/a.ts"], today="2026-06-10") is False
 
     def test_deps_touching_pr_is_still_eligible_so_the_driver_can_record_it(self):
@@ -1766,8 +1777,9 @@ class TestClusterStateAfterSelfDemotion:
             "pr": 1,
             "meta": {"title": "t", "author": "a", "state": "open", "draft": False,
                      "head_sha": HEAD, "checked_at": NOW},
-            "signals": {"greptile": 5, "ci": "passing", "mergeable": True,
+            "signals": {"ci": "passing", "mergeable": True,
                         "checked_at": NOW, "against_head_sha": HEAD},
+            "reviews": _reviews(),
             "drift": {"state": "applicable", "checked_at": NOW, "against_head_sha": HEAD},
         })
         store.save_cluster({"id": 1, "root_problem": "x", "prs": [1],
@@ -2263,7 +2275,7 @@ class TestFixHuntable:
     def _stale(self, **over):
         """A PR meeting the review bar whose branch has fallen behind: not
         mergeable, CI failing on the drifted base. The whole target population."""
-        return _pr(signals={"greptile": 5, "ci": "failing", "mergeable": False,
+        return _pr(signals={"ci": "failing", "mergeable": False,
                             "has_tests": True, "checked_at": NOW,
                             "against_head_sha": HEAD},
                    drift={"state": "conflicts", "checked_at": NOW,
@@ -2280,7 +2292,7 @@ class TestFixHuntable:
     def test_review_bar_unmet_refused(self, monkeypatch):
         self._profile(monkeypatch)
         pr = self._stale()
-        pr.raw["signals"]["greptile"] = 4
+        pr.raw["reviews"]["greptile"]["score"] = 4
         ok, why = gates.fix_huntable(pr, "rebase")
         assert ok is False
         assert "greptile" in why
@@ -2325,10 +2337,7 @@ class TestFixHuntable:
     def _below_bar(self, **over):
         """A CI-passing, mergeable PR whose review score sits below the bar at
         the current head — the population an agent-authored fix targets."""
-        return _pr(signals={"greptile": 4, "greptile_reviewed_sha": HEAD,
-                            "ci": "passing", "mergeable": True,
-                            "has_tests": True, "checked_at": NOW,
-                            "against_head_sha": HEAD}, **over)
+        return _pr(reviews=_reviews(greptile=_greptile(4)), **over)
 
     def test_below_bar_clean_pr_is_fix_huntable(self, monkeypatch):
         self._profile(monkeypatch, fixable_gates=("review",))
@@ -2356,7 +2365,7 @@ class TestFixHuntable:
         # re-review, not a fix authored against outdated findings.
         self._profile(monkeypatch, fixable_gates=("review",))
         pr = self._below_bar()
-        pr.raw["signals"]["greptile_reviewed_sha"] = "b" * 40
+        pr.raw["reviews"]["greptile"]["reviewed_sha"] = "b" * 40
         ok, why = gates.fix_huntable(pr, "fix")
         assert ok is False
         assert "stale" in why.lower()
@@ -2365,14 +2374,14 @@ class TestFixHuntable:
         # With no score there are no findings to author against.
         self._profile(monkeypatch, fixable_gates=("review",))
         pr = self._below_bar()
-        pr.raw["signals"]["greptile"] = None
+        pr.raw["reviews"]["greptile"]["score"] = None
         ok, why = gates.fix_huntable(pr, "fix")
         assert ok is False
 
     def test_fix_hunt_skips_a_pr_already_at_the_bar(self, monkeypatch):
         self._profile(monkeypatch, fixable_gates=("review",))
         pr = self._below_bar()
-        pr.raw["signals"]["greptile"] = 5
+        pr.raw["reviews"]["greptile"]["score"] = 5
         ok, why = gates.fix_huntable(pr, "fix")
         assert ok is False
 
@@ -2386,3 +2395,73 @@ class TestFixHuntable:
         ok, why = gates.fix_huntable(self._below_bar(), "resolve")
         assert ok is False
         assert "resolve" in why
+
+
+class TestMultiReviewerClean:
+    """Every active reviewer and scanner gates pr_clean under its own name."""
+
+    def _superagent(self, severity: str = "P2") -> dict:
+        return {"kind": "scanner", "reviewed_sha": HEAD, "checks": [], "extra": {},
+                "findings": [{"severity": severity, "resolved": False, "outdated": False}]}
+
+    def test_every_active_reviewer_gates(self, monkeypatch):
+        monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "greptile,coderabbit,superagent")
+        review_policy.reset()
+        rec = _pr(reviews=_reviews(superagent=self._superagent()))
+        ok, reasons = gates.pr_clean(rec)
+        assert not ok
+        assert "awaiting coderabbit review" in reasons
+        assert "superagent: 1 open P2 finding" in reasons
+
+    def test_inactive_reviewer_data_is_ignored(self):
+        rec = _pr(reviews=_reviews(superagent=self._superagent("P1")))
+        ok, reasons = gates.pr_clean(rec)
+        assert ok, reasons
+
+    def test_missing_reviews_section_blocks_and_does_not_demote(self):
+        rec = _pr(analysis=_merge_analysis(), security=_green())
+        del rec.raw["reviews"]
+        ok, reasons = gates.pr_clean(rec)
+        assert "reviews stale or missing" in reasons
+        assert gates.merge_demotion(rec) is None
+
+    def test_stale_reviews_section_blocks(self):
+        rec = _pr()
+        rec.raw["reviews"]["against_head_sha"] = "older"
+        ok, reasons = gates.pr_clean(rec)
+        assert "reviews stale or missing" in reasons
+
+    def test_bar_asks_from_blockers(self):
+        rec = _pr(reviews=_reviews(greptile=_greptile(3)))
+        _, reasons = gates.pr_clean(rec)
+        asks = gates.bar_asks(reasons, rec)
+        assert any("5/5" in a for a in asks)
+
+    def test_scanner_block_demotes_a_merge_pick(self, monkeypatch):
+        monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "greptile,superagent")
+        review_policy.reset()
+        rec = _pr(analysis=_merge_analysis(), security=_green(),
+                  reviews=_reviews(superagent=self._superagent("P1")))
+        route = gates.merge_demotion(rec)
+        assert route is not None and route[0] == "request-changes"
+        assert any("Superagent" in a for a in route[2])
+
+    def test_fix_not_huntable_under_scanner_block(self, monkeypatch):
+        monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "greptile,superagent")
+        review_policy.reset()
+        p = profile.RepoProfile(autofix=profile.AutofixPolicy(fixable_gates=("review",)))
+        monkeypatch.setattr(profile, "active", lambda: p)
+        rec = _pr(reviews=_reviews(greptile=_greptile(3), superagent=self._superagent("P1")))
+        ok, why = gates.fix_huntable(rec, "fix")
+        assert not ok and "superagent" in why
+
+    def test_coderabbit_fail_is_fix_huntable(self, monkeypatch):
+        monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "greptile,coderabbit")
+        review_policy.reset()
+        p = profile.RepoProfile(autofix=profile.AutofixPolicy(fixable_gates=("review",)))
+        monkeypatch.setattr(profile, "active", lambda: p)
+        cr = {"kind": "review", "reviewed_sha": HEAD, "checks": [], "extra": {},
+              "findings": [{"severity": "major", "resolved": False, "outdated": False}]}
+        rec = _pr(reviews=_reviews(coderabbit=cr))
+        ok, why = gates.fix_huntable(rec, "fix")
+        assert ok, why

@@ -127,15 +127,16 @@ class TestEveryEvidenceQuotingWriteIsGated:
                                     token="tok", dry_run=False)
         assert res["status"] == "stale"
 
-    def test_greptile_retrigger_is_not_gated(self, monkeypatch):
+    def test_review_retrigger_is_not_gated(self, monkeypatch):
         # a re-review targets the current head, so it is the remedy for a stale
         # score rather than a consumer of one — gating it would block the fix.
         _setup(monkeypatch, live=_OPEN_MOVED)
         monkeypatch.setattr(
             executor, "bot_run",
             lambda argv, token: type("R", (), {"returncode": 0, "stderr": "", "stdout": ""})())
-        res = executor.retrigger_greptile(5, token="tok", dry_run=False)
-        assert res["status"] == "executed"
+        res = executor.retrigger_review(5, "greptile", token="tok", dry_run=False)
+        assert res["status"] == "executed" and res["reviewer"] == "greptile"
+        assert executor.retrigger_review(5, "socket", token="tok", dry_run=False)["status"] == "skipped"
 
 
 class TestObservationIsRecorded:

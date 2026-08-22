@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 # and left it standalone"; an absent or stale stamp is "no pass has reached it
 # (or its head moved since)". A clustered PR carries `id` and is treated as
 # clustered regardless of freshness — membership persists across head moves.
-SHA_BOUND = ("signals", "drift", "summary", "cluster", "analysis", "security",
+SHA_BOUND = ("signals", "reviews", "drift", "summary", "cluster", "analysis", "security",
              "greptile_review", "verify")
 
 # The stale shape a re-run alone cannot fix: the fact is about the head we

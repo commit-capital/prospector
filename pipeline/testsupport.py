@@ -22,3 +22,19 @@ def set_section(store: Store, n: int, section: str, payload: dict,
     rec[section] = stamped
     store.save_pr(rec)
     return rec
+
+
+def greptile_entry(score: int | None = 5, reviewed_sha: str | None = None) -> dict:
+    """A Greptile reviewer entry as the ingest stores it."""
+    return {"kind": "review", "score": score, "reviewed_sha": reviewed_sha, "findings": [],
+            "checks": [], "extra": {}, "observed_at": None, "summary": None}
+
+
+def reviews_section(head: str, at: str | None = None, **entries: dict) -> dict:
+    """A current `reviews` section for `head`: Greptile at the bar unless a
+    `greptile=` entry overrides it, plus any other reviewer entries."""
+    section: dict = {"greptile": greptile_entry(5, head)}
+    section.update(entries)
+    section["checked_at"] = at or _now()
+    section["against_head_sha"] = head
+    return section

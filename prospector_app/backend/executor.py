@@ -32,7 +32,7 @@ from prospector_app.backend import service
 from prospector_app.backend.safety_guard import bot_merge_run, bot_run, run
 from pipeline import settings
 from pipeline import freshness
-from pipeline import review_policy
+from pipeline import reviewers
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GET_TOKEN = REPO_ROOT / "pipeline" / "get-bot-token.sh"
@@ -681,20 +681,22 @@ def comment_line(n: int, file: str, line: int, body: str, *, token: str | None, 
     return res
 
 
-def retrigger_greptile(n: int, *, token: str | None, dry_run: bool) -> dict:
-    """Post the configured review provider's mention as a plain PR comment to
-    re-trigger its review.
+def retrigger_review(n: int, reviewer_id: str, *, token: str | None, dry_run: bool) -> dict:
+    """Post the named reviewer's mention as a plain PR comment to re-trigger its
+    review.
 
-    The bare mention is the provider's manual-review trigger: it re-runs the review
+    The mention is the reviewer's manual-review trigger: it re-runs the review
     against the PR's current head with no new commit. Each call posts it again.
-    Head-relative rather than evidence-quoting — a re-review is how a score that
-    trails the code catches up — so a moved head is a reason to run it, not to
-    hold it."""
-    base = {"pr": int(n), "cluster_id": _cluster_id(n), "action": "GREPTILE_RETRIGGER"}
-    mention = review_policy.active().retrigger_mention
+    Head-relative rather than evidence-quoting — a re-review is how a verdict
+    that trails the code catches up — so a moved head is a reason to run it,
+    not to hold it."""
+    base = {"pr": int(n), "cluster_id": _cluster_id(n), "action": "REVIEW_RETRIGGER",
+            "reviewer": reviewer_id}
+    reviewer = reviewers.REVIEWERS.get(reviewer_id)
+    mention = reviewer.retrigger_mention if reviewer is not None else None
     if mention is None:
         return {**base, "status": "skipped",
-                "detail": "the configured review provider has no re-trigger action"}
+                "detail": f"{reviewer.label if reviewer else reviewer_id} has no re-trigger action"}
     pf = _preflight(n, None, check_head=False)
     if not pf.ok:
         return {**base, "status": "skipped", "detail": f"pre-flight: {pf.message}"}
@@ -702,21 +704,22 @@ def retrigger_greptile(n: int, *, token: str | None, dry_run: bool) -> dict:
         res = {**base, "status": "dry-run",
                "detail": f"would comment “{mention}” on #{n} as {settings.bot_login()} to re-trigger the review",
                "forced": not token and not dry_run}
-        activity.record("greptile_retrigger", identity=settings.bot_login(), dry_run=True, **res)
+        activity.record("review_retrigger", identity=settings.bot_login(), dry_run=True, **res)
         return res
     try:
         r = bot_run(["gh", "pr", "comment", str(n), "--repo", settings.repo(), "--body", mention], token)
         if r.returncode != 0:
             res = {**base, "status": "error", "detail": r.stderr.strip()[:160]}
         else:
-            res = {**base, "status": "executed", "detail": f"posted “{mention}” — the provider will re-review"}
+            res = {**base, "status": "executed",
+                   "detail": f"posted “{mention}” — {reviewer.label if reviewer else reviewer_id} will re-review"}
             url = (r.stdout or "").strip() or None  # gh prints the new comment's URL
             if url:
                 res["event_url"] = url
     except Exception as e:
         res = {**base, "status": "error",
                "detail": _public_exception_detail("review retrigger failed unexpectedly", e)}
-    activity.record("greptile_retrigger", identity=settings.bot_login(), dry_run=False, **res)
+    activity.record("review_retrigger", identity=settings.bot_login(), dry_run=False, **res)
     return res
 
 

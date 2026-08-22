@@ -14,8 +14,10 @@ export function ExplorerSearchBar({ value, onTextChange, onSpec, onDeepSearch, d
   deepBusy?: boolean;
   deepProgress?: { done: number; total: number } | null;
 }) {
-  const { review } = useExec();
-  const example = review.provider !== "none" ? "greptile < 3, " : "";
+  const { activeReviewers } = useExec();
+  const active = activeReviewers();
+  const example = active.some((r) => r.id === "greptile") ? "greptile < 3, "
+    : active.length ? `${active[0].label} failing, ` : "";
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
   const run = async () => {

@@ -2,6 +2,7 @@
 from pipeline import analyze_driver as ad
 from pipeline.testsupport import set_section
 from pipeline.store import Store
+from pipeline.testsupport import reviews_section
 
 NOW = "2026-06-10T00:00:00+00:00"
 
@@ -9,8 +10,9 @@ NOW = "2026-06-10T00:00:00+00:00"
 def _pr(store, n, head="h1", analysis=None, summary=True, draft=False, author="a"):
     rec = {"pr": n, "meta": {"title": f"t{n}", "author": author, "state": "open", "draft": draft,
                              "head_sha": head, "checked_at": NOW},
-           "signals": {"greptile": 5, "ci": "passing", "mergeable": True,
+           "signals": {"ci": "passing", "mergeable": True,
                        "checked_at": NOW, "against_head_sha": head},
+           "reviews": reviews_section(head, NOW),
            "drift": {"state": "applicable", "checked_at": NOW, "against_head_sha": head}}
     if summary:
         rec["summary"] = {"one_liner": f"does {n}", "subsystem": "ui", "mechanism": "m",
@@ -87,7 +89,8 @@ class TestBundle:
         b = ad.bundle(s, 1)
         assert b["cluster"]["id"] == 1
         assert [m["pr"] for m in b["members"]] == [1, 2]
-        assert b["members"][0]["signals"]["greptile"] == 5
+        assert b["members"][0]["reviews"]["greptile"]["score"] == 5
+        assert b["members"][0]["reviews"]["greptile"]["status"] == "pass"
         assert b["members"][0]["one_liner"] == "does 1"
         assert b["members"][0]["primary_change"] == "primary 1"
         assert b["members"][0]["secondary_changes"] == []
@@ -362,7 +365,7 @@ class TestDispositionOrphans:
         # asks at read time, and heals in place when the signal clears.
         s = Store(tmp_path)
         _standalone(s, 1)
-        rec = s.load_pr(1); rec.raw["signals"]["greptile"] = 4; s.save_pr(rec)
+        rec = s.load_pr(1); rec.raw["reviews"]["greptile"]["score"] = 4; s.save_pr(rec)
         assert ad.disposition_orphans(s) == 1
         pr = s.load_pr(1)
         assert pr.section("analysis")["disposition"] == "merge"
@@ -460,7 +463,7 @@ class TestDispositionOrphans:
     def test_standalone_draft_never_gets_request_changes(self, tmp_path):
         s = Store(tmp_path)
         _standalone(s, 1, draft=True)
-        rec = s.load_pr(1); rec.raw["signals"]["greptile"] = 4; s.save_pr(rec)  # below bar
+        rec = s.load_pr(1); rec.raw["reviews"]["greptile"]["score"] = 4; s.save_pr(rec)  # below bar
         assert ad.disposition_orphans(s) == 0
         assert s.load_pr(1).section("analysis") is None   # surface-only, not request-changes
 

@@ -60,6 +60,7 @@ def _features(pr: int) -> dict:
         "deletions": signals.get("deletions"),
         "changed_files": signals.get("changed_files"),
         "greptile": signals.get("greptile"),
+        "reviews": {rid: d.get("status") for rid, d in (row.get("reviews") or {}).items()},
         "ci": signals.get("ci"),
         "conflicts": signals.get("conflicts"),
         "checks_passed": checks.get("passed"),

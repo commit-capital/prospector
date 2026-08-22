@@ -3,13 +3,15 @@ from pipeline import ingest
 from pipeline import triage_cluster as tc
 from pipeline.store import Store
 from pipeline.testsupport import set_section
+from pipeline.testsupport import greptile_entry
 
 
 def _seed_cluster(store: Store, sha="sha1"):
     ingest.upsert_pr(store, {"number": 100, "title": "winner", "user": {"login": "a"},
                              "state": "open", "head": {"sha": sha}, "base": {"ref": "master"},
                              "html_url": "u"},
-                     ci_override="passing", greptile_override=5)
+                     ci_override="passing",
+                     reviews_override={"greptile": greptile_entry(5, sha)})
     store.load_pr(100).record_live_state(mergeable=True)  # the live sweep owns mergeable
     set_section(store, 100, "summary",
                 {"one_liner": "x", "mechanism": "m", "subsystem": "ui",

@@ -4,6 +4,7 @@ import json
 from pipeline import security_driver as sd
 from pipeline.store import Store
 from pipeline.wire import VerdictItem
+from pipeline.testsupport import greptile_entry, reviews_section
 
 NOW = "2026-06-10T00:00:00+00:00"
 
@@ -12,8 +13,9 @@ def _pr(store, n, head="h1", disposition="merge", greptile=5, security=None, clu
     rec = {"pr": n,
            "meta": {"title": f"t{n}", "author": "a", "state": "open", "draft": False,
                     "head_sha": head, "checked_at": NOW},
-           "signals": {"greptile": greptile, "ci": "passing", "mergeable": True,
+           "signals": {"ci": "passing", "mergeable": True,
                        "checked_at": NOW, "against_head_sha": head},
+           "reviews": reviews_section(head, NOW, greptile=greptile_entry(greptile, head)),
            "drift": {"state": "applicable", "checked_at": NOW, "against_head_sha": head},
            "analysis": {"disposition": disposition, "rationale": "r",
                         "checked_at": NOW, "against_head_sha": head}}

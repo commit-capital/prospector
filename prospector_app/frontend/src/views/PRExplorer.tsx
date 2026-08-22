@@ -18,6 +18,7 @@ import { term } from "../glossary";
 import { usePRFlyout } from "../usePRFlyout";
 import { makeRowOpen, stopRowOpen } from "../rowOpen";
 import { useColumnPrefs } from "../useColumnPrefs";
+import { useExec } from "../ExecContext";
 import { useAgentPane } from "../components/AgentPane";
 import { cycleSort, type SortDir } from "../sortCycle";
 
@@ -51,7 +52,7 @@ let lastQuery: { key: string; result: QueryResult } | null = null;
 // else (text columns: title, author, cluster, disposition, drift, summary) leads
 // ascending. Mirrors the backend `_DEFAULT_DESC` so the caret matches the order.
 const DESC_FIRST = new Set([
-  "pr", "greptile", "safety", "updated", "loc", "files",
+  "pr", "greptile", "review", "scans", "safety", "updated", "loc", "files",
   "checks", "merge", "age", "author_rate", "pain", "issues",
 ]);
 
@@ -133,7 +134,10 @@ export default function PRExplorer() {
   const setPageSize = (v: PageSizeOption) => { setPageSizeState(v); setPage(1); };
   const effectivePageSize = pageSize === "all" ? ALL_ROWS_LIMIT : pageSize;
   const [selected, setSelected] = useState<Set<number>>(new Set());
-  const [pending, setPending] = useState<{ action: BulkAction; comment: string; canonical?: number; perPr: boolean } | null>(null);
+  const [pending, setPending] = useState<{ action: BulkAction; comment: string; canonical?: number; perPr: boolean; reviewer?: string } | null>(null);
+  const { reviewers } = useExec();
+  const reviewerLabels = useMemo(
+    () => Object.fromEntries(reviewers.map((r) => [r.id, r.label])), [reviewers]);
   // Deep Search overlay: an agent-judged result set over the current filters.
   const [deep, setDeep] = useState<{ query: string; result: DeepResult } | null>(null);
   const [deepBusy, setDeepBusy] = useState(false);
@@ -308,7 +312,7 @@ export default function PRExplorer() {
       <LaneChips spec={spec} onChange={setSpec} />
       <FilterControls spec={spec} onChange={setSpec} visibleColKeys={new Set(visibleColumns.map((c) => c.key))} />
       <ColumnToggles isOn={colOn} toggle={toggleCol} reset={resetCols} />
-      <FilterSummary parts={buildPrFilterParts(spec, setSpec)} total={res?.total ?? null} />
+      <FilterSummary parts={buildPrFilterParts(spec, setSpec, reviewerLabels)} total={res?.total ?? null} />
       {deep && (
         <div className="deep-banner">
           <span className="deep-msg">
@@ -360,7 +364,7 @@ export default function PRExplorer() {
           {/* every column is server-sortable (#180) — the sort spans all pages */}
           {visibleColumns.map((col) => {
             const canFilter = FILTERABLE_COLS.has(col.key);
-            const filterActive = isColFilterActive(col.key, spec);
+            const filterActive = isColFilterActive(col.key, spec, reviewers);
             return (
               <th key={col.key}
                 className={[col.numeric ? "num" : "", "sortable-th", sortKey === col.key ? "sorted" : ""].filter(Boolean).join(" ")}

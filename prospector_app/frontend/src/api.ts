@@ -69,6 +69,8 @@ export interface FilterSpec {
   greptile?: NumCmp;
   greptile_stale?: boolean;
   greptile_severity?: "defects" | "nits" | "clean";
+  // {reviewer id: bar status} over the row's reviewer digests
+  reviewer_status?: Record<string, BarStatus | BarStatus[]>;
   age_days?: NumCmp;
   max_files?: number;
   max_total_lines?: number;
@@ -170,17 +172,67 @@ interface ProposedAction {
   fresh?: boolean;
 }
 
-/** The configured external code-review provider, from GET /api/capabilities.
- *  Drives whether the Greptile column/filter/detail-card/retrigger render at all
- *  and what they're labelled. `provider: "none"` means no external review. */
-export interface ReviewCap {
-  provider: "greptile" | "none";
+export type ReviewerKind = "review" | "scanner";
+export type BarStatus = "pass" | "fail" | "stale" | "pending" | "na";
+
+/** One automated reviewer or security scanner the backend knows, from GET
+ *  /api/capabilities — `active` means it gates this repository. Drives the
+ *  Review/Scans columns, their filters, the PR page's per-reviewer blocks and
+ *  the re-trigger controls. */
+export interface ReviewerCap {
+  id: string;
   label: string;
-  threshold: number | null;
-  score_max: number | null;
+  kind: ReviewerKind;
+  active: boolean;
   retrigger: boolean;
-  stale_tracking: boolean;
+  score_max: number | null;
+  threshold: number | null;
+  bar_label: string;
 }
+
+/** A reviewer's compact verdict on one PR row (service.pr_row `reviews[id]`). */
+export interface ReviewDigest {
+  id: string;
+  label: string;
+  kind: ReviewerKind;
+  status: BarStatus;
+  reason: string | null;
+  score: number | null;
+  score_max: number | null;
+  reviewed_sha: string | null;
+  stale: boolean | null;
+  open: Record<string, number>;
+  observed_at: string | null;
+  checks: { name: string | null; conclusion: string | null; status: string | null; title: string | null }[];
+  extra: Record<string, unknown>;
+  summary_line: string;
+}
+
+export interface ReviewFinding {
+  path: string | null;
+  line: number | null;
+  severity: string | null;
+  title: string | null;
+  body: string;
+  resolved: boolean;
+  outdated: boolean;
+  commit: string | null;
+  url: string | null;
+}
+
+/** A reviewer's stored entry on one PR (the `reviews` section). */
+export interface ReviewEntry {
+  kind: ReviewerKind;
+  reviewed_sha: string | null;
+  observed_at: string | null;
+  score: number | null;
+  findings: ReviewFinding[];
+  summary: string | null;
+  checks: ReviewDigest["checks"];
+  extra: Record<string, unknown>;
+}
+
+export type ReviewsDetail = Record<string, { entry: ReviewEntry | null; digest: ReviewDigest }>;
 
 interface SignalSummary {
   greptile: number | null;
@@ -223,6 +275,8 @@ export interface PRRow {
   proposed_action?: ProposedAction;
   suggestion?: Suggestion;
   signals?: SignalSummary | null;
+  // every reviewer with an entry on this PR or active on the repository, by id
+  reviews?: Record<string, ReviewDigest> | null;
   summary?: { one_liner?: string | null; primary_change?: string | null } | null;
   size_split?: SizeSplit | null;
   loc_breakdown?: LocBreakdown | null;
@@ -802,7 +856,7 @@ export interface PRDetail extends PRRow {
   fix_request?: FixRequest | null;
   analysis_detail?: unknown;
   size?: { additions: number | null; deletions: number | null; changed_files: number | null };
-  greptile?: { score: number | null; body: string } | null;
+  reviews_detail?: ReviewsDetail | null;
   ci_checks?: { name: string; conclusion: string; status: string }[];
   summary?: { one_liner?: string | null; mechanism?: string | null } | null;
   merge_gate?: { ok: boolean; reason: string; overridable?: boolean; override_kind?: "security" | "verify" | null };
@@ -1141,6 +1195,29 @@ export interface ChatReady {
   subscription?: string;
 }
 
+/** A GitHub user as the push-identity card needs it: the login, its id, and
+ *  GitHub's per-account no-reply email. */
+export interface PushAccount {
+  login: string;
+  id: number;
+  email: string;
+}
+
+/** This machine's contributor-push key for a login: where it is and the public
+ *  half the operator adds to the account. */
+export interface PushKeyInfo {
+  path: string;
+  public_key: string;
+}
+
+/** What GitHub said about a key: `login` is the account it greeted, `ok`
+ *  whether that is the one asked for. */
+export interface PushProbeResult {
+  ok: boolean;
+  login: string | null;
+  problem: string | null;
+}
+
 /** One step of setup. `bundle` supplies `env` and `profile` in their place. */
 export interface OnboardingApplyBody {
   step: "connect" | "join" | "writes" | "worker" | "agent";
@@ -1153,11 +1230,12 @@ export const api = {
   setupReadiness: () =>
     get<{ readiness: SetupReadiness; flags: WorkerFlags }>("/api/setup/readiness"),
   /** The deployment bundle a teammate pastes. `includeKey` adds the bot's
-   *  private key, so their machine executes approved writes too. */
-  setupShare: async (includeKey: boolean) => {
+   *  private key, so their machine executes approved writes too;
+   *  `includePushKey` the contributor-push identity, so it runs autofix. */
+  setupShare: async (includeKey: boolean, includePushKey: boolean) => {
     const r = await fetch("/api/setup/share", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ include_key: includeKey }),
+      body: JSON.stringify({ include_key: includeKey, include_push_key: includePushKey }),
     });
     if (!r.ok) {
       const problem = await r.json().catch(() => ({ detail: `${r.status}` }));
@@ -1166,6 +1244,35 @@ export const api = {
     return r.json() as Promise<{ bundle: string }>;
   },
   onboardingState: () => get<OnboardingState>("/api/onboarding/state"),
+  /** The operator's own gh login with no argument, else the named account. */
+  pushAccount: async (login?: string) => {
+    const q = login ? `?login=${encodeURIComponent(login)}` : "";
+    const r = await fetch(`/api/onboarding/push-identity/account${q}`);
+    if (!r.ok) {
+      const problem = await r.json().catch(() => ({ detail: `${r.status}` }));
+      throw new Error(problem.detail ?? `${r.status}`);
+    }
+    return r.json() as Promise<PushAccount>;
+  },
+  pushKey: async (login: string) => {
+    const r = await fetch("/api/onboarding/push-identity/key", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ login }),
+    });
+    if (!r.ok) {
+      const problem = await r.json().catch(() => ({ detail: `${r.status}` }));
+      throw new Error(problem.detail ?? `${r.status}`);
+    }
+    return r.json() as Promise<PushKeyInfo>;
+  },
+  pushProbe: async (login: string, keyFile?: string) => {
+    const r = await fetch("/api/onboarding/push-identity/probe", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ login, key_file: keyFile ?? null }),
+    });
+    if (!r.ok) throw new Error(`/api/onboarding/push-identity/probe → ${r.status}`);
+    return r.json() as Promise<PushProbeResult>;
+  },
   chatReady: () => get<ChatReady>("/api/chat/ready"),
   onboardingProbe: async (body: {
     store_url?: string; repo?: string; key_file?: string; agent?: boolean;
@@ -1294,7 +1401,7 @@ export const api = {
   pr: (n: number) => get<PRDetail>(`/api/prs/${n}`),
   prActions: (n: number) => get<{ items: PRAction[] }>(`/api/prs/${n}/actions`),
   prHistory: (n: number) => get<{ items: PRHistoryItem[] }>(`/api/prs/${n}/history`),
-  prGreptile: (n: number) => get<{ score?: number | null; body?: string }>(`/api/prs/${n}/greptile`),
+  prReviews: (n: number) => get<{ reviews: ReviewsDetail }>(`/api/prs/${n}/reviews`),
   suggestForAction: (n: number, disposition: string) =>
     get<Suggestion>(`/api/suggest/pr/${n}?disposition=${encodeURIComponent(disposition)}`),
   defaultComment: (action: string, canonical?: number) => {
@@ -1410,7 +1517,7 @@ export const api = {
   executeBulk: async (
     body: { prs: number[]; action: string; comment?: string;
             comments?: Record<number, string>; canonical?: number;
-            method?: string; reason?: string; tags?: string[]; dry_run: boolean },
+            method?: string; reason?: string; tags?: string[]; reviewer?: string; dry_run: boolean },
     onResult: (r: BulkResult) => void,
     onDone: (summary: Record<string, number>) => void,
   ) => {
@@ -1534,7 +1641,7 @@ export const api = {
   capabilities: () => get<{
     login: string | null;
     merge_upstream: boolean;
-    review: ReviewCap | null;
+    reviewers: ReviewerCap[];
     store_schema: { code_version: number; store_version: number | null; write_block: string | null } | null;
     write_block: string | null;
   }>("/api/capabilities"),
@@ -1553,8 +1660,8 @@ export const api = {
     });
     return r.json() as Promise<ExecResult>;
   },
-  retriggerGreptile: async (n: number, dryRun: boolean) => {
-    const r = await fetch(`/api/greptile/retrigger/pr/${n}?dry_run=${dryRun}`, { method: "POST" });
+  retriggerReview: async (n: number, reviewer: string, dryRun: boolean) => {
+    const r = await fetch(`/api/reviews/${encodeURIComponent(reviewer)}/retrigger/pr/${n}?dry_run=${dryRun}`, { method: "POST" });
     return r.json() as Promise<ExecResult>;
   },
   queueVerify: async (n: number) => {
@@ -1788,16 +1895,18 @@ export interface PRAction {
 }
 
 /** One event in a PR's condensed upstream activity history — a comment,
- *  review (Greptile's scored ones carry `greptile_score`), commit, or
- *  reopen/close/force-push/rename event. Oldest first. */
+ *  review (an automated reviewer's is `bot_review` with its `reviewer` id and,
+ *  for Greptile, the parsed `score`), commit, or reopen/close/force-push/rename
+ *  event. Oldest first. */
 export interface PRHistoryItem {
-  kind: "comment" | "review" | "greptile_review" | "commit" | "reopened" | "closed" | "force_push" | "renamed";
+  kind: "comment" | "review" | "bot_review" | "commit" | "reopened" | "closed" | "force_push" | "renamed";
   at: string;
   actor?: string | null;
   summary?: string | null;
   url?: string | null;
   state?: string | null;
-  greptile_score?: number | null;
+  reviewer?: string | null;
+  score?: number | null;
 }
 
 /** The latest landed live action on a PR, from the activity log (#10). */

@@ -2,9 +2,62 @@ import { useEffect, useRef, type CSSProperties, type ReactNode } from "react";
 import type {
   FilterSpec, Disposition, LocFilter, FilesFilter,
   SafetyFilter, DriftFilter, CiFilter, ResponsesFilter, CheckStatus, CheckClause,
+  BarStatus, ReviewerCap, ReviewerKind,
 } from "../../api";
 import { EnumFilter, NumFilter } from "../shared/FilterWidgets";
 import { CHECK_DEFS, CHECK_STATUS_OPTS } from "./checkDefs";
+import { useExec } from "../../ExecContext";
+
+const BAR_OPTS: { v: BarStatus; label: string }[] = [
+  { v: "pass", label: "✓ Passed its bar" },
+  { v: "fail", label: "✗ Failed its bar" },
+  { v: "stale", label: "⚠ Stale (earlier commit)" },
+  { v: "pending", label: "… Awaiting its verdict" },
+];
+
+// Per-reviewer bar-status selects for every active reviewer of `kind`, bound to
+// spec.reviewer_status[id].
+function ReviewerStatusFilters({ kind, spec, onChange }: {
+  kind: ReviewerKind; spec: FilterSpec; onChange: (next: FilterSpec) => void;
+}) {
+  const { activeReviewers } = useExec();
+  const set = (id: string, v: string) => {
+    const next: Record<string, BarStatus | BarStatus[]> = { ...(spec.reviewer_status ?? {}) };
+    if (v) next[id] = v as BarStatus; else delete next[id];
+    const out = { ...spec };
+    if (Object.keys(next).length) out.reviewer_status = next; else delete out.reviewer_status;
+    onChange(out);
+  };
+  return (
+    <>
+      {activeReviewers(kind).map((r) => {
+        const cur = spec.reviewer_status?.[r.id];
+        return (
+          <div key={r.id}>
+            <div className="cfp-label">{r.label}</div>
+            <div className="cfp-row">
+              <select className="cfp-select" value={Array.isArray(cur) ? cur[0] ?? "" : cur ?? ""}
+                onChange={(e) => set(r.id, e.target.value)}>
+                <option value="">Any</option>
+                {BAR_OPTS.map((o) => <option key={o.v} value={o.v}>{o.label}</option>)}
+              </select>
+            </div>
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+// Whether the spec filters on the bar status of any reviewer of `kind`. Without
+// the capability roster every reviewer_status key counts.
+function reviewerStatusActive(spec: FilterSpec, kind: ReviewerKind, reviewers?: ReviewerCap[]): boolean {
+  const ids = Object.keys(spec.reviewer_status ?? {});
+  if (!ids.length) return false;
+  if (!reviewers) return true;
+  const ofKind = new Set(reviewers.filter((r) => r.kind === kind).map((r) => r.id));
+  return ids.some((id) => ofKind.has(id));
+}
 
 // ---- helpers ----
 
@@ -160,6 +213,7 @@ function renderContent(
   spec: FilterSpec,
   s: (k: keyof FilterSpec, v: unknown) => void,
   onChange: (next: FilterSpec) => void,
+  greptileActive: boolean,
 ): ReactNode {
   switch (colKey) {
     case "pr":
@@ -368,10 +422,12 @@ function renderContent(
         </>
       );
 
-    case "greptile":
+    case "review":
       return (
         <>
-          <div className="cfp-label">Greptile score (1–5)</div>
+          <ReviewerStatusFilters kind="review" spec={spec} onChange={onChange} />
+          {greptileActive && (<>
+          <div className="cfp-label" style={{ marginTop: 8 }}>Greptile score (1–5)</div>
           <NumFilter
             cmp={spec.greptile}
             onCmp={(v) => s("greptile", v)}
@@ -408,8 +464,12 @@ function renderContent(
               <option value="nits">🧹 Nitpicks only</option>
             </select>
           </div>
+          </>)}
         </>
       );
+
+    case "scans":
+      return <ReviewerStatusFilters kind="scanner" spec={spec} onChange={onChange} />;
 
     case "age":
       return (
@@ -620,6 +680,8 @@ export function ColumnFilterPopout({ colKey, spec, onChange, rect, onClose }: Co
   const ref = useRef<HTMLDivElement>(null);
 
   const s = (k: keyof FilterSpec, v: unknown) => specSet(spec, k, v, onChange);
+  const { activeReviewers } = useExec();
+  const greptileActive = activeReviewers("review").some((r) => r.id === "greptile");
 
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
@@ -634,7 +696,7 @@ export function ColumnFilterPopout({ colKey, spec, onChange, rect, onClose }: Co
     };
   }, [onClose]);
 
-  const content = renderContent(colKey, spec, s, onChange);
+  const content = renderContent(colKey, spec, s, onChange, greptileActive);
   if (!content) return null;
 
   // Keep the popout inside the viewport horizontally. The "checks" popout
@@ -658,13 +720,13 @@ export function ColumnFilterPopout({ colKey, spec, onChange, rect, onClose }: Co
 export const FILTERABLE_COLS = new Set([
   "pr", "title", "tier", "merge", "summary", "issues",
   "safety", "disposition", "drift", "checks", "updated",
-  "greptile", "age", "author_rate", "pain",
+  "review", "scans", "age", "author_rate", "pain",
   "loc", "files", "author", "cluster",
 ]);
 
 // Is a filter currently active for this column?
 // eslint-disable-next-line react-refresh/only-export-components -- filter predicate co-located with the popout
-export function isColFilterActive(colKey: string, spec: FilterSpec): boolean {
+export function isColFilterActive(colKey: string, spec: FilterSpec, reviewers?: ReviewerCap[]): boolean {
   switch (colKey) {
     case "pr":          return spec.numbers !== undefined;
     case "title":       return spec.q !== undefined;
@@ -677,8 +739,9 @@ export function isColFilterActive(colKey: string, spec: FilterSpec): boolean {
     case "drift":       return spec.drift !== undefined;
     case "checks":      return spec.ci !== undefined || (spec.checks?.length ?? 0) > 0;
     case "updated":     return spec.responses !== undefined;
-    case "greptile":    return spec.greptile !== undefined || spec.greptile_stale !== undefined
-      || spec.greptile_severity !== undefined;
+    case "review":      return spec.greptile !== undefined || spec.greptile_stale !== undefined
+      || spec.greptile_severity !== undefined || reviewerStatusActive(spec, "review", reviewers);
+    case "scans":       return reviewerStatusActive(spec, "scanner", reviewers);
     case "age":         return spec.age_days !== undefined;
     case "author_rate": return spec.author_rate !== undefined;
     case "pain":        return spec.pain !== undefined;

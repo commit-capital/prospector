@@ -41,6 +41,7 @@ from prospector_app.backend import jobs
 from prospector_app.backend import freshness_live
 from prospector_app.backend import models
 from prospector_app.backend import onboarding
+from prospector_app.backend import push_identity
 from prospector_app.backend import pipeline_status
 from prospector_app.backend import pr_history
 from prospector_app.backend import pr_search
@@ -57,7 +58,7 @@ from prospector_app.backend import verify_queue
 from prospector_app.backend import verify_worker
 from prospector_app.backend import work_status
 
-from pipeline import greptile
+from pipeline import reviewers
 from pipeline import settings
 
 class SurrogateSafeJSONResponse(JSONResponse):
@@ -414,18 +415,51 @@ def onboarding_probe(body: models.OnboardingProbe):
 @app.post("/api/onboarding/apply")
 def onboarding_apply(body: models.OnboardingApply):
     """Write one step's configuration and adopt it in this process."""
-    env, profile_doc, key_pem = body.env, body.profile, None
-    if body.bundle is not None:
-        try:
-            env, profile_doc, key_pem = onboarding.parse_bundle(body.bundle)
-        except ValueError as e:
-            raise HTTPException(400, str(e))
     try:
-        return onboarding.apply(body.step, env, profile_doc, bot_key_pem=key_pem)
+        if body.bundle is not None:
+            return onboarding.apply_bundle(body.step, onboarding.parse_bundle(body.bundle))
+        return onboarding.apply(body.step, body.env, body.profile)
     except ValueError as e:
         raise HTTPException(400, str(e))
     except OSError as e:
         raise HTTPException(500, f"could not write configuration: {e}")
+
+
+@app.get("/api/onboarding/push-identity/account")
+def push_identity_account(login: str | None = None):
+    """A GitHub user's login, id, and no-reply email: the operator's own `gh`
+    login with no `login`, else the named account. 404 when there is no such
+    user or gh cannot ask."""
+    found = push_identity.account(login) if login else push_identity.operator_account()
+    if found is None:
+        raise HTTPException(404, "no such GitHub user, or gh is not signed in" if login
+                            else "gh is not signed in on this machine")
+    return found
+
+
+@app.post("/api/onboarding/push-identity/key")
+def push_identity_key(body: models.PushKeyRequest):
+    """Generate this machine's contributor-push key for `login` — or show the
+    one already there — and return its path and public half for the operator
+    to add to the account."""
+    try:
+        return push_identity.generate_key(body.login.strip())
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/onboarding/push-identity/probe")
+def push_identity_probe(body: models.PushProbe):
+    """Ask GitHub which account a key authenticates and whether it is `login`.
+    Read-only: writing the identity is the `worker` onboarding step."""
+    login = body.login.strip()
+    try:
+        path = (push_identity.operator_key_file(body.key_file)
+                if body.key_file and body.key_file.strip()
+                else push_identity.key_path(login))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return push_identity.probe_key(path, login)
 
 
 @app.get("/api/status/now")
@@ -464,11 +498,14 @@ def setup_flags(body: models.WorkerFlags):
 def setup_share(body: models.SetupShare | None = None):
     """Everything a teammate's fresh checkout needs to join this deployment,
     as one thing they paste into their setup wizard. POST, so the store URL is
-    never in a request line. `include_key` adds the bot's private key; refused
-    with a 400 when this machine has none to give."""
+    never in a request line. `include_key` adds the bot's private key and
+    `include_push_key` the contributor-push identity; either is refused with a
+    400 when this machine has none to give."""
     include_key = bool(body and body.include_key)
+    include_push_key = bool(body and body.include_push_key)
     try:
-        bundle = onboarding.build_bundle(include_key=include_key)
+        bundle = onboarding.build_bundle(include_key=include_key,
+                                         include_push_key=include_push_key)
     except ValueError as e:
         raise HTTPException(400, str(e))
     return {"bundle": json.dumps(bundle, indent=2)}
@@ -515,8 +552,8 @@ def pr_actions(n: int):
 
 @app.get("/api/prs/{n}/history")
 def pr_history_endpoint(n: int):
-    """Condensed upstream activity for this PR — comments, reviews (Greptile's
-    score history flagged), commits, and reopen/close/force-push/rename
+    """Condensed upstream activity for this PR — comments, reviews (each
+    automated reviewer's flagged), commits, and reopen/close/force-push/rename
     events — read live from GitHub, oldest first. Powers the PR-detail history
     panel so a reviewer doesn't have to open GitHub to see the back-and-forth."""
     return {"items": pr_history.fetch_pr_history(n)}
@@ -527,12 +564,12 @@ def pr_diff(n: int):
     return service.get_diff(n)
 
 
-@app.get("/api/prs/{n}/greptile")
-def pr_greptile(n: int):
-    """This PR's Greptile review summary ({score, body}) — read directly from
-    GitHub on demand (e.g. a column hover) rather than on every list row. Returns
-    {} when Greptile left no review or the fetch failed."""
-    return greptile.fetch_greptile_feedback(n) or {}
+@app.get("/api/prs/{n}/reviews")
+def pr_reviews(n: int):
+    """Every automated reviewer's and scanner's stored entry + digest on this PR,
+    keyed by reviewer id — the column hover and the PR page's per-reviewer
+    blocks. {} when the PR is unknown."""
+    return {"reviews": service.reviews_detail(n)}
 
 
 @app.post("/api/freshness")
@@ -746,7 +783,7 @@ def refresh_identities():
 def get_capabilities():
     c = caps.capabilities()
     return {"login": c.get("login"), "merge_upstream": c.get("merge_upstream", False),
-            "review": c.get("review"), "store_schema": c.get("store_schema"),
+            "reviewers": c.get("reviewers") or [], "store_schema": c.get("store_schema"),
             "write_block": c.get("write_block")}
 
 
@@ -778,7 +815,8 @@ async def execute_bulk(payload: models.BulkExecuteBody = Body(...)):
         async for ev in bulk.run_bulk(
             payload.prs, payload.action, comment=payload.comment, comments=payload.comments,
             canonical=payload.canonical, method=payload.method,
-            reason=payload.reason, tags=payload.tags, dry_run=payload.dry_run,
+            reason=payload.reason, tags=payload.tags, reviewer=payload.reviewer,
+            dry_run=payload.dry_run,
         ):
             yield ev
     return EventSourceResponse(gen())
@@ -1024,17 +1062,21 @@ def comment_line(n: int, payload: models.LineCommentBody = Body(...), dry_run: b
     return res
 
 
-@app.post("/api/greptile/retrigger/pr/{n}")
-def retrigger_greptile(n: int, dry_run: bool = True):
-    """Post "@greptileai" on PR #n as the configured bot to re-trigger a Greptile
-    review — no new commit needed. Gated + logged like every bot write. Once the
-    post lands, a backend task waits for Greptile's new scored summary and
-    targeted-ingests it into the shared snapshot; no UI session is required."""
+@app.post("/api/reviews/{reviewer}/retrigger/pr/{n}")
+def retrigger_review(reviewer: str, n: int, dry_run: bool = True):
+    """Post the named reviewer's mention on PR #n as the configured bot to
+    re-trigger its review — no new commit needed. Gated + logged like every bot
+    write. Once the post lands, a backend task waits for the reviewer's fresh
+    verdict and targeted-ingests it into the shared snapshot; no UI session is
+    required. 404 for an unknown reviewer id."""
+    known = next((r for r in reviewers.REVIEWERS.values() if r.id == reviewer), None)
+    if known is None:
+        raise HTTPException(status_code=404, detail="unknown reviewer")
     token = None if dry_run else executor.mint_bot_token()
-    baseline = review_refresh.capture(n) if token is not None else None
-    result = executor.retrigger_greptile(n, token=token, dry_run=dry_run)
+    baseline = review_refresh.capture(n, known.id) if token is not None else None
+    result = executor.retrigger_review(n, known.id, token=token, dry_run=dry_run)
     if result.get("status") == "executed" and baseline is not None:
-        review_refresh.schedule(n, baseline)
+        review_refresh.schedule(n, known.id, baseline)
     return result
 
 
