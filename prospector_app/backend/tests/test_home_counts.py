@@ -24,7 +24,11 @@ def _rec(pr: int, *, greptile: int = 5, ci: str = "passing") -> model.Pr:
 
 
 def _snapshot(monkeypatch, prs: dict[int, model.Pr]) -> None:
-    monkeypatch.setattr(data, "_loaded", True)  # counts serve rather than report loading
+    # Loaded and fresh: counts serve rather than report loading, and the accessors
+    # the request reaches beyond the patched ones (author_stats) see nothing stale
+    # to freshen in the background.
+    monkeypatch.setattr(data, "_loaded", True)
+    monkeypatch.setattr(data, "_last_check", time.monotonic())
     monkeypatch.setattr(data, "prs", lambda: prs)
     monkeypatch.setattr(data, "clusters", lambda: {})
     monkeypatch.setattr(data, "pr_to_clusters", lambda: {})
@@ -50,6 +54,17 @@ def test_counts_agree_with_query_totals(monkeypatch):
     r = c.post("/api/prs/counts", json={"specs": [spec]})
     assert r.status_code == 200
     assert r.json()["counts"] == [service.query_prs(spec, limit=0)["total"]]
+
+
+def test_counts_served_snapshot_spawns_no_freshen(monkeypatch):
+    """A served snapshot reads as fresh: the accessors a counts request reaches
+    beyond the patched ones (author_stats) kick no background freshen."""
+    calls: list[bool] = []
+    _snapshot(monkeypatch, {1: _rec(1)})
+    monkeypatch.setattr(data, "_freshen", lambda full=False: calls.append(full))
+    c = TestClient(appmod.app)
+    assert c.post("/api/prs/counts", json={"specs": [{}]}).json() == {"counts": [1]}
+    assert not data._check_lock.locked() and not calls, "counts kicked a background freshen"
 
 
 def test_counts_empty_specs_list(monkeypatch):
