@@ -23,10 +23,13 @@ def _pr(store, n, head="h1", analysis=None, summary=True, draft=False, author="a
     store.save_pr(rec)
 
 
-def _cluster(store, cid, prs, outcome=None):
+def _cluster(store, cid, prs, outcome=None, proposals=None):
     store.save_cluster({"id": cid, "root_problem": "x", "prs": [],
                         "outcome": outcome, "checked_at": NOW})
-    store.edit_cluster(cid).set_members(prs)   # wires cluster.prs AND each pr.cluster_ids
+    cl = store.edit_cluster(cid)
+    cl.set_members(prs)   # wires cluster.prs AND each pr.cluster_ids
+    if proposals is not None:
+        cl.set_proposals(proposals)
     return store.load_cluster(cid)
 
 
@@ -68,7 +71,9 @@ class TestPending:
         s = Store(tmp_path)
         a = {"disposition": "merge", "rationale": "r", "against_head_sha": "h1"}
         _pr(s, 1, analysis=a); _pr(s, 2, analysis=dict(a, disposition="close-dup", canonical=1))
-        _cluster(s, 1, [1, 2], outcome="merge-ready")
+        _cluster(s, 1, [1, 2], outcome="merge-ready",
+                 proposals=[{"pr": 1, "disposition": "merge"},
+                            {"pr": 2, "disposition": "close-dup", "canonical": 1}])
         assert ad.pending(s) == []
 
     def test_stale_member_analysis_makes_pending(self, tmp_path):
@@ -77,7 +82,21 @@ class TestPending:
                                         "against_head_sha": "OLD"})
         _pr(s, 2, analysis={"disposition": "close-dup", "canonical": 1, "rationale": "r",
                             "against_head_sha": "h1"})
-        _cluster(s, 1, [1, 2], outcome="merge-ready")
+        _cluster(s, 1, [1, 2], outcome="merge-ready",
+                 proposals=[{"pr": 1, "disposition": "merge"},
+                            {"pr": 2, "disposition": "close-dup", "canonical": 1}])
+        assert [c.id for c in ad.pending(s)] == [1]
+
+    def test_member_without_proposal_row_makes_pending(self, tmp_path):
+        # PR 3 joined after the analysis, carrying a current analysis from a
+        # standalone pass — only the missing proposal row exposes the change.
+        s = Store(tmp_path)
+        a = {"disposition": "merge", "rationale": "r", "against_head_sha": "h1"}
+        _pr(s, 1, analysis=a); _pr(s, 2, analysis=dict(a, disposition="close-dup", canonical=1))
+        _pr(s, 3, analysis=dict(a))
+        _cluster(s, 1, [1, 2, 3], outcome="merge-ready",
+                 proposals=[{"pr": 1, "disposition": "merge"},
+                            {"pr": 2, "disposition": "close-dup", "canonical": 1}])
         assert [c.id for c in ad.pending(s)] == [1]
 
 
