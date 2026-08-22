@@ -34,10 +34,10 @@ class Check(TypedDict):
 
 def _docker_daemon() -> tuple[bool, str, str]:
     if shutil.which("docker") is None:
-        return False, "no docker binary on PATH", "install a Docker runtime"
+        return False, "Docker is not installed", "install a Docker runtime"
     if not verify_driver.daemon_available():
-        return False, "the daemon is not answering", "start it (e.g. `colima start`)"
-    return True, "answering", ""
+        return False, "Docker is installed but not running", "start it (e.g. `colima start`)"
+    return True, "running", ""
 
 
 def _sandbox_image() -> tuple[bool, str, str]:
@@ -76,7 +76,7 @@ def _base_pin() -> tuple[bool, str, str]:
 
 def _push_identity() -> tuple[bool, str, str]:
     if not settings.push_identity_configured():
-        return False, "no contributor-push identity", "set one up in the card below"
+        return False, "none yet", "set one up in the card below"
     failure = fix_worker.key_safety_failure()
     if failure is not None:
         return False, failure, "fix the key, then restart the worker"
@@ -88,26 +88,26 @@ def _fix_policy() -> tuple[bool, str, str]:
     which is what an unguided hunted `fix` is gated on."""
     gates = profile.active().autofix.fixable_gates
     if not gates:
-        return False, "profile.json names no autofix.fixable_gates", \
-            ("paste a share bundle from a machine whose profile names them in the "
-             "card below, or add autofix.fixable_gates to profile.json")
-    return True, f"profile names fixable gates: {', '.join(gates)}", ""
+        return False, "the project has not said what the AI may fix on its own", \
+            ("copy it from a computer that has it, in the card below — or add "
+             "autofix.fixable_gates to profile.json")
+    return True, f"the AI may fix: {', '.join(gates)}", ""
 
 
 def _verify_flag() -> tuple[bool, str, str]:
     if not verify_worker.enabled():
-        return False, "TRIAGE_VERIFY_WORKER is not set", "turn the verify worker on"
+        return False, "off", "tick “Test pull requests” below"
     if not verify_worker.running():
-        return False, "opted in, but no worker threads are live", "start the verify worker"
-    return True, "draining the verify queue", ""
+        return False, "switched on, but not running", "start the verify worker"
+    return True, "on, watching the queue", ""
 
 
 def _fix_flag() -> tuple[bool, str, str]:
     if not fix_worker.enabled():
-        return False, "TRIAGE_FIX_WORKER is not set", "turn the autofix worker on"
+        return False, "off", "tick “Prepare fixes” below"
     if not fix_worker.running():
-        return False, "opted in, but no worker threads are live", "start the autofix worker"
-    return True, "draining the autofix queue", ""
+        return False, "switched on, but not running", "start the autofix worker"
+    return True, "on, watching the queue", ""
 
 
 # key, label, probe, blocking. Ordered the way a machine is provisioned, so the
