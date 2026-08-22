@@ -70,3 +70,48 @@ def test_importer_into_postgres(tmp_path, monkeypatch):
     store_migrate.import_pr_store(src, store_migrate.dest_store("@env"))
     assert Store().load_pr(5).raw == _pr()
     schema.METADATA.drop_all(eng)
+
+
+def test_concurrent_registry_saves_never_collide_on_postgres(store):
+    """Two hosts' heartbeats merge into one registry row at once. Under READ
+    COMMITTED a delete-then-insert pair races to a primary-key violation on the
+    loser; the save must be one atomic upsert so a concurrent beat is a lost
+    update at worst, never an exception. The first writer's transaction is held
+    open just after its first write to the row, and the second writer lands
+    inside that window."""
+    import threading
+    import time
+    from sqlalchemy import event
+    store.save_verify_worker({"host": "seed", "last_beat": "2026-08-21T00:00:00+00:00"})
+    first_write = threading.Event()
+    errors: list[BaseException] = []
+
+    def hold(conn, cursor, statement, parameters, context, executemany):
+        head = statement.lstrip().upper()
+        if (threading.current_thread().name == "first" and "registries" in statement
+                and head.startswith(("DELETE", "INSERT")) and not first_write.is_set()):
+            first_write.set()
+            time.sleep(1.0)
+
+    def beat(host: str) -> None:
+        try:
+            if host == "second":
+                assert first_write.wait(10.0)
+            store.save_verify_worker({"host": host, "last_beat": "2026-08-21T00:00:01+00:00"})
+        except BaseException as e:  # noqa: BLE001 - surfaced to the assertion
+            errors.append(e)
+
+    event.listen(store.engine, "after_cursor_execute", hold)
+    try:
+        threads = [threading.Thread(target=beat, args=(h,), name=h)
+                   for h in ("first", "second")]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    finally:
+        event.remove(store.engine, "after_cursor_execute", hold)
+    assert first_write.is_set()
+    assert errors == []
+    # The second writer's merge may lose the first's entry; the row itself is whole.
+    assert set(store.load_verify_worker()["hosts"]) & {"first", "second"}

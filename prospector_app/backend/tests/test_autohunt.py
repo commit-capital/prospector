@@ -242,7 +242,7 @@ def test_run_security_pre_spawn_recheck_skips_already_cleared(store, monkeypatch
         raise AssertionError("must not spawn a subprocess")
 
     monkeypatch.setattr(verify_worker.subprocess, "Popen", fake_popen)
-    assert verify_worker.run_security(1) == 0
+    assert verify_worker.run_security(1) is None
     assert spawned["count"] == 0
 
 
@@ -259,7 +259,7 @@ def test_run_security_declines_a_pr_another_machine_claimed(store, monkeypatch):
         raise AssertionError("must not spawn a subprocess")
 
     monkeypatch.setattr(verify_worker.subprocess, "Popen", fake_popen)
-    assert verify_worker.run_security(1) == 0
+    assert verify_worker.run_security(1) is None
 
 
 def test_run_security_releases_its_claim_when_the_run_fails(store, monkeypatch):
@@ -756,3 +756,75 @@ def test_the_verify_lane_outranks_the_resweep_lane(store):
     _green(store, 2)
     data.refresh()
     assert verify_worker.next_auto() == ("verify", 2)
+
+
+class TestSecurityClaimedElsewhere:
+    """Another machine's live claim on the top security pick. The hunter must
+    neither spin on it nor spend a second review: the pool skips a PR under
+    review elsewhere, and the drain loop rests after a lost claim."""
+
+    def test_pool_skips_a_pr_another_host_holds(self, store, monkeypatch):
+        store.save_pr(_clean_merge_pr(1, pain=0.9))
+        store.save_pr(_clean_merge_pr(2, pain=0.1))
+        monkeypatch.setattr(verify_worker.socket, "gethostname", lambda: "mac")
+        assert store.claim_security_run(1, host="linux", stale_after=3600) is True
+        data.refresh()
+        assert verify_worker.next_auto() == ("security", 2)
+
+    def test_pool_keeps_this_hosts_own_leftover_claim(self, store, monkeypatch):
+        store.save_pr(_clean_merge_pr(1))
+        monkeypatch.setattr(verify_worker.socket, "gethostname", lambda: "mac")
+        assert store.claim_security_run(1, host="mac", stale_after=3600) is True
+        data.refresh()
+        assert verify_worker.next_auto() == ("security", 1)
+
+    def test_pool_keeps_a_pr_whose_claim_went_stale(self, store, monkeypatch):
+        store.save_pr(_clean_merge_pr(1))
+        monkeypatch.setattr(verify_worker.socket, "gethostname", lambda: "mac")
+        rec = store.load_pr(1).raw
+        rec["security_run"] = {"host": "linux", "started_at": _iso_hours_ago(5)}
+        store.save_pr(rec)
+        data.refresh()
+        assert verify_worker.next_auto() == ("security", 1)
+
+    def test_drain_loop_rests_after_a_lost_claim(self, store, monkeypatch):
+        """The snapshot that picked the PR is behind the store that refused the
+        claim: the loop refreshes and rests a poll instead of re-picking the
+        same PR back to back."""
+        store.save_pr(_clean_merge_pr(1))
+        data.refresh()
+        monkeypatch.setattr(verify_worker.socket, "gethostname", lambda: "mac")
+        monkeypatch.setenv("TRIAGE_VERIFY_AUTOHUNT", "1")
+        monkeypatch.setattr(verify_worker, "maybe_refresh_base", lambda: None)
+        monkeypatch.setattr(verify_worker, "next_queued", lambda: None)
+        attempts: list[int] = []
+        real_run_security = verify_worker.run_security
+
+        def run_security(n: int) -> int | None:
+            attempts.append(n)
+            # Another machine wins the claim between the pick and the attempt.
+            store.claim_security_run(n, host="linux", stale_after=3600)
+            return real_run_security(n)
+        monkeypatch.setattr(verify_worker, "run_security", run_security)
+
+        waits: list[float] = []
+
+        class StopAfterOneWait:
+            """Set by the first wait; a loop that never waits is cut off after
+            a few ticks so a regression fails instead of hanging."""
+            def __init__(self) -> None:
+                self._set = False
+                self._ticks = 0
+
+            def is_set(self) -> bool:
+                self._ticks += 1
+                return self._set or self._ticks > 5
+
+            def wait(self, seconds: float) -> bool:
+                waits.append(seconds)
+                self._set = True
+                return True
+        monkeypatch.setattr(verify_worker, "stop", StopAfterOneWait())
+        verify_worker._drain_loop()
+        assert attempts == [1]
+        assert waits == [verify_worker.POLL_SECONDS]

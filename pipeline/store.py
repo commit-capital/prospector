@@ -97,6 +97,18 @@ PR_SECTIONS = ("meta", "signals", "reviews", "drift", "summary", "cluster", "ana
                "fix_request", "security_run")
 
 
+def security_claim_held_elsewhere(run: dict | None, *, host: str,
+                                  stale_after: float) -> bool:
+    """Whether `run`, a PR's `security_run` claim, is another host's live
+    review: held by a different host and started within `stale_after` seconds.
+    This host's own claim is a restart's leftover; one past its window is a
+    dead machine's. Neither blocks a hunter."""
+    run = run or {}
+    holder = run.get("host")
+    return (holder is not None and holder != host
+            and not _older_than(run.get("started_at"), stale_after))
+
+
 def _older_than(stamp: object, seconds: float) -> bool:
     """Whether an ISO timestamp is further back than `seconds`. An absent or
     unparseable stamp reads as old: a claim that cannot say when it started is
@@ -482,11 +494,19 @@ class Store:
         return row[0] if row is not None else default
 
     def _save_registry(self, name: str, data: dict) -> None:
-        from sqlalchemy import delete as sa_delete, insert
+        """Overwrite the registry row named `name` in one `INSERT … ON CONFLICT
+        DO UPDATE`: several machines' heartbeats land on the same row at once,
+        and a single atomic statement makes the loser's write a lost update the
+        next tick rewrites, never a primary-key violation."""
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
         storekit.assert_writable(self.engine)
+        ins = (pg_insert(schema.registries) if self.engine.dialect.name == "postgresql"
+               else sqlite_insert(schema.registries))
+        stmt = ins.values(name=name, data=data).on_conflict_do_update(
+            index_elements=[schema.registries.c.name], set_={"data": data})
         with self.engine.begin() as conn:
-            conn.execute(sa_delete(schema.registries).where(schema.registries.c.name == name))
-            conn.execute(insert(schema.registries).values(name=name, data=data))
+            conn.execute(stmt)
 
     def load_reviewers(self) -> dict:
         """Each automated reviewer's latest observed activity over the open
@@ -767,10 +787,8 @@ class Store:
         if row is None:
             return False
         rec, stamp = row
-        run = rec.get("security_run") or {}
-        holder = run.get("host")
-        if (holder is not None and holder != host
-                and not _older_than(run.get("started_at"), stale_after)):
+        if security_claim_held_elsewhere(rec.get("security_run"), host=host,
+                                         stale_after=stale_after):
             return False
         rec["security_run"] = {"host": host, "started_at": storekit.now()}
         return self._prs.save_if(rec, stamp)
