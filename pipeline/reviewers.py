@@ -288,7 +288,8 @@ def _coderabbit_parse(feed: PrFeed, head_sha: str | None, previous: dict | None)
     return _entry(CODERABBIT,
                   reviewed_sha=(latest or {}).get("commit"),
                   observed_at=_max_at((latest or {}).get("at"), (walk or {}).get("updated_at"),
-                                      (walk or {}).get("at"), *[t.get("at") for t in threads]),
+                                      (walk or {}).get("at"), *[t.get("at") for t in threads],
+                                      *[c.get("updated_at") or c.get("at") for c in comments]),
                   score=None, findings=findings,
                   summary=strip_html(body) if body else None, checks=checks,
                   extra={"actionable": int(act.group(1)) if act else None,
@@ -580,7 +581,9 @@ def seen_summary(prs: Iterable[Pr]) -> dict:
         for rid, entry in section.items():
             if rid not in REVIEWERS or not isinstance(entry, dict):
                 continue
-            at = entry.get("observed_at") or section.get("checked_at")
+            # A check run at the head is activity on this head even when the bot
+            # left no conversation to date it by; an entry with neither is not.
+            at = entry.get("observed_at") or (section.get("checked_at") if entry.get("checks") else None)
             if not at:
                 continue
             cur = seen.setdefault(rid, {"last_observed_at": at, "prs": 0})
