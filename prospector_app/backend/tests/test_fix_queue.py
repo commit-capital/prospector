@@ -601,3 +601,17 @@ def test_the_queue_route_still_takes_a_bare_mechanical_action(store):
 
     assert r.status_code == 200, r.text
     assert store.load_pr(1).fix_request["action"] == "update"
+
+
+def test_orphan_recovery_reads_only_in_flight_requests(store, monkeypatch):
+    """Startup recovery filters on the request status server-side: it never
+    pulls every PR record over the wire to find the handful mid-run."""
+    store.save_pr({"pr": 2, "meta": {"title": "idle", "state": "open",
+                                     "head_sha": "b" * 40}})
+    fix_queue.queue_pr(1, "update")
+    store.claim_fix_request(1, host=socket.gethostname())
+    data.refresh()
+    monkeypatch.setattr(S.Store, "all_prs",
+                        lambda self: pytest.fail("recovery pulled every PR record"))
+    assert fix_worker.recover_orphans() == [1]
+    assert store.load_pr(1).fix_request["status"] == "failed"

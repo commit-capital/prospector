@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar
 from collections.abc import Callable, Generator
 
 from sqlalchemy import (
@@ -28,13 +28,18 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import Insert as PGInsert, insert as pg_insert
 from sqlalchemy.dialects.sqlite import Insert as SQLiteInsert, insert as sqlite_insert
-from sqlalchemy.engine import make_url
+from sqlalchemy.engine import Row, make_url
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.pool import NullPool
 from sqlalchemy.sql.elements import ColumnElement
 
 T = TypeVar("T")
 R = TypeVar("R")
+
+# A bulk read ships its rows in pages of this many, each page its own statement,
+# so a full-table load over a slow link never holds one statement open long
+# enough to trip the server's statement timeout.
+BULK_PAGE_ROWS = 500
 
 _ENGINES: dict[str, Engine] = {}
 _ENGINES_LOCK = threading.Lock()
@@ -707,40 +712,82 @@ class Collection(Generic[T]):
         self._write(lambda conn: conn.execute(
             sa_delete(self.table).where(self.pk.in_(vals))))
 
+    def _paged(self, columns: list[ColumnElement]) -> list[Row[Any]]:
+        """Every row's (pk, *columns), in pk order, read as a series of
+        BULK_PAGE_ROWS-row statements keyed past the last pk seen."""
+        rows: list[Row[Any]] = []
+        last: int | None = None
+        while True:
+            def q(conn: Connection, after: int | None = last) -> list[Row[Any]]:
+                stmt = select(self.pk, *columns).order_by(self.pk).limit(BULK_PAGE_ROWS)
+                if after is not None:
+                    stmt = stmt.where(self.pk > after)
+                return list(conn.execute(stmt).all())
+            page = self._read(q)
+            rows.extend(page)
+            if len(page) < BULK_PAGE_ROWS:
+                return rows
+            last = page[-1][0]
+
     def all(self, omit_paths: list[tuple[str, ...]] | None = None) -> dict[int, T]:
-        """Every record, keyed by id. `omit_paths` drops the named nested JSON
-        paths from each record server-side (e.g. ('meta', 'body')) so the bulk
-        read never ships a heavy field the caller doesn't need — the omitted
-        value reads back as absent and is fetched on demand elsewhere."""
+        """Every record, keyed by id, read in pages. `omit_paths` drops the named
+        nested JSON paths from each record server-side (e.g. ('meta', 'body')) so
+        the bulk read never ships a heavy field the caller doesn't need — the
+        omitted value reads back as absent and is fetched on demand elsewhere."""
         data_col = self.table.c.data
         if omit_paths:
             data_col = strip_json_paths(data_col, self.engine.dialect.name, omit_paths)
-        def q(conn: Connection):
-            return conn.execute(select(self.pk, data_col).order_by(self.pk)).all()
-        rows = self._read(q)
+        rows = self._paged([data_col])
         return {r[0]: self.view(r[1]) for r in rows}
 
     def since(self, watermark: str | None,
               omit_paths: list[tuple[str, ...]] | None = None) -> tuple[dict[int, T], str | None]:
         """Records written strictly after `watermark` (everything when None), keyed
-        by id, plus the max saved_at among them — the reader's next watermark.
-        Strict `>` so a one-shot backfill that stamps every row with one timestamp
-        doesn't get refetched in full every check; nothing is missed because a
-        save_many commits atomically, so rows sharing a microsecond are all visible
-        together and a read never lands between them. `omit_paths` matches `all()`."""
+        by id, plus the reader's next watermark. Strict `>` so a one-shot backfill
+        that stamps every row with one timestamp doesn't get refetched in full
+        every check; nothing is missed because a save_many commits atomically, so
+        rows sharing a microsecond are all visible together and a read never lands
+        between them. `omit_paths` matches `all()`.
+
+        An incremental read is one statement and its watermark is the max saved_at
+        among the rows it returns. A full load reads in pages, and its watermark is
+        the table's max saved_at taken before the first page: a row rewritten while
+        later pages ship is stamped above that, so the next incremental read picks
+        the rewrite up even though an earlier page already carried the old row."""
         data_col = self.table.c.data
         if omit_paths:
             data_col = strip_json_paths(data_col, self.engine.dialect.name, omit_paths)
         sa = self.table.c.saved_at
+        if watermark is None:
+            def hi(conn: Connection) -> str | None:
+                return conn.execute(select(func.max(sa))).scalar_one_or_none()
+            high = self._read(hi)
+            rows = self._paged([data_col])
+            return {r[0]: self.view(r[1]) for r in rows}, high
         def q(conn: Connection):
-            stmt = select(self.pk, sa, data_col)
-            if watermark is not None:
-                stmt = stmt.where(sa > watermark)
-            return conn.execute(stmt).all()
+            return conn.execute(
+                select(self.pk, sa, data_col).where(sa > watermark)).all()
         rows = self._read(q)
         records = {r[0]: self.view(r[2]) for r in rows}
         high = max((r[1] for r in rows if r[1] is not None), default=None)
         return records, high
+
+    def where_json(self, path: tuple[str, ...], values: list[str]) -> dict[int, T]:
+        """Records whose JSON value at `path` is one of `values`, keyed by id —
+        filtered server-side, so a caller after a handful of rows (the requests
+        mid-run at worker startup) never pulls the table."""
+        if not values:
+            return {}
+        expr: Any = self.table.c.data
+        for key in path:
+            expr = expr[key]
+        def q(conn: Connection):
+            return conn.execute(
+                select(self.pk, self.table.c.data)
+                .where(expr.as_string().in_(list(values)))
+                .order_by(self.pk)).all()
+        rows = self._read(q)
+        return {r[0]: self.view(r[1]) for r in rows}
 
 
 def stamp(rec: dict, section: str, payload: dict, token_field: str | None,

@@ -199,3 +199,62 @@ def test_bound_session_read_survives_a_severed_connection(tmp_path, monkeypatch)
         _sever_next_statement(monkeypatch)
         assert set(coll.all()) == {1}
         assert coll.load(1)["x"] == 1
+
+
+# --- bulk reads page; filtered reads stay server-side ----------------------------
+
+def test_all_pages_through_every_row_in_pk_order(coll, monkeypatch):
+    """A bulk read runs as a series of bounded statements, so no single statement
+    has to ship the whole table inside the server's statement timeout."""
+    monkeypatch.setattr(storekit, "BULK_PAGE_ROWS", 2)
+    for n in (3, 1, 5, 2, 4):
+        coll.save({"pr": n, "x": n})
+    assert list(coll.all()) == [1, 2, 3, 4, 5]
+    assert coll.all()[4]["x"] == 4
+
+
+def test_since_full_load_pages_through_every_row(coll, monkeypatch):
+    monkeypatch.setattr(storekit, "BULK_PAGE_ROWS", 2)
+    for n in range(1, 6):
+        coll.save({"pr": n, "x": n})
+    records, high = coll.since(None)
+    assert set(records) == {1, 2, 3, 4, 5}
+    assert high is not None
+
+
+def test_since_full_load_never_loses_a_write_landing_between_pages(coll, monkeypatch):
+    """A row already paged out that is rewritten before the load finishes must
+    be picked up by the next incremental read: the watermark a paged full load
+    hands back predates every page, so the rewrite sits strictly above it."""
+    monkeypatch.setattr(storekit, "BULK_PAGE_ROWS", 2)
+    for n in range(1, 6):
+        coll.save({"pr": n, "x": n})
+    real_read = coll._read
+    reads: list[int] = []
+
+    def read_then_rewrite(fn):
+        reads.append(1)
+        if len(reads) == 3:  # the second page: row 1 was shipped by the first
+            coll.save({"pr": 1, "x": "rewritten"})
+        return real_read(fn)
+
+    monkeypatch.setattr(coll, "_read", read_then_rewrite)
+    records, high = coll.since(None)
+    assert len(records) == 5
+    later, _ = coll.since(high)
+    assert later[1]["x"] == "rewritten"
+
+
+def test_where_json_returns_only_rows_whose_path_holds_one_of_the_values(coll):
+    coll.save({"pr": 1, "x": 1, "fix_request": {"status": "running"}})
+    coll.save({"pr": 2, "x": 1, "fix_request": {"status": "pushing"}})
+    coll.save({"pr": 3, "x": 1, "fix_request": {"status": "queued"}})
+    coll.save({"pr": 4, "x": 1})
+    hits = coll.where_json(("fix_request", "status"), ["running", "pushing"])
+    assert set(hits) == {1, 2}
+    assert hits[1]["fix_request"]["status"] == "running"
+
+
+def test_where_json_with_no_values_matches_nothing(coll):
+    coll.save({"pr": 1, "x": 1, "fix_request": {"status": "running"}})
+    assert coll.where_json(("fix_request", "status"), []) == {}

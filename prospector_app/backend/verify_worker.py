@@ -156,10 +156,9 @@ def recover_orphans() -> tuple[list[int], list[int]]:
     me = socket.gethostname()
     st = data.store()
     with st.batch():
-        for n, rec in sorted(st.all_prs().items()):
+        running = st.prs_matching(("verify_request", "status"), ["running"])
+        for n, rec in sorted(running.items()):
             req = rec.verify_request or {}
-            if req.get("status") != "running":
-                continue
             if req.get("host") not in (None, me):
                 continue
             attempts = req.get("attempts") or 0
@@ -551,9 +550,7 @@ def release_stale_claims() -> list[int]:
     me = socket.gethostname()
     st = data.store()
     freed: list[int] = []
-    for n, rec in sorted(st.all_prs().items()):
-        if (rec.raw.get("security_run") or {}).get("host") != me:
-            continue
+    for n in sorted(st.prs_matching(("security_run", "host"), [me])):
         st.release_security_run(n, host=me)
         freed.append(n)
     return freed

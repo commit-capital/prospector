@@ -627,3 +627,14 @@ def test_reviewers_registry_roundtrip(store):
     store.save_reviewers({"seen": {"greptile": {"last_observed_at": "2026-08-21T00:00:00Z", "prs": 3}},
                           "computed_at": "2026-08-21T01:00:00Z"})
     assert store.load_reviewers()["seen"]["greptile"]["prs"] == 3
+
+
+def test_prs_matching_returns_the_full_records_whose_path_holds_a_value(store):
+    store.save_pr({"pr": 1, "meta": {"title": "a", "state": "open", "head_sha": "h"},
+                   "security_run": {"host": "box-a"}})
+    store.save_pr({"pr": 2, "meta": {"title": "b", "state": "open", "head_sha": "h"},
+                   "security_run": {"host": "box-b"}})
+    store.save_pr({"pr": 3, "meta": {"title": "c", "state": "open", "head_sha": "h"}})
+    hits = store.prs_matching(("security_run", "host"), ["box-a"])
+    assert list(hits) == [1]
+    assert hits[1].title == "a"
