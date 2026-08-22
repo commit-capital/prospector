@@ -6,18 +6,20 @@ import logging
 from prospector_app.backend import data
 from prospector_app.backend import freshness_live
 from pipeline.model import Pr
+from pipeline.testsupport import greptile_entry
 
 HEAD = "abc1234deadbeef"
 NEWHEAD = "ffff999cafebabe"
 
 
-def _store_pr(n=1, state="open", head=HEAD, ci="passing", mergeable=True, greptile=5):
+def _store_pr(n=1, state="open", head=HEAD, ci="passing", mergeable=True, greptile=5,
+              reviewed_sha=None):
     return Pr(None, {
         "pr": n,
         "meta": {"title": f"fix {n}", "author": "alice", "state": state,
                  "head_sha": head, "url": f"https://x/pull/{n}"},
-        "signals": {"greptile": greptile, "ci": ci, "mergeable": mergeable,
-                    "against_head_sha": head},
+        "signals": {"ci": ci, "mergeable": mergeable, "against_head_sha": head},
+        "reviews": {"greptile": greptile_entry(greptile, reviewed_sha), "against_head_sha": head},
     })
 
 
@@ -89,23 +91,22 @@ def test_ci_unknown_baseline_is_not_drift(monkeypatch):
     assert "ci" not in kinds
 
 
-class TestGreptileDivergence:
-    """The review provider's bar is a hard merge requirement, so a score against
-    an earlier commit is its own staleness — and its remedy is a review
+class TestReviewDivergence:
+    """Every active reviewer's bar is a hard merge requirement, so a verdict
+    against an earlier commit is its own staleness — and its remedy is a review
     re-trigger, not a re-analysis."""
 
     def _pr(self, reviewed):
-        pr = _store_pr(1)
-        pr.rec["signals"]["greptile_reviewed_sha"] = reviewed
-        return pr
+        return _store_pr(1, reviewed_sha=reviewed)
 
     def test_flagged_when_greptile_reviewed_an_earlier_commit(self, monkeypatch):
         _patch(monkeypatch, {1: self._pr(HEAD)},
                {1: {"state": "open", "merged": False, "head": NEWHEAD,
                     "mergeable": "MERGEABLE", "ci": "passing"}})
         div = freshness_live.check([1])["items"][0]["diverged"]
-        grep = [d for d in div if d["kind"] == "greptile"]
-        assert grep and grep[0]["was"] == HEAD[:7] and grep[0]["now"] == NEWHEAD[:7]
+        grep = [d for d in div if d["kind"] == "review"]
+        assert grep and grep[0]["reviewer"] == "greptile"
+        assert grep[0]["was"] == HEAD[:7] and grep[0]["now"] == NEWHEAD[:7]
 
     def test_flagged_even_when_our_own_analysis_is_current(self, monkeypatch):
         # the head has not moved since we analyzed; only Greptile is behind.
@@ -113,7 +114,7 @@ class TestGreptileDivergence:
                {1: {"state": "open", "merged": False, "head": HEAD,
                     "mergeable": "MERGEABLE", "ci": "passing"}})
         kinds = [d["kind"] for d in freshness_live.check([1])["items"][0]["diverged"]]
-        assert kinds == ["greptile"]
+        assert kinds == ["review"]
 
     def test_quiet_when_greptile_is_current(self, monkeypatch):
         _patch(monkeypatch, {1: self._pr(HEAD)},
@@ -139,20 +140,32 @@ def test_live_states_parses_diffstat_and_has_tests(monkeypatch):
     node = {"number": 1, "state": "OPEN", "merged": False, "headRefOid": HEAD,
             "mergeable": "MERGEABLE", "additions": 40, "deletions": 6, "changedFiles": 2,
             "files": {"nodes": [{"path": "src/app.ts"}, {"path": "src/app.test.ts"}]},
-            "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]}}
+            "commits": {"nodes": [{"commit": {"statusCheckRollup": {"contexts": {"nodes": [
+                {"__typename": "CheckRun", "name": "Build", "status": "COMPLETED",
+                 "conclusion": "SUCCESS", "checkSuite": {"app": {"slug": "github-actions"}}},
+                {"__typename": "CheckRun", "name": "Greptile Review", "status": "COMPLETED",
+                 "conclusion": "FAILURE", "title": "Confidence 3/5",
+                 "checkSuite": {"app": {"slug": "greptile-apps"}}}]}}}}]}}
     monkeypatch.setattr(freshness_live.live_prs, "gh_graphql",
                         lambda query: {"data": {"repository": {"p0": node}}})
     out, _ = freshness_live.live_states([1])
     assert out[1]["diffstat"] == {"additions": 40, "deletions": 6, "changed_files": 2}
     assert out[1]["has_tests"] is True
-    assert out[1]["ci"] == "passing"   # existing parse still works
+    assert out[1]["ci"] == "passing"   # Greptile's threshold check is not CI
+    assert out[1]["updated_at"] is None
+    assert [r["app"] for r in out[1]["check_runs"]] == ["github-actions", "greptile-apps"]
 
 
 def test_live_states_has_tests_false_without_test_files(monkeypatch):
     node = {"number": 2, "state": "OPEN", "merged": False, "headRefOid": HEAD,
             "mergeable": "MERGEABLE", "additions": 3, "deletions": 1, "changedFiles": 1,
             "files": {"nodes": [{"path": "README.md"}]},
-            "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]}}
+            "commits": {"nodes": [{"commit": {"statusCheckRollup": {"contexts": {"nodes": [
+                {"__typename": "CheckRun", "name": "Build", "status": "COMPLETED",
+                 "conclusion": "SUCCESS", "checkSuite": {"app": {"slug": "github-actions"}}},
+                {"__typename": "CheckRun", "name": "Greptile Review", "status": "COMPLETED",
+                 "conclusion": "FAILURE", "title": "Confidence 3/5",
+                 "checkSuite": {"app": {"slug": "greptile-apps"}}}]}}}}]}}
     monkeypatch.setattr(freshness_live.live_prs, "gh_graphql",
                         lambda query: {"data": {"repository": {"p0": node}}})
     assert freshness_live.live_states([2])[0][2]["has_tests"] is False
@@ -182,7 +195,12 @@ def test_live_states_keeps_resolved_aliases_when_one_errors(monkeypatch, caplog)
     node = {"number": 1, "state": "OPEN", "merged": False, "headRefOid": HEAD,
             "mergeable": "MERGEABLE", "additions": 3, "deletions": 1, "changedFiles": 1,
             "files": {"nodes": [{"path": "src/app.ts"}]},
-            "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]}}
+            "commits": {"nodes": [{"commit": {"statusCheckRollup": {"contexts": {"nodes": [
+                {"__typename": "CheckRun", "name": "Build", "status": "COMPLETED",
+                 "conclusion": "SUCCESS", "checkSuite": {"app": {"slug": "github-actions"}}},
+                {"__typename": "CheckRun", "name": "Greptile Review", "status": "COMPLETED",
+                 "conclusion": "FAILURE", "title": "Confidence 3/5",
+                 "checkSuite": {"app": {"slug": "greptile-apps"}}}]}}}}]}}
     envelope = {"data": {"repository": {"p0": node, "p1": None}},
                 "errors": [{"type": "NOT_FOUND", "path": ["repository", "p1"],
                             "message": "Could not resolve to a PullRequest with the number of 10241."}]}

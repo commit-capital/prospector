@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { api, type PRDetail as PD, type DiffResult, type VerifyRunner, type FixAction as FixActionName, type FixRunner } from "../api";
+import { api, type PRDetail as PD, type DiffResult, type VerifyRunner, type FixAction as FixActionName, type FixRunner, type ReviewDigest, type ReviewEntry } from "../api";
 import { DriftChip, TierChip, authorTip } from "../components/Chips";
 import { InfoTip } from "../components/InfoTip";
 import { dispositionEntry } from "../glossary";
@@ -42,9 +42,9 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
   // by a refusal and by a parked agent resolution alike.
   const [diffMode, setDiffMode] = useState<"pr" | "merge">("pr");
   const [lineComment, setLineComment] = useState<{ file: string; line: number } | null>(null);
-  const [retriggering, setRetriggering] = useState(false);
+  const [retriggering, setRetriggering] = useState<string | null>(null);
   const [err, setErr] = useState<string>();
-  const { botLogin, dryRun, reportResult, review, pushToast } = useExec();
+  const { botLogin, dryRun, reportResult, activeReviewers, pushToast } = useExec();
   const { meta } = useRepoMeta();
   // bump to re-fetch the per-PR action log after an action lands here.
   const [actLog, setActLog] = useState(0);
@@ -167,14 +167,14 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
   const run = useRunState([prNum]);
   const rs = run.byPr[prNum];
 
-  // Re-trigger the review provider by posting its mention as the configured bot —
-  // its manual-review webhook re-runs against the current head, no new commit.
-  const retriggerGreptile = async () => {
+  // Re-trigger a reviewer by posting its mention as the configured bot — its
+  // manual-review webhook re-runs against the current head, no new commit.
+  const retriggerReview = async (reviewerId: string, label: string) => {
     if (retriggering) return;
-    if (!dryRun && !window.confirm(`Re-trigger the ${review.label} review on #${prNum} as ${botLogin}?`)) return;
-    setRetriggering(true);
-    const r = await api.retriggerGreptile(prNum, dryRun);
-    setRetriggering(false);
+    if (!dryRun && !window.confirm(`Re-trigger the ${label} review on #${prNum} as ${botLogin}?`)) return;
+    setRetriggering(reviewerId);
+    const r = await api.retriggerReview(prNum, reviewerId, dryRun);
+    setRetriggering(null);
     reportResult(r);
   };
 
@@ -247,28 +247,24 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
   const checksActions: Partial<Record<string, ReactNode>> = {};
   const checksBodies: Partial<Record<string, ReactNode>> = {};
 
-  if (review.provider !== "none" && review.retrigger && !resolved) {
+  const retriggerable = activeReviewers("review").filter((r) => r.retrigger);
+  if (retriggerable.length > 0 && !resolved) {
     checksActions.review = (
-      <button className="btn-secondary sm" onClick={() => void retriggerGreptile()} disabled={retriggering}
-        title={`Re-trigger the ${review.label} review as ${botLogin} — no new commit needed`}>
-        {retriggering ? "…" : "↻ Re-trigger"}
-      </button>
-    );
-  }
-  if (pr.greptile) {
-    checksBodies.review = (
       <>
-        {pr.signals?.greptile_stale === true && (
-          <p className="muted small" style={{ marginBottom: 8 }}>
-            ⚠ This score is from an older commit. The author may have pushed commits addressing the {review.label} feedback since this review was submitted.
-          </p>
-        )}
-        <div className="markdown greptile-body">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{pr.greptile.body}</ReactMarkdown>
-        </div>
+        {retriggerable.map((r) => (
+          <button key={r.id} className="btn-secondary sm" onClick={() => void retriggerReview(r.id, r.label)}
+            disabled={retriggering !== null}
+            title={`Re-trigger the ${r.label} review as ${botLogin} — no new commit needed`}>
+            {retriggering === r.id ? "…" : retriggerable.length > 1 ? `↻ ${r.label}` : "↻ Re-trigger"}
+          </button>
+        ))}
       </>
     );
   }
+  const reviewBlocks = reviewerBlocks(pr.reviews_detail ?? null, "review");
+  if (reviewBlocks.length > 0) checksBodies.review = <>{reviewBlocks}</>;
+  const scanBlocks = reviewerBlocks(pr.reviews_detail ?? null, "scanner");
+  if (scanBlocks.length > 0) checksBodies.scans = <>{scanBlocks}</>;
 
   if (ci.length > 0) {
     checksBodies.ci = ci.map((c, i) => (
@@ -590,4 +586,65 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
       {lineComment && <LineCommentBox pr={pr.number} file={lineComment.file} line={lineComment.line} onClose={() => setLineComment(null)} />}
     </div>
   );
+}
+
+
+const STATUS_WORD: Record<ReviewDigest["status"], string> = {
+  pass: "passed its bar", fail: "below its bar", stale: "stale — reviewed an earlier commit",
+  pending: "awaiting its verdict", na: "not active",
+};
+
+/** One block per reviewer of `kind` on the PR page's Review / Scans check rows:
+ *  status line, stale banner, the bot's own summary, and its open findings. */
+function reviewerBlocks(detail: Record<string, { entry: ReviewEntry | null; digest: ReviewDigest }> | null,
+                        kind: ReviewDigest["kind"]): ReactNode[] {
+  if (!detail) return [];
+  return Object.values(detail).filter((d) => d.digest.kind === kind && d.digest.status !== "na").map(({ entry, digest }) => {
+    const open = (entry?.findings ?? []).filter((f) => !f.resolved && !f.outdated);
+    const trust = typeof digest.extra.trust_score === "number" ? digest.extra.trust_score : null;
+    const verdict = typeof digest.extra.trust_verdict === "string" ? digest.extra.trust_verdict : null;
+    const report = typeof digest.extra.report_url === "string" ? digest.extra.report_url : null;
+    return (
+      <div key={digest.id} className="reviewer-block" style={{ marginBottom: 12 }}>
+        <div>
+          <b>{digest.label}</b>
+          <span className={`chip chip-${digest.status === "pass" ? "green" : digest.status === "fail" ? "red" : "yellow"} sm`} style={{ marginLeft: 6 }}>
+            {digest.summary_line}
+          </span>
+          <span className="muted small"> — {STATUS_WORD[digest.status]}{digest.reason && digest.status !== "pass" ? ` (${digest.reason})` : ""}</span>
+        </div>
+        {digest.stale === true && (
+          <p className="muted small" style={{ margin: "4px 0" }}>
+            ⚠ This verdict is from an older commit. The author may have pushed commits addressing the {digest.label} feedback since.
+          </p>
+        )}
+        {trust != null && <div className="muted small">Contributor trust {trust}/100{verdict ? ` · ${verdict}` : ""}</div>}
+        {digest.checks.length > 0 && (
+          <div className="muted small">
+            {digest.checks.map((c, i) => (
+              <div key={i}>{c.conclusion === "success" ? "✓" : c.conclusion === "neutral" ? "•" : c.status !== "completed" ? "…" : "✗"} {c.name}{c.title ? ` — ${c.title}` : ""}</div>
+            ))}
+          </div>
+        )}
+        {report && <div className="small"><a href={report} target="_blank" rel="noreferrer">full report ↗</a></div>}
+        {open.length > 0 && (
+          <ul className="small" style={{ margin: "6px 0 0 16px" }}>
+            {open.map((f, i) => (
+              <li key={i}>
+                {f.path ? <code>{f.path}{f.line != null ? `:${f.line}` : ""}</code> : null}
+                {f.severity ? <span className="chip chip-muted sm" style={{ marginLeft: 4 }}>{f.severity}</span> : null}
+                {" "}{f.title ?? f.body.split("\n")[0]}
+                {f.url && <a className="action-log-link" href={f.url} target="_blank" rel="noreferrer" title="view on GitHub ↗"> ↗</a>}
+              </li>
+            ))}
+          </ul>
+        )}
+        {entry?.summary && (
+          <div className="markdown greptile-body" style={{ marginTop: 6 }}>
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{entry.summary}</ReactMarkdown>
+          </div>
+        )}
+      </div>
+    );
+  });
 }

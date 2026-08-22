@@ -8,12 +8,11 @@ import { ALL_CHECKS_PASS } from "./checkDefs.ts";
 // clearable chip. Lanes carry no matching logic of their own — the backend
 // sees only the plain filter fields.
 
-// Every gate green and ready to merge right now. The Home tab's "PRs ready to
-// merge" card narrows this same spec to the pipeline's merge picks.
+// Every gate green and ready to merge right now — the `review` and `scans`
+// check rows carry every active reviewer's and scanner's bar. The Home tab's
+// "PRs ready to merge" card narrows this same spec to the pipeline's merge picks.
 export const MERGE_READY_SPEC: FilterSpec = {
   checks: ALL_CHECKS_PASS,
-  greptile: { op: ">", value: 4 },
-  greptile_stale: false,
   safety: "GREEN",
 };
 

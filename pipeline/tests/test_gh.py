@@ -93,8 +93,10 @@ def test_check_runs_projects_and_dedupes(monkeypatch):
     ]})
     monkeypatch.setattr(gh.subprocess, "run", _fake_run(payload))
     assert gh.check_runs("abc") == [
-        {"name": "build", "conclusion": "success", "status": "completed"},
-        {"name": "lint", "conclusion": "failure", "status": "completed"},
+        {"app": None, "name": "build", "conclusion": "success", "status": "completed",
+         "title": None, "summary": None, "url": None},
+        {"app": None, "name": "lint", "conclusion": "failure", "status": "completed",
+         "title": None, "summary": None, "url": None},
     ]
 
 

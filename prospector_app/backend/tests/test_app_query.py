@@ -6,6 +6,7 @@ from prospector_app.backend import app as appmod
 from prospector_app.backend import data
 from pipeline import model
 from prospector_app.backend import service
+from pipeline.testsupport import greptile_entry
 
 
 def test_query_route(monkeypatch):
@@ -13,8 +14,9 @@ def test_query_route(monkeypatch):
         "pr": 5, "meta": {"title": "t", "author": "al", "state": "open", "draft": False,
                           "head_sha": "h", "url": "u", "created_at": "2026-01-01T00:00:00+00:00",
                           "updated_at": "2026-01-01T00:00:00+00:00"},
-        "signals": {"greptile": 2, "ci": "failing", "mergeable": True,
+        "signals": {"ci": "failing", "mergeable": True,
                     "diffstat": {"additions": 1, "deletions": 0, "changed_files": 1}},
+        "reviews": {"greptile": greptile_entry(2, "h")},
         "drift": {"state": "applicable"}})
     monkeypatch.setattr(data, "prs", lambda: {5: rec})
     monkeypatch.setattr(data, "clusters", lambda: {})
@@ -59,7 +61,7 @@ def test_query_row_carries_author_stats_and_trimmed_summary(monkeypatch):
         "pr": 7, "meta": {"title": "t", "author": "al", "state": "open", "draft": False,
                           "head_sha": "h", "url": "u", "created_at": "2026-01-01T00:00:00+00:00",
                           "updated_at": "2026-01-01T00:00:00+00:00"},
-        "signals": {"greptile": 5, "ci": "passing", "mergeable": True,
+        "signals": {"ci": "passing", "mergeable": True,
                     "diffstat": {"additions": 3, "deletions": 1, "changed_files": 2}},
         "summary": {"one_liner": "Fixes the thing", "primary_change": "patch foo()",
                     "mechanism": "a long mechanism paragraph", "paths": ["a.py", "b.py"]},
@@ -84,7 +86,7 @@ def _rec(pr: int, *, title: str = "t", author: str = "al", created: str = "2026-
         "pr": pr, "meta": {"title": title, "author": author, "state": "open", "draft": False,
                            "head_sha": "h", "url": "u", "created_at": created,
                            "updated_at": created},
-        "signals": {"greptile": 5, "ci": "passing", "mergeable": True,
+        "signals": {"ci": "passing", "mergeable": True,
                     "diffstat": {"additions": 1, "deletions": 0, "changed_files": 1}},
         "drift": {"state": "applicable"}})
 
@@ -146,29 +148,36 @@ def test_sort_by_linked_issues_counts_fix_evidence(monkeypatch):
     assert [r["number"] for r in out["items"]] == [2, 1, 3]
 
 
-def test_pr_greptile_route(monkeypatch):
-    monkeypatch.setattr(appmod.greptile, "fetch_greptile_feedback",
-                        lambda n: {"score": 0, "body": "Blocking: unhandled None deref in foo()."})
+def test_pr_reviews_route(monkeypatch):
+    monkeypatch.setattr(service, "reviews_detail",
+                        lambda n: {"greptile": {"entry": {"kind": "review", "score": 0},
+                                                "digest": {"status": "fail"}}})
     c = TestClient(appmod.app)
-    r = c.get("/api/prs/7/greptile")
+    r = c.get("/api/prs/7/reviews")
     assert r.status_code == 200
-    assert r.json() == {"score": 0, "body": "Blocking: unhandled None deref in foo()."}
+    assert r.json()["reviews"]["greptile"]["digest"]["status"] == "fail"
 
 
-def test_pr_greptile_route_empty(monkeypatch):
-    monkeypatch.setattr(appmod.greptile, "fetch_greptile_feedback", lambda n: None)
+def test_pr_reviews_route_empty(monkeypatch):
+    monkeypatch.setattr(service, "reviews_detail", lambda n: {})
     c = TestClient(appmod.app)
-    r = c.get("/api/prs/7/greptile")
-    assert r.status_code == 200 and r.json() == {}
+    r = c.get("/api/prs/7/reviews")
+    assert r.status_code == 200 and r.json() == {"reviews": {}}
+
+
+def test_retrigger_route_rejects_unknown_reviewer():
+    c = TestClient(appmod.app)
+    r = c.post("/api/reviews/bogus/retrigger/pr/7?dry_run=true")
+    assert r.status_code == 404
 
 
 def test_api_json_survives_lone_surrogates(monkeypatch):
     """GitHub review/comment text can carry unpaired UTF-16 surrogates (json.loads
     keeps "\\ud800" escapes as-is); the response encoder must degrade them instead
     of 500ing the endpoint."""
-    monkeypatch.setattr(service, "pr_detail", lambda n: {"greptile": {"body": "regex /[\ud800-\udfff]/ quoted"}})
+    monkeypatch.setattr(service, "pr_detail", lambda n: {"body": "regex /[\ud800-\udfff]/ quoted"})
     c = TestClient(appmod.app)
     r = c.get("/api/prs/800")
     assert r.status_code == 200
-    body = r.json()["greptile"]["body"]
+    body = r.json()["body"]
     assert body.startswith("regex /[") and body.endswith("quoted")

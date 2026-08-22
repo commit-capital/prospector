@@ -120,6 +120,7 @@ class AlertDismissBody(BaseModel):
 class BulkExecuteBody(BaseModel):
     prs: list[int] = []
     action: str = "CLOSE"
+    reviewer: str | None = None   # REVIEW_RETRIGGER: which reviewer's mention to post
     comment: str | None = None
     comments: dict[int, str] | None = None
     canonical: int | None = None

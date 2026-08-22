@@ -191,6 +191,15 @@ def matches(row: dict, spec: dict) -> bool:
         # than merely the absence of evidence that it doesn't.
         if d.get("greptile_stale") is not bool(spec["greptile_stale"]):
             return False
+    if spec.get("reviewer_status"):
+        # {reviewer id: status | [statuses]} against the row's reviewer digests;
+        # a reviewer with no digest on this row matches nothing.
+        digests = row.get("reviews") or {}
+        for rid, want in spec["reviewer_status"].items():
+            wanted = want if isinstance(want, list) else [want]
+            have = (digests.get(rid) or {}).get("status")
+            if have is None or have not in wanted:
+                return False
     if spec.get("greptile_severity") and d.get("greptile_severity") != spec["greptile_severity"]:
         # "nits"/"defects" keeps only PRs whose Greptile feedback was classified
         # that way; a PR with no classification yet ("clean", or unclassified —

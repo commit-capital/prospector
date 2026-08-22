@@ -2,6 +2,8 @@
 is a failing check, so the merge block is visible, not just in clean_reasons."""
 from pipeline import model
 from prospector_app.backend import pr_checks
+from pipeline.testsupport import reviews_section
+from pipeline import review_policy
 
 HEAD = "abc123"
 NOW = "2026-06-10T00:00:00+00:00"
@@ -12,8 +14,9 @@ def _pr(**over):
         "pr": 1,
         "meta": {"title": "t", "author": "a", "state": "open", "draft": False,
                  "head_sha": HEAD, "checked_at": NOW},
-        "signals": {"greptile": 5, "ci": "passing", "mergeable": True, "has_tests": True,
+        "signals": {"ci": "passing", "mergeable": True, "has_tests": True,
                     "checked_at": NOW, "against_head_sha": HEAD},
+        "reviews": reviews_section(HEAD, NOW),
         "drift": {"state": "applicable", "checked_at": NOW, "against_head_sha": HEAD},
     }
     rec.update(over)
@@ -50,22 +53,24 @@ def test_checks_carry_stable_keys():
     c = pr_checks.checks_for_record(rec)
     by_key = {x["key"]: x["name"] for x in c["checks"]}
     assert by_key == {
-        "review": "Greptile review", "ci": "CI", "mergeable": "No merge conflicts",
+        "review": "Code review", "ci": "CI", "scans": "Security scans",
+        "mergeable": "No merge conflicts",
         "tests": "Includes tests", "drift": "Still applies to trunk",
         "secrets": "No committed secrets", "security": "Deep security review",
         "verify": "Dynamic verification",
     }
 
 
-def test_all_eight_checks_shown_even_with_no_data():
+def test_all_checks_shown_even_with_no_data():
     # #581: the panel shows every check this deployment could run, not only
     # the ones a phase has actually produced data for — so a brand-new PR
-    # shows all 8 rows (na/never-run for the ones nothing has run yet).
+    # shows every row (na/never-run for the ones nothing has run yet).
     c = pr_checks.checks_for_record(_pr())  # signals + drift only; no threat/security/verify
     keys = [x["key"] for x in c["checks"]]
-    assert keys == ["review", "ci", "mergeable", "tests", "drift", "secrets", "security", "verify"]
+    assert keys == ["review", "ci", "scans", "mergeable", "tests", "drift", "secrets",
+                    "security", "verify"]
     never_run = {x["key"] for x in c["checks"] if x["status"] == "na"}
-    assert never_run == {"secrets", "security", "verify"}
+    assert never_run == {"scans", "secrets", "security", "verify"}
 
 
 def test_no_threat_section_shows_never_run_check():
@@ -83,13 +88,29 @@ def _review_check(rec):
 
 def test_greptile_review_check_at_bar():
     chk = _review_check(_pr())      # greptile 5 under the pinned greptile profile
-    assert chk and chk["name"] == "Greptile review"
-    assert chk["status"] == "pass" and chk["detail"] == "confidence 5/5"
+    assert chk and chk["name"] == "Code review"
+    assert chk["status"] == "pass" and chk["detail"] == "Greptile 5/5"
 
 
-def test_review_check_omitted_when_no_provider(monkeypatch):
+def test_review_check_na_when_no_reviewer_active(monkeypatch):
     monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "none")
-    assert _review_check(_pr()) is None
+    chk = _review_check(_pr())
+    assert chk and chk["status"] == "na"
+
+
+def test_review_and_scans_rows_aggregate_every_active_reviewer(monkeypatch):
+    monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "greptile,coderabbit,superagent,socket")
+    review_policy.reset()
+    rec = _pr(reviews=reviews_section(
+        HEAD, NOW,
+        superagent={"kind": "scanner", "reviewed_sha": HEAD, "checks": [], "extra": {},
+                    "findings": [{"severity": "P1", "resolved": False, "outdated": False}]}))
+    c = pr_checks.checks_for_record(rec)
+    rows = {x["key"]: x for x in c["checks"]}
+    assert rows["review"]["status"] == "warn"           # CodeRabbit pending
+    assert "CodeRabbit pending" in rows["review"]["detail"]
+    assert rows["scans"]["status"] == "fail"            # Superagent P1; Socket na is ignored
+    assert "Superagent 1 P1" in rows["scans"]["detail"]
 
 
 def _verify_check(rec):
@@ -194,7 +215,7 @@ def test_checks_carry_their_own_section_timestamp():
     sec_at = "2026-05-01T00:00:00+00:00"
     rec = _pr(security={"verdict": "GREEN", "findings": [], "checked_at": sec_at, "against_head_sha": HEAD})
     c = pr_checks.checks_for_record(rec)
-    grep = next(x for x in c["checks"] if x["name"] == "Greptile review")
-    assert grep["at"] == NOW  # from the signals section
+    review = next(x for x in c["checks"] if x["key"] == "review")
+    assert review["at"] == NOW  # from the reviews section
     sec = next(x for x in c["checks"] if x["name"] == "Deep security review")
     assert sec["at"] == sec_at  # from the security section, not the signals one

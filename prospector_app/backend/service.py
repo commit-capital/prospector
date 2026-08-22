@@ -27,7 +27,7 @@ from prospector_app.backend.safety_guard import run
 from pipeline import settings
 from pipeline import codeowners  # pipeline (path set up by data import)
 from pipeline import gh
-from pipeline import greptile
+from pipeline import reviewers
 from pipeline import freshness
 from pipeline import gates
 from pipeline import profile
@@ -83,22 +83,20 @@ def changed_paths(rec: Pr) -> list[str]:
 # ---------------------------------------------------------------------------
 # PR rows.
 # ---------------------------------------------------------------------------
-def _signal_summary(sig: dict | None, head_sha: str | None = None,
-                    greptile_severity: str | None = None) -> dict | None:
-    if not sig:
+def _signal_summary(sig: dict | None, rec: Pr) -> dict | None:
+    """The row's compact signals. The Greptile fields project the Greptile
+    reviewer entry (score, whether it predates the head, and the semantic read's
+    severity gated on that read's freshness) — they are the Explorer's Greptile
+    score/freshness/severity filters and search vocabulary."""
+    if not sig and rec.review_entry("greptile") is None:
         return None
+    sig = sig or {}
     ds = sig.get("diffstat") or {}
-    reviewed_sha = sig.get("greptile_reviewed_sha")
-    # True when Greptile's score predates commits the author pushed after the review;
-    # False when Greptile reviewed the current head; None when unknown.
-    greptile_stale: bool | None = (reviewed_sha != head_sha) if reviewed_sha and head_sha else None
     return {
-        "greptile": sig.get("greptile"),
-        "greptile_stale": greptile_stale,
-        # The caller passes the greptile_review section's severity already gated on
-        # that section's freshness, so a head move never leaves the Explorer showing
-        # (or filtering on) a stale verdict.
-        "greptile_severity": greptile_severity,
+        "greptile": rec.greptile,
+        "greptile_stale": rec.greptile_stale,
+        "greptile_severity": (rec.greptile_severity
+                              if freshness.is_current(rec, "greptile_review") else None),
         "ci": sig.get("ci"),
         "conflicts": not sig.get("mergeable", True),
         "has_tests": sig.get("has_tests"),
@@ -159,9 +157,19 @@ def _pr_body_live(n: int) -> str | None:
     return res.stdout.strip() if res.returncode == 0 else None
 
 
-def _greptile_and_ci(n: int, head_sha: str | None) -> tuple[dict | None, list[dict]]:
-    """Greptile's review and the PR head's CI check runs, both read from GitHub."""
-    return greptile.fetch_greptile_feedback(n), gh.check_runs(head_sha or "")
+def _ci_checks(head_sha: str | None) -> list[dict]:
+    """The PR head's check runs, read from GitHub."""
+    return gh.check_runs(head_sha or "")
+
+
+def reviews_detail(n: int) -> dict[str, dict]:
+    """Every reviewer's stored entry and digest on PR `n`, keyed by reviewer id —
+    the PR page's per-reviewer blocks."""
+    rec = data.prs().get(int(n))
+    if rec is None:
+        return {}
+    return {rid: {"entry": rec.review_entry(rid), "digest": d}
+            for rid, d in reviewers.digests(rec).items()}
 
 
 def _resolve_live(fut, fallback, failed: list[str], label: str):
@@ -294,9 +302,8 @@ def pr_row(n: int, rec: Pr | None = None) -> dict | None:
         "stale_sections": freshness.stale_sections(rec),
         "issues": rec.linked_issues,
         "trusted_author": rec.author in profile.active().trusted_authors,
-        "signals": _signal_summary(
-            rec.signals, rec.head_sha,
-            rec.greptile_severity if freshness.is_current(rec, "greptile_review") else None),
+        "signals": _signal_summary(rec.signals, rec),
+        "reviews": reviewers.digests(rec),
         "author_stats": data.author_stats(rec.author),
         "summary": _summary_line(rec),
         # test/non-test LOC split + effective-LOC breakdown + changed file list,
@@ -366,9 +373,25 @@ def _author_rate(r: dict) -> float:
 # (#180); the engine sorts server-side so it spans all pages, not just the
 # visible one. Keys that can be absent push their row to the end of an ascending
 # sort via a leading `(is_missing, …)` tuple.
+_BAR_RANK = {"fail": 0, "stale": 1, "pending": 2, "na": 3, "pass": 4}
+
+
+def _reviewer_rank(r: dict, kind: str) -> tuple[int, int]:
+    """Sort key over a row's reviewer digests of `kind`: the worst bar first,
+    then Greptile's score; rows with no digest of that kind sort last."""
+    digests = [d for d in (r.get("reviews") or {}).values() if d.get("kind") == kind]
+    if not digests:
+        return (-1, -1)
+    worst = min(_BAR_RANK.get(d.get("status") or "na", 3) for d in digests)
+    score = next((d.get("score") for d in digests if d.get("score") is not None), None)
+    return (worst, score if score is not None else -1)
+
+
 _SORT_KEYS = {
     "pr": lambda r: r["number"],
     "greptile": lambda r: (r["signals"] or {}).get("greptile") or -1,
+    "review": lambda r: _reviewer_rank(r, "review"),
+    "scans": lambda r: _reviewer_rank(r, "scanner"),
     "safety": lambda r: _SAFETY_RANK.get(r["safety"], 0),
     "updated": lambda r: r["updated_at"] or "",
     "author": lambda r: (r["author"] or "").lower(),
@@ -389,7 +412,7 @@ _SORT_KEYS = {
         1 for issue in r.get("issues") or []
         if issue.get("how") in ("explicit", "fix-found", "issue-ref")),
 }
-_DEFAULT_DESC = {"pr", "greptile", "safety", "updated", "loc", "files",
+_DEFAULT_DESC = {"pr", "greptile", "review", "scans", "safety", "updated", "loc", "files",
                  "checks", "merge", "age", "author_rate", "pain", "issues"}
 
 
@@ -653,11 +676,12 @@ def pr_detail(n: int) -> dict | None:
     row["size"] = {"additions": ds.get("additions"), "deletions": ds.get("deletions"),
                    "changed_files": ds.get("changed_files")}
 
-    # The rest each need a live round-trip — GitHub's Greptile review + CI check
-    # runs, its file list (CODEOWNERS), and the PR body. They're independent, so
-    # fan them out: wall time is one round-trip, not the sum of three. The
-    # CODEOWNERS and body calls only fire when their cached/ingested value is
-    # missing, so most warm PRs spend their latency on the Greptile/CI fetch alone.
+    # The rest each need a live round-trip — GitHub's CI check runs, its file
+    # list (CODEOWNERS), and the PR body. They're independent, so fan them out:
+    # wall time is one round-trip, not the sum of three. The CODEOWNERS and body
+    # calls only fire when their cached/ingested value is missing, so most warm
+    # PRs spend their latency on the CI fetch alone. Reviewer feedback comes from
+    # the store's reviews section, which ingest and the live sweep keep current.
     hm_known, hm_cached = _human_merge_cached(rec)
     # Which changed paths pinned the tier — the detail view's "why this tier".
     row["risk_tier_paths"] = (_facets(rec).get("risk") or {}).get("pinned_by") or []
@@ -666,14 +690,16 @@ def pr_detail(n: int) -> dict | None:
     body = rec.body or data.pr_body(n)
     failed_live: list[str] = []
     with ThreadPoolExecutor(max_workers=3) as pool:
-        detail_fut = pool.submit(_greptile_and_ci, n, rec.head_sha)
+        detail_fut = pool.submit(_ci_checks, rec.head_sha)
         # authoritative CODEOWNERS + tier source; live file list only when uncached (#15/#26)
         paths_fut = None if hm_known else pool.submit(live_changed_paths, n)
         body_fut = pool.submit(_pr_body_live, n) if body is None else None  # ingested lazily
 
         # Resolve each future on its own — a timeout/failure on any one degrades to
         # the cached/ingested value instead of taking down the whole endpoint.
-        row["greptile"], row["ci_checks"] = _resolve_live(detail_fut, (None, []), failed_live, "greptile/ci")
+        row["ci_checks"] = _resolve_live(detail_fut, [], failed_live, "ci")
+        row["reviews_detail"] = {rid: {"entry": rec.review_entry(rid), "digest": d}
+                                 for rid, d in (row.get("reviews") or {}).items()}
         if hm_known:
             row["human_merge"] = hm_cached
         else:

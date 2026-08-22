@@ -21,6 +21,7 @@ from pipeline import verify_driver as vd
 from pipeline.store import Store
 from pipeline import wire
 from pipeline.wire import BlindItem, JudgeItem
+from pipeline.testsupport import greptile_entry, reviews_section
 
 # A stand-in suite-config path for verify_pr calls whose run_phase is
 # monkeypatched — the path is threaded, never opened.
@@ -323,8 +324,9 @@ def _pr(store, n, head="h1", disposition="merge", greptile=5, verify=None):
     rec = {"pr": n,
            "meta": {"title": f"t{n}", "author": "a", "state": "open", "draft": False,
                     "head_sha": head, "checked_at": NOW},
-           "signals": {"greptile": greptile, "ci": "passing", "mergeable": True,
+           "signals": {"ci": "passing", "mergeable": True,
                        "checked_at": NOW, "against_head_sha": head},
+           "reviews": reviews_section(head, NOW, greptile=greptile_entry(greptile, head)),
            "drift": {"state": "applicable", "checked_at": NOW, "against_head_sha": head},
            "analysis": {"disposition": disposition, "rationale": "r",
                         "checked_at": NOW, "against_head_sha": head}}

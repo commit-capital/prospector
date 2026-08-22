@@ -16,20 +16,6 @@ from pipeline import review_policy
 _cache: dict | None = None
 
 
-def _review_descriptor() -> dict:
-    """The active review provider, for the frontend to drive its Greptile columns,
-    filters, detail card, and retrigger control (all hidden when provider=none)."""
-    p = review_policy.active()
-    return {
-        "provider": p.provider,
-        "label": p.label,
-        "threshold": p.threshold,
-        "score_max": p.score_max,
-        "retrigger": p.retrigger_mention is not None,
-        "stale_tracking": p.provider == "greptile",
-    }
-
-
 def capabilities() -> dict:
     global _cache
     if _cache is None:
@@ -49,7 +35,10 @@ def capabilities() -> dict:
             "merge_upstream": live and write_ready,
             "store_schema": store_schema,
             "write_block": store_schema["write_block"],
-            "review": _review_descriptor(),
+            # Every registry reviewer with whether it gates this repository —
+            # drives the frontend's Review/Scans columns, filters, detail
+            # blocks, and retrigger controls.
+            "reviewers": review_policy.describe(),
             # alert reads/writes run as the same App identity; per-source
             # availability is probed separately by /api/alerts/caps
             "alerts": {"available": live and write_ready},

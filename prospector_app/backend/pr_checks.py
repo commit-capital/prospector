@@ -1,8 +1,8 @@
 """Per-PR "checks" rollup — how thoroughly has this PR been vetted?
 
-Reads ONLY the store record (signals + security + drift + analysis freshness);
-the pass bar matches gates.py exactly (the configured review provider's bar, CI
-passing, mergeable, fresh facts, GREEN security).
+Reads ONLY the store record (signals + reviews + security + drift + analysis
+freshness); the pass bar matches gates.py exactly (every active reviewer's and
+scanner's bar, CI passing, mergeable, fresh facts, GREEN security).
 """
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from pipeline import freshness
 from pipeline import gates
 from pipeline import review_policy
+from pipeline import reviewers
 from pipeline import settings
 
 if TYPE_CHECKING:
@@ -24,29 +25,50 @@ def _c(key: str, name: str, status: str, detail: str = "", at: str | None = None
 # Stable identifiers for each named check, independent of the display name
 # (which varies with the configured review provider / default branch) — what
 # the PR Explorer's per-check filter (#578) matches against.
-CHECK_KEYS = ("review", "ci", "mergeable", "tests", "drift", "secrets", "security", "verify")
+CHECK_KEYS = ("review", "ci", "scans", "mergeable", "tests", "drift", "secrets", "security",
+              "verify")
+
+
+def _aggregate(key: str, name: str, rec: Pr, kind: str, at: str | None) -> dict:
+    """One check row over every active reviewer of `kind`: pass when all pass,
+    fail when any fails, warn when any is stale or pending, na when none is
+    active. The detail names each reviewer's verdict."""
+    active = review_policy.active_reviewers(kind)
+    if not active:
+        return _c(key, name, "na", "no active " + ("reviewer" if kind == reviewers.REVIEW else "scanner"), None)
+    parts: list[str] = []
+    statuses: list[str] = []
+    for r in active:
+        b = review_policy.bar(rec, r)
+        d = reviewers.digest(r, rec.review_entry(r.id), b, rec.head_sha)
+        parts.append(d["summary_line"])
+        statuses.append(b.status)
+    live = [s for s in statuses if s != reviewers.NA]
+    if not live:
+        status = "na"
+    elif reviewers.FAIL in live:
+        status = "fail"
+    elif reviewers.STALE in live or reviewers.PENDING in live:
+        status = "warn"
+    else:
+        status = "pass"
+    return _c(key, name, status, " · ".join(parts), at)
 
 
 def checks_for_record(rec: Pr, today: str | None = None) -> dict:
     """Roll `rec` up into named vetting checks — every check this deployment
     could run on a PR, not only the ones that have. A check with no data yet
-    still gets a row, `status="na"`, so the panel shows the full 7/8-check
-    surface up front instead of growing rows in as phases happen to run.
+    still gets a row, `status="na"`, so the panel shows the full check surface
+    up front instead of growing rows in as phases happen to run.
     `today` (an ISO date) is the reference for age-window checks; None means
     the current UTC date."""
     by_key: dict[str, dict] = {}
     sig = rec.signals or {}
     sig_at = sig.get("checked_at")
 
-    policy = review_policy.active()
-    if policy.required:
-        g = rec.review_score
-        if g is not None:
-            th, mx = policy.threshold, policy.score_max
-            status = "pass" if g == th else "warn" if g >= max(1, (th or 0) - 2) else "fail"
-            by_key["review"] = _c("review", f"{policy.label} review", status, f"confidence {g}/{mx}", sig_at)
-        else:
-            by_key["review"] = _c("review", f"{policy.label} review", "na", "not reviewed yet", None)
+    reviews_at = (rec.reviews or {}).get("checked_at")
+    by_key["review"] = _aggregate("review", "Code review", rec, reviewers.REVIEW, reviews_at)
+    by_key["scans"] = _aggregate("scans", "Security scans", rec, reviewers.SCANNER, reviews_at)
 
     ci = sig.get("ci")
     if ci:

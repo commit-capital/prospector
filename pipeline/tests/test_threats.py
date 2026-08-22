@@ -7,6 +7,7 @@ from pipeline import threats
 from pipeline import threat_scan
 from pipeline.model import Pr
 from pipeline.store import Store
+from pipeline.testsupport import greptile_entry, reviews_section
 
 
 # A trimmed-down version of the real payload seen in the tarun-khatri PRs:
@@ -144,8 +145,9 @@ class TestGateConsumesThreat:
             "pr": 1,
             "meta": {"title": "t", "author": "a", "state": "open", "draft": False,
                      "head_sha": "abc", "checked_at": "2026-06-10T00:00:00+00:00"},
-            "signals": {"greptile": 5, "ci": "passing", "mergeable": True,
+            "signals": {"ci": "passing", "mergeable": True,
                         "checked_at": "2026-06-10T00:00:00+00:00", "against_head_sha": "abc"},
+            "reviews": reviews_section("abc", "2026-06-10T00:00:00+00:00"),
             "drift": {"state": "applicable", "checked_at": "2026-06-10T00:00:00+00:00",
                       "against_head_sha": "abc"},
         }
@@ -186,7 +188,7 @@ class TestScanDriver:
             "pr": n,
             "meta": {"title": "t", "author": author, "state": "open", "draft": False,
                      "head_sha": head, "checked_at": "2026-06-10T00:00:00+00:00"},
-            "signals": {"greptile": 5, "ci": "passing", "mergeable": True,
+            "signals": {"ci": "passing", "mergeable": True,
                         "diffstat": {"additions": 10, "deletions": 5},
                         "checked_at": "2026-06-10T00:00:00+00:00", "against_head_sha": head},
         })
@@ -383,8 +385,9 @@ def test_threat_scan_emits_rotate_secret_action_item(tmp_path):
         "pr": 3994,
         "meta": {"title": "add override", "author": "myFinTechPL", "state": "open",
                  "draft": False, "head_sha": head, "checked_at": "2026-06-13T00:00:00+00:00"},
-        "signals": {"greptile": 2, "ci": "passing", "mergeable": False,
+        "signals": {"ci": "passing", "mergeable": False,
                     "checked_at": "2026-06-13T00:00:00+00:00", "against_head_sha": head},
+        "reviews": reviews_section(head, "2026-06-13T00:00:00+00:00", greptile=greptile_entry(2, head)),
     })
     threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs)])
     reg = store.load_action_items()

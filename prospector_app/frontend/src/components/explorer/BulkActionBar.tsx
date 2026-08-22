@@ -4,7 +4,7 @@ import { term } from "../../glossary";
 import { useExec } from "../../ExecContext";
 
 export type BulkAction = "CLOSE" | "CLOSE_DUP" | "CLOSE_FIXED" | "CLOSE_STALE"
-  | "CLOSE_OVERSIZED" | "REQUEST_CHANGES" | "COMMENT" | "GREPTILE_RETRIGGER"
+  | "CLOSE_OVERSIZED" | "REQUEST_CHANGES" | "COMMENT" | "REVIEW_RETRIGGER"
   | "QUEUE_VERIFY" | "RUN_SECURITY" | "MERGE";
 
 const ACTS: { v: BulkAction; label: string }[] = [
@@ -22,20 +22,23 @@ const ACTS: { v: BulkAction; label: string }[] = [
 
 export function BulkActionBar({ selected, onApply }:
   { selected: number[]; onApply: (args: {
-      action: BulkAction; comment: string; canonical?: number; perPr: boolean }) => void }) {
-  const [action, setAction] = useState<BulkAction>("CLOSE_STALE");
+      action: BulkAction; comment: string; canonical?: number; perPr: boolean; reviewer?: string }) => void }) {
+  // The select carries "REVIEW_RETRIGGER:<reviewer id>" per re-triggerable reviewer.
+  const [choice, setChoice] = useState<string>("CLOSE_STALE");
+  const action = (choice.startsWith("REVIEW_RETRIGGER") ? "REVIEW_RETRIGGER" : choice) as BulkAction;
+  const reviewer = choice.startsWith("REVIEW_RETRIGGER:") ? choice.slice("REVIEW_RETRIGGER:".length) : undefined;
   const [comment, setComment] = useState("");
   const [canonical, setCanonical] = useState("");
   // post each PR's own suggested comment instead of one shared comment (#182)
   const [perPr, setPerPr] = useState(false);
-  const { botLogin, pushToast, review } = useExec();
+  const { botLogin, pushToast, activeReviewers } = useExec();
   if (selected.length === 0) return null;
   const isMerge = action === "MERGE";
-  const postsComment = action !== "MERGE" && action !== "GREPTILE_RETRIGGER"
+  const postsComment = action !== "MERGE" && action !== "REVIEW_RETRIGGER"
     && action !== "QUEUE_VERIFY" && action !== "RUN_SECURITY";
-  const actions = review.retrigger
-    ? [...ACTS.slice(0, -1), { v: "GREPTILE_RETRIGGER" as const, label: `re-trigger ${review.label}` }, ACTS.at(-1)!]
-    : ACTS;
+  const retriggers = activeReviewers("review").filter((r) => r.retrigger)
+    .map((r) => ({ v: `REVIEW_RETRIGGER:${r.id}`, label: `re-trigger ${r.label}` }));
+  const actions: { v: string; label: string }[] = [...ACTS.slice(0, -1), ...retriggers, ACTS.at(-1)!];
 
   // Local-only utility — no upstream write, so it bypasses onApply/the executor.
   const copyIds = async () => {
@@ -57,9 +60,9 @@ export function BulkActionBar({ selected, onApply }:
         title="Copy the selected PR numbers (e.g. #1234, #1235) to the clipboard">
         📋 Copy IDs
       </button>
-      <select value={action} onChange={(e) => setAction(e.target.value as BulkAction)}
+      <select value={choice} onChange={(e) => setChoice(e.target.value)}
         title="One action applied to every selected PR. Each write is gated per-PR and logged to the activity feed.">
-        {actions.map((a) => <option key={a.v} value={a.v} title={term(`bulk.${a.v}`)?.meaning}>{a.label}</option>)}
+        {actions.map((a) => <option key={a.v} value={a.v} title={term(`bulk.${a.v.split(":")[0]}`)?.meaning}>{a.label}</option>)}
       </select>
       {action === "CLOSE_DUP" && !perPr && (
         <input className="canon" placeholder="#" value={canonical}
@@ -76,7 +79,7 @@ export function BulkActionBar({ selected, onApply }:
           value={comment} onChange={(e) => setComment(e.target.value)} />
       )}
       {postsComment && perPr && <span className="muted small">each PR keeps its own suggested comment</span>}
-      {action === "GREPTILE_RETRIGGER" && (
+      {action === "REVIEW_RETRIGGER" && (
         <span className="muted small">posts the review trigger on each PR — no new commit needed</span>
       )}
       {action === "QUEUE_VERIFY" && (
@@ -87,7 +90,7 @@ export function BulkActionBar({ selected, onApply }:
       )}
       {isMerge && <span className="muted small">merge posts no comment — each PR is gated individually</span>}
       <button className="btn-primary sm"
-        onClick={() => onApply({ action, comment, canonical: canonical ? Number(canonical) : undefined, perPr })}>
+        onClick={() => onApply({ action, comment, canonical: canonical ? Number(canonical) : undefined, perPr, reviewer })}>
         Apply →
       </button>
     </div>

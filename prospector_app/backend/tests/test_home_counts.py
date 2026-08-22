@@ -9,6 +9,7 @@ from pipeline import model
 from prospector_app.backend import app as appmod
 from prospector_app.backend import data
 from prospector_app.backend import service
+from pipeline.testsupport import greptile_entry
 
 
 def _rec(pr: int, *, greptile: int = 5, ci: str = "passing") -> model.Pr:
@@ -16,8 +17,9 @@ def _rec(pr: int, *, greptile: int = 5, ci: str = "passing") -> model.Pr:
         "pr": pr, "meta": {"title": "t", "author": "al", "state": "open", "draft": False,
                            "head_sha": "h", "url": "u", "created_at": "2026-01-01T00:00:00+00:00",
                            "updated_at": "2026-01-01T00:00:00+00:00"},
-        "signals": {"greptile": greptile, "ci": ci, "mergeable": True,
+        "signals": {"ci": ci, "mergeable": True,
                     "diffstat": {"additions": 1, "deletions": 0, "changed_files": 1}},
+        "reviews": {"greptile": greptile_entry(greptile, "h")},
         "drift": {"state": "applicable"}})
 
 

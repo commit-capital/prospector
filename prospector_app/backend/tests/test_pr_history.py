@@ -63,8 +63,9 @@ def test_greptile_review_flagged_with_parsed_score(monkeypatch):
     }]})
     monkeypatch.setattr(pr_history, "run", _fake_run(_payload(node)))
     item = pr_history.fetch_pr_history(1)[0]
-    assert item["kind"] == "greptile_review"
-    assert item["greptile_score"] == 4
+    assert item["kind"] == "bot_review"
+    assert item["reviewer"] == "greptile"
+    assert item["score"] == 4
 
 
 def test_non_greptile_review_has_no_score(monkeypatch):
@@ -76,7 +77,7 @@ def test_non_greptile_review_has_no_score(monkeypatch):
     monkeypatch.setattr(pr_history, "run", _fake_run(_payload(node)))
     item = pr_history.fetch_pr_history(1)[0]
     assert item["kind"] == "review"
-    assert item["greptile_score"] is None
+    assert item["score"] is None and item["reviewer"] is None
     assert item["state"] == "approved"
 
 

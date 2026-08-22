@@ -18,6 +18,7 @@ from prospector_app.backend import data
 from prospector_app.backend import fix_queue
 from prospector_app.backend import fix_worker
 from prospector_app.backend import resubmit_identity
+from pipeline.testsupport import reviews_section
 
 
 @pytest.fixture
@@ -329,9 +330,10 @@ def test_hunter_queues_a_rebase_for_an_unmergeable_pr(store):
     # The review score is part of the hunt bar (gates.fix_huntable): unprompted
     # sandbox time goes to PRs a reviewer already rated.
     rec = store.load_pr(1).raw
-    rec["signals"] = {"greptile": 5, "mergeable": False,
+    rec["signals"] = {"mergeable": False,
                       "checked_at": "2026-06-10T00:00:00+00:00",
                       "against_head_sha": "a" * 40}
+    rec["reviews"] = reviews_section("a" * 40, "2026-06-10T00:00:00+00:00")
     store.save_pr(rec)
     data.refresh()
     assert fix_worker.next_auto() == ("rebase", 1)

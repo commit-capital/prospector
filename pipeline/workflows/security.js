@@ -29,7 +29,8 @@ const fill = (tpl, subs) =>
 // never restated.
 const MANIFEST_SCHEMA = { type: 'object', properties: {
   items: { type: 'array', items: { type: 'object', properties: {
-    pr: { type: 'integer' }, head_sha: { type: 'string' }, title: { type: 'string' }, diff_path: { type: 'string' } },
+    pr: { type: 'integer' }, head_sha: { type: 'string' }, title: { type: 'string' }, diff_path: { type: 'string' },
+    bot_evidence: { type: 'array', items: { type: 'object', additionalProperties: true } } },
     required: ['pr', 'head_sha', 'diff_path'] } },
   lenses: { type: 'array', items: { type: 'object', properties: {
     key: { type: 'string' }, prompt: { type: 'string' } }, required: ['key', 'prompt'] } },
@@ -58,7 +59,8 @@ const results = await pipeline(manifest.items,
   (pr) => parallel(LENSES.map(L => () =>
     agent(fill(manifest.review_prompt, {
       '__DIFF_PATH__': pr.diff_path, '__LENS__': L.key, '__LENS_PROMPT__': L.prompt,
-      '__PR__': pr.n ?? pr.pr, '__TITLE__': pr.title }),
+      '__PR__': pr.n ?? pr.pr, '__TITLE__': pr.title,
+      '__BOT_EVIDENCE__': (pr.bot_evidence && pr.bot_evidence.length) ? JSON.stringify(pr.bot_evidence) : 'none' }),
       { label: `rev:${pr.pr}:${L.key}`, phase: 'Review', schema: FINDINGS_SCHEMA }
       // agent() returns null on terminal API error / skip; a real result has a findings array.
       // Mark each lens ok/failed so a wiped-out run can't masquerade as a clean GREEN.

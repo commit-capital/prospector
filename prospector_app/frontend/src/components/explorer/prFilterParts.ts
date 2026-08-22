@@ -17,7 +17,8 @@ function omit(spec: FilterSpec, ...keys: (keyof FilterSpec)[]): FilterSpec {
 /** Clearable clauses for the PR Explorer's active filter spec, one per active
  *  filter — feeds the shared FilterSummary chip bar. Each clause's × clears just
  *  that filter via `onChange`. */
-export function buildPrFilterParts(spec: FilterSpec, onChange: (next: FilterSpec) => void): FilterPart[] {
+export function buildPrFilterParts(spec: FilterSpec, onChange: (next: FilterSpec) => void,
+                                   reviewerLabels: Record<string, string> = {}): FilterPart[] {
   const parts: FilterPart[] = [];
   const push = (key: string, label: string, ...keys: (keyof FilterSpec)[]) => {
     parts.push({ key, label, onClear: () => onChange(omit(spec, ...keys)) });
@@ -86,6 +87,22 @@ export function buildPrFilterParts(spec: FilterSpec, onChange: (next: FilterSpec
   if (spec.greptile_stale === false) push("greptile_stale", "Greptile current", "greptile_stale");
   if (spec.greptile_severity === "defects") push("greptile_severity", "Greptile flagged a real defect", "greptile_severity");
   if (spec.greptile_severity === "nits") push("greptile_severity", "Greptile nitpicks only", "greptile_severity");
+  for (const [rid, status] of Object.entries(spec.reviewer_status ?? {})) {
+    const label = reviewerLabels[rid] ?? rid;
+    const statuses = Array.isArray(status) ? status.join(" or ") : status;
+    parts.push({
+      key: `reviewer_${rid}`,
+      label: `${label}: ${statuses}`,
+      onClear: () => {
+        const rest = { ...(spec.reviewer_status ?? {}) };
+        delete rest[rid];
+        const next = { ...spec };
+        if (Object.keys(rest).length) next.reviewer_status = rest;
+        else delete next.reviewer_status;
+        onChange(next);
+      },
+    });
+  }
   if (spec.age_days !== undefined) {
     const label = spec.age_days.op === ">" ? "older than" : "newer than";
     push("age_days", `age ${label} ${spec.age_days.value ?? "?"}d`, "age_days");

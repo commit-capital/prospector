@@ -9,19 +9,24 @@ Closed/merged PRs already in the store get their meta.state updated (the
 record is history, not deleted). Brand-new closed PRs are not ingested —
 they're dupe/already-fixed *evidence*, consulted live during ANALYZE.
 
+Every automated reviewer's and scanner's feedback (pipeline.reviewers) is read
+alongside: the head's check runs arrive with the live facts on every run, and a
+PR's conversation (reviews, review threads, comments) is re-read only when GitHub's
+updatedAt or the head moved past the stored `reviews` section. The run ends by
+recomputing the `reviewers` registry of each bot's latest activity, which
+`review_policy` auto-detection reads.
+
 A full run reconciles the whole open corpus (and the closed-state sweep), then
-chains the Greptile reviewed-SHA backfill and the issue ingest. `--new` fetches
-that corpus and upserts only PRs absent from the store, while `--prs` fetches
-each named PR directly and reconciles its live CI and Greptile signals. Both
-skip the closed-state sweep, the backfill, and the issue-ingest chain.
-Targeted refreshes write each PR as it is completed; corpus refreshes stage
-the records and persist bounded chunks.
+chains the issue ingest. `--new` fetches that corpus and upserts only PRs
+absent from the store, while `--prs` fetches each named PR directly and
+reconciles its live CI and reviewer signals. Both skip the closed-state sweep
+and the issue-ingest chain. Targeted refreshes write each PR as it is
+completed; corpus refreshes stage the records and persist bounded chunks.
 
 Usage:
   uv run python pipeline/ingest.py [--max N] [--store DIR]
   uv run python pipeline/ingest.py --new          # only new arrivals
   uv run python pipeline/ingest.py --prs 51,52,53 # only these PRs
-  uv run python pipeline/ingest.py --backfill-greptile-data
 """
 from __future__ import annotations
 
@@ -31,13 +36,15 @@ import subprocess
 import sys
 from typing import TYPE_CHECKING, TypedDict
 
-from pipeline import settings
+from pipeline import ci_signal
 from pipeline import diffpaths
-from pipeline import greptile
 from pipeline import live_prs
 from pipeline import model
-from pipeline import review_policy
+from pipeline import review_fetch
+from pipeline import reviewers
+from pipeline import settings
 from pipeline.gh import fetch_pr, gh_json, operator_env
+from pipeline.review_fetch import PrFeed
 from pipeline.store import Store
 from pipeline.storekit import now as _now
 
@@ -54,6 +61,7 @@ class _UpsertStats(TypedDict):
     upserted: int
     drafts: int
     open_ids: set[int]
+    staged: list[Pr]
 
 
 # ---------------------------------------------------------------------------
@@ -76,41 +84,6 @@ def meta_from_gh(pr: dict) -> dict:
         "comments": pr.get("comments"),
         "reactions_total": reactions.get("total_count"),
     }
-
-
-_CI_FAIL_CONCLUSIONS = frozenset(
-    {"failure", "timed_out", "cancelled", "action_required", "startup_failure", "stale"})
-_CI_OK_CONCLUSIONS = frozenset({"success", "neutral", "skipped"})
-
-
-def _ci_from_github_data(check_runs: list[dict], statuses: list[dict]) -> str | None:
-    """Combine GitHub's check-runs API and legacy commit-status API into a single
-    CI verdict ('passing' | 'failing' | 'pending'), the way the PR Checks tab
-    does. Returns None when GitHub reports no checks at all — the caller then
-    keeps the stored value rather than inventing a verdict. Failure outranks
-    pending outranks passing; skipped/neutral don't fail a run."""
-    saw_any = saw_fail = saw_pending = False
-    for run in check_runs:
-        saw_any = True
-        if run.get("status") != "completed":
-            saw_pending = True
-        elif run.get("conclusion") in _CI_FAIL_CONCLUSIONS:
-            saw_fail = True
-        elif run.get("conclusion") not in _CI_OK_CONCLUSIONS:
-            saw_pending = True  # completed with an unrecognized conclusion — be cautious
-    for st in statuses:
-        saw_any = True
-        if st.get("state") in ("failure", "error"):
-            saw_fail = True
-        elif st.get("state") == "pending":
-            saw_pending = True
-    if not saw_any:
-        return None
-    if saw_fail:
-        return "failing"
-    if saw_pending:
-        return "pending"
-    return "passing"
 
 
 def drift_from_signals(signals: dict) -> dict:
@@ -136,8 +109,6 @@ def issues_by_pr(links: list[dict]) -> dict[int, list[dict]]:
 
 
 def _build_signals(*, existing_signals: dict | None, ci_override: str | None,
-                   greptile_override: int | None,
-                   greptile_reviewed_sha: str | None,
                    mergeable_override: bool | None = None,
                    diffstat_override: dict | None = None,
                    has_tests_override: bool | None = None,
@@ -149,8 +120,6 @@ def _build_signals(*, existing_signals: dict | None, ci_override: str | None,
     replaced with values computed at the fetched head, or removed when that data
     was unavailable."""
     has_override = (ci_override is not None or mergeable_override is not None
-                    or greptile_override is not None
-                    or greptile_reviewed_sha is not None
                     or diffstat_override is not None
                     or has_tests_override is not None)
     if not has_override:
@@ -167,10 +136,6 @@ def _build_signals(*, existing_signals: dict | None, ci_override: str | None,
         sig["ci"] = ci_override
     if mergeable_override is not None:
         sig["mergeable"] = mergeable_override
-    if greptile_override is not None:
-        sig["greptile"] = greptile_override
-    if greptile_reviewed_sha is not None:
-        sig["greptile_reviewed_sha"] = greptile_reviewed_sha
     if diffstat_override is not None:
         sig["diffstat"] = diffstat_override
     if has_tests_override is not None:
@@ -186,14 +151,33 @@ def _diffstat_from_gh(gh_pr: dict) -> dict | None:
     return {"additions": values[0], "deletions": values[1], "changed_files": values[2]}
 
 
+def needs_conversation(existing: Pr | None, head_sha: str | None,
+                       live_updated_at: str | None) -> bool:
+    """Whether the PR's conversation must be re-read: no stored reviews, a moved
+    head, or GitHub's updatedAt past the one the stored section was read at."""
+    if existing is None or existing.reviews is None:
+        return True
+    stored = existing.reviews
+    if stored.get("against_head_sha") != head_sha:
+        return True
+    return stored.get("pr_updated_at") != live_updated_at
+
+
+def stage_reviews(existing: Pr | None, feed: PrFeed, head_sha: str | None) -> dict:
+    """The PR's `reviews` section from its feed: every registry reviewer's entry,
+    plus the updatedAt the conversation was read at."""
+    previous = existing.reviews if existing is not None else None
+    entries = reviewers.parse_all(feed, head_sha, previous)
+    return {**entries, "pr_updated_at": feed.updated_at}
+
+
 def _stage_pr(store: Store, gh_pr: dict, existing: Pr | None,
               issues: list[dict] | None = None, *,
               ci_override: str | None = None,
               mergeable_override: bool | None = None,
-              greptile_override: int | None = None,
-              greptile_reviewed_sha: str | None = None,
               diffstat_override: dict | None = None,
-              has_tests_override: bool | None = None) -> Pr:
+              has_tests_override: bool | None = None,
+              reviews_override: dict | None = None) -> Pr:
     """Merge GitHub facts into a new or existing PR without writing it."""
     n = int(gh_pr["number"])
     meta = meta_from_gh(gh_pr)
@@ -201,12 +185,11 @@ def _stage_pr(store: Store, gh_pr: dict, existing: Pr | None,
     sig = _build_signals(
         existing_signals=existing.signals if existing is not None else None,
         ci_override=ci_override, mergeable_override=mergeable_override,
-        greptile_override=greptile_override, greptile_reviewed_sha=greptile_reviewed_sha,
         diffstat_override=diffstat_override, has_tests_override=has_tests_override,
         head_moved=head_moved)
     drift = drift_from_signals(sig) if sig is not None else None
     pr = existing if existing is not None else model.Pr(store, {"pr": n})
-    pr.stage_facts(meta, signals=sig, drift=drift, issues=issues)
+    pr.stage_facts(meta, signals=sig, drift=drift, issues=issues, reviews=reviews_override)
     return pr
 
 
@@ -214,24 +197,21 @@ def upsert_pr(store: Store, gh_pr: dict,
               issues: list[dict] | None = None,
               *, ci_override: str | None = None,
               mergeable_override: bool | None = None,
-              greptile_override: int | None = None,
-              greptile_reviewed_sha: str | None = None,
               diffstat_override: dict | None = None,
-              has_tests_override: bool | None = None) -> Pr:
-    """Upsert one PR's meta (+signals/drift/issues). Returns the Pr. `ci_override`
-    is GitHub's authoritative CI verdict when the caller has fetched one (the
-    single-PR refresh path). `greptile_override` is Greptile's own on-PR
-    confidence score. `greptile_reviewed_sha` is the commit Greptile reviewed,
-    used to detect when that score predates recent commits. The diff overrides
-    are derived together from the fetched head and prevent old-head values from
-    inheriting its section stamp."""
+              has_tests_override: bool | None = None,
+              reviews_override: dict | None = None) -> Pr:
+    """Upsert one PR's meta (+signals/drift/issues/reviews). Returns the Pr.
+    `ci_override` is GitHub's authoritative CI verdict when the caller has
+    fetched one (the single-PR refresh path). `reviews_override` is the parsed
+    reviewer section for the fetched head. The diff overrides are derived
+    together from the fetched head and prevent old-head values from inheriting
+    its section stamp."""
     existing = store.load_pr(int(gh_pr["number"]))
     pr = _stage_pr(
         store, gh_pr, existing, issues,
         ci_override=ci_override, mergeable_override=mergeable_override,
-        greptile_override=greptile_override,
-        greptile_reviewed_sha=greptile_reviewed_sha,
-        diffstat_override=diffstat_override, has_tests_override=has_tests_override)
+        diffstat_override=diffstat_override, has_tests_override=has_tests_override,
+        reviews_override=reviews_override)
     store.save_pr(pr)
     return pr
 
@@ -239,9 +219,10 @@ def upsert_pr(store: Store, gh_pr: dict,
 def refresh_prs(store: Store, numbers: list[int]) -> list[dict]:
     """Refresh specific PRs from live gh + issue links (used by the
     single-cluster re-run). Returns one {pr, moved, old_sha, new_sha} per PR.
-    CI, Greptile, diffstat, and test presence are reconciled before the signals
-    section is stamped. A moved head auto-stales summary/analysis/security via
-    the store's against_head_sha stamping — no explicit invalidation here."""
+    CI, every reviewer's feed, diffstat, and test presence are reconciled before
+    the signals and reviews sections are stamped. A moved head auto-stales
+    summary/analysis/security via the store's against_head_sha stamping — no
+    explicit invalidation here."""
     out: list[dict] = []
     for n in numbers:
         n = int(n)
@@ -251,10 +232,15 @@ def refresh_prs(store: Store, numbers: list[int]) -> list[dict]:
         if gh_pr is None:
             raise RuntimeError(f"gh api pulls/{n} failed or returned no PR")
         issue_links = load_issue_links(prs=[gh_pr])
-        # GitHub is the source of truth for CI: reconcile against its live
-        # verdict for this exact head so a stale 'failing' can't false-block.
+        # GitHub is the source of truth for CI and reviewer feedback: the feed
+        # carries this exact head's check runs and the PR's conversation, so a
+        # stale 'failing' can't false-block and every bot's verdict is current.
         head_sha = (gh_pr.get("head") or {}).get("sha")
-        ci = gh_ci_status(head_sha) if head_sha else None
+        feed = review_fetch.fetch_feeds([n]).get(n)
+        if feed is not None:
+            ci = ci_signal.verdict(feed.check_runs, feed.statuses)
+        else:
+            ci = gh_ci_status(head_sha) if head_sha else None
         raw_mergeable = gh_pr.get("mergeable")
         mergeable = raw_mergeable if isinstance(raw_mergeable, bool) else None
         diffstat = _diffstat_from_gh(gh_pr)
@@ -267,19 +253,11 @@ def refresh_prs(store: Store, numbers: list[int]) -> list[dict]:
             paths = diff_cache.fetch_diff_paths(n, head_sha, store=store)
             if paths is not None:
                 has_tests = diffpaths.has_tests(paths)
-        # Read Greptile's own confidence score + reviewed commit directly from
-        # the PR, so staleness is known against the reviewed commit. Only when
-        # Greptile is the configured review provider; otherwise there is no such
-        # score to read.
-        if review_policy.active().provider == "greptile":
-            greptile_score, greptile_sha = greptile.fetch_greptile_verdict(n)
-        else:
-            greptile_score, greptile_sha = None, None
+        reviews = stage_reviews(before, feed, head_sha) if feed is not None else None
         rec = upsert_pr(store, gh_pr, issue_links.get(n, []),
                         ci_override=ci, mergeable_override=mergeable,
-                        greptile_override=greptile_score,
-                        greptile_reviewed_sha=greptile_sha,
-                        diffstat_override=diffstat, has_tests_override=has_tests)
+                        diffstat_override=diffstat, has_tests_override=has_tests,
+                        reviews_override=reviews)
         new_sha = rec.head_sha
         out.append({"pr": n, "moved": old_sha != new_sha,
                     "old_sha": old_sha, "new_sha": new_sha})
@@ -296,9 +274,9 @@ def gh_ci_status(sha: str) -> str | None:
     status = gh_json(f"repos/{settings.repo()}/commits/{sha}/status")
     if runs is None and status is None:
         return None  # couldn't reach GitHub at all — keep the stored verdict
-    check_runs = (runs or {}).get("check_runs", [])
+    check_runs = ci_signal.from_rest_check_runs((runs or {}).get("check_runs", []))
     statuses = (status or {}).get("statuses", [])
-    return _ci_from_github_data(check_runs, statuses)
+    return ci_signal.verdict(check_runs, statuses)
 
 
 # ---------------------------------------------------------------------------
@@ -388,17 +366,33 @@ def _upsert_all(store: Store, prs: list[dict], issue_links: dict[int, list[dict]
     drafts = 0
     open_ids: set[int] = set()
     facts = live_facts or {}
+    # A PR's conversation is re-read only when it moved past the stored reviews
+    # section; every other PR's reviewers see just the head's check runs, which
+    # the live facts already carry.
+    conv_numbers = [int(gh_pr["number"]) for gh_pr in prs
+                    if needs_conversation(existing_prs.get(int(gh_pr["number"])),
+                                          (gh_pr.get("head") or {}).get("sha"),
+                                          (facts.get(int(gh_pr["number"])) or {}).get("updated_at"))]
+    feeds = review_fetch.fetch_feeds(conv_numbers) if conv_numbers else {}
     for gh_pr in prs:
         n = int(gh_pr["number"])
         live = facts.get(n) or {}
         head_sha = (gh_pr.get("head") or {}).get("sha")
         current = live if live.get("head") == head_sha else {}
         live_mergeable = _LIVE_MERGEABLE.get(current.get("mergeable") or "")
+        existing = existing_prs.get(n)
+        feed = feeds.get(n)
+        if feed is None and current:
+            feed = PrFeed(pr=n, head_sha=head_sha, updated_at=current.get("updated_at"),
+                          check_runs=current.get("check_runs") or [],
+                          statuses=current.get("statuses") or [], conversation=False)
+        reviews = stage_reviews(existing, feed, head_sha) if feed is not None else None
         rec = _stage_pr(
-            store, gh_pr, existing_prs.get(n), issue_links.get(n, []),
+            store, gh_pr, existing, issue_links.get(n, []),
             ci_override=current.get("ci"), mergeable_override=live_mergeable,
             diffstat_override=current.get("diffstat"),
-            has_tests_override=current.get("has_tests"))
+            has_tests_override=current.get("has_tests"),
+            reviews_override=reviews)
         staged.append(rec)
         open_ids.add(n)
         if rec.draft:
@@ -407,7 +401,7 @@ def _upsert_all(store: Store, prs: list[dict], issue_links: dict[int, list[dict]
     for start in range(0, len(staged), batch_size):
         store.save_prs_many(staged[start:start + batch_size])
 
-    return {"upserted": len(staged), "drafts": drafts, "open_ids": open_ids}
+    return {"upserted": len(staged), "drafts": drafts, "open_ids": open_ids, "staged": staged}
 
 
 def _targeted_ingest(store: Store, args: argparse.Namespace, started: str) -> int:
@@ -461,11 +455,7 @@ def main(argv: list[str] | None = None) -> int:
                          "reuses the cheap bulk fetch, skips the closed-state sweep")
     ap.add_argument("--prs", default=None,
                     help="refresh only these comma-separated PR numbers directly, including "
-                         "live CI and Greptile signals; skips the closed-state sweep")
-    ap.add_argument("--backfill-greptile-data", action="store_true",
-                    help="fetch the Greptile-reviewed commit SHA for open scored PRs "
-                         "missing it or holding one that is not the current head, so "
-                         "staleness becomes known; skips the full ingest")
+                         "live CI and reviewer signals; skips the closed-state sweep")
     ap.add_argument("--skip-issues", action="store_true",
                     help="skip the issue ingest (issue_triage/issue_ingest.py) that a "
                          "full ingest chains after the PR sweep, so one refresh covers "
@@ -474,18 +464,6 @@ def main(argv: list[str] | None = None) -> int:
 
     store = Store(args.store) if args.store else Store()
     started = _now()
-
-    if args.backfill_greptile_data:
-        if review_policy.active().provider != "greptile":
-            print("Greptile is not the configured review provider — nothing to backfill.")
-            return 0
-        print("backfilling Greptile reviewed-SHA for scored PRs missing it or off-head…",
-              flush=True)
-        stats = greptile.backfill_greptile_data(store)
-        store.append_run({"phase": "backfill-greptile-data", "started": started,
-                          "finished": _now(), "stats": stats})
-        print(f"done: {stats}")
-        return 0
 
     if args.new or args.prs:
         return _targeted_ingest(store, args, started)
@@ -501,6 +479,9 @@ def main(argv: list[str] | None = None) -> int:
         existing_prs = store.all_prs()
         counts = _upsert_all(store, gh_prs, issue_links, existing_prs, live_facts=live)
         upserted, drafts, open_now = counts["upserted"], counts["drafts"], counts["open_ids"]
+        staged_ids = {p.number for p in counts["staged"]}
+        corpus = counts["staged"] + [p for n, p in existing_prs.items() if n not in staged_ids]
+        store.save_reviewers(reviewers.seen_summary(corpus))
 
         # PRs in the store that are no longer in the open list → closed or merged;
         # refresh their meta so state transitions are recorded. The pre-upsert
@@ -519,23 +500,9 @@ def main(argv: list[str] | None = None) -> int:
     store.append_run({"phase": "ingest", "started": started, "finished": _now(), "stats": stats})
     print(f"done: {stats}")
 
-    # A full ingest keeps the reviewed-SHA fact fresh too: chain the backfill
-    # (its own run ledger entry) so a bulk-ingested PR doesn't read "not
-    # current" indefinitely. It self-scopes to open scored PRs whose SHA is
-    # missing or anchored off the current head, so a corpus with nothing to
-    # backfill costs one cheap store scan (#21).
-    if review_policy.active().provider == "greptile":
-        print("backfilling Greptile reviewed-SHA for scored PRs missing it or off-head…",
-              flush=True)
-        backfill_started = _now()
-        backfill_stats = greptile.backfill_greptile_data(store, existing_prs)
-        store.append_run({"phase": "backfill-greptile-data", "started": backfill_started,
-                          "finished": _now(), "stats": backfill_stats})
-        print(f"done: {backfill_stats}")
-
     # A full ingest refreshes both corpora: chain the issue ingest (its own run
     # ledger entry, its own store rows) so issue state can't silently drift while
-    # PRs stay fresh (#412). Targeted modes (--new/--prs/--backfill) return above.
+    # PRs stay fresh (#412). Targeted modes (--new/--prs) return above.
     if not args.skip_issues:
         print("running issue ingest…", flush=True)
         from issue_triage import issue_ingest

@@ -1,11 +1,12 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router";
-import type { PRRow, PRResponses, ChecksRollup, LocBreakdown } from "../../api";
+import type { PRRow, PRResponses, ChecksRollup, LocBreakdown, ReviewerKind } from "../../api";
 import { InfoTip, type InstanceWhy } from "../InfoTip";
 import { term, safetyEntry, dispositionEntry } from "../../glossary";
 import type { GlossaryEntry } from "../../glossary";
 import { timeAgo } from "../../timeAgo";
-import { GreptileCell } from "./GreptileCell";
+import { ReviewCell } from "./ReviewCell";
+import { ScansCell } from "./ScansCell";
 import { GitHubPRLink } from "../GitHubPRLink";
 import { ConflictChip, DraftChip, TierChip, AckButton } from "../Chips";
 import { AuthorHover } from "../AuthorHover";
@@ -31,7 +32,7 @@ export interface ColumnDef {
   numeric?: boolean;        // right-aligned (the `num` class) on header + cell
   stopOpen?: boolean;       // cell swallows the row-open click (links)
   cellClass?: string;       // <td> className (e.g. "mono", "muted small")
-  capability?: "review";    // gated on a backend capability — hidden when absent
+  capability?: ReviewerKind; // shown only while a reviewer of this kind is active
   cell: (r: PRRow, ctx: CellCtx) => ReactNode;
 }
 
@@ -244,9 +245,11 @@ export const COLUMNS: ColumnDef[] = [
         : <InfoTip entry={NOT_ANALYZED} cue={false} focusable={false}>—</InfoTip>) },
 
   // --- default-off opt-in columns ---
-  { key: "greptile", label: "Greptile", defaultOn: false, term: "col.greptile", capability: "review",
-    cell: (r) => <GreptileCell n={r.number} score={r.signals?.greptile ?? null} stale={r.signals?.greptile_stale ?? null}
-      severity={r.signals?.greptile_severity ?? null} /> },
+  { key: "review", label: "Review", defaultOn: false, term: "col.review", capability: "review",
+    cell: (r) => <ReviewCell n={r.number} reviews={r.reviews ?? null}
+      greptileSeverity={r.signals?.greptile_severity ?? null} /> },
+  { key: "scans", label: "Scans", defaultOn: false, term: "col.scans", capability: "scanner",
+    cell: (r) => <ScansCell reviews={r.reviews ?? null} /> },
   { key: "checks", label: "CI checks", defaultOn: false, term: "col.checks",
     cell: (r) => {
       const c = r.checks;

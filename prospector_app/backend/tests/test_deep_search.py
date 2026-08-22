@@ -5,6 +5,7 @@ import json
 
 from prospector_app.backend import deep_search
 from pipeline import model
+from pipeline.testsupport import greptile_entry
 
 
 def _collect(query, prs):
@@ -37,13 +38,14 @@ def test_coerce_truncates_reason():
 
 def test_compact_record_shape(monkeypatch):
     monkeypatch.setattr(deep_search.testpaths, "cached_diff_text", lambda rec, c: None)
-    rec = {"pr": 7, "meta": {"title": "Fix X", "body": "B" * 1000},
-           "signals": {"greptile": 4, "ci": "passing",
+    rec = {"pr": 7, "meta": {"title": "Fix X", "body": "B" * 1000, "head_sha": "h"},
+           "signals": {"ci": "passing",
                        "diffstat": {"additions": 10, "deletions": 2, "changed_files": 1}},
+           "reviews": {"greptile": greptile_entry(4, "h"), "against_head_sha": "h"},
            "summary": {"one_liner": "fixes x", "mechanism": "does y"},
            "analysis": {"disposition": "merge"}}
     r = deep_search.compact_record(model.Pr(None, rec), "B" * 1000)
-    assert r["pr"] == 7 and r["title"] == "Fix X" and r["greptile"] == 4
+    assert r["pr"] == 7 and r["title"] == "Fix X" and r["reviews"] == {"greptile": "Greptile 4/5"}
     assert len(r["description"]) == deep_search._BODY_BUDGET
     assert r["files"] == [] and r["disposition"] == "request-changes"  # greptile 4 < bar → derived
 

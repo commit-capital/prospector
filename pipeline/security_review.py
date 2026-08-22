@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, cast
 from pipeline import diff_cache
 from pipeline import headless_agent
 from pipeline import security_driver
+from pipeline import reviewers
 from pipeline.security_driver import (
     LENSES, REVIEW_FENCED_TAIL, REVIEW_PROMPT, VERIFY_CHUNK_SIZE,
     VERIFY_FENCED_TAIL, VERIFY_PROMPT)
@@ -115,12 +116,14 @@ def _call_agent_json(prompt: str, step: str, on_event: Callable[[tuple], object]
 
 
 def _review_lens(pr: int, title: str, diff_path: str, lens: str, lens_prompt: str,
-                 on_event: Callable[[tuple], object]) -> dict:
+                 on_event: Callable[[tuple], object],
+                 bot_evidence: list[dict] | None = None) -> dict:
     """Run one lens; return {ok, findings}. A failed/garbled run is ok=False so a
     wiped-out lens can't masquerade as a clean GREEN (coverage gate below)."""
     prompt = headless_agent.fill(REVIEW_PROMPT, {
         "__PR__": pr, "__TITLE__": title, "__DIFF_PATH__": diff_path,
-        "__LENS__": lens, "__LENS_PROMPT__": lens_prompt}) + REVIEW_FENCED_TAIL
+        "__LENS__": lens, "__LENS_PROMPT__": lens_prompt,
+        "__BOT_EVIDENCE__": json.dumps(bot_evidence) if bot_evidence else "none"}) + REVIEW_FENCED_TAIL
     data = _call_agent_json(prompt, f"{lens} lens", on_event)
     findings = data.get("findings") if data else None
     if not isinstance(findings, list):
@@ -159,7 +162,8 @@ def _verify(pr: int, diff_path: str, flagged: list[Finding]) -> list[Finding]:
 
 
 def review_pr(pr: int, title: str, head: str,
-              store: Store | None = None) -> tuple[VerdictItem, int] | None:
+              store: Store | None = None,
+              bot_evidence: list[dict] | None = None) -> tuple[VerdictItem, int] | None:
     """Run the 3-lens-then-refute review on ONE PR. Returns (verdict_item,
     lenses_ok) — the item is a VerdictItem ready for
     security_driver.commit_verdicts, and lenses_ok is how many of the lenses ran
@@ -192,7 +196,8 @@ def review_pr(pr: int, title: str, head: str,
                 prog.emit(i, line)
         try:
             results[i] = _review_lens(pr, title, str(diff_path),
-                                      lens["key"], lens["prompt"], on_event)
+                                      lens["key"], lens["prompt"], on_event,
+                                      bot_evidence=bot_evidence)
         finally:
             prog.finish(i)
 
@@ -250,7 +255,8 @@ def run(store: Store, pr: int, *, trigger: str | None = None) -> int:
     _say(f"▶ Security review of PR #{pr}: {title}")
     _say(f"  head {head[:7]}")
 
-    reviewed = review_pr(pr, title, head, store=store)
+    reviewed = review_pr(pr, title, head, store=store,
+                         bot_evidence=reviewers.evidence(rec.reviews, rec.head_sha))
     if reviewed is None:
         return 1
     item, lenses_ok = reviewed

@@ -11,6 +11,7 @@ from pipeline.storekit import now as _now
 from prospector_app.backend import data
 from prospector_app.backend import service
 from prospector_app.backend import verify_worker
+from pipeline.testsupport import reviews_section
 
 HEAD = "a" * 40
 
@@ -29,8 +30,9 @@ def _clean_merge_pr(n: int, *, pain: float = 0.0) -> dict:
         "pr": n,
         "meta": {"title": f"fix {n}", "author": "dev", "state": "open",
                  "draft": False, "head_sha": HEAD, "checked_at": now},
-        "signals": {"greptile": 5, "ci": "passing", "mergeable": True,
+        "signals": {"ci": "passing", "mergeable": True,
                     "has_tests": True, "checked_at": now, "against_head_sha": HEAD},
+        "reviews": reviews_section(HEAD, now),
         "drift": {"state": "applicable", "checked_at": now, "against_head_sha": HEAD},
         "analysis": {"disposition": "merge", "rationale": "r", "checked_at": now,
                      "against_head_sha": HEAD},

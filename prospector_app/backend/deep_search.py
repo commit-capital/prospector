@@ -24,6 +24,7 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from pipeline import reviewers
 from prospector_app.backend import chat  # CLAUDE_BIN, isolation_flags, REPO_ROOT, APP_ROOT, system_prompt
 from prospector_app.backend import data
 from prospector_app.backend import safety_guard
@@ -85,7 +86,7 @@ def compact_record(rec: Pr, body: str | None = None) -> dict:
         "files": paths[:25],
         "summary": summ.get("one_liner"),
         "mechanism": summ.get("mechanism"),
-        "greptile": rec.greptile,
+        "reviews": {rid: d["summary_line"] for rid, d in reviewers.digests(rec).items()},
         "ci": rec.ci,
         "additions": ds.get("additions"),
         "deletions": ds.get("deletions"),

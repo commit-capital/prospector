@@ -88,7 +88,7 @@ export const HOME_CARDS: HomeCard[] = [
     column: "merge",
     spec: {
       checks: [
-        ...checksPass("review", "ci", "mergeable", "secrets", "security"),
+        ...checksPass("review", "ci", "scans", "mergeable", "secrets", "security"),
         { key: "verify", status: "never_ran" },
       ],
       safety: "GREEN",
@@ -107,7 +107,7 @@ export const HOME_CARDS: HomeCard[] = [
     column: "merge",
     spec: {
       checks: [
-        ...checksPass("review", "ci", "mergeable", "secrets"),
+        ...checksPass("review", "ci", "scans", "mergeable", "secrets"),
         { key: "security", status: "never_ran" },
       ],
       disposition: "merge",
@@ -125,11 +125,9 @@ export const HOME_CARDS: HomeCard[] = [
     column: "merge",
     spec: {
       checks: [
-        ...checksPass("review", "ci", "tests", "secrets", "security", "verify"),
+        ...checksPass("review", "ci", "scans", "tests", "secrets", "security", "verify"),
         { key: "mergeable", status: "fail" },
       ],
-      greptile: { op: ">", value: 4 },
-      greptile_stale: false,
       safety: "GREEN",
       disposition: "merge",
     },
