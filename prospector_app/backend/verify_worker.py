@@ -406,14 +406,20 @@ def next_auto() -> tuple[str, int] | None:
     highest community pain, then lowest PR number.
 
     Lane order is spend priority: a PR with no verification at all buys more
-    than a second opinion on one that already concluded."""
+    than a second opinion on one that already concluded. A PR another machine
+    holds the security claim on is that machine's to finish: it leaves the
+    pool here so this hunter moves on to the next candidate."""
     prs = data.prs()
+    me = socket.gethostname()
 
     def _key(item: tuple[int, Pr]) -> tuple[float, int]:
         return (-_pain(item[1]), item[0])
 
-    security_pool = [(n, pr) for n, pr in prs.items()
-                     if n not in security_failed and gates.blocked_on_security(pr)]
+    security_pool = [
+        (n, pr) for n, pr in prs.items()
+        if n not in security_failed and gates.blocked_on_security(pr)
+        and not store.security_claim_held_elsewhere(
+            pr.raw.get("security_run"), host=me, stale_after=SECURITY_CLAIM_SECONDS)]
     if security_pool:
         return ("security", min(security_pool, key=_key)[0])
     verify_pool = [(n, pr) for n, pr in prs.items() if auto_verifiable(pr)]
@@ -425,28 +431,30 @@ def next_auto() -> tuple[str, int] | None:
     return None
 
 
-def run_security(n: int) -> int:
+def run_security(n: int) -> int | None:
     """Run the headless per-PR security review for PR `n` and return its exit
-    code. A PR stays in security_failed until a run both exits 0 and leaves it
-    outside the security pool: pipeline/security_review.py can exit 0 while
-    holding an INCOMPLETE review (a lens agent failure) without writing a
-    verdict, so the exit code alone does not prove a verdict landed. A fresh
-    pre-spawn recheck skips a PR another
-    process already cleared since it was picked (snapshot lag). The runner
-    owns the verdict write, any RED flip, and the runs-ledger entry.
+    code, or None when no review ran. A PR stays in security_failed until a run
+    both exits 0 and leaves it outside the security pool:
+    pipeline/security_review.py can exit 0 while holding an INCOMPLETE review
+    (a lens agent failure) without writing a verdict, so the exit code alone
+    does not prove a verdict landed. A fresh pre-spawn recheck skips a PR
+    another process already cleared since it was picked (snapshot lag). The
+    runner owns the verdict write, any RED flip, and the runs-ledger entry.
 
     The store claim is what keeps two idle machines off one PR: a review costs
     several agent runs, so losing the race means dropping the pick rather than
     racing to a duplicate verdict. The claim is released whatever the run does,
-    so a failure leaves the PR free for the next attempt rather than parked."""
+    so a failure leaves the PR free for the next attempt rather than parked.
+    Both no-run returns mean the snapshot that picked this PR is behind the
+    store, which the caller answers with a refresh and a rest."""
     st = data.store()
     rec = st.load_pr(n)
     if rec is None or not gates.blocked_on_security(rec):
-        return 0
+        return None
     me = socket.gethostname()
     if not st.claim_security_run(n, host=me, stale_after=SECURITY_CLAIM_SECONDS):
         print(f"[autohunt] PR #{n} is already under review elsewhere", flush=True)
-        return 0
+        return None
     try:
         return _run_security_claimed(n)
     finally:
@@ -586,7 +594,9 @@ def _drain_loop() -> None:
                 state["current_pr"] = n
                 beat()
                 print(f"[autohunt] security review for PR #{n}", flush=True)
-                run_security(n)
+                if run_security(n) is None:
+                    data.refresh()
+                    stop.wait(POLL_SECONDS)
             elif lane == "resweep":
                 auto_queue_verify(n, source=RESWEEP_SOURCE)
             else:
