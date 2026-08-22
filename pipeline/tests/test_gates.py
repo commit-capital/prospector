@@ -344,9 +344,16 @@ class TestBlockedOnSecurity:
 
 
 class TestClusterState:
-    def _cluster(self, prs, outcome="merge-ready"):
+    def _cluster(self, prs, outcome="merge-ready", proposals=None):
+        # proposals default to one row per member, mirroring commit_analysis,
+        # which always writes them alongside the outcome
+        if proposals is None:
+            proposals = [{"pr": r.n,
+                          "disposition": (r.section("analysis") or {}).get("disposition")
+                          or "merge"}
+                         for r in prs]
         rec = {"id": 1, "root_problem": "x", "prs": [r.n for r in prs],
-               "outcome": outcome, "checked_at": NOW}
+               "outcome": outcome, "proposals": proposals, "checked_at": NOW}
         return Cluster(None, rec)
 
     def test_needs_analysis_when_no_outcome(self):
@@ -384,6 +391,13 @@ class TestClusterState:
     def test_stale_analysis_returns_to_needs_analysis(self):
         pr = _pr(analysis=_merge_analysis(against_head_sha="OLD"))
         c = self._cluster([pr])
+        assert gates.cluster_state(c, {1: pr}, today="2026-06-10") == "needs-analysis"
+
+    def test_member_without_proposal_row_returns_to_needs_analysis(self):
+        # A member added after the analysis has no proposal row — the stored
+        # outcome never considered it (#137).
+        pr = _pr(analysis=_merge_analysis(), security=_green(), verify=_verified())
+        c = self._cluster([pr], proposals=[])
         assert gates.cluster_state(c, {1: pr}, today="2026-06-10") == "needs-analysis"
 
     def test_merge_ready_with_a_needs_human_pick_is_blocked_on_decision(self):
@@ -1783,7 +1797,9 @@ class TestClusterStateAfterSelfDemotion:
             "drift": {"state": "applicable", "checked_at": NOW, "against_head_sha": HEAD},
         })
         store.save_cluster({"id": 1, "root_problem": "x", "prs": [1],
-                            "outcome": "merge-ready", "checked_at": NOW})
+                            "outcome": "merge-ready",
+                            "proposals": [{"pr": 1, "disposition": "merge"}],
+                            "checked_at": NOW})
         store.edit_pr(1).route_to("merge", "best of the cluster", from_cluster=1)
         return store
 

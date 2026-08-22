@@ -1440,6 +1440,9 @@ tr.row-done:hover > td { opacity: 1; }
 /* Sits well below the machine's own controls: this card is about a different
    computer, and the gap is what says so. */
 .setup-share { margin-top: 34px; }
+/* Each opt-in checkbox label on its own line, so every checkbox starts a row
+   and is visible at a glance. */
+.setup-share > label { display: block; margin: 0 0 8px; }
 .setup-warn { color: var(--gold); background: color-mix(in srgb, var(--gold) 10%, transparent);
   border-radius: 6px; padding: 7px 10px; margin: 0 0 10px; line-height: 1.5; }
 

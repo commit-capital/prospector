@@ -423,6 +423,21 @@ class TestCommitClusters:
         result = cd.commit_clusters(s, [{"root_problem": "b", "prs": [5, 6]}])
         assert result["created"] == [2]
 
+    def test_update_that_gains_a_member_resets_outcome(self, tmp_path):
+        # The analyzed outcome never considered the new member (#137).
+        s = self._seed(tmp_path)
+        cd.commit_clusters(s, [{"root_problem": "lock leak", "prs": [1, 2, 3]}])
+        s.load_cluster(1).set_outcome("merge-ready")
+        cd.commit_clusters(s, [{"root_problem": "lock leak", "prs": [1, 2, 3, 4]}])
+        assert s.load_cluster(1).outcome is None
+
+    def test_update_with_same_members_keeps_outcome(self, tmp_path):
+        s = self._seed(tmp_path)
+        cd.commit_clusters(s, [{"root_problem": "lock leak", "prs": [1, 2, 3]}])
+        s.load_cluster(1).set_outcome("merge-ready")
+        cd.commit_clusters(s, [{"root_problem": "lock leak", "prs": [1, 2, 3]}])
+        assert s.load_cluster(1).outcome == "merge-ready"
+
 
 class TestMarkStandalone:
     def test_stamps_summarized_unclustered_pr_standalone(self, tmp_path):
