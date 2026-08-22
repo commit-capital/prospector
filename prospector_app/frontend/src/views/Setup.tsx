@@ -45,7 +45,7 @@ const SWITCHES: { key: string; label: string; hint: string; needs?: string[]; on
     hint: "spot pull requests that have fallen behind the main branch and queue the branch update without being asked",
     needs: ["push_identity"] },
   { key: "TRIAGE_FIX_HUNT_FIX", label: "Draft fixes on its own",
-    hint: "spot pull requests that pass their tests but scored below the review bar, and have the AI draft a fix without being asked — one try per version of the pull request, and each draft waits for approval",
+    hint: "spot pull requests that pass their tests but scored below the review bar, and have the AI draft a fix without being asked — or, when the reviewer's only complaint is the description, a new description that follows the template. One try per version of the pull request, and each draft waits for approval",
     needs: ["push_identity", "fix_policy"] },
   { key: "TRIAGE_FIX_HUNT_RESOLVE", label: "Resolve merge conflicts on its own",
     hint: "when a branch update it queued runs into a real conflict, have the AI resolve it instead of giving up — the result waits for approval, with its reasoning per file",

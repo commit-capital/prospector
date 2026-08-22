@@ -869,6 +869,138 @@ def fix_profile(monkeypatch):
     monkeypatch.setattr(profile, "active", lambda: p)
 
 
+def _describable_pr(n: int = 5) -> dict:
+    """A CI-passing, mergeable PR whose only open Greptile finding at its head
+    is about the description — what the describe hunt targets."""
+    entry = greptile_entry(4, HEAD)
+    entry["findings"] = [{"title": "PR description is missing required template sections",
+                          "body": "**PR description is missing required template sections**",
+                          "resolved": False, "outdated": False, "path": "README.md"}]
+    return {"pr": n,
+            "meta": {"title": "docs only", "state": "open", "head_sha": HEAD,
+                     "body": "Adds a paragraph."},
+            "signals": {"ci": "passing", "mergeable": True,
+                        "checked_at": NOW, "against_head_sha": HEAD},
+            "reviews": reviews_section(HEAD, NOW, greptile=entry)}
+
+
+def test_hunter_queues_describe_for_a_description_only_nit(store, fix_profile, monkeypatch):
+    monkeypatch.setenv("TRIAGE_FIX_HUNT_FIX", "1")
+    store.save_pr(_describable_pr())
+    data.refresh()
+    assert fix_worker.auto_fixable(data.prs()[5]) == "describe"
+
+
+def test_a_code_finding_beside_the_description_nit_is_a_fix_not_a_describe(
+        store, fix_profile, monkeypatch):
+    monkeypatch.setenv("TRIAGE_FIX_HUNT_FIX", "1")
+    rec = _describable_pr()
+    rec["reviews"]["greptile"]["findings"].append(
+        {"title": "retry loop never exits", "body": "x", "resolved": False, "outdated": False})
+    store.save_pr(rec)
+    data.refresh()
+    assert fix_worker.auto_fixable(data.prs()[5]) == "fix"
+
+
+def _fake_describe_inputs(monkeypatch, tmp_path):
+    monkeypatch.setattr(fix_worker.describe_pr, "fetch_template", lambda: "## What Changed\n")
+    monkeypatch.setattr(fix_worker.describe_pr, "required_sections", lambda: ("What Changed",))
+    monkeypatch.setattr(fix_worker.gh, "fetch_pr",
+                        lambda n: {"title": "docs only", "body": "Adds a paragraph."})
+    patch = tmp_path / "pr.patch"
+    patch.write_text("diff --git a b\n")
+    monkeypatch.setattr(fix_worker.verify_driver, "fetch_patch", lambda n, sha: patch)
+
+
+def test_describe_parks_the_new_body_and_posts_nothing(store, monkeypatch, tmp_path):
+    store.save_pr(_describable_pr())
+    data.refresh()
+    fix_queue.queue_pr(5, "describe")
+    _fake_describe_inputs(monkeypatch, tmp_path)
+    monkeypatch.setattr(fix_worker.describe_pr, "describe",
+                        lambda **kw: {"body": "## What Changed\n- a paragraph\n\n"
+                                              "## Original description\nAdds a paragraph.\n"})
+    posted = []
+    monkeypatch.setattr(fix_worker.safety_guard, "chat_bot_run",
+                        lambda argv, token: posted.append(argv))
+
+    fix_worker.run_one(5)
+
+    req = store.load_pr(5).fix_request
+    assert req["status"] == "awaiting-review"
+    assert req["action"] == "describe"
+    assert req["result"]["body"].startswith("## What Changed")
+    assert req["result"]["previous_body"] == "Adds a paragraph."
+    assert posted == []
+
+
+def test_approved_describe_posts_as_the_bot_and_retriggers(store, monkeypatch, tmp_path):
+    store.save_pr(_describable_pr())
+    data.refresh()
+    fix_queue.queue_pr(5, "describe")
+    _fake_describe_inputs(monkeypatch, tmp_path)
+    monkeypatch.setattr(fix_worker.describe_pr, "describe",
+                        lambda **kw: {"body": "## What Changed\n- a\n"})
+    fix_worker.run_one(5)
+    fix_queue.approve_pr(5)
+
+    posted = []
+    monkeypatch.setattr(fix_worker.executor, "mint_bot_token", lambda: "tok")
+    monkeypatch.setattr(fix_worker.safety_guard, "chat_bot_run",
+                        lambda argv, token: (posted.append((argv, token)),
+                                             type("R", (), {"returncode": 0, "stdout": "ok",
+                                                            "stderr": ""})())[1])
+    logged = []
+    monkeypatch.setattr(fix_worker.activity, "record", lambda kind, **f: logged.append((kind, f)))
+    retriggered = []
+    monkeypatch.setattr(fix_worker, "_retrigger_review", lambda n: retriggered.append(n))
+
+    fix_worker.push_approved(5)
+
+    req = store.load_pr(5).fix_request
+    assert req["status"] == "pushed"
+    argv, token = posted[0]
+    assert argv[:4] == ["gh", "pr", "edit", "5"] and "--body-file" in argv and token == "tok"
+    assert logged and logged[0][0] == "pr-edit" and logged[0][1]["pr"] == 5
+    assert retriggered == [5]
+
+
+def test_approved_describe_without_a_bot_token_fails_and_posts_nothing(
+        store, monkeypatch, tmp_path):
+    store.save_pr(_describable_pr())
+    data.refresh()
+    fix_queue.queue_pr(5, "describe")
+    _fake_describe_inputs(monkeypatch, tmp_path)
+    monkeypatch.setattr(fix_worker.describe_pr, "describe",
+                        lambda **kw: {"body": "## What Changed\n- a\n"})
+    fix_worker.run_one(5)
+    fix_queue.approve_pr(5)
+    monkeypatch.setattr(fix_worker.executor, "mint_bot_token", lambda: None)
+    posted = []
+    monkeypatch.setattr(fix_worker.safety_guard, "chat_bot_run",
+                        lambda argv, token: posted.append(argv))
+
+    fix_worker.push_approved(5)
+
+    req = store.load_pr(5).fix_request
+    assert req["status"] == "failed"
+    assert "bot token" in req["error"]
+    assert posted == []
+
+
+def test_describe_give_up_refuses_with_the_reason(store, monkeypatch, tmp_path):
+    store.save_pr(_describable_pr())
+    data.refresh()
+    fix_queue.queue_pr(5, "describe")
+    _fake_describe_inputs(monkeypatch, tmp_path)
+    monkeypatch.setattr(fix_worker.describe_pr, "describe",
+                        lambda **kw: {"give_up": "the diff is binary"})
+    fix_worker.run_one(5)
+    req = store.load_pr(5).fix_request
+    assert req["status"] == "refused"
+    assert "the diff is binary" in req["refused_reason"]
+
+
 def test_hunter_ignores_fix_without_the_opt_in(store, fix_profile, monkeypatch):
     monkeypatch.delenv("TRIAGE_FIX_HUNT_FIX", raising=False)
     store.save_pr(_fixable_pr())

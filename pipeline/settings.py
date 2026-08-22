@@ -204,7 +204,7 @@ def review_threshold() -> int | None:
 # an agent resolve merge conflicts inside a merge of the base into the head —
 # recorded on requests the worker escalates from a conflicted rebase, never
 # queued directly.
-FIX_ACTIONS: tuple[str, ...] = ("update", "rebase", "fix", "resolve")
+FIX_ACTIONS: tuple[str, ...] = ("update", "rebase", "fix", "resolve", "describe")
 
 # The contributor-push user: the GitHub *user* account that pushes to
 # contributor PR head branches — a dedicated account or the operator's own,

@@ -42,17 +42,19 @@ import os
 import socket
 import stat
 import subprocess
+import tempfile
 import threading
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
-from pipeline import (author_fix, compile_preflight, diffpaths, freshness, gates, gh,
-                      profile, resolve_conflicts, review_fix, review_policy, reviewers,
-                      settings, verify_driver)
+from pipeline import (author_fix, compile_preflight, describe_pr, diffpaths, freshness,
+                      gates, gh, profile, resolve_conflicts, review_fix, review_policy,
+                      reviewers, settings, verify_driver)
 from pipeline.storekit import now as _now
-from prospector_app.backend import data, executor, fix_queue, review_refresh, service
+from prospector_app.backend import (activity, data, executor, fix_queue, review_refresh,
+                                    safety_guard, service)
 from prospector_app.backend.resubmit_identity import worker_env
 
 if TYPE_CHECKING:
@@ -439,6 +441,9 @@ def run_one(n: int) -> None:
     try:
         if action == "fix":
             _author_fix(n, claimed)
+            return
+        if action == "describe":
+            _describe(n, claimed)
             return
         patch = _probe(n, claimed, action)
         if patch is None:
@@ -841,6 +846,81 @@ def _agent_resolve(n: int, claimed: dict, paused: list[str]) -> None:
     _park(n, claimed, "resolve", result, socket.gethostname())
 
 
+def _describe(n: int, claimed: dict) -> None:
+    """Have an agent rewrite this PR's description to the repository's template
+    and park the body for an operator to approve — or post it directly when
+    TRIAGE_FIX_AUTOPUSH names `describe`. No worktree, no push: the post is
+    the bot's `pr edit`, run at approval."""
+    rec = data.store().load_pr(n)
+    if rec is None:
+        _refuse(n, claimed, f"PR #{n} left the store")
+        return
+    if not rec.head_sha:
+        _fail(n, claimed, "the PR has no recorded head SHA")
+        return
+    template = describe_pr.fetch_template()
+    if template is None:
+        _refuse(n, claimed, f"the repository has no {describe_pr.TEMPLATE_PATH} to follow")
+        return
+    live = gh.fetch_pr(n) or {}
+    title = str(live.get("title") or rec.title or "")
+    body = str(live.get("body") or rec.body or "")
+    try:
+        diff = verify_driver.fetch_patch(n, rec.head_sha).read_text()
+    except verify_driver.FetchFailure as e:
+        _fail(n, claimed, f"the pull request's diff could not be fetched: {e}")
+        return
+    findings = [f for r in review_policy.active_reviewers(reviewers.REVIEW)
+                for f in reviewers.open_findings(rec.review_entry(r.id))
+                if describe_pr.is_description_nit(f)]
+    _running_step(n, claimed, "agent writing the description", action="describe")
+    try:
+        verdict = describe_pr.describe(pr=n, title=title, body=body, diff=diff,
+                                       template=template, findings=findings,
+                                       required=describe_pr.required_sections())
+    except (RuntimeError, ValueError) as e:
+        _fail(n, claimed, f"The agent attempt did not land: {e}")
+        return
+    if "give_up" in verdict:
+        _refuse(n, claimed, f"The agent declined to write a description: {verdict['give_up']}")
+        return
+    result = {"body": verdict["body"], "previous_body": body,
+              "message": "Rewrite the description to follow the PR template"}
+    if "describe" not in settings.fix_autopush():
+        _park(n, claimed, "describe", result, socket.gethostname())
+        return
+    _post_description(n, claimed, result)
+
+
+def _post_description(n: int, req: dict, result: dict) -> None:
+    """Post a parked description as the bot through the curated `pr edit`
+    write, Activity-logged. A machine that cannot mint the bot token fails the
+    request rather than posting as anyone else."""
+    token = executor.mint_bot_token()
+    if not token:
+        _fail(n, req, "this machine cannot mint the bot token, so it cannot post the "
+                      "description — approve again from a machine that can, or re-queue")
+        return
+    body = str(result.get("body") or "")
+    with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as fh:
+        fh.write(body)
+        path = fh.name
+    try:
+        r = safety_guard.chat_bot_run(
+            ["gh", "pr", "edit", str(n), "--body-file", path, "--repo", settings.repo()],
+            token)
+    finally:
+        os.unlink(path)
+    if r.returncode != 0:
+        _fail(n, req, f"GitHub did not accept the new description: "
+                      f"{(r.stderr or r.stdout).strip()[:300]}")
+        return
+    activity.record("pr-edit", identity=settings.bot_login(), dry_run=False, pr=n,
+                    action="DESCRIBE", status="executed",
+                    detail="rewrote the description to follow the PR template")
+    _finish_pushed(n, req, (r.stdout or "").strip(), result=result)
+
+
 def _park(n: int, claimed: dict, action: str, result: dict, host: str) -> None:
     """Record a proven change for an operator to approve, pushing nothing.
 
@@ -850,7 +930,7 @@ def _park(n: int, claimed: dict, action: str, result: dict, host: str) -> None:
     accumulate them on one machine while a browsable backlog sits unreviewed —
     and would tie the approval to the machine that authored it. A `resolve` keeps
     its tree, because the merge commit it holds is the thing being approved."""
-    if action != "resolve":
+    if action not in ("resolve", "describe"):
         _resubmit(n, "abort")
     data.store().edit_pr(n).record_fix_request(
         "awaiting-review", action, queued_at=claimed.get("queued_at"),
@@ -952,6 +1032,13 @@ def push_approved(n: int) -> None:
     action = claimed.get("action") or "fix"
     authored: list[str] | None = None
     result = claimed.get("result") or {}
+    if action == "describe":
+        ok, why = recheck_eligibility(n, action)
+        if not ok:
+            _refuse(n, claimed, f"no longer eligible for {action}: {why}")
+            return
+        _post_description(n, claimed, result)
+        return
     if action == "resolve":
         raw_paths = result.get("conflict_paths")
         authored = [str(p) for p in raw_paths] if raw_paths else []
@@ -1042,7 +1129,7 @@ def _finish_pushed(n: int, req: dict, output: str, result: dict | None = None) -
         host=socket.gethostname(), head_sha=req.get("against_head_sha"))
     data.refresh()
     _log_run(n, req, "pushed", merged.get("message"))
-    if req.get("action") == "fix":
+    if req.get("action") in ("fix", "describe"):
         try:
             _retrigger_review(n)
         except Exception:
@@ -1116,16 +1203,20 @@ def _hunt_attempted(pr: Pr, action: str) -> bool:
     return False
 
 
-def _auto_fixes_in_flight() -> int:
-    """How many hunter-queued fix requests sit anywhere between queued and
-    pushing. Operator-queued fixes are not counted against the hunter's cap."""
+def _auto_in_flight(action: str) -> int:
+    """How many hunter-queued requests for `action` sit anywhere between queued
+    and pushing. Operator-queued ones are not counted against the hunter's cap."""
     count = 0
     for rec in data.prs().values():
         req = rec.fix_request or {}
-        if (req.get("source") == "auto" and req.get("action") == "fix"
+        if (req.get("source") == "auto" and req.get("action") == action
                 and req.get("status") in fix_queue.IN_FLIGHT):
             count += 1
     return count
+
+
+def _auto_fixes_in_flight() -> int:
+    return _auto_in_flight("fix")
 
 
 def auto_fixable(pr: Pr) -> str | None:
@@ -1133,9 +1224,11 @@ def auto_fixable(pr: Pr) -> str | None:
 
     A PR GitHub reports unmergeable needs its history replayed on current base,
     which is `rebase`; a PR whose drift scan says the base moved out from under
-    it needs `update`. A PR clean on both may take an agent-authored `fix` when
-    the deployment opts in (TRIAGE_FIX_HUNT_FIX) and this head has not already
-    burned its one unattended attempt. Anything else is left alone.
+    it needs `update`. A PR clean on both whose reviewer objects only to its
+    description takes a `describe`; one the reviewer fails on the code may take
+    an agent-authored `fix`. Both agent actions need the deployment's opt-in
+    (TRIAGE_FIX_HUNT_FIX) and a head that has not already burned its one
+    unattended attempt. Anything else is left alone.
 
     gates.fix_huntable is the bar, not fix_eligibility: unprompted sandbox time
     goes only where a stored quality signal argues the spend is worth it."""
@@ -1146,7 +1239,7 @@ def auto_fixable(pr: Pr) -> str | None:
     elif pr.drift_state == "conflicts":
         action = "update"
     elif settings.fix_hunt_fix():
-        action = "fix"
+        action = "describe" if describe_pr.only_description_nits(pr) else "fix"
     else:
         return None
     if _hunt_attempted(pr, action):
@@ -1178,23 +1271,27 @@ def next_auto() -> tuple[str, int] | None:
     A `fix` leads while one of the TRIAGE_FIX_HUNT_LIMIT slots is free, so the
     agent lane stays filled while the mechanical backlog drains around it; a
     parked fix holds its slot until someone decides on it, which is what bounds
-    the unattended spend. With the slots full the mechanical pool runs."""
-    fix_slots = settings.fix_hunt_limit() - _auto_fixes_in_flight()
-    best_fix: tuple[tuple[int, int, float, int], int] | None = None
-    best_mech: tuple[tuple[int, int, float, int], str, int] | None = None
+    the unattended spend. A `describe` has its own slots of the same size and
+    comes next: one read-only agent, no sandbox. With the slots full the
+    mechanical pool runs."""
+    limit = settings.fix_hunt_limit()
+    slots = {"fix": limit - _auto_in_flight("fix"),
+             "describe": limit - _auto_in_flight("describe")}
+    best: dict[str, tuple[tuple[int, int, float, int], str, int]] = {}
     for n, rec in data.prs().items():
         action = auto_fixable(rec)
         if action is None:
             continue
+        lane = action if action in slots else "mechanical"
+        if lane != "mechanical" and slots[lane] <= 0:
+            continue
         key = _hunt_key(rec, action, n)
-        if action == "fix":
-            if fix_slots > 0 and (best_fix is None or key < best_fix[0]):
-                best_fix = (key, n)
-        elif best_mech is None or key < best_mech[0]:
-            best_mech = (key, action, n)
-    if best_fix is not None:
-        return ("fix", best_fix[1])
-    return (best_mech[1], best_mech[2]) if best_mech else None
+        if lane not in best or key < best[lane][0]:
+            best[lane] = (key, action, n)
+    for lane in ("fix", "describe", "mechanical"):
+        if lane in best:
+            return (best[lane][1], best[lane][2])
+    return None
 
 
 def _beat_loop() -> None:

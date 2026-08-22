@@ -608,9 +608,9 @@ export interface RunnerHost {
 /** An autofix action the push bot may run on a contributor's PR head branch.
  *  `update` merges the base branch in, `rebase` replays the PR onto current
  *  base behind a pinned lease, `fix` has an agent author a change. */
-export type FixAction = "update" | "rebase" | "fix";
+export type FixAction = "update" | "rebase" | "fix" | "describe";
 
-/** Every action a request can carry: the three queueable actions plus
+/** Every action a request can carry: the four queueable actions plus
  *  `resolve`, which the worker records when it escalates a conflicted rebase
  *  to an agent-authored merge resolution. */
 export type FixRequestAction = FixAction | "resolve";
@@ -656,6 +656,10 @@ export interface FixResult {
   resolutions?: { path: string; rationale: string }[] | null;
   /** Per-file rationale from the authoring agent (action `fix`). */
   changes?: { path: string; rationale: string }[] | null;
+  /** The rewritten PR description (action `describe`), and the author's text
+   *  it replaces. */
+  body?: string | null;
+  previous_body?: string | null;
   /** The refuting reviewer's judgment of an authored fix. Present on a parked
    *  fix and on one it rejected — a rejection is the interesting half. */
   review_verdict?: { verdict: "safe" | "unsafe"; reason: string;

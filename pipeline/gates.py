@@ -22,7 +22,7 @@ import re
 import shlex
 from typing import TYPE_CHECKING
 
-from pipeline import codeowners, diffpaths, profile, review_policy, reviewers, settings
+from pipeline import codeowners, describe_pr, diffpaths, profile, review_policy, reviewers, settings
 from pipeline.freshness import currency_failure, is_current
 
 if TYPE_CHECKING:
@@ -554,7 +554,7 @@ def fix_eligibility(pr: Pr, action: str,
 # `rebase` are mechanical; `fix` has an agent author a change, and the worker
 # additionally holds it behind the deployment's TRIAGE_FIX_HUNT_FIX opt-in and
 # an in-flight cap. A `resolve` is never queued directly by anyone.
-HUNTABLE_ACTIONS = ("update", "rebase", "fix")
+HUNTABLE_ACTIONS = ("update", "rebase", "fix", "describe")
 
 
 def fix_huntable(pr: Pr, action: str,
@@ -576,6 +576,9 @@ def fix_huntable(pr: Pr, action: str,
       author moved past, and a re-review, not authored code, is what moves
       those. A scanner block excludes the PR outright: a security finding is a
       human's call.
+    - `describe` targets the PRs a reviewer fails at the current head on the
+      description alone — every open finding is about the PR body following
+      the template — which no push to the branch can clear.
 
     The operator's own click answers to fix_eligibility alone; this bar governs
     only what the hunter starts by itself.
@@ -588,7 +591,11 @@ def fix_huntable(pr: Pr, action: str,
         return False, "signals or reviews stale or missing, so the review bar is unknowable"
     review_blockers = review_policy.clean_blockers(pr, reviewers.REVIEW)
     scanner_blockers = review_policy.clean_blockers(pr, reviewers.SCANNER)
-    if action == "fix":
+    if action == "describe":
+        if not describe_pr.only_description_nits(pr):
+            return False, ("the open review findings are not all about the PR "
+                           "description, so a new description would not clear them")
+    elif action == "fix":
         if pr.ci != "passing":
             return False, f"CI is {pr.ci or 'unknown'}, not passing"
         if pr.mergeable is not True:

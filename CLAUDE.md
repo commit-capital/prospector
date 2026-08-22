@@ -152,8 +152,13 @@ Phases (each idempotent; drivers own the deterministic half, Workflow scripts th
 the phases rather than in them: a per-PR `fix_request` section any app queues and
 the worker on `TRIAGE_FIX_WORKER=1` drains, pushing to the contributor's head
 branch as the machine user. Actions are `update` (merge the base in), `rebase`
-(replay onto current base behind a pinned lease), and `fix` (an agent authors a
-change). A `fix` runs two agents inside a `resubmit prepare` clone:
+(replay onto current base behind a pinned lease), `fix` (an agent authors a
+change), and `describe` (an agent rewrites the PR description to the
+repository's `.github/PULL_REQUEST_TEMPLATE.md` — `pipeline/describe_pr.py` —
+for a PR whose every open review finding is about the description; the body is
+held to the profile's required sections and to the author's text kept verbatim,
+parks for approval, and is posted as the bot through the curated `gh pr edit`
+write, Activity-logged, with no push at all). A `fix` runs two agents inside a `resubmit prepare` clone:
 `pipeline/author_fix.py` writes the change against a goal — the operator's own
 typed guidance, else the profile's fixable gates read off every active code
 reviewer's open findings and its own summary (Greptile's reasons for a sub-bar
