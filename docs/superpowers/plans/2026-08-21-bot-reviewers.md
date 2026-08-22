@@ -45,7 +45,7 @@
 **Files:**
 - Create: `pipeline/reviewers.py`
 - Create: `pipeline/tests/test_reviewers.py`
-- Create: `pipeline/tests/fixtures/reviewers/` — JSON feeds built from the captured Paperclip payloads
+- Create: `pipeline/tests/fixtures/reviewers/` — JSON feeds built from the captured payloads
 
 **Interfaces:**
 - Produces: `Reviewer`, `REVIEW`, `SCANNER`, `REVIEWERS: dict[str, Reviewer]`, `GREPTILE/CODERABBIT/SUPERAGENT/SOCKET`, `by_login(login) -> Reviewer | None`, `by_app(slug) -> Reviewer | None`, `Bar(status, reason, ask)`, `PASS/FAIL/STALE/PENDING/NA`, `parse(reviewer, feed, head_sha, previous) -> dict | None`, `bar(reviewer, entry, head_sha, *, threshold) -> Bar`, `severity(reviewer, entry, greptile_review) -> str | None`, `open_findings(entry, head_sha) -> list[dict]`, `open_counts(entry, head_sha) -> dict[str, int]`, `digest(reviewer, entry, b, head_sha) -> dict`, `findings_for_fix(reviewer, entry, head_sha, greptile_review) -> list[dict]`, `evidence(entries, head_sha) -> list[dict]`, `summary_line(digests) -> str`, `version(reviewer, entry) -> str`, `seen_summary(prs) -> dict`, `parse_confidence_score(text) -> int | None`, `strip_html(s) -> str`, `PrFeed` (imported from review_fetch — Task 2 defines it; this task defines the dataclass in `review_fetch.py` first with no fetch logic).
@@ -1841,7 +1841,7 @@ ExecContext: `reviewers: ReviewerCap[]` (default `[]`), helper `activeReviewers(
 
 ### Task 13: Docs, env, onboarding, final gates
 
-**Files:** `CLAUDE.md` (section list adds `reviews`; trust-model/gates prose: "every active reviewer's bar"; fix-goal prose), `.env.example` (`TRIAGE_REVIEW_PROVIDER=auto|none|greptile,coderabbit,…`, `TRIAGE_REVIEWER_ACTIVE_DAYS`), `docs/deployments/paperclip.md` (review bar line), `pipeline/workflows/README.md`, `prospector_app/backend/onboarding.py` (no change unless it validates the value — verify), spec status line.
+**Files:** `CLAUDE.md` (section list adds `reviews`; trust-model/gates prose: "every active reviewer's bar"; fix-goal prose), `.env.example` (`TRIAGE_REVIEW_PROVIDER=auto|none|greptile,coderabbit,…`, `TRIAGE_REVIEWER_ACTIVE_DAYS`), the deployment doc (review bar line), `pipeline/workflows/README.md`, `prospector_app/backend/onboarding.py` (no change unless it validates the value — verify), spec status line.
 
 - [ ] **Step 1:** Edit docs. **Step 2:** Run the full gate: `uv run pytest -q`, `uv run pyright pipeline issue_triage alert_triage prospector_app/backend review-new-pr/harness`, `uv run ruff check .`, frontend build/lint. **Step 3:** Run the migration dry-run against the configured store and report the count (`uv run python pipeline/migrate_reviews.py`). **Step 4:** Commit `"Document the reviewer registry and the auto-detected review bar"`.
 

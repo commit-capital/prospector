@@ -13,7 +13,7 @@ PR page and the retrigger path all spell "Greptile". Anything else that reviews
 or scans a PR on the triaged repository is invisible, or collapses into the CI
 pass/fail signal.
 
-The triaged repository today (`paperclipai/paperclip`, checked 2026-08-21) runs:
+The triaged repository today (checked 2026-08-21) runs:
 
 | bot | what it posts | currently |
 |---|---|---|
@@ -352,7 +352,7 @@ GitHub ──feed (GraphQL + check runs)──▶ ingest.refresh_prs
 ## Testing
 
 - `pipeline/tests/test_reviewers.py`: each adapter against fixture feeds built
-  from the real Paperclip payloads captured for this design (Greptile comment +
+  from the real payloads captured from the triaged repository for this design (Greptile comment +
   failing check; CodeRabbit review + findings + walkthrough; Superagent review
   + P1/P2 threads + three checks; Socket alerts success/failure/neutral); bars
   for every status; `findings_for_fix` excludes scanners and resolved/outdated
