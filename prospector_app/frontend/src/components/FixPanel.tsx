@@ -38,6 +38,7 @@ const LABEL: Record<FixAction, string> = {
   update: "↻ Re-test against current main",
   rebase: "⟳ Resolve merge conflicts",
   fix: "🔧 Author a fix",
+  describe: "📝 Rewrite the description",
 };
 
 const HELP: Record<FixAction, string> = {
@@ -58,6 +59,11 @@ const HELP: Record<FixAction, string> = {
      + "review — nothing is pushed until you approve it. You say what to fix; a "
      + "second agent that did not write it has to fail to find a reason to "
      + "reject it, and the change has to compile, before it reaches your queue.",
+  describe: "Has an agent rewrite the PR description to follow the repository's "
+          + "pull request template, from the diff and the author's own text (kept "
+          + "verbatim). It parks for your review; approving posts it as the bot and "
+          + "asks the reviewer to look again. For PRs whose only review finding is "
+          + "the description itself.",
 };
 
 /** The queue/run state strip: where an in-flight, parked, or failed autofix
@@ -117,13 +123,17 @@ function RequestStrip({ req, runner }: { req: FixRequest; runner: FixRunner | nu
               ? "Approved — waiting for the runner to push"
               : req.action === "resolve"
                 ? "An agent resolved the merge conflicts — review & approve"
+                : req.action === "describe"
+                  ? "A new PR description is ready — review & approve"
                 : proven
                   ? `Conflicts resolvable — this ${req.action} applies cleanly`
                   : `A ${req.action} is ready for your review`}
             {req.status === "approved" && offlineChip}
           </div>
           <div className="vb-detail">
-            Nothing has been pushed to the contributor's branch yet.
+            {req.action === "describe"
+              ? "Nothing has been posted yet; approving edits the description as the bot."
+              : "Nothing has been pushed to the contributor's branch yet."}
             {pf && pf.exit === 0 && " Compile preflight passed."}
             {req.result?.message && ` Commit message: “${req.result.message}”.`}
             {req.action === "resolve" &&
@@ -245,7 +255,7 @@ export function FixAction({ req, runner, busy, resolved, onQueue, onDequeue, onA
   }
   return (
     <>
-      {(["update", "rebase", "fix"] as FixAction[]).map((action) => (
+      {(["update", "rebase", "fix", "describe"] as FixAction[]).map((action) => (
         <button key={action} className="btn-secondary sm"
           disabled={busy != null || why != null}
           onClick={() => (action === "fix" ? setGoal(DEFAULT_GOAL) : onQueue(action))}
@@ -330,6 +340,14 @@ export function FixBody({ req, runner }: { req: FixRequest | null; runner: FixRu
             The change, exactly as it would be pushed:
           </div>
           <pre className="log-tail">{req.result?.patch}</pre>
+        </>
+      )}
+      {req.result?.body && (req.status === "awaiting-review" || req.status === "approved") && (
+        <>
+          <div className="small muted" style={{ marginTop: 8 }}>
+            The description, exactly as it would be posted:
+          </div>
+          <pre className="log-tail" style={{ whiteSpace: "pre-wrap" }}>{req.result.body}</pre>
         </>
       )}
       {raw && (
