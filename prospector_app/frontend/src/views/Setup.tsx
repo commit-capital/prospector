@@ -28,20 +28,24 @@ const TEARDOWN_PARTS: { flag: "artifacts" | "vm" | "packages"; label: string; hi
     hint: "brew uninstall colima and docker; gh, jq, and node stay, other things use them" },
 ];
 
-/** The lane switches, in the order a machine is provisioned. `needs` names a
- *  readiness check that must pass first — the autofix lane is meaningless
- *  without a push identity, so its control says so rather than failing later. */
-const SWITCHES: { key: string; label: string; hint: string; needs?: string }[] = [
+/** The lane switches, in the order a machine is provisioned. `needs` names the
+ *  readiness checks that must pass first — the autofix lane is meaningless
+ *  without a push identity, and an unattended agent fix without the profile's
+ *  opt-in, so each control says so rather than failing later. */
+const SWITCHES: { key: string; label: string; hint: string; needs?: string[] }[] = [
   { key: "TRIAGE_VERIFY_WORKER", label: "Test pull requests",
     hint: "run each queued pull request's tests in a sandbox to prove the fix works — failing before the change, passing after" },
   { key: "TRIAGE_VERIFY_AUTOHUNT", label: "Look for work on its own",
     hint: "when the queue is empty, pick clean pull requests and run security reviews and verification on them unprompted" },
   { key: "TRIAGE_FIX_WORKER", label: "Prepare fixes",
     hint: "update, rebase, and draft fixes for contributors' branches — each result is parked here for approval before anything is pushed",
-    needs: "push_identity" },
-  { key: "TRIAGE_FIX_AUTOHUNT", label: "Queue fixes on its own",
+    needs: ["push_identity"] },
+  { key: "TRIAGE_FIX_AUTOHUNT", label: "Queue branch updates on its own",
     hint: "notice pull requests that have fallen behind their base branch and queue the update or rebase itself",
-    needs: "push_identity" },
+    needs: ["push_identity"] },
+  { key: "TRIAGE_FIX_HUNT_FIX", label: "Draft fixes on its own",
+    hint: "also have the agent draft a fix for mergeable, CI-passing pull requests the review scored below the bar — one attempt per head, parked here for approval",
+    needs: ["push_identity", "fix_policy"] },
 ];
 
 /** What each readiness check's subject is for, in words for someone meeting it
@@ -53,6 +57,7 @@ const EXPLAIN: Record<string, string> = {
   verify_flag: "The background process that picks up queued verification work.",
   push_identity: "The GitHub user account — yours or a dedicated one — whose SSH key pushes fixes to contributors' branches. Only autofix needs it.",
   fix_flag: "The background process that prepares branch updates, rebases, and fixes.",
+  fix_policy: "Whether profile.json opts this repository into agent-authored fixes by naming autofix.fixable_gates. Only unattended fix drafting needs it; a share bundle carries the sharer's profile.",
 };
 
 /** The lane flags whose presence means this machine has been signed up to
@@ -190,8 +195,9 @@ function WorkerSection(
   const blockers = readiness.checks.filter((c) => !c.ok && c.blocking);
   const optedIn = OPT_IN_FLAGS.some((k) => flags[k] === "1");
   const provisioned = !!(byKey.sandbox_image?.ok || byKey.base_pin?.ok);
-  const available = SWITCHES.filter(
-    (s) => s.needs == null || byKey[s.needs] == null || byKey[s.needs].ok);
+  const unmet = (s: { needs?: string[] }): string[] =>
+    (s.needs ?? []).filter((k) => byKey[k] != null && !byKey[k].ok);
+  const available = SWITCHES.filter((s) => unmet(s).length === 0);
   const allOn = available.length > 0 && available.every((s) => flags[s.key] === "1");
 
   return (
@@ -276,7 +282,8 @@ function WorkerSection(
         {" "}<span className="muted small">all of the below</span>
       </div>
       {SWITCHES.map((s) => {
-        const blocked = s.needs != null && byKey[s.needs] != null && !byKey[s.needs].ok;
+        const missing = unmet(s);
+        const blocked = missing.length > 0;
         return (
           <div key={s.key}>
             <label>
@@ -289,7 +296,9 @@ function WorkerSection(
               {" "}{s.label}
             </label>
             {" "}<span className="muted small">
-              {blocked ? `needs the ${byKey[s.needs!].label.toLowerCase()} above` : s.hint}
+              {blocked
+                ? `needs the ${missing.map((k) => byKey[k].label.toLowerCase()).join(" and ")} above`
+                : s.hint}
             </span>
           </div>
         );
@@ -570,8 +579,9 @@ function KeyFlow({ mode, onDone }: { mode: "me" | "dedicated"; onDone: () => voi
   );
 }
 
-/** A share bundle pasted on a configured machine: only its contributor-push
- *  identity is taken. */
+/** A share bundle pasted on a configured machine: its contributor-push
+ *  identity and the sharer's repository profile are taken; the repository and
+ *  store are not. */
 function PastePushIdentity({ onDone }: { onDone: () => void }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -593,8 +603,9 @@ function PastePushIdentity({ onDone }: { onDone: () => void }) {
     <div className="welcome-field">
       <p className="muted small">
         Your teammate ticks “also let the teammate's machine push fixes” under
-        “Invite a member to this project” on their Setup tab. Only the push
-        identity is taken from it here; the repository and store stay as they are.
+        “Invite a member to this project” on their Setup tab. The push identity
+        and their repository profile (the autofix policy) are taken from it
+        here; the repository and store stay as they are.
       </p>
       <textarea className="welcome-paste" value={text} rows={8} disabled={busy}
         placeholder={'{\n  "version": 2,\n  "push": { "login": "…" }\n}'}

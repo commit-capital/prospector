@@ -16,7 +16,7 @@ import socket
 from collections.abc import Callable
 from typing import TypedDict
 
-from pipeline import settings, verify_driver
+from pipeline import profile, settings, verify_driver
 from prospector_app.backend import data, fix_worker, verify_worker
 
 
@@ -83,6 +83,17 @@ def _push_identity() -> tuple[bool, str, str]:
     return True, f"pushes as {settings.push_login()}", ""
 
 
+def _fix_policy() -> tuple[bool, str, str]:
+    """Whether the profile opts this repository into agent-authored fixes,
+    which is what an unguided hunted `fix` is gated on."""
+    gates = profile.active().autofix.fixable_gates
+    if not gates:
+        return False, "profile.json names no autofix.fixable_gates", \
+            ("paste a share bundle from a machine whose profile names them, or add "
+             "autofix.fixable_gates to profile.json")
+    return True, f"profile names fixable gates: {', '.join(gates)}", ""
+
+
 def _verify_flag() -> tuple[bool, str, str]:
     if not verify_worker.enabled():
         return False, "TRIAGE_VERIFY_WORKER is not set", "turn the verify worker on"
@@ -108,6 +119,7 @@ _CHECKS: list[tuple[str, str, Callable[[], tuple[bool, str, str]], bool]] = [
     ("verify_flag", "Verify worker", _verify_flag, True),
     ("push_identity", "Contributor-push identity", _push_identity, False),
     ("fix_flag", "Autofix worker", _fix_flag, False),
+    ("fix_policy", "Agent-fix policy", _fix_policy, False),
 ]
 
 

@@ -1151,7 +1151,7 @@ export interface SetupReadiness {
   autofix_ready: boolean;
 }
 
-/** The five worker lane switches, the only .env keys the lane writer may touch. */
+/** The six worker lane switches, the only .env keys the lane writer may touch. */
 export type WorkerFlags = Record<string, string>;
 
 /** Where this checkout stands on the setup ladder. */

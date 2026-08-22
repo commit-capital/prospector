@@ -260,7 +260,9 @@ def reconfigure(applied: dict[str, str]) -> None:
 
 def apply_bundle(step: str, bundle: Bundle) -> dict[str, object]:
     """Apply a pasted bundle as `step`: `join` takes all of it; `worker` takes
-    its contributor-push identity alone and refuses a bundle carrying none."""
+    its contributor-push identity and its profile — the sharer's current
+    repository policy, which is where the agent-fix opt-in lives — and refuses
+    a bundle carrying no identity. The env never comes along in `worker`."""
     if step == "join":
         return apply(step, bundle.env, bundle.profile,
                      bot_key_pem=bundle.bot_key_pem, push=bundle.push)
@@ -269,7 +271,7 @@ def apply_bundle(step: str, bundle: Bundle) -> dict[str, object]:
             raise ValueError(
                 "this bundle carries no contributor-push identity — the sharer "
                 "ticks “also let the teammate's machine push fixes” to include it")
-        return apply(step, {}, None, push=bundle.push)
+        return apply(step, {}, bundle.profile, push=bundle.push)
     raise ValueError(f"a bundle is not pasted into step {step}")
 
 

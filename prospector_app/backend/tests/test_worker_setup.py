@@ -58,6 +58,12 @@ class TestSetFlags:
         with pytest.raises(ValueError, match="TRIAGE_VERIFY_WORKER"):
             worker_control.set_flags({"TRIAGE_VERIFY_WORKER": "yes"})
 
+    def test_the_hunt_fix_switch_is_a_lane_switch(self, env_path):
+        worker_control.set_flags({"TRIAGE_FIX_HUNT_FIX": "1"})
+        assert "TRIAGE_FIX_HUNT_FIX=1" in env_path.read_text()
+        with pytest.raises(ValueError, match="TRIAGE_FIX_HUNT_FIX"):
+            worker_control.set_flags({"TRIAGE_FIX_HUNT_FIX": "yes"})
+
     def test_a_refused_write_leaves_the_file_untouched(self, env_path):
         before = env_path.read_text()
         with pytest.raises(ValueError):
@@ -121,6 +127,27 @@ class TestReadiness:
         assert report["autofix_ready"] is False
 
 
+
+    def test_fix_policy_row_reads_the_profiles_fixable_gates(self, monkeypatch):
+        """The row the hunt-fix switch waits on: an unguided fix needs the
+        profile's opt-in, so a machine whose profile names none is told where
+        the gates come from."""
+        from pipeline import profile
+        opted = profile.parse_profile(
+            {"version": 1, "autofix": {"fixable_gates": ["ci", "review"]}}, "test")
+        monkeypatch.setattr(profile, "active", lambda: opted)
+        ok, detail, remedy = worker_readiness._fix_policy()
+        assert ok and "ci, review" in detail
+
+        monkeypatch.setattr(profile, "active", lambda: profile.parse_profile({"version": 1}, "test"))
+        ok, detail, remedy = worker_readiness._fix_policy()
+        assert not ok
+        assert "fixable_gates" in detail
+        assert "paste" in remedy
+
+    def test_fix_policy_row_never_blocks_readiness(self):
+        row = next(c for c in worker_readiness.checks() if c["key"] == "fix_policy")
+        assert row["blocking"] is False
 
     def test_sandbox_row_names_the_images_built_under_other_tags(self, monkeypatch):
         """The image the profile's pin names is missing while an image built
