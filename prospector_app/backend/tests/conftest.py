@@ -3,6 +3,7 @@ snapshot between tests, and provide a throwaway SQLite store."""
 from __future__ import annotations
 
 import tempfile
+import time
 
 import pytest
 
@@ -33,6 +34,14 @@ def _cold_data_snapshot(monkeypatch):
     # snapshot — a monkeypatched corpus must never serve another test's rows.
     monkeypatch.setattr(service, "_ROW_CACHE", {})
     monkeypatch.setattr(service, "_ROW_CACHE_KEY", None)
+    yield
+    # A freshen a test kicked onto a daemon thread publishes under _check_lock and
+    # releases it last; let it finish so it never blocks the next test's cold load
+    # or publishes into that test's snapshot.
+    for _ in range(250):
+        if not data._check_lock.locked():
+            break
+        time.sleep(0.02)
 
 
 @pytest.fixture
