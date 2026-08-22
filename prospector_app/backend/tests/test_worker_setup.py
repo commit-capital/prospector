@@ -121,3 +121,28 @@ class TestReadiness:
         assert report["autofix_ready"] is False
 
 
+
+    def test_sandbox_row_names_the_images_built_under_other_tags(self, monkeypatch):
+        """The image the profile's pin names is missing while an image built
+        under another tag sits in the daemon: the row says which, so the fix
+        reads as a rebuild under the current tag rather than a first build."""
+        vd = worker_readiness.verify_driver
+        monkeypatch.setattr(vd, "sandbox_image", lambda: "pr-verify:pnpm-9.15.4")
+        monkeypatch.setattr(vd, "daemon_available", lambda: True)
+        monkeypatch.setattr(vd, "image_exists", lambda tag: False)
+        monkeypatch.setattr(vd, "sandbox_images", lambda: ["pr-verify:local"])
+        ok, detail, remedy = worker_readiness._sandbox_image()
+        assert ok is False
+        assert "pr-verify:pnpm-9.15.4 is not built" in detail
+        assert "pr-verify:local" in detail
+        assert remedy == "run build-image here"
+
+    def test_sandbox_row_with_no_image_at_all_reads_as_a_first_build(self, monkeypatch):
+        vd = worker_readiness.verify_driver
+        monkeypatch.setattr(vd, "sandbox_image", lambda: "pr-verify:pnpm-9.15.4")
+        monkeypatch.setattr(vd, "daemon_available", lambda: True)
+        monkeypatch.setattr(vd, "image_exists", lambda tag: False)
+        monkeypatch.setattr(vd, "sandbox_images", lambda: [])
+        ok, detail, remedy = worker_readiness._sandbox_image()
+        assert (ok, detail, remedy) == (
+            False, "pr-verify:pnpm-9.15.4 is not built", "run build-image here")

@@ -815,3 +815,13 @@ class Store:
         hosts = dict(self.load_verify_base_hosts())
         hosts[str(record["host"])] = record
         self._save_registry("verify_base", {"hosts": hosts})
+
+    def clear_verify_base(self, host: str) -> bool:
+        """Drop `host`'s pin from the registry — the machine has removed the
+        clone and image it named. Returns whether there was one."""
+        hosts = dict(self.load_verify_base_hosts())
+        if host not in hosts:
+            return False
+        del hosts[host]
+        self._save_registry("verify_base", {"hosts": hosts})
+        return True

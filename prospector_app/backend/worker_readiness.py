@@ -45,6 +45,11 @@ def _sandbox_image() -> tuple[bool, str, str]:
     if not verify_driver.daemon_available():
         return False, "cannot look: the Docker daemon is not answering", "start Docker"
     if not verify_driver.image_exists(tag):
+        others = [t for t in verify_driver.sandbox_images() if t != tag]
+        if others:
+            # Naming the image already here tells the operator this is a rebuild.
+            return False, (f"{tag} is not built; this machine has {', '.join(others)}, "
+                           f"built for a different pnpm pin"), "run build-image here"
         return False, f"{tag} is not built", "run build-image here"
     return True, f"{tag} present", ""
 

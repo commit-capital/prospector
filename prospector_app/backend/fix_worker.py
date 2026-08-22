@@ -364,11 +364,11 @@ def _log_run(n: int, req: dict, status: str, detail: str | None = None,
         traceback.print_exc()
 
 
-def _fail(n: int, req: dict, message: str) -> None:
+def _fail(n: int, req: dict, message: str, result: dict | None = None) -> None:
     data.store().edit_pr(n).record_fix_request(
         "failed", req.get("action", "fix"), queued_at=req.get("queued_at"),
         started_at=req.get("started_at"), finished_at=_now(),
-        error=message[-TAIL_CHARS:], source=req.get("source"),
+        error=message[-TAIL_CHARS:], result=result, source=req.get("source"),
         guidance=req.get("guidance"), host=socket.gethostname(),
         head_sha=req.get("against_head_sha"))
     data.refresh()
@@ -406,6 +406,17 @@ def recheck_eligibility(n: int, action: str,
                                  guided=bool(guidance))
 
 
+def _end_on_preflight(n: int, claimed: dict, pf: dict, result: dict) -> None:
+    """Write the ending for a compile preflight that did not clear, after
+    discarding the worktree. An `error` is the sandbox failing to run at all —
+    this machine's problem, a `failed` the hunter retries once it cools —
+    while a refusal or a compile that exits non-zero is a verdict on the
+    change."""
+    _resubmit(n, "abort")
+    ending = _fail if pf.get("error") else _refuse
+    ending(n, claimed, plain_preflight(pf), result=result)
+
+
 def run_one(n: int) -> None:
     """Act on one claimed PR. Every exit writes a terminal status, so a request
     never sits `running` after this returns."""
@@ -431,10 +442,9 @@ def run_one(n: int) -> None:
         if pf is not None:
             pf_ok, pf_why = gates.compile_preflight_gate(pf)
             if not pf_ok:
-                _resubmit(n, "abort")
-                _refuse(n, claimed, plain_preflight(pf),
-                        result={"patch": patch[-TAIL_CHARS:], "compile_preflight": pf,
-                                "detail": pf_why})
+                _end_on_preflight(n, claimed, pf,
+                                  {"patch": patch[-TAIL_CHARS:], "compile_preflight": pf,
+                                   "detail": pf_why})
                 return
         result = {"patch": patch[-TAIL_CHARS:], "compile_preflight": pf,
                   "message": _commit_message(action)}
@@ -627,7 +637,7 @@ def _author_fix(n: int, claimed: dict) -> None:
                                     diff_path=str(pr_patch), head_sha=rec.head_sha)
     except (RuntimeError, ValueError) as e:
         _resubmit(n, "abort")
-        _refuse(n, claimed, f"The agent attempt did not land: {e}")
+        _fail(n, claimed, f"The agent attempt did not land: {e}")
         return
     if "give_up" in verdict:
         _resubmit(n, "abort")
@@ -680,6 +690,11 @@ def _author_fix(n: int, claimed: dict) -> None:
                                review_summary=review_summary)
     evidence = {"patch": patch, "changes": verdict["changes"],
                 "review_verdict": review}
+    if review.get("failed"):
+        _resubmit(n, "abort")
+        _fail(n, claimed, f"The reviewing agent did not reach a verdict: "
+                          f"{review['reason']}", result=evidence)
+        return
     if review["verdict"] != "safe":
         _resubmit(n, "abort")
         _refuse(n, claimed, f"The reviewing agent rejected the change: "
@@ -691,9 +706,8 @@ def _author_fix(n: int, claimed: dict) -> None:
     if pf is not None:
         pf_ok, pf_why = gates.compile_preflight_gate(pf)
         if not pf_ok:
-            _resubmit(n, "abort")
-            _refuse(n, claimed, plain_preflight(pf),
-                    result={**evidence, "compile_preflight": pf, "detail": pf_why})
+            _end_on_preflight(n, claimed, pf,
+                              {**evidence, "compile_preflight": pf, "detail": pf_why})
             return
 
     result = {**evidence, "compile_preflight": pf,
@@ -807,11 +821,10 @@ def _agent_resolve(n: int, claimed: dict, paused: list[str]) -> None:
     if pf is not None:
         pf_ok, pf_why = gates.compile_preflight_gate(pf)
         if not pf_ok:
-            _resubmit(n, "abort")
-            _refuse(n, claimed, plain_preflight(pf),
-                    result={"patch": patch[-TAIL_CHARS:], "compile_preflight": pf,
-                            "detail": pf_why, "merge_diff": merge_diff,
-                            "conflict_paths": paused})
+            _end_on_preflight(n, claimed, pf,
+                              {"patch": patch[-TAIL_CHARS:], "compile_preflight": pf,
+                               "detail": pf_why, "merge_diff": merge_diff,
+                               "conflict_paths": paused})
             return
 
     result = {"patch": patch[-TAIL_CHARS:], "compile_preflight": pf,
@@ -1049,20 +1062,48 @@ def _retrigger_review(n: int) -> None:
 
 # Terminal fix_request statuses. A cancelled request counts as an attempt: an
 # operator saying no to this head is not an invitation to try it again.
-_TERMINAL = ("pushed", "refused", "failed", "cancelled")
+# The endings that are a verdict on a head: the action pushed, was refused on
+# the code or the policy, or an operator cancelled it. These rest the PR until
+# the author pushes.
+_VERDICT_ENDINGS = ("pushed", "refused", "cancelled")
+
+# A `failed` ending is the machine's, not the PR's — a diff GitHub did not
+# answer, a worker restart mid-run, an agent that never finished, a sandbox
+# that could not run. The hunter may try that head again once the failure is
+# this old, so a machine that recovers picks the PR back up on its own.
+FAILED_RETRY_COOLDOWN_SECONDS = 3600
+
+
+def _cooled_down(finished_at: str | None) -> bool:
+    """Whether a failed ending stamped `finished_at` is old enough to retry. An
+    absent or unreadable stamp reads as cooled."""
+    try:
+        ended = datetime.fromisoformat(str(finished_at).replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if ended.tzinfo is None:
+        ended = ended.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - ended).total_seconds() >= FAILED_RETRY_COOLDOWN_SECONDS
 
 
 def _hunt_attempted(pr: Pr, action: str) -> bool:
-    """Whether this PR's current head already had its unattended attempt at
-    `action`. The stamp a moved head no longer matches is what re-arms the PR —
-    a refused rebase stays refused until the author pushes, so re-running it
-    every sweep would pin the hunter to the same few conflicted PRs. An
-    operator's click is not bound by this; re-queueing by hand is how a
-    restart-orphaned run is retried at the same head."""
+    """Whether this PR's current head is resting from the hunter at `action`.
+    A verdict ending rests it until the author pushes — a refused rebase
+    re-run every sweep would pin the hunter to the same few conflicted PRs. A
+    failed ending rests it for FAILED_RETRY_COOLDOWN_SECONDS only: it says
+    nothing about the code, so the PR is not rested on it. The stamp a moved
+    head no longer matches re-arms the PR either way. An operator's click is
+    not bound by any of this."""
     req = pr.fix_request or {}
-    return (req.get("action") == action and req.get("status") in _TERMINAL
-            and pr.head_sha is not None
-            and req.get("against_head_sha") == pr.head_sha)
+    if not (req.get("action") == action and pr.head_sha is not None
+            and req.get("against_head_sha") == pr.head_sha):
+        return False
+    status = req.get("status")
+    if status in _VERDICT_ENDINGS:
+        return True
+    if status == "failed":
+        return not _cooled_down(req.get("finished_at"))
+    return False
 
 
 def _auto_fixes_in_flight() -> int:

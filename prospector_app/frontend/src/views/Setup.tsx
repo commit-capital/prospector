@@ -8,6 +8,18 @@ import { useRepoMeta } from "../RepoMetaContext";
 const POLL_MS = 5000;
 
 const COMMAND = "./setup-worker-machine.sh";
+const TEARDOWN = "./teardown-worker-machine.sh";
+
+/** What `teardown-worker-machine.sh` removes beyond the lane switches, one
+ *  option per checkbox; the page composes the command from them. */
+const TEARDOWN_PARTS: { flag: "artifacts" | "vm" | "packages"; label: string; hint: string }[] = [
+  { flag: "artifacts", label: "Remove this machine's sandbox artifacts",
+    hint: "the base images, the hardened sandbox image, the scratch clone under ~/.pr-triage-verify, and this machine's base pin in the store — several gigabytes" },
+  { flag: "vm", label: "Delete the Docker VM",
+    hint: "stops and deletes the Colima VM, which reserves 12 GB of memory while it runs" },
+  { flag: "packages", label: "Uninstall the container runtime",
+    hint: "brew uninstall colima and docker; gh, jq, and node stay, other things use them" },
+];
 
 /** The lane switches, in the order a machine is provisioned. `needs` names a
  *  readiness check that must pass first — the autofix lane is meaningless
@@ -111,6 +123,10 @@ export default function Setup() {
   if (!readiness) return <div className="pad muted">reading this machine…</div>;
 
   const optedIn = OPT_IN_FLAGS.some((k) => flags[k] === "1");
+  // Artifacts on disk mean the machine was provisioned, whatever its switches
+  // say now; the unprovision card lives in the worker section, so that stays.
+  const provisioned = readiness.checks.some(
+    (c) => (c.key === "sandbox_image" || c.key === "base_pin") && c.ok);
 
   return (
     <div className="pad">
@@ -120,7 +136,7 @@ export default function Setup() {
         work is provisioned on its own; the Control tab reports the whole fleet.
       </p>
 
-      {optedIn || expanded
+      {optedIn || expanded || provisioned
         ? <WorkerSection readiness={readiness} flags={flags} busy={busy} onToggle={toggle} />
         : <ProvisionBanner onStart={() => setExpanded(true)} />}
 
@@ -148,9 +164,10 @@ function ProvisionBanner({ onStart }: { onStart: () => void }) {
   );
 }
 
-/** Everything about this machine as a work processor: whether it is running,
- *  what it still needs, and which work it does. A machine that has never opted
- *  in gets a first-time framing; a signed-up machine gets its status plainly. */
+/** One card for everything about this machine as a work processor: whether it
+ *  is running, what it still needs, and which work it does. A machine that has
+ *  never opted in gets a first-time framing; a signed-up machine gets its
+ *  status plainly. */
 function WorkerSection(
   { readiness, flags, busy, onToggle }: {
     readiness: SetupReadiness;
@@ -163,21 +180,26 @@ function WorkerSection(
   const byKey = Object.fromEntries(readiness.checks.map((c) => [c.key, c]));
   const blockers = readiness.checks.filter((c) => !c.ok && c.blocking);
   const optedIn = OPT_IN_FLAGS.some((k) => flags[k] === "1");
+  const provisioned = !!(byKey.sandbox_image?.ok || byKey.base_pin?.ok);
   const available = SWITCHES.filter(
     (s) => s.needs == null || byKey[s.needs] == null || byKey[s.needs].ok);
   const allOn = available.length > 0 && available.every((s) => flags[s.key] === "1");
 
   return (
-    <>
-      {optedIn && (
-        <h3>
-          {readiness.ready
-            ? <span className="chip chip-green">processing work</span>
-            : <span className="chip chip-red">not processing work</span>}
-          {" "}
-          {readiness.autofix_ready && <span className="chip chip-green">autofix on</span>}
-        </h3>
-      )}
+    <section className="setup-card setup-queues">
+      <h3>
+        ⚙️ Automatic Work Queues
+        {optedIn && (
+          <>
+            {" "}
+            {readiness.ready
+              ? <span className="chip chip-green">processing work</span>
+              : <span className="chip chip-red">not processing work</span>}
+            {" "}
+            {readiness.autofix_ready && <span className="chip chip-green">autofix on</span>}
+          </>
+        )}
+      </h3>
 
       {!optedIn && (
         <p className="muted small">
@@ -222,7 +244,7 @@ function WorkerSection(
         </tbody>
       </table>
 
-      <h3>What work should this machine do?</h3>
+      <h4>What work should this machine do?</h4>
       <p className="muted small">
         Saved on this machine and applied immediately. Choices that need
         something not yet set up stay off until it is.
@@ -259,7 +281,90 @@ function WorkerSection(
           </div>
         );
       })}
-    </>
+
+      {(optedIn || provisioned) && (
+        <UnprovisionSection
+          anyOn={SWITCHES.some((s) => flags[s.key] === "1")}
+          canStart={available.length > 0}
+          busy={busy}
+          onStop={() => onToggle(Object.fromEntries(SWITCHES.map((s) => [s.key, false])))}
+          onStart={() => onToggle(Object.fromEntries(available.map((s) => [s.key, true])))}
+        />
+      )}
+    </section>
+  );
+}
+
+/** Taking this machine back out of the work queues, in tiers: one click stops
+ *  the work (every lane off, threads stop, nothing removed — and one click
+ *  brings it back); the checkboxes compose the teardown command that removes
+ *  what provisioning installed, run in the operator's own terminal like
+ *  provisioning is, since it reaches brew and the VM. */
+function UnprovisionSection(
+  { anyOn, canStart, busy, onStop, onStart }: {
+    anyOn: boolean; canStart: boolean; busy: string | null;
+    onStop: () => void; onStart: () => void;
+  },
+) {
+  const [more, setMore] = useState(false);
+  const [parts, setParts] = useState<Record<string, boolean>>({});
+  const [copied, setCopied] = useState(false);
+  const command = [TEARDOWN, ...TEARDOWN_PARTS.filter((p) => parts[p.flag]).map((p) => `--${p.flag}`)].join(" ");
+
+  return (
+    <section className="setup-card">
+      <h3>⏏️ Unprovision this computer</h3>
+      {anyOn
+        ? <>
+            <p className="muted small">
+              Stops running work here: every lane above goes off and the worker
+              threads stop. Nothing installed is removed, so it comes back in one
+              click.
+            </p>
+            <button disabled={busy != null} onClick={onStop}>stop running work on this computer</button>
+          </>
+        : <>
+            <p className="muted small">
+              This computer is not running work.
+              {canStart && " Turn it back on in one click, or remove what provisioning installed below."}
+            </p>
+            {canStart && <button disabled={busy != null} onClick={onStart}>start running work again</button>}
+          </>}
+      <p>
+        <button className="link-btn" onClick={() => setMore(!more)}>
+          {more ? "▾" : "▸"} Also remove what provisioning installed…
+        </button>
+      </p>
+      {more && (
+        <div>
+          {anyOn && (
+            <p className="muted small">Stop running work first — the options stay off while a lane is on.</p>
+          )}
+          {TEARDOWN_PARTS.map((p) => (
+            <div key={p.flag}>
+              <label>
+                <input type="checkbox" checked={!!parts[p.flag]} disabled={anyOn}
+                  onChange={(e) => setParts({ ...parts, [p.flag]: e.target.checked })} />
+                {" "}{p.label}
+              </label>
+              {" "}<span className="muted small">{p.hint}</span>
+            </div>
+          ))}
+          <p>Run it in your own terminal, from the repo root:</p>
+          <pre className="log-tail">{command}</pre>
+          <button disabled={anyOn}
+            onClick={() => { void navigator.clipboard.writeText(command); setCopied(true); }}>
+            {copied ? "copied" : "copy command"}
+          </button>
+          <p className="muted small">
+            With no option it only turns the lane switches off; each option above
+            adds what it names. The script confirms each step (<code>--yes</code>
+            {" "}skips the prompts), and the rows above go back to “needed” as it
+            works through them.
+          </p>
+        </div>
+      )}
+    </section>
   );
 }
 

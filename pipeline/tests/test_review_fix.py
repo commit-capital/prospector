@@ -57,22 +57,27 @@ def test_the_patch_and_goal_reach_the_prompt(monkeypatch):
     assert "Clear the outstanding review findings." in r["calls"]["prompt"]
 
 
-def test_malformed_output_reads_as_unsafe(monkeypatch):
-    # A reviewer that did not answer the question has not cleared anything.
+def test_malformed_output_reads_as_unsafe_and_as_no_verdict(monkeypatch):
+    # A reviewer that did not answer the question has not cleared anything, and
+    # has not judged anything either.
     out = _run(monkeypatch, "I think it's probably fine?")["out"]
     assert out["verdict"] == "unsafe"
+    assert out["failed"] is True
 
 
 def test_an_unrecognized_verdict_reads_as_unsafe(monkeypatch):
+    # An answer that names a verdict, however hedged, is the reviewer's judgment.
     out = _run(monkeypatch, json.dumps({"verdict": "mostly safe", "reason": "eh"}))["out"]
     assert out["verdict"] == "unsafe"
+    assert "failed" not in out
 
 
-def test_a_crashed_reviewer_reads_as_unsafe(monkeypatch):
+def test_a_crashed_reviewer_reads_as_unsafe_and_as_no_verdict(monkeypatch):
     # The push side must never be reachable by killing the reviewer.
     out = _run(monkeypatch, RuntimeError("claude did not exit within 900s"))["out"]
     assert out["verdict"] == "unsafe"
     assert "900s" in out["reason"]
+    assert out["failed"] is True
 
 
 @pytest.mark.parametrize("reply", ["", "{}", json.dumps({"reason": "no verdict"})])

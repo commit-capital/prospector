@@ -246,19 +246,27 @@ def image_exists(image: str) -> bool:
     return p.returncode == 0
 
 
+def sandbox_images() -> list[str]:
+    return verify_gc.sandbox_images()
+
+
 def collect_garbage(pinned_sha: str | None, *, dry_run: bool = False) -> dict:
     """Reclaim base artifacts outside the retention rule, reporting the result.
     Wrapped so that tidying up can never fail the pin it runs alongside."""
     try:
-        result = verify_gc.collect(pinned_sha, dry_run=dry_run)
+        result = verify_gc.collect(pinned_sha, sandbox_tag=sandbox_image(), dry_run=dry_run)
     except Exception as e:
-        result = {"ok": False, "keep": [], "reclaimed": [],
+        result = {"ok": False, "keep": [], "reclaimed": [], "sandbox_reclaimed": [],
                   "error": f"{type(e).__name__}: {e}"}
     if result.get("error"):
         print(f"base GC did not complete: {result['error']}", file=sys.stderr)
-    elif result.get("reclaimed"):
-        print(f"base GC reclaimed {len(result['reclaimed'])} generation(s): "
-              f"{', '.join(result['reclaimed'])}", file=sys.stderr)
+    else:
+        if result.get("reclaimed"):
+            print(f"base GC reclaimed {len(result['reclaimed'])} generation(s): "
+                  f"{', '.join(result['reclaimed'])}", file=sys.stderr)
+        if result.get("sandbox_reclaimed"):
+            print(f"base GC reclaimed sandbox image(s): "
+                  f"{', '.join(result['sandbox_reclaimed'])}", file=sys.stderr)
     return result
 
 
@@ -1455,13 +1463,13 @@ def build_image() -> str:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("cmd", choices=["prepare-base", "build-image", "gc"])
+    ap.add_argument("cmd", choices=["prepare-base", "build-image", "gc", "teardown"])
     ap.add_argument("--base-sha", default=None)
     ap.add_argument("--tier", type=int, default=0, choices=[0, 1],
                     help="the tier to build the base image at. verify_pr reads it "
                          "back from the pin.")
     ap.add_argument("--dry-run", action="store_true",
-                    help="gc only: report what would be reclaimed, remove nothing")
+                    help="gc and teardown: report what would go, remove nothing")
     ap.add_argument("--store", default=None)
     args = ap.parse_args(argv)
 
@@ -1471,12 +1479,29 @@ def main(argv: list[str] | None = None) -> int:
 
     store = Store(args.store) if args.store else Store()
 
+    if args.cmd == "teardown":
+        result = verify_gc.teardown(dry_run=args.dry_run)
+        verb = "would remove" if args.dry_run else "removed"
+        print(f"{verb} images: {', '.join(result['images']) or 'none'}")
+        if result["kept_images"]:
+            print(f"still held (a container is using them): {', '.join(result['kept_images'])}")
+        print(f"{verb} scratch: {result['scratch'] or 'nothing there'}")
+        if not args.dry_run:
+            host = socket.gethostname()
+            had = store.clear_verify_base(host)
+            print(f"cleared this machine's base pin ({host})" if had
+                  else f"no base pin recorded for {host}")
+        if result["error"]:
+            print(f"teardown did not complete: {result['error']}", file=sys.stderr)
+        return 0 if result["ok"] else 1
+
     if args.cmd == "gc":
         result = collect_garbage(local_pin(store).get("base_sha"),
                                  dry_run=args.dry_run)
         verb = "would reclaim" if args.dry_run else "reclaimed"
+        gone = result["reclaimed"] + result.get("sandbox_reclaimed", [])
         print(f"keeping {', '.join(result['keep']) or 'nothing'}; "
-              f"{verb} {', '.join(result['reclaimed']) or 'nothing'}")
+              f"{verb} {', '.join(gone) or 'nothing'}")
         return 0 if result["ok"] else 1
 
     tag = prepare_base(store, base_sha=args.base_sha, tier=args.tier)

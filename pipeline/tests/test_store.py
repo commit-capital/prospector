@@ -517,6 +517,15 @@ class TestVerifyBaseRegistry:
         s.save_verify_base(self._pin(host="mac"))
         assert s.load_verify_base("linux")["base_sha"] is None
 
+    def test_clearing_a_pin_touches_only_that_machine(self, tmp_path):
+        s = Store(tmp_path)
+        s.save_verify_base(self._pin(host="mac", base_sha="a" * 12))
+        s.save_verify_base(self._pin(host="linux", base_sha="b" * 12))
+        assert s.clear_verify_base("mac") is True
+        assert s.load_verify_base("mac")["base_sha"] is None
+        assert s.load_verify_base("linux")["base_sha"] == "b" * 12
+        assert s.clear_verify_base("mac") is False
+
     def test_a_flat_pin_reads_as_the_machine_that_prepared_it(self, tmp_path):
         """A pin written before the registry was keyed by hostname names its
         machine in `prepared_on`, so that machine keeps the base it built."""

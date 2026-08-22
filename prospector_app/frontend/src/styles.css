@@ -1339,7 +1339,7 @@ tr.row-done:hover > td { opacity: 1; }
    top, the sample table of its highest-pain member PRs below); the backstop
    card lays the two parts side by side. Every headline links into the PR
    Explorer. */
-.home { max-width: 1080px; }
+.home { max-width: 1440px; }
 .home-head { margin-bottom: 16px; }
 .home-head h2 { margin: 0 0 4px; }
 .home-columns { display: flex; gap: 12px; align-items: flex-start; margin-bottom: 10px; }
@@ -1381,8 +1381,15 @@ tr.row-done:hover > td { opacity: 1; }
 .home-sample-pain { width: 76px; text-align: right; color: var(--muted); }
 .home-sample-issues { width: 128px; text-align: right; }
 .home-sample-issues .issue-prs { flex-wrap: nowrap; justify-content: flex-end; max-width: 100%; }
+.home-sample-run { width: 72px; text-align: right; }
+.home-row-run { white-space: nowrap; }
 .home-show-all { margin-top: 4px; align-self: flex-end; color: var(--accent); text-decoration: none; }
 .home-show-all:hover { text-decoration: underline; }
+.home-card-action {
+  display: flex; align-items: center; gap: 8px; padding: 8px 12px; min-width: 0;
+  border-top: 1px solid var(--border);
+}
+.home-action-tail { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media (max-width: 860px) {
   .home-columns { flex-direction: column; }
   .home-card { flex-direction: column; }
@@ -1424,6 +1431,12 @@ tr.row-done:hover > td { opacity: 1; }
 .setup-card > h3 { margin: 0 0 6px; font-size: 14px; }
 .setup-card > p { margin: 0 0 10px; }
 .setup-offer { border-color: var(--accent); }
+/* The Automatic Work Queues pane: one accent-bordered card holds every worker
+   control, and the card nested inside it sits on the page background so it
+   reads as a sub-section. */
+.setup-queues { border-color: var(--accent); }
+.setup-queues > h4 { margin: 18px 0 6px; font-size: 13px; }
+.setup-queues .setup-card { background: var(--bg); }
 /* Sits well below the machine's own controls: this card is about a different
    computer, and the gap is what says so. */
 .setup-share { margin-top: 34px; }

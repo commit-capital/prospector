@@ -317,3 +317,152 @@ class TestCollect:
         result = gc.collect("a" * 12)
         assert (tmp_path / "base" / ("c" * 12)).is_dir()
         assert result["reclaimed"] == []
+
+
+class TestTeardown:
+    """Unprovisioning removes every base generation, every sandbox image, and the
+    scratch root — the pinned SHA included, since the pin goes with them."""
+
+    def _stub(self, monkeypatch, tmp_path, *, rmi_ok=True):
+        removed: list[str] = []
+        pruned: list[int] = []
+        scratch = tmp_path / "scratch"
+        (scratch / "base" / ("a" * 12) / "src").mkdir(parents=True)
+        (scratch / "base" / ("b" * 12)).mkdir(parents=True)
+        (scratch / "other-file").write_text("x")
+        monkeypatch.setattr(gc, "SCRATCH", scratch)
+        monkeypatch.setattr(gc, "_base_images", lambda: {
+            "a" * 12: [(f"pr-verify-base:{'a' * 12}-t1", NOW)],
+            "b" * 12: [(f"pr-verify-base:{'b' * 12}-t0", NOW),
+                        (f"pr-verify-base:{'b' * 12}-t1", NOW)]})
+        monkeypatch.setattr(gc, "_rmi", lambda image: (removed.append(image), rmi_ok)[1])
+        monkeypatch.setattr(gc, "_prune_build_leftovers", lambda: pruned.append(1))
+        from pipeline import verify_driver
+        monkeypatch.setattr(verify_driver, "sandbox_image", lambda: "pr-verify:pnpm-9.9.9")
+        monkeypatch.setattr(gc, "sandbox_images",
+                            lambda: ["pr-verify:local", "pr-verify:pnpm-9.9.9"])
+        return removed, pruned, scratch
+
+    def test_removes_every_generation_the_sandbox_image_and_the_scratch_root(
+            self, monkeypatch, tmp_path):
+        removed, pruned, scratch = self._stub(monkeypatch, tmp_path)
+        r = gc.teardown()
+        assert r["ok"] is True
+        assert sorted(removed) == sorted([
+            f"pr-verify-base:{'a' * 12}-t1", f"pr-verify-base:{'b' * 12}-t0",
+            f"pr-verify-base:{'b' * 12}-t1", "pr-verify:local", "pr-verify:pnpm-9.9.9"])
+        assert sorted(r["images"]) == sorted(removed)
+        assert not scratch.exists()
+        assert r["scratch"] == str(scratch)
+        assert pruned == [1]
+
+    def test_dry_run_removes_nothing_and_reports_everything(self, monkeypatch, tmp_path):
+        removed, pruned, scratch = self._stub(monkeypatch, tmp_path)
+        r = gc.teardown(dry_run=True)
+        assert removed == [] and pruned == []
+        assert scratch.exists()
+        assert len(r["images"]) == 5 and r["scratch"] == str(scratch)
+
+    def test_an_image_that_will_not_go_is_reported_not_hidden(self, monkeypatch, tmp_path):
+        removed, _, scratch = self._stub(monkeypatch, tmp_path, rmi_ok=False)
+        r = gc.teardown()
+        assert r["ok"] is False
+        assert r["images"] == []
+        assert len(r["kept_images"]) == 5
+        assert not scratch.exists()
+
+class TestSandboxImages:
+    def test_lists_every_tag_in_the_sandbox_repository(self, monkeypatch):
+        def run(cmd: list[str], **kw: object) -> subprocess.CompletedProcess[str]:
+            assert cmd[:3] == ["docker", "image", "ls"]
+            assert f"reference={gc.SANDBOX_REPO}" in cmd
+            return subprocess.CompletedProcess(
+                cmd, 0, "pr-verify:local\npr-verify:pnpm-9.15.4\npr-verify:<none>\n", "")
+        monkeypatch.setattr(gc.subprocess, "run", run)
+        assert gc.sandbox_images() == ["pr-verify:local", "pr-verify:pnpm-9.15.4"]
+
+    def test_a_failing_daemon_lists_nothing(self, monkeypatch):
+        monkeypatch.setattr(
+            gc.subprocess, "run",
+            lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, "", "x"))
+        assert gc.sandbox_images() == []
+
+
+class TestSandboxPlan:
+    """Which `pr-verify:*` tags a sweep removes: every one except the tag the
+    active profile's pin names and any a base image here records as its parent."""
+
+    def test_the_current_tag_survives(self):
+        keep, remove = gc.sandbox_plan(["pr-verify:pnpm-9.15.4"], "pr-verify:pnpm-9.15.4",
+                                       set())
+        assert (keep, remove) == (("pr-verify:pnpm-9.15.4",), ())
+
+    def test_a_tag_no_base_image_was_built_from_is_removed(self):
+        keep, remove = gc.sandbox_plan(["pr-verify:local", "pr-verify:pnpm-9.15.4"],
+                                       "pr-verify:pnpm-9.15.4", set())
+        assert remove == ("pr-verify:local",)
+        assert keep == ("pr-verify:pnpm-9.15.4",)
+
+    def test_a_tag_a_base_image_names_as_its_parent_survives(self):
+        keep, remove = gc.sandbox_plan(
+            ["pr-verify:local", "pr-verify:pnpm-10.4.1", "pr-verify:pnpm-9.15.4"],
+            "pr-verify:pnpm-9.15.4", {"pr-verify:pnpm-10.4.1"})
+        assert remove == ("pr-verify:local",)
+        assert set(keep) == {"pr-verify:pnpm-9.15.4", "pr-verify:pnpm-10.4.1"}
+
+    def test_the_current_tag_is_kept_even_when_not_yet_built(self):
+        keep, remove = gc.sandbox_plan(["pr-verify:local"], "pr-verify:pnpm-9.15.4", set())
+        assert keep == ("pr-verify:pnpm-9.15.4",)
+        assert remove == ("pr-verify:local",)
+
+
+class TestCollectSandboxImages:
+    def _run_factory(self, calls: list[list[str]], tags: str, parents: dict[str, str]):
+        def run(cmd: list[str], **kw: object) -> subprocess.CompletedProcess[str]:
+            calls.append(cmd)
+            if cmd[1:3] == ["image", "ls"] and f"reference={gc.SANDBOX_REPO}" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, tags, "")
+            if cmd[1:3] == ["image", "ls"] and any(
+                    a.startswith(f"label={gc.SANDBOX_LABEL}=") for a in cmd):
+                tag = next(a for a in cmd if a.startswith("label=")).split("=", 2)[2]
+                return subprocess.CompletedProcess(cmd, 0, parents.get(tag, ""), "")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        return run
+
+    def test_stale_sandbox_tags_are_removed_and_reported(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(gc, "SCRATCH", tmp_path)
+        calls: list[list[str]] = []
+        monkeypatch.setattr(gc.subprocess, "run", self._run_factory(
+            calls, "pr-verify:local\npr-verify:pnpm-9.15.4\n", {}))
+        result = gc.collect("a" * 12, sandbox_tag="pr-verify:pnpm-9.15.4")
+        assert result["sandbox_reclaimed"] == ["pr-verify:local"]
+        assert ["docker", "rmi", "pr-verify:local"] in calls
+        assert ["docker", "rmi", "pr-verify:pnpm-9.15.4"] not in calls
+
+    def test_a_parent_of_a_base_image_here_is_left_alone(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(gc, "SCRATCH", tmp_path)
+        calls: list[list[str]] = []
+        monkeypatch.setattr(gc.subprocess, "run", self._run_factory(
+            calls, "pr-verify:pnpm-10.4.1\npr-verify:pnpm-9.15.4\n",
+            {"pr-verify:pnpm-10.4.1": "sha256:abc\n"}))
+        result = gc.collect("a" * 12, sandbox_tag="pr-verify:pnpm-9.15.4")
+        assert result["sandbox_reclaimed"] == []
+        assert not any(c[1] == "rmi" and c[2].startswith("pr-verify:") for c in calls)
+
+    def test_with_no_sandbox_tag_no_sandbox_image_is_touched(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(gc, "SCRATCH", tmp_path)
+        calls: list[list[str]] = []
+        monkeypatch.setattr(gc.subprocess, "run", self._run_factory(
+            calls, "pr-verify:local\n", {}))
+        result = gc.collect("a" * 12)
+        assert result["sandbox_reclaimed"] == []
+        assert not any(c[1] == "rmi" for c in calls)
+
+    def test_a_dry_run_reports_without_removing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(gc, "SCRATCH", tmp_path)
+        calls: list[list[str]] = []
+        monkeypatch.setattr(gc.subprocess, "run", self._run_factory(
+            calls, "pr-verify:local\n", {}))
+        result = gc.collect("a" * 12, sandbox_tag="pr-verify:pnpm-9.15.4", dry_run=True)
+        assert result["sandbox_reclaimed"] == ["pr-verify:local"]
+        assert not any(c[1] == "rmi" for c in calls)
