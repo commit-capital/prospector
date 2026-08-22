@@ -107,7 +107,9 @@ key *paths* are never client-writable there), `writes` (the bot identity and
 key path), and `worker` (the contributor-push identity — the three values
 together or none, or a pasted bundle's `push` section together with its
 profile, so a machine that joined early adopts the sharer's current repository
-policy; the bundle's env is never taken there). **`connect` and `join` are refused once
+policy; the bundle's env is never taken there), and `profile` (a pasted
+bundle's profile alone — no env key is writable in it — so a configured
+machine whose push identity is already in place can still refresh its policy). **`connect` and `join` are refused once
 `settings.configured()` is true**, so a working deployment cannot be pointed at
 another repository or another database through the HTTP surface; `writes` and
 `worker` stay open because the wizard reaches them after `connect` has already

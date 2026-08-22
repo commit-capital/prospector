@@ -593,6 +593,34 @@ class TestPushIdentityInBundle:
         onboarding.apply_bundle("worker", onboarding.parse_bundle(json.dumps(bundle)))
         assert json.loads(prof.read_text()) == PROFILE
 
+    def test_profile_step_adopts_the_profile_alone(self, files, pushing):
+        """A configured machine with its push identity already in place has
+        only the profile to take from a bundle, and takes nothing else."""
+        env, prof = files
+        bundle = onboarding.build_bundle()
+        bundle["env"]["TRIAGE_REPO"] = "other/repo"
+        bundle["profile"] = {**PROFILE, "autofix": {"fixable_gates": ["review"]}}
+        onboarding.apply_bundle("profile", onboarding.parse_bundle(json.dumps(bundle)))
+        assert json.loads(prof.read_text())["autofix"]["fixable_gates"] == ["review"]
+        assert "other/repo" not in env.read_text()
+
+    def test_profile_step_refuses_a_bundle_carrying_no_profile(self, files, pushing):
+        bundle = onboarding.build_bundle()
+        bundle.pop("profile", None)
+        with pytest.raises(ValueError, match="no profile"):
+            onboarding.apply_bundle("profile", onboarding.parse_bundle(json.dumps(bundle)))
+
+    def test_profile_step_is_open_while_configured(self, files, monkeypatch):
+        monkeypatch.setenv("TRIAGE_REPO", "acme/widgets")
+        onboarding.apply("profile", {}, PROFILE)
+        assert json.loads(files[1].read_text()) == PROFILE
+
+    def test_profile_step_writes_no_env(self, files, monkeypatch):
+        monkeypatch.setenv("TRIAGE_REPO", "acme/widgets")
+        with pytest.raises(ValueError, match="not writable in step profile"):
+            onboarding.apply("profile", {"TRIAGE_REPO": "other/repo"}, PROFILE)
+        assert "other/repo" not in files[0].read_text()
+
     def test_worker_refuses_a_bundle_carrying_none(self, files, pushing):
         b = onboarding.parse_bundle(json.dumps(onboarding.build_bundle()))
         with pytest.raises(ValueError, match="no contributor-push identity"):

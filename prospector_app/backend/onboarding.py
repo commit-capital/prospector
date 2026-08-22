@@ -49,6 +49,10 @@ STEP_KEYS: dict[str, tuple[str, ...]] = {
                 "PROSPECTOR_FEEDBACK_REPO"),
     "writes": ("TRIAGE_BOT_LOGIN", "TRIAGE_BOT_APP_ID", "TRIAGE_BOT_KEY_FILE"),
     "worker": PUSH_KEYS,
+    # The repository profile alone, from a pasted bundle: no env key is
+    # writable here, so a configured machine can refresh its policy and
+    # nothing else.
+    "profile": (),
     "agent": ("TRIAGE_AGENT_PROVIDER",),
 }
 
@@ -262,10 +266,15 @@ def apply_bundle(step: str, bundle: Bundle) -> dict[str, object]:
     """Apply a pasted bundle as `step`: `join` takes all of it; `worker` takes
     its contributor-push identity and its profile — the sharer's current
     repository policy, which is where the agent-fix opt-in lives — and refuses
-    a bundle carrying no identity. The env never comes along in `worker`."""
+    a bundle carrying no identity; `profile` takes the profile alone and
+    refuses a bundle carrying none. The env never comes along in either."""
     if step == "join":
         return apply(step, bundle.env, bundle.profile,
                      bot_key_pem=bundle.bot_key_pem, push=bundle.push)
+    if step == "profile":
+        if bundle.profile is None:
+            raise ValueError("this bundle carries no profile")
+        return apply(step, {}, bundle.profile)
     if step == "worker":
         if bundle.push is None:
             raise ValueError(
