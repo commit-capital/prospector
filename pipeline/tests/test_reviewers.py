@@ -273,14 +273,16 @@ class TestProjections:
     def test_seen_summary_over_open_corpus(self):
         prs = [Pr(None, {"pr": 1, "meta": {"state": "open", "head_sha": "h"},
                          "reviews": {"greptile": {"kind": "review", "observed_at": "2026-08-20T00:00:00Z"},
-                                     "socket": {"kind": "scanner", "observed_at": None},
+                                     "socket": {"kind": "scanner", "observed_at": None,
+                                                "checks": [{"name": "Socket Security: Project Report"}]},
+                                     "coderabbit": {"kind": "review", "observed_at": None, "checks": []},
                                      "checked_at": "2026-08-21T00:00:00Z"}}),
                Pr(None, {"pr": 2, "meta": {"state": "closed", "head_sha": "h"},
                          "reviews": {"coderabbit": {"kind": "review", "observed_at": "2026-08-21T00:00:00Z"}}})]
         seen = reviewers.seen_summary(prs)["seen"]
         assert seen["greptile"] == {"last_observed_at": "2026-08-20T00:00:00Z", "prs": 1}
-        assert seen["socket"]["last_observed_at"] == "2026-08-21T00:00:00Z"
-        assert "coderabbit" not in seen
+        assert seen["socket"]["last_observed_at"] == "2026-08-21T00:00:00Z"   # check run at the head
+        assert "coderabbit" not in seen   # an empty shell dates nothing; PR 2 is closed
 
 
 def test_greptile_finding_title_drops_its_html_badge():
@@ -290,3 +292,10 @@ def test_greptile_finding_title_drops_its_html_badge():
                            "at": "2026-08-21T00:00:00Z", "url": "t"}])
     e = reviewers.parse(reviewers.GREPTILE, feed, HEAD, None)
     assert e["findings"][0]["title"] == "**logic:** retry never exits"
+
+
+def test_coderabbit_stray_comment_dates_the_entry():
+    feed = _feed(comments=[{"id": 1, "login": "coderabbitai[bot]", "body": "Review paused.",
+                            "at": "2026-06-18T00:00:00Z", "updated_at": None, "url": "c"}])
+    e = reviewers.parse(reviewers.CODERABBIT, feed, HEAD, None)
+    assert e is not None and e["observed_at"] == "2026-06-18T00:00:00Z"
