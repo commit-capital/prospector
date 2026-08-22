@@ -97,9 +97,13 @@ async def run_bulk(prs: list[int], action: str, *, comment: str | None = None,
             elif action == "MERGE":
                 res = executor.merge_pr(n, method, dry_run=dry_run, reason=reason)
             elif action == "REVIEW_RETRIGGER":
-                rid = reviewer or next(
-                    (r.id for r in review_policy.active_reviewers(reviewers.REVIEW)
-                     if r.retrigger_mention), "")
+                # The request names a reviewer; only the registry's own id for it
+                # goes any further.
+                named = next((r for r in reviewers.REVIEWERS.values() if r.id == reviewer), None)
+                chosen = named or next(
+                    (r for r in review_policy.active_reviewers(reviewers.REVIEW)
+                     if r.retrigger_mention), None)
+                rid = chosen.id if chosen is not None else ""
                 baseline = review_refresh.capture(n, rid) if token is not None and rid else None
                 res = executor.retrigger_review(n, rid, token=token, dry_run=dry_run)
                 if res.get("status") == "executed" and baseline is not None:

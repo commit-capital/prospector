@@ -1032,13 +1032,14 @@ def retrigger_review(reviewer: str, n: int, dry_run: bool = True):
     write. Once the post lands, a backend task waits for the reviewer's fresh
     verdict and targeted-ingests it into the shared snapshot; no UI session is
     required. 404 for an unknown reviewer id."""
-    if reviewer not in reviewers.REVIEWERS:
-        raise HTTPException(status_code=404, detail=f"unknown reviewer {reviewer!r}")
+    known = next((r for r in reviewers.REVIEWERS.values() if r.id == reviewer), None)
+    if known is None:
+        raise HTTPException(status_code=404, detail="unknown reviewer")
     token = None if dry_run else executor.mint_bot_token()
-    baseline = review_refresh.capture(n, reviewer) if token is not None else None
-    result = executor.retrigger_review(n, reviewer, token=token, dry_run=dry_run)
+    baseline = review_refresh.capture(n, known.id) if token is not None else None
+    result = executor.retrigger_review(n, known.id, token=token, dry_run=dry_run)
     if result.get("status") == "executed" and baseline is not None:
-        review_refresh.schedule(n, reviewer, baseline)
+        review_refresh.schedule(n, known.id, baseline)
     return result
 
 
