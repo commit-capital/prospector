@@ -1195,6 +1195,29 @@ export interface ChatReady {
   subscription?: string;
 }
 
+/** A GitHub user as the push-identity card needs it: the login, its id, and
+ *  GitHub's per-account no-reply email. */
+export interface PushAccount {
+  login: string;
+  id: number;
+  email: string;
+}
+
+/** This machine's contributor-push key for a login: where it is and the public
+ *  half the operator adds to the account. */
+export interface PushKeyInfo {
+  path: string;
+  public_key: string;
+}
+
+/** What GitHub said about a key: `login` is the account it greeted, `ok`
+ *  whether that is the one asked for. */
+export interface PushProbeResult {
+  ok: boolean;
+  login: string | null;
+  problem: string | null;
+}
+
 /** One step of setup. `bundle` supplies `env` and `profile` in their place. */
 export interface OnboardingApplyBody {
   step: "connect" | "join" | "writes" | "worker" | "agent";
@@ -1207,11 +1230,12 @@ export const api = {
   setupReadiness: () =>
     get<{ readiness: SetupReadiness; flags: WorkerFlags }>("/api/setup/readiness"),
   /** The deployment bundle a teammate pastes. `includeKey` adds the bot's
-   *  private key, so their machine executes approved writes too. */
-  setupShare: async (includeKey: boolean) => {
+   *  private key, so their machine executes approved writes too;
+   *  `includePushKey` the contributor-push identity, so it runs autofix. */
+  setupShare: async (includeKey: boolean, includePushKey: boolean) => {
     const r = await fetch("/api/setup/share", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ include_key: includeKey }),
+      body: JSON.stringify({ include_key: includeKey, include_push_key: includePushKey }),
     });
     if (!r.ok) {
       const problem = await r.json().catch(() => ({ detail: `${r.status}` }));
@@ -1220,6 +1244,35 @@ export const api = {
     return r.json() as Promise<{ bundle: string }>;
   },
   onboardingState: () => get<OnboardingState>("/api/onboarding/state"),
+  /** The operator's own gh login with no argument, else the named account. */
+  pushAccount: async (login?: string) => {
+    const q = login ? `?login=${encodeURIComponent(login)}` : "";
+    const r = await fetch(`/api/onboarding/push-identity/account${q}`);
+    if (!r.ok) {
+      const problem = await r.json().catch(() => ({ detail: `${r.status}` }));
+      throw new Error(problem.detail ?? `${r.status}`);
+    }
+    return r.json() as Promise<PushAccount>;
+  },
+  pushKey: async (login: string) => {
+    const r = await fetch("/api/onboarding/push-identity/key", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ login }),
+    });
+    if (!r.ok) {
+      const problem = await r.json().catch(() => ({ detail: `${r.status}` }));
+      throw new Error(problem.detail ?? `${r.status}`);
+    }
+    return r.json() as Promise<PushKeyInfo>;
+  },
+  pushProbe: async (login: string, keyFile?: string) => {
+    const r = await fetch("/api/onboarding/push-identity/probe", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ login, key_file: keyFile ?? null }),
+    });
+    if (!r.ok) throw new Error(`/api/onboarding/push-identity/probe → ${r.status}`);
+    return r.json() as Promise<PushProbeResult>;
+  },
   chatReady: () => get<ChatReady>("/api/chat/ready"),
   onboardingProbe: async (body: {
     store_url?: string; repo?: string; key_file?: string; agent?: boolean;

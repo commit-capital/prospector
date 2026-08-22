@@ -41,6 +41,7 @@ from prospector_app.backend import jobs
 from prospector_app.backend import freshness_live
 from prospector_app.backend import models
 from prospector_app.backend import onboarding
+from prospector_app.backend import push_identity
 from prospector_app.backend import pipeline_status
 from prospector_app.backend import pr_history
 from prospector_app.backend import pr_search
@@ -414,18 +415,47 @@ def onboarding_probe(body: models.OnboardingProbe):
 @app.post("/api/onboarding/apply")
 def onboarding_apply(body: models.OnboardingApply):
     """Write one step's configuration and adopt it in this process."""
-    env, profile_doc, key_pem = body.env, body.profile, None
-    if body.bundle is not None:
-        try:
-            env, profile_doc, key_pem = onboarding.parse_bundle(body.bundle)
-        except ValueError as e:
-            raise HTTPException(400, str(e))
     try:
-        return onboarding.apply(body.step, env, profile_doc, bot_key_pem=key_pem)
+        if body.bundle is not None:
+            return onboarding.apply_bundle(body.step, onboarding.parse_bundle(body.bundle))
+        return onboarding.apply(body.step, body.env, body.profile)
     except ValueError as e:
         raise HTTPException(400, str(e))
     except OSError as e:
         raise HTTPException(500, f"could not write configuration: {e}")
+
+
+@app.get("/api/onboarding/push-identity/account")
+def push_identity_account(login: str | None = None):
+    """A GitHub user's login, id, and no-reply email: the operator's own `gh`
+    login with no `login`, else the named account. 404 when there is no such
+    user or gh cannot ask."""
+    found = push_identity.account(login) if login else push_identity.operator_account()
+    if found is None:
+        raise HTTPException(404, "no such GitHub user, or gh is not signed in" if login
+                            else "gh is not signed in on this machine")
+    return found
+
+
+@app.post("/api/onboarding/push-identity/key")
+def push_identity_key(body: models.PushKeyRequest):
+    """Generate this machine's contributor-push key for `login` — or show the
+    one already there — and return its path and public half for the operator
+    to add to the account."""
+    try:
+        return push_identity.generate_key(body.login.strip())
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/onboarding/push-identity/probe")
+def push_identity_probe(body: models.PushProbe):
+    """Ask GitHub which account a key authenticates and whether it is `login`.
+    Read-only: writing the identity is the `worker` onboarding step."""
+    login = body.login.strip()
+    path = (Path(body.key_file).expanduser() if body.key_file and body.key_file.strip()
+            else push_identity.key_path(login))
+    return push_identity.probe_key(path, login)
 
 
 @app.get("/api/status/now")
@@ -464,11 +494,14 @@ def setup_flags(body: models.WorkerFlags):
 def setup_share(body: models.SetupShare | None = None):
     """Everything a teammate's fresh checkout needs to join this deployment,
     as one thing they paste into their setup wizard. POST, so the store URL is
-    never in a request line. `include_key` adds the bot's private key; refused
-    with a 400 when this machine has none to give."""
+    never in a request line. `include_key` adds the bot's private key and
+    `include_push_key` the contributor-push identity; either is refused with a
+    400 when this machine has none to give."""
     include_key = bool(body and body.include_key)
+    include_push_key = bool(body and body.include_push_key)
     try:
-        bundle = onboarding.build_bundle(include_key=include_key)
+        bundle = onboarding.build_bundle(include_key=include_key,
+                                         include_push_key=include_push_key)
     except ValueError as e:
         raise HTTPException(400, str(e))
     return {"bundle": json.dumps(bundle, indent=2)}

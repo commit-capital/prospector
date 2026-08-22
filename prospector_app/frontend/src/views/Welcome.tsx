@@ -130,7 +130,7 @@ function BackLink({ onBack }: { onBack: () => void }) {
 
 /** What a pasted bundle carries, read from its JSON so the page can say so
  *  before anything is written; null while the text is not a bundle yet. */
-function describeBundle(text: string): { repo: string; store: boolean; profile: boolean; bot: string; key: boolean } | null {
+function describeBundle(text: string): { repo: string; store: boolean; profile: boolean; bot: string; key: boolean; push: string } | null {
   try {
     const doc: unknown = JSON.parse(text);
     if (typeof doc !== "object" || doc === null || !("env" in doc)) return null;
@@ -138,12 +138,17 @@ function describeBundle(text: string): { repo: string; store: boolean; profile: 
     if (typeof env !== "object" || env === null) return null;
     const e = env as Record<string, unknown>;
     const pem = (doc as { bot_key_pem?: unknown }).bot_key_pem;
+    const push = (doc as { push?: unknown }).push;
+    const pushLogin = typeof push === "object" && push !== null && "login" in push
+      && typeof (push as { login: unknown }).login === "string"
+      ? (push as { login: string }).login : "";
     return {
       repo: typeof e.TRIAGE_REPO === "string" ? e.TRIAGE_REPO : "",
       store: typeof e.TRIAGE_STORE_URL === "string" && e.TRIAGE_STORE_URL !== "",
       profile: "profile" in doc && (doc as { profile: unknown }).profile != null,
       bot: typeof e.TRIAGE_BOT_LOGIN === "string" ? e.TRIAGE_BOT_LOGIN : "",
       key: typeof pem === "string" && pem.trim() !== "",
+      push: pushLogin,
     };
   } catch {
     return null;
@@ -178,7 +183,7 @@ function JoinBranch({ onDone, onBack }: { onDone: () => void; onBack: () => void
         reached you privately — not through a channel with history.
       </p>
       <textarea className="welcome-paste" value={text} rows={10} disabled={busy}
-        placeholder={'{\n  "version": 1,\n  "env": { "TRIAGE_REPO": "…" }\n}'}
+        placeholder={'{\n  "version": 2,\n  "env": { "TRIAGE_REPO": "…" }\n}'}
         onChange={(e) => setText(e.target.value)} />
       {busy && (
         <p className="chip chip-blue sm" role="status">
@@ -194,6 +199,10 @@ function JoinBranch({ onDone, onBack }: { onDone: () => void; onBack: () => void
           {carries.key && (
             <> · <strong>🔑 the bot's private key</strong> — approved actions will
               execute for real from this machine</>
+          )}
+          {carries.push && (
+            <> · <strong>🔑 the contributor-push identity <code>{carries.push}</code></strong> —
+              this machine can push fixes to contributors' branches</>
           )}
         </p>
       )}

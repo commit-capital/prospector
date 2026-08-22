@@ -39,10 +39,9 @@ def push_identity(monkeypatch, tmp_path_factory):
     """Exercise the worker identity by default; focused tests switch to chat."""
     key = tmp_path_factory.mktemp("push-key") / "id_ed25519"
     key.write_text("not-a-real-key\n")
-    monkeypatch.setattr(resubmit.settings, "PUSH_LOGIN", "test-push-bot")
-    monkeypatch.setattr(resubmit.settings, "PUSH_EMAIL",
-                        "1+test-push-bot@users.noreply.github.com")
-    monkeypatch.setattr(resubmit.settings, "PUSH_SSH_KEY_FILE", key)
+    monkeypatch.setenv("TRIAGE_PUSH_LOGIN", "test-push-bot")
+    monkeypatch.setenv("TRIAGE_PUSH_EMAIL", "1+test-push-bot@users.noreply.github.com")
+    monkeypatch.setenv("TRIAGE_PUSH_SSH_KEY_FILE", str(key))
     monkeypatch.setenv(resubmit_identity.MACHINE_USER_ENV, "1")
     return key
 
@@ -82,9 +81,8 @@ def test_interactive_operator_needs_no_worker_identity(monkeypatch):
     # The dedicated key is an unattended-worker boundary, not a prerequisite for
     # an operator-confirmed chat resubmit on their own laptop.
     monkeypatch.delenv(resubmit_identity.MACHINE_USER_ENV)
-    monkeypatch.setattr(resubmit.settings, "PUSH_LOGIN", "")
-    monkeypatch.setattr(resubmit.settings, "PUSH_EMAIL", "")
-    monkeypatch.setattr(resubmit.settings, "PUSH_SSH_KEY_FILE", None)
+    for k in ("TRIAGE_PUSH_LOGIN", "TRIAGE_PUSH_EMAIL", "TRIAGE_PUSH_SSH_KEY_FILE"):
+        monkeypatch.delenv(k, raising=False)
     ok, reason = resubmit.eligibility(_pr())
     assert ok is True
     assert "operator" in reason
@@ -294,9 +292,8 @@ def test_interactive_rebase_reuses_worker_mechanics_without_its_key(monkeypatch,
     repos = _make_rebase_repos(tmp_path, conflict=False)
     _wire_rebase(monkeypatch, tmp_path, repos)
     monkeypatch.delenv(resubmit_identity.MACHINE_USER_ENV)
-    monkeypatch.setattr(resubmit.settings, "PUSH_LOGIN", "")
-    monkeypatch.setattr(resubmit.settings, "PUSH_EMAIL", "")
-    monkeypatch.setattr(resubmit.settings, "PUSH_SSH_KEY_FILE", None)
+    for k in ("TRIAGE_PUSH_LOGIN", "TRIAGE_PUSH_EMAIL", "TRIAGE_PUSH_SSH_KEY_FILE"):
+        monkeypatch.delenv(k, raising=False)
 
     assert resubmit.cmd_prepare(42, rebase=True) == 0
     meta = json.loads(resubmit._meta_path(42).read_text())
@@ -515,7 +512,7 @@ def test_update_refuses_without_a_push_identity(monkeypatch, tmp_path, capsys):
     # whatever identity happens to be ambient.
     repos = _make_rebase_repos(tmp_path, conflict=False)
     _wire_update(monkeypatch, tmp_path, repos)
-    monkeypatch.setattr(resubmit.settings, "PUSH_LOGIN", "")
+    monkeypatch.delenv("TRIAGE_PUSH_LOGIN", raising=False)
     ran = _Ran()
     monkeypatch.setattr(resubmit.subprocess, "run", ran)
 
@@ -589,7 +586,7 @@ def test_update_probe_still_refuses_without_a_push_identity(monkeypatch, tmp_pat
     # machine user. An unconfigured machine does no such thing.
     repos = _make_rebase_repos(tmp_path, conflict=False)
     _wire_update(monkeypatch, tmp_path, repos)
-    monkeypatch.setattr(resubmit.settings, "PUSH_LOGIN", "")
+    monkeypatch.delenv("TRIAGE_PUSH_LOGIN", raising=False)
     ran = _Ran()
     monkeypatch.setattr(resubmit.subprocess, "run", ran)
 
@@ -621,9 +618,12 @@ def test_push_env_pins_the_key_and_identity(push_identity):
     env = resubmit_identity.push_env(
         {"GH_TOKEN": "app", "GITHUB_TOKEN": "app", "PATH": "/usr/bin"})
     assert "GH_TOKEN" not in env and "GITHUB_TOKEN" not in env
-    # IdentitiesOnly is what stops ssh-agent offering a personal key first, which
-    # would land the commit under the wrong account.
+    # Only the pinned key may be offered: ssh_config's IdentityFile for
+    # github.com and ssh-agent would otherwise land the commit under the
+    # operator's account.
     assert "-o IdentitiesOnly=yes" in env["GIT_SSH_COMMAND"]
+    assert "-F /dev/null" in env["GIT_SSH_COMMAND"]
+    assert "-o IdentityAgent=none" in env["GIT_SSH_COMMAND"]
     assert str(push_identity) in env["GIT_SSH_COMMAND"]
     assert env["GIT_AUTHOR_NAME"] == env["GIT_COMMITTER_NAME"] == "test-push-bot"
     assert env["GIT_AUTHOR_EMAIL"].endswith("@users.noreply.github.com")
@@ -631,13 +631,13 @@ def test_push_env_pins_the_key_and_identity(push_identity):
 
 
 def test_push_env_refuses_without_a_configured_identity(monkeypatch):
-    monkeypatch.setattr(resubmit.settings, "PUSH_LOGIN", "")
+    monkeypatch.delenv("TRIAGE_PUSH_LOGIN", raising=False)
     with pytest.raises(RuntimeError, match="TRIAGE_PUSH_LOGIN"):
         resubmit_identity.push_env()
 
 
 def test_push_env_refuses_a_missing_key_file(monkeypatch, tmp_path):
-    monkeypatch.setattr(resubmit.settings, "PUSH_SSH_KEY_FILE", tmp_path / "absent")
+    monkeypatch.setenv("TRIAGE_PUSH_SSH_KEY_FILE", str(tmp_path / "absent"))
     with pytest.raises(RuntimeError, match="not a readable file"):
         resubmit_identity.push_env()
 

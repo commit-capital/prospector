@@ -147,9 +147,10 @@ def key_safety_failure() -> str | None:
     alone, and live outside the sandbox scratch root — properties asserted at
     startup rather than assumed."""
     if not settings.push_identity_configured():
-        return ("no contributor-push identity is configured: set TRIAGE_PUSH_LOGIN, "
-                "TRIAGE_PUSH_EMAIL and TRIAGE_PUSH_SSH_KEY_FILE in .env")
-    key = settings.PUSH_SSH_KEY_FILE
+        return ("no contributor-push identity is configured: set one up on the "
+                "Setup tab, or TRIAGE_PUSH_LOGIN, TRIAGE_PUSH_EMAIL and "
+                "TRIAGE_PUSH_SSH_KEY_FILE in .env")
+    key = settings.push_ssh_key_file()
     assert key is not None  # push_identity_configured() proved it
     try:
         mode = key.stat().st_mode
@@ -1246,6 +1247,6 @@ def startup() -> bool:
     ]
     for t in _threads:
         t.start()
-    print(f"[fix-worker] enabled on {socket.gethostname()} as {settings.PUSH_LOGIN} "
+    print(f"[fix-worker] enabled on {socket.gethostname()} as {settings.push_login()} "
           f"(poll every {POLL_SECONDS:.0f}s)", flush=True)
     return True

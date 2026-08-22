@@ -22,14 +22,21 @@ from typing import NamedTuple
 from pipeline import profile, settings
 from prospector_app.backend import data, env_file
 
-BUNDLE_VERSION = 1
+BUNDLE_VERSION = 2
 
 PROFILE_PATH = settings.REPO_ROOT / "profile.json"
 
-# Where a joiner files the bot's private key when a bundle carries one: under
-# the user's config dir, outside the checkout and the environment, one
-# subdirectory per bot login.
+# Where a joiner files the bot's private key when a bundle carries one, and
+# where the contributor-push key lives: under the user's config dir, outside the
+# checkout and the environment, one subdirectory per login.
 KEY_DIR = Path.home() / ".config" / "prospector"
+BOT_KEY_NAME = "private-key.pem"
+PUSH_KEY_NAME = "push-key"
+
+# The three .env keys that make up the contributor-push identity; written all
+# together or not at all.
+PUSH_KEYS: tuple[str, str, str] = (
+    "TRIAGE_PUSH_LOGIN", "TRIAGE_PUSH_EMAIL", "TRIAGE_PUSH_SSH_KEY_FILE")
 
 _REPO_RE = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+\Z")
 
@@ -41,7 +48,7 @@ STEP_KEYS: dict[str, tuple[str, ...]] = {
                 "TRIAGE_REVIEW_PROVIDER", "TRIAGE_REVIEW_THRESHOLD",
                 "PROSPECTOR_FEEDBACK_REPO"),
     "writes": ("TRIAGE_BOT_LOGIN", "TRIAGE_BOT_APP_ID", "TRIAGE_BOT_KEY_FILE"),
-    "worker": ("TRIAGE_PUSH_LOGIN", "TRIAGE_PUSH_EMAIL", "TRIAGE_PUSH_SSH_KEY_FILE"),
+    "worker": PUSH_KEYS,
     "agent": ("TRIAGE_AGENT_PROVIDER",),
 }
 
@@ -77,6 +84,10 @@ def _validated(step: str, updates: dict[str, str]) -> dict[str, str]:
     if outside:
         raise ValueError(f"not writable in step {step}: {', '.join(outside)}")
     clean = {k: str(v).strip() for k, v in updates.items()}
+    if any(k in clean for k in PUSH_KEYS) and not all(clean.get(k) for k in PUSH_KEYS):
+        raise ValueError(
+            "TRIAGE_PUSH_LOGIN, TRIAGE_PUSH_EMAIL and TRIAGE_PUSH_SSH_KEY_FILE are "
+            "written together — set all three")
     target = clean.get("TRIAGE_REPO")
     if target is not None and not _REPO_RE.match(target):
         raise ValueError(f"TRIAGE_REPO must be owner/name, not {target!r}")
@@ -88,12 +99,25 @@ def _validated(step: str, updates: dict[str, str]) -> dict[str, str]:
     return clean
 
 
+class PushIdentity(NamedTuple):
+    """A contributor-push identity as it travels: the login, its commit email,
+    and the SSH private key itself."""
+    login: str
+    email: str
+    ssh_key: str
+
+
 class Bundle(NamedTuple):
     """What a pasted bundle carries: the env mapping, the profile document, and
-    the bot's private key when the sharer chose to include it."""
+    — each only when the sharer chose to include it — the bot's private key and
+    the contributor-push identity."""
     env: dict[str, str]
     profile: dict[str, object] | None
     bot_key_pem: str | None
+    push: PushIdentity | None
+
+
+_LOGIN_RE = re.compile(r"[A-Za-z0-9._-]+\Z")
 
 
 def _check_key(login: str, pem: str) -> None:
@@ -101,29 +125,63 @@ def _check_key(login: str, pem: str) -> None:
     it can be filed under."""
     if not login:
         raise ValueError("a bundle carrying the bot key must also carry TRIAGE_BOT_LOGIN")
-    if not re.fullmatch(r"[A-Za-z0-9._-]+", login):
+    if not _LOGIN_RE.match(login):
         raise ValueError(f"TRIAGE_BOT_LOGIN is not a name a key can be filed under: {login!r}")
     if "-----BEGIN" not in pem or "PRIVATE KEY-----" not in pem:
         raise ValueError("the bundle's bot_key_pem is not a PEM private key")
 
 
-def _file_key(login: str, pem: str) -> Path:
-    """Write the bot's private key under KEY_DIR for `login`, owner-only, and
-    return its path."""
+def _check_push(push: PushIdentity) -> None:
+    """Raises ValueError unless `push` is a complete identity whose key is a
+    private key and whose login a key can be filed under."""
+    if not push.login or not push.email:
+        raise ValueError("a contributor-push identity needs a login and an email")
+    if not _LOGIN_RE.match(push.login):
+        raise ValueError(f"TRIAGE_PUSH_LOGIN is not a name a key can be filed under: {push.login!r}")
+    if "-----BEGIN" not in push.ssh_key or "PRIVATE KEY-----" not in push.ssh_key:
+        raise ValueError("the contributor-push ssh_key is not a private key")
+
+
+def _file_secret(login: str, name: str, text: str) -> Path:
+    """Write `text` to KEY_DIR/<login>/<name>, owner-only, and return its path."""
     folder = KEY_DIR / login
     folder.mkdir(parents=True, exist_ok=True)
     folder.chmod(0o700)
-    path = folder / "private-key.pem"
+    path = folder / name
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
-        f.write(pem if pem.endswith("\n") else pem + "\n")
+        f.write(text if text.endswith("\n") else text + "\n")
     path.chmod(0o600)
     return path
 
 
+class _Filed(NamedTuple):
+    """One secret written during `apply`, with what was there before so a
+    failed .env write can put it back."""
+    path: Path
+    previous: str | None
+
+
+def _file(login: str, name: str, text: str, filed: list[_Filed]) -> Path:
+    candidate = KEY_DIR / login / name
+    previous = candidate.read_text() if candidate.is_file() else None
+    path = _file_secret(login, name, text)
+    filed.append(_Filed(path, previous))
+    return path
+
+
+def _unfile(filed: list[_Filed]) -> None:
+    for f in reversed(filed):
+        if f.previous is None:
+            f.path.unlink(missing_ok=True)
+        else:
+            f.path.write_text(f.previous)
+
+
 def apply(step: str, env: dict[str, str],
           profile_doc: dict[str, object] | None,
-          bot_key_pem: str | None = None) -> dict[str, object]:
+          bot_key_pem: str | None = None,
+          push: PushIdentity | None = None) -> dict[str, object]:
     """Write one step's configuration and adopt it in this process.
 
     Everything is validated before anything is written. `profile.json` goes
@@ -131,10 +189,19 @@ def apply(step: str, env: dict[str, str],
     the `.env` write then fails, the previous profile is put back, because a
     checkout whose policy file belongs to one deployment and whose `.env` names
     another is worse than either failure alone. A bot key rides only in a
-    `join` bundle: it is filed under KEY_DIR after the profile and before
+    `join` bundle, and a pasted contributor-push identity in a `join` or
+    `worker` one: each is filed under KEY_DIR after the profile and before
     `.env` names it, and put back as it was if the `.env` write fails.
     """
+    if push is not None:
+        if step not in ("join", "worker"):
+            raise ValueError("a contributor-push identity travels only in a pasted bundle")
+        _check_push(push)
+        env = {k: v for k, v in env.items() if k not in PUSH_KEYS}
     clean = _validated(step, env)
+    if push is not None:
+        # The key path is this machine's, decided here, never the client's.
+        clean.update({"TRIAGE_PUSH_LOGIN": push.login, "TRIAGE_PUSH_EMAIL": push.email})
     login = clean.get("TRIAGE_BOT_LOGIN", "")
     if bot_key_pem is not None:
         if step != "join":
@@ -151,14 +218,13 @@ def apply(step: str, env: dict[str, str],
             raise ValueError(str(e))
         previous = PROFILE_PATH.read_text() if PROFILE_PATH.exists() else None
         PROFILE_PATH.write_text(json.dumps(profile_doc, indent=2) + "\n")
-    key_path: Path | None = None
-    previous_key: str | None = None
+    filed: list[_Filed] = []
     try:
         if bot_key_pem is not None:
-            candidate = KEY_DIR / login / "private-key.pem"
-            previous_key = candidate.read_text() if candidate.is_file() else None
-            key_path = _file_key(login, bot_key_pem)
-            clean["TRIAGE_BOT_KEY_FILE"] = str(key_path)
+            clean["TRIAGE_BOT_KEY_FILE"] = str(_file(login, BOT_KEY_NAME, bot_key_pem, filed))
+        if push is not None:
+            clean["TRIAGE_PUSH_SSH_KEY_FILE"] = str(
+                _file(push.login, PUSH_KEY_NAME, push.ssh_key, filed))
         env_file.write(clean)
     except OSError:
         if profile_doc is not None:
@@ -166,11 +232,7 @@ def apply(step: str, env: dict[str, str],
                 PROFILE_PATH.unlink(missing_ok=True)
             else:
                 PROFILE_PATH.write_text(previous)
-        if key_path is not None:
-            if previous_key is None:
-                key_path.unlink(missing_ok=True)
-            else:
-                key_path.write_text(previous_key)
+        _unfile(filed)
         raise
     reconfigure(clean)
     return state()
@@ -196,15 +258,33 @@ def reconfigure(applied: dict[str, str]) -> None:
         executor.refresh_live()
 
 
-def build_bundle(include_key: bool = False) -> dict[str, object]:
+def apply_bundle(step: str, bundle: Bundle) -> dict[str, object]:
+    """Apply a pasted bundle as `step`: `join` takes all of it; `worker` takes
+    its contributor-push identity alone and refuses a bundle carrying none."""
+    if step == "join":
+        return apply(step, bundle.env, bundle.profile,
+                     bot_key_pem=bundle.bot_key_pem, push=bundle.push)
+    if step == "worker":
+        if bundle.push is None:
+            raise ValueError(
+                "this bundle carries no contributor-push identity — the sharer "
+                "ticks “also let the teammate's machine push fixes” to include it")
+        return apply(step, {}, None, push=bundle.push)
+    raise ValueError(f"a bundle is not pasted into step {step}")
+
+
+def build_bundle(include_key: bool = False,
+                 include_push_key: bool = False) -> dict[str, object]:
     """This deployment, as one thing a teammate can paste.
 
     Carries the store URL and the whole profile, because a bundle needing a
     second out-of-band step is the problem it exists to solve. It is therefore a
     credential, and the UI offering it says so. With `include_key`, also the
     bot's private key, read from this machine's TRIAGE_BOT_KEY_FILE, so the
-    joiner's machine executes approved writes too; raises ValueError when this
-    machine has no readable key or no bot login to file it under.
+    joiner's machine executes approved writes too; with `include_push_key`, the
+    contributor-push identity with its SSH private key, so the joiner's machine
+    can run autofix. Raises ValueError when this machine lacks what was asked
+    for.
     """
     env = {k: os.environ[k].strip() for k in _BUNDLE_KEYS
            if os.environ.get(k, "").strip()}
@@ -224,6 +304,15 @@ def build_bundle(include_key: bool = False) -> dict[str, object]:
         if key_path is None or not key_path.is_file():
             raise ValueError("this machine has no readable bot key to share")
         bundle["bot_key_pem"] = key_path.read_text()
+    if include_push_key:
+        if not settings.push_identity_configured():
+            raise ValueError("this machine has no contributor-push identity to share")
+        ssh_key = settings.push_ssh_key_file()
+        assert ssh_key is not None  # push_identity_configured() proved it
+        if not ssh_key.is_file():
+            raise ValueError("this machine's contributor-push key is not a readable file")
+        bundle["push"] = {"login": settings.push_login(), "email": settings.push_email(),
+                          "ssh_key": ssh_key.read_text()}
     return bundle
 
 
@@ -246,9 +335,16 @@ def parse_bundle(text: str) -> Bundle:
         raise ValueError("not a Prospector bundle: env is not an object")
     prof = doc.get("profile")
     pem = doc.get("bot_key_pem")
+    raw_push = doc.get("push")
+    push: PushIdentity | None = None
+    if isinstance(raw_push, dict):
+        push = PushIdentity(str(raw_push.get("login", "")).strip(),
+                            str(raw_push.get("email", "")).strip(),
+                            str(raw_push.get("ssh_key", "")))
     return Bundle({str(k): str(v) for k, v in env.items()},
                   prof if isinstance(prof, dict) else None,
-                  pem if isinstance(pem, str) and pem.strip() else None)
+                  pem if isinstance(pem, str) and pem.strip() else None,
+                  push)
 
 
 def _probe_store(url: str) -> dict[str, object]:

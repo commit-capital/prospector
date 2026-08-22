@@ -206,28 +206,43 @@ def review_threshold() -> int | None:
 # queued directly.
 FIX_ACTIONS: tuple[str, ...] = ("update", "rebase", "fix", "resolve")
 
-# The machine user that pushes to contributor PR head branches: a GitHub *user*
-# account holding push access on REPO, distinct from the App identity in
-# BOT_LOGIN. Pushing to a fork head branch rides the PR's "Allow edits from
-# maintainers", which grants push to maintainer users — an App installation
-# token can never satisfy it. The account authenticates by SSH key alone (no API
-# token), so its whole reach is git refs.
+# The contributor-push user: the GitHub *user* account that pushes to
+# contributor PR head branches — a dedicated account or the operator's own,
+# distinct from the App identity in BOT_LOGIN. Pushing to a fork head branch
+# rides the PR's "Allow edits from maintainers", which grants push to maintainer
+# users — an App installation token can never satisfy it. The account
+# authenticates by a pinned SSH key alone (no API token), so its whole reach is
+# git refs. Read on each call, so a write from the app takes effect in the
+# running process.
 #
 # All three unset → contributor-branch pushes are unavailable and the app
 # surfaces them disabled. Setting only some of them is a misconfiguration, not a
-# half-enabled feature: it fails loudly rather than pushing under whatever
-# identity happens to be ambient.
-PUSH_LOGIN: str = os.environ.get("TRIAGE_PUSH_LOGIN", "").strip()
-PUSH_EMAIL: str = os.environ.get("TRIAGE_PUSH_EMAIL", "").strip()
-_push_key = os.environ.get("TRIAGE_PUSH_SSH_KEY_FILE", "").strip()
-PUSH_SSH_KEY_FILE: Path | None = Path(_push_key).expanduser() if _push_key else None
+# half-enabled feature: it fails loudly at boot rather than pushing under
+# whatever identity happens to be ambient.
+def push_login() -> str:
+    return os.environ.get("TRIAGE_PUSH_LOGIN", "").strip()
 
-if any((PUSH_LOGIN, PUSH_EMAIL, PUSH_SSH_KEY_FILE)) and not all(
-        (PUSH_LOGIN, PUSH_EMAIL, PUSH_SSH_KEY_FILE)):
+
+def push_email() -> str:
+    return os.environ.get("TRIAGE_PUSH_EMAIL", "").strip()
+
+
+def push_ssh_key_file() -> Path | None:
+    raw = os.environ.get("TRIAGE_PUSH_SSH_KEY_FILE", "").strip()
+    return Path(raw).expanduser() if raw else None
+
+
+def push_identity_partial() -> bool:
+    """Whether some but not all of the contributor-push values are set."""
+    got = (push_login(), push_email(), push_ssh_key_file())
+    return any(got) and not all(got)
+
+
+if push_identity_partial():
     raise SystemExit(
         "TRIAGE_PUSH_LOGIN, TRIAGE_PUSH_EMAIL and TRIAGE_PUSH_SSH_KEY_FILE must be "
-        "set together (the machine user's login, its commit email, and its private "
-        "key). Set all three or none — see .env.example."
+        "set together (the contributor-push user's login, its commit email, and "
+        "its private key). Set all three or none — see .env.example."
     )
 
 
@@ -235,7 +250,7 @@ def push_identity_configured() -> bool:
     """Whether this machine holds a complete contributor-push identity. False
     leaves every autofix action unavailable rather than falling back to another
     identity."""
-    return bool(PUSH_LOGIN and PUSH_EMAIL and PUSH_SSH_KEY_FILE)
+    return bool(push_login() and push_email() and push_ssh_key_file())
 
 
 def parse_fix_autopush(raw: str | None) -> frozenset[str]:
