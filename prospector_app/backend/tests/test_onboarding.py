@@ -574,6 +574,25 @@ class TestPushIdentityInBundle:
         assert "TRIAGE_PUSH_LOGIN=acme-pusher\n" in text
         assert "other/repo" not in text
 
+    def test_worker_adopts_the_sharers_profile(self, files, pushing):
+        """A machine that joined before the sharer opted into agent fixes picks
+        the opt-in up with the push identity, so the hunt-fix switch it is about
+        to tick has the policy it needs."""
+        _, prof = files
+        bundle = onboarding.build_bundle(include_push_key=True)
+        bundle["profile"] = {**PROFILE, "autofix": {"fixable_gates": ["ci", "review"]}}
+        onboarding.apply_bundle("worker", onboarding.parse_bundle(json.dumps(bundle)))
+        assert json.loads(prof.read_text())["autofix"]["fixable_gates"] == ["ci", "review"]
+
+    def test_worker_with_no_profile_in_the_bundle_leaves_the_local_one_alone(
+            self, files, pushing):
+        _, prof = files
+        prof.write_text(json.dumps(PROFILE))
+        bundle = onboarding.build_bundle(include_push_key=True)
+        bundle.pop("profile", None)
+        onboarding.apply_bundle("worker", onboarding.parse_bundle(json.dumps(bundle)))
+        assert json.loads(prof.read_text()) == PROFILE
+
     def test_worker_refuses_a_bundle_carrying_none(self, files, pushing):
         b = onboarding.parse_bundle(json.dumps(onboarding.build_bundle()))
         with pytest.raises(ValueError, match="no contributor-push identity"):

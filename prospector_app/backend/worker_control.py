@@ -21,7 +21,8 @@ from prospector_app.backend import env_file, fix_worker, verify_worker
 # The only keys this module may write. Each is a worker lane switch — nothing
 # here names a credential, a path, or the store.
 WRITABLE = ("TRIAGE_VERIFY_WORKER", "TRIAGE_VERIFY_AUTOHUNT",
-            "TRIAGE_FIX_WORKER", "TRIAGE_FIX_AUTOHUNT", "TRIAGE_FIX_AUTOPUSH")
+            "TRIAGE_FIX_WORKER", "TRIAGE_FIX_AUTOHUNT", "TRIAGE_FIX_HUNT_FIX",
+            "TRIAGE_FIX_AUTOPUSH")
 
 
 def flags() -> dict[str, str]:
@@ -43,7 +44,7 @@ def _validated(updates: dict[str, str]) -> dict[str, str]:
         if bad:
             raise ValueError(f"not an autofix action: {', '.join(bad)}")
     for key in ("TRIAGE_VERIFY_WORKER", "TRIAGE_VERIFY_AUTOHUNT",
-                "TRIAGE_FIX_WORKER", "TRIAGE_FIX_AUTOHUNT"):
+                "TRIAGE_FIX_WORKER", "TRIAGE_FIX_AUTOHUNT", "TRIAGE_FIX_HUNT_FIX"):
         if key in clean and clean[key] not in ("", "1"):
             raise ValueError(f"{key} is \"1\" or empty, not {clean[key]!r}")
     return clean

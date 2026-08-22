@@ -94,7 +94,7 @@ comment/close/reopen/review as the configured bot plus the dedicated
 reads normally, and writes nothing.
 
 **Two writers touch `.env`, each with its own allowlist.**
-`worker_control.set_flags` writes the five worker lane switches and nothing
+`worker_control.set_flags` writes the six worker lane switches and nothing
 else. `prospector_app/backend/onboarding.py` writes deployment configuration
 for the setup wizard, allowlisted per step: `connect` (`TRIAGE_REPO`,
 `TRIAGE_STORE_URL`, the profile path, and presentation/review config, plus
@@ -105,7 +105,9 @@ files owner-only at `~/.config/prospector/<login>/private-key.pem` and names in
 private key, filed the same way at `~/.config/prospector/<login>/push-key`; the
 key *paths* are never client-writable there), `writes` (the bot identity and
 key path), and `worker` (the contributor-push identity — the three values
-together or none, or the `push` section of a pasted bundle alone). **`connect` and `join` are refused once
+together or none, or a pasted bundle's `push` section together with its
+profile, so a machine that joined early adopts the sharer's current repository
+policy; the bundle's env is never taken there). **`connect` and `join` are refused once
 `settings.configured()` is true**, so a working deployment cannot be pointed at
 another repository or another database through the HTTP surface; `writes` and
 `worker` stay open because the wizard reaches them after `connect` has already
