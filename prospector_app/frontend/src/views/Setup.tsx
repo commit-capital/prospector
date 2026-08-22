@@ -34,30 +34,30 @@ const TEARDOWN_PARTS: { flag: "artifacts" | "vm" | "packages"; label: string; hi
  *  opt-in, so each control says so rather than failing later. */
 const SWITCHES: { key: string; label: string; hint: string; needs?: string[] }[] = [
   { key: "TRIAGE_VERIFY_WORKER", label: "Test pull requests",
-    hint: "run each queued pull request's tests in a sandbox to prove the fix works — failing before the change, passing after" },
+    hint: "when someone queues a pull request for testing, run its tests here in a sealed-off container to prove the fix works: they fail before the change and pass after" },
   { key: "TRIAGE_VERIFY_AUTOHUNT", label: "Look for work on its own",
-    hint: "when the queue is empty, pick clean pull requests and run security reviews and verification on them unprompted" },
+    hint: "when nothing is queued, pick healthy pull requests and run security reviews and tests on them without being asked" },
   { key: "TRIAGE_FIX_WORKER", label: "Prepare fixes",
-    hint: "update, rebase, and draft fixes for contributors' branches — each result is parked here for approval before anything is pushed",
+    hint: "when someone clicks a fix in the app, do the work here — bring the contributor's branch up to date, or have the AI draft a fix. Every result waits here for a person's approval before anything is pushed",
     needs: ["push_identity"] },
   { key: "TRIAGE_FIX_AUTOHUNT", label: "Queue branch updates on its own",
-    hint: "notice pull requests that have fallen behind their base branch and queue the update or rebase itself",
+    hint: "spot pull requests that have fallen behind the main branch and queue the branch update without being asked",
     needs: ["push_identity"] },
   { key: "TRIAGE_FIX_HUNT_FIX", label: "Draft fixes on its own",
-    hint: "also have the agent draft a fix for mergeable, CI-passing pull requests the review scored below the bar — one attempt per head, parked here for approval",
+    hint: "spot pull requests that pass their tests but scored below the review bar, and have the AI draft a fix without being asked — one try per version of the pull request, and each draft waits for approval",
     needs: ["push_identity", "fix_policy"] },
 ];
 
 /** What each readiness check's subject is for, in words for someone meeting it
  *  for the first time. Keyed by the check keys `worker_readiness.checks` emits. */
 const EXPLAIN: Record<string, string> = {
-  docker: "A container runtime. Every test and build runs inside a disposable container, so pull-request code never runs directly on this machine.",
-  sandbox_image: "The locked-down container image those runs use — it carries no credentials and blocks the network.",
-  base_pin: "This machine's own copy of the repository's default branch, the before/after baseline every verification is proven against.",
-  verify_flag: "The background process that picks up queued verification work.",
-  push_identity: "The GitHub user account — yours or a dedicated one — whose SSH key pushes fixes to contributors' branches. Only autofix needs it.",
-  fix_flag: "The background process that prepares branch updates, rebases, and fixes.",
-  fix_policy: "Whether profile.json opts this repository into agent-authored fixes by naming autofix.fixable_gates. Only unattended fix drafting needs it; a share bundle carries the sharer's profile.",
+  docker: "The program that runs sealed-off, throwaway containers. Every pull request is tested inside one, so its code never runs directly on this computer.",
+  sandbox_image: "The sealed-off container those tests run in. It holds no passwords or keys and cannot reach the internet.",
+  base_pin: "This computer's own copy of the project's main branch — the “before” that each pull request is compared against to prove its fix works.",
+  verify_flag: "The background job on this computer that tests queued pull requests.",
+  push_identity: "The GitHub account that fixes are pushed to contributors' branches under — yours, or a separate one. Only needed for fixing pull requests, not for testing them.",
+  fix_flag: "The background job on this computer that updates branches and drafts fixes.",
+  fix_policy: "The project's permission for the AI to draft fixes without being asked: a short list in profile.json of what it may try to fix. Only “Draft fixes on its own” needs it — testing, branch updates, and fixes a person asks for all work without it.",
 };
 
 /** The lane flags whose presence means this machine has been signed up to
@@ -144,8 +144,8 @@ export default function Setup() {
     <div className="pad">
       <h2>🛠️ Setup — {readiness.host}</h2>
       <p className="muted small">
-        This page configures the machine serving it. Every machine that processes
-        work is provisioned on its own; the Control tab reports the whole fleet.
+        This page sets up the computer you are using right now. Each computer
+        that does work is set up on its own; the Control tab shows all of them.
       </p>
 
       {optedIn || expanded || provisioned
@@ -218,14 +218,14 @@ function WorkerSection(
 
       {!optedIn && (
         <p className="muted small">
-          To process pull requests and issues, this machine runs their tests,
-          security reviews, and fixes inside disposable containers. Here is
-          everything that takes, and where this machine stands on each piece:
+          To work on pull requests, this computer runs their tests, security
+          reviews, and fixes inside sealed-off, throwaway containers. Here is
+          everything that takes, and where this computer stands on each piece:
         </p>
       )}
       {optedIn && blockers.length > 0 && (
         <p className="muted small">
-          This machine has signed up for work but cannot process it right now —
+          This computer is signed up for work but cannot do it right now —
           the {blockers.length === 1 ? "row marked" : "rows marked"} “needed”
           below {blockers.length === 1 ? "says" : "say"} why.
         </p>
@@ -267,10 +267,10 @@ function WorkerSection(
         <ProfileSection onDone={onChanged} />
       )}
 
-      <h4>What work should this machine do?</h4>
+      <h4>What work should this computer do?</h4>
       <p className="muted small">
-        Saved on this machine and applied immediately. Choices that need
-        something not yet set up stay off until it is.
+        Saved on this computer and applied right away. A choice that needs
+        something not set up yet stays off until it is.
       </p>
       <div>
         <label>
@@ -404,19 +404,19 @@ function PushIdentitySection({ onDone }: { onDone: () => void }) {
   const [path, setPath] = useState<PushPath | null>(null);
   const options: { key: PushPath; label: string; hint: string }[] = [
     { key: "me", label: "Push fixes as me",
-      hint: "fixes land under your own GitHub account, through a new key made here just for Prospector" },
-    { key: "paste", label: "Paste one from another machine",
-      hint: "a teammate's share bundle with “also let the teammate's machine push fixes” ticked" },
-    { key: "dedicated", label: "Use a dedicated account",
-      hint: "a separate GitHub user you create, so the key here reaches only this repository and fixes are attributed to it" },
+      hint: "fixes show up under your own GitHub account, through a new key made here just for Prospector" },
+    { key: "paste", label: "Copy one from another computer",
+      hint: "paste a share bundle from a computer that already has one (copied with “also let the teammate's machine push fixes” ticked)" },
+    { key: "dedicated", label: "Use a separate account",
+      hint: "a GitHub account you create just for this, so fixes show up under its name and its key reaches only this project" },
   ];
   return (
     <section className="setup-card">
       <h3>🔑 Contributor-push identity</h3>
       <p className="muted small">
-        Autofix pushes branch updates, rebases, and fixes to contributors'
-        branches as a GitHub user account, through an SSH key this machine
-        holds — only git pushes, never the API. Whose account?
+        When a fix is approved, it is pushed to the contributor's branch under
+        a GitHub account, using a key kept on this computer. Whose account
+        should that be?
       </p>
       {options.map((o) => (
         <div key={o.key}>
@@ -606,10 +606,10 @@ function PastePushIdentity({ onDone }: { onDone: () => void }) {
   return (
     <div className="welcome-field">
       <p className="muted small">
-        Your teammate ticks “also let the teammate's machine push fixes” under
-        “Invite a member to this project” on their Setup tab. The push identity
-        and their repository profile (the autofix policy) are taken from it
-        here; the repository and store stay as they are.
+        On the other computer's Setup tab, under “Invite a member to this
+        project”, tick “also let the teammate's machine push fixes” and copy.
+        Paste it here: the push account and that computer's project settings
+        (the fix permissions) are taken from it; nothing else changes.
       </p>
       <textarea className="welcome-paste" value={text} rows={8} disabled={busy}
         placeholder={'{\n  "version": 2,\n  "push": { "login": "…" }\n}'}
@@ -647,13 +647,14 @@ function ProfileSection({ onDone }: { onDone: () => void }) {
 
   return (
     <section className="setup-card">
-      <h3>📋 Repository profile</h3>
+      <h3>📋 Fix permissions from another computer</h3>
       <p className="muted small">
-        Drafting fixes unattended needs the profile to name which failing gates
-        the agent may work on (autofix.fixable_gates). Paste a share bundle from a
-        machine whose profile does — “copy setup for a teammate” on its Setup tab;
-        neither key needs ticking. Only the profile is taken from it here; the
-        repository, store, and push identity stay as they are.
+        Before the AI may draft fixes without being asked, the project has to
+        say what it is allowed to fix. A computer that already has that
+        permission can hand it over: on its Setup tab, click “copy setup for a
+        teammate” (no need to tick either box) and paste the result here. Only
+        that permission list is taken from it; nothing else on this computer
+        changes.
       </p>
       <textarea className="welcome-paste" value={text} rows={8} disabled={busy}
         placeholder={'{\n  "version": 2,\n  "profile": { … }\n}'}
@@ -661,7 +662,7 @@ function ProfileSection({ onDone }: { onDone: () => void }) {
       {problem && <p className="chip chip-red sm">{problem}</p>}
       <div className="welcome-actions">
         <button className="btn-primary" disabled={busy || text.trim() === ""} onClick={() => void submit()}>
-          {busy ? "saving…" : "use this profile"}
+          {busy ? "saving…" : "use these permissions"}
         </button>
       </div>
     </section>

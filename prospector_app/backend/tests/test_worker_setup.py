@@ -142,8 +142,8 @@ class TestReadiness:
         monkeypatch.setattr(profile, "active", lambda: profile.parse_profile({"version": 1}, "test"))
         ok, detail, remedy = worker_readiness._fix_policy()
         assert not ok
-        assert "fixable_gates" in detail
-        assert "paste" in remedy
+        assert "fixable_gates" in remedy
+        assert "card below" in remedy
 
     def test_fix_policy_row_never_blocks_readiness(self):
         row = next(c for c in worker_readiness.checks() if c["key"] == "fix_policy")
