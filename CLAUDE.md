@@ -94,7 +94,7 @@ comment/close/reopen/review as the configured bot plus the dedicated
 reads normally, and writes nothing.
 
 **Two writers touch `.env`, each with its own allowlist.**
-`worker_control.set_flags` writes the six worker lane switches and nothing
+`worker_control.set_flags` writes the seven worker lane switches and nothing
 else. `prospector_app/backend/onboarding.py` writes deployment configuration
 for the setup wizard, allowlisted per step: `connect` (`TRIAGE_REPO`,
 `TRIAGE_STORE_URL`, the profile path, and presentation/review config, plus
@@ -175,8 +175,8 @@ measures that same composed tree. Only an explicit
 between, the patch is held to the files the agent reported
 (`author_fix.assert_disclosed`) and re-gated on the paths it really touched, so
 an agent cannot author its way onto a withheld path. A mechanical `rebase` that pauses on real
-conflicts escalates — for operator-clicked requests only, never the hunter's —
-to a fourth action, `resolve`: a locked-down agent resolves the conflicted
+conflicts escalates — for operator-clicked requests, and for the hunter's
+under `TRIAGE_FIX_HUNT_RESOLVE=1` — to a fourth action, `resolve`: a locked-down agent resolves the conflicted
 paths inside a merge of current base into the head (`resubmit prepare --merge`
 + `pipeline/resolve_conflicts.py`), the result passes the compile preflight,
 and it parks as `awaiting-review` with a per-file rationale, keeping its

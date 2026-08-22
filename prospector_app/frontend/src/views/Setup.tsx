@@ -32,7 +32,8 @@ const TEARDOWN_PARTS: { flag: "artifacts" | "vm" | "packages"; label: string; hi
  *  readiness checks that must pass first — the autofix lane is meaningless
  *  without a push identity, and an unattended agent fix without the profile's
  *  opt-in, so each control says so rather than failing later. */
-const SWITCHES: { key: string; label: string; hint: string; needs?: string[] }[] = [
+/** `on` is the value a ticked switch writes; the plain switches write "1". */
+const SWITCHES: { key: string; label: string; hint: string; needs?: string[]; on?: string }[] = [
   { key: "TRIAGE_VERIFY_WORKER", label: "Test pull requests",
     hint: "when someone queues a pull request for testing, run its tests here in a sealed-off container to prove the fix works: they fail before the change and pass after" },
   { key: "TRIAGE_VERIFY_AUTOHUNT", label: "Look for work on its own",
@@ -46,7 +47,16 @@ const SWITCHES: { key: string; label: string; hint: string; needs?: string[] }[]
   { key: "TRIAGE_FIX_HUNT_FIX", label: "Draft fixes on its own",
     hint: "spot pull requests that pass their tests but scored below the review bar, and have the AI draft a fix without being asked — one try per version of the pull request, and each draft waits for approval",
     needs: ["push_identity", "fix_policy"] },
+  { key: "TRIAGE_FIX_HUNT_RESOLVE", label: "Resolve merge conflicts on its own",
+    hint: "when a branch update it queued runs into a real conflict, have the AI resolve it instead of giving up — the result waits for approval, with its reasoning per file",
+    needs: ["push_identity"] },
+  { key: "TRIAGE_FIX_AUTOPUSH", on: "update,rebase", label: "Push branch updates without asking",
+    hint: "a branch update or rebase that passes the build check is pushed straight to the contributor's branch instead of waiting here for approval. AI-drafted fixes always wait",
+    needs: ["push_identity"] },
 ];
+
+const onValue = (key: string): string => SWITCHES.find((s) => s.key === key)?.on ?? "1";
+const isOn = (flags: WorkerFlags, s: { key: string }): boolean => (flags[s.key] ?? "") !== "";
 
 /** What each readiness check's subject is for, in words for someone meeting it
  *  for the first time. Keyed by the check keys `worker_readiness.checks` emits. */
@@ -121,7 +131,7 @@ export default function Setup() {
     setError(null);
     try {
       const r = await api.setSetupFlags(
-        Object.fromEntries(Object.entries(updates).map(([k, on]) => [k, on ? "1" : ""])));
+        Object.fromEntries(Object.entries(updates).map(([k, on]) => [k, on ? onValue(k) : ""])));
       setFlags(r.applied.flags);
       setReadiness(r.readiness);
     } catch (e) {
@@ -198,7 +208,7 @@ function WorkerSection(
   const unmet = (s: { needs?: string[] }): string[] =>
     (s.needs ?? []).filter((k) => byKey[k] != null && !byKey[k].ok);
   const available = SWITCHES.filter((s) => unmet(s).length === 0);
-  const allOn = available.length > 0 && available.every((s) => flags[s.key] === "1");
+  const allOn = available.length > 0 && available.every((s) => isOn(flags, s));
 
   return (
     <section className="setup-card setup-queues">
@@ -293,7 +303,7 @@ function WorkerSection(
             <label>
               <input
                 type="checkbox"
-                checked={flags[s.key] === "1"}
+                checked={isOn(flags, s)}
                 disabled={busy != null || blocked}
                 onChange={(e) => onToggle({ [s.key]: e.target.checked })}
               />
@@ -310,7 +320,7 @@ function WorkerSection(
 
       {(optedIn || provisioned) && (
         <UnprovisionSection
-          anyOn={SWITCHES.some((s) => flags[s.key] === "1")}
+          anyOn={SWITCHES.some((s) => isOn(flags, s))}
           canStart={available.length > 0}
           busy={busy}
           onStop={() => onToggle(Object.fromEntries(SWITCHES.map((s) => [s.key, false])))}

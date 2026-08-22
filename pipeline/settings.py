@@ -294,6 +294,14 @@ def fix_hunt_fix() -> bool:
     return os.environ.get("TRIAGE_FIX_HUNT_FIX", "") == "1"
 
 
+def fix_hunt_resolve() -> bool:
+    """Whether a hunted `rebase` that pauses on real conflicts may escalate to
+    an agent-authored `resolve`, parked for review like an operator's. Its own
+    opt-in: a conflict resolution is unattended agent time spent on a merge
+    nobody asked for."""
+    return os.environ.get("TRIAGE_FIX_HUNT_RESOLVE", "") == "1"
+
+
 def fix_hunt_limit() -> int:
     """The most auto-queued `fix` requests allowed in flight at once. Each fix
     spends two agents plus a compile preflight, so the hunter feeds them in
