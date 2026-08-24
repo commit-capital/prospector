@@ -1433,3 +1433,18 @@ def test_a_lost_worktree_cancels_with_a_reason(review_lane, store, monkeypatch):
     req = store.load_pr(1).fix_request
     assert req["status"] == "cancelled"
     assert "worktree" in (req.get("refused_reason") or "").lower()
+
+
+def test_queue_entries_carry_the_auto_review_bar(store):
+    _parked_resolve(store, result={
+        **RESOLVE_RESULT,
+        "auto_review": {"reviews": [], "bar": {"ok": False,
+                                               "reason": "tier 0"}}})
+    entry = next(e for e in fix_queue.queue_entries() if e["pr"] == 1)
+    assert entry["auto_review"] == {"ok": False, "reason": "tier 0"}
+
+
+def test_queue_entries_without_a_stamp_have_no_auto_review(store):
+    _parked_resolve(store)
+    entry = next(e for e in fix_queue.queue_entries() if e["pr"] == 1)
+    assert entry["auto_review"] is None

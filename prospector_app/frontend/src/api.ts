@@ -666,6 +666,18 @@ export interface FixResult {
                      concerns: string[] } | null;
   compile_preflight?: { exit?: number | null; refused?: string | null;
                         error?: string | null; error_excerpt?: string | null } | null;
+  /** The unattended-push judgment stamped on a parked `resolve` when the
+   *  deployment autopushes them: two refuting reviewers, the related-tests
+   *  sandbox run, the risk tier, and the bar's decision. */
+  auto_review?: {
+    against_head_sha?: string | null;
+    at?: string | null;
+    tier?: { tier: number | null; pinned_by: string[] } | null;
+    reviews: { lens: string; verdict: "safe" | "unsafe"; reason: string;
+               concerns?: string[]; failed?: boolean }[];
+    tests?: { files: string[]; run: { exit?: number | null } } | null;
+    bar?: { ok: boolean; reason: string } | null;
+  } | null;
 }
 
 /** Autofix-runner liveness plus this backend's push configuration.
@@ -714,6 +726,9 @@ export interface FixQueueEntry {
    *  asked to settle. Empty on every other ending. */
   conflict_paths: string[];
   resolvable: boolean;
+  /** The stamped auto-review outcome on a parked `resolve`, or null when no
+   *  auto-review has judged it. */
+  auto_review?: { ok: boolean; reason: string } | null;
 }
 
 export interface FixQueue {

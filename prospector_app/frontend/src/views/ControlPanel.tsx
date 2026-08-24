@@ -885,12 +885,20 @@ export default function ControlPanel() {
                   <tr>
                     <td>
                       {e.status === "awaiting-review" ? (
+                        <>
                         <span className={e.resolvable ? "chip chip-green sm" : "chip chip-amber sm"}
                           title={e.resolvable
                             ? "The action produced a change and the compile preflight did not reject it."
                             : "The change is parked, but its compile preflight did not pass."}>
                           {e.resolvable ? "✅ Conflicts resolvable" : "⚠ Needs a look"}
                         </span>
+                        {e.auto_review && (
+                          <span className={e.auto_review.ok ? "chip chip-green sm" : "chip chip-amber sm"}
+                            title={e.auto_review.reason}>
+                            🤖 {e.auto_review.ok ? "agents cleared" : "agents left it for you"}
+                          </span>
+                        )}
+                        </>
                       ) : (
                         <>
                           <span className={fixStatusChip(e.status)}>
