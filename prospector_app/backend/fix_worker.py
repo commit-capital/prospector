@@ -44,17 +44,20 @@ import stat
 import subprocess
 import tempfile
 import threading
+import time
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
+from collections.abc import Callable
 from typing import TYPE_CHECKING, NamedTuple
 
 from pipeline import (author_fix, compile_preflight, describe_pr, diffpaths, freshness,
-                      gates, gh, profile, resolve_conflicts, review_fix, review_policy,
-                      reviewers, settings, verify_driver)
+                      gates, gh, profile, resolve_conflicts, resolve_evidence,
+                      review_fix, review_policy, review_resolve, reviewers, risktier,
+                      settings, verify_driver)
 from pipeline.storekit import now as _now
 from prospector_app.backend import (activity, data, executor, fix_queue, review_refresh,
-                                    safety_guard, service)
+                                    safety_guard, sandbox_check, service)
 from prospector_app.backend.resubmit_identity import worker_env
 
 if TYPE_CHECKING:
@@ -227,6 +230,45 @@ def next_approved() -> int | None:
     it. Every other action re-derives from the store, so any machine may push
     one."""
     return _oldest("approved", mine_only=("resolve",))
+
+
+# PRs whose auto-review last ended as a machine failure (a crashed or timed-out
+# reviewer, a git error), by the monotonic time it happened. Held in memory so a
+# restart — a recovered machine — retries immediately, while a live worker waits
+# TRANSIENT_RETRY_SECONDS between attempts instead of spinning on one PR.
+_review_backoff: dict[int, float] = {}
+
+
+def next_reviewable() -> int | None:
+    """The oldest parked `resolve` this machine may auto-review, or None.
+
+    Only when the deployment names `resolve` in TRIAGE_FIX_AUTOPUSH; only ones
+    stamped with this host's name, because the kept merge worktree is the thing
+    being judged (a record naming no host keeps its worktree on an unknown
+    machine, and judging it here could only cancel work another can still
+    push); only ones no auto-review has stamped — a stamped verdict stands
+    until the resolve is re-authored; and none resting in _review_backoff."""
+    if "resolve" not in settings.fix_autopush():
+        return None
+    me = socket.gethostname()
+    best_n: int | None = None
+    best_key: str | None = None
+    for n, rec in data.prs().items():
+        req = rec.fix_request or {}
+        if req.get("status") != "awaiting-review" or req.get("action") != "resolve":
+            continue
+        if req.get("host") != me:
+            continue
+        if (req.get("result") or {}).get("auto_review") is not None:
+            continue
+        rested_at = _review_backoff.get(n)
+        if rested_at is not None and (time.monotonic() - rested_at
+                                      < TRANSIENT_RETRY_SECONDS):
+            continue
+        key = str(req.get("queued_at") or "")
+        if best_key is None or key < best_key:
+            best_n, best_key = n, key
+    return best_n
 
 
 def _oldest(status: str, mine_only: tuple[str, ...] = ()) -> int | None:
@@ -1010,6 +1052,150 @@ def _commit_message(action: str) -> str:
             else "Address review and CI feedback")
 
 
+def _cancel(n: int, req: dict, reason: str) -> None:
+    data.store().edit_pr(n).record_fix_request(
+        "cancelled", req.get("action", "fix"), queued_at=req.get("queued_at"),
+        started_at=req.get("started_at"), finished_at=_now(),
+        refused_reason=reason[-TAIL_CHARS:], source=req.get("source"),
+        guidance=req.get("guidance"), host=socket.gethostname(),
+        head_sha=req.get("against_head_sha"))
+    data.refresh()
+    _log_run(n, req, "cancelled", reason[-TAIL_CHARS:])
+
+
+def _related_tests_run(n: int, head: str, patch: str,
+                       related: list[str]) -> dict | None:
+    """The sandbox record for the `related` test files, run over current
+    default-branch HEAD with the resolved diff applied. None when no related
+    tests exist or the profile configures no test lane."""
+    if not related:
+        return None
+    cmd, _why = sandbox_check.lane_command(["test", *related])
+    if cmd is None:
+        return None
+    scratch = settings.verify_scratch() / "autofix"
+    scratch.mkdir(parents=True, exist_ok=True)
+    path = scratch / f"pr-{n}.resolve-tests.patch"
+    path.write_text(patch + "\n")
+    return {"files": related,
+            "run": compile_preflight.run_command_for_patch(n, head, path, cmd)}
+
+
+def review_parked_resolve(n: int) -> None:
+    """Judge this host's parked `resolve` for unattended pushing.
+
+    The request is claimed to `running` for the duration (the same CAS every
+    worker transition uses), so an operator's cancel or approval can never be
+    overwritten by a verdict landing later. The judged change is the kept
+    worktree's own diff, read fresh — the stored patch is a display tail.
+
+    Two refuting reviewers and a related-tests sandbox run are recorded into
+    the request's `result.auto_review`, and `gates.resolve_autopush_bar` over
+    that evidence decides. Pass → the request becomes `approved`, and the drain
+    loop pushes it through `push_approved` like an operator's approval. Fail →
+    it returns to `awaiting-review` with the verdict for the operator to read,
+    and the stamp keeps it from being judged again. A machine failure — a
+    crashed or timed-out reviewer with no judged rejection beside it, a git or
+    evidence error — restores the request unstamped and rests the PR in
+    _review_backoff, so a live worker retries later and a restarted one
+    immediately."""
+    rec = data.store().load_pr(n)
+    if rec is None:
+        return
+    req = rec.fix_request or {}
+    if req.get("status") != "awaiting-review" or req.get("action") != "resolve":
+        return
+    head = str(req.get("against_head_sha") or rec.head_sha or "")
+    if rec.head_sha != (req.get("against_head_sha") or rec.head_sha):
+        _resubmit(n, "abort")
+        _cancel(n, req, "the PR's head moved before the auto-review ran; "
+                        "a fresh resolve applies to the author's latest head")
+        return
+    state_r = _resubmit(n, "state")
+    try:
+        st = json.loads(state_r.stdout or "{}")
+    except ValueError:
+        st = {}
+    worktree = st.get("worktree")
+    if not worktree:
+        _cancel(n, req, "the kept merge worktree is gone, so there is nothing "
+                        "to judge or push — re-queue the rebase")
+        return
+    claimed = data.store().claim_fix_request(n, host=socket.gethostname(),
+                                             statuses=("awaiting-review",))
+    if claimed is None:
+        return
+
+    def restore(reason: str) -> None:
+        _review_backoff[n] = time.monotonic()
+        data.store().edit_pr(n).record_fix_request(
+            "awaiting-review", "resolve", queued_at=claimed.get("queued_at"),
+            started_at=req.get("started_at"), result=claimed.get("result"),
+            source=claimed.get("source"), host=socket.gethostname(),
+            base_sha=claimed.get("base_sha"), head_sha=head)
+        data.refresh()
+        print(f"[fix-worker] resolve auto-review for PR #{n}: {reason}; "
+              f"resting it to retry", flush=True)
+
+    try:
+        _judge_claimed_resolve(n, rec, claimed, head, str(worktree), restore)
+    except Exception:
+        traceback.print_exc()
+        restore("the review crashed")
+
+
+def _judge_claimed_resolve(n: int, rec: Pr, claimed: dict, head: str,
+                           worktree: str,
+                           restore: Callable[[str], None]) -> None:
+    result = dict(claimed.get("result") or {})
+    paths = [str(p) for p in (result.get("conflict_paths") or [])]
+    diff_r = _resubmit(n, "diff")
+    patch = (diff_r.stdout or "").strip()
+    if diff_r.returncode != 0 or not patch.startswith("diff "):
+        restore("the kept worktree's diff could not be read")
+        return
+    stamp: dict = {"against_head_sha": head, "base_sha": claimed.get("base_sha"),
+                   "host": socket.gethostname(), "at": _now(),
+                   "tier": risktier.tier_facet(paths),
+                   "reviews": [], "tests": None}
+    tier = stamp["tier"]["tier"]
+    if tier is not None and tier != 0:
+        history = resolve_evidence.history(worktree, paths)
+        context = resolve_evidence.store_context(rec)
+        related = resolve_evidence.related_tests(worktree, paths)
+        reviews: list[dict] = []
+        for lens in ("behavior", "history"):
+            verdict = review_resolve.review(
+                worktree, pr=n, title=rec.title or "",
+                merge_diff=str(result.get("merge_diff") or ""),
+                patch=patch,
+                resolutions=list(result.get("resolutions") or []),
+                history=history, store_context=context, lens=lens)
+            reviews.append({"lens": lens, **verdict})
+            if verdict.get("verdict") != "safe" and not verdict.get("failed"):
+                break
+        judged_rejection = any(r.get("verdict") != "safe" and not r.get("failed")
+                               for r in reviews)
+        if any(r.get("failed") for r in reviews) and not judged_rejection:
+            restore("a reviewer failed as a machine, with no judged rejection "
+                    "beside it")
+            return
+        stamp["reviews"] = reviews
+        if all(r.get("verdict") == "safe" for r in reviews) and len(reviews) == 2:
+            stamp["tests"] = _related_tests_run(n, head, patch, related)
+    result["auto_review"] = stamp
+    ok, why = gates.resolve_autopush_bar(result)
+    stamp["bar"] = {"ok": ok, "reason": why}
+    data.store().edit_pr(n).record_fix_request(
+        "approved" if ok else "awaiting-review", "resolve",
+        queued_at=claimed.get("queued_at"), started_at=claimed.get("started_at"),
+        result=result, source=claimed.get("source"), host=socket.gethostname(),
+        base_sha=claimed.get("base_sha"), head_sha=head)
+    data.refresh()
+    print(f"[fix-worker] resolve auto-review for PR #{n}: "
+          f"{'cleared for push' if ok else why}", flush=True)
+
+
 def push_approved(n: int) -> None:
     """Push a request an operator approved, rebuilding its worktree first.
 
@@ -1325,6 +1511,14 @@ def _drain_loop() -> None:
                 beat()
                 print(f"[fix-worker] picking up PR #{n}", flush=True)
                 run_one(n)
+                continue
+            n = next_reviewable()
+            if n is not None:
+                state["current_pr"] = n
+                beat()
+                print(f"[fix-worker] auto-reviewing parked resolve for PR #{n}",
+                      flush=True)
+                review_parked_resolve(n)
                 continue
             pick = next_auto() if enabled_autohunt() else None
             if pick is None:

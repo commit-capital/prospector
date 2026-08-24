@@ -143,6 +143,16 @@ function RequestStrip({ req, runner }: { req: FixRequest; runner: FixRunner | nu
               ` Proven against base ${req.base_sha.slice(0, 8)}; pushing re-runs it against
                 current base first.`}
           </div>
+          {req.result?.auto_review?.bar && (
+            <div className="vb-detail" style={{ marginTop: 4 }}>
+              {req.result.auto_review.bar.ok
+                ? "🤖 Auto-review cleared it: two agent reviewers found nothing wrong"
+                  + (req.result.auto_review.tests
+                    ? " and the related tests passed."
+                    : "; no related tests were found to run.")
+                : `🤖 Auto-review left it for you: ${req.result.auto_review.bar.reason}`}
+            </div>
+          )}
         </div>
       </div>
     );

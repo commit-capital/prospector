@@ -188,6 +188,7 @@ class FixQueueEntry(TypedDict):
     detail: str | None
     conflict_paths: list[str]
     resolvable: bool
+    auto_review: dict | None
 
 
 def _detail(req: dict) -> str | None:
@@ -229,7 +230,17 @@ def _entry(n: int, title: str | None, req: dict) -> FixQueueEntry:
         "guidance": req.get("guidance"), "detail": _detail(req),
         "conflict_paths": [str(p) for p in paths] if isinstance(paths, list) else [],
         "resolvable": status == "awaiting-review" and (pf is None or pf.get("exit") == 0),
+        "auto_review": _auto_review_bar(result),
     }
+
+
+def _auto_review_bar(result: dict) -> dict | None:
+    """The stamped auto-review outcome, {"ok", "reason"}, or None when no
+    auto-review has judged this request."""
+    bar = (result.get("auto_review") or {}).get("bar")
+    if not isinstance(bar, dict):
+        return None
+    return {"ok": bool(bar.get("ok")), "reason": str(bar.get("reason") or "")}
 
 
 def queue_entries() -> list[FixQueueEntry]:

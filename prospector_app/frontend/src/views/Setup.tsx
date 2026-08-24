@@ -32,8 +32,11 @@ const TEARDOWN_PARTS: { flag: "artifacts" | "vm" | "packages"; label: string; hi
  *  readiness checks that must pass first — the autofix lane is meaningless
  *  without a push identity, and an unattended agent fix without the profile's
  *  opt-in, so each control says so rather than failing later. */
-/** `on` is the value a ticked switch writes; the plain switches write "1". */
-const SWITCHES: { key: string; label: string; hint: string; needs?: string[]; on?: string }[] = [
+/** A plain switch writes "1" when ticked. A switch with `parts` owns those
+ *  names inside its key's comma-separated value, so two switches can share
+ *  TRIAGE_FIX_AUTOPUSH; `id` tells them apart in the UI. */
+const SWITCHES: { key: string; id?: string; label: string; hint: string;
+                  needs?: string[]; parts?: string[] }[] = [
   { key: "TRIAGE_VERIFY_WORKER", label: "Test pull requests",
     hint: "when someone queues a pull request for testing, run its tests here in a sealed-off container to prove the fix works: they fail before the change and pass after" },
   { key: "TRIAGE_VERIFY_AUTOHUNT", label: "Look for work on its own",
@@ -50,13 +53,24 @@ const SWITCHES: { key: string; label: string; hint: string; needs?: string[]; on
   { key: "TRIAGE_FIX_HUNT_RESOLVE", label: "Resolve merge conflicts on its own",
     hint: "when a branch update it queued runs into a real conflict, have the AI resolve it instead of giving up — the result waits for approval, with its reasoning per file",
     needs: ["push_identity"] },
-  { key: "TRIAGE_FIX_AUTOPUSH", on: "update,rebase", label: "Push branch updates without asking",
+  { key: "TRIAGE_FIX_AUTOPUSH", parts: ["update", "rebase"], label: "Push branch updates without asking",
     hint: "a branch update or rebase that passes the build check is pushed straight to the contributor's branch instead of waiting here for approval. AI-drafted fixes always wait",
+    needs: ["push_identity"] },
+  { key: "TRIAGE_FIX_AUTOPUSH", id: "TRIAGE_FIX_AUTOPUSH:resolve", parts: ["resolve"],
+    label: "Push agent-resolved conflicts without asking",
+    hint: "an AI conflict resolution is pushed only after two independent AI reviewers both fail to find anything wrong with it, the tests related to the conflicted files pass in the sandbox, and the files are not high-risk — anything less waits here for you, with the reviewers' reasons",
     needs: ["push_identity"] },
 ];
 
-const onValue = (key: string): string => SWITCHES.find((s) => s.key === key)?.on ?? "1";
-const isOn = (flags: WorkerFlags, s: { key: string }): boolean => (flags[s.key] ?? "") !== "";
+const switchId = (s: { key: string; id?: string }): string => s.id ?? s.key;
+/** Stable ordering for the composed TRIAGE_FIX_AUTOPUSH value. */
+const AUTOPUSH_ORDER = ["update", "rebase", "fix", "describe", "resolve"];
+const valueParts = (value: string): Set<string> =>
+  new Set(value.split(",").map((p) => p.trim()).filter(Boolean));
+const isOn = (flags: WorkerFlags, s: { key: string; parts?: string[] }): boolean =>
+  s.parts
+    ? s.parts.every((p) => valueParts(flags[s.key] ?? "").has(p))
+    : (flags[s.key] ?? "") !== "";
 
 /** What each readiness check's subject is for, in words for someone meeting it
  *  for the first time. Keyed by the check keys `worker_readiness.checks` emits. */
@@ -129,9 +143,26 @@ export default function Setup() {
   async function toggle(updates: Record<string, boolean>) {
     setBusy(Object.keys(updates).join(","));
     setError(null);
+    // Updates are keyed by switch id. A key with `parts` switches (the two
+    // autopush ones) is recomposed whole from its switches' final states, so
+    // the page owns the entire value — a part no switch claims is cleared,
+    // exactly as writing the key outright would.
+    const next: Record<string, string> = {};
+    for (const [id, on] of Object.entries(updates)) {
+      const s = SWITCHES.find((x) => switchId(x) === id);
+      if (!s) continue;
+      if (s.parts) {
+        const owned = SWITCHES.filter((x) => x.key === s.key && x.parts);
+        const state = (x: { key: string; id?: string; parts?: string[] }): boolean =>
+          switchId(x) in updates ? updates[switchId(x)] : isOn(flags, x);
+        const kept = new Set(owned.filter(state).flatMap((x) => x.parts ?? []));
+        next[s.key] = AUTOPUSH_ORDER.filter((p) => kept.has(p)).join(",");
+      } else {
+        next[s.key] = on ? "1" : "";
+      }
+    }
     try {
-      const r = await api.setSetupFlags(
-        Object.fromEntries(Object.entries(updates).map(([k, on]) => [k, on ? onValue(k) : ""])));
+      const r = await api.setSetupFlags(next);
       setFlags(r.applied.flags);
       setReadiness(r.readiness);
     } catch (e) {
@@ -289,7 +320,7 @@ function WorkerSection(
             checked={allOn}
             disabled={busy != null || available.length === 0}
             onChange={(e) =>
-              onToggle(Object.fromEntries(available.map((s) => [s.key, e.target.checked])))}
+              onToggle(Object.fromEntries(available.map((s) => [switchId(s), e.target.checked])))}
           />
           {" "}<strong>Everything it can</strong>
         </label>
@@ -299,13 +330,13 @@ function WorkerSection(
         const missing = unmet(s);
         const blocked = missing.length > 0;
         return (
-          <div key={s.key}>
+          <div key={switchId(s)}>
             <label>
               <input
                 type="checkbox"
                 checked={isOn(flags, s)}
                 disabled={busy != null || blocked}
-                onChange={(e) => onToggle({ [s.key]: e.target.checked })}
+                onChange={(e) => onToggle({ [switchId(s)]: e.target.checked })}
               />
               {" "}{s.label}
             </label>
@@ -323,8 +354,8 @@ function WorkerSection(
           anyOn={SWITCHES.some((s) => isOn(flags, s))}
           canStart={available.length > 0}
           busy={busy}
-          onStop={() => onToggle(Object.fromEntries(SWITCHES.map((s) => [s.key, false])))}
-          onStart={() => onToggle(Object.fromEntries(available.map((s) => [s.key, true])))}
+          onStop={() => onToggle(Object.fromEntries(SWITCHES.map((s) => [switchId(s), false])))}
+          onStart={() => onToggle(Object.fromEntries(available.map((s) => [switchId(s), true])))}
         />
       )}
     </section>

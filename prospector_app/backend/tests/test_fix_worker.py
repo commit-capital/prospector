@@ -1226,3 +1226,325 @@ def test_a_refused_rebase_is_not_hunted_again_at_the_same_head(store, monkeypatc
     store.save_pr(rec)
     data.refresh()
     assert fix_worker.auto_fixable(data.prs()[1]) == "rebase"
+
+
+# --- the resolve auto-review lane -----------------------------------------------
+
+RESOLVE_RESULT = {
+    "patch": "diff --git a/one.txt b/one.txt\n+resolved",
+    "merge_diff": "diff --git a/one.txt b/one.txt\n+<<<<<<< conflict",
+    "conflict_paths": ["one.txt"],
+    "resolutions": [{"path": "one.txt", "rationale": "kept both"}],
+    "compile_preflight": {"exit": 0},
+    "message": "Merge current base, conflicts agent-resolved",
+}
+
+
+def _parked_resolve(store, host: str | None = "me", head: str = HEAD,
+                    result: dict | None = None) -> None:
+    import socket
+    store.load_pr(1).record_fix_request(
+        "awaiting-review", "resolve", queued_at=NOW, source="auto",
+        result=dict(result if result is not None else RESOLVE_RESULT),
+        host=socket.gethostname() if host == "me" else host, head_sha=head)
+    data.refresh()
+
+
+class _ReadyMergeResubmit(_Probe):
+    """A resubmit holding a completed merge worktree for PR 1."""
+
+    def __init__(self, tmp_path):
+        super().__init__()
+        self.wt = str(tmp_path / "wt")
+
+    def __call__(self, n, *args, stdin: str | None = None):
+        if args[0] == "state":
+            self.calls.append(args)
+            out = json.dumps({"phase": "ready", "mode": "merge",
+                              "conflicts": [], "worktree": self.wt,
+                              "base_branch": "master"})
+            return type("R", (), {"returncode": 0, "stdout": out, "stderr": ""})()
+        return super().__call__(n, *args, stdin=stdin)
+
+
+@pytest.fixture
+def review_lane(store, monkeypatch, tmp_path):
+    """The lane with its subprocess boundaries mocked: evidence assembly is
+    canned, both reviewers say safe, the sandbox run passes."""
+    monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", "resolve")
+    fake = _ReadyMergeResubmit(tmp_path)
+    monkeypatch.setattr(fix_worker, "_resubmit", fake)
+    monkeypatch.setattr(fix_worker.resolve_evidence, "history",
+                        lambda wt, paths: "one.txt: abc #101")
+    monkeypatch.setattr(fix_worker.resolve_evidence, "store_context",
+                        lambda rec: "a retry fix")
+    monkeypatch.setattr(fix_worker.resolve_evidence, "related_tests",
+                        lambda wt, paths: ["tests/test_one.py"])
+    reviews: list[dict] = []
+    review_calls: list[dict] = []
+
+    def fake_review(wt, **kw):
+        review_calls.append({"worktree": wt, **kw})
+        if reviews:
+            return reviews.pop(0)
+        return {"verdict": "safe", "reason": "ok", "concerns": []}
+
+    monkeypatch.setattr(fix_worker.review_resolve, "review", fake_review)
+    runs: list[str] = []
+    run_patches: list[str] = []
+
+    def fake_run(pr, head, patch, cmd):
+        runs.append(cmd)
+        run_patches.append(patch.read_text())
+        return {"exit": 0, "cmd": cmd}
+
+    monkeypatch.setattr(fix_worker.compile_preflight, "run_command_for_patch",
+                        fake_run)
+    fix_worker._review_backoff.clear()
+    return {"resubmit": fake, "reviews": reviews, "runs": runs,
+            "review_calls": review_calls, "run_patches": run_patches}
+
+
+def test_the_lane_is_inert_without_the_flag(store, monkeypatch):
+    monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", "update,rebase")
+    _parked_resolve(store)
+    assert fix_worker.next_reviewable() is None
+
+
+def test_the_lane_picks_this_hosts_unstamped_resolves(store, monkeypatch):
+    monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", "resolve")
+    _parked_resolve(store)
+    assert fix_worker.next_reviewable() == 1
+
+
+def test_the_lane_skips_other_hosts_resolves(store, monkeypatch):
+    monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", "resolve")
+    _parked_resolve(store, host="some-other-machine")
+    assert fix_worker.next_reviewable() is None
+
+
+def test_the_lane_skips_non_resolve_parks(store, monkeypatch):
+    monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", "resolve")
+    import socket
+    store.load_pr(1).record_fix_request(
+        "awaiting-review", "fix", queued_at=NOW, result={"patch": "diff x"},
+        host=socket.gethostname(), head_sha=HEAD)
+    data.refresh()
+    assert fix_worker.next_reviewable() is None
+
+
+def test_the_lane_skips_already_stamped_resolves(store, monkeypatch):
+    monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", "resolve")
+    _parked_resolve(store, result={**RESOLVE_RESULT,
+                                   "auto_review": {"reviews": []}})
+    assert fix_worker.next_reviewable() is None
+
+
+def test_a_clean_bar_approves_for_the_push_lane(review_lane, store):
+    _parked_resolve(store)
+    fix_worker.review_parked_resolve(1)
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "approved"
+    auto = req["result"]["auto_review"]
+    assert [r["verdict"] for r in auto["reviews"]] == ["safe", "safe"]
+    assert auto["tests"]["run"]["exit"] == 0
+    assert auto["bar"]["ok"] is True
+    assert fix_worker.next_approved() == 1
+
+
+def test_an_unsafe_review_stays_parked_with_the_reason(review_lane, store):
+    review_lane["reviews"].extend([
+        {"verdict": "safe", "reason": "ok", "concerns": []},
+        {"verdict": "unsafe", "reason": "drops the base side's guard",
+         "concerns": []}])
+    _parked_resolve(store)
+    fix_worker.review_parked_resolve(1)
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "awaiting-review"
+    assert req["result"]["auto_review"]["bar"]["ok"] is False
+    assert "guard" in req["result"]["auto_review"]["bar"]["reason"]
+    assert fix_worker.next_reviewable() is None  # not re-judged
+
+
+def test_an_unsafe_first_review_skips_the_second_and_the_sandbox(review_lane, store):
+    review_lane["reviews"].append(
+        {"verdict": "unsafe", "reason": "half-kept hunk", "concerns": []})
+    _parked_resolve(store)
+    fix_worker.review_parked_resolve(1)
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "awaiting-review"
+    assert len(req["result"]["auto_review"]["reviews"]) == 1
+    assert review_lane["runs"] == []
+
+
+def test_machine_failures_leave_no_stamp_so_a_recovered_host_retries(review_lane, store):
+    review_lane["reviews"].extend([
+        {"verdict": "unsafe", "reason": "agent timed out", "failed": True,
+         "concerns": []},
+        {"verdict": "unsafe", "reason": "agent crashed", "failed": True,
+         "concerns": []}])
+    _parked_resolve(store)
+    fix_worker.review_parked_resolve(1)
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "awaiting-review"
+    assert "auto_review" not in (req.get("result") or {})
+
+
+def test_a_tier0_conflict_parks_without_spending_agents(review_lane, store, monkeypatch):
+    called = []
+    monkeypatch.setattr(fix_worker.review_resolve, "review",
+                        lambda wt, **kw: called.append(1))
+    _parked_resolve(store, result={**RESOLVE_RESULT,
+                                   "conflict_paths": ["package.json"]})
+    fix_worker.review_parked_resolve(1)
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "awaiting-review"
+    assert req["result"]["auto_review"]["bar"]["ok"] is False
+    assert "tier" in req["result"]["auto_review"]["bar"]["reason"]
+    assert called == []
+
+
+def test_failing_related_tests_stay_parked(review_lane, store, monkeypatch):
+    monkeypatch.setattr(fix_worker.compile_preflight, "run_command_for_patch",
+                        lambda pr, head, patch, cmd: {"exit": 1, "cmd": cmd})
+    _parked_resolve(store)
+    fix_worker.review_parked_resolve(1)
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "awaiting-review"
+    assert "test" in req["result"]["auto_review"]["bar"]["reason"]
+
+
+def test_no_related_tests_passes_on_the_reviews_alone(review_lane, store, monkeypatch):
+    monkeypatch.setattr(fix_worker.resolve_evidence, "related_tests",
+                        lambda wt, paths: [])
+    _parked_resolve(store)
+    fix_worker.review_parked_resolve(1)
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "approved"
+    assert req["result"]["auto_review"]["tests"] is None
+    assert review_lane["runs"] == []
+
+
+def test_a_moved_head_cancels_and_frees_the_worktree(review_lane, store):
+    _parked_resolve(store, head="b" * 40)
+    fix_worker.review_parked_resolve(1)
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "cancelled"
+    assert "head" in (req.get("refused_reason") or "").lower()
+    assert ("abort",) in review_lane["resubmit"].calls
+
+
+def test_a_lost_worktree_cancels_with_a_reason(review_lane, store, monkeypatch):
+    fake = _Probe(overrides={"state": (0, json.dumps({"phase": "none"}))})
+    monkeypatch.setattr(fix_worker, "_resubmit", fake)
+    _parked_resolve(store)
+    fix_worker.review_parked_resolve(1)
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "cancelled"
+    assert "worktree" in (req.get("refused_reason") or "").lower()
+
+
+def test_queue_entries_carry_the_auto_review_bar(store):
+    _parked_resolve(store, result={
+        **RESOLVE_RESULT,
+        "auto_review": {"reviews": [], "bar": {"ok": False,
+                                               "reason": "tier 0"}}})
+    entry = next(e for e in fix_queue.queue_entries() if e["pr"] == 1)
+    assert entry["auto_review"] == {"ok": False, "reason": "tier 0"}
+
+
+def test_queue_entries_without_a_stamp_have_no_auto_review(store):
+    _parked_resolve(store)
+    entry = next(e for e in fix_queue.queue_entries() if e["pr"] == 1)
+    assert entry["auto_review"] is None
+
+
+def test_the_lane_skips_hostless_resolves(store, monkeypatch):
+    # A record without a host stamp has its worktree on an unknown machine;
+    # judging it here could only cancel work another machine can still push.
+    monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", "resolve")
+    _parked_resolve(store, host=None)
+    assert fix_worker.next_reviewable() is None
+
+
+def test_the_review_holds_the_request_as_running_while_it_judges(review_lane, store,
+                                                                monkeypatch):
+    seen: list[str] = []
+
+    def spying_review(wt, **kw):
+        seen.append(store.load_pr(1).fix_request["status"])
+        return {"verdict": "safe", "reason": "ok", "concerns": []}
+
+    monkeypatch.setattr(fix_worker.review_resolve, "review", spying_review)
+    _parked_resolve(store)
+    fix_worker.review_parked_resolve(1)
+    assert seen and all(status == "running" for status in seen)
+    assert store.load_pr(1).fix_request["status"] == "approved"
+
+
+def test_a_machine_failure_backs_off_before_retrying(review_lane, store):
+    review_lane["reviews"].extend([
+        {"verdict": "unsafe", "reason": "agent timed out", "failed": True,
+         "concerns": []},
+        {"verdict": "unsafe", "reason": "agent crashed", "failed": True,
+         "concerns": []}])
+    _parked_resolve(store)
+    fix_worker.review_parked_resolve(1)
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "awaiting-review"
+    assert "auto_review" not in (req.get("result") or {})
+    assert fix_worker.next_reviewable() is None
+    fix_worker._review_backoff.clear()
+    assert fix_worker.next_reviewable() == 1
+
+
+def test_one_failed_reviewer_beside_a_safe_leaves_no_stamp(review_lane, store):
+    review_lane["reviews"].extend([
+        {"verdict": "unsafe", "reason": "agent timed out", "failed": True,
+         "concerns": []},
+        {"verdict": "safe", "reason": "ok", "concerns": []}])
+    _parked_resolve(store)
+    fix_worker.review_parked_resolve(1)
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "awaiting-review"
+    assert "auto_review" not in (req.get("result") or {})
+
+
+def test_a_judged_rejection_beside_a_failed_reviewer_still_stamps(review_lane, store):
+    review_lane["reviews"].extend([
+        {"verdict": "unsafe", "reason": "agent timed out", "failed": True,
+         "concerns": []},
+        {"verdict": "unsafe", "reason": "drops the base side's guard",
+         "concerns": []}])
+    _parked_resolve(store)
+    fix_worker.review_parked_resolve(1)
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "awaiting-review"
+    assert "guard" in req["result"]["auto_review"]["bar"]["reason"]
+
+
+def test_the_review_judges_the_worktrees_full_diff_not_the_stored_tail(
+        review_lane, store, monkeypatch):
+    full = "diff --git a/one.txt b/one.txt\n+the full resolution\n"
+    fake = review_lane["resubmit"]
+    fake.overrides["diff"] = (0, full)
+    _parked_resolve(store, result={**RESOLVE_RESULT,
+                                   "patch": "+a stored 4000-char tail"})
+    fix_worker.review_parked_resolve(1)
+    assert store.load_pr(1).fix_request["status"] == "approved"
+    assert all(c["patch"] == full.strip() for c in review_lane["review_calls"])
+    assert review_lane["run_patches"] and full.strip() in review_lane["run_patches"][0]
+
+
+def test_an_evidence_crash_restores_the_request_and_backs_off(review_lane, store,
+                                                              monkeypatch):
+    def boom(wt, paths):
+        raise RuntimeError("git timed out")
+
+    monkeypatch.setattr(fix_worker.resolve_evidence, "history", boom)
+    _parked_resolve(store)
+    fix_worker.review_parked_resolve(1)
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "awaiting-review"
+    assert "auto_review" not in (req.get("result") or {})
+    assert fix_worker.next_reviewable() is None

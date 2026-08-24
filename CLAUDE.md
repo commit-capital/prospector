@@ -187,9 +187,22 @@ paths inside a merge of current base into the head (`resubmit prepare --merge`
 and it parks as `awaiting-review` with a per-file rationale, keeping its
 worktree — the only action that does, and so the only one whose approval its
 own machine must push. `gates.fix_eligibility` holds `resolve` to the CODEOWNERS
-and deny-glob bar over the conflicted paths, with no profile opt-in; a resolve
-never autopushes regardless of `TRIAGE_FIX_AUTOPUSH`, and approval pushes the
-kept merge commit with no history rewrite. `gates.fix_eligibility` is the ONE
+and deny-glob bar over the conflicted paths, with no profile opt-in; every
+resolve parks first, and approval pushes the
+kept merge commit with no history rewrite. A deployment that names `resolve` in
+`TRIAGE_FIX_AUTOPUSH` lets the authoring machine's worker approve its own
+parked resolves through `gates.resolve_autopush_bar` — the ONE unattended-push
+policy: conflicted paths below risk tier 0 (`pipeline/risktier.py`), two
+independent refuting reviewers (`pipeline/review_resolve.py`, behavior and
+history lenses over evidence from `pipeline/resolve_evidence.py` — per-side
+`git log`, store summaries, linked issues) both affirmatively `safe`
+(fail-closed on any malfunction), and a clean sandbox run of the test files
+related to the conflicted paths. The verdict is stamped into
+`fix_request.result.auto_review`; a pass records `approved` and the normal
+push path takes it, anything less stays parked with the reason for the
+operator, whose manual Push never consults the bar. A parked resolve whose
+head moved is cancelled instead of judged — the hunter re-arms on the new
+head. `gates.fix_eligibility` is the ONE
 policy —
 fail-closed on a malicious threat verdict, any recorded RED security verdict, a
 CODEOWNERS-gated path, a path the profile's `autofix.deny_globs` names, a

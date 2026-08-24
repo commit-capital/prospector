@@ -22,7 +22,7 @@ import re
 import shlex
 from typing import TYPE_CHECKING
 
-from pipeline import codeowners, describe_pr, diffpaths, profile, review_policy, reviewers, settings
+from pipeline import codeowners, describe_pr, diffpaths, profile, review_policy, reviewers, risktier, settings
 from pipeline.freshness import currency_failure, is_current
 
 if TYPE_CHECKING:
@@ -517,7 +517,8 @@ def fix_eligibility(pr: Pr, action: str,
 
     `resolve` carries agent-authored conflict resolutions; callers pass the
     conflicted paths as `changed_paths`, and it needs no profile opt-in because
-    every resolution parks for operator approval before anything is pushed.
+    every resolution parks for review before it is pushed — an operator's, or
+    resolve_autopush_bar's when the deployment opts into unattended pushes.
 
     A repository that also wants the mechanical actions off some surface names
     it in autofix.deny_globs, which blocks every action. Agent-executed
@@ -548,6 +549,48 @@ def fix_eligibility(pr: Pr, action: str,
         return False, ("the active profile names no autofix.fixable_gates, so "
                        "agent-authored fixes are not enabled for this repository")
     return True, f"eligible for {action}"
+
+
+def resolve_autopush_bar(result: dict) -> tuple[bool, str]:
+    """May a parked `resolve` be pushed unattended? The ONE policy over the
+    request's recorded evidence, judged only when TRIAGE_FIX_AUTOPUSH names
+    `resolve`; an operator's manual approval never consults it.
+
+    Pass requires all of:
+      - the conflicted paths are known and none reaches risk tier 0 — agent
+        judgment stays out of the code where a wrong merge hurts most
+      - two independent reviewers, each an affirmative `safe` (a missing,
+        malformed, or failed review reads as unsafe)
+      - the related-tests sandbox run, when one exists, exited clean; a resolve
+        with no related tests passes on the reviews alone
+    """
+    paths = [str(p) for p in (result.get("conflict_paths") or [])]
+    tier = risktier.pr_tier(paths)
+    if tier is None:
+        return False, "the conflicted paths are unknown, so the risk tier is too"
+    if tier == 0:
+        pinned = risktier.tier_facet(paths)["pinned_by"]
+        return False, ("conflicted paths reach risk tier 0: "
+                       f"{', '.join(pinned[:5])}")
+    auto = result.get("auto_review") or {}
+    reviews = [r for r in (auto.get("reviews") or []) if isinstance(r, dict)]
+    # A judged rejection is the reason worth reporting; a machine-failed
+    # reviewer blocks all the same but only speaks when no judgment exists.
+    for judged_only in (True, False):
+        for r in reviews:
+            if r.get("verdict") != "safe" and bool(r.get("failed")) != judged_only:
+                reason = str(r.get("reason") or "no reason recorded")
+                return False, (f"the {r.get('lens') or '?'}-lens reviewer did "
+                               f"not clear it: {reason}")
+    if len(reviews) < 2:
+        return False, f"{len(reviews)} of 2 agent reviews recorded"
+    tests = auto.get("tests")
+    if tests:
+        run = tests.get("run") or {}
+        if run.get("exit") != 0:
+            return False, ("the related-tests sandbox run did not pass: "
+                           f"exit {run.get('exit')}")
+    return True, "cleared for unattended push"
 
 
 # The autofix actions the idle hunter may queue on its own. `update` and
