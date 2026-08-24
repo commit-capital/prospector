@@ -4,8 +4,9 @@ Tier ranks a PR's blast radius from the upstream file paths it touches — 0
 (orchestration/auth core and supply chain) down to 3 (leaf surfaces whose
 failures are visible and reversible). It is an ordering/attention signal:
 the app's Easy Lane floats tier-3 PRs and the security driver reviews
-tier-0 candidates first. It is NOT a gate input — no merge, threat, or
-security policy consumes it, and the threat scan stays path-blind (a
+tier-0 candidates first. One gate consumes it: `gates.resolve_autopush_bar`
+parks a tier-0 conflict resolution for a human. No merge, threat, or
+security policy reads it, and the threat scan stays path-blind (a
 "docs-only" diff is still scanned; path shape is attacker-controlled).
 
 The glob map is repository policy in the active profile

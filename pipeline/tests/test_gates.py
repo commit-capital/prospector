@@ -2481,3 +2481,69 @@ class TestMultiReviewerClean:
         rec = _pr(reviews=_reviews(coderabbit=cr))
         ok, why = gates.fix_huntable(rec, "fix")
         assert ok, why
+
+
+class TestResolveAutopushBar:
+    """The evidence bar an agent-resolved merge must pass to push unattended."""
+
+    def _result(self, **over) -> dict:
+        base = {
+            "conflict_paths": ["src/app.py"],
+            "auto_review": {
+                "reviews": [
+                    {"lens": "behavior", "verdict": "safe", "reason": "ok"},
+                    {"lens": "history", "verdict": "safe", "reason": "ok"},
+                ],
+                "tests": {"files": ["tests/test_app.py"], "run": {"exit": 0}},
+            },
+        }
+        base.update(over)
+        return base
+
+    def test_full_evidence_passes(self):
+        ok, why = gates.resolve_autopush_bar(self._result())
+        assert ok, why
+
+    def test_no_related_tests_still_passes(self):
+        result = self._result()
+        result["auto_review"]["tests"] = None
+        ok, why = gates.resolve_autopush_bar(result)
+        assert ok, why
+
+    def test_tier0_conflict_path_parks(self):
+        ok, why = gates.resolve_autopush_bar(
+            self._result(conflict_paths=["package.json"]))
+        assert not ok
+        assert "tier" in why
+
+    def test_unknown_conflict_paths_park(self):
+        ok, why = gates.resolve_autopush_bar(self._result(conflict_paths=[]))
+        assert not ok
+
+    def test_one_unsafe_review_parks(self):
+        result = self._result()
+        result["auto_review"]["reviews"][1] = {
+            "lens": "history", "verdict": "unsafe", "reason": "drops a fix"}
+        ok, why = gates.resolve_autopush_bar(result)
+        assert not ok
+        assert "drops a fix" in why
+
+    def test_a_single_review_is_not_enough(self):
+        result = self._result()
+        result["auto_review"]["reviews"] = [
+            {"lens": "behavior", "verdict": "safe", "reason": "ok"}]
+        ok, why = gates.resolve_autopush_bar(result)
+        assert not ok
+
+    def test_missing_auto_review_parks(self):
+        ok, why = gates.resolve_autopush_bar(
+            self._result(auto_review=None))
+        assert not ok
+
+    def test_failing_tests_park(self):
+        result = self._result()
+        result["auto_review"]["tests"] = {"files": ["tests/test_app.py"],
+                                          "run": {"exit": 1}}
+        ok, why = gates.resolve_autopush_bar(result)
+        assert not ok
+        assert "test" in why
