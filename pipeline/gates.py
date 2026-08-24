@@ -575,13 +575,13 @@ def resolve_autopush_bar(result: dict) -> tuple[bool, str]:
                        f"{', '.join(pinned[:5])}")
     auto = result.get("auto_review") or {}
     reviews = [r for r in (auto.get("reviews") or []) if isinstance(r, dict)]
-    if len(reviews) < 2:
-        return False, f"{len(reviews)} of 2 agent reviews recorded"
     for r in reviews:
         if r.get("verdict") != "safe":
             reason = str(r.get("reason") or "no reason recorded")
             return False, (f"the {r.get('lens') or '?'}-lens reviewer did not "
                            f"clear it: {reason}")
+    if len(reviews) < 2:
+        return False, f"{len(reviews)} of 2 agent reviews recorded"
     tests = auto.get("tests")
     if tests:
         run = tests.get("run") or {}

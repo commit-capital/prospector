@@ -50,8 +50,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
 from pipeline import (author_fix, compile_preflight, describe_pr, diffpaths, freshness,
-                      gates, gh, profile, resolve_conflicts, review_fix, review_policy,
-                      reviewers, settings, verify_driver)
+                      gates, gh, profile, resolve_conflicts, resolve_evidence,
+                      review_fix, review_policy, review_resolve, reviewers, settings,
+                      verify_driver)
 from pipeline.storekit import now as _now
 from prospector_app.backend import (activity, data, executor, fix_queue, review_refresh,
                                     safety_guard, service)
@@ -227,6 +228,32 @@ def next_approved() -> int | None:
     it. Every other action re-derives from the store, so any machine may push
     one."""
     return _oldest("approved", mine_only=("resolve",))
+
+
+def next_reviewable() -> int | None:
+    """The oldest parked `resolve` this machine may auto-review, or None.
+
+    Only when the deployment names `resolve` in TRIAGE_FIX_AUTOPUSH; only this
+    host's, because the kept merge worktree is the thing being judged; and only
+    ones no auto-review has stamped — a stamped verdict stands until the
+    resolve is re-authored."""
+    if "resolve" not in settings.fix_autopush():
+        return None
+    me = socket.gethostname()
+    best_n: int | None = None
+    best_key: str | None = None
+    for n, rec in data.prs().items():
+        req = rec.fix_request or {}
+        if req.get("status") != "awaiting-review" or req.get("action") != "resolve":
+            continue
+        if req.get("host") not in (None, me):
+            continue
+        if (req.get("result") or {}).get("auto_review") is not None:
+            continue
+        key = str(req.get("queued_at") or "")
+        if best_key is None or key < best_key:
+            best_n, best_key = n, key
+    return best_n
 
 
 def _oldest(status: str, mine_only: tuple[str, ...] = ()) -> int | None:
@@ -1010,6 +1037,112 @@ def _commit_message(action: str) -> str:
             else "Address review and CI feedback")
 
 
+def _cancel(n: int, req: dict, reason: str) -> None:
+    data.store().edit_pr(n).record_fix_request(
+        "cancelled", req.get("action", "fix"), queued_at=req.get("queued_at"),
+        finished_at=_now(), refused_reason=reason[-TAIL_CHARS:],
+        source=req.get("source"), host=socket.gethostname(),
+        head_sha=req.get("against_head_sha"))
+    data.refresh()
+    _log_run(n, req, "cancelled", reason[-TAIL_CHARS:])
+
+
+def _related_tests_run(n: int, head: str, patch: str, worktree: str,
+                       conflict_paths: list[str]) -> dict | None:
+    """The sandbox record for the test files related to the conflicted paths,
+    run over current default-branch HEAD with the resolved diff applied. None
+    when no related tests exist or the profile configures no test lane."""
+    from prospector_app.backend import sandbox_check
+    related = resolve_evidence.related_tests(worktree, conflict_paths)
+    if not related:
+        return None
+    cmd, _why = sandbox_check.lane_command(["test", *related])
+    if cmd is None:
+        return None
+    scratch = settings.verify_scratch() / "autofix"
+    scratch.mkdir(parents=True, exist_ok=True)
+    path = scratch / f"pr-{n}.resolve-tests.patch"
+    path.write_text(patch + "\n")
+    return {"files": related,
+            "run": compile_preflight.run_command_for_patch(n, head, path, cmd)}
+
+
+def review_parked_resolve(n: int) -> None:
+    """Judge this host's parked `resolve` for unattended pushing.
+
+    Two refuting reviewers and a related-tests sandbox run are recorded into
+    the request's `result.auto_review`, and `gates.resolve_autopush_bar` over
+    that evidence decides. Pass → the request becomes `approved`, and the drain
+    loop pushes it through `push_approved` like an operator's approval. Fail →
+    it stays parked with the verdict for the operator to read, and the stamp
+    keeps it from being judged again. When every reviewer failed as a machine —
+    crashed, timed out, gave no verdict — nothing is stamped, so a recovered
+    host retries."""
+    rec = data.store().load_pr(n)
+    if rec is None:
+        return
+    req = rec.fix_request or {}
+    if req.get("status") != "awaiting-review" or req.get("action") != "resolve":
+        return
+    result = dict(req.get("result") or {})
+    head = str(req.get("against_head_sha") or rec.head_sha or "")
+    if rec.head_sha != (req.get("against_head_sha") or rec.head_sha):
+        _resubmit(n, "abort")
+        _cancel(n, req, "the PR's head moved before the auto-review ran; "
+                        "a fresh resolve applies to the author's latest head")
+        return
+    state_r = _resubmit(n, "state")
+    try:
+        st = json.loads(state_r.stdout or "{}")
+    except ValueError:
+        st = {}
+    worktree = st.get("worktree")
+    if not worktree:
+        _cancel(n, req, "the kept merge worktree is gone, so there is nothing "
+                        "to judge or push — re-queue the rebase")
+        return
+    paths = [str(p) for p in (result.get("conflict_paths") or [])]
+    from pipeline import risktier
+    stamp: dict = {"against_head_sha": head, "base_sha": req.get("base_sha"),
+                   "host": socket.gethostname(), "at": _now(),
+                   "tier": risktier.tier_facet(paths),
+                   "reviews": [], "tests": None}
+    tier = stamp["tier"]["tier"]
+    if tier is not None and tier != 0:
+        history = resolve_evidence.history(worktree, paths)
+        context = resolve_evidence.store_context(rec)
+        reviews: list[dict] = []
+        for lens in ("behavior", "history"):
+            verdict = review_resolve.review(
+                worktree, pr=n, title=rec.title or "",
+                merge_diff=str(result.get("merge_diff") or ""),
+                patch=str(result.get("patch") or ""),
+                resolutions=list(result.get("resolutions") or []),
+                history=history, store_context=context, lens=lens)
+            reviews.append({"lens": lens, **verdict})
+            if verdict.get("verdict") != "safe" and not verdict.get("failed"):
+                break
+        if reviews and all(r.get("failed") for r in reviews):
+            print(f"[fix-worker] resolve auto-review for PR #{n}: every reviewer "
+                  f"failed; leaving it unstamped to retry", flush=True)
+            return
+        stamp["reviews"] = reviews
+        if all(r.get("verdict") == "safe" for r in reviews) and len(reviews) == 2:
+            stamp["tests"] = _related_tests_run(
+                n, head, str(result.get("patch") or ""), str(worktree), paths)
+    result["auto_review"] = stamp
+    ok, why = gates.resolve_autopush_bar(result)
+    stamp["bar"] = {"ok": ok, "reason": why}
+    data.store().edit_pr(n).record_fix_request(
+        "approved" if ok else "awaiting-review", "resolve",
+        queued_at=req.get("queued_at"), started_at=req.get("started_at"),
+        result=result, source=req.get("source"), host=req.get("host"),
+        base_sha=req.get("base_sha"), head_sha=head)
+    data.refresh()
+    print(f"[fix-worker] resolve auto-review for PR #{n}: "
+          f"{'cleared for push' if ok else why}", flush=True)
+
+
 def push_approved(n: int) -> None:
     """Push a request an operator approved, rebuilding its worktree first.
 
@@ -1325,6 +1458,14 @@ def _drain_loop() -> None:
                 beat()
                 print(f"[fix-worker] picking up PR #{n}", flush=True)
                 run_one(n)
+                continue
+            n = next_reviewable()
+            if n is not None:
+                state["current_pr"] = n
+                beat()
+                print(f"[fix-worker] auto-reviewing parked resolve for PR #{n}",
+                      flush=True)
+                review_parked_resolve(n)
                 continue
             pick = next_auto() if enabled_autohunt() else None
             if pick is None:
