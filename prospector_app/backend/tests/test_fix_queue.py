@@ -13,6 +13,7 @@ import pytest
 from pipeline import profile
 from pipeline import store as S
 from pipeline.storekit import now as _now
+from prospector_app.backend import activity
 from prospector_app.backend import data
 from prospector_app.backend import fix_queue
 from prospector_app.backend import fix_worker
@@ -130,7 +131,7 @@ def test_approve_moves_an_awaiting_review_request(store):
                                         result={"patch": "diff"},
                                         head_sha="a" * 40)
     data.refresh()
-    assert fix_queue.approve_pr(1) == {"pr": 1, "status": "approved"}
+    assert fix_queue.approve_pr(1, dry_run=False) == {"pr": 1, "status": "approved"}
     req = store.load_pr(1).fix_request
     assert req["status"] == "approved"
     assert req["result"] == {"patch": "diff"}, "the authored patch survives approval"
@@ -139,7 +140,7 @@ def test_approve_moves_an_awaiting_review_request(store):
 def test_approve_refuses_when_nothing_awaits_review(store):
     fix_queue.queue_pr(1, "rebase")
     with pytest.raises(ValueError, match="no fix awaiting review"):
-        fix_queue.approve_pr(1)
+        fix_queue.approve_pr(1, dry_run=False)
 
 
 def test_approve_refuses_when_the_head_moved(store):
@@ -154,7 +155,54 @@ def test_approve_refuses_when_the_head_moved(store):
     store.save_pr(rec)
     data.refresh()
     with pytest.raises(ValueError, match="head moved"):
-        fix_queue.approve_pr(1)
+        fix_queue.approve_pr(1, dry_run=False)
+
+
+def test_dry_run_approve_previews_without_approving(store, temp_store, push_key):
+    # The tab's Dry Run toggle reaches this endpoint: the click answers with
+    # what a live approval would push and by which identity, changes nothing,
+    # and lands in the Activity feed like every other dry-run.
+    store.edit_pr(1).record_fix_request(
+        "awaiting-review", "resolve",
+        result={"conflict_paths": ["pipeline/gates.py", "pipeline/model.py"]},
+        head_sha="a" * 40)
+    data.refresh()
+    out = fix_queue.approve_pr(1, dry_run=True)
+    assert out["status"] == "dry-run"
+    assert "test-push-bot" in out["detail"]
+    assert "pipeline/gates.py" in out["detail"]
+    assert store.load_pr(1).fix_request["status"] == "awaiting-review"
+    ev = activity.recent()[0]
+    assert ev["dry_run"] is True and ev["pr"] == 1
+    assert ev["status"] == "dry-run"
+
+
+def test_dry_run_approve_of_a_describe_names_the_bot(store, temp_store, monkeypatch):
+    # A describe posts as the bot App, not the contributor-push user — the
+    # preview says which identity would act.
+    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "test-bot")
+    store.edit_pr(1).record_fix_request(
+        "awaiting-review", "describe",
+        result={"body": "## Summary\nrewritten"},
+        head_sha="a" * 40)
+    data.refresh()
+    out = fix_queue.approve_pr(1, dry_run=True)
+    assert out["status"] == "dry-run"
+    assert "test-bot" in out["detail"]
+    assert store.load_pr(1).fix_request["status"] == "awaiting-review"
+
+
+def test_dry_run_approve_still_refuses_when_the_head_moved(store):
+    # The preview is honest: what would refuse live refuses in dry-run too.
+    store.edit_pr(1).record_fix_request("awaiting-review", "rebase",
+                                        result={"patch": "diff"},
+                                        head_sha="a" * 40)
+    rec = store.load_pr(1).raw
+    rec["meta"]["head_sha"] = "b" * 40
+    store.save_pr(rec)
+    data.refresh()
+    with pytest.raises(ValueError, match="head moved"):
+        fix_queue.approve_pr(1, dry_run=True)
 
 
 def test_queue_entries_carry_running_progress(store):

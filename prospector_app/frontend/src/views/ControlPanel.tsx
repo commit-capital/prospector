@@ -2,6 +2,7 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import { api, type JobSpec, type JobRec, type PipelineStatus, type Autohunt, type AutohuntResultCounts, type FilterSpec, type VerifyBaseHealth, type VerifyBaseHost, type VerifyQueue, type FixQueue } from "../api";
 import { useRepoMeta } from "../RepoMetaContext";
+import { useExec } from "../ExecContext";
 import { PRLink } from "../components/PRLink";
 
 const HUNT_RANGE_OPTIONS = [
@@ -224,6 +225,7 @@ function HuntLaneSummary({ phase, counts }: { phase: "security" | "verify"; coun
 
 export default function ControlPanel() {
   const { meta: repoMeta } = useRepoMeta();
+  const { dryRun, pushToast } = useExec();
   const [specs, setSpecs] = useState<JobSpec[]>([]);
   const [jobs, setJobs] = useState<JobRec[]>([]);
   const [cluster, setCluster] = useState("");
@@ -268,12 +270,22 @@ export default function ControlPanel() {
     api.fixQueue(fixQueueRange.days, fixQueueRange.allTime).then(setFixQueue).catch(() => {});
 
   /** Approve or discard one parked change. The push itself happens on the
-   *  worker's next tick, so this reloads rather than reporting a landed push. */
+   *  worker's next tick, so this reloads rather than reporting a landed push.
+   *  In dry-run, an approve answers with what it would push and changes
+   *  nothing. */
   const runFixAction = async (pr: number, kind: "approve" | "discard") => {
     setFixBusy(pr);
     setFixError(null);
     try {
-      await (kind === "approve" ? api.approveFix(pr) : api.dequeueFix(pr));
+      if (kind === "approve") {
+        const res = await api.approveFix(pr, dryRun);
+        if (res.status === "dry-run") {
+          pushToast(`(dry run) #${pr} · ${res.action ?? "fix"} push`, "yellow",
+            { detail: res.detail });
+        }
+      } else {
+        await api.dequeueFix(pr);
+      }
       await refreshFixQueue();
     } catch (e) {
       setFixError(String(e));
@@ -908,8 +920,10 @@ export default function ControlPanel() {
                           <>
                             <button className="btn-primary sm" disabled={fixBusy != null}
                               onClick={() => runFixAction(e.pr, "approve")}
-                              title={`Push this ${e.action} to PR #${e.pr} as the machine user.`}>
-                              {fixBusy === e.pr ? "…" : "✓ Push"}
+                              title={dryRun
+                                ? "Dry run: preview what this would push — nothing reaches GitHub until you switch to Live."
+                                : `Push this ${e.action} to PR #${e.pr} as the machine user.`}>
+                              {fixBusy === e.pr ? "…" : dryRun ? "✓ Push (dry run)" : "✓ Push"}
                             </button>
                             <button className="btn-secondary sm" disabled={fixBusy != null}
                               onClick={() => runFixAction(e.pr, "discard")}

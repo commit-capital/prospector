@@ -131,6 +131,10 @@ def identities() -> dict:
         ],
         "live_possible": live,
         "live_error": error,
+        # The second write identity: the contributor-push user that pushes to
+        # PR head branches over its SSH key, with its own availability.
+        "push": {"login": settings.push_login() or None,
+                 "available": settings.push_identity_configured()},
     }
 
 

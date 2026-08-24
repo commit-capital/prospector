@@ -162,7 +162,7 @@ function DryRunBadge() {
   const dryRunTitle = storeWriteBlock
     ? storeWriteBlock
     : livePossible
-    ? "Toggle dry-run / live posting"
+    ? "Toggle dry-run / live. Dry run previews every action you take in the UI — upstream posts and PR-branch pushes alike — without touching GitHub."
     : `No ${botLogin} token on this machine — dry-run only${liveError ? ` (${liveError})` : ""}`;
   return (
     <button
@@ -182,7 +182,8 @@ function DryRunBadge() {
  *  the dry-run/live switch, and feedback. */
 function SettingsMenu() {
   const { identities, botLogin, identity, setIdentity, livePossible,
-    liveError, retryLive, pushToast } = useExec();
+    liveError, pushIdentity, retryLive, pushToast } = useExec();
+  const { meta } = useRepoMeta();
   const [open, setOpen] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [theme, setTheme] = useState(document.documentElement.dataset.theme || "light");
@@ -238,6 +239,29 @@ function SettingsMenu() {
               disabled={identities.length <= 1}>
               {identities.map((i) => <option key={i.id} value={i.id}>{i.label}</option>)}
             </select>
+          </div>
+          {/* The deployment's two write identities, each with its own lane and
+              availability: the bot App posts upstream; the contributor-push
+              user pushes to PR head branches over SSH. */}
+          <div className="settings-row" title={livePossible
+            ? `Comments, closes, reviews and merges on ${meta?.repo ?? "the triage repo"} are posted as the ${botLogin} GitHub App.`
+            : `No ${botLogin} token on this machine — upstream posts preview as dry-run only.${liveError ? ` (${liveError})` : ""}`}>
+            <span className="muted small" style={{ flex: 1 }}>
+              Posts to {meta?.display_name ?? "the triage repo"} as <b>{botLogin}</b>
+            </span>
+            <span className={`chip sm ${livePossible ? "chip-green" : "chip-yellow"}`}>
+              {livePossible ? "ready" : "no token"}
+            </span>
+          </div>
+          <div className="settings-row" title={pushIdentity?.available
+            ? `Autofix pushes to contributors' PR branches are made as the ${pushIdentity.login} GitHub user over its SSH key.`
+            : "No contributor-push identity on this machine — autofix pushes run elsewhere (see Setup)."}>
+            <span className="muted small" style={{ flex: 1 }}>
+              Pushes to PR branches as <b>{pushIdentity?.login ?? "—"}</b>
+            </span>
+            <span className={`chip sm ${pushIdentity?.available ? "chip-green" : "chip-muted"}`}>
+              {pushIdentity?.available ? "ready" : "not configured"}
+            </span>
           </div>
           {!livePossible && (
             <div className="settings-row">

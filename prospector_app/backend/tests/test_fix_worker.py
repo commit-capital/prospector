@@ -819,7 +819,7 @@ def test_guidance_survives_the_claim_and_the_approval(store, monkeypatch):
     fix_worker.run_one(1)
     assert store.load_pr(1).fix_request["guidance"] == "drop the retry loop"
 
-    fix_queue.approve_pr(1)
+    fix_queue.approve_pr(1, dry_run=False)
     probe = _fix_probe()
     monkeypatch.setattr(fix_worker, "_resubmit", probe)
     fix_worker.push_approved(1)
@@ -942,7 +942,7 @@ def test_approved_describe_posts_as_the_bot_and_retriggers(store, monkeypatch, t
     monkeypatch.setattr(fix_worker.describe_pr, "describe",
                         lambda **kw: {"body": "## What Changed\n- a\n"})
     fix_worker.run_one(5)
-    fix_queue.approve_pr(5)
+    fix_queue.approve_pr(5, dry_run=False)
 
     posted = []
     monkeypatch.setattr(fix_worker.executor, "mint_bot_token", lambda: "tok")
@@ -974,7 +974,7 @@ def test_approved_describe_without_a_bot_token_fails_and_posts_nothing(
     monkeypatch.setattr(fix_worker.describe_pr, "describe",
                         lambda **kw: {"body": "## What Changed\n- a\n"})
     fix_worker.run_one(5)
-    fix_queue.approve_pr(5)
+    fix_queue.approve_pr(5, dry_run=False)
     monkeypatch.setattr(fix_worker.executor, "mint_bot_token", lambda: None)
     posted = []
     monkeypatch.setattr(fix_worker.safety_guard, "chat_bot_run",

@@ -360,12 +360,13 @@ def fix_dequeue_pr(n: int):
 
 
 @app.post("/api/prs/{n}/fix/approve")
-def fix_approve_pr(n: int):
+def fix_approve_pr(n: int, dry_run: bool = True):
     """Approve PR #n's authored fix for pushing. The worker re-derives a
     mechanical change against current base and pushes it on its next tick; an
-    agent-authored fix is pushed from the worktree it prepared."""
+    agent-authored fix is pushed from the worktree it prepared. With `dry_run`
+    the click previews what a live approval would push, recording nothing."""
     try:
-        return fix_queue.approve_pr(n)
+        return fix_queue.approve_pr(n, dry_run=dry_run)
     except ValueError as e:
         raise HTTPException(400, str(e))
 

@@ -17,7 +17,7 @@ from typing import TypedDict
 
 from pipeline import gates, settings
 from pipeline.storekit import now as _now
-from prospector_app.backend import data, service
+from prospector_app.backend import activity, data, service
 
 # A worker heartbeat older than this reads as offline: the worker beats every
 # poll tick (fix_worker.POLL_SECONDS), so several missed beats mean the process
@@ -78,12 +78,16 @@ def dequeue_pr(n: int) -> dict:
     return {"pr": n, "status": "cancelled"}
 
 
-def approve_pr(n: int) -> dict:
+def approve_pr(n: int, *, dry_run: bool) -> dict:
     """Approve PR `n`'s authored fix for pushing. Only an `awaiting-review`
     request can be approved; a worker picks the approval up on its next tick and
     rebuilds the tree before pushing. The approval is recorded here rather than
     pushing inline, so an operator can approve from any machine while the push
     stays on one holding the push key.
+
+    With `dry_run`, the same pre-checks run but nothing is recorded: the click
+    answers with what a live approval would push and under which identity, and
+    lands in the Activity feed as a dry-run like every other write preview.
 
     The authoring machine is carried across: a `resolve` holds its merge commit
     in that machine's worktree, so only it can push one."""
@@ -97,6 +101,8 @@ def approve_pr(n: int) -> dict:
     if rec.head_sha != (req.get("against_head_sha") or rec.head_sha):
         raise ValueError(f"PR #{n}'s head moved since the fix was authored — "
                          "re-queue so the change applies to the author's latest head")
+    if dry_run:
+        return _approve_preview(n, req)
     rec.record_fix_request("approved", req.get("action", "fix"),
                            queued_at=req.get("queued_at"), source=req.get("source"),
                            base_sha=req.get("base_sha"), result=req.get("result"),
@@ -104,6 +110,52 @@ def approve_pr(n: int) -> dict:
                            head_sha=req.get("against_head_sha"))
     data.refresh()
     return {"pr": n, "status": "approved"}
+
+
+# The activity-log action name for each parked change a dry-run approval
+# previews, matching what the live push of that action records.
+_PREVIEW_LOG_ACTION = {"update": "UPDATE_BRANCH", "rebase": "REBASE",
+                       "resolve": "RESOLVE_CONFLICTS", "fix": "RESUBMIT"}
+
+
+def _approve_preview(n: int, req: dict) -> dict:
+    """What approving this parked request would do, pushed nowhere: a `describe`
+    posts as the bot App, every other action pushes to the contributor's head
+    branch as the machine push user."""
+    action = req.get("action", "fix")
+    result = req.get("result") or {}
+    if action == "describe":
+        who = settings.bot_login() or "the configured bot"
+        detail = f"would post the rewritten description on PR #{n} as {who}"
+        activity.record("pr-edit", identity=who, dry_run=True, pr=n,
+                        action="DESCRIBE", status="dry-run", detail=detail)
+        return {"pr": n, "status": "dry-run", "action": action,
+                "detail": detail, "identity": who}
+    who = settings.push_login() or "the contributor-push user"
+    if action == "resolve":
+        paths = [str(p) for p in (result.get("conflict_paths") or [])]
+        what = f"the kept merge commit resolving {_paths_phrase(paths)}"
+    elif action == "fix":
+        paths = [str(c.get("path")) for c in (result.get("changes") or [])
+                 if c.get("path")]
+        what = f"the reviewed patch touching {_paths_phrase(paths)}"
+    elif action == "rebase":
+        lease = str(req.get("against_head_sha") or "")[:12]
+        what = f"the head rebased onto current base (lease on {lease})"
+    else:  # update
+        what = "a merge of the current base into the head"
+    detail = f"would push {what} to PR #{n}'s head branch as {who}"
+    activity.record("resubmit", pr=n, action=_PREVIEW_LOG_ACTION[action],
+                    dry_run=True, status="dry-run", detail=detail)
+    return {"pr": n, "status": "dry-run", "action": action,
+            "detail": detail, "identity": who}
+
+
+def _paths_phrase(paths: list[str]) -> str:
+    if not paths:
+        return "no files"
+    listed = ", ".join(paths[:5]) + (", …" if len(paths) > 5 else "")
+    return f"{len(paths)} file(s): {listed}"
 
 
 # Listing order. `awaiting-review` leads because it is the only status an

@@ -143,6 +143,30 @@ def test_identities_omits_error_when_live(monkeypatch):
     executor._live_possible = True
     out = executor.identities()
     assert out["live_error"] is None
+
+
+def test_identities_reports_the_push_lane(monkeypatch, tmp_path):
+    # The contributor-push user is the second write identity — separate from
+    # the bot App, with its own availability — so the payload names it too.
+    _reset_caches()
+    executor._live_possible = True
+    key = tmp_path / "push-key"
+    key.write_text("key\n")
+    monkeypatch.setenv("TRIAGE_PUSH_LOGIN", "test-push-bot")
+    monkeypatch.setenv("TRIAGE_PUSH_EMAIL", "1+test-push-bot@users.noreply.github.com")
+    monkeypatch.setenv("TRIAGE_PUSH_SSH_KEY_FILE", str(key))
+    out = executor.identities()
+    assert out["push"] == {"login": "test-push-bot", "available": True}
+
+
+def test_identities_reports_an_unconfigured_push_lane(monkeypatch):
+    _reset_caches()
+    executor._live_possible = True
+    monkeypatch.delenv("TRIAGE_PUSH_LOGIN", raising=False)
+    monkeypatch.delenv("TRIAGE_PUSH_EMAIL", raising=False)
+    monkeypatch.delenv("TRIAGE_PUSH_SSH_KEY_FILE", raising=False)
+    out = executor.identities()
+    assert out["push"] == {"login": None, "available": False}
     assert out["identities"][0]["note"] is None
 
 
