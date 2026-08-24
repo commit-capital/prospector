@@ -102,3 +102,26 @@ def test_store_context_renders_summary_and_issues():
 
 def test_store_context_empty_record_is_empty():
     assert resolve_evidence.store_context(model.Pr(None, {"pr": 8})) == ""
+
+
+def test_related_tests_treats_the_stem_as_a_literal_not_a_regex(merge_worktree):
+    (merge_worktree / "src" / "grid[2d].py").write_text("def cells(): pass\n")
+    (merge_worktree / "tests" / "test_cells.py").write_text(
+        "uses grid[2d] helpers\n")
+    _git(merge_worktree, "add", ".")
+    _git(merge_worktree, "commit", "-m", "add grid[2d]")
+    tests = resolve_evidence.related_tests(str(merge_worktree), ["src/grid[2d].py"])
+    assert "tests/test_cells.py" in tests
+
+
+def test_related_tests_never_leaks_non_test_files(merge_worktree):
+    # Every test file is itself conflicted, so the content search has no test
+    # corpus left; it must return only the conflicted tests, not grep the tree.
+    (merge_worktree / "src" / "uses_app.py").write_text("from src import app\n")
+    _git(merge_worktree, "add", ".")
+    _git(merge_worktree, "commit", "-m", "add consumer")
+    tests = resolve_evidence.related_tests(
+        str(merge_worktree),
+        ["tests/test_app.py", "tests/test_other.py", "src/app.py"])
+    assert "src/uses_app.py" not in tests
+    assert all(t.startswith("tests/") for t in tests)

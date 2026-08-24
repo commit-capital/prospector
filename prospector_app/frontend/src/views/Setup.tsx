@@ -143,16 +143,20 @@ export default function Setup() {
   async function toggle(updates: Record<string, boolean>) {
     setBusy(Object.keys(updates).join(","));
     setError(null);
-    // Updates are keyed by switch id; switches sharing an env key (the two
-    // autopush ones) compose that key's comma-separated value.
+    // Updates are keyed by switch id. A key with `parts` switches (the two
+    // autopush ones) is recomposed whole from its switches' final states, so
+    // the page owns the entire value — a part no switch claims is cleared,
+    // exactly as writing the key outright would.
     const next: Record<string, string> = {};
     for (const [id, on] of Object.entries(updates)) {
       const s = SWITCHES.find((x) => switchId(x) === id);
       if (!s) continue;
       if (s.parts) {
-        const set = valueParts(next[s.key] ?? flags[s.key] ?? "");
-        for (const p of s.parts) { if (on) set.add(p); else set.delete(p); }
-        next[s.key] = AUTOPUSH_ORDER.filter((p) => set.has(p)).join(",");
+        const owned = SWITCHES.filter((x) => x.key === s.key && x.parts);
+        const state = (x: { key: string; id?: string; parts?: string[] }): boolean =>
+          switchId(x) in updates ? updates[switchId(x)] : isOn(flags, x);
+        const kept = new Set(owned.filter(state).flatMap((x) => x.parts ?? []));
+        next[s.key] = AUTOPUSH_ORDER.filter((p) => kept.has(p)).join(",");
       } else {
         next[s.key] = on ? "1" : "";
       }

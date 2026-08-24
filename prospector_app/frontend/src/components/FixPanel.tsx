@@ -146,7 +146,10 @@ function RequestStrip({ req, runner }: { req: FixRequest; runner: FixRunner | nu
           {req.result?.auto_review?.bar && (
             <div className="vb-detail" style={{ marginTop: 4 }}>
               {req.result.auto_review.bar.ok
-                ? "🤖 Auto-review cleared it: two agent reviewers found nothing wrong and the related tests passed."
+                ? "🤖 Auto-review cleared it: two agent reviewers found nothing wrong"
+                  + (req.result.auto_review.tests
+                    ? " and the related tests passed."
+                    : "; no related tests were found to run.")
                 : `🤖 Auto-review left it for you: ${req.result.auto_review.bar.reason}`}
             </div>
           )}

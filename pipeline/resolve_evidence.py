@@ -74,9 +74,11 @@ def related_tests(worktree: str, conflict_paths: list[str]) -> list[str]:
         if any(stem and stem in Path(f).stem for stem in stems):
             picked.append(f)
     for stem in stems:
-        if not stem:
+        if not stem or not all_tests or len(picked) >= MAX_RELATED_TESTS:
             continue
-        hits = _git(worktree, "grep", "-l", "--", stem, "--", *all_tests)
+        # -F keeps a stem like "grid[2d]" a literal, and the explicit pathspec
+        # holds the search to the test corpus.
+        hits = _git(worktree, "grep", "-l", "-F", "--", stem, "--", *all_tests)
         picked.extend(f for f in hits.splitlines() if f and f not in picked)
     return picked[:MAX_RELATED_TESTS]
 

@@ -5,8 +5,8 @@ Same contract as review_fix: the reviewer runs in its own process with
 read-only tools, no network, `cwd` at the merge worktree. Only a well-formed,
 explicit `safe` returns safe; a refusal, malformed answer, timeout, or crashed
 process returns `unsafe`, so autopush is unreachable by breaking the reviewer.
-Two lenses exist so the two reviewers a resolve gets look for different
-failures rather than voting twice from one script.
+Each of a resolve's two reviewers runs under its own lens, looking for a
+different family of failures.
 """
 from __future__ import annotations
 

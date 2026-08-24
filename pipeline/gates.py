@@ -22,7 +22,7 @@ import re
 import shlex
 from typing import TYPE_CHECKING
 
-from pipeline import codeowners, describe_pr, diffpaths, profile, review_policy, reviewers, settings
+from pipeline import codeowners, describe_pr, diffpaths, profile, review_policy, reviewers, risktier, settings
 from pipeline.freshness import currency_failure, is_current
 
 if TYPE_CHECKING:
@@ -564,7 +564,6 @@ def resolve_autopush_bar(result: dict) -> tuple[bool, str]:
       - the related-tests sandbox run, when one exists, exited clean; a resolve
         with no related tests passes on the reviews alone
     """
-    from pipeline import risktier
     paths = [str(p) for p in (result.get("conflict_paths") or [])]
     tier = risktier.pr_tier(paths)
     if tier is None:
@@ -575,11 +574,14 @@ def resolve_autopush_bar(result: dict) -> tuple[bool, str]:
                        f"{', '.join(pinned[:5])}")
     auto = result.get("auto_review") or {}
     reviews = [r for r in (auto.get("reviews") or []) if isinstance(r, dict)]
-    for r in reviews:
-        if r.get("verdict") != "safe":
-            reason = str(r.get("reason") or "no reason recorded")
-            return False, (f"the {r.get('lens') or '?'}-lens reviewer did not "
-                           f"clear it: {reason}")
+    # A judged rejection is the reason worth reporting; a machine-failed
+    # reviewer blocks all the same but only speaks when no judgment exists.
+    for judged_only in (True, False):
+        for r in reviews:
+            if r.get("verdict") != "safe" and bool(r.get("failed")) != judged_only:
+                reason = str(r.get("reason") or "no reason recorded")
+                return False, (f"the {r.get('lens') or '?'}-lens reviewer did "
+                               f"not clear it: {reason}")
     if len(reviews) < 2:
         return False, f"{len(reviews)} of 2 agent reviews recorded"
     tests = auto.get("tests")

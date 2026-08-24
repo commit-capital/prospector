@@ -1240,13 +1240,13 @@ RESOLVE_RESULT = {
 }
 
 
-def _parked_resolve(store, host: str | None = None, head: str = HEAD,
+def _parked_resolve(store, host: str | None = "me", head: str = HEAD,
                     result: dict | None = None) -> None:
     import socket
     store.load_pr(1).record_fix_request(
         "awaiting-review", "resolve", queued_at=NOW, source="auto",
         result=dict(result if result is not None else RESOLVE_RESULT),
-        host=host or socket.gethostname(), head_sha=head)
+        host=socket.gethostname() if host == "me" else host, head_sha=head)
     data.refresh()
 
 
@@ -1281,19 +1281,28 @@ def review_lane(store, monkeypatch, tmp_path):
     monkeypatch.setattr(fix_worker.resolve_evidence, "related_tests",
                         lambda wt, paths: ["tests/test_one.py"])
     reviews: list[dict] = []
-    monkeypatch.setattr(
-        fix_worker.review_resolve, "review",
-        lambda wt, **kw: reviews.pop(0) if reviews
-        else {"verdict": "safe", "reason": "ok", "concerns": []})
+    review_calls: list[dict] = []
+
+    def fake_review(wt, **kw):
+        review_calls.append({"worktree": wt, **kw})
+        if reviews:
+            return reviews.pop(0)
+        return {"verdict": "safe", "reason": "ok", "concerns": []}
+
+    monkeypatch.setattr(fix_worker.review_resolve, "review", fake_review)
     runs: list[str] = []
+    run_patches: list[str] = []
 
     def fake_run(pr, head, patch, cmd):
         runs.append(cmd)
+        run_patches.append(patch.read_text())
         return {"exit": 0, "cmd": cmd}
 
     monkeypatch.setattr(fix_worker.compile_preflight, "run_command_for_patch",
                         fake_run)
-    return {"resubmit": fake, "reviews": reviews, "runs": runs}
+    fix_worker._review_backoff.clear()
+    return {"resubmit": fake, "reviews": reviews, "runs": runs,
+            "review_calls": review_calls, "run_patches": run_patches}
 
 
 def test_the_lane_is_inert_without_the_flag(store, monkeypatch):
@@ -1448,3 +1457,94 @@ def test_queue_entries_without_a_stamp_have_no_auto_review(store):
     _parked_resolve(store)
     entry = next(e for e in fix_queue.queue_entries() if e["pr"] == 1)
     assert entry["auto_review"] is None
+
+
+def test_the_lane_skips_hostless_resolves(store, monkeypatch):
+    # A record without a host stamp has its worktree on an unknown machine;
+    # judging it here could only cancel work another machine can still push.
+    monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", "resolve")
+    _parked_resolve(store, host=None)
+    assert fix_worker.next_reviewable() is None
+
+
+def test_the_review_holds_the_request_as_running_while_it_judges(review_lane, store,
+                                                                monkeypatch):
+    seen: list[str] = []
+
+    def spying_review(wt, **kw):
+        seen.append(store.load_pr(1).fix_request["status"])
+        return {"verdict": "safe", "reason": "ok", "concerns": []}
+
+    monkeypatch.setattr(fix_worker.review_resolve, "review", spying_review)
+    _parked_resolve(store)
+    fix_worker.review_parked_resolve(1)
+    assert seen and all(status == "running" for status in seen)
+    assert store.load_pr(1).fix_request["status"] == "approved"
+
+
+def test_a_machine_failure_backs_off_before_retrying(review_lane, store):
+    review_lane["reviews"].extend([
+        {"verdict": "unsafe", "reason": "agent timed out", "failed": True,
+         "concerns": []},
+        {"verdict": "unsafe", "reason": "agent crashed", "failed": True,
+         "concerns": []}])
+    _parked_resolve(store)
+    fix_worker.review_parked_resolve(1)
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "awaiting-review"
+    assert "auto_review" not in (req.get("result") or {})
+    assert fix_worker.next_reviewable() is None
+    fix_worker._review_backoff.clear()
+    assert fix_worker.next_reviewable() == 1
+
+
+def test_one_failed_reviewer_beside_a_safe_leaves_no_stamp(review_lane, store):
+    review_lane["reviews"].extend([
+        {"verdict": "unsafe", "reason": "agent timed out", "failed": True,
+         "concerns": []},
+        {"verdict": "safe", "reason": "ok", "concerns": []}])
+    _parked_resolve(store)
+    fix_worker.review_parked_resolve(1)
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "awaiting-review"
+    assert "auto_review" not in (req.get("result") or {})
+
+
+def test_a_judged_rejection_beside_a_failed_reviewer_still_stamps(review_lane, store):
+    review_lane["reviews"].extend([
+        {"verdict": "unsafe", "reason": "agent timed out", "failed": True,
+         "concerns": []},
+        {"verdict": "unsafe", "reason": "drops the base side's guard",
+         "concerns": []}])
+    _parked_resolve(store)
+    fix_worker.review_parked_resolve(1)
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "awaiting-review"
+    assert "guard" in req["result"]["auto_review"]["bar"]["reason"]
+
+
+def test_the_review_judges_the_worktrees_full_diff_not_the_stored_tail(
+        review_lane, store, monkeypatch):
+    full = "diff --git a/one.txt b/one.txt\n+the full resolution\n"
+    fake = review_lane["resubmit"]
+    fake.overrides["diff"] = (0, full)
+    _parked_resolve(store, result={**RESOLVE_RESULT,
+                                   "patch": "+a stored 4000-char tail"})
+    fix_worker.review_parked_resolve(1)
+    assert store.load_pr(1).fix_request["status"] == "approved"
+    assert all(c["patch"] == full.strip() for c in review_lane["review_calls"])
+    assert review_lane["run_patches"] and full.strip() in review_lane["run_patches"][0]
+
+
+def test_an_evidence_crash_restores_the_request_and_backs_off(review_lane, store,
+                                                              monkeypatch):
+    def boom(wt, paths):
+        raise RuntimeError("git timed out")
+
+    monkeypatch.setattr(fix_worker.resolve_evidence, "history", boom)
+    _parked_resolve(store)
+    fix_worker.review_parked_resolve(1)
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "awaiting-review"
+    assert "auto_review" not in (req.get("result") or {})
+    assert fix_worker.next_reviewable() is None
