@@ -132,7 +132,13 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
   const approveFix = async () => {
     if (fixBusy) return;
     setFixBusy("approve");
-    try { await api.approveFix(prNum); } catch (e) { window.alert(String(e)); }
+    try {
+      const res = await api.approveFix(prNum, dryRun);
+      if (res.status === "dry-run") {
+        pushToast(`(dry run) #${prNum} · ${res.action ?? "fix"} push`, "yellow",
+          { detail: res.detail });
+      }
+    } catch (e) { window.alert(String(e)); }
     await reloadPr();
     setFixBusy(null);
   };

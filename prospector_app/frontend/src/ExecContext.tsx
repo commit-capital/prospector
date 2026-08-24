@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
-import { api, type Identity, type ExecResult, type IssueExecResult, type ReviewerCap, type ReviewerKind } from "./api";
+import { api, type Identity, type ExecResult, type IssueExecResult, type PushIdentityInfo, type ReviewerCap, type ReviewerKind } from "./api";
 
 export interface Effect { label: string; value: string }
 export interface Toast { id: number; title: string; detail?: string; effects?: Effect[]; tone: "green" | "red" | "yellow" | "muted" }
@@ -15,6 +15,9 @@ interface ExecState {
   // Why live mode isn't available (key missing, bad app id, no installation, …)
   // — from get-bot-token.sh's stderr, surfaced instead of silently discarded.
   liveError: string | null;
+  // The contributor-push user that pushes to PR head branches (its own lane,
+  // separate from the bot App); null until /api/identities answers.
+  pushIdentity: PushIdentityInfo | null;
   // A stale server checkout cannot safely act against a newer shared store.
   storeWriteBlock: string | null;
   // Re-probes live_possible (see api.refreshIdentities) instead of waiting for
@@ -42,7 +45,7 @@ interface ExecState {
 const Ctx = createContext<ExecState>({
   identities: [], botLogin: "bot", identity: "", setIdentity: () => {},
   dryRun: true, setDryRun: () => {}, livePossible: false,
-  liveError: null, storeWriteBlock: null, retryLive: async () => false,
+  liveError: null, pushIdentity: null, storeWriteBlock: null, retryLive: async () => false,
   canMergeUpstream: false, login: null, reviewers: [], activeReviewers: () => [],
   toasts: [], pushToast: () => {}, dismissToast: () => {}, actionTick: 0, reportResult: () => {},
 });
@@ -106,6 +109,7 @@ export function ExecProvider({ children }: { children: ReactNode }) {
   const [identity, setIdentity] = useState("");
   const [livePossible, setLivePossible] = useState(false);
   const [liveError, setLiveError] = useState<string | null>(null);
+  const [pushIdentity, setPushIdentity] = useState<PushIdentityInfo | null>(null);
   const [storeWriteBlock, setStoreWriteBlock] = useState<string | null>(null);
   // Persist dry-run/live per-tab so a full reload (e.g. a manual address-bar edit,
   // which tears down this provider) keeps the mode. sessionStorage not localStorage:
@@ -134,6 +138,7 @@ export function ExecProvider({ children }: { children: ReactNode }) {
       setIdentity((prev) => prev || d.identities[0]?.id || "");
       setLivePossible(d.live_possible);
       setLiveError(d.live_error);
+      setPushIdentity(d.push ?? null);
       if (!d.live_possible) setDryRun(true);
     }).catch(() => {});
     api.capabilities().then((c) => {
@@ -157,6 +162,7 @@ export function ExecProvider({ children }: { children: ReactNode }) {
     setIdentities(d.identities);
     setLivePossible(d.live_possible);
     setLiveError(d.live_error);
+    setPushIdentity(d.push ?? null);
     if (!d.live_possible) setDryRun(true);
     let writeBlock = storeWriteBlock;
     await api.capabilities().then((c) => {
@@ -215,7 +221,7 @@ export function ExecProvider({ children }: { children: ReactNode }) {
   return (
     <Ctx.Provider value={{
       identities, botLogin, identity, setIdentity, dryRun, setDryRun: setDryRunGuarded, livePossible,
-      liveError, storeWriteBlock, retryLive, canMergeUpstream, login, reviewers, activeReviewers,
+      liveError, pushIdentity, storeWriteBlock, retryLive, canMergeUpstream, login, reviewers, activeReviewers,
       toasts, pushToast, dismissToast, actionTick, reportResult,
     }}>
       {children}

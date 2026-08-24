@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import type { FixAction, FixRequest, FixRunner } from "../api";
+import { useExec } from "../ExecContext";
 import { localDateTime, timeAgo } from "../timeAgo";
 
 /** What the composer starts with. The operator edits the goal; the bar beneath
@@ -203,6 +204,7 @@ export function FixAction({ req, runner, busy, resolved, onQueue, onDequeue, onA
   onDequeue: () => void;
   onApprove: () => void;
 }) {
+  const { dryRun } = useExec();
   const [goal, setGoal] = useState<string | null>(null);
   const status = req?.status;
   if (status === "running" || status === "pushing") {
@@ -214,8 +216,11 @@ export function FixAction({ req, runner, busy, resolved, onQueue, onDequeue, onA
     return (
       <>
         <button className="btn-primary sm" disabled={busy != null} onClick={onApprove}
-          title="Push the authored change to the contributor's branch. This is the first moment anything reaches GitHub.">
-          {busy === "approve" ? "Approving…" : "✓ Approve & push"}
+          title={dryRun
+            ? "Dry run: preview what approving would push — nothing reaches GitHub until you switch to Live."
+            : "Push the authored change to the contributor's branch. This is the first moment anything reaches GitHub."}>
+          {busy === "approve" ? "Approving…"
+            : dryRun ? "✓ Approve & push (dry run)" : "✓ Approve & push"}
         </button>
         <button className="btn-secondary sm" disabled={busy != null} onClick={onDequeue}
           title="Discard the authored change without pushing it.">

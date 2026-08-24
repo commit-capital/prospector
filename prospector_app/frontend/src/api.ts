@@ -1696,11 +1696,12 @@ export const api = {
     if (!r.ok) throw new Error(body?.detail ?? `cancel autofix → ${r.status}`);
     return body as { pr: number; status: string };
   },
-  approveFix: async (n: number) => {
-    const r = await fetch(`/api/prs/${n}/fix/approve`, { method: "POST" });
-    const body = (await r.json().catch(() => null)) as { detail?: string; pr?: number; status?: string } | null;
+  approveFix: async (n: number, dryRun: boolean) => {
+    const r = await fetch(`/api/prs/${n}/fix/approve?dry_run=${dryRun}`, { method: "POST" });
+    const body = (await r.json().catch(() => null)) as
+      { detail?: string; pr?: number; status?: string; action?: string; identity?: string } | null;
     if (!r.ok) throw new Error(body?.detail ?? `approve autofix → ${r.status}`);
-    return body as { pr: number; status: string };
+    return body as { pr: number; status: string; action?: string; detail?: string; identity?: string };
   },
   fixRunner: () => get<FixRunner>("/api/fix/runner"),
   fixQueue: (days = 7, allTime = false, limit = 100) => {
@@ -1884,7 +1885,13 @@ export interface ActionItem {
 }
 
 export interface Identity { id: string; label: string; available: boolean; note: string | null }
-export interface IdentitiesResult { identities: Identity[]; live_possible: boolean; live_error: string | null }
+/** The contributor-push user — the second write identity, pushing to PR head
+ *  branches over its SSH key — with whether this deployment holds it. */
+export interface PushIdentityInfo { login: string | null; available: boolean }
+export interface IdentitiesResult {
+  identities: Identity[]; live_possible: boolean; live_error: string | null;
+  push: PushIdentityInfo;
+}
 // `status: "stale"` is a refusal the operator can confirm past: the write quotes
 // facts the author has moved beyond, and `stale` names the drift.
 export interface ExecResult { pr: number; action: string; status: string; detail: string; forced?: boolean; stale?: StaleBlock }
