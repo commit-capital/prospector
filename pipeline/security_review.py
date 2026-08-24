@@ -132,11 +132,15 @@ def _review_lens(pr: int, title: str, diff_path: str, lens: str, lens_prompt: st
                                      if (f.get("severity") or "").lower() != "green"]}
 
 
-def _verify(pr: int, diff_path: str, flagged: list[Finding]) -> list[Finding]:
-    """Chunked refuting verifier. Returns the confirmed findings (upheld, not
-    downgraded to not-an-issue), each stamped with the verifier's reasoning."""
+def _verify(pr: int, diff_path: str, flagged: list[Finding]) -> tuple[list[Finding], bool]:
+    """Chunked refuting verifier. Returns (confirmed, complete): the confirmed
+    findings (upheld, not downgraded to not-an-issue), each stamped with the
+    verifier's reasoning, and whether every chunk's agent ran. A failed chunk
+    leaves its findings unverified — neither confirmed nor refuted — so
+    complete=False tells the caller no clean bill can be trusted."""
     indexed = [{"index": i, **f} for i, f in enumerate(flagged)]
     confirmed: list[Finding] = []
+    complete = True
     for start in range(0, len(indexed), VERIFY_CHUNK_SIZE):
         chunk = indexed[start:start + VERIFY_CHUNK_SIZE]
         prompt = headless_agent.fill(VERIFY_PROMPT, {
@@ -144,6 +148,7 @@ def _verify(pr: int, diff_path: str, flagged: list[Finding]) -> list[Finding]:
             "__CHUNK__": json.dumps(chunk)}) + VERIFY_FENCED_TAIL
         data = _call_agent_json(prompt, f"verify chunk {start}", headless_agent.print_progress)
         if data is None:
+            complete = False
             continue
         results = data.get("results", [])
         by_index = {r.get("index"): r for r in results if isinstance(r, dict)}
@@ -158,7 +163,7 @@ def _verify(pr: int, diff_path: str, flagged: list[Finding]) -> list[Finding]:
             finding["severity"] = sev
             finding["detail"] = f"{finding.get('detail', '')}\n\n[verified: {v.get('reasoning', '')}]"
             confirmed.append(finding)
-    return confirmed
+    return confirmed, complete
 
 
 def review_pr(pr: int, title: str, head: str,
@@ -219,16 +224,18 @@ def review_pr(pr: int, title: str, head: str,
     # Refute the flagged findings; only confirmed ones survive.
     if flagged:
         _say(f"③ Verifying {len(flagged)} flagged finding(s)…")
-        confirmed = _verify(pr, str(diff_path), flagged)
+        confirmed, verify_ok = _verify(pr, str(diff_path), flagged)
     else:
-        confirmed = []
+        confirmed, verify_ok = [], True
     reds = [f for f in confirmed if f["severity"] == "red"]
     yellows = [f for f in confirmed if f["severity"] == "yellow"]
 
     verdict = "RED" if reds else ("YELLOW" if yellows else "GREEN")
-    # A clean bill is only trusted with full lens coverage; otherwise HOLD
-    # (INCOMPLETE) so the PR stays eligible and re-runs. RED/YELLOW stand.
-    if verdict == "GREEN" and not coverage_ok:
+    # A clean bill is only trusted with full lens coverage AND a verify pass
+    # whose every chunk ran — a failed chunk leaves findings unverified, not
+    # refuted. Otherwise HOLD (INCOMPLETE) so the PR stays eligible and re-runs.
+    # RED/YELLOW stand: a confirmed finding is real whatever else failed.
+    if verdict == "GREEN" and not (coverage_ok and verify_ok):
         verdict = "INCOMPLETE"
 
     item = VerdictItem(pr=pr, head_sha=head, verdict=verdict,
@@ -269,7 +276,10 @@ def run(store: Store, pr: int, *, trigger: str | None = None) -> int:
             _say(f"    ! {e}")
         return 1
     if held:
-        _say(f"⚠ verdict HELD (incomplete lens coverage: {lenses_ok}/{len(LENSES)} ran) — "
+        cause = (f"incomplete lens coverage: {lenses_ok}/{len(LENSES)} ran"
+                 if lenses_ok < len(LENSES)
+                 else "verify pass failed with flagged findings unverified")
+        _say(f"⚠ verdict HELD ({cause}) — "
              f"no GREEN trusted; PR stays eligible and will re-run.")
         return 0
     verdict, findings = item.verdict, item.findings

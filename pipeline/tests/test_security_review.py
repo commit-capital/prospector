@@ -107,6 +107,50 @@ def test_lens_failure_holds_as_incomplete(tmp_path, monkeypatch):
     assert store.load_pr(100).section("security") is None
 
 
+def test_verify_failure_with_flagged_findings_holds_as_incomplete(tmp_path, monkeypatch):
+    store = Store(str(tmp_path))
+    _eligible_pr(store)
+    monkeypatch.setattr(rs.diff_cache, "fetch_diff", lambda *a, **k: True)
+    finding = {"severity": "red", "category": "authz", "title": "maybe", "detail": "d"}
+
+    def fake(prompt, *a, **k):
+        if prompt.startswith("Pre-merge security review"):
+            return _fenced({"lens_summary": "s", "findings": [finding]})
+        raise RuntimeError("claude exited 1: 403 Unable to verify organization membership")
+    monkeypatch.setattr(rs.headless_agent, "run_agent", fake)
+
+    # Every lens ran and flagged a finding, but the verify chunk failed — the
+    # unverified findings must not read as refuted, so no GREEN is trusted:
+    # the verdict is held and the PR stays eligible to re-run.
+    assert rs.run(store, 100) == 0
+    assert store.load_pr(100).section("security") is None
+
+
+def test_confirmed_red_stands_when_a_later_verify_chunk_fails(tmp_path, monkeypatch):
+    store = Store(str(tmp_path))
+    _eligible_pr(store)
+    monkeypatch.setattr(rs.diff_cache, "fetch_diff", lambda *a, **k: True)
+    findings = [{"severity": "red", "category": "authz", "title": f"t{i}", "detail": "d"}
+                for i in range(rs.VERIFY_CHUNK_SIZE + 1)]
+
+    def fake(prompt, *a, **k):
+        if prompt.startswith("Pre-merge security review"):
+            # Only the security lens flags; the flagged set spans two chunks.
+            return _fenced({"lens_summary": "s",
+                            "findings": findings if "via the security lens" in prompt else []})
+        if '"index": 0' in prompt:
+            return _fenced({"results": [{"index": 0, "upheld": True,
+                                         "adjusted_severity": "red",
+                                         "reasoning": "confirmed"}]})
+        raise RuntimeError("claude exited 1")
+    monkeypatch.setattr(rs.headless_agent, "run_agent", fake)
+
+    # The second verify chunk failed, but the first ran and confirmed a red —
+    # a confirmed finding stands regardless of verify completeness.
+    assert rs.run(store, 100) == 0
+    assert store.load_pr(100).section("security")["verdict"] == "RED"
+
+
 def test_non_merge_pr_is_reviewed_not_refused(tmp_path, monkeypatch):
     # The engine is gate-free: a close-fixed PR is still reviewed on demand.
     store = Store(str(tmp_path))

@@ -69,12 +69,14 @@ const results = await pipeline(manifest.items,
       : { lens: L.key, ok: false, findings: [] })
   )).then(lr => ({ pr, lensResults: lr.filter(Boolean) })),
   async (rev) => {
-    // Coverage gate: a GREEN is only trustworthy if every lens actually ran.
-    // Zero-or-partial successful lenses must NOT yield GREEN — they map to
-    // INCOMPLETE so the driver holds the PR (stays security-eligible, re-runs).
+    // Coverage gate: a GREEN is only trustworthy if every lens actually ran AND
+    // every verify chunk's agent ran (a failed chunk leaves findings unverified,
+    // not refuted). Anything less must NOT yield GREEN — it maps to INCOMPLETE
+    // so the driver holds the PR (stays security-eligible, re-runs).
     const lensesOk = rev.lensResults.filter(l => l.ok).length
     const coverageOk = lensesOk === LENSES.length
-    const settle = (verdict) => (verdict === 'GREEN' && !coverageOk) ? 'INCOMPLETE' : verdict
+    const settle = (verdict, verifyOk = true) =>
+      (verdict === 'GREEN' && !(coverageOk && verifyOk)) ? 'INCOMPLETE' : verdict
     const base = { pr: rev.pr.pr, head_sha: rev.pr.head_sha, lenses_ok: lensesOk, lenses_total: LENSES.length }
     // Per-PR durability: a write agent persists the verdict the moment it's
     // computed (the workflow can't touch the fs; the verdict is JS-assembled from
@@ -97,24 +99,29 @@ const results = await pipeline(manifest.items,
     const chunks = []
     for (let i = 0; i < indexed.length; i += VERIFY_CHUNK_SIZE)
       chunks.push(indexed.slice(i, i + VERIFY_CHUNK_SIZE))
-    const verified = (await parallel(chunks.map(chunk => () =>
+    const chunkResults = await parallel(chunks.map(chunk => () =>
       agent(fill(manifest.verify_prompt, {
         '__N__': chunk.length, '__PR__': rev.pr.pr, '__DIFF_PATH__': rev.pr.diff_path,
         '__CHUNK__': JSON.stringify(chunk) }),
         { label: `vfy:${rev.pr.pr}:${chunk[0].index}-${chunk[chunk.length - 1].index}`, phase: 'Verify', schema: VERIFY_BATCH_SCHEMA }
       ).then(verify => {
+        if (!verify) return null  // agent errored/skipped — the whole chunk is unverified
         const byIndex = new Map((verify.results || []).map(v => [v.index, v]))
         return chunk.map(f => ({ finding: f, verdict: byIndex.get(f.index) })).filter(x => x.verdict)
       })
-    ))).flat()
-    const conf = verified.filter(Boolean).filter(x => x.verdict.upheld && x.verdict.adjusted_severity !== 'not-an-issue')
+    ))
+    // A null chunk left its findings neither confirmed nor refuted, so no clean
+    // bill can be trusted from this run.
+    const verifyOk = chunkResults.every(r => Array.isArray(r))
+    const verified = chunkResults.filter(Array.isArray).flat()
+    const conf = verified.filter(x => x.verdict.upheld && x.verdict.adjusted_severity !== 'not-an-issue')
     const keep = (sev) => conf.filter(x => x.verdict.adjusted_severity === sev)
       .map(x => ({ ...x.finding, severity: sev, detail: `${x.finding.detail}\n\n[verified: ${x.verdict.reasoning}]` }))
     const reds = keep('red'), yellows = keep('yellow')
     // RED/YELLOW stand regardless of coverage (a confirmed finding is real);
-    // only a clean bill (GREEN) is downgraded when a lens failed to run.
+    // only a clean bill (GREEN) is downgraded when a lens or verify chunk failed.
     const verdict = reds.length ? 'RED' : (yellows.length ? 'YELLOW' : 'GREEN')
-    const result = { ...base, verdict: settle(verdict), findings: [...reds, ...yellows] }
+    const result = { ...base, verdict: settle(verdict, verifyOk), findings: [...reds, ...yellows] }
     await persist(result)
     return result
   }
