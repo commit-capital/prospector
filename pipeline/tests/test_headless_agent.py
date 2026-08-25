@@ -154,6 +154,77 @@ def test_run_agent_sends_the_prompt_over_stdin_not_argv(monkeypatch):
     assert proc.stdin.closed
 
 
+def _denial_proc(cmd, denials, text="ok"):
+    proc = _FakeProc(cmd)
+    proc.stdout = iter([
+        json.dumps({"type": "stream_event", "event": {
+            "type": "content_block_delta",
+            "delta": {"type": "text_delta", "text": text}}}),
+        json.dumps({"type": "result", "permission_denials": denials}),
+    ])
+    return proc
+
+
+def test_run_agent_raises_when_edits_inside_the_grant_are_denied(monkeypatch, tmp_path):
+    """A permission denial of Edit/Write on a path inside edit_root means the
+    grant never reached the agent — the machine's fault, not a verdict on the
+    change — so run_agent raises instead of returning the agent's give-up."""
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    denials = [{"tool_name": "Write", "tool_use_id": "t1",
+                "tool_input": {"file_path": str(wt / "src" / "a.ts"),
+                               "content": "x"}}]
+    monkeypatch.setattr(ha.subprocess, "Popen",
+                        lambda cmd, **kw: _denial_proc(cmd, denials))
+    with pytest.raises(ha.EditsBlockedError):
+        ha.run_agent("go", allow_gh=False, cwd=str(wt), edit_root=str(wt))
+
+
+def test_run_agent_raises_on_in_root_denial_through_a_symlinked_root(monkeypatch, tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    denials = [{"tool_name": "Edit", "tool_use_id": "t1",
+                "tool_input": {"file_path": str(link / "a.py")}}]
+    monkeypatch.setattr(ha.subprocess, "Popen",
+                        lambda cmd, **kw: _denial_proc(cmd, denials))
+    with pytest.raises(ha.EditsBlockedError):
+        ha.run_agent("go", allow_gh=False, cwd=str(real), edit_root=str(real))
+
+
+def test_run_agent_keeps_denials_outside_the_edit_root(monkeypatch, tmp_path):
+    """An Edit the agent aimed outside its worktree is the lockdown working."""
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    denials = [{"tool_name": "Edit", "tool_use_id": "t1",
+                "tool_input": {"file_path": "/etc/hosts"}}]
+    monkeypatch.setattr(ha.subprocess, "Popen",
+                        lambda cmd, **kw: _denial_proc(cmd, denials))
+    assert ha.run_agent("go", allow_gh=False, cwd=str(wt),
+                        edit_root=str(wt)) == "ok"
+
+
+def test_run_agent_without_edit_root_keeps_edit_denials(monkeypatch):
+    """With no edit grant, a denied Edit is the read-only lockdown working."""
+    denials = [{"tool_name": "Edit", "tool_use_id": "t1",
+                "tool_input": {"file_path": "/tmp/a.py"}}]
+    monkeypatch.setattr(ha.subprocess, "Popen",
+                        lambda cmd, **kw: _denial_proc(cmd, denials))
+    assert ha.run_agent("go", allow_gh=False, cwd="/tmp") == "ok"
+
+
+def test_run_agent_keeps_non_edit_denials_inside_the_root(monkeypatch, tmp_path):
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    denials = [{"tool_name": "Bash", "tool_use_id": "t1",
+                "tool_input": {"command": f"rm {wt}/a.py"}}]
+    monkeypatch.setattr(ha.subprocess, "Popen",
+                        lambda cmd, **kw: _denial_proc(cmd, denials))
+    assert ha.run_agent("go", allow_gh=False, cwd=str(wt),
+                        edit_root=str(wt)) == "ok"
+
+
 def test_flags_allow_adds_rules_on_top_of_the_read_only_set():
     flags = ha._flags(False, allow=["Bash(/x/sandbox-check:*)"])
     allowed = flags[flags.index("--allowedTools") + 1].split(",")
