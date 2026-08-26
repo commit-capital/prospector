@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 
 from pipeline import diffpaths, gates, profile, verify_driver
+from pipeline.store import Store
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +106,11 @@ def _compile_over(result: dict, patch: Path, cmd: str, head_sha: str) -> None:
     result["base_sha"] = sha
     tag = verify_driver.base_image_tag(sha, 1)
     if not verify_driver.image_exists(tag):
+        try:
+            pin = verify_driver.local_pin(Store()).get("base_sha")
+            verify_driver.collect_garbage(str(pin) if pin else None)
+        except Exception:
+            logger.warning("compile preflight could not collect verify garbage", exc_info=True)
         verify_driver.build_base_image(sha, tier=1)
     exit_code, tail = verify_driver.run_phase(
         "compile", tag, patch=patch, tier=1, test_cmd=cmd,

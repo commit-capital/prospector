@@ -107,6 +107,11 @@ class TestRunForMerge:
                             lambda pr, head: _patch_file(tmp_path, SRC_DIFF))
         monkeypatch.setattr(verify_driver, "resolve_base_sha", lambda: BASE)
         monkeypatch.setattr(verify_driver, "image_exists", lambda tag: False)
+        monkeypatch.setattr(compile_preflight, "Store", lambda: object(), raising=False)
+        monkeypatch.setattr(verify_driver, "local_pin",
+                            lambda store: {"base_sha": "p" * 40})
+        monkeypatch.setattr(verify_driver, "collect_garbage",
+                            lambda pinned: order.append(("gc", pinned)))
 
         def fake_build(sha, *, tier):
             order.append("build")
@@ -116,7 +121,7 @@ class TestRunForMerge:
                             lambda *a, **k: (order.append("run"), (0, ""))[1])
         res = compile_preflight.run_for_merge(7, "a" * 40)
         assert res is not None and res["exit"] == 0
-        assert order == ["build", "run"]
+        assert order == [("gc", "p" * 40), "build", "run"]
 
     def test_compile_failure_extracts_error_excerpt(self, configured, monkeypatch, tmp_path):
         monkeypatch.setattr(verify_driver, "fetch_patch",
