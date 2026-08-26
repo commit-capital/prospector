@@ -562,7 +562,9 @@ def resolve_autopush_bar(result: dict) -> tuple[bool, str]:
       - two independent reviewers, each an affirmative `safe` (a missing,
         malformed, or failed review reads as unsafe)
       - the related-tests sandbox run, when one exists, exited clean; a resolve
-        with no related tests passes on the reviews alone
+        with no related tests passes on the reviews alone. A run the sandbox
+        could not execute — an infrastructure error or a preflight refusal —
+        blocks with the record's own message rather than a missing exit code.
     """
     paths = [str(p) for p in (result.get("conflict_paths") or [])]
     tier = risktier.pr_tier(paths)
@@ -587,6 +589,10 @@ def resolve_autopush_bar(result: dict) -> tuple[bool, str]:
     tests = auto.get("tests")
     if tests:
         run = tests.get("run") or {}
+        not_run = run.get("error") or run.get("refused")
+        if not_run:
+            return False, ("the related-tests sandbox could not run: "
+                           f"{not_run}")
         if run.get("exit") != 0:
             return False, ("the related-tests sandbox run did not pass: "
                            f"exit {run.get('exit')}")

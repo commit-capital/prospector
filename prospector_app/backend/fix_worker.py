@@ -1096,9 +1096,9 @@ def review_parked_resolve(n: int) -> None:
     it returns to `awaiting-review` with the verdict for the operator to read,
     and the stamp keeps it from being judged again. A machine failure — a
     crashed or timed-out reviewer with no judged rejection beside it, a git or
-    evidence error — restores the request unstamped and rests the PR in
-    _review_backoff, so a live worker retries later and a restarted one
-    immediately."""
+    evidence error, a related-tests sandbox that errored instead of running —
+    restores the request unstamped and rests the PR in _review_backoff, so a
+    live worker retries later and a restarted one immediately."""
     rec = data.store().load_pr(n)
     if rec is None:
         return
@@ -1183,6 +1183,14 @@ def _judge_claimed_resolve(n: int, rec: Pr, claimed: dict, head: str,
         stamp["reviews"] = reviews
         if all(r.get("verdict") == "safe" for r in reviews) and len(reviews) == 2:
             stamp["tests"] = _related_tests_run(n, head, patch, related)
+            run = (stamp["tests"] or {}).get("run") or {}
+            # An errored sandbox is the machine's failure, so the request stays
+            # unstamped and retryable; a `refused` run is deterministic and
+            # stamps, with the bar carrying the refusal for the operator.
+            if run.get("error"):
+                restore("the related-tests sandbox could not run: "
+                        f"{run['error']}")
+                return
     result["auto_review"] = stamp
     ok, why = gates.resolve_autopush_bar(result)
     stamp["bar"] = {"ok": ok, "reason": why}

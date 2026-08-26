@@ -2547,3 +2547,25 @@ class TestResolveAutopushBar:
         ok, why = gates.resolve_autopush_bar(result)
         assert not ok
         assert "test" in why
+
+    def test_a_sandbox_error_parks_with_the_underlying_message(self):
+        result = self._result()
+        result["auto_review"]["tests"] = {
+            "files": ["tests/test_app.py"],
+            "run": {"error": "compile preflight failed unexpectedly; "
+                             "see server logs"}}
+        ok, why = gates.resolve_autopush_bar(result)
+        assert not ok
+        assert "could not run" in why
+        assert "see server logs" in why
+        assert "exit None" not in why
+
+    def test_a_sandbox_refusal_parks_with_its_reason(self):
+        result = self._result()
+        result["auto_review"]["tests"] = {
+            "files": ["tests/test_app.py"],
+            "run": {"refused": "the PR diff is empty or unparsable"}}
+        ok, why = gates.resolve_autopush_bar(result)
+        assert not ok
+        assert "could not run" in why
+        assert "empty or unparsable" in why
