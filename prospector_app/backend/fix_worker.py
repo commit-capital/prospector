@@ -52,9 +52,9 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, NamedTuple
 
 from pipeline import (author_fix, compile_preflight, describe_pr, diffpaths, freshness,
-                      gates, gh, profile, resolve_conflicts, resolve_evidence,
-                      review_fix, review_policy, review_resolve, reviewers, risktier,
-                      settings, verify_driver)
+                      gates, gh, headless_agent, profile, resolve_conflicts,
+                      resolve_evidence, review_fix, review_policy, review_resolve,
+                      reviewers, risktier, settings, verify_driver)
 from pipeline.storekit import now as _now
 from prospector_app.backend import (activity, data, executor, fix_queue, review_refresh,
                                     safety_guard, sandbox_check, service)
@@ -840,6 +840,12 @@ def _agent_resolve(n: int, claimed: dict, paused: list[str]) -> None:
         verdict = resolve_conflicts.resolve(
             worktree, conflicts, pr=n, title=rec.title or "",
             body=rec.body or "", base_branch=str(st.get("base_branch") or ""))
+    except headless_agent.EditsBlockedError as e:
+        # The edit grant never reached the agent — this machine's fault, so the
+        # ending is retryable rather than a verdict that rests the head.
+        _resubmit(n, "abort")
+        _fail(n, claimed, f"The agent attempt did not land: {e}.")
+        return
     except (RuntimeError, ValueError) as e:
         _resubmit(n, "abort")
         _refuse(n, claimed,

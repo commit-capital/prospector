@@ -13,7 +13,7 @@ import json
 
 import pytest
 
-from pipeline import profile
+from pipeline import headless_agent, profile
 from pipeline import store as S
 from prospector_app.backend import data, fix_queue, fix_worker
 from pipeline.testsupport import greptile_entry, reviews_section
@@ -465,6 +465,27 @@ def test_agent_give_up_refuses_with_reason(store, monkeypatch, tmp_path):
     req = store.load_pr(1).fix_request
     assert req["status"] == "refused"
     assert "the sides contradict" in req["refused_reason"]
+    after_merge = fake.calls[fake.calls.index(("prepare", "--merge")):]
+    assert ("abort",) in after_merge
+
+
+def test_resolve_agent_with_blocked_edits_fails_instead_of_refusing(store, monkeypatch,
+                                                                    tmp_path):
+    # An edit grant that never reached the agent is the machine's fault: the
+    # ending must be retryable, not a verdict that rests the head.
+    fix_queue.queue_pr(1, "rebase")
+    fake = _ConflictedResubmit(tmp_path)
+    monkeypatch.setattr(fix_worker, "_resubmit", fake)
+    monkeypatch.setattr(fix_worker.resolve_conflicts, "resolve",
+                        lambda wt, paths, **kw: (_ for _ in ()).throw(
+                            headless_agent.EditsBlockedError(
+                                "the edit grant did not reach the agent")))
+
+    fix_worker.run_one(1)
+
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "failed"
+    assert "edit grant" in req["error"]
     after_merge = fake.calls[fake.calls.index(("prepare", "--merge")):]
     assert ("abort",) in after_merge
 
