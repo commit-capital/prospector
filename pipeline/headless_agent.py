@@ -29,6 +29,15 @@ from pipeline.settings import REPO_ROOT
 CLAUDE_BIN = shutil.which("claude") or "claude"
 
 
+class EditsBlockedError(RuntimeError):
+    """The CLI denied an Edit/Write on a path inside the granted edit_root.
+
+    The grant covers the whole worktree subtree, so an in-root denial means the
+    permission rule is not reaching the agent (a CLI whose rule syntax moved, a
+    worktree path the rule form cannot name) — this machine's fault, never a
+    verdict on the change. Callers end such a run as retryable."""
+
+
 def fill(template: str, subs: dict[str, object]) -> str:
     """Substitute `__TOKEN__` placeholders in `template` in a SINGLE pass, so a
     substituted value that itself contains another token is never re-substituted
@@ -89,10 +98,12 @@ def _flags(allow_gh: bool, edit_root: str | None = None,
     ]
 
 
-def parse_stream(lines, on_event=None) -> str:
+def parse_stream(lines, on_event=None, on_result=None) -> str:
     """Consume claude stream-json lines; return the concatenated assistant text.
     Calls on_event((kind, name, input)) for tool uses so callers can show
-    progress: ("tool", tool_name, tool_input_dict)."""
+    progress: ("tool", tool_name, tool_input_dict), and on_result(event) with
+    the CLI's terminal result event, which carries the run's permission
+    denials."""
     parts: list[str] = []
     saw_delta = False
     for raw in lines:
@@ -118,8 +129,25 @@ def parse_stream(lines, on_event=None) -> str:
                 if c.get("type") == "text" and c.get("text") and not saw_delta:
                     parts.append(c["text"])
         elif t == "result":
+            if on_result:
+                on_result(e)
             break
     return "".join(parts)
+
+
+def _blocked_edits(result: dict | None, edit_root: str) -> list[str]:
+    """The file paths of Edit/Write permission denials inside `edit_root`, read
+    from the CLI's terminal result event. The grant covers the whole subtree,
+    so any entry here means the grant is not working."""
+    root = os.path.realpath(edit_root).rstrip("/")
+    blocked: list[str] = []
+    for d in (result or {}).get("permission_denials") or []:
+        if d.get("tool_name") not in ("Edit", "Write"):
+            continue
+        path = str((d.get("tool_input") or {}).get("file_path") or "")
+        if path and os.path.realpath(path).startswith(root + "/"):
+            blocked.append(path)
+    return blocked
 
 
 def tool_summary(name: str, inp: dict, width: int = 100) -> str:
@@ -195,7 +223,10 @@ def run_agent(prompt: str, *, allow_gh: bool, cwd: str, system_prompt: str | Non
     Edit/Write scoped to that directory (plus read-only git). `allow` adds
     permission rules on top of the read-only set, such as `Bash(<tool>:*)` for
     one more host command; `env_extra` is merged into the agent's environment,
-    which its Bash commands inherit. Raises RuntimeError on a non-zero exit."""
+    which its Bash commands inherit. Raises RuntimeError on a non-zero exit,
+    and EditsBlockedError when an Edit/Write inside `edit_root` was
+    permission-denied — the grant not working, so the run's outcome is the
+    machine's, not the agent's."""
     cmd = [CLAUDE_BIN, "-p", *_flags(allow_gh, edit_root, allow),
            "--output-format", "stream-json", "--verbose", "--include-partial-messages"]
     if model:
@@ -223,7 +254,8 @@ def run_agent(prompt: str, *, allow_gh: bool, cwd: str, system_prompt: str | Non
 
     feeder = threading.Thread(target=_feed, daemon=True)
     feeder.start()
-    text = parse_stream(proc.stdout, on_event=on_event)
+    results: list[dict] = []
+    text = parse_stream(proc.stdout, on_event=on_event, on_result=results.append)
     feeder.join(timeout=60)
     try:
         proc.wait(timeout=timeout)
@@ -236,4 +268,11 @@ def run_agent(prompt: str, *, allow_gh: bool, cwd: str, system_prompt: str | Non
     if proc.returncode != 0:
         tail = text[-500:] if text else "(no output)"
         raise RuntimeError(f"claude exited {proc.returncode}; last output: {tail}")
+    if edit_root:
+        blocked = _blocked_edits(results[0] if results else None, edit_root)
+        if blocked:
+            raise EditsBlockedError(
+                f"the edit grant did not reach the agent: {len(blocked)} "
+                f"Edit/Write call(s) inside {edit_root} were permission-denied "
+                f"(first: {blocked[0]})")
     return text
