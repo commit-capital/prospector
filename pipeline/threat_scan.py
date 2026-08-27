@@ -11,6 +11,11 @@ their PRs always stamp `clear`, and neither the attack signatures nor the
 blocklist apply to them (a secret-leak still raises a rotate-secret action
 item; the leaked key must rotate no matter who pushed it).
 
+The sweep visits open PRs only: a closed PR's verdict gates nothing, and the
+incident of one caught while open already sits in the durable registry.
+`--only` names PRs verbatim, open or closed, so an operator can rescan a
+specific PR while investigating an incident.
+
 Diffs live in the machine-local cache (diff_cache.py). Before scanning, the
 run fetches the current-head diff of every open PR that has none cached
 (diff_cache.fetch_diff: bounded, read-only gh reads), so scan coverage never
@@ -157,6 +162,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.only:
         want = {int(x) for x in args.only.split(",")}
         prs = {n: r for n, r in prs.items() if n in want}
+    else:
+        prs = {n: r for n, r in prs.items() if r.state == "open"}
 
     fetch_stats: dict[str, int] = {}
     exempt: set[int] = set()
