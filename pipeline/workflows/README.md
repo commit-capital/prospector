@@ -116,7 +116,7 @@ Runs after INGEST and after diffs are fetched (the CLUSTER `fetch-diffs` step).
 Cheap and idempotent — no Workflow, no metered tokens.
 
 ```
-uv run python pipeline/threat_scan.py            # scan every PR with a cached diff
+uv run python pipeline/threat_scan.py            # scan every open PR with a cached diff
 uv run python pipeline/threat_scan.py --only 5174,5270   # rescan specific PRs
 uv run python pipeline/views.py
 ```
