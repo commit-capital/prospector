@@ -22,10 +22,16 @@ if TYPE_CHECKING:
 # Canonical phase names → human label
 PHASE_LABELS: dict[str, str] = {
     "ingest": "Ingest",
-    "cluster:commit": "Clustering",
+    "cluster": "Clustering",
     "analyze:commit": "Analysis",
     "threat-scan": "Threat scan",
     "security:commit": "Security review",
+}
+
+# The runs-ledger phases a card's freshness reads. A card names every ledger
+# phase that keeps its fact current; a card absent here reads its own key.
+PHASE_LEDGER: dict[str, tuple[str, ...]] = {
+    "cluster": ("cluster:commit", "cluster:assign"),
 }
 
 # How many of the most recent samples an estimate averages over — recent
@@ -134,14 +140,18 @@ def _issue_coverage() -> dict:
 
 
 def _pr_coverage(all_prs: dict[int, Pr], diffs_dir: Path) -> dict:
-    """PR coverage split by freshness. For each per-PR fact, `current` counts
-    stamps computed against the PR's present head, `stale` stamps outdated by a
-    later push, and `never` PRs no run has stamped. The threat scan reads diffs
-    from this machine's local cache and fetches missing open-PR diffs on
-    demand, so the split of its uncovered PRs (stale + never) into
-    `diff_cached_here` (current head's diff already cached) and
-    `diff_uncached_here` (the scan fetches it as it runs) is a workload hint —
-    how much fetching the next scan run from this app will do."""
+    """PR coverage split by freshness over the open PRs — the population every
+    phase acts on; `tracked` is the whole store, closed and merged included.
+    For each per-PR fact, `current` counts stamps computed against the PR's
+    present head, `stale` stamps outdated by a later push, and `never` PRs no
+    run has stamped. The threat scan reads diffs from this machine's local
+    cache and fetches missing open-PR diffs on demand, so the split of its
+    uncovered PRs (stale + never) into `diff_cached_here` (current head's diff
+    already cached) and `diff_uncached_here` (the scan fetches it as it runs)
+    is a workload hint — how much fetching the next scan run from this app
+    will do."""
+    tracked = len(all_prs)
+    all_prs = {n: pr for n, pr in all_prs.items() if pr.state == "open"}
     total = len(all_prs)
 
     def split(section: str) -> dict[str, int]:
@@ -165,6 +175,7 @@ def _pr_coverage(all_prs: dict[int, Pr], diffs_dir: Path) -> dict:
 
     clustered = sum(1 for pr in all_prs.values() if pr.section("cluster"))
     return {
+        "tracked": tracked,
         "total": total,
         "clustered": clustered,
         "not_clustered": total - clustered,
@@ -181,10 +192,11 @@ def status() -> dict:
 
     phases = []
     for phase_key, label in PHASE_LABELS.items():
+        ledger = PHASE_LEDGER.get(phase_key, (phase_key,))
         phases.append({
             "phase": phase_key,
             "label": label,
-            "last_run": last_runs.get(phase_key),
+            "last_run": max((last_runs[k] for k in ledger if k in last_runs), default=None),
         })
     issue_runs = _issue_runs()
     last_issue_runs = _last_issue_runs(issue_runs)

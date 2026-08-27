@@ -460,7 +460,7 @@ export default function ControlPanel() {
         <>
           {cov && (
             <p className="muted small" style={{ margin: "0 0 10px" }}>
-              {cov.total.toLocaleString()} PRs tracked
+              {cov.tracked.toLocaleString()} PRs tracked · {cov.total.toLocaleString()} open
               {icov && ` · ${icov.open.toLocaleString()} open issues`}
               {" "}· phases feed forward: Ingest → Threat scan → Clustering → Analysis → Security → Verify.
               {" "}"Current" counts facts computed against each PR's latest push; a push after a run leaves that fact stale until the phase re-runs.
@@ -487,7 +487,7 @@ export default function ControlPanel() {
               lastRun={pipeline.phases.find((p) => p.phase === "threat-scan")?.last_run}
               done={cov?.threat.current} total={cov?.total} stale={cov?.threat.stale} />
             <PhaseCard icon="🧩" label="Clustering"
-              lastRun={pipeline.phases.find((p) => p.phase === "cluster:commit")?.last_run}
+              lastRun={pipeline.phases.find((p) => p.phase === "cluster")?.last_run}
               done={cov?.clustered} total={cov?.total} />
             <PhaseCard icon="🔍" label="Analysis"
               lastRun={pipeline.phases.find((p) => p.phase === "analyze:commit")?.last_run}
@@ -534,8 +534,8 @@ export default function ControlPanel() {
               <b>Threat scan</b> — deterministic attack-pattern scan over PR diffs + author blocklist check.
               Fetches any uncached diffs from GitHub first (read-only), so coverage doesn&apos;t wait on a Clustering run.
               {cov && estThreatScan && (
-                <span className="muted small" title="every run rescans all tracked PRs, not just the unscanned ones">
-                  {" "}· takes {estThreatScan} for all {cov.total.toLocaleString()} PRs
+                <span className="muted small" title="every run rescans all open PRs, not just the unscanned ones">
+                  {" "}· takes {estThreatScan} for all {cov.total.toLocaleString()} open PRs
                 </span>
               )}
               {pipeline?.phases.find((p) => p.phase === "threat-scan")?.last_run && (

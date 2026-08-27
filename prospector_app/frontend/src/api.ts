@@ -1792,7 +1792,11 @@ interface ThreatCoverage extends SectionCoverage {
   diff_uncached_here: number;
 }
 
+/** Phase coverage over the open PRs — the population every phase acts on.
+ * `total` is that open count; `tracked` is the whole store, closed and merged
+ * included. */
 interface PipelineCoverage {
+  tracked: number;
   total: number;
   clustered: number;
   not_clustered: number;
