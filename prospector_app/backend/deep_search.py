@@ -25,7 +25,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pipeline import reviewers
-from prospector_app.backend import chat  # CLAUDE_BIN, isolation_flags, REPO_ROOT, APP_ROOT, system_prompt
+from prospector_app.backend import chat
+from prospector_app.backend import claude_backend
 from prospector_app.backend import data
 from prospector_app.backend import safety_guard
 from prospector_app.backend import service
@@ -141,7 +142,8 @@ async def _judge_batch(query: str, records: list[dict], sem: asyncio.Semaphore) 
     A subprocess/parse failure degrades to {} (those PRs count as non-matches)."""
     prompt = _JUDGE_PROMPT.format(query=query, records=json.dumps(records, ensure_ascii=False))
     # Read-only judge: no token, no write tools — the strictly read-only sandbox.
-    cmd = [chat.CLAUDE_BIN, "-p", prompt, *chat.isolation_flags(can_write=False),
+    cmd = [claude_backend.CLAUDE_BIN, "-p", prompt,
+           *claude_backend.isolation_flags(can_write=False),
            "--output-format", "json", "--append-system-prompt", chat.system_prompt()]
     valid = {r["pr"] for r in records}
     async with sem:

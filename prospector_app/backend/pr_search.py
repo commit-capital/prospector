@@ -14,7 +14,8 @@ import re
 
 from pipeline import review_policy
 from pipeline import reviewers
-from prospector_app.backend import chat  # reuse CLAUDE_BIN, isolation_flags, REPO_ROOT, system_prompt
+from prospector_app.backend import chat
+from prospector_app.backend import claude_backend
 from prospector_app.backend import safety_guard
 from prospector_app.backend import subproc
 
@@ -158,8 +159,8 @@ Omit any key you're unsure about. Reviewer query: {query}"""
 async def search_to_spec(query: str) -> dict:
     """Run the one-shot agent and return a validated spec (possibly {})."""
     prompt = _PROMPT.replace("__REVIEW_FIELDS__", _review_field_docs()).format(query=query)
-    cmd = [chat.CLAUDE_BIN, "-p", prompt,
-           *chat.isolation_flags(can_write=False), "--output-format", "json",
+    cmd = [claude_backend.CLAUDE_BIN, "-p", prompt,
+           *claude_backend.isolation_flags(can_write=False), "--output-format", "json",
            "--append-system-prompt", chat.system_prompt()]
     proc = await subproc.spawn(
         cmd, cwd=chat.REPO_ROOT, stderr=asyncio.subprocess.DEVNULL,
