@@ -659,9 +659,9 @@ def default_comment(action: str, canonical: int | None = None,
 # ---------------------------------------------------------------------------
 @app.get("/api/chat/ready")
 def chat_ready():
-    """Whether this machine can run the agent pane — the provider and, for
-    claude, the local CLI's presence and login. The pane renders its fix-it
-    empty state from this."""
+    """Whether this machine can run the agent pane — the provider plus its
+    local CLI's presence and login. The pane renders its fix-it empty state
+    from this."""
     return chat.readiness()
 
 

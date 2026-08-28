@@ -1,7 +1,7 @@
 """The in-app agent's provider setting and readiness probe.
 
-The agent pane runs the operator's local `claude` CLI under their own login,
-so readiness is a per-machine fact: the binary on PATH and its auth status.
+The agent pane runs the selected local CLI under the operator's own login, so
+readiness is a per-machine fact: the binary on PATH and its auth status.
 `settings.agent_provider()` is the deployment-side switch the pane hides on.
 """
 from __future__ import annotations
@@ -29,8 +29,12 @@ class TestAgentProvider:
         monkeypatch.setenv("TRIAGE_AGENT_PROVIDER", "claude")
         assert settings.agent_provider() == "claude"
 
-    def test_an_unrecognized_value_fails_toward_no_agent(self, monkeypatch):
+    def test_codex_reads_as_codex(self, monkeypatch):
         monkeypatch.setenv("TRIAGE_AGENT_PROVIDER", "codex")
+        assert settings.agent_provider() == "codex"
+
+    def test_an_unrecognized_value_fails_toward_no_agent(self, monkeypatch):
+        monkeypatch.setenv("TRIAGE_AGENT_PROVIDER", "gemini")
         assert settings.agent_provider() == "none"
 
 
