@@ -56,9 +56,8 @@ STEP_KEYS: dict[str, tuple[str, ...]] = {
     "agent": ("TRIAGE_AGENT_PROVIDER",),
 }
 
-# The wizard enables Claude or no agent. Codex is available through deployment
-# configuration and is not a wizard choice.
-_AGENT_PROVIDERS = ("claude", "none")
+# The agent choices accepted by the first-run wizard and the standing Setup card.
+_AGENT_PROVIDERS = ("claude", "codex", "none")
 
 # What the bundle carries to a teammate: everything a fresh checkout needs to
 # point itself at this deployment, plus the bot identity so its writes are
@@ -391,12 +390,13 @@ def _probe_repo(target: str) -> dict[str, object]:
 
 
 def probe(store_url: str | None, repo: str | None,
-          key_file: str | None, agent: bool = False) -> dict[str, object]:
+          key_file: str | None, agent: bool = False,
+          agent_provider: str | None = None) -> dict[str, object]:
     """Check candidate configuration without committing any of it.
 
-    Diagnosing these is the wizard's job, so nothing here raises to the caller:
+    Diagnosing these is the Setup surface's job, so nothing here raises to the caller:
     an unreachable store, an unreadable repository, a missing PEM, and an
-    absent or logged-out claude CLI are findings. Failures report a category,
+    absent or logged-out agent CLI are findings. Failures report a category,
     never raw exception text or the store URL.
     """
     found: dict[str, object] = {}
@@ -410,7 +410,7 @@ def probe(store_url: str | None, repo: str | None,
                              else {"ok": False, "problem": "no file at that path"})
     if agent:
         from prospector_app.backend import chat
-        found["agent"] = chat.readiness()
+        found["agent"] = chat.readiness(agent_provider)
     return found
 
 

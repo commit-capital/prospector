@@ -10,7 +10,8 @@ import { useRepoMeta } from "../RepoMetaContext";
 
 type Branch = "join" | "new" | null;
 type Pick = "easy" | "full" | null;
-type AgentPick = "claude" | "none" | null;
+type AgentProvider = "claude" | "codex";
+type AgentPick = AgentProvider | "none" | null;
 
 /** The onboarding state once the backend answers again, or null after ~10s of
  *  unreachability. */
@@ -245,28 +246,30 @@ function EasyOrFull(
   );
 }
 
-/** This machine's agent readiness (the local claude CLI), probed while
- *  `active`. */
-function useAgentProbe(active: boolean): ProbeFinding | undefined {
-  const [found, setFound] = useState<ProbeFinding | undefined>();
+/** This machine's readiness for the provider selected in the form. */
+function useAgentProbe(provider: AgentProvider | null): ProbeFinding | undefined {
+  const [result, setResult] = useState<{
+    provider: AgentProvider;
+    found: ProbeFinding | undefined;
+  }>();
   useEffect(() => {
-    if (!active) return;
+    if (provider == null) return;
     let stale = false;
-    void api.onboardingProbe({ agent: true })
-      .then((r) => { if (!stale) setFound(r.agent); })
-      .catch(() => { if (!stale) setFound(undefined); });
+    void api.onboardingProbe({ agent: true, agent_provider: provider })
+      .then((r) => { if (!stale) setResult({ provider, found: r.agent }); })
+      .catch(() => { if (!stale) setResult({ provider, found: undefined }); });
     return () => { stale = true; };
-  }, [active]);
-  return found;
+  }, [provider]);
+  return result?.provider === provider ? result.found : undefined;
 }
 
-/** The agent-provider choice: who backs the “Ask the agent” sidebar. Probes
- *  this machine's claude CLI as soon as that option is picked. `title` is the
- *  fork heading; the ladder rung omits it, its card already carries one. */
+/** The agent-provider choice: who backs the “Ask the agent” sidebar. `title`
+ *  is the fork heading; the ladder rung omits it, its card already carries one. */
 function AgentChooser({ pick, onPick, title }: {
-  pick: AgentPick; onPick: (p: "claude" | "none") => void; title?: string;
+  pick: AgentPick; onPick: (p: Exclude<AgentPick, null>) => void; title?: string;
 }) {
-  const found = useAgentProbe(pick === "claude");
+  const provider = pick === "claude" || pick === "codex" ? pick : null;
+  const found = useAgentProbe(provider);
   return (
     <div className="welcome-fork">
       {title && <h4>{title}</h4>}
@@ -284,10 +287,19 @@ function AgentChooser({ pick, onPick, title }: {
           </p>
         )}
       </label>
-      <label className="fork-opt" title="Not supported yet">
-        <input type="radio" checked={false} disabled readOnly />
-        {" "}<strong>Connect your Codex account</strong>
-        {" "}<span className="muted small">not supported yet.</span>
+      <label className={pick === "codex" ? "fork-opt on" : "fork-opt"}>
+        <input type="radio" checked={pick === "codex"} onChange={() => onPick("codex")} />
+        {" "}<strong>Use your Codex account</strong>
+        {" "}<span className="muted small">
+          the “Ask the agent” sidebar runs the Codex CLI on this computer,
+          under your own login.
+        </span>
+        {pick === "codex" && <>{" "}<Finding found={found} /></>}
+        {pick === "codex" && found && !found.ok && (
+          <p className="muted small">
+            You can fix this later — the sidebar shows what to do.
+          </p>
+        )}
       </label>
       <label className={pick === "none" ? "fork-opt on" : "fork-opt"}>
         <input type="radio" checked={pick === "none"} onChange={() => onPick("none")} />
@@ -505,13 +517,16 @@ function Ladder({ state, onChange }: { state: OnboardingState; onChange: () => v
  *  standing choice with this machine's readiness. */
 function AgentStep({ state, onDone }: { state: OnboardingState; onDone: () => void }) {
   const chosen: AgentPick =
-    state.agent_provider === "claude" || state.agent_provider === "none"
+    state.agent_provider === "claude" || state.agent_provider === "codex"
+      || state.agent_provider === "none"
       ? state.agent_provider : null;
   const [pick, setPick] = useState<AgentPick>(chosen);
   const [editing, setEditing] = useState(chosen == null);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
-  const found = useAgentProbe(!editing && chosen === "claude");
+  const found = useAgentProbe(
+    !editing && (chosen === "claude" || chosen === "codex") ? chosen : null,
+  );
 
   const apply = async () => {
     if (pick == null) return;
@@ -528,15 +543,17 @@ function AgentStep({ state, onDone }: { state: OnboardingState; onDone: () => vo
     }
   };
 
-  if (!editing && chosen === "claude") {
+  if (!editing && (chosen === "claude" || chosen === "codex")) {
+    const name = chosen === "claude" ? "Claude" : "Codex";
+    const command = chosen === "claude" ? "claude auth login" : "codex login";
     return (
       <section className="setup-card setup-done">
-        <h3>✅ The “Ask the agent” sidebar uses your Claude account</h3>
+        <h3>✅ The “Ask the agent” sidebar uses your {name} account</h3>
         <p className="muted small">
-          It runs the Claude Code CLI on this computer, under your own login.
+          It runs the {name} CLI on this computer, under your own login.
           {" "}<Finding found={found} />
           {found && !found.ok && found.problem === "not logged in" && (
-            <> Run <code>claude auth login</code> in a terminal to finish.</>
+            <> Run <code>{command}</code> in a terminal to finish.</>
           )}
           {" "}<button className="link-btn" onClick={() => setEditing(true)}>change</button>
         </p>

@@ -154,6 +154,7 @@ class OnboardingProbe(BaseModel):
     repo: str | None = None
     key_file: str | None = None
     agent: bool = False
+    agent_provider: str | None = None
 
 
 class SetupShare(BaseModel):

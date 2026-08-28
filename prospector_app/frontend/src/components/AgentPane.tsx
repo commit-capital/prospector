@@ -16,6 +16,32 @@ function MicIcon() {
   );
 }
 
+function AgentReadinessHelp({ ready }: { ready: ChatReady }) {
+  const codex = ready.provider === "codex";
+  const cli = codex ? "Codex CLI" : "Claude Code CLI";
+  const missing = codex ? "codex CLI not on PATH" : "claude CLI not on PATH";
+  const installUrl = codex
+    ? "https://developers.openai.com/codex"
+    : "https://claude.com/claude-code";
+  const installLabel = codex ? "install Codex" : "install Claude Code";
+  const login = codex ? "codex login" : "claude auth login";
+
+  return (
+    <p className="muted small">
+      The agent runs the <b>{cli}</b> on this computer, under your own login.{" "}
+      {ready.problem === missing
+        ? <>It isn't installed here — <a href={installUrl}
+            target="_blank" rel="noreferrer">{installLabel}</a>, then check again.</>
+        : ready.problem === "not logged in"
+          ? <>It isn't logged in — run <code>{login}</code> in a terminal, then check again.</>
+          : ready.problem === "Codex authentication is not file-backed"
+            ? <>Its login is not file-backed. Set <code>cli_auth_credentials_store = "file"</code> in
+                your Codex config, run <code>codex login</code>, then check again.</>
+            : <>It didn't answer a status check ({ready.problem ?? "unknown"}).</>}
+    </p>
+  );
+}
+
 interface Anchor { file: string; line: number }
 interface AgentCtx {
   anchor: Anchor | null;
@@ -339,7 +365,7 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
     return () => { document.documentElement.style.removeProperty("--ap-w"); };
   }, [open, paneW]);
 
-  // Whether this machine can run the agent at all — the local claude CLI's
+  // Whether this machine can run the agent at all — the selected local CLI's
   // presence and login. Checked once per pane-open; not-ready swaps the
   // composer for a fix-it notice with a re-check.
   const [ready, setReady] = useState<ChatReady | null>(null);
@@ -572,17 +598,7 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
             )}
             {ready && !ready.ok ? (
               <div className="ap-not-ready">
-                <p className="muted small">
-                  The agent runs the <b>Claude Code CLI</b> on this computer, under
-                  your own login.{" "}
-                  {ready.problem === "claude CLI not on PATH"
-                    ? <>It isn't installed here — <a href="https://claude.com/claude-code"
-                        target="_blank" rel="noreferrer">install Claude Code</a>, then check again.</>
-                    : ready.problem === "not logged in"
-                      ? <>It isn't logged in — run <code>claude auth login</code> in a
-                          terminal, then check again.</>
-                      : <>It didn't answer a status check ({ready.problem ?? "unknown"}).</>}
-                </p>
+                <AgentReadinessHelp ready={ready} />
                 <button className="btn-secondary sm" disabled={checkingReady} onClick={checkReady}>
                   {checkingReady ? "checking…" : "Check again"}
                 </button>

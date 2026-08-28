@@ -55,6 +55,15 @@ uv run python pipeline/store_migrate.py dump @env <output-dir>
 uv run python issue_triage/issue_store_migrate.py dump @env <output-dir>
 ```
 
+## In-app agent
+
+`TRIAGE_AGENT_PROVIDER` selects the local CLI behind the “Ask the agent”
+sidebar: `claude`, `codex`, or `none`. The 🛠️ Setup page exposes the same
+choice on both new and configured installs and adopts changes in the running
+process. Claude uses the login from `claude auth login`; Codex uses the login
+from `codex login`. The choice and credentials stay on the machine and are not
+included in deployment-sharing bundles.
+
 ## Bot identity (live writes)
 
 Upstream writes execute as a GitHub App, and each deployment registers its own

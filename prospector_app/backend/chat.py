@@ -83,8 +83,8 @@ def _configured_backend() -> agent_backend.AgentBackend | None:
     return _BACKENDS.get(settings.agent_provider())
 
 
-def readiness() -> dict[str, object]:
-    provider = settings.agent_provider()
+def readiness(provider: str | None = None) -> dict[str, object]:
+    provider = provider or settings.agent_provider()
     backend = _BACKENDS.get(provider)
     if backend is None:
         return {"provider": provider, "ok": False, "problem": "agent support is off"}
