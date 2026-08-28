@@ -1,72 +1,47 @@
-"""Context-aware 'ask the agent' chat — headless `claude -p`, streamed as SSE.
+"""Context-aware 'ask the agent' orchestration, streamed as SSE.
 
 The app's agent pane is global: it knows what you're looking at. A question
 carries a context (a PR, cluster, issue, security alert, advisory, or nothing)
 plus an optional diff anchor (file:line). Requests from PR Explorer carry the operator's filtered PR list;
 a new or reconstructed session includes it in the prompt, so "review these"
 doesn't need the numbers spelled out (#355, #507). The list doesn't change the
-thread identity. We build the right context block, spawn a
-sandboxed headless Claude rooted at the repo, and stream the answer. Threads +
-claude sessions are kept per thread key — a subject's context id by default, or
+thread identity. We build the right context block, start the configured backend,
+and stream the answer. Threads and provider sessions are kept per thread key —
+a subject's context id by default, or
 an explicit `chat_id` for an operator-named session
 (#343) — so each has its own running conversation.
 
 It is mostly a reader, but when a bot token can be minted it may also
 run a curated set of upstream writes — on PRs (edit/comment/close/reopen/review),
 issues (create/reopen/comment/edit), and workflow runs (rerun) — AS the bot,
-after the operator confirms in chat — see _GH_WRITE_ALLOW / isolation_flags.
+after the operator confirms in chat — see `claude_backend.isolation_flags`.
 PR closes, reopens, and reviews, plus issue closes, run through executor-backed
 helpers so each attempt is gated and recorded in Activity. Two write paths use a
 different identity
-instead, each through a helper script that drops the bot token: "resubmit"
-(_RESUBMIT_ALLOW), which authors a change on a contributor's fork branch and
+instead, each through a helper script that drops the bot token: "resubmit",
+which authors a change on a contributor's fork branch and
 pushes it over the confirming OPERATOR's ssh identity — a GitHub App can't push
 to a fork (#210) — and merges the base branch into a stale PR's head
-(`resubmit <pr> update`); and "file-issue" (_FILE_ISSUE_ALLOW), opening a
+(`resubmit <pr> update`); and "file-issue", opening a
 triager bug on the meta-repo, which lies outside the bot's app installation.
 
-ISOLATED. This is a lean Q&A assistant, NOT the developer's full dev agent. We
-run it sandboxed from the operator's personal Claude Code harness so it doesn't
-inherit plugins (e.g. superpowers + its SessionStart skill preamble), MCP
-servers, slash-command skills, hooks, or the repo's dev-facing CLAUDE.md — all of
-which made the embedded agent announce "superpowers", talk about plan mode, and
-behave like a coding agent. The lockdown (see isolation_flags):
-  - --safe-mode → disable ALL discovered customizations in one flag: CLAUDE.md
-    auto-discovery, hooks, plugins, skills, MCP servers, custom agents/commands.
-    Unlike --bare it keeps normal OAuth/subscription auth. This is what stops
-    CLAUDE.md from doing double duty: the agent gets its OWN context from
-    agent/context.md, not the dev manual.
-  - --setting-sources "" → load NONE of the settings files (user, project,
-    local). safe-mode disables customizations but leaves *permissions* working
-    normally, so the agent's permission model comes entirely from the CLI
-    allow/deny here — not from the repo `.claude/settings.json`, whose deny layer
-    is the operator-session guard against hand-run upstream `gh`
-    writes and is not this agent's boundary (its own dontAsk + allowlist is).
-  - --permission-mode dontAsk → never prompt, silently deny anything outside the
-    allowlist. (NOT `plan`: plan mode is a *coding* affordance — propose-a-plan-
-    then-await-approval — which produced the "permissions / plan" chatter.)
-  - --allowedTools Read,Grep,Glob + read-only `gh` (see _GH_ALLOW) + the helper
-    scripts, plus the curated upstream PR + issue writes (_GH_WRITE_ALLOW and
-    _ISSUE_CLOSE_ALLOW) when a bot token is available; --disallowedTools
-    <everything else> → dontAsk denies
-    any command not on the allowlist.
+The Claude backend is a lean Q&A assistant isolated from the operator's Claude
+Code harness. Its boundary (see `claude_backend.isolation_flags`) uses safe mode
+to disable discovered customizations, loads no settings files, runs in dontAsk
+mode, and advertises only the read tools and curated helper scripts allowed for
+the machine's current bot-token capability.
 
-Context comes from two dedicated, agent-facing sources (NOT the dev CLAUDE.md):
-agent/context.md (stable operating manual, injected into the system prompt) and
+Context comes from two dedicated, agent-facing sources: agent/context.md
+(stable operating manual, injected into the system prompt) and
 agent_memory (durable learnings, injected into the first message of each thread).
 
 Chat transcripts are stored per operator in the shared SQL `chat_messages` table
-(same DB as the store and activity). Only the claude resume session_id — a
+(same DB as the store and activity). Only the provider's resume session_id — a
 local-machine handle — stays in gitignored cache/.
 """
 from __future__ import annotations
 
-import asyncio
 import json
-import os
-import shutil
-import signal
-import subprocess
 import time
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
@@ -74,14 +49,15 @@ from pathlib import Path
 
 from prospector_app.backend import activity
 from prospector_app.backend import advisories
+from prospector_app.backend import agent_backend
 from prospector_app.backend import agent_memory
 from prospector_app.backend import alerts
+from prospector_app.backend import claude_backend
 from prospector_app.backend import data
 from prospector_app.backend import executor
 from prospector_app.backend import issues
 from prospector_app.backend import issue_receipts
 from prospector_app.backend import safety_guard
-from prospector_app.backend import subproc
 from pipeline import settings
 from pipeline import profile
 from pipeline import review_policy
@@ -93,213 +69,26 @@ from pipeline import storekit
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 APP_ROOT = Path(__file__).resolve().parents[1]
-# Gitignored cache for per-thread machine-local state (partials, claude session_ids).
+# Gitignored cache for per-thread machine-local state (partials, provider session ids).
 SESSION_DIR = APP_ROOT / "cache" / "chat"
 AGENT_CONTEXT = APP_ROOT / "agent" / "context.md"
-CLAUDE_BIN = shutil.which("claude") or "claude"
 DIFF_BUDGET = 16000
+
+_BACKENDS: dict[str, agent_backend.AgentBackend] = {
+    claude_backend.CLAUDE_BACKEND.provider: claude_backend.CLAUDE_BACKEND,
+}
+
+
+def _configured_backend() -> agent_backend.AgentBackend | None:
+    return _BACKENDS.get(settings.agent_provider())
 
 
 def readiness() -> dict[str, object]:
-    """Whether this machine can run the agent pane: the configured provider,
-    and — for "claude" — the local CLI's presence and login. The binary is
-    looked up fresh so an install made while the app runs is seen. Failures
-    report a category, never raw command output."""
     provider = settings.agent_provider()
-    if provider != "claude":
+    backend = _BACKENDS.get(provider)
+    if backend is None:
         return {"provider": provider, "ok": False, "problem": "agent support is off"}
-    found = shutil.which("claude")
-    if found is None:
-        return {"provider": "claude", "ok": False, "problem": "claude CLI not on PATH"}
-    try:
-        r = subprocess.run([found, "auth", "status", "--json"],
-                           capture_output=True, text=True, timeout=15)
-        status = json.loads(r.stdout)
-        logged_in = bool(status.get("loggedIn"))
-    except (OSError, subprocess.SubprocessError) as e:
-        return {"provider": "claude", "ok": False, "problem": type(e).__name__}
-    except json.JSONDecodeError:
-        return {"provider": "claude", "ok": False, "problem": "unrecognized auth status"}
-    if not logged_in:
-        return {"provider": "claude", "ok": False, "problem": "not logged in"}
-    return {"provider": "claude", "ok": True,
-            "auth_method": str(status.get("authMethod") or ""),
-            "subscription": str(status.get("subscriptionType") or "")}
-
-# The agent's read `gh` allowlist: read-only PR/issue/search commands. Every write
-# lives elsewhere — the curated UPSTREAM writes (_GH_WRITE_ALLOW, as the bot) are
-# added on top of this only when a bot token is available, and meta-repo issue
-# filing runs as the operator through its own script (_FILE_ISSUE_ALLOW). dontAsk
-# denies anything not listed; --setting-sources "" loads no settings file so a repo
-# grant can't widen this. The agent is instructed (agent/context.md) which repo to
-# target and to confirm before any write.
-#
-# Why Bash-with-allowlist and not an MCP server: in headless `claude -p` +
-# stream-json (what the app streams over SSE), MCP tools register too late to
-# be exposed to the model — measured ~20% availability, unusable. A `gh`-command
-# allowlist is reliable there AND matches how the rest of this repo reads GitHub
-# (safety_guard's `run`). Safety: --permission-mode dontAsk runs ONLY allowlisted
-# commands; everything else (gh pr merge, gh api -X POST, redirects, …) is
-# silently denied. --setting-sources "" loads none of the settings files, so a
-# repo `Bash(gh pr *)` grant can't widen this allowlist. Verified end-to-end.
-_GH_ALLOW = [
-    "Bash(gh pr view:*)", "Bash(gh pr diff:*)", "Bash(gh pr list:*)",
-    "Bash(gh pr checks:*)", "Bash(gh pr status:*)", "Bash(gh issue view:*)",
-    "Bash(gh issue list:*)", "Bash(gh search prs:*)", "Bash(gh search issues:*)",
-    "Bash(gh search commits:*)", "Bash(gh release view:*)",
-    "Bash(gh run view:*)",
-]
-
-# Curated upstream writes ride one narrow helper that validates the operation,
-# pins --repo to settings.repo(), and mints an installation token for each invocation. PR
-# close/reopen/review and issue close use their executor helpers below so those
-# attempts are also recorded in Activity.
-_GH_WRITE_ALLOW = ["Bash(prospector_app/agent/gh-write:*)"]
-
-# These PR writes call the same executor operations as the app UI, including
-# preflight, configured-bot writes, store reflection where applicable, and
-# Activity appends. Direct gh equivalents are not allowlisted, making the
-# helpers the embedded agent's only close, reopen, and review commands.
-_PR_EXECUTOR_ALLOW = [
-    "Bash(prospector_app/agent/close-pr:*)",
-    "Bash(prospector_app/agent/reopen-pr:*)",
-    "Bash(prospector_app/agent/submit-review:*)",
-]
-
-# The agent's issue-close path calls the same executor operation as the Issues UI,
-# including its live gate, configured-bot write, store reflection, and Activity
-# append. Direct `gh issue close` is not allowlisted, making this helper the only
-# close command the embedded agent can execute. It is unlocked only with a bot
-# token because it performs a live upstream write.
-_ISSUE_CLOSE_ALLOW = ["Bash(prospector_app/agent/close-issue:*)"]
-
-# The agent's one self-write: persist a learning to its committed memory. Same
-# allowlisted-Bash mechanism as gh-issue-create (MCP is unreliable in headless
-# stream-json), scoped to exactly this command. The agent runs from REPO_ROOT, so
-# the path is repo-relative; dontAsk denies any other invocation. The agent is
-# instructed (agent/context.md) to call it proactively when it learns something
-# durable. NOTE: keep this prefix in sync with the script's actual path.
-_REMEMBER_ALLOW = ["Bash(prospector_app/agent/remember:*)"]
-
-# The agent's bug-filing write: open an issue on the meta-repo (PROSPECTOR_FEEDBACK_REPO)
-# AS THE OPERATOR. The meta-repo sits outside the bot's GitHub App installation, so
-# a bot-authenticated `gh` can't even resolve it; the script drops the bot token and
-# files under the operator's own login. Always available — a triager bug is
-# reportable on every machine — and scoped by the script to that one repo, so the
-# operator-identity write reaches nothing else. NOTE: keep this prefix in sync with
-# the script's actual path.
-_FILE_ISSUE_ALLOW = ["Bash(prospector_app/agent/file-issue:*)"]
-
-# The agent's manual clustering override: detach a mis-grouped PR from a cluster.
-# A LOCAL store edit (no upstream write, no bot token), so it rides the same
-# always-available allowlisted-Bash path as `remember` rather than _GH_WRITE_ALLOW.
-# It mutates through the validated store accessor; the agent is instructed
-# (agent/context.md) to confirm with the operator before detaching. NOTE: keep
-# this prefix in sync with the script's actual path.
-_UNCLUSTER_ALLOW = ["Bash(prospector_app/agent/uncluster:*)"]
-
-# The agent's read window into GitHub's raw file contents + code search. `gh api`
-# is read-only only by default (`-X PUT …/contents/<path>` writes a file, `-X PUT
-# …/pulls/N/merge` merges), and a prefix allowlist can't forbid a trailing `-X
-# PUT`, so raw `gh api` can't be allowlisted safely. This script is the safe slice:
-# the HTTP method is hardcoded to GET, so it can only read. A read only (no bot
-# token, no upstream write), so it rides the same always-available allowlisted-Bash
-# path as `store-read`. NOTE: keep this prefix in sync with the script's actual path.
-_GH_READ_ALLOW = ["Bash(prospector_app/agent/gh-read:*)"]
-
-# The agent's read window into the local git tree: `git diff` reads the working
-# tree / index / commits and prints — it never mutates the repo, whatever its args
-# — so it rides the same always-available allowlisted-Bash path as the other reads.
-# The `git diff` token pair matches only that subcommand; dontAsk denies every other
-# git invocation (commit, push, checkout, …), so no write or history edit is reachable.
-_GIT_ALLOW = ["Bash(git diff:*)"]
-
-# The agent's read window into the store. The store is SQL (Supabase Postgres via
-# TRIAGE_STORE_URL, or local SQLite) — the agent's file tools can't open a DB
-# connection, so this allowlisted command reads a PR/cluster record (or the threat
-# registry) through the validated store accessor. A read only (no upstream write,
-# no bot token), so it rides the same always-available path as `remember`. NOTE:
-# keep this prefix in sync with the script's actual path.
-_STORE_READ_ALLOW = ["Bash(prospector_app/agent/store-read:*)"]
-
-# The agent's "reingest a PR" path: refresh one PR's store record against its
-# current head SHA and re-triage it (re-summarize + re-analyze the stale sections),
-# the natural follow-on to a `resubmit` push so the resubmitted PR becomes
-# mergeable without an out-of-band pipeline run. A LOCAL store edit (no upstream
-# write, no bot token) that mutates through the validated accessor, so it rides the
-# same always-available allowlisted-Bash path as `store-read` / `uncluster` rather
-# than the write-gated ones. NOTE: keep this prefix in sync with the script's path.
-_REINGEST_ALLOW = ["Bash(prospector_app/agent/reingest:*)"]
-
-# The agent's "resubmit a PR" path: author changes on a contributor's fork branch
-# and push them AS THE CONFIRMING OPERATOR (not the App — a GitHub App can't
-# push to a fork even with "Allow edits from maintainers"; that grants push to
-# maintainer *users*, #210). The script owns all git mechanics, drops the bot
-# token before using the operator's existing SSH identity. The helper also owns
-# the narrow, pinned rebase/force-with-lease path for conflicting PRs, without
-# exposing general git commands to the agent, and its `update` subcommand merges
-# the base branch in locally over ssh. It rides the same allowlisted-Bash path,
-# and is unlocked when a bot token proves this is a writable operator session,
-# together with the Edit/Write tools the agent needs to author the change in the
-# prepared worktree. Unattended fix_worker calls opt into the configured machine
-# user separately. NOTE: keep this prefix in sync with the script's actual path.
-_RESUBMIT_ALLOW = ["Bash(prospector_app/agent/resubmit:*)"]
-
-# Everything that is NOT a read tool. dontAsk already blocks their *use*; listing
-# them here removes them from the model's advertised toolset so it doesn't believe
-# it can spawn agents, enter plan mode, or invoke skills. Edit/Write are here as
-# the read-only default but are lifted on a real operator machine (see
-# isolation_flags) so the agent can author a resubmit. NOTE: Bash is deliberately
-# NOT here — it stays available but is constrained to the allowlisted `gh` commands
-# in _GH_ALLOW (dontAsk denies any Bash command not allowlisted).
-_DISALLOWED_TOOLS = [
-    "Task", "Edit", "Write", "NotebookEdit",
-    "EnterPlanMode", "ExitPlanMode", "EnterWorktree", "ExitWorktree",
-    "Skill", "Workflow", "SendMessage", "TeamCreate", "TeamDelete",
-    "CronCreate", "CronDelete", "CronList",
-    "TaskCreate", "TaskGet", "TaskList", "TaskOutput", "TaskStop", "TaskUpdate",
-    "Monitor", "RemoteTrigger", "PushNotification", "ScheduleWakeup",
-    "DesignSync", "ToolSearch", "WebFetch", "WebSearch", "AskUserQuestion", "LSP",
-]
-
-# Flags that sandbox the embedded agent from the operator's global harness.
-# --safe-mode disables CLAUDE.md, hooks, plugins, skills, MCP servers, and custom
-# agents/commands (keeping OAuth auth, unlike --bare); --setting-sources "" then
-# drops every settings file (user/project/local) so the agent's permissions come
-# only from the explicit allow/deny below. safe-mode keeps permissions working
-# normally (the repo's project deny among them), so dropping the settings files is
-# what keeps that deny out of this agent's boundary.
-def isolation_flags(can_write: bool) -> list[str]:
-    """The agent's sandbox flags. When can_write (a bot token was
-    minted, so this is a real operator machine) the curated upstream writes in
-    _GH_WRITE_ALLOW are added to the allowlist, along with the interactive
-    resubmit path (_RESUBMIT_ALLOW) and the Edit/Write tools it needs to author a
-    change in the prepared fork worktree. The separate unattended worker path
-    still requires a configured machine user. Otherwise the agent's only write is
-    the meta-repo issue it files as the operator (_FILE_ISSUE_ALLOW) — no
-    upstream write command or file-edit tool is even advertised, so there is no
-    way to touch the configured repo or files on disk."""
-    allowed = ["Read", "Grep", "Glob", *_GH_ALLOW, *_GH_READ_ALLOW, *_GIT_ALLOW,
-               *_REMEMBER_ALLOW, *_UNCLUSTER_ALLOW, *_STORE_READ_ALLOW, *_REINGEST_ALLOW,
-               *_FILE_ISSUE_ALLOW]
-    disallowed = list(_DISALLOWED_TOOLS)
-    if can_write:
-        allowed += [*_GH_WRITE_ALLOW, *_PR_EXECUTOR_ALLOW, *_ISSUE_CLOSE_ALLOW,
-                    *_RESUBMIT_ALLOW,
-                    "Edit", "Write"]
-        # The resubmit path authors real code edits, so Edit/Write come off the
-        # deny list. They stay filesystem-wide (claude can't path-scope them), so
-        # the agent is instructed (agent/context.md) to edit only inside the
-        # worktree `resubmit prepare` sets up; the push only ever commits from
-        # that isolated clone, so a stray edit elsewhere never reaches upstream.
-        disallowed = [t for t in disallowed if t not in ("Edit", "Write")]
-    return [
-        "--allowedTools", ",".join(allowed),
-        "--disallowedTools", *disallowed,
-        "--permission-mode", "dontAsk",
-        "--safe-mode",
-        "--setting-sources", "",
-    ]
+    return backend.readiness()
 
 
 # A minted bot token, cached so we don't re-mint (a shell-out + two API
@@ -319,9 +108,6 @@ def _bot_token() -> str | None:
     if _BOT_TOKEN:
         _BOT_TOKEN_EXP = time.monotonic() + 50 * 60  # refresh before the 1h expiry
     return _BOT_TOKEN
-
-# ctx_id -> the live subprocess, so an operator can stop an in-flight answer (#14).
-_RUNNING: dict[str, asyncio.subprocess.Process] = {}
 
 def system_prompt() -> str:
     """The agent's operating manual (agent/context.md), injected as its system
@@ -374,7 +160,7 @@ def _ctx_id(pr: int | None, cluster: int | None, issue: int | None = None,
 def _thread_key(chat_id: str | None, pr: int | None, cluster: int | None,
                 issue: int | None = None, advisory: str | None = None,
                 alert_source: str | None = None, alert: int | None = None) -> str:
-    """The thread's storage/claude-resume key. An explicit `chat_id` — an
+    """The thread's storage and provider-resume key. An explicit `chat_id` — an
     operator-created named session (#343) — always wins, so a session keeps its
     own conversation independent of whatever subject the operator is currently
     viewing. A caller with no chat_id gets one thread per subject."""
@@ -400,7 +186,7 @@ def _engine() -> storekit.Engine:
 
 
 def _meta_path(ctx_id: str) -> Path:
-    # Local-only claude resume handle, scoped per operator so switching identity
+    # Local-only provider resume handle, scoped per operator so switching identity
     # doesn't resume someone else's session.
     return SESSION_DIR / _op_slug() / f"{ctx_id}.meta.json"
 
@@ -423,9 +209,8 @@ def _clear_partial(ctx_id: str) -> None:
 
 
 def _reground_path(ctx_id: str) -> Path:
-    # Marker: the live claude session for this ctx is unreliable — the last turn was
-    # stopped, or a resume silently started a fresh session — so the next turn
-    # re-grounds from the persisted transcript instead of trusting `-r` resume.
+    # The marker identifies a provider session that cannot be resumed. Its next
+    # turn starts from the persisted transcript.
     return SESSION_DIR / _op_slug() / f"{ctx_id}.reground"
 
 
@@ -450,9 +235,7 @@ _REPLAY_BUDGET = 8000
 
 
 def _thread_digest(thread: list[dict]) -> str:
-    """Compact replay of a thread's prior turns, injected when the live claude
-    session was lost (e.g. after Stop) so a fresh session continues seamlessly.
-    Kept from the end (most recent) within a char budget."""
+    """Compact replay of recent turns for a fresh provider session."""
     lines: list[str] = []
     used = 0
     for m in reversed(thread):
@@ -475,7 +258,8 @@ def load_thread(ctx_id: str) -> list[dict]:
     # Recover an orphaned partial: a sidecar for a ctx that isn't streaming means
     # its stream died before the reply was saved — fold it into the thread (#191).
     pp = _partial_path(ctx_id)
-    if pp.exists() and ctx_id not in _RUNNING:
+    running = any(backend.is_running(ctx_id) for backend in _BACKENDS.values())
+    if pp.exists() and not running:
         partial = pp.read_text()
         if partial.strip():
             _save(ctx_id, "assistant", partial, None)
@@ -490,7 +274,7 @@ def load_thread(ctx_id: str) -> list[dict]:
             .order_by(c.rowid)).all()
     thread = [{"role": r[0], "text": r[1], "at": r[2]} for r in rows]
     # While a stream is live, show its current partial as a trailing bubble.
-    if pp.exists() and ctx_id in _RUNNING:
+    if pp.exists() and running:
         partial = pp.read_text()
         if partial.strip():
             thread.append({"role": "assistant", "text": partial, "at": datetime.now(timezone.utc).isoformat()})
@@ -802,14 +586,14 @@ async def stream_chat(question: str, pr: int | None = None, cluster: int | None 
                       file: str | None = None, line: int | None = None,
                       prs: list[int] | None = None, prs_total: int | None = None,
                       chat_id: str | None = None) -> AsyncIterator[dict[str, str]]:
+    backend = _configured_backend()
+    if backend is None:
+        raise RuntimeError("agent support is off")
     ctx_id = _thread_key(chat_id, pr, cluster, issue, advisory, alert_source, alert)
     thread = load_thread(ctx_id)
     sid = _session_id(ctx_id)
     is_first = sid is None and not thread
-    # A stopped or silently-forked prior turn leaves the live claude session
-    # unresumable (see the end of this function). When flagged, this turn re-grounds
-    # from the persisted transcript rather than trusting `-r`: re-inject the subject
-    # context and replay the thread into a fresh session.
+    # A re-ground marker makes this turn start from persisted context and transcript.
     needs_reground = not is_first and _consume_reground(ctx_id)
     ground = is_first or needs_reground
 
@@ -837,89 +621,48 @@ async def stream_chat(question: str, pr: int | None = None, cluster: int | None 
     # process uses the operator environment for reads, and each write helper
     # mints its execution token.
     token = _bot_token()
-    cmd = [
-        CLAUDE_BIN, "-p", prompt,
-        *isolation_flags(can_write=bool(token)),
-        "--output-format", "stream-json", "--verbose", "--include-partial-messages",
-        "--append-system-prompt", system_prompt(),
-    ]
+    manual = system_prompt()
     # Resume the live session on a normal turn. On a re-ground the session is
     # unreliable, so start fresh — the context is replayed into the prompt above.
     resumed_sid = sid if (sid and not needs_reground) else None
-    if resumed_sid:
-        cmd += ["-r", resumed_sid]
 
     _save(ctx_id, "user", anchored + question, None)
 
-    # start_new_session=True puts claude (and its children) in their own process
-    # group so stop_chat() can signal the whole tree, not just the parent.
-    proc = await subproc.spawn(
-        cmd, cwd=REPO_ROOT, stderr=asyncio.subprocess.STDOUT,
-        start_new_session=True,
-        env=safety_guard.operator_env(),
+    run = await backend.start(
+        agent_backend.AgentRequest(
+            thread_key=ctx_id,
+            prompt=prompt,
+            system_prompt=manual,
+            session_id=resumed_sid,
+            can_write=bool(token),
+            cwd=REPO_ROOT,
+            env=safety_guard.operator_env(),
+        )
     )
-    _RUNNING[ctx_id] = proc
-    captured_sid: str | None = None
     parts: list[str] = []
     final_text: str | None = None
-    tool_commands: dict[str, str] = {}
     file_issue_receipts: list[issue_receipts.IssueReceipt] = []
     last_pw = 0.0  # last partial-sidecar write time (throttled, #191)
-    saw_result = False  # claude's own "this turn is done" signal
     stopped = False
     try:
-        assert proc.stdout is not None
-        async for raw in proc.stdout:
-            s = raw.decode("utf-8", "replace").strip()
-            if not s:
-                continue
-            try:
-                e = json.loads(s)
-            except json.JSONDecodeError:
-                continue
-            captured_sid = captured_sid or e.get("session_id")
-            t = e.get("type")
-            if t == "stream_event":
-                ev = e.get("event", {})
-                if ev.get("type") == "content_block_delta":
-                    dd = ev.get("delta", {})
-                    if dd.get("type") == "text_delta" and dd.get("text"):
-                        parts.append(dd["text"])
-                        yield {"event": "delta", "data": dd["text"]}
-            elif t == "assistant":
-                content = e.get("message", {}).get("content", [])
-                for c in content:
-                    if c.get("type") == "tool_use" and c.get("name") == "Bash":
-                        tool_id = c.get("id")
-                        command = (c.get("input") or {}).get("command")
-                        if isinstance(tool_id, str) and isinstance(command, str):
-                            tool_commands[tool_id] = command
-                if not parts:
-                    for c in content:
-                        if c.get("type") == "text" and c.get("text"):
-                            parts.append(c["text"])
-                            yield {"event": "delta", "data": c["text"]}
-            elif t == "user":
-                for c in e.get("message", {}).get("content", []):
-                    if c.get("type") != "tool_result":
-                        continue
-                    command = tool_commands.get(c.get("tool_use_id"), "")
-                    is_error = bool(c.get("is_error"))
-                    receipt = issue_receipts.parse(
-                        command, c.get("content"), settings.feedback_repo(), is_error=is_error
-                    )
-                    if receipt is not None:
-                        file_issue_receipts.append(receipt)
-            elif t == "result":
-                saw_result = True
-                break
+        async for event in run.events():
+            if isinstance(event, agent_backend.TextDelta):
+                parts.append(event.text)
+                yield {"event": "delta", "data": event.text}
+            elif isinstance(event, agent_backend.ToolResult):
+                receipt = issue_receipts.parse(
+                    event.command, event.content, settings.feedback_repo(),
+                    is_error=event.is_error,
+                )
+                if receipt is not None:
+                    file_issue_receipts.append(receipt)
             # Persist the in-progress reply to its sidecar (throttled) so a backend
             # hot-reload mid-answer doesn't lose it (#191).
             if parts and time.monotonic() - last_pw > 0.4:
                 _write_partial(ctx_id, "".join(parts))
                 last_pw = time.monotonic()
 
-        if saw_result:
+        if run.completed:
             raw_text = "".join(parts)
             final_text = issue_receipts.attach_verified_summary(
                 raw_text, file_issue_receipts
@@ -928,62 +671,36 @@ async def stream_chat(question: str, pr: int | None = None, cluster: int | None 
             if receipt_suffix:
                 yield {"event": "delta", "data": receipt_suffix}
     finally:
-        # Runs on a clean finish AND on an abnormal teardown — an operator Stop
-        # (the frontend closes its EventSource before it even calls /chat/stop)
-        # or a plain dropped connection tears this generator down via
-        # sse_starlette calling aclose()/cancelling the task mid-iteration
-        # (#547). That used to skip straight past everything below, which sat
-        # AFTER this try/finally: the assistant's partial reply was never
-        # saved, and — critically — the thread was never flagged to re-ground,
-        # so the next turn either silently resumed a dead `claude -r` session
-        # or started a brand-new one with no context and no transcript replay
-        # (the agent "forgetting" a cut-off turn). Persisting and deciding
-        # re-ground BEFORE reaping the subprocess means a second cancellation
-        # landing on `proc.wait()` can't skip them too.
-        stopped = ctx_id not in _RUNNING
-        _RUNNING.pop(ctx_id, None)
+        # SSE disconnects close this generator during iteration. Persistence and
+        # re-ground state are committed before the provider process is reaped.
+        stopped = run.stopped
         if final_text is None:
             final_text = issue_receipts.attach_verified_summary(
                 "".join(parts), file_issue_receipts
             )
-        _save(ctx_id, "assistant", final_text, captured_sid)
+        _save(ctx_id, "assistant", final_text, run.session_id)
         _clear_partial(ctx_id)
-        # The live session's resumability is only confirmed when the turn ended
-        # via claude's own "result" event; anything else (operator stop, dropped
-        # connection, a crashed subprocess) — or a resume that silently forked
-        # to a new session id — means the next turn must re-ground from the
-        # persisted transcript rather than trust `-r`.
-        resume_lost = bool(resumed_sid and captured_sid and captured_sid != resumed_sid)
-        if not saw_result or resume_lost:
+        # A provider completion event with the resumed session id confirms that
+        # the next turn can keep using the live session.
+        resume_lost = bool(
+            resumed_sid and run.session_id and run.session_id != resumed_sid
+        )
+        if not run.completed or resume_lost:
             _mark_reground(ctx_id)
-        if proc.returncode is None:
-            _terminate(proc)
-        await proc.wait()
+        await run.close()
 
-    yield {"event": "done", "data": json.dumps({"session_id": captured_sid, "stopped": stopped})}
-
-
-def _terminate(proc: asyncio.subprocess.Process) -> None:
-    """SIGTERM the subprocess's whole process group; fall back to killing the proc."""
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-    except (ProcessLookupError, PermissionError):
-        try:
-            proc.terminate()
-        except ProcessLookupError:
-            pass
+    yield {"event": "done", "data": json.dumps({
+        "session_id": run.session_id,
+        "stopped": stopped,
+    })}
 
 
 def stop_chat(pr: int | None = None, cluster: int | None = None, issue: int | None = None,
               advisory: str | None = None, alert_source: str | None = None,
               alert: int | None = None, chat_id: str | None = None) -> bool:
-    """Interrupt the in-flight answer for a thread (#14). Returns True if one was
-    running. Popping from _RUNNING first signals stream_chat that this was an
-    operator stop (not a natural finish)."""
+    """Interrupt the in-flight answer for a thread (#14)."""
     ctx_id = _thread_key(chat_id, pr, cluster, issue, advisory, alert_source, alert)
-    proc = _RUNNING.pop(ctx_id, None)
-    if proc is None:
-        return False
-    if proc.returncode is None:
-        _terminate(proc)
-    return True
+    stopped = False
+    for backend in _BACKENDS.values():
+        stopped = backend.stop(ctx_id) or stopped
+    return stopped

@@ -5,6 +5,7 @@ import asyncio
 from unittest import mock
 
 from prospector_app.backend import chat
+from prospector_app.backend import claude_backend
 
 _DETAIL = {
     "cluster_id": 12,
@@ -273,7 +274,7 @@ def test_visible_prs_context_rides_alongside_a_pr_subject(temp_store, tmp_path, 
         captured.append(list(cmd))
         return FakeProc()
 
-    monkeypatch.setattr(chat.asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(claude_backend.asyncio, "create_subprocess_exec", fake_exec)
 
     async def drive():
         async for _ in chat.stream_chat("review these", pr=101, prs=[101, 102], prs_total=2):
@@ -313,7 +314,7 @@ def test_visible_prs_context_omitted_when_nothing_is_currently_filtered(temp_sto
         captured["cmd"] = list(cmd)
         return FakeProc()
 
-    monkeypatch.setattr(chat.asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(claude_backend.asyncio, "create_subprocess_exec", fake_exec)
 
     async def drive():
         async for _ in chat.stream_chat("is this safe?", pr=101):
@@ -353,7 +354,7 @@ def test_writable_chat_process_uses_operator_environment(temp_store, tmp_path, m
         captured["env"] = kwargs["env"]
         return FakeProc()
 
-    monkeypatch.setattr(chat.subproc, "spawn", fake_spawn)
+    monkeypatch.setattr(claude_backend.subproc, "spawn", fake_spawn)
 
     async def drive():
         async for _ in chat.stream_chat("hello"):
