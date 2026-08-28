@@ -6,12 +6,12 @@ import {
   type OnboardingState,
   type ProbeFinding,
 } from "../api";
+import { useAgentProbe, type AgentPick } from "../agentProvider";
+import { AgentProviderChooser } from "../components/AgentProviderChooser";
 import { useRepoMeta } from "../RepoMetaContext";
 
 type Branch = "join" | "new" | null;
 type Pick = "easy" | "full" | null;
-type AgentProvider = "claude" | "codex";
-type AgentPick = AgentProvider | "none" | null;
 
 /** The onboarding state once the backend answers again, or null after ~10s of
  *  unreachability. */
@@ -246,72 +246,6 @@ function EasyOrFull(
   );
 }
 
-/** This machine's readiness for the provider selected in the form. */
-function useAgentProbe(provider: AgentProvider | null): ProbeFinding | undefined {
-  const [result, setResult] = useState<{
-    provider: AgentProvider;
-    found: ProbeFinding | undefined;
-  }>();
-  useEffect(() => {
-    if (provider == null) return;
-    let stale = false;
-    void api.onboardingProbe({ agent: true, agent_provider: provider })
-      .then((r) => { if (!stale) setResult({ provider, found: r.agent }); })
-      .catch(() => { if (!stale) setResult({ provider, found: undefined }); });
-    return () => { stale = true; };
-  }, [provider]);
-  return result?.provider === provider ? result.found : undefined;
-}
-
-/** The agent-provider choice: who backs the “Ask the agent” sidebar. `title`
- *  is the fork heading; the ladder rung omits it, its card already carries one. */
-function AgentChooser({ pick, onPick, title }: {
-  pick: AgentPick; onPick: (p: Exclude<AgentPick, null>) => void; title?: string;
-}) {
-  const provider = pick === "claude" || pick === "codex" ? pick : null;
-  const found = useAgentProbe(provider);
-  return (
-    <div className="welcome-fork">
-      {title && <h4>{title}</h4>}
-      <label className={pick === "claude" ? "fork-opt on" : "fork-opt"}>
-        <input type="radio" checked={pick === "claude"} onChange={() => onPick("claude")} />
-        {" "}<strong>Use your Claude account</strong>
-        {" "}<span className="muted small">
-          the “Ask the agent” sidebar runs the Claude Code CLI on this computer,
-          under your own login.
-        </span>
-        {pick === "claude" && <>{" "}<Finding found={found} /></>}
-        {pick === "claude" && found && !found.ok && (
-          <p className="muted small">
-            You can fix this later — the sidebar shows what to do.
-          </p>
-        )}
-      </label>
-      <label className={pick === "codex" ? "fork-opt on" : "fork-opt"}>
-        <input type="radio" checked={pick === "codex"} onChange={() => onPick("codex")} />
-        {" "}<strong>Use your Codex account</strong>
-        {" "}<span className="muted small">
-          the “Ask the agent” sidebar runs the Codex CLI on this computer,
-          under your own login.
-        </span>
-        {pick === "codex" && <>{" "}<Finding found={found} /></>}
-        {pick === "codex" && found && !found.ok && (
-          <p className="muted small">
-            You can fix this later — the sidebar shows what to do.
-          </p>
-        )}
-      </label>
-      <label className={pick === "none" ? "fork-opt on" : "fork-opt"}>
-        <input type="radio" checked={pick === "none"} onChange={() => onPick("none")} />
-        {" "}<strong>No agent support</strong>
-        {" "}<span className="muted small">
-          hides the sidebar; you can turn it on later from this page.
-        </span>
-      </label>
-    </div>
-  );
-}
-
 function Finding({ found }: { found: ProbeFinding | undefined }) {
   if (!found) return null;
   if (found.ok) {
@@ -447,7 +381,7 @@ function NewBranch({ onDone, onBack }: { onDone: () => void; onBack: () => void 
         </div>
       )}
 
-      <AgentChooser pick={agent} onPick={setAgent} title="In-app agent support" />
+      <AgentProviderChooser pick={agent} onPick={setAgent} title="In-app agent support" />
 
       {problem && <p className="chip chip-red sm">{problem}</p>}
       <div className="welcome-actions">
@@ -578,7 +512,7 @@ function AgentStep({ state, onDone }: { state: OnboardingState; onDone: () => vo
         The “Ask the agent” sidebar answers questions about the app, a PR, or
         the codebase. It needs an AI account on this computer.
       </p>
-      <AgentChooser pick={pick} onPick={setPick} />
+      <AgentProviderChooser pick={pick} onPick={setPick} />
       {problem && <p className="chip chip-red sm">{problem}</p>}
       <div className="welcome-actions">
         <button className="btn-primary" disabled={busy || pick == null} onClick={() => void apply()}>

@@ -8,6 +8,8 @@ import {
   type SetupReadiness,
   type WorkerFlags,
 } from "../api";
+import type { AgentPick } from "../agentProvider";
+import { AgentProviderChooser } from "../components/AgentProviderChooser";
 import { useRepoMeta } from "../RepoMetaContext";
 
 /** How often the readiness rows re-check while the page is open. Fast enough
@@ -189,6 +191,8 @@ export default function Setup() {
         that does work is set up on its own; the Control tab shows all of them.
       </p>
 
+      <AgentProviderSettings />
+
       {optedIn || expanded || provisioned
         ? <WorkerSection readiness={readiness} flags={flags} busy={busy} onToggle={toggle}
             onChanged={() => void load()} />
@@ -198,6 +202,68 @@ export default function Setup() {
 
       {error && <p className="chip chip-red sm">{error}</p>}
     </div>
+  );
+}
+
+type SavedAgentPick = Exclude<AgentPick, null>;
+
+function savedAgentPick(provider: string): SavedAgentPick {
+  if (provider === "claude" || provider === "codex") return provider;
+  return "none";
+}
+
+function AgentProviderSettings() {
+  const { meta, refresh } = useRepoMeta();
+  if (!meta) return null;
+  const provider = savedAgentPick(meta.agent_provider);
+  return <AgentProviderCard key={provider} provider={provider} onSaved={refresh} />;
+}
+
+function AgentProviderCard({ provider, onSaved }: {
+  provider: SavedAgentPick;
+  onSaved: () => void;
+}) {
+  const [pick, setPick] = useState<AgentPick>(provider);
+  const [saved, setSaved] = useState<SavedAgentPick>(provider);
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+
+  const apply = async () => {
+    if (pick == null || pick === saved) return;
+    setBusy(true);
+    setProblem(null);
+    try {
+      const state = await api.onboardingApply({
+        step: "agent", env: { TRIAGE_AGENT_PROVIDER: pick },
+      });
+      const applied = state.agent_provider == null
+        ? pick : savedAgentPick(state.agent_provider);
+      setPick(applied);
+      setSaved(applied);
+      onSaved();
+    } catch (error) {
+      setProblem(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="setup-card">
+      <h3>🤖 In-app agent</h3>
+      <p className="muted small">
+        Choose the local account behind the “Ask the agent” sidebar. This
+        machine keeps the choice and login to itself.
+      </p>
+      <AgentProviderChooser pick={pick} onPick={setPick} />
+      {problem && <p className="chip chip-red sm">{problem}</p>}
+      <div className="welcome-actions">
+        <button className="btn-primary" disabled={busy || pick == null || pick === saved}
+          onClick={() => void apply()}>
+          {busy ? "saving…" : pick === saved ? "saved" : "save agent setting"}
+        </button>
+      </div>
+    </section>
   );
 }
 
