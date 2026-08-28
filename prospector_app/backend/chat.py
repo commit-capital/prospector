@@ -14,7 +14,7 @@ an explicit `chat_id` for an operator-named session
 It is mostly a reader, but when a bot token can be minted it may also
 run a curated set of upstream writes — on PRs (edit/comment/close/reopen/review),
 issues (create/reopen/comment/edit), and workflow runs (rerun) — AS the bot,
-after the operator confirms in chat — see `claude_backend.isolation_flags`.
+after the operator confirms in chat — see the configured provider backend.
 PR closes, reopens, and reviews, plus issue closes, run through executor-backed
 helpers so each attempt is gated and recorded in Activity. Two write paths use a
 different identity
@@ -25,11 +25,9 @@ to a fork (#210) — and merges the base branch into a stale PR's head
 (`resubmit <pr> update`); and "file-issue", opening a
 triager bug on the meta-repo, which lies outside the bot's app installation.
 
-The Claude backend is a lean Q&A assistant isolated from the operator's Claude
-Code harness. Its boundary (see `claude_backend.isolation_flags`) uses safe mode
-to disable discovered customizations, loads no settings files, runs in dontAsk
-mode, and advertises only the read tools and curated helper scripts allowed for
-the machine's current bot-token capability.
+Each provider backend isolates this Q&A assistant from the operator's development
+harness and exposes only repository reads plus the curated helper scripts allowed
+for the machine's current bot-token capability.
 
 Context comes from two dedicated, agent-facing sources: agent/context.md
 (stable operating manual, injected into the system prompt) and
@@ -53,6 +51,7 @@ from prospector_app.backend import agent_backend
 from prospector_app.backend import agent_memory
 from prospector_app.backend import alerts
 from prospector_app.backend import claude_backend
+from prospector_app.backend import codex_backend
 from prospector_app.backend import data
 from prospector_app.backend import executor
 from prospector_app.backend import issues
@@ -76,6 +75,7 @@ DIFF_BUDGET = 16000
 
 _BACKENDS: dict[str, agent_backend.AgentBackend] = {
     claude_backend.CLAUDE_BACKEND.provider: claude_backend.CLAUDE_BACKEND,
+    codex_backend.CODEX_BACKEND.provider: codex_backend.CODEX_BACKEND,
 }
 
 

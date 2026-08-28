@@ -56,8 +56,8 @@ STEP_KEYS: dict[str, tuple[str, ...]] = {
     "agent": ("TRIAGE_AGENT_PROVIDER",),
 }
 
-# The agent pane's backends. The wizard also lists Codex, rendered as not
-# supported yet; writing it is refused here until a backend exists.
+# The wizard enables Claude or no agent. Codex is available through deployment
+# configuration and is not a wizard choice.
 _AGENT_PROVIDERS = ("claude", "none")
 
 # What the bundle carries to a teammate: everything a fresh checkout needs to
