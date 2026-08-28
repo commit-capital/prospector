@@ -85,7 +85,7 @@ def _terminate(proc: asyncio.subprocess.Process) -> None:
             pass
 
 
-class ClaudeTurn:
+class ClaudeTurn(agent_backend.AgentTurn):
     def __init__(self, backend: ClaudeBackend, request: agent_backend.AgentRequest,
                  proc: asyncio.subprocess.Process) -> None:
         self._backend = backend
@@ -157,7 +157,7 @@ class ClaudeTurn:
         await self._proc.wait()
 
 
-class ClaudeBackend:
+class ClaudeBackend(agent_backend.AgentBackend):
     provider = "claude"
 
     def __init__(self) -> None:
