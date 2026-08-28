@@ -53,6 +53,17 @@ def test_readiness_dispatches_to_the_configured_backend(monkeypatch):
     }
 
 
+def test_readiness_can_probe_a_provider_before_it_is_configured(monkeypatch):
+    backend = FakeBackend()
+    backend.provider = "codex"
+    monkeypatch.setenv("TRIAGE_AGENT_PROVIDER", "claude")
+    monkeypatch.setattr(chat, "_BACKENDS", {"codex": backend})
+
+    assert chat.readiness("codex") == {
+        "provider": "codex", "ok": True, "adapter": "fake",
+    }
+
+
 def test_chat_orchestration_consumes_normalized_backend_events(
         temp_store, tmp_path, monkeypatch):
     backend = FakeBackend()

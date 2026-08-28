@@ -410,7 +410,7 @@ def onboarding_state():
 def onboarding_probe(body: models.OnboardingProbe):
     """Check candidate configuration without writing any of it."""
     return onboarding.probe(body.store_url, body.repo, body.key_file,
-                            agent=body.agent)
+                            agent=body.agent, agent_provider=body.agent_provider)
 
 
 @app.post("/api/onboarding/apply")

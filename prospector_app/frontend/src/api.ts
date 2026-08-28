@@ -1204,8 +1204,7 @@ export interface ProbeResult {
   agent?: ProbeFinding;
 }
 
-/** Whether this machine can run the agent pane: the configured provider and,
- *  for claude, the local CLI's presence and login. */
+/** Whether this machine can run the agent pane with the selected local CLI. */
 export interface ChatReady {
   provider: string;
   ok: boolean;
@@ -1295,6 +1294,7 @@ export const api = {
   chatReady: () => get<ChatReady>("/api/chat/ready"),
   onboardingProbe: async (body: {
     store_url?: string; repo?: string; key_file?: string; agent?: boolean;
+    agent_provider?: string;
   }) => {
     const r = await fetch("/api/onboarding/probe", {
       method: "POST", headers: { "Content-Type": "application/json" },
