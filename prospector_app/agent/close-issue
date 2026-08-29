@@ -8,7 +8,7 @@ all come from one executor path.
 
 Usage:
     close-issue <issue> --disposition not-planned --comment "<why>"
-    close-issue <issue> --disposition completed --comment "<what completed>"
+    close-issue <issue> --disposition completed --comment-file <path>
     close-issue <issue> --disposition fixed --fixed-by <pr> [--comment "<why>"]
     close-issue <issue> --disposition dup --canonical <issue> [--comment "<why>"]
 """
@@ -38,10 +38,23 @@ def main(argv: list[str] | None = None) -> int:
         choices=("not-planned", "completed", "fixed", "dup"),
         help="the close semantics and GitHub state reason",
     )
-    p.add_argument("--comment", help="the closing comment")
+    comment = p.add_mutually_exclusive_group()
+    comment.add_argument("--comment", help="the closing comment")
+    comment.add_argument(
+        "--comment-file",
+        type=Path,
+        help="read the closing comment from this file",
+    )
     p.add_argument("--fixed-by", type=int, help="merged PR that fixed the issue")
     p.add_argument("--canonical", type=int, help="canonical issue for a duplicate")
     args = p.parse_args(argv)
+
+    comment_text = args.comment
+    if args.comment_file is not None:
+        try:
+            comment_text = args.comment_file.read_text()
+        except OSError as e:
+            p.error(f"cannot read comment file {args.comment_file}: {e}")
 
     token = executor.mint_bot_token()
     if not token:
@@ -51,7 +64,7 @@ def main(argv: list[str] | None = None) -> int:
 
     action = models.IssueCloseBody(
         disposition=args.disposition,
-        comment=args.comment,
+        comment=comment_text,
         fixed_by=args.fixed_by,
         canonical=args.canonical,
     )
