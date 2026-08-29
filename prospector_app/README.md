@@ -33,8 +33,8 @@ actor from the executor above. Its permissions come from a narrow command
 allowlist:
 
 - **Reads:** repository files, the local store, and read-only GitHub operations
-  (`pr view/diff/list/checks`, `issue view/list`, searches, and workflow-run
-  inspection).
+  (`pr view/diff/list/checks`, `issue view/list`, searches, workflow-run
+  inspection, and workflow-run/release listing).
 - **Local writes:** curated helpers may record agent memory, detach a PR from an
   incorrect cluster, and reingest a moved PR through the validated store
   accessor.

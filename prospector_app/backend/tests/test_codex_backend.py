@@ -56,7 +56,10 @@ def test_read_only_rules_expose_only_curated_reads_and_local_helpers():
     rules = codex_backend.isolation_rules(can_write=False)
 
     assert '["gh", "pr", "view"]' in rules
+    assert '["gh", "release", "list"]' in rules
+    assert '["gh", "run", "list"]' in rules
     assert '["prospector_app/agent/store-read"]' in rules
+    assert json.dumps([str(codex_backend.AGENT_ROOT / "store-read")]) in rules
     assert '["prospector_app/agent/file-issue"]' in rules
     assert '["prospector_app/agent/gh-write"]' not in rules
     assert '["prospector_app/agent/resubmit"]' not in rules
@@ -82,6 +85,12 @@ def test_writable_rules_add_only_the_curated_write_helpers():
     for helper in codex_backend._WRITE_ALLOW:
         assert json.dumps(list(helper)) in writable
     assert '["gh", "pr", "merge"]' not in writable
+
+
+def test_writable_rules_accept_resolved_absolute_helper_paths():
+    rules = codex_backend.isolation_rules(can_write=True)
+    for helper in ("gh-write", "close-pr", "reopen-pr", "submit-review", "close-issue", "resubmit"):
+        assert json.dumps([str((codex_backend.AGENT_ROOT / helper).resolve())]) in rules
 
 
 def test_start_isolates_config_and_normalizes_jsonl_events(tmp_path, monkeypatch):

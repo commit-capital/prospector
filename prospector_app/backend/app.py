@@ -474,11 +474,17 @@ def status_now():
 
 @app.get("/api/setup/readiness")
 def setup_readiness():
-    """What THIS machine still needs before it can process work, plus the state
-    of its lane switches. Scoped to the backend serving the request — the Setup
-    view provisions the machine you loaded it from. Read-only, so the view polls
-    it while setup-worker-machine.sh runs."""
-    return {"readiness": worker_readiness.report(), "flags": worker_control.flags()}
+    """This machine's worker and GitHub App readiness, plus its lane switches."""
+    permissions = executor.bot_permissions() if settings.bot_login() else None
+    return {
+        "readiness": worker_readiness.report(),
+        "flags": worker_control.flags(),
+        "bot_permissions": {
+            "configured": bool(settings.bot_login()),
+            "available": permissions is not None,
+            "actions": permissions.get("actions") if permissions is not None else None,
+        },
+    }
 
 
 @app.post("/api/setup/flags")

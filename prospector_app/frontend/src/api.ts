@@ -1170,6 +1170,12 @@ export interface SetupReadiness {
   autofix_ready: boolean;
 }
 
+export interface BotPermissionReadiness {
+  configured: boolean;
+  available: boolean;
+  actions: string | null;
+}
+
 /** The six worker lane switches, the only .env keys the lane writer may touch. */
 export type WorkerFlags = Record<string, string>;
 
@@ -1246,7 +1252,7 @@ export interface OnboardingApplyBody {
 
 export const api = {
   setupReadiness: () =>
-    get<{ readiness: SetupReadiness; flags: WorkerFlags }>("/api/setup/readiness"),
+    get<{ readiness: SetupReadiness; flags: WorkerFlags; bot_permissions: BotPermissionReadiness }>("/api/setup/readiness"),
   /** The deployment bundle a teammate pastes. `includeKey` adds the bot's
    *  private key, so their machine executes approved writes too;
    *  `includePushKey` the contributor-push identity, so it runs autofix. */

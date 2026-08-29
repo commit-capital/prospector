@@ -18,6 +18,7 @@ Usage:
     prospector_app/agent/gh-read file <path>            # raw file at the default branch
     prospector_app/agent/gh-read file <path> --ref <r>  # …at a branch/tag/SHA
     prospector_app/agent/gh-read search '<query>'       # code search, scoped to the repo
+    prospector_app/agent/gh-read search '<query>' --jq '.items[].path'
     prospector_app/agent/gh-read commits <path>         # newest commits touching a path
     prospector_app/agent/gh-read commit <sha>           # one commit: message, files, patch
 
@@ -63,10 +64,14 @@ def read_file(path: str, ref: str | None) -> int:
     return _run(["gh", "api", endpoint, "-H", "Accept: application/vnd.github.raw"])
 
 
-def search_code(query: str) -> int:
+def search_code(query: str, limit: int, jq: str | None) -> int:
     # Scope the search to the upstream repo unless the caller already qualified it.
     q = query if "repo:" in query else f"{query} repo:{settings.repo()}"
-    return _run(["gh", "api", "-X", "GET", "search/code", "-f", f"q={q}"])
+    command = ["gh", "api", "-X", "GET", "search/code", "-f", f"q={q}",
+               "-f", f"per_page={max(1, min(limit, 100))}"]
+    if jq is not None:
+        command += ["--jq", jq]
+    return _run(command)
 
 
 def list_commits(path: str, limit: int) -> int:
@@ -76,12 +81,15 @@ def list_commits(path: str, limit: int) -> int:
                  "--jq", r'.[] | "\(.sha) \(.commit.author.date) \(.commit.message | split("\n")[0])"'])
 
 
-def show_commit(sha: str) -> int:
-    # A SHA is hex only; anything else (a path, a flag) is refused before gh runs.
+def show_commit(sha: str, jq: str | None) -> int:
+    # The alphanumeric form refuses paths and flags before gh runs.
     if not sha.isalnum():
         print(f"gh-read commit: not a commit sha: {sha!r}", file=sys.stderr)
         return 2
-    return _run(["gh", "api", f"repos/{settings.repo()}/commits/{sha}"])
+    command = ["gh", "api", f"repos/{settings.repo()}/commits/{sha}"]
+    if jq is not None:
+        command += ["--jq", jq]
+    return _run(command)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -97,6 +105,8 @@ def main(argv: list[str] | None = None) -> int:
 
     s = sub.add_parser("search", help="search code in the repo")
     s.add_argument("query", help="GitHub code-search query")
+    s.add_argument("--limit", type=int, default=30, help="how many (1-100, default 30)")
+    s.add_argument("--jq", default=None, help="filter the JSON response with a jq expression")
 
     c = sub.add_parser("commits", help="newest commits touching a path on the default branch")
     c.add_argument("path", help="repo-relative path")
@@ -104,15 +114,16 @@ def main(argv: list[str] | None = None) -> int:
 
     one = sub.add_parser("commit", help="one commit with its file patches")
     one.add_argument("sha", help="commit sha")
+    one.add_argument("--jq", default=None, help="filter the JSON response with a jq expression")
 
     args = p.parse_args(argv)
     if args.what == "file":
         return read_file(args.path, args.ref)
     if args.what == "search":
-        return search_code(args.query)
+        return search_code(args.query, args.limit, args.jq)
     if args.what == "commits":
         return list_commits(args.path, args.limit)
-    return show_commit(args.sha)
+    return show_commit(args.sha, args.jq)
 
 
 if __name__ == "__main__":
