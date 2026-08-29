@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -985,6 +986,50 @@ def cmd_state(pr: int) -> int:
     return 0
 
 
+_REV = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/^~@{}-]{0,255}$")
+
+
+def _revision(ref: str) -> str:
+    """A revision safe to hand to git as an argument. The leading-character rule
+    is what refuses a flag; the character class refuses shell and path tricks."""
+    if not _REV.match(ref):
+        raise RuntimeError(f"{ref!r} is not a revision (letters, digits and ._/^~@{{}}- only)")
+    return ref
+
+
+def _inspect(pr: int, args: list[str]) -> int:
+    """Run one read-only git query in the prepared worktree and print it."""
+    wt = _worktree(pr)
+    if not _read_meta(pr) or not wt.exists():
+        print(f"resubmit: PR #{pr} was not prepared (run `resubmit {pr} prepare` first)",
+              file=sys.stderr)
+        return 2
+    r = _git(args, wt)
+    if r.returncode != 0:
+        print(f"resubmit: git {args[0]} failed: {r.stderr.strip()}", file=sys.stderr)
+        return 4
+    print(r.stdout.rstrip("\n") or f"resubmit: git {args[0]} printed nothing.")
+    return 0
+
+
+def cmd_log(pr: int, limit: int) -> int:
+    """The worktree's recent commits. What `prepare --rebase`/`--merge` produced
+    is a local rewrite the operator has not seen; this is how you read it back."""
+    return _inspect(pr, ["log", "--no-color", "--oneline", "--decorate",
+                         "-n", str(max(1, min(limit, 100)))])
+
+
+def cmd_show(pr: int, ref: str, stat: bool) -> int:
+    """One commit in the worktree — `--stat` for the file list alone."""
+    args = ["show", "--no-color"] + (["--stat"] if stat else []) + [_revision(ref)]
+    return _inspect(pr, args)
+
+
+def cmd_status(pr: int) -> int:
+    """The worktree's branch and uncommitted paths."""
+    return _inspect(pr, ["status", "--short", "--branch"])
+
+
 def cmd_abort(pr: int) -> int:
     if not _worktree(pr).exists() and not _meta_path(pr).exists():
         print(f"resubmit: nothing to abort — PR #{pr} has no prepared worktree.", file=sys.stderr)
@@ -1085,6 +1130,12 @@ def main(argv: list[str] | None = None) -> int:
                       help="run the merge and print the resulting change, but push nothing")
     sub.add_parser("abort", help="discard the prepared worktree without pushing")
     sub.add_parser("state", help="print the prepared state as JSON (phase, mode, conflicts)")
+    logp = sub.add_parser("log", help="the prepared worktree's recent commits")
+    logp.add_argument("--limit", type=int, default=10, help="how many (1-100, default 10)")
+    showp = sub.add_parser("show", help="one commit in the prepared worktree")
+    showp.add_argument("ref", nargs="?", default="HEAD", help="revision to show (default HEAD)")
+    showp.add_argument("--stat", action="store_true", help="file list only, no patch")
+    sub.add_parser("status", help="the prepared worktree's branch and uncommitted paths")
     args = p.parse_args(argv)
 
     try:
@@ -1104,6 +1155,12 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_state(args.pr)
         if args.action == "abort":
             return cmd_abort(args.pr)
+        if args.action == "log":
+            return cmd_log(args.pr, args.limit)
+        if args.action == "show":
+            return cmd_show(args.pr, args.ref, args.stat)
+        if args.action == "status":
+            return cmd_status(args.pr)
     except RuntimeError as e:
         print(f"resubmit: {e}", file=sys.stderr)
         return 4

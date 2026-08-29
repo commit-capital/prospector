@@ -270,6 +270,15 @@ The `resubmit` helper owns the git mechanics; you author the edits in between:
 
     prospector_app/agent/resubmit <pr> abort    # discard the worktree, push nothing
 
+The clone is a separate repository under the cache, so raw `git` cannot reach it.
+Three read-only queries inspect it — reach for them to check what a `prepare
+--rebase` or `--merge` actually produced before you describe it to the operator,
+rather than reporting the mechanics you assume ran:
+
+    prospector_app/agent/resubmit <pr> log [--limit N]   # recent commits (default 10)
+    prospector_app/agent/resubmit <pr> show [<rev>] [--stat]   # one commit; --stat = files only
+    prospector_app/agent/resubmit <pr> status            # branch + uncommitted paths
+
 **Draft the exact change first** — the PR, what you'll change and why — and run
 `prepare` only after the operator confirms. Show them what you edited before you
 `push`, and confirm again. One PR at a time; report the pushed commit and note that
@@ -413,22 +422,33 @@ settle.) Then confirm with `store-read pr <pr>` that the sections are pinned to 
 current head SHA.
 
 ## Fixing a mis-grouped cluster
-Clustering is automated, and it occasionally mis-groups a PR — most often when a
-PR's head moved to unrelated content after it was clustered, so it stays in a
+Clustering is automated, and it occasionally mis-groups a member — most often a
+PR whose head moved to unrelated content after it was clustered, so it stays in a
 cluster whose root problem its current diff no longer addresses. When you've
-confirmed (from the diffs and the current summaries, not a hunch) that a PR does
-not belong in a cluster, you can detach it locally — no full re-cluster needed:
+confirmed (from the diffs and the current summaries, not a hunch) that a member
+does not belong, you can detach it locally — no full re-cluster needed:
 
-    prospector_app/agent/uncluster <pr> --from <cluster_id>   # one cluster
-    prospector_app/agent/uncluster <pr> --all                 # every cluster it's in
+    prospector_app/agent/uncluster pr <pr> --from <cluster_id>   # one cluster
+    prospector_app/agent/uncluster pr <pr> --all                 # every cluster it's in
+    prospector_app/agent/uncluster issue <issue> --from <cluster_id>
 
-This edits the store through the validated accessor: it drops the PR from
-the cluster's members and, if that was its last cluster, leaves it a confirmed
-standalone. The cluster keeps its other members (a single-member cluster is fine).
+This edits the store through the validated accessor: it drops the member from
+the cluster and clears its backref. The cluster keeps its other members (a
+single-member cluster is fine). A PR carries a list of cluster ids, so it can
+straddle and `--all` means something; detaching a PR from its last cluster leaves
+it a confirmed standalone. An issue carries at most one, so `--from` names it and
+there is no `--all`.
+
+**On an issue, durability depends on curation.** The issue clusterer rebuilds
+every uncurated cluster from scratch and re-groups the issues they hold, so a
+detach out of an uncurated cluster holds only until the next CLUSTER run — the
+command says so when that applies. Relay it: the fix that sticks is confirming
+that cluster's curation.
+
 It is a **local** change (no upstream write, no bot token) — but it reshapes the
-data the app shows, so treat it like an upstream write: **name the PR, the
+data the app shows, so treat it like an upstream write: **name the member, the
 cluster, and why it's mis-filed, and run it only after the operator confirms.**
-Detaching does not touch the PR's disposition or close it upstream; it only fixes
+Detaching does not touch the disposition or close anything upstream; it only fixes
 the grouping. If the mis-grouping looks systemic rather than a one-off, also offer
 to file a `clustering` issue so the pattern gets tuned.
 

@@ -1,25 +1,39 @@
 #!/usr/bin/env python3
-"""The app agent's manual clustering override.
+"""The app agent's manual clustering override, for both families.
 
-Clustering is automated (the CLUSTER phase), but it occasionally mis-groups a
-PR — most often when a PR's head moved to unrelated content after it was
+Clustering is automated (the CLUSTER phases), and it occasionally mis-groups a
+member — most often a PR whose head moved to unrelated content after it was
 clustered, so it stays glued to a cluster whose root problem its current diff no
-longer addresses. This allowlisted command lets the agent detach such a PR on the
+longer addresses. This allowlisted command detaches such a member on the
 operator's say-so, without a full re-cluster pass.
 
-It removes a PR from one cluster (--from) or from every cluster it belongs to
-(--all), through the validated store accessor (model.Cluster.remove_member) — the
-ONLY sanctioned way to mutate membership. Detaching a PR from its last cluster
-leaves a current standalone stamp (a confirmed singleton), exactly as a clustering
-pass would. The cluster keeps its other members; a cluster emptied to one member
-is allowed (a single-PR cluster is a valid end state).
+Membership is mutated only through the validated store accessors
+(model.Cluster.remove_member, issue_model.IssueCluster.remove_member) — the ONLY
+sanctioned way. The cluster keeps its other members; a cluster emptied to one
+member is allowed (a single-member cluster is a valid end state).
+
+The two families differ in what a detach durably means:
+
+  pr    A PR carries a LIST of cluster ids (it may straddle), so it detaches from
+        one cluster (--from) or from all of them (--all). Detaching a PR from its
+        last cluster leaves a current standalone stamp — a confirmed singleton,
+        exactly as a clustering pass would leave it.
+  issue An issue carries at most ONE cluster id, so --from names it and there is
+        nothing for --all to mean. Detaching clears the backref outright. The
+        issue clusterer rebuilds every UNCURATED cluster from scratch and
+        re-groups every issue those uncurated clusters hold, so a detach is
+        durable only out of a cluster whose curation is confirmed; out of an
+        uncurated one it holds until the next CLUSTER run, and the command says
+        so.
 
 Usage:
-    prospector_app/agent/uncluster <pr> --from <cluster_id>
-    prospector_app/agent/uncluster <pr> --all
+    prospector_app/agent/uncluster pr <pr> --from <cluster_id>
+    prospector_app/agent/uncluster pr <pr> --all
+    prospector_app/agent/uncluster issue <issue> --from <cluster_id>
 
-Stdlib only, so it runs under the sandbox's system python (like `remember`). It
-reuses pipeline/store.py for the single source of truth on the store shape.
+It reuses pipeline/store.py and issue_triage/issue_store.py for the single source
+of truth on each store's shape, so it runs under a python that has the store's
+dependencies — the app's own, which is what the agent's PATH resolves.
 """
 from __future__ import annotations
 
@@ -29,27 +43,16 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 # Run under a bare python3 (the agent's shell), so put the repo root on the path
-# for the `pipeline` package rather than relying on the editable install.
+# for the `pipeline` and `issue_triage` packages rather than relying on the
+# editable install.
 sys.path.insert(0, str(REPO_ROOT))
 
+from issue_triage.issue_store import IssueStore  # noqa: E402
 from pipeline import storekit  # noqa: E402
 from pipeline.store import Store  # noqa: E402
 
 
-def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(
-        prog="uncluster",
-        description="Detach a PR from a mis-grouped cluster (manual clustering override).",
-    )
-    p.add_argument("pr", type=int, help="the PR number to detach")
-    g = p.add_mutually_exclusive_group(required=True)
-    g.add_argument("--from", dest="cluster", type=int, metavar="CLUSTER_ID",
-                   help="remove the PR from this one cluster")
-    g.add_argument("--all", action="store_true",
-                   help="remove the PR from every cluster it belongs to")
-    p.add_argument("--store", default=None, help="store root (testing hook)")
-    args = p.parse_args(argv)
-
+def _detach_pr(args: argparse.Namespace) -> int:
     store = Store(args.store) if args.store else Store()
 
     pr = store.load_pr(args.pr)
@@ -87,6 +90,67 @@ def main(argv: list[str] | None = None) -> int:
     print(f"detached PR #{args.pr} from cluster(s) {here}; "
           f"now in {still or 'no cluster (standalone)'}")
     return 0
+
+
+def _detach_issue(args: argparse.Namespace) -> int:
+    store = IssueStore(args.store) if args.store else IssueStore()
+
+    issue = store.load_issue(args.issue)
+    if issue is None:
+        print(f"uncluster: issue #{args.issue} is not in the store", file=sys.stderr)
+        return 2
+    if issue.cluster_id != args.cluster:
+        where = f"cluster {issue.cluster_id}" if issue.cluster_id else "no cluster"
+        print(f"uncluster: issue #{args.issue} is not in cluster {args.cluster} "
+              f"(it is in {where})", file=sys.stderr)
+        return 2
+
+    cluster = store.load_issue_cluster(args.cluster)
+    if cluster is None:
+        print(f"uncluster: issue cluster {args.cluster} is not in the store", file=sys.stderr)
+        return 2
+    confirmed = bool((cluster.curation or {}).get("confirmed"))
+    cluster.remove_member(args.issue)
+
+    now = storekit.now()
+    store.append_run({"phase": "issue-cluster:manual-uncluster", "started": now,
+                      "finished": now, "actor": "app-agent",
+                      "stats": {"issue": args.issue, "removed_from": [args.cluster]}})
+
+    print(f"detached issue #{args.issue} from cluster {args.cluster}; now in no cluster")
+    if not confirmed:
+        print(f"note: cluster {args.cluster} is not confirmed-curated, so the next "
+              f"CLUSTER run rebuilds it and may re-group #{args.issue}. Confirm the "
+              f"cluster's curation to make this stick.")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(
+        prog="uncluster",
+        description="Detach a PR or issue from a mis-grouped cluster "
+                    "(manual clustering override).",
+    )
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--store", default=None, help="store root (testing hook)")
+    subjects = p.add_subparsers(dest="subject", required=True)
+
+    pr = subjects.add_parser("pr", parents=[common], help="detach a PR from its cluster(s)")
+    pr.add_argument("pr", type=int, help="the PR number to detach")
+    target = pr.add_mutually_exclusive_group(required=True)
+    target.add_argument("--from", dest="cluster", type=int, metavar="CLUSTER_ID",
+                        help="remove the PR from this one cluster")
+    target.add_argument("--all", action="store_true",
+                        help="remove the PR from every cluster it belongs to")
+
+    issue = subjects.add_parser("issue", parents=[common],
+                                help="detach an issue from its cluster")
+    issue.add_argument("issue", type=int, help="the issue number to detach")
+    issue.add_argument("--from", dest="cluster", type=int, metavar="CLUSTER_ID",
+                       required=True, help="the cluster the issue is in")
+
+    args = p.parse_args(argv)
+    return _detach_pr(args) if args.subject == "pr" else _detach_issue(args)
 
 
 if __name__ == "__main__":
