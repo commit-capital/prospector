@@ -6,11 +6,12 @@ about what ready means. Every check is read-only and side-effect free, which is
 what lets the view poll it while the script is mid-run.
 
 A check reports what it found and the remedy for what it did not. A check that
-raises reports as failing with the exception as its detail: a check that cannot
-answer is not evidence the machine is ready.
+raises reports a generic failure and logs the exception on the server: a check
+that cannot answer is not evidence the machine is ready.
 """
 from __future__ import annotations
 
+import logging
 import shutil
 import socket
 from collections.abc import Callable
@@ -18,6 +19,8 @@ from typing import TypedDict
 
 from pipeline import profile, settings, verify_driver
 from prospector_app.backend import data, fix_worker, verify_worker
+
+logger = logging.getLogger(__name__)
 
 
 class Check(TypedDict):
@@ -129,8 +132,9 @@ def checks() -> list[Check]:
     for key, label, probe, blocking in _CHECKS:
         try:
             ok, detail, remedy = probe()
-        except Exception as e:
-            ok, detail, remedy = False, f"{type(e).__name__}: {e}", "see the detail"
+        except Exception:
+            logger.exception("%s readiness check failed", label)
+            ok, detail, remedy = False, "check failed unexpectedly", "see server logs"
         out.append({"key": key, "label": label, "ok": ok, "detail": detail,
                     "remedy": remedy or None, "blocking": blocking})
     return out
