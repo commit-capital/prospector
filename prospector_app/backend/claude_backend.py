@@ -25,8 +25,23 @@ _GH_ALLOW = [
     "Bash(gh pr view:*)", "Bash(gh pr diff:*)", "Bash(gh pr list:*)",
     "Bash(gh pr checks:*)", "Bash(gh pr status:*)", "Bash(gh issue view:*)",
     "Bash(gh issue list:*)", "Bash(gh search prs:*)", "Bash(gh search issues:*)",
-    "Bash(gh search commits:*)", "Bash(gh release view:*)",
+    "Bash(gh search commits:*)", "Bash(gh search repos:*)", "Bash(gh release view:*)",
     "Bash(gh release list:*)", "Bash(gh run view:*)", "Bash(gh run list:*)",
+]
+
+# Read-only text filters, so a read's output can be narrowed within the one
+# command (`gh pr checks … | awk`, `resubmit diff | grep`). The in-place and
+# output-file forms of sed and sort are denied; the harness refuses a shell
+# redirection on its own.
+_FILTER_ALLOW = [
+    "Bash(head:*)", "Bash(tail:*)", "Bash(grep:*)", "Bash(sed:*)", "Bash(awk:*)",
+    "Bash(sort:*)", "Bash(uniq:*)", "Bash(wc:*)", "Bash(cut:*)", "Bash(tr:*)",
+    "Bash(jq:*)",
+]
+_FILTER_DENY = [
+    "Bash(sed -i:*)", "Bash(sed --in-place:*)",
+    "Bash(sort -o:*)", "Bash(sort --output:*)",
+    "Bash(tee:*)",
 ]
 
 
@@ -68,10 +83,10 @@ _DISALLOWED_TOOLS = [
 
 def isolation_flags(can_write: bool) -> list[str]:
     """Build the complete Claude tool and harness boundary for one turn."""
-    allowed = ["Read", "Grep", "Glob", *_GH_ALLOW, *_GH_READ_ALLOW, *_GIT_ALLOW,
-               *_REMEMBER_ALLOW, *_UNCLUSTER_ALLOW, *_STORE_READ_ALLOW, *_REINGEST_ALLOW,
-               *_FILE_ISSUE_ALLOW]
-    disallowed = list(_DISALLOWED_TOOLS)
+    allowed = ["Read", "Grep", "Glob", *_GH_ALLOW, *_FILTER_ALLOW, *_GH_READ_ALLOW,
+               *_GIT_ALLOW, *_REMEMBER_ALLOW, *_UNCLUSTER_ALLOW, *_STORE_READ_ALLOW,
+               *_REINGEST_ALLOW, *_FILE_ISSUE_ALLOW]
+    disallowed = [*_DISALLOWED_TOOLS, *_FILTER_DENY]
     if can_write:
         allowed += [*_GH_WRITE_ALLOW, *_PR_EXECUTOR_ALLOW, *_ISSUE_CLOSE_ALLOW,
                     *_RESUBMIT_ALLOW, "Edit", "Write"]

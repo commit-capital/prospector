@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 GH_READ = REPO_ROOT / "prospector_app" / "agent" / "gh-read"
 
@@ -124,4 +126,28 @@ def test_commit_accepts_jq_filter_without_changing_the_endpoint(tmp_path):
 
 def test_commit_refuses_anything_but_a_sha(tmp_path):
     r = _run(_fake_gh(tmp_path / "bin"), ["commit", "../../rate_limit"])
+    assert r.returncode == 2 and r.stdout == ""
+
+
+def test_auth_runs_status_with_nothing_passed_through(tmp_path):
+    r = _run(_fake_gh(tmp_path / "bin"), ["auth"])
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.splitlines() == ["auth", "status"]
+
+
+def test_auth_refuses_a_show_token_flag(tmp_path):
+    r = _run(_fake_gh(tmp_path / "bin"), ["auth", "--show-token"])
+    assert r.returncode != 0
+    assert r.stdout == ""  # gh never ran
+
+
+def test_user_is_a_plain_get_of_one_login(tmp_path):
+    r = _run(_fake_gh(tmp_path / "bin"), ["user", "octo-cat", "--jq", ".type"])
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.splitlines() == ["api", "users/octo-cat", "--jq", ".type"]
+
+
+@pytest.mark.parametrize("login", ["../rate_limit", "-flag", "a b", "octo/cat", "", "-" * 40])
+def test_user_refuses_anything_but_a_login(tmp_path, login):
+    r = _run(_fake_gh(tmp_path / "bin"), ["user", login])
     assert r.returncode == 2 and r.stdout == ""
