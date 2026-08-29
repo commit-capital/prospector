@@ -1,10 +1,11 @@
 """The agent's `uncluster` CLI — its manual clustering override. Driven end-to-end
 as a subprocess (how the sandboxed agent actually invokes it) against a temp store
-built from the pipeline's own model, so we never touch the committed store."""
+built from each family's own model, so we never touch the committed store."""
 import subprocess
 import sys
 from pathlib import Path
 
+from issue_triage.issue_store import IssueStore
 from pipeline.store import Store
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -39,7 +40,7 @@ def _run(root, args):
 def test_detach_from_one_cluster_leaves_others(tmp_path):
     root = tmp_path / "store"
     _seed(root)
-    r = _run(root, ["2", "--from", "7"])
+    r = _run(root, ["pr", "2", "--from", "7"])
     assert r.returncode == 0, r.stderr
     store = Store(root)
     pr2, c7, c8 = store.load_pr(2), store.load_cluster(7), store.load_cluster(8)
@@ -52,7 +53,7 @@ def test_detach_from_one_cluster_leaves_others(tmp_path):
 def test_detach_all_makes_standalone_at_current_head(tmp_path):
     root = tmp_path / "store"
     _seed(root)
-    r = _run(root, ["2", "--all"])
+    r = _run(root, ["pr", "2", "--all"])
     assert r.returncode == 0, r.stderr
     pr = Store(root).load_pr(2)
     assert pr is not None
@@ -67,7 +68,7 @@ def test_detach_all_makes_standalone_at_current_head(tmp_path):
 def test_rejects_non_member(tmp_path):
     root = tmp_path / "store"
     _seed(root)
-    r = _run(root, ["1", "--from", "8"])            # #1 is not in cluster 8
+    r = _run(root, ["pr", "1", "--from", "8"])            # #1 is not in cluster 8
     assert r.returncode == 2
     assert "not in cluster 8" in r.stderr
     c8 = Store(root).load_cluster(8)
@@ -77,7 +78,7 @@ def test_rejects_non_member(tmp_path):
 def test_rejects_unknown_pr(tmp_path):
     root = tmp_path / "store"
     _seed(root)
-    r = _run(root, ["999", "--all"])
+    r = _run(root, ["pr", "999", "--all"])
     assert r.returncode == 2
     assert "not in the store" in r.stderr
 
@@ -85,8 +86,69 @@ def test_rejects_unknown_pr(tmp_path):
 def test_logs_a_run(tmp_path):
     root = tmp_path / "store"
     _seed(root)
-    _run(root, ["2", "--from", "7"])
+    _run(root, ["pr", "2", "--from", "7"])
     runs = Store(root).runs()
     last = runs[-1]
     assert last.phase == "cluster:manual-uncluster"
     assert last.raw["stats"] == {"pr": 2, "removed_from": [7]}
+
+
+# --- issues: one cluster id per member, and a curation-dependent durability ----
+
+def _seed_issues(root, *, confirmed: bool):
+    """Two issues jointly in issue cluster 3, curated or not."""
+    store = IssueStore(root)
+    for n in (10, 11):
+        store.create_issue(n, {"title": f"i{n}", "state": "open", "updated_at": "t"})
+    cluster = store.create_issue_cluster(3, "cluster three", members=[10, 11])
+    if confirmed:
+        cluster.record_curation({"confirmed": True})
+    return store
+
+
+def test_detach_issue_clears_its_backref_and_keeps_the_others(tmp_path):
+    root = tmp_path / "store"
+    _seed_issues(root, confirmed=True)
+    r = _run(root, ["issue", "11", "--from", "3"])
+    assert r.returncode == 0, r.stderr
+    store = IssueStore(root)
+    issue, cluster = store.load_issue(11), store.load_issue_cluster(3)
+    assert issue and cluster
+    assert issue.cluster_id is None
+    assert cluster.members == [10]
+
+
+def test_detaches_from_an_uncurated_cluster_too(tmp_path):
+    root = tmp_path / "store"
+    _seed_issues(root, confirmed=False)
+    r = _run(root, ["issue", "11", "--from", "3"])
+    assert r.returncode == 0, r.stderr
+    store = IssueStore(root)
+    assert store.load_issue(11).cluster_id is None
+    assert store.load_issue_cluster(3).members == [10]
+
+
+def test_rejects_an_issue_that_is_not_in_the_named_cluster(tmp_path):
+    root = tmp_path / "store"
+    _seed_issues(root, confirmed=True)
+    r = _run(root, ["issue", "11", "--from", "9"])
+    assert r.returncode == 2
+    assert "not in cluster 9" in r.stderr
+    assert IssueStore(root).load_issue_cluster(3).members == [10, 11]
+
+
+def test_rejects_unknown_issue(tmp_path):
+    root = tmp_path / "store"
+    _seed_issues(root, confirmed=True)
+    r = _run(root, ["issue", "999", "--from", "3"])
+    assert r.returncode == 2
+    assert "not in the store" in r.stderr
+
+
+def test_logs_an_issue_run_on_the_issue_ledger(tmp_path):
+    root = tmp_path / "store"
+    _seed_issues(root, confirmed=True)
+    _run(root, ["issue", "11", "--from", "3"])
+    last = IssueStore(root).runs()[-1]
+    assert last.phase == "issue-cluster:manual-uncluster"
+    assert last.raw["stats"] == {"issue": 11, "removed_from": [3]}
