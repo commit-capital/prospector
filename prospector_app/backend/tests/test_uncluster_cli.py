@@ -118,22 +118,26 @@ def test_detach_issue_clears_its_backref_and_keeps_the_others(tmp_path):
     assert cluster.members == [10]
 
 
-def test_detach_from_an_uncurated_cluster_warns_it_may_be_regrouped(tmp_path):
+def test_refuses_to_detach_from_an_uncurated_cluster(tmp_path):
     root = tmp_path / "store"
     _seed_issues(root, confirmed=False)
     r = _run(root, ["issue", "11", "--from", "3"])
-    assert r.returncode == 0, r.stderr
-    # The clusterer rebuilds uncurated clusters wholesale, so the detach holds
-    # only until the next run — the operator has to be told.
-    assert "not confirmed-curated" in r.stdout
-    assert IssueStore(root).load_issue(11).cluster_id is None
+    # The clusterer rebuilds uncurated clusters wholesale, so the detach would
+    # silently revert. Refuse it and name the fix that sticks.
+    assert r.returncode == 2
+    assert "not confirmed-curated" in r.stderr
+    assert "/diagnose-issue-cluster" in r.stderr
+    store = IssueStore(root)
+    assert store.load_issue(11).cluster_id == 3
+    assert store.load_issue_cluster(3).members == [10, 11]
 
 
-def test_detach_issue_reports_no_warning_when_the_cluster_is_curated(tmp_path):
+def test_an_uncurated_refusal_writes_no_ledger_entry(tmp_path):
     root = tmp_path / "store"
-    _seed_issues(root, confirmed=True)
-    r = _run(root, ["issue", "11", "--from", "3"])
-    assert "not confirmed-curated" not in r.stdout
+    _seed_issues(root, confirmed=False)
+    before = len(IssueStore(root).runs())
+    _run(root, ["issue", "11", "--from", "3"])
+    assert len(IssueStore(root).runs()) == before
 
 
 def test_rejects_an_issue_that_is_not_in_the_named_cluster(tmp_path):

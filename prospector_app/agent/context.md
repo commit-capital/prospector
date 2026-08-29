@@ -439,11 +439,14 @@ straddle and `--all` means something; detaching a PR from its last cluster leave
 it a confirmed standalone. An issue carries at most one, so `--from` names it and
 there is no `--all`.
 
-**On an issue, durability depends on curation.** The issue clusterer rebuilds
-every uncurated cluster from scratch and re-groups the issues they hold, so a
-detach out of an uncurated cluster holds only until the next CLUSTER run — the
-command says so when that applies. Relay it: the fix that sticks is confirming
-that cluster's curation.
+**An issue detaches only out of a confirmed-curated cluster**, and the command
+refuses otherwise. The issue clusterer rebuilds every uncurated cluster from
+scratch and re-groups the issues they hold, so a detach out of one would silently
+revert — and nothing upstream can fire from an uncurated cluster anyway, since
+close-as-dup requires confirmed curation. If you hit that refusal, relay the fix
+that sticks: curate and confirm the cluster (`/diagnose-issue-cluster`) first.
+That is also the case that matters most — a confirmed cluster is exactly the one
+whose canonical would otherwise close its members upstream as duplicates.
 
 It is a **local** change (no upstream write, no bot token) — but it reshapes the
 data the app shows, so treat it like an upstream write: **name the member, the

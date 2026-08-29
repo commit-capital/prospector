@@ -19,12 +19,14 @@ The two families differ in what a detach durably means:
         last cluster leaves a current standalone stamp — a confirmed singleton,
         exactly as a clustering pass would leave it.
   issue An issue carries at most ONE cluster id, so --from names it and there is
-        nothing for --all to mean. Detaching clears the backref outright. The
-        issue clusterer rebuilds every UNCURATED cluster from scratch and
-        re-groups every issue those uncurated clusters hold, so a detach is
-        durable only out of a cluster whose curation is confirmed; out of an
-        uncurated one it holds until the next CLUSTER run, and the command says
-        so.
+        nothing for --all to mean. Detaching clears the backref outright, and is
+        allowed ONLY out of a confirmed-curated cluster. The issue clusterer
+        rebuilds every uncurated cluster from scratch and re-groups the issues
+        they hold, so a detach out of one would silently revert; and nothing
+        upstream can fire from an uncurated cluster anyway, since close-as-dup
+        requires confirmed curation. Confirming the curation is the fix that
+        sticks, so an uncurated cluster is refused with that instruction rather
+        than mutated.
 
 Usage:
     prospector_app/agent/uncluster pr <pr> --from <cluster_id>
@@ -109,7 +111,13 @@ def _detach_issue(args: argparse.Namespace) -> int:
     if cluster is None:
         print(f"uncluster: issue cluster {args.cluster} is not in the store", file=sys.stderr)
         return 2
-    confirmed = bool((cluster.curation or {}).get("confirmed"))
+    if not (cluster.curation or {}).get("confirmed"):
+        print(f"uncluster: issue cluster {args.cluster} is not confirmed-curated, so the "
+              f"next CLUSTER run would rebuild it and re-group #{args.issue}. Nothing "
+              f"upstream can fire from it either — close-as-dup requires confirmed "
+              f"curation. Confirm the curation first (/diagnose-issue-cluster), then "
+              f"detach.", file=sys.stderr)
+        return 2
     cluster.remove_member(args.issue)
 
     now = storekit.now()
@@ -118,10 +126,6 @@ def _detach_issue(args: argparse.Namespace) -> int:
                       "stats": {"issue": args.issue, "removed_from": [args.cluster]}})
 
     print(f"detached issue #{args.issue} from cluster {args.cluster}; now in no cluster")
-    if not confirmed:
-        print(f"note: cluster {args.cluster} is not confirmed-curated, so the next "
-              f"CLUSTER run rebuilds it and may re-group #{args.issue}. Confirm the "
-              f"cluster's curation to make this stick.")
     return 0
 
 
