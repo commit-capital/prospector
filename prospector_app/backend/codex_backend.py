@@ -26,6 +26,18 @@ from prospector_app.backend import subproc
 
 CODEX_BIN = shutil.which("codex") or "codex"
 CODEX_CACHE_ROOT = Path(__file__).resolve().parents[1] / "cache" / "codex"
+AGENT_ROOT = Path(__file__).resolve().parents[1] / "agent"
+
+
+def _helper_prefixes(*names: str) -> tuple[tuple[str, ...], ...]:
+    return tuple(
+        prefix
+        for name in names
+        for prefix in (
+            (f"prospector_app/agent/{name}",),
+            (str(AGENT_ROOT / name),),
+        )
+    )
 
 _READ_ALLOW: tuple[tuple[str, ...], ...] = (
     ("gh", "pr", "view"),
@@ -39,23 +51,16 @@ _READ_ALLOW: tuple[tuple[str, ...], ...] = (
     ("gh", "search", "issues"),
     ("gh", "search", "commits"),
     ("gh", "release", "view"),
+    ("gh", "release", "list"),
     ("gh", "run", "view"),
+    ("gh", "run", "list"),
     ("git", "diff"),
-    ("prospector_app/agent/gh-read",),
-    ("prospector_app/agent/remember",),
-    ("prospector_app/agent/uncluster",),
-    ("prospector_app/agent/store-read",),
-    ("prospector_app/agent/reingest",),
-    ("prospector_app/agent/file-issue",),
+    *_helper_prefixes("gh-read", "remember", "uncluster", "store-read",
+                      "reingest", "file-issue"),
 )
 
-_WRITE_ALLOW: tuple[tuple[str, ...], ...] = (
-    ("prospector_app/agent/gh-write",),
-    ("prospector_app/agent/close-pr",),
-    ("prospector_app/agent/reopen-pr",),
-    ("prospector_app/agent/submit-review",),
-    ("prospector_app/agent/close-issue",),
-    ("prospector_app/agent/resubmit",),
+_WRITE_ALLOW = _helper_prefixes(
+    "gh-write", "close-pr", "reopen-pr", "submit-review", "close-issue", "resubmit",
 )
 
 _CODEX_CONTEXT = """

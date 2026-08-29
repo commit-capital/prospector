@@ -62,6 +62,18 @@ def test_search_is_a_get_auto_scoped_to_the_repo(tmp_path):
     argv = r.stdout.splitlines()
     assert argv[:4] == ["api", "-X", "GET", "search/code"]
     assert "q=eol=lf repo:test-owner/test-repo" in argv
+    assert "per_page=30" in argv
+
+
+def test_search_accepts_bounded_limit_and_jq_filter(tmp_path):
+    r = _run(_fake_gh(tmp_path / "bin"), [
+        "search", "eol=lf", "--limit", "500", "--jq", ".items[].path",
+    ])
+    assert r.returncode == 0, r.stderr
+    argv = r.stdout.splitlines()
+    assert "per_page=100" in argv
+    assert argv[-2:] == ["--jq", ".items[].path"]
+    assert argv[:4] == ["api", "-X", "GET", "search/code"]
 
 
 def test_search_keeps_a_caller_supplied_repo_qualifier(tmp_path):
@@ -97,6 +109,17 @@ def test_commit_is_a_plain_get_of_one_sha(tmp_path):
     r = _run(_fake_gh(tmp_path / "bin"), ["commit", "c647b8cc2ea6"])
     assert r.returncode == 0, r.stderr
     assert r.stdout.splitlines() == ["api", "repos/test-owner/test-repo/commits/c647b8cc2ea6"]
+
+
+def test_commit_accepts_jq_filter_without_changing_the_endpoint(tmp_path):
+    r = _run(_fake_gh(tmp_path / "bin"), [
+        "commit", "c647b8cc2ea6", "--jq", ".files[].filename",
+    ])
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.splitlines() == [
+        "api", "repos/test-owner/test-repo/commits/c647b8cc2ea6",
+        "--jq", ".files[].filename",
+    ]
 
 
 def test_commit_refuses_anything_but_a_sha(tmp_path):

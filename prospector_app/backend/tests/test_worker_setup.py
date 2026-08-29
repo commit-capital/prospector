@@ -104,7 +104,8 @@ class TestApply:
 
 
 class TestReadiness:
-    def test_a_check_that_raises_reads_as_failing(self, monkeypatch):
+    def test_a_check_failure_is_logged_without_reaching_the_readiness_response(
+            self, monkeypatch, caplog):
         """A check that cannot answer is not evidence the machine is ready."""
         def boom():
             raise RuntimeError("docker exploded")
@@ -112,9 +113,13 @@ class TestReadiness:
         monkeypatch.setattr(
             worker_readiness, "_CHECKS",
             [("docker", "Docker daemon", boom, True)])
-        rows = worker_readiness.checks()
+        with caplog.at_level("ERROR", logger="prospector_app.backend.worker_readiness"):
+            rows = worker_readiness.checks()
         assert rows[0]["ok"] is False
-        assert "docker exploded" in rows[0]["detail"]
+        assert rows[0]["detail"] == "check failed unexpectedly"
+        assert rows[0]["remedy"] == "see server logs"
+        assert "docker exploded" not in repr(rows[0])
+        assert "docker exploded" in caplog.text
 
     def test_ready_ignores_the_non_blocking_rows(self, monkeypatch):
         """A machine may deliberately run verification and not autofix."""

@@ -13,37 +13,47 @@ import shutil
 import signal
 import subprocess
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 from prospector_app.backend import agent_backend
 from prospector_app.backend import subproc
 
 CLAUDE_BIN = shutil.which("claude") or "claude"
+AGENT_ROOT = Path(__file__).resolve().parents[1] / "agent"
 
 _GH_ALLOW = [
     "Bash(gh pr view:*)", "Bash(gh pr diff:*)", "Bash(gh pr list:*)",
     "Bash(gh pr checks:*)", "Bash(gh pr status:*)", "Bash(gh issue view:*)",
     "Bash(gh issue list:*)", "Bash(gh search prs:*)", "Bash(gh search issues:*)",
     "Bash(gh search commits:*)", "Bash(gh release view:*)",
-    "Bash(gh run view:*)",
+    "Bash(gh release list:*)", "Bash(gh run view:*)", "Bash(gh run list:*)",
 ]
 
-_GH_WRITE_ALLOW = ["Bash(prospector_app/agent/gh-write:*)"]
 
-_PR_EXECUTOR_ALLOW = [
-    "Bash(prospector_app/agent/close-pr:*)",
-    "Bash(prospector_app/agent/reopen-pr:*)",
-    "Bash(prospector_app/agent/submit-review:*)",
-]
+def _helper_allow(*names: str) -> list[str]:
+    return [
+        rule
+        for name in names
+        for rule in (
+            f"Bash(prospector_app/agent/{name}:*)",
+            f"Bash({AGENT_ROOT / name}:*)",
+        )
+    ]
 
-_ISSUE_CLOSE_ALLOW = ["Bash(prospector_app/agent/close-issue:*)"]
-_REMEMBER_ALLOW = ["Bash(prospector_app/agent/remember:*)"]
-_FILE_ISSUE_ALLOW = ["Bash(prospector_app/agent/file-issue:*)"]
-_UNCLUSTER_ALLOW = ["Bash(prospector_app/agent/uncluster:*)"]
-_GH_READ_ALLOW = ["Bash(prospector_app/agent/gh-read:*)"]
+
+_GH_WRITE_ALLOW = _helper_allow("gh-write")
+
+_PR_EXECUTOR_ALLOW = _helper_allow("close-pr", "reopen-pr", "submit-review")
+
+_ISSUE_CLOSE_ALLOW = _helper_allow("close-issue")
+_REMEMBER_ALLOW = _helper_allow("remember")
+_FILE_ISSUE_ALLOW = _helper_allow("file-issue")
+_UNCLUSTER_ALLOW = _helper_allow("uncluster")
+_GH_READ_ALLOW = _helper_allow("gh-read")
 _GIT_ALLOW = ["Bash(git diff:*)"]
-_STORE_READ_ALLOW = ["Bash(prospector_app/agent/store-read:*)"]
-_REINGEST_ALLOW = ["Bash(prospector_app/agent/reingest:*)"]
-_RESUBMIT_ALLOW = ["Bash(prospector_app/agent/resubmit:*)"]
+_STORE_READ_ALLOW = _helper_allow("store-read")
+_REINGEST_ALLOW = _helper_allow("reingest")
+_RESUBMIT_ALLOW = _helper_allow("resubmit")
 
 _DISALLOWED_TOOLS = [
     "Task", "Edit", "Write", "NotebookEdit",

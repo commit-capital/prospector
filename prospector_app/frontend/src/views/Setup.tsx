@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router";
 import {
   api,
+  type BotPermissionReadiness,
   type PushAccount,
   type PushKeyInfo,
   type SetupCheck,
@@ -111,6 +112,7 @@ function CheckRow({ check }: { check: SetupCheck }) {
 export default function Setup() {
   const [readiness, setReadiness] = useState<SetupReadiness | null>(null);
   const [flags, setFlags] = useState<WorkerFlags>({});
+  const [botPermissions, setBotPermissions] = useState<BotPermissionReadiness | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   // `?provision=1` opens the provisioning steps directly — the wizard's
@@ -123,6 +125,7 @@ export default function Setup() {
       const r = await api.setupReadiness();
       setReadiness(r.readiness);
       setFlags(r.flags);
+      setBotPermissions(r.bot_permissions);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -193,6 +196,8 @@ export default function Setup() {
 
       <AgentProviderSettings />
 
+      {botPermissions?.configured && <BotPermissionsCard permissions={botPermissions} />}
+
       {optedIn || expanded || provisioned
         ? <WorkerSection readiness={readiness} flags={flags} busy={busy} onToggle={toggle}
             onChanged={() => void load()} />
@@ -202,6 +207,32 @@ export default function Setup() {
 
       {error && <p className="chip chip-red sm">{error}</p>}
     </div>
+  );
+}
+
+function BotPermissionsCard({ permissions }: { permissions: BotPermissionReadiness }) {
+  const ready = permissions.actions === "write";
+  return (
+    <section className="setup-card">
+      <h3>🪪 GitHub App permissions</h3>
+      <p>
+        <span className={ready ? "chip chip-green sm" : "chip chip-amber sm"}>
+          {ready ? "workflow reruns ready" : "workflow reruns unavailable"}
+        </span>
+      </p>
+      {!ready && (
+        <p className="muted small">
+          {permissions.available
+            ? "Grant the GitHub App repository Actions permission at Read and write, save the change, and approve the requested permission on its installation."
+            : "Prospector could not inspect the App installation. Restore live bot-token access, then restart Prospector to check its Actions permission."}
+        </p>
+      )}
+      {ready && (
+        <p className="muted small">
+          The in-app agent can rerun a GitHub Actions workflow after you confirm the exact run.
+        </p>
+      )}
+    </section>
   );
 }
 

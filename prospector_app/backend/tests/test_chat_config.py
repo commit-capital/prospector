@@ -95,7 +95,7 @@ def test_read_only_allowlist_without_a_token():
     for sub in ("gh pr view", "gh pr diff", "gh pr list", "gh pr checks",
                 "gh pr status", "gh issue view", "gh issue list",
                 "gh search prs", "gh search issues", "gh search commits",
-                "gh release view", "gh run view"):
+                "gh release view", "gh release list", "gh run view", "gh run list"):
         assert f"Bash({sub}:*)" in allowed
     # No upstream write helper or direct gh write is advertised without a token.
     assert "prospector_app/agent/gh-write" not in allowed
@@ -238,6 +238,19 @@ def test_gh_read_is_allowlisted_and_executable():
         assert "Bash(prospector_app/agent/gh-read:*)" in allowed
     script = chat.APP_ROOT / "agent" / "gh-read"
     assert script.exists() and os.access(script, os.X_OK)
+
+
+def test_sanctioned_helpers_accept_relative_and_resolved_absolute_paths():
+    for can_write, helpers in (
+        (False, ("gh-read", "remember", "uncluster", "store-read", "reingest", "file-issue")),
+        (True, ("gh-write", "close-pr", "reopen-pr", "submit-review", "close-issue", "resubmit")),
+    ):
+        allowed = _flag(claude_backend.isolation_flags(can_write), "--allowedTools")
+        for helper in helpers:
+            relative = f"prospector_app/agent/{helper}"
+            absolute = (chat.APP_ROOT / "agent" / helper).resolve()
+            assert f"Bash({relative}:*)" in allowed
+            assert f"Bash({absolute}:*)" in allowed
 
 
 def test_git_diff_is_allowlisted_read_only():

@@ -435,14 +435,15 @@ to file a `clustering` issue so the pattern gets tuned.
 ## Live / cross-PR data
 For PRs not yet ingested, or to check current state, you may run read-only GitHub
 CLI: `gh pr view/diff/list/checks/status`, `gh issue view/list`, `gh search
-prs/issues/commits`, `gh release view`, `gh run view` — always with `--repo
+prs/issues/commits`, `gh release view/list`, `gh run view/list` — always with `--repo
 {repo}`, and `--json <fields>` for structured output. To answer "was
 this already fixed — find the commit," reach for `gh search commits`. When a PR's
 CI is failing, `gh pr checks` lists the checks and `gh run view <run-id> --log`
 drills into a specific run's logs to see *why*. After diagnosing a retryable
 failure, recommend the exact `prospector_app/agent/gh-write run rerun <run-id>`
 action and execute it only after the operator confirms. Prefer the local
-store for already-ingested analysis.
+store for already-ingested analysis. When the operator asks you to wait for CI,
+use `gh pr checks <pr> --watch --interval 30 --repo {repo}` as one command.
 
 To read a **file's exact bytes** at a ref, or run a **tree-wide code search** (raw
 `gh api` isn't allowlisted — it's read-only only by default), use `gh-read`:
@@ -450,11 +451,14 @@ To read a **file's exact bytes** at a ref, or run a **tree-wide code search** (r
     prospector_app/agent/gh-read file .gitattributes          # raw file on the default branch
     prospector_app/agent/gh-read file Dockerfile --ref <sha>  # …at a branch/tag/SHA
     prospector_app/agent/gh-read search 'eol=lf'              # code search, auto-scoped to the repo
+    prospector_app/agent/gh-read search 'eol=lf' --limit 10 --jq '.items[].path'
     prospector_app/agent/gh-read commits server/src/app.ts    # newest commits touching a path
-    prospector_app/agent/gh-read commit <sha>                 # one commit with its patches
+    prospector_app/agent/gh-read commit <sha> --jq '.files[] | {filename, patch}'
 
 `file` prints the raw contents and errors with a 404 if the path doesn't exist (so
-you can tell "no such file" apart from an empty one); `search` prints GitHub's JSON;
+you can tell "no such file" apart from an empty one); `search` prints GitHub's JSON
+and caps `--limit` at 100; `search` and `commit` accept `--jq` for structured output
+without a shell pipeline;
 `commits` prints one `sha date subject` line per commit, newest first; `commit` prints
 the commit's JSON with its patches. All are GET-only against `{repo}`. Reach for these to confirm what's
 actually on the branch — e.g. whether a `.gitattributes` exists — instead of
