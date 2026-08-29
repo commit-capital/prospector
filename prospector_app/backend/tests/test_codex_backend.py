@@ -323,3 +323,12 @@ def test_readiness_requires_a_binary_login_and_file_auth(tmp_path, monkeypatch):
     )
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-home"))
     assert backend.readiness()["problem"] == "Codex authentication is not file-backed"
+
+
+def test_read_only_rules_include_text_filters_and_repo_search():
+    rules = codex_backend.isolation_rules(can_write=False)
+    for tool in ("head", "tail", "grep", "sed", "awk", "sort", "uniq", "wc", "cut", "tr", "jq"):
+        assert json.dumps([tool]) in rules
+    assert '["gh", "search", "repos"]' in rules
+    assert '["python3"]' not in rules
+    assert '["gh", "auth", "status"]' not in rules

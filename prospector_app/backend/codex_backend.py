@@ -51,11 +51,15 @@ _READ_ALLOW: tuple[tuple[str, ...], ...] = (
     ("gh", "search", "prs"),
     ("gh", "search", "issues"),
     ("gh", "search", "commits"),
+    ("gh", "search", "repos"),
     ("gh", "release", "view"),
     ("gh", "release", "list"),
     ("gh", "run", "view"),
     ("gh", "run", "list"),
     ("git", "diff"),
+    # Text filters; the sandbox, not the rule, bounds what they may write.
+    ("head",), ("tail",), ("grep",), ("sed",), ("awk",), ("sort",), ("uniq",),
+    ("wc",), ("cut",), ("tr",), ("jq",),
     *_helper_prefixes("gh-read", "remember", "uncluster", "store-read",
                       "reingest", "file-issue"),
 )

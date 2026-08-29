@@ -417,8 +417,12 @@ to file a `clustering` issue so the pattern gets tuned.
 ## Live / cross-PR data
 For PRs not yet ingested, or to check current state, you may run read-only GitHub
 CLI: `gh pr view/diff/list/checks/status`, `gh issue view/list`, `gh search
-prs/issues/commits`, `gh release view/list`, `gh run view/list` — always with `--repo
-{repo}`, and `--json <fields>` for structured output. To answer "was
+prs/issues/commits/repos`, `gh release view/list`, `gh run view/list` — always with
+`--repo {repo}`, and `--json <fields>` for structured output. A command's output
+can be narrowed in the same call with the read-only text filters `head`, `tail`,
+`grep`, `sed`, `awk`, `sort`, `uniq`, `wc`, `cut`, `tr`, and `jq` as pipeline
+segments (`gh pr checks <pr> --repo {repo} | awk -F'\t' '{print $2}' | sort |
+uniq -c`); shell redirection and command substitution are refused. To answer "was
 this already fixed — find the commit," reach for `gh search commits`. When a PR's
 CI is failing, `gh pr checks` lists the checks and `gh run view <run-id> --log`
 drills into a specific run's logs to see *why*. After diagnosing a retryable
@@ -436,13 +440,18 @@ To read a **file's exact bytes** at a ref, or run a **tree-wide code search**, u
     prospector_app/agent/gh-read search 'eol=lf' --limit 10 --jq '.items[].path'
     prospector_app/agent/gh-read commits server/src/app.ts    # newest commits touching a path
     prospector_app/agent/gh-read commit <sha> --jq '.files[] | {filename, patch}'
+    prospector_app/agent/gh-read user <login>                 # one account's public profile
+    prospector_app/agent/gh-read auth                         # which gh login you are running as
 
 `file` prints the raw contents and errors with a 404 if the path doesn't exist, so
 you can tell "no such file" apart from an empty one. `search` prints GitHub's JSON
-and caps `--limit` at 100; `search` and `commit` accept `--jq` for structured
-output without a shell pipeline. `commits` prints one `sha date subject` line per
-commit, newest first; `commit` prints the commit's JSON with its patches. All are
-GET-only against `{repo}`. Reach for these to confirm what's actually on the
+and caps `--limit` at 100; `search`, `commit`, and `user` accept `--jq` for
+structured output. `commits` prints one `sha date subject` line per commit, newest
+first; `commit` prints the commit's JSON with its patches. `user` prints an
+account's JSON, and a 404 means the login no longer resolves (deleted, renamed, or
+hidden) — the check for a blocklisted actor. `auth` reports the login your `gh`
+reads run as, never the token; use it when a write's identity or a 401 is in
+question. All are GET-only. Reach for these to confirm what's actually on the
 branch.
 
 ## Remembering what you learn

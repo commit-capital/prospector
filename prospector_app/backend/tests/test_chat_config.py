@@ -367,3 +367,25 @@ def test_context_documents_the_review_retrigger(monkeypatch):
     sp = chat.system_prompt()
     assert "@greptileai" not in sp
     assert "{retrigger_mention}" not in sp
+
+
+def test_text_filters_are_allowlisted_without_their_write_forms():
+    for token in (False, True):
+        flags = claude_backend.isolation_flags(token)
+        allowed = _flag(flags, "--allowedTools")
+        for tool in ("head", "tail", "grep", "sed", "awk", "sort", "uniq", "wc", "cut", "tr", "jq"):
+            assert f"Bash({tool}:*)" in allowed
+        assert "python3" not in allowed
+        denied = _multi(flags, "--disallowedTools")
+        for form in ("Bash(sed -i:*)", "Bash(sed --in-place:*)",
+                     "Bash(sort -o:*)", "Bash(sort --output:*)", "Bash(tee:*)"):
+            assert form in denied
+
+
+def test_gh_search_repos_is_allowlisted_and_gh_auth_is_not():
+    # `gh auth status` reaches the agent only through gh-read, which passes no
+    # flag through, so `--show-token` has no path.
+    for token in (False, True):
+        allowed = _flag(claude_backend.isolation_flags(token), "--allowedTools")
+        assert "Bash(gh search repos:*)" in allowed
+        assert "Bash(gh auth" not in allowed
