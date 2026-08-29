@@ -134,7 +134,10 @@ def test_start_isolates_config_and_normalizes_jsonl_events(tmp_path, monkeypatch
     assert command[:2] == ["/usr/bin/codex", "exec"]
     assert "resume" not in command
     assert command[-1] == "Is this safe?"
-    assert "PROSPECTOR MANUAL" in config_value(command, "developer_instructions")
+    instructions = config_value(command, "developer_instructions")
+    assert isinstance(instructions, str)
+    assert "PROSPECTOR MANUAL" in instructions
+    assert "only inside the worktree printed by `resubmit prepare`" in instructions
     assert config_value(command, "sandbox_mode") == "read-only"
     assert config_value(command, "approval_policy") == "never"
     assert config_value(command, "project_doc_max_bytes") == 0
@@ -196,6 +199,8 @@ def test_resume_uses_the_saved_thread_and_writable_policy(tmp_path, monkeypatch)
     assert command[:3] == ["/usr/bin/codex", "exec", "resume"]
     assert command[-2:] == ["saved-thread", "Is this safe?"]
     assert all("developer_instructions=" not in arg for arg in command)
+    assert config_value(command, "sandbox_mode") == "workspace-write"
+    assert config_value(command, "sandbox_workspace_write.network_access") is False
     child_env = captured["env"]
     assert isinstance(child_env, dict)
     rules = (Path(child_env["CODEX_HOME"]) / "rules" / "default.rules").read_text()
