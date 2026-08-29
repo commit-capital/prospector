@@ -122,8 +122,6 @@ def test_detaches_from_an_uncurated_cluster_too(tmp_path):
     root = tmp_path / "store"
     _seed_issues(root, confirmed=False)
     r = _run(root, ["issue", "11", "--from", "3"])
-    # A hand-driven close-as-dup (issues.close_gate) consults no curation, so an
-    # uncurated cluster is exactly as able to drive a wrong close as a curated one.
     assert r.returncode == 0, r.stderr
     store = IssueStore(root)
     assert store.load_issue(11).cluster_id is None

@@ -12,7 +12,7 @@ Membership is mutated only through the validated store accessors
 sanctioned way. The cluster keeps its other members; a cluster emptied to one
 member is allowed (a single-member cluster is a valid end state).
 
-The two families differ in what a detach durably means:
+The two families carry membership differently:
 
   pr    A PR carries a LIST of cluster ids (it may straddle), so it detaches from
         one cluster (--from) or from all of them (--all). Detaching a PR from its
@@ -20,12 +20,6 @@ The two families differ in what a detach durably means:
         exactly as a clustering pass would leave it.
   issue An issue carries at most ONE cluster id, so --from names it and there is
         nothing for --all to mean. Detaching clears the backref outright.
-
-What a detach protects is the operator's own reading of the cluster: an issue
-closed as a duplicate by hand goes through issues.close_gate, which asserts the
-operator's judgement and consults no curation, so a wrong grouping reaches
-upstream through the person looking at it. The grouping is the thing to fix, and
-this fixes it for every cluster, curated or not.
 
 
 Usage:
