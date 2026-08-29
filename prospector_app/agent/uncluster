@@ -19,14 +19,14 @@ The two families differ in what a detach durably means:
         last cluster leaves a current standalone stamp — a confirmed singleton,
         exactly as a clustering pass would leave it.
   issue An issue carries at most ONE cluster id, so --from names it and there is
-        nothing for --all to mean. Detaching clears the backref outright, and is
-        allowed ONLY out of a confirmed-curated cluster. The issue clusterer
-        rebuilds every uncurated cluster from scratch and re-groups the issues
-        they hold, so a detach out of one would silently revert; and nothing
-        upstream can fire from an uncurated cluster anyway, since close-as-dup
-        requires confirmed curation. Confirming the curation is the fix that
-        sticks, so an uncurated cluster is refused with that instruction rather
-        than mutated.
+        nothing for --all to mean. Detaching clears the backref outright.
+
+What a detach protects is the operator's own reading of the cluster: an issue
+closed as a duplicate by hand goes through issues.close_gate, which asserts the
+operator's judgement and consults no curation, so a wrong grouping reaches
+upstream through the person looking at it. The grouping is the thing to fix, and
+this fixes it for every cluster, curated or not.
+
 
 Usage:
     prospector_app/agent/uncluster pr <pr> --from <cluster_id>
@@ -110,13 +110,6 @@ def _detach_issue(args: argparse.Namespace) -> int:
     cluster = store.load_issue_cluster(args.cluster)
     if cluster is None:
         print(f"uncluster: issue cluster {args.cluster} is not in the store", file=sys.stderr)
-        return 2
-    if not (cluster.curation or {}).get("confirmed"):
-        print(f"uncluster: issue cluster {args.cluster} is not confirmed-curated, so the "
-              f"next CLUSTER run would rebuild it and re-group #{args.issue}. Nothing "
-              f"upstream can fire from it either — close-as-dup requires confirmed "
-              f"curation. Confirm the curation first (/diagnose-issue-cluster), then "
-              f"detach.", file=sys.stderr)
         return 2
     cluster.remove_member(args.issue)
 

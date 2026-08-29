@@ -118,26 +118,16 @@ def test_detach_issue_clears_its_backref_and_keeps_the_others(tmp_path):
     assert cluster.members == [10]
 
 
-def test_refuses_to_detach_from_an_uncurated_cluster(tmp_path):
+def test_detaches_from_an_uncurated_cluster_too(tmp_path):
     root = tmp_path / "store"
     _seed_issues(root, confirmed=False)
     r = _run(root, ["issue", "11", "--from", "3"])
-    # The clusterer rebuilds uncurated clusters wholesale, so the detach would
-    # silently revert. Refuse it and name the fix that sticks.
-    assert r.returncode == 2
-    assert "not confirmed-curated" in r.stderr
-    assert "/diagnose-issue-cluster" in r.stderr
+    # A hand-driven close-as-dup (issues.close_gate) consults no curation, so an
+    # uncurated cluster is exactly as able to drive a wrong close as a curated one.
+    assert r.returncode == 0, r.stderr
     store = IssueStore(root)
-    assert store.load_issue(11).cluster_id == 3
-    assert store.load_issue_cluster(3).members == [10, 11]
-
-
-def test_an_uncurated_refusal_writes_no_ledger_entry(tmp_path):
-    root = tmp_path / "store"
-    _seed_issues(root, confirmed=False)
-    before = len(IssueStore(root).runs())
-    _run(root, ["issue", "11", "--from", "3"])
-    assert len(IssueStore(root).runs()) == before
+    assert store.load_issue(11).cluster_id is None
+    assert store.load_issue_cluster(3).members == [10]
 
 
 def test_rejects_an_issue_that_is_not_in_the_named_cluster(tmp_path):
