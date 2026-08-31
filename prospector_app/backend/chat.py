@@ -26,8 +26,9 @@ to a fork (#210) — and merges the base branch into a stale PR's head
 triager bug on the meta-repo, which lies outside the bot's app installation.
 
 Each provider backend isolates this Q&A assistant from the operator's development
-harness and exposes only repository reads plus the curated helper scripts allowed
-for the machine's current bot-token capability.
+harness and exposes only repository reads plus the curated helper scripts. The
+bot-authenticated writes ride the machine's bot-token capability; resubmit rides
+the operator's own identity and is granted in every interactive session.
 
 Context comes from two dedicated, agent-facing sources: agent/context.md
 (stable operating manual, injected into the system prompt) and
@@ -635,6 +636,9 @@ async def stream_chat(question: str, pr: int | None = None, cluster: int | None 
             system_prompt=manual,
             session_id=resumed_sid,
             can_write=bool(token),
+            # Resubmit pushes as the confirming operator, never the bot, so an
+            # interactive session grants it regardless of token minting.
+            can_resubmit=True,
             cwd=REPO_ROOT,
             env=safety_guard.operator_env(),
         )

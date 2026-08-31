@@ -1030,6 +1030,30 @@ def cmd_status(pr: int) -> int:
     return _inspect(pr, ["status", "--short", "--branch"])
 
 
+def cmd_rm(pr: int, path: str) -> int:
+    """Delete one file inside the prepared worktree. `push` stages with
+    `git add -A`, so the deletion is committed like any other authored edit."""
+    wt = _worktree(pr)
+    if not _read_meta(pr) or not wt.exists():
+        print(f"resubmit: PR #{pr} was not prepared (run `resubmit {pr} prepare` first)",
+              file=sys.stderr)
+        return 2
+    rel = Path(path)
+    target = wt / rel
+    if (rel.is_absolute()
+            or ".git" in rel.parts
+            or not target.resolve().is_relative_to(wt.resolve())
+            or target.resolve() == wt.resolve()):
+        print(f"resubmit: rm is confined to the prepared worktree: {path!r}", file=sys.stderr)
+        return 2
+    if not target.is_file():
+        print(f"resubmit: not a file in the worktree: {path!r}", file=sys.stderr)
+        return 2
+    target.unlink()
+    print(f"deleted {rel} from the PR #{pr} worktree; review with `resubmit {pr} diff`.")
+    return 0
+
+
 def cmd_abort(pr: int) -> int:
     if not _worktree(pr).exists() and not _meta_path(pr).exists():
         print(f"resubmit: nothing to abort — PR #{pr} has no prepared worktree.", file=sys.stderr)
@@ -1136,6 +1160,8 @@ def main(argv: list[str] | None = None) -> int:
     showp.add_argument("ref", nargs="?", default="HEAD", help="revision to show (default HEAD)")
     showp.add_argument("--stat", action="store_true", help="file list only, no patch")
     sub.add_parser("status", help="the prepared worktree's branch and uncommitted paths")
+    rmp = sub.add_parser("rm", help="delete one file inside the prepared worktree")
+    rmp.add_argument("path", help="worktree-relative path to delete")
     args = p.parse_args(argv)
 
     try:
@@ -1161,6 +1187,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_show(args.pr, args.ref, args.stat)
         if args.action == "status":
             return cmd_status(args.pr)
+        if args.action == "rm":
+            return cmd_rm(args.pr, args.path)
     except RuntimeError as e:
         print(f"resubmit: {e}", file=sys.stderr)
         return 4

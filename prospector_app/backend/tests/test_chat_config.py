@@ -34,15 +34,15 @@ def _multi(flags, name):
 def test_runs_in_dontask_not_plan():
     # plan mode is what produced the "permissions / plan" chatter; dontAsk
     # silently denies anything outside the allowlist.
-    assert _flag(claude_backend.isolation_flags(False), "--permission-mode") == "dontAsk"
+    assert _flag(claude_backend.isolation_flags(False, can_resubmit=True), "--permission-mode") == "dontAsk"
 
 
 def test_safe_mode_isolates_from_dev_harness():
     # --safe-mode disables CLAUDE.md (no double duty with the dev manual), hooks,
     # plugins, skills, MCP servers, and custom agents/commands. True regardless of
     # whether writes are unlocked.
-    assert "--safe-mode" in claude_backend.isolation_flags(False)
-    assert "--safe-mode" in claude_backend.isolation_flags(True)
+    assert "--safe-mode" in claude_backend.isolation_flags(False, can_resubmit=True)
+    assert "--safe-mode" in claude_backend.isolation_flags(True, can_resubmit=True)
 
 
 def test_no_settings_files_are_loaded():
@@ -52,7 +52,7 @@ def test_no_settings_files_are_loaded():
     # (#374). Dropping the settings files leaves the agent's boundary as its
     # dontAsk + CLI allowlist.
     for token in (False, True):
-        flags = claude_backend.isolation_flags(token)
+        flags = claude_backend.isolation_flags(token, can_resubmit=True)
         assert _flag(flags, "--setting-sources") == ""
 
 
@@ -90,8 +90,8 @@ def test_missing_context_is_a_loud_failure(monkeypatch, tmp_path):
 
 
 def test_read_only_allowlist_without_a_token():
-    # No bot token → the read subcommands and none of the upstream writes.
-    allowed = _flag(claude_backend.isolation_flags(False), "--allowedTools")
+    # No bot token → the read subcommands and none of the BOT-identity writes.
+    allowed = _flag(claude_backend.isolation_flags(False, can_resubmit=True), "--allowedTools")
     for sub in ("gh pr view", "gh pr diff", "gh pr list", "gh pr checks",
                 "gh pr status", "gh issue view", "gh issue list",
                 "gh search prs", "gh search issues", "gh search commits",
@@ -104,29 +104,34 @@ def test_read_only_allowlist_without_a_token():
                    "gh issue create", "gh issue close", "gh issue reopen",
                    "gh issue comment", "gh issue edit", "gh run rerun"):
         assert danger not in allowed
-    # resubmit (push-as-the-operator) and the Edit/Write tools it needs are NOT
-    # offered without a token, and Edit/Write stay on the effective deny list —
-    # a read-only machine can't touch files on disk or push a branch.
-    flags = claude_backend.isolation_flags(False)
-    assert "prospector_app/agent/resubmit" not in allowed
-    assert "Edit" not in allowed and "Write" not in allowed
-    assert "Edit" in _multi(flags, "--disallowedTools")
-    assert "Write" in _multi(flags, "--disallowedTools")
+    # resubmit (push-as-the-operator) and the Edit/Write tools it needs ride the
+    # session's resubmit grant, not the token — a machine that cannot mint the
+    # bot token still authors and pushes as the confirming operator.
+    assert "Bash(prospector_app/agent/resubmit:*)" in allowed
+    assert "Edit" in allowed and "Write" in allowed
 
 
-def test_resubmit_and_file_edits_unlocked_with_a_token():
-    # A minted bot token proves this is a writable operator session, so
-    # the resubmit path is offered and the Edit/Write tools it needs to author
-    # the change are lifted off the deny list. The interactive push itself runs
-    # as the confirming operator (the helper drops the App token), not the App.
-    flags = claude_backend.isolation_flags(True)
+def test_resubmit_and_file_edits_ride_the_resubmit_grant_not_the_token():
+    # The two grants are separate identities. can_resubmit alone offers the
+    # resubmit path and lifts Edit/Write off the deny list, with no bot helper
+    # in sight; can_write alone offers the bot helpers and keeps files sealed.
+    flags = claude_backend.isolation_flags(False, can_resubmit=True)
     allowed = _flag(flags, "--allowedTools")
     assert "Bash(prospector_app/agent/resubmit:*)" in allowed
     assert "Edit" in allowed and "Write" in allowed
+    assert "gh-write" not in allowed and "close-pr" not in allowed
     disallowed = _multi(flags, "--disallowedTools")
     assert "Edit" not in disallowed and "Write" not in disallowed
     # NotebookEdit is never needed and stays denied.
     assert "NotebookEdit" in disallowed
+
+    flags = claude_backend.isolation_flags(True, can_resubmit=False)
+    allowed = _flag(flags, "--allowedTools")
+    assert "Bash(prospector_app/agent/gh-write:*)" in allowed
+    assert "resubmit" not in allowed
+    assert "Edit" not in allowed and "Write" not in allowed
+    disallowed = _multi(flags, "--disallowedTools")
+    assert "Edit" in disallowed and "Write" in disallowed
     # the real, executable script backs the allowlisted path.
     script = chat.APP_ROOT / "agent" / "resubmit"
     assert script.exists() and os.access(script, os.X_OK)
@@ -135,7 +140,7 @@ def test_resubmit_and_file_edits_unlocked_with_a_token():
 def test_interactive_resubmit_needs_no_worker_push_identity():
     # TRIAGE_PUSH_* belongs to the unattended worker. A laptop with an ordinary
     # operator SSH login keeps the explicitly confirmed chat flow available.
-    flags = claude_backend.isolation_flags(True)
+    flags = claude_backend.isolation_flags(True, can_resubmit=True)
     allowed = _flag(flags, "--allowedTools")
     assert "Bash(prospector_app/agent/resubmit:*)" in allowed
     assert "Edit" in allowed and "Write" in allowed
@@ -147,7 +152,7 @@ def test_interactive_resubmit_needs_no_worker_push_identity():
 
 def test_curated_writes_unlocked_with_a_token_but_never_merge():
     # With a token one validating, on-demand-mint helper is added on top of the reads.
-    allowed = _flag(claude_backend.isolation_flags(True), "--allowedTools")
+    allowed = _flag(claude_backend.isolation_flags(True, can_resubmit=True), "--allowedTools")
     assert "Bash(prospector_app/agent/gh-write:*)" in allowed
     for sub in ("gh pr edit", "gh pr comment", "gh issue create", "gh issue reopen",
                 "gh issue comment", "gh issue edit", "gh run rerun"):
@@ -174,8 +179,8 @@ def test_curated_writes_unlocked_with_a_token_but_never_merge():
 
 
 def test_executor_write_helpers_require_token_and_are_executable():
-    read_only = _flag(claude_backend.isolation_flags(False), "--allowedTools")
-    writable = _flag(claude_backend.isolation_flags(True), "--allowedTools")
+    read_only = _flag(claude_backend.isolation_flags(False, can_resubmit=True), "--allowedTools")
+    writable = _flag(claude_backend.isolation_flags(True, can_resubmit=True), "--allowedTools")
     for name in ("close-pr", "reopen-pr", "submit-review", "close-issue"):
         assert f"prospector_app/agent/{name}" not in read_only
         assert f"Bash(prospector_app/agent/{name}:*)" in writable
@@ -188,7 +193,7 @@ def test_local_self_writes_are_allowlisted_and_executable():
     # its memory, and detach a mis-grouped PR from a cluster. Both ride the
     # always-on allowlisted-Bash path, present even with no token.
     for token in (False, True):
-        allowed = _flag(claude_backend.isolation_flags(token), "--allowedTools")
+        allowed = _flag(claude_backend.isolation_flags(token, can_resubmit=True), "--allowedTools")
         assert "Bash(prospector_app/agent/remember:*)" in allowed
         assert "Bash(prospector_app/agent/uncluster:*)" in allowed
     # Each allowlisted path must be the real, executable script.
@@ -203,7 +208,7 @@ def test_file_issue_is_allowlisted_and_executable():
     # bot-authenticated `gh` can't resolve it). Available with or without a token —
     # a tooling bug is reportable on every machine.
     for token in (False, True):
-        allowed = _flag(claude_backend.isolation_flags(token), "--allowedTools")
+        allowed = _flag(claude_backend.isolation_flags(token, can_resubmit=True), "--allowedTools")
         assert "Bash(prospector_app/agent/file-issue:*)" in allowed
     script = chat.APP_ROOT / "agent" / "file-issue"
     assert script.exists() and os.access(script, os.X_OK)
@@ -213,7 +218,7 @@ def test_store_read_is_allowlisted_and_executable():
     # The agent's read window into the SQL store rides the same always-on
     # allowlisted-Bash path (no upstream, no token) — present with or without one.
     for token in (False, True):
-        allowed = _flag(claude_backend.isolation_flags(token), "--allowedTools")
+        allowed = _flag(claude_backend.isolation_flags(token, can_resubmit=True), "--allowedTools")
         assert "Bash(prospector_app/agent/store-read:*)" in allowed
     script = chat.APP_ROOT / "agent" / "store-read"
     assert script.exists() and os.access(script, os.X_OK)
@@ -223,7 +228,7 @@ def test_reingest_is_allowlisted_and_executable():
     # The agent's "refresh one PR" path (a local store edit, no upstream/token) rides
     # the same always-on allowlisted-Bash path — present with or without a token.
     for token in (False, True):
-        allowed = _flag(claude_backend.isolation_flags(token), "--allowedTools")
+        allowed = _flag(claude_backend.isolation_flags(token, can_resubmit=True), "--allowedTools")
         assert "Bash(prospector_app/agent/reingest:*)" in allowed
     script = chat.APP_ROOT / "agent" / "reingest"
     assert script.exists() and os.access(script, os.X_OK)
@@ -234,7 +239,7 @@ def test_gh_read_is_allowlisted_and_executable():
     # upstream write, no token) rides the same always-on allowlisted-Bash path —
     # present with or without a token.
     for token in (False, True):
-        allowed = _flag(claude_backend.isolation_flags(token), "--allowedTools")
+        allowed = _flag(claude_backend.isolation_flags(token, can_resubmit=True), "--allowedTools")
         assert "Bash(prospector_app/agent/gh-read:*)" in allowed
     script = chat.APP_ROOT / "agent" / "gh-read"
     assert script.exists() and os.access(script, os.X_OK)
@@ -245,7 +250,7 @@ def test_sanctioned_helpers_accept_relative_and_resolved_absolute_paths():
         (False, ("gh-read", "remember", "uncluster", "store-read", "reingest", "file-issue")),
         (True, ("gh-write", "close-pr", "reopen-pr", "submit-review", "close-issue", "resubmit")),
     ):
-        allowed = _flag(claude_backend.isolation_flags(can_write), "--allowedTools")
+        allowed = _flag(claude_backend.isolation_flags(can_write, can_resubmit=True), "--allowedTools")
         for helper in helpers:
             relative = f"prospector_app/agent/{helper}"
             absolute = (chat.APP_ROOT / "agent" / helper).resolve()
@@ -257,7 +262,7 @@ def test_git_diff_is_allowlisted_read_only():
     # `git diff` is read-only, so it's on the always-on allowlist (with or without a
     # token) — but only that subcommand; mutating git commands stay denied.
     for token in (False, True):
-        allowed = _flag(claude_backend.isolation_flags(token), "--allowedTools")
+        allowed = _flag(claude_backend.isolation_flags(token, can_resubmit=True), "--allowedTools")
         assert "Bash(git diff:*)" in allowed
         for danger in ("git commit", "git push", "git checkout", "git reset"):
             assert danger not in allowed
@@ -271,7 +276,7 @@ def test_write_and_agentic_tools_are_disallowed_but_bash_is_not():
         assert t in claude_backend._DISALLOWED_TOOLS
     # the agentic tools are never lifted, even on an operator machine.
     for t in ("Task", "Workflow", "Skill", "WebFetch"):
-        assert t in _multi(claude_backend.isolation_flags(True), "--disallowedTools")
+        assert t in _multi(claude_backend.isolation_flags(True, can_resubmit=True), "--disallowedTools")
     # Bash stays available — it's the carrier for the gh allowlist.
     assert "Bash" not in claude_backend._DISALLOWED_TOOLS
 
@@ -371,7 +376,7 @@ def test_context_documents_the_review_retrigger(monkeypatch):
 
 def test_text_filters_are_allowlisted_without_their_write_forms():
     for token in (False, True):
-        flags = claude_backend.isolation_flags(token)
+        flags = claude_backend.isolation_flags(token, can_resubmit=True)
         allowed = _flag(flags, "--allowedTools")
         for tool in ("head", "tail", "grep", "sed", "awk", "sort", "uniq", "wc", "cut", "tr", "jq"):
             assert f"Bash({tool}:*)" in allowed
@@ -386,6 +391,6 @@ def test_gh_search_repos_is_allowlisted_and_gh_auth_is_not():
     # `gh auth status` reaches the agent only through gh-read, which passes no
     # flag through, so `--show-token` has no path.
     for token in (False, True):
-        allowed = _flag(claude_backend.isolation_flags(token), "--allowedTools")
+        allowed = _flag(claude_backend.isolation_flags(token, can_resubmit=True), "--allowedTools")
         assert "Bash(gh search repos:*)" in allowed
         assert "Bash(gh auth" not in allowed

@@ -14,6 +14,7 @@ class AgentRequest:
     system_prompt: str
     session_id: str | None
     can_write: bool
+    can_resubmit: bool
     cwd: Path
     env: Mapping[str, str]
 

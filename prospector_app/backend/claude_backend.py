@@ -2,7 +2,8 @@
 
 The CLI runs in safe mode with no settings sources. Its dontAsk permission
 boundary advertises repository reads and curated helper scripts, adding the
-token-gated write and resubmit paths only for a writable operator session.
+token-gated bot writes when the session can mint the bot token and the
+operator-identity resubmit path when the session grants it.
 """
 from __future__ import annotations
 
@@ -81,15 +82,21 @@ _DISALLOWED_TOOLS = [
 ]
 
 
-def isolation_flags(can_write: bool) -> list[str]:
-    """Build the complete Claude tool and harness boundary for one turn."""
+def isolation_flags(can_write: bool, can_resubmit: bool) -> list[str]:
+    """Build the complete Claude tool and harness boundary for one turn.
+
+    The two grants are independent identities: `can_write` is the bot (a
+    mintable installation token) and adds the bot-authenticated helpers;
+    `can_resubmit` is the confirming operator and adds the resubmit helper plus
+    the Edit/Write tools its worktree authoring needs."""
     allowed = ["Read", "Grep", "Glob", *_GH_ALLOW, *_FILTER_ALLOW, *_GH_READ_ALLOW,
                *_GIT_ALLOW, *_REMEMBER_ALLOW, *_UNCLUSTER_ALLOW, *_STORE_READ_ALLOW,
                *_REINGEST_ALLOW, *_FILE_ISSUE_ALLOW]
     disallowed = [*_DISALLOWED_TOOLS, *_FILTER_DENY]
     if can_write:
-        allowed += [*_GH_WRITE_ALLOW, *_PR_EXECUTOR_ALLOW, *_ISSUE_CLOSE_ALLOW,
-                    *_RESUBMIT_ALLOW, "Edit", "Write"]
+        allowed += [*_GH_WRITE_ALLOW, *_PR_EXECUTOR_ALLOW, *_ISSUE_CLOSE_ALLOW]
+    if can_resubmit:
+        allowed += [*_RESUBMIT_ALLOW, "Edit", "Write"]
         disallowed = [t for t in disallowed if t not in ("Edit", "Write")]
     return [
         "--allowedTools", ",".join(allowed),
@@ -218,7 +225,8 @@ class ClaudeBackend(agent_backend.AgentBackend):
     async def start(self, request: agent_backend.AgentRequest) -> ClaudeTurn:
         command = [
             CLAUDE_BIN, "-p", request.prompt,
-            *isolation_flags(can_write=request.can_write),
+            *isolation_flags(can_write=request.can_write,
+                             can_resubmit=request.can_resubmit),
             "--output-format", "stream-json", "--verbose", "--include-partial-messages",
             "--append-system-prompt", request.system_prompt,
         ]

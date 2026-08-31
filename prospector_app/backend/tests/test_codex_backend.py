@@ -29,7 +29,8 @@ class FakeProc:
 
 
 def request(tmp_path: Path, *, session_id: str | None = None,
-            can_write: bool = False) -> agent_backend.AgentRequest:
+            can_write: bool = False,
+            can_resubmit: bool = True) -> agent_backend.AgentRequest:
     operator_home = tmp_path / "operator-codex"
     operator_home.mkdir(exist_ok=True)
     (operator_home / "auth.json").write_text("{}")
@@ -39,6 +40,7 @@ def request(tmp_path: Path, *, session_id: str | None = None,
         system_prompt="PROSPECTOR MANUAL",
         session_id=session_id,
         can_write=can_write,
+        can_resubmit=can_resubmit,
         cwd=tmp_path,
         env={"CODEX_HOME": str(operator_home), "PATH": "/usr/bin"},
     )
@@ -53,7 +55,7 @@ def config_value(command: list[str], key: str) -> object:
 
 
 def test_read_only_rules_expose_only_curated_reads_and_local_helpers():
-    rules = codex_backend.isolation_rules(can_write=False)
+    rules = codex_backend.isolation_rules(can_write=False, can_resubmit=False)
 
     assert '["gh", "pr", "view"]' in rules
     assert '["gh", "release", "list"]' in rules
@@ -78,17 +80,24 @@ def test_chat_registers_and_dispatches_the_codex_backend(monkeypatch):
 
 
 def test_writable_rules_add_only_the_curated_write_helpers():
-    read_only = codex_backend.isolation_rules(can_write=False)
-    writable = codex_backend.isolation_rules(can_write=True)
+    read_only = codex_backend.isolation_rules(can_write=False, can_resubmit=False)
+    writable = codex_backend.isolation_rules(can_write=True, can_resubmit=False)
 
     assert writable.startswith(read_only)
     for helper in codex_backend._WRITE_ALLOW:
         assert json.dumps(list(helper)) in writable
+    assert '["prospector_app/agent/resubmit"]' not in writable
     assert '["gh", "pr", "merge"]' not in writable
 
 
+def test_resubmit_rules_ride_the_resubmit_grant_not_the_token():
+    rules = codex_backend.isolation_rules(can_write=False, can_resubmit=True)
+    assert '["prospector_app/agent/resubmit"]' in rules
+    assert '["prospector_app/agent/gh-write"]' not in rules
+
+
 def test_writable_rules_accept_resolved_absolute_helper_paths():
-    rules = codex_backend.isolation_rules(can_write=True)
+    rules = codex_backend.isolation_rules(can_write=True, can_resubmit=True)
     for helper in ("gh-write", "close-pr", "reopen-pr", "submit-review", "close-issue", "resubmit"):
         assert json.dumps([str((codex_backend.AGENT_ROOT / helper).resolve())]) in rules
 
@@ -137,8 +146,12 @@ def test_start_isolates_config_and_normalizes_jsonl_events(tmp_path, monkeypatch
     instructions = config_value(command, "developer_instructions")
     assert isinstance(instructions, str)
     assert "PROSPECTOR MANUAL" in instructions
-    assert "only inside the worktree printed by `resubmit prepare`" in instructions
-    assert config_value(command, "sandbox_mode") == "read-only"
+    assert "inside the worktree printed by `resubmit prepare`" in instructions
+    # The default request grants resubmit, so the sandbox is workspace-write;
+    # withholding the grant is what keeps it read-only.
+    assert config_value(command, "sandbox_mode") == "workspace-write"
+    read_only = codex_backend._flags(system_prompt=None, can_resubmit=False)
+    assert config_value(read_only, "sandbox_mode") == "read-only"
     assert config_value(command, "approval_policy") == "never"
     assert config_value(command, "project_doc_max_bytes") == 0
     assert "--ignore-user-config" in command
@@ -326,7 +339,7 @@ def test_readiness_requires_a_binary_login_and_file_auth(tmp_path, monkeypatch):
 
 
 def test_read_only_rules_include_text_filters_and_repo_search():
-    rules = codex_backend.isolation_rules(can_write=False)
+    rules = codex_backend.isolation_rules(can_write=False, can_resubmit=False)
     for tool in ("head", "tail", "grep", "sed", "awk", "sort", "uniq", "wc", "cut", "tr", "jq"):
         assert json.dumps([tool]) in rules
     assert '["gh", "search", "repos"]' in rules
