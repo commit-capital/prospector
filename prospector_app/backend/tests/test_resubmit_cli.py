@@ -854,3 +854,57 @@ def test_merge_push_refuses_when_head_moved(monkeypatch, tmp_path):
     monkeypatch.setattr(resubmit, "_gh_json",
                         lambda pr: _pr(headRefOid="f" * 40, baseRefOid=repos["stale_base"]))
     assert resubmit.cmd_push(42, None, False, None) == 6
+
+
+# --- rm: file deletion confined to the prepared worktree ------------------------
+
+def _prepared_edit_worktree(monkeypatch, tmp_path):
+    repos = _make_rebase_repos(tmp_path, conflict=False)
+    _wire_rebase(monkeypatch, tmp_path, repos)
+    assert resubmit.cmd_prepare(42) == 0
+    return resubmit._worktree(42)
+
+
+def test_rm_deletes_one_worktree_file(monkeypatch, tmp_path, capsys):
+    wt = _prepared_edit_worktree(monkeypatch, tmp_path)
+    assert (wt / "feature.txt").is_file()
+    assert resubmit.cmd_rm(42, "feature.txt") == 0
+    assert not (wt / "feature.txt").exists()
+    assert "deleted feature.txt" in capsys.readouterr().out
+
+
+def test_rm_deletion_is_committed_by_push(monkeypatch, tmp_path):
+    repos = _make_rebase_repos(tmp_path, conflict=False)
+    _wire_rebase(monkeypatch, tmp_path, repos)
+    monkeypatch.setattr(resubmit, "_log", lambda *args, **kwargs: None)
+    assert resubmit.cmd_prepare(42) == 0
+    assert resubmit.cmd_rm(42, "feature.txt") == 0
+    assert resubmit.cmd_push(42, "Drop the superseded file", False) == 0
+    pushed = _git(repos["fork"], "rev-parse", "refs/heads/fix").stdout.strip()
+    tree = _git(repos["fork"], "ls-tree", "--name-only", pushed).stdout
+    assert "feature.txt" not in tree
+
+
+@pytest.mark.parametrize("path", [
+    "../outside.txt", "/etc/passwd", ".git/config", "sub/../../outside.txt", ".",
+])
+def test_rm_refuses_paths_outside_the_worktree(monkeypatch, tmp_path, capsys, path):
+    _prepared_edit_worktree(monkeypatch, tmp_path)
+    (tmp_path / "resubmit" / "outside.txt").write_text("sibling of the clone\n")
+    assert resubmit.cmd_rm(42, path) == 2
+    assert "confined to the prepared worktree" in capsys.readouterr().err
+    assert (tmp_path / "resubmit" / "outside.txt").exists()
+
+
+def test_rm_refuses_a_missing_file_and_a_directory(monkeypatch, tmp_path, capsys):
+    wt = _prepared_edit_worktree(monkeypatch, tmp_path)
+    (wt / "adir").mkdir()
+    assert resubmit.cmd_rm(42, "nope.txt") == 2
+    assert resubmit.cmd_rm(42, "adir") == 2
+    assert (wt / "adir").is_dir()
+
+
+def test_rm_without_prepare_fails_cleanly(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(resubmit, "WORKTREE_ROOT", tmp_path / "resubmit")
+    assert resubmit.main(["42", "rm", "anything.txt"]) == 2
+    assert "was not prepared" in capsys.readouterr().err

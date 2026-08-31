@@ -73,8 +73,9 @@ own branches while still being unable to reach the triage repository.
   they never fall back to the operator's login. A separate helper may always
   file an issue only on `PROSPECTOR_FEEDBACK_REPO` as the operator. The agent's
   resubmit helper uses the confirming operator's identity for interactive
-  contributor-branch pushes and is advertised when the session can mint the bot
-  token. The worker opts into its configured machine identity separately. These
+  contributor-branch pushes and is advertised in every interactive session,
+  with or without a mintable bot token. The worker opts into its configured
+  machine identity separately. These
   paths do not use the per-PR merge gate. Chat PR close, reopen, and review
   operations, plus issue closes, call their corresponding executor paths; other
   upstream chat writes use `prospector_app/agent/gh-write`, which validates the

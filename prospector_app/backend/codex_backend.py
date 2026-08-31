@@ -1,12 +1,13 @@
 """Codex CLI implementation of the conversational-agent boundary.
 
 Each chat thread gets an isolated Codex home containing its resume state and an
-execpolicy allowlist. Codex runs in a network-restricted sandbox that stays
-read-only unless the session can mint the bot token; writable sessions may
-author the confirmed resubmit edit. Only the same GitHub reads and curated
-helper commands exposed to Claude may run outside it. The operator's file-backed
-Codex login is linked into the isolated home, while user configuration and
-repository instructions stay out of the app agent's prompt.
+execpolicy allowlist. Codex runs in a network-restricted sandbox; a session that
+grants resubmit runs it workspace-write so the agent can author the confirmed
+resubmit edit, and the bot-authenticated helpers ride separately on the session's
+bot-token grant. Only the same GitHub reads and curated helper commands exposed
+to Claude may run outside the sandbox. The operator's file-backed Codex login is
+linked into the isolated home, while user configuration and repository
+instructions stay out of the app agent's prompt.
 """
 from __future__ import annotations
 
@@ -65,8 +66,10 @@ _READ_ALLOW: tuple[tuple[str, ...], ...] = (
 )
 
 _WRITE_ALLOW = _helper_prefixes(
-    "gh-write", "close-pr", "reopen-pr", "submit-review", "close-issue", "resubmit",
+    "gh-write", "close-pr", "reopen-pr", "submit-review", "close-issue",
 )
+
+_RESUBMIT_ALLOW = _helper_prefixes("resubmit")
 
 _CODEX_CONTEXT = """
 
@@ -74,14 +77,14 @@ _CODEX_CONTEXT = """
 You are running through the Codex CLI. The operating manual's references to
 Claude Code's cockpit describe this app's provider-independent boundary. Run
 the documented commands with the shell tool exactly as written. Commands not
-granted by the cockpit remain inside the network-disabled sandbox. A writable
-session changes that sandbox from read-only to workspace-write for the confirmed
+granted by the cockpit remain inside the network-disabled sandbox. A session
+that grants resubmit runs that sandbox workspace-write for the confirmed
 resubmit flow. An approval or network denial means the action did not run. Do
 not ask the operator for a Codex approval prompt; this embedded surface has none.
 
-In a writable session, use filesystem write tools only for a resubmit the
-operator confirmed, and only inside the worktree printed by `resubmit prepare`.
-Never edit the primary Prospector checkout.
+Use filesystem write tools only for a resubmit the operator confirmed, and only
+inside the worktree printed by `resubmit prepare`. Never edit the primary
+Prospector checkout.
 """.rstrip()
 
 _SHELL_EXCLUDES = [
@@ -92,8 +95,9 @@ _SHELL_EXCLUDES = [
 ]
 
 
-def isolation_rules(can_write: bool) -> str:
-    prefixes = _READ_ALLOW + (_WRITE_ALLOW if can_write else ())
+def isolation_rules(can_write: bool, can_resubmit: bool) -> str:
+    prefixes = (_READ_ALLOW + (_WRITE_ALLOW if can_write else ())
+                + (_RESUBMIT_ALLOW if can_resubmit else ()))
     return "".join(
         f"prefix_rule(pattern = {json.dumps(list(prefix))}, decision = \"allow\")\n"
         for prefix in prefixes
@@ -134,7 +138,7 @@ def _prepare_home(request: agent_backend.AgentRequest) -> Path:
     rules_dir.mkdir(mode=0o700, exist_ok=True)
     rules_path = rules_dir / "default.rules"
     with tempfile.NamedTemporaryFile("w", dir=rules_dir, delete=False) as tmp:
-        tmp.write(isolation_rules(request.can_write))
+        tmp.write(isolation_rules(request.can_write, request.can_resubmit))
         staged = Path(tmp.name)
     staged.chmod(0o600)
     staged.replace(rules_path)
@@ -145,12 +149,12 @@ def _config(key: str, value: object) -> list[str]:
     return ["-c", f"{key}={json.dumps(value)}"]
 
 
-def _flags(system_prompt: str | None, can_write: bool) -> list[str]:
+def _flags(system_prompt: str | None, can_resubmit: bool) -> list[str]:
     flags = [
         "--json",
         "--ignore-user-config",
         "--strict-config",
-        *_config("sandbox_mode", "workspace-write" if can_write else "read-only"),
+        *_config("sandbox_mode", "workspace-write" if can_resubmit else "read-only"),
         *_config("approval_policy", "never"),
         *_config("project_doc_max_bytes", 0),
         *_config("include_apps_instructions", False),
@@ -171,7 +175,7 @@ def _flags(system_prompt: str | None, can_write: bool) -> list[str]:
         *_config("shell_environment_policy.ignore_default_excludes", False),
         *_config("shell_environment_policy.exclude", _SHELL_EXCLUDES),
     ]
-    if can_write:
+    if can_resubmit:
         flags += _config("sandbox_workspace_write.network_access", False)
     if system_prompt is not None:
         flags += _config("developer_instructions", system_prompt + _CODEX_CONTEXT)
@@ -317,14 +321,14 @@ class CodexBackend(agent_backend.AgentBackend):
         if request.session_id:
             command = [
                 CODEX_BIN, "exec", "resume",
-                *_flags(system_prompt=None, can_write=request.can_write),
+                *_flags(system_prompt=None, can_resubmit=request.can_resubmit),
                 request.session_id,
                 request.prompt,
             ]
         else:
             command = [
                 CODEX_BIN, "exec",
-                *_flags(system_prompt=request.system_prompt, can_write=request.can_write),
+                *_flags(system_prompt=request.system_prompt, can_resubmit=request.can_resubmit),
                 request.prompt,
             ]
         proc = await subproc.spawn(

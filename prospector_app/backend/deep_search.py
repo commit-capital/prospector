@@ -143,7 +143,7 @@ async def _judge_batch(query: str, records: list[dict], sem: asyncio.Semaphore) 
     prompt = _JUDGE_PROMPT.format(query=query, records=json.dumps(records, ensure_ascii=False))
     # Read-only judge: no token, no write tools — the strictly read-only sandbox.
     cmd = [claude_backend.CLAUDE_BIN, "-p", prompt,
-           *claude_backend.isolation_flags(can_write=False),
+           *claude_backend.isolation_flags(can_write=False, can_resubmit=False),
            "--output-format", "json", "--append-system-prompt", chat.system_prompt()]
     valid = {r["pr"] for r in records}
     async with sem:

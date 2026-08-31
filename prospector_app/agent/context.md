@@ -226,9 +226,10 @@ and push it** — which also re-triggers CI and the configured review provider.
 This is the **one action that runs as the confirming operator, not `{bot}`**
 — a GitHub App installation cannot push to a fork even when "Allow edits from
 maintainers" is on (that grants push to maintainer *users*), so the push goes out
-through the operator's existing local GitHub SSH identity. Treat it as
+through the operator's existing local GitHub SSH identity. It does not need the
+bot token — it is available even when the bot writes are not. Treat it as
 **higher-stakes than the bot writes**: it commits code to someone else's branch,
-and is available only in a writable session after the operator confirms.
+and runs only after the operator confirms.
 
 The `resubmit` helper owns the git mechanics; you author the edits in between:
 
@@ -255,6 +256,11 @@ or `--merge` produced before you describe it to the operator:
     prospector_app/agent/resubmit <pr> log [--limit N]   # recent commits (default 10)
     prospector_app/agent/resubmit <pr> show [<rev>] [--stat]   # one commit; --stat = files only
     prospector_app/agent/resubmit <pr> status            # branch + uncommitted paths
+
+To delete a file as part of the change, use the helper — it is confined to the
+worktree, and `push` commits the deletion like any other edit:
+
+    prospector_app/agent/resubmit <pr> rm <worktree-relative-path>
 
 **Draft the exact change first** — the PR, what you'll change and why — and run
 `prepare` only after the operator confirms. Show them what you edited before you

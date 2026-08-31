@@ -160,7 +160,7 @@ async def search_to_spec(query: str) -> dict:
     """Run the one-shot agent and return a validated spec (possibly {})."""
     prompt = _PROMPT.replace("__REVIEW_FIELDS__", _review_field_docs()).format(query=query)
     cmd = [claude_backend.CLAUDE_BIN, "-p", prompt,
-           *claude_backend.isolation_flags(can_write=False), "--output-format", "json",
+           *claude_backend.isolation_flags(can_write=False, can_resubmit=False), "--output-format", "json",
            "--append-system-prompt", chat.system_prompt()]
     proc = await subproc.spawn(
         cmd, cwd=chat.REPO_ROOT, stderr=asyncio.subprocess.DEVNULL,
