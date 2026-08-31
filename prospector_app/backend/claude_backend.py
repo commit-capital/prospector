@@ -73,7 +73,7 @@ _RESUBMIT_ALLOW = _helper_allow("resubmit")
 _DISALLOWED_TOOLS = [
     "Task", "Edit", "Write", "NotebookEdit",
     "EnterPlanMode", "ExitPlanMode", "EnterWorktree", "ExitWorktree",
-    "Skill", "Workflow", "SendMessage", "TeamCreate", "TeamDelete",
+    "Skill", "Workflow", "SendMessage",
     "CronCreate", "CronDelete", "CronList",
     "TaskCreate", "TaskGet", "TaskList", "TaskOutput", "TaskStop", "TaskUpdate",
     "Monitor", "RemoteTrigger", "PushNotification", "ScheduleWakeup",
