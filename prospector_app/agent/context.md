@@ -435,7 +435,10 @@ drills into a specific run's logs to see *why*. After diagnosing a retryable
 failure, recommend the exact `prospector_app/agent/gh-write run rerun <run-id>`
 action and execute it only after the operator confirms. Prefer the local
 store for already-ingested analysis. When the operator asks you to wait for CI,
-use `gh pr checks <pr> --watch --interval 30 --repo {repo}` as one command.
+use `gh pr checks <pr> --watch --interval 30 --repo {repo}` as one command. The
+watch blocks until the checks settle, and the Bash tool times a command out at
+ten minutes — a timeout there means the checks have not settled, not that they
+failed; re-run the same watch (or a plain `gh pr checks`) to keep waiting.
 
 To read a **file's exact bytes** at a ref, or run a **tree-wide code search**, use
 `gh-read`:
