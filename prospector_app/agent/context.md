@@ -40,10 +40,32 @@ and prints the record as JSON:
     prospector_app/agent/store-read cluster <CID>           # the whole cluster record
     prospector_app/agent/store-read issue <N>               # the whole issue record
     prospector_app/agent/store-read issue <N> --section analysis  # just one section
+    prospector_app/agent/store-read prs                     # every open PR as a compact row
+    prospector_app/agent/store-read prs --state all --fields issues.linked,analysis.disposition
+    prospector_app/agent/store-read prs --numbers 12,40,77  # just these PRs
+    prospector_app/agent/store-read issues --state closed   # every closed issue
     prospector_app/agent/store-read threats                 # the threat registry
     prospector_app/agent/store-read activity pr <N>         # executed actions on one PR
     prospector_app/agent/store-read activity issue <N>      # executed actions on one issue
     prospector_app/agent/store-read activity recent --limit 50  # the recent action feed
+
+`prs` and `issues` are the bulk reads: a JSON array with one compact row per
+record (number, state, title, author, stamps), open records by default,
+`--state closed|all` to widen, `--numbers` to restrict to a list (the Explorer
+context hands you every matching number when the set is large), and `--fields`
+to copy dotted paths out of the record into each row. `prs --with-issues`
+adds each linked issue's current `state`, `state_reason`, and `title` to the
+`issues.linked` entries, whose `how` is `explicit` / `body-ref` (the PR names
+the issue) or `issue-ref` / `subsystem` (a weaker match). Always pipe bulk
+output through `jq` and print only the answer; a few thousand rows do not
+belong in your context, and your shell has no writable scratch space. A
+population question is one pipeline, for example the open PRs that name an
+issue which is now closed:
+
+    prospector_app/agent/store-read prs --with-issues \
+      | jq -c '[.[] | {pr, title, author,
+                       closed: [.issues.linked[]? | select((.how == "explicit" or .how == "body-ref") and .state == "closed") | .issue]}
+                    | select(.closed | length > 0)]'
 
 A missing record or section prints `null`; report it as not yet produced. Useful
 PR sections include `meta`, `signals`, `reviews`, `summary`, `cluster`,
