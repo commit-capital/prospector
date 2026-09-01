@@ -14,6 +14,8 @@ import { buildIssueFilterParts } from "../components/issues/issueFilterParts";
 import { IssueColumnFilterPopout, ISSUE_FILTERABLE_COLS, isIssueColFilterActive } from "../components/issues/IssueColumnFilterPopout";
 import { TrustedAuthorName } from "../components/TrustedAuthor";
 import { AuthorHover } from "../components/AuthorHover";
+import { perIssueRefs } from "../components/issues/issueCloseRefs";
+import { IssueCloseConfirmDialog, type IssueClosePlan } from "../components/issues/IssueCloseConfirmDialog";
 
 const PAGE_SIZE = 50;
 type IssueSortKey = "number" | "title" | "author" | "pain" | "repro" | "dups" | "prs" | "disposition" | "subsystem";
@@ -310,55 +312,50 @@ const DISPOSITIONS: { key: Disposition; label: string }[] = [
   { key: "dup", label: "duplicate" },
 ];
 
-// The bulk close bar under the All-issues table: one shared disposition + comment,
+// The bulk close bar above the All-issues table: one shared disposition + comment,
 // closing every checked issue as the configured bot (gated, reversible, logged). The two
 // plain reasons require a comment; "fixed" needs a fixer PR # and "duplicate" a
 // canonical issue # (comment optional — a templated note is posted when empty), and
-// those attribute to the fixed/dup activity cards. The chosen PR/issue # applies to
-// the whole selection. Dry-run by default.
+// those attribute to the fixed/dup activity cards. The PR/issue # is either one
+// number for the whole selection or, with "each issue's own" checked, each issue's
+// own merged fixer / canonical read off its row, with its own default note; an
+// issue that has none is skipped. The Close button hands the plan to the confirm
+// dialog, which runs it. Dry-run by default.
 function IssueCloseBar({
-  selected, onResult, onDone,
+  selected, rows, onConfirm,
 }: {
   selected: number[];
-  onResult: (n: number, res: IssueExecResult) => void;
-  onDone: () => void;
+  rows: IssueRow[];
+  onConfirm: (plan: IssueClosePlan) => void;
 }) {
   const { botLogin, dryRun } = useExec();
   const [disposition, setDisposition] = useState<Disposition>("not-planned");
   const [comment, setComment] = useState("");
   const [fixedBy, setFixedBy] = useState("");
   const [canonical, setCanonical] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [perIssue, setPerIssue] = useState(false);
 
   const fixerN = Number(fixedBy);
   const canonN = Number(canonical);
   const needsComment = disposition === "not-planned" || disposition === "completed";
-  const refOk = disposition === "fixed" ? fixerN > 0
+  const takesRef = disposition === "fixed" || disposition === "dup";
+  const own = takesRef && perIssue ? perIssueRefs(rows, selected, disposition) : null;
+  const ownCount = own ? selected.length - own.missing.length : 0;
+  const refOk = own ? ownCount > 0
+    : disposition === "fixed" ? fixerN > 0
     : disposition === "dup" ? canonN > 0
     : true;
-  const canClose = !busy && selected.length > 0 && refOk && (!needsComment || comment.trim().length > 0);
+  const canClose = selected.length > 0 && refOk && (!needsComment || comment.trim().length > 0);
+  const refWord = disposition === "fixed" ? "merged fixer PR" : "canonical issue";
 
-  const closeAll = async () => {
-    setBusy(true);
-    const body = {
+  const confirm = () => {
+    const shared = disposition === "fixed" ? fixerN : disposition === "dup" ? canonN : null;
+    onConfirm({
       disposition,
-      comment: comment.trim(),
-      ...(disposition === "fixed" ? { fixed_by: fixerN } : {}),
-      ...(disposition === "dup" ? { canonical: canonN } : {}),
-    };
-    try {
-      for (const n of selected) {
-        try {
-          const res = await api.closeIssue(n, body, dryRun);
-          onResult(n, res);
-        } catch (e) {
-          onResult(n, { issue: n, action: "CLOSE_ISSUE", status: "error", detail: String(e) });
-        }
-      }
-    } finally {
-      setBusy(false);
-      onDone();
-    }
+      comment: own ? "" : comment.trim(),
+      refs: own ? own.refs : Object.fromEntries(shared === null ? [] : selected.map((n) => [n, shared])),
+      skipped: own ? own.missing : [],
+    });
   };
 
   return (
@@ -371,28 +368,45 @@ function IssueCloseBar({
               onClick={() => setDisposition(d.key)}>{d.label}</button>
           ))}
         </div>
-        {disposition === "fixed" && (
+        {disposition === "fixed" && !perIssue && (
           <input className="search sm issue-ref-input" type="number" min={1} value={fixedBy}
             onChange={(e) => setFixedBy(e.target.value)} placeholder="fixed by PR #" />
         )}
-        {disposition === "dup" && (
+        {disposition === "dup" && !perIssue && (
           <input className="search sm issue-ref-input" type="number" min={1} value={canonical}
             onChange={(e) => setCanonical(e.target.value)} placeholder="duplicate of issue #" />
         )}
+        {takesRef && (
+          <label className="bulk-perpr"
+            title={disposition === "fixed"
+              ? "Close each issue against its own merged fixer (the already-fixed detector's verdict, else an explicit Fixes/Closes reference the store knows merged), each with its own default note. An issue with no merged fixer is skipped."
+              : "Close each issue against its own cluster's canonical, each with its own default note. An issue with no canonical is skipped."}>
+            <input type="checkbox" checked={perIssue} onChange={(e) => setPerIssue(e.target.checked)} />
+            each issue's own {disposition === "fixed" ? "PR #" : "issue #"}
+          </label>
+        )}
+        {own && (
+          <span className="muted small">
+            {ownCount} of {selected.length} {ownCount === 1 ? "has" : "have"} a {refWord}
+            {own.missing.length > 0 && ` — ${own.missing.length} skipped`}
+          </span>
+        )}
       </div>
-      <textarea className="dup-comment" rows={2} value={comment} onChange={(e) => setComment(e.target.value)}
-        placeholder={needsComment
-          ? "Comment posted to each issue before it closes (required)…"
-          : disposition === "fixed"
-            ? `Optional — defaults to a “fixed by #${fixedBy || "…"}” note…`
-            : `Optional — defaults to a “duplicate of #${canonical || "…"}” note…`} />
+      {own
+        ? <span className="muted small">each issue keeps its own default note</span>
+        : <textarea className="dup-comment" rows={2} value={comment} onChange={(e) => setComment(e.target.value)}
+            placeholder={needsComment
+              ? "Comment posted to each issue before it closes (required)…"
+              : disposition === "fixed"
+                ? `Optional — defaults to a “fixed by #${fixedBy || "…"}” note…`
+                : `Optional — defaults to a “duplicate of #${canonical || "…"}” note…`} />}
       <div className="dup-card-actions">
-        <button className={`btn-primary sm ${!dryRun ? "btn-live" : ""}`} disabled={!canClose} onClick={closeAll}>
-          {busy ? "Working…"
-            : `${dryRun ? "" : "● "}Close ${selected.length} issue${selected.length === 1 ? "" : "s"}${dryRun ? " (dry-run)" : ` as ${botLogin}`}`}
+        <button className={`btn-primary sm ${!dryRun ? "btn-live" : ""}`} disabled={!canClose} onClick={confirm}>
+          {`${dryRun ? "" : "● "}Close ${own ? ownCount : selected.length} issue${(own ? ownCount : selected.length) === 1 ? "" : "s"}${dryRun ? " (dry-run)" : ` as ${botLogin}`}…`}
         </button>
         <span className="muted small">
-          {disposition === "fixed" ? `closes “completed”, fixed by #${fixedBy || "…"} — reversible`
+          {own ? `closes ${disposition === "fixed" ? "“completed”, each fixed by its own PR" : "“duplicate”, each of its own canonical"} — reversible`
+            : disposition === "fixed" ? `closes “completed”, fixed by #${fixedBy || "…"} — reversible`
             : disposition === "dup" ? `closes “duplicate” of #${canonical || "…"} — reversible`
             : `closes “${disposition === "completed" ? "completed" : "not planned"}” — reversible`}
         </span>
@@ -420,7 +434,7 @@ const STATE_FILTERS: { key: string; label: string }[] = [
 function AllIssuesTable({
   rows, total, page, q, sortKey, sortDir, loading, dispFilter, stateFilter,
   onQ, onPage, onSort, onDispFilter, onStateFilter, filterSpec, onFilterSpecChange,
-  selected, results, onToggle, onToggleAll,
+  selected, results, onToggle, onToggleAll, closeBar,
 }: {
   rows: IssueRow[];
   total: number;
@@ -442,6 +456,7 @@ function AllIssuesTable({
   results: Record<number, IssueExecResult>;
   onToggle: (n: number) => void;
   onToggleAll: (nums: number[], checked: boolean) => void;
+  closeBar: React.ReactNode;
 }) {
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const start = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
@@ -510,6 +525,7 @@ function AllIssuesTable({
         <button className="btn-secondary sm" disabled={page >= pages || loading} onClick={() => onPage(page + 1)}>Next</button>
       </div>
       <FilterSummary parts={filterParts} total={total} unit="issue" />
+      {closeBar}
       {openFilter && (
         <IssueColumnFilterPopout
           colKey={openFilter.key}
@@ -617,6 +633,7 @@ export default function Issues() {
   // scrolled out of view.
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [issueResults, setIssueResults] = useState<Record<number, IssueExecResult>>({});
+  const [pendingClose, setPendingClose] = useState<IssueClosePlan | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -800,14 +817,16 @@ export default function Issues() {
           results={issueResults}
           onToggle={toggleOne}
           onToggleAll={toggleAll}
+          closeBar={selected.size > 0 && (
+            <IssueCloseBar selected={[...selected]} rows={rows} onConfirm={setPendingClose} />
+          )}
         />
       )}
-      {tab === "all" && selected.size > 0 && (
-        <IssueCloseBar
-          selected={[...selected]}
+      {pendingClose && (
+        <IssueCloseConfirmDialog plan={pendingClose} selected={[...selected]} rows={rows}
           onResult={(n, res) => setIssueResults((r) => ({ ...r, [n]: res }))}
-          onDone={() => setSelected(new Set())}
-        />
+          onClose={() => setPendingClose(null)}
+          onDone={() => setSelected(new Set())} />
       )}
     </div>
   );

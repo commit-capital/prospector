@@ -947,6 +947,7 @@ export interface IssueRow {
   is_dup: boolean;
   duplicates: number[];
   disposition: IssueTriageDisposition | null;
+  fixed_by: number | null;
   linked_prs: IssuePR[];
   linked_pr_count: number;
   referenced_pr_count: number;
