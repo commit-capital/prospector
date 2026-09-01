@@ -689,17 +689,28 @@ async def chat_stream(q: str, pr: int | None = None, cluster: int | None = None,
                       alert: int | None = None,
                       file: str | None = None, line: int | None = None,
                       prs: str | None = None, prs_total: int | None = None,
+                      spec: str | None = None,
                       chat_id: str | None = None) -> EventSourceResponse:
     # `prs` is a comma-separated PR-number list — the operator's currently
     # visible/filtered view (#355), e.g. from PR Explorer. `prs_total` carries
     # the true match count when the frontend truncated the list before sending.
+    # `spec` is that view's filter spec as JSON; the match is evaluated here.
     pr_list = [int(x) for x in prs.split(",") if x.strip().isdigit()] if prs else None
+    filter_spec: dict | None = None
+    if spec is not None:
+        try:
+            filter_spec = json.loads(spec)
+        except ValueError as e:
+            raise HTTPException(400, f"spec is not JSON: {e}") from e
+        if not isinstance(filter_spec, dict):
+            raise HTTPException(400, "spec must be a JSON object")
     async def gen() -> AsyncIterator[dict[str, str]]:
         async for ev in chat.stream_chat(q, pr=pr, cluster=cluster, issue=issue,
                                          advisory=advisory, alert_source=alert_source,
                                          alert=alert,
                                          file=file, line=line,
-                                         prs=pr_list, prs_total=prs_total, chat_id=chat_id):
+                                         prs=pr_list, prs_total=prs_total, spec=filter_spec,
+                                         chat_id=chat_id):
             yield ev
     return EventSourceResponse(gen())
 

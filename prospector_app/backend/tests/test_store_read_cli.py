@@ -207,3 +207,113 @@ def test_activity_recent_includes_dry_runs(tmp_path):
     items = json.loads(r.stdout)
     assert len(items) == 2
     assert items[0]["dry_run"] is True   # newest first; the preview is visible here
+
+
+def _seed_population(root):
+    """Two open PRs and one closed, two issues (one closed); PR 1 links to both
+    issues, PR 2 links to the open one only."""
+    store = Store(root)
+    store.save_pr({
+        "pr": 1,
+        "meta": {"head_sha": "s1", "checked_at": "t", "state": "open", "title": "p1",
+                 "author": "alice"},
+        "issues": {"linked": [{"issue": 10, "how": "explicit"}, {"issue": 11, "how": "body-ref"}]},
+    })
+    store.save_pr({
+        "pr": 2,
+        "meta": {"head_sha": "s2", "checked_at": "t", "state": "open", "title": "p2",
+                 "author": "bob"},
+        "issues": {"linked": [{"issue": 10, "how": "explicit"}]},
+    })
+    store.save_pr({
+        "pr": 3,
+        "meta": {"head_sha": "s3", "checked_at": "t", "state": "closed", "title": "p3",
+                 "author": "carol"},
+    })
+    istore = IssueStore(root)
+    istore.save_issue({"issue": 10,
+                       "meta": {"title": "open one", "state": "open", "updated_at": "t"}})
+    istore.save_issue({"issue": 11,
+                       "meta": {"title": "done", "state": "closed", "state_reason": "completed",
+                                "updated_at": "t"}})
+    return store
+
+
+def test_prs_lists_open_rows_by_default(tmp_path):
+    root = tmp_path / "store"
+    _seed_population(root)
+    r = _run(root, ["prs"])
+    assert r.returncode == 0, r.stderr
+    rows = json.loads(r.stdout)
+    assert [row["pr"] for row in rows] == [1, 2]
+    assert rows[0] == {"pr": 1, "state": "open", "title": "p1", "author": "alice",
+                       "head_sha": "s1", "updated_at": None}
+
+
+def test_prs_state_flag_widens_to_closed_and_all(tmp_path):
+    root = tmp_path / "store"
+    _seed_population(root)
+    closed = json.loads(_run(root, ["prs", "--state", "closed"]).stdout)
+    assert [row["pr"] for row in closed] == [3]
+    every = json.loads(_run(root, ["prs", "--state", "all"]).stdout)
+    assert [row["pr"] for row in every] == [1, 2, 3]
+
+
+def test_prs_numbers_restricts_and_fields_projects_nested_paths(tmp_path):
+    root = tmp_path / "store"
+    _seed_population(root)
+    r = _run(root, ["prs", "--numbers", "2,3,999", "--state", "all",
+                    "--fields", "issues.linked,analysis.disposition"])
+    assert r.returncode == 0, r.stderr
+    rows = json.loads(r.stdout)
+    assert [row["pr"] for row in rows] == [2, 3]
+    assert rows[0]["issues"]["linked"] == [{"issue": 10, "how": "explicit"}]
+    assert rows[0]["analysis"]["disposition"] is None
+    assert rows[1]["issues"]["linked"] is None
+
+
+def test_issues_lists_rows_with_state_and_reason(tmp_path):
+    root = tmp_path / "store"
+    _seed_population(root)
+    open_rows = json.loads(_run(root, ["issues"]).stdout)
+    assert [row["issue"] for row in open_rows] == [10]
+    closed = json.loads(_run(root, ["issues", "--state", "closed"]).stdout)
+    assert closed == [{"issue": 11, "state": "closed", "state_reason": "completed",
+                       "title": "done", "author": None, "updated_at": "t"}]
+
+
+def test_issues_numbers_and_fields(tmp_path):
+    root = tmp_path / "store"
+    _seed_population(root)
+    r = _run(root, ["issues", "--state", "all", "--numbers", "11", "--fields", "meta.title"])
+    rows = json.loads(r.stdout)
+    assert len(rows) == 1 and rows[0]["meta"]["title"] == "done"
+
+
+def test_prs_with_issues_hydrates_linked_issue_state(tmp_path):
+    root = tmp_path / "store"
+    _seed_population(root)
+    r = _run(root, ["prs", "--fields", "issues.linked", "--with-issues"])
+    assert r.returncode == 0, r.stderr
+    rows = {row["pr"]: row for row in json.loads(r.stdout)}
+    assert rows[1]["issues"]["linked"] == [
+        {"issue": 10, "how": "explicit", "state": "open", "state_reason": None,
+         "title": "open one"},
+        {"issue": 11, "how": "body-ref", "state": "closed", "state_reason": "completed",
+         "title": "done"},
+    ]
+    assert rows[2]["issues"]["linked"][0]["state"] == "open"
+
+
+def test_prs_with_issues_leaves_an_unknown_issue_bare(tmp_path):
+    root = tmp_path / "store"
+    store = _seed_population(root)
+    store.save_pr({
+        "pr": 4,
+        "meta": {"head_sha": "s4", "checked_at": "t", "state": "open", "title": "p4"},
+        "issues": {"linked": [{"issue": 999, "how": "explicit"}]},
+    })
+    r = _run(root, ["prs", "--numbers", "4", "--with-issues"])
+    rows = json.loads(r.stdout)
+    assert rows[0]["issues"]["linked"] == [{"issue": 999, "how": "explicit", "state": None,
+                                            "state_reason": None, "title": None}]

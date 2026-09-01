@@ -34,8 +34,15 @@ by number, read through `Store.all_prs()` and `IssueStore.all_issues()`:
   - PR: `pr, state, title, author, head_sha, updated_at`
   - issue: `issue, state, state_reason, title, author, updated_at`
 
-Joins and filters compose with `jq`, which the agent's allowlist already
-admits. The agent manual (`prospector_app/agent/context.md`) documents the
+- `prs --with-issues` hydrates every `issues.linked` entry with the linked
+  issue's current `state`, `state_reason`, and `title`, read in one query
+  through `IssueStore.load_issues`. The PR-side link is the authoritative one
+  (ingest refreshes it from live PR bodies, while an issue's candidate
+  snapshot only refreshes when the issue changes), and the agent's shell has no
+  writable scratch space or command substitution to join two reads with, so
+  the one cross-collection edge a PR record holds is joined by the helper.
+
+Filters compose with `jq`, which the agent's allowlist already admits. The agent manual (`prospector_app/agent/context.md`) documents the
 commands and one worked join, and tells the agent to pipe bulk output through
 `jq` rather than print it into its context.
 
@@ -60,7 +67,8 @@ publishes `{ids, spec}` to the agent pane, which sends `spec`.
 
 - `test_store_read_cli.py`: `prs`/`issues` default to open records, `--state`
   widens, `--numbers` restricts, `--fields` projects nested paths and reads
-  `null` for a missing section.
+  `null` for a missing section, `--with-issues` hydrates linked issues and
+  leaves an unknown issue's fields `null`.
 - `test_chat_context.py`: a spec grounds the session from the server-side
   match, and an over-cap match lists every number without the narrow-the-filter
   line.

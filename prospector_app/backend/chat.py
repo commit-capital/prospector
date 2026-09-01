@@ -528,7 +528,8 @@ def _advisory_context(ghsa: str) -> str:
 _VISIBLE_PRS_CAP = 150
 
 
-def _visible_prs_context(numbers: list[int], total: int | None = None) -> str:
+def _visible_prs_context(numbers: list[int] | None, total: int | None = None,
+                         spec: dict | None = None) -> str:
     """Neutral facts about the PRs currently visible in the operator's PR
     Explorer (after their active filters/search) — #355, so a 'review these'
     question doesn't require the operator to re-list numbers already on screen.
@@ -537,15 +538,27 @@ def _visible_prs_context(numbers: list[int], total: int | None = None) -> str:
     the operator is still browsing, and it isn't itself a signal that they've
     switched to asking about only that one PR — the question's own wording is.
     Same neutral-signals convention as _cluster_context: the pipeline's recorded
-    disposition/rationale verdict is withheld so the agent forms its own view."""
-    n_total = total if total is not None else len(numbers)
+    disposition/rationale verdict is withheld so the agent forms its own view.
+
+    A `spec` is the Explorer's filter spec itself; the match is computed here,
+    where the snapshot lives, and every matching number is listed past the
+    detail cap so the agent can read the whole set with `store-read prs`."""
+    if spec is not None:
+        ids: list[int] = list(service.query_prs(spec, limit=0)["match_ids"])
+        total = len(ids)
+    else:
+        ids = list(numbers or [])
+    n_total = total if total is not None else len(ids)
     lines = [
         f"CONTEXT: the operator is looking at {n_total} PR(s) in the PR Explorer "
         "right now, after their active filters/search. Neutral signals only — "
         "the pipeline's recorded disposition/rationale is withheld here on "
         "purpose, same as cluster context:",
     ]
-    for n in numbers:
+    if spec is not None:
+        lines.append(f"  Active Explorer filter: {json.dumps(spec, sort_keys=True)}")
+    detailed = ids[:_VISIBLE_PRS_CAP]
+    for n in detailed:
         row = service.pr_row(n)
         if row is None:
             continue
@@ -557,8 +570,13 @@ def _visible_prs_context(numbers: list[int], total: int | None = None) -> str:
             f"+{s.get('additions')}/-{s.get('deletions')} over "
             f"{s.get('changed_files')} files"
         )
-    if n_total > len(numbers):
-        lines.append(f"  …(+{n_total - len(numbers)} more not shown — ask the "
+    if len(ids) > len(detailed):
+        lines.append(
+            f"  …(+{len(ids) - len(detailed)} more without a detail line). "
+            f"Every matching PR number, for `store-read prs --numbers <list>`: "
+            + ", ".join(str(n) for n in ids))
+    elif n_total > len(ids):
+        lines.append(f"  …(+{n_total - len(ids)} more not shown — ask the "
                       "operator to narrow the filter for full coverage)")
     return "\n".join(lines)
 
@@ -586,6 +604,7 @@ async def stream_chat(question: str, pr: int | None = None, cluster: int | None 
                       alert: int | None = None,
                       file: str | None = None, line: int | None = None,
                       prs: list[int] | None = None, prs_total: int | None = None,
+                      spec: dict | None = None,
                       chat_id: str | None = None) -> AsyncIterator[dict[str, str]]:
     backend = _configured_backend()
     if backend is None:
@@ -604,7 +623,8 @@ async def stream_chat(question: str, pr: int | None = None, cluster: int | None 
     memory = agent_memory.context_block() if is_first else ""
     intro = f"{memory}\n\n" if memory else ""
     # The Explorer's filtered set grounds a new or reconstructed session.
-    visible = f"{_visible_prs_context(prs, prs_total)}\n\n" if prs and ground else ""
+    visible = (f"{_visible_prs_context(prs, prs_total, spec)}\n\n"
+               if (prs or spec is not None) and ground else "")
     # The subject's facts (a PR/cluster's context) are injected at thread start and
     # re-injected on a re-ground, since the fresh session has lost them.
     base = (f"{_build_context(pr, cluster, issue, file, line, advisory, alert_source, alert)}\n\n"

@@ -117,7 +117,7 @@ export default function PRExplorer() {
     if (n !== null) rowOpen(n).onAuxClick(e);
   };
   const { isOn: colOn, toggle: toggleCol, reset: resetCols, visibleColumns } = useColumnPrefs();
-  const { setVisiblePrs } = useAgentPane();
+  const { setVisible } = useAgentPane();
   const [page, setPage] = useState(1);
   const [pageSize, setPageSizeState] = useState<PageSizeOption>(readPageSize);
   // A fresh mount always starts on page 1 with no deep-search overlay (that's
@@ -236,8 +236,8 @@ export default function PRExplorer() {
   // PR, not just the current page — same list "select all matching" uses below.
   // Cleared on unmount so a stale list doesn't leak into chat on another page.
   useEffect(() => {
-    setVisiblePrs(res?.match_ids ?? null);
-    return () => setVisiblePrs(null);
+    setVisible(res ? { ids: res.match_ids, spec: effSpec } : null);
+    return () => setVisible(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [res]);
 

@@ -247,6 +247,37 @@ def test_visible_prs_context_skips_pr_missing_from_the_snapshot():
     assert "#999" not in out  # no crash, no fabricated line for an unknown PR
 
 
+def test_visible_prs_context_from_spec_grounds_on_the_server_side_match():
+    spec = {"has_issues": True}
+    seen: list[dict] = []
+
+    def fake_query(s, **kw):
+        seen.append(s)
+        return {"match_ids": [102, 101], "total": 2}
+
+    with mock.patch.object(chat.service, "query_prs", side_effect=fake_query), \
+            mock.patch.object(chat.service, "pr_row", side_effect=lambda n: _ROWS.get(n)):
+        out = chat._visible_prs_context(None, None, spec=spec)
+    assert seen == [spec]
+    assert "2 PR(s)" in out
+    assert '"has_issues": true' in out
+    assert "#101" in out and "#102" in out
+    assert "narrow the filter" not in out
+
+
+def test_visible_prs_context_over_cap_lists_every_matching_number(monkeypatch):
+    monkeypatch.setattr(chat, "_VISIBLE_PRS_CAP", 1)
+    with mock.patch.object(chat.service, "query_prs",
+                           return_value={"match_ids": [101, 102, 103], "total": 3}), \
+            mock.patch.object(chat.service, "pr_row", side_effect=lambda n: _ROWS.get(n)):
+        out = chat._visible_prs_context(None, None, spec={"q": "fix"})
+    assert "3 PR(s)" in out
+    assert "Alt fix" not in out          # only the first cap PRs get a detail line
+    assert "101, 102, 103" in out        # every matching number is still listed
+    assert "store-read prs --numbers" in out
+    assert "narrow the filter" not in out
+
+
 # #507: a PR flyout open on top of the filtered Explorer list isn't a signal
 # that the operator abandoned that list — the visible-PR context must ride
 # alongside a pr/cluster subject's own context too, not just general questions.
@@ -289,6 +320,42 @@ def test_visible_prs_context_rides_alongside_a_pr_subject(temp_store, tmp_path, 
     assert "SUBJECT-CONTEXT-PR-101" in first
     assert "#102" in first
     assert "#102" not in second
+
+
+def test_spec_alone_grounds_the_session(temp_store, tmp_path, monkeypatch):
+    monkeypatch.setattr(chat, "SESSION_DIR", tmp_path / "cache" / "chat")
+    monkeypatch.setattr(chat, "_op_slug", lambda: "tester")
+    monkeypatch.setattr(chat, "_bot_token", lambda: None)
+    monkeypatch.setattr(chat, "system_prompt", lambda: "SYS")
+    monkeypatch.setattr(chat.service, "pr_row", lambda n: _ROWS.get(n))
+    monkeypatch.setattr(chat.service, "query_prs",
+                        lambda s, **kw: {"match_ids": [102], "total": 1})
+
+    captured: dict[str, list[str]] = {}
+
+    class FakeProc:
+        pid = 1
+        def __init__(self):
+            self.returncode = 0
+            self.stdout = self._gen()
+        async def _gen(self):
+            yield b'{"type":"result","session_id":"sess-A"}\n'
+        async def wait(self):
+            return 0
+
+    async def fake_exec(*cmd, **kw):
+        captured["cmd"] = list(cmd)
+        return FakeProc()
+
+    monkeypatch.setattr(claude_backend.asyncio, "create_subprocess_exec", fake_exec)
+
+    async def drive():
+        async for _ in chat.stream_chat("review these", spec={"author": "bob"}):
+            pass
+    asyncio.run(drive())
+
+    prompt = captured["cmd"][captured["cmd"].index("-p") + 1]
+    assert "#102" in prompt and "#101" not in prompt
 
 
 def test_visible_prs_context_omitted_when_nothing_is_currently_filtered(temp_store, tmp_path, monkeypatch):
