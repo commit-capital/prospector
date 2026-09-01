@@ -699,9 +699,6 @@ def test_dup_group_offers_fix_found_fixer(tmp_path, monkeypatch):
 
 
 def test_row_carries_the_fix_scans_fixer_without_a_store_state(tmp_path, monkeypatch):
-    """A fixer that merged before ingest saw it open has no store state, so the row
-    names it directly off the fix scan; an issue with no current fixed verdict has
-    none."""
     st = _seed(tmp_path, monkeypatch)
     monkeypatch.setattr(issues, "_store_pr_states", lambda: ({}, False))
     st.edit_issue(10).record_fixed(950, rationale="#950 adds the guard")

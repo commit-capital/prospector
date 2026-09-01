@@ -316,11 +316,9 @@ const DISPOSITIONS: { key: Disposition; label: string }[] = [
 // closing every checked issue as the configured bot (gated, reversible, logged). The two
 // plain reasons require a comment; "fixed" needs a fixer PR # and "duplicate" a
 // canonical issue # (comment optional — a templated note is posted when empty), and
-// those attribute to the fixed/dup activity cards. The PR/issue # is either one
-// number for the whole selection or, with "each issue's own" checked, each issue's
-// own merged fixer / canonical read off its row, with its own default note; an
-// issue that has none is skipped. The Close button hands the plan to the confirm
-// dialog, which runs it. Dry-run by default.
+// those attribute to the fixed/dup activity cards. With "each issue's own" checked,
+// each issue closes against its own row's fixer / canonical and one with none is
+// skipped. Close opens the confirm dialog, which runs it. Dry-run by default.
 function IssueCloseBar({
   selected, rows, onConfirm,
 }: {

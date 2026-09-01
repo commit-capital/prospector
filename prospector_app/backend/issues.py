@@ -235,8 +235,6 @@ def _row(iss: Issue, clusters_by_id: dict[int, IssueCluster], store_states: dict
         "is_dup": bool(canonical and iss.number != canonical and len(members) > 1),
         "duplicates": [m for m in members if m != iss.number],
         "disposition": iss.disposition,
-        # The fix scan's merged fixer while it is current — the PR the close-fixed
-        # disposition rests on, whether or not the PR store ever saw that PR.
         "fixed_by": iss.fixed_by if iss.disposition == "close-fixed" else None,
         "linked_prs": _issue_linked_prs(iss, store_states, limit=link_limit),
         "linked_pr_count": len(iss.candidate_prs),

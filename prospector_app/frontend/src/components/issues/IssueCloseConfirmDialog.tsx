@@ -4,10 +4,7 @@ import { useExec } from "../../ExecContext";
 import { BulkDialogFrame, BulkStatusChip } from "../shared/BulkRunDialog";
 import { countStatuses, summaryLine } from "../shared/bulkSummary";
 
-// What the close bar hands the dialog: the disposition, the shared comment
-// (empty means the server's default note), each issue's close reference (its
-// fixer PR or canonical) where the disposition takes one, and the selected
-// issues that have none and are skipped.
+// An empty `comment` posts the server's default note on each issue.
 export interface IssueClosePlan {
   disposition: IssueDisposition;
   comment: string;
@@ -22,11 +19,8 @@ const VERB: Record<IssueDisposition, string> = {
   dup: "close as duplicate",
 };
 
-// Confirms and runs a bulk issue close, one issue at a time as the configured
-// bot, showing each issue's reference up front and its result as it lands.
-// Results are also reported to the parent so the table's chips follow along.
-// The targets are snapshotted on open: the parent clears its selection when
-// the run finishes, and the list and summary stay put.
+// Targets are snapshotted on open: the parent clears its selection when the
+// run finishes.
 export function IssueCloseConfirmDialog({ plan, selected: initialSelected, rows: initialRows, onResult, onClose, onDone }: {
   plan: IssueClosePlan;
   selected: number[];

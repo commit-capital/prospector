@@ -1,9 +1,8 @@
 import type { ReactNode } from "react";
 import { chipTone } from "./bulkSummary";
 
-// The shell shared by the bulk-run confirm dialogs: a backdrop that ignores
-// clicks while a run is in flight (losing the dialog mid-run leaves no way to
-// tell whether it is still going), the modal, and its title.
+// The backdrop ignores clicks while a run is in flight: losing the dialog
+// mid-run leaves no way to tell whether it is still going.
 export function BulkDialogFrame({ title, running, onClose, children }:
   { title: ReactNode; running: boolean; onClose: () => void; children: ReactNode }) {
   return (
