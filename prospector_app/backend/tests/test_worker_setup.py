@@ -104,6 +104,24 @@ class TestApply:
 
 
 class TestReadiness:
+    @pytest.mark.parametrize(
+        ("system", "install", "start"),
+        [
+            ("Darwin", "install Docker and Colima", "start it with `colima start`"),
+            ("Linux", "install Docker Engine", "start it with `sudo systemctl start docker`"),
+        ],
+    )
+    def test_docker_remedies_match_the_host(self, monkeypatch, system, install, start):
+        monkeypatch.setattr(worker_readiness.platform, "system", lambda: system)
+        monkeypatch.setattr(worker_readiness.shutil, "which", lambda _: None)
+        assert worker_readiness._docker_daemon() == (
+            False, "Docker is not installed", install)
+
+        monkeypatch.setattr(worker_readiness.shutil, "which", lambda _: "/usr/bin/docker")
+        monkeypatch.setattr(worker_readiness.verify_driver, "daemon_available", lambda: False)
+        assert worker_readiness._docker_daemon() == (
+            False, "Docker is installed but not running", start)
+
     def test_a_check_failure_is_logged_without_reaching_the_readiness_response(
             self, monkeypatch, caplog):
         """A check that cannot answer is not evidence the machine is ready."""

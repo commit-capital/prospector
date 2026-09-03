@@ -461,7 +461,7 @@ def _run_inner(store: Store, rec: Pr, req: _Request) -> int:
     # machine never prepared.
     if not _daemon_available():
         return _no_daemon(req, "the local Docker daemon is not answering — start "
-                               "it (e.g. `colima start`) to resume verification")
+                               "the platform's Docker service to resume verification")
     if not _image_exists(image):
         return _no_base(req,
                         f"base image {image} not found in the local Docker daemon"
