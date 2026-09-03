@@ -12,6 +12,7 @@ that cannot answer is not evidence the machine is ready.
 from __future__ import annotations
 
 import logging
+import platform
 import shutil
 import socket
 from collections.abc import Callable
@@ -35,18 +36,36 @@ class Check(TypedDict):
     blocking: bool
 
 
+def _docker_start_remedy() -> str:
+    system = platform.system()
+    if system == "Darwin":
+        return "start it with `colima start`"
+    if system == "Linux":
+        return "start it with `sudo systemctl start docker`"
+    return "start the Docker daemon"
+
+
+def _docker_install_remedy() -> str:
+    if platform.system() == "Darwin":
+        return "install Docker and Colima"
+    if platform.system() == "Linux":
+        return "install Docker Engine"
+    return "install a Docker runtime"
+
+
 def _docker_daemon() -> tuple[bool, str, str]:
     if shutil.which("docker") is None:
-        return False, "Docker is not installed", "install a Docker runtime"
+        return False, "Docker is not installed", _docker_install_remedy()
     if not verify_driver.daemon_available():
-        return False, "Docker is installed but not running", "start it (e.g. `colima start`)"
+        return False, "Docker is installed but not running", _docker_start_remedy()
     return True, "running", ""
 
 
 def _sandbox_image() -> tuple[bool, str, str]:
     tag = verify_driver.sandbox_image()
     if not verify_driver.daemon_available():
-        return False, "cannot look: the Docker daemon is not answering", "start Docker"
+        return False, "cannot look: the Docker daemon is not answering", \
+            _docker_start_remedy()
     if not verify_driver.image_exists(tag):
         others = [t for t in verify_driver.sandbox_images() if t != tag]
         if others:
@@ -69,7 +88,7 @@ def _base_pin() -> tuple[bool, str, str]:
             "run prepare-base here"
     if not verify_driver.daemon_available():
         return False, "cannot look for the base image: the Docker daemon is not answering", \
-            "start Docker"
+            _docker_start_remedy()
     image = verify_driver.base_image_tag(str(sha), int(tier))
     if not verify_driver.image_exists(image):
         return False, f"pinned {str(sha)[:12]} but {image} is not in the local daemon", \
