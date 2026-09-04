@@ -73,7 +73,7 @@ def changed_paths(text: str) -> list[str]:
     return out
 
 
-def _diff_blocks(text: str) -> list[tuple[str, str]]:
+def diff_blocks(text: str) -> list[tuple[str, str]]:
     """A unified diff split into (path, block_text) pairs, one per changed file, in
     order. `path` is the file's `diff --git` new path; `block_text` spans from that
     line up to (not including) the next `diff --git` line, so each block is itself
@@ -98,4 +98,4 @@ def _diff_blocks(text: str) -> list[tuple[str, str]]:
 def filter_diff(text: str, predicate: Callable[[str], bool]) -> str:
     """The subset of a unified diff whose changed files satisfy `predicate(path)` —
     itself a valid patch `git apply` can consume, empty when no file matches."""
-    return "".join(block for path, block in _diff_blocks(text) if predicate(path))
+    return "".join(block for path, block in diff_blocks(text) if predicate(path))
