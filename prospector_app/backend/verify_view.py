@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, TypedDict
 
 from pipeline import freshness
 from pipeline import gates
+from pipeline import wire
 
 if TYPE_CHECKING:
     from pipeline.model import Pr
@@ -109,7 +110,8 @@ def _state_label(outcome: str | None) -> str:
     return _STATE_LABEL.get(outcome, "Couldn't run")
 
 
-def _outcome_fault(outcome: str | None, signals: dict, findings: list[dict]) -> str | None:
+def _outcome_fault(outcome: str | None, signals: wire.VerifySignals,
+                   findings: list[wire.VerifyFinding]) -> str | None:
     """The fault a committed outcome attributes. A not-verified whose red never
     ran because the test command's name filter matched nothing is a harness
     artifact (the whole suite skipped), not the PR's fault — so it reads as
@@ -139,6 +141,13 @@ class VerifyStep(TypedDict):
     reasoning: str | None
 
 
+class VerifyFindingView(TypedDict):
+    title: str
+    detail: str
+    confidence: str | None
+    signal: str | None
+
+
 class VerifyDetail(TypedDict):
     outcome: str | None
     tier: int | None
@@ -155,14 +164,14 @@ class VerifyDetail(TypedDict):
     cause: str | None
     story: list[VerifyStep]
     signals: dict[str, dict]
-    findings: list[dict]
+    findings: list[VerifyFindingView]
 
 
 def _strip_ansi(text: str) -> str:
     return _ANSI.sub("", text)
 
 
-def _clean_signals(signals: dict) -> dict[str, dict]:
+def _clean_signals(signals: wire.VerifySignals) -> dict[str, dict]:
     """The signals with ANSI escapes stripped from every captured output tail.
     Copies the dicts it touches — the store record is never mutated."""
     out: dict[str, dict] = {}
@@ -176,6 +185,31 @@ def _clean_signals(signals: dict) -> dict[str, dict]:
                 cleaned[field] = _strip_ansi(v)
         out[name] = cleaned
     return out
+
+
+_FINDING_TITLES = {
+    "vacuous-filter": "Test command matched no test",
+    "dirty-green": "Green run contained unrelated failures",
+    "repro-rejected": "Independent repro rejected",
+    "misrooted-repro-config": "Independent repro used a misrooted config",
+    "vacuous-repro-name-filter": "Independent repro matched no test",
+    "authored-test": "Agent-authored test did not verify the fix",
+    "regress": "Regression evidence",
+    "lane": "Merge-gate lane failed",
+}
+
+
+def _finding_view(finding: wire.VerifyFinding) -> VerifyFindingView:
+    signal = finding.get("signal")
+    title = finding.get("title")
+    if not title:
+        title = _FINDING_TITLES.get(signal or "", "Verification finding")
+    return {
+        "title": title,
+        "detail": finding.get("detail") or finding.get("note") or "",
+        "confidence": finding.get("confidence"),
+        "signal": signal,
+    }
 
 
 # Per-outcome operator copy: (level, headline, detail). `level` is a display
@@ -254,7 +288,8 @@ def _step(key: str, label: str, result: str, note: str,
             "reasoning": reasoning}
 
 
-def _red_step(blind: dict, rg: dict, judge: dict) -> VerifyStep:
+def _red_step(blind: wire.VerifyBlindSignal, rg: wire.VerifyRedGreenSignal,
+              judge: wire.VerifyReasonMatch) -> VerifyStep:
     """The red-run check in plain English: the PR's test on unfixed main must
     fail (exit 20), and the judge must confirm it failed for the predicted
     reason. This is the check that proves the bug exists."""
@@ -303,7 +338,7 @@ def _red_step(blind: dict, rg: dict, judge: dict) -> VerifyStep:
                  "matches — the run holds and re-runs.", reasoning)
 
 
-def _green_step(rg: dict) -> VerifyStep:
+def _green_step(rg: wire.VerifyRedGreenSignal) -> VerifyStep:
     label = "Run the test again WITH the fix applied — it must pass"
     exit_ = rg.get("green_exit")
     red_ok = rg.get("red_exit") == gates.SENTINEL_TEST_FAIL
@@ -331,7 +366,7 @@ def _green_step(rg: dict) -> VerifyStep:
                  "re-queues.")
 
 
-def _confirm_step(rg: dict) -> VerifyStep | None:
+def _confirm_step(rg: wire.VerifyRedGreenSignal) -> VerifyStep | None:
     """The confirm re-run check, or None when no confirm ran (the first red→green
     was not clean). A verified-fix must reproduce on the second run too; a
     disagreement is a flaky (nondeterministic) reproduction that escalates."""
@@ -362,7 +397,7 @@ def _confirm_step(rg: dict) -> VerifyStep | None:
                  "holds and re-runs.")
 
 
-def _regress_step(regress: dict) -> VerifyStep:
+def _regress_step(regress: wire.VerifyRegressSignal) -> VerifyStep:
     label = "Full-suite regression check — the rest of the tests must not break"
     if not regress.get("ran"):
         reason = regress.get("skipped_reason")
@@ -389,7 +424,7 @@ _LANE_LABELS: dict[str, str] = {
 }
 
 
-def _lane_step(name: str, entry: dict) -> VerifyStep:
+def _lane_step(name: str, entry: wire.VerifyLaneSignal) -> VerifyStep:
     """One merge-gate lane's check: the profile's whole-repo command over the
     patched tree, host-observed. A failed lane reads as `regressed`; a
     non-sentinel exit escalates."""
@@ -416,13 +451,14 @@ def _lane_step(name: str, entry: dict) -> VerifyStep:
                  "escalated for a human.")
 
 
-def _lane_steps(signals: dict) -> list[VerifyStep]:
+def _lane_steps(signals: wire.VerifySignals) -> list[VerifyStep]:
     return [_lane_step(name, entry)
             for name, entry in (signals.get("lanes") or {}).items()
             if isinstance(entry, dict)]
 
 
-def _repro_step(blind: dict, repro: dict, rating: dict) -> VerifyStep | None:
+def _repro_step(blind: wire.VerifyBlindSignal, repro: wire.VerifyReproSignal,
+                rating: wire.VerifyReasonMatch) -> VerifyStep | None:
     """The independent-repro check, or None when the blind pass authored no
     repro. Corroborating evidence only — the outcome never turns on it. A
     repro the driver rejected pre-run (blind.repro_rejected — the command
@@ -493,7 +529,8 @@ def _repro_step(blind: dict, repro: dict, rating: dict) -> VerifyStep | None:
                  "The repro ran but was never rated by the judge.", reasoning)
 
 
-def _authored_steps(authored: dict, signals: dict) -> list[VerifyStep]:
+def _authored_steps(authored: wire.VerifyAuthoredSignal,
+                    signals: wire.VerifySignals) -> list[VerifyStep]:
     """The agent-authored lane's checks in execution order — corroborating
     evidence only; no step here is a policy gate."""
     steps: list[VerifyStep] = []
@@ -601,7 +638,7 @@ def _authored_steps(authored: dict, signals: dict) -> list[VerifyStep]:
     return steps
 
 
-def _build_story(signals: dict) -> list[VerifyStep]:
+def _build_story(signals: wire.VerifySignals) -> list[VerifyStep]:
     """The run's checks in execution order, each with a plain-English verdict.
     Mirrors the checks gates.verify_outcome gates on — for explanation only;
     the outcome itself is always the stored one. Empty when the record carries
@@ -670,7 +707,7 @@ def _build_story(signals: dict) -> list[VerifyStep]:
     return steps
 
 
-def _cause(outcome: str | None, signals: dict) -> str | None:
+def _cause(outcome: str | None, signals: wire.VerifySignals) -> str | None:
     """One sentence naming the specific check that broke, for the blocking and
     attention outcomes — None when nothing broke (or the headline already says
     everything, as for the unverifiable outcomes)."""
@@ -805,5 +842,5 @@ def verify_detail(rec: Pr) -> VerifyDetail | None:
         "cause": _cause(outcome, signals),
         "story": _build_story(signals),
         "signals": _clean_signals(signals),
-        "findings": rec.verify_findings,
+        "findings": [_finding_view(finding) for finding in rec.verify_findings],
     }

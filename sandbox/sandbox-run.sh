@@ -11,7 +11,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NET="${PR_VERIFY_NET:-pr-verify-net}"
 
-IMAGE="" PHASE="" PATCH="" EXCL="" SUITE_CFG="" PROBE_DENY_ARG="" TIER=0 TEST_CMD="pnpm -s test" BASE_SHA="unknown" HEAD_SHA="unknown"
+IMAGE="" PHASE="" PATCH="" EXCL="" SUITE_CFG="" PROBE_DENY_ARG="" CONTAINER_NAME="" TIER=0 TEST_CMD="pnpm -s test" BASE_SHA="unknown" HEAD_SHA="unknown"
 while [ $# -gt 0 ]; do
   case "$1" in
     --image) IMAGE="$2"; shift 2;;
@@ -24,11 +24,12 @@ while [ $# -gt 0 ]; do
     --test-cmd) TEST_CMD="$2"; shift 2;;
     --base-sha) BASE_SHA="$2"; shift 2;;
     --head-sha) HEAD_SHA="$2"; shift 2;;
+    --container-name) CONTAINER_NAME="$2"; shift 2;;
     *) echo "unknown arg: $1" >&2; exit 2;;
   esac
 done
 [ -n "$IMAGE" ] && [ -n "$PHASE" ] || {
-  echo "usage: sandbox-run.sh --image IMG --phase apply-check|repro|red|green|compile|build|baseline|regress [--patch F] [--exclude-file F] [--suite-config F] [--probe-deny LIST] [--tier 0|1] [--test-cmd C] [--base-sha S] [--head-sha S]" >&2
+  echo "usage: sandbox-run.sh --image IMG --phase apply-check|repro|red|green|compile|build|baseline|regress [--patch F] [--exclude-file F] [--suite-config F] [--probe-deny LIST] [--tier 0|1] [--test-cmd C] [--base-sha S] [--head-sha S] [--container-name N]" >&2
   exit 2; }
 case "$PHASE" in apply-check|repro|red|green|compile|build|baseline|regress) ;; *) echo "bad --phase: $PHASE" >&2; exit 2;; esac
 # apply-check, green, compile, and build require a patch onto the base tree.
@@ -121,7 +122,11 @@ fi
 MEM=2g
 PIDS=512
 case "$PHASE" in compile|build|baseline|regress) MEM=6g; PIDS=2048;; esac
-docker run --rm --network "$NET" \
+name_args=()
+if [ -n "$CONTAINER_NAME" ]; then
+  name_args=( --name "$CONTAINER_NAME" )
+fi
+docker run --rm "${name_args[@]+"${name_args[@]}"}" --network "$NET" \
   --cap-drop ALL --security-opt no-new-privileges:true \
   --pids-limit "$PIDS" --memory "$MEM" --cpus 2 \
   "${env_args[@]}" \

@@ -523,7 +523,12 @@ export interface VerifySignals {
   }>;
 }
 
-interface VerifyFinding { title?: string; detail?: string; confidence?: string }
+interface VerifyFinding {
+  title: string;
+  detail: string;
+  confidence: string | null;
+  signal: string | null;
+}
 
 export type VerifyLevel = "verified" | "attention" | "blocked" | "info" | "pending";
 
@@ -572,7 +577,7 @@ export type VerifyFault = "pr" | "system" | "judgment" | null;
  *  base (retried, bounded), finished as done / error / cancelled. */
 export interface VerifyRequest {
   status: "queued" | "running" | "waiting-for-base" | "done" | "error" | "cancelled";
-  source?: "operator" | "auto" | null;
+  source?: "operator" | "auto" | "auto-resweep" | null;
   step?: string | null;
   queued_at?: string | null;
   started_at?: string | null;
@@ -812,13 +817,13 @@ interface AutohuntSummary {
 export interface Autohunt { status: AutohuntStatus; summary: AutohuntSummary; history: AutohuntRun[]; }
 
 /** One PR with a sandbox-verification request in flight: running, waiting on
- *  a base refresh, or queued. `source` is "auto" for the idle hunter, null/
- *  undefined for an operator-queued request. */
+ *  a base refresh, or queued. `source` distinguishes an operator pick, the
+ *  idle hunter's first pass, and its re-sweep of an older conclusion. */
 export interface VerifyQueueEntry {
   pr: number;
   title?: string | null;
   status: "queued" | "running" | "waiting-for-base";
-  source?: "auto" | null;
+  source?: "operator" | "auto" | "auto-resweep" | null;
   step?: string | null;
   queued_at?: string | null;
   started_at?: string | null;

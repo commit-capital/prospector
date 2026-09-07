@@ -892,6 +892,7 @@ class _FakePopen:
         self.seen["env"] = kw.get("env")
         self.seen["stdout"] = kw.get("stdout")
         self.seen["stderr"] = kw.get("stderr")
+        self.seen["start_new_session"] = kw.get("start_new_session")
         self.stdout = io.BytesIO(self.output)
         return self
 
@@ -960,7 +961,11 @@ class TestRunPhase:
 
     def test_a_timeout_is_an_error_not_a_red(self, monkeypatch):
         fake = _FakePopen(output=b"", returncode=-9, raise_timeout=True)
+        cleanup: list[list[str]] = []
         monkeypatch.setattr(vd.subprocess, "Popen", fake)
+        monkeypatch.setattr(
+            vd.subprocess, "run",
+            lambda argv, **kw: cleanup.append(argv) or subprocess.CompletedProcess(argv, 0))
         rc, tail = vd.run_phase("red", "img:t0")
         # Checked against every sentinel, not just PASS and TEST_FAIL.
         sentinels = (gates.SENTINEL_PASS, gates.SENTINEL_PROBE_FAIL,
@@ -968,6 +973,10 @@ class TestRunPhase:
         assert rc not in sentinels
         assert "timed out" in tail
         assert fake.killed
+        argv = fake.seen["argv"]
+        container = argv[argv.index("--container-name") + 1]
+        assert cleanup == [["docker", "rm", "-f", container]] * 2
+        assert fake.seen["start_new_session"] is True
 
     def test_survives_non_utf8_output_and_still_returns_the_exit_code(
             self, tmp_path, monkeypatch):
@@ -2391,4 +2400,3 @@ class TestRunLanes:
         ev = {}
         assert vd._run_lanes(ev, None, Path("/tmp/x.patch")) is None
         assert "lanes" not in ev
-

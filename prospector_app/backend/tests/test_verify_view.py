@@ -114,9 +114,23 @@ def test_signals_pass_through_with_tails_ansi_stripped():
     assert d["signals"]["independent_repro"]["output_tail"] == "plain"
     # non-tail fields untouched
     assert d["signals"]["blind_adequacy"]["reasoning"] == "r"
-    assert d["findings"] == findings
+    assert d["findings"] == [{"title": "f", "detail": "d",
+                               "confidence": "high", "signal": None}]
     # the store record itself is never mutated by the view
     assert "\x1b" in pr.verify_signals["red_green"]["red_output_tail"]
+
+
+def test_mechanical_findings_are_normalized_for_the_frontend():
+    findings = [{"signal": "dirty-green", "note": "unrelated test failed",
+                 "tests": ["a.test.ts"]}]
+    d = verify_view.verify_detail(_pr(_verify(findings=findings)))
+    assert d is not None
+    assert d["findings"] == [{
+        "title": "Green run contained unrelated failures",
+        "detail": "unrelated test failed",
+        "confidence": None,
+        "signal": "dirty-green",
+    }]
 
 
 def test_base_and_head_shas_surface():

@@ -217,3 +217,33 @@ class TestVerifyWire:
             "findings": []})
         assert j.repro_reason_match == {"applicable": True, "matches": False,
                                         "confidence": "high", "reasoning": "timed out"}
+
+    def test_judge_item_normalizes_malformed_agent_fields(self):
+        from pipeline.wire import JudgeItem
+
+        j = JudgeItem.from_dict({
+            "pr": 7,
+            "red_reason_match": {"matches": "yes", "confidence": 3,
+                                   "reasoning": ["not text"]},
+            "repro_reason_match": "not an object",
+            "findings": [
+                {"title": "usable", "detail": "kept", "confidence": "high"},
+                {"title": "missing detail"},
+                "not an object",
+            ],
+        })
+
+        assert j.red_reason_match == {}
+        assert j.repro_reason_match == {}
+        assert j.findings == [
+            {"title": "usable", "detail": "kept", "confidence": "high"}]
+
+    def test_judge_item_downgrades_an_invalid_confidence(self):
+        from pipeline.wire import JudgeItem
+
+        j = JudgeItem.from_dict({
+            "pr": 7,
+            "red_reason_match": {"matches": True, "confidence": "certain"},
+        })
+
+        assert j.red_reason_match == {"matches": True, "confidence": "low"}

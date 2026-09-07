@@ -125,6 +125,9 @@ function matchSummary(m: VerifyReasonMatch | undefined): { icon: string; text: s
  *  below it is the result. */
 function RequestStrip({ req, runner }: { req: VerifyRequest; runner: VerifyRunner | null }) {
   const offline = runner != null && !runner.online;
+  const source = req.source === "auto-resweep"
+    ? " · automatic re-sweep"
+    : req.source === "auto" ? " · auto-picked" : "";
   if (req.status === "queued") {
     return (
       <div className="verdict-banner v-unknown">
@@ -135,7 +138,7 @@ function RequestStrip({ req, runner }: { req: VerifyRequest; runner: VerifyRunne
             {offline && <span className="chip chip-yellow sm" style={{ marginLeft: 8 }} title="No verification worker has beat recently, so the queue is not draining. Start the app backend with TRIAGE_VERIFY_WORKER=1 on the sandbox machine.">⚠ runner offline</span>}
           </div>
           <div className="vb-detail">
-            Waiting for the runner{req.source === "auto" && " · auto-picked"}
+            Waiting for the runner{source}
             {req.queued_at && <span title={localDateTime(req.queued_at)}> · queued {timeAgo(req.queued_at)}</span>}
           </div>
         </div>
@@ -156,7 +159,7 @@ function RequestStrip({ req, runner }: { req: VerifyRequest; runner: VerifyRunne
             retries automatically once a prepare-base run lands (the wait is
             bounded, then this errors)
             {req.queued_at && <span title={localDateTime(req.queued_at)}> · queued {timeAgo(req.queued_at)}</span>}
-            {req.source === "auto" && " · auto-picked"}
+            {source}
           </div>
         </div>
       </div>
@@ -171,7 +174,7 @@ function RequestStrip({ req, runner }: { req: VerifyRequest; runner: VerifyRunne
           <div className="vb-detail">
             {req.started_at && <span title={localDateTime(req.started_at)}>started {timeAgo(req.started_at)} · </span>}
             blind verdict → sandbox red/green → judge; a full run can take many minutes.
-            {req.source === "auto" && " · auto-picked"}
+            {source}
           </div>
         </div>
       </div>
