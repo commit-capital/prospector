@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING
 from pipeline import gates
 from pipeline import store
 from pipeline import verify_driver
+from pipeline import wire
 from pipeline.freshness import is_current
 from pipeline.storekit import now as _now
 from prospector_app.backend import data
@@ -181,7 +182,7 @@ def recover_orphans() -> tuple[list[int], list[int]]:
     return marked, requeued
 
 
-def _rested(req: dict, seconds: float) -> bool:
+def _rested(req: wire.VerifyRequest, seconds: float) -> bool:
     """Whether a parked request's last attempt (its checked_at write stamp) is
     at least `seconds` old. A missing or unparseable stamp reads as rested, so
     a malformed record cannot wait forever."""
@@ -195,7 +196,7 @@ def _rested(req: dict, seconds: float) -> bool:
     return (datetime.now(timezone.utc) - at).total_seconds() >= seconds
 
 
-def base_refresh_due(reg: dict, now: datetime) -> bool:
+def base_refresh_due(reg: wire.VerifyPin, now: datetime) -> bool:
     """Whether this machine's daily pin refresh should attempt now: its pin
     exists, is older than REFRESH_AFTER_HOURS, and no attempt was made on
     today's date (one attempt per day, success or failure). A machine without a
@@ -265,7 +266,9 @@ def maybe_refresh_base() -> None:
                 return
             print(f"[verify-worker] daily pin refresh: "
                   f"{str(reg.get('base_sha'))[:12]} -> {sha[:12]}", flush=True)
-            verify_driver.prepare_base(st, base_sha=sha, tier=int(reg.get("tier", 1)))
+            tier = reg.get("tier")
+            verify_driver.prepare_base(
+                st, base_sha=sha, tier=tier if isinstance(tier, int) else 1)
             _record_refresh(st, True, None, failures)
             entry["stats"].update(ok=True, to=sha[:12])
         except Exception as e:
@@ -298,7 +301,9 @@ def next_queued() -> int | None:
     best_key: tuple[bool, str] | None = None
     daemon: bool | None = None
     for n, rec in data.prs().items():
-        req = rec.verify_request or {}
+        req = rec.verify_request
+        if req is None:
+            continue
         status = req.get("status")
         if status == "waiting-for-base":
             if not _rested(req, BASE_RETRY_SECONDS):

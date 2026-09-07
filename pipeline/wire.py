@@ -92,6 +92,165 @@ class Finding(TypedDict):
     lens: NotRequired[str]
 
 
+class VerifyReasonMatch(TypedDict, total=False):
+    matches: bool | None
+    applicable: bool
+    confidence: str
+    reasoning: str
+
+
+class VerifyJudgment(TypedDict, total=False):
+    red_reason_match: VerifyReasonMatch
+    repro_reason_match: VerifyReasonMatch
+
+
+class VerifyFinding(TypedDict, total=False):
+    signal: str
+    title: str
+    detail: str
+    note: str
+    confidence: str
+    lane: str
+    test_cmd: str | None
+    repro_command: str | None
+    tests: list[str]
+
+
+class VerifyBlindSignal(TypedDict, total=False):
+    has_test: bool
+    faithful: bool
+    confidence: str
+    claimed_symptom: str | None
+    expected_red_signature: str | None
+    requires_live_agent: bool
+    test_cmd: str | None
+    repro_command: str | None
+    expected_repro_signature: str | None
+    repro_rejected: str | None
+    from_linked_issue: bool
+    reasoning: str
+
+
+class VerifyRunSignal(TypedDict, total=False):
+    red_exit: int | None
+    green_exit: int | None
+    red_exit_confirm: int | None
+    green_exit_confirm: int | None
+    red_output_tail: str
+    green_output_tail: str
+
+
+class VerifyRedGreenSignal(VerifyRunSignal, total=False):
+    apply_exit: int | None
+    red_failing: list[str] | None
+    green_failing: list[str] | None
+    green_failing_confirm: list[str] | None
+    failing_in_diff: list[str] | None
+    no_test_hunks: bool
+
+
+class VerifyReproSignal(TypedDict, total=False):
+    ran: bool
+    exit_code: int | None
+    from_linked_issue: bool
+    output_tail: str
+    skipped_reason: str
+
+
+class VerifyRegressSignal(TypedDict, total=False):
+    ran: bool
+    skipped_reason: str
+    exit_first: int | None
+    exit_confirm: int | None
+    confirmed: bool
+    flake: bool
+    excluded_count: int
+    new_failures: list[str]
+
+
+class VerifyAuthoredFile(TypedDict):
+    path: str
+    contents: str
+
+
+class VerifyAuthoredSignal(VerifyRunSignal, total=False):
+    attempted: bool
+    can_author: bool
+    files: list[VerifyAuthoredFile]
+    test_cmd: str | None
+    expected_red_signature: str | None
+    confidence: str
+    reasoning: str
+    skipped_reason: str
+
+
+class VerifyLaneSignal(TypedDict, total=False):
+    cmd: str
+    exit: int
+    ok: bool
+    duration_s: float
+    error_excerpt: str
+    skipped: str
+
+
+class VerifySignals(TypedDict, total=False):
+    blind_adequacy: VerifyBlindSignal
+    red_green: VerifyRedGreenSignal
+    independent_repro: VerifyReproSignal
+    regress: VerifyRegressSignal
+    authored_test: VerifyAuthoredSignal
+    red_reason_match: VerifyReasonMatch
+    repro_reason_match: VerifyReasonMatch
+    lanes: dict[str, VerifyLaneSignal]
+
+
+class VerifyEvidence(TypedDict):
+    pr: int
+    head_sha: str
+    base_sha: str
+    tier: int
+    blind_adequacy: VerifyBlindSignal
+    red_green: VerifyRedGreenSignal
+    independent_repro: VerifyReproSignal
+    regress: VerifyRegressSignal
+    authored_test: NotRequired[VerifyAuthoredSignal]
+    lanes: NotRequired[dict[str, VerifyLaneSignal]]
+
+
+class VerifyRequest(TypedDict):
+    status: str
+    source: NotRequired[str]
+    step: NotRequired[str]
+    queued_at: NotRequired[str]
+    started_at: NotRequired[str]
+    finished_at: NotRequired[str]
+    error_kind: NotRequired[str]
+    error: NotRequired[str]
+    log_tail: NotRequired[str]
+    attempts: NotRequired[int]
+    host: NotRequired[str]
+    checked_at: NotRequired[str]
+    against_head_sha: NotRequired[str]
+
+
+class VerifyPin(TypedDict):
+    base_sha: str | None
+    tier: int | None
+    pinned_at: str | None
+    baseline_failing: list[str] | None
+    baseline_captured_at: str | None
+    host: NotRequired[str]
+    suite: NotRequired[bool]
+    arch: NotRequired[str]
+    refresh_attempted_at: NotRequired[str]
+    refresh_ok: NotRequired[bool]
+    refresh_error: NotRequired[str | None]
+    refresh_failures: NotRequired[int]
+
+
+VERIFY_CONFIDENCES = frozenset({"high", "medium", "low"})
+
+
 @dataclass(frozen=True, kw_only=True)
 class VerdictItem:
     """One PR's security verdict ready for security_driver.commit_verdicts — the
@@ -178,7 +337,7 @@ class BlindItem:
             expected_repro_signature=d.get("expected_repro_signature"),
         )
 
-    def to_signal(self) -> dict[str, object]:
+    def to_signal(self) -> VerifyBlindSignal:
         """The `signals.blind_adequacy` shape stored on the PR. Routing fields
         (pr/head_sha) belong to the envelope, not the signal."""
         return {"has_test": self.has_test, "faithful": self.faithful,
@@ -207,15 +366,49 @@ class JudgeItem:
     the agent is structurally incapable of resolving an escalation. from_dict
     selects only the fields it owns and drops anything else the agent emits."""
     pr: int
-    red_reason_match: dict
-    repro_reason_match: dict
-    findings: list[dict]
+    red_reason_match: VerifyReasonMatch
+    repro_reason_match: VerifyReasonMatch
+    findings: list[VerifyFinding]
 
     @classmethod
     def from_dict(cls, d: dict) -> JudgeItem:
-        return cls(pr=d["pr"], red_reason_match=d.get("red_reason_match") or {},
-                   repro_reason_match=d.get("repro_reason_match") or {},
-                   findings=d.get("findings") or [])
+        def reason_match(value: object) -> VerifyReasonMatch:
+            if not isinstance(value, dict):
+                return {}
+            out: VerifyReasonMatch = {}
+            matches = value.get("matches")
+            if isinstance(matches, bool) or matches is None:
+                out["matches"] = matches
+            applicable = value.get("applicable")
+            if isinstance(applicable, bool):
+                out["applicable"] = applicable
+            confidence = value.get("confidence")
+            if confidence in VERIFY_CONFIDENCES:
+                out["confidence"] = confidence
+            elif isinstance(matches, bool):
+                out["confidence"] = "low"
+            reasoning = value.get("reasoning")
+            if isinstance(reasoning, str):
+                out["reasoning"] = reasoning
+            return out
+
+        findings: list[VerifyFinding] = []
+        raw_findings = d.get("findings")
+        if isinstance(raw_findings, list):
+            for value in raw_findings:
+                if not isinstance(value, dict):
+                    continue
+                title, detail = value.get("title"), value.get("detail")
+                if not isinstance(title, str) or not isinstance(detail, str):
+                    continue
+                finding: VerifyFinding = {"title": title, "detail": detail}
+                confidence = value.get("confidence")
+                if confidence in VERIFY_CONFIDENCES:
+                    finding["confidence"] = confidence
+                findings.append(finding)
+        return cls(pr=d["pr"], red_reason_match=reason_match(d.get("red_reason_match")),
+                   repro_reason_match=reason_match(d.get("repro_reason_match")),
+                   findings=findings)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -233,25 +426,27 @@ class AuthorItem:
     dropped rather than trusted."""
     pr: int
     can_author: bool
-    files: list[dict[str, str]]
+    files: list[VerifyAuthoredFile]
     expected_red_signature: str | None = None
     confidence: str = "medium"
     reasoning: str = ""
 
     @classmethod
     def from_dict(cls, d: dict) -> AuthorItem:
-        files = [f for f in (d.get("files") or [])
-                 if isinstance(f, dict) and isinstance(f.get("path"), str)
-                 and isinstance(f.get("contents"), str)]
+        files: list[VerifyAuthoredFile] = [
+            {"path": f["path"], "contents": f["contents"]}
+            for f in (d.get("files") or [])
+            if isinstance(f, dict) and isinstance(f.get("path"), str)
+            and isinstance(f.get("contents"), str)]
         return cls(
             pr=d["pr"], can_author=d.get("can_author") is True,
-            files=[{"path": f["path"], "contents": f["contents"]} for f in files],
+            files=files,
             expected_red_signature=d.get("expected_red_signature"),
             confidence=d.get("confidence", "medium"),
             reasoning=d.get("reasoning", ""),
         )
 
-    def to_signal(self) -> dict[str, object]:
+    def to_signal(self) -> VerifyAuthoredSignal:
         """The stored `signals.authored_test` core. `attempted` marks that the
         AUTHOR pass ran for this PR; the driver adds `test_cmd` /
         `skipped_reason` after validation and the host adds the lane's exit

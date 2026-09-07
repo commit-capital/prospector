@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, TypedDict
 
 from pipeline import gates
 from pipeline import storekit
+from pipeline import wire
 from prospector_app.backend import data
 from prospector_app.backend import verify_queue
 from prospector_app.backend import verify_worker
@@ -82,7 +83,7 @@ class AutohuntStatus(TypedDict):
 STALE_AFTER_HOURS = 2 * verify_worker.REFRESH_AFTER_HOURS
 
 
-def _host_health(host: str, reg: dict) -> VerifyBaseHost:
+def _host_health(host: str, reg: wire.VerifyPin) -> VerifyBaseHost:
     """One machine's pin: what it holds, how old it is, and how its daily
     refresh last went.
 

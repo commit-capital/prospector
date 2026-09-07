@@ -721,7 +721,7 @@ export default function ControlPanel() {
                 ))}
                 {hunt.status.verify_failed.map((f) => (
                   <PRLink key={`ver-${f.pr}`} n={f.pr} className="chip chip-red sm">
-                    🧪 #{f.pr}{f.error_kind ? ` · ${f.error_kind}` : ""} · {f.source === "auto" ? "auto" : "manual"}
+                    🧪 #{f.pr}{f.error_kind ? ` · ${f.error_kind}` : ""} · {f.source === "auto-resweep" ? "re-sweep" : f.source === "auto" ? "auto" : "manual"}
                   </PRLink>
                 ))}
               </span>
@@ -809,7 +809,7 @@ export default function ControlPanel() {
                     <PRLink n={e.pr} />
                     {e.title && <div className="muted small">{e.title.slice(0, 60)}</div>}
                   </td>
-                  <td><span className="chip chip-muted sm">{e.source === "auto" ? "auto" : "manual"}</span></td>
+                  <td><span className="chip chip-muted sm">{e.source === "auto-resweep" ? "re-sweep" : e.source === "auto" ? "auto" : "manual"}</span></td>
                   <td className="muted small" title={fmt(e.started_at ?? e.queued_at)}>{ago(e.started_at ?? e.queued_at)}</td>
                 </tr>
               ))}
