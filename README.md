@@ -20,14 +20,23 @@ npx github:commit-capital/prospector
 One command: it installs [`uv`](https://docs.astral.sh/uv/) if missing, clones
 the repository, sets up the pinned Python environment and the frontend, and
 starts the app in your browser. You need macOS or Linux with `git` and Node
-≥ 24 — everything else is fetched for you. (Sign in the [`gh` CLI](https://cli.github.com/)
-before your first ingest; Docker is needed only for sandboxed fix
-verification.)
+≥ 24 — everything else is fetched for you.
+
+Three more things, none needed to get the app up:
+
+- Sign in the [`gh` CLI](https://cli.github.com/) before your first ingest —
+  every GitHub read runs as your login.
+- Triage judgment (clustering, analysis, security review, verification) runs
+  through [Claude Code](https://code.claude.com/docs) on your
+  own login; the in-app agent can use Claude Code or Codex. Ingest, the threat
+  scan, and the app itself need neither.
+- Docker is needed only on a machine that runs the sandboxed verification and
+  autofix queues; the [setup guide](docs/setup.md) covers provisioning one.
 
 Already have a clone?
 
 ```bash
-./setup.sh                      # uv-locked Python env + frontend deps (idempotent)
+./setup.sh                      # needs uv; installs the locked Python env + frontend deps (idempotent)
 uv run prospector serve --dev   # then open the printed frontend URL
 ```
 
@@ -49,7 +58,7 @@ deterministic threat scan feed it:
 INGEST ─► THREAT SCAN ─► CLUSTER ─► ANALYZE ─► GATE ─► SECURITY ─► VERIFY ─► RESOLVE
 ```
 
-- **INGEST:** fetch open non-draft PRs and issue links.
+- **INGEST:** fetch open PRs (drafts included) and their linked issues.
 - **THREAT SCAN:** apply deterministic attack signatures and the actor blocklist.
 - **CLUSTER / ANALYZE:** summarize diffs, group related PRs, and propose dispositions.
 - **GATE / SECURITY / VERIFY:** apply quality gates, adversarial review, and
@@ -71,7 +80,7 @@ directly.
   runs, the disposition vocabulary, and the merge bars.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — where state lives and how it flows.
 - [CLAUDE.md](CLAUDE.md) — the trust model and operating rules (authoritative).
-- [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
+- [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md). MIT licensed.
 
 ## Safety
 
