@@ -2,13 +2,13 @@
 
 **Take back control of an overflowing GitHub repository.**
 
-In the age of AI, code is cheap — repository bloat is the new cost. Prospector
+In the age of AI, code is cheap. The cost has moved to the repository. Prospector
 works your open pull requests and issues down to repository inbox zero: it
 triages, tests, fixes, and merges contributions in repositories where the pace
 of contribution has outrun human review. Every upstream action still waits for
 a human click.
 
-It was built working down a real ~3,000-PR backlog — that deployment is
+It was built working down a real ~3,000-PR backlog. That deployment is
 written up in [docs/deployments/paperclip.md](docs/deployments/paperclip.md).
 
 ## Quick start
@@ -20,12 +20,12 @@ npx github:commit-capital/prospector
 One command: it installs [`uv`](https://docs.astral.sh/uv/) if missing, clones
 the repository, sets up the pinned Python environment and the frontend, and
 starts the app in your browser. You need macOS or Linux with `git` and Node
-≥ 24 — everything else is fetched for you.
+≥ 24. Everything else is fetched for you.
 
 Three more things, none needed to get the app up:
 
-- Sign in the [`gh` CLI](https://cli.github.com/) before your first ingest —
-  every GitHub read runs as your login.
+- Sign in the [`gh` CLI](https://cli.github.com/) before your first ingest,
+  since every GitHub read runs as your login.
 - Triage judgment (clustering, analysis, security review, verification) runs
   through [Claude Code](https://code.claude.com/docs) on your
   own login; the in-app agent can use Claude Code or Codex. Ingest, the threat
@@ -42,7 +42,7 @@ uv run prospector serve --dev   # then open the printed frontend URL
 
 First launch opens a **setup wizard**: paste the share-bundle a teammate
 copies from their 🛠️ Setup tab, or answer a few questions to point Prospector
-at a repository of your own. Every step after that is opt-in — see the
+at a repository of your own. Every step after that is opt-in: see the
 repository, then let a bot write to it, then optionally run automated tasks on
 this machine. The [setup guide](docs/setup.md) covers the rest, including
 worker machines and running without the dev servers.
@@ -72,14 +72,14 @@ directly.
 
 ## Learn more
 
-- [Setup guide](docs/setup.md) — prerequisites in detail, worker machines,
+- [Setup guide](docs/setup.md) - prerequisites in detail, worker machines,
   single-process serve, repository layout.
-- [Configuration](docs/configuration.md) — `.env`, the repository profile,
+- [Configuration](docs/configuration.md) - `.env`, the repository profile,
   the backing store, and registering the GitHub App bot identity.
-- [Operations](docs/operations.md) — which commands you run, which the agent
+- [Operations](docs/operations.md) - which commands you run, which the agent
   runs, the disposition vocabulary, and the merge bars.
-- [ARCHITECTURE.md](ARCHITECTURE.md) — where state lives and how it flows.
-- [CLAUDE.md](CLAUDE.md) — the trust model and operating rules (authoritative).
+- [ARCHITECTURE.md](ARCHITECTURE.md) - where state lives and how it flows.
+- [CLAUDE.md](CLAUDE.md) - the trust model and operating rules (authoritative).
 - [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md). MIT licensed.
 
 ## Safety
