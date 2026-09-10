@@ -75,8 +75,17 @@ _LAUNCHER_ENV_ALLOW = ("PATH", "HOME", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_
 
 # Credential-bearing files deleted from the checkout before it is baked into an
 # image layer. `.env.example` is kept — it is documentation, not a credential.
-_SCRUB_GLOBS = ("**/.npmrc", "**/.env*", "**/.netrc", "**/.git-credentials")
+_SCRUB_GLOBS = ("**/.env*", "**/.netrc", "**/.git-credentials")
 _KEEP = re.compile(r"\.env\.example$")
+
+# `.npmrc` is package-manager configuration that may carry a credential line,
+# so it is filtered rather than deleted: a setting like `auto-install-peers` is
+# recorded in the lockfile, and a frozen install refuses a tree whose setting
+# differs. A credential line is a registry-scoped entry (`//host/:…`, the form
+# auth attaches to a registry) or one of npm's auth keys.
+_NPMRC_CREDENTIAL_LINE = re.compile(
+    r"(?i)^\s*(?://|(?:_auth|_authToken|_password|username|email|otp|"
+    r"ca|cafile|cert|certfile|key|keyfile)\s*=)")
 
 # Source files, which SCRUB_PATTERNS are exempt from. In source the patterns are
 # what a redactor matches on, or a fixture key generated to be thrown away — and
@@ -151,9 +160,15 @@ def resolve_base_sha() -> str:
     return str(data["sha"])
 
 
+def _npmrc_credential_lines(path: Path) -> list[str]:
+    return [line for line in path.read_text(errors="ignore").splitlines()
+            if _NPMRC_CREDENTIAL_LINE.match(line)]
+
+
 def scrub_checkout(src: Path) -> None:
-    """Strip every git remote and delete credential-bearing files. Call
-    assert_scrubbed afterwards — this is the cleanup, that is the gate."""
+    """Strip every git remote, delete credential-bearing files, and drop the
+    credential lines from every `.npmrc` (deleting one left with no lines).
+    Call assert_scrubbed afterwards — this is the cleanup, that is the gate."""
     for remote in subprocess.run(
             ["git", "-C", str(src), "remote"], capture_output=True, text=True,
             check=True, env=launcher_env()).stdout.split():
@@ -163,6 +178,15 @@ def scrub_checkout(src: Path) -> None:
         for path in src.glob(glob):
             if path.is_file() and not _KEEP.search(path.name):
                 path.unlink()
+    for path in src.glob("**/.npmrc"):
+        if not path.is_file():
+            continue
+        kept = [line for line in path.read_text(errors="ignore").splitlines()
+                if not _NPMRC_CREDENTIAL_LINE.match(line)]
+        if kept:
+            path.write_text("".join(f"{line}\n" for line in kept))
+        else:
+            path.unlink()
 
 
 def assert_scrubbed(src: Path) -> None:
@@ -170,9 +194,10 @@ def assert_scrubbed(src: Path) -> None:
     image layer is durable, so a credential in any layer stays readable once a
     later layer removes the file. Raises RuntimeError naming the file.
 
-    Two checks: every file scrub_checkout deletes is gone, and no file outside
-    source carries key or token content. The second is the gate for a credential
-    in a file no _SCRUB_GLOBS entry knows about.
+    Three checks: every file scrub_checkout deletes is gone, no `.npmrc` keeps
+    a credential line, and no file outside source carries key or token content.
+    The last is the gate for a credential in a file no _SCRUB_GLOBS entry knows
+    about.
 
     Source is exempt (_SOURCE_FILE), and workflow YAML is scanned against the
     literal-material patterns only (_WORKFLOW_YAML / _SCRUB_RE_LITERALS). This
@@ -189,6 +214,12 @@ def assert_scrubbed(src: Path) -> None:
                 raise RuntimeError(
                     f"refusing to build a base image: {path.relative_to(src)} survived "
                     f"the scrub — an image layer is durable, so scrub it first")
+    for path in src.glob("**/.npmrc"):
+        if path.is_file() and (lines := _npmrc_credential_lines(path)):
+            key = lines[0].split("=", 1)[0].strip()
+            raise RuntimeError(
+                f"refusing to build a base image: {path.relative_to(src)} line "
+                f"{key!r} survived the scrub — an image layer is durable, so scrub it first")
     for path in src.rglob("*", recurse_symlinks=True):
         rel = path.relative_to(src)
         if not path.is_file() or ".git" in rel.parts:
