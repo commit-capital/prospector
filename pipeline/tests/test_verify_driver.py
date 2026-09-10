@@ -33,6 +33,10 @@ SUITE_PROFILE = profile.RepoProfile(verify=profile.VerifyPolicy(
     suite=profile.SuiteConfig(wrapper="scripts/w.mjs", server_project="@x/server")))
 
 
+# One 64-column base64 line, the shape of every line in a PEM key body.
+_PEM_BODY_LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj"
+
+
 class TestLauncherEnv:
     """CRITICAL: DEPLOYMENT_PRIVATE_KEY is a GitHub App private key with org admin on
     the upstream repo, and it is exported in the operator's shell profile — so it
@@ -89,6 +93,39 @@ class TestScrub:
         assert not (src / ".env.local").exists()
         assert not (src / ".env.production").exists()
 
+    def test_keeps_npmrc_settings_and_drops_its_credential_lines(self, tmp_path):
+        # Upstream's .npmrc sets auto-install-peers=false, which the lockfile
+        # records; a frozen install refuses a tree whose setting differs. The
+        # setting stays, and every line that carries a credential goes.
+        src = self._checkout(tmp_path)
+        (src / ".npmrc").write_text(
+            "auto-install-peers=false\n"
+            "//registry.npmjs.org/:_authToken=npm_SECRET\n"
+            "//npm.pkg.github.com/:always-auth=true\n"
+            "_auth=dXNlcjpwYXNz\n"
+            "_password=hunter2\n"
+            "username=brandon\n"
+            "email=brandon@example.com\n"
+            "node-linker=hoisted\n")
+        vd.scrub_checkout(src)
+        assert (src / ".npmrc").read_text() == (
+            "auto-install-peers=false\nnode-linker=hoisted\n")
+        vd.assert_scrubbed(src)
+
+    def test_an_npmrc_of_only_credentials_is_deleted(self, tmp_path):
+        src = self._checkout(tmp_path)
+        (src / ".npmrc").write_text("_auth=dXNlcjpwYXNz\n")
+        vd.scrub_checkout(src)
+        assert not (src / ".npmrc").exists()
+
+    def test_an_unscrubbed_npmrc_credential_line_aborts(self, tmp_path):
+        # _auth and _password are not in SCRUB_PATTERNS: the .npmrc line
+        # predicate is what catches them.
+        src = self._checkout(tmp_path)
+        (src / ".npmrc").write_text("auto-install-peers=false\n_password=hunter2\n")
+        with pytest.raises(RuntimeError, match="survived the scrub"):
+            vd.assert_scrubbed(src)
+
     def test_keeps_env_example(self, tmp_path):
         src = self._checkout(tmp_path)
         (src / ".env.example").write_text("TOKEN=replace-me")
@@ -141,7 +178,36 @@ class TestScrub:
 
     def test_assert_catches_a_private_key(self, tmp_path):
         src = self._checkout(tmp_path)
-        (src / "key.pem").write_text("-----BEGIN RSA PRIVATE KEY-----\nabc\n")
+        (src / "key.pem").write_text(
+            "-----BEGIN RSA PRIVATE KEY-----\n" + _PEM_BODY_LINE + "\n")
+        with pytest.raises(RuntimeError, match="PRIVATE KEY"):
+            vd.assert_scrubbed(src)
+
+    def test_a_bare_pem_header_is_not_a_credential(self, tmp_path):
+        # Upstream's app definitions carry the header alone as a form field's
+        # placeholder text. A credential is the header AND the key material
+        # that follows it.
+        src = self._checkout(tmp_path)
+        (src / "packages" / "core" / "github.json").write_text(
+            '{"placeholder": "-----BEGIN RSA PRIVATE KEY-----", "secret": true}')
+        vd.assert_scrubbed(src)
+
+    def test_a_private_key_in_a_json_string_still_aborts(self, tmp_path):
+        # A service-account file carries the key with its newlines escaped.
+        src = self._checkout(tmp_path)
+        (src / "service-account.json").write_text(
+            '{"private_key": "-----BEGIN PRIVATE KEY-----\\n'
+            + _PEM_BODY_LINE + '\\n-----END PRIVATE KEY-----\\n"}')
+        with pytest.raises(RuntimeError, match="PRIVATE KEY"):
+            vd.assert_scrubbed(src)
+
+    def test_an_encrypted_private_key_still_aborts(self, tmp_path):
+        src = self._checkout(tmp_path)
+        (src / "key.pem").write_text(
+            "-----BEGIN RSA PRIVATE KEY-----\n"
+            "Proc-Type: 4,ENCRYPTED\n"
+            "DEK-Info: AES-128-CBC,0123456789ABCDEF0123456789ABCDEF\n"
+            "\n" + _PEM_BODY_LINE + "\n")
         with pytest.raises(RuntimeError, match="PRIVATE KEY"):
             vd.assert_scrubbed(src)
 
@@ -892,6 +958,7 @@ class _FakePopen:
         self.seen["env"] = kw.get("env")
         self.seen["stdout"] = kw.get("stdout")
         self.seen["stderr"] = kw.get("stderr")
+        self.seen["start_new_session"] = kw.get("start_new_session")
         self.stdout = io.BytesIO(self.output)
         return self
 
@@ -960,7 +1027,11 @@ class TestRunPhase:
 
     def test_a_timeout_is_an_error_not_a_red(self, monkeypatch):
         fake = _FakePopen(output=b"", returncode=-9, raise_timeout=True)
+        cleanup: list[list[str]] = []
         monkeypatch.setattr(vd.subprocess, "Popen", fake)
+        monkeypatch.setattr(
+            vd.subprocess, "run",
+            lambda argv, **kw: cleanup.append(argv) or subprocess.CompletedProcess(argv, 0))
         rc, tail = vd.run_phase("red", "img:t0")
         # Checked against every sentinel, not just PASS and TEST_FAIL.
         sentinels = (gates.SENTINEL_PASS, gates.SENTINEL_PROBE_FAIL,
@@ -968,6 +1039,10 @@ class TestRunPhase:
         assert rc not in sentinels
         assert "timed out" in tail
         assert fake.killed
+        argv = fake.seen["argv"]
+        container = argv[argv.index("--container-name") + 1]
+        assert cleanup == [["docker", "rm", "-f", container]] * 2
+        assert fake.seen["start_new_session"] is True
 
     def test_survives_non_utf8_output_and_still_returns_the_exit_code(
             self, tmp_path, monkeypatch):
@@ -2391,4 +2466,3 @@ class TestRunLanes:
         ev = {}
         assert vd._run_lanes(ev, None, Path("/tmp/x.patch")) is None
         assert "lanes" not in ev
-

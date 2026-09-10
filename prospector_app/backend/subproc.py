@@ -1,11 +1,9 @@
 """Async subprocess spawning for the backend's agent/CLI children.
 
 Every child that streams stdout back into the app is spawned through `spawn`,
-so each gets a stdout reader sized for agent output: headless `claude`
-stream-json emits each event as a single line, and a tool-result event embeds
-whole file contents (an Edit on a large source file runs to hundreds of KiB on
-one line), far past asyncio's 64 KiB default StreamReader limit — which makes
-`async for line in proc.stdout` raise ValueError mid-stream.
+so each gets a stdout reader sized for agent output. Provider JSON events can
+embed whole file contents in one tool-result line, far past asyncio's 64 KiB
+default StreamReader limit.
 """
 
 from __future__ import annotations

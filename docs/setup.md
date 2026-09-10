@@ -58,7 +58,74 @@ To make a machine process work rather than just serve the UI — running
 verification sandboxes and autofix — run `./setup-worker-machine.sh` on it and
 watch the app's 🛠️ Setup tab go green. Any number of machines can; each holds
 its own sandbox base, and the queue claim is a compare-and-swap so two never
-pick up the same PR.
+pick up the same PR. The same command supports macOS and Linux: it starts
+Colima on macOS and the host's Docker Engine service on Linux. Linux package
+installation supports `apt-get` (Ubuntu/Debian) and `dnf` (Amazon Linux,
+Fedora, and related distributions). On another distribution, install Docker
+Engine, `gh`, `jq`, Node 24+, and `uv` first and then run the command.
+For a verification-only cloud host whose `.env` and `profile.json` are already
+in place, the unattended form is:
+
+```bash
+./setup-worker-machine.sh --verify-only --yes
+```
+
+Run the script as the eventual service user, without `sudo`; it elevates only
+package-manager, Docker-service, and group-membership operations.
+
+The worker also needs the Claude CLI and a usable non-interactive login because
+VERIFY's blind and post-run judgments are headless Claude processes. Run
+`claude auth login` as the account that will own the worker service, or provide
+that account an `ANTHROPIC_API_KEY`. GitHub reads likewise use that account's
+stored `gh auth login`; exported `GH_TOKEN` values are not the worker's local
+read identity.
+
+### Running continuously on Linux
+
+The verification worker lives inside the Prospector backend process. A
+dedicated Linux host can keep that process alive with systemd without exposing
+the app port. Create `/etc/systemd/system/prospector-worker.service` with the
+following unit, replacing `ubuntu`, the two home-directory paths, and the
+checkout path for the account and location on the machine:
+
+```ini
+[Unit]
+Description=Prospector verification worker
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/prospector
+Environment=HOME=/home/ubuntu
+Environment=PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PROSPECTOR_NO_LAUNCH_SWEEP=1
+ExecStart=/home/ubuntu/.local/bin/uv run prospector serve
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+The service user must be in the `docker` group and must own the checkout,
+`.env`, `profile.json`, the `gh` login, and the Claude login. The setup command
+adds its invoking Linux user to the group when necessary; a fresh login makes
+that membership active. Then enable the service and follow its log:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now prospector-worker
+journalctl -u prospector-worker -f
+```
+
+No inbound security-group rule is needed for this worker-only process. It binds
+the API to loopback and reaches the shared queue through `TRIAGE_STORE_URL`.
+Stopping the unit lets an in-flight subprocess finish only until systemd's
+default stop timeout, so stop it while idle or re-queue an interrupted run from
+the app.
 
 Autofix additionally needs a **contributor-push identity** on the machine: a
 GitHub user account — your own, or a dedicated one — whose SSH key pushes
@@ -75,8 +142,10 @@ stops the work in one click (every lane off; one click brings it back) and,
 expanded, composes the reverse of the setup command for you to run:
 `./teardown-worker-machine.sh [--artifacts] [--vm] [--packages]` — lane
 switches off always; `--artifacts` removes this machine's base images, sandbox
-image, scratch clone, and base pin; `--vm` deletes the Colima VM; `--packages`
-uninstalls colima and docker (never gh, jq, or node).
+image, scratch clone, and base pin; `--vm` deletes the Colima VM on macOS and is
+a no-op on Linux; `--packages` uninstalls Colima/Docker on macOS or Docker
+Engine on Linux (never `gh`, `jq`, or Node). Stop and disable a systemd service
+separately with `sudo systemctl disable --now prospector-worker`.
 
 ## Repository layout
 

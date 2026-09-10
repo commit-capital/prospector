@@ -11,13 +11,14 @@ from __future__ import annotations
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from pipeline import gates
 from pipeline import reviewers
 from pipeline import schema
 from pipeline import settings
 from pipeline import storekit
+from pipeline import wire
 from pipeline.storekit import Collection, ValidationError
 
 if TYPE_CHECKING:
@@ -629,10 +630,11 @@ class Store:
 
     # One machine's absent pin. `baseline_failing` of None means no baseline was
     # ever captured there — distinct from [], the suite passed clean.
-    _NO_PIN = {"base_sha": None, "tier": None, "pinned_at": None,
-               "baseline_failing": None, "baseline_captured_at": None}
+    _NO_PIN: wire.VerifyPin = {
+        "base_sha": None, "tier": None, "pinned_at": None,
+        "baseline_failing": None, "baseline_captured_at": None}
 
-    def load_verify_base_hosts(self) -> dict[str, dict]:
+    def load_verify_base_hosts(self) -> dict[str, wire.VerifyPin]:
         """Every machine's pinned base, keyed by hostname (`{<hostname>:
         {base_sha, tier, pinned_at, baseline_failing, baseline_captured_at}}`).
 
@@ -646,15 +648,16 @@ class Store:
         the key and is dropped from the record."""
         reg = self._load_registry("verify_base", {"hosts": {}})
         if "hosts" in reg:
-            return reg["hosts"]
+            return cast(dict[str, wire.VerifyPin], reg["hosts"])
         host = reg.pop("prepared_on", None)
-        return {str(host): reg} if host else {}
+        return {str(host): cast(wire.VerifyPin, reg)} if host else {}
 
-    def load_verify_base(self, host: str) -> dict:
+    def load_verify_base(self, host: str) -> wire.VerifyPin:
         """`host`'s pinned base, or the empty pin when that machine has none.
         verify_driver.prepare_base writes it; verify_pr reads the base SHA and
         tier back to name the image it boots."""
-        return self.load_verify_base_hosts().get(host, dict(self._NO_PIN))
+        return self.load_verify_base_hosts().get(
+            host, cast(wire.VerifyPin, dict(self._NO_PIN)))
 
     def load_verify_worker(self) -> dict:
         """Sandbox verification-worker heartbeats, one record per host
@@ -698,7 +701,7 @@ class Store:
                  if h == host or str(r.get("last_beat") or "") >= cutoff}
         self._save_registry("verify_worker", {"hosts": hosts})
 
-    def claim_verify_request(self, n: int, *, host: str) -> dict | None:
+    def claim_verify_request(self, n: int, *, host: str) -> wire.VerifyRequest | None:
         """Atomically claim PR `n`'s `queued`/`waiting-for-base` verify_request
         for `host`: flip it to running (step `claimed`) only while the row is
         unchanged since it was read — a compare-and-swap on the saved_at
@@ -712,13 +715,20 @@ class Store:
         req = rec.get("verify_request") or {}
         if req.get("status") not in ("queued", "waiting-for-base"):
             return None
-        section: dict = {"status": "running", "step": "claimed", "host": host,
-                         "started_at": storekit.now()}
+        section: wire.VerifyRequest = {
+            "status": "running", "step": "claimed", "host": host,
+            "started_at": storekit.now()}
         for field in ("queued_at", "source", "attempts"):
             if req.get(field) is not None:
-                section[field] = req[field]
+                if field == "attempts" and isinstance(req[field], int):
+                    section["attempts"] = req[field]
+                elif field == "queued_at" and isinstance(req[field], str):
+                    section["queued_at"] = req[field]
+                elif field == "source" and isinstance(req[field], str):
+                    section["source"] = req[field]
         head = (rec.get("meta") or {}).get("head_sha")
-        storekit.stamp(rec, "verify_request", section, "against_head_sha", head)
+        storekit.stamp(
+            rec, "verify_request", cast(dict, section), "against_head_sha", head)
         return section if self._prs.save_if(rec, stamp) else None
 
     def load_fix_worker(self) -> dict:
@@ -813,7 +823,7 @@ class Store:
         rec["security_run"] = None
         self._prs.save_if(rec, stamp)
 
-    def save_verify_base(self, record: dict) -> None:
+    def save_verify_base(self, record: wire.VerifyPin) -> None:
         """Merge one machine's pin into the verify_base registry. host is
         required: the clone and image a pin names are local to the machine that
         built them, so a pin naming no machine tells another one nothing it can
@@ -837,7 +847,9 @@ class Store:
         if not record.get("baseline_captured_at"):
             raise ValidationError("verify_base.baseline_captured_at: required")
         hosts = dict(self.load_verify_base_hosts())
-        hosts[str(record["host"])] = record
+        host = record.get("host")
+        assert host is not None
+        hosts[host] = record
         self._save_registry("verify_base", {"hosts": hosts})
 
     def clear_verify_base(self, host: str) -> bool:

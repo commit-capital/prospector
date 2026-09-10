@@ -3,15 +3,9 @@ import { api, type PRRow, type BulkResult } from "../../api";
 import { useExec } from "../../ExecContext";
 import { useJobGroup } from "../../useJobGroup";
 import { GitHubPRLink } from "../GitHubPRLink";
+import { BulkDialogFrame, BulkStatusChip } from "../shared/BulkRunDialog";
+import { countStatuses, summaryLine } from "../shared/bulkSummary";
 import type { BulkAction } from "./BulkActionBar";
-
-function chipTone(status: string): string {
-  if (status === "done" || status === "executed" || status === "merged") return "green";
-  if (status === "failed" || status === "error" || status === "blocked") return "red";
-  if (status === "running") return "blue";
-  if (status === "tracking-lost") return "amber";
-  return "muted";
-}
 
 export function BulkConfirmDialog({ action, comment, canonical, perPr = false, reviewer, selected, rows, onClose, onDone,
   onJobsFinished }:
@@ -57,21 +51,14 @@ export function BulkConfirmDialog({ action, comment, canonical, perPr = false, r
     return job ? { ...result, status: job.status, detail: job.detail } : result;
   };
   const visibleSummary = backgroundSecurity && summary
-    ? Object.values(results).reduce<Record<string, number>>((counts, rawResult) => {
-        const result = displayedResult(rawResult);
-        counts[result.status] = (counts[result.status] ?? 0) + 1;
-        return counts;
-      }, {})
+    ? countStatuses(Object.values(results).map((r) => displayedResult(r).status))
     : summary;
 
   if (targets === null) {
     return (
-      <div className="modal-backdrop">
-        <div className="modal bulk-confirm" onClick={(e) => e.stopPropagation()}>
-          <h3>{action} — {selected.length} PR(s)</h3>
-          <div className="bulk-progress">Loading {selected.length} selected PR{selected.length === 1 ? "" : "s"}…</div>
-        </div>
-      </div>
+      <BulkDialogFrame running={true} onClose={onClose} title={`${action} — ${selected.length} PR(s)`}>
+        <div className="bulk-progress">Loading {selected.length} selected PR{selected.length === 1 ? "" : "s"}…</div>
+      </BulkDialogFrame>
     );
   }
 
@@ -108,74 +95,70 @@ export function BulkConfirmDialog({ action, comment, canonical, perPr = false, r
     );
   };
 
-  // While running, the backdrop click is a no-op — losing the dialog mid-run
-  // leaves no way to tell whether it's still going or already finished.
   return (
-    <div className="modal-backdrop" onClick={() => { if (!running) onClose(); }}>
-      <div className="modal bulk-confirm" onClick={(e) => e.stopPropagation()}>
-        <h3>{action} — {count} PR(s) {localQueue ? "(local verify queue)" : backgroundSecurity ? "(background jobs)" : dryRun ? "(dry run)" : `LIVE as ${botLogin}`}</h3>
-        {running && <div className="bulk-progress">Starting… {submittedCount} of {count} submitted</div>}
-        {backgroundSecurity && summary && (
-          <div className="bulk-progress">
-            {securityJobs.jobCount === 0
-              ? "No new security reviews were started"
-              : securityJobs.allFinished
-                ? `All ${securityJobs.jobCount} started security reviews finished`
-                : `Security reviews… ${securityJobs.finishedCount} of ${securityJobs.jobCount} finished`}
-          </div>
-        )}
-        {localQueue && (
-          <div className="muted small bulk-perpr-note">
-            🧪 Queues each PR for sandbox verification. The verify worker picks them up
-            from the shared queue; nothing is posted upstream.
-          </div>
-        )}
-        {backgroundSecurity && (
-          <div className="muted small bulk-perpr-note">
-            🛡️ Starts one deep security review per PR, with two reviews running at a
-            time. The jobs continue if this dialog or page is closed.
-          </div>
-        )}
-        {postsComment && (perPr
-          ? <div className="muted small bulk-perpr-note">📮 Posting <b>each PR's own suggested comment</b> ({Object.keys(perPrComments).length} of {count} have one; the rest fall back to the default).</div>
-          : comment && <pre className="shared-comment">{comment}</pre>)}
-        {blockedMerges.length > 0 && (
-          <div className="sug-verify">⛔ {blockedMerges.length} fail the merge gate and will be blocked (not merged):
-            {" "}{blockedMerges.map((r) => `#${r.number}`).join(", ")}</div>
-        )}
-        <ul className="bulk-targets">
-          {targets.map((r) => {
-            const rawResult = results[r.number];
-            const res = rawResult ? displayedResult(rawResult) : undefined;
-            const gate = action === "MERGE" ? r.merge_gate : undefined;
-            const resultFinished = res && (!backgroundSecurity || res.job_id === undefined
-              || securityJobs.byKey[r.number]?.finished);
-            return (
-              <li key={r.number} className={resultFinished ? "bulk-target-done" : undefined}>
-                <GitHubPRLink n={r.number} url={r.url} className="num" /> {r.title}
-                {gate && !gate.ok && <span className="chip chip-red" title={gate.reason}>blocked</span>}
-                {res && <span className={`chip chip-${chipTone(res.status)}`} title={res.detail ?? undefined}>{res.status}</span>}
-                {perPr && postsComment && (
-                  perPrComments[r.number]
-                    ? <div className="muted small bulk-pr-comment" title={perPrComments[r.number]}>📮 {perPrComments[r.number].replace(/\s+/g, " ").slice(0, 80)}…</div>
-                    : <div className="muted small bulk-pr-comment">📮 <i>default comment (no per-PR suggestion)</i></div>
-                )}
-              </li>
-            );
-          })}
-        </ul>
-        {visibleSummary
-          ? <div className="bulk-summary">{Object.entries(visibleSummary).map(([k, v]) => `${v} ${k}`).join(" · ")}</div>
-          : <div className="modal-actions">
-              <button className="btn-secondary" onClick={onClose} disabled={running}>Cancel</button>
-              <button className={`btn-primary ${!dryRun && !localAction ? "btn-live" : ""}`} onClick={run} disabled={running}>
-                {running ? "Running…" : localQueue ? `Queue ${count}` : backgroundSecurity ? `Start ${count}` : dryRun ? "Run (dry)" : `● Apply to ${count}`}
-              </button>
-            </div>}
-        {summary && <div className="modal-actions"><button className="btn-primary" onClick={onClose}>
-          {backgroundSecurity && securityJobs.jobCount > 0 && !securityJobs.allFinished ? "Close" : "Done"}
-        </button></div>}
-      </div>
-    </div>
+    <BulkDialogFrame running={running} onClose={onClose}
+      title={`${action} — ${count} PR(s) ${localQueue ? "(local verify queue)" : backgroundSecurity ? "(background jobs)" : dryRun ? "(dry run)" : `LIVE as ${botLogin}`}`}>
+      {running && <div className="bulk-progress">Starting… {submittedCount} of {count} submitted</div>}
+      {backgroundSecurity && summary && (
+        <div className="bulk-progress">
+          {securityJobs.jobCount === 0
+            ? "No new security reviews were started"
+            : securityJobs.allFinished
+              ? `All ${securityJobs.jobCount} started security reviews finished`
+              : `Security reviews… ${securityJobs.finishedCount} of ${securityJobs.jobCount} finished`}
+        </div>
+      )}
+      {localQueue && (
+        <div className="muted small bulk-perpr-note">
+          🧪 Queues each PR for sandbox verification. The verify worker picks them up
+          from the shared queue; nothing is posted upstream.
+        </div>
+      )}
+      {backgroundSecurity && (
+        <div className="muted small bulk-perpr-note">
+          🛡️ Starts one deep security review per PR, with two reviews running at a
+          time. The jobs continue if this dialog or page is closed.
+        </div>
+      )}
+      {postsComment && (perPr
+        ? <div className="muted small bulk-perpr-note">📮 Posting <b>each PR's own suggested comment</b> ({Object.keys(perPrComments).length} of {count} have one; the rest fall back to the default).</div>
+        : comment && <pre className="shared-comment">{comment}</pre>)}
+      {blockedMerges.length > 0 && (
+        <div className="sug-verify">⛔ {blockedMerges.length} fail the merge gate and will be blocked (not merged):
+          {" "}{blockedMerges.map((r) => `#${r.number}`).join(", ")}</div>
+      )}
+      <ul className="bulk-targets">
+        {targets.map((r) => {
+          const rawResult = results[r.number];
+          const res = rawResult ? displayedResult(rawResult) : undefined;
+          const gate = action === "MERGE" ? r.merge_gate : undefined;
+          const resultFinished = res && (!backgroundSecurity || res.job_id === undefined
+            || securityJobs.byKey[r.number]?.finished);
+          return (
+            <li key={r.number} className={resultFinished ? "bulk-target-done" : undefined}>
+              <GitHubPRLink n={r.number} url={r.url} className="num" /> {r.title}
+              {gate && !gate.ok && <span className="chip chip-red" title={gate.reason}>blocked</span>}
+              {res && <BulkStatusChip status={res.status} detail={res.detail} />}
+              {perPr && postsComment && (
+                perPrComments[r.number]
+                  ? <div className="muted small bulk-pr-comment" title={perPrComments[r.number]}>📮 {perPrComments[r.number].replace(/\s+/g, " ").slice(0, 80)}…</div>
+                  : <div className="muted small bulk-pr-comment">📮 <i>default comment (no per-PR suggestion)</i></div>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      {visibleSummary
+        ? <div className="bulk-summary">{summaryLine(visibleSummary)}</div>
+        : <div className="modal-actions">
+            <button className="btn-secondary" onClick={onClose} disabled={running}>Cancel</button>
+            <button className={`btn-primary ${!dryRun && !localAction ? "btn-live" : ""}`} onClick={run} disabled={running}>
+              {running ? "Running…" : localQueue ? `Queue ${count}` : backgroundSecurity ? `Start ${count}` : dryRun ? "Run (dry)" : `● Apply to ${count}`}
+            </button>
+          </div>}
+      {summary && <div className="modal-actions"><button className="btn-primary" onClick={onClose}>
+        {backgroundSecurity && securityJobs.jobCount > 0 && !securityJobs.allFinished ? "Close" : "Done"}
+      </button></div>}
+    </BulkDialogFrame>
   );
 }

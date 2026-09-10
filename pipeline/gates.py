@@ -22,7 +22,7 @@ import re
 import shlex
 from typing import TYPE_CHECKING
 
-from pipeline import codeowners, describe_pr, diffpaths, profile, review_policy, reviewers, risktier, settings
+from pipeline import codeowners, describe_pr, diffpaths, profile, review_policy, reviewers, risktier, settings, wire
 from pipeline.freshness import currency_failure, is_current
 
 if TYPE_CHECKING:
@@ -45,7 +45,7 @@ def configured_lanes() -> dict[str, str]:
     return {name: cmd for name in LANE_ORDER if (cmd := cmds[name])}
 
 
-def _lanes_verdict(lanes: dict | None) -> str | None:
+def _lanes_verdict(lanes: dict[str, wire.VerifyLaneSignal] | None) -> str | None:
     """The outcome a record's lane results force on a would-be verified
     outcome, or None when every recorded lane passed (or none were recorded).
 
@@ -74,7 +74,7 @@ def _lanes_verdict(lanes: dict | None) -> str | None:
     return None
 
 
-def _lane_escalate_cause(signals: dict) -> str | None:
+def _lane_escalate_cause(signals: wire.VerifySignals) -> str | None:
     """The lane name whose recorded entry left verification unconcluded — an
     infra exit or malformed entry — or None when no recorded lane did.
 
@@ -94,7 +94,7 @@ def _lane_escalate_cause(signals: dict) -> str | None:
     return None
 
 
-def _lane_regressed_cause(signals: dict) -> str | None:
+def _lane_regressed_cause(signals: wire.VerifySignals) -> str | None:
     """The lane name whose recorded entry failed — exited SENTINEL_TEST_FAIL —
     or None when no recorded lane did."""
     lanes = signals.get("lanes") or {}
@@ -562,7 +562,9 @@ def resolve_autopush_bar(result: dict) -> tuple[bool, str]:
       - two independent reviewers, each an affirmative `safe` (a missing,
         malformed, or failed review reads as unsafe)
       - the related-tests sandbox run, when one exists, exited clean; a resolve
-        with no related tests passes on the reviews alone
+        with no related tests passes on the reviews alone. A run the sandbox
+        could not execute — an infrastructure error or a preflight refusal —
+        blocks with the record's own message rather than a missing exit code.
     """
     paths = [str(p) for p in (result.get("conflict_paths") or [])]
     tier = risktier.pr_tier(paths)
@@ -587,6 +589,10 @@ def resolve_autopush_bar(result: dict) -> tuple[bool, str]:
     tests = auto.get("tests")
     if tests:
         run = tests.get("run") or {}
+        not_run = run.get("error") or run.get("refused")
+        if not_run:
+            return False, ("the related-tests sandbox could not run: "
+                           f"{not_run}")
         if run.get("exit") != 0:
             return False, ("the related-tests sandbox run did not pass: "
                            f"exit {run.get('exit')}")
@@ -774,7 +780,8 @@ _NAME_FILTER_RE = re.compile(
     r"(?:^|\s)(-t|-g|--testNamePattern|--test-name-pattern|--grep)(?=[=\s]|$)")
 
 
-def vacuous_name_filter(blind: dict, host: dict) -> str | None:
+def vacuous_name_filter(blind: wire.VerifyBlindSignal,
+                        host: wire.VerifyRedGreenSignal) -> str | None:
     """The name-filter flag in the committed test_cmd, when the red run exited
     SENTINEL_PASS with one present — the signature of a filter that matched no
     test names. A runner given a name filter that matches nothing skips every
@@ -961,7 +968,8 @@ def repro_targets_pr_test(repro_cmd: str, diff_text: str) -> str | None:
     return None
 
 
-def vacuous_repro_name_filter(blind: dict, repro: dict) -> str | None:
+def vacuous_repro_name_filter(blind: wire.VerifyBlindSignal,
+                              repro: wire.VerifyReproSignal) -> str | None:
     """The name-filter value in the committed repro_command that matched no test
     name, when the repro ran and exited SENTINEL_PASS with one present. Returns
     None when the repro never ran, exited anything else, or carries no filter.
@@ -985,7 +993,8 @@ def vacuous_repro_name_filter(blind: dict, repro: dict) -> str | None:
     return vals[0] if vals else None
 
 
-def misrooted_repro_config(blind: dict, repro: dict) -> str | None:
+def misrooted_repro_config(blind: wire.VerifyBlindSignal,
+                           repro: wire.VerifyReproSignal) -> str | None:
     """The `--config` value in the committed repro_command that names a config
     in a subdirectory the command never makes the runner's root, when the repro
     ran and exited SENTINEL_TEST_FAIL. Returns None when the repro never ran,
@@ -1029,7 +1038,7 @@ def misrooted_repro_config(blind: dict, repro: dict) -> str | None:
     return cfg
 
 
-def _contained_dirty_green(host: dict, green_key: str) -> bool:
+def _contained_dirty_green(host: wire.VerifyRedGreenSignal, green_key: str) -> bool:
     """True iff the failing set parsed from the green leg under `green_key` is
     contamination the red run already carried: non-empty, a PROPER subset of
     red's failing set (so at least one red failure flipped to passing), and no
@@ -1056,7 +1065,7 @@ def _contained_dirty_green(host: dict, green_key: str) -> bool:
     return green_set < red_set and not green_set & {str(t) for t in in_diff}
 
 
-def green_accepted(host: dict) -> bool:
+def green_accepted(host: wire.VerifyRedGreenSignal) -> bool:
     """Whether the first green run counts as passing: an exit of SENTINEL_PASS,
     or an exit of SENTINEL_TEST_FAIL whose failing set is contained
     contamination (#3718, #3368: a test in the same file that fails identically
@@ -1071,7 +1080,7 @@ def green_accepted(host: dict) -> bool:
             and _contained_dirty_green(host, "green_failing"))
 
 
-def green_confirm_accepted(host: dict) -> bool:
+def green_confirm_accepted(host: wire.VerifyRedGreenSignal) -> bool:
     """green_accepted for the confirm re-run: SENTINEL_PASS (which includes a
     contaminant that stopped failing), or a contained SENTINEL_TEST_FAIL judged
     against the same first-run red set. A confirm failing on anything red never
@@ -1083,7 +1092,7 @@ def green_confirm_accepted(host: dict) -> bool:
             and _contained_dirty_green(host, "green_failing_confirm"))
 
 
-def contained_green_failures(host: dict) -> list[str]:
+def contained_green_failures(host: wire.VerifyRedGreenSignal) -> list[str]:
     """The contaminating test ids the containment exemption accepted, across
     both green legs, sorted — [] when the exemption applied to neither.
     commit_outcomes records them as a dedicated `dirty-green` finding,
@@ -1101,7 +1110,9 @@ def contained_green_failures(host: dict) -> list[str]:
     return sorted(out)
 
 
-def verify_run_errored(blind: dict, host: dict, *, regress: dict | None) -> bool:
+def verify_run_errored(blind: wire.VerifyBlindSignal,
+                       host: wire.VerifyRedGreenSignal, *,
+                       regress: wire.VerifyRegressSignal | None) -> bool:
     """True iff a PR's committed signals record a run that errored: the host saw a
     phase exit outside its sentinel set (a killed container, an OOM, a timeout, an
     image fault), or a clean red->green's confirm re-run or regress leg is
@@ -1167,9 +1178,10 @@ def verify_run_errored(blind: dict, host: dict, *, regress: dict | None) -> bool
     return False
 
 
-def _authored_lane_outcome(authored: dict | None, judge: dict | None, *,
-                           regress: dict | None,
-                           lanes: dict | None = None) -> str:
+def _authored_lane_outcome(authored: wire.VerifyAuthoredSignal | None,
+                           judge: wire.VerifyJudgment | None, *,
+                           regress: wire.VerifyRegressSignal | None,
+                           lanes: dict[str, wire.VerifyLaneSignal] | None = None) -> str:
     """The no-test lane's outcome, from the agent-authored test's committed
     record and host-observed exits.
 
@@ -1205,9 +1217,12 @@ def _authored_lane_outcome(authored: dict | None, judge: dict | None, *,
     return "agent-verified"
 
 
-def verify_outcome(blind: dict, host: dict, judge: dict | None, *,
-                   regress: dict | None, authored: dict | None = None,
-                   lanes: dict | None = None) -> str | None:
+def verify_outcome(blind: wire.VerifyBlindSignal,
+                   host: wire.VerifyRedGreenSignal,
+                   judge: wire.VerifyJudgment | None, *,
+                   regress: wire.VerifyRegressSignal | None,
+                   authored: wire.VerifyAuthoredSignal | None = None,
+                   lanes: dict[str, wire.VerifyLaneSignal] | None = None) -> str | None:
     """The ONE VERIFY outcome policy, computed from the four signals.
 
     `blind` is the adequacy verdict committed BEFORE any run; `host` is the

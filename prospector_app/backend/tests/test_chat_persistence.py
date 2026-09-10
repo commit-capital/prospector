@@ -7,6 +7,7 @@ import asyncio
 import json
 
 from prospector_app.backend import chat
+from prospector_app.backend import claude_backend
 
 
 def test_save_splits_transcript_from_session_meta(temp_store, tmp_path, monkeypatch):
@@ -34,7 +35,7 @@ def test_orphaned_partial_recovered_on_load(temp_store, tmp_path, monkeypatch):
 
     chat._save("pr-9", "user", "explain the gate", None)
     chat._write_partial("pr-9", "The gate checks Greptile 5/5,")  # mid-answer when the reload hit
-    assert "pr-9" not in chat._RUNNING                            # after a reload, nothing runs
+    assert "pr-9" not in claude_backend.CLAUDE_BACKEND.running                            # after a reload, nothing runs
 
     thread = chat.load_thread("pr-9")
     assert [m["role"] for m in thread] == ["user", "assistant"]
@@ -52,13 +53,13 @@ def test_live_partial_shown_but_not_finalized(temp_store, tmp_path, monkeypatch)
 
     chat._save("pr-9", "user", "explain the gate", None)
     chat._write_partial("pr-9", "Looking…")
-    chat._RUNNING["pr-9"] = object()  # a stream is live for this ctx
+    claude_backend.CLAUDE_BACKEND.running["pr-9"] = object()  # a stream is live for this ctx
     try:
         thread = chat.load_thread("pr-9")
         assert [m["text"] for m in thread] == ["explain the gate", "Looking…"]
         assert chat._partial_path("pr-9").exists()  # NOT finalized — the live stream owns it
     finally:
-        chat._RUNNING.pop("pr-9", None)
+        claude_backend.CLAUDE_BACKEND.running.pop("pr-9", None)
 
 
 def test_each_operator_sees_only_their_own_thread(temp_store, tmp_path, monkeypatch):
@@ -150,8 +151,7 @@ def test_thread_digest_replays_recent_turns_within_budget(monkeypatch):
 
 
 def test_stopped_turn_flags_reground(temp_store, tmp_path, monkeypatch):
-    """After Stop, the next turn must re-ground: stop_chat pops _RUNNING, the
-    stream sees the stop, and it flags the thread."""
+    """After Stop, the next turn re-grounds from the persisted transcript."""
     monkeypatch.setattr(chat, "SESSION_DIR", tmp_path / "cache" / "chat")
     monkeypatch.setattr(chat, "_op_slug", lambda: "tester")
     monkeypatch.setattr(chat, "_bot_token", lambda: None)
@@ -174,7 +174,7 @@ def test_stopped_turn_flags_reground(temp_store, tmp_path, monkeypatch):
     async def fake_exec(*cmd, **kw):
         return FakeProc()
 
-    monkeypatch.setattr(chat.asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(claude_backend.asyncio, "create_subprocess_exec", fake_exec)
 
     async def drive():
         async for _ in chat.stream_chat("reanalyze 6744", pr=6744):
@@ -218,7 +218,7 @@ def test_cancelled_stream_persists_partial_and_flags_reground(temp_store, tmp_pa
     async def fake_exec(*cmd, **kw):
         return FakeProc()
 
-    monkeypatch.setattr(chat.asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(claude_backend.asyncio, "create_subprocess_exec", fake_exec)
 
     async def drive():
         gen = chat.stream_chat("explain this PR", pr=555)
@@ -230,7 +230,7 @@ def test_cancelled_stream_persists_partial_and_flags_reground(temp_store, tmp_pa
     thread = chat.load_thread("pr-555")
     assert thread[-1]["text"] == "Looking at the diff"    # partial reply persisted, not lost
     assert chat._reground_path("pr-555").exists()         # next turn must re-ground
-    assert "pr-555" not in chat._RUNNING                   # cleaned up, not left dangling
+    assert "pr-555" not in claude_backend.CLAUDE_BACKEND.running                   # cleaned up, not left dangling
 
 
 def test_reground_turn_reinjects_context_and_replay_without_resume(
@@ -264,7 +264,7 @@ def test_reground_turn_reinjects_context_and_replay_without_resume(
         captured["cmd"] = list(cmd)
         return FakeProc()
 
-    monkeypatch.setattr(chat.asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(claude_backend.asyncio, "create_subprocess_exec", fake_exec)
 
     async def drive():
         async for _ in chat.stream_chat("did greptile pass?", pr=6744):

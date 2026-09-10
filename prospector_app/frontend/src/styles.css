@@ -1323,7 +1323,7 @@ tr.row-done:hover > td { opacity: 1; }
 
 .chk-col { width: 1.6rem; text-align: center; }
 .issue-close-bar {
-  position: sticky; bottom: 0; margin-top: 0.75rem; padding: 0.75rem;
+  position: sticky; top: calc(var(--topbar-h, 48px) + 8px); z-index: 5; margin: 0 0 0.75rem; padding: 0.75rem;
   border: 1px solid var(--border, #333); border-radius: 8px;
   background: var(--panel, #1b1b1b); display: flex; flex-direction: column; gap: 0.5rem;
 }

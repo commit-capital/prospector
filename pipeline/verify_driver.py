@@ -19,6 +19,7 @@ import json
 import os
 import platform
 import re
+import signal
 import shlex
 import shutil
 import socket
@@ -28,7 +29,7 @@ import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from pipeline import diffpaths
 from pipeline import gates
@@ -74,8 +75,17 @@ _LAUNCHER_ENV_ALLOW = ("PATH", "HOME", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_
 
 # Credential-bearing files deleted from the checkout before it is baked into an
 # image layer. `.env.example` is kept — it is documentation, not a credential.
-_SCRUB_GLOBS = ("**/.npmrc", "**/.env*", "**/.netrc", "**/.git-credentials")
+_SCRUB_GLOBS = ("**/.env*", "**/.netrc", "**/.git-credentials")
 _KEEP = re.compile(r"\.env\.example$")
+
+# `.npmrc` is package-manager configuration that may carry a credential line,
+# so it is filtered rather than deleted: a setting like `auto-install-peers` is
+# recorded in the lockfile, and a frozen install refuses a tree whose setting
+# differs. A credential line is a registry-scoped entry (`//host/:…`, the form
+# auth attaches to a registry) or one of npm's auth keys.
+_NPMRC_CREDENTIAL_LINE = re.compile(
+    r"(?i)^\s*(?://|(?:_auth|_authToken|_password|username|email|otp|"
+    r"ca|cafile|cert|certfile|key|keyfile)\s*=)")
 
 # Source files, which SCRUB_PATTERNS are exempt from. In source the patterns are
 # what a redactor matches on, or a fixture key generated to be thrown away — and
@@ -95,7 +105,14 @@ SCRUB_PATTERNS: tuple[str, ...] = (
     r"_authToken",
     r"\bghp_[A-Za-z0-9]{20,}",
     r"\bgithub_pat_[A-Za-z0-9_]{20,}",
-    r"-----BEGIN [A-Z ]*PRIVATE KEY-----",
+    # A private key is its header AND the base64 body that follows it. The
+    # header alone is UI text (a form field's placeholder). The body's first
+    # line is 64 columns, and an encrypted key carries Proc-Type / DEK-Info
+    # header lines before it. Newlines may be JSON-escaped, as a service-account
+    # file writes them.
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----"
+    r"(?:(?:\\[rn]|\s)*(?:Proc-Type|DEK-Info):[^\n\\]*)*"
+    r"(?:\\[rn]|\s)*[A-Za-z0-9+/]{40,}",
 )
 _SCRUB_RE = re.compile("|".join(SCRUB_PATTERNS))
 
@@ -143,9 +160,15 @@ def resolve_base_sha() -> str:
     return str(data["sha"])
 
 
+def _npmrc_credential_lines(path: Path) -> list[str]:
+    return [line for line in path.read_text(errors="ignore").splitlines()
+            if _NPMRC_CREDENTIAL_LINE.match(line)]
+
+
 def scrub_checkout(src: Path) -> None:
-    """Strip every git remote and delete credential-bearing files. Call
-    assert_scrubbed afterwards — this is the cleanup, that is the gate."""
+    """Strip every git remote, delete credential-bearing files, and drop the
+    credential lines from every `.npmrc` (deleting one left with no lines).
+    Call assert_scrubbed afterwards — this is the cleanup, that is the gate."""
     for remote in subprocess.run(
             ["git", "-C", str(src), "remote"], capture_output=True, text=True,
             check=True, env=launcher_env()).stdout.split():
@@ -155,6 +178,15 @@ def scrub_checkout(src: Path) -> None:
         for path in src.glob(glob):
             if path.is_file() and not _KEEP.search(path.name):
                 path.unlink()
+    for path in src.glob("**/.npmrc"):
+        if not path.is_file():
+            continue
+        kept = [line for line in path.read_text(errors="ignore").splitlines()
+                if not _NPMRC_CREDENTIAL_LINE.match(line)]
+        if kept:
+            path.write_text("".join(f"{line}\n" for line in kept))
+        else:
+            path.unlink()
 
 
 def assert_scrubbed(src: Path) -> None:
@@ -162,9 +194,10 @@ def assert_scrubbed(src: Path) -> None:
     image layer is durable, so a credential in any layer stays readable once a
     later layer removes the file. Raises RuntimeError naming the file.
 
-    Two checks: every file scrub_checkout deletes is gone, and no file outside
-    source carries key or token content. The second is the gate for a credential
-    in a file no _SCRUB_GLOBS entry knows about.
+    Three checks: every file scrub_checkout deletes is gone, no `.npmrc` keeps
+    a credential line, and no file outside source carries key or token content.
+    The last is the gate for a credential in a file no _SCRUB_GLOBS entry knows
+    about.
 
     Source is exempt (_SOURCE_FILE), and workflow YAML is scanned against the
     literal-material patterns only (_WORKFLOW_YAML / _SCRUB_RE_LITERALS). This
@@ -181,6 +214,12 @@ def assert_scrubbed(src: Path) -> None:
                 raise RuntimeError(
                     f"refusing to build a base image: {path.relative_to(src)} survived "
                     f"the scrub — an image layer is durable, so scrub it first")
+    for path in src.glob("**/.npmrc"):
+        if path.is_file() and (lines := _npmrc_credential_lines(path)):
+            key = lines[0].split("=", 1)[0].strip()
+            raise RuntimeError(
+                f"refusing to build a base image: {path.relative_to(src)} line "
+                f"{key!r} survived the scrub — an image layer is durable, so scrub it first")
     for path in src.rglob("*", recurse_symlinks=True):
         rel = path.relative_to(src)
         if not path.is_file() or ".git" in rel.parts:
@@ -372,7 +411,7 @@ def changed_paths_for(rec: Pr) -> list[str]:
     return diffpaths.changed_paths(cached_diff_text(rec))
 
 
-def local_pin(store: Store) -> dict:
+def local_pin(store: Store) -> wire.VerifyPin:
     """This machine's pinned base. A pin names a Docker image and a clone on
     local disk, so another machine's pin is not one this machine could boot."""
     return store.load_verify_base(socket.gethostname())
@@ -672,7 +711,8 @@ def failing_in_test_diff(names: list[str] | None, diff_text: str) -> list[str] |
     return hits
 
 
-def _run_lanes(ev: dict, phase: Callable[..., tuple[int, str]], patch: Path) -> str | None:
+def _run_lanes(ev: wire.VerifyEvidence, phase: Callable[..., tuple[int, str]],
+               patch: Path) -> str | None:
     """Run every configured merge-gate lane over the patched tree, recording
     each under ev["lanes"]. Returns the first failing lane's name — later
     lanes record a skip and the caller skips the regress leg — or None when
@@ -683,20 +723,21 @@ def _run_lanes(ev: dict, phase: Callable[..., tuple[int, str]], patch: Path) -> 
     if not lanes_cfg:
         return None
     ev["lanes"] = {}
+    lanes = ev["lanes"]
     failed: str | None = None
     for name, cmd in lanes_cfg.items():
         if failed is not None:
-            ev["lanes"][name] = {"cmd": cmd, "skipped": f"{failed} failed"}
+            lanes[name] = {"cmd": cmd, "skipped": f"{failed} failed"}
             continue
         t0 = time.monotonic()
         rc, tail = phase(name, patch=patch, test_cmd=cmd)
-        entry: dict = {"cmd": cmd, "exit": rc,
-                       "ok": rc == gates.SENTINEL_PASS,
-                       "duration_s": round(time.monotonic() - t0, 1)}
+        entry: wire.VerifyLaneSignal = {
+            "cmd": cmd, "exit": rc, "ok": rc == gates.SENTINEL_PASS,
+            "duration_s": round(time.monotonic() - t0, 1)}
         if rc != gates.SENTINEL_PASS:
             entry["error_excerpt"] = error_excerpt(tail)
             failed = name
-        ev["lanes"][name] = entry
+        lanes[name] = entry
     return failed
 
 
@@ -724,6 +765,33 @@ _READ_CHUNK_BYTES = 65536
 _TIMEOUT_EXIT = 124
 
 
+def _stop_timed_out_phase(proc: subprocess.Popen[bytes], container: str,
+                          env: dict[str, str]) -> None:
+    def remove_container() -> None:
+        try:
+            subprocess.run(
+                ["docker", "rm", "-f", container], check=False, env=env,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+    remove_container()
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except AttributeError:
+        proc.kill()
+    except ProcessLookupError:
+        pass
+    except PermissionError:
+        proc.kill()
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+    remove_container()
+
+
 def run_phase(phase: str, image: str, *, patch: Path | None = None, tier: int = 0,
               test_cmd: str = "pnpm -s test", base_sha: str = "",
               head_sha: str = "", exclude_file: Path | None = None,
@@ -742,9 +810,11 @@ def run_phase(phase: str, image: str, *, patch: Path | None = None, tier: int = 
     verify.suite), mounted read-only for the baseline/regress phases.
 
     The launcher gets launcher_env(), never os.environ."""
+    container = f"prospector-verify-{os.getpid()}-{time.monotonic_ns()}"
     argv = [str(SANDBOX / "sandbox-run.sh"), "--phase", phase, "--image", image,
             "--tier", str(tier), "--test-cmd", test_cmd,
-            "--base-sha", base_sha, "--head-sha", head_sha]
+            "--base-sha", base_sha, "--head-sha", head_sha,
+            "--container-name", container]
     if patch is not None:
         argv += ["--patch", str(patch)]
     if exclude_file is not None:
@@ -753,8 +823,10 @@ def run_phase(phase: str, image: str, *, patch: Path | None = None, tier: int = 
         argv += ["--suite-config", str(suite_config)]
     if settings.VERIFY_PROBE_DENY:
         argv += ["--probe-deny", settings.VERIFY_PROBE_DENY]
-    proc = subprocess.Popen(argv, env=launcher_env(), stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT)
+    env = launcher_env()
+    proc = subprocess.Popen(
+        argv, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        start_new_session=True)
     assert proc.stdout is not None
     out = proc.stdout
     tail = bytearray()
@@ -773,12 +845,8 @@ def run_phase(phase: str, image: str, *, patch: Path | None = None, tier: int = 
     try:
         returncode = proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
-        # The reader thread is left to drain (or block on) whatever remains of
-        # the pipe on its own: a killed process's own descendants can outlive
-        # it and keep the write end open, and the timeout message below does
-        # not depend on the tail it is collecting.
-        proc.kill()
-        proc.wait()
+        _stop_timed_out_phase(proc, container, env)
+        reader.join(timeout=10)
         return _TIMEOUT_EXIT, f"phase {phase} timed out after {timeout}s"
     reader.join()
     return returncode, bytes(tail).decode("utf-8", errors="replace")
@@ -921,7 +989,7 @@ def validate_authored(item: wire.AuthorItem, *, base_clone: Path,
     return cmd, None
 
 
-def authored_test_patch(head_sha: str, files: list[dict[str, str]]) -> Path:
+def authored_test_patch(head_sha: str, files: list[wire.VerifyAuthoredFile]) -> Path:
     """A new-file unified diff adding each authored test file, written under
     SCRATCH so Colima's virtiofs can mount it read-only into the container."""
     chunks: list[str] = []
@@ -1027,7 +1095,8 @@ def run_canaries(image: str, base: str, tier: int) -> list[str]:
 
 
 def verify_pr(rec: Pr, image: str, base: str, tier: int,
-              baseline: list[str], *, suite_config: Path | None) -> dict | None:
+              baseline: list[str], *, suite_config: Path | None
+              ) -> wire.VerifyEvidence | None:
     """Run the sandbox phases for one PR and return the evidence the judge reads.
     Returns None when the PR has no committed blind verdict.
 
@@ -1063,7 +1132,7 @@ def verify_pr(rec: Pr, image: str, base: str, tier: int,
         return None
 
     head = rec.head_sha or ""
-    ev: dict = {
+    ev: wire.VerifyEvidence = {
         "pr": rec.n, "head_sha": head, "base_sha": base, "tier": tier,
         "blind_adequacy": blind,
         "red_green": {"apply_exit": None, "red_exit": None, "green_exit": None,
@@ -1074,6 +1143,7 @@ def verify_pr(rec: Pr, image: str, base: str, tier: int,
                               "output_tail": ""},
         "regress": {"ran": False, "skipped_reason": "red-green-not-clean"},
     }
+    red_green = ev["red_green"]
     test_cmd = blind.get("test_cmd")
     authored = rec.verify_signals.get("authored_test") or {}
     if not test_cmd and not authored.get("test_cmd"):
@@ -1131,18 +1201,21 @@ def verify_pr(rec: Pr, image: str, base: str, tier: int,
             ev["red_green"]["no_test_hunks"] = True
             return ev
         green_patch = patch
-        record = ev["red_green"]
+        record = red_green
     else:
         # The authored lane: red runs the agent-authored test alone on the
         # base; green runs it with the PR's fix applied (one concatenated
         # patch, so the apply is atomic). Host facts land in the lane's own
         # record — red_green stays the author-shipped test's record.
-        test_cmd = authored["test_cmd"]
-        red_patch = authored_test_patch(head, authored["files"])
+        test_cmd = authored.get("test_cmd")
+        files = authored.get("files") or []
+        assert test_cmd is not None
+        red_patch = authored_test_patch(head, files)
         green_patch = combined_patch(head, patch, red_patch)
-        record = {"red_exit": None, "green_exit": None,
-                  "red_exit_confirm": None, "green_exit_confirm": None,
-                  "red_output_tail": "", "green_output_tail": ""}
+        record: wire.VerifyRunSignal = {
+            "red_exit": None, "green_exit": None,
+            "red_exit_confirm": None, "green_exit_confirm": None,
+            "red_output_tail": "", "green_output_tail": ""}
         ev["authored_test"] = {**authored, **record}
         record = ev["authored_test"]
 
@@ -1158,14 +1231,17 @@ def verify_pr(rec: Pr, image: str, base: str, tier: int,
     # which green failures the diff's test hunks mention. The facts are
     # author-shipped-lane only — an agent-authored file is new, so a green
     # failure there is the authored test itself failing.
-    if (record is ev["red_green"] and red_rc == gates.SENTINEL_TEST_FAIL
+    if (record is red_green and red_rc == gates.SENTINEL_TEST_FAIL
             and green_rc == gates.SENTINEL_TEST_FAIL):
-        record["red_failing"] = parse_failed_tests(red_tail)
-        record["green_failing"] = parse_failed_tests(green_tail)
-        record["failing_in_diff"] = failing_in_test_diff(
-            record["green_failing"], cached_diff_text(rec))
+        red_green["red_failing"] = parse_failed_tests(red_tail)
+        red_green["green_failing"] = parse_failed_tests(green_tail)
+        red_green["failing_in_diff"] = failing_in_test_diff(
+            red_green.get("green_failing"), cached_diff_text(rec))
 
-    if not (red_rc == gates.SENTINEL_TEST_FAIL and gates.green_accepted(record)):
+    accepted = (gates.green_accepted(red_green)
+                if record is red_green
+                else record.get("green_exit") == gates.SENTINEL_PASS)
+    if not (red_rc == gates.SENTINEL_TEST_FAIL and accepted):
         return ev   # not an accepted red->green — no confirm, no regress
 
     # Confirm the accepted red->green is not a flake: re-run both in fresh
@@ -1173,16 +1249,21 @@ def verify_pr(rec: Pr, image: str, base: str, tier: int,
     red2_rc, _ = phase("red", test_cmd=test_cmd, patch=red_patch)
     green2_rc, green2_tail = phase("green", patch=green_patch, test_cmd=test_cmd)
     record.update(red_exit_confirm=red2_rc, green_exit_confirm=green2_rc)
-    if (record is ev["red_green"] and green2_rc == gates.SENTINEL_TEST_FAIL
-            and isinstance(record.get("green_failing"), list)):
+    green_failing = red_green.get("green_failing")
+    if (record is red_green and green2_rc == gates.SENTINEL_TEST_FAIL
+            and isinstance(green_failing, list)):
         # The confirm green failed after a contained first leg: parse it and
         # re-derive the diff-membership fact over both green sets, so the
         # confirm containment check reads complete facts.
-        record["green_failing_confirm"] = parse_failed_tests(green2_tail)
-        record["failing_in_diff"] = failing_in_test_diff(
-            record["green_failing"] + (record["green_failing_confirm"] or []),
+        green_confirm = parse_failed_tests(green2_tail)
+        red_green["green_failing_confirm"] = green_confirm
+        red_green["failing_in_diff"] = failing_in_test_diff(
+            green_failing + (green_confirm or []),
             cached_diff_text(rec))
-    if red2_rc == gates.SENTINEL_TEST_FAIL and gates.green_confirm_accepted(record):
+    confirm_accepted = (gates.green_confirm_accepted(red_green)
+                        if record is red_green
+                        else record.get("green_exit_confirm") == gates.SENTINEL_PASS)
+    if red2_rc == gates.SENTINEL_TEST_FAIL and confirm_accepted:
         lane_fail = _run_lanes(ev, phase, patch)
         if lane_fail is not None:
             ev["regress"] = {"ran": False,
@@ -1195,9 +1276,10 @@ def verify_pr(rec: Pr, image: str, base: str, tier: int,
         r1, t1 = phase("regress", patch=patch, test_cmd="true",
                        exclude_file=excl, suite_config=suite_config,
                        timeout=SUITE_TIMEOUT_SECONDS)
-        regress: dict = {"ran": True, "exit_first": r1, "exit_confirm": None,
-                         "confirmed": False, "flake": False,
-                         "excluded_count": len(baseline), "new_failures": []}
+        regress: wire.VerifyRegressSignal = {
+            "ran": True, "exit_first": r1, "exit_confirm": None,
+            "confirmed": False, "flake": False,
+            "excluded_count": len(baseline), "new_failures": []}
         if r1 == gates.SENTINEL_TEST_FAIL:
             regress["new_failures"] = _advisory_failures(t1)
             r2, t2 = phase("regress", patch=patch, test_cmd="true",
@@ -1239,7 +1321,8 @@ Judge TWO questions:
 For both, rate the match and say how confident you are. Confidence is not a formality — fuzzy output matching is the weakest link in this chain, so `low` is the honest answer when the output is thin, generic, or absent. Report any finding worth a human's attention, including a repro that failed for the wrong reason even when red_reason_match itself is clean.""".replace("__REPO__", settings.repo())
 
 
-def authored_attempt_note(authored: dict, red_match: dict) -> str | None:
+def authored_attempt_note(authored: wire.VerifyAuthoredSignal,
+                          red_match: wire.VerifyReasonMatch) -> str | None:
     """One finding sentence for an authored-test attempt that did not end
     agent-verified — what stopped it, in the operator's terms — or None when
     the record shows no attempt. Display-only: the outcome never turns on it."""
@@ -1306,7 +1389,7 @@ def commit_outcomes(store: Store, items: list[JudgeItem]) -> tuple[int, list[int
             if rec is None:
                 errs.append(f"pr {it.pr}: not in store")
                 continue
-            signals = dict(rec.verify_signals)
+            signals = cast(wire.VerifySignals, dict(rec.verify_signals))
             blind = signals.get("blind_adequacy")
             host = signals.get("red_green")
             if not blind or not host:
@@ -1324,9 +1407,10 @@ def commit_outcomes(store: Store, items: list[JudgeItem]) -> tuple[int, list[int
             regress = signals.get("regress")
             authored = signals.get("authored_test")
             lanes = signals.get("lanes")
-            outcome = gates.verify_outcome(blind, host, {
+            judgment: wire.VerifyJudgment = {
                 "red_reason_match": it.red_reason_match,
-                "repro_reason_match": it.repro_reason_match}, regress=regress,
+                "repro_reason_match": it.repro_reason_match}
+            outcome = gates.verify_outcome(blind, host, judgment, regress=regress,
                 authored=authored, lanes=lanes)
             if outcome is None:
                 if gates.verify_run_errored(blind, host, regress=regress):
@@ -1335,7 +1419,7 @@ def commit_outcomes(store: Store, items: list[JudgeItem]) -> tuple[int, list[int
                     errs.append(f"pr {it.pr}: the judge rated no usable red-reason "
                                 f"match — re-run the judge over this PR's evidence")
                 continue
-            findings = list(it.findings)
+            findings: list[wire.VerifyFinding] = list(it.findings)
             flag = gates.vacuous_name_filter(blind, host)
             if flag is not None:
                 findings.append({
@@ -1511,7 +1595,7 @@ def main(argv: list[str] | None = None) -> int:
         print("no verify.suite contract in the profile — pinned without a "
               "baseline; the regress leg is skipped for this repository")
     else:
-        print(f"baseline: {len(reg['baseline_failing'])} failing on the pinned base "
+        print(f"baseline: {len(reg.get('baseline_failing') or [])} failing on the pinned base "
               f"(excluded from every regress run)")
     return 0
 

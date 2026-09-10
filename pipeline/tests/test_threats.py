@@ -525,7 +525,38 @@ class TestFetchMissingDiffs:
         assert store.load_pr(12).section("threat")["verdict"] == "clear"
         stats = self._stats(store)
         assert stats["fetched"] == 0
-        assert stats["uncached"] == 1    # the closed PR stays unfetched, uncached
+        assert stats["scanned"] == 1
+        assert stats["uncached"] == 0    # the closed PR is outside the sweep entirely
+
+    def test_closed_pr_is_not_visited_even_with_a_cached_diff(self, tmp_path, monkeypatch):
+        store = Store(tmp_path)
+        diffs = tmp_path / "diffs"; diffs.mkdir()
+        self._seed(store, 13, author="mallory", state="closed", head="hd")
+        self._seed(store, 14, head="he")
+        (diffs / "hd.diff").write_text(PAYLOAD_DIFF)
+        (diffs / "he.diff").write_text(CLEAN_DIFF)
+        monkeypatch.setattr(diff_cache, "fetch_diff", _must_not_fetch)
+        threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs), "--no-fetch"])
+        assert store.load_pr(13).section("threat") is None
+        assert store.load_pr(14).section("threat")["verdict"] == "clear"
+        assert "mallory" not in store.load_threats().get("actors", {})
+        stats = self._stats(store)
+        assert stats["scanned"] == 1
+        assert stats["malicious"] == 0
+        assert stats["uncached"] == 0
+
+    def test_only_names_a_closed_pr_verbatim(self, tmp_path, monkeypatch):
+        store = Store(tmp_path)
+        diffs = tmp_path / "diffs"; diffs.mkdir()
+        self._seed(store, 15, author="mallory", state="closed", head="hf")
+        (diffs / "hf.diff").write_text(PAYLOAD_DIFF)
+        monkeypatch.setattr(diff_cache, "fetch_diff", _must_not_fetch)
+        threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs), "--no-fetch", "--only", "15"])
+        assert store.load_pr(15).section("threat")["verdict"] == "malicious"
+        assert "mallory" in store.load_threats()["actors"]
+        stats = self._stats(store)
+        assert stats["scanned"] == 1
+        assert stats["malicious"] == 1
 
 
 def test_secret_leak_no_false_positives():

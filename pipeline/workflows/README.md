@@ -116,7 +116,7 @@ Runs after INGEST and after diffs are fetched (the CLUSTER `fetch-diffs` step).
 Cheap and idempotent — no Workflow, no metered tokens.
 
 ```
-uv run python pipeline/threat_scan.py            # scan every PR with a cached diff
+uv run python pipeline/threat_scan.py            # scan every open PR with a cached diff
 uv run python pipeline/threat_scan.py --only 5174,5270   # rescan specific PRs
 uv run python pipeline/views.py
 ```
@@ -182,9 +182,10 @@ Dynamic verification: prove the claimed bug is real on a pinned `main`, apply th
 fix, and prove it resolves. Runs on GATE-clean merge candidates (the same
 GATE-clean rule as SECURITY) and adds `verified-fix` as a fifth merge-bar element.
 
-Needs Docker (`colima start` if it is down). A fresh machine first builds the
-hardened image (`uv run python pipeline/verify_driver.py build-image` — bakes the
-profile's pnpm pin); sandbox/README.md carries the full machine checklist.
+Needs Docker (`colima start` on macOS or `sudo systemctl start docker` on Linux
+if it is down). A fresh machine first builds the hardened image (`uv run python
+pipeline/verify_driver.py build-image` — bakes the profile's pnpm pin);
+sandbox/README.md carries the full machine checklist.
 
 Pin and prepare the base image once per default-branch revision:
 

@@ -36,12 +36,13 @@ import traceback
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, TypeVar, cast
 
 from pipeline import diff_cache
 from pipeline import gates
 from pipeline import headless_agent
 from pipeline import verify_driver
+from pipeline import wire
 from pipeline.settings import REPO_ROOT
 from pipeline.store import AUTO_REQUEST_SOURCES, Store
 from pipeline.storekit import now as _now
@@ -381,8 +382,9 @@ def _author_verdict(rec: Pr, clone_dir: str) -> AuthorItem | None:
 
 
 def _judge_verdict(n: int, expected_red: str | None, expected_repro: str | None,
-                   red_green: dict,
-                   independent_repro: dict) -> tuple[JudgeItem | None, str | None]:
+                   red_green: wire.VerifyRedGreenSignal,
+                   independent_repro: wire.VerifyReproSignal,
+                   ) -> tuple[JudgeItem | None, str | None]:
     """Signals 3 and 4 for this PR via a headless agent: the canonical judge
     prompt with the evidence inlined — the pre-committed predictions vs. what
     the sandbox actually captured. Returns (item, failure): the parsed rating
@@ -403,7 +405,7 @@ def _judge_verdict(n: int, expected_red: str | None, expected_repro: str | None,
     return JudgeItem.from_dict({"pr": n, **data}), None
 
 
-def _no_run_evidence(rec: Pr, base: str, tier: int) -> dict:
+def _no_run_evidence(rec: Pr, base: str, tier: int) -> wire.VerifyEvidence:
     """The evidence shape for a PR whose blind verdict settles the outcome with
     no sandbox time (requires_live_agent): host facts all unrecorded, in the
     exact shape verify_driver.verify_pr returns, so the commit path reads one
@@ -461,7 +463,7 @@ def _run_inner(store: Store, rec: Pr, req: _Request) -> int:
     # machine never prepared.
     if not _daemon_available():
         return _no_daemon(req, "the local Docker daemon is not answering — start "
-                               "it (e.g. `colima start`) to resume verification")
+                               "the platform's Docker service to resume verification")
     if not _image_exists(image):
         return _no_base(req,
                         f"base image {image} not found in the local Docker daemon"
@@ -534,9 +536,9 @@ def _run_inner(store: Store, rec: Pr, req: _Request) -> int:
         req.running("author")
         item = _author_verdict(rec2, str(clone))
         if item is None:
-            authored_sig: dict[str, object] = {"attempted": True, "can_author": False,
-                                  "files": [], "test_cmd": None,
-                                  "skipped_reason": "agent-failed"}
+            authored_sig: wire.VerifyAuthoredSignal = {
+                "attempted": True, "can_author": False, "files": [],
+                "test_cmd": None, "skipped_reason": "agent-failed"}
         else:
             cmd, skip = verify_driver.validate_authored(
                 item, base_clone=clone, pr_paths=paths)
@@ -544,7 +546,7 @@ def _run_inner(store: Store, rec: Pr, req: _Request) -> int:
             authored_sig["test_cmd"] = cmd
             if skip is not None:
                 authored_sig["skipped_reason"] = skip
-        signals0 = dict(rec2.verify_signals)
+        signals0 = cast(wire.VerifySignals, dict(rec2.verify_signals))
         signals0["authored_test"] = authored_sig
         store.edit_pr(n).record_verify(None, signals0, base_sha=base,
                                        head_sha=rec2.head_sha)
@@ -575,7 +577,8 @@ def _run_inner(store: Store, rec: Pr, req: _Request) -> int:
                                log_tail=traceback.format_exc())
     assert ev is not None, f"pr {n} has a committed blind verdict, so verify_pr returns evidence"
     rg = ev["red_green"]
-    _say(f"  exits: apply={rg['apply_exit']} red={rg['red_exit']} green={rg['green_exit']}")
+    _say(f"  exits: apply={rg.get('apply_exit')} red={rg.get('red_exit')} "
+         f"green={rg.get('green_exit')}")
     contaminated = gates.contained_green_failures(rg)
     if contaminated:
         _say("  dirty green accepted as contamination (failed red too): "
@@ -584,14 +587,14 @@ def _run_inner(store: Store, rec: Pr, req: _Request) -> int:
         state = (f"exit {lane['exit']}" if "exit" in lane
                  else f"skipped ({lane.get('skipped')})")
         _say(f"  lane {lane_name}: {state}")
-    signals = dict(rec2.verify_signals)
+    signals = cast(wire.VerifySignals, dict(rec2.verify_signals))
     signals["red_green"] = ev["red_green"]
     signals["independent_repro"] = ev["independent_repro"]
     signals["regress"] = ev["regress"]
-    if ev.get("authored_test"):
-        signals["authored_test"] = ev["authored_test"]
-    if ev.get("lanes"):
-        signals["lanes"] = ev["lanes"]
+    if authored_result := ev.get("authored_test"):
+        signals["authored_test"] = authored_result
+    if lane_results := ev.get("lanes"):
+        signals["lanes"] = lane_results
     store.edit_pr(n).record_verify(None, signals, tier=tier, base_sha=base,
                                    head_sha=rec2.head_sha)
 
@@ -618,11 +621,15 @@ def _run_inner(store: Store, rec: Pr, req: _Request) -> int:
     elif authored_ev.get("red_exit") is not None:
         _say("④ Post-run judgment (authored-test red-reason match)…")
         req.running("judge")
+        authored_red_green: wire.VerifyRedGreenSignal = {
+            "red_exit": authored_ev.get("red_exit"),
+            "green_exit": authored_ev.get("green_exit"),
+            "red_output_tail": authored_ev.get("red_output_tail", ""),
+            "green_output_tail": authored_ev.get("green_output_tail", ""),
+        }
         judged, judge_fail = _retry_once(
             lambda: _judge_verdict(n, authored_ev.get("expected_red_signature"), None,
-                                   {k: authored_ev.get(k) for k in
-                                    ("red_exit", "green_exit", "red_output_tail",
-                                     "green_output_tail")},
+                                   authored_red_green,
                                    {"ran": False, "exit_code": None, "output_tail": ""}),
             "post-run judge")
         if judged is None:

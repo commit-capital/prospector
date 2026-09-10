@@ -73,8 +73,9 @@ own branches while still being unable to reach the triage repository.
   they never fall back to the operator's login. A separate helper may always
   file an issue only on `PROSPECTOR_FEEDBACK_REPO` as the operator. The agent's
   resubmit helper uses the confirming operator's identity for interactive
-  contributor-branch pushes and is advertised when the session can mint the bot
-  token. The worker opts into its configured machine identity separately. These
+  contributor-branch pushes and is advertised in every interactive session,
+  with or without a mintable bot token. The worker opts into its configured
+  machine identity separately. These
   paths do not use the per-PR merge gate. Chat PR close, reopen, and review
   operations, plus issue closes, call their corresponding executor paths; other
   upstream chat writes use `prospector_app/agent/gh-write`, which validates the
@@ -109,11 +110,14 @@ together or none, or a pasted bundle's `push` section together with its
 profile, so a machine that joined early adopts the sharer's current repository
 policy; the bundle's env is never taken there), and `profile` (a pasted
 bundle's profile alone — no env key is writable in it — so a configured
-machine whose push identity is already in place can still refresh its policy). **`connect` and `join` are refused once
+machine whose push identity is already in place can still refresh its policy),
+and `agent` (`TRIAGE_AGENT_PROVIDER`, the machine-local Claude/Codex/none
+choice, which never travels in a bundle). **`connect` and `join` are refused once
 `settings.configured()` is true**, so a working deployment cannot be pointed at
 another repository or another database through the HTTP surface; `writes` and
 `worker` stay open because the wizard reaches them after `connect` has already
-configured the app. Both writers share `env_file.py`, which replaces the file
+configured the app, and `agent` stays open so an existing install can switch
+its local provider. Both writers share `env_file.py`, which replaces the file
 whole from a temporary sibling. `settings` reads every deployment value from
 the environment on the call, so `onboarding.reconfigure` — the ONE adoption
 path — makes a write take effect in the running process by updating the

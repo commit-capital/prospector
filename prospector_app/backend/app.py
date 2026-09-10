@@ -410,7 +410,7 @@ def onboarding_state():
 def onboarding_probe(body: models.OnboardingProbe):
     """Check candidate configuration without writing any of it."""
     return onboarding.probe(body.store_url, body.repo, body.key_file,
-                            agent=body.agent)
+                            agent=body.agent, agent_provider=body.agent_provider)
 
 
 @app.post("/api/onboarding/apply")
@@ -474,11 +474,17 @@ def status_now():
 
 @app.get("/api/setup/readiness")
 def setup_readiness():
-    """What THIS machine still needs before it can process work, plus the state
-    of its lane switches. Scoped to the backend serving the request — the Setup
-    view provisions the machine you loaded it from. Read-only, so the view polls
-    it while setup-worker-machine.sh runs."""
-    return {"readiness": worker_readiness.report(), "flags": worker_control.flags()}
+    """This machine's worker and GitHub App readiness, plus its lane switches."""
+    permissions = executor.bot_permissions() if settings.bot_login() else None
+    return {
+        "readiness": worker_readiness.report(),
+        "flags": worker_control.flags(),
+        "bot_permissions": {
+            "configured": bool(settings.bot_login()),
+            "available": permissions is not None,
+            "actions": permissions.get("actions") if permissions is not None else None,
+        },
+    }
 
 
 @app.post("/api/setup/flags")
@@ -659,9 +665,9 @@ def default_comment(action: str, canonical: int | None = None,
 # ---------------------------------------------------------------------------
 @app.get("/api/chat/ready")
 def chat_ready():
-    """Whether this machine can run the agent pane — the provider and, for
-    claude, the local CLI's presence and login. The pane renders its fix-it
-    empty state from this."""
+    """Whether this machine can run the agent pane — the provider plus its
+    local CLI's presence and login. The pane renders its fix-it empty state
+    from this."""
     return chat.readiness()
 
 
@@ -683,17 +689,28 @@ async def chat_stream(q: str, pr: int | None = None, cluster: int | None = None,
                       alert: int | None = None,
                       file: str | None = None, line: int | None = None,
                       prs: str | None = None, prs_total: int | None = None,
+                      spec: str | None = None,
                       chat_id: str | None = None) -> EventSourceResponse:
     # `prs` is a comma-separated PR-number list — the operator's currently
     # visible/filtered view (#355), e.g. from PR Explorer. `prs_total` carries
     # the true match count when the frontend truncated the list before sending.
+    # `spec` is that view's filter spec as JSON; the match is evaluated here.
     pr_list = [int(x) for x in prs.split(",") if x.strip().isdigit()] if prs else None
+    filter_spec: dict | None = None
+    if spec is not None:
+        try:
+            filter_spec = json.loads(spec)
+        except ValueError as e:
+            raise HTTPException(400, f"spec is not JSON: {e}") from e
+        if not isinstance(filter_spec, dict):
+            raise HTTPException(400, "spec must be a JSON object")
     async def gen() -> AsyncIterator[dict[str, str]]:
         async for ev in chat.stream_chat(q, pr=pr, cluster=cluster, issue=issue,
                                          advisory=advisory, alert_source=alert_source,
                                          alert=alert,
                                          file=file, line=line,
-                                         prs=pr_list, prs_total=prs_total, chat_id=chat_id):
+                                         prs=pr_list, prs_total=prs_total, spec=filter_spec,
+                                         chat_id=chat_id):
             yield ev
     return EventSourceResponse(gen())
 

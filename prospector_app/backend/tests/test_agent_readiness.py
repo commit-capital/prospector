@@ -1,7 +1,7 @@
 """The in-app agent's provider setting and readiness probe.
 
-The agent pane runs the operator's local `claude` CLI under their own login,
-so readiness is a per-machine fact: the binary on PATH and its auth status.
+The agent pane runs the selected local CLI under the operator's own login, so
+readiness is a per-machine fact: the binary on PATH and its auth status.
 `settings.agent_provider()` is the deployment-side switch the pane hides on.
 """
 from __future__ import annotations
@@ -13,6 +13,7 @@ import pytest
 
 from pipeline import settings
 from prospector_app.backend import chat
+from prospector_app.backend import claude_backend
 
 
 class TestAgentProvider:
@@ -28,8 +29,12 @@ class TestAgentProvider:
         monkeypatch.setenv("TRIAGE_AGENT_PROVIDER", "claude")
         assert settings.agent_provider() == "claude"
 
-    def test_an_unrecognized_value_fails_toward_no_agent(self, monkeypatch):
+    def test_codex_reads_as_codex(self, monkeypatch):
         monkeypatch.setenv("TRIAGE_AGENT_PROVIDER", "codex")
+        assert settings.agent_provider() == "codex"
+
+    def test_an_unrecognized_value_fails_toward_no_agent(self, monkeypatch):
+        monkeypatch.setenv("TRIAGE_AGENT_PROVIDER", "gemini")
         assert settings.agent_provider() == "none"
 
 
@@ -54,40 +59,40 @@ class TestReadiness:
         assert found["ok"] is False
 
     def test_missing_binary_names_the_problem(self, monkeypatch):
-        monkeypatch.setattr(chat.shutil, "which", lambda name: None)
+        monkeypatch.setattr(claude_backend.shutil, "which", lambda name: None)
         found = chat.readiness()
         assert found["ok"] is False
         assert found["problem"] == "claude CLI not on PATH"
 
     def test_logged_out_cli_is_not_ready(self, monkeypatch):
-        monkeypatch.setattr(chat.shutil, "which", lambda name: "/usr/bin/claude")
-        monkeypatch.setattr(chat.subprocess, "run", _auth_status({"loggedIn": False}))
+        monkeypatch.setattr(claude_backend.shutil, "which", lambda name: "/usr/bin/claude")
+        monkeypatch.setattr(claude_backend.subprocess, "run", _auth_status({"loggedIn": False}))
         found = chat.readiness()
         assert found["ok"] is False
         assert found["problem"] == "not logged in"
 
     def test_logged_in_cli_is_ready_with_auth_details(self, monkeypatch):
-        monkeypatch.setattr(chat.shutil, "which", lambda name: "/usr/bin/claude")
-        monkeypatch.setattr(chat.subprocess, "run", _auth_status(
+        monkeypatch.setattr(claude_backend.shutil, "which", lambda name: "/usr/bin/claude")
+        monkeypatch.setattr(claude_backend.subprocess, "run", _auth_status(
             {"loggedIn": True, "authMethod": "claude.ai", "subscriptionType": "max"}))
         found = chat.readiness()
         assert found == {"provider": "claude", "ok": True,
                          "auth_method": "claude.ai", "subscription": "max"}
 
     def test_a_failing_status_command_reports_a_category(self, monkeypatch):
-        monkeypatch.setattr(chat.shutil, "which", lambda name: "/usr/bin/claude")
+        monkeypatch.setattr(claude_backend.shutil, "which", lambda name: "/usr/bin/claude")
         def boom(argv, **kwargs):
             raise OSError("exec format error")
-        monkeypatch.setattr(chat.subprocess, "run", boom)
+        monkeypatch.setattr(claude_backend.subprocess, "run", boom)
         found = chat.readiness()
         assert found["ok"] is False
         assert found["problem"] == "OSError"
 
     def test_unparseable_status_output_is_not_ready(self, monkeypatch):
-        monkeypatch.setattr(chat.shutil, "which", lambda name: "/usr/bin/claude")
+        monkeypatch.setattr(claude_backend.shutil, "which", lambda name: "/usr/bin/claude")
         def run(argv, **kwargs):
             return subprocess.CompletedProcess(argv, 0, stdout="not json", stderr="")
-        monkeypatch.setattr(chat.subprocess, "run", run)
+        monkeypatch.setattr(claude_backend.subprocess, "run", run)
         found = chat.readiness()
         assert found["ok"] is False
         assert found["problem"] == "unrecognized auth status"

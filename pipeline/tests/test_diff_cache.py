@@ -64,7 +64,91 @@ class TestFetchDiffFallback:
         paths = diff_cache.fetch_diff_paths(688, "deadbeef")
 
         assert paths == ["src/app.ts", "src/app.test.ts"]
-        assert (tmp_path / "deadbeef.diff").stat().st_size == 60
+        cached = (tmp_path / "deadbeef.diff").read_text()
+        assert "+source\n" not in cached
+        assert "+test\n" not in cached
+        assert cached.count("diff --git") == 2
+
+    def test_cached_diff_spends_the_cap_on_source_and_stubs_the_snapshot(self, tmp_path, monkeypatch):
+        """The #5578 shape: a 563KB drizzle snapshot sorted ahead of every
+        source file. The cache must hold the source hunks and a stub for the
+        snapshot, not the first 200KB of JSON."""
+        monkeypatch.setattr(diff_cache, "DIFFS", tmp_path)
+        monkeypatch.setattr(diff_cache, "MAX_DIFF_BYTES", 400)
+        snapshot = "+" + ("x" * 40) + "\n"
+        text = (
+            "diff --git a/packages/db/src/migrations/meta/0094_snapshot.json b/packages/db/src/migrations/meta/0094_snapshot.json\n"
+            "--- a/packages/db/src/migrations/meta/0094_snapshot.json\n"
+            "+++ b/packages/db/src/migrations/meta/0094_snapshot.json\n"
+            "@@ -0,0 +1,30 @@\n"
+            + snapshot * 30
+            + "diff --git a/server/src/routes/agents.ts b/server/src/routes/agents.ts\n"
+            "--- a/server/src/routes/agents.ts\n"
+            "+++ b/server/src/routes/agents.ts\n"
+            "@@ -1,2 +1,3 @@\n"
+            " keep\n"
+            "+image: text(\"image\"),\n"
+            "-old\n"
+        )
+
+        class R:
+            returncode, stdout, stderr = 0, text, ""
+
+        monkeypatch.setattr(diff_cache.subprocess, "run", lambda *a, **k: R())
+
+        assert diff_cache.fetch_diff_paths(5578, "a1a3c70") == [
+            "packages/db/src/migrations/meta/0094_snapshot.json",
+            "server/src/routes/agents.ts",
+        ]
+        cached = (tmp_path / "a1a3c70.diff").read_text()
+        assert '+image: text("image"),' in cached
+        assert snapshot not in cached
+        assert cached.index("agents.ts") < cached.index("0094_snapshot.json")
+
+
+class TestBound:
+    SRC = (
+        "diff --git a/src/app.ts b/src/app.ts\n"
+        "--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1 +1,2 @@\n keep\n+new\n"
+    )
+    LOCK = (
+        "diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml\n"
+        "--- a/pnpm-lock.yaml\n+++ b/pnpm-lock.yaml\n@@ -1,2 +1,3 @@\n a\n+b\n-c\n"
+    )
+    TEST = (
+        "diff --git a/src/app.test.ts b/src/app.test.ts\n"
+        "--- a/src/app.test.ts\n+++ b/src/app.test.ts\n@@ -1 +1 @@\n-x\n+y\n"
+    )
+
+    def test_under_the_cap_every_file_is_kept_whole_with_artifacts_last(self):
+        out = diff_cache.bound(self.LOCK + self.SRC + self.TEST, cap=10_000)
+        assert out == self.SRC + self.TEST + self.LOCK
+
+    def test_past_the_cap_a_file_becomes_a_stub_that_keeps_its_header_and_counts(self):
+        out = diff_cache.bound(self.SRC + self.LOCK, cap=len(self.SRC) + 10)
+        assert out.startswith(self.SRC)
+        assert "diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml\n" in out
+        assert "+b\n" not in out
+        stub = out[len(self.SRC):]
+        assert "lockfile" in stub
+        assert f"{len(self.LOCK)} bytes" in stub
+        assert "+1 -1" in stub
+
+    def test_once_the_cap_is_reached_every_later_file_is_stubbed_in_order(self):
+        out = diff_cache.bound(self.SRC + self.TEST + self.LOCK, cap=len(self.SRC) + 10)
+        assert out.startswith(self.SRC)
+        assert out.count("diff --git") == 3
+        assert "+y\n" not in out and "+b\n" not in out
+        assert out.index("app.test.ts") < out.index("pnpm-lock.yaml")
+
+    def test_a_stubbed_source_file_is_labelled_source(self):
+        out = diff_cache.bound(self.SRC + self.TEST, cap=len(self.SRC) + 10)
+        stub = out[len(self.SRC):]
+        assert "source" in stub
+
+    def test_text_before_the_first_file_header_is_preserved(self):
+        out = diff_cache.bound("preamble\n" + self.SRC, cap=10_000)
+        assert out == "preamble\n" + self.SRC
 
     def test_explicit_diffs_dir_overrides_the_canonical_cache(self, tmp_path, monkeypatch):
         text = "diff --git a/src/app.ts b/src/app.ts\n+x\n"

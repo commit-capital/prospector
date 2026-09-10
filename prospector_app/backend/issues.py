@@ -235,6 +235,7 @@ def _row(iss: Issue, clusters_by_id: dict[int, IssueCluster], store_states: dict
         "is_dup": bool(canonical and iss.number != canonical and len(members) > 1),
         "duplicates": [m for m in members if m != iss.number],
         "disposition": iss.disposition,
+        "fixed_by": iss.fixed_by if iss.disposition == "close-fixed" else None,
         "linked_prs": _issue_linked_prs(iss, store_states, limit=link_limit),
         "linked_pr_count": len(iss.candidate_prs),
         "referenced_pr_count": sum(1 for c in iss.candidate_prs if _referenced(c)),

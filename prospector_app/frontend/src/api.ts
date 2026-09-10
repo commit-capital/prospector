@@ -523,7 +523,12 @@ export interface VerifySignals {
   }>;
 }
 
-interface VerifyFinding { title?: string; detail?: string; confidence?: string }
+interface VerifyFinding {
+  title: string;
+  detail: string;
+  confidence: string | null;
+  signal: string | null;
+}
 
 export type VerifyLevel = "verified" | "attention" | "blocked" | "info" | "pending";
 
@@ -572,7 +577,7 @@ export type VerifyFault = "pr" | "system" | "judgment" | null;
  *  base (retried, bounded), finished as done / error / cancelled. */
 export interface VerifyRequest {
   status: "queued" | "running" | "waiting-for-base" | "done" | "error" | "cancelled";
-  source?: "operator" | "auto" | null;
+  source?: "operator" | "auto" | "auto-resweep" | null;
   step?: string | null;
   queued_at?: string | null;
   started_at?: string | null;
@@ -812,13 +817,13 @@ interface AutohuntSummary {
 export interface Autohunt { status: AutohuntStatus; summary: AutohuntSummary; history: AutohuntRun[]; }
 
 /** One PR with a sandbox-verification request in flight: running, waiting on
- *  a base refresh, or queued. `source` is "auto" for the idle hunter, null/
- *  undefined for an operator-queued request. */
+ *  a base refresh, or queued. `source` distinguishes an operator pick, the
+ *  idle hunter's first pass, and its re-sweep of an older conclusion. */
 export interface VerifyQueueEntry {
   pr: number;
   title?: string | null;
   status: "queued" | "running" | "waiting-for-base";
-  source?: "auto" | null;
+  source?: "operator" | "auto" | "auto-resweep" | null;
   step?: string | null;
   queued_at?: string | null;
   started_at?: string | null;
@@ -947,6 +952,7 @@ export interface IssueRow {
   is_dup: boolean;
   duplicates: number[];
   disposition: IssueTriageDisposition | null;
+  fixed_by: number | null;
   linked_prs: IssuePR[];
   linked_pr_count: number;
   referenced_pr_count: number;
@@ -1170,6 +1176,12 @@ export interface SetupReadiness {
   autofix_ready: boolean;
 }
 
+export interface BotPermissionReadiness {
+  configured: boolean;
+  available: boolean;
+  actions: string | null;
+}
+
 /** The six worker lane switches, the only .env keys the lane writer may touch. */
 export type WorkerFlags = Record<string, string>;
 
@@ -1204,8 +1216,7 @@ export interface ProbeResult {
   agent?: ProbeFinding;
 }
 
-/** Whether this machine can run the agent pane: the configured provider and,
- *  for claude, the local CLI's presence and login. */
+/** Whether this machine can run the agent pane with the selected local CLI. */
 export interface ChatReady {
   provider: string;
   ok: boolean;
@@ -1247,7 +1258,7 @@ export interface OnboardingApplyBody {
 
 export const api = {
   setupReadiness: () =>
-    get<{ readiness: SetupReadiness; flags: WorkerFlags }>("/api/setup/readiness"),
+    get<{ readiness: SetupReadiness; flags: WorkerFlags; bot_permissions: BotPermissionReadiness }>("/api/setup/readiness"),
   /** The deployment bundle a teammate pastes. `includeKey` adds the bot's
    *  private key, so their machine executes approved writes too;
    *  `includePushKey` the contributor-push identity, so it runs autofix. */
@@ -1295,6 +1306,7 @@ export const api = {
   chatReady: () => get<ChatReady>("/api/chat/ready"),
   onboardingProbe: async (body: {
     store_url?: string; repo?: string; key_file?: string; agent?: boolean;
+    agent_provider?: string;
   }) => {
     const r = await fetch("/api/onboarding/probe", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -1792,7 +1804,11 @@ interface ThreatCoverage extends SectionCoverage {
   diff_uncached_here: number;
 }
 
+/** Phase coverage over the open PRs — the population every phase acts on.
+ * `total` is that open count; `tracked` is the whole store, closed and merged
+ * included. */
 interface PipelineCoverage {
+  tracked: number;
   total: number;
   clustered: number;
   not_clustered: number;

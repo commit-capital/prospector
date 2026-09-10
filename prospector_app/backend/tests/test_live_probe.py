@@ -18,6 +18,8 @@ from prospector_app.backend import executor
 def _reset_caches():
     executor._live_possible = None
     executor._last_mint_error = None
+    executor._bot_permissions = None
+    executor._bot_permissions_probed = False
     caps._cache = None
 
 
@@ -33,6 +35,45 @@ def test_token_script_reads_generic_key_path_config(tmp_path):
                        text=True, timeout=10, env=env)
     assert r.returncode != 0
     assert f"TRIAGE_BOT_KEY_FILE is not readable: {missing}" in r.stderr
+
+
+def test_token_script_permissions_mode_returns_metadata_without_token(tmp_path):
+    key = tmp_path / "private-key.pem"
+    key.write_text("test-key")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    node = bin_dir / "node"
+    node.write_text("#!/bin/sh\nprintf 'test-jwt\\n'\n")
+    node.chmod(0o755)
+    curl = bin_dir / "curl"
+    curl.write_text("""#!/bin/sh
+for arg in "$@"; do
+  case "$arg" in
+    */access_tokens)
+      printf '%s\\n' '{"token":"installation-secret","permissions":{"actions":"write","issues":"write"}}'
+      exit 0
+      ;;
+  esac
+done
+printf '%s\\n' '[{"id":42,"account":{"login":"example"}}]'
+""")
+    curl.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "TRIAGE_REPO": "example/repo",
+        "TRIAGE_BOT_APP_ID": "123",
+        "TRIAGE_BOT_KEY_FILE": str(key),
+    }
+
+    result = subprocess.run(
+        ["bash", str(executor.GET_TOKEN), "--permissions"],
+        capture_output=True, text=True, timeout=10, env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == '{"actions":"write","issues":"write"}'
+    assert "installation-secret" not in result.stdout
 
 
 def test_mint_bot_token_surfaces_missing_key_from_script(monkeypatch):
@@ -98,6 +139,37 @@ def test_mint_bot_token_success_clears_prior_error(monkeypatch):
     monkeypatch.setattr(executor.subprocess, "run", lambda *a, **k: FakeResult())
     assert executor.mint_bot_token() == "ghs_realtoken"
     assert executor.mint_error() is None
+
+
+def test_bot_permissions_uses_nonsecret_token_helper_mode_and_caches(monkeypatch):
+    _reset_caches()
+    calls = []
+
+    class FakeResult:
+        stdout = '{"actions":"write","issues":"write"}\n'
+        stderr = ""
+        returncode = 0
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return FakeResult()
+
+    monkeypatch.setattr(executor.subprocess, "run", fake_run)
+    assert executor.bot_permissions() == {"actions": "write", "issues": "write"}
+    assert executor.bot_permissions() == {"actions": "write", "issues": "write"}
+    assert calls == [["bash", str(executor.GET_TOKEN), "--permissions"]]
+
+
+def test_bot_permissions_fails_closed_on_malformed_output(monkeypatch):
+    _reset_caches()
+
+    class FakeResult:
+        stdout = "not-json\n"
+        stderr = ""
+        returncode = 0
+
+    monkeypatch.setattr(executor.subprocess, "run", lambda *args, **kwargs: FakeResult())
+    assert executor.bot_permissions() is None
 
 
 def test_live_possible_probes_once_and_caches(monkeypatch):

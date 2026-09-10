@@ -76,14 +76,15 @@ def display_name() -> str:
 
 
 def agent_provider() -> str:
-    """Which AI backs the app's in-chat agent pane: "claude" (the operator's
-    local Claude Code CLI, under their own login) or "none" (no agent pane).
-    Defaults to "claude"; an unrecognized value reads as "none", failing toward
-    no agent rather than spawning a CLI the operator did not pick."""
+    """Which local CLI backs the app's in-chat agent pane, or "none".
+
+    Defaults to Claude; an unrecognized value reads as "none", failing toward
+    no agent rather than spawning a CLI the operator did not pick.
+    """
     raw = os.environ.get("TRIAGE_AGENT_PROVIDER", "").strip().lower()
     if not raw:
         return "claude"
-    return raw if raw in ("claude", "none") else "none"
+    return raw if raw in ("claude", "codex", "none") else "none"
 
 
 def feedback_repo() -> str:

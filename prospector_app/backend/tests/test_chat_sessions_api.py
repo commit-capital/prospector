@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from prospector_app.backend import app as appmod
 from prospector_app.backend import chat
+from prospector_app.backend import claude_backend
 
 
 def test_history_with_chat_id_reads_the_named_sessions_own_thread(
@@ -54,7 +55,7 @@ def test_history_routes_security_subjects_to_their_own_threads(
 
 class _FinishedProc:
     """A process that's already exited, so stop_chat's cleanup has nothing to
-    terminate — only the _RUNNING bookkeeping is under test here."""
+    terminate — only the backend's running-process bookkeeping is under test."""
     returncode = 0
 
 
@@ -63,11 +64,11 @@ def test_stop_with_chat_id_targets_the_named_session_not_the_subject(
     monkeypatch.setattr(chat, "SESSION_DIR", tmp_path / "cache" / "chat")
     monkeypatch.setattr(chat, "_op_slug", lambda: "tester")
     # A stream is "running" for the named session but not for the bare subject.
-    chat._RUNNING["sess-alpha"] = _FinishedProc()
+    claude_backend.CLAUDE_BACKEND.running["sess-alpha"] = _FinishedProc()
     try:
         c = TestClient(appmod.app)
         assert c.post("/api/chat/stop", params={"pr": 42}).json()["stopped"] is False
         assert c.post("/api/chat/stop", params={"pr": 42, "chat_id": "sess-alpha"}).json()["stopped"] is True
-        assert "sess-alpha" not in chat._RUNNING
+        assert "sess-alpha" not in claude_backend.CLAUDE_BACKEND.running
     finally:
-        chat._RUNNING.pop("sess-alpha", None)
+        claude_backend.CLAUDE_BACKEND.running.pop("sess-alpha", None)

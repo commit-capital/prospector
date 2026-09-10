@@ -55,6 +55,15 @@ uv run python pipeline/store_migrate.py dump @env <output-dir>
 uv run python issue_triage/issue_store_migrate.py dump @env <output-dir>
 ```
 
+## In-app agent
+
+`TRIAGE_AGENT_PROVIDER` selects the local CLI behind the “Ask the agent”
+sidebar: `claude`, `codex`, or `none`. The 🛠️ Setup page exposes the same
+choice on both new and configured installs and adopts changes in the running
+process. Claude uses the login from `claude auth login`; Codex uses the login
+from `codex login`. The choice and credentials stay on the machine and are not
+included in deployment-sharing bundles.
+
 ## Bot identity (live writes)
 
 Upstream writes execute as a GitHub App, and each deployment registers its own
@@ -66,6 +75,7 @@ no token and every write runs dry.
    - **Contents**: read & write (squash-merges)
    - **Issues**: read & write (issue close/comment/reopen)
    - **Pull requests**: read & write (PR comment/close/review/merge)
+   - **Actions**: read & write (confirmed workflow reruns from the in-app agent)
    - **Metadata**: read (implied)
    - **Code scanning alerts**: read & write (🛡️ Alerts tab — optional; ingest + dismissal)
    - **Dependabot alerts**: read & write (🛡️ Alerts tab — optional)
@@ -74,6 +84,8 @@ no token and every write runs dry.
 
    The alert and advisory permissions are optional: without them the 🛡️ Alerts
    tab reports each source unavailable and everything else works unchanged.
+   Saving a new required permission prompts the owner of each installation to
+   approve it; the old grant remains in effect until that approval is complete.
 2. Keep the app install-restricted (**Only on this account**) and install it on the `TRIAGE_REPO` owner, granting the triaged repo. `pipeline/get-bot-token.sh` selects the installation whose account is the owner of `TRIAGE_REPO`, so a stray installation elsewhere is never used — but there's no reason to allow one.
 3. Generate a private key in the app settings and save the PEM outside the repo (e.g. `~/.config/<app>/private-key.pem`), then wire `.env`:
    - `TRIAGE_BOT_APP_ID` — the app's numeric id (on the app's settings page)

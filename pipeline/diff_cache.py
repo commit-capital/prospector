@@ -1,6 +1,8 @@
 """Machine-local PR diff cache and the bounded, read-only GitHub fetch into it.
 
-One file per PR head (`cache/diffs/<head_sha>.diff`), capped at MAX_DIFF_BYTES.
+One file per PR head (`cache/diffs/<head_sha>.diff`), bounded by MAX_DIFF_BYTES:
+`bound` spends the cap on source files first and replaces every file past it
+with a one-line stub, so a cached diff always names every changed file.
 Fetches are read-only against GitHub: `gh pr diff`, falling back to a diff
 synthesized from the paginated per-file listing when GitHub refuses the diff
 outright (HTTP 406 for PRs over 20k lines). The CLUSTER wave's fetch-diffs
@@ -27,6 +29,7 @@ from typing import TYPE_CHECKING
 
 from pipeline import settings
 from pipeline import diffpaths
+from pipeline import profile
 from pipeline.gh import operator_env
 
 if TYPE_CHECKING:
@@ -37,6 +40,52 @@ _log = logging.getLogger(__name__)
 
 DIFFS = Path(__file__).resolve().parent / "cache" / "diffs"
 MAX_DIFF_BYTES = 200_000  # summarizers don't need megadiffs
+
+
+def _artifact_category(path: str) -> str | None:
+    for rule in profile.active().artifact_rules:
+        if re.search(rule.pattern, path, re.IGNORECASE):
+            return rule.category
+    return None
+
+
+def _stub(block: str, category: str | None) -> str:
+    """A file's `diff --git` header plus one line naming what the cache left
+    out: its artifact category (or `source`), byte size, and +/- line counts."""
+    header, _, body = block.partition("\n")
+    adds = dels = 0
+    for line in body.splitlines():
+        if line.startswith("+") and not line.startswith("+++"):
+            adds += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            dels += 1
+    return f"{header}\n# omitted: {category or 'source'}, {len(block)} bytes, +{adds} -{dels}\n"
+
+
+def bound(text: str, cap: int | None = None) -> str:
+    """The diff the cache holds for `text`: every non-artifact file in its
+    original order, then every artifact-category file (the profile's
+    `artifact_rules`), each kept whole while the running size stays within
+    `cap` and stubbed from the first file that does not fit onward. Every
+    changed file keeps its header, so `changed_paths` over the result is
+    complete however large the PR."""
+    limit = MAX_DIFF_BYTES if cap is None else cap
+    m = re.search(r"^diff --git ", text or "", re.M)
+    preamble = text[:m.start()] if m else (text or "")
+    blocks = [(path, block, _artifact_category(path))
+              for path, block in diffpaths.diff_blocks(text)]
+    ordered = [b for b in blocks if b[2] is None] + [b for b in blocks if b[2] is not None]
+    out = [preamble]
+    used = len(preamble)
+    exceeded = False
+    for _, block, category in ordered:
+        if not exceeded and used + len(block) <= limit:
+            out.append(block)
+            used += len(block)
+        else:
+            exceeded = True
+            out.append(_stub(block, category))
+    return "".join(out)
 _STORE_CHUNK = 100  # diff bodies per store round-trip (~30KB avg keeps a chunk a few MB)
 
 
@@ -77,7 +126,7 @@ def changed_paths(pr: int, head_sha: str | None,
     if diff.exists() and diff.stat().st_size < MAX_DIFF_BYTES:
         return re.findall(r"^diff --git a/.+ b/(.+)$",
                           diff.read_text(errors="replace"), re.M)
-    # A cache file exactly at the cap may have lost trailing file headers.
+    # A body at or past the cap is not trusted to carry every file header.
     # Fall back to the complete paginated listing rather than treating the
     # bounded summarizer cache as a complete manifest.
     return _fetch_changed_paths(pr) or []
@@ -140,9 +189,10 @@ def fetch_diff_paths(pr: int, head_sha: str, diffs_dir: Path | None = None,
     if text is None:
         return None
     paths = diffpaths.changed_paths(text)
-    path.write_text(text[:MAX_DIFF_BYTES])
+    bounded = bound(text)
+    path.write_text(bounded)
     if store is not None:
-        _store_save(store, [(head_sha, pr, text[:MAX_DIFF_BYTES])])
+        _store_save(store, [(head_sha, pr, bounded)])
     return paths
 
 

@@ -437,6 +437,80 @@ def test_abort_during_conflict_leaves_remote_untouched(monkeypatch, tmp_path):
     assert _git(repos["fork"], "rev-parse", "refs/heads/fix").stdout.strip() == repos["old_head"]
 
 
+# --- inspection: read-only git queries confined to the prepared worktree -------
+
+def test_log_reads_back_the_commits_a_rebase_rewrote(monkeypatch, tmp_path, capsys):
+    repos = _make_rebase_repos(tmp_path, conflict=False)
+    _wire_rebase(monkeypatch, tmp_path, repos)
+    assert resubmit.cmd_prepare(42, rebase=True) == 0
+    assert resubmit.cmd_log(42, 10) == 0
+    out = capsys.readouterr().out
+    assert "add feature" in out          # the contributor's commit, replayed
+    assert "advance base" in out         # now sitting on the advanced base
+
+
+def test_log_limit_bounds_the_output(monkeypatch, tmp_path, capsys):
+    repos = _make_rebase_repos(tmp_path, conflict=False)
+    _wire_rebase(monkeypatch, tmp_path, repos)
+    assert resubmit.cmd_prepare(42, rebase=True) == 0
+    capsys.readouterr()                  # drop prepare's own report
+    assert resubmit.cmd_log(42, 1) == 0
+    assert len(capsys.readouterr().out.strip().splitlines()) == 1
+
+
+def test_show_stat_names_the_files_in_a_commit(monkeypatch, tmp_path, capsys):
+    repos = _make_rebase_repos(tmp_path, conflict=False)
+    _wire_rebase(monkeypatch, tmp_path, repos)
+    assert resubmit.cmd_prepare(42, rebase=True) == 0
+    assert resubmit.cmd_show(42, "HEAD", stat=True) == 0
+    out = capsys.readouterr().out
+    assert "feature.txt" in out
+    assert "+feature" not in out         # --stat, so the file list without the patch
+
+
+def test_status_reports_an_uncommitted_edit(monkeypatch, tmp_path, capsys):
+    repos = _make_rebase_repos(tmp_path, conflict=False)
+    _wire_rebase(monkeypatch, tmp_path, repos)
+    assert resubmit.cmd_prepare(42) == 0
+    (resubmit._worktree(42) / "feature.txt").write_text("edited\n")
+    assert resubmit.cmd_status(42) == 0
+    assert "feature.txt" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("ref", ["HEAD", "HEAD~2", "HEAD^", "a" * 40, "refs/heads/fix", "HEAD@{1}"])
+def test_revision_accepts_the_shapes_a_reviewer_actually_names(ref):
+    assert resubmit._revision(ref) == ref
+
+
+@pytest.mark.parametrize("ref", ["a b", "x;whoami", "$(id)", "`id`", "../etc/passwd", ""])
+def test_revision_refuses_shell_and_path_shapes(ref):
+    with pytest.raises(RuntimeError, match="is not a revision"):
+        resubmit._revision(ref)
+
+
+@pytest.mark.parametrize("ref", ["-n1", "--output=/tmp/pwned"])
+def test_show_refuses_a_flag_shaped_ref_before_git_runs(ref):
+    # argparse rejects the flag shape outright, so _revision's leading-character
+    # rule is the second of two guards, not the only one.
+    with pytest.raises(SystemExit):
+        resubmit.main([str(42), "show", ref])
+
+
+def test_show_refuses_a_ref_that_is_not_a_revision(monkeypatch, tmp_path, capsys):
+    repos = _make_rebase_repos(tmp_path, conflict=False)
+    _wire_rebase(monkeypatch, tmp_path, repos)
+    assert resubmit.cmd_prepare(42) == 0
+    assert resubmit.main([str(42), "show", "x;whoami"]) == 4
+    assert "is not a revision" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("action", ["log", "show", "status"])
+def test_inspection_without_prepare_fails_cleanly(monkeypatch, tmp_path, capsys, action):
+    monkeypatch.setattr(resubmit, "WORKTREE_ROOT", tmp_path / "resubmit")
+    assert resubmit.main([str(42), action]) == 2
+    assert "was not prepared" in capsys.readouterr().err
+
+
 # --- update: merge the base branch into the PR's head under either identity ----
 
 class _Ran:
@@ -780,3 +854,57 @@ def test_merge_push_refuses_when_head_moved(monkeypatch, tmp_path):
     monkeypatch.setattr(resubmit, "_gh_json",
                         lambda pr: _pr(headRefOid="f" * 40, baseRefOid=repos["stale_base"]))
     assert resubmit.cmd_push(42, None, False, None) == 6
+
+
+# --- rm: file deletion confined to the prepared worktree ------------------------
+
+def _prepared_edit_worktree(monkeypatch, tmp_path):
+    repos = _make_rebase_repos(tmp_path, conflict=False)
+    _wire_rebase(monkeypatch, tmp_path, repos)
+    assert resubmit.cmd_prepare(42) == 0
+    return resubmit._worktree(42)
+
+
+def test_rm_deletes_one_worktree_file(monkeypatch, tmp_path, capsys):
+    wt = _prepared_edit_worktree(monkeypatch, tmp_path)
+    assert (wt / "feature.txt").is_file()
+    assert resubmit.cmd_rm(42, "feature.txt") == 0
+    assert not (wt / "feature.txt").exists()
+    assert "deleted feature.txt" in capsys.readouterr().out
+
+
+def test_rm_deletion_is_committed_by_push(monkeypatch, tmp_path):
+    repos = _make_rebase_repos(tmp_path, conflict=False)
+    _wire_rebase(monkeypatch, tmp_path, repos)
+    monkeypatch.setattr(resubmit, "_log", lambda *args, **kwargs: None)
+    assert resubmit.cmd_prepare(42) == 0
+    assert resubmit.cmd_rm(42, "feature.txt") == 0
+    assert resubmit.cmd_push(42, "Drop the superseded file", False) == 0
+    pushed = _git(repos["fork"], "rev-parse", "refs/heads/fix").stdout.strip()
+    tree = _git(repos["fork"], "ls-tree", "--name-only", pushed).stdout
+    assert "feature.txt" not in tree
+
+
+@pytest.mark.parametrize("path", [
+    "../outside.txt", "/etc/passwd", ".git/config", "sub/../../outside.txt", ".",
+])
+def test_rm_refuses_paths_outside_the_worktree(monkeypatch, tmp_path, capsys, path):
+    _prepared_edit_worktree(monkeypatch, tmp_path)
+    (tmp_path / "resubmit" / "outside.txt").write_text("sibling of the clone\n")
+    assert resubmit.cmd_rm(42, path) == 2
+    assert "confined to the prepared worktree" in capsys.readouterr().err
+    assert (tmp_path / "resubmit" / "outside.txt").exists()
+
+
+def test_rm_refuses_a_missing_file_and_a_directory(monkeypatch, tmp_path, capsys):
+    wt = _prepared_edit_worktree(monkeypatch, tmp_path)
+    (wt / "adir").mkdir()
+    assert resubmit.cmd_rm(42, "nope.txt") == 2
+    assert resubmit.cmd_rm(42, "adir") == 2
+    assert (wt / "adir").is_dir()
+
+
+def test_rm_without_prepare_fails_cleanly(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(resubmit, "WORKTREE_ROOT", tmp_path / "resubmit")
+    assert resubmit.main(["42", "rm", "anything.txt"]) == 2
+    assert "was not prepared" in capsys.readouterr().err

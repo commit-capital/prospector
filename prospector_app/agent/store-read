@@ -18,10 +18,21 @@ Usage:
     prospector_app/agent/store-read cluster <CID>           # the whole cluster record
     prospector_app/agent/store-read issue <N>               # the whole issue record
     prospector_app/agent/store-read issue <N> --section analysis   # one section
+    prospector_app/agent/store-read prs                     # every open PR, one compact row each
+    prospector_app/agent/store-read prs --state all --fields issues.linked,analysis.disposition
+    prospector_app/agent/store-read prs --numbers 12,40,77  # just these PRs
+    prospector_app/agent/store-read issues --state closed   # every closed issue
     prospector_app/agent/store-read threats                 # the threat registry
     prospector_app/agent/store-read activity pr <N>         # executed actions on one PR
     prospector_app/agent/store-read activity issue <N>      # executed actions on one issue
     prospector_app/agent/store-read activity recent         # the recent action feed
+
+The `prs` and `issues` subcommands print a JSON array of compact rows (number,
+state, title, author, and a few stamps), open records by default; `--state`
+widens to `closed` or `all`, `--numbers` restricts to a comma-separated list,
+and `--fields` copies dotted paths out of the raw record into each row at their
+nested position (`null` at the leaf when the record lacks them). The rows are
+meant to be piped through `jq`, which joins and filters them.
 
 The `activity` subcommand reads the app's append-only activity log — the
 record of what was actually *executed* upstream (closes, merges, reopens,
@@ -52,6 +63,58 @@ sys.path.insert(0, str(REPO_ROOT))
 from issue_triage.issue_store import IssueStore  # noqa: E402
 from pipeline.store import Store  # noqa: E402
 
+_STATES = ("open", "closed", "all")
+
+
+def _numbers(text: str | None) -> set[int] | None:
+    if text is None:
+        return None
+    return {int(tok) for tok in text.split(",") if tok.strip().isdigit()}
+
+
+def _fields(text: str | None) -> list[tuple[str, ...]]:
+    return [tuple(f.strip().split(".")) for f in (text or "").split(",") if f.strip()]
+
+
+def _project(raw: dict, fields: list[tuple[str, ...]], row: dict) -> dict:
+    for path in fields:
+        value: object = raw
+        for key in path:
+            value = value.get(key) if isinstance(value, dict) else None
+        target = row
+        for key in path[:-1]:
+            target = target.setdefault(key, {})
+        target[path[-1]] = value
+    return row
+
+
+def _selected(number: int, state: str | None, want_state: str, want: set[int] | None) -> bool:
+    if want is not None and number not in want:
+        return False
+    return want_state == "all" or state == want_state
+
+
+def _hydrate_issues(rows: list[dict], istore: IssueStore) -> None:
+    """Merge each linked issue's current state, state_reason and title into the
+    rows' `issues.linked` entries, from one read of the issues they name."""
+    linked = [e for row in rows for e in (row["issues"]["linked"] or [])]
+    issues = istore.load_issues(sorted({int(e["issue"]) for e in linked}))
+    for e in linked:
+        iss = issues.get(int(e["issue"]))
+        e.update({"state": iss.state if iss else None,
+                  "state_reason": iss.state_reason if iss else None,
+                  "title": iss.title if iss else None})
+
+
+def _add_bulk_flags(sp: argparse.ArgumentParser) -> None:
+    sp.add_argument("--state", choices=_STATES, default="open",
+                    help="which records to list (default open)")
+    sp.add_argument("--numbers", default=None,
+                    help="comma-separated numbers to restrict the list to")
+    sp.add_argument("--fields", default=None,
+                    help="comma-separated dotted paths to copy into each row "
+                         "(e.g. issues.linked,analysis.disposition)")
+
 
 def main(argv: list[str] | None = None) -> int:
     # `--store` lives on a shared parent so it's accepted on either side of the
@@ -79,6 +142,15 @@ def main(argv: list[str] | None = None) -> int:
     iss.add_argument("--section", default=None,
                      help="print only this section (meta/summary/repro/cluster/"
                           "analysis/links/resolution/fix_scan)")
+
+    prs = sub.add_parser("prs", parents=[common], help="list PRs as compact rows")
+    _add_bulk_flags(prs)
+    prs.add_argument("--with-issues", action="store_true",
+                     help="add each linked issue's current state, state_reason and "
+                          "title to the issues.linked entries")
+
+    isss = sub.add_parser("issues", parents=[common], help="list issues as compact rows")
+    _add_bulk_flags(isss)
 
     sub.add_parser("threats", parents=[common], help="read the durable threat registry")
 
@@ -114,6 +186,20 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(events, indent=2, sort_keys=True))
         return 0
 
+    if args.what == "issues":
+        want = _numbers(args.numbers)
+        fields = _fields(args.fields)
+        rows = []
+        for n, irec in sorted(IssueStore(args.store).all_issues().items()):
+            if not _selected(n, irec.state, args.state, want):
+                continue
+            rows.append(_project(irec.raw, fields, {
+                "issue": n, "state": irec.state, "state_reason": irec.state_reason,
+                "title": irec.title, "author": irec.author, "updated_at": irec.updated_at,
+            }))
+        print(json.dumps(rows, indent=1, sort_keys=True))
+        return 0
+
     if args.what == "issue":
         istore = IssueStore(args.store)
         irec = istore.load_issue(args.number)
@@ -133,6 +219,24 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     store = Store(args.store) if args.store else Store()
+
+    if args.what == "prs":
+        want = _numbers(args.numbers)
+        fields = _fields(args.fields)
+        if args.with_issues and ("issues", "linked") not in fields:
+            fields.append(("issues", "linked"))
+        rows = []
+        for n, rec in sorted(store.all_prs().items()):
+            if not _selected(n, rec.state, args.state, want):
+                continue
+            rows.append(_project(rec.raw, fields, {
+                "pr": n, "state": rec.state, "title": rec.title, "author": rec.author,
+                "head_sha": rec.head_sha, "updated_at": rec.updated_at,
+            }))
+        if args.with_issues:
+            _hydrate_issues(rows, IssueStore(args.store))
+        print(json.dumps(rows, indent=1, sort_keys=True))
+        return 0
 
     if args.what == "pr":
         rec = store.load_pr(args.number)

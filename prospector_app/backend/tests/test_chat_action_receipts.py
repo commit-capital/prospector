@@ -7,6 +7,7 @@ import asyncio
 import json
 
 from prospector_app.backend import chat
+from prospector_app.backend import claude_backend
 from prospector_app.backend import issue_receipts
 from pipeline import settings
 
@@ -106,7 +107,7 @@ def test_stream_preserves_agent_text_without_receipt(
     async def fake_exec(*cmd, **kw):
         return FakeProc()
 
-    monkeypatch.setattr(chat.asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(claude_backend.asyncio, "create_subprocess_exec", fake_exec)
 
     async def drive():
         return [ev async for ev in chat.stream_chat("file it", pr=7)]
@@ -159,7 +160,7 @@ def test_stream_appends_same_turn_receipt(
     async def fake_exec(*cmd, **kw):
         return FakeProc()
 
-    monkeypatch.setattr(chat.asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(claude_backend.asyncio, "create_subprocess_exec", fake_exec)
 
     async def drive():
         return [ev async for ev in chat.stream_chat("file it", pr=8)]

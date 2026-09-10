@@ -1435,6 +1435,40 @@ def test_failing_related_tests_stay_parked(review_lane, store, monkeypatch):
     assert "test" in req["result"]["auto_review"]["bar"]["reason"]
 
 
+def test_a_sandbox_error_leaves_no_stamp_so_a_recovered_host_retries(
+        review_lane, store, monkeypatch):
+    monkeypatch.setattr(
+        fix_worker.compile_preflight, "run_command_for_patch",
+        lambda pr, head, patch, cmd: {
+            "cmd": cmd,
+            "error": "compile preflight failed unexpectedly; see server logs"})
+    _parked_resolve(store)
+    fix_worker.review_parked_resolve(1)
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "awaiting-review"
+    assert "auto_review" not in (req.get("result") or {})
+    assert fix_worker.next_reviewable() is None
+    fix_worker._review_backoff.clear()
+    assert fix_worker.next_reviewable() == 1
+
+
+def test_a_sandbox_refusal_stamps_with_its_reason(review_lane, store, monkeypatch):
+    monkeypatch.setattr(
+        fix_worker.compile_preflight, "run_command_for_patch",
+        lambda pr, head, patch, cmd: {
+            "cmd": cmd,
+            "refused": "the PR changes dependency manifests"})
+    _parked_resolve(store)
+    fix_worker.review_parked_resolve(1)
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "awaiting-review"
+    bar = req["result"]["auto_review"]["bar"]
+    assert bar["ok"] is False
+    assert "could not run" in bar["reason"]
+    assert "dependency manifests" in bar["reason"]
+    assert fix_worker.next_reviewable() is None  # not re-judged
+
+
 def test_no_related_tests_passes_on_the_reviews_alone(review_lane, store, monkeypatch):
     monkeypatch.setattr(fix_worker.resolve_evidence, "related_tests",
                         lambda wt, paths: [])

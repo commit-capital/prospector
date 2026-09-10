@@ -322,18 +322,32 @@ class TestAgentStep:
         onboarding.apply("agent", {"TRIAGE_AGENT_PROVIDER": "none"}, None)
         assert "TRIAGE_AGENT_PROVIDER=none" in env.read_text()
 
+    def test_codex_can_be_selected_while_configured(self, adopting, monkeypatch):
+        monkeypatch.setenv("TRIAGE_REPO", "acme/widgets")
+        env, _ = adopting
+        onboarding.apply("agent", {"TRIAGE_AGENT_PROVIDER": "codex"}, None)
+        assert "TRIAGE_AGENT_PROVIDER=codex" in env.read_text()
+        assert os.environ["TRIAGE_AGENT_PROVIDER"] == "codex"
+        assert onboarding.state()["agent_provider"] == "codex"
+
     def test_an_unsupported_provider_is_refused(self, files, monkeypatch):
         monkeypatch.setenv("TRIAGE_REPO", "acme/widgets")
-        with pytest.raises(ValueError, match="claude.*none"):
-            onboarding.apply("agent", {"TRIAGE_AGENT_PROVIDER": "codex"}, None)
+        with pytest.raises(ValueError, match="claude.*codex.*none"):
+            onboarding.apply("agent", {"TRIAGE_AGENT_PROVIDER": "gemini"}, None)
 
-    def test_probe_reports_agent_readiness(self, monkeypatch):
+    def test_probe_reports_the_candidate_provider_readiness(self, monkeypatch):
         from prospector_app.backend import chat
-        monkeypatch.setattr(chat, "readiness",
-                            lambda: {"provider": "claude", "ok": True})
+        seen: list[str | None] = []
+
+        def readiness(provider: str | None = None) -> dict[str, object]:
+            seen.append(provider)
+            return {"provider": provider or "claude", "ok": True}
+
+        monkeypatch.setattr(chat, "readiness", readiness)
         found = onboarding.probe(store_url=None, repo=None, key_file=None,
-                                 agent=True)
-        assert found["agent"] == {"provider": "claude", "ok": True}
+                                 agent=True, agent_provider="codex")
+        assert found["agent"] == {"provider": "codex", "ok": True}
+        assert seen == ["codex"]
 
     def test_state_reports_no_choice_until_one_is_made(self, monkeypatch):
         monkeypatch.delenv("TRIAGE_REPO", raising=False)
@@ -434,6 +448,24 @@ class TestBundleContents:
 
 
 class TestRoutes:
+    def test_probe_checks_the_provider_selected_in_the_form(self, monkeypatch):
+        from fastapi.testclient import TestClient
+        from prospector_app.backend import app as app_mod
+        seen: list[str | None] = []
+
+        def probe(store_url, repo, key_file, agent=False, agent_provider=None):
+            seen.append(agent_provider)
+            return {"agent": {"provider": agent_provider, "ok": True}}
+
+        monkeypatch.setattr(onboarding, "probe", probe)
+        client = TestClient(app_mod.app, raise_server_exceptions=False)
+        r = client.post("/api/onboarding/probe", json={
+            "agent": True, "agent_provider": "codex",
+        })
+        assert r.status_code == 200
+        assert r.json()["agent"]["provider"] == "codex"
+        assert seen == ["codex"]
+
     def test_apply_from_a_bundle_configures_an_unconfigured_app(
             self, adopting, monkeypatch):
         from fastapi.testclient import TestClient

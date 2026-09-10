@@ -95,9 +95,9 @@ def test_issue_coverage_counts_open_pending(tmp_path, monkeypatch):
     assert cov == {"total": 3, "open": 2, "analyzed": 1, "pending_analysis": 1}
 
 
-def _cov_pr(n: int, head: str, **sections) -> Pr:
+def _cov_pr(n: int, head: str, state: str = "open", **sections) -> Pr:
     rec: dict = {"pr": n,
-                 "meta": {"title": "t", "author": "a", "state": "open", "draft": False,
+                 "meta": {"title": "t", "author": "a", "state": state, "draft": False,
                           "head_sha": head, "checked_at": "2026-07-01T00:00:00+00:00"}}
     rec.update(sections)
     return Pr(None, rec)
@@ -120,12 +120,18 @@ def test_pr_coverage_splits_current_stale_never(tmp_path):
                    analysis={"disposition": "merge", **stamp, "against_head_sha": "OLD"}),
         3: _cov_pr(3, "h3"),
         4: _cov_pr(4, "h4"),
+        # closed PRs are tracked but outside every phase's population
+        5: _cov_pr(5, "h5", state="closed",
+                   threat={"verdict": "clear", "signatures": [], **stamp, "against_head_sha": "h5"},
+                   cluster={"ids": [3], **stamp, "against_head_sha": "h5"}),
+        6: _cov_pr(6, "h6", state="merged"),
     }
     (tmp_path / "h2.diff").write_text("diff --git a/x b/x\n")
     (tmp_path / "h3.diff").write_text("diff --git a/x b/x\n")
 
     cov = pipeline_status._pr_coverage(prs, tmp_path)
 
+    assert cov["tracked"] == 6
     assert cov["total"] == 4
     assert cov["clustered"] == 1 and cov["not_clustered"] == 3
     assert cov["analysis"] == {"current": 1, "stale": 1, "never": 2}
@@ -233,6 +239,23 @@ def test_seconds_per_run_averages_whole_run_durations():
     ]]
 
     assert pipeline_status._seconds_per_run(records, "ingest") == 5.0
+
+
+def test_clustering_freshness_reads_the_latest_of_commit_and_assign(monkeypatch, tmp_path):
+    from prospector_app.backend import data, issues
+    monkeypatch.setattr(issues, "STORE_ROOT", tmp_path)
+    monkeypatch.setattr(data, "runs", lambda: [storekit.parse_run(d) for d in [
+        {"phase": "cluster:commit", "started": "2026-06-19T15:00:00+00:00",
+         "finished": "2026-06-19T15:51:26+00:00"},
+        {"phase": "cluster:assign", "started": "2026-08-27T21:00:00+00:00",
+         "finished": "2026-08-27T21:05:42+00:00"},
+    ]])
+    monkeypatch.setattr(data, "prs", lambda: {})
+
+    phases = {p["phase"]: p for p in pipeline_status.status()["phases"]}
+
+    assert phases["cluster"]["label"] == "Clustering"
+    assert phases["cluster"]["last_run"] == "2026-08-27T21:05:42+00:00"
 
 
 def test_status_includes_estimates(monkeypatch, tmp_path):

@@ -696,3 +696,13 @@ def test_dup_group_offers_fix_found_fixer(tmp_path, monkeypatch):
     monkeypatch.setattr(issues, "_live_pr_states", lambda nums: {950: "merged"})
     g = next(g for g in issues.duplicate_groups() if g["cluster"] == 5)
     assert g["fixed_comment"] is not None and "#950" in g["fixed_comment"]
+
+
+def test_row_carries_the_fix_scans_fixer_without_a_store_state(tmp_path, monkeypatch):
+    st = _seed(tmp_path, monkeypatch)
+    monkeypatch.setattr(issues, "_store_pr_states", lambda: ({}, False))
+    st.edit_issue(10).record_fixed(950, rationale="#950 adds the guard")
+    rows = {r["number"]: r for r in issues.query_issues()["items"]}
+    assert rows[10]["disposition"] == "close-fixed" and rows[10]["fixed_by"] == 950
+    assert rows[10]["linked_prs"][0]["state"] is None
+    assert rows[11]["fixed_by"] is None

@@ -10,10 +10,11 @@ it owns a local stamp helper for the same reason.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from pipeline import gates
 from pipeline import storekit
+from pipeline import wire
 
 if TYPE_CHECKING:
     from pipeline.store import Store
@@ -271,28 +272,32 @@ class Pr:
         return (self.rec.get("verify") or {}).get("outcome")
 
     @property
-    def verify_signals(self) -> dict:
+    def verify_signals(self) -> wire.VerifySignals:
         """The four VERIFY signals, kept separate. `*_output_tail` values inside
         are untrusted, attacker-influenced text — never derive a verdict from them."""
-        return (self.rec.get("verify") or {}).get("signals") or {}
+        signals = (self.rec.get("verify") or {}).get("signals") or {}
+        return cast(wire.VerifySignals, signals)
 
     @property
     def verify_base_sha(self) -> str | None:
         return (self.rec.get("verify") or {}).get("against_base_sha")
 
     @property
-    def verify_findings(self) -> list[dict]:
-        return (self.rec.get("verify") or {}).get("findings") or []
+    def verify_findings(self) -> list[wire.VerifyFinding]:
+        findings = (self.rec.get("verify") or {}).get("findings") or []
+        return [cast(wire.VerifyFinding, finding)
+                for finding in findings if isinstance(finding, dict)]
 
     @property
     def verify_override(self) -> dict | None:
         return (self.rec.get("verify") or {}).get("override")
 
     @property
-    def verify_request(self) -> dict | None:
+    def verify_request(self) -> wire.VerifyRequest | None:
         """The operator's sandbox-verification queue state for this PR
         ({status, queued_at, ...}), or None when never queued."""
-        return self.rec.get("verify_request")
+        request = self.rec.get("verify_request")
+        return cast(wire.VerifyRequest, request) if isinstance(request, dict) else None
 
     @property
     def fix_request(self) -> dict | None:
@@ -372,8 +377,8 @@ class Pr:
                head)
         self._persist()
 
-    def record_verify(self, outcome: str | None, signals: dict, *,
-                      findings: list[dict] | None = None, tier: int = 0,
+    def record_verify(self, outcome: str | None, signals: wire.VerifySignals, *,
+                      findings: list[wire.VerifyFinding] | None = None, tier: int = 0,
                       base_sha: str, head_sha: str | None = None) -> None:
         """Record a VERIFY outcome. The section is stamped against BOTH the PR
         head (freshness) and the base `base_sha` the run booted, which names

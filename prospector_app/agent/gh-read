@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The app agent's read window into GitHub's raw contents + code search.
 
-The agent's allowlisted `gh` commands (chat.py:_GH_ALLOW) cover PR/issue/search
+The agent's allowlisted `gh` commands (claude_backend.py:_GH_ALLOW) cover PR/issue/search
 subcommands but not `gh api`, because `gh api` is read-only only by *default* —
 `gh api -X PUT repos/<repo>/contents/<path> -f content=…` writes a file to the
 default branch and `gh api -X PUT .../pulls/N/merge` merges a PR, both bypassing
@@ -10,31 +10,39 @@ the executor's gate. A prefix allowlist can't forbid a trailing `-X PUT`, so raw
 it shells out to `gh api` with the method hardcoded to GET and the endpoint built
 from fixed strings, so there is no way to turn it into a write.
 
-Four things an agent can't otherwise see — a file's exact bytes at a ref, a
-tree-wide code search, a path's commit history, and one commit's diff — all plain
-GETs against the upstream repo (settings.repo()):
+Things an agent can't otherwise see — a file's exact bytes at a ref, a tree-wide
+code search, a path's commit history, one commit's diff, one account's profile —
+all plain GETs against the upstream repo (settings.repo()) or the users API — plus
+the operator's own `gh` login:
 
 Usage:
     prospector_app/agent/gh-read file <path>            # raw file at the default branch
     prospector_app/agent/gh-read file <path> --ref <r>  # …at a branch/tag/SHA
     prospector_app/agent/gh-read search '<query>'       # code search, scoped to the repo
+    prospector_app/agent/gh-read search '<query>' --jq '.items[].path'
     prospector_app/agent/gh-read commits <path>         # newest commits touching a path
     prospector_app/agent/gh-read commit <sha>           # one commit: message, files, patch
+    prospector_app/agent/gh-read user <login>           # one account's public profile
+    prospector_app/agent/gh-read auth                   # the operator's gh login, no token
 
 `file` prints the raw bytes (`gh` exits non-zero with a 404 on stderr if the path
 doesn't exist, so the agent can report "no such file" instead of inventing one).
 `search` prints GitHub's JSON result; the repo qualifier is appended automatically
 unless the query already carries a `repo:` one. `commits` prints one line per
 commit (sha, date, subject), newest first; `commit` prints the commit's JSON with
-its file patches. Reads only — no bot token, no upstream write — so it rides the
-same always-available allowlisted-Bash path as `store-read`; it runs under the
-app's uv env, where every agent command runs. Both the chat agent (chat.py
-_GH_READ_ALLOW) and the headless pipeline agents (pipeline/headless_agent.py
-_GH_ALLOW) allowlist this script by path.
+its file patches. `user` prints the account's JSON; GitHub answers 404 for a login
+that no longer resolves (deleted, renamed, or hidden). `auth` runs `gh auth status`
+with no flag passed through, so the token itself is never printed. Reads only —
+no bot token, no upstream write — so it rides the same always-available
+allowlisted-Bash path as `store-read`; it runs under the app's uv env, where every
+agent command runs. Both the chat agent (claude_backend.py _GH_READ_ALLOW) and the
+headless pipeline agents (pipeline/headless_agent.py _GH_ALLOW) allowlist this
+script by path.
 """
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -63,10 +71,14 @@ def read_file(path: str, ref: str | None) -> int:
     return _run(["gh", "api", endpoint, "-H", "Accept: application/vnd.github.raw"])
 
 
-def search_code(query: str) -> int:
+def search_code(query: str, limit: int, jq: str | None) -> int:
     # Scope the search to the upstream repo unless the caller already qualified it.
     q = query if "repo:" in query else f"{query} repo:{settings.repo()}"
-    return _run(["gh", "api", "-X", "GET", "search/code", "-f", f"q={q}"])
+    command = ["gh", "api", "-X", "GET", "search/code", "-f", f"q={q}",
+               "-f", f"per_page={max(1, min(limit, 100))}"]
+    if jq is not None:
+        command += ["--jq", jq]
+    return _run(command)
 
 
 def list_commits(path: str, limit: int) -> int:
@@ -76,12 +88,33 @@ def list_commits(path: str, limit: int) -> int:
                  "--jq", r'.[] | "\(.sha) \(.commit.author.date) \(.commit.message | split("\n")[0])"'])
 
 
-def show_commit(sha: str) -> int:
-    # A SHA is hex only; anything else (a path, a flag) is refused before gh runs.
+def show_commit(sha: str, jq: str | None) -> int:
+    # The alphanumeric form refuses paths and flags before gh runs.
     if not sha.isalnum():
         print(f"gh-read commit: not a commit sha: {sha!r}", file=sys.stderr)
         return 2
-    return _run(["gh", "api", f"repos/{settings.repo()}/commits/{sha}"])
+    command = ["gh", "api", f"repos/{settings.repo()}/commits/{sha}"]
+    if jq is not None:
+        command += ["--jq", jq]
+    return _run(command)
+
+
+_LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")
+
+
+def show_user(login: str, jq: str | None) -> int:
+    # The login form refuses paths and flags before gh runs.
+    if not _LOGIN.match(login):
+        print(f"gh-read user: not a GitHub login: {login!r}", file=sys.stderr)
+        return 2
+    command = ["gh", "api", f"users/{login}"]
+    if jq is not None:
+        command += ["--jq", jq]
+    return _run(command)
+
+
+def auth_status() -> int:
+    return _run(["gh", "auth", "status"])
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -97,6 +130,8 @@ def main(argv: list[str] | None = None) -> int:
 
     s = sub.add_parser("search", help="search code in the repo")
     s.add_argument("query", help="GitHub code-search query")
+    s.add_argument("--limit", type=int, default=30, help="how many (1-100, default 30)")
+    s.add_argument("--jq", default=None, help="filter the JSON response with a jq expression")
 
     c = sub.add_parser("commits", help="newest commits touching a path on the default branch")
     c.add_argument("path", help="repo-relative path")
@@ -104,15 +139,26 @@ def main(argv: list[str] | None = None) -> int:
 
     one = sub.add_parser("commit", help="one commit with its file patches")
     one.add_argument("sha", help="commit sha")
+    one.add_argument("--jq", default=None, help="filter the JSON response with a jq expression")
+
+    u = sub.add_parser("user", help="one account's public profile")
+    u.add_argument("login", help="GitHub login")
+    u.add_argument("--jq", default=None, help="filter the JSON response with a jq expression")
+
+    sub.add_parser("auth", help="the operator's gh login, as `gh auth status` reports it")
 
     args = p.parse_args(argv)
     if args.what == "file":
         return read_file(args.path, args.ref)
     if args.what == "search":
-        return search_code(args.query)
+        return search_code(args.query, args.limit, args.jq)
     if args.what == "commits":
         return list_commits(args.path, args.limit)
-    return show_commit(args.sha)
+    if args.what == "user":
+        return show_user(args.login, args.jq)
+    if args.what == "auth":
+        return auth_status()
+    return show_commit(args.sha, args.jq)
 
 
 if __name__ == "__main__":

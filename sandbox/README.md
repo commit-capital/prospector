@@ -15,12 +15,12 @@ fresh clone; the app's 🛠️ Setup tab reports what a machine is still missing
 flips its lane switches. The steps are listed here for anyone provisioning by
 hand or debugging a machine that will not come up:
 
-1. **A Docker daemon.** On macOS, Colima (or any runtime whose VM shares
-   `$HOME` — the scratch root must be mountable; see `TRIAGE_VERIFY_SCRATCH`
-   in `.env.example`). Size the VM for the profile's merge-gate lanes: the
-   compile/build phases run in 6g containers and a merge preflight can overlap
-   a worker run, so with lanes configured give the VM ~12GB
-   (`colima start --memory 12`).
+1. **A Docker daemon.** The setup command starts Colima on macOS and Docker
+   Engine on Linux. A macOS runtime's VM must share `$HOME` so the scratch root
+   is mountable; see `TRIAGE_VERIFY_SCRATCH` in `.env.example`. Size the host or
+   VM for the profile's merge-gate lanes: the compile/build phases run in 6g
+   containers and a merge preflight can overlap a worker run, so with lanes
+   configured give it ~12GB (`colima start --memory 12` on macOS).
 2. **Build the hardened image:** `uv run python pipeline/verify_driver.py
    build-image` — bakes the profile's pnpm pin (`verify.pnpm_version`) into
    `pr-verify:pnpm-<version>`, a tag per pinned version, so deployments on one

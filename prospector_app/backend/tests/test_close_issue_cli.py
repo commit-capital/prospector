@@ -4,6 +4,8 @@ import importlib.util
 import json
 from pathlib import Path
 
+import pytest
+
 from prospector_app.backend import models
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -61,3 +63,30 @@ def test_blocked_close_returns_failure_and_prints_the_result(monkeypatch, capsys
     )
     assert cli.main(["1883", "--disposition", "not-planned", "--comment", "stale"]) == 1
     assert json.loads(capsys.readouterr().out)["status"] == "blocked"
+
+
+def test_comment_file_carries_a_multiline_comment(monkeypatch, tmp_path):
+    cli = _load()
+    seen = {}
+    body = tmp_path / "why.md"
+    body.write_text("Closing this one.\n\nSee #1800 for the tracked fix.\n")
+
+    def close(issue, action, *, token, dry_run):
+        seen["action"] = action
+        return {"issue": issue, "status": "executed", "action": "CLOSE_ISSUE"}
+
+    monkeypatch.setattr(cli.executor, "mint_bot_token", lambda: "bot-token")
+    monkeypatch.setattr(cli.executor, "close_issue_with_comment", close)
+    rc = cli.main(["1883", "--disposition", "not-planned", "--comment-file", str(body)])
+
+    assert rc == 0
+    assert seen["action"].comment == body.read_text()
+
+
+def test_comment_and_comment_file_are_exclusive(tmp_path):
+    cli = _load()
+    body = tmp_path / "why.md"
+    body.write_text("x")
+    with pytest.raises(SystemExit):
+        cli.main(["1883", "--disposition", "not-planned",
+                  "--comment", "a", "--comment-file", str(body)])

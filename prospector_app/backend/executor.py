@@ -95,6 +95,8 @@ def mint_bot_token() -> str | None:
 
 
 _live_possible: bool | None = None
+_bot_permissions: dict[str, str] | None = None
+_bot_permissions_probed = False
 
 
 def live_possible() -> bool:
@@ -115,9 +117,35 @@ def live_possible() -> bool:
     return _live_possible
 
 
+def bot_permissions() -> dict[str, str] | None:
+    """Repository permissions granted to the current App installation."""
+    global _bot_permissions, _bot_permissions_probed
+    if _bot_permissions_probed:
+        return _bot_permissions
+    _bot_permissions_probed = True
+    if not GET_TOKEN.exists():
+        return None
+    try:
+        result = subprocess.run(
+            ["bash", str(GET_TOKEN), "--permissions"],
+            capture_output=True, text=True, timeout=30,
+        )
+        raw = json.loads((result.stdout or "").strip()) if result.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        return None
+    if not isinstance(raw, dict) or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in raw.items()):
+        return None
+    _bot_permissions = raw
+    return _bot_permissions
+
+
 def refresh_live() -> None:
-    global _live_possible
+    global _live_possible, _bot_permissions, _bot_permissions_probed
     _live_possible = None
+    _bot_permissions = None
+    _bot_permissions_probed = False
 
 
 def identities() -> dict:

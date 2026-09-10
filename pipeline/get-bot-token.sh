@@ -3,12 +3,13 @@
 # triage bot.
 #
 # Output: a GitHub API token valid for 1 hour, scoped to the bot app's
-# installation on the TRIAGE_REPO owner's account. Use as GH_TOKEN for gh CLI
-# commands.
+# installation on the TRIAGE_REPO owner's account. `--permissions` prints the
+# installation token's repository-permissions object without printing the token.
 #
 # Usage:
 #   export GH_TOKEN=$(bash pipeline/get-bot-token.sh)
 #   GH_TOKEN=$(bash pipeline/get-bot-token.sh) gh api repos/<TRIAGE_REPO>/pulls/<N>
+#   bash pipeline/get-bot-token.sh --permissions
 #
 # Config (environment wins over the repo-root .env, matching settings.py):
 #   TRIAGE_BOT_APP_ID  — numeric GitHub App id of the bot
@@ -17,6 +18,18 @@
 #   TRIAGE_BOT_KEY_FILE — path to the app's private key PEM
 # Requires: node (for JWT signing), jq
 set -euo pipefail
+
+if [ "$#" -gt 1 ]; then
+  echo "Usage: $0 [--permissions]" >&2
+  exit 2
+fi
+OUTPUT_MODE="${1:-token}"
+case "$OUTPUT_MODE" in
+  token|--permissions) ;;
+  *)
+    echo "Usage: $0 [--permissions]" >&2
+    exit 2;;
+esac
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -114,4 +127,8 @@ if [ -z "$TOKEN" ]; then
   exit 1
 fi
 
-echo "$TOKEN"
+if [ "$OUTPUT_MODE" = "--permissions" ]; then
+  echo "$TOKEN_RESP" | jq -c '.permissions // {}'
+else
+  echo "$TOKEN"
+fi

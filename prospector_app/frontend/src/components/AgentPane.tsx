@@ -3,7 +3,7 @@ import { useLocation } from "react-router";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { addSubjectParams, subjectFromLocation, type AgentSubject } from "../agentSubject";
-import { api, type ChatReady } from "../api";
+import { api, type ChatReady, type FilterSpec } from "../api";
 import { shouldFollowChatAfterScroll } from "../chatScroll";
 import { useRepoMeta } from "../RepoMetaContext";
 import { useSpeechInput } from "../useSpeechInput";
@@ -16,6 +16,32 @@ function MicIcon() {
   );
 }
 
+function AgentReadinessHelp({ ready }: { ready: ChatReady }) {
+  const codex = ready.provider === "codex";
+  const cli = codex ? "Codex CLI" : "Claude Code CLI";
+  const missing = codex ? "codex CLI not on PATH" : "claude CLI not on PATH";
+  const installUrl = codex
+    ? "https://developers.openai.com/codex"
+    : "https://claude.com/claude-code";
+  const installLabel = codex ? "install Codex" : "install Claude Code";
+  const login = codex ? "codex login" : "claude auth login";
+
+  return (
+    <p className="muted small">
+      The agent runs the <b>{cli}</b> on this computer, under your own login.{" "}
+      {ready.problem === missing
+        ? <>It isn't installed here — <a href={installUrl}
+            target="_blank" rel="noreferrer">{installLabel}</a>, then check again.</>
+        : ready.problem === "not logged in"
+          ? <>It isn't logged in — run <code>{login}</code> in a terminal, then check again.</>
+          : ready.problem === "Codex authentication is not file-backed"
+            ? <>Its login is not file-backed. Set <code>cli_auth_credentials_store = "file"</code> in
+                your Codex config, run <code>codex login</code>, then check again.</>
+            : <>It didn't answer a status check ({ready.problem ?? "unknown"}).</>}
+    </p>
+  );
+}
+
 interface Anchor { file: string; line: number }
 interface AgentCtx {
   anchor: Anchor | null;
@@ -23,17 +49,20 @@ interface AgentCtx {
   setOpen: (b: boolean) => void;
   askAbout: (file: string, line: number, question?: string) => void;
   clearAnchor: () => void;
-  // The PR numbers currently visible in a list view (e.g. PR Explorer after its
-  // active filters/search), so a general question can refer to "what I'm
-  // looking at" without the operator re-listing numbers. A view sets this on
+  // The list view's current result (e.g. PR Explorer after its active
+  // filters/search), so a general question can refer to "what I'm looking
+  // at" without the operator re-listing numbers. A view sets this on
   // mount/data-change and clears it (null) on unmount; only one view owns it
   // at a time since only one such view is ever on screen.
-  visiblePrs: number[] | null;
-  setVisiblePrs: (ids: number[] | null) => void;
+  visible: VisibleSet | null;
+  setVisible: (v: VisibleSet | null) => void;
 }
+/** The PR Explorer's current result: every matching number plus the filter
+ *  spec that produced it, which the backend re-evaluates to ground a session. */
+export type VisibleSet = { ids: number[]; spec: FilterSpec };
 const Ctx = createContext<AgentCtx>({
   anchor: null, open: false, setOpen: () => {}, askAbout: () => {}, clearAnchor: () => {},
-  visiblePrs: null, setVisiblePrs: () => {},
+  visible: null, setVisible: () => {},
 });
 // eslint-disable-next-line react-refresh/only-export-components -- context hook co-located with its provider
 export const useAgentPane = () => useContext(Ctx);
@@ -149,15 +178,12 @@ function linkifyUserText(text: string): ReactNode[] {
   return out.length ? out : [text];
 }
 
-// Cap how many visible-PR numbers ride on the EventSource URL (and how many the
-// backend renders into the prompt) — matches chat.py's _VISIBLE_PRS_CAP.
-const VISIBLE_PRS_CAP = 150;
 
 export function AgentPaneProvider({ children }: { children: ReactNode }) {
   const [anchor, setAnchor] = useState<Anchor | null>(null);
   const [open, setOpen] = useState(localStorage.getItem("agentpane-open") !== "0");
   const [pending, setPending] = useState<string | null>(null);
-  const [visiblePrs, setVisiblePrs] = useState<number[] | null>(null);
+  const [visible, setVisible] = useState<VisibleSet | null>(null);
   const { meta } = useRepoMeta();
   // No pane on an unconfigured checkout (the wizard is the only page and the
   // chat API refuses there) or when the deployment turned agent support off.
@@ -171,19 +197,19 @@ export function AgentPaneProvider({ children }: { children: ReactNode }) {
   const clearAnchor = useCallback(() => setAnchor(null), []);
 
   return (
-    <Ctx.Provider value={{ anchor, open, setOpen, askAbout, clearAnchor, visiblePrs, setVisiblePrs }}>
+    <Ctx.Provider value={{ anchor, open, setOpen, askAbout, clearAnchor, visible, setVisible }}>
       {children}
       {enabled && (
         <AgentPane anchor={anchor} open={open} setOpen={setOpen} clearAnchor={clearAnchor}
-          pending={pending} clearPending={() => setPending(null)} visiblePrs={visiblePrs} />
+          pending={pending} clearPending={() => setPending(null)} visible={visible} />
       )}
     </Ctx.Provider>
   );
 }
 
-function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, visiblePrs }: {
+function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, visible }: {
   anchor: Anchor | null; open: boolean; setOpen: (b: boolean) => void; clearAnchor: () => void;
-  pending: string | null; clearPending: () => void; visiblePrs: number[] | null;
+  pending: string | null; clearPending: () => void; visible: VisibleSet | null;
 }) {
   const loc = useLocation();
   const { meta } = useRepoMeta();
@@ -241,10 +267,11 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
   // operator has abandoned the broader list they were browsing (#507). Purely
   // cosmetic; the thread/history key (subj.key) is unaffected, so
   // switching filters or peeking at a flyout never fragments the chat.
-  const displaySubj = visiblePrs && visiblePrs.length
+  const nVisible = visible?.ids.length ?? 0;
+  const displaySubj = nVisible
     ? (subj.kind === "general"
-        ? { ...subj, label: `the ${visiblePrs.length} filtered PR${visiblePrs.length === 1 ? "" : "s"}` }
-        : { ...subj, label: `${subj.label} (+${visiblePrs.length} filtered PR${visiblePrs.length === 1 ? "" : "s"} in view)` })
+        ? { ...subj, label: `the ${nVisible} filtered PR${nVisible === 1 ? "" : "s"}` }
+        : { ...subj, label: `${subj.label} (+${nVisible} filtered PR${nVisible === 1 ? "" : "s"} in view)` })
     : subj;
   const securitySubject = subj.kind === "alert" || subj.kind === "advisory";
   const [paneW, setPaneW] = useState(() => Number(localStorage.getItem("agentpane-w")) || 360);
@@ -339,7 +366,7 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
     return () => { document.documentElement.style.removeProperty("--ap-w"); };
   }, [open, paneW]);
 
-  // Whether this machine can run the agent at all — the local claude CLI's
+  // Whether this machine can run the agent at all — the selected local CLI's
   // presence and login. Checked once per pane-open; not-ready swaps the
   // composer for a fix-it notice with a re-check.
   const [ready, setReady] = useState<ChatReady | null>(null);
@@ -368,12 +395,8 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
     const p = ctxParams();
     p.set("q", text);
     if (anchor) { p.set("file", anchor.file); p.set("line", String(anchor.line)); }
-    // PR Explorer's filtered set is available to ground agent sessions.
-    if (visiblePrs && visiblePrs.length) {
-      const capped = visiblePrs.slice(0, VISIBLE_PRS_CAP);
-      p.set("prs", capped.join(","));
-      if (visiblePrs.length > capped.length) p.set("prs_total", String(visiblePrs.length));
-    }
+    // PR Explorer's filter grounds agent sessions; the backend evaluates it.
+    if (visible && visible.ids.length) p.set("spec", JSON.stringify(visible.spec));
     const es = new EventSource(`/api/chat?${p}`);
     esRef.current = es;
     es.addEventListener("delta", (e: MessageEvent) => {
@@ -389,7 +412,7 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
         .sort((a, b) => b.lastActiveAt - a.lastActiveAt));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [streaming, anchor, subj.key, effectiveActiveId, speech.stop, visiblePrs, setFollowLatest]);
+  }, [streaming, anchor, subj.key, effectiveActiveId, speech.stop, visible, setFollowLatest]);
 
   // Resume a cut-off turn: nudge the (still-resumable) claude session to continue
   // where it left off. The backend re-attaches via -r, so the agent keeps its
@@ -572,17 +595,7 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
             )}
             {ready && !ready.ok ? (
               <div className="ap-not-ready">
-                <p className="muted small">
-                  The agent runs the <b>Claude Code CLI</b> on this computer, under
-                  your own login.{" "}
-                  {ready.problem === "claude CLI not on PATH"
-                    ? <>It isn't installed here — <a href="https://claude.com/claude-code"
-                        target="_blank" rel="noreferrer">install Claude Code</a>, then check again.</>
-                    : ready.problem === "not logged in"
-                      ? <>It isn't logged in — run <code>claude auth login</code> in a
-                          terminal, then check again.</>
-                      : <>It didn't answer a status check ({ready.problem ?? "unknown"}).</>}
-                </p>
+                <AgentReadinessHelp ready={ready} />
                 <button className="btn-secondary sm" disabled={checkingReady} onClick={checkReady}>
                   {checkingReady ? "checking…" : "Check again"}
                 </button>
