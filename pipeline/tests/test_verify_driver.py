@@ -93,6 +93,39 @@ class TestScrub:
         assert not (src / ".env.local").exists()
         assert not (src / ".env.production").exists()
 
+    def test_keeps_npmrc_settings_and_drops_its_credential_lines(self, tmp_path):
+        # Upstream's .npmrc sets auto-install-peers=false, which the lockfile
+        # records; a frozen install refuses a tree whose setting differs. The
+        # setting stays, and every line that carries a credential goes.
+        src = self._checkout(tmp_path)
+        (src / ".npmrc").write_text(
+            "auto-install-peers=false\n"
+            "//registry.npmjs.org/:_authToken=npm_SECRET\n"
+            "//npm.pkg.github.com/:always-auth=true\n"
+            "_auth=dXNlcjpwYXNz\n"
+            "_password=hunter2\n"
+            "username=brandon\n"
+            "email=brandon@example.com\n"
+            "node-linker=hoisted\n")
+        vd.scrub_checkout(src)
+        assert (src / ".npmrc").read_text() == (
+            "auto-install-peers=false\nnode-linker=hoisted\n")
+        vd.assert_scrubbed(src)
+
+    def test_an_npmrc_of_only_credentials_is_deleted(self, tmp_path):
+        src = self._checkout(tmp_path)
+        (src / ".npmrc").write_text("_auth=dXNlcjpwYXNz\n")
+        vd.scrub_checkout(src)
+        assert not (src / ".npmrc").exists()
+
+    def test_an_unscrubbed_npmrc_credential_line_aborts(self, tmp_path):
+        # _auth and _password are not in SCRUB_PATTERNS: the .npmrc line
+        # predicate is what catches them.
+        src = self._checkout(tmp_path)
+        (src / ".npmrc").write_text("auto-install-peers=false\n_password=hunter2\n")
+        with pytest.raises(RuntimeError, match="survived the scrub"):
+            vd.assert_scrubbed(src)
+
     def test_keeps_env_example(self, tmp_path):
         src = self._checkout(tmp_path)
         (src / ".env.example").write_text("TOKEN=replace-me")
