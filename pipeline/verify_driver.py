@@ -96,7 +96,14 @@ SCRUB_PATTERNS: tuple[str, ...] = (
     r"_authToken",
     r"\bghp_[A-Za-z0-9]{20,}",
     r"\bgithub_pat_[A-Za-z0-9_]{20,}",
-    r"-----BEGIN [A-Z ]*PRIVATE KEY-----",
+    # A private key is its header AND the base64 body that follows it. The
+    # header alone is UI text (a form field's placeholder). The body's first
+    # line is 64 columns, and an encrypted key carries Proc-Type / DEK-Info
+    # header lines before it. Newlines may be JSON-escaped, as a service-account
+    # file writes them.
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----"
+    r"(?:(?:\\[rn]|\s)*(?:Proc-Type|DEK-Info):[^\n\\]*)*"
+    r"(?:\\[rn]|\s)*[A-Za-z0-9+/]{40,}",
 )
 _SCRUB_RE = re.compile("|".join(SCRUB_PATTERNS))
 

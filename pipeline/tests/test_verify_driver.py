@@ -33,6 +33,10 @@ SUITE_PROFILE = profile.RepoProfile(verify=profile.VerifyPolicy(
     suite=profile.SuiteConfig(wrapper="scripts/w.mjs", server_project="@x/server")))
 
 
+# One 64-column base64 line, the shape of every line in a PEM key body.
+_PEM_BODY_LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj"
+
+
 class TestLauncherEnv:
     """CRITICAL: DEPLOYMENT_PRIVATE_KEY is a GitHub App private key with org admin on
     the upstream repo, and it is exported in the operator's shell profile — so it
@@ -141,7 +145,36 @@ class TestScrub:
 
     def test_assert_catches_a_private_key(self, tmp_path):
         src = self._checkout(tmp_path)
-        (src / "key.pem").write_text("-----BEGIN RSA PRIVATE KEY-----\nabc\n")
+        (src / "key.pem").write_text(
+            "-----BEGIN RSA PRIVATE KEY-----\n" + _PEM_BODY_LINE + "\n")
+        with pytest.raises(RuntimeError, match="PRIVATE KEY"):
+            vd.assert_scrubbed(src)
+
+    def test_a_bare_pem_header_is_not_a_credential(self, tmp_path):
+        # Upstream's app definitions carry the header alone as a form field's
+        # placeholder text. A credential is the header AND the key material
+        # that follows it.
+        src = self._checkout(tmp_path)
+        (src / "packages" / "core" / "github.json").write_text(
+            '{"placeholder": "-----BEGIN RSA PRIVATE KEY-----", "secret": true}')
+        vd.assert_scrubbed(src)
+
+    def test_a_private_key_in_a_json_string_still_aborts(self, tmp_path):
+        # A service-account file carries the key with its newlines escaped.
+        src = self._checkout(tmp_path)
+        (src / "service-account.json").write_text(
+            '{"private_key": "-----BEGIN PRIVATE KEY-----\\n'
+            + _PEM_BODY_LINE + '\\n-----END PRIVATE KEY-----\\n"}')
+        with pytest.raises(RuntimeError, match="PRIVATE KEY"):
+            vd.assert_scrubbed(src)
+
+    def test_an_encrypted_private_key_still_aborts(self, tmp_path):
+        src = self._checkout(tmp_path)
+        (src / "key.pem").write_text(
+            "-----BEGIN RSA PRIVATE KEY-----\n"
+            "Proc-Type: 4,ENCRYPTED\n"
+            "DEK-Info: AES-128-CBC,0123456789ABCDEF0123456789ABCDEF\n"
+            "\n" + _PEM_BODY_LINE + "\n")
         with pytest.raises(RuntimeError, match="PRIVATE KEY"):
             vd.assert_scrubbed(src)
 
