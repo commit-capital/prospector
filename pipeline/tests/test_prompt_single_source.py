@@ -35,7 +35,28 @@ class TestHeadlessPathsImportCanonical:
         from pipeline import verify_driver
         from pipeline import verify_pr
         assert verify_pr.BLIND_PROMPT is verify_driver.BLIND_PROMPT
+        assert verify_pr.AUTHOR_PROMPT is verify_driver.AUTHOR_PROMPT
         assert verify_pr.JUDGE_PROMPT is verify_driver.JUDGE_PROMPT
+
+    def test_verify_prompt_layers(self) -> None:
+        from pipeline import verify_driver
+        from pipeline import verify_pr
+        prompts = (
+            verify_driver.BLIND_PROMPT,
+            verify_driver.AUTHOR_PROMPT,
+            verify_driver.JUDGE_PROMPT,
+        )
+        for prompt in prompts:
+            assert prompt.startswith("# Background\n")
+            assert prompt.count("# Background") == 1
+            assert prompt.count("# Behavior") == 1
+            assert "# Output" not in prompt
+        tails = (
+            verify_pr.BLIND_FENCED_TAIL,
+            verify_pr.AUTHOR_FENCED_TAIL,
+            verify_pr.JUDGE_FENCED_TAIL,
+        )
+        assert all(tail.lstrip().startswith("# Output\n") for tail in tails)
 
 
 class TestPlaceholders:
@@ -70,6 +91,13 @@ class TestPlaceholders:
         assert "trace every guard and required input" in ad.ANALYZE_PROMPT
         assert "attribute the claim explicitly to the author" in ad.ANALYZE_PROMPT
         assert 'Use "diff verified" only' in ad.ANALYZE_PROMPT
+
+    def test_analyze_separates_background_behavior_and_output(self) -> None:
+        assert ad.ANALYZE_PROMPT.startswith("# Background\n")
+        assert ad.ANALYZE_PROMPT.count("# Background") == 1
+        assert ad.ANALYZE_PROMPT.count("# Behavior") == 1
+        assert "# Output" not in ad.ANALYZE_PROMPT
+        assert ad.ANALYZE_FENCED_TAIL.lstrip().startswith("# Output\n")
 
 
 class TestDriversShipTheCanonicalText:
@@ -111,6 +139,7 @@ class TestWorkflowsConsumeNotRestate:
         assert "index.prompt.replace('__BUNDLE_PATH__'" in src
         assert "You are the triage analyst" in ad.ANALYZE_PROMPT  # lives in the constant
         assert "You are the triage analyst" not in src            # not in the workflow
+        assert src.count("# Output") == 1
 
     def test_summarize_js(self):
         src = (WORKFLOWS / "summarize.js").read_text()

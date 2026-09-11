@@ -87,6 +87,8 @@ inside the worktree printed by `resubmit prepare`. Never edit the primary
 Prospector checkout.
 """.rstrip()
 
+_OUTPUT_HEADING = "\n# Output\n"
+
 _SHELL_EXCLUDES = [
     "TRIAGE_STORE_URL",
     "DATABASE_URL",
@@ -149,6 +151,13 @@ def _config(key: str, value: object) -> list[str]:
     return ["-c", f"{key}={json.dumps(value)}"]
 
 
+def _with_codex_context(system_prompt: str) -> str:
+    behavior, output_heading, output = system_prompt.partition(_OUTPUT_HEADING)
+    if not output_heading:
+        return system_prompt + _CODEX_CONTEXT
+    return behavior + _CODEX_CONTEXT + output_heading + output
+
+
 def _flags(system_prompt: str | None, can_resubmit: bool) -> list[str]:
     flags = [
         "--json",
@@ -178,7 +187,7 @@ def _flags(system_prompt: str | None, can_resubmit: bool) -> list[str]:
     if can_resubmit:
         flags += _config("sandbox_workspace_write.network_access", False)
     if system_prompt is not None:
-        flags += _config("developer_instructions", system_prompt + _CODEX_CONTEXT)
+        flags += _config("developer_instructions", _with_codex_context(system_prompt))
     return flags
 
 

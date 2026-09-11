@@ -61,6 +61,8 @@ if TYPE_CHECKING:
 # outcome is gates.verify_outcome's alone.
 BLIND_FENCED_TAIL = """
 
+# Output
+
 Return ONLY a JSON object (no prose): {"faithful": <bool>, \
 "confidence": "high|medium|low", "claimed_symptom": "..."|null, \
 "expected_red_signature": "..."|null, "repro_command": "<cmd>"|null, \
@@ -69,12 +71,16 @@ Return ONLY a JSON object (no prose): {"faithful": <bool>, \
 
 AUTHOR_FENCED_TAIL = """
 
+# Output
+
 Return ONLY a JSON object (no prose): {"can_author": <bool>, \
 "files": [{"path": "<repo-relative test file>", "contents": "<full file body>"}], \
 "expected_red_signature": "..."|null, "confidence": "high|medium|low", \
 "reasoning": "..."}. Output it as a ```json fenced block."""
 
 JUDGE_FENCED_TAIL = """
+
+# Output
 
 Return ONLY a JSON object (no prose): {"red_reason_match": {"matches": <bool>, \
 "confidence": "high|medium|low", "reasoning": "..."}, "repro_reason_match": \

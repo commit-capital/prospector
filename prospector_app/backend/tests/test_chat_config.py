@@ -83,6 +83,15 @@ def test_agent_has_its_own_context_not_the_dev_claude_md(monkeypatch):
     assert "store-read pr" in sp  # the real doc, pointing at the store accessor
 
 
+def test_system_prompt_separates_background_behavior_and_output() -> None:
+    sp = chat.system_prompt()
+    headings = ("# Background", "# Behavior", "# Output")
+    assert all(sp.count(heading) == 1 for heading in headings)
+    assert [sp.index(heading) for heading in headings] == sorted(
+        sp.index(heading) for heading in headings
+    )
+
+
 def test_system_prompt_renders_configured_review_bar(monkeypatch):
     monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "greptile")
     monkeypatch.setenv("TRIAGE_REVIEW_THRESHOLD", str(4))
