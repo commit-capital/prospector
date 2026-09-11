@@ -61,8 +61,8 @@ if TYPE_CHECKING:
 # outcome is gates.verify_outcome's alone.
 BLIND_FENCED_TAIL = """
 
-Return ONLY a JSON object (no prose): {"has_test": <bool>, "test_cmd": "<cmd>"|null, \
-"faithful": <bool>, "confidence": "high|medium|low", "claimed_symptom": "..."|null, \
+Return ONLY a JSON object (no prose): {"faithful": <bool>, \
+"confidence": "high|medium|low", "claimed_symptom": "..."|null, \
 "expected_red_signature": "..."|null, "repro_command": "<cmd>"|null, \
 "expected_repro_signature": "..."|null, "from_linked_issue": <bool>, \
 "requires_live_agent": <bool>, "reasoning": "..."}. Output it as a ```json fenced block."""
@@ -307,7 +307,14 @@ def _blind_verdict(rec: Pr, clone_dir: str,
         return None, failure
     if not isinstance(data.get("faithful"), bool):
         return None, f"blind adequacy: unusable answer: {json.dumps(data)[:800]}"
-    return BlindItem.from_dict({"pr": rec.n, "head_sha": head, **data}), None
+    return BlindItem.from_dict({
+        "pr": rec.n,
+        "head_sha": head,
+        **data,
+        # The driver derives these from the diff before storing the verdict.
+        "has_test": False,
+        "test_cmd": None,
+    }), None
 
 
 def _repro_rejection_addendum(token: str, repro_cmd: str) -> str:
@@ -521,11 +528,10 @@ def _run_inner(store: Store, rec: Pr, req: _Request) -> int:
     if errs or not ok:
         return _fail(req, "agent-failed",
                      f"blind verdict commit failed: {'; '.join(errs)}")
-    _say(f"  faithful={blind_item.faithful} test_cmd={blind_item.test_cmd!r}")
-
     rec2 = store.load_pr(n)
     assert rec2 is not None, f"pr {n} was just blind-committed but is gone from the store"
     blind = rec2.verify_signals.get("blind_adequacy") or {}
+    _say(f"  faithful={blind_item.faithful} test_cmd={blind.get('test_cmd')!r}")
 
     # AUTHOR pass — a PR that ships no test gets an agent-authored reproduction
     # test, validated fail-closed and committed BEFORE any sandbox run (the same

@@ -901,6 +901,10 @@ class TestBlindPromptSingleSource:
         # The prompt must tell the agent it does not choose the command.
         assert "do not choose" in vd.BLIND_PROMPT.lower()
         assert "whole test file" in vd.BLIND_PROMPT.lower()
+        assert "has_test" not in vd.BLIND_PROMPT
+
+    def test_prompt_defines_linked_issue_repro_provenance(self):
+        assert "from_linked_issue: true only when repro_command" in vd.BLIND_PROMPT
 
     def test_prompt_pins_the_repro_command_to_the_sandbox_tree(self):
         # repro_command is the one command the agent still authors; it executes

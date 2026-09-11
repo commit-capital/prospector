@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pipeline import reviewers
-from prospector_app.backend import chat
+from pipeline import settings
 from prospector_app.backend import claude_backend
 from prospector_app.backend import data
 from prospector_app.backend import safety_guard
@@ -36,7 +36,7 @@ from prospector_app.backend import testpaths
 if TYPE_CHECKING:
     from pipeline.model import Pr
 
-CACHE_DIR = chat.APP_ROOT / "cache" / "deep_search"
+CACHE_DIR = Path(__file__).resolve().parents[1] / "cache" / "deep_search"
 BATCH_SIZE = 25          # PRs of compact facts per agent call
 MAX_CONCURRENCY = 5      # parallel headless `claude` processes
 MAX_CANDIDATES = 500     # hard ceiling; the UI narrows with fast filters first
@@ -141,14 +141,13 @@ async def _judge_batch(query: str, records: list[dict], sem: asyncio.Semaphore) 
     """Run one sandboxed headless `claude` over a batch; return coerced verdicts.
     A subprocess/parse failure degrades to {} (those PRs count as non-matches)."""
     prompt = _JUDGE_PROMPT.format(query=query, records=json.dumps(records, ensure_ascii=False))
-    # Read-only judge: no token, no write tools — the strictly read-only sandbox.
+    # Stateless judge with no tools or repository context.
     cmd = [claude_backend.CLAUDE_BIN, "-p", prompt,
-           *claude_backend.isolation_flags(can_write=False, can_resubmit=False),
-           "--output-format", "json", "--append-system-prompt", chat.system_prompt()]
+           *claude_backend.classifier_flags(), "--output-format", "json"]
     valid = {r["pr"] for r in records}
     async with sem:
         proc = await subproc.spawn(
-            cmd, cwd=chat.REPO_ROOT, stderr=asyncio.subprocess.DEVNULL,
+            cmd, cwd=settings.REPO_ROOT, stderr=asyncio.subprocess.DEVNULL,
             start_new_session=True, env=safety_guard.operator_env())
         out, _ = await proc.communicate()
     try:

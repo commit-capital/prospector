@@ -36,6 +36,31 @@ def test_coerce_truncates_reason():
     assert len(deep_search.coerce_judgments(text, {1})[1]["reason"]) == deep_search._REASON_BUDGET
 
 
+def test_judge_agent_uses_tool_free_classifier(monkeypatch):
+    captured = {}
+
+    class Process:
+        async def communicate(self):
+            result = '[{"pr": 1, "match": true, "reason": "matches"}]'
+            return json.dumps({"result": result}).encode(), b""
+
+    async def spawn(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return Process()
+
+    monkeypatch.setattr(deep_search.subproc, "spawn", spawn)
+    monkeypatch.setattr(deep_search.claude_backend, "classifier_flags",
+                        lambda: ["CLASSIFIER-ONLY"])
+
+    async def judge():
+        return await deep_search._judge_batch(
+            "matches", [{"pr": 1}], asyncio.Semaphore(1))
+
+    assert asyncio.run(judge())[1]["match"] is True
+    assert "CLASSIFIER-ONLY" in captured["cmd"]
+    assert "--append-system-prompt" not in captured["cmd"]
+
+
 def test_compact_record_shape(monkeypatch):
     monkeypatch.setattr(deep_search.testpaths, "cached_diff_text", lambda rec, c: None)
     rec = {"pr": 7, "meta": {"title": "Fix X", "body": "B" * 1000, "head_sha": "h"},

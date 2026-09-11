@@ -1,7 +1,7 @@
 """Natural-language PR query → a validated filter spec.
 
-A one-shot sandboxed `claude` (same isolation as chat.py, read-only) translates the
-operator's sentence into JSON; `coerce` then drops anything not in the schema so
+A one-shot tool-free `claude` translates the operator's sentence into JSON;
+`coerce` then drops anything not in the schema so
 a hallucinated field can never reach the query engine. The engine — not the
 model — produces rows, so search results are reproducible and inventable matches
 are impossible.
@@ -14,7 +14,7 @@ import re
 
 from pipeline import review_policy
 from pipeline import reviewers
-from prospector_app.backend import chat
+from pipeline import settings
 from prospector_app.backend import claude_backend
 from prospector_app.backend import safety_guard
 from prospector_app.backend import subproc
@@ -160,10 +160,9 @@ async def search_to_spec(query: str) -> dict:
     """Run the one-shot agent and return a validated spec (possibly {})."""
     prompt = _PROMPT.replace("__REVIEW_FIELDS__", _review_field_docs()).format(query=query)
     cmd = [claude_backend.CLAUDE_BIN, "-p", prompt,
-           *claude_backend.isolation_flags(can_write=False, can_resubmit=False), "--output-format", "json",
-           "--append-system-prompt", chat.system_prompt()]
+           *claude_backend.classifier_flags(), "--output-format", "json"]
     proc = await subproc.spawn(
-        cmd, cwd=chat.REPO_ROOT, stderr=asyncio.subprocess.DEVNULL,
+        cmd, cwd=settings.REPO_ROOT, stderr=asyncio.subprocess.DEVNULL,
         start_new_session=True, env=safety_guard.operator_env())
     out, _ = await proc.communicate()
     try:

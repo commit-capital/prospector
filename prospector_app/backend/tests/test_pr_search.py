@@ -1,5 +1,8 @@
 """pr_search.coerce(): raw model JSON → a safe filter spec. Never raises; drops
 unknown keys, clamps enums/ops, so a hallucinated field can't reach the engine."""
+import asyncio
+import json
+
 from prospector_app.backend import pr_search
 
 
@@ -83,6 +86,25 @@ def test_extract_json_from_model_text():
     raw = 'Sure!\n```json\n{"cluster": 9}\n```\n'
     assert pr_search.extract_spec(raw) == {"cluster": 9}
     assert pr_search.extract_spec("garbage") == {}
+
+
+def test_search_agent_uses_tool_free_classifier(monkeypatch):
+    captured = {}
+
+    class Process:
+        async def communicate(self):
+            return json.dumps({"result": '{"cluster": 9}'}).encode(), b""
+
+    async def spawn(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return Process()
+
+    monkeypatch.setattr(pr_search.subproc, "spawn", spawn)
+    monkeypatch.setattr(pr_search.claude_backend, "classifier_flags",
+                        lambda: ["CLASSIFIER-ONLY"])
+    assert asyncio.run(pr_search.search_to_spec("cluster nine")) == {"cluster": 9}
+    assert "CLASSIFIER-ONLY" in captured["cmd"]
+    assert "--append-system-prompt" not in captured["cmd"]
 
 
 def test_search_route(monkeypatch):
