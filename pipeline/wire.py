@@ -286,8 +286,8 @@ class BlindItem:
     """One PR's blind adequacy verdict — Signal 1, judged from the diff and the
     linked issue before any sandbox boots, and committed to the store in that state.
 
-    `test_cmd` is the command that exercises the claimed defect (the author's test,
-    or a linked issue's repro steps when the PR ships none); it drives red->green.
+    `has_test` and `test_cmd` are derived by the driver from the diff's changed
+    test files and drive red->green; agent output does not supply them.
     `repro_command` is the agent's own independent repro (Signal 4), run against the
     base only and recorded as corroborating evidence.
     `expected_red_signature` is the pre-committed prediction Signal 3 is checked

@@ -31,6 +31,21 @@ def _multi(flags, name):
     return out
 
 
+def test_classifier_has_no_tools_or_chat_operating_manual():
+    flags = claude_backend.classifier_flags()
+    assert _flag(flags, "--tools") == ""
+    assert _flag(flags, "--permission-mode") == "dontAsk"
+    assert _flag(flags, "--permission-prompts") == "none"
+    assert "--restricted" in flags
+    assert "--strict-mcp-config" in flags
+    assert "--no-session-persistence" in flags
+    prompt = _flag(flags, "--system-prompt")
+    assert prompt == claude_backend.CLASSIFIER_SYSTEM_PROMPT
+    assert "stateless classifier" in prompt
+    assert "call tools" in prompt
+    assert "Making changes upstream" not in prompt
+
+
 def test_runs_in_dontask_not_plan():
     # plan mode is what produced the "permissions / plan" chatter; dontAsk
     # silently denies anything outside the allowlist.

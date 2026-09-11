@@ -37,6 +37,23 @@ AUTHOR_OK = {"can_author": True,
             "confidence": "high", "reasoning": "authored test reproduces the defect"}
 
 
+def test_blind_output_contract_excludes_driver_owned_test_fields():
+    assert '"test_cmd"' not in vp.BLIND_FENCED_TAIL
+    assert '"has_test"' not in vp.BLIND_FENCED_TAIL
+
+
+def test_blind_agent_cannot_supply_driver_owned_test_fields(store, monkeypatch):
+    monkeypatch.setattr(
+        vp, "_call_agent_json",
+        lambda prompt, step: ({"faithful": True, "has_test": True,
+                               "test_cmd": "agent-chosen command"}, None))
+    item, failure = vp._blind_verdict(store.load_pr(1), "/tmp/base")
+    assert failure is None
+    assert item is not None
+    assert item.has_test is False
+    assert item.test_cmd is None
+
+
 def _ev(rec, base, tier, *, red=20, green=0):
     """Host evidence in verify_driver.verify_pr's shape: a completed run with a
     complete regress leg."""
