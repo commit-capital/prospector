@@ -54,6 +54,17 @@ def config_value(command: list[str], key: str) -> object:
     raise AssertionError(f"missing Codex config: {key}")
 
 
+def test_codex_context_stays_inside_the_behavior_layer() -> None:
+    prompt = "# Background\n\nRole.\n\n# Behavior\n\nRules.\n\n# Output\n\nFormat."
+    rendered = codex_backend._with_codex_context(prompt)
+
+    headings = ("# Background", "# Behavior", "## Codex cockpit", "# Output")
+    assert [rendered.index(heading) for heading in headings] == sorted(
+        rendered.index(heading) for heading in headings
+    )
+    assert rendered.count("# Output") == 1
+
+
 def test_read_only_rules_expose_only_curated_reads_and_local_helpers():
     rules = codex_backend.isolation_rules(can_write=False, can_resubmit=False)
 

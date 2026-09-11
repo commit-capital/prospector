@@ -56,6 +56,8 @@ const results = await parallel(index.clusters.map((c) => () => {
   return agent(
     `${body}
 
+# Output
+
 When done, FIRST use the Write tool to save your analysis as a single raw JSON object (the {cluster_id, outcome, rationale, prs:[...]} object, nothing else — no array, no prose) to the file ${outPath}. THEN return the same object via structured output.`,
     { label: `analyze:cluster-${c.cluster_id}`, phase: 'Analyze', schema: ANALYSIS_SCHEMA })
 }))
