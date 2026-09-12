@@ -82,21 +82,12 @@ interface ChatSession {
   lastActiveAt: number;
 }
 
-interface LegacyChatSession {
-  id: string;
-  label: string;
-  subjKind: "pr" | "cluster" | "issue" | "general";
-  subjId: number | null;
-  lastActiveAt: number;
-}
-
 // The session list and the active session belong to a deployment, so their
 // keys carry the repository: two deployments served from one origin (two
 // checkouts taking turns on a port) never hand each other their threads. The
 // bare keys are the pre-scoping stores — read once when a scoped one is
 // absent, removed on the first scoped save.
 const SESSIONS_KEY = "agentpane-sessions-v2";
-const LEGACY_SESSIONS_KEY = "agentpane-sessions-v1";
 const ACTIVE_SESSION_KEY = "agentpane-active-session";
 const scopedKey = (base: string, repo: string): string => `${base}@${repo}`;
 const MAX_STORED_SESSIONS = 20;
@@ -113,35 +104,10 @@ function storedArray(key: string): unknown[] | null {
   }
 }
 
-function migrateLegacySession(session: LegacyChatSession): ChatSession {
-  const number = Number(session.subjId);
-  let subject: AgentSubject;
-  switch (session.subjKind) {
-    case "pr":
-      subject = { kind: "pr", key: `pr:${number}`, number, label: session.label };
-      break;
-    case "cluster":
-      subject = { kind: "cluster", key: `cluster:${number}`, number, label: session.label };
-      break;
-    case "issue":
-      subject = { kind: "issue", key: `issue:${number}`, number, label: session.label };
-      break;
-    case "general":
-      subject = { kind: "general", key: "general", label: session.label };
-      break;
-  }
-  return {
-    id: session.id, label: session.label, subject, lastActiveAt: session.lastActiveAt,
-  };
-}
-
 function loadSessions(repo: string): ChatSession[] {
   const scoped = storedArray(scopedKey(SESSIONS_KEY, repo));
   if (scoped !== null) return scoped as ChatSession[];
-  const unscoped = storedArray(SESSIONS_KEY);
-  if (unscoped !== null) return unscoped as ChatSession[];
-  return (storedArray(LEGACY_SESSIONS_KEY) ?? [])
-    .map((session) => migrateLegacySession(session as LegacyChatSession));
+  return (storedArray(SESSIONS_KEY) ?? []) as ChatSession[];
 }
 
 function loadActiveSessionId(repo: string): string | null {
@@ -232,7 +198,6 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
   useEffect(() => {
     localStorage.setItem(scopedKey(SESSIONS_KEY, repo), JSON.stringify(sessions));
     localStorage.removeItem(SESSIONS_KEY);
-    localStorage.removeItem(LEGACY_SESSIONS_KEY);
   }, [sessions, repo]);
   useEffect(() => {
     const key = scopedKey(ACTIVE_SESSION_KEY, repo);
