@@ -42,7 +42,10 @@ dev = [
 # pipeline.*, prospector_app.backend.*, issue_triage.*. Each package sits at its
 # natural path under the repo root, so no package-dir remapping is needed. New
 # modules need no change — they're submodules of an already-registered package.
-packages = ["alert_triage", "pipeline", "prospector_app", "prospector_app.backend", "issue_triage"]
+packages = ["alert_triage", "pipeline", "pipeline.evals", "prospector_app", "prospector_app.backend", "issue_triage"]
+
+[tool.setuptools.package-data]
+"pipeline.evals" = ["data/*.jsonl"]
 
 [tool.pytest.ini_options]
 # One command runs all three suites. importlib import-mode avoids pytest's
