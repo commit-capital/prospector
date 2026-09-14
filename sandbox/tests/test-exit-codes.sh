@@ -5,6 +5,7 @@
 # from inside that namespace is discarded, so the kill is a no-op and exits 0.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
+. "$(dirname "$0")/base-image.sh"
 SCRATCH="$HOME/.cache/pr-verify-tests"; mkdir -p "$SCRATCH"
 CTX="$(mktemp -d "$SCRATCH/ctx.XXXXXX")"
 cleanup() { rm -rf "$CTX"; docker rmi -f pr-verify-base:exitcodes-t0 >/dev/null 2>&1 || true; }
@@ -42,7 +43,7 @@ diff --git a/nonexistent.txt b/nonexistent.txt
 PATCH
 
 docker build -q --network none -t pr-verify-base:exitcodes-t0 \
-  --build-arg TIER=0 -f "$HERE/Dockerfile.base" "$CTX" >/dev/null || {
+  --build-arg BASE_IMAGE="$BASE_IMAGE" --build-arg TIER=0 -f "$HERE/Dockerfile.base" "$CTX" >/dev/null || {
     echo "base image build failed"; exit 1; }
 
 run() { bash "$HERE/sandbox-run.sh" --image pr-verify-base:exitcodes-t0 \
