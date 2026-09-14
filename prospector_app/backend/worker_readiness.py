@@ -11,9 +11,11 @@ that cannot answer is not evidence the machine is ready.
 """
 from __future__ import annotations
 
+import json
 import logging
 import platform
 import shutil
+import subprocess
 from collections.abc import Callable
 from typing import TypedDict
 
@@ -58,6 +60,44 @@ def _docker_daemon() -> tuple[bool, str, str]:
     if not verify_driver.daemon_available():
         return False, "Docker is installed but not running", _docker_start_remedy()
     return True, "running", ""
+
+
+# The Colima mount type whose host/VM file view is coherent. sshfs and 9p can
+# show a container an empty or stale copy of a file the host just wrote, which
+# is how a healthy-looking sandbox fails every patch apply.
+COHERENT_MOUNT = "virtiofs"
+RECREATE_COLIMA = ("recreate the VM: `colima stop && colima delete && "
+                   "colima start --memory 12 --vm-type vz --mount-type virtiofs`")
+
+
+def colima_mount_type() -> str | None:
+    """The running Colima instance's mount type, or None when Docker here is
+    not Colima's (Docker Desktop, Linux Engine) or Colima is not running."""
+    if shutil.which("colima") is None:
+        return None
+    try:
+        r = subprocess.run(["colima", "status", "--json"], capture_output=True,
+                           text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    try:
+        status = json.loads(r.stdout.strip().splitlines()[-1])
+    except ValueError:
+        return None
+    mount = status.get("mount_type") if isinstance(status, dict) else None
+    return str(mount) if mount else None
+
+
+def _docker_sharing() -> tuple[bool, str, str]:
+    mount = colima_mount_type()
+    if mount is None:
+        return True, "not Colima's to judge", ""
+    if mount != COHERENT_MOUNT:
+        return False, (f"Colima shares files over {mount}, which can hand a container an "
+                       f"empty or stale view of a file the host just wrote"), RECREATE_COLIMA
+    return True, f"Colima shares files over {mount}", ""
 
 
 def _sandbox_image() -> tuple[bool, str, str]:
@@ -135,6 +175,7 @@ def _fix_flag() -> tuple[bool, str, str]:
 # first failing row is the one to act on.
 _CHECKS: list[tuple[str, str, Callable[[], tuple[bool, str, str]], bool]] = [
     ("docker", "Docker daemon", _docker_daemon, True),
+    ("docker_sharing", "Docker file sharing", _docker_sharing, True),
     ("sandbox_image", "Hardened sandbox image", _sandbox_image, True),
     ("base_pin", "Pinned base", _base_pin, True),
     ("verify_flag", "Verify worker", _verify_flag, True),

@@ -22,10 +22,15 @@ from pipeline import diffpaths, gates, profile, verify_driver
 logger = logging.getLogger(__name__)
 
 
+# How much of a failure's own text the record keeps: enough of a build's
+# stderr tail to name the cause from the store alone.
+ERROR_CHARS = 1500
+
+
 def _record_unexpected_error(result: dict, error: Exception) -> None:
     logger.error("compile preflight failed unexpectedly",
                  exc_info=(type(error), error, error.__traceback__))
-    result["error"] = "compile preflight failed unexpectedly; see server logs"
+    result["error"] = f"{type(error).__name__}: {str(error)[-ERROR_CHARS:]}"
 
 
 def run_for_patch(pr: int, head_sha: str, patch: Path) -> dict | None:
@@ -110,5 +115,12 @@ def _compile_over(result: dict, patch: Path, cmd: str, head_sha: str) -> None:
         "compile", tag, patch=patch, tier=1, test_cmd=cmd,
         base_sha=sha, head_sha=head_sha)
     result["exit"] = exit_code
-    if exit_code == gates.SENTINEL_TEST_FAIL:
-        result["error_excerpt"] = verify_driver.error_excerpt(tail)
+    excerpt = verify_driver.error_excerpt(tail)
+    if exit_code in (gates.SENTINEL_TEST_FAIL, gates.SENTINEL_PATCH_CONFLICT):
+        result["error_excerpt"] = excerpt
+    elif exit_code == gates.SENTINEL_PATCH_UNREADABLE:
+        result["error"] = ("the sandbox could not read the patch it was handed"
+                           + (f": {excerpt}" if excerpt else ""))
+    elif exit_code not in (gates.SENTINEL_PASS, gates.SENTINEL_PROBE_FAIL):
+        result["error"] = (f"the sandbox phase exited {exit_code} before the command "
+                           f"concluded" + (f": {excerpt}" if excerpt else ""))

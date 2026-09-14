@@ -73,6 +73,19 @@ check "compile failing cmd = 20" 20 \
 check "compile with bad patch = 30"   30 "$(run --phase compile --patch "$CTX/bad.patch")"
 check "compile with no --patch = 2 (launcher usage error)" 2 "$(run --phase compile)"
 
+# A mounted patch that never matches the sha the host announced is the worker's
+# file sharing failing, not a conflict: run-phase.sh waits, then exits 40. Run
+# the phase script directly, since the launcher always announces the true sha.
+NET=pr-verify-net-exitcodes
+docker network inspect "$NET" >/dev/null 2>&1 || docker network create --internal "$NET" >/dev/null
+unreadable="$(docker run --rm --network "$NET" \
+  -e PHASE=apply-check -e PATCH_FILE=/patch/fix.patch -e PATCH_SHA256=0000 \
+  -v "$HERE/boot-probe.sh:/boot-probe.sh:ro" -v "$HERE/run-phase.sh:/run-phase.sh:ro" \
+  -v "$CTX/fix.patch:/patch/fix.patch:ro" \
+  pr-verify-base:exitcodes-t0 bash -lc 'bash /run-phase.sh' >/dev/null 2>&1; echo $?)"
+check "apply-check with a patch that never matches the announced sha = 40" 40 "$unreadable"
+docker network rm "$NET" >/dev/null 2>&1 || true
+
 # An untrusted CHILD killing PID 1 must NOT be able to present as a red. The
 # fixture's "killpid1" script runs as a pnpm-spawned child, not PID 1 itself:
 # run-phase.sh runs the command in a subshell which forks/execs pnpm, and pnpm

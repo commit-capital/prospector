@@ -142,7 +142,7 @@ class TestRunForMerge:
                             lambda *a, **k: pytest.fail("ran despite no base"))
         res = compile_preflight.run_for_merge(7, "a" * 40)
         assert res is not None
-        assert res["error"] == "compile preflight failed unexpectedly; see server logs"
+        assert res["error"] == "RuntimeError: cannot resolve default branch"
         assert "exit" not in res
 
     def test_every_record_carries_duration(self, configured, no_sandbox_calls):
@@ -199,3 +199,48 @@ class TestRunCommandForPatch:
                             lambda: (_ for _ in ()).throw(RuntimeError("no docker")))
         res = compile_preflight.run_command_for_patch(7, "a" * 40, patch, "x")
         assert "error" in res and "exit" not in res
+
+
+class TestExitClassification:
+    """Which container exits are verdicts on the change and which are the
+    worker's own faults, recorded so the store alone names the cause."""
+
+    def _run(self, configured, monkeypatch, tmp_path, exit_code, tail):
+        from pipeline import compile_preflight, verify_driver
+        patch = tmp_path / "p.patch"
+        patch.write_text("diff --git a/x.ts b/x.ts\n--- a/x.ts\n+++ b/x.ts\n@@ -1 +1 @@\n-a\n+b\n")
+        monkeypatch.setattr(verify_driver, "resolve_base_sha", lambda: "b" * 40)
+        monkeypatch.setattr(verify_driver, "image_exists", lambda tag: True)
+        monkeypatch.setattr(verify_driver, "run_phase", lambda *a, **k: (exit_code, tail))
+        return compile_preflight.run_for_patch(1, "a" * 40, patch)
+
+    def test_a_patch_conflict_keeps_the_applys_own_words(self, configured, monkeypatch, tmp_path):
+        rec = self._run(configured, monkeypatch, tmp_path, 30, "error: patch failed: x.ts:1\n")
+        assert rec["exit"] == 30 and "error" not in rec
+        assert "patch failed" in rec["error_excerpt"]
+
+    def test_an_unreadable_patch_is_the_workers_fault(self, configured, monkeypatch, tmp_path):
+        rec = self._run(configured, monkeypatch, tmp_path, 40,
+                        "patch mount does not match what the host wrote after 20 reads\n")
+        assert rec["exit"] == 40
+        assert "could not read the patch" in rec["error"]
+        assert "does not match" in rec["error"]
+
+    def test_a_non_sentinel_exit_is_the_workers_fault(self, configured, monkeypatch, tmp_path):
+        rec = self._run(configured, monkeypatch, tmp_path, 137, "Killed\n")
+        assert "exited 137" in rec["error"]
+
+    def test_an_exception_keeps_its_text(self, configured, monkeypatch, tmp_path):
+        from pipeline import compile_preflight, verify_driver
+        patch = tmp_path / "p.patch"
+        patch.write_text("diff --git a/x.ts b/x.ts\n--- a/x.ts\n+++ b/x.ts\n@@ -1 +1 @@\n-a\n+b\n")
+        monkeypatch.setattr(verify_driver, "resolve_base_sha", lambda: "b" * 40)
+        monkeypatch.setattr(verify_driver, "image_exists", lambda tag: False)
+
+        def boom(sha, *, tier):
+            raise verify_driver.BuildFailure(
+                "building pr-verify-base:x exited 1: ERR_PNPM_NO_OFFLINE_META  No offline metadata")
+        monkeypatch.setattr(verify_driver, "build_base_image", boom)
+        rec = compile_preflight.run_for_patch(1, "a" * 40, patch)
+        assert rec["error"].startswith("BuildFailure: ")
+        assert "ERR_PNPM_NO_OFFLINE_META" in rec["error"]

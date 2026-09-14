@@ -106,10 +106,15 @@ _canary_cache: dict[str, list[str]] = {}
 
 def _harness_problems(image: str, base: str, tier: int) -> list[str]:
     """The canary self-test's problems for a base image — empty when the harness
-    reproduces a known bug, confirms its fix, and rejects a non-fix patch. Cached
-    per image, so the self-test runs once per worker boot per pinned base."""
+    reproduces a known bug, confirms its fix, and rejects a non-fix patch. A
+    pass is cached per image, so a healthy harness self-tests once per worker
+    boot per pinned base; a failure is not, so a fault that clears (a mount
+    that caught up, a daemon restarted) is seen on the next pickup."""
     if image not in _canary_cache:
-        _canary_cache[image] = verify_driver.run_canaries(image, base, tier)
+        problems = verify_driver.run_canaries(image, base, tier)
+        if problems:
+            return problems
+        _canary_cache[image] = problems
     return _canary_cache[image]
 
 

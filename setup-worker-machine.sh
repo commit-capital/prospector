@@ -206,10 +206,22 @@ if docker info >/dev/null 2>&1; then
   echo "daemon already answering"
 elif [ "$PLATFORM" = macos ]; then
   echo "starting Colima with 12GB (compile lanes run in 6g containers)"
-  colima start --memory 12
+  # vz + virtiofs: the one file-sharing stack whose container view of a host
+  # file is coherent. sshfs and 9p can show a container an empty or stale copy
+  # of a patch the host just wrote, which fails every apply while the daemon
+  # looks healthy. The flags bind on first creation; an existing VM keeps its own.
+  colima start --memory 12 --vm-type vz --mount-type virtiofs
 else
   echo "starting Docker Engine"
   start_linux_docker
+fi
+
+if [ "$PLATFORM" = macos ] && command -v colima >/dev/null 2>&1; then
+  mount_type="$(colima status --json 2>/dev/null | tail -1 | sed -n 's/.*"mount_type":"\([^"]*\)".*/\1/p')"
+  if [ -n "$mount_type" ] && [ "$mount_type" != virtiofs ]; then
+    fail "Colima shares files over $mount_type, which loses writes between the host and a container.
+Recreate the VM: colima stop && colima delete && colima start --memory 12 --vm-type vz --mount-type virtiofs"
+  fi
 fi
 
 if ! docker info >/dev/null 2>&1; then
