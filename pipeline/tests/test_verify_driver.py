@@ -2470,3 +2470,32 @@ class TestRunLanes:
         ev = {}
         assert vd._run_lanes(ev, None, Path("/tmp/x.patch")) is None
         assert "lanes" not in ev
+
+
+class TestBuildStepOutput:
+    def test_a_failed_step_raises_with_its_tail(self, monkeypatch, capsys):
+        def fake_run(argv, **kw):
+            return subprocess.CompletedProcess(argv, 1, stdout="step 1\n\x1b[31mERR_PNPM_NO_OFFLINE_META\x1b[0m\n", stderr="")
+        monkeypatch.setattr(vd.subprocess, "run", fake_run)
+        with pytest.raises(vd.BuildFailure) as info:
+            vd._run_build_step("building img", ["docker", "build"], env={})
+        assert "building img exited 1" in str(info.value)
+        assert "ERR_PNPM_NO_OFFLINE_META" in str(info.value)
+        assert "\x1b" not in str(info.value)
+        assert "ERR_PNPM_NO_OFFLINE_META" in capsys.readouterr().out
+
+    def test_a_passing_step_echoes_and_returns(self, monkeypatch, capsys):
+        monkeypatch.setattr(vd.subprocess, "run",
+                            lambda argv, **kw: subprocess.CompletedProcess(argv, 0, stdout="done\n", stderr=""))
+        vd._run_build_step("cloning", ["git", "clone"], env={})
+        assert "done" in capsys.readouterr().out
+
+
+class TestCanaryOutput:
+    def test_a_failing_canary_carries_what_the_sandbox_said(self, monkeypatch):
+        seq = iter([(20, ""), (30, "error: unrecognized input\n"), (30, "error: unrecognized input\n")])
+        monkeypatch.setattr(vd, "run_phase", lambda phase, image, **kw: next(seq))
+        monkeypatch.setattr(vd, "_canary_patch", lambda marker: Path(f"/tmp/{marker}.patch"))
+        problems = vd.run_canaries("img:t0", "base1", 0)
+        assert len(problems) == 2
+        assert all("sandbox said: error: unrecognized input" in p for p in problems)

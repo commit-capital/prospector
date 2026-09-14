@@ -1709,3 +1709,10 @@ class TestLaneHealth:
         assert lane_health.open_or_retest("fix") is False
         monkeypatch.setattr(lane_health.worker_health, "cooled", lambda rec, name, now=None: True)
         assert lane_health.open_or_retest("fix") is True
+
+
+def test_plain_preflight_tells_a_conflict_from_a_worker_fault_from_a_compile_failure():
+    assert "did not apply cleanly" in fix_worker.plain_preflight({"exit": 30})
+    assert "didn't compile" in fix_worker.plain_preflight({"exit": 20})
+    worker = fix_worker.plain_preflight({"error": "the sandbox could not read the patch it was handed"})
+    assert "problem with the worker" in worker and "could not read the patch" in worker

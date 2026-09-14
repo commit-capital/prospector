@@ -413,16 +413,19 @@ def plain_reason(rc: int, output: str) -> str:
 def plain_preflight(pf: dict) -> str:
     """Why the compile preflight did not clear the change, in plain words.
 
-    A refusal is a policy decision and already reads as a sentence. An `error` is
-    an exception string from the sandbox — docker argv, a Python class name —
-    which says nothing an operator can act on beyond "the sandbox is broken on
-    this machine"."""
+    A refusal is a policy decision and already reads as a sentence. An `error`
+    is the sandbox's own account of why it could not run, kept because it is
+    what distinguishes a dead daemon from a missing image from an incoherent
+    mount when the worker is a machine nobody is sitting at."""
     if pf.get("refused"):
         return f"The change wasn't compile-checked: {pf['refused']}"
     if pf.get("error"):
-        return ("The build check couldn't run — the sandbox failed to start on the "
-                "worker machine. Nothing was pushed. This is a problem with the "
-                "worker, not with the PR.")
+        return ("The build check couldn't run on the worker machine — nothing was "
+                "pushed. This is a problem with the worker, not with the PR: "
+                f"{str(pf['error'])[:400]}")
+    if pf.get("exit") == gates.SENTINEL_PATCH_CONFLICT:
+        return ("The change did not apply cleanly onto the current base, so nothing "
+                "was pushed.")
     if pf.get("exit") not in (0, None):
         return "The project didn't compile with this change applied, so nothing was pushed."
     return "The build check did not pass."

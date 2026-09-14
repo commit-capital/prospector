@@ -256,13 +256,14 @@ def prefetch_store(src: Path, store: Path) -> None:
     container that wrote it. The removal is load-bearing: pnpm reads an existing
     node_modules as the record of what is installed, so a tree carrying one
     installs nothing and links nothing."""
-    subprocess.run(
+    _run_build_step(
+        "prefetching the pnpm store",
         ["docker", "run", "--rm",
          "-v", f"{src}:/work/src", "-v", f"{store}:/work/pnpm-store",
          sandbox_image(), "bash", "-lc",
          "pnpm fetch --dir /work/src --store-dir /work/pnpm-store"
          " && rm -rf /work/src/node_modules"],
-        check=True, env=launcher_env())
+        env=launcher_env())
 
 
 def daemon_available() -> bool:
@@ -308,6 +309,30 @@ def collect_garbage(pinned_sha: str | None, *, dry_run: bool = False) -> dict:
     return result
 
 
+class BuildFailure(RuntimeError):
+    """A base-image build step exited non-zero. The message carries the step
+    and the tail of what it printed, so a refresh that fails on a machine
+    nobody is watching still names its cause in the store."""
+
+
+# How much of a failed build step's output the failure carries.
+BUILD_TAIL_CHARS = 1500
+
+
+def _run_build_step(what: str, argv: list[str], *, env: dict[str, str]) -> None:
+    """Run one build step with its output captured, echo the output, and raise
+    BuildFailure with the tail when it exits non-zero."""
+    print(f"{what}…", flush=True)
+    proc = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          text=True, env=env)
+    out = proc.stdout or ""
+    if out.strip():
+        print(out.rstrip(), flush=True)
+    if proc.returncode != 0:
+        tail = _ANSI_RE.sub("", out).strip()[-BUILD_TAIL_CHARS:]
+        raise BuildFailure(f"{what} exited {proc.returncode}: {tail or '(no output)'}")
+
+
 def build_base_image(sha: str, *, tier: int) -> str:
     """Produce a scrubbed remote-stripped clone of `sha` under SCRATCH and build
     the per-batch base image from it (Tier 1 prefetches the pnpm store first so
@@ -323,10 +348,11 @@ def build_base_image(sha: str, *, tier: int) -> str:
     src.parent.mkdir(parents=True, exist_ok=True)
     pnpm_store.mkdir(parents=True, exist_ok=True)
 
-    subprocess.run(["git", "clone", f"https://github.com/{settings.repo()}.git", str(src)],
-                   check=True, env=launcher_env())
-    subprocess.run(["git", "-C", str(src), "checkout", "--detach", sha],
-                   check=True, env=launcher_env())
+    _run_build_step(f"cloning {settings.repo()}",
+                    ["git", "clone", f"https://github.com/{settings.repo()}.git", str(src)],
+                    env=launcher_env())
+    _run_build_step(f"checking out {sha[:12]}",
+                    ["git", "-C", str(src), "checkout", "--detach", sha], env=launcher_env())
     scrub_checkout(src)
     assert_scrubbed(src)
 
@@ -334,11 +360,12 @@ def build_base_image(sha: str, *, tier: int) -> str:
         prefetch_store(src, pnpm_store)
 
     tag = base_image_tag(sha, tier)
-    subprocess.run(
+    _run_build_step(
+        f"building {tag}",
         ["docker", "build", "--network", "none", "-t", tag, "--build-arg", f"TIER={tier}",
          "--build-arg", f"BASE_IMAGE={sandbox_image()}",
          "-f", str(SANDBOX / "Dockerfile.base"), str(ctx)],
-        check=True, env=launcher_env())
+        env=launcher_env())
     return tag
 
 
@@ -1108,14 +1135,24 @@ def run_canaries(image: str, base: str, tier: int) -> list[str]:
     fix worked, not that the harness always passes."""
     fix = _canary_patch(_CANARY_FIX_MARKER)
     nonfix = _canary_patch(_CANARY_NONFIX_MARKER)
-    red_rc, _ = run_phase("red", image, tier=tier, base_sha=base,
-                          test_cmd=CANARY_TEST_CMD)
-    green_rc, _ = run_phase("green", image, tier=tier, base_sha=base,
-                            test_cmd=CANARY_TEST_CMD, patch=fix)
-    mutant_rc, _ = run_phase("green", image, tier=tier, base_sha=base,
-                             test_cmd=CANARY_TEST_CMD, patch=nonfix)
-    return canary_checks(bug_reproduces=red_rc, fix_resolves=green_rc,
-                         nonfix_rejected=mutant_rc)
+    red_rc, red_tail = run_phase("red", image, tier=tier, base_sha=base,
+                                 test_cmd=CANARY_TEST_CMD)
+    green_rc, green_tail = run_phase("green", image, tier=tier, base_sha=base,
+                                     test_cmd=CANARY_TEST_CMD, patch=fix)
+    mutant_rc, mutant_tail = run_phase("green", image, tier=tier, base_sha=base,
+                                       test_cmd=CANARY_TEST_CMD, patch=nonfix)
+    problems = canary_checks(bug_reproduces=red_rc, fix_resolves=green_rc,
+                             nonfix_rejected=mutant_rc)
+    # Each problem carries what its phase printed: the apply's or the test's
+    # own words are what tell an empty patch mount from a rigged harness.
+    tails = {"the known bug": red_tail, "the known fix": green_tail,
+             "a NON-fix": mutant_tail}
+    out: list[str] = []
+    for problem in problems:
+        tail = next((t for head, t in tails.items() if problem.startswith(head)), "")
+        excerpt = error_excerpt(tail)
+        out.append(f"{problem} [sandbox said: {excerpt}]" if excerpt else problem)
+    return out
 
 
 def verify_pr(rec: Pr, image: str, base: str, tier: int,

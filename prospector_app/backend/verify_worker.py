@@ -72,6 +72,10 @@ TRANSIENT_RETRY_SECONDS = 600.0
 # claimed, so they are reclaimed without waiting for someone to restart it.
 RECLAIM_SECONDS = 300.0
 
+# How much of a failed refresh's error the pin and the ledger keep: a build
+# step's whole stderr tail, so the cause is readable from the store.
+REFRESH_ERROR_CHARS = 1500
+
 # How old the base pin must be before the daily refresh considers re-pinning.
 REFRESH_AFTER_HOURS = 24.0
 
@@ -318,7 +322,7 @@ def maybe_refresh_base() -> None:
             _record_refresh(st, True, None, failures)
             entry["stats"].update(ok=True, to=sha[:12])
         except Exception as e:
-            detail = f"{type(e).__name__}: {str(e)[:200]}"
+            detail = f"{type(e).__name__}: {str(e)[-REFRESH_ERROR_CHARS:]}"
             entry["stats"].update(ok=False, error=detail)
             _record_refresh(st, False, detail, failures)
             traceback.print_exc()

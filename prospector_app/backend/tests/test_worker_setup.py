@@ -203,3 +203,29 @@ class TestReadiness:
         ok, detail, remedy = worker_readiness._sandbox_image()
         assert (ok, detail, remedy) == (
             False, "pr-verify:pnpm-9.15.4 is not built", "run build-image here")
+
+
+class TestDockerSharing:
+    def _status(self, monkeypatch, payload, rc=0):
+        monkeypatch.setattr(worker_readiness.shutil, "which", lambda name: "/opt/homebrew/bin/colima")
+        monkeypatch.setattr(worker_readiness.subprocess, "run",
+                            lambda argv, **kw: type("R", (), {"returncode": rc, "stdout": payload})())
+
+    def test_virtiofs_is_coherent(self, monkeypatch):
+        self._status(monkeypatch, '{"display_name":"colima","mount_type":"virtiofs"}\n')
+        ok, detail, remedy = worker_readiness._docker_sharing()
+        assert ok and "virtiofs" in detail and remedy == ""
+
+    def test_sshfs_is_a_blocking_fault_with_the_recreate_remedy(self, monkeypatch):
+        self._status(monkeypatch, '{"display_name":"colima","mount_type":"sshfs"}\n')
+        ok, detail, remedy = worker_readiness._docker_sharing()
+        assert not ok and "sshfs" in detail and "--mount-type virtiofs" in remedy
+        assert [c for c in worker_readiness._CHECKS if c[0] == "docker_sharing"][0][3] is True
+
+    def test_a_machine_without_colima_is_not_judged(self, monkeypatch):
+        monkeypatch.setattr(worker_readiness.shutil, "which", lambda name: None)
+        assert worker_readiness._docker_sharing() == (True, "not Colima's to judge", "")
+
+    def test_a_stopped_colima_is_not_judged(self, monkeypatch):
+        self._status(monkeypatch, "", rc=1)
+        assert worker_readiness._docker_sharing()[0] is True

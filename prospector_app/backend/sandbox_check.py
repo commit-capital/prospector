@@ -85,6 +85,8 @@ def render(rec: dict) -> str:
     if code == gates.SENTINEL_PATCH_CONFLICT:
         return head + ("\nFAIL: the pull request plus your edits do not apply onto "
                        "the current default branch")
+    if code == gates.SENTINEL_PATCH_UNREADABLE:
+        return head + "\ncheck could not run: the sandbox could not read the patch"
     return head + "\nFAIL\n" + str(rec.get("error_excerpt") or "")
 
 

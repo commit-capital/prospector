@@ -20,7 +20,11 @@ hand or debugging a machine that will not come up:
    is mountable; see `TRIAGE_VERIFY_SCRATCH` in `.env.example`. Size the host or
    VM for the profile's merge-gate lanes: the compile/build phases run in 6g
    containers and a merge preflight can overlap a worker run, so with lanes
-   configured give it ~12GB (`colima start --memory 12` on macOS).
+   configured give it ~12GB. On macOS the VM must share files over virtiofs
+   (`colima start --memory 12 --vm-type vz --mount-type virtiofs`): sshfs and
+   9p can hand a container an empty or stale view of a patch the host just
+   wrote, which fails every apply while the daemon looks healthy. The Setup
+   tab's "Docker file sharing" row reports the running VM's mount type.
 2. **Build the hardened image:** `uv run python pipeline/verify_driver.py
    build-image` — bakes the profile's pnpm pin (`verify.pnpm_version`) into
    `pr-verify:pnpm-<version>`, a tag per pinned version, so deployments on one

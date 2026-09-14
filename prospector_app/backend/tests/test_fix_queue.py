@@ -617,10 +617,12 @@ def test_plain_reason_falls_back_to_a_sentence_not_a_dump():
     assert why == "the fork repository was deleted"
 
 
-def test_a_broken_sandbox_reads_as_a_worker_problem():
-    why = fix_worker.plain_preflight({"error": "CalledProcessError: Command '['docker'...]'"})
-    assert "docker" not in why and "CalledProcessError" not in why
-    assert "worker" in why and "Nothing was pushed" in why
+def test_a_broken_sandbox_reads_as_a_worker_problem_and_names_the_cause():
+    why = fix_worker.plain_preflight(
+        {"error": "BuildFailure: building pr-verify-base:x exited 1: ERR_PNPM_NO_OFFLINE_META"})
+    assert why.startswith("The build check couldn't run on the worker machine")
+    assert "problem with the worker" in why and "nothing was pushed" in why
+    assert "ERR_PNPM_NO_OFFLINE_META" in why
 
 
 def test_a_real_compile_failure_says_so():

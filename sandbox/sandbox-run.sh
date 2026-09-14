@@ -77,6 +77,11 @@ fi
 patch_mount=()
 if [ -n "$PATCH" ]; then
   env_args+=( -e "PATCH_FILE=/patch/fix.patch" )
+  # What the container must see at /patch/fix.patch; run-phase.sh waits for the
+  # mount to match it and exits SENTINEL_PATCH_UNREADABLE when it never does.
+  patch_sha="$(shasum -a 256 "$PATCH" 2>/dev/null | cut -d' ' -f1)"
+  [ -n "$patch_sha" ] || patch_sha="$(sha256sum "$PATCH" | cut -d' ' -f1)"
+  env_args+=( -e "PATCH_SHA256=$patch_sha" )
   patch_mount=( -v "$PATCH:/patch/fix.patch:ro" )
 else
   env_args+=( -e "PATCH_FILE=" )

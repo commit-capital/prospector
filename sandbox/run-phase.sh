@@ -15,10 +15,15 @@ set -uo pipefail
 SENTINEL_PROBE_FAIL=10
 SENTINEL_TEST_FAIL=20
 SENTINEL_PATCH_CONFLICT=30
+SENTINEL_PATCH_UNREADABLE=40
 
 PHASE="${PHASE:?PHASE is required}"
 TEST_CMD="${TEST_CMD:-pnpm -s test}"
 PATCH_FILE="${PATCH_FILE:-}"
+# The host's sha256 of the patch it mounted. Docker's file sharing can hand a
+# container a stale or empty view of a file the host just wrote; the apply
+# waits for the mount to match and refuses to read anything else as the patch.
+PATCH_SHA256="${PATCH_SHA256:-}"
 EXCLUDE_FILE="${EXCLUDE_FILE:-}"
 SRC=/work/src
 
@@ -38,6 +43,21 @@ apply_patch() {
     echo "PATCH_FILE is set but not a readable file: $PATCH_FILE" >&2
     exit 1
   }
+  if [ -n "$PATCH_SHA256" ]; then
+    local tries=0 got=""
+    while :; do
+      got="$(sha256sum "$PATCH_FILE" | cut -d' ' -f1)"
+      [ "$got" = "$PATCH_SHA256" ] && break
+      tries=$((tries + 1))
+      if [ "$tries" -ge 20 ]; then
+        echo "patch mount does not match what the host wrote after ${tries} reads:" \
+             "expected sha256 $PATCH_SHA256, got $got" \
+             "($(wc -c < "$PATCH_FILE") bytes) — the worker's Docker file sharing is not coherent" >&2
+        exit "$SENTINEL_PATCH_UNREADABLE"
+      fi
+      sleep 0.25
+    done
+  fi
   git -c core.checkStat=minimal apply --3way "$PATCH_FILE" >&2
 }
 

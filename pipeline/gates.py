@@ -188,6 +188,9 @@ SENTINEL_PASS = 0
 SENTINEL_PROBE_FAIL = 10
 SENTINEL_TEST_FAIL = 20
 SENTINEL_PATCH_CONFLICT = 30
+# The mounted patch did not match what the host wrote (empty, truncated, or
+# stale in the Docker VM's file sharing): a worker fault, never a verdict.
+SENTINEL_PATCH_UNREADABLE = 40
 
 # Disposition precedence for a PR that belongs to several clusters: the most
 # blocking proposal wins (a close overrides a merge; needs-human overrides all).
@@ -786,6 +789,9 @@ def compile_preflight_gate(result: dict) -> tuple[bool, str]:
         return False, f"{why}: {excerpt}" if excerpt else why
     if exit_code == SENTINEL_PROBE_FAIL:
         return False, "sandbox isolation probe failed — refusing to run PR code"
+    if exit_code == SENTINEL_PATCH_UNREADABLE:
+        return False, ("the sandbox could not read the patch it was handed — a "
+                       "file-sharing fault on the worker, live merge refused")
     return False, (f"compile phase exited {exit_code}, not a sentinel — "
                    "infrastructure failure, live merge refused")
 

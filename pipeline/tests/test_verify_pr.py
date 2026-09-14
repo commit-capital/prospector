@@ -833,3 +833,18 @@ class TestAuthorPass:
         rec = store.load_pr(1)
         assert rec.verify_outcome == "agent-verified"
         assert "post-run judge" in pinned["agent_calls"]
+
+
+def test_a_failed_canary_is_not_cached(monkeypatch):
+    """A harness fault that clears (a mount that caught up) must be seen on
+    the next pickup; only a pass is remembered for the worker's lifetime."""
+    vp._canary_cache.clear()
+    answers = iter([["the known fix did not resolve it"], [], ["never asked"]])
+    calls: list[str] = []
+    monkeypatch.setattr(vp.verify_driver, "run_canaries",
+                        lambda image, base, tier: (calls.append(image), next(answers))[1])
+    assert vp._harness_problems("img", "b", 1) == ["the known fix did not resolve it"]
+    assert vp._harness_problems("img", "b", 1) == []
+    assert vp._harness_problems("img", "b", 1) == []
+    assert calls == ["img", "img"]
+    vp._canary_cache.clear()
