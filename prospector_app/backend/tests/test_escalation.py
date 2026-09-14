@@ -34,6 +34,8 @@ def test_file_issue_creates_the_label_then_the_issue_as_the_operator(monkeypatch
     gh = _Gh()
     monkeypatch.setattr(escalation.subprocess, "run", gh)
     monkeypatch.setenv("GH_TOKEN", "bot-token")
+    # Off a GitHub Actions runner, where the injected token is the sanctioned identity.
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     assert escalation.file_issue("t", "b") == (42, "https://github.com/o/meta/issues/42")
     label, issue = gh.calls
     assert label[:3] == ["gh", "label", "create"] and escalation.LABEL in label
