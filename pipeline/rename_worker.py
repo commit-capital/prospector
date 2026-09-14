@@ -59,13 +59,12 @@ def plan_registries(store: Store, old: str, new: str) -> dict[str, dict]:
     """Each registry's merged `hosts` map after the rename, only for registries
     that hold a record under `old`."""
     plans: dict[str, dict] = {}
-    pins = store.load_verify_base_hosts()
+    pins: dict[str, dict] = {h: dict(p) for h, p in store.load_verify_base_hosts().items()}
     if old in pins:
-        hosts = dict(pins)
-        moved = dict(hosts.pop(old))
+        moved = pins.pop(old)
         moved["host"] = new
-        hosts[new] = _newer(dict(hosts[new]), moved, "pinned_at") if new in hosts else moved
-        plans["verify_base"] = hosts
+        pins[new] = _newer(pins[new], moved, "pinned_at") if new in pins else moved
+        plans["verify_base"] = pins
     for name, loader in (("verify_worker", store.load_verify_worker),
                          ("fix_worker", store.load_fix_worker)):
         hosts = dict(loader()["hosts"])

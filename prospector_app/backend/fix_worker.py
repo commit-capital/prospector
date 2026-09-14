@@ -55,8 +55,9 @@ from pipeline import (author_fix, compile_preflight, describe_pr, diffpaths, fre
                       resolve_evidence, review_fix, review_policy, review_resolve,
                       reviewers, risktier, settings, verify_driver)
 from pipeline.storekit import now as _now
-from prospector_app.backend import (activity, data, executor, fix_queue, review_refresh,
-                                    safety_guard, sandbox_check, service)
+from prospector_app.backend import (activity, data, executor, fix_queue, lane_health,
+                                    review_refresh, safety_guard, sandbox_check, service,
+                                    worker_log)
 from prospector_app.backend.resubmit_identity import worker_env
 
 if TYPE_CHECKING:
@@ -394,10 +395,13 @@ def _settle(n: int, req: dict, rc: int, output: str) -> None:
 
 
 def _log_run(n: int, req: dict, status: str, detail: str | None = None,
-             host: str | None = None) -> None:
-    """Append this run's ending to the runs ledger. A PR carries one
-    fix_request, which the next queue click overwrites — the ledger is where an
-    action's outcome survives that, and what the app's fix history reads.
+             host: str | None = None, *, kind: str = "run-failed") -> None:
+    """Append this run's ending to the runs ledger, and book it on the fix
+    lane's health: a `failed` ending is the machine's (counted under `kind`;
+    an agent outage trips every agent lane at once), every other ending is
+    the PR's and ends the failure run. A PR carries one fix_request, which the
+    next queue click overwrites — the ledger is where an action's outcome
+    survives that, and what the app's fix history reads.
 
     Best-effort: a ledger append that fails must not cost the operator the
     terminal status the caller has already written."""
@@ -411,9 +415,16 @@ def _log_run(n: int, req: dict, status: str, detail: str | None = None,
         data.store().append_run(entry)
     except Exception:
         traceback.print_exc()
+    if status != "failed":
+        lane_health.note_success("fix")
+    elif kind == "agent-unavailable":
+        lane_health.trip_agent_lanes(detail or "the agent CLI could not run")
+    else:
+        lane_health.note_failure("fix", kind=kind, reason=detail or "", pr=n)
 
 
-def _fail(n: int, req: dict, message: str, result: dict | None = None) -> None:
+def _fail(n: int, req: dict, message: str, result: dict | None = None, *,
+          kind: str = "run-failed") -> None:
     data.store().edit_pr(n).record_fix_request(
         "failed", req.get("action", "fix"), queued_at=req.get("queued_at"),
         started_at=req.get("started_at"), finished_at=_now(),
@@ -421,7 +432,7 @@ def _fail(n: int, req: dict, message: str, result: dict | None = None) -> None:
         guidance=req.get("guidance"), host=settings.worker_id(),
         head_sha=req.get("against_head_sha"))
     data.refresh()
-    _log_run(n, req, "failed", message[-TAIL_CHARS:])
+    _log_run(n, req, "failed", message[-TAIL_CHARS:], kind=kind)
 
 
 def _refuse(n: int, req: dict, reason: str, result: dict | None = None) -> None:
@@ -462,8 +473,10 @@ def _end_on_preflight(n: int, claimed: dict, pf: dict, result: dict) -> None:
     while a refusal or a compile that exits non-zero is a verdict on the
     change."""
     _resubmit(n, "abort")
-    ending = _fail if pf.get("error") else _refuse
-    ending(n, claimed, plain_preflight(pf), result=result)
+    if pf.get("error"):
+        _fail(n, claimed, plain_preflight(pf), result=result, kind="sandbox")
+    else:
+        _refuse(n, claimed, plain_preflight(pf), result=result)
 
 
 def run_one(n: int) -> None:
@@ -687,6 +700,11 @@ def _author_fix(n: int, claimed: dict) -> None:
                                     findings=findings, ci_failures=checks,
                                     review_summary=review_summary,
                                     diff_path=str(pr_patch), head_sha=rec.head_sha)
+    except headless_agent.AgentUnavailable as e:
+        _resubmit(n, "abort")
+        _fail(n, claimed, f"The agent could not run on {settings.worker_id()}: {e}",
+              kind="agent-unavailable")
+        return
     except (RuntimeError, ValueError) as e:
         _resubmit(n, "abort")
         _fail(n, claimed, f"The agent attempt did not land: {e}")
@@ -839,6 +857,11 @@ def _agent_resolve(n: int, claimed: dict, paused: list[str]) -> None:
         verdict = resolve_conflicts.resolve(
             worktree, conflicts, pr=n, title=rec.title or "",
             body=rec.body or "", base_branch=str(st.get("base_branch") or ""))
+    except headless_agent.AgentUnavailable as e:
+        _resubmit(n, "abort")
+        _fail(n, claimed, f"The agent could not run on {settings.worker_id()}: {e}",
+              kind="agent-unavailable")
+        return
     except headless_agent.EditsBlockedError as e:
         # The edit grant never reached the agent — this machine's fault, so the
         # ending is retryable rather than a verdict that rests the head.
@@ -925,6 +948,10 @@ def _describe(n: int, claimed: dict) -> None:
         verdict = describe_pr.describe(pr=n, title=title, body=body, diff=diff,
                                        template=template, findings=findings,
                                        required=describe_pr.required_sections())
+    except headless_agent.AgentUnavailable as e:
+        _fail(n, claimed, f"The agent could not run on {settings.worker_id()}: {e}",
+              kind="agent-unavailable")
+        return
     except (RuntimeError, ValueError) as e:
         _fail(n, claimed, f"The agent attempt did not land: {e}")
         return
@@ -1511,6 +1538,9 @@ def _drain_loop() -> None:
         traceback.print_exc()
     while not stop.is_set():
         try:
+            if not lane_health.open_or_retest("fix"):
+                stop.wait(POLL_SECONDS)
+                continue
             n = next_approved()
             if n is not None:
                 state["current_pr"] = n
@@ -1563,6 +1593,7 @@ def startup() -> bool:
     if running():
         return True
     stop.clear()
+    worker_log.install()
     _threads[:] = [
         threading.Thread(target=_beat_loop, daemon=True, name="fix-worker-beat"),
         threading.Thread(target=_drain_loop, daemon=True, name="fix-worker"),

@@ -828,3 +828,88 @@ class TestSecurityClaimedElsewhere:
         verify_worker._drain_loop()
         assert attempts == [1]
         assert waits == [verify_worker.POLL_SECONDS]
+
+
+class TestLaneHealth:
+    """The security lane's endings feed the worker's health; an agent outage
+    exit trips every agent lane; a failed pin refresh run trips verify."""
+
+    def _health(self, store):
+        from pipeline import settings, worker_health
+        return worker_health.load(store, settings.worker_id())
+
+    def test_agent_unavailable_exit_trips_every_agent_lane_and_parks_nothing(
+            self, store, monkeypatch):
+        from pipeline import security_review, worker_health
+        from prospector_app.backend import escalation
+        monkeypatch.setattr(escalation, "file_issue", lambda t, b: (None, None))
+        store.save_pr(_clean_merge_pr(1))
+        data.refresh()
+
+        class FakeProc:
+            stdout = iter(["✗ the agent CLI could not run: 401 OAuth token expired\n"])
+
+            def wait(self):
+                return security_review.EXIT_AGENT_UNAVAILABLE
+
+        monkeypatch.setattr(verify_worker.subprocess, "Popen", lambda argv, **kw: FakeProc())
+        assert verify_worker.run_security(1) == security_review.EXIT_AGENT_UNAVAILABLE
+        assert 1 not in verify_worker.security_failed
+        rec = self._health(store)
+        assert all(worker_health.is_tripped(rec, lane) for lane in ("security", "verify", "fix"))
+        assert "401" in rec["lanes"]["security"]["tripped"]["reason"]
+
+    def test_three_failed_runs_trip_the_security_lane(self, store, monkeypatch):
+        from pipeline import worker_health
+        from prospector_app.backend import escalation
+        monkeypatch.setattr(escalation, "file_issue", lambda t, b: (None, None))
+        for n in (1, 2, 3):
+            store.save_pr(_clean_merge_pr(n))
+        data.refresh()
+
+        class FakeProc:
+            def __init__(self):
+                self.stdout = iter(["boom\n"])
+
+            def wait(self):
+                return 1
+
+        monkeypatch.setattr(verify_worker.subprocess, "Popen", lambda argv, **kw: FakeProc())
+        for n in (1, 2, 3):
+            assert verify_worker.run_security(n) == 1
+        rec = self._health(store)
+        assert worker_health.is_tripped(rec, "security")
+        assert not worker_health.is_tripped(rec, "verify")
+        assert verify_worker.security_failed.reasons()["1"].startswith("security review exited 1")
+
+    def test_a_tripped_security_lane_leaves_the_pool_alone(self, store):
+        store.save_pr(_clean_merge_pr(1))
+        data.refresh()
+        assert verify_worker.next_auto(frozenset({"verify"})) is None
+        assert verify_worker.next_auto() == ("security", 1)
+
+    def test_a_verify_ending_is_booked_by_its_fault(self, store, monkeypatch):
+        from pipeline import worker_health
+        from prospector_app.backend import escalation
+        monkeypatch.setattr(escalation, "file_issue", lambda t, b: (None, None))
+        for n in (1, 2, 3):
+            store.save_pr(_clean_merge_pr(n))
+            store.edit_pr(n).record_verify_request(
+                "error", error_kind="sandbox-error", error="harness canary failed")
+            verify_worker._note_verify_ending(n)
+        rec = self._health(store)
+        assert worker_health.is_tripped(rec, "verify")
+        store.save_pr(_clean_merge_pr(4))
+        store.edit_pr(4).record_verify_request(
+            "error", error_kind="refused-safety", error="PR #4 is merged, not open")
+        worker_health.update(store, rec["host"], lambda r: worker_health.reopen(r, "verify", by="t"))
+        verify_worker._note_verify_ending(4)
+        assert self._health(store)["lanes"]["verify"]["consecutive_failures"] == 0
+
+    def test_beat_carries_the_skip_reasons(self, store, monkeypatch):
+        from pipeline import settings
+        verify_worker.security_failed.add(7, "security review exited 1: boom")
+        verify_worker.beat()
+        rec = store.load_verify_worker()["hosts"][settings.worker_id()]
+        assert rec["security_failed"] == [7]
+        assert rec["security_failed_reasons"] == {"7": "security review exited 1: boom"}

@@ -258,6 +258,11 @@ def _image_exists(image: str) -> bool:
     return verify_driver.image_exists(image)
 
 
+# The agent-outage reason, once one headless run could not start at all: every
+# later agent step ends the request as `agent-unavailable` without retrying.
+_agent_outage: list[str] = []
+
+
 def _call_agent_json(prompt: str, step: str) -> tuple[dict | None, str | None]:
     """Run one headless agent (read-only tools, no gh — both verify judgments
     are functions of the diff, the claimed defect, and the pinned tree alone).
@@ -267,9 +272,24 @@ def _call_agent_json(prompt: str, step: str) -> tuple[dict | None, str | None]:
         text = headless_agent.run_agent(prompt, allow_gh=False, cwd=str(REPO_ROOT),
                                         on_event=headless_agent.print_progress)
         return headless_agent.extract_json(text), None
+    except headless_agent.AgentUnavailable as e:
+        _say(f"    ! {step} could not run: {e}")
+        _agent_outage.append(str(e))
+        return None, f"{step}: {e}"
     except (RuntimeError, ValueError) as e:
         _say(f"    ! {step} failed: {e}")
         return None, f"{step}: {e}"
+
+
+def _agent_failed(req: _Request, message: str, log_tail: str | None) -> int:
+    """End a request whose agent step produced nothing: as this machine's
+    `agent-unavailable` when the CLI could not run, else as a transient
+    `agent-failed` that re-queues."""
+    if _agent_outage:
+        return _fail(req, "agent-unavailable",
+                     f"the agent CLI could not run on this machine: {_agent_outage[-1]}",
+                     log_tail=log_tail)
+    return _fail_transient(req, "agent-failed", message, log_tail=log_tail)
 
 
 _T = TypeVar("_T")
@@ -284,6 +304,8 @@ def _retry_once(call: Callable[[], tuple[_T | None, str | None]],
     item, failure = call()
     if item is not None:
         return item, None
+    if _agent_outage:
+        return None, failure
     _say(f"    ! {step} answer unusable — retrying once")
     item, failure2 = call()
     if item is not None:
@@ -526,9 +548,8 @@ def _run_inner(store: Store, rec: Pr, req: _Request) -> int:
     blind_item, blind_fail = _retry_once(
         lambda: _blind_verdict(rec, str(clone)), "blind adequacy")
     if blind_item is None:
-        return _fail_transient(req, "agent-failed",
-                               "the blind adequacy agent failed or returned "
-                               "unusable JSON", log_tail=blind_fail)
+        return _agent_failed(req, "the blind adequacy agent failed or returned "
+                                  "unusable JSON", blind_fail)
     blind_item = _vet_blind_repro(rec, blind_item, str(clone))
     ok, errs = verify_driver.commit_blind(store, [blind_item])
     if errs or not ok:
@@ -626,9 +647,8 @@ def _run_inner(store: Store, rec: Pr, req: _Request) -> int:
                                    ev["red_green"], ev["independent_repro"]),
             "post-run judge")
         if judged is None:
-            return _fail_transient(req, "agent-failed",
-                                   "the post-run judge agent failed or returned "
-                                   "unusable JSON", log_tail=judge_fail)
+            return _agent_failed(req, "the post-run judge agent failed or returned "
+                                      "unusable JSON", judge_fail)
         judge_item = judged
     elif authored_ev.get("red_exit") is not None:
         _say("④ Post-run judgment (authored-test red-reason match)…")
@@ -645,9 +665,8 @@ def _run_inner(store: Store, rec: Pr, req: _Request) -> int:
                                    {"ran": False, "exit_code": None, "output_tail": ""}),
             "post-run judge")
         if judged is None:
-            return _fail_transient(req, "agent-failed",
-                                   "the post-run judge agent failed or returned "
-                                   "unusable JSON", log_tail=judge_fail)
+            return _agent_failed(req, "the post-run judge agent failed or returned "
+                                      "unusable JSON", judge_fail)
         judge_item = judged
 
     # The outcome — gates.verify_outcome via commit_outcomes (disposition

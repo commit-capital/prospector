@@ -251,6 +251,28 @@ fix run history reads that lane, and `fix_history_backfill.py` seeds it from the
 endings a store already holds. The queue view itself holds an ending for half an
 hour, so a run that starts and finishes between two polls is still readable.
 
+**WORKER HEALTH** (`pipeline/worker_health.py` + `prospector_app/backend/lane_health.py`
++ `escalation.py`) is the ONE policy for a worker that is failing rather than
+the PRs. Every ending a worker writes is booked per lane (`security`, `verify`,
+`fix`) on that worker's `worker_health` registry record: a machine-fault ending
+(a `failed` fix run, a system-fault verify error per `gates.VERIFY_REQUEST_FAULT`,
+a security run that exited non-zero or held its verdict) extends a run of
+consecutive failures, any other ending resets it. Three in a row trip the lane;
+an agent outage (`headless_agent.AgentUnavailable`: the CLI is missing or not
+authenticated — `security_review.py` exits `EXIT_AGENT_UNAVAILABLE`, `verify_pr`
+ends the request `agent-unavailable`, the fix worker ends the run `failed`)
+trips all three at once; three consecutive base-pin refresh failures trip
+`verify`. A tripped lane picks nothing, retests itself every fifteen minutes
+(`worker_selftest.py`: the CLI probe for an agent trip, the sandbox and pin for
+anything else) and reopens on a pass; the Control tab's banner offers Resume.
+Every trip appends a `worker:trip` ledger entry and files one issue per failure
+signature per week on `PROSPECTOR_FEEDBACK_REPO` as the operator, labeled
+`worker-health`; any live backend's escalation watch files the same for a
+worker whose heartbeat has been silent an hour. Worker stdout is mirrored to
+`<verify scratch>/logs/worker-<id>.log` (`worker_log.py`), which the issue
+quotes. The security lane's skip set carries a reason per PR and expires after
+six hours.
+
 **ALERTS** (`alert_triage/`) is a parallel family beside PRs and issues:
 GitHub code-scanning / Dependabot / secret-scanning alerts for `TRIAGE_REPO`,
 stored in the shared SQL store's `alerts` table (keyed by

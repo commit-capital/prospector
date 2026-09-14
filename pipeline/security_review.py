@@ -102,6 +102,15 @@ class _LensProgress:
                 self._promote(self._live + 1)
 
 
+# The exit `run` uses when the agent CLI could not serve any prompt: the
+# worker reads it as this machine's outage, not as the PR's failed review.
+EXIT_AGENT_UNAVAILABLE = 3
+
+# Each agent-outage reason seen this process, so `run` can end on the outage
+# instead of holding a verdict that no lens could have produced.
+_outages: list[str] = []
+
+
 def _call_agent_json(prompt: str, step: str, on_event: Callable[[tuple], object]) -> dict | None:
     """Run one headless agent and return its parsed JSON, or None if the run or
     the JSON extraction failed (logged under `step`). Shared by the review and
@@ -110,6 +119,10 @@ def _call_agent_json(prompt: str, step: str, on_event: Callable[[tuple], object]
         text = headless_agent.run_agent(prompt, allow_gh=True, cwd=str(REPO_ROOT),
                                         on_event=on_event)
         return headless_agent.extract_json(text)
+    except headless_agent.AgentUnavailable as e:
+        _say(f"    ! {step} could not run: {e}")
+        _outages.append(str(e))
+        return None
     except (RuntimeError, ValueError) as e:
         _say(f"    ! {step} failed: {e}")
         return None
@@ -266,6 +279,9 @@ def run(store: Store, pr: int, *, trigger: str | None = None) -> int:
                          bot_evidence=reviewers.evidence(rec.reviews, rec.head_sha))
     if reviewed is None:
         return 1
+    if _outages:
+        _say(f"✗ the agent CLI could not run on this machine: {_outages[-1]}")
+        return EXIT_AGENT_UNAVAILABLE
     item, lenses_ok = reviewed
 
     disp_before = rec.disposition

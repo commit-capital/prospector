@@ -32,6 +32,17 @@ SECURITY_MAX_AGE_DAYS = 7
 
 VERIFY_MAX_AGE_DAYS = 7
 
+# Whose fault a failed verify_request is, by its error_kind: "system" when the
+# harness or the machine broke (an errored sandbox, a dead agent, a restart, a
+# missing base), "pr" when a property of the PR stopped the run. The worker's
+# health counter and the app's fault badge both read this.
+VERIFY_REQUEST_FAULT: dict[str, str] = {
+    "no-base": "system", "fetch-error": "system", "sandbox-error": "system",
+    "agent-failed": "system", "agent-unavailable": "system",
+    "interrupted": "system", "exception": "system", "hold": "system",
+    "refused-safety": "pr",
+}
+
 # Merge-gate lanes in run order. A lane is required iff the active profile
 # configures its command; configuring the key is the entire enforcement switch.
 LANE_ORDER: tuple[str, ...] = ("compile", "build")

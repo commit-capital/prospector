@@ -29,6 +29,29 @@ from pipeline.settings import REPO_ROOT
 CLAUDE_BIN = shutil.which("claude") or "claude"
 
 
+class AgentUnavailable(RuntimeError):
+    """The CLI could not do any work at all: the binary is missing, or it
+    exited because it is not authenticated. This machine's condition, never a
+    verdict on the work — callers end such a run as retryable, and a worker
+    trips its agent lanes until a probe passes."""
+
+
+# What the CLI prints when it cannot serve any prompt: an expired or missing
+# login, or a rejected key. Matched against the run's output on a non-zero exit.
+_UNAVAILABLE = re.compile(
+    r"Failed to authenticate|OAuth (?:access )?token (?:has )?expired|Not logged in"
+    r"|Please run /login|Invalid API key|invalid_api_key|authentication_error"
+    r"|API Error: 401", re.I)
+
+
+def unavailable_reason(text: str) -> str | None:
+    """The line of `text` that says the CLI cannot serve prompts, or None."""
+    for line in text.splitlines():
+        if _UNAVAILABLE.search(line):
+            return line.strip()[:300]
+    return None
+
+
 class EditsBlockedError(RuntimeError):
     """The CLI denied an Edit/Write on a path inside the granted edit_root.
 
@@ -236,10 +259,13 @@ def run_agent(prompt: str, *, allow_gh: bool, cwd: str, system_prompt: str | Non
     env = operator_env()
     if env_extra:
         env.update(env_extra)
-    proc = subprocess.Popen(cmd, cwd=cwd, stdin=subprocess.PIPE,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True,
-                            start_new_session=True, env=env)
+    try:
+        proc = subprocess.Popen(cmd, cwd=cwd, stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True,
+                                start_new_session=True, env=env)
+    except FileNotFoundError:
+        raise AgentUnavailable(f"{CLAUDE_BIN} is not installed or not on PATH")
     assert proc.stdin is not None and proc.stdout is not None
 
     # Fed from a thread while this thread drains stdout, so neither pipe can
@@ -267,6 +293,9 @@ def run_agent(prompt: str, *, allow_gh: bool, cwd: str, system_prompt: str | Non
         raise RuntimeError(f"claude did not exit within {timeout}s")
     if proc.returncode != 0:
         tail = text[-500:] if text else "(no output)"
+        why = unavailable_reason(text)
+        if why:
+            raise AgentUnavailable(f"claude exited {proc.returncode}: {why}")
         raise RuntimeError(f"claude exited {proc.returncode}; last output: {tail}")
     if edit_root:
         blocked = _blocked_edits(results[0] if results else None, edit_root)
@@ -276,3 +305,15 @@ def run_agent(prompt: str, *, allow_gh: bool, cwd: str, system_prompt: str | Non
                 f"Edit/Write call(s) inside {edit_root} were permission-denied "
                 f"(first: {blocked[0]})")
     return text
+
+
+def probe(timeout: int = 180) -> str | None:
+    """Whether the CLI can serve a prompt on this machine right now: one
+    trivial headless run on the cheapest model. None when it answered, else
+    the reason it could not — what a tripped agent lane retests with."""
+    try:
+        run_agent("Reply with the single word ok.", allow_gh=False,
+                  cwd=str(REPO_ROOT), model="haiku", timeout=timeout)
+    except RuntimeError as e:
+        return str(e)
+    return None

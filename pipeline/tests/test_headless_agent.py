@@ -244,3 +244,47 @@ def test_run_agent_merges_env_extra_into_the_agents_environment(monkeypatch):
                  env_extra={"PROSPECTOR_CHECK_PR": "7"})
     assert seen["env"]["PROSPECTOR_CHECK_PR"] == "7"
     assert "PATH" in seen["env"]
+
+
+def _failing_proc(cmd, text, rc=1):
+    proc = _FakeProc(cmd)
+    proc.returncode = rc
+    proc.stdout = iter([
+        json.dumps({"type": "stream_event", "event": {
+            "type": "content_block_delta",
+            "delta": {"type": "text_delta", "text": text}}}),
+        json.dumps({"type": "result"}),
+    ])
+    return proc
+
+
+def test_run_agent_raises_agent_unavailable_on_an_expired_login(monkeypatch):
+    text = ("Failed to authenticate. API Error: 401 OAuth access token has expired. "
+            "Re-authenticate to continue.")
+    monkeypatch.setattr(ha.subprocess, "Popen", lambda cmd, **kw: _failing_proc(cmd, text))
+    with pytest.raises(ha.AgentUnavailable, match="OAuth access token has expired"):
+        ha.run_agent("go", allow_gh=False, cwd="/tmp")
+
+
+def test_run_agent_keeps_an_ordinary_failure_a_runtime_error(monkeypatch):
+    monkeypatch.setattr(ha.subprocess, "Popen",
+                        lambda cmd, **kw: _failing_proc(cmd, "segfault in the middle"))
+    with pytest.raises(RuntimeError) as info:
+        ha.run_agent("go", allow_gh=False, cwd="/tmp")
+    assert not isinstance(info.value, ha.AgentUnavailable)
+
+
+def test_run_agent_raises_agent_unavailable_when_the_cli_is_missing(monkeypatch):
+    def missing(cmd, **kw):
+        raise FileNotFoundError(cmd[0])
+    monkeypatch.setattr(ha.subprocess, "Popen", missing)
+    with pytest.raises(ha.AgentUnavailable, match="not installed"):
+        ha.run_agent("go", allow_gh=False, cwd="/tmp")
+
+
+def test_probe_reports_the_outage_and_none_when_healthy(monkeypatch):
+    monkeypatch.setattr(ha.subprocess, "Popen",
+                        lambda cmd, **kw: _failing_proc(cmd, "Not logged in. Please run /login"))
+    assert "Not logged in" in (ha.probe() or "")
+    monkeypatch.setattr(ha.subprocess, "Popen", lambda cmd, **kw: _FakeProc(cmd))
+    assert ha.probe() is None

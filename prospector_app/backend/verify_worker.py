@@ -28,20 +28,25 @@ from __future__ import annotations
 import os
 import subprocess
 import threading
+import time
 import traceback
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from pipeline import gates
+from pipeline import security_review
 from pipeline import settings
 from pipeline import store
 from pipeline import verify_driver
 from pipeline import wire
+from pipeline import worker_health
 from pipeline.freshness import is_current
 from pipeline.storekit import now as _now
 from prospector_app.backend import data
 from prospector_app.backend import service
 from prospector_app.backend import verify_queue
+from prospector_app.backend import lane_health
+from prospector_app.backend import worker_log
 from prospector_app.backend.jobs import PIPELINE_PY, REPO_ROOT
 
 if TYPE_CHECKING:
@@ -138,7 +143,8 @@ def beat() -> None:
     data.store().save_verify_worker({
         "host": settings.worker_id(), "pid": os.getpid(),
         "last_beat": _now(), "current_pr": state["current_pr"],
-        "autohunt": enabled_autohunt(), "security_failed": sorted(security_failed)})
+        "autohunt": enabled_autohunt(), "security_failed": sorted(security_failed),
+        "security_failed_reasons": security_failed.reasons()})
 
 
 def recover_orphans() -> tuple[list[int], list[int]]:
@@ -276,6 +282,10 @@ def maybe_refresh_base() -> None:
             entry["stats"].update(ok=False, error=detail)
             _record_refresh(st, False, detail, failures)
             traceback.print_exc()
+            if failures + 1 >= worker_health.TRIP_AFTER:
+                lane_health.trip_lane("verify", kind="pin-refresh",
+                                      reason=f"the daily base-pin refresh has failed "
+                                             f"{failures + 1} times in a row; last: {detail}")
         finally:
             entry["finished"] = _now()
             st.append_run(entry)
@@ -324,10 +334,49 @@ def next_queued() -> int | None:
     return best_n
 
 
-# Security auto-runs that exited nonzero this process: the hunter skips them
-# so a broken run is never immediately re-fired (a backend restart clears the
-# set; the operator can re-run any PR from the app meanwhile).
-security_failed: set[int] = set()
+# How long a failed security auto-run keeps its PR out of the pool. Past it
+# the hunter tries again; a machine that keeps failing trips its lane long
+# before then, so this only governs one-off run failures.
+SECURITY_FAILED_SECONDS = 6 * 3600.0
+
+
+class _SkipSet:
+    """Security auto-runs that failed this process, each with when and why,
+    so the hunter skips them for SECURITY_FAILED_SECONDS and the heartbeat can
+    say what went wrong. A restart clears it; the operator can re-run any PR
+    from the app meanwhile."""
+
+    def __init__(self) -> None:
+        self._entries: dict[int, tuple[float, str]] = {}
+
+    def add(self, n: int, reason: str = "the security run failed") -> None:
+        self._entries[n] = (time.monotonic(), reason)
+
+    def discard(self, n: int) -> None:
+        self._entries.pop(n, None)
+
+    def clear(self) -> None:
+        self._entries.clear()
+
+    def active(self) -> set[int]:
+        cutoff = time.monotonic() - SECURITY_FAILED_SECONDS
+        return {n for n, (at, _) in self._entries.items() if at >= cutoff}
+
+    def reasons(self) -> dict[str, str]:
+        active = self.active()
+        return {str(n): why for n, (_, why) in self._entries.items() if n in active}
+
+    def __contains__(self, n: object) -> bool:
+        return n in self.active()
+
+    def __iter__(self):
+        return iter(sorted(self.active()))
+
+    def __len__(self) -> int:
+        return len(self.active())
+
+
+security_failed = _SkipSet()
 
 
 def enabled_autohunt() -> bool:
@@ -402,7 +451,8 @@ def auto_resweepable(pr: Pr) -> bool:
     return gates.verify_eligible(pr, _changed_paths(pr))
 
 
-def next_auto() -> tuple[str, int] | None:
+def next_auto(open_lanes: frozenset[str] = frozenset({"security", "verify"})
+              ) -> tuple[str, int] | None:
     """The idle hunt's next pick, or None: ("security", n) while any clean
     merge candidate lacks a current security verdict, then ("verify", n) for
     the best GREEN-cleared unverified candidate, then ("resweep", n) for a
@@ -412,7 +462,9 @@ def next_auto() -> tuple[str, int] | None:
     Lane order is spend priority: a PR with no verification at all buys more
     than a second opinion on one that already concluded. A PR another machine
     holds the security claim on is that machine's to finish: it leaves the
-    pool here so this hunter moves on to the next candidate."""
+    pool here so this hunter moves on to the next candidate. `open_lanes`
+    names the lanes whose health allows a pick; a tripped lane's pool is
+    skipped."""
     prs = data.prs()
     me = settings.worker_id()
 
@@ -421,11 +473,14 @@ def next_auto() -> tuple[str, int] | None:
 
     security_pool = [
         (n, pr) for n, pr in prs.items()
-        if n not in security_failed and gates.blocked_on_security(pr)
+        if "security" in open_lanes
+        and n not in security_failed and gates.blocked_on_security(pr)
         and not store.security_claim_held_elsewhere(
             pr.raw.get("security_run"), host=me, stale_after=SECURITY_CLAIM_SECONDS)]
     if security_pool:
         return ("security", min(security_pool, key=_key)[0])
+    if "verify" not in open_lanes:
+        return None
     verify_pool = [(n, pr) for n, pr in prs.items() if auto_verifiable(pr)]
     if verify_pool:
         return ("verify", min(verify_pool, key=_key)[0])
@@ -466,21 +521,62 @@ def run_security(n: int) -> int | None:
 
 
 def _run_security_claimed(n: int) -> int:
-    """Spawn the security review for a PR this host holds the claim on."""
-    security_failed.add(n)
+    """Spawn the security review for a PR this host holds the claim on, and
+    book the ending on the security lane's health: a verdict that landed is a
+    success; a run that exited non-zero or held its verdict is a machine
+    failure and parks the PR; an agent outage parks nothing and trips every
+    agent lane at once."""
     argv = [*PIPELINE_PY, "-u", str(REPO_ROOT / "pipeline" / "security_review.py"),
             "--pr", str(n), "--trigger", "autohunt"]
     proc = subprocess.Popen(argv, cwd=str(REPO_ROOT), stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True)
     assert proc.stdout is not None
+    lines: list[str] = []
     for line in proc.stdout:
         print(f"[autohunt pr {n}] {line}", end="", flush=True)
+        lines.append(line)
+        if len(lines) > 60:
+            del lines[:30]
     rc = proc.wait()
+    last = next((ln.strip() for ln in reversed(lines) if ln.strip()), "")
     data.refresh()
+    if rc == security_review.EXIT_AGENT_UNAVAILABLE:
+        lane_health.trip_agent_lanes(last or "the agent CLI could not run")
+        return rc
     rec2 = data.store().load_pr(n)
     if rc == 0 and rec2 is not None and not gates.blocked_on_security(rec2):
         security_failed.discard(n)
+        lane_health.note_success("security")
+        return rc
+    reason = (f"security review exited {rc}: {last}" if rc
+              else f"security review held its verdict: {last}")
+    security_failed.add(n, reason[:300])
+    lane_health.note_failure("security", kind="security-run" if rc else "incomplete",
+                             reason=reason, pr=n)
     return rc
+
+
+def _note_verify_ending(n: int) -> None:
+    """Book a finished pickup on the verify lane's health, by the request the
+    orchestrator left: a system-fault error counts against the machine, an
+    agent outage trips every agent lane, and anything else (done, a refusal
+    that is the PR's) ends the failure run."""
+    rec = data.store().load_pr(n)
+    if rec is None:
+        return
+    req = rec.verify_request or {}
+    kind = req.get("error_kind")
+    error = str(req.get("error") or "")
+    if req.get("status") in ("error", "queued") and kind:
+        if kind == "agent-unavailable":
+            lane_health.trip_agent_lanes(error or "the agent CLI could not run")
+        elif gates.VERIFY_REQUEST_FAULT.get(kind) == "system":
+            lane_health.note_failure("verify", kind=kind, reason=error, pr=n)
+        else:
+            lane_health.note_success("verify")
+        return
+    if req.get("status") in ("done", "error"):
+        lane_health.note_success("verify")
 
 
 def auto_queue_verify(n: int, *, source: str = "auto") -> None:
@@ -580,14 +676,19 @@ def _drain_loop() -> None:
     while not stop.is_set():
         try:
             maybe_refresh_base()
-            n = next_queued()
+            verify_open = lane_health.open_or_retest("verify")
+            n = next_queued() if verify_open else None
             if n is not None:
                 state["current_pr"] = n
                 beat()
                 print(f"[verify-worker] picking up PR #{n}", flush=True)
                 run_one(n)
+                _note_verify_ending(n)
                 continue
-            pick = next_auto() if enabled_autohunt() else None
+            security_open = lane_health.open_or_retest("security")
+            open_lanes = frozenset(lane for lane, ok in (("security", security_open),
+                                                         ("verify", verify_open)) if ok)
+            pick = next_auto(open_lanes) if enabled_autohunt() and open_lanes else None
             if pick is None:
                 stop.wait(POLL_SECONDS)
                 continue
@@ -619,6 +720,7 @@ def startup() -> bool:
     if running():
         return True
     stop.clear()
+    worker_log.install()
     _threads[:] = [
         threading.Thread(target=_beat_loop, daemon=True, name="verify-worker-beat"),
         threading.Thread(target=_drain_loop, daemon=True, name="verify-worker"),

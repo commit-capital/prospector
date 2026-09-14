@@ -55,7 +55,8 @@ VERIFY_REQUEST_STATUSES = {"queued", "running", "waiting-for-base", "done", "err
 # infrastructure failed, the worker restarted mid-run, the run errored so no
 # verdict is trusted (hold), or the orchestrator itself crashed.
 VERIFY_ERROR_KINDS = {"refused-safety", "no-base", "fetch-error", "agent-failed",
-                      "sandbox-error", "interrupted", "hold", "exception"}
+                      "agent-unavailable", "sandbox-error", "interrupted", "hold",
+                      "exception"}
 
 # Who queued a verification request: the idle auto-hunter stamps its picks
 # "auto", and "auto-resweep" on the lane that re-runs a concluded verification
@@ -761,6 +762,23 @@ class Store:
         hosts = {h: r for h, r in hosts.items()
                  if h == host or str(r.get("last_beat") or "") >= cutoff}
         self._save_registry("fix_worker", {"hosts": hosts})
+
+    def load_worker_health(self) -> dict:
+        """Every worker's lane health (`{hosts: {<worker id>: record}}`), the
+        record shape pipeline/worker_health.py owns: per lane, the run of
+        consecutive machine-fault endings, the trip stamp, and the issue filed
+        for it. An empty map means no worker has recorded an ending."""
+        return self._load_registry("worker_health", {"hosts": {}})
+
+    def save_worker_health(self, record: dict) -> None:
+        """Merge one worker's health record into the registry, keyed by its
+        `host`. Two workers' merges may race on the shared row; each rewrites
+        its own record on its next ending."""
+        if not record.get("host"):
+            raise ValidationError("worker_health.host: required")
+        hosts = dict(self.load_worker_health()["hosts"])
+        hosts[str(record["host"])] = record
+        self._save_registry("worker_health", {"hosts": hosts})
 
     def claim_fix_request(self, n: int, *, host: str,
                           statuses: tuple[str, ...] = ("queued",),
