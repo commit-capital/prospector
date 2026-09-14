@@ -2,7 +2,8 @@
 # The core security proof: boot-probe passes on an --internal network and
 # FAILS on the default bridge (where the spike showed host services are reachable).
 set -euo pipefail
-IMG="${PR_VERIFY_IMAGE:-pr-verify:local}"
+. "$(dirname "$0")/base-image.sh"
+IMG="$BASE_IMAGE"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 NET=pr-verify-test-internal
 

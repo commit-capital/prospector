@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Asserts the pr-verify image has build tooling but NO agent CLIs / gh.
 set -euo pipefail
-IMG="${PR_VERIFY_IMAGE:-pr-verify:local}"
+. "$(dirname "$0")/base-image.sh"
+IMG="$BASE_IMAGE"
 
 fail=0
 have()    { docker run --rm "$IMG" sh -c "command -v $1 >/dev/null 2>&1"; }

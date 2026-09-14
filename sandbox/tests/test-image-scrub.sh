@@ -4,6 +4,7 @@
 # it never appears in the built image's filesystem.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
+. "$(dirname "$0")/base-image.sh"
 SCRATCH="$HOME/.cache/pr-verify-tests"; mkdir -p "$SCRATCH"
 CTX="$(mktemp -d "$SCRATCH/scrub.XXXXXX")"
 cleanup() { rm -rf "$CTX"; docker rmi -f pr-verify-base:scrubtest-t0 >/dev/null 2>&1 || true; }
@@ -27,8 +28,8 @@ vd.scrub_checkout(src)
 vd.assert_scrubbed(src)
 " || { echo "scrub/assert failed"; exit 1; }
 
-docker build -q --network none -t pr-verify-base:scrubtest-t0 --build-arg TIER=0 \
-  -f "$HERE/Dockerfile.base" "$CTX" >/dev/null || { echo "build failed"; exit 1; }
+docker build -q --network none -t pr-verify-base:scrubtest-t0 \
+  --build-arg BASE_IMAGE="$BASE_IMAGE" --build-arg TIER=0 -f "$HERE/Dockerfile.base" "$CTX" >/dev/null || { echo "build failed"; exit 1; }
 
 if docker run --rm --network none --entrypoint bash pr-verify-base:scrubtest-t0 \
      -lc 'grep -rl "POISONSECRET" /work/src 2>/dev/null | head -1' | grep -q .; then

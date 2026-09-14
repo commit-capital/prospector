@@ -16,6 +16,7 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
+. "$(dirname "$0")/base-image.sh"
 FIXTURE="$(cd "$(dirname "$0")/fixtures/tier1" && pwd)"
 SCRATCH="$HOME/.cache/pr-verify-tests"; mkdir -p "$SCRATCH"
 CTX="$(mktemp -d "$SCRATCH/tier1.XXXXXX")"
@@ -56,7 +57,7 @@ run() { # run <image> <tier>
 }
 
 docker build -q --network none -t pr-verify-base:tier1-t1 \
-  --build-arg TIER=1 -f "$HERE/Dockerfile.base" "$CTX" >/dev/null || {
+  --build-arg BASE_IMAGE="$BASE_IMAGE" --build-arg TIER=1 -f "$HERE/Dockerfile.base" "$CTX" >/dev/null || {
     echo "tier 1 base image build failed"; exit 1; }
 
 check "tier 1: phase imports its dependency offline" 0 "$(run pr-verify-base:tier1-t1 1)"
@@ -74,7 +75,7 @@ fi
 # is a red. Without this, the Tier 1 assertion above would also pass for a `ms`
 # that arrived some way other than the offline install.
 docker build -q --network none -t pr-verify-base:tier1-t0 \
-  --build-arg TIER=0 -f "$HERE/Dockerfile.base" "$CTX" >/dev/null || {
+  --build-arg BASE_IMAGE="$BASE_IMAGE" --build-arg TIER=0 -f "$HERE/Dockerfile.base" "$CTX" >/dev/null || {
     echo "tier 0 control image build failed"; exit 1; }
 
 check "tier 0 control: same fixture cannot import it" 20 "$(run pr-verify-base:tier1-t0 0)"

@@ -3,6 +3,7 @@
 # the container, and must run on an internal (isolated) network.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
+. "$(dirname "$0")/base-image.sh"
 # Scratch under $HOME (Colima virtiofs shares only $HOME).
 SCRATCH="$HOME/.cache/pr-verify-tests"; mkdir -p "$SCRATCH"
 CTX="$(mktemp -d "$SCRATCH/ctx.XXXXXX")"
@@ -21,8 +22,8 @@ JSON
 git -C "$CTX/src" init -q && git -C "$CTX/src" add -A \
   && GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
      git -C "$CTX/src" commit -qm base
-docker build -q --network none -t pr-verify-base:secretless-t0 --build-arg TIER=0 \
-  -f "$HERE/Dockerfile.base" "$CTX" >/dev/null || { echo "build failed"; exit 1; }
+docker build -q --network none -t pr-verify-base:secretless-t0 \
+  --build-arg BASE_IMAGE="$BASE_IMAGE" --build-arg TIER=0 -f "$HERE/Dockerfile.base" "$CTX" >/dev/null || { echo "build failed"; exit 1; }
 
 # PR_VERIFY_DEBUG=1 dumps the container env to stdout, which the host captures.
 DUMP="$(PR_VERIFY_DEBUG=1 bash "$HERE/sandbox-run.sh" \

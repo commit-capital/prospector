@@ -279,3 +279,11 @@ parallelism, quiet on a known-good PR only sometimes.
 ## Test
 
     bash sandbox/tests/run-tests.sh
+
+`run-tests.sh` builds `pr-verify:local` from `sandbox/Dockerfile` and runs every
+test against it. A single test also runs on its own — `bash
+sandbox/tests/test-exit-codes.sh` — against the image `tests/base-image.sh`
+resolves: an explicit `BASE_IMAGE` in the environment, else the tag the active
+profile keys (`verify_driver.sandbox_image()`, the image the worker itself
+uses), else `pr-verify:local`. A test exits at once, naming the tag, when that
+image is not on the daemon. Docker is required; these tests are not part of CI.

@@ -5,6 +5,9 @@ ROOT="$(cd "$HERE/.." && pwd)"
 
 echo "== building pr-verify:local =="
 docker build -t pr-verify:local -f "$ROOT/Dockerfile" "$ROOT" || exit 1
+# Every test resolves its sandbox image through base-image.sh, which takes
+# an explicit BASE_IMAGE first.
+export BASE_IMAGE=pr-verify:local
 
 fail=0
 for t in test-image-hardening.sh test-isolation.sh test-exit-codes.sh \
