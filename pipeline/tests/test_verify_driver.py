@@ -2535,3 +2535,29 @@ class TestLanesAskTheBase:
         ev: dict = {}
         vd._run_lanes(ev, phase, Path("/tmp/x.patch"))
         assert all(not c.get("pristine") for c in calls)
+
+
+class TestLargePhaseLock:
+    def test_large_phases_serialize_across_processes(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(vd, "SCRATCH", tmp_path)
+        with vd._LargePhaseLock("compile"):
+            import fcntl
+            other = open(tmp_path / vd._LARGE_LOCK_NAME, "a+")
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(other.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            other.close()
+        other = open(tmp_path / vd._LARGE_LOCK_NAME, "a+")
+        fcntl.flock(other.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        other.close()
+
+    def test_small_phases_take_no_lock(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(vd, "SCRATCH", tmp_path)
+        with vd._LargePhaseLock("red"):
+            assert not (tmp_path / vd._LARGE_LOCK_NAME).exists()
+
+    def test_the_class_matches_the_launchers(self):
+        import re
+        text = (vd.SANDBOX / "sandbox-run.sh").read_text()
+        m = re.search(r'case "\$PHASE" in ([a-z|]+)\) MEM=6g', text)
+        assert m is not None
+        assert set(m.group(1).split("|")) == set(vd.LARGE_PHASES)

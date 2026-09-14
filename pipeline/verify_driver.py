@@ -15,6 +15,7 @@ CLI:
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import platform
@@ -877,6 +878,50 @@ def _stop_timed_out_phase(proc: subprocess.Popen[bytes], container: str,
     remove_container()
 
 
+# The phases the launcher runs at its large memory class (6g). Two of them at
+# once exhaust a 12 GB Docker VM and the kernel kills whichever is bigger, so
+# every large phase on this machine takes one host lock first, whichever
+# worker thread or orchestrator process is asking. The small phases (2g) run
+# unserialized.
+LARGE_PHASES = frozenset({"compile", "build", "baseline", "regress"})
+_LARGE_LOCK_NAME = "sandbox-large.lock"
+# How long a waiter stays quiet before saying what it is waiting for.
+_LOCK_WAIT_LOG_SECONDS = 30.0
+
+
+class _LargePhaseLock:
+    """An exclusive advisory lock on `<scratch>/sandbox-large.lock`, held for
+    the life of one large phase container. Blocking: the phase waits its turn
+    rather than racing another for the VM's memory."""
+
+    def __init__(self, phase: str) -> None:
+        self.phase = phase
+        self._fh = None
+
+    def __enter__(self) -> _LargePhaseLock:
+        if self.phase not in LARGE_PHASES:
+            return self
+        SCRATCH.mkdir(parents=True, exist_ok=True)
+        self._fh = open(SCRATCH / _LARGE_LOCK_NAME, "a+")
+        waited = 0.0
+        while True:
+            try:
+                fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return self
+            except BlockingIOError:
+                if waited and waited % _LOCK_WAIT_LOG_SECONDS < 0.5:
+                    print(f"[sandbox] {self.phase} phase waiting {waited:.0f}s for another "
+                          f"large phase to finish", file=sys.stderr, flush=True)
+                time.sleep(0.5)
+                waited += 0.5
+
+    def __exit__(self, *exc: object) -> None:
+        if self._fh is not None:
+            fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
+            self._fh.close()
+            self._fh = None
+
+
 def run_phase(phase: str, image: str, *, patch: Path | None = None, tier: int = 0,
               test_cmd: str = "pnpm -s test", base_sha: str = "",
               head_sha: str = "", exclude_file: Path | None = None,
@@ -896,7 +941,19 @@ def run_phase(phase: str, image: str, *, patch: Path | None = None, tier: int = 
     `suite_config` is the host-written full-suite contract JSON (the profile's
     verify.suite), mounted read-only for the baseline/regress phases.
 
-    The launcher gets launcher_env(), never os.environ."""
+    The launcher gets launcher_env(), never os.environ. A phase in
+    LARGE_PHASES holds the host's large-phase lock from launch to exit."""
+    with _LargePhaseLock(phase):
+        return _run_phase_locked(phase, image, patch=patch, tier=tier, test_cmd=test_cmd,
+                                 base_sha=base_sha, head_sha=head_sha,
+                                 exclude_file=exclude_file, suite_config=suite_config,
+                                 timeout=timeout, pristine=pristine)
+
+
+def _run_phase_locked(phase: str, image: str, *, patch: Path | None, tier: int,
+                      test_cmd: str, base_sha: str, head_sha: str,
+                      exclude_file: Path | None, suite_config: Path | None,
+                      timeout: int, pristine: bool) -> tuple[int, str]:
     container = f"prospector-verify-{os.getpid()}-{time.monotonic_ns()}"
     argv = [str(SANDBOX / "sandbox-run.sh"), "--phase", phase, "--image", image,
             "--tier", str(tier), "--test-cmd", test_cmd,
