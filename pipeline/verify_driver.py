@@ -762,14 +762,43 @@ def failing_in_test_diff(names: list[str] | None, diff_text: str) -> list[str] |
     return hits
 
 
+# Whether the base itself passes a lane command, per (image, command): None
+# for a pass, else the excerpt of its failure. Asked only after a PR's run
+# fails, so a healthy lane pays nothing; kept for the process, since an
+# image's tree does not change.
+_base_command_failures: dict[tuple[str, str], str | None] = {}
+
+
+def base_command_failure(image: str, cmd: str,
+                         run_pristine: Callable[[], tuple[int, str]]) -> str | None:
+    """Why `cmd` fails over the pristine base in `image`, or None when it
+    passes. A command the base cannot pass (a check the sandbox image cannot
+    run, a profile command that drifted from the repository) fails every PR
+    the same way; the lane must read that as its own fault, never as a
+    verdict on the PR."""
+    key = (image, cmd)
+    if key not in _base_command_failures:
+        exit_code, tail = run_pristine()
+        if exit_code == gates.SENTINEL_PASS:
+            _base_command_failures[key] = None
+        else:
+            excerpt = error_excerpt(tail)
+            _base_command_failures[key] = (f"exit {exit_code}"
+                                           + (f": {excerpt}" if excerpt else ""))
+    return _base_command_failures[key]
+
+
 def _run_lanes(ev: wire.VerifyEvidence, phase: Callable[..., tuple[int, str]],
-               patch: Path) -> str | None:
+               patch: Path, *, image: str = "") -> str | None:
     """Run every configured merge-gate lane over the patched tree, recording
     each under ev["lanes"]. Returns the first failing lane's name — later
     lanes record a skip and the caller skips the regress leg — or None when
     every lane passed (or none are configured). The patch is the PR's own
     diff: an agent-authored test file is never part of the tree a lane
-    measures."""
+    measures. With `image` given, a lane the PR fails is re-run over the
+    pristine base once per image and command; a base that fails it too is
+    recorded on the entry as `base_fails`, which gates read as the lane's own
+    fault rather than a regression."""
     lanes_cfg = gates.configured_lanes()
     if not lanes_cfg:
         return None
@@ -788,6 +817,11 @@ def _run_lanes(ev: wire.VerifyEvidence, phase: Callable[..., tuple[int, str]],
         if rc != gates.SENTINEL_PASS:
             entry["error_excerpt"] = error_excerpt(tail)
             failed = name
+            if rc == gates.SENTINEL_TEST_FAIL and image:
+                why = base_command_failure(
+                    image, cmd, lambda: phase(name, test_cmd=cmd, pristine=True))
+                if why is not None:
+                    entry["base_fails"] = why
         lanes[name] = entry
     return failed
 
@@ -847,8 +881,10 @@ def run_phase(phase: str, image: str, *, patch: Path | None = None, tier: int = 
               test_cmd: str = "pnpm -s test", base_sha: str = "",
               head_sha: str = "", exclude_file: Path | None = None,
               suite_config: Path | None = None,
-              timeout: int = PHASE_TIMEOUT_SECONDS) -> tuple[int, str]:
+              timeout: int = PHASE_TIMEOUT_SECONDS, pristine: bool = False) -> tuple[int, str]:
     """Run ONE sandbox phase and return (exit_code, captured_output_tail).
+    `pristine` runs a compile or build phase over the base tree as pinned,
+    with no patch.
 
     The exit code is the authoritative result: untrusted PR code cannot forge its
     own PID 1 exit as the host observes it. The captured output is the untrusted
@@ -868,6 +904,8 @@ def run_phase(phase: str, image: str, *, patch: Path | None = None, tier: int = 
             "--container-name", container]
     if patch is not None:
         argv += ["--patch", str(patch)]
+    if pristine:
+        argv += ["--pristine"]
     if exclude_file is not None:
         argv += ["--exclude-file", str(exclude_file)]
     if suite_config is not None:
@@ -1213,11 +1251,13 @@ def verify_pr(rec: Pr, image: str, base: str, tier: int,
     def phase(name: str, *, test_cmd: str, patch: Path | None = None,
               exclude_file: Path | None = None,
               suite_config: Path | None = None,
-              timeout: int = PHASE_TIMEOUT_SECONDS) -> tuple[int, str]:
+              timeout: int = PHASE_TIMEOUT_SECONDS,
+              pristine: bool = False) -> tuple[int, str]:
+        extra = {"pristine": True} if pristine else {}
         rc, tail = run_phase(name, image, tier=tier, base_sha=base, head_sha=head,
                              test_cmd=test_cmd, patch=patch,
                              exclude_file=exclude_file, suite_config=suite_config,
-                             timeout=timeout)
+                             timeout=timeout, **extra)
         if rc == gates.SENTINEL_PROBE_FAIL:
             raise ProbeFailure(
                 f"sandbox isolation could not be proven (PR #{rec.n}, phase {name}) — "
@@ -1325,7 +1365,7 @@ def verify_pr(rec: Pr, image: str, base: str, tier: int,
                         if record is red_green
                         else record.get("green_exit_confirm") == gates.SENTINEL_PASS)
     if red2_rc == gates.SENTINEL_TEST_FAIL and confirm_accepted:
-        lane_fail = _run_lanes(ev, phase, patch)
+        lane_fail = _run_lanes(ev, phase, patch, image=image)
         if lane_fail is not None:
             ev["regress"] = {"ran": False,
                              "skipped_reason": f"lane-{lane_fail}-failed"}

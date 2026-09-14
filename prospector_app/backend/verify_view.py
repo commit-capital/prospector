@@ -742,6 +742,11 @@ def _cause(outcome: str | None, signals: wire.VerifySignals) -> str | None:
         if lane is not None:
             entry = (signals.get("lanes") or {}).get(lane)
             exit_ = entry.get("exit") if isinstance(entry, dict) else None
+            base_fails = entry.get("base_fails") if isinstance(entry, dict) else None
+            if base_fails:
+                return (f"The {lane} lane's command fails on the base itself ({base_fails}), "
+                        "so it cannot judge any PR — not evidence about the PR; fix the "
+                        "profile's command or the sandbox image.")
             return (f"The {lane} lane could not run to a verdict (infrastructure "
                     f"exit {exit_}) — not evidence about the PR; re-queue once "
                     "the harness is healthy, or decide from the other signals.")

@@ -55,8 +55,8 @@ VERIFY_REQUEST_STATUSES = {"queued", "running", "waiting-for-base", "done", "err
 # infrastructure failed, the worker restarted mid-run, the run errored so no
 # verdict is trusted (hold), or the orchestrator itself crashed.
 VERIFY_ERROR_KINDS = {"refused-safety", "no-base", "fetch-error", "agent-failed",
-                      "agent-unavailable", "sandbox-error", "interrupted", "hold",
-                      "exception"}
+                      "agent-unavailable", "sandbox-error", "base-lane", "interrupted",
+                      "hold", "exception"}
 
 # Who queued a verification request: the idle auto-hunter stamps its picks
 # "auto", and "auto-resweep" on the lane that re-runs a concluded verification

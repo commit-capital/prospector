@@ -243,12 +243,26 @@ def recover_orphans() -> list[int]:
 RESOLVE_STRANDED_SECONDS = 24 * 3600.0
 
 
+STALE_RESOLVE_REASON = ("the resolution no longer applies onto the current default branch "
+                        "(it was authored against an older base); the head is handed back "
+                        "to the hunter for a fresh resolve")
+
+
+def _stale_resolve(req: dict) -> bool:
+    """Whether a parked resolve's related-tests run found its patch no longer
+    applies onto the current default branch."""
+    run = (((req.get("result") or {}).get("auto_review") or {}).get("tests") or {}).get("run") or {}
+    return run.get("exit") == gates.SENTINEL_PATCH_CONFLICT
+
+
 def reclaim_stranded_resolves() -> list[int]:
-    """Cancel the parked `resolve` requests whose authoring worker has been
-    offline longer than RESOLVE_STRANDED_SECONDS and that no reviewer
-    rejected, so the hunter re-authors them on a machine that is up. A resolve
-    a reviewer rejected carries a judgment the operator should read, and stays.
-    The cancel is stamped `reclaimed`, which is what re-arms the head for the
+    """Cancel the parked `resolve` requests no one can usefully push: this
+    worker's own whose resolution no longer applies onto the current default
+    branch, and any whose authoring worker has been offline longer than
+    RESOLVE_STRANDED_SECONDS and that no reviewer rejected. Either way the
+    hunter re-authors them on a machine that is up. A resolve a reviewer
+    rejected carries a judgment the operator should read, and stays. The
+    cancel is stamped `reclaimed`, which is what re-arms the head for the
     hunter. Returns the PRs cancelled."""
     me = settings.worker_id()
     st = data.store()
@@ -260,6 +274,12 @@ def reclaim_stranded_resolves() -> list[int]:
         if req.get("status") != "awaiting-review" or req.get("action") != "resolve":
             continue
         host = req.get("host")
+        if host == me and _stale_resolve(req):
+            _resubmit(n, "abort")
+            _cancel(n, req, STALE_RESOLVE_REASON,
+                    result={"reclaimed": {"from": me, "at": _now(), "stale": True}})
+            cancelled.append(n)
+            continue
         if not host or host == me:
             continue
         beat = ((registry.get("hosts") or {}).get(host) or {}).get("last_beat")
@@ -545,7 +565,8 @@ def _end_on_preflight(n: int, claimed: dict, pf: dict, result: dict) -> None:
     change."""
     _resubmit(n, "abort")
     if pf.get("error"):
-        _fail(n, claimed, plain_preflight(pf), result=result, kind="sandbox")
+        _fail(n, claimed, plain_preflight(pf), result=result,
+              kind=str(pf.get("error_kind") or "sandbox"))
     else:
         _refuse(n, claimed, plain_preflight(pf), result=result)
 
@@ -1293,6 +1314,14 @@ def _judge_claimed_resolve(n: int, rec: Pr, claimed: dict, head: str,
             if run.get("error"):
                 restore("the related-tests sandbox could not run: "
                         f"{run['error']}")
+                return
+            if run.get("exit") == gates.SENTINEL_PATCH_CONFLICT:
+                # The resolution was authored against a base the default branch
+                # has since left behind; only a fresh resolve can apply.
+                _resubmit(n, "abort")
+                _cancel(n, claimed, STALE_RESOLVE_REASON,
+                        result={"reclaimed": {"from": settings.worker_id(),
+                                              "at": _now(), "stale": True}})
                 return
     result["auto_review"] = stamp
     ok, why = gates.resolve_autopush_bar(result)

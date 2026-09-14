@@ -164,10 +164,12 @@ class TestPhaseDeclared:
         m = re.search(r'case "\$PHASE" in ([a-z|-]+)\) ;;', text)
         assert m is not None and "compile" in m.group(1).split("|")
 
-    def test_launcher_requires_a_patch_for_compile(self):
+    def test_launcher_requires_a_patch_or_pristine_for_compile(self):
         text = (SANDBOX / "sandbox-run.sh").read_text()
-        m = re.search(r"^  ([a-z|-]*green[a-z|-]*)\)$", text, re.MULTILINE)
-        assert m is not None and "compile" in m.group(1).split("|")
+        m = re.search(r"^  (compile\|build)\)\n(.*?)\n    ;;", text, re.MULTILINE | re.DOTALL)
+        assert m is not None
+        assert "requires --patch F or --pristine" in m.group(2)
+        assert "--pristine takes no --patch" in m.group(2)
 
 
 class TestRunCommandForPatch:
@@ -244,3 +246,50 @@ class TestExitClassification:
         rec = compile_preflight.run_for_patch(1, "a" * 40, patch)
         assert rec["error"].startswith("BuildFailure: ")
         assert "ERR_PNPM_NO_OFFLINE_META" in rec["error"]
+
+
+class TestBaseCompile:
+    """A compile command the base itself cannot pass fails every PR the same
+    way; the lane must read that as its own fault, not as compile verdicts."""
+
+    def _setup(self, monkeypatch, tmp_path, exits):
+        from pipeline import compile_preflight, verify_driver
+        verify_driver._base_command_failures.clear()
+        patch = tmp_path / "p.patch"
+        patch.write_text("diff --git a/x.ts b/x.ts\n--- a/x.ts\n+++ b/x.ts\n@@ -1 +1 @@\n-a\n+b\n")
+        calls: list[dict] = []
+        seq = iter(exits)
+
+        def fake_run(phase, image, **kw):
+            calls.append(kw)
+            return next(seq), "ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL typecheck:rust cargo: not found\n"
+        monkeypatch.setattr(verify_driver, "resolve_base_sha", lambda: "b" * 40)
+        monkeypatch.setattr(verify_driver, "image_exists", lambda tag: True)
+        monkeypatch.setattr(verify_driver, "run_phase", fake_run)
+        return compile_preflight, patch, calls
+
+    def test_a_base_that_fails_the_command_is_the_workers_fault(self, configured, monkeypatch, tmp_path):
+        cp, patch, calls = self._setup(monkeypatch, tmp_path, [20, 20])
+        rec = cp.run_for_patch(1, "a" * 40, patch)
+        assert rec["exit"] == 20
+        assert rec["error_kind"] == "base-compile"
+        assert "fails on the base itself" in rec["error"] and "cargo: not found" in rec["error"]
+        assert calls[1].get("pristine") is True and "patch" not in calls[1]
+
+    def test_a_base_that_passes_leaves_the_prs_failure_a_verdict(self, configured, monkeypatch, tmp_path):
+        cp, patch, calls = self._setup(monkeypatch, tmp_path, [20, 0])
+        rec = cp.run_for_patch(1, "a" * 40, patch)
+        assert rec["exit"] == 20 and "error" not in rec
+        assert "ERR_PNPM" in rec["error_excerpt"]
+
+    def test_the_base_answer_is_remembered_per_image(self, configured, monkeypatch, tmp_path):
+        cp, patch, calls = self._setup(monkeypatch, tmp_path, [20, 20, 20])
+        cp.run_for_patch(1, "a" * 40, patch)
+        rec = cp.run_for_patch(2, "c" * 40, patch)
+        assert rec["error_kind"] == "base-compile"
+        assert sum(1 for c in calls if c.get("pristine")) == 1
+
+    def test_a_passing_pr_never_asks_about_the_base(self, configured, monkeypatch, tmp_path):
+        cp, patch, calls = self._setup(monkeypatch, tmp_path, [0])
+        cp.run_for_patch(1, "a" * 40, patch)
+        assert len(calls) == 1

@@ -191,6 +191,7 @@ class VerifyLaneSignal(TypedDict, total=False):
     duration_s: float
     error_excerpt: str
     skipped: str
+    base_fails: str  # why the pristine base fails this command too
 
 
 class VerifySignals(TypedDict, total=False):

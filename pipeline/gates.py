@@ -39,7 +39,7 @@ VERIFY_MAX_AGE_DAYS = 7
 # health counter and the app's fault badge both read this.
 VERIFY_REQUEST_FAULT: dict[str, str] = {
     "no-base": "system", "fetch-error": "system", "sandbox-error": "system",
-    "agent-failed": "system", "agent-unavailable": "system",
+    "agent-failed": "system", "agent-unavailable": "system", "base-lane": "system",
     "interrupted": "system", "exception": "system", "hold": "system",
     "refused-safety": "pr",
 }
@@ -104,8 +104,9 @@ def _lanes_verdict(lanes: dict[str, wire.VerifyLaneSignal] | None) -> str | None
     """The outcome a record's lane results force on a would-be verified
     outcome, or None when every recorded lane passed (or none were recorded).
 
-    A lane whose command failed is a regression of the merged tree
-    (`regressed`); any other non-pass entry — an infra exit, a malformed
+    A lane whose command failed, and which the pristine base passes, is a
+    regression of the merged tree (`regressed`); any other non-pass entry — a
+    command the base fails too (`base_fails`), an infra exit, a malformed
     entry, a skip whose cause is not itself in the record — leaves the
     verification unconcluded (`escalate`): never silently mergeable, never
     silently blocked. The scan is order-independent and `regressed` always
@@ -118,7 +119,7 @@ def _lanes_verdict(lanes: dict[str, wire.VerifyLaneSignal] | None) -> str | None
     if not lanes:
         return None
     entries = list(lanes.values())
-    if any(isinstance(e, dict) and e.get("exit") == SENTINEL_TEST_FAIL for e in entries):
+    if any(_lane_regressed(e) for e in entries):
         return "regressed"
     # A skip entry (no "exit" key) counts toward escalate here safely: under
     # fail-fast a skip always coexists with the exit-20 lane that caused it,
@@ -127,6 +128,14 @@ def _lanes_verdict(lanes: dict[str, wire.VerifyLaneSignal] | None) -> str | None
     if any(not isinstance(e, dict) or e.get("exit") != SENTINEL_PASS for e in entries):
         return "escalate"
     return None
+
+
+def _lane_regressed(entry: object) -> bool:
+    """A lane the PR failed and the pristine base passes: a regression of the
+    merged tree. A lane the base fails too (`base_fails`) is the command's
+    fault and reads as escalate."""
+    return (isinstance(entry, dict) and entry.get("exit") == SENTINEL_TEST_FAIL
+            and not entry.get("base_fails"))
 
 
 def _lane_escalate_cause(signals: wire.VerifySignals) -> str | None:
@@ -139,11 +148,10 @@ def _lane_escalate_cause(signals: wire.VerifySignals) -> str | None:
     returns None. Otherwise the first entry that is not a dict, or whose exit
     is neither SENTINEL_PASS nor SENTINEL_TEST_FAIL, names the lane."""
     lanes = signals.get("lanes") or {}
-    if any(isinstance(e, dict) and e.get("exit") == SENTINEL_TEST_FAIL
-           for e in lanes.values()):
+    if any(_lane_regressed(e) for e in lanes.values()):
         return None
     for name, entry in lanes.items():
-        if not isinstance(entry, dict) or entry.get("exit") not in (
+        if not isinstance(entry, dict) or entry.get("base_fails") or entry.get("exit") not in (
                 SENTINEL_PASS, SENTINEL_TEST_FAIL):
             return name
     return None
@@ -651,6 +659,9 @@ def resolve_autopush_bar(result: dict) -> tuple[bool, str]:
         if not_run:
             return False, ("the related-tests sandbox could not run: "
                            f"{not_run}")
+        if run.get("exit") == SENTINEL_PATCH_CONFLICT:
+            return False, ("the resolution no longer applies onto the current default "
+                           "branch")
         if run.get("exit") != 0:
             return False, ("the related-tests sandbox run did not pass: "
                            f"exit {run.get('exit')}")
@@ -1472,6 +1483,13 @@ def verify_disposition(pr: Pr) -> tuple[str, str] | None:
     if outcome == "escalate":
         lane = _lane_escalate_cause(pr.verify_signals)
         if lane is not None:
+            entry = (pr.verify_signals.get("lanes") or {}).get(lane)
+            base_fails = entry.get("base_fails") if isinstance(entry, dict) else None
+            if base_fails:
+                return ("needs-human",
+                        f"Dynamic verification escalated — the {lane} merge-gate lane's "
+                        f"command fails on the base itself ({base_fails}), so it cannot "
+                        "judge any PR. Fix the profile's command or the sandbox image.")
             return ("needs-human",
                     f"Dynamic verification escalated — the {lane} merge-gate lane "
                     "could not run to a verdict (infrastructure exit, not "

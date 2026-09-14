@@ -61,7 +61,7 @@ _JSON = JSON().with_variant(JSONB, "postgresql")
 #      scanner's normalized feedback, keyed by reviewer id) and the `reviewers`
 #      registry records each bot's latest activity; an older reader finds no
 #      Greptile score in `signals` and judges every PR un-reviewed.
-STORE_SCHEMA_VERSION = 20
+STORE_SCHEMA_VERSION = 21
 
 # saved_at is a microsecond-resolution ISO timestamp stamped on every save — when
 # the store row was last written (distinct from `updated_at`, which mirrors the

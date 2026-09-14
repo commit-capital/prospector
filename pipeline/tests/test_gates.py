@@ -2569,3 +2569,20 @@ class TestResolveAutopushBar:
         assert not ok
         assert "could not run" in why
         assert "empty or unparsable" in why
+
+
+class TestLaneBaseFails:
+    """A lane the pristine base fails too is the command's fault: escalate,
+    never a regression pinned on the PR."""
+
+    def test_a_base_failing_lane_escalates_instead_of_regressing(self):
+        lanes = {"compile": {"cmd": "pnpm -r typecheck", "exit": 20, "ok": False,
+                             "base_fails": "exit 20: cargo: not found"}}
+        assert gates._lanes_verdict(lanes) == "escalate"
+        assert gates._lane_escalate_cause({"lanes": lanes}) == "compile"
+
+    def test_a_real_regression_still_wins(self):
+        lanes = {"compile": {"cmd": "c", "exit": 20, "ok": False, "base_fails": "exit 20"},
+                 "build": {"cmd": "b", "exit": 20, "ok": False}}
+        assert gates._lanes_verdict(lanes) == "regressed"
+        assert gates._lane_escalate_cause({"lanes": lanes}) is None

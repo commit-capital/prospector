@@ -721,3 +721,47 @@ class TestReclaim:
         self._beat(store, "studio", hours_ago=3)
         self._parked_resolve(store, 1, "studio")
         assert fix_worker.reclaim_stranded_resolves() == []
+
+
+class TestStaleResolves:
+    def _parked(self, store, host, exit_code):
+        store.edit_pr(1).record_fix_request(
+            "awaiting-review", "resolve", queued_at=_now(), source="auto", host=host,
+            head_sha=store.load_pr(1).head_sha,
+            result={"conflict_paths": ["a.ts"],
+                    "auto_review": {"reviews": [{"lens": "behavior", "verdict": "safe"},
+                                                {"lens": "history", "verdict": "safe"}],
+                                    "tests": {"files": ["a.test.ts"], "run": {"exit": exit_code}},
+                                    "bar": {"ok": False, "reason": "x"}}})
+        data.refresh()
+
+    def test_this_workers_stale_resolve_is_handed_back_to_the_hunter(self, store, monkeypatch):
+        from pipeline import settings
+        aborted: list[tuple] = []
+        monkeypatch.setattr(fix_worker, "_resubmit",
+                            lambda n, *a, **kw: aborted.append(a) or type("R", (), {"returncode": 0, "stdout": ""})())
+        self._parked(store, settings.worker_id(), 30)
+        assert fix_worker.reclaim_stranded_resolves() == [1]
+        pr = data.prs()[1]
+        assert pr.fix_request["status"] == "cancelled"
+        assert "no longer applies" in pr.fix_request["refused_reason"]
+        assert pr.fix_request["result"]["reclaimed"]["stale"] is True
+        assert ("abort",) in aborted
+        assert fix_worker._hunt_attempted(pr, "rebase") is False
+
+    def test_a_held_resolve_that_still_applies_stays(self, store, monkeypatch):
+        from pipeline import settings
+        monkeypatch.setattr(fix_worker, "_resubmit",
+                            lambda n, *a, **kw: type("R", (), {"returncode": 0, "stdout": ""})())
+        self._parked(store, settings.worker_id(), 20)
+        assert fix_worker.reclaim_stranded_resolves() == []
+        assert store.load_pr(1).fix_request["status"] == "awaiting-review"
+
+    def test_the_bar_names_a_stale_resolution(self):
+        from pipeline import gates
+        ok, why = gates.resolve_autopush_bar({
+            "conflict_paths": ["a.ts"],
+            "auto_review": {"reviews": [{"lens": "behavior", "verdict": "safe"},
+                                        {"lens": "history", "verdict": "safe"}],
+                            "tests": {"files": ["a.test.ts"], "run": {"exit": 30}}}})
+        assert not ok and "no longer applies" in why
