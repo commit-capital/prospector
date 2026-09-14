@@ -28,6 +28,8 @@ def store(tmp_path):
     st.save_verify_base(_pin(NEW, "2026-09-14T00:00:00+00:00"))
     st.save_verify_worker({"host": OLD, "last_beat": "2026-09-10T00:00:00+00:00"})
     st.save_fix_worker({"host": OLD, "last_beat": "2026-09-10T00:00:00+00:00"})
+    st.save_worker_health({"host": OLD, "lanes": {"fix": {"tripped": {"kind": "k"}}},
+                           "updated_at": "2026-09-10T00:00:00+00:00"})
     return st
 
 
@@ -57,5 +59,7 @@ def test_live_folds_records_and_registries(store):
     assert pins[NEW]["pinned_at"] == "2026-09-14T00:00:00+00:00"
     assert set(store.load_verify_worker()["hosts"]) == {NEW}
     assert set(store.load_fix_worker()["hosts"]) == {NEW}
+    health = store.load_worker_health()["hosts"]
+    assert set(health) == {NEW} and health[NEW]["lanes"]["fix"]["tripped"]["kind"] == "k"
     edits = [r for r in store.runs() if getattr(r, "transform", "") == "rename_worker"]
     assert edits and edits[0].changed == [1, 2]

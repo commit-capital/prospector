@@ -33,18 +33,24 @@ worktrees are orphaned.
   endings, the last failure, the last success, and a `tripped` stamp. The
   record lives in a `worker_health` registry keyed by worker id.
 - A lane trips on three consecutive system-fault endings, on an agent
-  outage (`headless_agent.AgentUnavailable`: auth failure or missing CLI),
-  on three consecutive pin-refresh failures (verify), or on a failed sandbox
-  self-test. A tripped lane picks no work. Every fifteen minutes the worker
-  runs that lane's self-test and re-opens on a pass; the Control tab offers
-  Resume.
-- On trip: a `worker:trip` ledger entry; a banner on the Control tab; an
+  outage (`headless_agent.AgentUnavailable`: auth failure or missing CLI,
+  which trips every lane the machine runs), or on three consecutive
+  pin-refresh failures (verify). A tripped lane picks no work; a lane tripped
+  on the agent alone still pushes operator-approved fixes. A lane tripped on
+  the agent or the sandbox runs the matching self-test fifteen minutes after
+  the trip and every fifteen minutes after, reopening on a pass; a lane
+  tripped on a kind no probe answers opens once after a six-hour cool-down.
+  The Control tab offers Resume.
+- On trip: a `worker:trip` ledger entry; a banner on the Control tab; one
   issue on `PROSPECTOR_FEEDBACK_REPO` as the operator, labeled
-  `worker-health`, titled by worker, lane, and failure signature, with the
-  last three reasons and the log tail, deduplicated per signature for seven
-  days.
-- Any live backend that sees an enabled worker's heartbeat stale for over an
-  hour files one offline issue the same way.
+  `worker-health`, titled by worker, lanes, and failure kind, with the last
+  failures and the log tail, deduplicated per failure kind per worker for
+  seven days across lanes.
+- Any live backend that sees a worker's heartbeat stale for over an hour
+  files one offline issue the same way; a worker stopping on purpose drops
+  its heartbeat first. Each worker's health record is its own registry row.
+- `schema.STORE_SCHEMA_VERSION` is bumped for the new `agent-unavailable`
+  verify error kind, which older writers reject.
 - Worker stdout is mirrored to a rotating log under the verify scratch
   directory.
 - An agent outage ends a fix-worker action `failed` (cooldown retry), never

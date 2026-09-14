@@ -13,6 +13,7 @@ reads empty everywhere and its API refuses to serve.
 from __future__ import annotations
 
 import os
+import socket
 import subprocess
 from functools import lru_cache
 from pathlib import Path
@@ -155,10 +156,12 @@ def verify_scratch() -> Path:
 # another.
 def worker_id() -> str:
     raw = os.environ.get("TRIAGE_WORKER_ID", "").strip()
-    if raw:
-        return raw
-    import socket
-    return socket.gethostname()
+    return raw or socket.gethostname()
+
+
+def verify_worker_enabled() -> bool:
+    """Whether this machine drains the verification queue."""
+    return os.environ.get("TRIAGE_VERIFY_WORKER", "") == "1"
 
 
 # Comma-separated host:port entries the sandbox boot probe must FAIL to reach

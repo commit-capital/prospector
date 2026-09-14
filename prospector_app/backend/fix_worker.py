@@ -57,7 +57,7 @@ from pipeline import (author_fix, compile_preflight, describe_pr, diffpaths, fre
 from pipeline.storekit import now as _now
 from prospector_app.backend import (activity, data, executor, fix_queue, lane_health,
                                     review_refresh, safety_guard, sandbox_check, service,
-                                    verify_worker, worker_log)
+                                    verify_worker, worker_log, worker_selftest)
 from prospector_app.backend.resubmit_identity import worker_env
 
 if TYPE_CHECKING:
@@ -125,6 +125,7 @@ def shutdown(timeout: float = SHUTDOWN_TIMEOUT) -> bool:
     flight is still finishing, which is not a failure."""
     if not running():
         _threads.clear()
+        _clear_heartbeat()
         return True
     stop.set()
     for t in _threads:
@@ -132,7 +133,17 @@ def shutdown(timeout: float = SHUTDOWN_TIMEOUT) -> bool:
     if running():
         return False
     _threads.clear()
+    _clear_heartbeat()
     return True
+
+
+def _clear_heartbeat() -> None:
+    """Drop this worker's heartbeat on a clean stop, so a worker switched off
+    on purpose is not escalated as one that went dark. Best-effort."""
+    try:
+        data.store().clear_fix_worker(settings.worker_id())
+    except Exception:
+        traceback.print_exc()
 
 
 def enabled() -> bool:
@@ -1606,15 +1617,20 @@ def _drain_loop() -> None:
                 if marked or stranded:
                     print(f"[fix-worker] reclaimed from an offline worker: "
                           f"failed {marked}, re-armed {stranded}", flush=True)
-            if not lane_health.open_or_retest("fix"):
-                stop.wait(POLL_SECONDS)
-                continue
-            n = next_approved()
+            fix_open = lane_health.open_or_retest("fix")
+            # An approved push needs the sandbox and no agent, so a lane
+            # tripped on the agent alone still pushes what the operator
+            # approved; every other trip holds everything.
+            pushes_open = fix_open or lane_health.trip_kind("fix") in worker_selftest.AGENT_KINDS
+            n = next_approved() if pushes_open else None
             if n is not None:
                 state["current_pr"] = n
                 beat()
                 print(f"[fix-worker] pushing approved fix for PR #{n}", flush=True)
                 push_approved(n)
+                continue
+            if not fix_open:
+                stop.wait(POLL_SECONDS)
                 continue
             n = next_queued()
             if n is not None:

@@ -267,17 +267,22 @@ consecutive failures, any other ending resets it. Three in a row trip the lane;
 an agent outage (`headless_agent.AgentUnavailable`: the CLI is missing or not
 authenticated — `security_review.py` exits `EXIT_AGENT_UNAVAILABLE`, `verify_pr`
 ends the request `agent-unavailable`, the fix worker ends the run `failed`)
-trips all three at once; three consecutive base-pin refresh failures trip
-`verify`. A tripped lane picks nothing, retests itself every fifteen minutes
-(`worker_selftest.py`: the CLI probe for an agent trip, the sandbox and pin for
-anything else) and reopens on a pass; the Control tab's banner offers Resume.
-Every trip appends a `worker:trip` ledger entry and files one issue per failure
-signature per week on `PROSPECTOR_FEEDBACK_REPO` as the operator, labeled
-`worker-health`; any live backend's escalation watch files the same for a
-worker whose heartbeat has been silent an hour. Worker stdout is mirrored to
-`<verify scratch>/logs/worker-<id>.log` (`worker_log.py`), which the issue
-quotes. The security lane's skip set carries a reason per PR and expires after
-six hours.
+trips every lane the machine runs at once; three consecutive base-pin refresh
+failures trip `verify`. A tripped lane picks nothing (a lane tripped on the
+agent alone still pushes what an operator approved). A lane tripped on the
+agent or the sandbox retests itself every fifteen minutes
+(`worker_selftest.py`: the CLI probe, or the daemon, pinned image and clone)
+and reopens on a pass; one tripped on anything else (crashed runs, held
+verdicts) opens once after a six-hour cool-down; the Control tab's banner
+offers Resume. Every trip appends a `worker:trip` ledger entry and files one
+issue per failure kind per week per worker on `PROSPECTOR_FEEDBACK_REPO` as the
+operator, labeled `worker-health`; any live backend's escalation watch files
+the same for a worker whose heartbeat has been silent an hour, and a worker
+stopping on purpose drops its heartbeat so it is never escalated. Each
+worker's health is its own `worker_health:<id>` registry row. Worker stdout
+is mirrored to `<verify scratch>/logs/worker-<id>.log` (`worker_log.py`),
+which the issue quotes. The security lane's skip set carries a reason per PR
+and expires after six hours.
 
 **ALERTS** (`alert_triage/`) is a parallel family beside PRs and issues:
 GitHub code-scanning / Dependabot / secret-scanning alerts for `TRIAGE_REPO`,

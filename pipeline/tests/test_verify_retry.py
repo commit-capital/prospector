@@ -41,3 +41,8 @@ def test_the_prs_own_fault_never_retries():
 def test_the_head_run_cap_holds():
     assert not gates.verify_retry_allowed(
         _pr(attempts=gates.VERIFY_RETRY_ATTEMPTS - 1), worker="laptop", now=NOW)[0]
+
+
+def test_a_moved_head_retries_even_past_the_cap():
+    pr = _pr(head="b" * 40, attempts=gates.VERIFY_RETRY_ATTEMPTS + 2)
+    assert gates.verify_retry_allowed(pr, worker="studio", now=NOW)[0]

@@ -843,6 +843,8 @@ class TestLaneHealth:
         from pipeline import security_review, worker_health
         from prospector_app.backend import escalation
         monkeypatch.setattr(escalation, "file_issue", lambda t, b: (None, None))
+        monkeypatch.setenv("TRIAGE_VERIFY_WORKER", "1")
+        monkeypatch.setenv("TRIAGE_FIX_WORKER", "1")
         store.save_pr(_clean_merge_pr(1))
         data.refresh()
 

@@ -1617,7 +1617,10 @@ class TestLaneHealth:
             self, store, monkeypatch, tmp_path):
         from pipeline import worker_health
         from prospector_app.backend import escalation
-        monkeypatch.setattr(escalation, "file_issue", lambda t, b: (None, None))
+        filed: list[str] = []
+        monkeypatch.setattr(escalation, "file_issue",
+                            lambda t, b: (filed.append(t) or None, None))
+        monkeypatch.setenv("TRIAGE_FIX_WORKER", "1")
         fix_queue.queue_pr(1, "rebase")
         fake = _ConflictedResubmit(tmp_path)
         monkeypatch.setattr(fix_worker, "_resubmit", fake)
@@ -1632,10 +1635,12 @@ class TestLaneHealth:
         assert req["status"] == "failed"
         assert "Failed to authenticate" in req["error"]
         rec = self._health(store)
-        assert all(worker_health.is_tripped(rec, lane)
-                   for lane in ("security", "verify", "fix"))
+        # Only the lanes this machine runs trip: a fix-only worker closes fix.
+        assert worker_health.is_tripped(rec, "fix")
+        assert not worker_health.is_tripped(rec, "security")
         trips = [r for r in store.runs() if getattr(r, "phase", "") == "worker:trip"]
-        assert sorted(r.raw["stats"]["lane"] for r in trips) == ["fix", "security", "verify"]
+        assert [r.raw["stats"]["lanes"] for r in trips] == [["fix"]]
+        assert len(filed) == 1 and "agent-unavailable" in filed[0]
 
     def test_three_machine_failures_trip_the_fix_lane(self, store, monkeypatch, tmp_path):
         from pipeline import worker_health
@@ -1675,9 +1680,15 @@ class TestLaneHealth:
         from prospector_app.backend import lane_health
         worker_health.update(store, settings.worker_id(),
                              lambda r: worker_health.trip(r, "fix", kind="sandbox", reason="x"))
+        # Before the first retest interval the lane answers closed without testing.
+        monkeypatch.setattr(lane_health.worker_selftest, "run",
+                            lambda kind: (_ for _ in ()).throw(AssertionError("too early")))
+        assert lane_health.open_or_retest("fix") is False
+        monkeypatch.setattr(lane_health.worker_health, "retest_due", lambda rec, name, now=None: True)
         monkeypatch.setattr(lane_health.worker_selftest, "run", lambda kind: "still down")
         assert lane_health.open_or_retest("fix") is False
         assert self._health(store)["lanes"]["fix"]["retest"]["ok"] is False
+        monkeypatch.setattr(lane_health.worker_health, "retest_due", lambda rec, name, now=None: False)
         # Between retests the lane answers closed without testing again.
         monkeypatch.setattr(lane_health.worker_selftest, "run",
                             lambda kind: (_ for _ in ()).throw(AssertionError("retested")))
@@ -1687,3 +1698,14 @@ class TestLaneHealth:
         monkeypatch.setattr(lane_health.worker_selftest, "run", lambda kind: None)
         assert lane_health.open_or_retest("fix") is True
         assert not worker_health.is_tripped(self._health(store), "fix")
+
+    def test_a_trip_no_probe_answers_waits_for_the_cool_down(self, store, monkeypatch):
+        from pipeline import settings, worker_health
+        from prospector_app.backend import lane_health
+        worker_health.update(store, settings.worker_id(),
+                             lambda r: worker_health.trip(r, "fix", kind="run-failed", reason="x"))
+        monkeypatch.setattr(lane_health.worker_selftest, "run",
+                            lambda kind: (_ for _ in ()).throw(AssertionError("probed")))
+        assert lane_health.open_or_retest("fix") is False
+        monkeypatch.setattr(lane_health.worker_health, "cooled", lambda rec, name, now=None: True)
+        assert lane_health.open_or_retest("fix") is True

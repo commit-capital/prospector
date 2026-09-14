@@ -12,6 +12,15 @@ from prospector_app.backend import data
 
 # Trip kinds that mean the agent CLI, not the sandbox, is what failed.
 AGENT_KINDS = frozenset({"agent-unavailable"})
+# Trip kinds the sandbox probe answers: the daemon, the pinned image, the clone.
+SANDBOX_KINDS = frozenset({"sandbox", "sandbox-error", "no-base", "pin-refresh"})
+
+
+def testable(kind: str) -> bool:
+    """Whether some probe can tell that a trip of `kind` has cleared. A lane
+    tripped on anything else (crashed runs, held verdicts, git failures) waits
+    for the operator's Resume or the cool-down."""
+    return kind in AGENT_KINDS or kind in SANDBOX_KINDS
 
 
 def sandbox_ready() -> str | None:
@@ -37,6 +46,8 @@ def run(kind: str) -> str | None:
     try:
         if kind in AGENT_KINDS:
             return headless_agent.probe()
-        return sandbox_ready()
+        if kind in SANDBOX_KINDS:
+            return sandbox_ready()
+        return f"no self-test answers a {kind} trip"
     except Exception as e:  # a test that cannot answer is not a pass
         return f"{type(e).__name__}: {e}"

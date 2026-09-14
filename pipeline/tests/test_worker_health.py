@@ -56,10 +56,19 @@ class TestTrip:
 
 
 class TestRetest:
-    def test_due_right_after_the_trip(self):
+    def test_first_retest_waits_the_full_interval(self):
         rec = wh.empty("w")
         wh.trip(rec, "fix", kind="k", reason="r", now=_iso(T0))
-        assert wh.retest_due(rec, "fix", now=T0 + timedelta(seconds=1))
+        assert not wh.retest_due(rec, "fix", now=T0 + timedelta(seconds=1))
+        assert not wh.retest_due(rec, "fix", now=T0 + timedelta(minutes=14))
+        assert wh.retest_due(rec, "fix", now=T0 + timedelta(minutes=15))
+
+    def test_cooled_after_six_hours_closed(self):
+        rec = wh.empty("w")
+        wh.trip(rec, "fix", kind="k", reason="r", now=_iso(T0))
+        assert not wh.cooled(rec, "fix", now=T0 + timedelta(hours=5))
+        assert wh.cooled(rec, "fix", now=T0 + timedelta(hours=6))
+        assert not wh.cooled(wh.empty("w"), "fix", now=T0)
 
     def test_not_due_soon_after_a_failed_retest(self):
         rec = wh.empty("w")
@@ -86,6 +95,12 @@ class TestIssues:
         assert not wh.issue_due(rec, "fix", sig, now=T0 + timedelta(days=6))
         assert wh.issue_due(rec, "fix", sig, now=T0 + timedelta(days=8))
         assert wh.issue_due(rec, "fix", wh.signature("k", "other"), now=T0)
+
+    def test_an_issue_on_one_lane_covers_the_same_signature_on_another(self):
+        rec = wh.empty("w")
+        sig = wh.signature("agent-unavailable", "")
+        wh.record_issue(rec, "fix", sig=sig, number=1, url="u", now=_iso(T0))
+        assert not wh.issue_due(rec, "security", sig, now=T0 + timedelta(hours=1))
 
 
 def test_update_round_trips_through_the_store(tmp_path):

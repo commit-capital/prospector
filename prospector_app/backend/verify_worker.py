@@ -28,6 +28,7 @@ from __future__ import annotations
 import os
 import subprocess
 import threading
+from collections.abc import Iterator
 import time
 import traceback
 from datetime import datetime, timezone
@@ -124,6 +125,7 @@ def shutdown(timeout: float = SHUTDOWN_TIMEOUT) -> bool:
     flight is still finishing, which is not a failure."""
     if not running():
         _threads.clear()
+        _clear_heartbeat()
         return True
     stop.set()
     for t in _threads:
@@ -131,7 +133,17 @@ def shutdown(timeout: float = SHUTDOWN_TIMEOUT) -> bool:
     if running():
         return False
     _threads.clear()
+    _clear_heartbeat()
     return True
+
+
+def _clear_heartbeat() -> None:
+    """Drop this worker's heartbeat on a clean stop, so a worker switched off
+    on purpose is not escalated as one that went dark. Best-effort."""
+    try:
+        data.store().clear_verify_worker(settings.worker_id())
+    except Exception:
+        traceback.print_exc()
 
 
 def enabled() -> bool:
@@ -211,7 +223,7 @@ def recover_orphans() -> tuple[list[int], list[int]]:
                 started_at=req.get("started_at"), finished_at=_now(),
                 error_kind="interrupted",
                 error=f"{who} mid-run — re-queue to retry",
-                source=req.get("source"), host=me)
+                source=req.get("source"), host=me if mine else str(host))
             marked.append(n)
     return marked, requeued
 
@@ -397,7 +409,7 @@ class _SkipSet:
     def __contains__(self, n: object) -> bool:
         return n in self.active()
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[int]:
         return iter(sorted(self.active()))
 
     def __len__(self) -> int:

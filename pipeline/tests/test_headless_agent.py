@@ -246,29 +246,55 @@ def test_run_agent_merges_env_extra_into_the_agents_environment(monkeypatch):
     assert "PATH" in seen["env"]
 
 
-def _failing_proc(cmd, text, rc=1):
+_EXPIRED = ("Failed to authenticate. API Error: 401 OAuth access token has expired. "
+            "Re-authenticate to continue.")
+
+
+def _failing_proc(cmd, lines, rc=1):
     proc = _FakeProc(cmd)
     proc.returncode = rc
-    proc.stdout = iter([
-        json.dumps({"type": "stream_event", "event": {
-            "type": "content_block_delta",
-            "delta": {"type": "text_delta", "text": text}}}),
-        json.dumps({"type": "result"}),
-    ])
+    proc.stdout = iter(lines)
     return proc
 
 
-def test_run_agent_raises_agent_unavailable_on_an_expired_login(monkeypatch):
-    text = ("Failed to authenticate. API Error: 401 OAuth access token has expired. "
-            "Re-authenticate to continue.")
-    monkeypatch.setattr(ha.subprocess, "Popen", lambda cmd, **kw: _failing_proc(cmd, text))
+def _delta(text):
+    return json.dumps({"type": "stream_event", "event": {
+        "type": "content_block_delta", "delta": {"type": "text_delta", "text": text}}})
+
+
+def test_run_agent_raises_agent_unavailable_on_an_error_result(monkeypatch):
+    lines = [json.dumps({"type": "result", "is_error": True, "result": _EXPIRED})]
+    monkeypatch.setattr(ha.subprocess, "Popen", lambda cmd, **kw: _failing_proc(cmd, lines))
     with pytest.raises(ha.AgentUnavailable, match="OAuth access token has expired"):
         ha.run_agent("go", allow_gh=False, cwd="/tmp")
 
 
+def test_run_agent_raises_agent_unavailable_on_a_plain_text_complaint(monkeypatch):
+    lines = ["Not logged in. Please run /login"]
+    monkeypatch.setattr(ha.subprocess, "Popen", lambda cmd, **kw: _failing_proc(cmd, lines))
+    with pytest.raises(ha.AgentUnavailable, match="Not logged in"):
+        ha.run_agent("go", allow_gh=False, cwd="/tmp")
+
+
+def test_run_agent_raises_agent_unavailable_on_message_text_without_a_result(monkeypatch):
+    lines = [_delta(_EXPIRED)]
+    monkeypatch.setattr(ha.subprocess, "Popen", lambda cmd, **kw: _failing_proc(cmd, lines))
+    with pytest.raises(ha.AgentUnavailable):
+        ha.run_agent("go", allow_gh=False, cwd="/tmp")
+
+
+def test_run_agent_does_not_read_an_outage_into_a_completed_runs_prose(monkeypatch):
+    lines = [_delta("the fix guards against an Invalid API key response"),
+             json.dumps({"type": "result", "is_error": False})]
+    monkeypatch.setattr(ha.subprocess, "Popen", lambda cmd, **kw: _failing_proc(cmd, lines))
+    with pytest.raises(RuntimeError) as info:
+        ha.run_agent("go", allow_gh=False, cwd="/tmp")
+    assert not isinstance(info.value, ha.AgentUnavailable)
+
+
 def test_run_agent_keeps_an_ordinary_failure_a_runtime_error(monkeypatch):
-    monkeypatch.setattr(ha.subprocess, "Popen",
-                        lambda cmd, **kw: _failing_proc(cmd, "segfault in the middle"))
+    lines = [_delta("segfault in the middle"), json.dumps({"type": "result"})]
+    monkeypatch.setattr(ha.subprocess, "Popen", lambda cmd, **kw: _failing_proc(cmd, lines))
     with pytest.raises(RuntimeError) as info:
         ha.run_agent("go", allow_gh=False, cwd="/tmp")
     assert not isinstance(info.value, ha.AgentUnavailable)
@@ -284,7 +310,7 @@ def test_run_agent_raises_agent_unavailable_when_the_cli_is_missing(monkeypatch)
 
 def test_probe_reports_the_outage_and_none_when_healthy(monkeypatch):
     monkeypatch.setattr(ha.subprocess, "Popen",
-                        lambda cmd, **kw: _failing_proc(cmd, "Not logged in. Please run /login"))
+                        lambda cmd, **kw: _failing_proc(cmd, ["Not logged in. Please run /login"]))
     assert "Not logged in" in (ha.probe() or "")
     monkeypatch.setattr(ha.subprocess, "Popen", lambda cmd, **kw: _FakeProc(cmd))
     assert ha.probe() is None

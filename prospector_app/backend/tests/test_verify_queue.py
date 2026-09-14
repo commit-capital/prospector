@@ -538,3 +538,19 @@ class TestReclaim:
                                                error="canary", attempts=1, host="studio")
         verify_queue.queue_pr(1)
         assert store.load_pr(1).verify_request.get("attempts") is None
+
+    def test_a_retry_on_a_moved_head_starts_the_count_over(self, store):
+        store.edit_pr(1).record_verify_request("error", error_kind="sandbox-error",
+                                               error="canary", attempts=2, host="studio")
+        rec = store.load_pr(1).raw
+        rec["meta"]["head_sha"] = "b" * 40
+        store.save_pr(rec)
+        data.refresh()
+        verify_queue.queue_pr(1, source="auto")
+        assert store.load_pr(1).verify_request.get("attempts") is None
+
+    def test_a_clean_stop_drops_the_heartbeat(self, store):
+        verify_worker.beat()
+        assert store.load_verify_worker()["hosts"]
+        assert verify_worker.shutdown()
+        assert store.load_verify_worker()["hosts"] == {}

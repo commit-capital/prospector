@@ -73,11 +73,22 @@ def plan_registries(store: Store, old: str, new: str) -> dict[str, dict]:
             moved["host"] = new
             hosts[new] = _newer(dict(hosts[new]), moved, "last_beat") if new in hosts else moved
             plans[name] = hosts
+    health = store.load_worker_health()["hosts"]
+    if old in health:
+        moved = dict(health[old])
+        moved["host"] = new
+        plans["worker_health"] = {new: (_newer(dict(health[new]), moved, "updated_at")
+                                        if new in health else moved)}
     return plans
 
 
-def apply_registries(store: Store, plans: dict[str, dict]) -> None:
+def apply_registries(store: Store, plans: dict[str, dict], old: str) -> None:
     for name, hosts in plans.items():
+        if name == "worker_health":
+            for rec in hosts.values():
+                store.save_worker_health(rec)
+            store.clear_worker_health(old)
+            continue
         store._save_registry(name, {"hosts": hosts})
 
 
@@ -107,7 +118,7 @@ def main(argv: list[str] | None = None) -> int:
         print("re-run with --live to apply")
         return 0
     store_edit.apply_edit(store, report, "rename_worker")
-    apply_registries(store, plans)
+    apply_registries(store, plans, args.old)
     print(f"applied; pre-images at {report.backup}" if report.backup else "applied")
     return 0
 

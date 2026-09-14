@@ -67,12 +67,12 @@ def verify_retry_allowed(pr: Pr, *, worker: str,
     kind = str(req.get("error_kind") or "")
     if VERIFY_REQUEST_FAULT.get(kind) != "system":
         return False, f"{kind or 'the error'} is the PR's to answer, not the harness's"
-    runs = int(req.get("attempts") or 0) + 1
-    if runs >= VERIFY_RETRY_ATTEMPTS:
-        return False, f"this head has had {runs} runs"
     stamped = req.get("against_head_sha")
     if stamped and pr.head_sha and stamped != pr.head_sha:
         return True, "the head moved since the error"
+    runs = int(req.get("attempts") or 0) + 1
+    if runs >= VERIFY_RETRY_ATTEMPTS:
+        return False, f"this head has had {runs} runs"
     host = req.get("host")
     if host and host != worker:
         return True, f"a different worker than {host}, which errored it"

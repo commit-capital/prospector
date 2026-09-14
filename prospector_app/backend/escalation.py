@@ -70,25 +70,29 @@ def file_issue(title: str, body: str) -> tuple[int | None, str | None]:
     return None, None
 
 
-def _trip_body(host: str, lane: str, entry: dict) -> str:
-    tripped = entry.get("tripped") or {}
-    recent = entry.get("recent") or []
+def _trip_body(host: str, lanes: list[str], rec: dict) -> str:
+    first = worker_health.lane(rec, lanes[0])
+    tripped = first.get("tripped") or {}
+    names = ", ".join(f"**{lane}**" for lane in lanes)
     lines = [
-        f"Prospector's **{lane}** lane on worker **{host}** tripped and stopped picking work.",
+        f"Prospector's {names} lane{'s' if len(lanes) > 1 else ''} on worker **{host}** "
+        f"tripped and stopped picking work.",
         "",
         f"- kind: `{tripped.get('kind')}`",
         f"- reason: {tripped.get('reason')}",
         f"- tripped at: {tripped.get('at')}",
         f"- repository: {settings.repo()}",
         "",
-        "The lane retests itself every 15 minutes and reopens on a pass; the Control tab's "
-        "banner has a Resume button for a manual override.",
+        "A lane tripped on the agent CLI or the sandbox retests itself every 15 minutes "
+        "and reopens on a pass; one tripped on anything else opens once after six hours. "
+        "The Control tab's banner has a Resume button for a manual override.",
         "",
         "### Last machine failures",
     ]
-    for f in recent[-worker_health.RECENT_KEEP:]:
-        pr = f" (PR #{f.get('pr')})" if f.get("pr") else ""
-        lines.append(f"- {f.get('at')} `{f.get('kind')}`{pr}: {f.get('reason')}")
+    for lane in lanes:
+        for f in (worker_health.lane(rec, lane).get("recent") or [])[-worker_health.RECENT_KEEP:]:
+            pr = f" (PR #{f.get('pr')})" if f.get("pr") else ""
+            lines.append(f"- {lane} {f.get('at')} `{f.get('kind')}`{pr}: {f.get('reason')}")
     tail = worker_log.tail(3000)
     if tail:
         lines += ["", "### Worker log tail", "```", tail.strip(), "```"]
@@ -96,33 +100,39 @@ def _trip_body(host: str, lane: str, entry: dict) -> str:
     return "\n".join(lines)
 
 
-def escalate_trip(lane: str) -> None:
-    """Record this worker's fresh trip of `lane` in the ledger and file (or
-    skip, when one is recent for the same signature) the issue."""
+def escalate_trip(lanes: list[str]) -> None:
+    """Record this worker's fresh trip of `lanes` (one cause, one or more
+    lanes) in the ledger and file the issue, or skip it when one is recent for
+    the same failure kind on any lane of this worker."""
+    if not lanes:
+        return
     host = settings.worker_id()
     st = data.store()
     rec = worker_health.load(st, host)
-    entry = worker_health.lane(rec, lane)
-    tripped = entry.get("tripped") or {}
+    tripped = worker_health.lane(rec, lanes[0]).get("tripped") or {}
     kind = str(tripped.get("kind") or "unknown")
     reason = str(tripped.get("reason") or "")
     try:
         st.append_run({"phase": "worker:trip", "started": _now(), "finished": _now(),
-                       "stats": {"host": host, "lane": lane, "kind": kind,
+                       "stats": {"host": host, "lanes": list(lanes), "kind": kind,
                                  "reason": reason[:600]}})
     except Exception:
         traceback.print_exc()
-    sig = worker_health.signature(kind, reason)
-    if not worker_health.issue_due(rec, lane, sig):
-        print(f"[escalation] {lane} lane tripped on {host}; an issue for this failure "
-              f"is already open", flush=True)
+    sig = worker_health.signature(kind, "")
+    if not worker_health.issue_due(rec, lanes[0], sig):
+        print(f"[escalation] {', '.join(lanes)} tripped on {host}; an issue for this "
+              f"failure kind is recent", flush=True)
         return
     number, url = file_issue(
-        f"[worker-health] {host}: {lane} lane tripped ({kind})",
-        _trip_body(host, lane, entry))
-    worker_health.update(st, host, lambda r: worker_health.record_issue(
-        r, lane, sig=sig, number=number, url=url))
-    print(f"[escalation] {lane} lane tripped on {host}: {reason[:200]}"
+        f"[worker-health] {host}: {', '.join(lanes)} lane"
+        f"{'s' if len(lanes) > 1 else ''} tripped ({kind})",
+        _trip_body(host, lanes, rec))
+
+    def _record(r: dict) -> None:
+        for lane in lanes:
+            worker_health.record_issue(r, lane, sig=sig, number=number, url=url)
+    worker_health.update(st, host, _record)
+    print(f"[escalation] {', '.join(lanes)} tripped on {host}: {reason[:200]}"
           + (f" — filed {url}" if url else " — no issue filed"), flush=True)
 
 
@@ -232,9 +242,11 @@ def health_status() -> dict:
 
 def resume(host: str, lane: str) -> dict:
     """An operator's Resume: reopen the lane. Raises ValueError on an unknown
-    lane."""
+    lane or a worker with no health record."""
     if lane not in worker_health.LANES:
         raise ValueError(f"unknown lane {lane!r}")
+    if host not in (data.store().load_worker_health().get("hosts") or {}):
+        raise ValueError(f"no worker named {host!r} has recorded any health")
     rec = worker_health.update(data.store(), host, lambda r: worker_health.reopen(
         r, lane, by="resumed by the operator"))
     try:

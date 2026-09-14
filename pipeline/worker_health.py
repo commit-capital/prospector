@@ -23,7 +23,7 @@ from __future__ import annotations
 import re
 import threading
 from collections.abc import Callable
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from pipeline.storekit import now as _now
@@ -35,8 +35,11 @@ LANES = ("security", "verify", "fix")
 
 # Consecutive machine-fault endings that trip a lane.
 TRIP_AFTER = 3
-# How long a tripped lane waits between self-tests.
+# How long a tripped lane waits before its first self-test and between them.
 RETEST_SECONDS = 15 * 60
+# How long a lane tripped on a condition no self-test can answer stays closed
+# before it is opened once to see whether the cause passed on its own.
+COOL_DOWN_SECONDS = 6 * 3600
 # How long one failure signature suppresses a second issue.
 ISSUE_DEDUP_SECONDS = 7 * 24 * 3600
 # How stale a worker's heartbeat is before its silence is escalated.
@@ -115,22 +118,35 @@ def reopen(rec: dict, name: str, *, by: str, now: str | None = None) -> None:
     rec["updated_at"] = now
 
 
+def _since(stamp: object, now: datetime) -> float:
+    """Seconds from `stamp` to `now`; an unreadable stamp reads as very old."""
+    try:
+        at = datetime.fromisoformat(str(stamp))
+    except ValueError:
+        return float("inf")
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    return (now - at).total_seconds()
+
+
 def retest_due(rec: dict, name: str, now: datetime | None = None) -> bool:
-    """Whether a tripped lane should run its self-test: never retested since
-    the trip, or RETEST_SECONDS past the last one."""
+    """Whether a tripped lane should run its self-test: RETEST_SECONDS past
+    the trip, then RETEST_SECONDS past each retest."""
     entry = lane(rec, name)
     tripped = entry.get("tripped")
     if not tripped:
         return False
     now = now or datetime.now(timezone.utc)
     last = (entry.get("retest") or {}).get("at") or tripped.get("at")
-    try:
-        at = datetime.fromisoformat(str(last))
-    except ValueError:
-        return True
-    if (entry.get("retest") or {}).get("at") is None:
-        return True
-    return now - at >= timedelta(seconds=RETEST_SECONDS)
+    return _since(last, now) >= RETEST_SECONDS
+
+
+def cooled(rec: dict, name: str, now: datetime | None = None) -> bool:
+    """Whether a tripped lane has been closed for COOL_DOWN_SECONDS."""
+    tripped = lane(rec, name).get("tripped")
+    if not tripped:
+        return False
+    return _since(tripped.get("at"), now or datetime.now(timezone.utc)) >= COOL_DOWN_SECONDS
 
 
 def record_retest(rec: dict, name: str, *, ok: bool, detail: str,
@@ -151,17 +167,16 @@ def signature(kind: str, reason: str) -> str:
 
 
 def issue_due(rec: dict, name: str, sig: str, now: datetime | None = None) -> bool:
-    """Whether a trip with this signature warrants a new issue: none filed for
-    it, or the last one older than ISSUE_DEDUP_SECONDS."""
-    issue = lane(rec, name).get("issue") or {}
-    if issue.get("signature") != sig:
-        return True
+    """Whether a trip with this signature warrants a new issue: no lane of
+    this worker has one filed for it within ISSUE_DEDUP_SECONDS. The check
+    spans lanes because one cause (an agent outage) trips several at once."""
     now = now or datetime.now(timezone.utc)
-    try:
-        filed = datetime.fromisoformat(str(issue.get("filed_at")))
-    except ValueError:
-        return True
-    return now - filed >= timedelta(seconds=ISSUE_DEDUP_SECONDS)
+    lane(rec, name)
+    for entry in (rec.get("lanes") or {}).values():
+        issue = entry.get("issue") or {}
+        if issue.get("signature") == sig and _since(issue.get("filed_at"), now) < ISSUE_DEDUP_SECONDS:
+            return False
+    return True
 
 
 def record_issue(rec: dict, name: str, *, sig: str, number: int | None,

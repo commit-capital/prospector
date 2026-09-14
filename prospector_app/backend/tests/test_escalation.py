@@ -64,12 +64,12 @@ def test_escalate_trip_ledgers_and_files_once_per_signature(store, monkeypatch):
     me = settings.worker_id()
     worker_health.update(store, me, lambda r: worker_health.trip(
         r, "fix", kind="sandbox", reason="docker down at /x"))
-    escalation.escalate_trip("fix")
+    escalation.escalate_trip(["fix"])
     # A second trip with the same shape within the week files nothing new.
     worker_health.update(store, me, lambda r: worker_health.reopen(r, "fix", by="t"))
     worker_health.update(store, me, lambda r: worker_health.trip(
         r, "fix", kind="sandbox", reason="docker down at /y"))
-    escalation.escalate_trip("fix")
+    escalation.escalate_trip(["fix"])
     assert len(filed) == 1 and "fix lane tripped" in filed[0]
     trips = [r for r in store.runs() if getattr(r, "phase", "") == "worker:trip"]
     assert len(trips) == 2
