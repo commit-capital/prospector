@@ -26,22 +26,28 @@ operator-queued request always wins the next pick.
 from __future__ import annotations
 
 import os
-import socket
 import subprocess
 import threading
+from collections.abc import Iterator
+import time
 import traceback
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from pipeline import gates
+from pipeline import security_review
+from pipeline import settings
 from pipeline import store
 from pipeline import verify_driver
 from pipeline import wire
+from pipeline import worker_health
 from pipeline.freshness import is_current
 from pipeline.storekit import now as _now
 from prospector_app.backend import data
 from prospector_app.backend import service
 from prospector_app.backend import verify_queue
+from prospector_app.backend import lane_health
+from prospector_app.backend import worker_log
 from prospector_app.backend.jobs import PIPELINE_PY, REPO_ROOT
 
 if TYPE_CHECKING:
@@ -61,6 +67,10 @@ BASE_RETRY_SECONDS = 60.0
 # count) rests this long before pickup, giving the failing dependency time to
 # recover instead of burning the attempt cap in one bad minute.
 TRANSIENT_RETRY_SECONDS = 600.0
+
+# How often an idle worker looks for runs a worker that went offline left
+# claimed, so they are reclaimed without waiting for someone to restart it.
+RECLAIM_SECONDS = 300.0
 
 # How old the base pin must be before the daily refresh considers re-pinning.
 REFRESH_AFTER_HOURS = 24.0
@@ -115,6 +125,7 @@ def shutdown(timeout: float = SHUTDOWN_TIMEOUT) -> bool:
     flight is still finishing, which is not a failure."""
     if not running():
         _threads.clear()
+        _clear_heartbeat()
         return True
     stop.set()
     for t in _threads:
@@ -122,7 +133,17 @@ def shutdown(timeout: float = SHUTDOWN_TIMEOUT) -> bool:
     if running():
         return False
     _threads.clear()
+    _clear_heartbeat()
     return True
+
+
+def _clear_heartbeat() -> None:
+    """Drop this worker's heartbeat on a clean stop, so a worker switched off
+    on purpose is not escalated as one that went dark. Best-effort."""
+    try:
+        data.store().clear_verify_worker(settings.worker_id())
+    except Exception:
+        traceback.print_exc()
 
 
 def enabled() -> bool:
@@ -136,17 +157,37 @@ def beat() -> None:
     """Write this worker's liveness, autohunt opt-in, and security failure
     memory into the shared store."""
     data.store().save_verify_worker({
-        "host": socket.gethostname(), "pid": os.getpid(),
+        "host": settings.worker_id(), "pid": os.getpid(),
         "last_beat": _now(), "current_pr": state["current_pr"],
-        "autohunt": enabled_autohunt(), "security_failed": sorted(security_failed)})
+        "autohunt": enabled_autohunt(), "security_failed": sorted(security_failed),
+        "security_failed_reasons": security_failed.reasons()})
+
+
+def worker_offline(host: str, registry: dict, claimed_at: str | None = None) -> bool:
+    """Whether `host` has stopped beating: its heartbeat in `registry` (a
+    verify_worker or fix_worker record) is older than
+    worker_health.OFFLINE_AFTER_SECONDS. A host the registry does not know
+    (never beat here, or pruned after a week of silence) is judged by its
+    claim instead: `claimed_at` that old means nobody is coming back for it,
+    a fresh one is a worker that has not beaten yet."""
+    rec = (registry.get("hosts") or {}).get(host) or {}
+    stamp = rec.get("last_beat") if rec else claimed_at
+    if not isinstance(stamp, str):
+        return False
+    try:
+        at = datetime.fromisoformat(stamp)
+    except ValueError:
+        return False
+    return (datetime.now(timezone.utc) - at).total_seconds() >= worker_health.OFFLINE_AFTER_SECONDS
 
 
 def recover_orphans() -> tuple[list[int], list[int]]:
-    """Resolve THIS host's `running` requests: a run does not survive the
-    worker's process, so at startup a running status claimed by this host can
-    only be a restart's leftover. A request another host claimed is its live
-    run, never touched from here; a hostless record (written before claims
-    carried a host) is treated as this host's.
+    """Resolve the `running` requests no worker will finish: this host's own
+    (a run does not survive the worker's process, so a running status claimed
+    here is a restart's leftover) and any host's whose heartbeat has gone
+    silent past worker_health.OFFLINE_AFTER_SECONDS. A request a live host
+    claimed is its run, never touched from here; a hostless record (written
+    before claims carried a host) is treated as this host's.
 
     A run stopped at a RESUMABLE_STEPS step re-queues itself, capped at
     RESTART_MAX_ATTEMPTS: nothing of the PR's verification ran. Anything further
@@ -154,21 +195,26 @@ def recover_orphans() -> tuple[list[int], list[int]]:
     run is never silently re-fired. Returns (marked, requeued)."""
     marked: list[int] = []
     requeued: list[int] = []
-    me = socket.gethostname()
+    me = settings.worker_id()
     st = data.store()
+    registry = st.load_verify_worker()
     with st.batch():
         running = st.prs_matching(("verify_request", "status"), ["running"])
         for n, rec in sorted(running.items()):
             req = rec.verify_request or {}
-            if req.get("host") not in (None, me):
+            host = req.get("host")
+            mine = host in (None, me)
+            if not mine and not worker_offline(
+                    str(host), registry, req.get("started_at") or req.get("queued_at")):
                 continue
+            who = ("the verification worker restarted" if mine
+                   else f"the verification worker on {host} went offline")
             attempts = req.get("attempts") or 0
             if req.get("step") in RESUMABLE_STEPS and attempts < RESTART_MAX_ATTEMPTS:
                 st.edit_pr(n).record_verify_request(
                     "queued", queued_at=req.get("queued_at"),
                     error_kind="interrupted",
-                    error="the verification worker restarted before the sandbox "
-                          "ran — re-queued automatically",
+                    error=f"{who} before the sandbox ran — re-queued automatically",
                     attempts=attempts + 1, source=req.get("source"), host=me)
                 requeued.append(n)
                 continue
@@ -176,8 +222,8 @@ def recover_orphans() -> tuple[list[int], list[int]]:
                 "error", queued_at=req.get("queued_at"),
                 started_at=req.get("started_at"), finished_at=_now(),
                 error_kind="interrupted",
-                error="the verification worker restarted mid-run — re-queue to retry",
-                source=req.get("source"), host=me)
+                error=f"{who} mid-run — re-queue to retry",
+                source=req.get("source"), host=me if mine else str(host))
             marked.append(n)
     return marked, requeued
 
@@ -226,7 +272,7 @@ def _record_refresh(st: Store, ok: bool, error: str | None, failures: int) -> No
     attempt succeeded, its error, the consecutive-failure run, and the
     once-per-day attempt stamp. Written after prepare_base returns, because
     prepare_base full-replaces this host's record with the fields it owns."""
-    me = socket.gethostname()
+    me = settings.worker_id()
     st.save_verify_base({
         **st.load_verify_base(me), "host": me,
         "refresh_attempted_at": _now(), "refresh_ok": ok,
@@ -249,7 +295,7 @@ def maybe_refresh_base() -> None:
     healthy refresh — there was nothing to move to."""
     try:
         st = data.store()
-        me = socket.gethostname()
+        me = settings.worker_id()
         reg = st.load_verify_base(me)
         if not base_refresh_due(reg, datetime.now(timezone.utc)):
             return
@@ -276,6 +322,10 @@ def maybe_refresh_base() -> None:
             entry["stats"].update(ok=False, error=detail)
             _record_refresh(st, False, detail, failures)
             traceback.print_exc()
+            if failures + 1 >= worker_health.TRIP_AFTER:
+                lane_health.trip_lane("verify", kind="pin-refresh",
+                                      reason=f"the daily base-pin refresh has failed "
+                                             f"{failures + 1} times in a row; last: {detail}")
         finally:
             entry["finished"] = _now()
             st.append_run(entry)
@@ -324,10 +374,49 @@ def next_queued() -> int | None:
     return best_n
 
 
-# Security auto-runs that exited nonzero this process: the hunter skips them
-# so a broken run is never immediately re-fired (a backend restart clears the
-# set; the operator can re-run any PR from the app meanwhile).
-security_failed: set[int] = set()
+# How long a failed security auto-run keeps its PR out of the pool. Past it
+# the hunter tries again; a machine that keeps failing trips its lane long
+# before then, so this only governs one-off run failures.
+SECURITY_FAILED_SECONDS = 6 * 3600.0
+
+
+class _SkipSet:
+    """Security auto-runs that failed this process, each with when and why,
+    so the hunter skips them for SECURITY_FAILED_SECONDS and the heartbeat can
+    say what went wrong. A restart clears it; the operator can re-run any PR
+    from the app meanwhile."""
+
+    def __init__(self) -> None:
+        self._entries: dict[int, tuple[float, str]] = {}
+
+    def add(self, n: int, reason: str = "the security run failed") -> None:
+        self._entries[n] = (time.monotonic(), reason)
+
+    def discard(self, n: int) -> None:
+        self._entries.pop(n, None)
+
+    def clear(self) -> None:
+        self._entries.clear()
+
+    def active(self) -> set[int]:
+        cutoff = time.monotonic() - SECURITY_FAILED_SECONDS
+        return {n for n, (at, _) in self._entries.items() if at >= cutoff}
+
+    def reasons(self) -> dict[str, str]:
+        active = self.active()
+        return {str(n): why for n, (_, why) in self._entries.items() if n in active}
+
+    def __contains__(self, n: object) -> bool:
+        return n in self.active()
+
+    def __iter__(self) -> Iterator[int]:
+        return iter(sorted(self.active()))
+
+    def __len__(self) -> int:
+        return len(self.active())
+
+
+security_failed = _SkipSet()
 
 
 def enabled_autohunt() -> bool:
@@ -350,10 +439,14 @@ def auto_verifiable(pr: Pr) -> bool:
     """Whether the hunter may queue a sandbox run: verify-eligible with a
     current GREEN security verdict (the sandbox never executes code the
     adversarial review has not cleared), no current verify record, and no
-    verify_request in flight or deliberately stopped (error/cancelled wait
-    for an operator re-queue)."""
+    verify_request in flight or deliberately stopped. A cancel waits for an
+    operator; an error waits unless gates.verify_retry_allowed says the
+    harness, not the PR, is what failed and a retry is due."""
     status = (pr.verify_request or {}).get("status")
-    if status in ("queued", "running", "waiting-for-base", "error", "cancelled"):
+    if status in ("queued", "running", "waiting-for-base", "cancelled"):
+        return False
+    if status == "error" and not gates.verify_retry_allowed(
+            pr, worker=settings.worker_id())[0]:
         return False
     if not gates.security_cleared(pr):
         return False
@@ -402,7 +495,8 @@ def auto_resweepable(pr: Pr) -> bool:
     return gates.verify_eligible(pr, _changed_paths(pr))
 
 
-def next_auto() -> tuple[str, int] | None:
+def next_auto(open_lanes: frozenset[str] = frozenset({"security", "verify"})
+              ) -> tuple[str, int] | None:
     """The idle hunt's next pick, or None: ("security", n) while any clean
     merge candidate lacks a current security verdict, then ("verify", n) for
     the best GREEN-cleared unverified candidate, then ("resweep", n) for a
@@ -412,20 +506,25 @@ def next_auto() -> tuple[str, int] | None:
     Lane order is spend priority: a PR with no verification at all buys more
     than a second opinion on one that already concluded. A PR another machine
     holds the security claim on is that machine's to finish: it leaves the
-    pool here so this hunter moves on to the next candidate."""
+    pool here so this hunter moves on to the next candidate. `open_lanes`
+    names the lanes whose health allows a pick; a tripped lane's pool is
+    skipped."""
     prs = data.prs()
-    me = socket.gethostname()
+    me = settings.worker_id()
 
     def _key(item: tuple[int, Pr]) -> tuple[float, int]:
         return (-_pain(item[1]), item[0])
 
     security_pool = [
         (n, pr) for n, pr in prs.items()
-        if n not in security_failed and gates.blocked_on_security(pr)
+        if "security" in open_lanes
+        and n not in security_failed and gates.blocked_on_security(pr)
         and not store.security_claim_held_elsewhere(
             pr.raw.get("security_run"), host=me, stale_after=SECURITY_CLAIM_SECONDS)]
     if security_pool:
         return ("security", min(security_pool, key=_key)[0])
+    if "verify" not in open_lanes:
+        return None
     verify_pool = [(n, pr) for n, pr in prs.items() if auto_verifiable(pr)]
     if verify_pool:
         return ("verify", min(verify_pool, key=_key)[0])
@@ -455,7 +554,7 @@ def run_security(n: int) -> int | None:
     rec = st.load_pr(n)
     if rec is None or not gates.blocked_on_security(rec):
         return None
-    me = socket.gethostname()
+    me = settings.worker_id()
     if not st.claim_security_run(n, host=me, stale_after=SECURITY_CLAIM_SECONDS):
         print(f"[autohunt] PR #{n} is already under review elsewhere", flush=True)
         return None
@@ -466,21 +565,62 @@ def run_security(n: int) -> int | None:
 
 
 def _run_security_claimed(n: int) -> int:
-    """Spawn the security review for a PR this host holds the claim on."""
-    security_failed.add(n)
+    """Spawn the security review for a PR this host holds the claim on, and
+    book the ending on the security lane's health: a verdict that landed is a
+    success; a run that exited non-zero or held its verdict is a machine
+    failure and parks the PR; an agent outage parks nothing and trips every
+    agent lane at once."""
     argv = [*PIPELINE_PY, "-u", str(REPO_ROOT / "pipeline" / "security_review.py"),
             "--pr", str(n), "--trigger", "autohunt"]
     proc = subprocess.Popen(argv, cwd=str(REPO_ROOT), stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True)
     assert proc.stdout is not None
+    lines: list[str] = []
     for line in proc.stdout:
         print(f"[autohunt pr {n}] {line}", end="", flush=True)
+        lines.append(line)
+        if len(lines) > 60:
+            del lines[:30]
     rc = proc.wait()
+    last = next((ln.strip() for ln in reversed(lines) if ln.strip()), "")
     data.refresh()
+    if rc == security_review.EXIT_AGENT_UNAVAILABLE:
+        lane_health.trip_agent_lanes(last or "the agent CLI could not run")
+        return rc
     rec2 = data.store().load_pr(n)
     if rc == 0 and rec2 is not None and not gates.blocked_on_security(rec2):
         security_failed.discard(n)
+        lane_health.note_success("security")
+        return rc
+    reason = (f"security review exited {rc}: {last}" if rc
+              else f"security review held its verdict: {last}")
+    security_failed.add(n, reason[:300])
+    lane_health.note_failure("security", kind="security-run" if rc else "incomplete",
+                             reason=reason, pr=n)
     return rc
+
+
+def _note_verify_ending(n: int) -> None:
+    """Book a finished pickup on the verify lane's health, by the request the
+    orchestrator left: a system-fault error counts against the machine, an
+    agent outage trips every agent lane, and anything else (done, a refusal
+    that is the PR's) ends the failure run."""
+    rec = data.store().load_pr(n)
+    if rec is None:
+        return
+    req = rec.verify_request or {}
+    kind = req.get("error_kind")
+    error = str(req.get("error") or "")
+    if req.get("status") in ("error", "queued") and kind:
+        if kind == "agent-unavailable":
+            lane_health.trip_agent_lanes(error or "the agent CLI could not run")
+        elif gates.VERIFY_REQUEST_FAULT.get(kind) == "system":
+            lane_health.note_failure("verify", kind=kind, reason=error, pr=n)
+        else:
+            lane_health.note_success("verify")
+        return
+    if req.get("status") in ("done", "error"):
+        lane_health.note_success("verify")
 
 
 def auto_queue_verify(n: int, *, source: str = "auto") -> None:
@@ -522,7 +662,7 @@ def _finalize(n: int, rc: int, tail: str) -> None:
     failure re-queue and stays for the worker to re-pick. A request another
     host claimed is left alone: this pickup lost the claim race, and the
     running status is the winner's live run."""
-    me = socket.gethostname()
+    me = settings.worker_id()
     st = data.store()
     rec = st.load_pr(n)
     if rec is not None:
@@ -552,7 +692,7 @@ def release_stale_claims() -> list[int]:
     """Drop this host's leftover security-review claims. A review does not
     survive the worker's process, so at startup a claim in this host's name is a
     restart's leftover; another host's is its live run. Returns what it freed."""
-    me = socket.gethostname()
+    me = settings.worker_id()
     st = data.store()
     freed: list[int] = []
     for n in sorted(st.prs_matching(("security_run", "host"), [me])):
@@ -577,17 +717,29 @@ def _drain_loop() -> None:
             print(f"[verify-worker] re-queued after restart: {requeued}", flush=True)
     except Exception:
         traceback.print_exc()
+    last_reclaim = time.monotonic()
     while not stop.is_set():
         try:
             maybe_refresh_base()
-            n = next_queued()
+            if time.monotonic() - last_reclaim >= RECLAIM_SECONDS:
+                last_reclaim = time.monotonic()
+                marked, requeued = recover_orphans()
+                if marked or requeued:
+                    print(f"[verify-worker] reclaimed from an offline worker: "
+                          f"errored {marked}, re-queued {requeued}", flush=True)
+            verify_open = lane_health.open_or_retest("verify")
+            n = next_queued() if verify_open else None
             if n is not None:
                 state["current_pr"] = n
                 beat()
                 print(f"[verify-worker] picking up PR #{n}", flush=True)
                 run_one(n)
+                _note_verify_ending(n)
                 continue
-            pick = next_auto() if enabled_autohunt() else None
+            security_open = lane_health.open_or_retest("security")
+            open_lanes = frozenset(lane for lane, ok in (("security", security_open),
+                                                         ("verify", verify_open)) if ok)
+            pick = next_auto(open_lanes) if enabled_autohunt() and open_lanes else None
             if pick is None:
                 stop.wait(POLL_SECONDS)
                 continue
@@ -619,12 +771,13 @@ def startup() -> bool:
     if running():
         return True
     stop.clear()
+    worker_log.install()
     _threads[:] = [
         threading.Thread(target=_beat_loop, daemon=True, name="verify-worker-beat"),
         threading.Thread(target=_drain_loop, daemon=True, name="verify-worker"),
     ]
     for t in _threads:
         t.start()
-    print(f"[verify-worker] enabled on {socket.gethostname()} "
+    print(f"[verify-worker] enabled on {settings.worker_id()} "
           f"(poll every {POLL_SECONDS:.0f}s)", flush=True)
     return True

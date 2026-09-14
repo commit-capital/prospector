@@ -55,7 +55,8 @@ VERIFY_REQUEST_STATUSES = {"queued", "running", "waiting-for-base", "done", "err
 # infrastructure failed, the worker restarted mid-run, the run errored so no
 # verdict is trusted (hold), or the orchestrator itself crashed.
 VERIFY_ERROR_KINDS = {"refused-safety", "no-base", "fetch-error", "agent-failed",
-                      "sandbox-error", "interrupted", "hold", "exception"}
+                      "agent-unavailable", "sandbox-error", "interrupted", "hold",
+                      "exception"}
 
 # Who queued a verification request: the idle auto-hunter stamps its picks
 # "auto", and "auto-resweep" on the lane that re-runs a concluded verification
@@ -761,6 +762,58 @@ class Store:
         hosts = {h: r for h, r in hosts.items()
                  if h == host or str(r.get("last_beat") or "") >= cutoff}
         self._save_registry("fix_worker", {"hosts": hosts})
+
+    # Each worker's health is its own registry row, so two machines' writes
+    # never race on one row.
+    _HEALTH_PREFIX = "worker_health:"
+
+    def load_worker_health(self) -> dict:
+        """Every worker's lane health (`{hosts: {<worker id>: record}}`), the
+        record shape pipeline/worker_health.py owns: per lane, the run of
+        consecutive machine-fault endings, the trip stamp, and the issue filed
+        for it. An empty map means no worker has recorded an ending."""
+        from sqlalchemy import select
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(schema.registries.c.name, schema.registries.c.data)
+                .where(schema.registries.c.name.like(f"{self._HEALTH_PREFIX}%"))).all()
+        return {"hosts": {name[len(self._HEALTH_PREFIX):]: rec for name, rec in rows}}
+
+    def save_worker_health(self, record: dict) -> None:
+        """Write one worker's health record to its own row, keyed by `host`."""
+        if not record.get("host"):
+            raise ValidationError("worker_health.host: required")
+        self._save_registry(f"{self._HEALTH_PREFIX}{record['host']}", record)
+
+    def clear_worker_health(self, host: str) -> bool:
+        return self._delete_registry(f"{self._HEALTH_PREFIX}{host}")
+
+    def _delete_registry(self, name: str) -> bool:
+        from sqlalchemy import delete as sa_delete
+        storekit.assert_writable(self.engine)
+        with self.engine.begin() as conn:
+            res = conn.execute(sa_delete(schema.registries)
+                               .where(schema.registries.c.name == name))
+        return bool(res.rowcount)
+
+    def clear_verify_worker(self, host: str) -> bool:
+        """Drop `host`'s verification-worker heartbeat: a worker stopping on
+        purpose leaves no record for the offline watch to escalate."""
+        hosts = dict(self.load_verify_worker()["hosts"])
+        if host not in hosts:
+            return False
+        del hosts[host]
+        self._save_registry("verify_worker", {"hosts": hosts})
+        return True
+
+    def clear_fix_worker(self, host: str) -> bool:
+        """Drop `host`'s autofix-worker heartbeat, as clear_verify_worker."""
+        hosts = dict(self.load_fix_worker()["hosts"])
+        if host not in hosts:
+            return False
+        del hosts[host]
+        self._save_registry("fix_worker", {"hosts": hosts})
+        return True
 
     def claim_fix_request(self, n: int, *, host: str,
                           statuses: tuple[str, ...] = ("queued",),

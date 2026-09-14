@@ -14,6 +14,7 @@ from pipeline import gates
 from pipeline import storekit
 from pipeline import wire
 from prospector_app.backend import data
+from prospector_app.backend import escalation
 from prospector_app.backend import verify_queue
 from prospector_app.backend import verify_worker
 
@@ -71,9 +72,11 @@ class AutohuntStatus(TypedDict):
     enabled: bool
     runner: dict
     base: VerifyBaseHealth
+    health: dict
     security_pool: int
     verify_pool: int
     security_failed: list[int]
+    security_failed_reasons: dict[str, str]
     verify_failed: list[VerifyFailed]
 
 
@@ -143,16 +146,19 @@ def status() -> AutohuntStatus:
     base's health, so a lane whose daily pin refresh has been failing shows up
     next to the runner rather than only in the runs ledger.
     `verify_failed` lists every
-    verify request that ended in error, auto-queued or operator-queued alike —
-    the hunter never re-fires an errored request, so each waits for an operator
-    re-queue regardless of who queued it — tagged with its `source` ("auto" for
-    hunter-fired requests, None for operator-queued ones) so the panel can label
-    each failure by who queued it."""
+    verify request that ended in error, auto-queued or operator-queued alike,
+    tagged with its `source` ("auto" for hunter-fired requests, None for
+    operator-queued ones) so the panel can label each failure by who queued
+    it. The hunter re-queues the ones the harness caused when
+    gates.verify_retry_allowed says a retry is due; the PR's own refusals wait
+    for an operator."""
     records = verify_queue.worker_records(data.store().load_verify_worker())
     newest: dict = records[0] if records else {}
     prs = data.prs()
     failed = newest.get("security_failed")
     failed_set = {int(n) for n in failed} if isinstance(failed, list) else set()
+    reasons = newest.get("security_failed_reasons")
+    reasons = reasons if isinstance(reasons, dict) else {}
     verify_failed: list[VerifyFailed] = []
     for n, pr in sorted(prs.items()):
         req = pr.verify_request or {}
@@ -163,10 +169,13 @@ def status() -> AutohuntStatus:
         "enabled": bool(newest.get("autohunt")),
         "runner": verify_queue.runner_status(),
         "base": base_health(),
+        "health": escalation.health_status(),
         "security_pool": sum(1 for n, pr in prs.items()
                              if n not in failed_set and gates.blocked_on_security(pr)),
         "verify_pool": sum(1 for pr in prs.values() if verify_worker.auto_verifiable(pr)),
         "security_failed": sorted(failed_set),
+        "security_failed_reasons": {str(n): str(reasons.get(str(n)) or "")
+                                    for n in sorted(failed_set) if reasons.get(str(n))},
         "verify_failed": verify_failed,
     }
 

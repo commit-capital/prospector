@@ -21,6 +21,8 @@ if _worker:
     os.environ["TRIAGE_STORE_URL"] = f"sqlite:///{_store_dir}/store.db"
 else:
     os.environ.pop("TRIAGE_STORE_URL", None)
+# A developer's own worker name must never leak into a test's host stamps.
+os.environ.pop("TRIAGE_WORKER_ID", None)
 os.environ.setdefault("TRIAGE_REPO", "test-owner/test-repo")
 os.environ.setdefault("TRIAGE_BOT_LOGIN", "test-bot")
 # A deliberately non-"master", non-"main" branch: tests that build prompts or

@@ -65,6 +65,12 @@ class TestSetFlags:
         with pytest.raises(ValueError, match=key):
             worker_control.set_flags({key: "yes"})
 
+    def test_the_worker_id_is_writable_as_one_token(self, env_path):
+        worker_control.set_flags({"TRIAGE_WORKER_ID": "studio-1.local"})
+        assert "TRIAGE_WORKER_ID=studio-1.local" in env_path.read_text()
+        with pytest.raises(ValueError, match="TRIAGE_WORKER_ID"):
+            worker_control.set_flags({"TRIAGE_WORKER_ID": "two words"})
+
     def test_a_refused_write_leaves_the_file_untouched(self, env_path):
         before = env_path.read_text()
         with pytest.raises(ValueError):

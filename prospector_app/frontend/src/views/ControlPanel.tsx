@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
-import { api, type JobSpec, type JobRec, type PipelineStatus, type Autohunt, type AutohuntResultCounts, type FilterSpec, type VerifyBaseHealth, type VerifyBaseHost, type VerifyQueue, type FixQueue } from "../api";
+import { api, type JobSpec, type JobRec, type PipelineStatus, type Autohunt, type AutohuntResultCounts, type FilterSpec, type VerifyBaseHealth, type VerifyBaseHost, type VerifyQueue, type FixQueue, type WorkerHealth, type WorkerHealthHost } from "../api";
 import { useRepoMeta } from "../RepoMetaContext";
 import { useExec } from "../ExecContext";
 import { PRLink } from "../components/PRLink";
@@ -187,6 +187,50 @@ function BaseHealth({ base }: { base: VerifyBaseHealth }) {
   return (
     <>
       {base.hosts.map((h) => <HostBase key={h.host} base={h} />)}
+    </>
+  );
+}
+
+/** A worker whose lane tripped: it has stopped picking work because the
+ *  machine, not the PRs, kept failing. One banner per tripped lane, with the
+ *  reason, the last self-test, the issue filed, and a Resume override. */
+function TrippedLane({ host, lane, onResume }: { host: WorkerHealthHost; lane: string; onResume: () => void }) {
+  const h = host.lanes[lane] ?? {};
+  const t = h.tripped ?? {};
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const resume = async () => {
+    setBusy(true); setErr(null);
+    try { await api.workerHealthResume(host.host, lane); onResume(); }
+    catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div className="callout err" style={{ marginBottom: 8 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <b>{lane} lane paused on {host.host}</b>
+        <span className="muted small">tripped {ago(t.at)}{t.kind ? ` · ${t.kind}` : ""}</span>
+        <span style={{ flex: 1 }} />
+        {h.issue?.url && <a href={h.issue.url} target="_blank" rel="noreferrer" className="small">issue #{h.issue.number}</a>}
+        <button className="btn-sm" disabled={busy} onClick={resume}>{busy ? "Resuming…" : "Resume"}</button>
+      </div>
+      <div className="small" style={{ marginTop: 4 }}>{t.reason}</div>
+      {h.retest && !h.retest.ok && (
+        <div className="muted small" style={{ marginTop: 2 }}>last self-test {ago(h.retest.at)}: {h.retest.detail}</div>
+      )}
+      {err && <div className="small" style={{ marginTop: 2 }}>{err}</div>}
+    </div>
+  );
+}
+
+/** Every tripped lane across every worker, or nothing when all are open. */
+function WorkerHealthBanner({ health, onResume }: { health: WorkerHealth; onResume: () => void }) {
+  if (!health.any_tripped) return null;
+  return (
+    <>
+      {health.hosts.flatMap((h) => h.tripped.map((lane) => (
+        <TrippedLane key={`${h.host}-${lane}`} host={h} lane={lane} onResume={onResume} />
+      )))}
     </>
   );
 }
@@ -696,6 +740,10 @@ export default function ControlPanel() {
       <h3>Auto-hunt</h3>
       {hunt ? (
         <>
+          {hunt.status.health && (
+            <WorkerHealthBanner health={hunt.status.health}
+              onResume={() => api.autohunt(huntRange.days, huntRange.allTime).then(setHunt).catch(() => {})} />
+          )}
           <div className="jobspec" style={{ alignItems: "flex-start", flexDirection: "column", gap: 6 }}>
             <span className="jobspec-label">
               {hunt.status.enabled
@@ -717,7 +765,9 @@ export default function ControlPanel() {
               <span className="small">
                 <span className="muted small">needs attention (run failed): </span>
                 {hunt.status.security_failed.map((n) => (
-                  <PRLink key={`sec-${n}`} n={n} className="chip chip-red sm">🛡 #{n} · auto</PRLink>
+                  <span key={`sec-${n}`} title={hunt.status.security_failed_reasons?.[String(n)] ?? undefined}>
+                    <PRLink n={n} className="chip chip-red sm">🛡 #{n} · auto</PRLink>
+                  </span>
                 ))}
                 {hunt.status.verify_failed.map((f) => (
                   <PRLink key={`ver-${f.pr}`} n={f.pr} className="chip chip-red sm">

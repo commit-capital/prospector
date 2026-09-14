@@ -784,16 +784,50 @@ export interface VerifyBaseHealth {
 /** The idle hunter's live status: worker opt-in + liveness, pool sizes
  *  computed with the hunter's own gates, and its failure parking lots —
  *  security runs parked by the worker's failure memory, and verify requests
- *  that ended in error (awaiting an operator re-queue), auto-queued or
+ *  that ended in error (the harness's own are retried by the hunter, the
+ *  PR's await an operator re-queue), auto-queued or
  *  operator-queued alike. */
 interface AutohuntStatus {
   enabled: boolean;
   runner: VerifyRunner;
   base: VerifyBaseHealth;
+  health: WorkerHealth;
   security_pool: number;
   verify_pool: number;
   security_failed: number[];
+  security_failed_reasons: Record<string, string>;
   verify_failed: { pr: number; error_kind?: string | null; source?: string | null }[];
+}
+
+/** One machine failure a worker lane booked: when, what kind, why, on which PR. */
+export interface WorkerLaneFailure {
+  at?: string | null;
+  kind?: string | null;
+  reason?: string | null;
+  pr?: number | null;
+}
+
+/** One worker lane's health: the run of consecutive machine failures, the
+ *  trip stamp while it is closed, its last self-test, and the issue filed. */
+export interface WorkerLaneHealth {
+  consecutive_failures?: number | null;
+  tripped?: { at?: string | null; kind?: string | null; reason?: string | null } | null;
+  retest?: { at?: string | null; ok?: boolean | null; detail?: string | null } | null;
+  issue?: { signature?: string | null; number?: number | null; url?: string | null; filed_at?: string | null } | null;
+  recent?: WorkerLaneFailure[] | null;
+  last_success_at?: string | null;
+}
+
+export interface WorkerHealthHost {
+  host: string;
+  lanes: Record<string, WorkerLaneHealth>;
+  tripped: string[];
+}
+
+/** Every worker's lane health, tripped workers first. */
+export interface WorkerHealth {
+  hosts: WorkerHealthHost[];
+  any_tripped: boolean;
 }
 
 /** Run counts + result breakdown for one lane (security or verify) within
@@ -1737,6 +1771,17 @@ export const api = {
     return get<FixQueue>(`/api/fix/queue?${qs}`);
   },
   workStatus: () => get<WorkStatus>("/api/status/now"),
+  /** Reopen a tripped worker lane by the operator's say-so. */
+  workerHealthResume: async (host: string, lane: string): Promise<void> => {
+    const r = await fetch("/api/worker/health/resume", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ host, lane }),
+    });
+    if (!r.ok) {
+      const problem = await r.json().catch(() => ({ detail: `${r.status}` }));
+      throw new Error(problem.detail ?? `${r.status}`);
+    }
+  },
   autohunt: (days = 7, allTime = false, limit = 100) => {
     const qs = new URLSearchParams({ days: String(days), limit: String(limit) });
     if (allTime) qs.set("all_time", "true");

@@ -62,15 +62,6 @@ class VerifyRequestView(TypedDict):
 # a hold, an unhealthy sandbox — NOT the PR's fault), "judgment" (the signals
 # disagree; a human must decide), or None (verified, or nothing wrong yet).
 
-# The error_kind of a failed verify_request → its fault. Every kind but the
-# safety refusal is the harness/infra; refused-safety is a property of the PR
-# (closed, malicious, or deps-touching) that stopped the run.
-_REQUEST_FAULT: dict[str, str] = {
-    "no-base": "system", "fetch-error": "system", "sandbox-error": "system",
-    "agent-failed": "system", "interrupted": "system", "exception": "system",
-    "hold": "system",
-    "refused-safety": "pr",
-}
 
 # A committed outcome → its fault. verified-fix, agent-verified, and the
 # unverifiable outcomes carry none (nothing went wrong — the PR just has no
@@ -83,7 +74,7 @@ _OUTCOME_FAULT: dict[str, str] = {
 
 
 def _request_fault(error_kind: str | None) -> str | None:
-    return _REQUEST_FAULT.get(error_kind) if error_kind else None
+    return gates.VERIFY_REQUEST_FAULT.get(error_kind) if error_kind else None
 
 
 # The eight verify outcomes collapse to FOUR operator-facing states for the lead

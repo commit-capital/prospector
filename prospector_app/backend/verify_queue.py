@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from typing import TypedDict
 
 from pipeline.storekit import now as _now
+from pipeline import store
 from prospector_app.backend import data
 
 # A worker heartbeat older than this reads as offline: the worker beats every
@@ -35,10 +36,19 @@ def queue_pr(n: int, source: str | None = None) -> dict:
     if rec.threat_verdict == "malicious":
         raise ValueError(f"PR #{n} has a malicious threat verdict — "
                          f"flagged code never runs in the sandbox")
-    status = (rec.verify_request or {}).get("status")
+    prior = rec.verify_request or {}
+    status = prior.get("status")
     if status in ("queued", "running", "waiting-for-base"):
         raise ValueError(f"PR #{n} already has a {status} verification request")
-    rec.record_verify_request("queued", queued_at=_now(), source=source)
+    # A hunter retry of an errored run on the same head carries the run count
+    # forward, so gates.verify_retry_allowed can cap it; a moved head and an
+    # operator's click start a fresh count.
+    attempts = None
+    if (source in store.AUTO_REQUEST_SOURCES and status == "error"
+            and prior.get("against_head_sha") == rec.head_sha):
+        attempts = int(prior.get("attempts") or 0) + 1
+    rec.record_verify_request("queued", queued_at=_now(), source=source,
+                              attempts=attempts)
     data.refresh()
     return {"pr": n, "status": "queued"}
 

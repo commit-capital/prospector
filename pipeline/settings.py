@@ -13,6 +13,7 @@ reads empty everywhere and its API refuses to serve.
 from __future__ import annotations
 
 import os
+import socket
 import subprocess
 from functools import lru_cache
 from pathlib import Path
@@ -147,6 +148,21 @@ def verify_scratch() -> Path:
     if scratch:
         return Path(scratch).expanduser()
     return Path.home() / ".pr-triage-verify" / f"{repo_owner()}-{repo_name()}"
+
+# The name this machine's workers stamp on every claim, pin, heartbeat, and
+# kept worktree. TRIAGE_WORKER_ID when set, else the hostname. The env value is
+# the one to set on a worker machine: a hostname on macOS follows the network,
+# and a record stamped under one name is invisible to the same machine under
+# another.
+def worker_id() -> str:
+    raw = os.environ.get("TRIAGE_WORKER_ID", "").strip()
+    return raw or socket.gethostname()
+
+
+def verify_worker_enabled() -> bool:
+    """Whether this machine drains the verification queue."""
+    return os.environ.get("TRIAGE_VERIFY_WORKER", "") == "1"
+
 
 # Comma-separated host:port entries the sandbox boot probe must FAIL to reach
 # (this machine's sensitive host services, e.g. a credentialed local server).

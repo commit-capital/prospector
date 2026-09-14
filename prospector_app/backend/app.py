@@ -24,6 +24,7 @@ from prospector_app.backend import activity
 from prospector_app.backend import advisories as advisories_mod
 from prospector_app.backend import alerts as alerts_mod
 from prospector_app.backend import autohunt_view
+from prospector_app.backend import escalation
 from prospector_app.backend import worker_control
 from prospector_app.backend import worker_readiness
 from prospector_app.backend import bulk
@@ -78,6 +79,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     _launch_live_sweep()
     _launch_verify_worker()
     _launch_fix_worker()
+    _launch_escalation_watch()
     yield
 
 
@@ -184,6 +186,29 @@ def _launch_fix_worker():
     if "pytest" in sys.modules:
         return
     fix_worker.startup()
+
+
+def _launch_escalation_watch():
+    """Start the offline-worker watch: any live backend escalates a worker
+    whose heartbeat has gone stale, once per silence, into the feedback repo.
+    Skipped under pytest."""
+    import sys
+    if "pytest" in sys.modules:
+        return
+    escalation.start_watch()
+
+
+@app.post("/api/worker/health/resume")
+def worker_health_resume(body: dict = Body(...)):
+    """Reopen a tripped lane on a worker by the operator's say-so."""
+    host = str(body.get("host") or "")
+    lane = str(body.get("lane") or "")
+    if not host:
+        raise HTTPException(400, "host required")
+    try:
+        return escalation.resume(host, lane)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @app.get("/api/health")

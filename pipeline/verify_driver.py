@@ -22,7 +22,6 @@ import re
 import signal
 import shlex
 import shutil
-import socket
 import subprocess
 import sys
 import threading
@@ -385,7 +384,7 @@ def prepare_base(store: Store, *, base_sha: str | None = None, tier: int = 0) ->
             print(f"baseline anomalies (nonzero vitest exit with no failing test): {anomalies}",
                   file=sys.stderr)
 
-    store.save_verify_base({"host": socket.gethostname(), "base_sha": sha,
+    store.save_verify_base({"host": settings.worker_id(), "base_sha": sha,
                             "tier": tier, "pinned_at": _now(),
                             "baseline_failing": failed,
                             "baseline_captured_at": _now(),
@@ -414,7 +413,7 @@ def changed_paths_for(rec: Pr) -> list[str]:
 def local_pin(store: Store) -> wire.VerifyPin:
     """This machine's pinned base. A pin names a Docker image and a clone on
     local disk, so another machine's pin is not one this machine could boot."""
-    return store.load_verify_base(socket.gethostname())
+    return store.load_verify_base(settings.worker_id())
 
 
 def _pin(store: Store) -> tuple[str, int]:
@@ -1608,7 +1607,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"still held (a container is using them): {', '.join(result['kept_images'])}")
         print(f"{verb} scratch: {result['scratch'] or 'nothing there'}")
         if not args.dry_run:
-            host = socket.gethostname()
+            host = settings.worker_id()
             had = store.clear_verify_base(host)
             print(f"cleared this machine's base pin ({host})" if had
                   else f"no base pin recorded for {host}")

@@ -222,3 +222,18 @@ def test_concurrent_lens_progress_prints_lens_by_lens(tmp_path, monkeypatch, cap
                                                 for p in lines[lens["key"]])
         for lens in rs.LENSES)
     assert expected in out
+
+
+def test_agent_outage_exits_with_its_own_code_and_writes_nothing(tmp_path, monkeypatch):
+    store = Store(str(tmp_path))
+    _eligible_pr(store)
+    monkeypatch.setattr(rs.diff_cache, "fetch_diff", lambda *a, **k: True)
+    monkeypatch.setattr(rs, "_outages", [])
+
+    def fake(prompt, *a, **k):
+        raise rs.headless_agent.AgentUnavailable("claude exited 1: Not logged in")
+    monkeypatch.setattr(rs.headless_agent, "run_agent", fake)
+
+    assert rs.run(store, 100) == rs.EXIT_AGENT_UNAVAILABLE
+    assert store.load_pr(100).section("security") is None
+    assert not [r for r in store.runs() if getattr(r, "phase", "") == "security:review-one"]

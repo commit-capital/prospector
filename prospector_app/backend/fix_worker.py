@@ -39,7 +39,6 @@ from __future__ import annotations
 
 import json
 import os
-import socket
 import stat
 import subprocess
 import tempfile
@@ -56,8 +55,9 @@ from pipeline import (author_fix, compile_preflight, describe_pr, diffpaths, fre
                       resolve_evidence, review_fix, review_policy, review_resolve,
                       reviewers, risktier, settings, verify_driver)
 from pipeline.storekit import now as _now
-from prospector_app.backend import (activity, data, executor, fix_queue, review_refresh,
-                                    safety_guard, sandbox_check, service)
+from prospector_app.backend import (activity, data, executor, fix_queue, lane_health,
+                                    review_refresh, safety_guard, sandbox_check, service,
+                                    verify_worker, worker_log, worker_selftest)
 from prospector_app.backend.resubmit_identity import worker_env
 
 if TYPE_CHECKING:
@@ -84,6 +84,10 @@ TRANSIENT_EXITS = {4, 6, 7}
 
 # How many times a transient failure is re-queued before it is left for a human.
 MAX_ATTEMPTS = 3
+
+# How often an idle worker looks for runs and parked resolves a worker that
+# went offline left behind.
+RECLAIM_SECONDS = 300.0
 
 # How long a re-queued request rests before pickup, so a moving base or a
 # flaking remote gets time to settle instead of burning the attempt cap in one
@@ -121,6 +125,7 @@ def shutdown(timeout: float = SHUTDOWN_TIMEOUT) -> bool:
     flight is still finishing, which is not a failure."""
     if not running():
         _threads.clear()
+        _clear_heartbeat()
         return True
     stop.set()
     for t in _threads:
@@ -128,7 +133,17 @@ def shutdown(timeout: float = SHUTDOWN_TIMEOUT) -> bool:
     if running():
         return False
     _threads.clear()
+    _clear_heartbeat()
     return True
+
+
+def _clear_heartbeat() -> None:
+    """Drop this worker's heartbeat on a clean stop, so a worker switched off
+    on purpose is not escalated as one that went dark. Best-effort."""
+    try:
+        data.store().clear_fix_worker(settings.worker_id())
+    except Exception:
+        traceback.print_exc()
 
 
 def enabled() -> bool:
@@ -177,33 +192,42 @@ def key_safety_failure() -> str | None:
 def beat() -> None:
     """Write this worker's liveness and autohunt opt-in into the shared store."""
     data.store().save_fix_worker({
-        "host": socket.gethostname(), "pid": os.getpid(),
+        "host": settings.worker_id(), "pid": os.getpid(),
         "last_beat": _now(), "current_pr": state["current_pr"],
         "autohunt": enabled_autohunt()})
 
 
 def recover_orphans() -> list[int]:
-    """Mark THIS host's `running`/`pushing` requests failed: an action does not
-    survive the worker's process, so at startup such a status claimed by this
-    host can only be a restart's leftover. A request another host claimed is its
-    live run, never touched from here. Returns the PRs marked.
+    """Mark failed the `running`/`pushing` requests no worker will finish: this
+    host's own (an action does not survive the worker's process, so such a
+    status claimed here is a restart's leftover) and any host's whose
+    heartbeat has been silent past worker_health.OFFLINE_AFTER_SECONDS. A
+    request a live host claimed is its run, never touched from here. Returns
+    the PRs marked. A `failed` ending is what the hunter retries after its
+    cooldown, so the work comes back around on whichever machine is up.
 
     A `pushing` orphan is reported as indeterminate: the push may or may not
     have gone out before the process died, so the operator re-reads the PR
     rather than the worker guessing."""
     marked: list[int] = []
-    me = socket.gethostname()
+    me = settings.worker_id()
     st = data.store()
+    registry = st.load_fix_worker()
     with st.batch():
         in_flight = st.prs_matching(("fix_request", "status"), ["running", "pushing"])
         for n, rec in sorted(in_flight.items()):
             req = rec.fix_request or {}
             status = req.get("status")
-            if req.get("host") not in (None, me):
+            host = req.get("host")
+            mine = host in (None, me)
+            if not mine and not verify_worker.worker_offline(
+                    str(host), registry, req.get("started_at") or req.get("queued_at")):
                 continue
-            note = ("the autofix worker restarted mid-run — nothing was pushed; re-queue to retry"
+            who = ("the autofix worker restarted" if mine
+                   else f"the autofix worker on {host} went offline")
+            note = (f"{who} mid-run — nothing was pushed; it retries"
                     if status == "running" else
-                    "the autofix worker restarted mid-push — re-read the PR to see whether "
+                    f"{who} mid-push — re-read the PR to see whether "
                     "the push landed before re-queueing")
             st.edit_pr(n).record_fix_request(
                 "failed", req.get("action", "fix"), queued_at=req.get("queued_at"),
@@ -211,6 +235,50 @@ def recover_orphans() -> list[int]:
                 source=req.get("source"), host=me)
             marked.append(n)
     return marked
+
+
+# How long a parked `resolve` waits for the worker that authored it before
+# another worker gives the head back to the hunter. Only that worker can push
+# the kept merge commit; past this its silence costs more than re-authoring.
+RESOLVE_STRANDED_SECONDS = 24 * 3600.0
+
+
+def reclaim_stranded_resolves() -> list[int]:
+    """Cancel the parked `resolve` requests whose authoring worker has been
+    offline longer than RESOLVE_STRANDED_SECONDS and that no reviewer
+    rejected, so the hunter re-authors them on a machine that is up. A resolve
+    a reviewer rejected carries a judgment the operator should read, and stays.
+    The cancel is stamped `reclaimed`, which is what re-arms the head for the
+    hunter. Returns the PRs cancelled."""
+    me = settings.worker_id()
+    st = data.store()
+    registry = st.load_fix_worker()
+    now = datetime.now(timezone.utc)
+    cancelled: list[int] = []
+    for n, rec in sorted(data.prs().items()):
+        req = rec.fix_request or {}
+        if req.get("status") != "awaiting-review" or req.get("action") != "resolve":
+            continue
+        host = req.get("host")
+        if not host or host == me:
+            continue
+        beat = ((registry.get("hosts") or {}).get(host) or {}).get("last_beat")
+        try:
+            since = (now - datetime.fromisoformat(str(beat))).total_seconds()
+        except ValueError:
+            since = float("inf")
+        if since < RESOLVE_STRANDED_SECONDS:
+            continue
+        reviews = ((req.get("result") or {}).get("auto_review") or {}).get("reviews") or []
+        if any(isinstance(r, dict) and r.get("verdict") != "safe" and not r.get("failed")
+               for r in reviews):
+            continue
+        _cancel(n, req, f"the worker that authored this resolution ({host}) has been "
+                        f"offline for {since / 3600:.0f} hours and only it can push the "
+                        f"kept merge; the head is handed back to the hunter",
+                result={"reclaimed": {"from": host, "at": _now()}})
+        cancelled.append(n)
+    return cancelled
 
 
 def next_queued() -> int | None:
@@ -250,7 +318,7 @@ def next_reviewable() -> int | None:
     until the resolve is re-authored; and none resting in _review_backoff."""
     if "resolve" not in settings.fix_autopush():
         return None
-    me = socket.gethostname()
+    me = settings.worker_id()
     best_n: int | None = None
     best_key: str | None = None
     for n, rec in data.prs().items():
@@ -276,7 +344,7 @@ def _oldest(status: str, mine_only: tuple[str, ...] = ()) -> int | None:
     first within each. An action named in `mine_only` is passed over unless this
     machine recorded it (or the record names none, from before hosts were
     stamped) — it depends on state only that machine holds."""
-    me = socket.gethostname()
+    me = settings.worker_id()
     best_n: int | None = None
     best_key: tuple[bool, str] | None = None
     for n, rec in data.prs().items():
@@ -381,7 +449,7 @@ def _settle(n: int, req: dict, rc: int, output: str) -> None:
     if rc in TRANSIENT_EXITS and attempts < MAX_ATTEMPTS:
         data.store().edit_pr(n).record_fix_request(
             "queued", req.get("action", "fix"), queued_at=req.get("queued_at"),
-            attempts=attempts, source=req.get("source"), host=socket.gethostname(),
+            attempts=attempts, source=req.get("source"), host=settings.worker_id(),
             guidance=req.get("guidance"),
             error=f"attempt {attempts} did not stick, retrying: {output[-TAIL_CHARS:]}")
         data.refresh()
@@ -395,10 +463,13 @@ def _settle(n: int, req: dict, rc: int, output: str) -> None:
 
 
 def _log_run(n: int, req: dict, status: str, detail: str | None = None,
-             host: str | None = None) -> None:
-    """Append this run's ending to the runs ledger. A PR carries one
-    fix_request, which the next queue click overwrites — the ledger is where an
-    action's outcome survives that, and what the app's fix history reads.
+             host: str | None = None, *, kind: str = "run-failed") -> None:
+    """Append this run's ending to the runs ledger, and book it on the fix
+    lane's health: a `failed` ending is the machine's (counted under `kind`;
+    an agent outage trips every agent lane at once), every other ending is
+    the PR's and ends the failure run. A PR carries one fix_request, which the
+    next queue click overwrites — the ledger is where an action's outcome
+    survives that, and what the app's fix history reads.
 
     Best-effort: a ledger append that fails must not cost the operator the
     terminal status the caller has already written."""
@@ -407,22 +478,29 @@ def _log_run(n: int, req: dict, status: str, detail: str | None = None,
         "finished": _now(),
         "trigger": "autohunt" if req.get("source") == "auto" else None,
         "stats": {"status": status, "action": req.get("action", "fix"),
-                  "detail": detail, "host": host or socket.gethostname()}}
+                  "detail": detail, "host": host or settings.worker_id()}}
     try:
         data.store().append_run(entry)
     except Exception:
         traceback.print_exc()
+    if status != "failed":
+        lane_health.note_success("fix")
+    elif kind == "agent-unavailable":
+        lane_health.trip_agent_lanes(detail or "the agent CLI could not run")
+    else:
+        lane_health.note_failure("fix", kind=kind, reason=detail or "", pr=n)
 
 
-def _fail(n: int, req: dict, message: str, result: dict | None = None) -> None:
+def _fail(n: int, req: dict, message: str, result: dict | None = None, *,
+          kind: str = "run-failed") -> None:
     data.store().edit_pr(n).record_fix_request(
         "failed", req.get("action", "fix"), queued_at=req.get("queued_at"),
         started_at=req.get("started_at"), finished_at=_now(),
         error=message[-TAIL_CHARS:], result=result, source=req.get("source"),
-        guidance=req.get("guidance"), host=socket.gethostname(),
+        guidance=req.get("guidance"), host=settings.worker_id(),
         head_sha=req.get("against_head_sha"))
     data.refresh()
-    _log_run(n, req, "failed", message[-TAIL_CHARS:])
+    _log_run(n, req, "failed", message[-TAIL_CHARS:], kind=kind)
 
 
 def _refuse(n: int, req: dict, reason: str, result: dict | None = None) -> None:
@@ -431,7 +509,7 @@ def _refuse(n: int, req: dict, reason: str, result: dict | None = None) -> None:
         started_at=req.get("started_at"), finished_at=_now(),
         refused_reason=reason[-TAIL_CHARS:], result=result,
         source=req.get("source"), guidance=req.get("guidance"),
-        host=socket.gethostname(), head_sha=req.get("against_head_sha"))
+        host=settings.worker_id(), head_sha=req.get("against_head_sha"))
     data.refresh()
     _log_run(n, req, "refused", reason[-TAIL_CHARS:])
 
@@ -463,14 +541,16 @@ def _end_on_preflight(n: int, claimed: dict, pf: dict, result: dict) -> None:
     while a refusal or a compile that exits non-zero is a verdict on the
     change."""
     _resubmit(n, "abort")
-    ending = _fail if pf.get("error") else _refuse
-    ending(n, claimed, plain_preflight(pf), result=result)
+    if pf.get("error"):
+        _fail(n, claimed, plain_preflight(pf), result=result, kind="sandbox")
+    else:
+        _refuse(n, claimed, plain_preflight(pf), result=result)
 
 
 def run_one(n: int) -> None:
     """Act on one claimed PR. Every exit writes a terminal status, so a request
     never sits `running` after this returns."""
-    host = socket.gethostname()
+    host = settings.worker_id()
     claimed = data.store().claim_fix_request(n, host=host)
     if claimed is None:
         return  # another worker got there first, or the request moved on
@@ -688,6 +768,11 @@ def _author_fix(n: int, claimed: dict) -> None:
                                     findings=findings, ci_failures=checks,
                                     review_summary=review_summary,
                                     diff_path=str(pr_patch), head_sha=rec.head_sha)
+    except headless_agent.AgentUnavailable as e:
+        _resubmit(n, "abort")
+        _fail(n, claimed, f"The agent could not run on {settings.worker_id()}: {e}",
+              kind="agent-unavailable")
+        return
     except (RuntimeError, ValueError) as e:
         _resubmit(n, "abort")
         _fail(n, claimed, f"The agent attempt did not land: {e}")
@@ -766,7 +851,7 @@ def _author_fix(n: int, claimed: dict) -> None:
     result = {**evidence, "compile_preflight": pf,
               "message": verdict["summary"] or _commit_message("fix")}
     if "fix" not in settings.fix_autopush():
-        _park(n, claimed, "fix", result, socket.gethostname())
+        _park(n, claimed, "fix", result, settings.worker_id())
         return
     _push(n, claimed, "fix", result)
 
@@ -785,7 +870,7 @@ def _running_step(n: int, claimed: dict, step: str, action: str = "resolve") -> 
         "running", action, queued_at=claimed.get("queued_at"),
         started_at=claimed.get("started_at"), step=step,
         source=claimed.get("source"), guidance=claimed.get("guidance"),
-        host=socket.gethostname(), head_sha=claimed.get("against_head_sha"))
+        host=settings.worker_id(), head_sha=claimed.get("against_head_sha"))
     data.refresh()
 
 
@@ -840,6 +925,11 @@ def _agent_resolve(n: int, claimed: dict, paused: list[str]) -> None:
         verdict = resolve_conflicts.resolve(
             worktree, conflicts, pr=n, title=rec.title or "",
             body=rec.body or "", base_branch=str(st.get("base_branch") or ""))
+    except headless_agent.AgentUnavailable as e:
+        _resubmit(n, "abort")
+        _fail(n, claimed, f"The agent could not run on {settings.worker_id()}: {e}",
+              kind="agent-unavailable")
+        return
     except headless_agent.EditsBlockedError as e:
         # The edit grant never reached the agent — this machine's fault, so the
         # ending is retryable rather than a verdict that rests the head.
@@ -891,7 +981,7 @@ def _agent_resolve(n: int, claimed: dict, paused: list[str]) -> None:
               "resolutions": verdict["resolutions"], "conflict_paths": paused,
               "merge_diff": merge_diff,
               "message": "Merge current base, conflicts agent-resolved"}
-    _park(n, claimed, "resolve", result, socket.gethostname())
+    _park(n, claimed, "resolve", result, settings.worker_id())
 
 
 def _describe(n: int, claimed: dict) -> None:
@@ -926,6 +1016,10 @@ def _describe(n: int, claimed: dict) -> None:
         verdict = describe_pr.describe(pr=n, title=title, body=body, diff=diff,
                                        template=template, findings=findings,
                                        required=describe_pr.required_sections())
+    except headless_agent.AgentUnavailable as e:
+        _fail(n, claimed, f"The agent could not run on {settings.worker_id()}: {e}",
+              kind="agent-unavailable")
+        return
     except (RuntimeError, ValueError) as e:
         _fail(n, claimed, f"The agent attempt did not land: {e}")
         return
@@ -935,7 +1029,7 @@ def _describe(n: int, claimed: dict) -> None:
     result = {"body": verdict["body"], "previous_body": body,
               "message": "Rewrite the description to follow the PR template"}
     if "describe" not in settings.fix_autopush():
-        _park(n, claimed, "describe", result, socket.gethostname())
+        _park(n, claimed, "describe", result, settings.worker_id())
         return
     _post_description(n, claimed, result)
 
@@ -1058,12 +1152,12 @@ def _commit_message(action: str) -> str:
             else "Address review and CI feedback")
 
 
-def _cancel(n: int, req: dict, reason: str) -> None:
+def _cancel(n: int, req: dict, reason: str, result: dict | None = None) -> None:
     data.store().edit_pr(n).record_fix_request(
         "cancelled", req.get("action", "fix"), queued_at=req.get("queued_at"),
         started_at=req.get("started_at"), finished_at=_now(),
-        refused_reason=reason[-TAIL_CHARS:], source=req.get("source"),
-        guidance=req.get("guidance"), host=socket.gethostname(),
+        refused_reason=reason[-TAIL_CHARS:], result=result, source=req.get("source"),
+        guidance=req.get("guidance"), host=settings.worker_id(),
         head_sha=req.get("against_head_sha"))
     data.refresh()
     _log_run(n, req, "cancelled", reason[-TAIL_CHARS:])
@@ -1127,7 +1221,7 @@ def review_parked_resolve(n: int) -> None:
         _cancel(n, req, "the kept merge worktree is gone, so there is nothing "
                         "to judge or push — re-queue the rebase")
         return
-    claimed = data.store().claim_fix_request(n, host=socket.gethostname(),
+    claimed = data.store().claim_fix_request(n, host=settings.worker_id(),
                                              statuses=("awaiting-review",))
     if claimed is None:
         return
@@ -1137,7 +1231,7 @@ def review_parked_resolve(n: int) -> None:
         data.store().edit_pr(n).record_fix_request(
             "awaiting-review", "resolve", queued_at=claimed.get("queued_at"),
             started_at=req.get("started_at"), result=claimed.get("result"),
-            source=claimed.get("source"), host=socket.gethostname(),
+            source=claimed.get("source"), host=settings.worker_id(),
             base_sha=claimed.get("base_sha"), head_sha=head)
         data.refresh()
         print(f"[fix-worker] resolve auto-review for PR #{n}: {reason}; "
@@ -1161,7 +1255,7 @@ def _judge_claimed_resolve(n: int, rec: Pr, claimed: dict, head: str,
         restore("the kept worktree's diff could not be read")
         return
     stamp: dict = {"against_head_sha": head, "base_sha": claimed.get("base_sha"),
-                   "host": socket.gethostname(), "at": _now(),
+                   "host": settings.worker_id(), "at": _now(),
                    "tier": risktier.tier_facet(paths),
                    "reviews": [], "tests": None}
     tier = stamp["tier"]["tier"]
@@ -1203,7 +1297,7 @@ def _judge_claimed_resolve(n: int, rec: Pr, claimed: dict, head: str,
     data.store().edit_pr(n).record_fix_request(
         "approved" if ok else "awaiting-review", "resolve",
         queued_at=claimed.get("queued_at"), started_at=claimed.get("started_at"),
-        result=result, source=claimed.get("source"), host=socket.gethostname(),
+        result=result, source=claimed.get("source"), host=settings.worker_id(),
         base_sha=claimed.get("base_sha"), head_sha=head)
     data.refresh()
     print(f"[fix-worker] resolve auto-review for PR #{n}: "
@@ -1224,7 +1318,7 @@ def push_approved(n: int) -> None:
     Any machine can push either one, so an approval is not held hostage by the
     machine that authored it. A `resolve` is the exception: the merge commit in
     its worktree is the artifact being approved, so its own machine pushes it."""
-    host = socket.gethostname()
+    host = settings.worker_id()
     claimed = data.store().claim_fix_request(n, host=host, statuses=("approved",),
                                              to_status="pushing")
     if claimed is None:
@@ -1326,7 +1420,7 @@ def _finish_pushed(n: int, req: dict, output: str, result: dict | None = None) -
         "pushed", req.get("action", "fix"), queued_at=req.get("queued_at"),
         started_at=req.get("started_at"), finished_at=_now(), result=merged,
         source=req.get("source"), guidance=req.get("guidance"),
-        host=socket.gethostname(), head_sha=req.get("against_head_sha"))
+        host=settings.worker_id(), head_sha=req.get("against_head_sha"))
     data.refresh()
     _log_run(n, req, "pushed", merged.get("message"))
     if req.get("action") in ("fix", "describe"):
@@ -1389,13 +1483,16 @@ def _hunt_attempted(pr: Pr, action: str) -> bool:
     head no longer matches re-arms the PR either way. A `resolve` is what a
     hunted rebase became when it paused on conflicts, so its ending rests the
     rebase hunt the same way. An operator's click is not bound by any of
-    this."""
+    this. A cancel stamped `reclaimed` is a resolve taken back from a
+    worker that went offline, and re-arms the head."""
     req = pr.fix_request or {}
     done = {action, "resolve"} if action == "rebase" else {action}
     if not (req.get("action") in done and pr.head_sha is not None
             and req.get("against_head_sha") == pr.head_sha):
         return False
     status = req.get("status")
+    if status == "cancelled" and (req.get("result") or {}).get("reclaimed"):
+        return False
     if status in _VERDICT_ENDINGS:
         return True
     if status == "failed":
@@ -1510,14 +1607,30 @@ def _drain_loop() -> None:
             print(f"[fix-worker] marked failed after restart: {marked}", flush=True)
     except Exception:
         traceback.print_exc()
+    last_reclaim = time.monotonic()
     while not stop.is_set():
         try:
-            n = next_approved()
+            if time.monotonic() - last_reclaim >= RECLAIM_SECONDS:
+                last_reclaim = time.monotonic()
+                marked = recover_orphans()
+                stranded = reclaim_stranded_resolves()
+                if marked or stranded:
+                    print(f"[fix-worker] reclaimed from an offline worker: "
+                          f"failed {marked}, re-armed {stranded}", flush=True)
+            fix_open = lane_health.open_or_retest("fix")
+            # An approved push needs the sandbox and no agent, so a lane
+            # tripped on the agent alone still pushes what the operator
+            # approved; every other trip holds everything.
+            pushes_open = fix_open or lane_health.trip_kind("fix") in worker_selftest.AGENT_KINDS
+            n = next_approved() if pushes_open else None
             if n is not None:
                 state["current_pr"] = n
                 beat()
                 print(f"[fix-worker] pushing approved fix for PR #{n}", flush=True)
                 push_approved(n)
+                continue
+            if not fix_open:
+                stop.wait(POLL_SECONDS)
                 continue
             n = next_queued()
             if n is not None:
@@ -1564,12 +1677,13 @@ def startup() -> bool:
     if running():
         return True
     stop.clear()
+    worker_log.install()
     _threads[:] = [
         threading.Thread(target=_beat_loop, daemon=True, name="fix-worker-beat"),
         threading.Thread(target=_drain_loop, daemon=True, name="fix-worker"),
     ]
     for t in _threads:
         t.start()
-    print(f"[fix-worker] enabled on {socket.gethostname()} as {settings.push_login()} "
+    print(f"[fix-worker] enabled on {settings.worker_id()} as {settings.push_login()} "
           f"(poll every {POLL_SECONDS:.0f}s)", flush=True)
     return True

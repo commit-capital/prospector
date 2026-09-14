@@ -29,6 +29,45 @@ from pipeline.settings import REPO_ROOT
 CLAUDE_BIN = shutil.which("claude") or "claude"
 
 
+class AgentUnavailable(RuntimeError):
+    """The CLI could not do any work at all: the binary is missing, or it
+    exited because it is not authenticated. This machine's condition, never a
+    verdict on the work — callers end such a run as retryable, and a worker
+    trips its agent lanes until a probe passes."""
+
+
+# What the CLI prints when it cannot serve any prompt: an expired or missing
+# login, or a rejected key. Matched against the run's output on a non-zero exit.
+_UNAVAILABLE = re.compile(
+    r"Failed to authenticate|OAuth (?:access )?token (?:has )?expired|Not logged in"
+    r"|Please run /login|Invalid API key|invalid_api_key|authentication_error"
+    r"|API Error: 401", re.I)
+
+
+def _failure_text(text: str, raw_lines: list[str], results: list[dict]) -> str:
+    """Where a failed run's own complaint can be: the terminal result event's
+    error text, the lines the CLI printed outside the stream, and the message
+    text when the CLI marked the run an error or never sent a result. A run
+    that completed with a result the CLI did not flag keeps its prose out of
+    the scan, so an assistant quoting an error string is not an outage."""
+    result = results[0] if results else None
+    parts: list[str] = []
+    if result is not None and result.get("is_error"):
+        parts.append(str(result.get("result") or ""))
+    parts.extend(raw_lines)
+    if result is None or result.get("is_error"):
+        parts.append(text)
+    return "\n".join(parts)
+
+
+def unavailable_reason(text: str) -> str | None:
+    """The line of `text` that says the CLI cannot serve prompts, or None."""
+    for line in text.splitlines():
+        if _UNAVAILABLE.search(line):
+            return line.strip()[:300]
+    return None
+
+
 class EditsBlockedError(RuntimeError):
     """The CLI denied an Edit/Write on a path inside the granted edit_root.
 
@@ -98,12 +137,13 @@ def _flags(allow_gh: bool, edit_root: str | None = None,
     ]
 
 
-def parse_stream(lines, on_event=None, on_result=None) -> str:
+def parse_stream(lines, on_event=None, on_result=None, on_raw=None) -> str:
     """Consume claude stream-json lines; return the concatenated assistant text.
     Calls on_event((kind, name, input)) for tool uses so callers can show
-    progress: ("tool", tool_name, tool_input_dict), and on_result(event) with
+    progress: ("tool", tool_name, tool_input_dict), on_result(event) with
     the CLI's terminal result event, which carries the run's permission
-    denials."""
+    denials, and on_raw(line) with every non-JSON line — the CLI's own
+    complaints, which arrive outside the stream."""
     parts: list[str] = []
     saw_delta = False
     for raw in lines:
@@ -113,6 +153,8 @@ def parse_stream(lines, on_event=None, on_result=None) -> str:
         try:
             e = json.loads(s)
         except json.JSONDecodeError:
+            if on_raw:
+                on_raw(s)
             continue
         t = e.get("type")
         if t == "stream_event":
@@ -236,10 +278,13 @@ def run_agent(prompt: str, *, allow_gh: bool, cwd: str, system_prompt: str | Non
     env = operator_env()
     if env_extra:
         env.update(env_extra)
-    proc = subprocess.Popen(cmd, cwd=cwd, stdin=subprocess.PIPE,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True,
-                            start_new_session=True, env=env)
+    try:
+        proc = subprocess.Popen(cmd, cwd=cwd, stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True,
+                                start_new_session=True, env=env)
+    except FileNotFoundError:
+        raise AgentUnavailable(f"{CLAUDE_BIN} is not installed or not on PATH")
     assert proc.stdin is not None and proc.stdout is not None
 
     # Fed from a thread while this thread drains stdout, so neither pipe can
@@ -255,7 +300,9 @@ def run_agent(prompt: str, *, allow_gh: bool, cwd: str, system_prompt: str | Non
     feeder = threading.Thread(target=_feed, daemon=True)
     feeder.start()
     results: list[dict] = []
-    text = parse_stream(proc.stdout, on_event=on_event, on_result=results.append)
+    raw_lines: list[str] = []
+    text = parse_stream(proc.stdout, on_event=on_event, on_result=results.append,
+                        on_raw=raw_lines.append)
     feeder.join(timeout=60)
     try:
         proc.wait(timeout=timeout)
@@ -267,6 +314,9 @@ def run_agent(prompt: str, *, allow_gh: bool, cwd: str, system_prompt: str | Non
         raise RuntimeError(f"claude did not exit within {timeout}s")
     if proc.returncode != 0:
         tail = text[-500:] if text else "(no output)"
+        why = unavailable_reason(_failure_text(text, raw_lines, results))
+        if why:
+            raise AgentUnavailable(f"claude exited {proc.returncode}: {why}")
         raise RuntimeError(f"claude exited {proc.returncode}; last output: {tail}")
     if edit_root:
         blocked = _blocked_edits(results[0] if results else None, edit_root)
@@ -276,3 +326,15 @@ def run_agent(prompt: str, *, allow_gh: bool, cwd: str, system_prompt: str | Non
                 f"Edit/Write call(s) inside {edit_root} were permission-denied "
                 f"(first: {blocked[0]})")
     return text
+
+
+def probe(timeout: int = 180) -> str | None:
+    """Whether the CLI can serve a prompt on this machine right now: one
+    trivial headless run on the cheapest model. None when it answered, else
+    the reason it could not — what a tripped agent lane retests with."""
+    try:
+        run_agent("Reply with the single word ok.", allow_gh=False,
+                  cwd=str(REPO_ROOT), model="haiku", timeout=timeout)
+    except RuntimeError as e:
+        return str(e)
+    return None

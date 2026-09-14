@@ -17,6 +17,7 @@ Cluster state is DERIVED here, never stored.
 from __future__ import annotations
 
 import fnmatch
+from datetime import datetime, timezone
 import posixpath
 import re
 import shlex
@@ -31,6 +32,60 @@ if TYPE_CHECKING:
 SECURITY_MAX_AGE_DAYS = 7
 
 VERIFY_MAX_AGE_DAYS = 7
+
+# Whose fault a failed verify_request is, by its error_kind: "system" when the
+# harness or the machine broke (an errored sandbox, a dead agent, a restart, a
+# missing base), "pr" when a property of the PR stopped the run. The worker's
+# health counter and the app's fault badge both read this.
+VERIFY_REQUEST_FAULT: dict[str, str] = {
+    "no-base": "system", "fetch-error": "system", "sandbox-error": "system",
+    "agent-failed": "system", "agent-unavailable": "system",
+    "interrupted": "system", "exception": "system", "hold": "system",
+    "refused-safety": "pr",
+}
+
+# How many runs one head gets before an errored verify request stays errored,
+# and how long the worker that errored it waits before trying again itself.
+VERIFY_RETRY_ATTEMPTS = 3
+VERIFY_RETRY_SECONDS = 6 * 3600
+
+
+def verify_retry_allowed(pr: Pr, *, worker: str,
+                         now: datetime | None = None) -> tuple[bool, str]:
+    """May the idle hunter re-queue this PR's errored verify request?
+
+    Only a system-fault error qualifies (VERIFY_REQUEST_FAULT): the harness or
+    the machine broke, so the PR itself has not been judged. Within
+    VERIFY_RETRY_ATTEMPTS runs per head, the retry is allowed when the head
+    moved since the error, when `worker` is not the machine that errored it
+    (a different machine may not share the fault), or when VERIFY_RETRY_SECONDS
+    have passed on the same machine. A refusal that is the PR's, a cancel, and
+    an exhausted head all stay put for an operator."""
+    req = pr.verify_request or {}
+    if req.get("status") != "error":
+        return False, "not an errored request"
+    kind = str(req.get("error_kind") or "")
+    if VERIFY_REQUEST_FAULT.get(kind) != "system":
+        return False, f"{kind or 'the error'} is the PR's to answer, not the harness's"
+    stamped = req.get("against_head_sha")
+    if stamped and pr.head_sha and stamped != pr.head_sha:
+        return True, "the head moved since the error"
+    runs = int(req.get("attempts") or 0) + 1
+    if runs >= VERIFY_RETRY_ATTEMPTS:
+        return False, f"this head has had {runs} runs"
+    host = req.get("host")
+    if host and host != worker:
+        return True, f"a different worker than {host}, which errored it"
+    now = now or datetime.now(timezone.utc)
+    try:
+        ended = datetime.fromisoformat(str(req.get("finished_at")))
+    except ValueError:
+        return True, "the error carries no usable finish time"
+    if ended.tzinfo is None:
+        ended = ended.replace(tzinfo=timezone.utc)
+    if (now - ended).total_seconds() >= VERIFY_RETRY_SECONDS:
+        return True, "rested since the error"
+    return False, "resting on the machine that errored it"
 
 # Merge-gate lanes in run order. A lane is required iff the active profile
 # configures its command; configuring the key is the entire enforcement switch.

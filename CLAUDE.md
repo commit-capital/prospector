@@ -95,8 +95,8 @@ comment/close/reopen/review as the configured bot plus the dedicated
 reads normally, and writes nothing.
 
 **Two writers touch `.env`, each with its own allowlist.**
-`worker_control.set_flags` writes the seven worker lane switches and nothing
-else. `prospector_app/backend/onboarding.py` writes deployment configuration
+`worker_control.set_flags` writes the seven worker lane switches plus
+`TRIAGE_WORKER_ID` and nothing else. `prospector_app/backend/onboarding.py` writes deployment configuration
 for the setup wizard, allowlisted per step: `connect` (`TRIAGE_REPO`,
 `TRIAGE_STORE_URL`, the profile path, and presentation/review config, plus
 `profile.json` itself), `join` (a pasted bundle: the `connect` keys plus the bot
@@ -149,7 +149,7 @@ Phases (each idempotent; drivers own the deterministic half, Workflow scripts th
 - **2 ANALYZE** (`analyze_driver.py` + the analyze workflow) — per-cluster dispositions + outcome, stored verbatim; a merge pick's blockers (below-bar review, a security verdict, a verify outcome) derive its effective disposition at read time (`gates.merge_demotion` via `Pr.disposition`), so a re-run or signal refresh that clears the blocker heals the read with nothing re-stored.
 - **3 GATE** (`gates.py`) — which merge candidates are clean enough for security review.
 - **4 SECURITY** (`security_driver.py` + `workflows/security.js`) — 3-lens adversarial review + refuting verifier on gated merge candidates only; RED flips the PR to needs-human and reopens every cluster it belongs to.
-- **6 VERIFY** (`verify_driver.py` + `verify_pr.py`) — run the PR's test in a secretless Docker sandbox against the machine's own pinned default branch: red before the fix, green after, each phase in its own container. Dynamic verification never runs against a credentialed deployment. A green that exits failing is accepted only when its parsed failing set is contamination the red run already carried and none is named by the PR's test hunks (`gates.green_accepted`); that partial evidence never auto-recommends merge. A blind adequacy verdict commits before any run, and `gates.verify_outcome` computes the outcome from agent judgments plus host-observed exits. For a PR without tests, an agent may author new test files through a fail-closed validator; a confirmed red→green records `agent-verified`, which supports human `merge_eligibility` but never automatic `merge_allowed`. Configured compile/build lanes run over the patched tree; failures become `regressed`, infrastructure errors become `escalate`, and missing lane evidence is surfaced as incomplete. Any number of machines run this phase: the queue claim is a compare-and-swap, each machine holds its own base pin (`verify_base` is keyed by hostname) and refreshes it daily after the default branch moves, and every result records the base it was proven against. The idle hunter claims a PR's security review the same way, so two machines never both spend one.
+- **6 VERIFY** (`verify_driver.py` + `verify_pr.py`) — run the PR's test in a secretless Docker sandbox against the machine's own pinned default branch: red before the fix, green after, each phase in its own container. Dynamic verification never runs against a credentialed deployment. A green that exits failing is accepted only when its parsed failing set is contamination the red run already carried and none is named by the PR's test hunks (`gates.green_accepted`); that partial evidence never auto-recommends merge. A blind adequacy verdict commits before any run, and `gates.verify_outcome` computes the outcome from agent judgments plus host-observed exits. For a PR without tests, an agent may author new test files through a fail-closed validator; a confirmed red→green records `agent-verified`, which supports human `merge_eligibility` but never automatic `merge_allowed`. Configured compile/build lanes run over the patched tree; failures become `regressed`, infrastructure errors become `escalate`, and missing lane evidence is surfaced as incomplete. Any number of machines run this phase: the queue claim is a compare-and-swap, each machine holds its own base pin (`verify_base` is keyed by `settings.worker_id()`) and refreshes it daily after the default branch moves, and every result records the base it was proven against. The idle hunter claims a PR's security review the same way, so two machines never both spend one. A run claimed by a worker whose heartbeat has been silent an hour is reclaimed by any worker's `recover_orphans` (re-queued at a resumable step, else errored `interrupted`), and an errored request whose fault is the harness's (`gates.VERIFY_REQUEST_FAULT`) is re-queued by the hunter under `gates.verify_retry_allowed`: when the head moved, when a different worker is picking, or six hours later on the same one, three runs per head; the PR's own refusals and cancels wait for an operator.
 - **7 RESOLVE** — human approves in the app; the executor acts upstream as `TRIAGE_BOT_LOGIN`.
 
 **AUTOFIX** (`prospector_app/backend/fix_queue.py` + `fix_worker.py`) sits beside
@@ -206,7 +206,13 @@ related to the conflicted paths. The verdict is stamped into
 push path takes it, anything less stays parked with the reason for the
 operator, whose manual Push never consults the bar. A parked resolve whose
 head moved is cancelled instead of judged — the hunter re-arms on the new
-head. `gates.fix_eligibility` is the ONE
+head. A parked resolve whose authoring worker has been offline a day, and that
+no reviewer rejected, is cancelled by any other worker
+(`fix_worker.reclaim_stranded_resolves`) with a `reclaimed` stamp that re-arms
+the head for the hunter; a reviewer-rejected one stays for the operator. A
+`running` fix request whose worker's heartbeat has been silent an hour is
+marked `failed` by any worker's `recover_orphans`, which the hunter retries
+after its cooldown. `gates.fix_eligibility` is the ONE
 policy —
 fail-closed on a malicious threat verdict, any recorded RED security verdict, a
 CODEOWNERS-gated path, a path the profile's `autofix.deny_globs` names, a
@@ -250,6 +256,33 @@ outcome outlives the `fix_request` the next queue click overwrites; the app's
 fix run history reads that lane, and `fix_history_backfill.py` seeds it from the
 endings a store already holds. The queue view itself holds an ending for half an
 hour, so a run that starts and finishes between two polls is still readable.
+
+**WORKER HEALTH** (`pipeline/worker_health.py` + `prospector_app/backend/lane_health.py`
++ `escalation.py`) is the ONE policy for a worker that is failing rather than
+the PRs. Every ending a worker writes is booked per lane (`security`, `verify`,
+`fix`) on that worker's `worker_health` registry record: a machine-fault ending
+(a `failed` fix run, a system-fault verify error per `gates.VERIFY_REQUEST_FAULT`,
+a security run that exited non-zero or held its verdict) extends a run of
+consecutive failures, any other ending resets it. Three in a row trip the lane;
+an agent outage (`headless_agent.AgentUnavailable`: the CLI is missing or not
+authenticated — `security_review.py` exits `EXIT_AGENT_UNAVAILABLE`, `verify_pr`
+ends the request `agent-unavailable`, the fix worker ends the run `failed`)
+trips every lane the machine runs at once; three consecutive base-pin refresh
+failures trip `verify`. A tripped lane picks nothing (a lane tripped on the
+agent alone still pushes what an operator approved). A lane tripped on the
+agent or the sandbox retests itself every fifteen minutes
+(`worker_selftest.py`: the CLI probe, or the daemon, pinned image and clone)
+and reopens on a pass; one tripped on anything else (crashed runs, held
+verdicts) opens once after a six-hour cool-down; the Control tab's banner
+offers Resume. Every trip appends a `worker:trip` ledger entry and files one
+issue per failure kind per week per worker on `PROSPECTOR_FEEDBACK_REPO` as the
+operator, labeled `worker-health`; any live backend's escalation watch files
+the same for a worker whose heartbeat has been silent an hour, and a worker
+stopping on purpose drops its heartbeat so it is never escalated. Each
+worker's health is its own `worker_health:<id>` registry row. Worker stdout
+is mirrored to `<verify scratch>/logs/worker-<id>.log` (`worker_log.py`),
+which the issue quotes. The security lane's skip set carries a reason per PR
+and expires after six hours.
 
 **ALERTS** (`alert_triage/`) is a parallel family beside PRs and issues:
 GitHub code-scanning / Dependabot / secret-scanning alerts for `TRIAGE_REPO`,
