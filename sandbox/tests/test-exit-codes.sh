@@ -73,6 +73,11 @@ check "compile failing cmd = 20" 20 \
   "$(run --phase compile --patch "$CTX/fix.patch" --test-cmd 'exit 1')"
 check "compile with bad patch = 30"   30 "$(run --phase compile --patch "$CTX/bad.patch")"
 check "compile with no --patch = 2 (launcher usage error)" 2 "$(run --phase compile)"
+check "compile --pristine runs the command over the base as pinned = 0" 0 \
+  "$(run --phase compile --pristine --test-cmd 'exit 0')"
+check "compile --pristine failing cmd = 20" 20 "$(run --phase compile --pristine --test-cmd 'exit 1')"
+check "compile --pristine with --patch = 2 (launcher usage error)" 2 \
+  "$(run --phase compile --pristine --patch "$CTX/fix.patch")"
 
 # A mounted patch that never matches the sha the host announced is the worker's
 # file sharing failing, not a conflict: run-phase.sh waits, then exits 40. Run

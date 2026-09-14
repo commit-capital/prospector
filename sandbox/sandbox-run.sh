@@ -11,12 +11,13 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NET="${PR_VERIFY_NET:-pr-verify-net}"
 
-IMAGE="" PHASE="" PATCH="" EXCL="" SUITE_CFG="" PROBE_DENY_ARG="" CONTAINER_NAME="" TIER=0 TEST_CMD="pnpm -s test" BASE_SHA="unknown" HEAD_SHA="unknown"
+IMAGE="" PHASE="" PATCH="" EXCL="" SUITE_CFG="" PROBE_DENY_ARG="" CONTAINER_NAME="" TIER=0 TEST_CMD="pnpm -s test" BASE_SHA="unknown" HEAD_SHA="unknown" PRISTINE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --image) IMAGE="$2"; shift 2;;
     --phase) PHASE="$2"; shift 2;;
     --patch) PATCH="$2"; shift 2;;
+    --pristine) PRISTINE=1; shift;;
     --exclude-file) EXCL="$2"; shift 2;;
     --suite-config) SUITE_CFG="$2"; shift 2;;
     --probe-deny) PROBE_DENY_ARG="$2"; shift 2;;
@@ -29,7 +30,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$IMAGE" ] && [ -n "$PHASE" ] || {
-  echo "usage: sandbox-run.sh --image IMG --phase apply-check|repro|red|green|compile|build|baseline|regress [--patch F] [--exclude-file F] [--suite-config F] [--probe-deny LIST] [--tier 0|1] [--test-cmd C] [--base-sha S] [--head-sha S] [--container-name N]" >&2
+  echo "usage: sandbox-run.sh --image IMG --phase apply-check|repro|red|green|compile|build|baseline|regress [--patch F | --pristine] [--exclude-file F] [--suite-config F] [--probe-deny LIST] [--tier 0|1] [--test-cmd C] [--base-sha S] [--head-sha S] [--container-name N]" >&2
   exit 2; }
 case "$PHASE" in apply-check|repro|red|green|compile|build|baseline|regress) ;; *) echo "bad --phase: $PHASE" >&2; exit 2;; esac
 # apply-check, green, compile, and build require a patch onto the base tree.
@@ -37,8 +38,18 @@ case "$PHASE" in apply-check|repro|red|green|compile|build|baseline|regress) ;; 
 # diff itself adds — and runs unpatched when omitted. repro always runs
 # against the base tree as pinned and never takes one. regress requires one
 # too, plus the exclusion file from the baseline phase's failing set.
+# compile and build may instead run --pristine: the command over the base tree
+# as pinned, with no patch — how the host learns whether the base itself passes
+# the command before it reads a PR's failure as the PR's.
 case "$PHASE" in
-  apply-check|green|compile|build|regress)
+  compile|build)
+    if [ "$PRISTINE" = 1 ]; then
+      [ -z "$PATCH" ] || { echo "usage: --pristine takes no --patch" >&2; exit 2; }
+    else
+      [ -n "$PATCH" ] || { echo "usage: --phase $PHASE requires --patch F or --pristine" >&2; exit 2; }
+    fi
+    ;;
+  apply-check|green|regress)
     [ -n "$PATCH" ] || { echo "usage: --phase $PHASE requires --patch F" >&2; exit 2; }
     ;;
 esac

@@ -613,6 +613,13 @@ def _run_inner(store: Store, rec: Pr, req: _Request) -> int:
     except Exception as e:
         return _fail_transient(req, "sandbox-error", f"sandbox run failed: {e}",
                                log_tail=traceback.format_exc())
+    if ev is not None:
+        for lane_name, lane in (ev.get("lanes") or {}).items():
+            base_fails = lane.get("base_fails") if isinstance(lane, dict) else None
+            if base_fails:
+                return _fail(req, "base-lane",
+                             f"the {lane_name} lane's command fails on the base itself, so "
+                             f"it cannot judge this PR: {base_fails}")
     assert ev is not None, f"pr {n} has a committed blind verdict, so verify_pr returns evidence"
     rg = ev["red_green"]
     _say(f"  exits: apply={rg.get('apply_exit')} red={rg.get('red_exit')} "

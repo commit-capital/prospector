@@ -40,7 +40,7 @@
     "test_runner": ["npx", "vitest", "run"],
     "test_flags": ["--testTimeout=120000", "--hookTimeout=120000"],
     "pnpm_version": "9.15.4",
-    "compile_cmd": "pnpm -r typecheck",
+    "compile_cmd": "pnpm run preflight:workspace-links && pnpm --filter @paperclipai/paperclip-runner run build:typescript && pnpm -r --filter '!@paperclipai/server' --filter '!@paperclipai/paperclip-runner' typecheck && pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && pnpm --filter @paperclipai/server exec tsc --noEmit",
     "build_cmd": "pnpm build",
     "suite": {
       "wrapper": "scripts/run-vitest-stable.mjs",

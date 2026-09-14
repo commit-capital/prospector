@@ -2499,3 +2499,39 @@ class TestCanaryOutput:
         problems = vd.run_canaries("img:t0", "base1", 0)
         assert len(problems) == 2
         assert all("sandbox said: error: unrecognized input" in p for p in problems)
+
+
+class TestLanesAskTheBase:
+    def _phase(self, answers):
+        calls: list[dict] = []
+
+        def phase(name, **kw):
+            calls.append({"name": name, **kw})
+            return answers[(name, bool(kw.get("pristine")))], "ERR typecheck failed\n"
+        return phase, calls
+
+    def test_a_lane_the_base_also_fails_is_marked(self, monkeypatch):
+        vd._base_command_failures.clear()
+        monkeypatch.setattr(vd.gates, "configured_lanes", lambda: {"compile": "pnpm -r typecheck"})
+        phase, calls = self._phase({("compile", False): 20, ("compile", True): 20})
+        ev: dict = {}
+        assert vd._run_lanes(ev, phase, Path("/tmp/x.patch"), image="img:t1") == "compile"
+        assert ev["lanes"]["compile"]["base_fails"].startswith("exit 20")
+        assert [c.get("pristine") for c in calls] == [None, True]
+
+    def test_a_lane_the_base_passes_stays_a_verdict_and_the_base_is_asked_once(self, monkeypatch):
+        vd._base_command_failures.clear()
+        monkeypatch.setattr(vd.gates, "configured_lanes", lambda: {"compile": "pnpm -r typecheck"})
+        phase, calls = self._phase({("compile", False): 20, ("compile", True): 0})
+        for _ in range(2):
+            ev: dict = {}
+            vd._run_lanes(ev, phase, Path("/tmp/x.patch"), image="img:t1")
+            assert "base_fails" not in ev["lanes"]["compile"]
+        assert sum(1 for c in calls if c.get("pristine")) == 1
+
+    def test_without_an_image_the_base_is_never_asked(self, monkeypatch):
+        monkeypatch.setattr(vd.gates, "configured_lanes", lambda: {"compile": "c"})
+        phase, calls = self._phase({("compile", False): 20})
+        ev: dict = {}
+        vd._run_lanes(ev, phase, Path("/tmp/x.patch"))
+        assert all(not c.get("pristine") for c in calls)
