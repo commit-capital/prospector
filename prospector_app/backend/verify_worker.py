@@ -26,7 +26,6 @@ operator-queued request always wins the next pick.
 from __future__ import annotations
 
 import os
-import socket
 import subprocess
 import threading
 import traceback
@@ -34,6 +33,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from pipeline import gates
+from pipeline import settings
 from pipeline import store
 from pipeline import verify_driver
 from pipeline import wire
@@ -136,7 +136,7 @@ def beat() -> None:
     """Write this worker's liveness, autohunt opt-in, and security failure
     memory into the shared store."""
     data.store().save_verify_worker({
-        "host": socket.gethostname(), "pid": os.getpid(),
+        "host": settings.worker_id(), "pid": os.getpid(),
         "last_beat": _now(), "current_pr": state["current_pr"],
         "autohunt": enabled_autohunt(), "security_failed": sorted(security_failed)})
 
@@ -154,7 +154,7 @@ def recover_orphans() -> tuple[list[int], list[int]]:
     run is never silently re-fired. Returns (marked, requeued)."""
     marked: list[int] = []
     requeued: list[int] = []
-    me = socket.gethostname()
+    me = settings.worker_id()
     st = data.store()
     with st.batch():
         running = st.prs_matching(("verify_request", "status"), ["running"])
@@ -226,7 +226,7 @@ def _record_refresh(st: Store, ok: bool, error: str | None, failures: int) -> No
     attempt succeeded, its error, the consecutive-failure run, and the
     once-per-day attempt stamp. Written after prepare_base returns, because
     prepare_base full-replaces this host's record with the fields it owns."""
-    me = socket.gethostname()
+    me = settings.worker_id()
     st.save_verify_base({
         **st.load_verify_base(me), "host": me,
         "refresh_attempted_at": _now(), "refresh_ok": ok,
@@ -249,7 +249,7 @@ def maybe_refresh_base() -> None:
     healthy refresh — there was nothing to move to."""
     try:
         st = data.store()
-        me = socket.gethostname()
+        me = settings.worker_id()
         reg = st.load_verify_base(me)
         if not base_refresh_due(reg, datetime.now(timezone.utc)):
             return
@@ -414,7 +414,7 @@ def next_auto() -> tuple[str, int] | None:
     holds the security claim on is that machine's to finish: it leaves the
     pool here so this hunter moves on to the next candidate."""
     prs = data.prs()
-    me = socket.gethostname()
+    me = settings.worker_id()
 
     def _key(item: tuple[int, Pr]) -> tuple[float, int]:
         return (-_pain(item[1]), item[0])
@@ -455,7 +455,7 @@ def run_security(n: int) -> int | None:
     rec = st.load_pr(n)
     if rec is None or not gates.blocked_on_security(rec):
         return None
-    me = socket.gethostname()
+    me = settings.worker_id()
     if not st.claim_security_run(n, host=me, stale_after=SECURITY_CLAIM_SECONDS):
         print(f"[autohunt] PR #{n} is already under review elsewhere", flush=True)
         return None
@@ -522,7 +522,7 @@ def _finalize(n: int, rc: int, tail: str) -> None:
     failure re-queue and stays for the worker to re-pick. A request another
     host claimed is left alone: this pickup lost the claim race, and the
     running status is the winner's live run."""
-    me = socket.gethostname()
+    me = settings.worker_id()
     st = data.store()
     rec = st.load_pr(n)
     if rec is not None:
@@ -552,7 +552,7 @@ def release_stale_claims() -> list[int]:
     """Drop this host's leftover security-review claims. A review does not
     survive the worker's process, so at startup a claim in this host's name is a
     restart's leftover; another host's is its live run. Returns what it freed."""
-    me = socket.gethostname()
+    me = settings.worker_id()
     st = data.store()
     freed: list[int] = []
     for n in sorted(st.prs_matching(("security_run", "host"), [me])):
@@ -625,6 +625,6 @@ def startup() -> bool:
     ]
     for t in _threads:
         t.start()
-    print(f"[verify-worker] enabled on {socket.gethostname()} "
+    print(f"[verify-worker] enabled on {settings.worker_id()} "
           f"(poll every {POLL_SECONDS:.0f}s)", flush=True)
     return True

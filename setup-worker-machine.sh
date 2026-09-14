@@ -235,6 +235,19 @@ fi
 say "hardened sandbox image"
 uv run python pipeline/verify_driver.py build-image
 
+# The name this machine stamps on its pin, claims, heartbeat, and kept
+# worktrees, written before the pin so the pin carries it. A hostname on macOS
+# follows the network; the LocalHostName is fixed.
+if [ -z "${TRIAGE_WORKER_ID:-}" ] && ! grep -q '^TRIAGE_WORKER_ID=' "$ROOT/.env"; then
+  WORKER_ID="$(scutil --get LocalHostName 2>/dev/null || hostname -s)"
+  WORKER_ID="$WORKER_ID" uv run python -c "
+import os
+from prospector_app.backend import worker_control
+worker_control.set_flags({'TRIAGE_WORKER_ID': os.environ['WORKER_ID']})
+print('worker id: ' + os.environ['WORKER_ID'])
+"
+fi
+
 say "pinned base (clone + image + captured baseline — this takes a while)"
 uv run python pipeline/verify_driver.py prepare-base --tier 1
 

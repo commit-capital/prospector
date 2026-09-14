@@ -148,6 +148,19 @@ def verify_scratch() -> Path:
         return Path(scratch).expanduser()
     return Path.home() / ".pr-triage-verify" / f"{repo_owner()}-{repo_name()}"
 
+# The name this machine's workers stamp on every claim, pin, heartbeat, and
+# kept worktree. TRIAGE_WORKER_ID when set, else the hostname. The env value is
+# the one to set on a worker machine: a hostname on macOS follows the network,
+# and a record stamped under one name is invisible to the same machine under
+# another.
+def worker_id() -> str:
+    raw = os.environ.get("TRIAGE_WORKER_ID", "").strip()
+    if raw:
+        return raw
+    import socket
+    return socket.gethostname()
+
+
 # Comma-separated host:port entries the sandbox boot probe must FAIL to reach
 # (this machine's sensitive host services, e.g. a credentialed local server).
 # Empty keeps sandbox/boot-probe.sh's built-in default list.

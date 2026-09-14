@@ -30,7 +30,6 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
-import socket
 import sys
 import traceback
 from collections.abc import Callable
@@ -41,6 +40,7 @@ from typing import TYPE_CHECKING, TypeVar, cast
 from pipeline import diff_cache
 from pipeline import gates
 from pipeline import headless_agent
+from pipeline import settings
 from pipeline import verify_driver
 from pipeline import wire
 from pipeline.settings import REPO_ROOT
@@ -132,7 +132,7 @@ class _Request:
         self._source = source
         self._started_at: str | None = started_at
         self._attempts = attempts
-        self._host = socket.gethostname()
+        self._host = settings.worker_id()
 
     @property
     def source(self) -> str | None:
@@ -682,7 +682,7 @@ def run(store: Store, pr: int, *, from_queue: bool = False) -> int:
         # An atomic claim, not a read-then-write: the request flips to running
         # only if the row is unchanged since it was read, so two workers
         # against the shared store can never both run one PR.
-        claimed = store.claim_verify_request(pr, host=socket.gethostname())
+        claimed = store.claim_verify_request(pr, host=settings.worker_id())
         if claimed is None:
             _say(f"· PR #{pr} is not claimable (status: {prior.get('status')!r}) — "
                  f"nothing to run; a cancel landed or another worker claimed it")

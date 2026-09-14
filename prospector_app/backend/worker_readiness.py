@@ -14,7 +14,6 @@ from __future__ import annotations
 import logging
 import platform
 import shutil
-import socket
 from collections.abc import Callable
 from typing import TypedDict
 
@@ -166,7 +165,7 @@ def report() -> dict:
     rows = checks()
     by_key = {c["key"]: c for c in rows}
     return {
-        "host": socket.gethostname(),
+        "host": settings.worker_id(),
         "checks": rows,
         "ready": all(c["ok"] for c in rows if c["blocking"]),
         "autofix_ready": by_key["push_identity"]["ok"] and by_key["fix_flag"]["ok"],

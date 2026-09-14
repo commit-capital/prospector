@@ -14,15 +14,21 @@ like it applied.
 from __future__ import annotations
 
 import os
+import re
 
 from pipeline import settings
 from prospector_app.backend import env_file, fix_worker, verify_worker
 
-# The only keys this module may write. Each is a worker lane switch — nothing
-# here names a credential, a path, or the store.
+# The only keys this module may write: the worker lane switches and the name
+# the lanes stamp on their work — nothing here names a credential, a path, or
+# the store.
 WRITABLE = ("TRIAGE_VERIFY_WORKER", "TRIAGE_VERIFY_AUTOHUNT",
             "TRIAGE_FIX_WORKER", "TRIAGE_FIX_AUTOHUNT", "TRIAGE_FIX_HUNT_FIX",
-            "TRIAGE_FIX_HUNT_RESOLVE", "TRIAGE_FIX_AUTOPUSH")
+            "TRIAGE_FIX_HUNT_RESOLVE", "TRIAGE_FIX_AUTOPUSH", "TRIAGE_WORKER_ID")
+
+# What a worker id may look like: one token a registry key, a log line, and an
+# issue title can all carry verbatim.
+_WORKER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
 def flags() -> dict[str, str]:
@@ -43,6 +49,8 @@ def _validated(updates: dict[str, str]) -> dict[str, str]:
         bad = sorted(names - set(settings.FIX_ACTIONS))
         if bad:
             raise ValueError(f"not an autofix action: {', '.join(bad)}")
+    if "TRIAGE_WORKER_ID" in clean and clean["TRIAGE_WORKER_ID"] and not _WORKER_ID.match(clean["TRIAGE_WORKER_ID"]):
+        raise ValueError(f"TRIAGE_WORKER_ID is not a usable worker name: {clean['TRIAGE_WORKER_ID']!r}")
     for key in ("TRIAGE_VERIFY_WORKER", "TRIAGE_VERIFY_AUTOHUNT",
                 "TRIAGE_FIX_WORKER", "TRIAGE_FIX_AUTOHUNT", "TRIAGE_FIX_HUNT_FIX",
                 "TRIAGE_FIX_HUNT_RESOLVE"):

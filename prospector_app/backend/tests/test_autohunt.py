@@ -766,21 +766,21 @@ class TestSecurityClaimedElsewhere:
     def test_pool_skips_a_pr_another_host_holds(self, store, monkeypatch):
         store.save_pr(_clean_merge_pr(1, pain=0.9))
         store.save_pr(_clean_merge_pr(2, pain=0.1))
-        monkeypatch.setattr(verify_worker.socket, "gethostname", lambda: "mac")
+        monkeypatch.setenv("TRIAGE_WORKER_ID", "mac")
         assert store.claim_security_run(1, host="linux", stale_after=3600) is True
         data.refresh()
         assert verify_worker.next_auto() == ("security", 2)
 
     def test_pool_keeps_this_hosts_own_leftover_claim(self, store, monkeypatch):
         store.save_pr(_clean_merge_pr(1))
-        monkeypatch.setattr(verify_worker.socket, "gethostname", lambda: "mac")
+        monkeypatch.setenv("TRIAGE_WORKER_ID", "mac")
         assert store.claim_security_run(1, host="mac", stale_after=3600) is True
         data.refresh()
         assert verify_worker.next_auto() == ("security", 1)
 
     def test_pool_keeps_a_pr_whose_claim_went_stale(self, store, monkeypatch):
         store.save_pr(_clean_merge_pr(1))
-        monkeypatch.setattr(verify_worker.socket, "gethostname", lambda: "mac")
+        monkeypatch.setenv("TRIAGE_WORKER_ID", "mac")
         rec = store.load_pr(1).raw
         rec["security_run"] = {"host": "linux", "started_at": _iso_hours_ago(5)}
         store.save_pr(rec)
@@ -793,7 +793,7 @@ class TestSecurityClaimedElsewhere:
         same PR back to back."""
         store.save_pr(_clean_merge_pr(1))
         data.refresh()
-        monkeypatch.setattr(verify_worker.socket, "gethostname", lambda: "mac")
+        monkeypatch.setenv("TRIAGE_WORKER_ID", "mac")
         monkeypatch.setenv("TRIAGE_VERIFY_AUTOHUNT", "1")
         monkeypatch.setattr(verify_worker, "maybe_refresh_base", lambda: None)
         monkeypatch.setattr(verify_worker, "next_queued", lambda: None)

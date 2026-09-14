@@ -95,8 +95,8 @@ comment/close/reopen/review as the configured bot plus the dedicated
 reads normally, and writes nothing.
 
 **Two writers touch `.env`, each with its own allowlist.**
-`worker_control.set_flags` writes the seven worker lane switches and nothing
-else. `prospector_app/backend/onboarding.py` writes deployment configuration
+`worker_control.set_flags` writes the seven worker lane switches plus
+`TRIAGE_WORKER_ID` and nothing else. `prospector_app/backend/onboarding.py` writes deployment configuration
 for the setup wizard, allowlisted per step: `connect` (`TRIAGE_REPO`,
 `TRIAGE_STORE_URL`, the profile path, and presentation/review config, plus
 `profile.json` itself), `join` (a pasted bundle: the `connect` keys plus the bot

@@ -51,3 +51,21 @@ class TestAccessorsReadTheCurrentEnvironment:
         monkeypatch.setenv("TRIAGE_REPO", "acme/widgets")
         monkeypatch.delenv("TRIAGE_VERIFY_SCRATCH", raising=False)
         assert settings.verify_scratch() == Path.home() / ".pr-triage-verify" / "acme-widgets"
+
+
+class TestWorkerId:
+    def test_env_value_wins(self, monkeypatch):
+        monkeypatch.setenv("TRIAGE_WORKER_ID", " studio-1 ")
+        assert settings.worker_id() == "studio-1"
+
+    def test_falls_back_to_the_hostname(self, monkeypatch):
+        import socket
+        monkeypatch.delenv("TRIAGE_WORKER_ID", raising=False)
+        monkeypatch.setattr(socket, "gethostname", lambda: "box.local")
+        assert settings.worker_id() == "box.local"
+
+    def test_blank_reads_as_unset(self, monkeypatch):
+        import socket
+        monkeypatch.setenv("TRIAGE_WORKER_ID", "  ")
+        monkeypatch.setattr(socket, "gethostname", lambda: "box.local")
+        assert settings.worker_id() == "box.local"
