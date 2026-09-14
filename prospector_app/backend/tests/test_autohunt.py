@@ -913,3 +913,30 @@ class TestLaneHealth:
         rec = store.load_verify_worker()["hosts"][settings.worker_id()]
         assert rec["security_failed"] == [7]
         assert rec["security_failed_reasons"] == {"7": "security review exited 1: boom"}
+
+
+class TestErroredRetry:
+    def _errored(self, store, n, *, kind, host, hours_ago=0.0):
+        store.save_pr(_clean_merge_pr(n))
+        _green(store, n)
+        store.edit_pr(n).record_verify_request(
+            "error", error_kind=kind, error="x", host=host,
+            finished_at=_iso_hours_ago(hours_ago))
+        data.refresh()
+
+    def test_another_workers_system_fault_error_is_retried(self, store, monkeypatch):
+        monkeypatch.setenv("TRIAGE_WORKER_ID", "laptop")
+        self._errored(store, 1, kind="sandbox-error", host="studio")
+        assert verify_worker.auto_verifiable(data.prs()[1])
+
+    def test_this_workers_fresh_error_rests(self, store, monkeypatch):
+        monkeypatch.setenv("TRIAGE_WORKER_ID", "laptop")
+        self._errored(store, 1, kind="sandbox-error", host="laptop")
+        assert not verify_worker.auto_verifiable(data.prs()[1])
+        self._errored(store, 2, kind="sandbox-error", host="laptop", hours_ago=7)
+        assert verify_worker.auto_verifiable(data.prs()[2])
+
+    def test_the_prs_own_refusal_is_never_retried(self, store, monkeypatch):
+        monkeypatch.setenv("TRIAGE_WORKER_ID", "laptop")
+        self._errored(store, 1, kind="refused-safety", host="studio")
+        assert not verify_worker.auto_verifiable(data.prs()[1])

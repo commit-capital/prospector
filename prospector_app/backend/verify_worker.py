@@ -67,6 +67,10 @@ BASE_RETRY_SECONDS = 60.0
 # recover instead of burning the attempt cap in one bad minute.
 TRANSIENT_RETRY_SECONDS = 600.0
 
+# How often an idle worker looks for runs a worker that went offline left
+# claimed, so they are reclaimed without waiting for someone to restart it.
+RECLAIM_SECONDS = 300.0
+
 # How old the base pin must be before the daily refresh considers re-pinning.
 REFRESH_AFTER_HOURS = 24.0
 
@@ -147,12 +151,31 @@ def beat() -> None:
         "security_failed_reasons": security_failed.reasons()})
 
 
+def worker_offline(host: str, registry: dict, claimed_at: str | None = None) -> bool:
+    """Whether `host` has stopped beating: its heartbeat in `registry` (a
+    verify_worker or fix_worker record) is older than
+    worker_health.OFFLINE_AFTER_SECONDS. A host the registry does not know
+    (never beat here, or pruned after a week of silence) is judged by its
+    claim instead: `claimed_at` that old means nobody is coming back for it,
+    a fresh one is a worker that has not beaten yet."""
+    rec = (registry.get("hosts") or {}).get(host) or {}
+    stamp = rec.get("last_beat") if rec else claimed_at
+    if not isinstance(stamp, str):
+        return False
+    try:
+        at = datetime.fromisoformat(stamp)
+    except ValueError:
+        return False
+    return (datetime.now(timezone.utc) - at).total_seconds() >= worker_health.OFFLINE_AFTER_SECONDS
+
+
 def recover_orphans() -> tuple[list[int], list[int]]:
-    """Resolve THIS host's `running` requests: a run does not survive the
-    worker's process, so at startup a running status claimed by this host can
-    only be a restart's leftover. A request another host claimed is its live
-    run, never touched from here; a hostless record (written before claims
-    carried a host) is treated as this host's.
+    """Resolve the `running` requests no worker will finish: this host's own
+    (a run does not survive the worker's process, so a running status claimed
+    here is a restart's leftover) and any host's whose heartbeat has gone
+    silent past worker_health.OFFLINE_AFTER_SECONDS. A request a live host
+    claimed is its run, never touched from here; a hostless record (written
+    before claims carried a host) is treated as this host's.
 
     A run stopped at a RESUMABLE_STEPS step re-queues itself, capped at
     RESTART_MAX_ATTEMPTS: nothing of the PR's verification ran. Anything further
@@ -162,19 +185,24 @@ def recover_orphans() -> tuple[list[int], list[int]]:
     requeued: list[int] = []
     me = settings.worker_id()
     st = data.store()
+    registry = st.load_verify_worker()
     with st.batch():
         running = st.prs_matching(("verify_request", "status"), ["running"])
         for n, rec in sorted(running.items()):
             req = rec.verify_request or {}
-            if req.get("host") not in (None, me):
+            host = req.get("host")
+            mine = host in (None, me)
+            if not mine and not worker_offline(
+                    str(host), registry, req.get("started_at") or req.get("queued_at")):
                 continue
+            who = ("the verification worker restarted" if mine
+                   else f"the verification worker on {host} went offline")
             attempts = req.get("attempts") or 0
             if req.get("step") in RESUMABLE_STEPS and attempts < RESTART_MAX_ATTEMPTS:
                 st.edit_pr(n).record_verify_request(
                     "queued", queued_at=req.get("queued_at"),
                     error_kind="interrupted",
-                    error="the verification worker restarted before the sandbox "
-                          "ran — re-queued automatically",
+                    error=f"{who} before the sandbox ran — re-queued automatically",
                     attempts=attempts + 1, source=req.get("source"), host=me)
                 requeued.append(n)
                 continue
@@ -182,7 +210,7 @@ def recover_orphans() -> tuple[list[int], list[int]]:
                 "error", queued_at=req.get("queued_at"),
                 started_at=req.get("started_at"), finished_at=_now(),
                 error_kind="interrupted",
-                error="the verification worker restarted mid-run — re-queue to retry",
+                error=f"{who} mid-run — re-queue to retry",
                 source=req.get("source"), host=me)
             marked.append(n)
     return marked, requeued
@@ -399,10 +427,14 @@ def auto_verifiable(pr: Pr) -> bool:
     """Whether the hunter may queue a sandbox run: verify-eligible with a
     current GREEN security verdict (the sandbox never executes code the
     adversarial review has not cleared), no current verify record, and no
-    verify_request in flight or deliberately stopped (error/cancelled wait
-    for an operator re-queue)."""
+    verify_request in flight or deliberately stopped. A cancel waits for an
+    operator; an error waits unless gates.verify_retry_allowed says the
+    harness, not the PR, is what failed and a retry is due."""
     status = (pr.verify_request or {}).get("status")
-    if status in ("queued", "running", "waiting-for-base", "error", "cancelled"):
+    if status in ("queued", "running", "waiting-for-base", "cancelled"):
+        return False
+    if status == "error" and not gates.verify_retry_allowed(
+            pr, worker=settings.worker_id())[0]:
         return False
     if not gates.security_cleared(pr):
         return False
@@ -673,9 +705,16 @@ def _drain_loop() -> None:
             print(f"[verify-worker] re-queued after restart: {requeued}", flush=True)
     except Exception:
         traceback.print_exc()
+    last_reclaim = time.monotonic()
     while not stop.is_set():
         try:
             maybe_refresh_base()
+            if time.monotonic() - last_reclaim >= RECLAIM_SECONDS:
+                last_reclaim = time.monotonic()
+                marked, requeued = recover_orphans()
+                if marked or requeued:
+                    print(f"[verify-worker] reclaimed from an offline worker: "
+                          f"errored {marked}, re-queued {requeued}", flush=True)
             verify_open = lane_health.open_or_retest("verify")
             n = next_queued() if verify_open else None
             if n is not None:

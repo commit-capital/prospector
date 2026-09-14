@@ -494,3 +494,47 @@ def test_release_stale_claims_reads_only_this_hosts_claims(store, monkeypatch):
     assert verify_worker.release_stale_claims() == [1]
     assert store.load_pr(1).raw.get("security_run") is None
     assert store.load_pr(3).raw["security_run"]["host"] == "some-other-machine"
+
+
+class TestReclaim:
+    """A run claimed by a worker that went dark is reclaimed by whichever
+    worker is up; the hunter re-queues errored runs the harness caused."""
+
+    def _beat(self, store, host, hours_ago):
+        at = (datetime.now(timezone.utc) - timedelta(hours=hours_ago)).isoformat()
+        store.save_verify_worker({"host": host, "last_beat": at})
+
+    def test_recover_orphans_reclaims_a_dark_workers_run(self, store):
+        self._beat(store, "studio", hours_ago=5)
+        store.edit_pr(1).record_verify_request("running", queued_at=_now(),
+                                               started_at=_now(), step="sandbox",
+                                               host="studio")
+        assert verify_worker.recover_orphans() == ([1], [])
+        req = store.load_pr(1).verify_request
+        assert req["status"] == "error" and "studio went offline" in req["error"]
+
+    def test_recover_orphans_leaves_a_live_workers_run_alone(self, store):
+        self._beat(store, "studio", hours_ago=0)
+        store.edit_pr(1).record_verify_request("running", queued_at=_now(),
+                                               started_at=_now(), host="studio")
+        assert verify_worker.recover_orphans() == ([], [])
+        assert store.load_pr(1).verify_request["status"] == "running"
+
+    def test_an_unknown_worker_is_judged_by_the_age_of_its_claim(self, store):
+        old = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+        store.edit_pr(1).record_verify_request("running", queued_at=old,
+                                               started_at=old, step="blind", host="ghost")
+        assert verify_worker.recover_orphans() == ([], [1])
+        store.edit_pr(1).record_verify_request("running", queued_at=_now(),
+                                               started_at=_now(), step="blind", host="ghost")
+        assert verify_worker.recover_orphans() == ([], [])
+
+    def test_a_hunter_retry_carries_the_head_run_count(self, store):
+        store.edit_pr(1).record_verify_request("error", error_kind="sandbox-error",
+                                               error="canary", attempts=1, host="studio")
+        verify_queue.queue_pr(1, source="auto")
+        assert store.load_pr(1).verify_request["attempts"] == 2
+        store.edit_pr(1).record_verify_request("error", error_kind="sandbox-error",
+                                               error="canary", attempts=1, host="studio")
+        verify_queue.queue_pr(1)
+        assert store.load_pr(1).verify_request.get("attempts") is None

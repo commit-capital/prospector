@@ -663,3 +663,59 @@ def test_orphan_recovery_reads_only_in_flight_requests(store, monkeypatch):
                         lambda self: pytest.fail("recovery pulled every PR record"))
     assert fix_worker.recover_orphans() == [1]
     assert store.load_pr(1).fix_request["status"] == "failed"
+
+
+class TestReclaim:
+    def _beat(self, store, host, hours_ago):
+        at = (datetime.now(timezone.utc) - timedelta(hours=hours_ago)).isoformat()
+        store.save_fix_worker({"host": host, "last_beat": at})
+
+    def test_orphan_recovery_reclaims_a_dark_workers_run(self, store):
+        self._beat(store, "studio", hours_ago=5)
+        fix_queue.queue_pr(1, "update")
+        store.claim_fix_request(1, host="studio")
+        data.refresh()
+        assert fix_worker.recover_orphans() == [1]
+        req = store.load_pr(1).fix_request
+        assert req["status"] == "failed" and "studio went offline" in req["error"]
+
+    def test_orphan_recovery_leaves_a_live_workers_run_alone(self, store):
+        self._beat(store, "studio", hours_ago=0)
+        fix_queue.queue_pr(1, "update")
+        store.claim_fix_request(1, host="studio")
+        data.refresh()
+        assert fix_worker.recover_orphans() == []
+
+    def _parked_resolve(self, store, n, host, reviews=None):
+        result = {"conflict_paths": ["a.ts"], "merge_diff": "diff"}
+        if reviews is not None:
+            result["auto_review"] = {"reviews": reviews}
+        store.edit_pr(n).record_fix_request(
+            "awaiting-review", "resolve", queued_at=_now(), result=result,
+            source="auto", host=host, head_sha=store.load_pr(n).head_sha)
+        data.refresh()
+
+    def test_a_stranded_resolve_is_handed_back_to_the_hunter(self, store):
+        self._beat(store, "studio", hours_ago=30)
+        self._parked_resolve(store, 1, "studio",
+                             reviews=[{"lens": "behavior", "verdict": "safe"},
+                                      {"lens": "history", "verdict": "safe"}])
+        assert fix_worker.reclaim_stranded_resolves() == [1]
+        pr = data.prs()[1]
+        req = pr.fix_request
+        assert req["status"] == "cancelled" and "offline for 30 hours" in req["refused_reason"]
+        assert req["result"]["reclaimed"]["from"] == "studio"
+        assert fix_worker._hunt_attempted(pr, "rebase") is False
+
+    def test_a_reviewer_rejected_resolve_stays_for_the_operator(self, store):
+        self._beat(store, "studio", hours_ago=30)
+        self._parked_resolve(store, 1, "studio",
+                             reviews=[{"lens": "behavior", "verdict": "unsafe",
+                                       "reason": "drops the base's deletion"}])
+        assert fix_worker.reclaim_stranded_resolves() == []
+        assert store.load_pr(1).fix_request["status"] == "awaiting-review"
+
+    def test_a_resolve_on_a_recently_seen_worker_waits(self, store):
+        self._beat(store, "studio", hours_ago=3)
+        self._parked_resolve(store, 1, "studio")
+        assert fix_worker.reclaim_stranded_resolves() == []

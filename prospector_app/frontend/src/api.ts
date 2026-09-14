@@ -784,7 +784,8 @@ export interface VerifyBaseHealth {
 /** The idle hunter's live status: worker opt-in + liveness, pool sizes
  *  computed with the hunter's own gates, and its failure parking lots —
  *  security runs parked by the worker's failure memory, and verify requests
- *  that ended in error (awaiting an operator re-queue), auto-queued or
+ *  that ended in error (the harness's own are retried by the hunter, the
+ *  PR's await an operator re-queue), auto-queued or
  *  operator-queued alike. */
 interface AutohuntStatus {
   enabled: boolean;

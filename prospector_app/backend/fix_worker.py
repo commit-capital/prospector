@@ -57,7 +57,7 @@ from pipeline import (author_fix, compile_preflight, describe_pr, diffpaths, fre
 from pipeline.storekit import now as _now
 from prospector_app.backend import (activity, data, executor, fix_queue, lane_health,
                                     review_refresh, safety_guard, sandbox_check, service,
-                                    worker_log)
+                                    verify_worker, worker_log)
 from prospector_app.backend.resubmit_identity import worker_env
 
 if TYPE_CHECKING:
@@ -84,6 +84,10 @@ TRANSIENT_EXITS = {4, 6, 7}
 
 # How many times a transient failure is re-queued before it is left for a human.
 MAX_ATTEMPTS = 3
+
+# How often an idle worker looks for runs and parked resolves a worker that
+# went offline left behind.
+RECLAIM_SECONDS = 300.0
 
 # How long a re-queued request rests before pickup, so a moving base or a
 # flaking remote gets time to settle instead of burning the attempt cap in one
@@ -183,10 +187,13 @@ def beat() -> None:
 
 
 def recover_orphans() -> list[int]:
-    """Mark THIS host's `running`/`pushing` requests failed: an action does not
-    survive the worker's process, so at startup such a status claimed by this
-    host can only be a restart's leftover. A request another host claimed is its
-    live run, never touched from here. Returns the PRs marked.
+    """Mark failed the `running`/`pushing` requests no worker will finish: this
+    host's own (an action does not survive the worker's process, so such a
+    status claimed here is a restart's leftover) and any host's whose
+    heartbeat has been silent past worker_health.OFFLINE_AFTER_SECONDS. A
+    request a live host claimed is its run, never touched from here. Returns
+    the PRs marked. A `failed` ending is what the hunter retries after its
+    cooldown, so the work comes back around on whichever machine is up.
 
     A `pushing` orphan is reported as indeterminate: the push may or may not
     have gone out before the process died, so the operator re-reads the PR
@@ -194,16 +201,22 @@ def recover_orphans() -> list[int]:
     marked: list[int] = []
     me = settings.worker_id()
     st = data.store()
+    registry = st.load_fix_worker()
     with st.batch():
         in_flight = st.prs_matching(("fix_request", "status"), ["running", "pushing"])
         for n, rec in sorted(in_flight.items()):
             req = rec.fix_request or {}
             status = req.get("status")
-            if req.get("host") not in (None, me):
+            host = req.get("host")
+            mine = host in (None, me)
+            if not mine and not verify_worker.worker_offline(
+                    str(host), registry, req.get("started_at") or req.get("queued_at")):
                 continue
-            note = ("the autofix worker restarted mid-run — nothing was pushed; re-queue to retry"
+            who = ("the autofix worker restarted" if mine
+                   else f"the autofix worker on {host} went offline")
+            note = (f"{who} mid-run — nothing was pushed; it retries"
                     if status == "running" else
-                    "the autofix worker restarted mid-push — re-read the PR to see whether "
+                    f"{who} mid-push — re-read the PR to see whether "
                     "the push landed before re-queueing")
             st.edit_pr(n).record_fix_request(
                 "failed", req.get("action", "fix"), queued_at=req.get("queued_at"),
@@ -211,6 +224,50 @@ def recover_orphans() -> list[int]:
                 source=req.get("source"), host=me)
             marked.append(n)
     return marked
+
+
+# How long a parked `resolve` waits for the worker that authored it before
+# another worker gives the head back to the hunter. Only that worker can push
+# the kept merge commit; past this its silence costs more than re-authoring.
+RESOLVE_STRANDED_SECONDS = 24 * 3600.0
+
+
+def reclaim_stranded_resolves() -> list[int]:
+    """Cancel the parked `resolve` requests whose authoring worker has been
+    offline longer than RESOLVE_STRANDED_SECONDS and that no reviewer
+    rejected, so the hunter re-authors them on a machine that is up. A resolve
+    a reviewer rejected carries a judgment the operator should read, and stays.
+    The cancel is stamped `reclaimed`, which is what re-arms the head for the
+    hunter. Returns the PRs cancelled."""
+    me = settings.worker_id()
+    st = data.store()
+    registry = st.load_fix_worker()
+    now = datetime.now(timezone.utc)
+    cancelled: list[int] = []
+    for n, rec in sorted(data.prs().items()):
+        req = rec.fix_request or {}
+        if req.get("status") != "awaiting-review" or req.get("action") != "resolve":
+            continue
+        host = req.get("host")
+        if not host or host == me:
+            continue
+        beat = ((registry.get("hosts") or {}).get(host) or {}).get("last_beat")
+        try:
+            since = (now - datetime.fromisoformat(str(beat))).total_seconds()
+        except ValueError:
+            since = float("inf")
+        if since < RESOLVE_STRANDED_SECONDS:
+            continue
+        reviews = ((req.get("result") or {}).get("auto_review") or {}).get("reviews") or []
+        if any(isinstance(r, dict) and r.get("verdict") != "safe" and not r.get("failed")
+               for r in reviews):
+            continue
+        _cancel(n, req, f"the worker that authored this resolution ({host}) has been "
+                        f"offline for {since / 3600:.0f} hours and only it can push the "
+                        f"kept merge; the head is handed back to the hunter",
+                result={"reclaimed": {"from": host, "at": _now()}})
+        cancelled.append(n)
+    return cancelled
 
 
 def next_queued() -> int | None:
@@ -1084,11 +1141,11 @@ def _commit_message(action: str) -> str:
             else "Address review and CI feedback")
 
 
-def _cancel(n: int, req: dict, reason: str) -> None:
+def _cancel(n: int, req: dict, reason: str, result: dict | None = None) -> None:
     data.store().edit_pr(n).record_fix_request(
         "cancelled", req.get("action", "fix"), queued_at=req.get("queued_at"),
         started_at=req.get("started_at"), finished_at=_now(),
-        refused_reason=reason[-TAIL_CHARS:], source=req.get("source"),
+        refused_reason=reason[-TAIL_CHARS:], result=result, source=req.get("source"),
         guidance=req.get("guidance"), host=settings.worker_id(),
         head_sha=req.get("against_head_sha"))
     data.refresh()
@@ -1415,13 +1472,16 @@ def _hunt_attempted(pr: Pr, action: str) -> bool:
     head no longer matches re-arms the PR either way. A `resolve` is what a
     hunted rebase became when it paused on conflicts, so its ending rests the
     rebase hunt the same way. An operator's click is not bound by any of
-    this."""
+    this. A cancel stamped `reclaimed` is a resolve taken back from a
+    worker that went offline, and re-arms the head."""
     req = pr.fix_request or {}
     done = {action, "resolve"} if action == "rebase" else {action}
     if not (req.get("action") in done and pr.head_sha is not None
             and req.get("against_head_sha") == pr.head_sha):
         return False
     status = req.get("status")
+    if status == "cancelled" and (req.get("result") or {}).get("reclaimed"):
+        return False
     if status in _VERDICT_ENDINGS:
         return True
     if status == "failed":
@@ -1536,8 +1596,16 @@ def _drain_loop() -> None:
             print(f"[fix-worker] marked failed after restart: {marked}", flush=True)
     except Exception:
         traceback.print_exc()
+    last_reclaim = time.monotonic()
     while not stop.is_set():
         try:
+            if time.monotonic() - last_reclaim >= RECLAIM_SECONDS:
+                last_reclaim = time.monotonic()
+                marked = recover_orphans()
+                stranded = reclaim_stranded_resolves()
+                if marked or stranded:
+                    print(f"[fix-worker] reclaimed from an offline worker: "
+                          f"failed {marked}, re-armed {stranded}", flush=True)
             if not lane_health.open_or_retest("fix"):
                 stop.wait(POLL_SECONDS)
                 continue
