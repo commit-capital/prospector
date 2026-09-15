@@ -104,7 +104,7 @@ verdict goes stale, and the security hunter re-reviews. The bar is
 
 ## Open decisions for the operator
 
-- Turn on `objection` in `autofix.fixable_gates` for the paperclip profile.
+- Turn on `objection` in `autofix.fixable_gates` for the deployment's profile.
 - Whether `fix` joins `TRIAGE_FIX_AUTOPUSH` at step 4, and under what extra
   condition (tier ≥ 2, diff under N lines, both reviewers).
 - The daily budget.
