@@ -24,6 +24,7 @@ A conflicting PR uses the same isolated worktree and a pinned rebase transaction
     resubmit <pr> continue             # stage those paths + continue; repeat as needed
     resubmit <pr> diff                 # review the resolution / final range-diff
     resubmit <pr> push --confirm-rewrite <old-head-sha>
+    resubmit <pr> commit -m <message>          (a follow-up on a kept merge)
 
 A conflicting PR can instead take a merge-commit resolution — merge the base
 into the head and resolve inside the merge commit, rewriting no history:
@@ -658,6 +659,36 @@ def _push_merge(pr: int, meta: dict, dry_run: bool) -> int:
     return 0
 
 
+def cmd_commit(pr: int, message: str) -> int:
+    """Commit the kept merge worktree's outstanding edits as one follow-up
+    commit on top of its merge commit, pushing nothing and keeping the tree.
+    A continuation authored after a reviewer's objection lands this way, so
+    the merge push that follows carries the resolution and its follow-up."""
+    wt = _worktree(pr)
+    meta = _read_meta(pr)
+    if not meta or meta.get("mode") != "merge":
+        print(f"resubmit: PR #{pr} holds no kept merge to commit onto", file=sys.stderr)
+        return 2
+    status = _git(["status", "--porcelain"], wt)
+    if status.returncode != 0:
+        print(f"resubmit: git status failed: {status.stderr.strip()}", file=sys.stderr)
+        return 4
+    if not status.stdout.strip():
+        print(f"resubmit: no changes in {wt} — nothing to commit.", file=sys.stderr)
+        return 5
+    add = _git(["add", "-A"], wt)
+    if add.returncode != 0:
+        print(f"resubmit: git add failed: {add.stderr.strip()}", file=sys.stderr)
+        return 4
+    commit = _git(["commit", "-m", message], wt)
+    if commit.returncode != 0:
+        print(f"resubmit: commit failed: {commit.stderr.strip()}", file=sys.stderr)
+        return 4
+    sha = _git(["rev-parse", "HEAD"], wt).stdout.strip()
+    print(f"committed {sha[:8]} on the kept merge")
+    return 0
+
+
 def cmd_push(pr: int, message: str | None, dry_run: bool,
              confirm_rewrite: str | None = None) -> int:
     wt = _worktree(pr)
@@ -1145,6 +1176,10 @@ def main(argv: list[str] | None = None) -> int:
                            help="acknowledge the exact old head before a rebased rewrite")
     pushp.add_argument("--dry-run", action="store_true",
                        help="complete locally but do not push (log it as a dry-run)")
+    commitp = sub.add_parser("commit",
+                             help="commit the kept merge worktree's edits as a follow-up "
+                                  "on its merge commit, pushing nothing")
+    commitp.add_argument("-m", "--message", required=True)
     sub.add_parser("apply", help="apply a patch from stdin to the prepared worktree")
     sub.add_parser("diff", help="show the diff of the edits authored in the worktree")
     updp = sub.add_parser("update", help="merge the base branch into the PR's head branch")
@@ -1171,6 +1206,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_continue(args.pr)
         if args.action == "push":
             return cmd_push(args.pr, args.message, args.dry_run, args.confirm_rewrite)
+        if args.action == "commit":
+            return cmd_commit(args.pr, args.message)
         if args.action == "apply":
             return cmd_apply(args.pr)
         if args.action == "diff":
