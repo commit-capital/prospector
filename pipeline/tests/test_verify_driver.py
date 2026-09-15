@@ -980,6 +980,10 @@ class TestRunPhase:
     """The host reads each phase's result from the container's EXIT CODE. The
     launcher is never handed os.environ."""
 
+    @pytest.fixture(autouse=True)
+    def _no_sweep(self, monkeypatch):
+        monkeypatch.setattr(vd, "stop_orphaned_sandboxes", lambda: [])
+
     def test_passes_only_the_allowlisted_env(self, monkeypatch):
         fake = _FakePopen(output=b"ok", returncode=0)
         monkeypatch.setenv("DEPLOYMENT_PRIVATE_KEY", "POISON-PRIVATE-KEY")
@@ -2540,6 +2544,7 @@ class TestLanesAskTheBase:
 class TestLargePhaseLock:
     def test_large_phases_serialize_across_processes(self, monkeypatch, tmp_path):
         monkeypatch.setattr(vd, "SCRATCH", tmp_path)
+        monkeypatch.setattr(vd, "stop_orphaned_sandboxes", lambda: [])
         with vd._LargePhaseLock("compile"):
             import fcntl
             other = open(tmp_path / vd._LARGE_LOCK_NAME, "a+")
@@ -2561,3 +2566,97 @@ class TestLargePhaseLock:
         m = re.search(r'case "\$PHASE" in ([a-z|]+)\) MEM=6g', text)
         assert m is not None
         assert set(m.group(1).split("|")) == set(vd.LARGE_PHASES)
+
+    def test_a_large_phase_stops_orphans_once_it_holds_the_lock(self, monkeypatch, tmp_path):
+        import fcntl
+        monkeypatch.setattr(vd, "SCRATCH", tmp_path)
+        swept: list[bool] = []
+
+        def stop() -> list[str]:
+            other = open(tmp_path / vd._LARGE_LOCK_NAME, "a+")
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(other.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            other.close()
+            swept.append(True)
+            return []
+        monkeypatch.setattr(vd, "stop_orphaned_sandboxes", stop)
+        with vd._LargePhaseLock("compile"):
+            pass
+        assert swept == [True]
+
+    def test_a_small_phase_never_looks_for_orphans(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(vd, "SCRATCH", tmp_path)
+        monkeypatch.setattr(vd, "stop_orphaned_sandboxes",
+                            lambda: pytest.fail("a small phase swept"))
+        with vd._LargePhaseLock("red"):
+            pass
+
+
+class TestOrphanedSandboxes:
+    PS = ("prospector-verify-4242-17\n"
+          "prospector-verify-99999999-5\n"
+          "prospector-verify-4242-18\n"
+          "unrelated-container\n"
+          "prospector-verify-notapid\n"
+          "prospector-verify-31337-9-extra\n")
+
+    def _docker(self, monkeypatch, ps_output: str) -> list[list[str]]:
+        calls: list[list[str]] = []
+
+        def run(argv, **kw):
+            calls.append(list(argv))
+            out = ps_output if argv[:2] == ["docker", "ps"] else ""
+            return subprocess.CompletedProcess(argv, 0, stdout=out, stderr="")
+        monkeypatch.setattr(vd.subprocess, "run", run)
+        monkeypatch.setattr(vd, "_pid_alive", lambda pid: pid == 4242)
+        return calls
+
+    def test_only_launcher_named_containers_of_dead_pids_are_orphans(self):
+        orphans = vd.orphaned_sandbox_containers(
+            self.PS.splitlines(), alive=lambda pid: pid == 4242)
+        assert orphans == ["prospector-verify-99999999-5"]
+
+    def test_the_owner_is_read_off_the_launchers_name(self, monkeypatch):
+        popen: list[list[str]] = []
+
+        class Proc:
+            stdout = io.BytesIO(b"")
+            pid = 1
+
+            def wait(self, timeout=None):
+                return 0
+        monkeypatch.setattr(vd.subprocess, "Popen", lambda argv, **kw: popen.append(argv) or Proc())
+        monkeypatch.setattr(vd, "stop_orphaned_sandboxes", lambda: [])
+        vd.run_phase("red", "img:t0")
+        name = popen[0][popen[0].index("--container-name") + 1]
+        assert vd.container_owner(name) == os.getpid()
+        assert vd.container_owner("unrelated-container") is None
+
+    def test_stopping_removes_each_orphan_and_logs_one_line(self, monkeypatch, capsys):
+        calls = self._docker(monkeypatch, self.PS)
+        assert vd.stop_orphaned_sandboxes() == ["prospector-verify-99999999-5"]
+        assert calls[0][:2] == ["docker", "ps"]
+        assert calls[1:] == [["docker", "rm", "-f", "prospector-verify-99999999-5"]]
+        out = capsys.readouterr().out
+        assert out.count("\n") == 1
+        assert "prospector-verify-99999999-5" in out
+        assert "4242" not in out
+
+    def test_nothing_orphaned_removes_nothing_and_says_nothing(self, monkeypatch, capsys):
+        calls = self._docker(monkeypatch, "prospector-verify-4242-17\n")
+        assert vd.stop_orphaned_sandboxes() == []
+        assert len(calls) == 1
+        assert capsys.readouterr().out == ""
+
+    def test_a_docker_that_does_not_answer_stops_nothing(self, monkeypatch, capsys):
+        def run(argv, **kw):
+            raise FileNotFoundError("docker")
+        monkeypatch.setattr(vd.subprocess, "run", run)
+        assert vd.stop_orphaned_sandboxes() == []
+        assert capsys.readouterr().out == ""
+
+    def test_a_docker_that_errors_stops_nothing(self, monkeypatch):
+        def run(argv, **kw):
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="Cannot connect")
+        monkeypatch.setattr(vd.subprocess, "run", run)
+        assert vd.stop_orphaned_sandboxes() == []
