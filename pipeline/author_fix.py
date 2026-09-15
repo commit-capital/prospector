@@ -209,13 +209,12 @@ def author(worktree: str, *, pr: int, title: str, body: str, goal: str,
     if diff_path is not None:
         allow = [f"Bash({CHECK_TOOL}:*)"]
         env_extra = check_env(pr, head_sha, worktree, diff_path)
-    text = headless_agent.run_agent(
+    verdict, text = headless_agent.json_reply(lambda: headless_agent.run_agent(
         _prompt(worktree, pr, title, body, goal, findings, ci_failures,
                 review_summary, diff_path, withheld_globs),
         allow_gh=bool(ci_failures), cwd=worktree, edit_root=worktree,
         timeout=AGENT_TIMEOUT_SECONDS, on_event=on_event, allow=allow,
-        env_extra=env_extra)
-    verdict = headless_agent.extract_json(text)
+        env_extra=env_extra))
     if "give_up" in verdict:
         return {"give_up": str(verdict["give_up"])}
     raw = verdict.get("changes")

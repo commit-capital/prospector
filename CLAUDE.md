@@ -296,7 +296,10 @@ an agent outage (`headless_agent.AgentUnavailable`: the CLI is missing or not
 authenticated — `security_review.py` exits `EXIT_AGENT_UNAVAILABLE`, `verify_pr`
 ends the request `agent-unavailable`, the fix worker ends the run `failed`)
 trips every lane the machine runs at once; three consecutive base-pin refresh
-failures trip `verify`. A tripped lane picks nothing (a lane tripped on the
+failures trip `verify`. A prompt the API's safeguards refuse
+(`headless_agent.AgentDeclined`) is a verdict on that request's text: the fix
+worker ends it `refused`, and it counts toward no trip. Every headless run is
+pinned to `TRIAGE_AGENT_MODEL` (default `opus`; empty leaves the CLI's default). A tripped lane picks nothing (a lane tripped on the
 agent alone still pushes what an operator approved). A lane tripped on the
 agent or the sandbox retests itself every fifteen minutes
 (`worker_selftest.py`: the CLI probe, or the daemon, pinned image and clone)

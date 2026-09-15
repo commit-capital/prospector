@@ -314,3 +314,68 @@ def test_probe_reports_the_outage_and_none_when_healthy(monkeypatch):
     assert "Not logged in" in (ha.probe() or "")
     monkeypatch.setattr(ha.subprocess, "Popen", lambda cmd, **kw: _FakeProc(cmd))
     assert ha.probe() is None
+
+
+class _FailingProc(_FakeProc):
+    """A CLI run that exits non-zero after printing `lines` outside the stream."""
+
+    def __init__(self, cmd, lines: list[str], code: int = 1):
+        super().__init__(cmd)
+        self.returncode = code
+        self.stdout = iter(lines)
+
+
+def _popen_with(factory):
+    def fake_popen(cmd, **kwargs):
+        return factory(cmd)
+    return fake_popen
+
+
+def test_a_prompt_the_safeguards_refuse_raises_agent_declined(monkeypatch):
+    monkeypatch.setattr(ha.subprocess, "Popen", _popen_with(lambda cmd: _FailingProc(cmd, [
+        "API Error: Opus 5 (1M context)'s safeguards flagged this message "
+        "(https://www.anthropic.com/legal/aup). Try rephrasing."])))
+    with pytest.raises(ha.AgentDeclined, match="safeguards flagged"):
+        ha.run_agent("describe this PR", allow_gh=False, cwd="/tmp")
+
+
+def test_an_expired_login_still_reads_as_unavailable_not_declined(monkeypatch):
+    monkeypatch.setattr(ha.subprocess, "Popen", _popen_with(
+        lambda cmd: _FailingProc(cmd, ["OAuth token has expired. Please run /login"])))
+    with pytest.raises(ha.AgentUnavailable):
+        ha.run_agent("x", allow_gh=False, cwd="/tmp")
+
+
+def test_every_run_is_pinned_to_the_configured_model(monkeypatch):
+    procs: list[_FakeProc] = []
+    monkeypatch.setattr(ha.subprocess, "Popen", _popen_with(lambda cmd: procs.append(_FakeProc(cmd)) or procs[-1]))
+    monkeypatch.delenv("TRIAGE_AGENT_MODEL", raising=False)
+    ha.run_agent("x", allow_gh=False, cwd="/tmp")
+    assert procs[-1].cmd[procs[-1].cmd.index("--model") + 1] == "opus"
+    monkeypatch.setenv("TRIAGE_AGENT_MODEL", "sonnet")
+    ha.run_agent("x", allow_gh=False, cwd="/tmp")
+    assert procs[-1].cmd[procs[-1].cmd.index("--model") + 1] == "sonnet"
+    ha.run_agent("x", allow_gh=False, cwd="/tmp", model="haiku")
+    assert procs[-1].cmd[procs[-1].cmd.index("--model") + 1] == "haiku"
+    monkeypatch.setenv("TRIAGE_AGENT_MODEL", "")
+    ha.run_agent("x", allow_gh=False, cwd="/tmp")
+    assert "--model" not in procs[-1].cmd
+
+
+def test_json_reply_runs_once_more_when_the_first_answer_is_cut_off():
+    answers = iter(['{"changes": [{"path": "a.ts", "rationale": "unterminat',
+                    '{"changes": []}'])
+    calls = 0
+
+    def run() -> str:
+        nonlocal calls
+        calls += 1
+        return next(answers)
+
+    verdict, text = ha.json_reply(run)
+    assert verdict == {"changes": []} and text == '{"changes": []}' and calls == 2
+
+
+def test_json_reply_raises_after_a_second_cut_off_answer():
+    with pytest.raises(ValueError):
+        ha.json_reply(lambda: "no json here")
