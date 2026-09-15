@@ -754,7 +754,7 @@ HUNTABLE_ACTIONS = ("update", "rebase", "fix", "describe")
 
 def fix_huntable(pr: Pr, action: str,
                  changed_paths: list[str] | None = None, *,
-                 objection: bool = False) -> tuple[bool, str]:
+                 objection: bool | str = False) -> tuple[bool, str]:
     """May the idle hunter queue `action` for this PR without being asked?
 
     fix_eligibility bounds which branches the push bot may touch at all. This is
@@ -777,8 +777,10 @@ def fix_huntable(pr: Pr, action: str,
       the template — which no push to the branch can clear.
 
     The operator's own click answers to fix_eligibility alone; this bar governs
-    only what the hunter starts by itself. With `objection` the `fix` needs no
-    failing review gate: the objection names what the fix is for.
+    only what the hunter starts by itself. With `objection` (True, or the
+    objection's kind) the `fix` needs no failing review gate: the objection
+    names what the fix is for; a `ci` objection also hunts a head whose CI
+    fails, since that failure is the objection.
     """
     if action not in HUNTABLE_ACTIONS:
         return False, (f"the hunter queues only {', '.join(HUNTABLE_ACTIONS)}; "
@@ -793,7 +795,7 @@ def fix_huntable(pr: Pr, action: str,
             return False, ("the open review findings are not all about the PR "
                            "description, so a new description would not clear them")
     elif action == "fix":
-        if pr.ci != "passing":
+        if pr.ci != "passing" and objection != "ci":
             return False, f"CI is {pr.ci or 'unknown'}, not passing"
         if pr.mergeable is not True:
             return False, "the PR does not merge cleanly"
@@ -812,7 +814,7 @@ def fix_huntable(pr: Pr, action: str,
                 return False, "no gate a fix could clear is failing"
     elif review_blockers or scanner_blockers:
         return False, (review_blockers + scanner_blockers)[0].bar.reason or "review bar not met"
-    return fix_eligibility(pr, action, changed_paths, objection=objection)
+    return fix_eligibility(pr, action, changed_paths, objection=bool(objection))
 
 
 def security_overridable(pr: Pr, today: str | None = None,

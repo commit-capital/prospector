@@ -2133,6 +2133,74 @@ class TestDeclinedPrompt:
         assert "safeguards declined" in req["refused_reason"]
 
 
+class TestCiObjection:
+    """A CI failure at a head this bot pushed is the bot's next fix goal."""
+
+    def _bot_pushed_head(self, store, ci="failing"):
+        rec = store.load_pr(1).raw
+        new_head = "b" * 40
+        rec["meta"]["head_sha"] = new_head
+        rec["signals"].update({"ci": ci, "mergeable": True, "against_head_sha": new_head,
+                               "checked_at": _now()})
+        rec["reviews"] = reviews_section(new_head, _now())
+        rec["drift"] = {"state": "applicable", "checked_at": _now(), "against_head_sha": new_head}
+        rec["fix_request"] = {"action": "fix", "status": "pushed", "source": "auto",
+                              "against_head_sha": HEAD, "host": "w",
+                              "queued_at": _now(), "started_at": _now(), "finished_at": _now(),
+                              "result": {"pushed_head_sha": new_head, "patch": PR_DIFF}}
+        store.save_pr(rec)
+        data.refresh()
+
+    def _checks(self, monkeypatch):
+        monkeypatch.setattr(fix_worker.gh, "check_runs", lambda sha: [
+            {"app": "github-actions", "name": "ci / verify", "status": "completed", "conclusion": "failure"},
+            {"app": "greptile-apps", "name": "Greptile Review", "status": "completed", "conclusion": "failure"},
+            {"app": "github-actions", "name": "ci / lint", "status": "completed", "conclusion": "success"}])
+
+    def _gate(self, monkeypatch):
+        monkeypatch.setenv("TRIAGE_FIX_HUNT_FIX", "1")
+        monkeypatch.setattr(profile, "active", lambda: profile.RepoProfile(
+            autofix=profile.AutofixPolicy(fixable_gates=("objection",))))
+
+    def test_a_head_the_bot_pushed_with_failing_ci_is_hunted_from_the_failing_checks(
+            self, store, monkeypatch):
+        self._gate(monkeypatch); self._checks(monkeypatch); self._bot_pushed_head(store)
+        pick = fix_worker.next_auto()
+        assert pick is not None and pick[0] == "fix" and pick[1] == 1
+        assert pick[2]["kind"] == "ci"
+        assert pick[2]["text"] == "- ci / verify"
+        assert pick[2]["from"]["checks"] == ["ci / verify"]
+
+    def test_a_head_the_author_pushed_is_not_the_bot_s_to_repair(self, store, monkeypatch):
+        self._gate(monkeypatch); self._checks(monkeypatch); self._bot_pushed_head(store)
+        rec = store.load_pr(1).raw
+        rec["meta"]["head_sha"] = "c" * 40
+        for section in ("signals", "reviews", "drift"):
+            rec[section]["against_head_sha"] = "c" * 40
+        store.save_pr(rec); data.refresh()
+        assert fix_worker._ci_objection(store.load_pr(1)) is None
+        assert fix_worker.next_auto() is None
+
+    def test_passing_ci_at_the_pushed_head_raises_no_objection(self, store, monkeypatch):
+        self._gate(monkeypatch); self._checks(monkeypatch)
+        self._bot_pushed_head(store, ci="passing")
+        assert fix_worker._ci_objection(store.load_pr(1)) is None
+
+    def test_the_goal_carries_the_failing_checks(self, store, monkeypatch):
+        self._gate(monkeypatch); self._checks(monkeypatch); self._bot_pushed_head(store)
+        obj = fix_worker._ci_objection(store.load_pr(1))
+        brief = fix_worker._fix_goal(store.load_pr(1), {"objection": obj})
+        assert brief.checks == ["ci / verify"] and "this bot pushed" in brief.goal
+
+    def test_a_push_records_the_head_it_created(self, store, monkeypatch):
+        monkeypatch.setattr(fix_worker, "_retrigger_review", lambda n: None)
+        fix_queue.queue_pr(1, "update")
+        fix_worker._finish_pushed(1, {"action": "update", "against_head_sha": HEAD},
+                                  "resubmitted PR #1: pushed abcdef12 to o @ b as x.\n"
+                                  "resubmit: head is now " + "e" * 40 + "\n")
+        assert store.load_pr(1).fix_request["result"]["pushed_head_sha"] == "e" * 40
+
+
 class TestFixAutopush:
     def _run(self, store, monkeypatch, tier, related=(), run=None):
         monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", "fix")

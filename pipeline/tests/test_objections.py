@@ -87,3 +87,10 @@ def test_budget_counts_a_continuation_once_across_its_endings(tmp_path, monkeypa
                        "stats": {"host": "w1", "status": status, "action": "resolve",
                                  "objection": "resolve-review:abc"}})
     assert objections.used_today(st, "w1", now) == 1
+
+
+def test_the_ci_kind_names_the_failing_checks_in_its_goal():
+    obj = objections.build("ci", "- ci / verify\n- ci / e2e", origin={"checks": ["ci / verify", "ci / e2e"]})
+    assert obj["kind"] == "ci" and obj["signature"].startswith("ci:")
+    goal = objections.goal_text(obj)
+    assert "this bot pushed" in goal and "- ci / e2e" in goal

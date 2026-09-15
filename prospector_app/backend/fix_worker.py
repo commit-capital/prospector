@@ -40,6 +40,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import re
 import subprocess
 import tempfile
 import threading
@@ -50,7 +51,7 @@ from pathlib import Path
 from collections.abc import Callable
 from typing import TYPE_CHECKING, NamedTuple
 
-from pipeline import (author_fix, compile_preflight, describe_pr, diffpaths, freshness,
+from pipeline import (author_fix, ci_signal, compile_preflight, describe_pr, diffpaths, freshness,
                       gates, gh, headless_agent, objections, profile, resolve_conflicts,
                       resolve_evidence, review_fix, review_policy, review_resolve,
                       reviewers, risktier, settings, verify_driver)
@@ -763,7 +764,10 @@ def _fix_goal(rec: Pr, claimed: dict) -> _FixBrief:
     defects that may already be fixed."""
     objection = claimed.get("objection")
     if objection:
-        return _FixBrief(objections.goal_text(objection), [], [], "")
+        # A ci objection carries the failing check names, which the author
+        # reads the logs of through the gh read tool.
+        checks = [str(c) for c in ((objection.get("from") or {}).get("checks") or [])]
+        return _FixBrief(objections.goal_text(objection), [], checks, "")
     read = rec.greptile_review if freshness.is_current(rec, "greptile_review") else None
     findings: list[dict] = []
     for r in review_policy.active_reviewers(reviewers.REVIEW):
@@ -1782,9 +1786,17 @@ def _push(n: int, req: dict, action: str, result: dict) -> None:
     _finish_pushed(n, req, (r.stdout or "").strip(), result=result)
 
 
+_PUSHED_HEAD_RE = re.compile(r"head is now ([0-9a-f]{40})")
+
+
 def _finish_pushed(n: int, req: dict, output: str, result: dict | None = None) -> None:
     merged = dict(result or {})
     merged["output"] = output[-TAIL_CHARS:]
+    pushed = _PUSHED_HEAD_RE.search(output)
+    if pushed:
+        # The head this push created, which is how the hunter later knows a
+        # CI failure at the PR's head is one this bot introduced.
+        merged["pushed_head_sha"] = pushed.group(1)
     data.store().edit_pr(n).record_fix_request(
         "pushed", req.get("action", "fix"), queued_at=req.get("queued_at"),
         started_at=req.get("started_at"), finished_at=_now(), result=merged,
@@ -1900,7 +1912,9 @@ def auto_fixable(pr: Pr, *, budget_ok: bool = True) -> tuple[str, dict | None] |
     has not already burned its one unattended attempt; a security continuation
     also needs today's budget (`budget_ok`) and an objection this head has not
     answered, and otherwise the PR takes the ordinary pick, which the same
-    head's spent attempt rests in turn. Anything else is left alone.
+    head's spent attempt rests in turn. A head this bot pushed whose CI fails
+    takes a `fix` from that failure first (`_ci_objection`), under the same
+    budget. Anything else is left alone.
 
     gates.fix_huntable is the bar, not fix_eligibility: unprompted sandbox time
     goes only where a stored quality signal argues the spend is worth it."""
@@ -1912,9 +1926,12 @@ def auto_fixable(pr: Pr, *, budget_ok: bool = True) -> tuple[str, dict | None] |
     elif pr.drift_state == "conflicts":
         action = "update"
     elif settings.fix_hunt_fix():
+        broke = _ci_objection(pr) if budget_ok else None
         yellow = (_yellow_objection(pr)
                   if budget_ok and settings.fix_hunt_security() else None)
-        if yellow is not None and not objections.spent(pr, yellow["signature"]):
+        if broke is not None and not objections.spent(pr, broke["signature"]):
+            action, objection = "fix", broke
+        elif yellow is not None and not objections.spent(pr, yellow["signature"]):
             action, objection = "fix", yellow
         else:
             action = "describe" if describe_pr.only_description_nits(pr) else "fix"
@@ -1923,8 +1940,28 @@ def auto_fixable(pr: Pr, *, budget_ok: bool = True) -> tuple[str, dict | None] |
     if _hunt_attempted(pr, action):
         return None
     ok, _ = gates.fix_huntable(pr, action, service.changed_paths(pr),
-                               objection=objection is not None)
+                               objection=str(objection["kind"]) if objection else False)
     return (action, objection) if ok else None
+
+
+def _ci_objection(pr: Pr) -> dict | None:
+    """The ci objection for a PR whose current head is one this bot pushed and
+    whose CI fails there: the failing checks, the reviewers' own excluded.
+    None when the head is the author's, CI is not failing at it, the signals
+    are stale, or no failing check is left once the reviewers' are set aside."""
+    req = pr.fix_request or {}
+    pushed = str((req.get("result") or {}).get("pushed_head_sha") or "")
+    if (req.get("status") != "pushed" or not pushed or pushed != pr.head_sha
+            or pr.ci != "failing" or not freshness.is_current(pr, "signals")):
+        return None
+    apps = reviewers.app_slugs()
+    failing = sorted({str(c.get("name")) for c in gh.check_runs(pr.head_sha or "")
+                      if c.get("name") and c.get("app") not in apps
+                      and c.get("conclusion") in ci_signal.FAIL_CONCLUSIONS})
+    if not failing:
+        return None
+    text = "\n".join(f"- {name}" for name in failing)
+    return objections.build("ci", text, origin={"pushed_head_sha": pushed, "checks": failing})
 
 
 def _yellow_objection(pr: Pr) -> dict | None:

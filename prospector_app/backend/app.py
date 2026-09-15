@@ -25,7 +25,7 @@ from prospector_app.backend import advisories as advisories_mod
 from prospector_app.backend import alerts as alerts_mod
 from prospector_app.backend import autohunt_view
 from prospector_app.backend import escalation
-from prospector_app.backend import stale_refresh
+from prospector_app.backend import rereview_hunt, stale_refresh
 from prospector_app.backend import worker_control
 from prospector_app.backend import worker_readiness
 from prospector_app.backend import bulk
@@ -207,6 +207,7 @@ def _launch_stale_refresh():
     if "pytest" in sys.modules:
         return
     stale_refresh.start()
+    rereview_hunt.start()
 
 
 @app.post("/api/worker/health/resume")

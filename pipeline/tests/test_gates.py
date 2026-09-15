@@ -2644,6 +2644,36 @@ class TestObjectionEligibility:
         assert gates.fix_huntable(pr, "fix", ["src/a.ts"], objection=True)[0]
 
 
+def _now_iso() -> str:
+    from pipeline.storekit import now
+    return now()
+
+
+class TestCiObjectionHunt:
+    def _pr(self, tmp_path, ci="failing"):
+        from pipeline import store as S
+        from pipeline.testsupport import reviews_section
+        store = S.Store(tmp_path / "store")
+        head = "d" * 40
+        store.save_pr({"pr": 9, "meta": {"title": "t", "state": "open", "head_sha": head},
+                       "signals": {"ci": ci, "mergeable": True, "checked_at": _now_iso(),
+                                   "against_head_sha": head},
+                       "reviews": reviews_section(head, _now_iso()),
+                       "drift": {"state": "applicable", "checked_at": _now_iso(),
+                                 "against_head_sha": head}})
+        return store.load_pr(9)
+
+    def test_a_ci_objection_hunts_a_head_whose_ci_fails(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(gates.profile, "active", lambda: gates.profile.RepoProfile(
+            autofix=gates.profile.AutofixPolicy(fixable_gates=("objection",))))
+        pr = self._pr(tmp_path)
+        assert gates.fix_huntable(pr, "fix", ["src/a.ts"], objection="ci")[0]
+        ok, why = gates.fix_huntable(pr, "fix", ["src/a.ts"], objection="security")
+        assert not ok and "CI is failing" in why
+        ok, why = gates.fix_huntable(pr, "fix", ["src/a.ts"])
+        assert not ok and "CI is failing" in why
+
+
 class TestFixAutopushBar:
     def _result(self, verdict="safe", lines=10, failed=False):
         patch = "diff --git a/x.ts b/x.ts\n--- a/x.ts\n+++ b/x.ts\n" + "\n".join(

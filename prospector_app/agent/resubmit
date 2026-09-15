@@ -798,6 +798,7 @@ def cmd_push(pr: int, message: str | None, dry_run: bool,
         print(f"[dry-run] resubmit of PR #{pr} logged; nothing pushed to {where}.")
     else:
         print(f"resubmitted PR #{pr}: pushed {new_sha[:8]} to {where} as {actor_label()}.")
+        print(f"resubmit: head is now {new_sha}")
         print("  Greptile + CI re-run on the push.")
     return 0
 

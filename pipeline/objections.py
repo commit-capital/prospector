@@ -1,8 +1,8 @@
 """An objection: a machine judgment that names a defect an agent may fix.
 
 A reviewer's rejection of a resolution, a compile excerpt the pristine base
-passes, a fix reviewer's rejection, or a security finding is handed to the
-authoring agent as its goal. The signature keys once-per-head and the budget
+passes, a fix reviewer's rejection, a security finding, or the CI checks a
+head this bot pushed fails is handed to the authoring agent as its goal. The signature keys once-per-head and the budget
 bounds unattended spend per worker per UTC day.
 """
 from __future__ import annotations
@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from pipeline.model import Pr
     from pipeline.store import Store
 
-KINDS = ("resolve-review", "compile", "fix-review", "security")
+KINDS = ("resolve-review", "compile", "fix-review", "security", "ci")
 
 _GOALS = {
     "resolve-review": ("A reviewer rejected the previous change for this reason; make the "
@@ -29,6 +29,10 @@ _GOALS = {
                 "that makes it pass:"),
     "security": ("A security review flagged this finding; make the smallest change "
                  "that removes it:"),
+    "ci": ("CI fails at the head this bot pushed to the pull request, on the checks "
+           "listed below. Make the smallest change that makes them pass while keeping "
+           "the pushed change's intent; when a failure is plainly unrelated to the "
+           "pushed change (flaky or infrastructure), give up and say so:"),
 }
 
 # How much of an objection's text is stored and handed to the agent.
