@@ -50,9 +50,12 @@ LABEL = "prospector.verify-base=1"
 # How many generations survive a sweep: the pin plus one more.
 KEEP_GENERATIONS = 2
 
-# How much BuildKit cache a sweep leaves alone. It covers the build that just
-# finished and any build running concurrently.
+# How much BuildKit cache a sweep leaves alone: cache younger than the window
+# survives, and what survives is then held under the byte bound, newest first.
+# A base build stages a multi-gigabyte pnpm store per default-branch head, so
+# an age window alone lets a busy day fill the Docker volume.
 BUILD_CACHE_KEEP_HOURS = 24
+BUILD_CACHE_KEEP_BYTES = 20 * 1024 ** 3
 
 # `docker image ls --format {{.CreatedAt}}` renders "2026-08-10 09:00:00 +0000
 # UTC" — a timezone offset followed by its abbreviation, which strptime has no
@@ -225,12 +228,25 @@ def _prune_build_leftovers() -> None:
     stages a multi-gigabyte pnpm store that never enters the shipped image; the
     layers land as dangling images under the classic builder and as build cache
     under BuildKit, so both are swept. The label scopes the first to our own
-    images and the age window scopes the second to cache nothing is using."""
+    images; the age window scopes the second to cache nothing is using, and the
+    byte bound caps what the window leaves."""
     subprocess.run(["docker", "image", "prune", "-f", "--filter", f"label={LABEL}"],
                    capture_output=True, text=True, env=_env())
     subprocess.run(["docker", "builder", "prune", "-f", "--filter",
                     f"until={BUILD_CACHE_KEEP_HOURS:g}h"],
                    capture_output=True, text=True, env=_env())
+    _bound_build_cache(BUILD_CACHE_KEEP_BYTES)
+
+
+def _bound_build_cache(keep_bytes: int) -> None:
+    """Hold the BuildKit cache under `keep_bytes`, oldest entries first. The
+    flag that names the bound differs across Docker releases, so the current
+    spelling is tried first and the older one when the daemon rejects it."""
+    for flag in ("--max-used-space", "--keep-storage"):
+        p = subprocess.run(["docker", "builder", "prune", "-f", flag, str(keep_bytes)],
+                           capture_output=True, text=True, env=_env())
+        if p.returncode == 0 or "unknown flag" not in (p.stderr or ""):
+            return
 
 
 def collect(pinned_sha: str | None, *, sandbox_tag: str | None = None,

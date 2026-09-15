@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 
 from pipeline import diffpaths, gates, profile, verify_driver
+from pipeline.store import Store
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +112,10 @@ def _compile_over(result: dict, patch: Path, cmd: str, head_sha: str) -> None:
     tag = verify_driver.base_image_tag(sha, 1)
     if not verify_driver.image_exists(tag):
         verify_driver.build_base_image(sha, tier=1)
+        # Every default-branch move builds another generation; the sweep keeps
+        # this machine's verify pin and the newest beside it and reclaims the
+        # rest, so a busy day cannot fill the Docker volume.
+        verify_driver.collect_garbage(verify_driver.local_pin(Store()).get("base_sha"))
     exit_code, tail = verify_driver.run_phase(
         "compile", tag, patch=patch, tier=1, test_cmd=cmd,
         base_sha=sha, head_sha=head_sha)
@@ -129,8 +134,8 @@ def _compile_over(result: dict, patch: Path, cmd: str, head_sha: str) -> None:
     elif exit_code == gates.SENTINEL_PATCH_CONFLICT:
         result["error_excerpt"] = excerpt
     elif exit_code == gates.SENTINEL_PATCH_UNREADABLE:
-        result["error"] = ("the sandbox could not read the patch it was handed"
-                           + (f": {excerpt}" if excerpt else ""))
+        result["error"] = ("the sandbox could not apply the patch for a reason that "
+                           "is not the patch's" + (f": {excerpt}" if excerpt else ""))
     elif exit_code not in (gates.SENTINEL_PASS, gates.SENTINEL_PROBE_FAIL):
         result["error"] = (f"the sandbox phase exited {exit_code} before the command "
                            f"concluded" + (f": {excerpt}" if excerpt else ""))

@@ -1966,6 +1966,19 @@ class TestCompilePreflightGate:
         assert ok is False
         assert "rebase" in why and "cccccccccccc" in why
 
+    def test_patch_conflict_carries_the_apply_s_own_words(self):
+        ok, why = gates.compile_preflight_gate(
+            {"exit": 30, "base_sha": "c" * 40,
+             "error_excerpt": "error: patch failed: src/x.ts:12"})
+        assert ok is False
+        assert why.endswith("error: patch failed: src/x.ts:12")
+
+    def test_a_patch_the_harness_could_not_apply_blocks_as_a_worker_fault(self):
+        ok, why = gates.compile_preflight_gate(
+            {"exit": 40, "base_sha": "c" * 40, "error_excerpt": "corrupt patch at line 49"})
+        assert ok is False
+        assert "worker" in why and "corrupt patch at line 49" in why
+
     def test_probe_failure_blocks(self):
         ok, why = gates.compile_preflight_gate({"exit": 10})
         assert ok is False

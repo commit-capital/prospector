@@ -118,6 +118,34 @@ class TestRunForMerge:
         assert res is not None and res["exit"] == 0
         assert order == ["build", "run"]
 
+    def test_a_build_is_followed_by_a_sweep_that_keeps_the_verify_pin(
+            self, configured, monkeypatch, tmp_path):
+        swept: list = []
+        monkeypatch.setattr(verify_driver, "fetch_patch",
+                            lambda pr, head: _patch_file(tmp_path, SRC_DIFF))
+        monkeypatch.setattr(verify_driver, "resolve_base_sha", lambda: BASE)
+        monkeypatch.setattr(verify_driver, "image_exists", lambda tag: False)
+        monkeypatch.setattr(verify_driver, "build_base_image",
+                            lambda sha, *, tier: verify_driver.base_image_tag(sha, tier))
+        monkeypatch.setattr(verify_driver, "local_pin", lambda store: {"base_sha": "p" * 40})
+        monkeypatch.setattr(verify_driver, "collect_garbage",
+                            lambda pinned, **kw: swept.append(pinned) or {"ok": True})
+        monkeypatch.setattr(verify_driver, "run_phase", lambda *a, **k: (0, ""))
+        res = compile_preflight.run_for_merge(7, "a" * 40)
+        assert res is not None and res["exit"] == 0
+        assert swept == ["p" * 40]
+
+    def test_an_image_already_present_is_not_swept_for(self, configured, monkeypatch, tmp_path):
+        monkeypatch.setattr(verify_driver, "fetch_patch",
+                            lambda pr, head: _patch_file(tmp_path, SRC_DIFF))
+        monkeypatch.setattr(verify_driver, "resolve_base_sha", lambda: BASE)
+        monkeypatch.setattr(verify_driver, "image_exists", lambda tag: True)
+        monkeypatch.setattr(verify_driver, "collect_garbage",
+                            lambda *a, **k: pytest.fail("no build, no sweep"))
+        monkeypatch.setattr(verify_driver, "run_phase", lambda *a, **k: (0, ""))
+        res = compile_preflight.run_for_merge(7, "a" * 40)
+        assert res is not None and res["exit"] == 0
+
     def test_compile_failure_extracts_error_excerpt(self, configured, monkeypatch, tmp_path):
         monkeypatch.setattr(verify_driver, "fetch_patch",
                             lambda pr, head: _patch_file(tmp_path, SRC_DIFF))
@@ -225,7 +253,7 @@ class TestExitClassification:
         rec = self._run(configured, monkeypatch, tmp_path, 40,
                         "patch mount does not match what the host wrote after 20 reads\n")
         assert rec["exit"] == 40
-        assert "could not read the patch" in rec["error"]
+        assert "could not apply the patch" in rec["error"]
         assert "does not match" in rec["error"]
 
     def test_a_non_sentinel_exit_is_the_workers_fault(self, configured, monkeypatch, tmp_path):

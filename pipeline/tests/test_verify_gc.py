@@ -466,3 +466,38 @@ class TestCollectSandboxImages:
         result = gc.collect("a" * 12, sandbox_tag="pr-verify:pnpm-9.15.4", dry_run=True)
         assert result["sandbox_reclaimed"] == ["pr-verify:local"]
         assert not any(c[1] == "rmi" for c in calls)
+
+
+class TestBuildCacheBound:
+    """The sweep holds BuildKit cache under a byte bound, spelled for the
+    daemon's release."""
+
+    def _recorder(self, reject: set[str]):
+        calls: list[list[str]] = []
+
+        def run(cmd: list[str], **kw: object) -> subprocess.CompletedProcess[str]:
+            calls.append(cmd)
+            if any(flag in cmd for flag in reject):
+                return subprocess.CompletedProcess(cmd, 125, "", "unknown flag: --max-used-space")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        return calls, run
+
+    def test_the_current_flag_is_tried_first(self, monkeypatch):
+        calls, run = self._recorder(set())
+        monkeypatch.setattr(gc.subprocess, "run", run)
+        gc._bound_build_cache(5)
+        assert calls == [["docker", "builder", "prune", "-f", "--max-used-space", "5"]]
+
+    def test_a_daemon_that_rejects_it_gets_the_older_spelling(self, monkeypatch):
+        calls, run = self._recorder({"--max-used-space"})
+        monkeypatch.setattr(gc.subprocess, "run", run)
+        gc._bound_build_cache(5)
+        assert [c[-2] for c in calls] == ["--max-used-space", "--keep-storage"]
+
+    def test_the_sweep_bounds_the_cache_after_the_age_window(self, monkeypatch):
+        calls, run = self._recorder(set())
+        monkeypatch.setattr(gc.subprocess, "run", run)
+        gc._prune_build_leftovers()
+        assert calls[-1] == ["docker", "builder", "prune", "-f", "--max-used-space",
+                             str(gc.BUILD_CACHE_KEEP_BYTES)]
+        assert any("until=" in " ".join(c) for c in calls[:-1])

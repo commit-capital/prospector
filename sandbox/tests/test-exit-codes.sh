@@ -41,6 +41,17 @@ diff --git a/nonexistent.txt b/nonexistent.txt
 -was
 +now
 PATCH
+# A hunk header that promises one more line than the file holds — the shape a
+# host leaves behind when it strips a trailing blank context line.
+cat > "$CTX/corrupt.patch" <<'PATCH'
+diff --git a/package.json b/package.json
+--- a/package.json
++++ b/package.json
+@@ -1,3 +1,3 @@
+ { "name": "fixture", "version": "0.0.0", "private": true,
+-  "scripts": {
++  "scripts":  {
+PATCH
 
 docker build -q --network none -t pr-verify-base:exitcodes-t0 \
   --build-arg BASE_IMAGE="$BASE_IMAGE" --build-arg TIER=0 -f "$HERE/Dockerfile.base" "$CTX" >/dev/null || {
@@ -57,6 +68,8 @@ check() { # check <label> <expected> <actual>
 check "apply-check clean patch = 0"  0  "$(run --phase apply-check --patch "$CTX/fix.patch")"
 check "apply-check conflict = 30"    30 "$(run --phase apply-check --patch "$CTX/bad.patch")"
 check "apply-check with no --patch = 2 (launcher usage error)" 2 "$(run --phase apply-check)"
+check "apply-check corrupt patch = 40 (the harness's fault, not a conflict)" 40 \
+  "$(run --phase apply-check --patch "$CTX/corrupt.patch")"
 check "red on base = 20 (test fails)" 20 "$(run --phase red)"
 check "red with patch = 0 (red applies its optional patch)" 0 \
   "$(run --phase red --patch "$CTX/fix.patch")"
@@ -64,6 +77,7 @@ check "red with bad patch = 30 (a conflict is still a conflict on red)" 30 \
   "$(run --phase red --patch "$CTX/bad.patch")"
 check "green with patch = 0"          0  "$(run --phase green --patch "$CTX/fix.patch")"
 check "green with bad patch = 30"     30 "$(run --phase green --patch "$CTX/bad.patch")"
+check "green with corrupt patch = 40" 40 "$(run --phase green --patch "$CTX/corrupt.patch")"
 
 # compile (the merge-time compile preflight) shares green's contract: apply the
 # full diff, run the command, sentinel exit.
@@ -72,6 +86,7 @@ check "compile with patch, passing cmd = 0" 0 \
 check "compile failing cmd = 20" 20 \
   "$(run --phase compile --patch "$CTX/fix.patch" --test-cmd 'exit 1')"
 check "compile with bad patch = 30"   30 "$(run --phase compile --patch "$CTX/bad.patch")"
+check "compile with corrupt patch = 40" 40 "$(run --phase compile --patch "$CTX/corrupt.patch")"
 check "compile with no --patch = 2 (launcher usage error)" 2 "$(run --phase compile)"
 check "compile --pristine runs the command over the base as pinned = 0" 0 \
   "$(run --phase compile --pristine --test-cmd 'exit 0')"

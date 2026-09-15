@@ -163,6 +163,28 @@ class _StepReader(_Probe):
         return super().__call__(n, *args, stdin=stdin)
 
 
+def test_a_diff_ending_in_a_blank_context_line_reaches_the_preflight_whole(store, monkeypatch):
+    # git renders an unchanged blank line as a lone space; a patch that loses it
+    # is corrupt, and the sandbox would refuse the change as not applying.
+    fix_queue.queue_pr(1, "update")
+    monkeypatch.setattr(fix_worker, "_resubmit",
+                        _Probe(stdout="diff --git a/a.ts b/a.ts\n@@ -1,2 +1,2 @@\n-x\n+y\n \n"))
+    handed: list[str] = []
+    monkeypatch.setattr(fix_worker, "_preflight",
+                        lambda n, patch: handed.append(patch) or {"exit": 0})
+
+    fix_worker.run_one(1)
+
+    assert handed == ["diff --git a/a.ts b/a.ts\n@@ -1,2 +1,2 @@\n-x\n+y\n "]
+
+
+def test_diff_text_trims_line_ends_only():
+    import subprocess
+    run = subprocess.CompletedProcess(["resubmit"], 0, "diff --git a/a b/a\n \n\n", "")
+    assert fix_worker._diff_text(run) == "diff --git a/a b/a\n "
+    assert fix_worker._diff_text(subprocess.CompletedProcess(["resubmit"], 0, " \n", "")) == ""
+
+
 def test_an_update_reports_its_steps_while_it_runs(store, monkeypatch):
     # The merge probe and the compile preflight are the minutes-long halves of a
     # mechanical update; each announces itself so the queue row never sits on
