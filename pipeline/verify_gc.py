@@ -50,12 +50,18 @@ LABEL = "prospector.verify-base=1"
 # How many generations survive a sweep: the pin plus one more.
 KEEP_GENERATIONS = 2
 
-# How much BuildKit cache a sweep leaves alone: cache younger than the window
-# survives, and what survives is then held under the byte bound, newest first.
-# A base build stages a multi-gigabyte pnpm store per default-branch head, so
-# an age window alone lets a busy day fill the Docker volume.
-BUILD_CACHE_KEEP_HOURS = 24
-BUILD_CACHE_KEEP_BYTES = 20 * 1024 ** 3
+# How much BuildKit cache a sweep tolerates. A base build stages a
+# multi-gigabyte pnpm store per default-branch head, and every cache record it
+# leaves is referenced by an image layer, so `docker builder prune` without
+# `--all` reclaims nothing and the size-bounded prune flags reclaim nothing
+# either. The sweep measures the cache instead and clears it whole once it
+# passes this bound; the next build re-fetches the store.
+BUILD_CACHE_KEEP_BYTES = 20 * 1000 ** 3
+
+_SIZE_RE = re.compile(r"^\s*([0-9]*\.?[0-9]+)\s*([kKMGTP]?i?B)\s*$")
+_SIZE_UNITS = {"B": 1, "kB": 1000, "KB": 1000, "MB": 1000 ** 2, "GB": 1000 ** 3,
+               "TB": 1000 ** 4, "PB": 1000 ** 5, "KiB": 1024, "MiB": 1024 ** 2,
+               "GiB": 1024 ** 3, "TiB": 1024 ** 4, "PiB": 1024 ** 5}
 
 # `docker image ls --format {{.CreatedAt}}` renders "2026-08-10 09:00:00 +0000
 # UTC" — a timezone offset followed by its abbreviation, which strptime has no
@@ -226,27 +232,48 @@ def _rmi(image: str) -> bool:
 def _prune_build_leftovers() -> None:
     """Reclaim what the two-stage base build leaves behind. Dockerfile.base
     stages a multi-gigabyte pnpm store that never enters the shipped image; the
-    layers land as dangling images under the classic builder and as build cache
-    under BuildKit, so both are swept. The label scopes the first to our own
-    images; the age window scopes the second to cache nothing is using, and the
-    byte bound caps what the window leaves."""
+    layers land as dangling images under the classic builder, pruned under our
+    own label, and as build cache under BuildKit, cleared whole once it passes
+    BUILD_CACHE_KEEP_BYTES."""
     subprocess.run(["docker", "image", "prune", "-f", "--filter", f"label={LABEL}"],
                    capture_output=True, text=True, env=_env())
-    subprocess.run(["docker", "builder", "prune", "-f", "--filter",
-                    f"until={BUILD_CACHE_KEEP_HOURS:g}h"],
+    _clear_build_cache_past(BUILD_CACHE_KEEP_BYTES)
+
+
+def parse_size(text: str) -> int | None:
+    """Bytes for a size as `docker system df` renders one ("56.13GB", "0B"),
+    or None for anything else."""
+    m = _SIZE_RE.match(text)
+    if not m:
+        return None
+    unit = _SIZE_UNITS.get(m.group(2))
+    if unit is None:
+        return None
+    return int(float(m.group(1)) * unit)
+
+
+def build_cache_bytes() -> int | None:
+    """The BuildKit cache size the daemon reports, or None when it cannot be
+    read."""
+    p = subprocess.run(["docker", "system", "df", "--format", "{{.Type}}\t{{.Size}}"],
+                       capture_output=True, text=True, env=_env())
+    if p.returncode != 0:
+        return None
+    for line in (p.stdout or "").splitlines():
+        kind, _, size = line.partition("\t")
+        if kind.strip() == "Build Cache":
+            return parse_size(size)
+    return None
+
+
+def _clear_build_cache_past(keep_bytes: int) -> None:
+    """Clear the whole BuildKit cache when it is larger than `keep_bytes`; an
+    unreadable size leaves it alone."""
+    size = build_cache_bytes()
+    if size is None or size <= keep_bytes:
+        return
+    subprocess.run(["docker", "builder", "prune", "-af"],
                    capture_output=True, text=True, env=_env())
-    _bound_build_cache(BUILD_CACHE_KEEP_BYTES)
-
-
-def _bound_build_cache(keep_bytes: int) -> None:
-    """Hold the BuildKit cache under `keep_bytes`, oldest entries first. The
-    flag that names the bound differs across Docker releases, so the current
-    spelling is tried first and the older one when the daemon rejects it."""
-    for flag in ("--max-used-space", "--keep-storage"):
-        p = subprocess.run(["docker", "builder", "prune", "-f", flag, str(keep_bytes)],
-                           capture_output=True, text=True, env=_env())
-        if p.returncode == 0 or "unknown flag" not in (p.stderr or ""):
-            return
 
 
 def collect(pinned_sha: str | None, *, sandbox_tag: str | None = None,

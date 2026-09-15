@@ -2291,6 +2291,29 @@ class TestFixEligibility:
         assert "withholds from autofix" in why
 
 
+class TestFixWithheld:
+    def _profile(self, monkeypatch, gated=("infra/**",), deny=("skills/**",)):
+        p = profile.RepoProfile(
+            codeowners=profile.CodeownersPolicy(gated_globs=gated, owners=("@core",)),
+            autofix=profile.AutofixPolicy(deny_globs=deny))
+        monkeypatch.setattr(profile, "active", lambda: p)
+
+    def test_the_globs_are_codeowners_plus_deny(self, monkeypatch):
+        self._profile(monkeypatch)
+        assert gates.fix_withheld_globs() == ("infra/**", "skills/**")
+
+    def test_the_generic_profile_withholds_nothing(self, monkeypatch):
+        self._profile(monkeypatch, gated=(), deny=())
+        assert gates.fix_withheld_globs() == ()
+        assert gates.fix_withheld_paths(["src/a.ts"]) == []
+
+    def test_paths_under_either_set_are_withheld(self, monkeypatch):
+        self._profile(monkeypatch)
+        withheld = gates.fix_withheld_paths(
+            ["src/a.ts", "infra/main.tf", "skills/agent/SKILL.md", "./skills/x.md"])
+        assert withheld == ["infra/main.tf", "skills/agent/SKILL.md", "./skills/x.md"]
+
+
 class TestFixHuntable:
     """The idle hunter's own bar, on top of fix_eligibility. It picks PRs a human
     already liked and that are merely out of date, so it asks for the review
@@ -2645,3 +2668,14 @@ class TestFixAutopushBar:
         assert "compile" in gates.fix_autopush_bar(r, ["a"])[1]
         monkeypatch.setattr(gates.risktier, "pr_tier", lambda paths: None)
         assert gates.fix_autopush_bar(self._result(), [])[1].startswith("the touched paths are unknown")
+
+    def test_related_tests_are_the_bar_s_last_evidence(self, monkeypatch):
+        monkeypatch.setattr(gates.risktier, "pr_tier", lambda paths: 2)
+        def with_run(run):
+            return {**self._result(), "tests": {"files": ["a.test.ts"], "run": run}}
+        assert gates.fix_autopush_bar(with_run({"exit": 0}), ["a"])[0]
+        assert "did not pass" in gates.fix_autopush_bar(with_run({"exit": 20}), ["a"])[1]
+        assert "the fix no longer applies" in gates.fix_autopush_bar(with_run({"exit": 30}), ["a"])[1]
+        assert "could not run" in gates.fix_autopush_bar(
+            with_run({"error": "no daemon"}), ["a"])[1]
+        assert gates.fix_autopush_bar({**self._result(), "tests": None}, ["a"])[0]

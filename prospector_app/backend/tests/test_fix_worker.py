@@ -777,6 +777,109 @@ def test_a_fix_with_nothing_to_aim_at_refuses_before_any_agent_runs(store, monke
     assert probe.calls == []
 
 
+def _withholding_profile(monkeypatch, *, fixable_gates: tuple[str, ...] = ("review",)) -> None:
+    monkeypatch.setattr(profile, "active", lambda: profile.RepoProfile(
+        codeowners=profile.CodeownersPolicy(gated_globs=("skills/**",), owners=("@core",)),
+        autofix=profile.AutofixPolicy(deny_globs=(".github/**",), fixable_gates=fixable_gates)))
+
+
+def test_findings_all_on_withheld_paths_refuse_before_any_agent_runs(store, monkeypatch):
+    # Every change that meets this goal fails the re-gate over the finished
+    # patch, so the request refuses first, naming the paths, and spends no
+    # agent time.
+    _sub_bar_review(store, findings=[
+        {"headline": "skill prose drifts", "class": "substantive", "why": "still there",
+         "path": "skills/agent/SKILL.md", "line": 3},
+        {"headline": "workflow typo", "class": "nitpick", "why": "still there",
+         "path": ".github/workflows/ci.yml", "line": 9}])
+    _withholding_profile(monkeypatch)
+    fix_queue.queue_pr(1, "fix")
+    probe = _fix_probe()
+    monkeypatch.setattr(fix_worker, "_resubmit", probe)
+    monkeypatch.setattr(fix_worker.author_fix, "author",
+                        lambda *a, **k: pytest.fail("agent ran on withheld paths"))
+
+    fix_worker.run_one(1)
+
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "refused"
+    assert "skills/agent/SKILL.md" in req["refused_reason"]
+    assert ".github/workflows/ci.yml" in req["refused_reason"]
+    assert probe.calls == []
+
+
+def test_a_finding_on_an_open_path_lets_the_agent_run(store, monkeypatch):
+    _sub_bar_review(store, findings=[
+        {"headline": "skill prose drifts", "class": "substantive", "why": "still there",
+         "path": "skills/agent/SKILL.md", "line": 3},
+        {"headline": "retry never exits", "class": "substantive", "why": "still there",
+         "path": "src/retry.ts", "line": 12}])
+    _withholding_profile(monkeypatch)
+    fix_queue.queue_pr(1, "fix")
+    monkeypatch.setattr(fix_worker, "_resubmit", _fix_probe())
+    seen: dict = {}
+    _authored(monkeypatch, capture=seen)
+    _reviewed(monkeypatch)
+
+    fix_worker.run_one(1)
+
+    assert store.load_pr(1).fix_request["status"] == "awaiting-review"
+    assert seen["withheld_globs"] == ("skills/**", ".github/**")
+
+
+def test_a_finding_without_a_path_lets_the_agent_run(store, monkeypatch):
+    # A pathless finding points somewhere the store cannot see, so only the
+    # agent can say whether the goal needs a withheld path.
+    _sub_bar_review(store, findings=[
+        {"headline": "skill prose drifts", "class": "substantive", "why": "still there",
+         "path": "skills/agent/SKILL.md", "line": 3},
+        {"headline": "naming is inconsistent", "class": "nitpick", "why": "still there"}])
+    _withholding_profile(monkeypatch)
+    fix_queue.queue_pr(1, "fix")
+    monkeypatch.setattr(fix_worker, "_resubmit", _fix_probe())
+    _authored(monkeypatch)
+    _reviewed(monkeypatch)
+
+    fix_worker.run_one(1)
+
+    assert store.load_pr(1).fix_request["status"] == "awaiting-review"
+
+
+def test_a_failing_check_is_a_target_when_the_findings_are_withheld(store, monkeypatch):
+    _sub_bar_review(store, findings=[
+        {"headline": "skill prose drifts", "class": "substantive", "why": "still there",
+         "path": "skills/agent/SKILL.md", "line": 3}])
+    _withholding_profile(monkeypatch, fixable_gates=("review", "ci"))
+    monkeypatch.setattr(fix_worker.gh, "check_runs",
+                        lambda sha: [{"name": "build", "conclusion": "failure"}])
+    fix_queue.queue_pr(1, "fix")
+    monkeypatch.setattr(fix_worker, "_resubmit", _fix_probe())
+    seen: dict = {}
+    _authored(monkeypatch, capture=seen)
+    _reviewed(monkeypatch)
+
+    fix_worker.run_one(1)
+
+    assert store.load_pr(1).fix_request["status"] == "awaiting-review"
+    assert seen["ci_failures"] == ["build"]
+
+
+def test_guidance_aims_past_withheld_findings(store, monkeypatch):
+    # The operator's typed goal is the goal; the findings ride along as evidence.
+    _sub_bar_review(store, findings=[
+        {"headline": "skill prose drifts", "class": "substantive", "why": "still there",
+         "path": "skills/agent/SKILL.md", "line": 3}])
+    _withholding_profile(monkeypatch)
+    _queue_fix("bound the retry loop in src/retry.ts")
+    monkeypatch.setattr(fix_worker, "_resubmit", _fix_probe())
+    _authored(monkeypatch)
+    _reviewed(monkeypatch)
+
+    fix_worker.run_one(1)
+
+    assert store.load_pr(1).fix_request["status"] == "awaiting-review"
+
+
 def test_the_agent_gets_the_pr_diff_and_the_sandbox_sees_pr_plus_edits(store, monkeypatch,
                                                                        tmp_path):
     _queue_fix()
@@ -1998,26 +2101,55 @@ class TestFixRetry:
 
 
 class TestFixAutopush:
-    def _run(self, store, monkeypatch, tier):
+    def _run(self, store, monkeypatch, tier, related=(), run=None):
         monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", "fix")
         monkeypatch.setattr(fix_worker.risktier, "pr_tier", lambda paths: tier)
         probe = _fix_probe()
         monkeypatch.setattr(fix_worker, "_resubmit", probe)
         _authored(monkeypatch)
         _reviewed(monkeypatch)
+        asked: dict = {}
+        monkeypatch.setattr(fix_worker.resolve_evidence, "related_tests",
+                            lambda wt, paths: asked.setdefault("paths", list(paths)) and list(related))
+        monkeypatch.setattr(
+            fix_worker, "_related_tests_run",
+            lambda n, head, patch, files: (asked.setdefault("patch", patch),
+                                           {"files": files, "run": run} if files else None)[1])
         _queue_fix()
         fix_worker.run_one(1)
-        return probe, store.load_pr(1).fix_request
+        return probe, store.load_pr(1).fix_request, asked
 
     def test_a_fix_past_the_bar_is_pushed(self, store, monkeypatch):
-        probe, req = self._run(store, monkeypatch, tier=2)
+        probe, req, _ = self._run(store, monkeypatch, tier=2)
         assert req["status"] == "pushed" and _pushed(probe)
         assert req["result"]["autopush_bar"]["ok"] is True
 
     def test_a_fix_under_the_bar_parks_with_the_reason(self, store, monkeypatch):
-        probe, req = self._run(store, monkeypatch, tier=1)
+        probe, req, _ = self._run(store, monkeypatch, tier=1)
         assert req["status"] == "awaiting-review" and not _pushed(probe)
         assert "tier" in req["result"]["autopush_bar"]["reason"]
+
+    def test_related_tests_run_over_the_composed_tree_before_a_push(self, store, monkeypatch):
+        probe, req, asked = self._run(store, monkeypatch, tier=2,
+                                      related=["src/a.test.ts"], run={"exit": 0})
+        assert req["status"] == "pushed" and _pushed(probe)
+        assert asked["paths"] == ["a.ts"]
+        assert asked["patch"].startswith(PR_DIFF) and "diff --git a/a.ts" in asked["patch"]
+        assert req["result"]["tests"] == {"files": ["src/a.test.ts"], "run": {"exit": 0}}
+
+    def test_failing_related_tests_park_the_fix(self, store, monkeypatch):
+        probe, req, _ = self._run(store, monkeypatch, tier=2,
+                                  related=["src/a.test.ts"], run={"exit": 20})
+        assert req["status"] == "awaiting-review" and not _pushed(probe)
+        assert "did not pass" in req["result"]["autopush_bar"]["reason"]
+
+    def test_a_related_tests_sandbox_that_cannot_run_is_the_machine_s_failure(
+            self, store, monkeypatch):
+        probe, req, _ = self._run(store, monkeypatch, tier=2, related=["src/a.test.ts"],
+                                  run={"error": "docker is not running", "error_kind": "sandbox"})
+        assert req["status"] == "failed" and not _pushed(probe)
+        assert "could not run" in req["error"]
+        assert ("abort",) in probe.calls
 
 
 class TestCompileObjection:

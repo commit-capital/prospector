@@ -17,6 +17,7 @@ Cluster state is DERIVED here, never stored.
 from __future__ import annotations
 
 import fnmatch
+from collections.abc import Iterable
 from datetime import datetime, timezone
 import posixpath
 import re
@@ -625,6 +626,22 @@ def fix_eligibility(pr: Pr, action: str,
     return True, f"eligible for {action}"
 
 
+def fix_withheld_globs() -> tuple[str, ...]:
+    """The globs an agent-authored change may not touch: the profile's
+    CODEOWNERS-gated globs followed by its autofix.deny_globs. These are the
+    two path blocks fix_eligibility raises against a `fix` or `resolve`, so
+    the authoring agent can be told them before it starts."""
+    p = profile.active()
+    return tuple(p.codeowners.gated_globs) + tuple(p.autofix.deny_globs)
+
+
+def fix_withheld_paths(paths: Iterable[str]) -> list[str]:
+    """The subset of `paths` that fix_withheld_globs covers, in order."""
+    globs = fix_withheld_globs()
+    return [p for p in paths
+            if any(diffpaths.matches_glob(diffpaths.normalize_path(p), g) for g in globs)]
+
+
 def resolve_autopush_bar(result: dict) -> tuple[bool, str]:
     """May a parked `resolve` be pushed unattended? The ONE policy over the
     request's recorded evidence, judged only when TRIAGE_FIX_AUTOPUSH names
@@ -666,20 +683,29 @@ def resolve_autopush_bar(result: dict) -> tuple[bool, str]:
                                f"not clear it: {reason}")
     if len(reviews) < 2:
         return False, f"{len(reviews)} of 2 agent reviews recorded"
-    tests = auto.get("tests")
-    if tests:
-        run = tests.get("run") or {}
-        not_run = run.get("error") or run.get("refused")
-        if not_run:
-            return False, ("the related-tests sandbox could not run: "
-                           f"{not_run}")
-        if run.get("exit") == SENTINEL_PATCH_CONFLICT:
-            return False, ("the resolution no longer applies onto the current default "
-                           "branch")
-        if run.get("exit") != 0:
-            return False, ("the related-tests sandbox run did not pass: "
-                           f"exit {run.get('exit')}")
+    blocked = related_tests_block(auto.get("tests"), "the resolution")
+    if blocked:
+        return False, blocked
     return True, "cleared for unattended push"
+
+
+def related_tests_block(tests: dict | None, change: str) -> str | None:
+    """Why a related-tests sandbox record blocks an unattended push, or None
+    when it clears: no record (no related tests exist) clears on the reviews
+    alone; a run that could not start, one whose patch no longer applies, and
+    one that exited failing each block with the reason. `change` names the
+    change in the reason ("the resolution", "the fix")."""
+    if not tests:
+        return None
+    run = tests.get("run") or {}
+    not_run = run.get("error") or run.get("refused")
+    if not_run:
+        return f"the related-tests sandbox could not run: {not_run}"
+    if run.get("exit") == SENTINEL_PATCH_CONFLICT:
+        return f"{change} no longer applies onto the current default branch"
+    if run.get("exit") != 0:
+        return f"the related-tests sandbox run did not pass: exit {run.get('exit')}"
+    return None
 
 
 def fix_autopush_bar(result: dict, changed_paths: list[str]) -> tuple[bool, str]:
@@ -688,8 +714,10 @@ def fix_autopush_bar(result: dict, changed_paths: list[str]) -> tuple[bool, str]
     `fix`; an operator's manual approval never consults it.
 
     Pass requires all of: the refuting reviewer's affirmative `safe`; a compile
-    preflight that cleared (or none configured); every touched path at or
-    above TRIAGE_FIX_AUTOPUSH_MIN_TIER; and a patch within
+    preflight that cleared (or none configured); a clean sandbox run of the
+    test files related to the touched paths, when any exist (`result["tests"]`,
+    the record `fix_worker._related_tests_run` writes); every touched path at
+    or above TRIAGE_FIX_AUTOPUSH_MIN_TIER; and a patch within
     TRIAGE_FIX_AUTOPUSH_MAX_LINES changed lines."""
     review = result.get("review_verdict") or {}
     if review.get("failed") or review.get("verdict") != "safe":
@@ -699,6 +727,9 @@ def fix_autopush_bar(result: dict, changed_paths: list[str]) -> tuple[bool, str]
         ok, why = compile_preflight_gate(pf)
         if not ok:
             return False, f"the compile preflight did not clear it: {why}"
+    blocked = related_tests_block(result.get("tests"), "the fix")
+    if blocked:
+        return False, blocked
     tier = risktier.pr_tier(changed_paths)
     if tier is None:
         return False, "the touched paths are unknown, so the risk tier is too"

@@ -788,6 +788,24 @@ def _fix_goal(rec: Pr, claimed: dict) -> _FixBrief:
     return _FixBrief("\n".join(goals) or DEFAULT_FIX_GOAL, findings, checks, summary)
 
 
+def _withheld_targets(claimed: dict, findings: list[dict], checks: list[str]) -> list[str]:
+    """The findings' paths when every one of them is withheld from agent
+    authoring and nothing else aims the fix, so the re-gate over the finished
+    patch refuses any change that meets the goal. Empty otherwise.
+
+    Operator guidance or an objection is its own goal, a failing check is a
+    target without a path, and a finding with no path points somewhere the
+    store cannot see; each leaves the question to the agent, which is told the
+    withheld patterns in its prompt."""
+    if claimed.get("guidance") or claimed.get("objection") or checks or not findings:
+        return []
+    paths = [str(f.get("path") or "") for f in findings]
+    if not all(paths):
+        return []
+    withheld = gates.fix_withheld_paths(paths)
+    return list(dict.fromkeys(withheld)) if len(withheld) == len(paths) else []
+
+
 def _over_pr(pr_patch: Path, authored: str) -> str:
     """The authored change as the sandbox must see it: the pull request's own
     diff with the agent's edits appended, so the compile runs over the tree the
@@ -830,6 +848,13 @@ def _author_fix(n: int, claimed: dict) -> None:
             or checks or review_summary):
         _refuse(n, claimed, "Nothing to aim a fix at: the review left no findings "
                             "and no summary for this head, and no check is failing.")
+        return
+    withheld = _withheld_targets(claimed, findings, checks)
+    if withheld:
+        _refuse(n, claimed, "Every path the review findings point at is one the bot "
+                            "may not author on (CODEOWNERS-gated or withheld by the "
+                            f"profile): {', '.join(withheld[:5])}. A change there "
+                            "needs a person.")
         return
     if not rec.head_sha:
         _fail(n, claimed, "the PR has no recorded head SHA")
@@ -910,6 +935,20 @@ def _author_fix(n: int, claimed: dict) -> None:
     result = {**evidence, "compile_preflight": pf,
               "message": verdict["summary"] or _commit_message("fix")}
     if "fix" in settings.fix_autopush():
+        # The bar's last piece of evidence: the test files related to what the
+        # agent touched, run over the same composed tree the preflight measured.
+        # A sandbox that could not run is the machine's failure, so the request
+        # ends `failed` and the hunter retries it; a verdict parks or pushes.
+        _running_step(n, claimed, "related tests", action="fix")
+        related = resolve_evidence.related_tests(worktree, paths)
+        result["tests"] = _related_tests_run(n, rec.head_sha or "",
+                                             _over_pr(pr_patch, patch), related)
+        run = (result["tests"] or {}).get("run") or {}
+        if run.get("error"):
+            _resubmit(n, "abort")
+            _fail(n, claimed, f"the related-tests sandbox could not run: {run['error']}",
+                  result=result, kind=str(run.get("error_kind") or "sandbox"))
+            return
         ok, why = gates.fix_autopush_bar(result, paths)
         result["autopush_bar"] = {"ok": ok, "reason": why}
         if ok:
@@ -937,7 +976,8 @@ def _author_and_review(n: int, claimed: dict, rec: Pr, worktree: str, goal: str,
                                     body=rec.body or "", goal=goal,
                                     findings=findings, ci_failures=checks,
                                     review_summary=review_summary,
-                                    diff_path=str(pr_patch), head_sha=rec.head_sha or "")
+                                    diff_path=str(pr_patch), head_sha=rec.head_sha or "",
+                                    withheld_globs=gates.fix_withheld_globs())
     except headless_agent.AgentUnavailable as e:
         _resubmit(n, "abort")
         _fail(n, claimed, f"The agent could not run on {settings.worker_id()}: {e}",
@@ -1341,8 +1381,9 @@ def _cancel(n: int, req: dict, reason: str, result: dict | None = None) -> None:
 def _related_tests_run(n: int, head: str, patch: str,
                        related: list[str]) -> dict | None:
     """The sandbox record for the `related` test files, run over current
-    default-branch HEAD with the resolved diff applied. None when no related
-    tests exist or the profile configures no test lane."""
+    default-branch HEAD with `patch` applied — a resolve's merge diff, or a
+    fix's pull-request diff with the authored change appended. None when no
+    related tests exist or the profile configures no test lane."""
     if not related:
         return None
     cmd, _why = sandbox_check.lane_command(["test", *related])
@@ -1350,7 +1391,7 @@ def _related_tests_run(n: int, head: str, patch: str,
         return None
     scratch = settings.verify_scratch() / "autofix"
     scratch.mkdir(parents=True, exist_ok=True)
-    path = scratch / f"pr-{n}.resolve-tests.patch"
+    path = scratch / f"pr-{n}.related-tests.patch"
     path.write_text(patch + "\n")
     return {"files": related,
             "run": compile_preflight.run_command_for_patch(n, head, path, cmd)}
@@ -1425,7 +1466,7 @@ def _judge_claimed_resolve(n: int, rec: Pr, claimed: dict, head: str,
     result = dict(claimed.get("result") or {})
     paths = [str(p) for p in (result.get("conflict_paths") or [])]
     diff_r = _resubmit(n, "diff")
-    patch = (diff_r.stdout or "").strip()
+    patch = _diff_text(diff_r)
     if diff_r.returncode != 0 or not patch.startswith("diff "):
         restore("the kept worktree's diff could not be read")
         return
@@ -1540,7 +1581,8 @@ def _continue_resolve(n: int, rec: Pr, claimed: dict, head: str, worktree: str,
         verdict = author_fix.author(
             worktree, pr=n, title=rec.title or "", body=rec.body or "",
             goal=objections.goal_text(objection), findings=[], ci_failures=[],
-            diff_path=str(pr_patch), head_sha=rec.head_sha or "")
+            diff_path=str(pr_patch), head_sha=rec.head_sha or "",
+            withheld_globs=gates.fix_withheld_globs())
     except headless_agent.AgentUnavailable as e:
         park(f"the agent could not run on {settings.worker_id()}: {e}")
         lane_health.trip_agent_lanes(str(e))
