@@ -3,6 +3,7 @@ import { useState } from "react";
 import type { FixAction, FixRequest, FixRunner } from "../api";
 import { useExec } from "../ExecContext";
 import { localDateTime, timeAgo } from "../timeAgo";
+import { SandboxChecks } from "./SandboxChecks";
 
 /** What the composer starts with. The operator edits the goal; the bar beneath
  *  it is not theirs to delete, so it lives in the agent's prompt and is shown
@@ -80,6 +81,11 @@ function RequestStrip({ req, runner }: { req: FixRequest; runner: FixRunner | nu
   const when = req.queued_at && (
     <span title={localDateTime(req.queued_at)}> · queued {timeAgo(req.queued_at)}</span>
   );
+  const checks = req.result?.checks?.length ? (
+    <div className="vb-detail" style={{ marginTop: 4 }}>
+      <SandboxChecks checks={req.result.checks} />
+    </div>
+  ) : null;
 
   if (req.status === "queued") {
     return (
@@ -153,6 +159,7 @@ function RequestStrip({ req, runner }: { req: FixRequest; runner: FixRunner | nu
                 : `🤖 Auto-review left it for you: ${req.result.auto_review.bar.reason}`}
             </div>
           )}
+          {checks}
         </div>
       </div>
     );
@@ -169,6 +176,7 @@ function RequestStrip({ req, runner }: { req: FixRequest; runner: FixRunner | nu
               <> The conflicted hunks are in the Diff panel below — switch it to “Merge diff”.</>
             )}
           </div>
+          {checks}
         </div>
       </div>
     );
@@ -180,6 +188,7 @@ function RequestStrip({ req, runner }: { req: FixRequest; runner: FixRunner | nu
         <div>
           <div className="vb-headline">This didn't finish</div>
           <div className="vb-detail">{req.error ?? "No error was recorded."}</div>
+          {checks}
         </div>
       </div>
     );
@@ -196,6 +205,7 @@ function RequestStrip({ req, runner }: { req: FixRequest; runner: FixRunner | nu
             The review provider and CI re-run on the push.
             {req.finished_at && <span title={localDateTime(req.finished_at)}> · {timeAgo(req.finished_at)}</span>}
           </div>
+          {checks}
         </div>
       </div>
     );

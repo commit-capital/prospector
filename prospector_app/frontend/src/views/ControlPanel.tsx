@@ -4,6 +4,7 @@ import { api, type JobSpec, type JobRec, type PipelineStatus, type Autohunt, typ
 import { useRepoMeta } from "../RepoMetaContext";
 import { useExec } from "../ExecContext";
 import { PRLink } from "../components/PRLink";
+import { SandboxChecks } from "../components/SandboxChecks";
 
 const HUNT_RANGE_OPTIONS = [
   { label: "7 days", days: 7, allTime: false },
@@ -1012,10 +1013,14 @@ export default function ControlPanel() {
                       </div>
                     </td>
                   </tr>
-                  {detail && (
+                  {(detail || e.checks.length > 0) && (
                     <tr>
                       <td />
-                      <td colSpan={5} className="muted small" style={{ paddingTop: 0 }}>{detail}</td>
+                      <td colSpan={5} className="muted small" style={{ paddingTop: 0 }}>
+                        {detail}
+                        {detail && e.checks.length > 0 && " · "}
+                        <SandboxChecks checks={e.checks} />
+                      </td>
                     </tr>
                   )}
                 </Fragment>

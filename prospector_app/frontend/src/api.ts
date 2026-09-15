@@ -645,6 +645,22 @@ export interface FixRequest {
   against_head_sha?: string | null;
 }
 
+/** One sandbox run the authoring agent made (action `fix`): the lane it chose,
+ *  the files it named, and how the run ended. `exit` is the sandbox's sentinel
+ *  exit when the command ran and null when it did not; `error_kind` names why
+ *  it did not — `infrastructure`, `refused`, or the preflight's own kind. */
+export interface SandboxCheck {
+  kind: string;
+  files: string[];
+  cmd?: string | null;
+  exit?: number | null;
+  error_kind?: string | null;
+  error?: string | null;
+  error_excerpt?: string | null;
+  duration_s?: number | null;
+  at?: string | null;
+}
+
 /** What the worker authored, carried on the request so the review view can
  *  show the diff before anything is pushed. A conflicted rebase carries the
  *  paused worktree's conflict diff (merge_diff + conflict_paths) — on a
@@ -671,6 +687,8 @@ export interface FixResult {
                      concerns: string[] } | null;
   compile_preflight?: { exit?: number | null; refused?: string | null;
                         error?: string | null; error_excerpt?: string | null } | null;
+  /** The sandbox runs the authoring agent made (action `fix`), oldest first. */
+  checks?: SandboxCheck[] | null;
   /** The unattended-push judgment stamped on a parked `resolve` when the
    *  deployment autopushes them: two refuting reviewers, the related-tests
    *  sandbox run, the risk tier, and the bar's decision. */
@@ -740,6 +758,8 @@ export interface FixQueueEntry {
   /** The stamped auto-review outcome on a parked `resolve`, or null when no
    *  auto-review has judged it. */
   auto_review?: { ok: boolean; reason: string } | null;
+  /** The sandbox runs the authoring agent made, empty for every other action. */
+  checks: SandboxCheck[];
 }
 
 export interface FixQueue {

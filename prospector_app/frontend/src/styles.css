@@ -1476,3 +1476,9 @@ tr.row-done:hover > td { opacity: 1; }
 .welcome-paste:focus { outline: none; border-color: var(--accent); }
 .welcome-actions { display: flex; gap: 10px; align-items: center; margin-top: 12px; }
 .welcome-back { padding: 4px 10px; border-radius: 6px; cursor: pointer; font: inherit; font-size: 12px; }
+
+/* The authoring agent's sandbox runs on a fix request: one mark per run. */
+.sandbox-checks .chk-pass { color: var(--green); }
+.sandbox-checks .chk-fail { color: var(--red); }
+.sandbox-checks .chk-error { color: var(--gold); }
+.sandbox-checks span[title] { cursor: help; }

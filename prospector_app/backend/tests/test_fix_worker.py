@@ -16,7 +16,7 @@ import pytest
 from pipeline import headless_agent, profile
 from pipeline import store as S
 from pipeline.storekit import now as _now
-from prospector_app.backend import data, fix_queue, fix_worker
+from prospector_app.backend import data, fix_queue, fix_worker, sandbox_check
 from pipeline.testsupport import greptile_entry, reviews_section
 
 HEAD = "a" * 40
@@ -594,6 +594,60 @@ def test_an_authored_fix_parks_with_its_rationale_and_pushes_nothing(store, monk
     assert req["result"]["review_verdict"]["verdict"] == "safe"
     assert req["result"]["message"] == "Bound the retry loop"
     assert not _pushed(probe)
+
+
+def test_an_authored_fix_keeps_the_checks_the_agent_ran(store, monkeypatch, tmp_path):
+    # The agent's sandbox runs are the only evidence of whether its change was
+    # exercised; the worker collects them off the check tool's file and stores
+    # them on the request, and a stale file from an earlier run is not read.
+    monkeypatch.setenv("TRIAGE_VERIFY_SCRATCH", str(tmp_path / "scratch"))
+    stale = sandbox_check.checks_path(1)
+    stale.parent.mkdir(parents=True)
+    stale.write_text(json.dumps({"kind": "typecheck", "exit": 20}) + "\n")
+    _queue_fix()
+    monkeypatch.setattr(fix_worker, "_resubmit", _fix_probe())
+
+    def fake_author(worktree, **kw):
+        sandbox_check.checks_path(1).write_text(
+            json.dumps({"kind": "typecheck", "files": [], "cmd": "tsc", "exit": 0,
+                        "error_kind": None, "error": None, "error_excerpt": None,
+                        "duration_s": 9.0, "at": NOW}) + "\n"
+            + json.dumps({"kind": "test", "files": ["a.test.ts"], "cmd": "vitest a.test.ts",
+                          "exit": None, "error_kind": "infrastructure",
+                          "error": "TimeoutError: lock", "error_excerpt": None,
+                          "duration_s": 0.1, "at": NOW}) + "\n")
+        return {"summary": "Bound the retry loop",
+                "changes": [{"path": "a.ts", "rationale": "added a cap"}]}
+    monkeypatch.setattr(fix_worker.author_fix, "author", fake_author)
+    _reviewed(monkeypatch)
+
+    fix_worker.run_one(1)
+
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "awaiting-review"
+    checks = req["result"]["checks"]
+    assert [(c["kind"], c["exit"], c["error_kind"]) for c in checks] == [
+        ("typecheck", 0, None), ("test", None, "infrastructure")]
+    assert not sandbox_check.checks_path(1).exists()
+
+
+def test_a_declined_fix_still_keeps_the_checks_the_agent_ran(store, monkeypatch, tmp_path):
+    monkeypatch.setenv("TRIAGE_VERIFY_SCRATCH", str(tmp_path / "scratch"))
+    _queue_fix()
+    monkeypatch.setattr(fix_worker, "_resubmit", _fix_probe())
+
+    def fake_author(worktree, **kw):
+        p = sandbox_check.checks_path(1)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({"kind": "typecheck", "exit": 20}) + "\n")
+        return {"give_up": "the typecheck fails before my change"}
+    monkeypatch.setattr(fix_worker.author_fix, "author", fake_author)
+
+    fix_worker.run_one(1)
+
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "refused"
+    assert [c["kind"] for c in req["result"]["checks"]] == ["typecheck"]
 
 
 def test_an_authored_fix_parks_its_patch_and_drops_its_worktree(store, monkeypatch):

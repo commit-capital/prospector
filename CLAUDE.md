@@ -200,7 +200,12 @@ runs the profile's compile command or test runner inside the verify sandbox over
 current default-branch HEAD + the PR diff + the agent's current edits
 (`prospector_app/backend/sandbox_check.py`, pins read from `PROSPECTOR_CHECK_*`
 set by `author_fix`, never argv); the host runs none of the contributor's code,
-and the agent gets no other Bash. The compile preflight on the finished patch
+and the agent gets no other Bash. Every run the agent makes leaves a bounded
+record (the lane, the files, the exit, and why it could not run when it did
+not) in `<verify scratch>/autofix/pr-<n>.checks.jsonl`, which the worker
+collects after the agent returns and stores as `fix_request.result.checks` on
+every ending; the queue row and the PR's fix panel show it, and the autopush
+bar does not consult it. The compile preflight on the finished patch
 measures that same composed tree. Only an explicit
 `safe` passes; a malformed, timed-out, or crashed reviewer reads as unsafe. In
 between, the patch is held to the files the agent reported

@@ -135,3 +135,116 @@ def test_an_unreadable_worktree_is_a_usage_failure_not_a_run(tmp_path, monkeypat
                             subprocess.CalledProcessError(128, "git")))
     assert sandbox_check.main(["typecheck"]) == 2
     assert "worktree" in capsys.readouterr().err
+
+
+# --- the record the worker collects ------------------------------------------------
+
+def _under_author(monkeypatch, tmp_path, pr: int = 7) -> None:
+    monkeypatch.setenv("TRIAGE_VERIFY_SCRATCH", str(tmp_path / "scratch"))
+    pr_patch = tmp_path / "pr.patch"
+    pr_patch.write_text("diff --git a/pr.ts b/pr.ts\n+pr\n")
+    monkeypatch.setenv("PROSPECTOR_CHECK_PR", str(pr))
+    monkeypatch.setenv("PROSPECTOR_CHECK_HEAD", "a" * 40)
+    monkeypatch.setenv("PROSPECTOR_CHECK_WORKTREE", "/wt")
+    monkeypatch.setenv("PROSPECTOR_CHECK_PR_PATCH", str(pr_patch))
+    monkeypatch.setattr(sandbox_check, "authored_patch", lambda wt: "")
+
+
+def test_every_run_is_recorded_for_the_worker_to_collect(tmp_path, monkeypatch,
+                                                         typecheck_profile, capsys):
+    _under_author(monkeypatch, tmp_path)
+    runs = iter([
+        {"cmd": "pnpm -r typecheck", "exit": 0, "duration_s": 12.5},
+        {"cmd": "npx vitest run src/a.test.ts", "exit": 20, "duration_s": 3.0,
+         "error_excerpt": "expected 1 to be 2"},
+        {"cmd": "npx vitest run src/a.test.ts", "duration_s": 0.4,
+         "error": "TimeoutError: the sandbox lock was held for 600s"},
+    ])
+    monkeypatch.setattr(compile_preflight, "run_command_for_patch",
+                        lambda pr, head, patch, cmd: next(runs))
+
+    assert sandbox_check.main(["typecheck"]) == 0
+    assert sandbox_check.main(["test", "src/a.test.ts"]) == 1
+    assert sandbox_check.main(["test", "src/a.test.ts"]) == 1
+    capsys.readouterr()
+
+    checks = sandbox_check.collect_checks(7)
+    assert [c["kind"] for c in checks] == ["typecheck", "test", "test"]
+    assert checks[0] == {"kind": "typecheck", "files": [], "cmd": "pnpm -r typecheck",
+                         "exit": 0, "error_kind": None, "error": None,
+                         "error_excerpt": None, "duration_s": 12.5, "at": checks[0]["at"]}
+    assert checks[0]["at"].startswith("20")
+    assert checks[1]["files"] == ["src/a.test.ts"]
+    assert checks[1]["exit"] == 20 and checks[1]["error_kind"] is None
+    assert checks[1]["error_excerpt"] == "expected 1 to be 2"
+    assert checks[2]["exit"] is None
+    assert checks[2]["error_kind"] == "infrastructure"
+    assert "sandbox lock" in checks[2]["error"]
+    # Collecting consumes the file: the next request starts with nothing.
+    assert sandbox_check.collect_checks(7) == []
+
+
+def test_a_refused_run_records_the_refusal_as_its_error(tmp_path, monkeypatch,
+                                                        typecheck_profile, capsys):
+    _under_author(monkeypatch, tmp_path)
+    monkeypatch.setattr(compile_preflight, "run_command_for_patch",
+                        lambda pr, head, patch, cmd: {"cmd": cmd, "duration_s": 0.0,
+                                                      "refused": "deps touched"})
+    assert sandbox_check.main(["typecheck"]) == 1
+    capsys.readouterr()
+    [c] = sandbox_check.collect_checks(7)
+    assert c["error_kind"] == "refused" and c["error"] == "deps touched"
+
+
+def test_the_preflights_own_error_kind_is_kept(tmp_path, monkeypatch, typecheck_profile,
+                                              capsys):
+    _under_author(monkeypatch, tmp_path)
+    monkeypatch.setattr(compile_preflight, "run_command_for_patch",
+                        lambda pr, head, patch, cmd: {"cmd": cmd, "exit": 20, "duration_s": 1.0,
+                                                      "error": "the base fails it too",
+                                                      "error_kind": "base-compile"})
+    sandbox_check.main(["typecheck"])
+    capsys.readouterr()
+    [c] = sandbox_check.collect_checks(7)
+    assert c["error_kind"] == "base-compile"
+
+
+def test_the_record_is_bounded(tmp_path, monkeypatch, typecheck_profile, capsys):
+    _under_author(monkeypatch, tmp_path)
+    monkeypatch.setattr(compile_preflight, "run_command_for_patch",
+                        lambda pr, head, patch, cmd: {"cmd": cmd, "exit": 20, "duration_s": 1.0,
+                                                      "error_excerpt": "x" * 10_000,
+                                                      "error": "y" * 10_000})
+    sandbox_check.main(["typecheck"])
+    capsys.readouterr()
+    [c] = sandbox_check.collect_checks(7)
+    assert len(c["error_excerpt"]) == sandbox_check.RECORD_CHARS
+    assert len(c["error"]) == sandbox_check.RECORD_CHARS
+
+
+def test_collecting_skips_lines_that_are_not_records_and_caps_the_count(tmp_path,
+                                                                        monkeypatch):
+    monkeypatch.setenv("TRIAGE_VERIFY_SCRATCH", str(tmp_path / "scratch"))
+    p = sandbox_check.checks_path(9)
+    p.parent.mkdir(parents=True)
+    lines = ['{"kind": "typecheck", "exit": 0}'] * (sandbox_check.MAX_CHECKS + 5)
+    p.write_text("\n".join(["not json", "[1, 2]", *lines]) + "\n")
+    checks = sandbox_check.collect_checks(9)
+    assert len(checks) == sandbox_check.MAX_CHECKS
+    assert all(c["kind"] == "typecheck" for c in checks)
+    assert not p.exists()
+
+
+def test_a_missing_file_collects_nothing(tmp_path, monkeypatch):
+    monkeypatch.setenv("TRIAGE_VERIFY_SCRATCH", str(tmp_path / "scratch"))
+    assert sandbox_check.collect_checks(9) == []
+
+
+def test_discard_drops_a_stale_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("TRIAGE_VERIFY_SCRATCH", str(tmp_path / "scratch"))
+    p = sandbox_check.checks_path(9)
+    p.parent.mkdir(parents=True)
+    p.write_text('{"kind": "typecheck", "exit": 0}\n')
+    sandbox_check.discard_checks(9)
+    assert not p.exists()
+    sandbox_check.discard_checks(9)
