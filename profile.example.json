@@ -52,6 +52,6 @@
   },
   "autofix": {
     "deny_globs": [".github/workflows/**", "scripts/release/**"],
-    "fixable_gates": ["ci", "review"]
+    "fixable_gates": ["ci", "review", "objection"]
   }
 }
