@@ -628,7 +628,7 @@ export interface FixRequest {
   status: "queued" | "running" | "awaiting-review" | "approved" | "pushing"
         | "pushed" | "refused" | "failed" | "cancelled";
   action: FixRequestAction;
-  source?: "operator" | "auto" | null;
+  source?: "operator" | "auto" | "objection" | null;
   step?: string | null;
   queued_at?: string | null;
   started_at?: string | null;

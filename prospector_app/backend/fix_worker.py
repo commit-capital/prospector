@@ -51,8 +51,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, NamedTuple
 
 from pipeline import (author_fix, compile_preflight, describe_pr, diffpaths, freshness,
-                      objections,
-                      gates, gh, headless_agent, profile, resolve_conflicts,
+                      gates, gh, headless_agent, objections, profile, resolve_conflicts,
                       resolve_evidence, review_fix, review_policy, review_resolve,
                       reviewers, risktier, settings, verify_driver)
 from pipeline.storekit import now as _now
@@ -63,6 +62,7 @@ from prospector_app.backend.resubmit_identity import worker_env
 
 if TYPE_CHECKING:
     from pipeline.model import Pr
+    from pipeline.store import Store
 
 POLL_SECONDS = 15.0
 
@@ -202,8 +202,22 @@ def beat() -> None:
         "host": settings.worker_id(), "pid": os.getpid(),
         "last_beat": _now(), "current_pr": state["current_pr"],
         "autohunt": enabled_autohunt(),
-        "objection_budget": {"used": objections.used_today(st, settings.worker_id()),
+        "objection_budget": {"used": _budget_used(st),
                              "limit": settings.fix_objection_budget()}})
+
+
+# The heartbeat's view of today's continuation count, re-read from the ledger
+# once a minute so the beat itself costs no ledger query.
+_budget_cache: tuple[float, int] = (0.0, 0)
+
+
+def _budget_used(st: Store) -> int:
+    global _budget_cache
+    at, used = _budget_cache
+    if time.monotonic() - at >= 60.0:
+        used = objections.used_today(st, settings.worker_id())
+        _budget_cache = (time.monotonic(), used)
+    return used
 
 
 def recover_orphans() -> list[int]:
@@ -241,7 +255,8 @@ def recover_orphans() -> list[int]:
             st.edit_pr(n).record_fix_request(
                 "failed", req.get("action", "fix"), queued_at=req.get("queued_at"),
                 started_at=req.get("started_at"), finished_at=_now(), error=note,
-                source=req.get("source"), host=me)
+                source=req.get("source"), guidance=req.get("guidance"),
+                objection=req.get("objection"), host=me)
             marked.append(n)
     return marked
 
@@ -384,7 +399,7 @@ def _oldest(status: str, mine_only: tuple[str, ...] = ()) -> int | None:
             continue
         if req.get("attempts") and not _rested(req, TRANSIENT_RETRY_SECONDS):
             continue
-        key = (req.get("source") == "auto", str(req.get("queued_at") or ""))
+        key = (req.get("source") in ("auto", "objection"), str(req.get("queued_at") or ""))
         if best_key is None or key < best_key:
             best_n, best_key = n, key
     return best_n
@@ -508,7 +523,7 @@ def _log_run(n: int, req: dict, status: str, detail: str | None = None,
     entry = {
         "phase": "fix:single", "pr": n, "started": req.get("started_at"),
         "finished": _now(),
-        "trigger": "autohunt" if req.get("source") == "auto" else None,
+        "trigger": "autohunt" if req.get("source") in ("auto", "objection") else None,
         "stats": {"status": status, "action": req.get("action", "fix"),
                   "detail": detail, "host": host or settings.worker_id()}}
     signature = (req.get("objection") or {}).get("signature")
@@ -563,10 +578,11 @@ def recheck_eligibility(n: int, action: str,
     rec = data.store().load_pr(n)
     if rec is None:
         return False, f"PR #{n} left the store"
-    guidance = (rec.fix_request or {}).get("guidance")
+    req = rec.fix_request or {}
     return gates.fix_eligibility(rec, action,
                                  paths if paths is not None else service.changed_paths(rec),
-                                 guided=bool(guidance))
+                                 guided=bool(req.get("guidance")),
+                                 objection=bool(req.get("objection")))
 
 
 def _end_on_preflight(n: int, claimed: dict, pf: dict, result: dict) -> None:
@@ -632,10 +648,14 @@ def run_one(n: int) -> None:
                           "detail": pf_why}
                 followup = _compile_objection(n, claimed, pf)
                 if followup is not None:
-                    result["detail"] = f"{pf_why} A fix has been queued from the compile error."
+                    result["detail"] = f"{pf_why} A fix is queued from the compile error."
                 _end_on_preflight(n, claimed, pf, result)
                 if followup is not None:
-                    fix_queue.queue_pr(n, "fix", objection=followup)
+                    try:
+                        fix_queue.queue_pr(n, "fix", objection=followup)
+                    except ValueError as e:
+                        print(f"[fix-worker] PR #{n}: the compile follow-up was not queued: {e}",
+                              flush=True)
                 return
         result = {"patch": patch[-TAIL_CHARS:], "compile_preflight": pf,
                   "message": _commit_message(action)}
@@ -741,14 +761,14 @@ def _fix_goal(rec: Pr, claimed: dict) -> _FixBrief:
     fails at the current head. A stale or pending verdict describes a head the
     author has moved past (or none yet), so it would send the agent after
     defects that may already be fixed."""
+    objection = claimed.get("objection")
+    if objection:
+        return _FixBrief(objections.goal_text(objection), [], [], "")
     read = rec.greptile_review if freshness.is_current(rec, "greptile_review") else None
     findings: list[dict] = []
     for r in review_policy.active_reviewers(reviewers.REVIEW):
         if review_policy.bar(rec, r).status == reviewers.FAIL:
             findings.extend(reviewers.findings_for_fix(r, rec.review_entry(r.id), rec.head_sha, read))
-    objection = claimed.get("objection")
-    if objection:
-        return _FixBrief(objections.goal_text(objection), [], [], "")
     fixable = profile.active().autofix.fixable_gates
     guidance = claimed.get("guidance")
     summary = _review_summary(rec) if ("review" in fixable or guidance) else ""
@@ -836,6 +856,7 @@ def _author_fix(n: int, claimed: dict) -> None:
     if authored is None:
         return
     verdict, patch, review = authored
+    rounds: list[dict] = []
     if review["verdict"] != "safe":
         objection = objections.build("fix-review", str(review.get("reason") or ""),
                                      origin={"concerns": list(review.get("concerns") or [])})
@@ -846,11 +867,15 @@ def _author_fix(n: int, claimed: dict) -> None:
                     result={"patch": patch, "changes": verdict["changes"],
                             "review_verdict": review})
             return
-        claimed = {**claimed, "objection": objection}
+        # The request keeps the objection it was queued for; the retry's own
+        # objection lives in its round, where `spent` also reads.
+        claimed = {**claimed, "objection": claimed.get("objection") or objection}
+        rounds = [{"objection": objection, "review": review}]
         retried = _author_and_review(n, claimed, rec, worktree,
                                      goal + "\n\n" + objections.goal_text(objection),
                                      findings, checks, review_summary, pr_patch,
-                                     step="retrying after the reviewer's objection")
+                                     step="retrying after the reviewer's objection",
+                                     prior_changes=list(verdict["changes"]))
         if retried is None:
             return
         verdict2, patch2, review2 = retried
@@ -859,11 +884,15 @@ def _author_fix(n: int, claimed: dict) -> None:
             _refuse(n, claimed, "The reviewing agent rejected the change twice: "
                                 f"{review['reason']}; then {review2['reason']}",
                     result={"patch": patch2, "changes": verdict2["changes"],
-                            "review_verdict": review2, "rounds": [review, review2]})
+                            "review_verdict": review2,
+                            "rounds": rounds + [{"objection": objection, "review": review2}]})
             return
-        verdict, patch, review = verdict2, patch2, review2
+        verdict = {**verdict2, "changes": list(verdict["changes"]) + list(verdict2["changes"])}
+        patch, review = patch2, review2
     paths = diffpaths.changed_paths(patch)
     evidence = {"patch": patch, "changes": verdict["changes"], "review_verdict": review}
+    if rounds:
+        evidence["rounds"] = rounds
 
     _running_step(n, claimed, "compile preflight", action="fix")
     pf = _preflight(n, _over_pr(pr_patch, patch))
@@ -887,11 +916,13 @@ def _author_fix(n: int, claimed: dict) -> None:
 
 def _author_and_review(n: int, claimed: dict, rec: Pr, worktree: str, goal: str,
                        findings: list[dict], checks: list[str], review_summary: str,
-                       pr_patch: Path, *, step: str = "agent authoring the fix"
+                       pr_patch: Path, *, step: str = "agent authoring the fix",
+                       prior_changes: list[dict] | None = None
                        ) -> tuple[dict, str, dict] | None:
     """One author-and-review round in the prepared worktree: the agent writes
-    against `goal`, the diff is held to the files it reported and re-gated on
-    the paths it touched, and the refuting reviewer judges it. Returns
+    against `goal`, the diff is held to the files it reported (plus
+    `prior_changes`, an earlier round's files still in the tree) and re-gated
+    on the paths it touched, and the refuting reviewer judges it. Returns
     (verdict, patch, review) for the caller to act on, or None after writing
     the request's ending itself."""
     _running_step(n, claimed, step, action="fix")
@@ -943,7 +974,7 @@ def _author_and_review(n: int, claimed: dict, rec: Pr, worktree: str, goal: str,
         return None
     paths = diffpaths.changed_paths(patch)
     try:
-        author_fix.assert_disclosed(verdict["changes"], paths)
+        author_fix.assert_disclosed(list(verdict["changes"]) + list(prior_changes or []), paths)
     except ValueError as e:
         _resubmit(n, "abort")
         _refuse(n, claimed, f"The authored change was not trusted: {e}",
@@ -1452,14 +1483,19 @@ def _may_continue(rec: Pr, objection: dict) -> bool:
 def _continue_resolve(n: int, rec: Pr, claimed: dict, head: str, worktree: str,
                       result: dict, stamp: dict, objection: dict) -> None:
     """Author the objection inside the kept merge worktree, commit it on top
-    of the merge, and judge the combined change under the resolve bar again.
-    Both rounds are kept on the request; every ending carries the objection."""
+    of the merge, and judge the combined change again: the follow-up's own
+    paths are held to what the agent reported and re-gated, the combined
+    change is compile-checked, both lenses review it, and the resolve bar
+    decides. Both rounds stay on the request. A continuation that does not
+    get that far is discarded, so the merge underneath stays approvable."""
     first = {**stamp, "objection": objection}
     paths = [str(p) for p in (result.get("conflict_paths") or [])]
     claimed = {**claimed, "objection": objection}
     _running_step(n, claimed, "continuing after the reviewer's objection")
 
-    def park(detail: str) -> None:
+    def park(detail: str, *, discard: bool = True) -> None:
+        if discard:
+            _resubmit(n, "discard")
         res = {**result, "rounds": [first],
                "auto_review": {**first, "bar": {"ok": False, "reason": detail}}}
         data.store().edit_pr(n).record_fix_request(
@@ -1470,18 +1506,15 @@ def _continue_resolve(n: int, rec: Pr, claimed: dict, head: str, worktree: str,
         data.refresh()
         _log_run(n, claimed, "awaiting-review", detail)
 
-    concerns = [str(c) for c in (objection.get("from") or {}).get("concerns") or []]
     try:
         pr_patch = verify_driver.fetch_patch(n, rec.head_sha or "")
         verdict = author_fix.author(
             worktree, pr=n, title=rec.title or "", body=rec.body or "",
-            goal=objections.goal_text(objection),
-            findings=[{"path": paths[0], "note": c} for c in concerns] if paths else [],
-            ci_failures=[], diff_path=str(pr_patch), head_sha=rec.head_sha or "")
+            goal=objections.goal_text(objection), findings=[], ci_failures=[],
+            diff_path=str(pr_patch), head_sha=rec.head_sha or "")
     except headless_agent.AgentUnavailable as e:
-        _resubmit(n, "abort")
-        _fail(n, claimed, f"The agent could not run on {settings.worker_id()}: {e}",
-              kind="agent-unavailable")
+        park(f"the agent could not run on {settings.worker_id()}: {e}")
+        lane_health.trip_agent_lanes(str(e))
         return
     except (RuntimeError, ValueError, verify_driver.FetchFailure) as e:
         park(f"the continuation did not land: {e}")
@@ -1489,12 +1522,21 @@ def _continue_resolve(n: int, rec: Pr, claimed: dict, head: str, worktree: str,
     if "give_up" in verdict:
         park(f"the continuation agent declined: {verdict['give_up']}")
         return
-    diff = _resubmit(n, "diff")
-    patch = (diff.stdout or "").strip()
-    if diff.returncode != 0 or not patch.startswith("diff "):
-        park("the continued worktree's diff could not be read")
+    committed = _resubmit(n, "commit", "-m",
+                          verdict.get("summary") or "Address the reviewer's objection")
+    if committed.returncode == 5:
+        park("the continuation changed nothing")
         return
-    touched = diffpaths.changed_paths(patch)
+    if committed.returncode != 0:
+        park(f"committing the continuation failed: "
+             f"{(committed.stderr or committed.stdout).strip()[:500]}")
+        return
+    last = _resubmit(n, "diff", "--last")
+    follow_up = (last.stdout or "").strip()
+    if last.returncode != 0 or not follow_up.startswith("diff "):
+        park("the follow-up's diff could not be read")
+        return
+    touched = diffpaths.changed_paths(follow_up)
     try:
         author_fix.assert_disclosed(verdict["changes"], touched)
     except ValueError as e:
@@ -1505,15 +1547,21 @@ def _continue_resolve(n: int, rec: Pr, claimed: dict, head: str, worktree: str,
     if not ok:
         park(f"the continuation is not one the bot may push: {why}")
         return
-    committed = _resubmit(n, "commit", "-m",
-                          verdict.get("summary") or "Address the reviewer's objection")
-    if committed.returncode != 0:
-        _fail(n, claimed, f"committing the continuation failed: "
-                          f"{(committed.stderr or committed.stdout).strip()[:500]}")
+    combined_r = _resubmit(n, "diff")
+    patch = (combined_r.stdout or "").strip()
+    if combined_r.returncode != 0 or not patch.startswith("diff "):
+        park("the continued worktree's diff could not be read")
         return
+    _running_step(n, claimed, "compile preflight after the continuation")
+    pf = _preflight(n, patch)
+    if pf is not None:
+        pf_ok, pf_why = gates.compile_preflight_gate(pf)
+        if not pf_ok:
+            park(f"the continuation did not clear the compile preflight: {pf_why}")
+            return
     second: dict = {"against_head_sha": head, "base_sha": claimed.get("base_sha"),
                     "host": settings.worker_id(), "at": _now(),
-                    "tier": risktier.tier_facet(all_paths),
+                    "tier": risktier.tier_facet(all_paths), "compile_preflight": pf,
                     "reviews": [], "tests": None, "objection": objection}
     history = resolve_evidence.history(worktree, paths)
     context = resolve_evidence.store_context(rec)
@@ -1528,8 +1576,8 @@ def _continue_resolve(n: int, rec: Pr, claimed: dict, head: str, worktree: str,
             break
     if all(r.get("verdict") == "safe" for r in second["reviews"]) and len(second["reviews"]) == 2:
         second["tests"] = _related_tests_run(n, head, patch, related)
-    res = {**result, "patch": patch[-TAIL_CHARS:], "rounds": [first, second],
-           "auto_review": second}
+    res = {**result, "patch": patch[-TAIL_CHARS:], "compile_preflight": pf,
+           "touched_paths": all_paths, "rounds": [first, second], "auto_review": second}
     ok, why = gates.resolve_autopush_bar(res)
     second["bar"] = {"ok": ok, "reason": why}
     data.store().edit_pr(n).record_fix_request(
@@ -1538,8 +1586,7 @@ def _continue_resolve(n: int, rec: Pr, claimed: dict, head: str, worktree: str,
         result=res, source=claimed.get("source"), host=settings.worker_id(),
         base_sha=claimed.get("base_sha"), head_sha=head, objection=objection)
     data.refresh()
-    if not ok:
-        _log_run(n, claimed, "awaiting-review", why)
+    _log_run(n, claimed, "approved" if ok else "awaiting-review", why)
     print(f"[fix-worker] resolve continuation for PR #{n}: "
           f"{'cleared for push' if ok else why}", flush=True)
 
@@ -1574,7 +1621,7 @@ def push_approved(n: int) -> None:
         _post_description(n, claimed, result)
         return
     if action == "resolve":
-        raw_paths = result.get("conflict_paths")
+        raw_paths = result.get("touched_paths") or result.get("conflict_paths")
         authored = [str(p) for p in raw_paths] if raw_paths else []
     elif action == "fix":
         # The agent's own paths, not the contributor's: the gate judges what
@@ -1757,7 +1804,7 @@ def _auto_fixes_in_flight() -> int:
     return _auto_in_flight("fix")
 
 
-def auto_fixable(pr: Pr) -> tuple[str, dict | None] | None:
+def auto_fixable(pr: Pr, *, budget_ok: bool = True) -> tuple[str, dict | None] | None:
     """The action the idle hunter would queue for this PR with the objection it
     answers (None for every action but a security continuation), or None.
 
@@ -1768,8 +1815,9 @@ def auto_fixable(pr: Pr) -> tuple[str, dict | None] | None:
     an agent-authored `fix`; one carrying a current YELLOW security verdict
     takes a `fix` from that finding under TRIAGE_FIX_HUNT_SECURITY. The agent
     actions need the deployment's opt-in (TRIAGE_FIX_HUNT_FIX) and a head that
-    has not already burned its one unattended attempt, or, for a security
-    continuation, has not already answered that objection. Anything else is
+    has not already burned its one unattended attempt; a security continuation
+    also needs today's budget (`budget_ok`) and an objection this head has not
+    answered, and falls back to the ordinary pick otherwise. Anything else is
     left alone.
 
     gates.fix_huntable is the bar, not fix_eligibility: unprompted sandbox time
@@ -1781,16 +1829,16 @@ def auto_fixable(pr: Pr) -> tuple[str, dict | None] | None:
         action = "rebase"
     elif pr.drift_state == "conflicts":
         action = "update"
-    elif settings.fix_hunt_fix() and settings.fix_hunt_security() and _yellow_objection(pr):
-        action, objection = "fix", _yellow_objection(pr)
     elif settings.fix_hunt_fix():
-        action = "describe" if describe_pr.only_description_nits(pr) else "fix"
+        yellow = (_yellow_objection(pr)
+                  if budget_ok and settings.fix_hunt_security() else None)
+        if yellow is not None and not objections.spent(pr, yellow["signature"]):
+            action, objection = "fix", yellow
+        else:
+            action = "describe" if describe_pr.only_description_nits(pr) else "fix"
     else:
         return None
-    if objection is not None:
-        if objections.spent(pr, objection["signature"]):
-            return None
-    elif _hunt_attempted(pr, action):
+    if _hunt_attempted(pr, action):
         return None
     ok, _ = gates.fix_huntable(pr, action, service.changed_paths(pr),
                                objection=objection is not None)
@@ -1800,8 +1848,9 @@ def auto_fixable(pr: Pr) -> tuple[str, dict | None] | None:
 def _yellow_objection(pr: Pr) -> dict | None:
     """The security objection for a PR whose current verdict is YELLOW: every
     confirmed finding's title and detail, or None when there is no current
-    YELLOW or it carries no findings."""
-    if (pr.security_verdict != "YELLOW"
+    YELLOW, an operator has logged an override on it, or it carries no
+    findings."""
+    if (pr.security_verdict != "YELLOW" or pr.security_override
             or not freshness.is_current(pr, "security",
                                         max_age_days=gates.SECURITY_MAX_AGE_DAYS)):
         return None
@@ -1844,8 +1893,10 @@ def next_auto() -> tuple[str, int, dict | None] | None:
     slots = {"fix": limit - _auto_in_flight("fix"),
              "describe": limit - _auto_in_flight("describe")}
     best: dict[str, tuple[tuple[int, int, float, int], str, int, dict | None]] = {}
+    budget_ok = (not settings.fix_hunt_security()
+                 or objections.budget_left(data.store(), settings.worker_id()) > 0)
     for n, rec in data.prs().items():
-        pick = auto_fixable(rec)
+        pick = auto_fixable(rec, budget_ok=budget_ok)
         if pick is None:
             continue
         action, objection = pick

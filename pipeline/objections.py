@@ -24,7 +24,7 @@ _GOALS = {
     "resolve-review": ("A reviewer rejected the previous change for this reason; make the "
                        "smallest change that resolves it without undoing the resolution:"),
     "fix-review": ("A reviewer rejected the previous change for this reason; make the "
-                   "smallest change that resolves it without undoing the resolution:"),
+                   "smallest change that resolves it while keeping the fix's intent:"),
     "compile": ("The compile check failed with this error; make the smallest change "
                 "that makes it pass:"),
     "security": ("A security review flagged this finding; make the smallest change "
@@ -33,6 +33,10 @@ _GOALS = {
 
 # How much of an objection's text is stored and handed to the agent.
 TEXT_CHARS = 2000
+
+# How long a `failed` ending (the machine's) keeps an objection answered before
+# a worker may take it up again.
+FAILED_COOLDOWN_SECONDS = 3600
 
 
 def _flatten(text: str) -> str:
@@ -57,33 +61,46 @@ def goal_text(objection: dict) -> str:
     return f"{_GOALS[str(objection['kind'])]}\n\n{objection['text']}"
 
 
-def spent(pr: Pr, signature: str) -> bool:
+def spent(pr: Pr, signature: str, now: datetime | None = None) -> bool:
     """Whether this head already answered `signature`: a fix_request carrying
-    it past `queued`, or a continuation round stamped with it."""
+    it past `queued`, or a continuation round stamped with it. A `failed`
+    ending is the machine's and holds the answer only for
+    FAILED_COOLDOWN_SECONDS."""
     req = pr.fix_request or {}
     if req.get("against_head_sha") != pr.head_sha:
         return False
     obj = req.get("objection") or {}
-    if obj.get("signature") == signature and req.get("status") != "queued":
-        return True
     rounds = (req.get("result") or {}).get("rounds") or []
-    return any((r.get("objection") or {}).get("signature") == signature
-               for r in rounds if isinstance(r, dict))
+    carried = (obj.get("signature") == signature and req.get("status") != "queued") or any(
+        (r.get("objection") or {}).get("signature") == signature
+        for r in rounds if isinstance(r, dict))
+    if not carried:
+        return False
+    if req.get("status") != "failed":
+        return True
+    try:
+        ended = datetime.fromisoformat(str(req.get("finished_at")))
+    except ValueError:
+        return False
+    if ended.tzinfo is None:
+        ended = ended.replace(tzinfo=timezone.utc)
+    return ((now or datetime.now(timezone.utc)) - ended).total_seconds() < FAILED_COOLDOWN_SECONDS
 
 
 def used_today(store: Store, worker: str, now: datetime | None = None) -> int:
-    """How many objection continuations `worker` ended since UTC midnight,
-    read from the fix lane's ledger entries."""
+    """How many distinct objection continuations (one per PR and signature)
+    `worker` ended since UTC midnight, read from the fix lane's ledger
+    entries; a continuation that parks and later pushes counts once."""
     now = now or datetime.now(timezone.utc)
     midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    count = 0
+    seen: set[tuple[object, str]] = set()
     for run in store.runs(since=midnight.isoformat()):
         if getattr(run, "phase", None) != "fix:single":
             continue
         stats = run.raw.get("stats") or {}
         if stats.get("host") == worker and stats.get("objection"):
-            count += 1
-    return count
+            seen.add((run.raw.get("pr"), str(stats["objection"])))
+    return len(seen)
 
 
 def budget_left(store: Store, worker: str, now: datetime | None = None) -> int:

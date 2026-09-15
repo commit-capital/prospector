@@ -1,5 +1,5 @@
 """objections: the shape, its signature, once-per-head, and the daily budget."""
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from pipeline import objections
 from pipeline.model import Pr
@@ -44,9 +44,10 @@ def test_spent_when_a_round_already_answered_it():
 def test_budget_counts_todays_objection_endings_for_this_worker(tmp_path, monkeypatch):
     st = Store(tmp_path / "db")
     now = datetime(2026, 9, 15, 12, 0, tzinfo=timezone.utc)
-    today = [("w1", now.replace(hour=11)), ("w1", now.replace(hour=10)), ("w2", now.replace(hour=11))]
-    for host, ts in today:
-        st.append_run({"phase": "fix:single", "pr": 1, "started": None,
+    today = [("w1", 1, now.replace(hour=11)), ("w1", 2, now.replace(hour=10)),
+             ("w2", 3, now.replace(hour=11))]
+    for host, pr, ts in today:
+        st.append_run({"phase": "fix:single", "pr": pr, "started": None,
                        "finished": ts.isoformat(), "ts": ts.isoformat(),
                        "stats": {"host": host, "status": "pushed", "action": "fix",
                                  "objection": "compile:abc"}})
@@ -65,3 +66,24 @@ def test_budget_counts_todays_objection_endings_for_this_worker(tmp_path, monkey
 def test_goal_text_names_the_kind():
     assert "compile check failed" in objections.goal_text(objections.build("compile", "boom"))
     assert "security review flagged" in objections.goal_text(objections.build("security", "s"))
+
+
+def test_a_failed_ending_holds_the_objection_only_through_the_cooldown():
+    obj = objections.build("compile", "e")
+    ended = datetime(2026, 9, 15, 12, 0, tzinfo=timezone.utc)
+    pr = Pr(None, {"pr": 1, "meta": {"head_sha": HEAD},
+                   "fix_request": {"status": "failed", "action": "fix", "objection": obj,
+                                   "against_head_sha": HEAD, "finished_at": ended.isoformat()}})
+    assert objections.spent(pr, obj["signature"], now=ended + timedelta(minutes=10))
+    assert not objections.spent(pr, obj["signature"], now=ended + timedelta(hours=2))
+
+
+def test_budget_counts_a_continuation_once_across_its_endings(tmp_path, monkeypatch):
+    st = Store(tmp_path / "db")
+    now = datetime(2026, 9, 15, 12, 0, tzinfo=timezone.utc)
+    for status in ("awaiting-review", "pushed"):
+        st.append_run({"phase": "fix:single", "pr": 7, "started": None, "finished": now.isoformat(),
+                       "ts": now.isoformat(),
+                       "stats": {"host": "w1", "status": status, "action": "resolve",
+                                 "objection": "resolve-review:abc"}})
+    assert objections.used_today(st, "w1", now) == 1

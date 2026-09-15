@@ -78,7 +78,8 @@ def dequeue_pr(n: int) -> dict:
                          f"(status: {req.get('status') or 'none'})")
     rec.record_fix_request("cancelled", req.get("action", "fix"),
                            queued_at=req.get("queued_at"), finished_at=_now(),
-                           source=req.get("source"))
+                           source=req.get("source"), guidance=req.get("guidance"),
+                           objection=req.get("objection"), head_sha=req.get("against_head_sha"))
     data.refresh()
     return {"pr": n, "status": "cancelled"}
 

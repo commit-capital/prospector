@@ -25,6 +25,8 @@ A conflicting PR uses the same isolated worktree and a pinned rebase transaction
     resubmit <pr> diff                 # review the resolution / final range-diff
     resubmit <pr> push --confirm-rewrite <old-head-sha>
     resubmit <pr> commit -m <message>          (a follow-up on a kept merge)
+    resubmit <pr> diff --last                  (that follow-up alone)
+    resubmit <pr> discard                      (drop it; keep the merge)
 
 A conflicting PR can instead take a merge-commit resolution — merge the base
 into the head and resolve inside the merge commit, rewriting no history:
@@ -685,7 +687,36 @@ def cmd_commit(pr: int, message: str) -> int:
         print(f"resubmit: commit failed: {commit.stderr.strip()}", file=sys.stderr)
         return 4
     sha = _git(["rev-parse", "HEAD"], wt).stdout.strip()
+    # The merge push checks HEAD against new_head_sha; the follow-up is now the
+    # head, and the merge commit is kept so `discard` can return to it.
+    meta.update({"continued_from": meta.get("new_head_sha"), "new_head_sha": sha})
+    _write_meta(pr, meta)
     print(f"committed {sha[:8]} on the kept merge")
+    return 0
+
+
+def cmd_discard(pr: int) -> int:
+    """Return a kept merge worktree to its merge commit: drop uncommitted edits
+    and untracked files, and drop a follow-up commit `commit` added. The merge
+    itself stays approvable."""
+    wt = _worktree(pr)
+    meta = _read_meta(pr)
+    if not meta or meta.get("mode") != "merge":
+        print(f"resubmit: PR #{pr} holds no kept merge to discard onto", file=sys.stderr)
+        return 2
+    target = meta.get("continued_from") or "HEAD"
+    reset = _git(["reset", "--hard", str(target)], wt)
+    if reset.returncode != 0:
+        print(f"resubmit: git reset failed: {reset.stderr.strip()}", file=sys.stderr)
+        return 4
+    clean = _git(["clean", "-fd"], wt)
+    if clean.returncode != 0:
+        print(f"resubmit: git clean failed: {clean.stderr.strip()}", file=sys.stderr)
+        return 4
+    if meta.get("continued_from"):
+        meta["new_head_sha"] = meta.pop("continued_from")
+        _write_meta(pr, meta)
+    print(f"discarded the continuation; the kept merge is {str(meta.get('new_head_sha'))[:8]}")
     return 0
 
 
@@ -804,7 +835,7 @@ def cmd_apply(pr: int) -> int:
     return 0
 
 
-def cmd_diff(pr: int) -> int:
+def cmd_diff(pr: int, last: bool = False) -> int:
     """Print the diff of the agent's edits in the prepared worktree, so the operator
     can review exactly what `push` will commit. The clone is a separate repo under
     the cache, so a plain `git diff` in the app's cwd can't reach it — this runs
@@ -827,6 +858,18 @@ def cmd_diff(pr: int) -> int:
         if meta.get("phase") != "ready":
             print(f"resubmit: merge of PR #{pr} is not ready to inspect.", file=sys.stderr)
             return 9
+        if last:
+            if not meta.get("continued_from"):
+                print(f"resubmit: PR #{pr}'s kept merge has no follow-up commit.", file=sys.stderr)
+                return 9
+            # `--last`: the follow-up commit alone, which is what the agent
+            # that authored it must account for.
+            r = _git(["diff", "--no-color", str(meta["continued_from"]), "HEAD"], wt)
+            if r.returncode != 0:
+                print(f"resubmit: git diff failed: {r.stderr.strip()}", file=sys.stderr)
+                return 4
+            print(r.stdout, end="")
+            return 0
         r = _git(["diff", "--no-color", meta["base_sha"], "HEAD"], wt)
         if r.returncode != 0:
             print(f"resubmit: git diff failed: {r.stderr.strip()}", file=sys.stderr)
@@ -1181,7 +1224,10 @@ def main(argv: list[str] | None = None) -> int:
                                   "on its merge commit, pushing nothing")
     commitp.add_argument("-m", "--message", required=True)
     sub.add_parser("apply", help="apply a patch from stdin to the prepared worktree")
-    sub.add_parser("diff", help="show the diff of the edits authored in the worktree")
+    diffp = sub.add_parser("diff", help="show the diff of the edits authored in the worktree")
+    diffp.add_argument("--last", action="store_true",
+                       help="on a kept merge, only the follow-up commit `commit` added")
+    sub.add_parser("discard", help="return a kept merge worktree to its merge commit")
     updp = sub.add_parser("update", help="merge the base branch into the PR's head branch")
     updp.add_argument("--dry-run", action="store_true",
                       help="log the update without merging anything")
@@ -1211,7 +1257,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.action == "apply":
             return cmd_apply(args.pr)
         if args.action == "diff":
-            return cmd_diff(args.pr)
+            return cmd_diff(args.pr, args.last)
+        if args.action == "discard":
+            return cmd_discard(args.pr)
         if args.action == "update":
             return cmd_update(args.pr, args.dry_run, args.probe)
         if args.action == "state":

@@ -632,6 +632,7 @@ def resolve_autopush_bar(result: dict) -> tuple[bool, str]:
     Pass requires all of:
       - the conflicted paths are known and none reaches risk tier 0 — agent
         judgment stays out of the code where a wrong merge hurts most
+      - the compile preflight recorded on the result cleared (or none ran)
       - two independent reviewers, each an affirmative `safe` (a missing,
         malformed, or failed review reads as unsafe)
       - the related-tests sandbox run, when one exists, exited clean; a resolve
@@ -647,6 +648,11 @@ def resolve_autopush_bar(result: dict) -> tuple[bool, str]:
         pinned = risktier.tier_facet(paths)["pinned_by"]
         return False, ("conflicted paths reach risk tier 0: "
                        f"{', '.join(pinned[:5])}")
+    pf = result.get("compile_preflight")
+    if pf is not None:
+        pf_ok, pf_why = compile_preflight_gate(pf)
+        if not pf_ok:
+            return False, f"the compile preflight did not clear it: {pf_why}"
     auto = result.get("auto_review") or {}
     reviews = [r for r in (auto.get("reviews") or []) if isinstance(r, dict)]
     # A judged rejection is the reason worth reporting; a machine-failed
