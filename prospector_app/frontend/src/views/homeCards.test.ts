@@ -126,6 +126,10 @@ test("the sample query fetches exactly the table's row budget", () => {
   assert.equal(SAMPLE_QUERY.limit, SAMPLE_LIMIT);
 });
 
+test("cards sample two PRs each so every card fits above the fold", () => {
+  assert.equal(SAMPLE_LIMIT, 2);
+});
+
 test("issue card keys are unique and disjoint from PR card keys", () => {
   const keys = [...HOME_CARDS.map((c) => c.key), ...HOME_ISSUE_CARDS.map((c) => c.key)];
   assert.equal(new Set(keys).size, keys.length);
