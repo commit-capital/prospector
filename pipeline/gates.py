@@ -196,8 +196,9 @@ SENTINEL_PASS = 0
 SENTINEL_PROBE_FAIL = 10
 SENTINEL_TEST_FAIL = 20
 SENTINEL_PATCH_CONFLICT = 30
-# The mounted patch did not match what the host wrote (empty, truncated, or
-# stale in the Docker VM's file sharing): a worker fault, never a verdict.
+# The sandbox could not apply the patch for a reason that is not the patch's:
+# the mount never matched what the host wrote, the file is corrupt, the disk is
+# full. A worker fault, never a verdict.
 SENTINEL_PATCH_UNREADABLE = 40
 
 # Disposition precedence for a PR that belongs to several clusters: the most
@@ -840,8 +841,9 @@ def compile_preflight_gate(result: dict) -> tuple[bool, str]:
     if exit_code == SENTINEL_PASS:
         return True, f"compile clean against {branch}@{base}"
     if exit_code == SENTINEL_PATCH_CONFLICT:
-        return False, (f"the PR no longer applies onto current {branch} "
-                       f"({base}) — needs a rebase")
+        excerpt = str(result.get("error_excerpt") or "").strip()
+        why = f"the PR no longer applies onto current {branch} ({base}) — needs a rebase"
+        return False, f"{why}: {excerpt}" if excerpt else why
     if exit_code == SENTINEL_TEST_FAIL:
         excerpt = str(result.get("error_excerpt") or "").strip()
         why = f"compile failed against current {branch}@{base}"
@@ -849,8 +851,10 @@ def compile_preflight_gate(result: dict) -> tuple[bool, str]:
     if exit_code == SENTINEL_PROBE_FAIL:
         return False, "sandbox isolation probe failed — refusing to run PR code"
     if exit_code == SENTINEL_PATCH_UNREADABLE:
-        return False, ("the sandbox could not read the patch it was handed — a "
-                       "file-sharing fault on the worker, live merge refused")
+        excerpt = str(result.get("error_excerpt") or "").strip()
+        why = ("the sandbox could not apply the patch for a reason that is not the "
+               "patch's — a fault on the worker, live merge refused")
+        return False, f"{why}: {excerpt}" if excerpt else why
     return False, (f"compile phase exited {exit_code}, not a sentinel — "
                    "infrastructure failure, live merge refused")
 

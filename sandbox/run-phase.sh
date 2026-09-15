@@ -58,7 +58,21 @@ apply_patch() {
       sleep 0.25
     done
   fi
-  git -c core.checkStat=minimal apply --3way "$PATCH_FILE" >&2
+  local err rc
+  err="$(git -c core.checkStat=minimal apply --3way "$PATCH_FILE" 2>&1)"; rc=$?
+  printf '%s\n' "$err" >&2
+  [ "$rc" -eq 0 ] && return 0
+  # git names a patch that does not fit the tree in a handful of phrases; that
+  # is the conflict the sentinel means. Every other failure — a corrupt or
+  # truncated patch file, a full disk, an unreadable object store — is the
+  # harness's own, and no verdict may be read from it.
+  if printf '%s' "$err" | grep -Eq \
+      'does not apply|patch failed|with conflicts|already exists in|does not exist in index|does not match index|No such file or directory|while searching for|cannot apply binary patch|has type [0-9]+, expected'; then
+    return 1
+  fi
+  echo "the patch could not be applied for a reason that is not the patch's:" \
+       "$(printf '%s' "$err" | grep -m1 -E '^(error|fatal):' || printf '%s' "$err" | tail -n 1)" >&2
+  exit "$SENTINEL_PATCH_UNREADABLE"
 }
 
 # Run the command string inside a subshell. The parentheses are load-bearing: an

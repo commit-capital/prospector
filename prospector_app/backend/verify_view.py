@@ -677,8 +677,8 @@ def _build_story(signals: wire.VerifySignals) -> list[VerifyStep]:
         return steps
     elif apply_exit == gates.SENTINEL_PATCH_UNREADABLE:
         steps.append(_step("apply", apply_label, "fail",
-                           "The sandbox could not read the patch it was handed — a "
-                           "file-sharing fault on the worker, not the PR."))
+                           "The sandbox could not apply the patch for a reason that "
+                           "is not the patch's — a fault on the worker, not the PR."))
         return steps
     elif apply_exit is None:
         steps.append(_step("apply", apply_label, "skip", "Never ran."))

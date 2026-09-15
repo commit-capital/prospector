@@ -682,7 +682,7 @@ def _probe(n: int, claimed: dict, action: str) -> str | None:
         if r.returncode != 0:
             _settle(n, claimed, r.returncode, (r.stderr or r.stdout).strip())
             return None
-        patch = (r.stdout or "").strip()
+        patch = _diff_text(r)
     else:
         _running_step(n, claimed, "rebasing onto base", action=action)
         prepared = _resubmit(n, "prepare", *(["--rebase"] if action == "rebase" else []))
@@ -710,7 +710,7 @@ def _probe(n: int, claimed: dict, action: str) -> str | None:
         if diff.returncode != 0:
             _fail(n, claimed, (diff.stderr or diff.stdout).strip())
             return None
-        patch = (diff.stdout or "").strip()
+        patch = _diff_text(diff)
     if not patch:
         _resubmit(n, "abort")
         _refuse(n, claimed, f"the {action} produced no change to push")
@@ -953,7 +953,7 @@ def _author_and_review(n: int, claimed: dict, rec: Pr, worktree: str, goal: str,
         _fail(n, claimed, f"reading the authored diff failed: "
                           f"{(diff.stderr or diff.stdout).strip()[:500]}")
         return None
-    patch = (diff.stdout or "").strip()
+    patch = _diff_text(diff)
     if not patch.startswith("diff "):
         _resubmit(n, "abort")
         _refuse(n, claimed, "The agent reported changes, but the worktree holds "
@@ -1107,7 +1107,7 @@ def _agent_resolve(n: int, claimed: dict, paused: list[str]) -> None:
         _fail(n, claimed, f"reading the resolved diff failed: "
                           f"{(diff.stderr or diff.stdout).strip()[:500]}")
         return
-    patch = diff.stdout.strip()
+    patch = _diff_text(diff)
 
     _running_step(n, claimed, "compile preflight")
     pf = _preflight(n, patch)
@@ -1279,6 +1279,14 @@ def _conflict_diff(n: int) -> str | None:
     if not out.startswith("diff "):
         return None
     return out[:MERGE_DIFF_CHARS]
+
+
+def _diff_text(r: subprocess.CompletedProcess[str]) -> str:
+    """A captured git diff with only its line ends trimmed. A diff's last line
+    may be a lone space (an unchanged blank line kept as context), and a patch
+    missing that line is corrupt, so no other whitespace is stripped."""
+    text = r.stdout or ""
+    return text.rstrip("\r\n") if text.strip() else ""
 
 
 def _preflight(n: int, patch: str) -> dict | None:
@@ -1532,7 +1540,7 @@ def _continue_resolve(n: int, rec: Pr, claimed: dict, head: str, worktree: str,
              f"{(committed.stderr or committed.stdout).strip()[:500]}")
         return
     last = _resubmit(n, "diff", "--last")
-    follow_up = (last.stdout or "").strip()
+    follow_up = _diff_text(last)
     if last.returncode != 0 or not follow_up.startswith("diff "):
         park("the follow-up's diff could not be read")
         return
@@ -1548,7 +1556,7 @@ def _continue_resolve(n: int, rec: Pr, claimed: dict, head: str, worktree: str,
         park(f"the continuation is not one the bot may push: {why}")
         return
     combined_r = _resubmit(n, "diff")
-    patch = (combined_r.stdout or "").strip()
+    patch = _diff_text(combined_r)
     if combined_r.returncode != 0 or not patch.startswith("diff "):
         park("the continued worktree's diff could not be read")
         return
