@@ -51,6 +51,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, NamedTuple
 
 from pipeline import (author_fix, compile_preflight, describe_pr, diffpaths, freshness,
+                      objections,
                       gates, gh, headless_agent, profile, resolve_conflicts,
                       resolve_evidence, review_fix, review_policy, review_resolve,
                       reviewers, risktier, settings, verify_driver)
@@ -477,7 +478,7 @@ def _settle(n: int, req: dict, rc: int, output: str) -> None:
         data.store().edit_pr(n).record_fix_request(
             "queued", req.get("action", "fix"), queued_at=req.get("queued_at"),
             attempts=attempts, source=req.get("source"), host=settings.worker_id(),
-            guidance=req.get("guidance"),
+            guidance=req.get("guidance"), objection=req.get("objection"),
             error=f"attempt {attempts} did not stick, retrying: {output[-TAIL_CHARS:]}")
         data.refresh()
         print(f"[fix-worker] PR #{n} exited {rc}; re-queued (attempt {attempts}"
@@ -506,6 +507,9 @@ def _log_run(n: int, req: dict, status: str, detail: str | None = None,
         "trigger": "autohunt" if req.get("source") == "auto" else None,
         "stats": {"status": status, "action": req.get("action", "fix"),
                   "detail": detail, "host": host or settings.worker_id()}}
+    signature = (req.get("objection") or {}).get("signature")
+    if signature:
+        entry["stats"]["objection"] = signature
     try:
         data.store().append_run(entry)
     except Exception:
@@ -524,7 +528,7 @@ def _fail(n: int, req: dict, message: str, result: dict | None = None, *,
         "failed", req.get("action", "fix"), queued_at=req.get("queued_at"),
         started_at=req.get("started_at"), finished_at=_now(),
         error=message[-TAIL_CHARS:], result=result, source=req.get("source"),
-        guidance=req.get("guidance"), host=settings.worker_id(),
+        guidance=req.get("guidance"), objection=req.get("objection"), host=settings.worker_id(),
         head_sha=req.get("against_head_sha"))
     data.refresh()
     _log_run(n, req, "failed", message[-TAIL_CHARS:], kind=kind)
@@ -535,7 +539,7 @@ def _refuse(n: int, req: dict, reason: str, result: dict | None = None) -> None:
         "refused", req.get("action", "fix"), queued_at=req.get("queued_at"),
         started_at=req.get("started_at"), finished_at=_now(),
         refused_reason=reason[-TAIL_CHARS:], result=result,
-        source=req.get("source"), guidance=req.get("guidance"),
+        source=req.get("source"), guidance=req.get("guidance"), objection=req.get("objection"),
         host=settings.worker_id(), head_sha=req.get("against_head_sha"))
     data.refresh()
     _log_run(n, req, "refused", reason[-TAIL_CHARS:])
@@ -906,7 +910,7 @@ def _running_step(n: int, claimed: dict, step: str, action: str = "resolve") -> 
     data.store().edit_pr(n).record_fix_request(
         "running", action, queued_at=claimed.get("queued_at"),
         started_at=claimed.get("started_at"), step=step,
-        source=claimed.get("source"), guidance=claimed.get("guidance"),
+        source=claimed.get("source"), guidance=claimed.get("guidance"), objection=claimed.get("objection"),
         host=settings.worker_id(), head_sha=claimed.get("against_head_sha"))
     data.refresh()
 
@@ -1114,7 +1118,7 @@ def _park(n: int, claimed: dict, action: str, result: dict, host: str) -> None:
     data.store().edit_pr(n).record_fix_request(
         "awaiting-review", action, queued_at=claimed.get("queued_at"),
         started_at=claimed.get("started_at"), result=result,
-        source=claimed.get("source"), guidance=claimed.get("guidance"),
+        source=claimed.get("source"), guidance=claimed.get("guidance"), objection=claimed.get("objection"),
         host=host, base_sha=_base_sha(),
         head_sha=claimed.get("against_head_sha"))
     data.refresh()
@@ -1194,7 +1198,7 @@ def _cancel(n: int, req: dict, reason: str, result: dict | None = None) -> None:
         "cancelled", req.get("action", "fix"), queued_at=req.get("queued_at"),
         started_at=req.get("started_at"), finished_at=_now(),
         refused_reason=reason[-TAIL_CHARS:], result=result, source=req.get("source"),
-        guidance=req.get("guidance"), host=settings.worker_id(),
+        guidance=req.get("guidance"), objection=req.get("objection"), host=settings.worker_id(),
         head_sha=req.get("against_head_sha"))
     data.refresh()
     _log_run(n, req, "cancelled", reason[-TAIL_CHARS:])
@@ -1311,13 +1315,23 @@ def _judge_claimed_resolve(n: int, rec: Pr, claimed: dict, head: str,
             reviews.append({"lens": lens, **verdict})
             if verdict.get("verdict") != "safe" and not verdict.get("failed"):
                 break
-        judged_rejection = any(r.get("verdict") != "safe" and not r.get("failed")
-                               for r in reviews)
-        if any(r.get("failed") for r in reviews) and not judged_rejection:
+        judged_rejection = next((r for r in reviews
+                                 if r.get("verdict") != "safe" and not r.get("failed")), None)
+        if any(r.get("failed") for r in reviews) and judged_rejection is None:
             restore("a reviewer failed as a machine, with no judged rejection "
                     "beside it")
             return
         stamp["reviews"] = reviews
+        if judged_rejection is not None:
+            objection = objections.build(
+                "resolve-review",
+                f"{judged_rejection.get('lens')}-lens: {judged_rejection.get('reason')}\n"
+                + "\n".join(str(c) for c in judged_rejection.get("concerns") or []),
+                origin={"lens": judged_rejection.get("lens"),
+                        "concerns": list(judged_rejection.get("concerns") or [])})
+            if _may_continue(rec, objection):
+                _continue_resolve(n, rec, claimed, head, worktree, result, stamp, objection)
+                return
         if all(r.get("verdict") == "safe" for r in reviews) and len(reviews) == 2:
             stamp["tests"] = _related_tests_run(n, head, patch, related)
             run = (stamp["tests"] or {}).get("run") or {}
@@ -1346,6 +1360,111 @@ def _judge_claimed_resolve(n: int, rec: Pr, claimed: dict, head: str,
         base_sha=claimed.get("base_sha"), head_sha=head)
     data.refresh()
     print(f"[fix-worker] resolve auto-review for PR #{n}: "
+          f"{'cleared for push' if ok else why}", flush=True)
+
+
+def _may_continue(rec: Pr, objection: dict) -> bool:
+    """Whether a continuation may start: the profile opted in, this head has
+    not answered this objection, and today's budget is not spent."""
+    if "objection" not in profile.active().autofix.fixable_gates:
+        return False
+    if objections.spent(rec, objection["signature"]):
+        return False
+    return objections.budget_left(data.store(), settings.worker_id()) > 0
+
+
+def _continue_resolve(n: int, rec: Pr, claimed: dict, head: str, worktree: str,
+                      result: dict, stamp: dict, objection: dict) -> None:
+    """Author the objection inside the kept merge worktree, commit it on top
+    of the merge, and judge the combined change under the resolve bar again.
+    Both rounds are kept on the request; every ending carries the objection."""
+    first = {**stamp, "objection": objection}
+    paths = [str(p) for p in (result.get("conflict_paths") or [])]
+    claimed = {**claimed, "objection": objection}
+    _running_step(n, claimed, "continuing after the reviewer's objection")
+
+    def park(detail: str) -> None:
+        res = {**result, "rounds": [first],
+               "auto_review": {**first, "bar": {"ok": False, "reason": detail}}}
+        data.store().edit_pr(n).record_fix_request(
+            "awaiting-review", "resolve", queued_at=claimed.get("queued_at"),
+            started_at=claimed.get("started_at"), result=res, source=claimed.get("source"),
+            host=settings.worker_id(), base_sha=claimed.get("base_sha"), head_sha=head,
+            objection=objection)
+        data.refresh()
+        _log_run(n, claimed, "awaiting-review", detail)
+
+    concerns = [str(c) for c in (objection.get("from") or {}).get("concerns") or []]
+    try:
+        pr_patch = verify_driver.fetch_patch(n, rec.head_sha or "")
+        verdict = author_fix.author(
+            worktree, pr=n, title=rec.title or "", body=rec.body or "",
+            goal=objections.goal_text(objection),
+            findings=[{"path": paths[0], "note": c} for c in concerns] if paths else [],
+            ci_failures=[], diff_path=str(pr_patch), head_sha=rec.head_sha or "")
+    except headless_agent.AgentUnavailable as e:
+        _resubmit(n, "abort")
+        _fail(n, claimed, f"The agent could not run on {settings.worker_id()}: {e}",
+              kind="agent-unavailable")
+        return
+    except (RuntimeError, ValueError, verify_driver.FetchFailure) as e:
+        park(f"the continuation did not land: {e}")
+        return
+    if "give_up" in verdict:
+        park(f"the continuation agent declined: {verdict['give_up']}")
+        return
+    diff = _resubmit(n, "diff")
+    patch = (diff.stdout or "").strip()
+    if diff.returncode != 0 or not patch.startswith("diff "):
+        park("the continued worktree's diff could not be read")
+        return
+    touched = diffpaths.changed_paths(patch)
+    try:
+        author_fix.assert_disclosed(verdict["changes"], touched)
+    except ValueError as e:
+        park(f"the continuation was not trusted: {e}")
+        return
+    all_paths = sorted(set(touched) | set(paths))
+    ok, why = recheck_eligibility(n, "resolve", all_paths)
+    if not ok:
+        park(f"the continuation is not one the bot may push: {why}")
+        return
+    committed = _resubmit(n, "commit", "-m",
+                          verdict.get("summary") or "Address the reviewer's objection")
+    if committed.returncode != 0:
+        _fail(n, claimed, f"committing the continuation failed: "
+                          f"{(committed.stderr or committed.stdout).strip()[:500]}")
+        return
+    second: dict = {"against_head_sha": head, "base_sha": claimed.get("base_sha"),
+                    "host": settings.worker_id(), "at": _now(),
+                    "tier": risktier.tier_facet(all_paths),
+                    "reviews": [], "tests": None, "objection": objection}
+    history = resolve_evidence.history(worktree, paths)
+    context = resolve_evidence.store_context(rec)
+    related = resolve_evidence.related_tests(worktree, paths)
+    for lens in ("behavior", "history"):
+        v = review_resolve.review(worktree, pr=n, title=rec.title or "",
+                                  merge_diff=str(result.get("merge_diff") or ""), patch=patch,
+                                  resolutions=list(result.get("resolutions") or []),
+                                  history=history, store_context=context, lens=lens)
+        second["reviews"].append({"lens": lens, **v})
+        if v.get("verdict") != "safe" and not v.get("failed"):
+            break
+    if all(r.get("verdict") == "safe" for r in second["reviews"]) and len(second["reviews"]) == 2:
+        second["tests"] = _related_tests_run(n, head, patch, related)
+    res = {**result, "patch": patch[-TAIL_CHARS:], "rounds": [first, second],
+           "auto_review": second}
+    ok, why = gates.resolve_autopush_bar(res)
+    second["bar"] = {"ok": ok, "reason": why}
+    data.store().edit_pr(n).record_fix_request(
+        "approved" if ok else "awaiting-review", "resolve",
+        queued_at=claimed.get("queued_at"), started_at=claimed.get("started_at"),
+        result=res, source=claimed.get("source"), host=settings.worker_id(),
+        base_sha=claimed.get("base_sha"), head_sha=head, objection=objection)
+    data.refresh()
+    if not ok:
+        _log_run(n, claimed, "awaiting-review", why)
+    print(f"[fix-worker] resolve continuation for PR #{n}: "
           f"{'cleared for push' if ok else why}", flush=True)
 
 
@@ -1464,7 +1583,7 @@ def _finish_pushed(n: int, req: dict, output: str, result: dict | None = None) -
     data.store().edit_pr(n).record_fix_request(
         "pushed", req.get("action", "fix"), queued_at=req.get("queued_at"),
         started_at=req.get("started_at"), finished_at=_now(), result=merged,
-        source=req.get("source"), guidance=req.get("guidance"),
+        source=req.get("source"), guidance=req.get("guidance"), objection=req.get("objection"),
         host=settings.worker_id(), head_sha=req.get("against_head_sha"))
     data.refresh()
     _log_run(n, req, "pushed", merged.get("message"))

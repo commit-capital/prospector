@@ -106,8 +106,8 @@ def approve_pr(n: int, *, dry_run: bool) -> dict:
     rec.record_fix_request("approved", req.get("action", "fix"),
                            queued_at=req.get("queued_at"), source=req.get("source"),
                            base_sha=req.get("base_sha"), result=req.get("result"),
-                           guidance=req.get("guidance"), host=req.get("host"),
-                           head_sha=req.get("against_head_sha"))
+                           guidance=req.get("guidance"), objection=req.get("objection"),
+                           host=req.get("host"), head_sha=req.get("against_head_sha"))
     data.refresh()
     return {"pr": n, "status": "approved"}
 

@@ -1755,3 +1755,114 @@ class TestMergeCommitFallback:
         assert req["status"] == "refused" and req["action"] == "rebase"
         assert "merge commits" in req["refused_reason"]
         assert ("update", "--probe") not in fake.calls
+
+
+class TestResolveContinuation:
+    """A reviewer's judged rejection becomes the author agent's goal inside the
+    kept merge worktree; the result is re-reviewed under the same bar."""
+
+    def _parked(self, store, tmp_path):
+        from pipeline import settings
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        (wt / "pr.patch").write_text("diff --git a/one.txt b/one.txt\n+x\n")
+        store.edit_pr(1).record_fix_request(
+            "awaiting-review", "resolve", queued_at="2026-09-14T00:00:00+00:00",
+            source="auto", host=settings.worker_id(), head_sha=HEAD,
+            result={"conflict_paths": ["one.txt"], "merge_diff": "diff --cc one.txt",
+                    "resolutions": [{"path": "one.txt", "rationale": "kept both"}]})
+        data.refresh()
+        return wt
+
+    def _fakes(self, monkeypatch, wt, verdicts, gates_=("objection",)):
+        monkeypatch.setattr(profile, "active", lambda: profile.RepoProfile(
+            autofix=profile.AutofixPolicy(fixable_gates=tuple(gates_))))
+        calls: dict = {"author": 0, "review": 0, "resubmit": []}
+        seq = iter(verdicts)
+
+        def review(worktree, **kw):
+            calls["review"] += 1
+            return next(seq)
+        monkeypatch.setattr(fix_worker.review_resolve, "review", review)
+
+        def author(worktree, **kw):
+            calls["author"] += 1
+            calls["goal"] = kw["goal"]
+            return {"summary": "Keep the base's deletion",
+                    "changes": [{"path": "one.txt", "note": "n"}]}
+        monkeypatch.setattr(fix_worker.author_fix, "author", author)
+        monkeypatch.setattr(fix_worker.author_fix, "assert_disclosed", lambda changes, paths: None)
+        monkeypatch.setattr(fix_worker.verify_driver, "fetch_patch", lambda pr, head: wt / "pr.patch")
+        monkeypatch.setattr(fix_worker, "_related_tests_run", lambda *a, **k: None)
+        monkeypatch.setattr(fix_worker.risktier, "tier_facet",
+                            lambda paths: {"tier": 2, "pinned_by": []})
+        monkeypatch.setattr(fix_worker.risktier, "pr_tier", lambda paths: 2)
+        monkeypatch.setattr(fix_worker.resolve_evidence, "history", lambda wt, paths: "")
+        monkeypatch.setattr(fix_worker.resolve_evidence, "store_context", lambda rec: "")
+        monkeypatch.setattr(fix_worker.resolve_evidence, "related_tests", lambda wt, paths: [])
+
+        def resubmit(n, *args, stdin=None):
+            calls["resubmit"].append(args)
+            out = ""
+            if args[0] == "state":
+                out = json.dumps({"phase": "ready", "mode": "merge", "conflicts": [],
+                                  "worktree": str(wt), "base_branch": "master"})
+            elif args[0] == "diff":
+                out = "diff --git a/one.txt b/one.txt\n+resolved"
+            return type("R", (), {"returncode": 0, "stdout": out, "stderr": ""})()
+        monkeypatch.setattr(fix_worker, "_resubmit", resubmit)
+        return calls
+
+    def test_a_rejection_is_continued_and_re_reviewed(self, store, monkeypatch, tmp_path):
+        wt = self._parked(store, tmp_path)
+        unsafe = {"verdict": "unsafe", "reason": "drops the base's deletion", "concerns": ["c1"]}
+        safe = {"verdict": "safe", "reason": "ok", "concerns": []}
+        calls = self._fakes(monkeypatch, wt, [unsafe, safe, safe])
+        fix_worker.review_parked_resolve(1)
+        req = store.load_pr(1).fix_request
+        assert req["status"] == "approved"
+        assert calls["author"] == 1 and "drops the base's deletion" in calls["goal"]
+        assert ("commit", "-m", "Keep the base's deletion") in calls["resubmit"]
+        assert [r["objection"]["kind"] for r in req["result"]["rounds"]] == [
+            "resolve-review", "resolve-review"]
+        assert req["objection"]["signature"].startswith("resolve-review:")
+
+    def test_a_second_rejection_parks_with_both_rounds(self, store, monkeypatch, tmp_path):
+        wt = self._parked(store, tmp_path)
+        unsafe = {"verdict": "unsafe", "reason": "still wrong", "concerns": []}
+        self._fakes(monkeypatch, wt, [unsafe, unsafe])
+        fix_worker.review_parked_resolve(1)
+        req = store.load_pr(1).fix_request
+        assert req["status"] == "awaiting-review"
+        assert len(req["result"]["rounds"]) == 2
+        assert not req["result"]["auto_review"]["bar"]["ok"]
+        ledger = [r for r in store.runs() if getattr(r, "phase", "") == "fix:single"]
+        assert ledger[-1].raw["stats"]["objection"].startswith("resolve-review:")
+
+    def test_without_the_gate_the_rejection_parks_as_before(self, store, monkeypatch, tmp_path):
+        wt = self._parked(store, tmp_path)
+        calls = self._fakes(monkeypatch, wt,
+                            [{"verdict": "unsafe", "reason": "r", "concerns": []}],
+                            gates_=("review",))
+        fix_worker.review_parked_resolve(1)
+        assert store.load_pr(1).fix_request["status"] == "awaiting-review"
+        assert calls["author"] == 0
+
+    def test_an_exhausted_budget_parks_as_before(self, store, monkeypatch, tmp_path):
+        wt = self._parked(store, tmp_path)
+        calls = self._fakes(monkeypatch, wt,
+                            [{"verdict": "unsafe", "reason": "r", "concerns": []}])
+        monkeypatch.setattr(fix_worker.objections, "budget_left", lambda st, w, now=None: 0)
+        fix_worker.review_parked_resolve(1)
+        assert calls["author"] == 0
+        assert store.load_pr(1).fix_request["status"] == "awaiting-review"
+
+    def test_an_objection_already_answered_on_this_head_is_not_retried(
+            self, store, monkeypatch, tmp_path):
+        from pipeline import objections as obj_mod
+        wt = self._parked(store, tmp_path)
+        calls = self._fakes(monkeypatch, wt,
+                            [{"verdict": "unsafe", "reason": "r", "concerns": []}])
+        monkeypatch.setattr(obj_mod, "spent", lambda pr, sig: True)
+        fix_worker.review_parked_resolve(1)
+        assert calls["author"] == 0

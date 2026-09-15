@@ -836,7 +836,7 @@ class Store:
                          "step": "claimed", "host": host,
                          "started_at": storekit.now()}
         for field in ("queued_at", "source", "attempts", "base_sha", "result",
-                      "guidance"):
+                      "guidance", "objection"):
             if req.get(field) is not None:
                 section[field] = req[field]
         head = (rec.get("meta") or {}).get("head_sha")
