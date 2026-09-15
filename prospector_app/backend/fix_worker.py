@@ -742,6 +742,9 @@ def _fix_goal(rec: Pr, claimed: dict) -> _FixBrief:
     for r in review_policy.active_reviewers(reviewers.REVIEW):
         if review_policy.bar(rec, r).status == reviewers.FAIL:
             findings.extend(reviewers.findings_for_fix(r, rec.review_entry(r.id), rec.head_sha, read))
+    objection = claimed.get("objection")
+    if objection:
+        return _FixBrief(objections.goal_text(objection), [], [], "")
     fixable = profile.active().autofix.fixable_gates
     guidance = claimed.get("guidance")
     summary = _review_summary(rec) if ("review" in fixable or guidance) else ""
@@ -799,7 +802,8 @@ def _author_fix(n: int, claimed: dict) -> None:
         _refuse(n, claimed, f"PR #{n} left the store")
         return
     goal, findings, checks, review_summary = _fix_goal(rec, claimed)
-    if not (claimed.get("guidance") or findings or checks or review_summary):
+    if not (claimed.get("guidance") or claimed.get("objection") or findings
+            or checks or review_summary):
         _refuse(n, claimed, "Nothing to aim a fix at: the review left no findings "
                             "and no summary for this head, and no check is failing.")
         return
@@ -1733,12 +1737,13 @@ def _hunt_attempted(pr: Pr, action: str) -> bool:
 
 
 def _auto_in_flight(action: str) -> int:
-    """How many hunter-queued requests for `action` sit anywhere between queued
-    and pushing. Operator-queued ones are not counted against the hunter's cap."""
+    """How many hunter-queued requests for `action` — auto picks and objection
+    continuations alike — sit anywhere between queued and pushing.
+    Operator-queued ones are not counted against the hunter's cap."""
     count = 0
     for rec in data.prs().values():
         req = rec.fix_request or {}
-        if (req.get("source") == "auto" and req.get("action") == action
+        if (req.get("source") in ("auto", "objection") and req.get("action") == action
                 and req.get("status") in fix_queue.IN_FLIGHT):
             count += 1
     return count
@@ -1748,33 +1753,60 @@ def _auto_fixes_in_flight() -> int:
     return _auto_in_flight("fix")
 
 
-def auto_fixable(pr: Pr) -> str | None:
-    """The action the idle hunter would queue for this PR, or None.
+def auto_fixable(pr: Pr) -> tuple[str, dict | None] | None:
+    """The action the idle hunter would queue for this PR with the objection it
+    answers (None for every action but a security continuation), or None.
 
     A PR GitHub reports unmergeable needs its history replayed on current base,
     which is `rebase`; a PR whose drift scan says the base moved out from under
     it needs `update`. A PR clean on both whose reviewer objects only to its
     description takes a `describe`; one the reviewer fails on the code may take
-    an agent-authored `fix`. Both agent actions need the deployment's opt-in
-    (TRIAGE_FIX_HUNT_FIX) and a head that has not already burned its one
-    unattended attempt. Anything else is left alone.
+    an agent-authored `fix`; one carrying a current YELLOW security verdict
+    takes a `fix` from that finding under TRIAGE_FIX_HUNT_SECURITY. The agent
+    actions need the deployment's opt-in (TRIAGE_FIX_HUNT_FIX) and a head that
+    has not already burned its one unattended attempt, or, for a security
+    continuation, has not already answered that objection. Anything else is
+    left alone.
 
     gates.fix_huntable is the bar, not fix_eligibility: unprompted sandbox time
     goes only where a stored quality signal argues the spend is worth it."""
     if (pr.fix_request or {}).get("status") in fix_queue.IN_FLIGHT:
         return None
+    objection: dict | None = None
     if pr.mergeable is False:
         action = "rebase"
     elif pr.drift_state == "conflicts":
         action = "update"
+    elif settings.fix_hunt_fix() and settings.fix_hunt_security() and _yellow_objection(pr):
+        action, objection = "fix", _yellow_objection(pr)
     elif settings.fix_hunt_fix():
         action = "describe" if describe_pr.only_description_nits(pr) else "fix"
     else:
         return None
-    if _hunt_attempted(pr, action):
+    if objection is not None:
+        if objections.spent(pr, objection["signature"]):
+            return None
+    elif _hunt_attempted(pr, action):
         return None
-    ok, _ = gates.fix_huntable(pr, action, service.changed_paths(pr))
-    return action if ok else None
+    ok, _ = gates.fix_huntable(pr, action, service.changed_paths(pr),
+                               objection=objection is not None)
+    return (action, objection) if ok else None
+
+
+def _yellow_objection(pr: Pr) -> dict | None:
+    """The security objection for a PR whose current verdict is YELLOW: every
+    confirmed finding's title and detail, or None when there is no current
+    YELLOW or it carries no findings."""
+    if (pr.security_verdict != "YELLOW"
+            or not freshness.is_current(pr, "security",
+                                        max_age_days=gates.SECURITY_MAX_AGE_DAYS)):
+        return None
+    findings = [f for f in ((pr.section("security") or {}).get("findings") or [])
+                if isinstance(f, dict)]
+    if not findings:
+        return None
+    text = "\n".join(f"- {f.get('title')}: {f.get('detail')}" for f in findings)
+    return objections.build("security", text, origin={"findings": len(findings)})
 
 
 def _hunt_key(rec: Pr, action: str, n: int) -> tuple[int, int, float, int]:
@@ -1794,8 +1826,9 @@ def _hunt_key(rec: Pr, action: str, n: int) -> tuple[int, int, float, int]:
     return (1, tier, -pain, n)
 
 
-def next_auto() -> tuple[str, int] | None:
-    """The idle hunter's next (action, PR), or None when nothing is eligible.
+def next_auto() -> tuple[str, int, dict | None] | None:
+    """The idle hunter's next (action, PR, objection), or None when nothing is
+    eligible; the objection is set only for a security continuation.
 
     A `fix` leads while one of the TRIAGE_FIX_HUNT_LIMIT slots is free, so the
     agent lane stays filled while the mechanical backlog drains around it; a
@@ -1806,20 +1839,21 @@ def next_auto() -> tuple[str, int] | None:
     limit = settings.fix_hunt_limit()
     slots = {"fix": limit - _auto_in_flight("fix"),
              "describe": limit - _auto_in_flight("describe")}
-    best: dict[str, tuple[tuple[int, int, float, int], str, int]] = {}
+    best: dict[str, tuple[tuple[int, int, float, int], str, int, dict | None]] = {}
     for n, rec in data.prs().items():
-        action = auto_fixable(rec)
-        if action is None:
+        pick = auto_fixable(rec)
+        if pick is None:
             continue
+        action, objection = pick
         lane = action if action in slots else "mechanical"
         if lane != "mechanical" and slots[lane] <= 0:
             continue
         key = _hunt_key(rec, action, n)
         if lane not in best or key < best[lane][0]:
-            best[lane] = (key, action, n)
+            best[lane] = (key, action, n, objection)
     for lane in ("fix", "describe", "mechanical"):
         if lane in best:
-            return (best[lane][1], best[lane][2])
+            return (best[lane][1], best[lane][2], best[lane][3])
     return None
 
 
@@ -1883,9 +1917,10 @@ def _drain_loop() -> None:
             if pick is None:
                 stop.wait(POLL_SECONDS)
                 continue
-            action, n = pick
-            print(f"[autofix-hunt] queueing {action} for PR #{n}", flush=True)
-            fix_queue.queue_pr(n, action, source="auto")
+            action, n, objection = pick
+            print(f"[autofix-hunt] queueing {action} for PR #{n}"
+                  + (f" from a {objection['kind']} objection" if objection else ""), flush=True)
+            fix_queue.queue_pr(n, action, source="auto", objection=objection)
         except Exception:
             traceback.print_exc()
             stop.wait(POLL_SECONDS)

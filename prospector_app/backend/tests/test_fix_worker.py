@@ -15,6 +15,7 @@ import pytest
 
 from pipeline import headless_agent, profile
 from pipeline import store as S
+from pipeline.storekit import now as _now
 from prospector_app.backend import data, fix_queue, fix_worker
 from pipeline.testsupport import greptile_entry, reviews_section
 
@@ -81,7 +82,7 @@ def test_hunter_requires_the_review_bar(store):
 def test_hunter_takes_an_unmergeable_pr_that_meets_the_bar(store):
     # CI is failing and the PR does not merge — the two things pr_clean refuses
     # on, and the two things an update exists to clear.
-    assert fix_worker.next_auto() == ("rebase", 1)
+    assert fix_worker.next_auto() == ("rebase", 1, None)
 
 
 # --- update parks instead of pushing --------------------------------------------
@@ -909,7 +910,7 @@ def test_hunter_queues_describe_for_a_description_only_nit(store, fix_profile, m
     monkeypatch.setenv("TRIAGE_FIX_HUNT_FIX", "1")
     store.save_pr(_describable_pr())
     data.refresh()
-    assert fix_worker.auto_fixable(data.prs()[5]) == "describe"
+    assert fix_worker.auto_fixable(data.prs()[5]) == ("describe", None)
 
 
 def test_a_code_finding_beside_the_description_nit_is_a_fix_not_a_describe(
@@ -920,7 +921,7 @@ def test_a_code_finding_beside_the_description_nit_is_a_fix_not_a_describe(
         {"title": "retry loop never exits", "body": "x", "resolved": False, "outdated": False})
     store.save_pr(rec)
     data.refresh()
-    assert fix_worker.auto_fixable(data.prs()[5]) == "fix"
+    assert fix_worker.auto_fixable(data.prs()[5]) == ("fix", None)
 
 
 def _fake_describe_inputs(monkeypatch, tmp_path):
@@ -1033,7 +1034,7 @@ def test_hunter_queues_fix_with_the_opt_in(store, fix_profile, monkeypatch):
     monkeypatch.setenv("TRIAGE_FIX_HUNT_FIX", "1")
     store.save_pr(_fixable_pr())
     data.refresh()
-    assert fix_worker.auto_fixable(data.prs()[2]) == "fix"
+    assert fix_worker.auto_fixable(data.prs()[2]) == ("fix", None)
 
 
 def test_one_fix_attempt_per_head(store, fix_profile, monkeypatch):
@@ -1049,7 +1050,7 @@ def test_one_fix_attempt_per_head(store, fix_profile, monkeypatch):
                           "against_head_sha": "b" * 40}
     store.save_pr(rec)
     data.refresh()
-    assert fix_worker.auto_fixable(data.prs()[2]) == "fix"
+    assert fix_worker.auto_fixable(data.prs()[2]) == ("fix", None)
 
 
 def test_mechanical_pool_runs_while_the_fix_slots_are_full(store, fix_profile, monkeypatch):
@@ -1061,7 +1062,7 @@ def test_mechanical_pool_runs_while_the_fix_slots_are_full(store, fix_profile, m
     store.save_pr(_fixable_pr(2))
     data.refresh()
     # PR 2 is a fix candidate and PR 1 a rebase; the one slot is held by PR 3.
-    assert fix_worker.next_auto() == ("rebase", 1)
+    assert fix_worker.next_auto() == ("rebase", 1, None)
 
 
 def test_a_resolve_ending_rests_the_rebase_hunt(store):
@@ -1110,12 +1111,12 @@ def test_hunt_order_fix_first_then_nits_then_tiers(store, fix_profile, monkeypat
         store.save_pr(rec)
     data.refresh()
     # A fix slot is free, so the agent lane leads PR 1's rebase.
-    assert fix_worker.next_auto() == ("fix", 4)  # nits beat score tiers
+    assert fix_worker.next_auto() == ("fix", 4, None)  # nits beat score tiers
     nits2 = store.load_pr(4).raw
     nits2["fix_request"] = {"status": "running", "action": "fix"}
     store.save_pr(nits2)
     data.refresh()
-    assert fix_worker.next_auto() == ("fix", 3)  # 4/5 beats 3/5
+    assert fix_worker.next_auto() == ("fix", 3, None)  # 4/5 beats 3/5
 
 
 def test_authored_fix_pushes_when_autopush_names_fix(store, monkeypatch):
@@ -1175,7 +1176,7 @@ def test_a_failed_ending_is_hunted_again_once_it_cools(store, monkeypatch):
     rec["fix_request"]["finished_at"] = long_ago
     store.save_pr(rec)
     data.refresh()
-    assert fix_worker.auto_fixable(data.prs()[1]) == "rebase"
+    assert fix_worker.auto_fixable(data.prs()[1]) == ("rebase", None)
 
 
 def test_an_agent_that_does_not_land_is_a_failure_not_a_verdict(store, monkeypatch):
@@ -1246,7 +1247,7 @@ def test_a_refused_rebase_is_not_hunted_again_at_the_same_head(store, monkeypatc
                           "against_head_sha": "b" * 40, "source": "auto"}
     store.save_pr(rec)
     data.refresh()
-    assert fix_worker.auto_fixable(data.prs()[1]) == "rebase"
+    assert fix_worker.auto_fixable(data.prs()[1]) == ("rebase", None)
 
 
 # --- the resolve auto-review lane -----------------------------------------------
@@ -1983,3 +1984,52 @@ class TestCompileObjection:
         fix_worker.run_one(1)
         req = store.load_pr(1).fix_request
         assert req["status"] == "failed" and req["action"] == "update"
+
+
+class TestSecurityLane:
+    def _yellow(self, store):
+        rec = store.load_pr(1).raw
+        rec["signals"].update({"ci": "passing", "mergeable": True})
+        rec["drift"]["state"] = "applicable"
+        rec["security"] = {"verdict": "YELLOW", "checked_at": _now(), "against_head_sha": HEAD,
+                           "findings": [{"severity": "yellow", "title": "unbounded retry",
+                                         "detail": "the loop never gives up"}]}
+        store.save_pr(rec)
+        data.refresh()
+
+    def _gate(self, monkeypatch):
+        monkeypatch.setattr(profile, "active", lambda: profile.RepoProfile(
+            autofix=profile.AutofixPolicy(fixable_gates=("objection",))))
+
+    def test_a_yellow_pr_is_hunted_as_an_objection_fix(self, store, monkeypatch):
+        monkeypatch.setenv("TRIAGE_FIX_HUNT_SECURITY", "1")
+        monkeypatch.setenv("TRIAGE_FIX_HUNT_FIX", "1")
+        self._gate(monkeypatch)
+        self._yellow(store)
+        pick = fix_worker.next_auto()
+        assert pick is not None and pick[0] == "fix" and pick[2]["kind"] == "security"
+        assert "unbounded retry" in pick[2]["text"]
+
+    def test_the_lane_is_off_without_its_flag(self, store, monkeypatch):
+        monkeypatch.delenv("TRIAGE_FIX_HUNT_SECURITY", raising=False)
+        monkeypatch.setenv("TRIAGE_FIX_HUNT_FIX", "1")
+        self._gate(monkeypatch)
+        self._yellow(store)
+        assert fix_worker.next_auto() is None
+
+    def test_an_answered_objection_is_not_hunted_again(self, store, monkeypatch):
+        monkeypatch.setenv("TRIAGE_FIX_HUNT_SECURITY", "1")
+        monkeypatch.setenv("TRIAGE_FIX_HUNT_FIX", "1")
+        self._gate(monkeypatch)
+        self._yellow(store)
+        pick = fix_worker.next_auto()
+        store.edit_pr(1).record_fix_request("refused", "fix", source="objection",
+                                            objection=pick[2], head_sha=HEAD)
+        data.refresh()
+        assert fix_worker.next_auto() is None
+
+    def test_the_goal_is_the_finding(self, store):
+        from pipeline import objections
+        obj = objections.build("security", "unbounded retry: the loop never gives up")
+        brief = fix_worker._fix_goal(store.load_pr(1), {"objection": obj})
+        assert "security review flagged" in brief.goal and brief.findings == []
