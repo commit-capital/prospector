@@ -349,6 +349,17 @@ def fix_objection_budget() -> int:
     return _positive_int("TRIAGE_FIX_OBJECTION_BUDGET", 20)
 
 
+def fix_hunt_rereview() -> bool:
+    """Whether an idle fix worker asks an active reviewer for the verdict a PR's
+    current head never got (TRIAGE_FIX_HUNT_REREVIEW, default on)."""
+    return os.environ.get("TRIAGE_FIX_HUNT_REREVIEW", "1") == "1"
+
+
+def rereview_budget() -> int:
+    """Re-review requests one worker may post per UTC day."""
+    return _positive_int("TRIAGE_REREVIEW_BUDGET", 40)
+
+
 def fix_hunt_security() -> bool:
     """Whether an idle fix worker may queue an objection fix against a current
     YELLOW security verdict on a mergeable, CI-green PR."""

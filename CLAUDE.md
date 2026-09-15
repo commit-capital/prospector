@@ -170,7 +170,18 @@ base passes, the fix reviewer's rejection, or a current YELLOW security finding
 profile must name `objection` in `autofix.fixable_gates`, every other block
 applies unchanged, one continuation runs per PR, head, and objection signature,
 and `TRIAGE_FIX_OBJECTION_BUDGET` (default 20) bounds continuations per worker
-per UTC day. A rejected resolve is continued inside its kept merge worktree
+per UTC day. A push records the head it created
+(`fix_request.result.pushed_head_sha`); when CI fails at that head, the
+hunter's first pick for the PR is a `fix` from the `ci` objection naming the
+failing checks (the reviewers' own excluded), so the bot repairs what it broke
+before anything else. A reviewer verdict a head never got is not a fix target:
+`prospector_app/backend/rereview_hunt.py` runs on a worker machine every half
+hour and, for an open, mergeable, CI-green PR whose active reviewer's bar is
+stale or pending at a head at least six hours old, posts that reviewer's
+mention as the bot through `executor.retrigger_review` (Activity-logged), at
+most five per pass and `TRIAGE_REREVIEW_BUDGET` (default 40) per UTC day,
+once per head (ledger phase `rereview:request`), and starts the ingest wait
+for the verdict; `TRIAGE_FIX_HUNT_REREVIEW=0` turns it off. A rejected resolve is continued inside its kept merge worktree
 (`resubmit commit` lands the follow-up on the merge) and re-judged under
 `resolve_autopush_bar` with both rounds kept on the request; a rejected fix is
 retried once; a hunted mechanical action that fails to compile queues a `fix`
