@@ -53,6 +53,7 @@ def store(tmp_path, monkeypatch):
     st = S.Store(tmp_path / "store")
     monkeypatch.setattr(data, "_store", st)
     verify_worker.security_failed.clear()
+    monkeypatch.setattr(verify_worker, "_last_auto_lane", None)
     monkeypatch.setattr(verify_worker, "_changed_paths", lambda pr: ["src/app.ts"])
     data.refresh()
     return st
@@ -306,13 +307,25 @@ def test_next_queued_ranks_operator_ahead_of_auto(store):
     assert verify_worker.next_queued() == 2
 
 
-def test_next_auto_prefers_security_lane_over_verify_lane(store):
+def test_next_auto_alternates_security_and_verify_while_both_have_work(store, monkeypatch):
     """PR 1 lacks a security verdict; PR 2 is GREEN-cleared and
-    verify-eligible. The security lane wins as long as any PR needs review."""
+    verify-eligible. Security takes the first pick, verify the next, so a
+    long security backlog never starves verification."""
+    monkeypatch.setattr(verify_worker, "_last_auto_lane", None)
     store.save_pr(_clean_merge_pr(1))
     store.save_pr(_clean_merge_pr(2))
     _green(store, 2)
     data.refresh()
+    assert verify_worker.next_auto() == ("security", 1)
+    assert verify_worker.next_auto() == ("verify", 2)
+    assert verify_worker.next_auto() == ("security", 1)
+
+
+def test_next_auto_serves_the_only_lane_with_work(store, monkeypatch):
+    monkeypatch.setattr(verify_worker, "_last_auto_lane", "security")
+    store.save_pr(_clean_merge_pr(1))
+    data.refresh()
+    assert verify_worker.next_auto() == ("security", 1)
     assert verify_worker.next_auto() == ("security", 1)
 
 

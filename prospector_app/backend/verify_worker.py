@@ -499,20 +499,29 @@ def auto_resweepable(pr: Pr) -> bool:
     return gates.verify_eligible(pr, _changed_paths(pr))
 
 
+# The lane the hunter last picked from, so a security pool that stays full
+# for hours cannot keep the verify pool waiting: the two alternate while both
+# have work, and either runs alone when the other is empty.
+_last_auto_lane: str | None = None
+
+
 def next_auto(open_lanes: frozenset[str] = frozenset({"security", "verify"})
               ) -> tuple[str, int] | None:
-    """The idle hunt's next pick, or None: ("security", n) while any clean
-    merge candidate lacks a current security verdict, then ("verify", n) for
-    the best GREEN-cleared unverified candidate, then ("resweep", n) for a
-    concluded verification whose repro the harness broke. Every lane orders by
-    highest community pain, then lowest PR number.
+    """The idle hunt's next pick, or None: ("security", n) for the best clean
+    merge candidate lacking a current security verdict, ("verify", n) for the
+    best GREEN-cleared unverified candidate, or ("resweep", n) for a concluded
+    verification whose repro the harness broke. Every lane orders by highest
+    community pain, then lowest PR number.
 
-    Lane order is spend priority: a PR with no verification at all buys more
-    than a second opinion on one that already concluded. A PR another machine
-    holds the security claim on is that machine's to finish: it leaves the
-    pool here so this hunter moves on to the next candidate. `open_lanes`
-    names the lanes whose health allows a pick; a tripped lane's pool is
-    skipped."""
+    Security and verify alternate while both have work — a first pick goes to
+    security — so the verify pool is served while the security backlog
+    drains; a resweep runs only when both are empty, since a PR with no
+    verification at all buys more than a second opinion on one that already
+    concluded. A PR another machine holds the security claim on is that
+    machine's to finish: it leaves the pool here so this hunter moves on to
+    the next candidate. `open_lanes` names the lanes whose health allows a
+    pick; a tripped lane's pool is skipped."""
+    global _last_auto_lane
     prs = data.prs()
     me = settings.worker_id()
 
@@ -525,13 +534,24 @@ def next_auto(open_lanes: frozenset[str] = frozenset({"security", "verify"})
         and n not in security_failed and gates.blocked_on_security(pr)
         and not store.security_claim_held_elsewhere(
             pr.raw.get("security_run"), host=me, stale_after=SECURITY_CLAIM_SECONDS)]
-    if security_pool:
+    verify_pool = ([(n, pr) for n, pr in prs.items() if auto_verifiable(pr)]
+                   if "verify" in open_lanes else [])
+    if security_pool and verify_pool:
+        lane = "verify" if _last_auto_lane == "security" else "security"
+    elif security_pool:
+        lane = "security"
+    elif verify_pool:
+        lane = "verify"
+    else:
+        lane = None
+    if lane == "security":
+        _last_auto_lane = lane
         return ("security", min(security_pool, key=_key)[0])
+    if lane == "verify":
+        _last_auto_lane = lane
+        return ("verify", min(verify_pool, key=_key)[0])
     if "verify" not in open_lanes:
         return None
-    verify_pool = [(n, pr) for n, pr in prs.items() if auto_verifiable(pr)]
-    if verify_pool:
-        return ("verify", min(verify_pool, key=_key)[0])
     resweep_pool = [(n, pr) for n, pr in prs.items() if auto_resweepable(pr)]
     if resweep_pool:
         return ("resweep", min(resweep_pool, key=_key)[0])
