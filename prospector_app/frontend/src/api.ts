@@ -86,6 +86,24 @@ export interface FilterSpec {
   artifact_dominated?: boolean;  // diff is mostly generated noise (snapshots/locales/lockfiles)
   paths?: string;            // substring over a PR's changed file paths
   numbers?: number[];        // restrict to a PR-number set (Deep Search overlay, or the PR-column filter)
+  // Where the PR stands with the automation (the row's `automation`, derived
+  // on read by the backend): the Home columns read these.
+  automation_column?: AutomationColumn | AutomationColumn[];
+  automation_bucket?: string | string[];
+  automation_owner?: AutomationOwner | AutomationOwner[];
+}
+
+/** The Home column a PR's standing with the automation places it in: a click
+ *  of yours moves it, a worker moves it, or the automation handed it back. */
+export type AutomationColumn = "act" | "auto" | "handed";
+/** Whose move a PR is: the operator, the automation itself, or the author. */
+export type AutomationOwner = "you" | "worker" | "author";
+/** One PR's standing with the automation, as the backend derives it. */
+export interface AutomationStanding {
+  column: AutomationColumn;
+  bucket: string;
+  owner: AutomationOwner;
+  reason: string;
 }
 
 /** One PR's verdict from Deep Search — the agent's match decision + a short why. */
@@ -288,6 +306,7 @@ export interface PRRow {
   age_days?: number | null;
   responses?: PRResponses | null;
   pain_score?: number | null;
+  automation?: AutomationStanding | null;
   pain_breakdown?: PainBreakdown | null;
   // path-based blast-radius tier (0 = core/supply chain … 3 = leaf);
   // null until the diff is cached ("unknown", rendered as absence)

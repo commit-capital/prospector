@@ -119,6 +119,15 @@ def matches(row: dict, spec: dict) -> bool:
                 return False
         elif row_disp != disp_spec:
             return False
+    for key in ("automation_column", "automation_bucket", "automation_owner"):
+        want = spec.get(key)
+        if want:
+            have = (row.get("automation") or {}).get(key.removeprefix("automation_"))
+            if isinstance(want, list):
+                if have not in want:
+                    return False
+            elif have != want:
+                return False
     if spec.get("paths"):
         # case-insensitive substring over the PR's changed file paths (from the
         # cached diff). A PR with no cached diff has [] and never matches.

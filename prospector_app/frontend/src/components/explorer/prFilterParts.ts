@@ -40,6 +40,13 @@ export function buildPrFilterParts(spec: FilterSpec, onChange: (next: FilterSpec
   if (spec.has_issues === false) push("has_issues", "no linked issues", "has_issues");
   if (spec.safety) push("safety", `safety ${joinEnum(spec.safety)}`, "safety");
   if (spec.disposition) push("disposition", `disposition: ${joinEnum(spec.disposition)}`, "disposition");
+  if (spec.automation_column) {
+    const names = { act: "your move", auto: "in motion", handed: "handed back" } as const;
+    const cols = Array.isArray(spec.automation_column) ? spec.automation_column : [spec.automation_column];
+    push("automation_column", `automation: ${cols.map((c) => names[c]).join(" or ")}`, "automation_column");
+  }
+  if (spec.automation_bucket) push("automation_bucket", `standing: ${joinEnum(spec.automation_bucket)}`, "automation_bucket");
+  if (spec.automation_owner) push("automation_owner", `whose move: ${joinEnum(spec.automation_owner)}`, "automation_owner");
   if (spec.drift) push("drift", `drift: ${joinEnum(spec.drift)}`, "drift");
   if (spec.ci) push("ci", `CI: ${joinEnum(spec.ci)}`, "ci");
   for (const clause of spec.checks ?? []) {
