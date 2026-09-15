@@ -25,6 +25,7 @@ from prospector_app.backend import advisories as advisories_mod
 from prospector_app.backend import alerts as alerts_mod
 from prospector_app.backend import autohunt_view
 from prospector_app.backend import escalation
+from prospector_app.backend import stale_refresh
 from prospector_app.backend import worker_control
 from prospector_app.backend import worker_readiness
 from prospector_app.backend import bulk
@@ -80,6 +81,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     _launch_verify_worker()
     _launch_fix_worker()
     _launch_escalation_watch()
+    _launch_stale_refresh()
     yield
 
 
@@ -196,6 +198,15 @@ def _launch_escalation_watch():
     if "pytest" in sys.modules:
         return
     escalation.start_watch()
+
+
+def _launch_stale_refresh():
+    """Start the stale merge-candidate refresh on a worker machine. Skipped
+    under pytest."""
+    import sys
+    if "pytest" in sys.modules:
+        return
+    stale_refresh.start()
 
 
 @app.post("/api/worker/health/resume")

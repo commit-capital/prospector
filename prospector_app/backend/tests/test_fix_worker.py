@@ -1716,3 +1716,42 @@ def test_plain_preflight_tells_a_conflict_from_a_worker_fault_from_a_compile_fai
     assert "didn't compile" in fix_worker.plain_preflight({"exit": 20})
     worker = fix_worker.plain_preflight({"error": "the sandbox could not read the patch it was handed"})
     assert "problem with the worker" in worker and "could not read the patch" in worker
+
+
+class TestMergeCommitFallback:
+    """A hunted rebase on a history the rebase refuses to flatten takes a
+    base merge instead of refusing; an operator's rebase keeps its refusal."""
+
+    class _Resubmit:
+        def __init__(self):
+            self.calls = []
+
+        def __call__(self, n, *args, stdin=None):
+            self.calls.append(args)
+            if args[:2] == ("prepare", "--rebase"):
+                return type("R", (), {"returncode": 9, "stdout": "", "stderr":
+                            "resubmit: PR #1 contains merge commits; automatic rebasing "
+                            "refuses to flatten that history."})()
+            if args[:2] == ("update", "--probe"):
+                return type("R", (), {"returncode": 0, "stdout": "diff --git a/a.ts b/a.ts\n+x",
+                                      "stderr": ""})()
+            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    def test_a_hunted_rebase_becomes_an_update(self, store, monkeypatch):
+        fake = self._Resubmit()
+        monkeypatch.setattr(fix_worker, "_resubmit", fake)
+        fix_queue.queue_pr(1, "rebase", source="auto")
+        fix_worker.run_one(1)
+        req = store.load_pr(1).fix_request
+        assert req["status"] == "awaiting-review" and req["action"] == "update"
+        assert ("update", "--probe") in fake.calls
+
+    def test_an_operators_rebase_keeps_its_refusal(self, store, monkeypatch):
+        fake = self._Resubmit()
+        monkeypatch.setattr(fix_worker, "_resubmit", fake)
+        fix_queue.queue_pr(1, "rebase")
+        fix_worker.run_one(1)
+        req = store.load_pr(1).fix_request
+        assert req["status"] == "refused" and req["action"] == "rebase"
+        assert "merge commits" in req["refused_reason"]
+        assert ("update", "--probe") not in fake.calls

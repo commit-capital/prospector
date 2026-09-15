@@ -85,6 +85,10 @@ TRANSIENT_EXITS = {4, 6, 7}
 # How many times a transient failure is re-queued before it is left for a human.
 MAX_ATTEMPTS = 3
 
+# What resubmit says when a PR's history holds merge commits it will not
+# flatten; a hunted rebase reads it and takes a base merge instead.
+MERGE_COMMITS_MARK = "contains merge commits"
+
 # How often an idle worker looks for runs and parked resolves a worker that
 # went offline left behind.
 RECLAIM_SECONDS = 300.0
@@ -594,6 +598,7 @@ def run_one(n: int) -> None:
         patch = _probe(n, claimed, action)
         if patch is None:
             return  # _probe wrote the terminal status
+        action = str(claimed.get("action") or action)
         _running_step(n, claimed, "compile preflight", action=action)
         pf = _preflight(n, patch)
         if pf is not None:
@@ -633,8 +638,16 @@ def _probe(n: int, claimed: dict, action: str) -> str | None:
         _running_step(n, claimed, "rebasing onto base", action=action)
         prepared = _resubmit(n, "prepare", *(["--rebase"] if action == "rebase" else []))
         if prepared.returncode != 0:
-            _settle(n, claimed, prepared.returncode,
-                    (prepared.stderr or prepared.stdout).strip())
+            output = (prepared.stderr or prepared.stdout).strip()
+            if (action == "rebase" and claimed.get("source") == "auto"
+                    and prepared.returncode == 9 and MERGE_COMMITS_MARK in output):
+                # A history the rebase refuses to flatten still takes a base
+                # merge; the hunted request becomes an `update` and carries on.
+                print(f"[fix-worker] PR #{n} has merge commits; the hunted rebase "
+                      f"becomes an update", flush=True)
+                claimed["action"] = "update"
+                return _probe(n, claimed, "update")
+            _settle(n, claimed, prepared.returncode, output)
             return None
         # `prepare --rebase` exits 0 both when the rebase finished and when it
         # PAUSED on conflicts git could not resolve. A paused rebase leaves
