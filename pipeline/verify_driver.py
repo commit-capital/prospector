@@ -907,19 +907,97 @@ class _LargePhaseLock:
         while True:
             try:
                 fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                return self
+                break
             except BlockingIOError:
                 if waited and waited % _LOCK_WAIT_LOG_SECONDS < 0.5:
                     print(f"[sandbox] {self.phase} phase waiting {waited:.0f}s for another "
                           f"large phase to finish", file=sys.stderr, flush=True)
                 time.sleep(0.5)
                 waited += 0.5
+        # A phase whose host process died still holds the VM's memory under
+        # dockerd with nobody holding this lock for it, so the lock holder
+        # clears such containers before launching its own.
+        stop_orphaned_sandboxes()
+        return self
 
     def __exit__(self, *exc: object) -> None:
         if self._fh is not None:
             fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
             self._fh.close()
             self._fh = None
+
+
+# Every phase container is named `prospector-verify-<host pid>-<nonce>`, so a
+# container's owning host process can be read off `docker ps`.
+_CONTAINER_PREFIX = "prospector-verify-"
+
+
+def container_name() -> str:
+    """A fresh name for a phase container launched by this process."""
+    return f"{_CONTAINER_PREFIX}{os.getpid()}-{time.monotonic_ns()}"
+
+
+def container_owner(name: str) -> int | None:
+    """The host pid a launcher-named container belongs to; None for any
+    other container."""
+    if not name.startswith(_CONTAINER_PREFIX):
+        return None
+    pid, sep, nonce = name[len(_CONTAINER_PREFIX):].partition("-")
+    if not sep or not pid.isdigit() or not nonce.isdigit():
+        return None
+    return int(pid)
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def orphaned_sandbox_containers(names: list[str], *,
+                                alive: Callable[[int], bool] | None = None) -> list[str]:
+    """The launcher-named containers among `names` whose owning host process
+    is gone. The launcher and its `docker run` client outlive a killed host,
+    so such a container keeps running until its phase ends on its own."""
+    probe = _pid_alive if alive is None else alive
+    orphans: list[str] = []
+    for name in names:
+        owner = container_owner(name.strip())
+        if owner is not None and not probe(owner):
+            orphans.append(name.strip())
+    return orphans
+
+
+def stop_orphaned_sandboxes() -> list[str]:
+    """Remove every running phase container whose host process is dead and
+    return their names, printing one line naming them. A Docker that cannot
+    be asked leaves everything alone: the phase about to launch fails on its
+    own with the daemon's message."""
+    env = launcher_env()
+    try:
+        ps = subprocess.run(
+            ["docker", "ps", "--filter", f"name={_CONTAINER_PREFIX}", "--format", "{{.Names}}"],
+            capture_output=True, text=True, env=env, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if ps.returncode != 0:
+        return []
+    stopped: list[str] = []
+    for name in orphaned_sandbox_containers(ps.stdout.splitlines()):
+        try:
+            subprocess.run(["docker", "rm", "-f", name], check=False, env=env,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        stopped.append(name)
+    if stopped:
+        print(f"[sandbox] stopped orphaned sandbox containers of dead host processes: "
+              f"{stopped}", flush=True)
+    return stopped
 
 
 def run_phase(phase: str, image: str, *, patch: Path | None = None, tier: int = 0,
@@ -954,7 +1032,7 @@ def _run_phase_locked(phase: str, image: str, *, patch: Path | None, tier: int,
                       test_cmd: str, base_sha: str, head_sha: str,
                       exclude_file: Path | None, suite_config: Path | None,
                       timeout: int, pristine: bool) -> tuple[int, str]:
-    container = f"prospector-verify-{os.getpid()}-{time.monotonic_ns()}"
+    container = container_name()
     argv = [str(SANDBOX / "sandbox-run.sh"), "--phase", phase, "--image", image,
             "--tier", str(tier), "--test-cmd", test_cmd,
             "--base-sha", base_sha, "--head-sha", head_sha,

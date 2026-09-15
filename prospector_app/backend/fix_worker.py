@@ -1930,6 +1930,12 @@ def _beat_loop() -> None:
 
 
 def _drain_loop() -> None:
+    # A phase container the previous process left running holds the VM's
+    # memory; it goes before this process can launch a phase beside it.
+    try:
+        verify_driver.stop_orphaned_sandboxes()
+    except Exception:
+        traceback.print_exc()
     try:
         marked = recover_orphans()
         if marked:

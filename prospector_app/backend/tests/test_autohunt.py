@@ -810,6 +810,7 @@ class TestSecurityClaimedElsewhere:
         monkeypatch.setenv("TRIAGE_VERIFY_AUTOHUNT", "1")
         monkeypatch.setattr(verify_worker, "maybe_refresh_base", lambda: None)
         monkeypatch.setattr(verify_worker, "next_queued", lambda: None)
+        monkeypatch.setattr(verify_worker.verify_driver, "stop_orphaned_sandboxes", lambda: [])
         attempts: list[int] = []
         real_run_security = verify_worker.run_security
 
