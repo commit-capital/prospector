@@ -188,7 +188,11 @@ score, CodeRabbit's walkthrough — each names defects even when it left no inli
 comment) and the failing checks; scanner findings are never a fix goal — and
 `pipeline/review_fix.py` then tries to refute the finished patch from a fresh
 context with read-only tools. A `fix` with no guidance, no
-findings, no summary and no failing check refuses before any agent runs. The
+findings, no summary and no failing check refuses before any agent runs, and so
+does an unguided one whose every finding names a path the bot may not author
+on (`gates.fix_withheld_paths`: the CODEOWNERS-gated globs plus
+`autofix.deny_globs`); the same globs reach the author's prompt as a do-not-edit
+rule, while the re-gate over the finished patch stays the guarantee. The
 clone is the head commit alone, so the agent is handed the PR's diff against its
 base as a host file, and it may run exactly one host command,
 `prospector_app/agent/sandbox-check` (`typecheck` or `test <test files>`), which

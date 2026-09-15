@@ -123,6 +123,20 @@ def test_the_diff_file_unlocks_the_sandbox_check_and_pins_its_tree(monkeypatch):
     assert env["PROSPECTOR_PYTHON"]
 
 
+def test_withheld_globs_reach_the_prompt_as_a_do_not_edit_rule(monkeypatch):
+    r = _run(monkeypatch, json.dumps({"summary": "s", "changes": []}),
+             withheld_globs=("skills/**", ".github/**"))
+    prompt = r["calls"]["prompt"]
+    assert "skills/**" in prompt and ".github/**" in prompt
+    assert "may not edit" in prompt.lower()
+    assert "give up" in prompt.lower()
+
+
+def test_no_withheld_globs_adds_no_rule(monkeypatch):
+    r = _run(monkeypatch, json.dumps({"summary": "s", "changes": []}))
+    assert "may not edit" not in r["calls"]["prompt"].lower()
+
+
 # --- the disclosure check ------------------------------------------------------
 
 def test_disclosure_accepts_a_patch_matching_what_was_reported():
