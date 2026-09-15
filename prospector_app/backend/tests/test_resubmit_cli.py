@@ -477,6 +477,24 @@ def test_status_reports_an_uncommitted_edit(monkeypatch, tmp_path, capsys):
     assert "feature.txt" in capsys.readouterr().out
 
 
+def test_diff_keeps_a_trailing_blank_context_line(monkeypatch, tmp_path, capsys):
+    # git renders an unchanged blank line as a lone space; the last such line of
+    # a diff is part of the hunk, and a patch printed without it is corrupt.
+    repos = _make_rebase_repos(tmp_path, conflict=False)
+    _wire_rebase(monkeypatch, tmp_path, repos)
+    assert resubmit.cmd_prepare(42) == 0
+    wt = resubmit._worktree(42)
+    (wt / "note.txt").write_text("x\n\n")
+    subprocess.run(["git", "-C", str(wt), "add", "note.txt"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(wt), "-c", "user.name=t", "-c", "user.email=t@t",
+                    "commit", "-qm", "note"], check=True, capture_output=True)
+    (wt / "note.txt").write_text("y\n\n")
+    capsys.readouterr()
+    assert resubmit.cmd_diff(42) == 0
+    out = capsys.readouterr().out
+    assert out.endswith("-x\n+y\n \n")
+
+
 @pytest.mark.parametrize("ref", ["HEAD", "HEAD~2", "HEAD^", "a" * 40, "refs/heads/fix", "HEAD@{1}"])
 def test_revision_accepts_the_shapes_a_reviewer_actually_names(ref):
     assert resubmit._revision(ref) == ref

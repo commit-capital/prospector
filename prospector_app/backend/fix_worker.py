@@ -1421,7 +1421,7 @@ def _judge_claimed_resolve(n: int, rec: Pr, claimed: dict, head: str,
     result = dict(claimed.get("result") or {})
     paths = [str(p) for p in (result.get("conflict_paths") or [])]
     diff_r = _resubmit(n, "diff")
-    patch = (diff_r.stdout or "").strip()
+    patch = _diff_text(diff_r)
     if diff_r.returncode != 0 or not patch.startswith("diff "):
         restore("the kept worktree's diff could not be read")
         return

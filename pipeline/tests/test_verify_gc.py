@@ -6,6 +6,8 @@ here with no Docker and no filesystem. The load-bearing property is that the
 pinned SHA is never in a delete set, whatever the timestamps say."""
 import os
 import subprocess
+
+import pytest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -259,23 +261,22 @@ class TestCollect:
         assert result["ok"] is True
         assert pruned, "the dangling/build-cache prune must still run"
 
-    def test_the_build_side_prunes_are_scoped(self, tmp_path, monkeypatch):
-        """The image prune is filtered to our own label and the builder prune to
-        a 24h window, so neither reclaims another project's images or the cache
-        of a build running right now."""
+    def test_the_image_prune_is_scoped_and_a_small_cache_is_left_alone(self, tmp_path, monkeypatch):
+        """The image prune is filtered to our own label, so it reclaims no other
+        project's images; a build cache under the bound is not touched."""
         monkeypatch.setattr(gc, "SCRATCH", tmp_path)
         calls: list[list[str]] = []
 
         def run(cmd: list[str], **kw: object) -> subprocess.CompletedProcess[str]:
             calls.append(cmd)
-            return subprocess.CompletedProcess(cmd, 0, "", "")
+            out = "Images\t9GB\nBuild Cache\t1.5GB\n" if cmd[1:3] == ["system", "df"] else ""
+            return subprocess.CompletedProcess(cmd, 0, out, "")
 
         monkeypatch.setattr(gc.subprocess, "run", run)
         gc.collect("a" * 12)
         image_prune = [c for c in calls if c[1:3] == ["image", "prune"]]
-        builder_prune = [c for c in calls if c[1:3] == ["builder", "prune"]]
         assert image_prune and f"label={gc.LABEL}" in image_prune[0]
-        assert builder_prune and f"until={gc.BUILD_CACHE_KEEP_HOURS:g}h" in builder_prune[0]
+        assert not [c for c in calls if c[1:3] == ["builder", "prune"]]
 
     def test_images_are_removed_without_force(self, tmp_path, monkeypatch):
         """Every sandbox container runs --rm, so an un-forced rmi fails only
@@ -469,35 +470,39 @@ class TestCollectSandboxImages:
 
 
 class TestBuildCacheBound:
-    """The sweep holds BuildKit cache under a byte bound, spelled for the
-    daemon's release."""
+    """The sweep measures the BuildKit cache and clears it whole once it passes
+    the bound; a partial or size-bounded prune reclaims nothing on the daemons
+    the workers run."""
 
-    def _recorder(self, reject: set[str]):
-        calls: list[list[str]] = []
-
+    def _docker(self, df_out: str, calls: list[list[str]]):
         def run(cmd: list[str], **kw: object) -> subprocess.CompletedProcess[str]:
             calls.append(cmd)
-            if any(flag in cmd for flag in reject):
-                return subprocess.CompletedProcess(cmd, 125, "", "unknown flag: --max-used-space")
-            return subprocess.CompletedProcess(cmd, 0, "", "")
-        return calls, run
+            out = df_out if cmd[1:3] == ["system", "df"] else ""
+            return subprocess.CompletedProcess(cmd, 0, out, "")
+        return run
 
-    def test_the_current_flag_is_tried_first(self, monkeypatch):
-        calls, run = self._recorder(set())
-        monkeypatch.setattr(gc.subprocess, "run", run)
-        gc._bound_build_cache(5)
-        assert calls == [["docker", "builder", "prune", "-f", "--max-used-space", "5"]]
+    @pytest.mark.parametrize("text,expected", [
+        ("0B", 0), ("56.13GB", 56_130_000_000), ("25.36MB", 25_360_000),
+        ("1.5GiB", 1_610_612_736), ("12kB", 12_000), ("lots", None), ("", None)])
+    def test_sizes_parse_as_docker_renders_them(self, text, expected):
+        assert gc.parse_size(text) == expected
 
-    def test_a_daemon_that_rejects_it_gets_the_older_spelling(self, monkeypatch):
-        calls, run = self._recorder({"--max-used-space"})
-        monkeypatch.setattr(gc.subprocess, "run", run)
-        gc._bound_build_cache(5)
-        assert [c[-2] for c in calls] == ["--max-used-space", "--keep-storage"]
+    def test_a_cache_past_the_bound_is_cleared_whole(self, monkeypatch):
+        calls: list[list[str]] = []
+        monkeypatch.setattr(gc.subprocess, "run",
+                            self._docker("Images\t60.6GB\nBuild Cache\t56.13GB\n", calls))
+        gc._clear_build_cache_past(20 * 1000 ** 3)
+        assert calls[-1] == ["docker", "builder", "prune", "-af"]
 
-    def test_the_sweep_bounds_the_cache_after_the_age_window(self, monkeypatch):
-        calls, run = self._recorder(set())
-        monkeypatch.setattr(gc.subprocess, "run", run)
-        gc._prune_build_leftovers()
-        assert calls[-1] == ["docker", "builder", "prune", "-f", "--max-used-space",
-                             str(gc.BUILD_CACHE_KEEP_BYTES)]
-        assert any("until=" in " ".join(c) for c in calls[:-1])
+    def test_a_cache_under_the_bound_is_kept(self, monkeypatch):
+        calls: list[list[str]] = []
+        monkeypatch.setattr(gc.subprocess, "run",
+                            self._docker("Build Cache\t19.9GB\n", calls))
+        gc._clear_build_cache_past(20 * 1000 ** 3)
+        assert [c[1:3] for c in calls] == [["system", "df"]]
+
+    def test_an_unreadable_size_clears_nothing(self, monkeypatch):
+        calls: list[list[str]] = []
+        monkeypatch.setattr(gc.subprocess, "run", self._docker("garbage\n", calls))
+        gc._clear_build_cache_past(1)
+        assert [c[1:3] for c in calls] == [["system", "df"]]
