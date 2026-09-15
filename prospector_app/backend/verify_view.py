@@ -744,12 +744,11 @@ def _cause(outcome: str | None, signals: wire.VerifySignals) -> str | None:
             exit_ = entry.get("exit") if isinstance(entry, dict) else None
             base_fails = entry.get("base_fails") if isinstance(entry, dict) else None
             if base_fails:
-                return (f"The {lane} lane's command fails on the base itself ({base_fails}), "
-                        "so it cannot judge any PR — not evidence about the PR; fix the "
-                        "profile's command or the sandbox image.")
-            return (f"The {lane} lane could not run to a verdict (infrastructure "
-                    f"exit {exit_}) — not evidence about the PR; re-queue once "
-                    "the harness is healthy, or decide from the other signals.")
+                return gates.base_fault_text(lane, str(base_fails))
+            what = gates.LANE_COMMAND_NAMES.get(lane, f"{lane} command")
+            return (f"The repository's {what} could not run to a result in the sandbox "
+                    f"(exit {exit_}); that says nothing about the PR. Re-queue once the "
+                    "sandbox is healthy, or decide from the other signals.")
         red2, green2 = rg.get("red_exit_confirm"), rg.get("green_exit_confirm")
         if (red2 is not None or green2 is not None) and not (
                 red2 == gates.SENTINEL_TEST_FAIL

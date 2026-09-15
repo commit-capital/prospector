@@ -301,7 +301,8 @@ class TestBaseCompile:
         rec = cp.run_for_patch(1, "a" * 40, patch)
         assert rec["exit"] == 20
         assert rec["error_kind"] == "base-compile"
-        assert "fails on the base itself" in rec["error"] and "cargo: not found" in rec["error"]
+        assert "fails on master itself" in rec["error"] or "itself, before this PR" in rec["error"]
+        assert "cargo: not found" in rec["error"]
         assert calls[1].get("pristine") is True and "patch" not in calls[1]
 
     def test_a_base_that_passes_leaves_the_prs_failure_a_verdict(self, configured, monkeypatch, tmp_path):

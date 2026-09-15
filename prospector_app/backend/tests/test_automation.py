@@ -140,3 +140,52 @@ def test_a_conflicted_pr_with_a_stale_verdict_is_the_author_s_rebase(store):
     out = _classify(store, _rec(mergeable=False, greptile=5, reviewed_sha="0" * 40))
     assert (out["column"], out["bucket"], out["owner"]) == ("handed", "author-conflicts", "author")
     assert "rebase" in out["reason"]
+
+
+def _merge_pick(rec: dict, *, verify: dict | None = None, verify_request: dict | None = None) -> dict:
+    rec["analysis"] = {"disposition": "merge", "rationale": "clean", "against_head_sha": HEAD,
+                       "checked_at": _now()}
+    rec["security"] = {"verdict": "GREEN", "checked_at": _now(), "against_head_sha": HEAD, "findings": []}
+    rec["threat"] = {"verdict": "clear", "checked_at": _now(), "against_head_sha": HEAD}
+    rec["signals"]["has_tests"] = True
+    if verify is not None:
+        rec["verify"] = verify
+    if verify_request is not None:
+        rec["verify_request"] = verify_request
+    return rec
+
+
+def test_ready_means_every_check_is_clear(store, monkeypatch):
+    from pipeline import gates
+    monkeypatch.setattr(gates, "verify_signals_incomplete", lambda pr: None)
+    rec = _merge_pick(_rec(), verify={"outcome": "verified-fix", "checked_at": _now(),
+                                      "against_head_sha": HEAD, "against_base_sha": "b" * 40,
+                                      "signals": {}})
+    out = _classify(store, rec)
+    assert (out["column"], out["bucket"]) == ("act", "merge-ready")
+
+
+def test_partial_verification_is_your_judgment_not_ready(store):
+    rec = _merge_pick(_rec(), verify={"outcome": "verified-fix", "checked_at": _now(),
+                                      "against_head_sha": HEAD, "against_base_sha": "b" * 40,
+                                      "signals": {}})
+    out = _classify(store, rec)
+    assert (out["column"], out["bucket"], out["owner"]) == ("handed", "other", "you")
+    assert "partial" in out["reason"]
+
+
+def test_a_merge_pick_whose_verification_never_ran_is_in_motion_not_ready(store):
+    out = _classify(store, _merge_pick(_rec()))
+    assert (out["column"], out["bucket"]) == ("auto", "waiting")
+    assert "verification has not run" in out["reason"]
+
+
+def test_a_merge_pick_whose_verification_hit_a_machine_fault_is_in_motion(store):
+    rec = _merge_pick(_rec(), verify_request={
+        "status": "error", "error_kind": "base-lane", "queued_at": _now(),
+        "finished_at": _now(), "host": "elsewhere", "against_head_sha": HEAD,
+        "error": "The repository's own build command fails on master itself"})
+    out = _classify(store, rec)
+    assert out["column"] != "act"
+    assert out["bucket"] in ("waiting", "other")
+    assert "verification" in out["reason"]

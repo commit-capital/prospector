@@ -697,8 +697,17 @@ def error_excerpt(tail: str) -> str:
     compiler errors are preferred when present; otherwise the last lines."""
     lines = [ln.strip() for ln in tail.splitlines() if ln.strip()]
     errs = [ln for ln in lines if "error TS" in ln]
+    if not errs:
+        # pnpm closes every failed script with the same two lines; the line
+        # that says what failed sits above them.
+        told = [ln for ln in lines if not _BOILERPLATE_RE.search(ln)]
+        lines = told or lines
     return " | ".join((errs or lines[-2:])[:2])[:_EXCERPT_MAX]
 
+
+# Package-runner sign-off lines that name no cause of their own.
+_BOILERPLATE_RE = re.compile(r"^Exit status \d+$|ELIFECYCLE|Command failed with exit code \d+"
+                             r"|^ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL")
 
 # ANSI CSI sequences (colors, styling) in a captured tail.
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")

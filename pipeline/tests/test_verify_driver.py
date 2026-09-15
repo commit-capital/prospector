@@ -2660,3 +2660,15 @@ class TestOrphanedSandboxes:
             return subprocess.CompletedProcess(argv, 1, stdout="", stderr="Cannot connect")
         monkeypatch.setattr(vd.subprocess, "run", run)
         assert vd.stop_orphaned_sandboxes() == []
+
+
+def test_error_excerpt_skips_the_package_runner_sign_off():
+    tail = ("> server@ build\n"
+            "src/x.ts(3,1): error TS2739: missing fields\n"
+            "ELIFECYCLE  Command failed with exit code 1.\n"
+            "Exit status 1\n")
+    assert "TS2739" in vd.error_excerpt(tail)
+    tail = ("sh: cargo: not found\n"
+            " ELIFECYCLE  Command failed with exit code 127.\n"
+            "Exit status 1\n")
+    assert vd.error_excerpt(tail) == "sh: cargo: not found"

@@ -128,8 +128,7 @@ def _compile_over(result: dict, patch: Path, cmd: str, head_sha: str) -> None:
                 "compile", tag, tier=1, test_cmd=cmd, base_sha=sha,
                 head_sha="pristine", pristine=True))
         if base_failure is not None:
-            result["error"] = (f"the compile command fails on the base itself "
-                               f"({sha[:12]}), so no PR can pass it — {base_failure}")
+            result["error"] = gates.base_fault_text("compile", f"at {sha[:12]}: {base_failure}")
             result["error_kind"] = "base-compile"
     elif exit_code == gates.SENTINEL_PATCH_CONFLICT:
         result["error_excerpt"] = excerpt
