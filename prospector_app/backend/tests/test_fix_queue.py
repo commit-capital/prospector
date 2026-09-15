@@ -383,7 +383,7 @@ def test_hunter_queues_a_rebase_for_an_unmergeable_pr(store):
     rec["reviews"] = reviews_section("a" * 40, "2026-06-10T00:00:00+00:00")
     store.save_pr(rec)
     data.refresh()
-    assert fix_worker.next_auto() == ("rebase", 1)
+    assert fix_worker.next_auto() == ("rebase", 1, None)
 
 
 def test_hunter_never_queues_an_agent_authored_fix(store, monkeypatch):
@@ -787,3 +787,25 @@ def test_queue_pr_with_an_objection_needs_the_objection_gate(store, monkeypatch)
     _objection_profile(monkeypatch, "review")
     with pytest.raises(ValueError, match="objection"):
         fix_queue.queue_pr(1, "fix", objection=objections.build("compile", "e"))
+
+
+def test_queue_entry_carries_the_objection_and_round_count(store):
+    from pipeline import objections
+    obj = objections.build("resolve-review", "drops the deletion")
+    store.edit_pr(1).record_fix_request(
+        "awaiting-review", "resolve", source="auto", host="w", head_sha="a" * 40, objection=obj,
+        result={"conflict_paths": ["a.ts"], "rounds": [{"objection": obj}, {"objection": obj}],
+                "auto_review": {"bar": {"ok": False, "reason": "r"}}})
+    data.refresh()
+    entry = [e for e in fix_queue.queue_entries() if e["pr"] == 1][0]
+    assert entry["objection"] == {"kind": "resolve-review", "text": "drops the deletion"}
+    assert entry["rounds"] == 2
+
+
+def test_beat_carries_the_objection_budget(store, monkeypatch):
+    from pipeline import settings
+    monkeypatch.setenv("TRIAGE_FIX_OBJECTION_BUDGET", "20")
+    fix_worker.beat()
+    rec = store.load_fix_worker()["hosts"][settings.worker_id()]
+    assert rec["objection_budget"] == {"used": 0, "limit": 20}
+    assert fix_queue.runner_status()["objection_budget"] == {"used": 0, "limit": 20}

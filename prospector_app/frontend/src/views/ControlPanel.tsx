@@ -919,6 +919,9 @@ export default function ControlPanel() {
             Proven in the sandbox, pushed to nobody. Approving re-runs the merge or
             rebase against current base before anything reaches the branch. A run that
             ends keeps its place here for half an hour, then moves to the run history.
+            {fixQueue.runner.objection_budget && (
+              <> · continuations today {fixQueue.runner.objection_budget.used}/{fixQueue.runner.objection_budget.limit}</>
+            )}
           </div>
           <table className="grid compact">
             <thead><tr><th>Status</th><th>PR</th><th>Action</th><th>Source</th><th>Since</th><th></th></tr></thead>
@@ -948,6 +951,11 @@ export default function ControlPanel() {
                             🤖 {e.auto_review.ok ? "agents cleared" : "agents left it for you"}
                           </span>
                         )}
+                        {e.rounds > 0 && (
+                          <span className="chip chip-blue sm" title={e.objection?.text ?? undefined}>
+                            🔁 continued after review ×{e.rounds}
+                          </span>
+                        )}
                         </>
                       ) : (
                         <>
@@ -966,7 +974,11 @@ export default function ControlPanel() {
                       {e.title && <div className="muted small">{e.title.slice(0, 60)}</div>}
                     </td>
                     <td><span className="chip chip-muted sm">{e.action}</span></td>
-                    <td><span className="chip chip-muted sm">{e.source === "auto" ? "auto" : "manual"}</span></td>
+                    <td>
+                      <span className="chip chip-muted sm" title={e.objection?.text ?? undefined}>
+                        {e.source === "objection" ? "from objection" : e.source === "auto" ? "auto" : "manual"}
+                      </span>
+                    </td>
                     <td className="muted small" title={fmt(e.finished_at ?? e.started_at ?? e.queued_at)}>
                       {live ? elapsed(e.started_at, now)
                         : ended ? ago(e.finished_at)

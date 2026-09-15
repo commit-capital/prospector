@@ -194,6 +194,8 @@ class FixQueueEntry(TypedDict):
     conflict_paths: list[str]
     resolvable: bool
     auto_review: dict | None
+    objection: dict | None
+    rounds: int
 
 
 def _detail(req: dict) -> str | None:
@@ -236,6 +238,9 @@ def _entry(n: int, title: str | None, req: dict) -> FixQueueEntry:
         "conflict_paths": [str(p) for p in paths] if isinstance(paths, list) else [],
         "resolvable": status == "awaiting-review" and (pf is None or pf.get("exit") == 0),
         "auto_review": _auto_review_bar(result),
+        "objection": ({"kind": str(obj.get("kind")), "text": str(obj.get("text") or "")[:400]}
+                      if (obj := req.get("objection")) else None),
+        "rounds": len(result.get("rounds") or []),
     }
 
 
@@ -316,4 +321,5 @@ def runner_status() -> dict:
             "push_login": settings.push_login() or None,
             "autopush": sorted(settings.fix_autopush()),
             "host": fresh.get("host"), "current_pr": fresh.get("current_pr"),
-            "last_beat": fresh.get("last_beat"), "hosts": hosts}
+            "last_beat": fresh.get("last_beat"), "hosts": hosts,
+            "objection_budget": records[0].get("objection_budget") if records else None}

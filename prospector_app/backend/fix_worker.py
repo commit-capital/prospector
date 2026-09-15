@@ -195,11 +195,15 @@ def key_safety_failure() -> str | None:
 
 
 def beat() -> None:
-    """Write this worker's liveness and autohunt opt-in into the shared store."""
-    data.store().save_fix_worker({
+    """Write this worker's liveness, autohunt opt-in, and today's continuation
+    budget into the shared store."""
+    st = data.store()
+    st.save_fix_worker({
         "host": settings.worker_id(), "pid": os.getpid(),
         "last_beat": _now(), "current_pr": state["current_pr"],
-        "autohunt": enabled_autohunt()})
+        "autohunt": enabled_autohunt(),
+        "objection_budget": {"used": objections.used_today(st, settings.worker_id()),
+                             "limit": settings.fix_objection_budget()}})
 
 
 def recover_orphans() -> list[int]:
