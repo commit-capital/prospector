@@ -576,7 +576,23 @@ def _end_on_preflight(n: int, claimed: dict, pf: dict, result: dict) -> None:
         _fail(n, claimed, plain_preflight(pf), result=result,
               kind=str(pf.get("error_kind") or "sandbox"))
     else:
-        _refuse(n, claimed, plain_preflight(pf), result=result)
+        _refuse(n, claimed, str(result.get("detail") or plain_preflight(pf)), result=result)
+
+
+def _compile_objection(n: int, claimed: dict, pf: dict) -> dict | None:
+    """The compile objection a hunted mechanical action's failed preflight
+    hands to a follow-up fix, or None when the failure is the machine's, the
+    request is an operator's, or a continuation may not start."""
+    if (claimed.get("source") != "auto" or pf.get("error")
+            or pf.get("exit") != gates.SENTINEL_TEST_FAIL):
+        return None
+    rec = data.store().load_pr(n)
+    if rec is None:
+        return None
+    objection = objections.build(
+        "compile", str(pf.get("error_excerpt") or "the compile command failed"),
+        origin={"base_sha": pf.get("base_sha")})
+    return objection if _may_continue(rec, objection) else None
 
 
 def run_one(n: int) -> None:
@@ -608,9 +624,14 @@ def run_one(n: int) -> None:
         if pf is not None:
             pf_ok, pf_why = gates.compile_preflight_gate(pf)
             if not pf_ok:
-                _end_on_preflight(n, claimed, pf,
-                                  {"patch": patch[-TAIL_CHARS:], "compile_preflight": pf,
-                                   "detail": pf_why})
+                result = {"patch": patch[-TAIL_CHARS:], "compile_preflight": pf,
+                          "detail": pf_why}
+                followup = _compile_objection(n, claimed, pf)
+                if followup is not None:
+                    result["detail"] = f"{pf_why} A fix has been queued from the compile error."
+                _end_on_preflight(n, claimed, pf, result)
+                if followup is not None:
+                    fix_queue.queue_pr(n, "fix", objection=followup)
                 return
         result = {"patch": patch[-TAIL_CHARS:], "compile_preflight": pf,
                   "message": _commit_message(action)}
@@ -1051,19 +1072,24 @@ def _agent_resolve(n: int, claimed: dict, paused: list[str]) -> None:
 
     _running_step(n, claimed, "compile preflight")
     pf = _preflight(n, patch)
-    if pf is not None:
-        pf_ok, pf_why = gates.compile_preflight_gate(pf)
-        if not pf_ok:
-            _end_on_preflight(n, claimed, pf,
-                              {"patch": patch[-TAIL_CHARS:], "compile_preflight": pf,
-                               "detail": pf_why, "merge_diff": merge_diff,
-                               "conflict_paths": paused})
-            return
-
     result = {"patch": patch[-TAIL_CHARS:], "compile_preflight": pf,
               "resolutions": verdict["resolutions"], "conflict_paths": paused,
               "merge_diff": merge_diff,
               "message": "Merge current base, conflicts agent-resolved"}
+    if pf is not None:
+        pf_ok, pf_why = gates.compile_preflight_gate(pf)
+        if not pf_ok:
+            followup = _compile_objection(n, claimed, pf)
+            if followup is not None:
+                stamp = {"against_head_sha": claimed.get("against_head_sha"),
+                         "base_sha": claimed.get("base_sha"), "host": settings.worker_id(),
+                         "at": _now(), "tier": risktier.tier_facet(paused),
+                         "reviews": [], "tests": None, "compile_preflight": pf}
+                _continue_resolve(n, rec, claimed, str(claimed.get("against_head_sha") or ""),
+                                  worktree, result, stamp, followup)
+                return
+            _end_on_preflight(n, claimed, pf, {**result, "detail": pf_why})
+            return
     _park(n, claimed, "resolve", result, settings.worker_id())
 
 

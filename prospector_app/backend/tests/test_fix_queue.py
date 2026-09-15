@@ -765,3 +765,25 @@ class TestStaleResolves:
                                         {"lens": "history", "verdict": "safe"}],
                             "tests": {"files": ["a.test.ts"], "run": {"exit": 30}}}})
         assert not ok and "no longer applies" in why
+
+
+def _objection_profile(monkeypatch, *gates_):
+    monkeypatch.setattr(profile, "active", lambda: profile.RepoProfile(
+        autofix=profile.AutofixPolicy(fixable_gates=tuple(gates_))))
+
+
+def test_queue_pr_with_an_objection_is_an_objection_source(store, monkeypatch):
+    from pipeline import objections
+    _objection_profile(monkeypatch, "objection")
+    obj = objections.build("compile", "error TS2322")
+    out = fix_queue.queue_pr(1, "fix", objection=obj)
+    req = store.load_pr(1).fix_request
+    assert out["status"] == "queued" and req["source"] == "objection"
+    assert req["objection"] == obj
+
+
+def test_queue_pr_with_an_objection_needs_the_objection_gate(store, monkeypatch):
+    from pipeline import objections
+    _objection_profile(monkeypatch, "review")
+    with pytest.raises(ValueError, match="objection"):
+        fix_queue.queue_pr(1, "fix", objection=objections.build("compile", "e"))

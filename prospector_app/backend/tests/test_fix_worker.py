@@ -1941,3 +1941,45 @@ class TestFixAutopush:
         probe, req = self._run(store, monkeypatch, tier=1)
         assert req["status"] == "awaiting-review" and not _pushed(probe)
         assert "tier" in req["result"]["autopush_bar"]["reason"]
+
+
+class TestCompileObjection:
+    def test_a_hunted_update_that_fails_to_compile_queues_a_compile_fix(self, store, monkeypatch):
+        monkeypatch.setattr(profile, "active", lambda: profile.RepoProfile(
+            autofix=profile.AutofixPolicy(fixable_gates=("objection",))))
+        fix_queue.queue_pr(1, "update", source="auto")
+        monkeypatch.setattr(fix_worker, "_resubmit", _Probe(rc=0))
+        monkeypatch.setattr(fix_worker, "_preflight",
+                            lambda n, patch: {"exit": 20, "error_excerpt": "error TS2322: x",
+                                              "base_sha": "b" * 40})
+        fix_worker.run_one(1)
+        req = store.load_pr(1).fix_request
+        assert req["status"] == "queued" and req["action"] == "fix"
+        assert req["source"] == "objection" and req["objection"]["kind"] == "compile"
+        endings = [r for r in store.runs() if getattr(r, "phase", "") == "fix:single"]
+        assert endings[-1].raw["stats"]["status"] == "refused"
+        assert "A fix has been queued" in endings[-1].raw["stats"]["detail"]
+
+    def test_an_operators_update_that_fails_to_compile_just_refuses(self, store, monkeypatch):
+        monkeypatch.setattr(profile, "active", lambda: profile.RepoProfile(
+            autofix=profile.AutofixPolicy(fixable_gates=("objection",))))
+        fix_queue.queue_pr(1, "update")
+        monkeypatch.setattr(fix_worker, "_resubmit", _Probe(rc=0))
+        monkeypatch.setattr(fix_worker, "_preflight",
+                            lambda n, patch: {"exit": 20, "error_excerpt": "error TS2322: x",
+                                              "base_sha": "b" * 40})
+        fix_worker.run_one(1)
+        req = store.load_pr(1).fix_request
+        assert req["status"] == "refused" and req["action"] == "update"
+
+    def test_a_base_that_fails_too_queues_nothing(self, store, monkeypatch):
+        monkeypatch.setattr(profile, "active", lambda: profile.RepoProfile(
+            autofix=profile.AutofixPolicy(fixable_gates=("objection",))))
+        fix_queue.queue_pr(1, "update", source="auto")
+        monkeypatch.setattr(fix_worker, "_resubmit", _Probe(rc=0))
+        monkeypatch.setattr(fix_worker, "_preflight",
+                            lambda n, patch: {"exit": 20, "error": "the compile command fails on the base itself",
+                                              "error_kind": "base-compile", "base_sha": "b" * 40})
+        fix_worker.run_one(1)
+        req = store.load_pr(1).fix_request
+        assert req["status"] == "failed" and req["action"] == "update"
