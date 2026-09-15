@@ -60,7 +60,10 @@ def classify(pr: Pr) -> dict | None:
     req = pr.fix_request or {}
     ok, _why = gates.merge_eligibility(pr)
     if ok and pr.disposition == "merge":
-        return _r("act", "merge-ready", "every gate is clear; merge it")
+        gap = _unclear_check(pr)
+        if gap is None:
+            return _r("act", "merge-ready", "every check is clear; merge it")
+        return _merge_pick_gap(pr, gap)
     if req.get("status") == "awaiting-review":
         return _r("act", "approve-parked",
                   f"a parked {req.get('action')} awaits your approval")
@@ -98,6 +101,48 @@ def classify(pr: Pr) -> dict | None:
                                           "continuation budget: " + what)
         return _r("auto", "hunt", f"the hunter's next pick: {what}")
     return _blocked(pr, action, why)
+
+
+def _unclear_check(pr: Pr) -> dict | None:
+    """The first rollup check that is not clear on a merge-eligible pick, or
+    None. A failed or warning check is not clear, except "Includes tests",
+    which may warn (a PR without tests can still be ready). A check that has
+    not run counts against readiness only for verification and the deep
+    security review, the two the hunters exist to run; a check that does not
+    apply to this deployment (no active scanner) is clear."""
+    from prospector_app.backend import pr_checks
+    for check in pr_checks.checks_for_record(pr)["checks"]:
+        status, key = check["status"], check["key"]
+        if status == "pass" or (key == "tests" and status == "warn"):
+            continue
+        if status == "na" and key not in ("verify", "security"):
+            continue
+        return check
+    return None
+
+
+def _merge_pick_gap(pr: Pr, check: dict) -> dict:
+    """A merge pick the human gate would pass but a check has not cleared:
+    what fills the gap, and whose it is."""
+    key, name, detail = check["key"], check["name"], str(check.get("detail") or "")
+    if key == "verify":
+        if check["status"] == "warn":
+            return _r("handed", "other", f"verification is partial evidence ({detail}); merge on "
+                                          f"your judgment or ask for an independent repro")
+        vr = pr.section("verify_request") or {}
+        if vr.get("status") == "error":
+            allowed, why = gates.verify_retry_allowed(pr, worker=settings.worker_id())
+            if allowed or "moved" in why or "another" in why:
+                return _r("auto", "waiting", "verification hit a machine fault, not the PR; "
+                                             "it re-runs automatically")
+            return _r("handed", "other", f"verification could not run on this head "
+                                          f"{gates.VERIFY_RETRY_ATTEMPTS} times; re-queue it "
+                                          f"or merge on your own judgment ({vr.get('error') or why})")
+        return _r("auto", "waiting", "verification has not run yet; the verify hunter picks it up")
+    if key == "security":
+        return _r("auto", "waiting", "the deep security review has not run yet; the security "
+                                     "hunter picks it up")
+    return _r("auto", "waiting", f"{name}: {detail or 'not clear yet'}")
 
 
 def _rested(pr: Pr, req: dict, action: str) -> dict:

@@ -47,6 +47,23 @@ VERIFY_REQUEST_FAULT: dict[str, str] = {
 
 # How many runs one head gets before an errored verify request stays errored,
 # and how long the worker that errored it waits before trying again itself.
+# What each merge-gate lane runs, in the operator's words.
+LANE_COMMAND_NAMES: dict[str, str] = {"compile": "type-check command",
+                                      "build": "build command"}
+
+
+def base_fault_text(lane: str, base_fails: str) -> str:
+    """The operator-facing sentence for a merge-gate lane whose command fails
+    on the default branch itself, before any PR is applied: a fault in the
+    branch or the sandbox, never evidence about the PR."""
+    branch = settings.default_branch()
+    what = LANE_COMMAND_NAMES.get(lane, f"{lane} command")
+    return (f"The repository's own {what} fails on {branch} itself, before this PR's "
+            f"changes are applied, so this run could not judge the PR. That is a "
+            f"problem with {branch} or the sandbox, not with this PR; verification "
+            f"re-runs once it passes. Output: {base_fails}")
+
+
 VERIFY_RETRY_ATTEMPTS = 3
 VERIFY_RETRY_SECONDS = 6 * 3600
 
@@ -1571,10 +1588,8 @@ def verify_disposition(pr: Pr) -> tuple[str, str] | None:
             entry = (pr.verify_signals.get("lanes") or {}).get(lane)
             base_fails = entry.get("base_fails") if isinstance(entry, dict) else None
             if base_fails:
-                return ("needs-human",
-                        f"Dynamic verification escalated — the {lane} merge-gate lane's "
-                        f"command fails on the base itself ({base_fails}), so it cannot "
-                        "judge any PR. Fix the profile's command or the sandbox image.")
+                return ("needs-human", "Dynamic verification escalated. "
+                        + base_fault_text(lane, str(base_fails)))
             return ("needs-human",
                     f"Dynamic verification escalated — the {lane} merge-gate lane "
                     "could not run to a verdict (infrastructure exit, not "

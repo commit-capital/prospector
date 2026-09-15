@@ -5,6 +5,22 @@ import { localDateTime, timeAgo } from "../timeAgo";
 /** The operator's #1 question when verification isn't green: whose fault is it?
  *  A leading badge answers it before any detail — PR-fault and harness-fault
  *  must never look alike. */
+// The store's verify error kinds, in the operator's words; the raw kind stays
+// in the chip's title.
+const ERROR_KIND_LABEL: Record<string, string> = {
+  "base-lane": "main branch fails its own command",
+  "base-compile": "main branch fails its own command",
+  "sandbox-error": "sandbox could not run",
+  "agent-unavailable": "agent CLI offline",
+  "agent-failed": "agent run failed",
+  "fetch-error": "GitHub fetch failed",
+  "no-base": "no base branch pinned",
+  "interrupted": "worker restarted mid-run",
+  "exception": "worker crashed",
+  "hold": "held by the worker",
+  "refused-safety": "refused by the safety check",
+};
+
 function FaultBadge({ fault }: { fault: VerifyFault }) {
   if (!fault) return null;
   const spec: Record<"pr" | "system" | "judgment", { cls: string; text: string; title: string }> = {
@@ -188,7 +204,11 @@ function RequestStrip({ req, runner }: { req: VerifyRequest; runner: VerifyRunne
           <div className="vb-headline">
             Verification run failed
             <FaultBadge fault={req.fault ?? null} />
-            {req.error_kind && <span className="chip chip-muted sm" style={{ marginLeft: 8 }}>{req.error_kind}</span>}
+            {req.error_kind && (
+              <span className="chip chip-muted sm" style={{ marginLeft: 8 }} title={`error kind: ${req.error_kind}`}>
+                {ERROR_KIND_LABEL[req.error_kind] ?? req.error_kind}
+              </span>
+            )}
           </div>
           <div className="vb-detail">
             {req.error}
