@@ -2645,3 +2645,14 @@ class TestFixAutopushBar:
         assert "compile" in gates.fix_autopush_bar(r, ["a"])[1]
         monkeypatch.setattr(gates.risktier, "pr_tier", lambda paths: None)
         assert gates.fix_autopush_bar(self._result(), [])[1].startswith("the touched paths are unknown")
+
+    def test_related_tests_are_the_bar_s_last_evidence(self, monkeypatch):
+        monkeypatch.setattr(gates.risktier, "pr_tier", lambda paths: 2)
+        def with_run(run):
+            return {**self._result(), "tests": {"files": ["a.test.ts"], "run": run}}
+        assert gates.fix_autopush_bar(with_run({"exit": 0}), ["a"])[0]
+        assert "did not pass" in gates.fix_autopush_bar(with_run({"exit": 20}), ["a"])[1]
+        assert "the fix no longer applies" in gates.fix_autopush_bar(with_run({"exit": 30}), ["a"])[1]
+        assert "could not run" in gates.fix_autopush_bar(
+            with_run({"error": "no daemon"}), ["a"])[1]
+        assert gates.fix_autopush_bar({**self._result(), "tests": None}, ["a"])[0]

@@ -906,6 +906,20 @@ def _author_fix(n: int, claimed: dict) -> None:
     result = {**evidence, "compile_preflight": pf,
               "message": verdict["summary"] or _commit_message("fix")}
     if "fix" in settings.fix_autopush():
+        # The bar's last piece of evidence: the test files related to what the
+        # agent touched, run over the same composed tree the preflight measured.
+        # A sandbox that could not run is the machine's failure, so the request
+        # ends `failed` and the hunter retries it; a verdict parks or pushes.
+        _running_step(n, claimed, "related tests", action="fix")
+        related = resolve_evidence.related_tests(worktree, paths)
+        result["tests"] = _related_tests_run(n, rec.head_sha or "",
+                                             _over_pr(pr_patch, patch), related)
+        run = (result["tests"] or {}).get("run") or {}
+        if run.get("error"):
+            _resubmit(n, "abort")
+            _fail(n, claimed, f"the related-tests sandbox could not run: {run['error']}",
+                  result=result, kind=str(run.get("error_kind") or "sandbox"))
+            return
         ok, why = gates.fix_autopush_bar(result, paths)
         result["autopush_bar"] = {"ok": ok, "reason": why}
         if ok:
@@ -1322,8 +1336,9 @@ def _cancel(n: int, req: dict, reason: str, result: dict | None = None) -> None:
 def _related_tests_run(n: int, head: str, patch: str,
                        related: list[str]) -> dict | None:
     """The sandbox record for the `related` test files, run over current
-    default-branch HEAD with the resolved diff applied. None when no related
-    tests exist or the profile configures no test lane."""
+    default-branch HEAD with `patch` applied — a resolve's merge diff, or a
+    fix's pull-request diff with the authored change appended. None when no
+    related tests exist or the profile configures no test lane."""
     if not related:
         return None
     cmd, _why = sandbox_check.lane_command(["test", *related])
@@ -1331,7 +1346,7 @@ def _related_tests_run(n: int, head: str, patch: str,
         return None
     scratch = settings.verify_scratch() / "autofix"
     scratch.mkdir(parents=True, exist_ok=True)
-    path = scratch / f"pr-{n}.resolve-tests.patch"
+    path = scratch / f"pr-{n}.related-tests.patch"
     path.write_text(patch + "\n")
     return {"files": related,
             "run": compile_preflight.run_command_for_patch(n, head, path, cmd)}
