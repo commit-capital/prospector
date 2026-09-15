@@ -134,3 +134,9 @@ def test_the_row_carries_it_and_the_filters_read_it(store):
     assert filters.matches(row, {"automation_bucket": ["author-ci", "author-declined"]})
     assert filters.matches(row, {"automation_owner": "author"})
     assert not filters.matches(row, {"automation_column": "auto"})
+
+
+def test_a_conflicted_pr_with_a_stale_verdict_is_the_author_s_rebase(store):
+    out = _classify(store, _rec(mergeable=False, greptile=5, reviewed_sha="0" * 40))
+    assert (out["column"], out["bucket"], out["owner"]) == ("handed", "author-conflicts", "author")
+    assert "rebase" in out["reason"]

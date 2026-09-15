@@ -129,11 +129,17 @@ def _rested(pr: Pr, req: dict, action: str) -> dict:
 def _blocked(pr: Pr, action: str, why: str) -> dict:
     """A head the hunter will not act on: what stands in the way, and whose."""
     low = why.lower()
+    if "signals or reviews stale" in low:
+        return _r("auto", "waiting", "waiting on re-ingest")
+    if action in ("rebase", "update"):
+        # The hunter rebases only at the review bar, and the re-review hunter
+        # asks only on a mergeable head, so a conflicted PR below or without a
+        # verdict waits on its author either way.
+        return _r("handed", "author-conflicts",
+                  f"needs a rebase, and the hunter leaves it to the author: {why}")
     if "stale or pending" in low or "awaiting" in low or "review stale" in low:
         return _r("auto", "waiting", "waiting on a reviewer verdict for this head; "
                                      "the worker asks for it")
-    if "signals or reviews stale" in low:
-        return _r("auto", "waiting", "waiting on re-ingest")
     if "ci is pending" in low:
         return _r("auto", "waiting", "CI is running")
     if "ci is failing" in low:
@@ -162,8 +168,4 @@ def _blocked(pr: Pr, action: str, why: str) -> dict:
                                          f"finish: {missing}")
         asks = pr.asks or []
         return _r("handed", "asks", str(asks[0]) if asks else (pr.rationale or why))
-    if action in ("rebase", "update"):
-        return _r("handed", "author-conflicts",
-                  f"needs a rebase, and the review bar is not met ({why}), so the hunter "
-                  f"leaves it to the author")
     return _r("handed", "other", why)
