@@ -37,9 +37,10 @@ export interface HomeBreakdown {
   spec: FilterSpec;
 }
 
-// How many sample PRs each card fetches into the table on its right side;
-// the "Show all" link opens the full set in the Explorer.
-export const SAMPLE_LIMIT = 6;
+// How many sample PRs each card fetches into the table on its right side,
+// kept small so every card fits above the fold; the "Show all" link opens
+// the full set in the Explorer.
+export const SAMPLE_LIMIT = 2;
 
 // How many linked issues a sample row lists before collapsing the rest into a
 // "+N" marker — the issues cell is a single fixed-width line sized to fit this
