@@ -8,19 +8,51 @@ Invoked through prospector_app/agent/sandbox-check, which the authoring agent's
 allowlist names. The pull request, its head, the worktree and the PR's diff
 file arrive in PROSPECTOR_CHECK_* environment variables set by author_fix,
 never on argv, so the agent cannot point the check at another tree.
+
+Every run also leaves a record of itself — the lane, the files, the command and
+how it ended — in a JSONL file under the verify scratch, which the fix worker
+collects and stores on the request once the agent returns. The store itself is
+never written from here.
 """
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import TypedDict
 
 from pipeline import compile_preflight, diffpaths, gates, profile, settings
 
 USAGE = ("usage: sandbox-check typecheck | "
          "sandbox-check test <repo-relative test file>...")
+
+# How much of a run's error text and excerpt a record keeps.
+RECORD_CHARS = 1500
+
+# How many records the worker collects for one request; an agent runs the
+# check a few times, so more is a runaway.
+MAX_CHECKS = 20
+
+
+class CheckRecord(TypedDict):
+    """One sandbox run the authoring agent made, as the request stores it.
+    `exit` is the sandbox's sentinel exit when the command ran and None when
+    it did not; `error_kind` names why it did not — the preflight's own kind
+    when it gives one, `refused` for a run the preflight declined to make, else
+    `infrastructure`."""
+    kind: str
+    files: list[str]
+    cmd: str | None
+    exit: int | None
+    error_kind: str | None
+    error: str | None
+    error_excerpt: str | None
+    duration_s: float | None
+    at: str
 
 
 def lane_command(argv: list[str]) -> tuple[str | None, str | None]:
@@ -72,6 +104,72 @@ def combined_patch(pr: int, pr_patch: Path, authored: str) -> Path:
     return p
 
 
+def checks_path(pr: int) -> Path:
+    return settings.verify_scratch() / "autofix" / f"pr-{pr}.checks.jsonl"
+
+
+def check_record(argv: list[str], rec: dict) -> CheckRecord:
+    """The bounded record of one run: the lane and files from the agent's
+    argv, the outcome from the preflight's record."""
+    kind = argv[0] if argv else ""
+    if rec.get("refused"):
+        error, error_kind = str(rec["refused"]), "refused"
+    elif rec.get("error"):
+        error, error_kind = str(rec["error"]), str(rec.get("error_kind") or "infrastructure")
+    else:
+        error, error_kind = None, None
+    code = rec.get("exit")
+    excerpt = rec.get("error_excerpt")
+    return {"kind": kind, "files": list(argv[1:]),
+            "cmd": str(rec["cmd"]) if rec.get("cmd") is not None else None,
+            "exit": int(code) if isinstance(code, int) else None,
+            "error_kind": error_kind,
+            "error": error[:RECORD_CHARS] if error else None,
+            "error_excerpt": str(excerpt)[:RECORD_CHARS] if excerpt else None,
+            "duration_s": rec.get("duration_s"),
+            "at": datetime.now(timezone.utc).isoformat()}
+
+
+def record_check(pr: int, record: CheckRecord) -> None:
+    """Append `record` for the worker to collect. Best-effort: a record that
+    cannot be written is reported on stderr and the run's verdict still
+    reaches the agent."""
+    p = checks_path(pr)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("a") as f:
+            f.write(json.dumps(record) + "\n")
+    except OSError as e:
+        print(f"sandbox-check: the run could not be recorded: {e}", file=sys.stderr)
+
+
+def collect_checks(pr: int) -> list[dict]:
+    """The records the agent's runs left for `pr`, oldest first and at most
+    MAX_CHECKS, consuming the file so the next request starts empty. A line
+    that is not a JSON object is skipped."""
+    p = checks_path(pr)
+    try:
+        text = p.read_text()
+    except FileNotFoundError:
+        return []
+    p.unlink(missing_ok=True)
+    out: list[dict] = []
+    for line in text.splitlines():
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(rec, dict):
+            out.append(rec)
+    return out[:MAX_CHECKS]
+
+
+def discard_checks(pr: int) -> None:
+    """Drop any record file left over for `pr`, so runs an earlier request's
+    agent made are never read as this one's."""
+    checks_path(pr).unlink(missing_ok=True)
+
+
 def render(rec: dict) -> str:
     """The record as the agent reads it: the verdict first, then the evidence."""
     if rec.get("refused"):
@@ -113,6 +211,7 @@ def main(argv: list[str]) -> int:
         return 2
     patch = combined_patch(pr, pr_patch, authored)
     rec = compile_preflight.run_command_for_patch(pr, head, patch, cmd)
+    record_check(pr, check_record(argv, rec))
     print(render(rec))
     return 0 if rec.get("exit") == gates.SENTINEL_PASS else 1
 

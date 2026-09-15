@@ -809,3 +809,31 @@ def test_beat_carries_the_objection_budget(store, monkeypatch):
     rec = store.load_fix_worker()["hosts"][settings.worker_id()]
     assert rec["objection_budget"] == {"used": 0, "limit": 20}
     assert fix_queue.runner_status()["objection_budget"] == {"used": 0, "limit": 20}
+
+
+def test_queue_entries_carry_the_authors_sandbox_checks(store):
+    # What the agent ran and how each run ended reaches the row, bounded, so an
+    # operator can tell an infrastructure failure from a real one.
+    checks = [{"kind": "typecheck", "files": [], "cmd": "pnpm -r typecheck", "exit": 0,
+               "error_kind": None, "error": None, "error_excerpt": None,
+               "duration_s": 12.5, "at": _now()},
+              {"kind": "test", "files": ["src/a.test.ts"], "cmd": "npx vitest run src/a.test.ts",
+               "exit": None, "error_kind": "infrastructure",
+               "error": "TimeoutError: lock" + "x" * 5000, "error_excerpt": None,
+               "duration_s": 0.4, "at": _now()}]
+    store.load_pr(1).record_fix_request(
+        "awaiting-review", "fix", queued_at=_now(),
+        result={"patch": "diff", "checks": checks}, head_sha="a" * 40)
+    data.refresh()
+    [entry] = fix_queue.queue_entries()
+    assert [c["kind"] for c in entry["checks"]] == ["typecheck", "test"]
+    assert entry["checks"][0]["exit"] == 0
+    assert entry["checks"][1]["error_kind"] == "infrastructure"
+    assert entry["checks"][1]["files"] == ["src/a.test.ts"]
+    assert len(entry["checks"][1]["error"]) == fix_queue.CHECK_TEXT_CHARS
+
+
+def test_queue_entries_without_checks_carry_an_empty_list(store):
+    fix_queue.queue_pr(1, "update")
+    [entry] = fix_queue.queue_entries()
+    assert entry["checks"] == []

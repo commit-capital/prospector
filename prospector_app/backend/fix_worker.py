@@ -865,7 +865,7 @@ def _author_fix(n: int, claimed: dict) -> None:
             _refuse(n, claimed, f"The reviewing agent rejected the change: "
                                 f"{review['reason']}",
                     result={"patch": patch, "changes": verdict["changes"],
-                            "review_verdict": review})
+                            "review_verdict": review, **_checks_only(verdict["checks"])})
             return
         # The request keeps the objection it was queued for; the retry's own
         # objection lives in its round, where `spent` also reads.
@@ -879,18 +879,22 @@ def _author_fix(n: int, claimed: dict) -> None:
         if retried is None:
             return
         verdict2, patch2, review2 = retried
+        all_checks = list(verdict["checks"]) + list(verdict2["checks"])
         if review2["verdict"] != "safe":
             _resubmit(n, "abort")
             _refuse(n, claimed, "The reviewing agent rejected the change twice: "
                                 f"{review['reason']}; then {review2['reason']}",
                     result={"patch": patch2, "changes": verdict2["changes"],
                             "review_verdict": review2,
-                            "rounds": rounds + [{"objection": objection, "review": review2}]})
+                            "rounds": rounds + [{"objection": objection, "review": review2}],
+                            **_checks_only(all_checks)})
             return
-        verdict = {**verdict2, "changes": list(verdict["changes"]) + list(verdict2["changes"])}
+        verdict = {**verdict2, "changes": list(verdict["changes"]) + list(verdict2["changes"]),
+                   "checks": all_checks}
         patch, review = patch2, review2
     paths = diffpaths.changed_paths(patch)
-    evidence = {"patch": patch, "changes": verdict["changes"], "review_verdict": review}
+    evidence = {"patch": patch, "changes": verdict["changes"], "review_verdict": review,
+                **_checks_only(verdict["checks"])}
     if rounds:
         evidence["rounds"] = rounds
 
@@ -923,9 +927,11 @@ def _author_and_review(n: int, claimed: dict, rec: Pr, worktree: str, goal: str,
     against `goal`, the diff is held to the files it reported (plus
     `prior_changes`, an earlier round's files still in the tree) and re-gated
     on the paths it touched, and the refuting reviewer judges it. Returns
-    (verdict, patch, review) for the caller to act on, or None after writing
+    (verdict, patch, review) for the caller to act on — the verdict carrying
+    the sandbox runs the agent made under `checks` — or None after writing
     the request's ending itself."""
     _running_step(n, claimed, step, action="fix")
+    sandbox_check.discard_checks(n)
     try:
         verdict = author_fix.author(worktree, pr=n, title=rec.title or "",
                                     body=rec.body or "", goal=goal,
@@ -935,16 +941,21 @@ def _author_and_review(n: int, claimed: dict, rec: Pr, worktree: str, goal: str,
     except headless_agent.AgentUnavailable as e:
         _resubmit(n, "abort")
         _fail(n, claimed, f"The agent could not run on {settings.worker_id()}: {e}",
+              result=_checks_only(sandbox_check.collect_checks(n)) or None,
               kind="agent-unavailable")
         return None
     except (RuntimeError, ValueError) as e:
         _resubmit(n, "abort")
-        _fail(n, claimed, f"The agent attempt did not land: {e}")
+        _fail(n, claimed, f"The agent attempt did not land: {e}",
+              result=_checks_only(sandbox_check.collect_checks(n)) or None)
         return None
+    # The sandbox runs the agent made are its own evidence of whether the
+    # change was exercised; they ride on every ending from here.
+    verdict["checks"] = sandbox_check.collect_checks(n)
     if "give_up" in verdict:
         _resubmit(n, "abort")
         _refuse(n, claimed, f"The agent declined to write a change: "
-                            f"{verdict['give_up']}")
+                            f"{verdict['give_up']}", result=_checks_only(verdict["checks"]) or None)
         return None
 
     diff = _resubmit(n, "diff")
@@ -963,14 +974,15 @@ def _author_and_review(n: int, claimed: dict, rec: Pr, worktree: str, goal: str,
         _resubmit(n, "abort")
         _refuse(n, claimed, f"The agent wrote {len(patch)} characters of diff, past "
                             f"the {PATCH_CHARS} the queue carries. A change this "
-                            f"large belongs to a person, not an unattended fix.")
+                            f"large belongs to a person, not an unattended fix.",
+                result=_checks_only(verdict["checks"]) or None)
         return None
     if "\nBinary files " in patch or patch.startswith("Binary files "):
         # A textual diff names a binary change without carrying it, so the
         # reviewed bytes could not be re-applied at approval time.
         _resubmit(n, "abort")
         _refuse(n, claimed, "The agent changed a binary file, which the reviewed "
-                            "patch cannot carry.")
+                            "patch cannot carry.", result=_checks_only(verdict["checks"]) or None)
         return None
     paths = diffpaths.changed_paths(patch)
     try:
@@ -978,13 +990,13 @@ def _author_and_review(n: int, claimed: dict, rec: Pr, worktree: str, goal: str,
     except ValueError as e:
         _resubmit(n, "abort")
         _refuse(n, claimed, f"The authored change was not trusted: {e}",
-                result={"patch": patch})
+                result={"patch": patch, **_checks_only(verdict["checks"])})
         return None
     ok, why = recheck_eligibility(n, "fix", paths)
     if not ok:
         _resubmit(n, "abort")
         _refuse(n, claimed, f"The change the agent wrote is not one the bot may "
-                            f"push: {why}", result={"patch": patch})
+                            f"push: {why}", result={"patch": patch, **_checks_only(verdict["checks"])})
         return None
 
     _running_step(n, claimed, "reviewing the authored change", action="fix")
@@ -994,9 +1006,16 @@ def _author_and_review(n: int, claimed: dict, rec: Pr, worktree: str, goal: str,
         _resubmit(n, "abort")
         _fail(n, claimed, f"The reviewing agent did not reach a verdict: "
                           f"{review['reason']}",
-              result={"patch": patch, "changes": verdict["changes"], "review_verdict": review})
+              result={"patch": patch, "changes": verdict["changes"], "review_verdict": review,
+                      **_checks_only(verdict["checks"])})
         return None
     return verdict, patch, review
+
+
+def _checks_only(checks: list[dict]) -> dict:
+    """A result carrying the agent's sandbox runs and nothing else; empty when
+    it made none, so an ending without evidence records no key."""
+    return {"checks": checks} if checks else {}
 
 
 def _conflict_refusal(paused: list[str]) -> str:
@@ -1500,11 +1519,12 @@ def _continue_resolve(n: int, rec: Pr, claimed: dict, head: str, worktree: str,
     paths = [str(p) for p in (result.get("conflict_paths") or [])]
     claimed = {**claimed, "objection": objection}
     _running_step(n, claimed, "continuing after the reviewer's objection")
+    checks: list[dict] = []
 
     def park(detail: str, *, discard: bool = True) -> None:
         if discard:
             _resubmit(n, "discard")
-        res = {**result, "rounds": [first],
+        res = {**result, "rounds": [first], **_checks_only(checks),
                "auto_review": {**first, "bar": {"ok": False, "reason": detail}}}
         data.store().edit_pr(n).record_fix_request(
             "awaiting-review", "resolve", queued_at=claimed.get("queued_at"),
@@ -1514,6 +1534,7 @@ def _continue_resolve(n: int, rec: Pr, claimed: dict, head: str, worktree: str,
         data.refresh()
         _log_run(n, claimed, "awaiting-review", detail)
 
+    sandbox_check.discard_checks(n)
     try:
         pr_patch = verify_driver.fetch_patch(n, rec.head_sha or "")
         verdict = author_fix.author(
@@ -1527,6 +1548,7 @@ def _continue_resolve(n: int, rec: Pr, claimed: dict, head: str, worktree: str,
     except (RuntimeError, ValueError, verify_driver.FetchFailure) as e:
         park(f"the continuation did not land: {e}")
         return
+    checks = sandbox_check.collect_checks(n)
     if "give_up" in verdict:
         park(f"the continuation agent declined: {verdict['give_up']}")
         return
@@ -1585,7 +1607,8 @@ def _continue_resolve(n: int, rec: Pr, claimed: dict, head: str, worktree: str,
     if all(r.get("verdict") == "safe" for r in second["reviews"]) and len(second["reviews"]) == 2:
         second["tests"] = _related_tests_run(n, head, patch, related)
     res = {**result, "patch": patch[-TAIL_CHARS:], "compile_preflight": pf,
-           "touched_paths": all_paths, "rounds": [first, second], "auto_review": second}
+           "touched_paths": all_paths, "rounds": [first, second], "auto_review": second,
+           **_checks_only(checks)}
     ok, why = gates.resolve_autopush_bar(res)
     second["bar"] = {"ok": ok, "reason": why}
     data.store().edit_pr(n).record_fix_request(

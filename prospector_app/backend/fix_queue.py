@@ -197,6 +197,35 @@ class FixQueueEntry(TypedDict):
     auto_review: dict | None
     objection: dict | None
     rounds: int
+    checks: list[dict]
+
+
+# How much of a sandbox check's error text and excerpt a queue row carries.
+CHECK_TEXT_CHARS = 600
+
+
+def _checks(result: dict) -> list[dict]:
+    """The authoring agent's sandbox runs, as the row shows them: the lane,
+    the files, how each ended, and bounded error text for the hover."""
+    raw = result.get("checks")
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for c in raw:
+        if not isinstance(c, dict):
+            continue
+        files = c.get("files")
+        out.append({
+            "kind": str(c.get("kind") or ""),
+            "files": [str(f) for f in files] if isinstance(files, list) else [],
+            "cmd": c.get("cmd"), "exit": c.get("exit"),
+            "error_kind": c.get("error_kind"),
+            "error": str(c["error"])[:CHECK_TEXT_CHARS] if c.get("error") else None,
+            "error_excerpt": (str(c["error_excerpt"])[:CHECK_TEXT_CHARS]
+                              if c.get("error_excerpt") else None),
+            "duration_s": c.get("duration_s"), "at": c.get("at"),
+        })
+    return out
 
 
 def _detail(req: dict) -> str | None:
@@ -242,6 +271,7 @@ def _entry(n: int, title: str | None, req: dict) -> FixQueueEntry:
         "objection": ({"kind": str(obj.get("kind")), "text": str(obj.get("text") or "")[:400]}
                       if (obj := req.get("objection")) else None),
         "rounds": len(result.get("rounds") or []),
+        "checks": _checks(result),
     }
 
 
