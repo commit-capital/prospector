@@ -908,3 +908,104 @@ def test_rm_without_prepare_fails_cleanly(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(resubmit, "WORKTREE_ROOT", tmp_path / "resubmit")
     assert resubmit.main(["42", "rm", "anything.txt"]) == 2
     assert "was not prepared" in capsys.readouterr().err
+
+
+def test_commit_adds_a_follow_up_on_a_kept_merge(monkeypatch, tmp_path, capsys):
+    repos = _make_rebase_repos(tmp_path)
+    _wire_merge(monkeypatch, tmp_path, repos)
+    resubmit.cmd_prepare(42, merge=True)
+    wt = resubmit._worktree(42)
+    (wt / "one.txt").write_text("resolved one\n")
+    assert resubmit.cmd_continue(42) == 0
+    merge_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=wt,
+                               capture_output=True, text=True).stdout.strip()
+    (wt / "follow.txt").write_text("fix\n")
+    assert resubmit.cmd_commit(42, "Address the reviewer's objection") == 0
+    log = subprocess.run(["git", "log", "-2", "--format=%s"], cwd=wt,
+                         capture_output=True, text=True).stdout.splitlines()
+    assert log[0] == "Address the reviewer's objection"
+    parent = subprocess.run(["git", "rev-parse", "HEAD^"], cwd=wt,
+                            capture_output=True, text=True).stdout.strip()
+    assert parent == merge_sha
+    assert resubmit._read_meta(42)["mode"] == "merge"
+    assert "committed" in capsys.readouterr().out
+
+
+def test_commit_refuses_a_clean_tree_and_a_non_merge_worktree(monkeypatch, tmp_path):
+    repos = _make_rebase_repos(tmp_path)
+    _wire_merge(monkeypatch, tmp_path, repos)
+    resubmit.cmd_prepare(42, merge=True)
+    (resubmit._worktree(42) / "one.txt").write_text("resolved one\n")
+    assert resubmit.cmd_continue(42) == 0
+    assert resubmit.cmd_commit(42, "nothing") == 5
+    resubmit.cmd_abort(42)
+    _wire_rebase(monkeypatch, tmp_path, repos)
+    assert resubmit.cmd_prepare(42, rebase=True) == 0
+    assert resubmit.cmd_commit(42, "nope") == 2
+
+
+def test_commit_keeps_the_merge_push_valid_and_diff_last_shows_the_follow_up(
+        monkeypatch, tmp_path, capsys):
+    repos = _make_rebase_repos(tmp_path)
+    _wire_merge(monkeypatch, tmp_path, repos)
+    resubmit.cmd_prepare(42, merge=True)
+    wt = resubmit._worktree(42)
+    (wt / "one.txt").write_text("resolved one\n")
+    assert resubmit.cmd_continue(42) == 0
+    merge_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=wt,
+                               capture_output=True, text=True).stdout.strip()
+    (wt / "follow.txt").write_text("fix\n")
+    assert resubmit.cmd_commit(42, "Address the reviewer's objection") == 0
+    capsys.readouterr()
+    assert resubmit.cmd_diff(42, last=True) == 0
+    last = capsys.readouterr().out
+    assert "follow.txt" in last and "one.txt" not in last
+    assert resubmit.cmd_diff(42) == 0
+    combined = capsys.readouterr().out
+    assert "follow.txt" in combined and "one.txt" in combined
+    assert resubmit.cmd_discard(42) == 0
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=wt,
+                          capture_output=True, text=True).stdout.strip()
+    assert head == merge_sha and not (wt / "follow.txt").exists()
+    assert resubmit._read_meta(42)["new_head_sha"] == merge_sha
+    capsys.readouterr()
+    assert resubmit.cmd_push(42, None, dry_run=True) == 0
+
+
+def test_a_committed_follow_up_pushes_with_the_merge(monkeypatch, tmp_path, capsys):
+    repos = _make_rebase_repos(tmp_path)
+    _wire_merge(monkeypatch, tmp_path, repos)
+    resubmit.cmd_prepare(42, merge=True)
+    wt = resubmit._worktree(42)
+    (wt / "one.txt").write_text("resolved one\n")
+    assert resubmit.cmd_continue(42) == 0
+    (wt / "follow.txt").write_text("fix\n")
+    assert resubmit.cmd_commit(42, "Address the reviewer's objection") == 0
+    capsys.readouterr()
+    assert resubmit.cmd_push(42, None, dry_run=True) == 0
+
+
+def test_discard_drops_uncommitted_edits_and_keeps_the_merge(monkeypatch, tmp_path):
+    repos = _make_rebase_repos(tmp_path)
+    _wire_merge(monkeypatch, tmp_path, repos)
+    resubmit.cmd_prepare(42, merge=True)
+    wt = resubmit._worktree(42)
+    (wt / "one.txt").write_text("resolved one\n")
+    assert resubmit.cmd_continue(42) == 0
+    (wt / "stray.txt").write_text("half done\n")
+    assert resubmit.cmd_discard(42) == 0
+    assert not (wt / "stray.txt").exists()
+    assert resubmit._read_meta(42)["phase"] == "ready"
+
+
+def test_a_second_commit_on_a_kept_merge_is_refused(monkeypatch, tmp_path):
+    repos = _make_rebase_repos(tmp_path)
+    _wire_merge(monkeypatch, tmp_path, repos)
+    resubmit.cmd_prepare(42, merge=True)
+    wt = resubmit._worktree(42)
+    (wt / "one.txt").write_text("resolved one\n")
+    assert resubmit.cmd_continue(42) == 0
+    (wt / "follow.txt").write_text("fix\n")
+    assert resubmit.cmd_commit(42, "first") == 0
+    (wt / "more.txt").write_text("more\n")
+    assert resubmit.cmd_commit(42, "second") == 2

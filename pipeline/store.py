@@ -89,7 +89,7 @@ FIX_REQUEST_STATUSES = {"queued", "running", "awaiting-review", "approved", "pus
 
 # Who queued a fix request: the idle auto-hunter stamps its picks "auto"; the
 # app's operator path leaves the field unset.
-FIX_REQUEST_SOURCES = {"operator", "auto"}
+FIX_REQUEST_SOURCES = {"operator", "auto", "objection"}
 
 # every per-PR record section this code knows; an unknown section is preserved
 # through save (with a stderr notice) so a checkout behind the store schema
@@ -836,7 +836,7 @@ class Store:
                          "step": "claimed", "host": host,
                          "started_at": storekit.now()}
         for field in ("queued_at", "source", "attempts", "base_sha", "result",
-                      "guidance"):
+                      "guidance", "objection"):
             if req.get(field) is not None:
                 section[field] = req[field]
         head = (rec.get("meta") or {}).get("head_sha")

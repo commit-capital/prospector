@@ -46,7 +46,7 @@ def _entry(n: int, req: dict) -> dict:
     return {
         "phase": FIX_PHASE, "pr": n, "started": req.get("started_at"),
         "finished": req.get("finished_at"), "backfilled": True,
-        "trigger": "autohunt" if req.get("source") == "auto" else None,
+        "trigger": "autohunt" if req.get("source") in ("auto", "objection") else None,
         "stats": {"status": req.get("status"), "action": req.get("action"),
                   "detail": _detail(req), "host": req.get("host")}}
 

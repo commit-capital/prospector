@@ -2586,3 +2586,49 @@ class TestLaneBaseFails:
                  "build": {"cmd": "b", "exit": 20, "ok": False}}
         assert gates._lanes_verdict(lanes) == "regressed"
         assert gates._lane_escalate_cause({"lanes": lanes}) is None
+
+
+def _gates_profile(*fixable: str) -> profile.RepoProfile:
+    return profile.RepoProfile(autofix=profile.AutofixPolicy(fixable_gates=tuple(fixable)))
+
+
+class TestObjectionEligibility:
+    def test_an_objection_fix_needs_the_objection_gate(self, monkeypatch):
+        pr = _pr()
+        monkeypatch.setattr(profile, "active", lambda: _gates_profile("review"))
+        ok, why = gates.fix_eligibility(pr, "fix", ["src/a.ts"], objection=True)
+        assert not ok and "objection" in why
+        monkeypatch.setattr(profile, "active", lambda: _gates_profile("objection"))
+        assert gates.fix_eligibility(pr, "fix", ["src/a.ts"], objection=True)[0]
+
+    def test_huntable_with_an_objection_skips_the_review_blocker(self, monkeypatch):
+        monkeypatch.setattr(profile, "active", lambda: _gates_profile("objection"))
+        pr = _pr()  # CI passing, mergeable, reviews at the bar
+        assert not gates.fix_huntable(pr, "fix", ["src/a.ts"])[0]
+        assert gates.fix_huntable(pr, "fix", ["src/a.ts"], objection=True)[0]
+
+
+class TestFixAutopushBar:
+    def _result(self, verdict="safe", lines=10, failed=False):
+        patch = "diff --git a/x.ts b/x.ts\n--- a/x.ts\n+++ b/x.ts\n" + "\n".join(
+            f"+line {i}" for i in range(lines))
+        return {"patch": patch,
+                "review_verdict": {"verdict": verdict, "failed": failed, "reason": "r"},
+                "compile_preflight": {"exit": 0, "base_sha": "b" * 40}}
+
+    def test_passes_a_small_safe_compiled_change_off_tier_zero(self, monkeypatch):
+        monkeypatch.setattr(gates.risktier, "pr_tier", lambda paths: 2)
+        assert gates.fix_autopush_bar(self._result(), ["src/a.ts"])[0]
+
+    def test_blocks_on_each_missing_condition(self, monkeypatch):
+        monkeypatch.setattr(gates.risktier, "pr_tier", lambda paths: 2)
+        assert "reviewer" in gates.fix_autopush_bar(self._result(verdict="unsafe"), ["a"])[1]
+        assert "lines" in gates.fix_autopush_bar(self._result(lines=400), ["a"])[1]
+        monkeypatch.setattr(gates.risktier, "pr_tier", lambda paths: 1)
+        assert "tier" in gates.fix_autopush_bar(self._result(), ["a"])[1]
+        r = self._result()
+        r["compile_preflight"] = {"exit": 20, "base_sha": "b" * 40}
+        monkeypatch.setattr(gates.risktier, "pr_tier", lambda paths: 2)
+        assert "compile" in gates.fix_autopush_bar(r, ["a"])[1]
+        monkeypatch.setattr(gates.risktier, "pr_tier", lambda paths: None)
+        assert gates.fix_autopush_bar(self._result(), [])[1].startswith("the touched paths are unknown")

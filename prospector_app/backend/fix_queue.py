@@ -30,7 +30,7 @@ IN_FLIGHT = ("queued", "running", "awaiting-review", "approved", "pushing")
 
 
 def queue_pr(n: int, action: str, source: str | None = None,
-             guidance: str | None = None) -> dict:
+             guidance: str | None = None, objection: dict | None = None) -> dict:
     """Mark PR `n` queued for `action`. Raises ValueError with the
     operator-readable reason when the pre-check refuses. `source` stamps who
     queued it ("auto" for the idle hunter; the operator path passes None).
@@ -38,23 +38,28 @@ def queue_pr(n: int, action: str, source: str | None = None,
     `guidance` is the operator's own instruction for a `fix`: it becomes the
     agent's goal, and it is the authorization for the action where the profile
     names no fixable gates. Blank text is no instruction, so it is dropped
-    rather than stored as an empty mandate."""
+    rather than stored as an empty mandate. `objection` is a machine judgment
+    the fix answers; it forces source "objection" and asks eligibility with
+    the objection gate, never as human authorization."""
     if action not in settings.FIX_ACTIONS:
         raise ValueError(f"unknown autofix action {action!r}; valid actions are "
                          f"{', '.join(settings.FIX_ACTIONS)}")
     guidance = (guidance or "").strip() or None
+    if objection is not None:
+        source = "objection"
     rec = data.store().load_pr(n)
     if rec is None:
         raise ValueError(f"PR #{n} not in store")
     ok, why = gates.fix_eligibility(rec, action, service.changed_paths(rec),
-                                    guided=guidance is not None)
+                                    guided=guidance is not None,
+                                    objection=objection is not None)
     if not ok:
         raise ValueError(f"PR #{n} is not eligible for {action}: {why}")
     status = (rec.fix_request or {}).get("status")
     if status in IN_FLIGHT:
         raise ValueError(f"PR #{n} already has a {status} fix request")
     rec.record_fix_request("queued", action, queued_at=_now(), source=source,
-                           guidance=guidance, head_sha=rec.head_sha)
+                           guidance=guidance, objection=objection, head_sha=rec.head_sha)
     data.refresh()
     return {"pr": n, "action": action, "status": "queued"}
 
@@ -73,7 +78,8 @@ def dequeue_pr(n: int) -> dict:
                          f"(status: {req.get('status') or 'none'})")
     rec.record_fix_request("cancelled", req.get("action", "fix"),
                            queued_at=req.get("queued_at"), finished_at=_now(),
-                           source=req.get("source"))
+                           source=req.get("source"), guidance=req.get("guidance"),
+                           objection=req.get("objection"), head_sha=req.get("against_head_sha"))
     data.refresh()
     return {"pr": n, "status": "cancelled"}
 
@@ -106,8 +112,8 @@ def approve_pr(n: int, *, dry_run: bool) -> dict:
     rec.record_fix_request("approved", req.get("action", "fix"),
                            queued_at=req.get("queued_at"), source=req.get("source"),
                            base_sha=req.get("base_sha"), result=req.get("result"),
-                           guidance=req.get("guidance"), host=req.get("host"),
-                           head_sha=req.get("against_head_sha"))
+                           guidance=req.get("guidance"), objection=req.get("objection"),
+                           host=req.get("host"), head_sha=req.get("against_head_sha"))
     data.refresh()
     return {"pr": n, "status": "approved"}
 
@@ -189,6 +195,8 @@ class FixQueueEntry(TypedDict):
     conflict_paths: list[str]
     resolvable: bool
     auto_review: dict | None
+    objection: dict | None
+    rounds: int
 
 
 def _detail(req: dict) -> str | None:
@@ -231,6 +239,9 @@ def _entry(n: int, title: str | None, req: dict) -> FixQueueEntry:
         "conflict_paths": [str(p) for p in paths] if isinstance(paths, list) else [],
         "resolvable": status == "awaiting-review" and (pf is None or pf.get("exit") == 0),
         "auto_review": _auto_review_bar(result),
+        "objection": ({"kind": str(obj.get("kind")), "text": str(obj.get("text") or "")[:400]}
+                      if (obj := req.get("objection")) else None),
+        "rounds": len(result.get("rounds") or []),
     }
 
 
@@ -311,4 +322,5 @@ def runner_status() -> dict:
             "push_login": settings.push_login() or None,
             "autopush": sorted(settings.fix_autopush()),
             "host": fresh.get("host"), "current_pr": fresh.get("current_pr"),
-            "last_beat": fresh.get("last_beat"), "hosts": hosts}
+            "last_beat": fresh.get("last_beat"), "hosts": hosts,
+            "objection_budget": records[0].get("objection_budget") if records else None}

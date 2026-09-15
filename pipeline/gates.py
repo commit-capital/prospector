@@ -543,7 +543,7 @@ def merge_eligibility(pr: Pr, today: str | None = None,
 
 def fix_eligibility(pr: Pr, action: str,
                     changed_paths: list[str] | None = None, *,
-                    guided: bool = False) -> tuple[bool, str]:
+                    guided: bool = False, objection: bool = False) -> tuple[bool, str]:
     """Autofix gate — may the push bot act on this PR's head branch?
 
     Answers from stored facts alone, so any app instance can render the buttons
@@ -586,6 +586,10 @@ def fix_eligibility(pr: Pr, action: str,
     every resolution parks for review before it is pushed — an operator's, or
     resolve_autopush_bar's when the deployment opts into unattended pushes.
 
+    `objection` says a machine judgment, not a person, chose this fix — a
+    reviewer's rejection, a compile excerpt, a security finding. It authorizes
+    nothing by itself, so the profile must name `objection` in fixable_gates.
+
     A repository that also wants the mechanical actions off some surface names
     it in autofix.deny_globs, which blocks every action. Agent-executed
     instruction paths are the case worth naming there.
@@ -611,7 +615,10 @@ def fix_eligibility(pr: Pr, action: str,
         if denied:
             return False, ("touches a path the profile withholds from autofix: "
                            f"{', '.join(denied[:5])}")
-    if action == "fix" and not guided and not profile.active().autofix.fixable_gates:
+    if action == "fix" and objection and "objection" not in profile.active().autofix.fixable_gates:
+        return False, ("the active profile does not name objection in autofix.fixable_gates, "
+                       "so agent continuations are not enabled for this repository")
+    if action == "fix" and not guided and not objection and not profile.active().autofix.fixable_gates:
         return False, ("the active profile names no autofix.fixable_gates, so "
                        "agent-authored fixes are not enabled for this repository")
     return True, f"eligible for {action}"
@@ -625,6 +632,7 @@ def resolve_autopush_bar(result: dict) -> tuple[bool, str]:
     Pass requires all of:
       - the conflicted paths are known and none reaches risk tier 0 — agent
         judgment stays out of the code where a wrong merge hurts most
+      - the compile preflight recorded on the result cleared (or none ran)
       - two independent reviewers, each an affirmative `safe` (a missing,
         malformed, or failed review reads as unsafe)
       - the related-tests sandbox run, when one exists, exited clean; a resolve
@@ -640,6 +648,11 @@ def resolve_autopush_bar(result: dict) -> tuple[bool, str]:
         pinned = risktier.tier_facet(paths)["pinned_by"]
         return False, ("conflicted paths reach risk tier 0: "
                        f"{', '.join(pinned[:5])}")
+    pf = result.get("compile_preflight")
+    if pf is not None:
+        pf_ok, pf_why = compile_preflight_gate(pf)
+        if not pf_ok:
+            return False, f"the compile preflight did not clear it: {pf_why}"
     auto = result.get("auto_review") or {}
     reviews = [r for r in (auto.get("reviews") or []) if isinstance(r, dict)]
     # A judged rejection is the reason worth reporting; a machine-failed
@@ -668,6 +681,38 @@ def resolve_autopush_bar(result: dict) -> tuple[bool, str]:
     return True, "cleared for unattended push"
 
 
+def fix_autopush_bar(result: dict, changed_paths: list[str]) -> tuple[bool, str]:
+    """May an authored `fix` be pushed unattended? The ONE policy over the
+    request's recorded evidence, judged only when TRIAGE_FIX_AUTOPUSH names
+    `fix`; an operator's manual approval never consults it.
+
+    Pass requires all of: the refuting reviewer's affirmative `safe`; a compile
+    preflight that cleared (or none configured); every touched path at or
+    above TRIAGE_FIX_AUTOPUSH_MIN_TIER; and a patch within
+    TRIAGE_FIX_AUTOPUSH_MAX_LINES changed lines."""
+    review = result.get("review_verdict") or {}
+    if review.get("failed") or review.get("verdict") != "safe":
+        return False, f"the reviewer did not clear it: {review.get('reason') or 'no verdict'}"
+    pf = result.get("compile_preflight")
+    if pf is not None:
+        ok, why = compile_preflight_gate(pf)
+        if not ok:
+            return False, f"the compile preflight did not clear it: {why}"
+    tier = risktier.pr_tier(changed_paths)
+    if tier is None:
+        return False, "the touched paths are unknown, so the risk tier is too"
+    if tier < settings.fix_autopush_min_tier():
+        return False, (f"touched paths reach risk tier {tier}, below the unattended "
+                       f"floor of {settings.fix_autopush_min_tier()}")
+    lines = sum(1 for ln in str(result.get("patch") or "").splitlines()
+                if (ln.startswith("+") and not ln.startswith("+++"))
+                or (ln.startswith("-") and not ln.startswith("---")))
+    if lines > settings.fix_autopush_max_lines():
+        return False, (f"the change touches {lines} lines, past the unattended cap of "
+                       f"{settings.fix_autopush_max_lines()}")
+    return True, "cleared for unattended push"
+
+
 # The autofix actions the idle hunter may queue on its own. `update` and
 # `rebase` are mechanical; `fix` has an agent author a change, and the worker
 # additionally holds it behind the deployment's TRIAGE_FIX_HUNT_FIX opt-in and
@@ -676,7 +721,8 @@ HUNTABLE_ACTIONS = ("update", "rebase", "fix", "describe")
 
 
 def fix_huntable(pr: Pr, action: str,
-                 changed_paths: list[str] | None = None) -> tuple[bool, str]:
+                 changed_paths: list[str] | None = None, *,
+                 objection: bool = False) -> tuple[bool, str]:
     """May the idle hunter queue `action` for this PR without being asked?
 
     fix_eligibility bounds which branches the push bot may touch at all. This is
@@ -699,7 +745,8 @@ def fix_huntable(pr: Pr, action: str,
       the template — which no push to the branch can clear.
 
     The operator's own click answers to fix_eligibility alone; this bar governs
-    only what the hunter starts by itself.
+    only what the hunter starts by itself. With `objection` the `fix` needs no
+    failing review gate: the objection names what the fix is for.
     """
     if action not in HUNTABLE_ACTIONS:
         return False, (f"the hunter queues only {', '.join(HUNTABLE_ACTIONS)}; "
@@ -721,18 +768,19 @@ def fix_huntable(pr: Pr, action: str,
         if scanner_blockers:
             return False, (f"{scanner_blockers[0].bar.reason} — a security finding is a "
                            "human's call, not a fix target")
-        fixable = profile.active().autofix.fixable_gates
-        failing = [b for b in review_blockers if b.bar.status == reviewers.FAIL]
-        review_fixable = "review" in fixable and bool(failing)
-        ci_fixable = "ci" in fixable and pr.ci == "failing"
-        if not (review_fixable or ci_fixable):
-            if review_blockers and not failing:
-                return False, ("the review is stale or pending — a re-review, not a fix, "
-                               "is what moves it")
-            return False, "no gate a fix could clear is failing"
+        if not objection:
+            fixable = profile.active().autofix.fixable_gates
+            failing = [b for b in review_blockers if b.bar.status == reviewers.FAIL]
+            review_fixable = "review" in fixable and bool(failing)
+            ci_fixable = "ci" in fixable and pr.ci == "failing"
+            if not (review_fixable or ci_fixable):
+                if review_blockers and not failing:
+                    return False, ("the review is stale or pending — a re-review, not a "
+                                   "fix, is what moves it")
+                return False, "no gate a fix could clear is failing"
     elif review_blockers or scanner_blockers:
         return False, (review_blockers + scanner_blockers)[0].bar.reason or "review bar not met"
-    return fix_eligibility(pr, action, changed_paths)
+    return fix_eligibility(pr, action, changed_paths, objection=objection)
 
 
 def security_overridable(pr: Pr, today: str | None = None,

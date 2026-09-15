@@ -628,7 +628,7 @@ export interface FixRequest {
   status: "queued" | "running" | "awaiting-review" | "approved" | "pushing"
         | "pushed" | "refused" | "failed" | "cancelled";
   action: FixRequestAction;
-  source?: "operator" | "auto" | null;
+  source?: "operator" | "auto" | "objection" | null;
   step?: string | null;
   queued_at?: string | null;
   started_at?: string | null;
@@ -697,6 +697,8 @@ export interface FixRunner {
   push_identity: boolean;
   push_login?: string | null;
   autopush: FixAction[];
+  /** Today's objection continuations on the freshest worker, against its daily cap. */
+  objection_budget?: { used: number; limit: number } | null;
   host?: string | null;
   current_pr?: number | null;
   last_beat?: string | null;
@@ -715,7 +717,7 @@ export interface FixQueueEntry {
   title?: string | null;
   status: FixRequest["status"];
   action: FixRequestAction;
-  source?: "operator" | "auto" | null;
+  source?: "operator" | "auto" | "objection" | null;
   step?: string | null;
   started_at?: string | null;
   finished_at?: string | null;
@@ -724,6 +726,10 @@ export interface FixQueueEntry {
   base_sha?: string | null;
   /** The operator's own instruction for an agent-authored fix. */
   guidance?: string | null;
+  /** The machine judgment a continuation authored from, when this request is one. */
+  objection?: { kind: string; text: string } | null;
+  /** How many author-and-review rounds the request has been through. */
+  rounds: number;
   /** The one line worth reading about where this request stands: why it was
    *  refused, what it failed on, or the message a proven change carries. */
   detail?: string | null;

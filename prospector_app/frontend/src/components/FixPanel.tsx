@@ -88,7 +88,7 @@ function RequestStrip({ req, runner }: { req: FixRequest; runner: FixRunner | nu
         <div>
           <div className="vb-headline">Queued to {req.action}{offlineChip}</div>
           <div className="vb-detail">
-            Waiting for the runner{req.source === "auto" && " · auto-picked"}{when}
+            Waiting for the runner{req.source === "auto" && " · auto-picked"}{req.source === "objection" && " · from an objection"}{when}
           </div>
         </div>
       </div>

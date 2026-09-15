@@ -15,6 +15,7 @@ import pytest
 
 from pipeline import headless_agent, profile
 from pipeline import store as S
+from pipeline.storekit import now as _now
 from prospector_app.backend import data, fix_queue, fix_worker
 from pipeline.testsupport import greptile_entry, reviews_section
 
@@ -81,7 +82,7 @@ def test_hunter_requires_the_review_bar(store):
 def test_hunter_takes_an_unmergeable_pr_that_meets_the_bar(store):
     # CI is failing and the PR does not merge — the two things pr_clean refuses
     # on, and the two things an update exists to clear.
-    assert fix_worker.next_auto() == ("rebase", 1)
+    assert fix_worker.next_auto() == ("rebase", 1, None)
 
 
 # --- update parks instead of pushing --------------------------------------------
@@ -909,7 +910,7 @@ def test_hunter_queues_describe_for_a_description_only_nit(store, fix_profile, m
     monkeypatch.setenv("TRIAGE_FIX_HUNT_FIX", "1")
     store.save_pr(_describable_pr())
     data.refresh()
-    assert fix_worker.auto_fixable(data.prs()[5]) == "describe"
+    assert fix_worker.auto_fixable(data.prs()[5]) == ("describe", None)
 
 
 def test_a_code_finding_beside_the_description_nit_is_a_fix_not_a_describe(
@@ -920,7 +921,7 @@ def test_a_code_finding_beside_the_description_nit_is_a_fix_not_a_describe(
         {"title": "retry loop never exits", "body": "x", "resolved": False, "outdated": False})
     store.save_pr(rec)
     data.refresh()
-    assert fix_worker.auto_fixable(data.prs()[5]) == "fix"
+    assert fix_worker.auto_fixable(data.prs()[5]) == ("fix", None)
 
 
 def _fake_describe_inputs(monkeypatch, tmp_path):
@@ -1033,7 +1034,7 @@ def test_hunter_queues_fix_with_the_opt_in(store, fix_profile, monkeypatch):
     monkeypatch.setenv("TRIAGE_FIX_HUNT_FIX", "1")
     store.save_pr(_fixable_pr())
     data.refresh()
-    assert fix_worker.auto_fixable(data.prs()[2]) == "fix"
+    assert fix_worker.auto_fixable(data.prs()[2]) == ("fix", None)
 
 
 def test_one_fix_attempt_per_head(store, fix_profile, monkeypatch):
@@ -1049,7 +1050,7 @@ def test_one_fix_attempt_per_head(store, fix_profile, monkeypatch):
                           "against_head_sha": "b" * 40}
     store.save_pr(rec)
     data.refresh()
-    assert fix_worker.auto_fixable(data.prs()[2]) == "fix"
+    assert fix_worker.auto_fixable(data.prs()[2]) == ("fix", None)
 
 
 def test_mechanical_pool_runs_while_the_fix_slots_are_full(store, fix_profile, monkeypatch):
@@ -1061,7 +1062,7 @@ def test_mechanical_pool_runs_while_the_fix_slots_are_full(store, fix_profile, m
     store.save_pr(_fixable_pr(2))
     data.refresh()
     # PR 2 is a fix candidate and PR 1 a rebase; the one slot is held by PR 3.
-    assert fix_worker.next_auto() == ("rebase", 1)
+    assert fix_worker.next_auto() == ("rebase", 1, None)
 
 
 def test_a_resolve_ending_rests_the_rebase_hunt(store):
@@ -1110,12 +1111,12 @@ def test_hunt_order_fix_first_then_nits_then_tiers(store, fix_profile, monkeypat
         store.save_pr(rec)
     data.refresh()
     # A fix slot is free, so the agent lane leads PR 1's rebase.
-    assert fix_worker.next_auto() == ("fix", 4)  # nits beat score tiers
+    assert fix_worker.next_auto() == ("fix", 4, None)  # nits beat score tiers
     nits2 = store.load_pr(4).raw
     nits2["fix_request"] = {"status": "running", "action": "fix"}
     store.save_pr(nits2)
     data.refresh()
-    assert fix_worker.next_auto() == ("fix", 3)  # 4/5 beats 3/5
+    assert fix_worker.next_auto() == ("fix", 3, None)  # 4/5 beats 3/5
 
 
 def test_authored_fix_pushes_when_autopush_names_fix(store, monkeypatch):
@@ -1175,7 +1176,7 @@ def test_a_failed_ending_is_hunted_again_once_it_cools(store, monkeypatch):
     rec["fix_request"]["finished_at"] = long_ago
     store.save_pr(rec)
     data.refresh()
-    assert fix_worker.auto_fixable(data.prs()[1]) == "rebase"
+    assert fix_worker.auto_fixable(data.prs()[1]) == ("rebase", None)
 
 
 def test_an_agent_that_does_not_land_is_a_failure_not_a_verdict(store, monkeypatch):
@@ -1246,7 +1247,7 @@ def test_a_refused_rebase_is_not_hunted_again_at_the_same_head(store, monkeypatc
                           "against_head_sha": "b" * 40, "source": "auto"}
     store.save_pr(rec)
     data.refresh()
-    assert fix_worker.auto_fixable(data.prs()[1]) == "rebase"
+    assert fix_worker.auto_fixable(data.prs()[1]) == ("rebase", None)
 
 
 # --- the resolve auto-review lane -----------------------------------------------
@@ -1755,3 +1756,484 @@ class TestMergeCommitFallback:
         assert req["status"] == "refused" and req["action"] == "rebase"
         assert "merge commits" in req["refused_reason"]
         assert ("update", "--probe") not in fake.calls
+
+
+class TestResolveContinuation:
+    """A reviewer's judged rejection becomes the author agent's goal inside the
+    kept merge worktree; the result is re-reviewed under the same bar."""
+
+    def _parked(self, store, tmp_path):
+        from pipeline import settings
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        (wt / "pr.patch").write_text("diff --git a/one.txt b/one.txt\n+x\n")
+        store.edit_pr(1).record_fix_request(
+            "awaiting-review", "resolve", queued_at="2026-09-14T00:00:00+00:00",
+            source="auto", host=settings.worker_id(), head_sha=HEAD,
+            result={"conflict_paths": ["one.txt"], "merge_diff": "diff --cc one.txt",
+                    "resolutions": [{"path": "one.txt", "rationale": "kept both"}]})
+        data.refresh()
+        return wt
+
+    def _fakes(self, monkeypatch, wt, verdicts, gates_=("objection",)):
+        monkeypatch.setattr(profile, "active", lambda: profile.RepoProfile(
+            autofix=profile.AutofixPolicy(fixable_gates=tuple(gates_))))
+        calls: dict = {"author": 0, "review": 0, "resubmit": []}
+        seq = iter(verdicts)
+
+        def review(worktree, **kw):
+            calls["review"] += 1
+            return next(seq)
+        monkeypatch.setattr(fix_worker.review_resolve, "review", review)
+
+        def author(worktree, **kw):
+            calls["author"] += 1
+            calls["goal"] = kw["goal"]
+            return {"summary": "Keep the base's deletion",
+                    "changes": [{"path": "one.txt", "note": "n"}]}
+        monkeypatch.setattr(fix_worker.author_fix, "author", author)
+        monkeypatch.setattr(fix_worker.author_fix, "assert_disclosed", lambda changes, paths: None)
+        monkeypatch.setattr(fix_worker.verify_driver, "fetch_patch", lambda pr, head: wt / "pr.patch")
+        monkeypatch.setattr(fix_worker, "_related_tests_run", lambda *a, **k: None)
+        monkeypatch.setattr(fix_worker.risktier, "tier_facet",
+                            lambda paths: {"tier": 2, "pinned_by": []})
+        monkeypatch.setattr(fix_worker.risktier, "pr_tier", lambda paths: 2)
+        monkeypatch.setattr(fix_worker.resolve_evidence, "history", lambda wt, paths: "")
+        monkeypatch.setattr(fix_worker.resolve_evidence, "store_context", lambda rec: "")
+        monkeypatch.setattr(fix_worker.resolve_evidence, "related_tests", lambda wt, paths: [])
+
+        def resubmit(n, *args, stdin=None):
+            calls["resubmit"].append(args)
+            out = ""
+            if args[0] == "state":
+                out = json.dumps({"phase": "ready", "mode": "merge", "conflicts": [],
+                                  "worktree": str(wt), "base_branch": "master"})
+            elif args[0] == "diff":
+                out = "diff --git a/one.txt b/one.txt\n+resolved"
+            return type("R", (), {"returncode": 0, "stdout": out, "stderr": ""})()
+        monkeypatch.setattr(fix_worker, "_resubmit", resubmit)
+        return calls
+
+    def test_a_rejection_is_continued_and_re_reviewed(self, store, monkeypatch, tmp_path):
+        wt = self._parked(store, tmp_path)
+        unsafe = {"verdict": "unsafe", "reason": "drops the base's deletion", "concerns": ["c1"]}
+        safe = {"verdict": "safe", "reason": "ok", "concerns": []}
+        calls = self._fakes(monkeypatch, wt, [unsafe, safe, safe])
+        fix_worker.review_parked_resolve(1)
+        req = store.load_pr(1).fix_request
+        assert req["status"] == "approved"
+        assert calls["author"] == 1 and "drops the base's deletion" in calls["goal"]
+        assert ("commit", "-m", "Keep the base's deletion") in calls["resubmit"]
+        assert [r["objection"]["kind"] for r in req["result"]["rounds"]] == [
+            "resolve-review", "resolve-review"]
+        assert req["objection"]["signature"].startswith("resolve-review:")
+
+    def test_a_second_rejection_parks_with_both_rounds(self, store, monkeypatch, tmp_path):
+        wt = self._parked(store, tmp_path)
+        unsafe = {"verdict": "unsafe", "reason": "still wrong", "concerns": []}
+        self._fakes(monkeypatch, wt, [unsafe, unsafe])
+        fix_worker.review_parked_resolve(1)
+        req = store.load_pr(1).fix_request
+        assert req["status"] == "awaiting-review"
+        assert len(req["result"]["rounds"]) == 2
+        assert not req["result"]["auto_review"]["bar"]["ok"]
+        ledger = [r for r in store.runs() if getattr(r, "phase", "") == "fix:single"]
+        assert ledger[-1].raw["stats"]["objection"].startswith("resolve-review:")
+
+    def test_without_the_gate_the_rejection_parks_as_before(self, store, monkeypatch, tmp_path):
+        wt = self._parked(store, tmp_path)
+        calls = self._fakes(monkeypatch, wt,
+                            [{"verdict": "unsafe", "reason": "r", "concerns": []}],
+                            gates_=("review",))
+        fix_worker.review_parked_resolve(1)
+        assert store.load_pr(1).fix_request["status"] == "awaiting-review"
+        assert calls["author"] == 0
+
+    def test_an_exhausted_budget_parks_as_before(self, store, monkeypatch, tmp_path):
+        wt = self._parked(store, tmp_path)
+        calls = self._fakes(monkeypatch, wt,
+                            [{"verdict": "unsafe", "reason": "r", "concerns": []}])
+        monkeypatch.setattr(fix_worker.objections, "budget_left", lambda st, w, now=None: 0)
+        fix_worker.review_parked_resolve(1)
+        assert calls["author"] == 0
+        assert store.load_pr(1).fix_request["status"] == "awaiting-review"
+
+    def test_an_objection_already_answered_on_this_head_is_not_retried(
+            self, store, monkeypatch, tmp_path):
+        from pipeline import objections as obj_mod
+        wt = self._parked(store, tmp_path)
+        calls = self._fakes(monkeypatch, wt,
+                            [{"verdict": "unsafe", "reason": "r", "concerns": []}])
+        monkeypatch.setattr(obj_mod, "spent", lambda pr, sig: True)
+        fix_worker.review_parked_resolve(1)
+        assert calls["author"] == 0
+
+
+class TestFixRetry:
+    """A rejected fix is retried once from the reviewer's objection; a second
+    rejection refuses with both reasons."""
+
+    def _setup(self, store, monkeypatch, verdicts, gates_=("review", "objection")):
+        monkeypatch.setattr(profile, "active", lambda: profile.RepoProfile(
+            autofix=profile.AutofixPolicy(fixable_gates=tuple(gates_))))
+        seq = iter(verdicts)
+        calls: dict = {"author": [], "review": 0}
+
+        def author(wt, **kw):
+            calls["author"].append(kw["goal"])
+            return {"summary": "s", "changes": [{"path": "a.ts", "note": "n"}]}
+        monkeypatch.setattr(fix_worker.author_fix, "author", author)
+        monkeypatch.setattr(fix_worker.author_fix, "assert_disclosed", lambda c, p: None)
+
+        def review(wt, patch, **kw):
+            calls["review"] += 1
+            return next(seq)
+        monkeypatch.setattr(fix_worker.review_fix, "review", review)
+        monkeypatch.setattr(fix_worker, "_resubmit", _fix_probe())
+        _queue_fix()
+        return calls
+
+    def test_a_rejected_fix_is_retried_once_with_the_objection(self, store, monkeypatch):
+        calls = self._setup(store, monkeypatch, [
+            {"verdict": "unsafe", "reason": "it removed the guard", "concerns": []},
+            {"verdict": "safe", "reason": "ok", "concerns": []}])
+        fix_worker.run_one(1)
+        req = store.load_pr(1).fix_request
+        assert req["status"] == "awaiting-review"
+        assert len(calls["author"]) == 2 and "it removed the guard" in calls["author"][1]
+        assert req["objection"]["kind"] == "fix-review"
+
+    def test_two_rejections_refuse_with_both_reasons(self, store, monkeypatch):
+        self._setup(store, monkeypatch, [
+            {"verdict": "unsafe", "reason": "first", "concerns": []},
+            {"verdict": "unsafe", "reason": "second", "concerns": []}])
+        fix_worker.run_one(1)
+        req = store.load_pr(1).fix_request
+        assert req["status"] == "refused"
+        assert "first" in req["refused_reason"] and "second" in req["refused_reason"]
+
+    def test_without_the_gate_a_rejection_refuses_at_once(self, store, monkeypatch):
+        calls = self._setup(store, monkeypatch,
+                            [{"verdict": "unsafe", "reason": "no", "concerns": []}],
+                            gates_=("review",))
+        fix_worker.run_one(1)
+        assert store.load_pr(1).fix_request["status"] == "refused"
+        assert len(calls["author"]) == 1
+
+
+class TestFixAutopush:
+    def _run(self, store, monkeypatch, tier):
+        monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", "fix")
+        monkeypatch.setattr(fix_worker.risktier, "pr_tier", lambda paths: tier)
+        probe = _fix_probe()
+        monkeypatch.setattr(fix_worker, "_resubmit", probe)
+        _authored(monkeypatch)
+        _reviewed(monkeypatch)
+        _queue_fix()
+        fix_worker.run_one(1)
+        return probe, store.load_pr(1).fix_request
+
+    def test_a_fix_past_the_bar_is_pushed(self, store, monkeypatch):
+        probe, req = self._run(store, monkeypatch, tier=2)
+        assert req["status"] == "pushed" and _pushed(probe)
+        assert req["result"]["autopush_bar"]["ok"] is True
+
+    def test_a_fix_under_the_bar_parks_with_the_reason(self, store, monkeypatch):
+        probe, req = self._run(store, monkeypatch, tier=1)
+        assert req["status"] == "awaiting-review" and not _pushed(probe)
+        assert "tier" in req["result"]["autopush_bar"]["reason"]
+
+
+class TestCompileObjection:
+    def test_a_hunted_update_that_fails_to_compile_queues_a_compile_fix(self, store, monkeypatch):
+        monkeypatch.setattr(profile, "active", lambda: profile.RepoProfile(
+            autofix=profile.AutofixPolicy(fixable_gates=("objection",))))
+        fix_queue.queue_pr(1, "update", source="auto")
+        monkeypatch.setattr(fix_worker, "_resubmit", _Probe(rc=0))
+        monkeypatch.setattr(fix_worker, "_preflight",
+                            lambda n, patch: {"exit": 20, "error_excerpt": "error TS2322: x",
+                                              "base_sha": "b" * 40})
+        fix_worker.run_one(1)
+        req = store.load_pr(1).fix_request
+        assert req["status"] == "queued" and req["action"] == "fix"
+        assert req["source"] == "objection" and req["objection"]["kind"] == "compile"
+        endings = [r for r in store.runs() if getattr(r, "phase", "") == "fix:single"]
+        assert endings[-1].raw["stats"]["status"] == "refused"
+        assert "A fix is queued" in endings[-1].raw["stats"]["detail"]
+
+    def test_an_operators_update_that_fails_to_compile_just_refuses(self, store, monkeypatch):
+        monkeypatch.setattr(profile, "active", lambda: profile.RepoProfile(
+            autofix=profile.AutofixPolicy(fixable_gates=("objection",))))
+        fix_queue.queue_pr(1, "update")
+        monkeypatch.setattr(fix_worker, "_resubmit", _Probe(rc=0))
+        monkeypatch.setattr(fix_worker, "_preflight",
+                            lambda n, patch: {"exit": 20, "error_excerpt": "error TS2322: x",
+                                              "base_sha": "b" * 40})
+        fix_worker.run_one(1)
+        req = store.load_pr(1).fix_request
+        assert req["status"] == "refused" and req["action"] == "update"
+
+    def test_a_base_that_fails_too_queues_nothing(self, store, monkeypatch):
+        monkeypatch.setattr(profile, "active", lambda: profile.RepoProfile(
+            autofix=profile.AutofixPolicy(fixable_gates=("objection",))))
+        fix_queue.queue_pr(1, "update", source="auto")
+        monkeypatch.setattr(fix_worker, "_resubmit", _Probe(rc=0))
+        monkeypatch.setattr(fix_worker, "_preflight",
+                            lambda n, patch: {"exit": 20, "error": "the compile command fails on the base itself",
+                                              "error_kind": "base-compile", "base_sha": "b" * 40})
+        fix_worker.run_one(1)
+        req = store.load_pr(1).fix_request
+        assert req["status"] == "failed" and req["action"] == "update"
+
+
+class TestSecurityLane:
+    def _yellow(self, store):
+        rec = store.load_pr(1).raw
+        rec["signals"].update({"ci": "passing", "mergeable": True})
+        rec["drift"]["state"] = "applicable"
+        rec["security"] = {"verdict": "YELLOW", "checked_at": _now(), "against_head_sha": HEAD,
+                           "findings": [{"severity": "yellow", "title": "unbounded retry",
+                                         "detail": "the loop never gives up"}]}
+        store.save_pr(rec)
+        data.refresh()
+
+    def _gate(self, monkeypatch):
+        monkeypatch.setattr(profile, "active", lambda: profile.RepoProfile(
+            autofix=profile.AutofixPolicy(fixable_gates=("objection",))))
+
+    def test_a_yellow_pr_is_hunted_as_an_objection_fix(self, store, monkeypatch):
+        monkeypatch.setenv("TRIAGE_FIX_HUNT_SECURITY", "1")
+        monkeypatch.setenv("TRIAGE_FIX_HUNT_FIX", "1")
+        self._gate(monkeypatch)
+        self._yellow(store)
+        pick = fix_worker.next_auto()
+        assert pick is not None and pick[0] == "fix" and pick[2]["kind"] == "security"
+        assert "unbounded retry" in pick[2]["text"]
+
+    def test_the_lane_is_off_without_its_flag(self, store, monkeypatch):
+        monkeypatch.delenv("TRIAGE_FIX_HUNT_SECURITY", raising=False)
+        monkeypatch.setenv("TRIAGE_FIX_HUNT_FIX", "1")
+        self._gate(monkeypatch)
+        self._yellow(store)
+        assert fix_worker.next_auto() is None
+
+    def test_an_answered_objection_is_not_hunted_again(self, store, monkeypatch):
+        monkeypatch.setenv("TRIAGE_FIX_HUNT_SECURITY", "1")
+        monkeypatch.setenv("TRIAGE_FIX_HUNT_FIX", "1")
+        self._gate(monkeypatch)
+        self._yellow(store)
+        pick = fix_worker.next_auto()
+        store.edit_pr(1).record_fix_request("refused", "fix", source="objection",
+                                            objection=pick[2], head_sha=HEAD)
+        data.refresh()
+        assert fix_worker.next_auto() is None
+
+    def test_the_goal_is_the_finding(self, store):
+        from pipeline import objections
+        obj = objections.build("security", "unbounded retry: the loop never gives up")
+        brief = fix_worker._fix_goal(store.load_pr(1), {"objection": obj})
+        assert "security review flagged" in brief.goal and brief.findings == []
+
+
+class TestResolveContinuationMechanics:
+    """The continuation commits before it reads, discloses the follow-up
+    alone, compile-checks the combined change, and discards on any stop."""
+
+    def _parked(self, store, tmp_path):
+        from pipeline import settings
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        (wt / "pr.patch").write_text("diff --git a/one.txt b/one.txt\n+x\n")
+        store.edit_pr(1).record_fix_request(
+            "awaiting-review", "resolve", queued_at="2026-09-14T00:00:00+00:00",
+            source="auto", host=settings.worker_id(), head_sha=HEAD,
+            result={"conflict_paths": ["one.txt"], "merge_diff": "diff --cc one.txt",
+                    "resolutions": [{"path": "one.txt", "rationale": "kept both"}]})
+        data.refresh()
+        return wt
+
+    def _fakes(self, monkeypatch, wt, verdicts, *, changes=None, preflight=None):
+        monkeypatch.setattr(profile, "active", lambda: profile.RepoProfile(
+            autofix=profile.AutofixPolicy(fixable_gates=("objection",))))
+        seq = iter(verdicts)
+        calls: dict = {"resubmit": [], "disclosed": [], "preflight": []}
+        monkeypatch.setattr(fix_worker.review_resolve, "review",
+                            lambda worktree, **kw: next(seq))
+        monkeypatch.setattr(fix_worker.author_fix, "author",
+                            lambda worktree, **kw: {"summary": "Follow up",
+                                                    "changes": changes or [{"path": "two.txt", "note": "n"}]})
+        monkeypatch.setattr(fix_worker.author_fix, "assert_disclosed",
+                            lambda c, paths: calls["disclosed"].append(paths))
+        monkeypatch.setattr(fix_worker.verify_driver, "fetch_patch", lambda pr, head: wt / "pr.patch")
+        monkeypatch.setattr(fix_worker, "_related_tests_run", lambda *a, **k: None)
+        monkeypatch.setattr(fix_worker.risktier, "tier_facet",
+                            lambda paths: {"tier": 2, "pinned_by": []})
+        monkeypatch.setattr(fix_worker.risktier, "pr_tier", lambda paths: 2)
+        monkeypatch.setattr(fix_worker.resolve_evidence, "history", lambda wt, paths: "")
+        monkeypatch.setattr(fix_worker.resolve_evidence, "store_context", lambda rec: "")
+        monkeypatch.setattr(fix_worker.resolve_evidence, "related_tests", lambda wt, paths: [])
+        monkeypatch.setattr(fix_worker, "_preflight",
+                            lambda n, patch: calls["preflight"].append(patch) or (preflight or {"exit": 0}))
+
+        def resubmit(n, *args, stdin=None):
+            calls["resubmit"].append(args)
+            out = ""
+            if args[0] == "state":
+                out = json.dumps({"phase": "ready", "mode": "merge", "conflicts": [],
+                                  "worktree": str(wt), "base_branch": "master"})
+            elif args == ("diff", "--last"):
+                out = "diff --git a/two.txt b/two.txt\n+follow"
+            elif args[0] == "diff":
+                out = "diff --git a/one.txt b/one.txt\n+resolved\ndiff --git a/two.txt b/two.txt\n+follow"
+            return type("R", (), {"returncode": 0, "stdout": out, "stderr": ""})()
+        monkeypatch.setattr(fix_worker, "_resubmit", resubmit)
+        return calls
+
+    def test_commit_precedes_the_reads_and_the_follow_up_is_what_is_disclosed(
+            self, store, monkeypatch, tmp_path):
+        wt = self._parked(store, tmp_path)
+        unsafe = {"verdict": "unsafe", "reason": "drops the deletion", "concerns": []}
+        safe = {"verdict": "safe", "reason": "ok", "concerns": []}
+        calls = self._fakes(monkeypatch, wt, [unsafe, safe, safe])
+        fix_worker.review_parked_resolve(1)
+        names = [a[0] + ("--last" if "--last" in a else "") for a in calls["resubmit"]]
+        last_combined = len(names) - 1 - names[::-1].index("diff")
+        assert names.index("commit") < names.index("diff--last") < last_combined
+        assert calls["disclosed"] == [["two.txt"]]
+        assert calls["preflight"] and "one.txt" in calls["preflight"][0] and "two.txt" in calls["preflight"][0]
+        req = store.load_pr(1).fix_request
+        assert req["status"] == "approved"
+        assert req["result"]["touched_paths"] == ["one.txt", "two.txt"]
+        assert req["result"]["compile_preflight"] == {"exit": 0}
+
+    def test_a_failing_compile_after_the_continuation_discards_and_parks(
+            self, store, monkeypatch, tmp_path):
+        wt = self._parked(store, tmp_path)
+        unsafe = {"verdict": "unsafe", "reason": "r", "concerns": []}
+        calls = self._fakes(monkeypatch, wt, [unsafe], preflight={"exit": 20, "error_excerpt": "TS2322"})
+        fix_worker.review_parked_resolve(1)
+        req = store.load_pr(1).fix_request
+        assert req["status"] == "awaiting-review"
+        assert "compile preflight" in req["result"]["auto_review"]["bar"]["reason"]
+        assert ("discard",) in calls["resubmit"]
+        assert len(req["result"]["rounds"]) == 1
+
+    def test_an_undisclosed_follow_up_discards_and_parks(self, store, monkeypatch, tmp_path):
+        wt = self._parked(store, tmp_path)
+        calls = self._fakes(monkeypatch, wt, [{"verdict": "unsafe", "reason": "r", "concerns": []}])
+        monkeypatch.setattr(fix_worker.author_fix, "assert_disclosed",
+                            lambda c, paths: (_ for _ in ()).throw(ValueError("changed files it did not report")))
+        fix_worker.review_parked_resolve(1)
+        req = store.load_pr(1).fix_request
+        assert req["status"] == "awaiting-review" and "not trusted" in req["result"]["auto_review"]["bar"]["reason"]
+        assert ("discard",) in calls["resubmit"]
+
+
+class TestObjectionBookkeeping:
+    def test_a_security_fix_rejected_twice_keeps_its_security_objection_spent(
+            self, store, monkeypatch):
+        from pipeline import objections
+        monkeypatch.setattr(profile, "active", lambda: profile.RepoProfile(
+            autofix=profile.AutofixPolicy(fixable_gates=("objection",))))
+        seq = iter([{"verdict": "unsafe", "reason": "first", "concerns": []},
+                    {"verdict": "unsafe", "reason": "second", "concerns": []}])
+        monkeypatch.setattr(fix_worker.author_fix, "author",
+                            lambda wt, **kw: {"summary": "s", "changes": [{"path": "a.ts", "note": "n"}]})
+        monkeypatch.setattr(fix_worker.author_fix, "assert_disclosed", lambda c, p: None)
+        monkeypatch.setattr(fix_worker.review_fix, "review", lambda wt, patch, **kw: next(seq))
+        monkeypatch.setattr(fix_worker, "_resubmit", _fix_probe())
+        rec = store.load_pr(1).raw
+        rec["signals"].update({"ci": "passing", "mergeable": True})
+        rec["drift"]["state"] = "applicable"
+        store.save_pr(rec)
+        data.refresh()
+        security = objections.build("security", "unbounded retry")
+        fix_queue.queue_pr(1, "fix", objection=security)
+        fix_worker.run_one(1)
+        pr = data.prs()[1]
+        assert pr.fix_request["status"] == "refused"
+        assert pr.fix_request["objection"] == security
+        assert objections.spent(pr, security["signature"])
+        assert all(r["objection"]["kind"] == "fix-review" for r in pr.fix_request["result"]["rounds"])
+
+    def test_a_cancel_keeps_the_objection(self, store, monkeypatch):
+        from pipeline import objections
+        monkeypatch.setattr(profile, "active", lambda: profile.RepoProfile(
+            autofix=profile.AutofixPolicy(fixable_gates=("objection",))))
+        rec = store.load_pr(1).raw
+        rec["signals"].update({"ci": "passing", "mergeable": True})
+        rec["drift"]["state"] = "applicable"
+        store.save_pr(rec)
+        data.refresh()
+        security = objections.build("security", "unbounded retry")
+        fix_queue.queue_pr(1, "fix", objection=security)
+        fix_queue.dequeue_pr(1)
+        pr = data.prs()[1]
+        assert pr.fix_request["objection"] == security
+        assert objections.spent(pr, security["signature"])
+
+    def test_recheck_asks_the_objection_question(self, store, monkeypatch):
+        from pipeline import objections
+        monkeypatch.setattr(profile, "active", lambda: profile.RepoProfile(
+            autofix=profile.AutofixPolicy(fixable_gates=("objection",))))
+        rec = store.load_pr(1).raw
+        rec["signals"].update({"ci": "passing", "mergeable": True})
+        rec["drift"]["state"] = "applicable"
+        store.save_pr(rec)
+        data.refresh()
+        fix_queue.queue_pr(1, "fix", objection=objections.build("compile", "e"))
+        monkeypatch.setattr(profile, "active", lambda: profile.RepoProfile(
+            autofix=profile.AutofixPolicy(fixable_gates=("review",))))
+        ok, why = fix_worker.recheck_eligibility(1, "fix", ["a.ts"])
+        assert not ok and "objection" in why
+
+
+class TestSecurityLaneBounds:
+    def _yellow(self, store):
+        rec = store.load_pr(1).raw
+        rec["signals"].update({"ci": "passing", "mergeable": True})
+        rec["drift"]["state"] = "applicable"
+        rec["security"] = {"verdict": "YELLOW", "checked_at": _now(), "against_head_sha": HEAD,
+                           "findings": [{"severity": "yellow", "title": "unbounded retry",
+                                         "detail": "the loop never gives up"}]}
+        store.save_pr(rec)
+        data.refresh()
+
+    def _on(self, monkeypatch, *gates_):
+        monkeypatch.setenv("TRIAGE_FIX_HUNT_SECURITY", "1")
+        monkeypatch.setenv("TRIAGE_FIX_HUNT_FIX", "1")
+        monkeypatch.setattr(profile, "active", lambda: profile.RepoProfile(
+            autofix=profile.AutofixPolicy(fixable_gates=tuple(gates_))))
+
+    def test_a_spent_yellow_falls_through_to_the_ordinary_hunt(self, store, monkeypatch):
+        self._on(monkeypatch, "objection", "review")
+        self._yellow(store)
+        rec = store.load_pr(1).raw
+        rec["reviews"]["greptile"]["score"] = 4
+        store.save_pr(rec)
+        data.refresh()
+        pick = fix_worker.next_auto()
+        assert pick[2] is not None
+        # A cancel stamped `reclaimed` re-arms the head for the hunter while the
+        # objection stays answered, so the ordinary review-driven fix runs.
+        store.edit_pr(1).record_fix_request(
+            "cancelled", "fix", source="objection", objection=pick[2], head_sha=HEAD,
+            finished_at="2026-09-01T00:00:00+00:00",
+            result={"reclaimed": {"from": "w", "at": "2026-09-01T00:00:00+00:00"}})
+        data.refresh()
+        assert fix_worker.next_auto() == ("fix", 1, None)
+
+    def test_an_exhausted_budget_blocks_the_security_pick(self, store, monkeypatch):
+        self._on(monkeypatch, "objection")
+        self._yellow(store)
+        monkeypatch.setattr(fix_worker, "_budget_used", lambda st: 10 ** 6)
+        assert fix_worker.next_auto() is None
+
+    def test_an_overridden_yellow_is_left_alone(self, store, monkeypatch):
+        self._on(monkeypatch, "objection")
+        self._yellow(store)
+        rec = store.load_pr(1).raw
+        rec["security"]["override"] = {"reason": "accepted", "by": "op", "at": _now()}
+        store.save_pr(rec)
+        data.refresh()
+        assert fix_worker.next_auto() is None

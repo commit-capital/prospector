@@ -162,7 +162,22 @@ repository's `.github/PULL_REQUEST_TEMPLATE.md` — `pipeline/describe_pr.py` �
 for a PR whose every open review finding is about the description; the body is
 held to the profile's required sections and to the author's text kept verbatim,
 parks for approval, and is posted as the bot through the curated `gh pr edit`
-write, Activity-logged, with no push at all). A `fix` runs two agents inside a `resubmit prepare` clone:
+write, Activity-logged, with no push at all). An **objection**
+(`pipeline/objections.py`) is a machine judgment that names a defect an agent
+may fix: a resolve reviewer's judged rejection, a compile excerpt the pristine
+base passes, the fix reviewer's rejection, or a current YELLOW security finding
+(behind `TRIAGE_FIX_HUNT_SECURITY=1`). It is never human authorization: the
+profile must name `objection` in `autofix.fixable_gates`, every other block
+applies unchanged, one continuation runs per PR, head, and objection signature,
+and `TRIAGE_FIX_OBJECTION_BUDGET` (default 20) bounds continuations per worker
+per UTC day. A rejected resolve is continued inside its kept merge worktree
+(`resubmit commit` lands the follow-up on the merge) and re-judged under
+`resolve_autopush_bar` with both rounds kept on the request; a rejected fix is
+retried once; a hunted mechanical action that fails to compile queues a `fix`
+with source `objection`. A `fix` pushes unattended only when `TRIAGE_FIX_AUTOPUSH`
+names it and `gates.fix_autopush_bar` clears it: reviewer `safe`, compile clean,
+every touched path at or above `TRIAGE_FIX_AUTOPUSH_MIN_TIER` (default 2), and at
+most `TRIAGE_FIX_AUTOPUSH_MAX_LINES` (default 300) changed lines. A `fix` runs two agents inside a `resubmit prepare` clone:
 `pipeline/author_fix.py` writes the change against a goal — the operator's own
 typed guidance, else the profile's fixable gates read off every active code
 reviewer's open findings and its own summary (Greptile's reasons for a sub-bar

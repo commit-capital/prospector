@@ -51,7 +51,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, NamedTuple
 
 from pipeline import (author_fix, compile_preflight, describe_pr, diffpaths, freshness,
-                      gates, gh, headless_agent, profile, resolve_conflicts,
+                      gates, gh, headless_agent, objections, profile, resolve_conflicts,
                       resolve_evidence, review_fix, review_policy, review_resolve,
                       reviewers, risktier, settings, verify_driver)
 from pipeline.storekit import now as _now
@@ -62,6 +62,7 @@ from prospector_app.backend.resubmit_identity import worker_env
 
 if TYPE_CHECKING:
     from pipeline.model import Pr
+    from pipeline.store import Store
 
 POLL_SECONDS = 15.0
 
@@ -194,11 +195,29 @@ def key_safety_failure() -> str | None:
 
 
 def beat() -> None:
-    """Write this worker's liveness and autohunt opt-in into the shared store."""
-    data.store().save_fix_worker({
+    """Write this worker's liveness, autohunt opt-in, and today's continuation
+    budget into the shared store."""
+    st = data.store()
+    st.save_fix_worker({
         "host": settings.worker_id(), "pid": os.getpid(),
         "last_beat": _now(), "current_pr": state["current_pr"],
-        "autohunt": enabled_autohunt()})
+        "autohunt": enabled_autohunt(),
+        "objection_budget": {"used": _budget_used(st),
+                             "limit": settings.fix_objection_budget()}})
+
+
+# The heartbeat's view of today's continuation count, re-read from the ledger
+# once a minute so the beat itself costs no ledger query.
+_budget_cache: tuple[float, int] = (0.0, 0)
+
+
+def _budget_used(st: Store) -> int:
+    global _budget_cache
+    at, used = _budget_cache
+    if time.monotonic() - at >= 60.0:
+        used = objections.used_today(st, settings.worker_id())
+        _budget_cache = (time.monotonic(), used)
+    return used
 
 
 def recover_orphans() -> list[int]:
@@ -236,7 +255,8 @@ def recover_orphans() -> list[int]:
             st.edit_pr(n).record_fix_request(
                 "failed", req.get("action", "fix"), queued_at=req.get("queued_at"),
                 started_at=req.get("started_at"), finished_at=_now(), error=note,
-                source=req.get("source"), host=me)
+                source=req.get("source"), guidance=req.get("guidance"),
+                objection=req.get("objection"), host=me)
             marked.append(n)
     return marked
 
@@ -379,7 +399,7 @@ def _oldest(status: str, mine_only: tuple[str, ...] = ()) -> int | None:
             continue
         if req.get("attempts") and not _rested(req, TRANSIENT_RETRY_SECONDS):
             continue
-        key = (req.get("source") == "auto", str(req.get("queued_at") or ""))
+        key = (req.get("source") in ("auto", "objection"), str(req.get("queued_at") or ""))
         if best_key is None or key < best_key:
             best_n, best_key = n, key
     return best_n
@@ -477,7 +497,7 @@ def _settle(n: int, req: dict, rc: int, output: str) -> None:
         data.store().edit_pr(n).record_fix_request(
             "queued", req.get("action", "fix"), queued_at=req.get("queued_at"),
             attempts=attempts, source=req.get("source"), host=settings.worker_id(),
-            guidance=req.get("guidance"),
+            guidance=req.get("guidance"), objection=req.get("objection"),
             error=f"attempt {attempts} did not stick, retrying: {output[-TAIL_CHARS:]}")
         data.refresh()
         print(f"[fix-worker] PR #{n} exited {rc}; re-queued (attempt {attempts}"
@@ -503,9 +523,12 @@ def _log_run(n: int, req: dict, status: str, detail: str | None = None,
     entry = {
         "phase": "fix:single", "pr": n, "started": req.get("started_at"),
         "finished": _now(),
-        "trigger": "autohunt" if req.get("source") == "auto" else None,
+        "trigger": "autohunt" if req.get("source") in ("auto", "objection") else None,
         "stats": {"status": status, "action": req.get("action", "fix"),
                   "detail": detail, "host": host or settings.worker_id()}}
+    signature = (req.get("objection") or {}).get("signature")
+    if signature:
+        entry["stats"]["objection"] = signature
     try:
         data.store().append_run(entry)
     except Exception:
@@ -524,7 +547,7 @@ def _fail(n: int, req: dict, message: str, result: dict | None = None, *,
         "failed", req.get("action", "fix"), queued_at=req.get("queued_at"),
         started_at=req.get("started_at"), finished_at=_now(),
         error=message[-TAIL_CHARS:], result=result, source=req.get("source"),
-        guidance=req.get("guidance"), host=settings.worker_id(),
+        guidance=req.get("guidance"), objection=req.get("objection"), host=settings.worker_id(),
         head_sha=req.get("against_head_sha"))
     data.refresh()
     _log_run(n, req, "failed", message[-TAIL_CHARS:], kind=kind)
@@ -535,7 +558,7 @@ def _refuse(n: int, req: dict, reason: str, result: dict | None = None) -> None:
         "refused", req.get("action", "fix"), queued_at=req.get("queued_at"),
         started_at=req.get("started_at"), finished_at=_now(),
         refused_reason=reason[-TAIL_CHARS:], result=result,
-        source=req.get("source"), guidance=req.get("guidance"),
+        source=req.get("source"), guidance=req.get("guidance"), objection=req.get("objection"),
         host=settings.worker_id(), head_sha=req.get("against_head_sha"))
     data.refresh()
     _log_run(n, req, "refused", reason[-TAIL_CHARS:])
@@ -555,10 +578,11 @@ def recheck_eligibility(n: int, action: str,
     rec = data.store().load_pr(n)
     if rec is None:
         return False, f"PR #{n} left the store"
-    guidance = (rec.fix_request or {}).get("guidance")
+    req = rec.fix_request or {}
     return gates.fix_eligibility(rec, action,
                                  paths if paths is not None else service.changed_paths(rec),
-                                 guided=bool(guidance))
+                                 guided=bool(req.get("guidance")),
+                                 objection=bool(req.get("objection")))
 
 
 def _end_on_preflight(n: int, claimed: dict, pf: dict, result: dict) -> None:
@@ -572,7 +596,23 @@ def _end_on_preflight(n: int, claimed: dict, pf: dict, result: dict) -> None:
         _fail(n, claimed, plain_preflight(pf), result=result,
               kind=str(pf.get("error_kind") or "sandbox"))
     else:
-        _refuse(n, claimed, plain_preflight(pf), result=result)
+        _refuse(n, claimed, str(result.get("detail") or plain_preflight(pf)), result=result)
+
+
+def _compile_objection(n: int, claimed: dict, pf: dict) -> dict | None:
+    """The compile objection a hunted mechanical action's failed preflight
+    hands to a follow-up fix, or None when the failure is the machine's, the
+    request is an operator's, or a continuation may not start."""
+    if (claimed.get("source") != "auto" or pf.get("error")
+            or pf.get("exit") != gates.SENTINEL_TEST_FAIL):
+        return None
+    rec = data.store().load_pr(n)
+    if rec is None:
+        return None
+    objection = objections.build(
+        "compile", str(pf.get("error_excerpt") or "the compile command failed"),
+        origin={"base_sha": pf.get("base_sha")})
+    return objection if _may_continue(rec, objection) else None
 
 
 def run_one(n: int) -> None:
@@ -604,9 +644,18 @@ def run_one(n: int) -> None:
         if pf is not None:
             pf_ok, pf_why = gates.compile_preflight_gate(pf)
             if not pf_ok:
-                _end_on_preflight(n, claimed, pf,
-                                  {"patch": patch[-TAIL_CHARS:], "compile_preflight": pf,
-                                   "detail": pf_why})
+                result = {"patch": patch[-TAIL_CHARS:], "compile_preflight": pf,
+                          "detail": pf_why}
+                followup = _compile_objection(n, claimed, pf)
+                if followup is not None:
+                    result["detail"] = f"{pf_why} A fix is queued from the compile error."
+                _end_on_preflight(n, claimed, pf, result)
+                if followup is not None:
+                    try:
+                        fix_queue.queue_pr(n, "fix", objection=followup)
+                    except ValueError as e:
+                        print(f"[fix-worker] PR #{n}: the compile follow-up was not queued: {e}",
+                              flush=True)
                 return
         result = {"patch": patch[-TAIL_CHARS:], "compile_preflight": pf,
                   "message": _commit_message(action)}
@@ -712,6 +761,9 @@ def _fix_goal(rec: Pr, claimed: dict) -> _FixBrief:
     fails at the current head. A stale or pending verdict describes a head the
     author has moved past (or none yet), so it would send the agent after
     defects that may already be fixed."""
+    objection = claimed.get("objection")
+    if objection:
+        return _FixBrief(objections.goal_text(objection), [], [], "")
     read = rec.greptile_review if freshness.is_current(rec, "greptile_review") else None
     findings: list[dict] = []
     for r in review_policy.active_reviewers(reviewers.REVIEW):
@@ -774,7 +826,8 @@ def _author_fix(n: int, claimed: dict) -> None:
         _refuse(n, claimed, f"PR #{n} left the store")
         return
     goal, findings, checks, review_summary = _fix_goal(rec, claimed)
-    if not (claimed.get("guidance") or findings or checks or review_summary):
+    if not (claimed.get("guidance") or claimed.get("objection") or findings
+            or checks or review_summary):
         _refuse(n, claimed, "Nothing to aim a fix at: the review left no findings "
                             "and no summary for this head, and no check is failing.")
         return
@@ -798,83 +851,48 @@ def _author_fix(n: int, claimed: dict) -> None:
         _fail(n, claimed, "the prepared worktree could not be read")
         return
 
-    _running_step(n, claimed, "agent authoring the fix", action="fix")
-    try:
-        verdict = author_fix.author(worktree, pr=n, title=rec.title or "",
-                                    body=rec.body or "", goal=goal,
-                                    findings=findings, ci_failures=checks,
-                                    review_summary=review_summary,
-                                    diff_path=str(pr_patch), head_sha=rec.head_sha)
-    except headless_agent.AgentUnavailable as e:
-        _resubmit(n, "abort")
-        _fail(n, claimed, f"The agent could not run on {settings.worker_id()}: {e}",
-              kind="agent-unavailable")
+    authored = _author_and_review(n, claimed, rec, worktree, goal, findings, checks,
+                                  review_summary, pr_patch)
+    if authored is None:
         return
-    except (RuntimeError, ValueError) as e:
-        _resubmit(n, "abort")
-        _fail(n, claimed, f"The agent attempt did not land: {e}")
-        return
-    if "give_up" in verdict:
-        _resubmit(n, "abort")
-        _refuse(n, claimed, f"The agent declined to write a change: "
-                            f"{verdict['give_up']}")
-        return
-
-    diff = _resubmit(n, "diff")
-    if diff.returncode != 0:
-        _resubmit(n, "abort")
-        _fail(n, claimed, f"reading the authored diff failed: "
-                          f"{(diff.stderr or diff.stdout).strip()[:500]}")
-        return
-    patch = (diff.stdout or "").strip()
-    if not patch.startswith("diff "):
-        _resubmit(n, "abort")
-        _refuse(n, claimed, "The agent reported changes, but the worktree holds "
-                            "none — nothing was written.")
-        return
-    if len(patch) > PATCH_CHARS:
-        _resubmit(n, "abort")
-        _refuse(n, claimed, f"The agent wrote {len(patch)} characters of diff, past "
-                            f"the {PATCH_CHARS} the queue carries. A change this "
-                            f"large belongs to a person, not an unattended fix.")
-        return
-    if "\nBinary files " in patch or patch.startswith("Binary files "):
-        # A textual diff names a binary change without carrying it, so the
-        # reviewed bytes could not be re-applied at approval time.
-        _resubmit(n, "abort")
-        _refuse(n, claimed, "The agent changed a binary file, which the reviewed "
-                            "patch cannot carry.")
-        return
-    paths = diffpaths.changed_paths(patch)
-    try:
-        author_fix.assert_disclosed(verdict["changes"], paths)
-    except ValueError as e:
-        _resubmit(n, "abort")
-        _refuse(n, claimed, f"The authored change was not trusted: {e}",
-                result={"patch": patch})
-        return
-    ok, why = recheck_eligibility(n, "fix", paths)
-    if not ok:
-        _resubmit(n, "abort")
-        _refuse(n, claimed, f"The change the agent wrote is not one the bot may "
-                            f"push: {why}", result={"patch": patch})
-        return
-
-    _running_step(n, claimed, "reviewing the authored change", action="fix")
-    review = review_fix.review(worktree, patch, pr=n, goal=goal, findings=findings,
-                               review_summary=review_summary)
-    evidence = {"patch": patch, "changes": verdict["changes"],
-                "review_verdict": review}
-    if review.get("failed"):
-        _resubmit(n, "abort")
-        _fail(n, claimed, f"The reviewing agent did not reach a verdict: "
-                          f"{review['reason']}", result=evidence)
-        return
+    verdict, patch, review = authored
+    rounds: list[dict] = []
     if review["verdict"] != "safe":
-        _resubmit(n, "abort")
-        _refuse(n, claimed, f"The reviewing agent rejected the change: "
-                            f"{review['reason']}", result=evidence)
-        return
+        objection = objections.build("fix-review", str(review.get("reason") or ""),
+                                     origin={"concerns": list(review.get("concerns") or [])})
+        if not _may_continue(rec, objection):
+            _resubmit(n, "abort")
+            _refuse(n, claimed, f"The reviewing agent rejected the change: "
+                                f"{review['reason']}",
+                    result={"patch": patch, "changes": verdict["changes"],
+                            "review_verdict": review})
+            return
+        # The request keeps the objection it was queued for; the retry's own
+        # objection lives in its round, where `spent` also reads.
+        claimed = {**claimed, "objection": claimed.get("objection") or objection}
+        rounds = [{"objection": objection, "review": review}]
+        retried = _author_and_review(n, claimed, rec, worktree,
+                                     goal + "\n\n" + objections.goal_text(objection),
+                                     findings, checks, review_summary, pr_patch,
+                                     step="retrying after the reviewer's objection",
+                                     prior_changes=list(verdict["changes"]))
+        if retried is None:
+            return
+        verdict2, patch2, review2 = retried
+        if review2["verdict"] != "safe":
+            _resubmit(n, "abort")
+            _refuse(n, claimed, "The reviewing agent rejected the change twice: "
+                                f"{review['reason']}; then {review2['reason']}",
+                    result={"patch": patch2, "changes": verdict2["changes"],
+                            "review_verdict": review2,
+                            "rounds": rounds + [{"objection": objection, "review": review2}]})
+            return
+        verdict = {**verdict2, "changes": list(verdict["changes"]) + list(verdict2["changes"])}
+        patch, review = patch2, review2
+    paths = diffpaths.changed_paths(patch)
+    evidence = {"patch": patch, "changes": verdict["changes"], "review_verdict": review}
+    if rounds:
+        evidence["rounds"] = rounds
 
     _running_step(n, claimed, "compile preflight", action="fix")
     pf = _preflight(n, _over_pr(pr_patch, patch))
@@ -887,10 +905,98 @@ def _author_fix(n: int, claimed: dict) -> None:
 
     result = {**evidence, "compile_preflight": pf,
               "message": verdict["summary"] or _commit_message("fix")}
-    if "fix" not in settings.fix_autopush():
-        _park(n, claimed, "fix", result, settings.worker_id())
-        return
-    _push(n, claimed, "fix", result)
+    if "fix" in settings.fix_autopush():
+        ok, why = gates.fix_autopush_bar(result, paths)
+        result["autopush_bar"] = {"ok": ok, "reason": why}
+        if ok:
+            _push(n, claimed, "fix", result)
+            return
+    _park(n, claimed, "fix", result, settings.worker_id())
+
+
+def _author_and_review(n: int, claimed: dict, rec: Pr, worktree: str, goal: str,
+                       findings: list[dict], checks: list[str], review_summary: str,
+                       pr_patch: Path, *, step: str = "agent authoring the fix",
+                       prior_changes: list[dict] | None = None
+                       ) -> tuple[dict, str, dict] | None:
+    """One author-and-review round in the prepared worktree: the agent writes
+    against `goal`, the diff is held to the files it reported (plus
+    `prior_changes`, an earlier round's files still in the tree) and re-gated
+    on the paths it touched, and the refuting reviewer judges it. Returns
+    (verdict, patch, review) for the caller to act on, or None after writing
+    the request's ending itself."""
+    _running_step(n, claimed, step, action="fix")
+    try:
+        verdict = author_fix.author(worktree, pr=n, title=rec.title or "",
+                                    body=rec.body or "", goal=goal,
+                                    findings=findings, ci_failures=checks,
+                                    review_summary=review_summary,
+                                    diff_path=str(pr_patch), head_sha=rec.head_sha or "")
+    except headless_agent.AgentUnavailable as e:
+        _resubmit(n, "abort")
+        _fail(n, claimed, f"The agent could not run on {settings.worker_id()}: {e}",
+              kind="agent-unavailable")
+        return None
+    except (RuntimeError, ValueError) as e:
+        _resubmit(n, "abort")
+        _fail(n, claimed, f"The agent attempt did not land: {e}")
+        return None
+    if "give_up" in verdict:
+        _resubmit(n, "abort")
+        _refuse(n, claimed, f"The agent declined to write a change: "
+                            f"{verdict['give_up']}")
+        return None
+
+    diff = _resubmit(n, "diff")
+    if diff.returncode != 0:
+        _resubmit(n, "abort")
+        _fail(n, claimed, f"reading the authored diff failed: "
+                          f"{(diff.stderr or diff.stdout).strip()[:500]}")
+        return None
+    patch = (diff.stdout or "").strip()
+    if not patch.startswith("diff "):
+        _resubmit(n, "abort")
+        _refuse(n, claimed, "The agent reported changes, but the worktree holds "
+                            "none — nothing was written.")
+        return None
+    if len(patch) > PATCH_CHARS:
+        _resubmit(n, "abort")
+        _refuse(n, claimed, f"The agent wrote {len(patch)} characters of diff, past "
+                            f"the {PATCH_CHARS} the queue carries. A change this "
+                            f"large belongs to a person, not an unattended fix.")
+        return None
+    if "\nBinary files " in patch or patch.startswith("Binary files "):
+        # A textual diff names a binary change without carrying it, so the
+        # reviewed bytes could not be re-applied at approval time.
+        _resubmit(n, "abort")
+        _refuse(n, claimed, "The agent changed a binary file, which the reviewed "
+                            "patch cannot carry.")
+        return None
+    paths = diffpaths.changed_paths(patch)
+    try:
+        author_fix.assert_disclosed(list(verdict["changes"]) + list(prior_changes or []), paths)
+    except ValueError as e:
+        _resubmit(n, "abort")
+        _refuse(n, claimed, f"The authored change was not trusted: {e}",
+                result={"patch": patch})
+        return None
+    ok, why = recheck_eligibility(n, "fix", paths)
+    if not ok:
+        _resubmit(n, "abort")
+        _refuse(n, claimed, f"The change the agent wrote is not one the bot may "
+                            f"push: {why}", result={"patch": patch})
+        return None
+
+    _running_step(n, claimed, "reviewing the authored change", action="fix")
+    review = review_fix.review(worktree, patch, pr=n, goal=goal, findings=findings,
+                               review_summary=review_summary)
+    if review.get("failed"):
+        _resubmit(n, "abort")
+        _fail(n, claimed, f"The reviewing agent did not reach a verdict: "
+                          f"{review['reason']}",
+              result={"patch": patch, "changes": verdict["changes"], "review_verdict": review})
+        return None
+    return verdict, patch, review
 
 
 def _conflict_refusal(paused: list[str]) -> str:
@@ -906,7 +1012,7 @@ def _running_step(n: int, claimed: dict, step: str, action: str = "resolve") -> 
     data.store().edit_pr(n).record_fix_request(
         "running", action, queued_at=claimed.get("queued_at"),
         started_at=claimed.get("started_at"), step=step,
-        source=claimed.get("source"), guidance=claimed.get("guidance"),
+        source=claimed.get("source"), guidance=claimed.get("guidance"), objection=claimed.get("objection"),
         host=settings.worker_id(), head_sha=claimed.get("against_head_sha"))
     data.refresh()
 
@@ -1005,19 +1111,24 @@ def _agent_resolve(n: int, claimed: dict, paused: list[str]) -> None:
 
     _running_step(n, claimed, "compile preflight")
     pf = _preflight(n, patch)
-    if pf is not None:
-        pf_ok, pf_why = gates.compile_preflight_gate(pf)
-        if not pf_ok:
-            _end_on_preflight(n, claimed, pf,
-                              {"patch": patch[-TAIL_CHARS:], "compile_preflight": pf,
-                               "detail": pf_why, "merge_diff": merge_diff,
-                               "conflict_paths": paused})
-            return
-
     result = {"patch": patch[-TAIL_CHARS:], "compile_preflight": pf,
               "resolutions": verdict["resolutions"], "conflict_paths": paused,
               "merge_diff": merge_diff,
               "message": "Merge current base, conflicts agent-resolved"}
+    if pf is not None:
+        pf_ok, pf_why = gates.compile_preflight_gate(pf)
+        if not pf_ok:
+            followup = _compile_objection(n, claimed, pf)
+            if followup is not None:
+                stamp = {"against_head_sha": claimed.get("against_head_sha"),
+                         "base_sha": claimed.get("base_sha"), "host": settings.worker_id(),
+                         "at": _now(), "tier": risktier.tier_facet(paused),
+                         "reviews": [], "tests": None, "compile_preflight": pf}
+                _continue_resolve(n, rec, claimed, str(claimed.get("against_head_sha") or ""),
+                                  worktree, result, stamp, followup)
+                return
+            _end_on_preflight(n, claimed, pf, {**result, "detail": pf_why})
+            return
     _park(n, claimed, "resolve", result, settings.worker_id())
 
 
@@ -1114,7 +1225,7 @@ def _park(n: int, claimed: dict, action: str, result: dict, host: str) -> None:
     data.store().edit_pr(n).record_fix_request(
         "awaiting-review", action, queued_at=claimed.get("queued_at"),
         started_at=claimed.get("started_at"), result=result,
-        source=claimed.get("source"), guidance=claimed.get("guidance"),
+        source=claimed.get("source"), guidance=claimed.get("guidance"), objection=claimed.get("objection"),
         host=host, base_sha=_base_sha(),
         head_sha=claimed.get("against_head_sha"))
     data.refresh()
@@ -1194,7 +1305,7 @@ def _cancel(n: int, req: dict, reason: str, result: dict | None = None) -> None:
         "cancelled", req.get("action", "fix"), queued_at=req.get("queued_at"),
         started_at=req.get("started_at"), finished_at=_now(),
         refused_reason=reason[-TAIL_CHARS:], result=result, source=req.get("source"),
-        guidance=req.get("guidance"), host=settings.worker_id(),
+        guidance=req.get("guidance"), objection=req.get("objection"), host=settings.worker_id(),
         head_sha=req.get("against_head_sha"))
     data.refresh()
     _log_run(n, req, "cancelled", reason[-TAIL_CHARS:])
@@ -1311,13 +1422,23 @@ def _judge_claimed_resolve(n: int, rec: Pr, claimed: dict, head: str,
             reviews.append({"lens": lens, **verdict})
             if verdict.get("verdict") != "safe" and not verdict.get("failed"):
                 break
-        judged_rejection = any(r.get("verdict") != "safe" and not r.get("failed")
-                               for r in reviews)
-        if any(r.get("failed") for r in reviews) and not judged_rejection:
+        judged_rejection = next((r for r in reviews
+                                 if r.get("verdict") != "safe" and not r.get("failed")), None)
+        if any(r.get("failed") for r in reviews) and judged_rejection is None:
             restore("a reviewer failed as a machine, with no judged rejection "
                     "beside it")
             return
         stamp["reviews"] = reviews
+        if judged_rejection is not None:
+            objection = objections.build(
+                "resolve-review",
+                f"{judged_rejection.get('lens')}-lens: {judged_rejection.get('reason')}\n"
+                + "\n".join(str(c) for c in judged_rejection.get("concerns") or []),
+                origin={"lens": judged_rejection.get("lens"),
+                        "concerns": list(judged_rejection.get("concerns") or [])})
+            if _may_continue(rec, objection):
+                _continue_resolve(n, rec, claimed, head, worktree, result, stamp, objection)
+                return
         if all(r.get("verdict") == "safe" for r in reviews) and len(reviews) == 2:
             stamp["tests"] = _related_tests_run(n, head, patch, related)
             run = (stamp["tests"] or {}).get("run") or {}
@@ -1346,6 +1467,127 @@ def _judge_claimed_resolve(n: int, rec: Pr, claimed: dict, head: str,
         base_sha=claimed.get("base_sha"), head_sha=head)
     data.refresh()
     print(f"[fix-worker] resolve auto-review for PR #{n}: "
+          f"{'cleared for push' if ok else why}", flush=True)
+
+
+def _may_continue(rec: Pr, objection: dict) -> bool:
+    """Whether a continuation may start: the profile opted in, this head has
+    not answered this objection, and today's budget is not spent."""
+    if "objection" not in profile.active().autofix.fixable_gates:
+        return False
+    if objections.spent(rec, objection["signature"]):
+        return False
+    return objections.budget_left(data.store(), settings.worker_id()) > 0
+
+
+def _continue_resolve(n: int, rec: Pr, claimed: dict, head: str, worktree: str,
+                      result: dict, stamp: dict, objection: dict) -> None:
+    """Author the objection inside the kept merge worktree, commit it on top
+    of the merge, and judge the combined change again: the follow-up's own
+    paths are held to what the agent reported and re-gated, the combined
+    change is compile-checked, both lenses review it, and the resolve bar
+    decides. Both rounds stay on the request. A continuation that does not
+    get that far is discarded, so the merge underneath stays approvable."""
+    first = {**stamp, "objection": objection}
+    paths = [str(p) for p in (result.get("conflict_paths") or [])]
+    claimed = {**claimed, "objection": objection}
+    _running_step(n, claimed, "continuing after the reviewer's objection")
+
+    def park(detail: str, *, discard: bool = True) -> None:
+        if discard:
+            _resubmit(n, "discard")
+        res = {**result, "rounds": [first],
+               "auto_review": {**first, "bar": {"ok": False, "reason": detail}}}
+        data.store().edit_pr(n).record_fix_request(
+            "awaiting-review", "resolve", queued_at=claimed.get("queued_at"),
+            started_at=claimed.get("started_at"), result=res, source=claimed.get("source"),
+            host=settings.worker_id(), base_sha=claimed.get("base_sha"), head_sha=head,
+            objection=objection)
+        data.refresh()
+        _log_run(n, claimed, "awaiting-review", detail)
+
+    try:
+        pr_patch = verify_driver.fetch_patch(n, rec.head_sha or "")
+        verdict = author_fix.author(
+            worktree, pr=n, title=rec.title or "", body=rec.body or "",
+            goal=objections.goal_text(objection), findings=[], ci_failures=[],
+            diff_path=str(pr_patch), head_sha=rec.head_sha or "")
+    except headless_agent.AgentUnavailable as e:
+        park(f"the agent could not run on {settings.worker_id()}: {e}")
+        lane_health.trip_agent_lanes(str(e))
+        return
+    except (RuntimeError, ValueError, verify_driver.FetchFailure) as e:
+        park(f"the continuation did not land: {e}")
+        return
+    if "give_up" in verdict:
+        park(f"the continuation agent declined: {verdict['give_up']}")
+        return
+    committed = _resubmit(n, "commit", "-m",
+                          verdict.get("summary") or "Address the reviewer's objection")
+    if committed.returncode == 5:
+        park("the continuation changed nothing")
+        return
+    if committed.returncode != 0:
+        park(f"committing the continuation failed: "
+             f"{(committed.stderr or committed.stdout).strip()[:500]}")
+        return
+    last = _resubmit(n, "diff", "--last")
+    follow_up = (last.stdout or "").strip()
+    if last.returncode != 0 or not follow_up.startswith("diff "):
+        park("the follow-up's diff could not be read")
+        return
+    touched = diffpaths.changed_paths(follow_up)
+    try:
+        author_fix.assert_disclosed(verdict["changes"], touched)
+    except ValueError as e:
+        park(f"the continuation was not trusted: {e}")
+        return
+    all_paths = sorted(set(touched) | set(paths))
+    ok, why = recheck_eligibility(n, "resolve", all_paths)
+    if not ok:
+        park(f"the continuation is not one the bot may push: {why}")
+        return
+    combined_r = _resubmit(n, "diff")
+    patch = (combined_r.stdout or "").strip()
+    if combined_r.returncode != 0 or not patch.startswith("diff "):
+        park("the continued worktree's diff could not be read")
+        return
+    _running_step(n, claimed, "compile preflight after the continuation")
+    pf = _preflight(n, patch)
+    if pf is not None:
+        pf_ok, pf_why = gates.compile_preflight_gate(pf)
+        if not pf_ok:
+            park(f"the continuation did not clear the compile preflight: {pf_why}")
+            return
+    second: dict = {"against_head_sha": head, "base_sha": claimed.get("base_sha"),
+                    "host": settings.worker_id(), "at": _now(),
+                    "tier": risktier.tier_facet(all_paths), "compile_preflight": pf,
+                    "reviews": [], "tests": None, "objection": objection}
+    history = resolve_evidence.history(worktree, paths)
+    context = resolve_evidence.store_context(rec)
+    related = resolve_evidence.related_tests(worktree, all_paths)
+    for lens in ("behavior", "history"):
+        v = review_resolve.review(worktree, pr=n, title=rec.title or "",
+                                  merge_diff=str(result.get("merge_diff") or ""), patch=patch,
+                                  resolutions=list(result.get("resolutions") or []),
+                                  history=history, store_context=context, lens=lens)
+        second["reviews"].append({"lens": lens, **v})
+        if v.get("verdict") != "safe" and not v.get("failed"):
+            break
+    if all(r.get("verdict") == "safe" for r in second["reviews"]) and len(second["reviews"]) == 2:
+        second["tests"] = _related_tests_run(n, head, patch, related)
+    res = {**result, "patch": patch[-TAIL_CHARS:], "compile_preflight": pf,
+           "touched_paths": all_paths, "rounds": [first, second], "auto_review": second}
+    ok, why = gates.resolve_autopush_bar(res)
+    second["bar"] = {"ok": ok, "reason": why}
+    data.store().edit_pr(n).record_fix_request(
+        "approved" if ok else "awaiting-review", "resolve",
+        queued_at=claimed.get("queued_at"), started_at=claimed.get("started_at"),
+        result=res, source=claimed.get("source"), host=settings.worker_id(),
+        base_sha=claimed.get("base_sha"), head_sha=head, objection=objection)
+    data.refresh()
+    _log_run(n, claimed, "approved" if ok else "awaiting-review", why)
+    print(f"[fix-worker] resolve continuation for PR #{n}: "
           f"{'cleared for push' if ok else why}", flush=True)
 
 
@@ -1379,7 +1621,7 @@ def push_approved(n: int) -> None:
         _post_description(n, claimed, result)
         return
     if action == "resolve":
-        raw_paths = result.get("conflict_paths")
+        raw_paths = result.get("touched_paths") or result.get("conflict_paths")
         authored = [str(p) for p in raw_paths] if raw_paths else []
     elif action == "fix":
         # The agent's own paths, not the contributor's: the gate judges what
@@ -1464,7 +1706,7 @@ def _finish_pushed(n: int, req: dict, output: str, result: dict | None = None) -
     data.store().edit_pr(n).record_fix_request(
         "pushed", req.get("action", "fix"), queued_at=req.get("queued_at"),
         started_at=req.get("started_at"), finished_at=_now(), result=merged,
-        source=req.get("source"), guidance=req.get("guidance"),
+        source=req.get("source"), guidance=req.get("guidance"), objection=req.get("objection"),
         host=settings.worker_id(), head_sha=req.get("against_head_sha"))
     data.refresh()
     _log_run(n, req, "pushed", merged.get("message"))
@@ -1546,12 +1788,13 @@ def _hunt_attempted(pr: Pr, action: str) -> bool:
 
 
 def _auto_in_flight(action: str) -> int:
-    """How many hunter-queued requests for `action` sit anywhere between queued
-    and pushing. Operator-queued ones are not counted against the hunter's cap."""
+    """How many hunter-queued requests for `action` — auto picks and objection
+    continuations alike — sit anywhere between queued and pushing.
+    Operator-queued ones are not counted against the hunter's cap."""
     count = 0
     for rec in data.prs().values():
         req = rec.fix_request or {}
-        if (req.get("source") == "auto" and req.get("action") == action
+        if (req.get("source") in ("auto", "objection") and req.get("action") == action
                 and req.get("status") in fix_queue.IN_FLIGHT):
             count += 1
     return count
@@ -1561,33 +1804,62 @@ def _auto_fixes_in_flight() -> int:
     return _auto_in_flight("fix")
 
 
-def auto_fixable(pr: Pr) -> str | None:
-    """The action the idle hunter would queue for this PR, or None.
+def auto_fixable(pr: Pr, *, budget_ok: bool = True) -> tuple[str, dict | None] | None:
+    """The action the idle hunter would queue for this PR with the objection it
+    answers (None for every action but a security continuation), or None.
 
     A PR GitHub reports unmergeable needs its history replayed on current base,
     which is `rebase`; a PR whose drift scan says the base moved out from under
     it needs `update`. A PR clean on both whose reviewer objects only to its
     description takes a `describe`; one the reviewer fails on the code may take
-    an agent-authored `fix`. Both agent actions need the deployment's opt-in
-    (TRIAGE_FIX_HUNT_FIX) and a head that has not already burned its one
-    unattended attempt. Anything else is left alone.
+    an agent-authored `fix`; one carrying a current YELLOW security verdict
+    takes a `fix` from that finding under TRIAGE_FIX_HUNT_SECURITY. The agent
+    actions need the deployment's opt-in (TRIAGE_FIX_HUNT_FIX) and a head that
+    has not already burned its one unattended attempt; a security continuation
+    also needs today's budget (`budget_ok`) and an objection this head has not
+    answered, and otherwise the PR takes the ordinary pick, which the same
+    head's spent attempt rests in turn. Anything else is left alone.
 
     gates.fix_huntable is the bar, not fix_eligibility: unprompted sandbox time
     goes only where a stored quality signal argues the spend is worth it."""
     if (pr.fix_request or {}).get("status") in fix_queue.IN_FLIGHT:
         return None
+    objection: dict | None = None
     if pr.mergeable is False:
         action = "rebase"
     elif pr.drift_state == "conflicts":
         action = "update"
     elif settings.fix_hunt_fix():
-        action = "describe" if describe_pr.only_description_nits(pr) else "fix"
+        yellow = (_yellow_objection(pr)
+                  if budget_ok and settings.fix_hunt_security() else None)
+        if yellow is not None and not objections.spent(pr, yellow["signature"]):
+            action, objection = "fix", yellow
+        else:
+            action = "describe" if describe_pr.only_description_nits(pr) else "fix"
     else:
         return None
     if _hunt_attempted(pr, action):
         return None
-    ok, _ = gates.fix_huntable(pr, action, service.changed_paths(pr))
-    return action if ok else None
+    ok, _ = gates.fix_huntable(pr, action, service.changed_paths(pr),
+                               objection=objection is not None)
+    return (action, objection) if ok else None
+
+
+def _yellow_objection(pr: Pr) -> dict | None:
+    """The security objection for a PR whose current verdict is YELLOW: every
+    confirmed finding's title and detail, or None when there is no current
+    YELLOW, an operator has logged an override on it, or it carries no
+    findings."""
+    if (pr.security_verdict != "YELLOW" or pr.security_override
+            or not freshness.is_current(pr, "security",
+                                        max_age_days=gates.SECURITY_MAX_AGE_DAYS)):
+        return None
+    findings = [f for f in ((pr.section("security") or {}).get("findings") or [])
+                if isinstance(f, dict)]
+    if not findings:
+        return None
+    text = "\n".join(f"- {f.get('title')}: {f.get('detail')}" for f in findings)
+    return objections.build("security", text, origin={"findings": len(findings)})
 
 
 def _hunt_key(rec: Pr, action: str, n: int) -> tuple[int, int, float, int]:
@@ -1607,8 +1879,9 @@ def _hunt_key(rec: Pr, action: str, n: int) -> tuple[int, int, float, int]:
     return (1, tier, -pain, n)
 
 
-def next_auto() -> tuple[str, int] | None:
-    """The idle hunter's next (action, PR), or None when nothing is eligible.
+def next_auto() -> tuple[str, int, dict | None] | None:
+    """The idle hunter's next (action, PR, objection), or None when nothing is
+    eligible; the objection is set only for a security continuation.
 
     A `fix` leads while one of the TRIAGE_FIX_HUNT_LIMIT slots is free, so the
     agent lane stays filled while the mechanical backlog drains around it; a
@@ -1619,20 +1892,23 @@ def next_auto() -> tuple[str, int] | None:
     limit = settings.fix_hunt_limit()
     slots = {"fix": limit - _auto_in_flight("fix"),
              "describe": limit - _auto_in_flight("describe")}
-    best: dict[str, tuple[tuple[int, int, float, int], str, int]] = {}
+    best: dict[str, tuple[tuple[int, int, float, int], str, int, dict | None]] = {}
+    budget_ok = (not settings.fix_hunt_security()
+                 or _budget_used(data.store()) < settings.fix_objection_budget())
     for n, rec in data.prs().items():
-        action = auto_fixable(rec)
-        if action is None:
+        pick = auto_fixable(rec, budget_ok=budget_ok)
+        if pick is None:
             continue
+        action, objection = pick
         lane = action if action in slots else "mechanical"
         if lane != "mechanical" and slots[lane] <= 0:
             continue
         key = _hunt_key(rec, action, n)
         if lane not in best or key < best[lane][0]:
-            best[lane] = (key, action, n)
+            best[lane] = (key, action, n, objection)
     for lane in ("fix", "describe", "mechanical"):
         if lane in best:
-            return (best[lane][1], best[lane][2])
+            return (best[lane][1], best[lane][2], best[lane][3])
     return None
 
 
@@ -1696,9 +1972,10 @@ def _drain_loop() -> None:
             if pick is None:
                 stop.wait(POLL_SECONDS)
                 continue
-            action, n = pick
-            print(f"[autofix-hunt] queueing {action} for PR #{n}", flush=True)
-            fix_queue.queue_pr(n, action, source="auto")
+            action, n, objection = pick
+            print(f"[autofix-hunt] queueing {action} for PR #{n}"
+                  + (f" from a {objection['kind']} objection" if objection else ""), flush=True)
+            fix_queue.queue_pr(n, action, source="auto", objection=objection)
         except Exception:
             traceback.print_exc()
             stop.wait(POLL_SECONDS)

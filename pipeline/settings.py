@@ -319,16 +319,42 @@ def fix_hunt_resolve() -> bool:
     return os.environ.get("TRIAGE_FIX_HUNT_RESOLVE", "") == "1"
 
 
+def _positive_int(name: str, default: int) -> int:
+    """The environment's positive integer for `name`; an unparseable or
+    non-positive value reads as `default`."""
+    try:
+        n = int(os.environ.get(name, ""))
+    except ValueError:
+        return default
+    return n if n > 0 else default
+
+
 def fix_hunt_limit() -> int:
     """The most auto-queued `fix` requests allowed in flight at once. Each fix
     spends two agents plus a compile preflight, so the hunter feeds them in
-    small batches; an unparseable or non-positive value reads as the default."""
-    raw = os.environ.get("TRIAGE_FIX_HUNT_LIMIT", "")
-    try:
-        n = int(raw)
-    except ValueError:
-        return 3
-    return n if n > 0 else 3
+    small batches."""
+    return _positive_int("TRIAGE_FIX_HUNT_LIMIT", 3)
+
+
+def fix_objection_budget() -> int:
+    """Continuations an objection may start per worker per UTC day."""
+    return _positive_int("TRIAGE_FIX_OBJECTION_BUDGET", 20)
+
+
+def fix_hunt_security() -> bool:
+    """Whether an idle fix worker may queue an objection fix against a current
+    YELLOW security verdict on a mergeable, CI-green PR."""
+    return os.environ.get("TRIAGE_FIX_HUNT_SECURITY", "") == "1"
+
+
+def fix_autopush_min_tier() -> int:
+    """The lowest risk tier a fix may touch and still push unattended."""
+    return _positive_int("TRIAGE_FIX_AUTOPUSH_MIN_TIER", 2)
+
+
+def fix_autopush_max_lines() -> int:
+    """The most changed lines a fix may carry and still push unattended."""
+    return _positive_int("TRIAGE_FIX_AUTOPUSH_MAX_LINES", 300)
 
 
 # Reject a malformed TRIAGE_FIX_AUTOPUSH while the process is still starting.
