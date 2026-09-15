@@ -802,83 +802,39 @@ def _author_fix(n: int, claimed: dict) -> None:
         _fail(n, claimed, "the prepared worktree could not be read")
         return
 
-    _running_step(n, claimed, "agent authoring the fix", action="fix")
-    try:
-        verdict = author_fix.author(worktree, pr=n, title=rec.title or "",
-                                    body=rec.body or "", goal=goal,
-                                    findings=findings, ci_failures=checks,
-                                    review_summary=review_summary,
-                                    diff_path=str(pr_patch), head_sha=rec.head_sha)
-    except headless_agent.AgentUnavailable as e:
-        _resubmit(n, "abort")
-        _fail(n, claimed, f"The agent could not run on {settings.worker_id()}: {e}",
-              kind="agent-unavailable")
+    authored = _author_and_review(n, claimed, rec, worktree, goal, findings, checks,
+                                  review_summary, pr_patch)
+    if authored is None:
         return
-    except (RuntimeError, ValueError) as e:
-        _resubmit(n, "abort")
-        _fail(n, claimed, f"The agent attempt did not land: {e}")
-        return
-    if "give_up" in verdict:
-        _resubmit(n, "abort")
-        _refuse(n, claimed, f"The agent declined to write a change: "
-                            f"{verdict['give_up']}")
-        return
-
-    diff = _resubmit(n, "diff")
-    if diff.returncode != 0:
-        _resubmit(n, "abort")
-        _fail(n, claimed, f"reading the authored diff failed: "
-                          f"{(diff.stderr or diff.stdout).strip()[:500]}")
-        return
-    patch = (diff.stdout or "").strip()
-    if not patch.startswith("diff "):
-        _resubmit(n, "abort")
-        _refuse(n, claimed, "The agent reported changes, but the worktree holds "
-                            "none — nothing was written.")
-        return
-    if len(patch) > PATCH_CHARS:
-        _resubmit(n, "abort")
-        _refuse(n, claimed, f"The agent wrote {len(patch)} characters of diff, past "
-                            f"the {PATCH_CHARS} the queue carries. A change this "
-                            f"large belongs to a person, not an unattended fix.")
-        return
-    if "\nBinary files " in patch or patch.startswith("Binary files "):
-        # A textual diff names a binary change without carrying it, so the
-        # reviewed bytes could not be re-applied at approval time.
-        _resubmit(n, "abort")
-        _refuse(n, claimed, "The agent changed a binary file, which the reviewed "
-                            "patch cannot carry.")
-        return
-    paths = diffpaths.changed_paths(patch)
-    try:
-        author_fix.assert_disclosed(verdict["changes"], paths)
-    except ValueError as e:
-        _resubmit(n, "abort")
-        _refuse(n, claimed, f"The authored change was not trusted: {e}",
-                result={"patch": patch})
-        return
-    ok, why = recheck_eligibility(n, "fix", paths)
-    if not ok:
-        _resubmit(n, "abort")
-        _refuse(n, claimed, f"The change the agent wrote is not one the bot may "
-                            f"push: {why}", result={"patch": patch})
-        return
-
-    _running_step(n, claimed, "reviewing the authored change", action="fix")
-    review = review_fix.review(worktree, patch, pr=n, goal=goal, findings=findings,
-                               review_summary=review_summary)
-    evidence = {"patch": patch, "changes": verdict["changes"],
-                "review_verdict": review}
-    if review.get("failed"):
-        _resubmit(n, "abort")
-        _fail(n, claimed, f"The reviewing agent did not reach a verdict: "
-                          f"{review['reason']}", result=evidence)
-        return
+    verdict, patch, review = authored
     if review["verdict"] != "safe":
-        _resubmit(n, "abort")
-        _refuse(n, claimed, f"The reviewing agent rejected the change: "
-                            f"{review['reason']}", result=evidence)
-        return
+        objection = objections.build("fix-review", str(review.get("reason") or ""),
+                                     origin={"concerns": list(review.get("concerns") or [])})
+        if not _may_continue(rec, objection):
+            _resubmit(n, "abort")
+            _refuse(n, claimed, f"The reviewing agent rejected the change: "
+                                f"{review['reason']}",
+                    result={"patch": patch, "changes": verdict["changes"],
+                            "review_verdict": review})
+            return
+        claimed = {**claimed, "objection": objection}
+        retried = _author_and_review(n, claimed, rec, worktree,
+                                     goal + "\n\n" + objections.goal_text(objection),
+                                     findings, checks, review_summary, pr_patch,
+                                     step="retrying after the reviewer's objection")
+        if retried is None:
+            return
+        verdict2, patch2, review2 = retried
+        if review2["verdict"] != "safe":
+            _resubmit(n, "abort")
+            _refuse(n, claimed, "The reviewing agent rejected the change twice: "
+                                f"{review['reason']}; then {review2['reason']}",
+                    result={"patch": patch2, "changes": verdict2["changes"],
+                            "review_verdict": review2, "rounds": [review, review2]})
+            return
+        verdict, patch, review = verdict2, patch2, review2
+    paths = diffpaths.changed_paths(patch)
+    evidence = {"patch": patch, "changes": verdict["changes"], "review_verdict": review}
 
     _running_step(n, claimed, "compile preflight", action="fix")
     pf = _preflight(n, _over_pr(pr_patch, patch))
@@ -891,10 +847,96 @@ def _author_fix(n: int, claimed: dict) -> None:
 
     result = {**evidence, "compile_preflight": pf,
               "message": verdict["summary"] or _commit_message("fix")}
-    if "fix" not in settings.fix_autopush():
-        _park(n, claimed, "fix", result, settings.worker_id())
-        return
-    _push(n, claimed, "fix", result)
+    if "fix" in settings.fix_autopush():
+        ok, why = gates.fix_autopush_bar(result, paths)
+        result["autopush_bar"] = {"ok": ok, "reason": why}
+        if ok:
+            _push(n, claimed, "fix", result)
+            return
+    _park(n, claimed, "fix", result, settings.worker_id())
+
+
+def _author_and_review(n: int, claimed: dict, rec: Pr, worktree: str, goal: str,
+                       findings: list[dict], checks: list[str], review_summary: str,
+                       pr_patch: Path, *, step: str = "agent authoring the fix"
+                       ) -> tuple[dict, str, dict] | None:
+    """One author-and-review round in the prepared worktree: the agent writes
+    against `goal`, the diff is held to the files it reported and re-gated on
+    the paths it touched, and the refuting reviewer judges it. Returns
+    (verdict, patch, review) for the caller to act on, or None after writing
+    the request's ending itself."""
+    _running_step(n, claimed, step, action="fix")
+    try:
+        verdict = author_fix.author(worktree, pr=n, title=rec.title or "",
+                                    body=rec.body or "", goal=goal,
+                                    findings=findings, ci_failures=checks,
+                                    review_summary=review_summary,
+                                    diff_path=str(pr_patch), head_sha=rec.head_sha or "")
+    except headless_agent.AgentUnavailable as e:
+        _resubmit(n, "abort")
+        _fail(n, claimed, f"The agent could not run on {settings.worker_id()}: {e}",
+              kind="agent-unavailable")
+        return None
+    except (RuntimeError, ValueError) as e:
+        _resubmit(n, "abort")
+        _fail(n, claimed, f"The agent attempt did not land: {e}")
+        return None
+    if "give_up" in verdict:
+        _resubmit(n, "abort")
+        _refuse(n, claimed, f"The agent declined to write a change: "
+                            f"{verdict['give_up']}")
+        return None
+
+    diff = _resubmit(n, "diff")
+    if diff.returncode != 0:
+        _resubmit(n, "abort")
+        _fail(n, claimed, f"reading the authored diff failed: "
+                          f"{(diff.stderr or diff.stdout).strip()[:500]}")
+        return None
+    patch = (diff.stdout or "").strip()
+    if not patch.startswith("diff "):
+        _resubmit(n, "abort")
+        _refuse(n, claimed, "The agent reported changes, but the worktree holds "
+                            "none — nothing was written.")
+        return None
+    if len(patch) > PATCH_CHARS:
+        _resubmit(n, "abort")
+        _refuse(n, claimed, f"The agent wrote {len(patch)} characters of diff, past "
+                            f"the {PATCH_CHARS} the queue carries. A change this "
+                            f"large belongs to a person, not an unattended fix.")
+        return None
+    if "\nBinary files " in patch or patch.startswith("Binary files "):
+        # A textual diff names a binary change without carrying it, so the
+        # reviewed bytes could not be re-applied at approval time.
+        _resubmit(n, "abort")
+        _refuse(n, claimed, "The agent changed a binary file, which the reviewed "
+                            "patch cannot carry.")
+        return None
+    paths = diffpaths.changed_paths(patch)
+    try:
+        author_fix.assert_disclosed(verdict["changes"], paths)
+    except ValueError as e:
+        _resubmit(n, "abort")
+        _refuse(n, claimed, f"The authored change was not trusted: {e}",
+                result={"patch": patch})
+        return None
+    ok, why = recheck_eligibility(n, "fix", paths)
+    if not ok:
+        _resubmit(n, "abort")
+        _refuse(n, claimed, f"The change the agent wrote is not one the bot may "
+                            f"push: {why}", result={"patch": patch})
+        return None
+
+    _running_step(n, claimed, "reviewing the authored change", action="fix")
+    review = review_fix.review(worktree, patch, pr=n, goal=goal, findings=findings,
+                               review_summary=review_summary)
+    if review.get("failed"):
+        _resubmit(n, "abort")
+        _fail(n, claimed, f"The reviewing agent did not reach a verdict: "
+                          f"{review['reason']}",
+              result={"patch": patch, "changes": verdict["changes"], "review_verdict": review})
+        return None
+    return verdict, patch, review
 
 
 def _conflict_refusal(paused: list[str]) -> str:

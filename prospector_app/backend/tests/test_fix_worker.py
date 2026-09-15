@@ -1866,3 +1866,78 @@ class TestResolveContinuation:
         monkeypatch.setattr(obj_mod, "spent", lambda pr, sig: True)
         fix_worker.review_parked_resolve(1)
         assert calls["author"] == 0
+
+
+class TestFixRetry:
+    """A rejected fix is retried once from the reviewer's objection; a second
+    rejection refuses with both reasons."""
+
+    def _setup(self, store, monkeypatch, verdicts, gates_=("review", "objection")):
+        monkeypatch.setattr(profile, "active", lambda: profile.RepoProfile(
+            autofix=profile.AutofixPolicy(fixable_gates=tuple(gates_))))
+        seq = iter(verdicts)
+        calls: dict = {"author": [], "review": 0}
+
+        def author(wt, **kw):
+            calls["author"].append(kw["goal"])
+            return {"summary": "s", "changes": [{"path": "a.ts", "note": "n"}]}
+        monkeypatch.setattr(fix_worker.author_fix, "author", author)
+        monkeypatch.setattr(fix_worker.author_fix, "assert_disclosed", lambda c, p: None)
+
+        def review(wt, patch, **kw):
+            calls["review"] += 1
+            return next(seq)
+        monkeypatch.setattr(fix_worker.review_fix, "review", review)
+        monkeypatch.setattr(fix_worker, "_resubmit", _fix_probe())
+        _queue_fix()
+        return calls
+
+    def test_a_rejected_fix_is_retried_once_with_the_objection(self, store, monkeypatch):
+        calls = self._setup(store, monkeypatch, [
+            {"verdict": "unsafe", "reason": "it removed the guard", "concerns": []},
+            {"verdict": "safe", "reason": "ok", "concerns": []}])
+        fix_worker.run_one(1)
+        req = store.load_pr(1).fix_request
+        assert req["status"] == "awaiting-review"
+        assert len(calls["author"]) == 2 and "it removed the guard" in calls["author"][1]
+        assert req["objection"]["kind"] == "fix-review"
+
+    def test_two_rejections_refuse_with_both_reasons(self, store, monkeypatch):
+        self._setup(store, monkeypatch, [
+            {"verdict": "unsafe", "reason": "first", "concerns": []},
+            {"verdict": "unsafe", "reason": "second", "concerns": []}])
+        fix_worker.run_one(1)
+        req = store.load_pr(1).fix_request
+        assert req["status"] == "refused"
+        assert "first" in req["refused_reason"] and "second" in req["refused_reason"]
+
+    def test_without_the_gate_a_rejection_refuses_at_once(self, store, monkeypatch):
+        calls = self._setup(store, monkeypatch,
+                            [{"verdict": "unsafe", "reason": "no", "concerns": []}],
+                            gates_=("review",))
+        fix_worker.run_one(1)
+        assert store.load_pr(1).fix_request["status"] == "refused"
+        assert len(calls["author"]) == 1
+
+
+class TestFixAutopush:
+    def _run(self, store, monkeypatch, tier):
+        monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", "fix")
+        monkeypatch.setattr(fix_worker.risktier, "pr_tier", lambda paths: tier)
+        probe = _fix_probe()
+        monkeypatch.setattr(fix_worker, "_resubmit", probe)
+        _authored(monkeypatch)
+        _reviewed(monkeypatch)
+        _queue_fix()
+        fix_worker.run_one(1)
+        return probe, store.load_pr(1).fix_request
+
+    def test_a_fix_past_the_bar_is_pushed(self, store, monkeypatch):
+        probe, req = self._run(store, monkeypatch, tier=2)
+        assert req["status"] == "pushed" and _pushed(probe)
+        assert req["result"]["autopush_bar"]["ok"] is True
+
+    def test_a_fix_under_the_bar_parks_with_the_reason(self, store, monkeypatch):
+        probe, req = self._run(store, monkeypatch, tier=1)
+        assert req["status"] == "awaiting-review" and not _pushed(probe)
+        assert "tier" in req["result"]["autopush_bar"]["reason"]
