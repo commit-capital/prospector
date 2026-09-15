@@ -438,6 +438,7 @@ class Pr:
                            source: str | None = None, host: str | None = None,
                            base_sha: str | None = None,
                            guidance: str | None = None,
+                           objection: dict | None = None,
                            head_sha: str | None = None) -> None:
         """Record this PR's autofix queue state (the fix_request section): any app
         writes `queued`/`cancelled`/`approved`, the fix worker advances it through
@@ -452,15 +453,19 @@ class Pr:
         ("auto" for the idle hunter; the operator path leaves it unset). guidance
         carries the operator's own instruction for an agent-authored fix, which
         the worker authors from and which is what authorizes the fix at all.
-        host records the machine that ran it. None-valued fields are omitted, so
-        the stored record carries only what is set."""
+        objection carries the machine judgment (a reviewer's rejection, a
+        compile excerpt, a security finding) a continuation authors from; it
+        is never human authorization. host records the machine that ran it.
+        None-valued fields are omitted, so the stored record carries only what
+        is set."""
         section: dict = {"status": status, "action": action}
         for field, value in (("queued_at", queued_at), ("started_at", started_at),
                              ("finished_at", finished_at), ("step", step),
                              ("error", error), ("refused_reason", refused_reason),
                              ("result", result), ("attempts", attempts),
                              ("source", source), ("host", host),
-                             ("base_sha", base_sha), ("guidance", guidance)):
+                             ("base_sha", base_sha), ("guidance", guidance),
+                             ("objection", objection)):
             if value is not None:
                 section[field] = value
         _stamp(self.rec, "fix_request", section, head_sha)

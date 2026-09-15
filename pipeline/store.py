@@ -89,7 +89,7 @@ FIX_REQUEST_STATUSES = {"queued", "running", "awaiting-review", "approved", "pus
 
 # Who queued a fix request: the idle auto-hunter stamps its picks "auto"; the
 # app's operator path leaves the field unset.
-FIX_REQUEST_SOURCES = {"operator", "auto"}
+FIX_REQUEST_SOURCES = {"operator", "auto", "objection"}
 
 # every per-PR record section this code knows; an unknown section is preserved
 # through save (with a stderr notice) so a checkout behind the store schema
