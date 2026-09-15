@@ -176,8 +176,11 @@ per UTC day. A rejected resolve is continued inside its kept merge worktree
 retried once; a hunted mechanical action that fails to compile queues a `fix`
 with source `objection`. A `fix` pushes unattended only when `TRIAGE_FIX_AUTOPUSH`
 names it and `gates.fix_autopush_bar` clears it: reviewer `safe`, compile clean,
-every touched path at or above `TRIAGE_FIX_AUTOPUSH_MIN_TIER` (default 2), and at
-most `TRIAGE_FIX_AUTOPUSH_MAX_LINES` (default 300) changed lines. A `fix` runs two agents inside a `resubmit prepare` clone:
+a clean sandbox run of the test files related to the touched paths when any
+exist (the same related-tests run a resolve gets; a sandbox that cannot run
+ends the request `failed` for the hunter to retry), every touched path at or
+above `TRIAGE_FIX_AUTOPUSH_MIN_TIER` (default 2), and at most
+`TRIAGE_FIX_AUTOPUSH_MAX_LINES` (default 300) changed lines. A `fix` runs two agents inside a `resubmit prepare` clone:
 `pipeline/author_fix.py` writes the change against a goal — the operator's own
 typed guidance, else the profile's fixable gates read off every active code
 reviewer's open findings and its own summary (Greptile's reasons for a sub-bar

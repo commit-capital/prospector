@@ -1944,26 +1944,55 @@ class TestFixRetry:
 
 
 class TestFixAutopush:
-    def _run(self, store, monkeypatch, tier):
+    def _run(self, store, monkeypatch, tier, related=(), run=None):
         monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", "fix")
         monkeypatch.setattr(fix_worker.risktier, "pr_tier", lambda paths: tier)
         probe = _fix_probe()
         monkeypatch.setattr(fix_worker, "_resubmit", probe)
         _authored(monkeypatch)
         _reviewed(monkeypatch)
+        asked: dict = {}
+        monkeypatch.setattr(fix_worker.resolve_evidence, "related_tests",
+                            lambda wt, paths: asked.setdefault("paths", list(paths)) and list(related))
+        monkeypatch.setattr(
+            fix_worker, "_related_tests_run",
+            lambda n, head, patch, files: (asked.setdefault("patch", patch),
+                                           {"files": files, "run": run} if files else None)[1])
         _queue_fix()
         fix_worker.run_one(1)
-        return probe, store.load_pr(1).fix_request
+        return probe, store.load_pr(1).fix_request, asked
 
     def test_a_fix_past_the_bar_is_pushed(self, store, monkeypatch):
-        probe, req = self._run(store, monkeypatch, tier=2)
+        probe, req, _ = self._run(store, monkeypatch, tier=2)
         assert req["status"] == "pushed" and _pushed(probe)
         assert req["result"]["autopush_bar"]["ok"] is True
 
     def test_a_fix_under_the_bar_parks_with_the_reason(self, store, monkeypatch):
-        probe, req = self._run(store, monkeypatch, tier=1)
+        probe, req, _ = self._run(store, monkeypatch, tier=1)
         assert req["status"] == "awaiting-review" and not _pushed(probe)
         assert "tier" in req["result"]["autopush_bar"]["reason"]
+
+    def test_related_tests_run_over_the_composed_tree_before_a_push(self, store, monkeypatch):
+        probe, req, asked = self._run(store, monkeypatch, tier=2,
+                                      related=["src/a.test.ts"], run={"exit": 0})
+        assert req["status"] == "pushed" and _pushed(probe)
+        assert asked["paths"] == ["a.ts"]
+        assert asked["patch"].startswith(PR_DIFF) and "diff --git a/a.ts" in asked["patch"]
+        assert req["result"]["tests"] == {"files": ["src/a.test.ts"], "run": {"exit": 0}}
+
+    def test_failing_related_tests_park_the_fix(self, store, monkeypatch):
+        probe, req, _ = self._run(store, monkeypatch, tier=2,
+                                  related=["src/a.test.ts"], run={"exit": 20})
+        assert req["status"] == "awaiting-review" and not _pushed(probe)
+        assert "did not pass" in req["result"]["autopush_bar"]["reason"]
+
+    def test_a_related_tests_sandbox_that_cannot_run_is_the_machine_s_failure(
+            self, store, monkeypatch):
+        probe, req, _ = self._run(store, monkeypatch, tier=2, related=["src/a.test.ts"],
+                                  run={"error": "docker is not running", "error_kind": "sandbox"})
+        assert req["status"] == "failed" and not _pushed(probe)
+        assert "could not run" in req["error"]
+        assert ("abort",) in probe.calls
 
 
 class TestCompileObjection:
