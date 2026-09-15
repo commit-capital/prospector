@@ -17,6 +17,7 @@ Cluster state is DERIVED here, never stored.
 from __future__ import annotations
 
 import fnmatch
+from collections.abc import Iterable
 from datetime import datetime, timezone
 import posixpath
 import re
@@ -623,6 +624,22 @@ def fix_eligibility(pr: Pr, action: str,
         return False, ("the active profile names no autofix.fixable_gates, so "
                        "agent-authored fixes are not enabled for this repository")
     return True, f"eligible for {action}"
+
+
+def fix_withheld_globs() -> tuple[str, ...]:
+    """The globs an agent-authored change may not touch: the profile's
+    CODEOWNERS-gated globs followed by its autofix.deny_globs. These are the
+    two path blocks fix_eligibility raises against a `fix` or `resolve`, so
+    the authoring agent can be told them before it starts."""
+    p = profile.active()
+    return tuple(p.codeowners.gated_globs) + tuple(p.autofix.deny_globs)
+
+
+def fix_withheld_paths(paths: Iterable[str]) -> list[str]:
+    """The subset of `paths` that fix_withheld_globs covers, in order."""
+    globs = fix_withheld_globs()
+    return [p for p in paths
+            if any(diffpaths.matches_glob(diffpaths.normalize_path(p), g) for g in globs)]
 
 
 def resolve_autopush_bar(result: dict) -> tuple[bool, str]:
