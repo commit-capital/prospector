@@ -1565,7 +1565,7 @@ def _continue_resolve(n: int, rec: Pr, claimed: dict, head: str, worktree: str,
                     "reviews": [], "tests": None, "objection": objection}
     history = resolve_evidence.history(worktree, paths)
     context = resolve_evidence.store_context(rec)
-    related = resolve_evidence.related_tests(worktree, paths)
+    related = resolve_evidence.related_tests(worktree, all_paths)
     for lens in ("behavior", "history"):
         v = review_resolve.review(worktree, pr=n, title=rec.title or "",
                                   merge_diff=str(result.get("merge_diff") or ""), patch=patch,
@@ -1817,8 +1817,8 @@ def auto_fixable(pr: Pr, *, budget_ok: bool = True) -> tuple[str, dict | None] |
     actions need the deployment's opt-in (TRIAGE_FIX_HUNT_FIX) and a head that
     has not already burned its one unattended attempt; a security continuation
     also needs today's budget (`budget_ok`) and an objection this head has not
-    answered, and falls back to the ordinary pick otherwise. Anything else is
-    left alone.
+    answered, and otherwise the PR takes the ordinary pick, which the same
+    head's spent attempt rests in turn. Anything else is left alone.
 
     gates.fix_huntable is the bar, not fix_eligibility: unprompted sandbox time
     goes only where a stored quality signal argues the spend is worth it."""
@@ -1894,7 +1894,7 @@ def next_auto() -> tuple[str, int, dict | None] | None:
              "describe": limit - _auto_in_flight("describe")}
     best: dict[str, tuple[tuple[int, int, float, int], str, int, dict | None]] = {}
     budget_ok = (not settings.fix_hunt_security()
-                 or objections.budget_left(data.store(), settings.worker_id()) > 0)
+                 or _budget_used(data.store()) < settings.fix_objection_budget())
     for n, rec in data.prs().items():
         pick = auto_fixable(rec, budget_ok=budget_ok)
         if pick is None:

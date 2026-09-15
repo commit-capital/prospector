@@ -996,3 +996,16 @@ def test_discard_drops_uncommitted_edits_and_keeps_the_merge(monkeypatch, tmp_pa
     assert resubmit.cmd_discard(42) == 0
     assert not (wt / "stray.txt").exists()
     assert resubmit._read_meta(42)["phase"] == "ready"
+
+
+def test_a_second_commit_on_a_kept_merge_is_refused(monkeypatch, tmp_path):
+    repos = _make_rebase_repos(tmp_path)
+    _wire_merge(monkeypatch, tmp_path, repos)
+    resubmit.cmd_prepare(42, merge=True)
+    wt = resubmit._worktree(42)
+    (wt / "one.txt").write_text("resolved one\n")
+    assert resubmit.cmd_continue(42) == 0
+    (wt / "follow.txt").write_text("fix\n")
+    assert resubmit.cmd_commit(42, "first") == 0
+    (wt / "more.txt").write_text("more\n")
+    assert resubmit.cmd_commit(42, "second") == 2

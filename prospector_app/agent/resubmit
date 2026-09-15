@@ -671,6 +671,10 @@ def cmd_commit(pr: int, message: str) -> int:
     if not meta or meta.get("mode") != "merge":
         print(f"resubmit: PR #{pr} holds no kept merge to commit onto", file=sys.stderr)
         return 2
+    if meta.get("continued_from"):
+        print(f"resubmit: PR #{pr}'s kept merge already carries a follow-up; discard it "
+              "before committing another.", file=sys.stderr)
+        return 2
     status = _git(["status", "--porcelain"], wt)
     if status.returncode != 0:
         print(f"resubmit: git status failed: {status.stderr.strip()}", file=sys.stderr)

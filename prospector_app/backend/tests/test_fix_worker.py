@@ -2226,7 +2226,7 @@ class TestSecurityLaneBounds:
     def test_an_exhausted_budget_blocks_the_security_pick(self, store, monkeypatch):
         self._on(monkeypatch, "objection")
         self._yellow(store)
-        monkeypatch.setattr(fix_worker.objections, "budget_left", lambda st, w, now=None: 0)
+        monkeypatch.setattr(fix_worker, "_budget_used", lambda st: 10 ** 6)
         assert fix_worker.next_auto() is None
 
     def test_an_overridden_yellow_is_left_alone(self, store, monkeypatch):
