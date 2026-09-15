@@ -1335,45 +1335,49 @@ tr.row-done:hover > td { opacity: 1; }
 .closeout-head:first-of-type { margin-top: 14px; }
 .fixed-row-detail td { background: var(--panel); }
 
-/* Home screen: two side-by-side columns of cards — the merge track beside the
-   request-changes track — with the needs-human backstop full-width beneath
-   both. Inside a column a card stacks vertically (headline count and blurb on
-   top, the sample table of its highest-pain member PRs below); the backstop
-   card lays the two parts side by side. Every headline links into the PR
-   Explorer. */
-.home { max-width: 1440px; }
+/* Home screen: column sections of cards — your move, in motion, handed back,
+   issues — laid out on a grid that fits as many ~430px-minimum columns as the
+   viewport allows, so a narrower window gets fewer, wider columns. A card
+   stacks vertically: headline count and blurb on top, the sample table of its
+   highest-pain member PRs below. Every headline links into the PR Explorer. */
+.home { max-width: 2200px; }
 .home-head { margin-bottom: 16px; }
 .home-head h2 { margin: 0 0 4px; }
-.home-columns { display: flex; gap: 12px; align-items: flex-start; margin-bottom: 10px; }
-.home-col { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+.home-columns {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(min(430px, 100%), 1fr));
+  gap: 12px; align-items: start; margin-bottom: 10px;
+}
+.home-col { min-width: 0; display: flex; flex-direction: column; gap: 10px; }
 .home-col-head { text-transform: uppercase; letter-spacing: .04em; font-size: 10.5px; }
-.home-cards { display: flex; flex-direction: column; gap: 10px; }
 .home-breakdown { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 0 12px 8px; }
 .home-breakdown-item { text-decoration: none; color: var(--muted); }
 .home-breakdown-item:hover { color: var(--fg); text-decoration: underline; }
+/* flex: none — the shared act-card flex basis sizes cards in a horizontal
+   row; in this vertical stack the card takes its natural height. */
 .home-card {
-  padding: 0; background: var(--panel); overflow: hidden;
-  display: flex; align-items: stretch;
+  flex: none; padding: 0; background: var(--panel); overflow: hidden;
+  display: flex; flex-direction: column; align-items: stretch;
 }
-.home-col .home-card { flex-direction: column; }
-.home-col .home-card-head { flex: 0 0 auto; }
-.home-col .home-card-side { border-left: none; border-top: 1px solid var(--border); }
 .home-card-head {
-  flex: 0 0 320px; min-width: 0;
   display: flex; align-items: baseline; gap: 14px; padding: 10px 12px;
   text-decoration: none; color: var(--text);
 }
 .home-card-head .act-card-n { min-width: 44px; text-align: right; }
 .home-card-text { flex: 1; min-width: 0; }
 .home-card-blurb { margin-top: 4px; line-height: 1.4; }
+/* The sample area is a size container: the @container rules below measure it
+   to drop table cells a narrow card has no room for. */
 .home-card-side {
-  flex: 1 1 auto; min-width: 0; border-left: 1px solid var(--border);
+  min-width: 0; border-top: 1px solid var(--border);
   padding: 6px 12px 8px; display: flex; flex-direction: column; gap: 3px;
-  justify-content: center;
+  justify-content: center; container-type: inline-size;
 }
 .home-sample-table { width: 100%; table-layout: fixed; border-collapse: collapse; }
 /* Every sample row is one line tall: each fixed-width cell keeps its content
-   on a single line and clips any overflow inside its own column. */
+   on a single line and clips any overflow inside its own column, and the
+   title cell takes the width they leave. In a card too narrow for all of
+   them, the issues cell and then the pain cell drop out, keeping the title
+   readable instead of ellipsized to a few characters. */
 .home-sample-table td {
   padding: 1px 0; vertical-align: baseline;
   white-space: nowrap; overflow: hidden;
@@ -1387,6 +1391,12 @@ tr.row-done:hover > td { opacity: 1; }
 .home-sample-issues { width: 128px; text-align: right; }
 .home-sample-issues .issue-prs { flex-wrap: nowrap; justify-content: flex-end; max-width: 100%; }
 .home-sample-run { width: 72px; text-align: right; }
+@container (width < 480px) {
+  .home-sample-issues { display: none; }
+}
+@container (width < 310px) {
+  .home-sample-pain { display: none; }
+}
 .home-row-run { white-space: nowrap; }
 .home-show-all { margin-top: 4px; align-self: flex-end; color: var(--accent); text-decoration: none; }
 .home-show-all:hover { text-decoration: underline; }
@@ -1395,12 +1405,6 @@ tr.row-done:hover > td { opacity: 1; }
   border-top: 1px solid var(--border);
 }
 .home-action-tail { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-@media (max-width: 860px) {
-  .home-columns { flex-direction: column; }
-  .home-card { flex-direction: column; }
-  .home-card-head { flex: 0 0 auto; }
-  .home-card-side { border-left: none; border-top: 1px solid var(--border); }
-}
 .home-loading { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; color: var(--muted); font-size: 12.5px; }
 .home-count-loading { animation: count-pulse 1.2s ease-in-out infinite; }
 @keyframes count-pulse { 0%, 100% { opacity: .55; } 50% { opacity: .2; } }
