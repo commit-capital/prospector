@@ -2100,6 +2100,39 @@ class TestFixRetry:
         assert len(calls["author"]) == 1
 
 
+class TestDeclinedPrompt:
+    """A prompt the API's safeguards refuse is a verdict on the PR's text: the
+    request ends refused, resting the head, and counts toward no lane trip."""
+
+    def test_a_declined_fix_is_refused_not_failed(self, store, monkeypatch):
+        probe = _fix_probe()
+        monkeypatch.setattr(fix_worker, "_resubmit", probe)
+
+        def declined(worktree, **kw):
+            raise headless_agent.AgentDeclined("API Error: safeguards flagged this message")
+        monkeypatch.setattr(fix_worker.author_fix, "author", declined)
+        _queue_fix()
+        fix_worker.run_one(1)
+        req = store.load_pr(1).fix_request
+        assert req["status"] == "refused"
+        assert "safeguards declined" in req["refused_reason"]
+        assert ("abort",) in probe.calls
+
+    def test_a_declined_describe_is_refused_not_failed(self, store, monkeypatch, tmp_path):
+        store.save_pr(_describable_pr())
+        data.refresh()
+        fix_queue.queue_pr(5, "describe")
+        _fake_describe_inputs(monkeypatch, tmp_path)
+
+        def declined(**kw):
+            raise headless_agent.AgentDeclined("API Error: safeguards flagged this message")
+        monkeypatch.setattr(fix_worker.describe_pr, "describe", declined)
+        fix_worker.run_one(5)
+        req = store.load_pr(5).fix_request
+        assert req["status"] == "refused"
+        assert "safeguards declined" in req["refused_reason"]
+
+
 class TestFixAutopush:
     def _run(self, store, monkeypatch, tier, related=(), run=None):
         monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", "fix")

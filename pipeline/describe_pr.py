@@ -160,10 +160,9 @@ def describe(*, pr: int, title: str, body: str, diff: str, template: str,
                                for f in findings) or "(none recorded)")):
             with open(os.path.join(tmp, name), "w") as fh:
                 fh.write(text)
-        text = headless_agent.run_agent(_prompt(pr, title, required), allow_gh=False,
-                                        cwd=tmp, timeout=AGENT_TIMEOUT_SECONDS,
-                                        on_event=on_event)
-    verdict = headless_agent.extract_json(text)
+        verdict, text = headless_agent.json_reply(lambda: headless_agent.run_agent(
+            _prompt(pr, title, required), allow_gh=False, cwd=tmp,
+            timeout=AGENT_TIMEOUT_SECONDS, on_event=on_event))
     if "give_up" in verdict:
         return {"give_up": str(verdict["give_up"])}
     new = verdict.get("body")

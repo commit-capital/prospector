@@ -15,7 +15,7 @@ conflict resolver and the fix author; the rule names the worktree in the CLI's
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 import os
 import re
 import shutil
@@ -23,6 +23,7 @@ import signal
 import subprocess
 import threading
 
+from pipeline import settings
 from pipeline.gh import operator_env
 from pipeline.settings import REPO_ROOT
 
@@ -64,6 +65,25 @@ def unavailable_reason(text: str) -> str | None:
     """The line of `text` that says the CLI cannot serve prompts, or None."""
     for line in text.splitlines():
         if _UNAVAILABLE.search(line):
+            return line.strip()[:300]
+    return None
+
+
+class AgentDeclined(RuntimeError):
+    """The model's safeguards refused the prompt itself. A verdict on this
+    request's text, never the machine's condition: callers end such a run as
+    refused, and it counts toward no lane trip."""
+
+
+# What the CLI prints when the API's safeguards refuse a prompt outright.
+_DECLINED = re.compile(r"safeguards flagged this message"
+                       r"|can't respond to this message", re.I)
+
+
+def declined_reason(text: str) -> str | None:
+    """The line of `text` that says the model refused the prompt, or None."""
+    for line in text.splitlines():
+        if _DECLINED.search(line):
             return line.strip()[:300]
     return None
 
@@ -254,6 +274,19 @@ def extract_json(text: str) -> dict:
     return json.loads(candidate)
 
 
+def json_reply(run: Callable[[], str]) -> tuple[dict, str]:
+    """`run` the agent and parse the JSON object out of its answer, running it
+    once more when the first answer carries no parseable object — a reply cut
+    off mid-string is the run's accident, not the prompt's verdict. Returns
+    the object with the text it came from; the second failure raises."""
+    text = run()
+    try:
+        return extract_json(text), text
+    except ValueError:
+        text = run()
+        return extract_json(text), text
+
+
 def run_agent(prompt: str, *, allow_gh: bool, cwd: str, system_prompt: str | None = None,
               model: str | None = None, on_event=None, timeout: int = 1200,
               edit_root: str | None = None, allow: Sequence[str] = (),
@@ -261,16 +294,20 @@ def run_agent(prompt: str, *, allow_gh: bool, cwd: str, system_prompt: str | Non
     """Spawn headless claude, stream its output through parse_stream, return the
     final text. The prompt travels over stdin — it can embed a whole PR diff,
     and argv has an OS size cap. `model` pins a specific model (e.g. a cheap
-    Haiku for mechanical work); None uses the CLI default. `edit_root` grants
+    Haiku for mechanical work); None takes `settings.agent_model()`, and only
+    an empty TRIAGE_AGENT_MODEL leaves the CLI's own default in charge.
+    `edit_root` grants
     Edit/Write scoped to that directory (plus read-only git). `allow` adds
     permission rules on top of the read-only set, such as `Bash(<tool>:*)` for
     one more host command; `env_extra` is merged into the agent's environment,
     which its Bash commands inherit. Raises RuntimeError on a non-zero exit,
     and EditsBlockedError when an Edit/Write inside `edit_root` was
     permission-denied — the grant not working, so the run's outcome is the
-    machine's, not the agent's."""
+    machine's, not the agent's. Raises AgentDeclined when the API's safeguards
+    refused the prompt, and AgentUnavailable when the CLI could serve none."""
     cmd = [CLAUDE_BIN, "-p", *_flags(allow_gh, edit_root, allow),
            "--output-format", "stream-json", "--verbose", "--include-partial-messages"]
+    model = model or settings.agent_model()
     if model:
         cmd += ["--model", model]
     if system_prompt:
@@ -314,9 +351,13 @@ def run_agent(prompt: str, *, allow_gh: bool, cwd: str, system_prompt: str | Non
         raise RuntimeError(f"claude did not exit within {timeout}s")
     if proc.returncode != 0:
         tail = text[-500:] if text else "(no output)"
-        why = unavailable_reason(_failure_text(text, raw_lines, results))
+        failure = _failure_text(text, raw_lines, results)
+        why = unavailable_reason(failure)
         if why:
             raise AgentUnavailable(f"claude exited {proc.returncode}: {why}")
+        declined = declined_reason(failure)
+        if declined:
+            raise AgentDeclined(declined)
         raise RuntimeError(f"claude exited {proc.returncode}; last output: {tail}")
     if edit_root:
         blocked = _blocked_edits(results[0] if results else None, edit_root)

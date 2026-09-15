@@ -76,6 +76,14 @@ def display_name() -> str:
     return os.environ.get("TRIAGE_DISPLAY_NAME") or repo_name()
 
 
+def agent_model() -> str | None:
+    """The model every headless agent run is pinned to, or None to leave the
+    CLI's own default in charge. TRIAGE_AGENT_MODEL, default "opus"; an empty
+    value means None."""
+    raw = os.environ.get("TRIAGE_AGENT_MODEL", "opus").strip()
+    return raw or None
+
+
 def agent_provider() -> str:
     """Which local CLI backs the app's in-chat agent pane, or "none".
 

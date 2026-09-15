@@ -984,6 +984,11 @@ def _author_and_review(n: int, claimed: dict, rec: Pr, worktree: str, goal: str,
               result=_checks_only(sandbox_check.collect_checks(n)) or None,
               kind="agent-unavailable")
         return None
+    except headless_agent.AgentDeclined as e:
+        _resubmit(n, "abort")
+        _refuse(n, claimed, f"The model's safeguards declined this PR's text, so "
+                            f"nothing was authored: {e}")
+        return None
     except (RuntimeError, ValueError) as e:
         _resubmit(n, "abort")
         _fail(n, claimed, f"The agent attempt did not land: {e}",
@@ -1226,6 +1231,10 @@ def _describe(n: int, claimed: dict) -> None:
     except headless_agent.AgentUnavailable as e:
         _fail(n, claimed, f"The agent could not run on {settings.worker_id()}: {e}",
               kind="agent-unavailable")
+        return
+    except headless_agent.AgentDeclined as e:
+        _refuse(n, claimed, f"The model's safeguards declined this PR's text, so no "
+                            f"description was written: {e}")
         return
     except (RuntimeError, ValueError) as e:
         _fail(n, claimed, f"The agent attempt did not land: {e}")
