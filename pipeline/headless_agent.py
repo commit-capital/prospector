@@ -251,11 +251,13 @@ def print_progress(ev) -> None:
 
 def extract_json(text: str) -> dict:
     """Pull the JSON object out of an agent's free-text answer: prefer a
-    ```json fenced block, else the last balanced {...} run. Raises ValueError."""
+    ```json fenced block, else the last balanced {...} run. A raw newline or
+    tab inside a string is accepted, since an agent writing prose into a
+    field breaks lines there. Raises ValueError."""
     import re
     m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if m:
-        return json.loads(m.group(1))
+        return json.loads(m.group(1), strict=False)
     # last balanced object
     depth = 0
     start = None
@@ -271,7 +273,7 @@ def extract_json(text: str) -> dict:
                 candidate = text[start:i + 1]
     if candidate is None:
         raise ValueError("no JSON object found in agent output")
-    return json.loads(candidate)
+    return json.loads(candidate, strict=False)
 
 
 def json_reply(run: Callable[[], str]) -> tuple[dict, str]:

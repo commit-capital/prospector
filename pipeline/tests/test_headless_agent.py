@@ -46,6 +46,13 @@ def test_extract_json_handles_raw_trailing_object():
     assert ha.extract_json(text) == {"a": 1, "b": [2, 3]}
 
 
+def test_extract_json_accepts_a_raw_newline_inside_a_string():
+    text = 'Done.\n{"summary": "Bound the loop.\nAdded a cap.", "changes": []}'
+    assert ha.extract_json(text) == {"summary": "Bound the loop.\nAdded a cap.", "changes": []}
+    fenced = '```json\n{"give_up": "line one\n\tline two"}\n```'
+    assert ha.extract_json(fenced) == {"give_up": "line one\n\tline two"}
+
+
 def test_extract_json_raises_on_no_json():
     with pytest.raises(ValueError):
         ha.extract_json("no json here at all")
