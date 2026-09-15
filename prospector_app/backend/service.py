@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from pipeline.model import Pr
 
-from prospector_app.backend import data
+from prospector_app.backend import automation, data
 from prospector_app.backend import filters  # spec predicate
 from prospector_app.backend import pr_checks
 from prospector_app.backend import responses
@@ -328,6 +328,9 @@ def pr_row(n: int, rec: Pr | None = None) -> dict | None:
         "out_of_scope": sug.get("action") == "OUT_OF_SCOPE",
         # how the community responded to our triage since we acted (#community-signals)
         "responses": responses.for_pr(rec.number),
+        # Where the PR stands with the automation (automation.classify): the
+        # Home columns and the automation_* filters read this one derivation.
+        "automation": automation.classify(rec),
         "pain_score": pain["score"],
         "pain_breakdown": {
             "issue_pain": pain["issue_pain"],

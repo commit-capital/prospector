@@ -1,12 +1,9 @@
-import type { CheckClause, FilterSpec } from "../api";
-// Explicit .ts extension so the node:test runner (type stripping, no bundler)
-// can resolve this runtime import when homeCards.test.ts loads the module.
-import { MERGE_READY_SPEC } from "../components/explorer/lanes.ts";
+import type { FilterSpec } from "../api";
 
-// Which part of the Home layout a card renders in: the merge track column
-// (the pipeline's merge picks), the request-changes column beside it, or the
-// full-width human-decision backstop beneath the columns.
-export type HomeColumn = "merge" | "changes" | "backstop";
+// Which Home column a card renders in: `act` (a click of yours moves these
+// PRs), `auto` (a worker queue or hunter moves them; nothing for a person to
+// do), or `handed` (the automation gave them back, to their author or to you).
+export type HomeColumn = "act" | "auto" | "handed";
 
 // A per-sample-row job button on a PR card: the Control-tab job to run for
 // that row's PR, with the button's label and hover hint.
@@ -30,6 +27,14 @@ export interface HomeCard {
   dir?: "asc" | "desc";
   lead?: boolean;
   rowAction?: HomeRowAction;
+  // Sub-buckets shown as counted links under the blurb, each its own spec.
+  breakdown?: HomeBreakdown[];
+}
+
+// One counted link under a card: a narrower spec inside the card's own.
+export interface HomeBreakdown {
+  label: string;
+  spec: FilterSpec;
 }
 
 // How many sample PRs each card fetches into the table on its right side;
@@ -55,115 +60,105 @@ export const SAMPLE_QUERY: { sort: string; direction: "desc"; limit: number } = 
   limit: SAMPLE_LIMIT,
 };
 
-function checksPass(...keys: string[]): CheckClause[] {
-  return keys.map((key) => ({ key, status: "pass" }));
+// The cards, grouped by Home column, every spec a filter over the row's
+// `automation` standing (prospector_app/backend/automation.py), so a card's
+// number is the row count its Explorer link opens. The `act` column is what a
+// click of yours moves; `auto` is what a worker queue or hunter moves on its
+// own, blurbed with what clears it; `handed` is what the automation gave back,
+// split by whose move it is, with a counted reason breakdown under each card.
+// Counts come from POST /api/prs/counts over HOME_COUNT_SPECS and samples
+// from POST /api/prs/query — the same backend matcher.
+function bucket(...buckets: string[]): FilterSpec {
+  return { automation_bucket: buckets.length === 1 ? buckets[0] : buckets };
 }
 
-// The cards, grouped by Home column. The merge column holds only the
-// pipeline's merge picks — every spec carries disposition "merge", so a PR the
-// pipeline decided to close as a dup or send back for changes never appears —
-// ordered by how close each card's PRs are to merge-ready: ready first, then
-// each card one step further from the finish line. The changes column holds
-// the request-changes picks whose CI is already clean — asks worth relaying to
-// their authors now. The human-decision backstop renders full-width beneath
-// both. Counts come from POST /api/prs/counts and samples from
-// POST /api/prs/query — the same backend matcher — so each card's number is
-// exactly the row count the Explorer shows when its link opens.
 export const HOME_CARDS: HomeCard[] = [
   {
     key: "ready",
-    title: "PRs ready to merge",
-    blurb: "A pipeline merge pick with every check green — review at the bar, CI passing, security GREEN, verified. Just merge.",
-    column: "merge",
-    // The Explorer's Merge-ready lane spec, narrowed to the pipeline's merge picks.
-    spec: { ...MERGE_READY_SPEC, disposition: "merge" },
+    title: "Ready to merge",
+    blurb: "Every gate is clear — review at the bar, CI passing, security GREEN, verified. One click each.",
+    column: "act",
+    spec: bucket("merge-ready"),
     sort: "updated",
     dir: "asc",
     lead: true,
   },
   {
-    key: "verify-pending",
-    title: "Awaiting verification",
-    blurb: "Security GREEN and otherwise clean, but dynamic verification has never run.",
-    column: "merge",
-    spec: {
-      checks: [
-        ...checksPass("review", "ci", "scans", "mergeable", "secrets", "security"),
-        { key: "verify", status: "never_ran" },
-      ],
-      safety: "GREEN",
-      disposition: "merge",
-    },
-    rowAction: {
-      kind: "verify-pr",
-      label: "verify",
-      hint: "Run sandbox verification for this PR — needs the Docker sandbox",
-    },
+    key: "approve",
+    title: "Approve a parked change",
+    blurb: "A resolve, fix, or description the worker prepared and parked for your approval. Approve it and the worker pushes.",
+    column: "act",
+    spec: bucket("approve-parked"),
   },
   {
-    key: "security-pending",
-    title: "Awaiting security review",
-    blurb: "Clean on review, CI, conflicts, and secrets, but the deep security review has never run.",
-    column: "merge",
-    spec: {
-      checks: [
-        ...checksPass("review", "ci", "scans", "mergeable", "secrets"),
-        { key: "security", status: "never_ran" },
-      ],
-      disposition: "merge",
-    },
-    rowAction: {
-      kind: "security-review",
-      label: "review",
-      hint: "Run the deep security review for this PR",
-    },
+    key: "queued",
+    title: "In a queue right now",
+    blurb: "Claimed or waiting in the fix or verify queue. Clears itself as the workers drain it.",
+    column: "auto",
+    spec: bucket("queued"),
   },
   {
-    key: "base-update",
-    title: "Just need a base update",
-    blurb: "Green everywhere except merge conflicts — update the branch with the base and they can go fully green.",
-    column: "merge",
-    spec: {
-      checks: [
-        ...checksPass("review", "ci", "scans", "tests", "secrets", "security", "verify"),
-        { key: "mergeable", status: "fail" },
-      ],
-      safety: "GREEN",
-      disposition: "merge",
-    },
+    key: "hunt",
+    title: "Hunter's next picks",
+    blurb: "An idle worker queues these itself — a rebase, an update, a fix, a description — one attempt per head. Objection fixes wait behind the day's budget.",
+    column: "auto",
+    spec: bucket("hunt", "budgeted"),
   },
   {
-    key: "changes",
-    title: "Changes to request",
-    blurb: "CI passing and no conflicts, but the pipeline's pick is request-changes — relay the asks to the authors.",
-    column: "changes",
-    spec: {
-      checks: checksPass("ci", "mergeable"),
-      disposition: "request-changes",
-    },
-    lead: true,
+    key: "waiting",
+    title: "Waiting on a reviewer or CI",
+    blurb: "The bot pushed and the reviewer or CI has not answered, a verdict is missing at this head and the worker has asked for it, or a machine failure is cooling before its retry.",
+    column: "auto",
+    spec: bucket("waiting", "retry"),
   },
   {
-    key: "nitpicks",
-    // The subset of the changes column whose review feedback is only nits —
-    // the cheapest asks to relay.
-    title: "Just need nitpicks fixed",
-    blurb: "CI passing, no conflicts, but the review left nits below the bar — a nitpick pass unblocks them.",
-    column: "changes",
-    spec: {
-      checks: checksPass("ci", "mergeable"),
-      greptile_severity: "nits",
-      disposition: "request-changes",
-    },
+    key: "author",
+    title: "Author's turn",
+    blurb: "The automation cannot move these without the contributor: conflicts the bot will not rebase, red CI, verification that did not confirm the fix, or an agent that tried and declined with its reasoning.",
+    column: "handed",
+    spec: { automation_owner: "author" },
+    breakdown: [
+      { label: "needs a rebase", spec: bucket("author-conflicts") },
+      { label: "red CI", spec: bucket("author-ci") },
+      { label: "agent declined", spec: bucket("author-declined") },
+      { label: "verification failed", spec: bucket("author-verify") },
+      { label: "fix rejected by reviewer", spec: bucket("author-rejected") },
+      { label: "other", spec: bucket("author-other") },
+    ],
   },
   {
-    key: "needs-human",
-    title: "Need a human decision",
-    blurb: "Flagged needs-human — only an operator call moves these forward.",
-    column: "backstop",
-    spec: { disposition: "needs-human" },
+    key: "your-call",
+    title: "Your call",
+    blurb: "Handed back to you: a needs-human pick, a security verdict, the analysis's own asks, or a path the bot may not touch.",
+    column: "handed",
+    spec: bucket("needs-human", "security-red", "security-yellow", "asks", "gated", "other"),
+    breakdown: [
+      { label: "needs a human decision", spec: bucket("needs-human") },
+      { label: "security RED", spec: bucket("security-red") },
+      { label: "security YELLOW", spec: bucket("security-yellow") },
+      { label: "analysis asks", spec: bucket("asks") },
+      { label: "gated path", spec: bucket("gated") },
+      { label: "other", spec: bucket("other") },
+    ],
   },
 ];
+
+// Every breakdown entry, flattened in card order, with the card it belongs to.
+export const HOME_BREAKDOWN_ENTRIES: { cardKey: string; entry: HomeBreakdown }[] =
+  HOME_CARDS.flatMap((c) => (c.breakdown ?? []).map((entry) => ({ cardKey: c.key, entry })));
+
+// The one counts request: the cards' specs first, then every breakdown
+// entry's, so a card's count is at its HOME_CARDS index and a breakdown's at
+// HOME_CARDS.length + its HOME_BREAKDOWN_ENTRIES index.
+export const HOME_COUNT_SPECS: FilterSpec[] = [
+  ...HOME_CARDS.map((c) => c.spec),
+  ...HOME_BREAKDOWN_ENTRIES.map((e) => e.entry.spec),
+];
+
+// The Explorer link for a breakdown entry: the card's sort, the entry's spec.
+export function breakdownHref(card: HomeCard, entry: HomeBreakdown): string {
+  return exploreHref({ ...card, spec: entry.spec });
+}
 
 export function exploreHref(card: HomeCard): string {
   const params = new URLSearchParams();

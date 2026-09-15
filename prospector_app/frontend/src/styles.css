@@ -1348,6 +1348,9 @@ tr.row-done:hover > td { opacity: 1; }
 .home-col { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
 .home-col-head { text-transform: uppercase; letter-spacing: .04em; font-size: 10.5px; }
 .home-cards { display: flex; flex-direction: column; gap: 10px; }
+.home-breakdown { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 0 12px 8px; }
+.home-breakdown-item { text-decoration: none; color: var(--muted); }
+.home-breakdown-item:hover { color: var(--fg); text-decoration: underline; }
 .home-card {
   padding: 0; background: var(--panel); overflow: hidden;
   display: flex; align-items: stretch;

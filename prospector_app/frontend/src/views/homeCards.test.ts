@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ALL_CHECKS_PASS, CHECK_DEFS } from "../components/explorer/checkDefs.ts";
-import { LANES, MERGE_READY_SPEC } from "../components/explorer/lanes.ts";
+import { LANES } from "../components/explorer/lanes.ts";
 import {
-  exploreHref, HOME_CARDS, HOME_ISSUE_CARDS, ISSUE_ANALYZE_BATCH, issuesHref,
+  breakdownHref, exploreHref, HOME_BREAKDOWN_ENTRIES, HOME_CARDS, HOME_COUNT_SPECS,
+  HOME_ISSUE_CARDS, ISSUE_ANALYZE_BATCH, issuesHref,
   painLabel, SAMPLE_LIMIT, SAMPLE_QUERY,
   type HomeCard,
 } from "./homeCards.ts";
@@ -13,27 +14,52 @@ test("card keys are unique", () => {
   assert.equal(new Set(keys).size, keys.length);
 });
 
-test("cards run merge track first, then the changes column, then the backstop", () => {
+test("cards run your move, then in motion, then handed back", () => {
   assert.deepEqual(
     HOME_CARDS.map((c) => c.key),
-    ["ready", "verify-pending", "security-pending", "base-update", "changes", "nitpicks", "needs-human"],
+    ["ready", "approve", "queued", "hunt", "waiting", "author", "your-call"],
   );
   assert.deepEqual(
     HOME_CARDS.map((c) => c.column),
-    ["merge", "merge", "merge", "merge", "changes", "changes", "backstop"],
+    ["act", "act", "auto", "auto", "auto", "handed", "handed"],
   );
 });
 
-test("merge-column cards keep only the pipeline's merge picks", () => {
-  for (const card of HOME_CARDS.filter((c) => c.column === "merge")) {
-    assert.equal(card.spec.disposition, "merge", card.key);
+test("every card filters on the automation standing alone", () => {
+  for (const card of HOME_CARDS) {
+    const keys = Object.keys(card.spec);
+    assert.ok(keys.every((k) => k.startsWith("automation_")), card.key);
+    assert.equal(keys.length, 1, card.key);
   }
 });
 
-test("changes-column cards keep only the request-changes picks", () => {
-  for (const card of HOME_CARDS.filter((c) => c.column === "changes")) {
-    assert.equal(card.spec.disposition, "request-changes", card.key);
+test("the handed-back cards carry a reason breakdown inside their own spec", () => {
+  const handed = HOME_CARDS.filter((c) => c.column === "handed");
+  assert.equal(handed.length, 2);
+  for (const card of handed) {
+    assert.ok((card.breakdown ?? []).length >= 4, card.key);
+    for (const entry of card.breakdown ?? []) {
+      assert.deepEqual(Object.keys(entry.spec), ["automation_bucket"], `${card.key}/${entry.label}`);
+    }
   }
+  for (const card of HOME_CARDS.filter((c) => c.column !== "handed")) {
+    assert.equal(card.breakdown, undefined, card.key);
+  }
+});
+
+test("the counts request lists card specs first, then every breakdown entry in order", () => {
+  assert.deepEqual(HOME_COUNT_SPECS.slice(0, HOME_CARDS.length), HOME_CARDS.map((c) => c.spec));
+  assert.deepEqual(HOME_COUNT_SPECS.slice(HOME_CARDS.length), HOME_BREAKDOWN_ENTRIES.map((e) => e.entry.spec));
+  assert.deepEqual(HOME_BREAKDOWN_ENTRIES.map((e) => e.cardKey),
+    HOME_CARDS.flatMap((c) => (c.breakdown ?? []).map(() => c.key)));
+  assert.ok(HOME_COUNT_SPECS.length <= 20, "the counts route accepts at most 20 specs");
+});
+
+test("a breakdown link keeps the card's sort and takes the entry's spec", () => {
+  const card = HOME_CARDS.find((c) => c.key === "author")!;
+  const entry = card.breakdown![0];
+  const params = new URLSearchParams(breakdownHref(card, entry).slice("/explore?".length));
+  assert.deepEqual(JSON.parse(params.get("spec")!), entry.spec);
 });
 
 test("ALL_CHECKS_PASS requires a pass on every rollup check", () => {
@@ -43,11 +69,11 @@ test("ALL_CHECKS_PASS requires a pass on every rollup check", () => {
   );
 });
 
-test("the ready card is the Merge-ready lane spec narrowed to merge picks", () => {
+test("the ready card is the merge-ready standing, oldest first", () => {
   const ready = HOME_CARDS.find((c) => c.key === "ready")!;
-  const lane = LANES.find((l) => l.key === "merge-ready")!;
-  assert.deepEqual(ready.spec, { ...MERGE_READY_SPEC, disposition: "merge" });
-  assert.equal(lane.spec, MERGE_READY_SPEC);
+  assert.deepEqual(ready.spec, { automation_bucket: "merge-ready" });
+  assert.equal(ready.sort, "updated");
+  assert.equal(ready.dir, "asc");
 });
 
 test("every lane spec uses only fields the filter UI can represent", () => {
@@ -59,6 +85,7 @@ test("every lane spec uses only fields the filter UI can represent", () => {
     "trusted_author", "clean", "greptile", "greptile_stale", "greptile_severity", "reviewer_status",
     "age_days", "risk_tier", "responses", "loc", "files", "pain", "author_rate",
     "artifact_dominated", "paths", "numbers", "merge_ok", "has_summary", "has_issues",
+    "automation_column", "automation_bucket", "automation_owner",
   ]);
   for (const lane of LANES) {
     for (const field of Object.keys(lane.spec)) {
@@ -78,9 +105,9 @@ test("exploreHref round-trips the spec through the URL", () => {
 
 test("exploreHref carries sort and dir only when the card sets them", () => {
   const sorted: HomeCard = {
-    key: "k", title: "t", blurb: "b", column: "merge", spec: {}, sort: "updated", dir: "asc",
+    key: "k", title: "t", blurb: "b", column: "act", spec: {}, sort: "updated", dir: "asc",
   };
-  const unsorted: HomeCard = { key: "k", title: "t", blurb: "b", column: "merge", spec: {} };
+  const unsorted: HomeCard = { key: "k", title: "t", blurb: "b", column: "act", spec: {} };
   const sortedParams = new URLSearchParams(exploreHref(sorted).slice("/explore?".length));
   assert.equal(sortedParams.get("sort"), "updated");
   assert.equal(sortedParams.get("dir"), "asc");
@@ -125,14 +152,9 @@ test("issuesHref carries the card's disposition filter", () => {
   }
 });
 
-test("row actions run the per-PR phase that unblocks the card, and only there", () => {
-  const byKey = Object.fromEntries(HOME_CARDS.map((c) => [c.key, c.rowAction?.kind ?? null]));
-  assert.equal(byKey["verify-pending"], "verify-pr");
-  assert.equal(byKey["security-pending"], "security-review");
+test("no card runs a per-row job — the workers pick these up themselves", () => {
   for (const card of HOME_CARDS) {
-    if (card.key !== "verify-pending" && card.key !== "security-pending") {
-      assert.equal(card.rowAction, undefined, card.key);
-    }
+    assert.equal(card.rowAction, undefined, card.key);
   }
 });
 

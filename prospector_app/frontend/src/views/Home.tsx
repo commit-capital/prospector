@@ -7,7 +7,8 @@ import { useIssueFlyout } from "../useIssueFlyout";
 import { useJobStream } from "../useJobStream";
 import { useRepoMeta } from "../RepoMetaContext";
 import {
-  exploreHref, HOME_CARDS, HOME_ISSUE_CARDS, issuesHref, painLabel,
+  breakdownHref, exploreHref, HOME_BREAKDOWN_ENTRIES, HOME_CARDS, HOME_COUNT_SPECS,
+  HOME_ISSUE_CARDS, issuesHref, painLabel,
   SAMPLE_ISSUE_LIMIT, SAMPLE_LIMIT, SAMPLE_QUERY,
   type HomeCard, type HomeIssueAction, type HomeIssueCard, type HomeRowAction,
 } from "./homeCards";
@@ -65,10 +66,11 @@ function SamplePR({ r, rowAction, onActionDone }: {
 // head inside a track column, to its right on the full-width backstop. `count`
 // is null until the counts poll lands; `sample` is null until the sample query
 // (started once the counts land) resolves.
-function HomeCardRow({ card, count, sample, onActionDone }: {
+function HomeCardRow({ card, count, sample, breakdown, onActionDone }: {
   card: HomeCard;
   count: number | null;
   sample: QueryResult | null;
+  breakdown: { label: string; href: string; count: number | null }[];
   onActionDone: () => void;
 }) {
   const href = exploreHref(card);
@@ -84,6 +86,16 @@ function HomeCardRow({ card, count, sample, onActionDone }: {
           <div className="small muted home-card-blurb">{card.blurb}</div>
         </div>
       </Link>
+      {breakdown.length > 0 && (
+        <div className="home-breakdown small">
+          {breakdown.filter((b) => b.count !== 0).map((b) => (
+            <Link key={b.label} to={b.href} className="home-breakdown-item"
+              title={`Open the ${b.label} PRs in the PR Explorer`}>
+              <span className="mono">{b.count ?? "…"}</span> {b.label}
+            </Link>
+          ))}
+        </div>
+      )}
       <div className="home-card-side">
         {sample && sample.total > 0 && (
           <>
@@ -218,7 +230,7 @@ export default function Home() {
     let cancelled = false;
     let timer: number | undefined;
     const load = () => {
-      api.prCounts(HOME_CARDS.map((c) => c.spec))
+      api.prCounts(HOME_COUNT_SPECS)
         .then((r) => {
           if (cancelled) return;
           if (r.counts) setCounts(r.counts);
@@ -248,9 +260,17 @@ export default function Home() {
   // each column looks a card's data up by its position there.
   const renderCard = (card: HomeCard) => {
     const i = HOME_CARDS.indexOf(card);
+    const breakdown = HOME_BREAKDOWN_ENTRIES
+      .map((e, j) => ({ ...e, j }))
+      .filter((e) => e.cardKey === card.key)
+      .map((e) => ({
+        label: e.entry.label,
+        href: breakdownHref(card, e.entry),
+        count: counts ? counts[HOME_CARDS.length + e.j] : null,
+      }));
     return (
       <HomeCardRow key={card.key} card={card} count={counts ? counts[i] : null}
-        sample={samples ? samples[i] : null}
+        sample={samples ? samples[i] : null} breakdown={breakdown}
         onActionDone={() => setGeneration((g) => g + 1)} />
     );
   };
@@ -259,8 +279,8 @@ export default function Home() {
       <div className="home-head">
         <h2>Home</h2>
         <div className="muted small">
-          The most actionable PRs and issues right now — each card samples its highest-pain members,
-          opens the matching view with its filters, and offers the action that moves them forward.
+          Every open PR, by whose move it is: yours, the workers&apos;, or a person&apos;s after the
+          automation handed it back. Each card samples its highest-pain members and opens the matching view.
         </div>
       </div>
       {err && <div className="error">Failed to load PRs: {err}</div>}
@@ -271,20 +291,21 @@ export default function Home() {
       )}
       <div className="home-columns">
         <section className="home-col">
-          <div className="home-col-head muted">Merge track — the pipeline&apos;s merge picks</div>
-          {HOME_CARDS.filter((c) => c.column === "merge").map(renderCard)}
+          <div className="home-col-head muted">Your move — one click each</div>
+          {HOME_CARDS.filter((c) => c.column === "act").map(renderCard)}
         </section>
         <section className="home-col">
-          <div className="home-col-head muted">Request changes — asks for the authors</div>
-          {HOME_CARDS.filter((c) => c.column === "changes").map(renderCard)}
+          <div className="home-col-head muted">In motion — the workers clear these</div>
+          {HOME_CARDS.filter((c) => c.column === "auto").map(renderCard)}
+        </section>
+        <section className="home-col">
+          <div className="home-col-head muted">Handed back — needs a person</div>
+          {HOME_CARDS.filter((c) => c.column === "handed").map(renderCard)}
         </section>
         <section className="home-col">
           <div className="home-col-head muted">Issues — triage picks to action</div>
           {HOME_ISSUE_CARDS.map((c) => <HomeIssueCardRow key={c.key} card={c} />)}
         </section>
-      </div>
-      <div className="home-cards">
-        {HOME_CARDS.filter((c) => c.column === "backstop").map(renderCard)}
       </div>
     </div>
   );

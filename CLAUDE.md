@@ -326,6 +326,20 @@ is mirrored to `<verify scratch>/logs/worker-<id>.log` (`worker_log.py`),
 which the issue quotes. The security lane's skip set carries a reason per PR
 and expires after six hours.
 
+**HOME** (`prospector_app/backend/automation.py` + `prospector_app/frontend/src/views/homeCards.ts`)
+shows every open PR by whose move it is. `automation.classify` is the ONE
+derivation, computed on read into each PR row as `automation`
+(`{column, bucket, owner, reason}`) from the same gates and hunter predicates
+the workers decide by, with no network: `act` (merge-eligible, or a parked
+change awaiting approval — a click of yours), `auto` (in a worker queue, the
+hunter's next pick, or waiting on a reviewer, CI, or a retry — nothing for a
+person to do), and `handed` (the automation gave it back — to the author for
+conflicts, red CI, a failed verification, or an agent's reasoned decline; to
+you for needs-human, a security verdict, the analysis's asks, or a gated
+path). The Explorer filters on `automation_column` / `automation_bucket` /
+`automation_owner`, and every Home card, its count, and its link read that
+one field, so a card's number is the row count its link opens.
+
 **ALERTS** (`alert_triage/`) is a parallel family beside PRs and issues:
 GitHub code-scanning / Dependabot / secret-scanning alerts for `TRIAGE_REPO`,
 stored in the shared SQL store's `alerts` table (keyed by
