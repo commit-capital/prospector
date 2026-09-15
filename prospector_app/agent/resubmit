@@ -909,11 +909,12 @@ def cmd_diff(pr: int, last: bool = False) -> int:
     if r.returncode != 0:
         print(f"resubmit: git diff failed: {r.stderr.strip()}", file=sys.stderr)
         return 4
-    out = r.stdout.strip()
-    if not out:
+    # Printed whole: a diff's last line may be a lone space (an unchanged blank
+    # line kept as context), and a patch missing it is corrupt.
+    if not r.stdout.strip():
         print(f"resubmit: no changes yet in {wt} — author the edits first.")
         return 0
-    print(out)
+    print(r.stdout, end="")
     return 0
 
 
