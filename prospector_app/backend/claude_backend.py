@@ -4,6 +4,13 @@ The CLI runs in safe mode with no settings sources. Its dontAsk permission
 boundary advertises repository reads and curated helper scripts, adding the
 token-gated bot writes when the session can mint the bot token and the
 operator-identity resubmit path when the session grants it.
+
+The agent reads text an outsider wrote — PR titles, bodies, diffs, review
+comments — so its reach is what bounds a prompt injection. Read/Grep/Glob are
+held to the checkout, and the deployment's secrets inside it are denied by
+name: a deny rule reaches the Read and Grep tools and the file arguments of an
+allowlisted Bash filter alike, which an allow rule alone cannot do for the
+working directory the CLI always reads.
 """
 from __future__ import annotations
 
@@ -16,11 +23,22 @@ import subprocess
 from collections.abc import AsyncIterator
 from pathlib import Path
 
+from pipeline import settings
 from prospector_app.backend import agent_backend
 from prospector_app.backend import subproc
 
 CLAUDE_BIN = shutil.which("claude") or "claude"
 AGENT_ROOT = Path(__file__).resolve().parents[1] / "agent"
+
+# The one read grant, in the CLI's `//absolute` form: the Prospector source the
+# agent answers questions about, its operating manual, and the resubmit clones
+# and body files under the app's cache. Chat runs here, and the CLI reads its
+# working directory whatever the rules say.
+CHECKOUT = "/" + os.path.realpath(settings.REPO_ROOT)
+
+# The deployment secrets named in the environment. The files live outside the
+# checkout by default; naming them holds a deployment that files one inside it.
+_KEY_FILE_VARS = ("TRIAGE_BOT_KEY_FILE", "TRIAGE_PUSH_SSH_KEY_FILE")
 
 CLASSIFIER_SYSTEM_PROMPT = """\
 # Background
@@ -93,6 +111,23 @@ _DISALLOWED_TOOLS = [
 ]
 
 
+def _read_rules() -> list[str]:
+    """Read/Grep/Glob over the checkout. Each tool needs its own rule — a scoped
+    Read beside a bare Grep leaves every file greppable."""
+    return [f"{tool}({CHECKOUT}/**)" for tool in ("Read", "Grep", "Glob")]
+
+
+def _secret_denies() -> list[str]:
+    """Deny rules over the deployment's credentials: the repo-root .env the
+    read grant covers, and each configured private key, as resolved paths."""
+    rules = [f"Read({CHECKOUT}/.env)", f"Read({CHECKOUT}/.env.*)"]
+    for var in _KEY_FILE_VARS:
+        raw = os.environ.get(var, "").strip()
+        if raw:
+            rules.append(f"Read(/{os.path.realpath(Path(raw).expanduser())})")
+    return rules
+
+
 def _edit_rules() -> list[str]:
     """Edit/Write rules over the prepared clones and the body directory, naming
     resolved paths in the CLI's `//absolute` form. Each clone rule names a
@@ -112,10 +147,10 @@ def isolation_flags(can_write: bool, can_resubmit: bool) -> list[str]:
     mintable installation token) and adds the bot-authenticated helpers;
     `can_resubmit` is the confirming operator and adds the resubmit helper plus
     Edit/Write over the clones it prepares and the body directory."""
-    allowed = ["Read", "Grep", "Glob", *_GH_ALLOW, *_FILTER_ALLOW, *_GH_READ_ALLOW,
+    allowed = [*_read_rules(), *_GH_ALLOW, *_FILTER_ALLOW, *_GH_READ_ALLOW,
                *_REMEMBER_ALLOW, *_UNCLUSTER_ALLOW, *_STORE_READ_ALLOW,
                *_REINGEST_ALLOW, *_FILE_ISSUE_ALLOW]
-    disallowed = list(_DISALLOWED_TOOLS)
+    disallowed = [*_DISALLOWED_TOOLS, *_secret_denies()]
     if can_write:
         allowed += [*_GH_WRITE_ALLOW, *_PR_EXECUTOR_ALLOW, *_ISSUE_CLOSE_ALLOW]
     if can_resubmit:

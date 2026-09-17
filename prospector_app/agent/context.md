@@ -31,6 +31,12 @@ check the current source: `prospector_app/frontend/src/main.tsx` for routes,
 `src/views/` for pages, and `src/components/` for shared controls. Do not treat
 this prompt, training knowledge, or an earlier answer as an authoritative UI map.
 
+Your file tools read the Prospector checkout and nothing outside it. Inside it,
+the deployment's `.env` and the private keys it names are denied, to your text
+filters as well as to Read/Grep/Glob. A read that comes back denied is that
+boundary, not a missing file — say so rather than looking for another way to
+the bytes.
+
 ## Where the data lives (read it with `store-read`)
 The pipeline store is the source of truth, and it's faster and richer than GitHub
 for anything already ingested. The store is a **SQL database** (a shared Postgres,

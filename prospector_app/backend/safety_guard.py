@@ -31,6 +31,34 @@ from pipeline.gh import operator_env
 
 ALLOWED_BINARIES = {"gh", "git", "claude", "python", "python3"}
 
+# What the chat agent's process needs to start, authenticate and push as the
+# confirming operator. `SSH_AUTH_SOCK` is how an interactive resubmit reaches
+# the operator's own key.
+_AGENT_ENV_KEEP = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG",
+                   "TERM", "SSH_AUTH_SOCK")
+_AGENT_ENV_PREFIXES = ("LC_", "ANTHROPIC_", "CLAUDE_", "CODEX_",
+                       "TRIAGE_", "PROSPECTOR_")
+
+# The deployment value the agent's environment withholds. `jq` is an
+# allowlisted text filter and `jq -n env` prints the environment, so the store
+# URL's password would be one command from any text an outsider wrote. Helpers
+# that need the store read it from the repo-root .env, which pipeline.settings
+# loads on import; a deployment configured by process environment alone, with
+# no .env on disk, loses `store-read` in chat.
+_AGENT_ENV_DROP = ("TRIAGE_STORE_URL",)
+
+
+def agent_env() -> dict[str, str]:
+    """The environment for one chat-agent turn: the operator's, held to what
+    the CLI and the curated helpers need. Its Bash commands inherit this, so
+    what is not here is out of a prompt injection's reach."""
+    return {
+        key: value for key, value in operator_env().items()
+        if key not in _AGENT_ENV_DROP
+        and (key in _AGENT_ENV_KEEP or key.startswith(_AGENT_ENV_PREFIXES))
+    }
+
+
 # --- denied patterns, matched against the full argv joined with spaces -------
 _DENY = [
     # gh write subcommands
