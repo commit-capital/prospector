@@ -11,6 +11,7 @@ import pytest
 
 from pipeline import reviewers
 from pipeline import settings
+from prospector_app.backend import agent_backend
 from prospector_app.backend import chat
 from prospector_app.backend import claude_backend
 
@@ -159,6 +160,50 @@ def test_resubmit_and_file_edits_ride_the_resubmit_grant_not_the_token():
     # the real, executable script backs the allowlisted path.
     script = chat.APP_ROOT / "agent" / "resubmit"
     assert script.exists() and os.access(script, os.X_OK)
+
+
+def _edit_rules(flags: list[str]) -> list[str]:
+    return [rule for rule in _flag(flags, "--allowedTools").split(",")
+            if rule.split("(")[0] in ("Edit", "Write")]
+
+
+@pytest.mark.parametrize("can_write", [False, True])
+def test_a_resubmit_session_edits_prepared_clones_and_body_files_alone(can_write):
+    clones = "/" + os.path.realpath(agent_backend.RESUBMIT_ROOT)
+    bodies = "/" + os.path.realpath(agent_backend.BODY_DIR)
+    assert _edit_rules(claude_backend.isolation_flags(can_write, can_resubmit=True)) == [
+        f"{tool}({pattern})" for tool in ("Edit", "Write")
+        for pattern in (f"{clones}/pr-*/*", f"{clones}/pr-*/*/**", f"{bodies}/**")]
+
+
+@pytest.mark.parametrize("can_write", [False, True])
+def test_a_session_without_the_resubmit_grant_edits_nothing(can_write):
+    assert _edit_rules(claude_backend.isolation_flags(can_write, can_resubmit=False)) == []
+
+
+def test_every_clone_rule_names_a_segment_below_the_clone():
+    # The CLI lets a trailing `/**` match no segment, so `pr-*/**` also matches
+    # `pr-7.resubmit.json`, the file beside the clone that `push` reads its
+    # target from.
+    rules = _edit_rules(claude_backend.isolation_flags(False, can_resubmit=True))
+    clone_rules = [rule for rule in rules if "/pr-*" in rule]
+    assert clone_rules and all("/pr-*/*" in rule for rule in clone_rules)
+
+
+def test_edit_rules_name_the_resolved_roots(tmp_path, monkeypatch):
+    real = tmp_path / "real"
+    real.mkdir()
+    (tmp_path / "link").symlink_to(real)
+    monkeypatch.setattr(agent_backend, "RESUBMIT_ROOT", tmp_path / "link" / "resubmit")
+    monkeypatch.setattr(agent_backend, "BODY_DIR", tmp_path / "link" / "chat-bodies")
+    rules = _edit_rules(claude_backend.isolation_flags(False, can_resubmit=True))
+    assert rules and all(f"(/{real.resolve()}/" in rule for rule in rules)
+
+
+def test_the_manual_names_the_body_directory_the_write_rules_grant():
+    sp = chat.system_prompt()
+    assert "{body_dir}" not in sp
+    assert f"`{os.path.realpath(agent_backend.BODY_DIR)}/" in sp
 
 
 def test_interactive_resubmit_needs_no_worker_push_identity():

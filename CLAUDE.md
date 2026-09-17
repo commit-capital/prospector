@@ -74,7 +74,12 @@ own branches while still being unable to reach the triage repository.
   file an issue only on `PROSPECTOR_FEEDBACK_REPO` as the operator. The agent's
   resubmit helper uses the confirming operator's identity for interactive
   contributor-branch pushes and is advertised in every interactive session,
-  with or without a mintable bot token. The worker opts into its configured
+  with or without a mintable bot token. On Claude that session's Edit and Write
+  tools reach the clones `resubmit prepare` makes and the `--body-file`
+  directory, and nothing else (`claude_backend._edit_rules`); each clone rule
+  names a path segment below `pr-*`, because the CLI lets a trailing `/**` match
+  the `pr-<n>.resubmit.json` that sits beside a clone and that `push` reads its
+  target from. The worker opts into its configured
   machine identity separately. These
   paths do not use the per-PR merge gate. Chat PR close, reopen, and review
   operations, plus issue closes, call their corresponding executor paths; other
