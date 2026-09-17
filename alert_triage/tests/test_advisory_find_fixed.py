@@ -130,3 +130,20 @@ def test_filter_batch_verdicts_drops_foreign_and_unknown():
         {"id": 2, "verdict": "likely-fixed"},
         {"id": 1, "verdict": "duplicate", "duplicate_of": G2},
     ]
+
+
+def test_the_batch_agent_reads_only_its_private_bundle_directory(monkeypatch):
+    import json
+    import os
+    seen: dict = {}
+
+    def fake_run(prompt, **kw):
+        path = next(t for t in prompt.split() if "advisory-find-fixed-" in t).rstrip(".,—")
+        seen.update(kw, bundle=json.load(open(path)))
+        return '{"verdicts": []}'
+
+    monkeypatch.setattr(ff.headless_agent, "run_agent", fake_run)
+    ff.run_batch_agent([{"id": 1, "ghsa_id": "GHSA-aaaa-bbbb-cccc"}], [{"ghsa_id": "x"}])
+    assert seen["bundle"]["roster"] == [{"ghsa_id": "x"}]
+    assert seen["read_root"] == [seen["cwd"]] and seen["allow_gh"] is True
+    assert list(seen["env_allow"]) == [] and not os.path.exists(seen["cwd"])

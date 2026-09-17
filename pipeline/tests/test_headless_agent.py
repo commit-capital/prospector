@@ -552,3 +552,24 @@ def test_probe_runs_scoped_to_an_empty_directory_under_the_env_allowlist(monkeyp
     root = f"/{seen['cwd']}"
     assert allowed == [f"Read({root}/**)", f"Grep({root}/**)", f"Glob({root}/**)"]
     assert "TRIAGE_STORE_URL" not in seen["env"]
+
+
+def test_run_on_bundle_runs_the_agent_in_a_private_directory_holding_the_bundle(
+        monkeypatch, tmp_path):
+    seen: dict = {}
+
+    def fake_run(prompt, **kw):
+        path = prompt.removeprefix("read ")
+        seen.update(kw, path=path, bundle=json.load(open(path)))
+        return "ok"
+
+    monkeypatch.setattr(ha, "run_agent", fake_run)
+    extra = tmp_path / "abc.diff"
+    extra.write_text("d")
+    out = ha.run_on_bundle([{"n": 1}], lambda p: f"read {p}", prefix="wave-",
+                           allow_gh=True, read_root=[str(extra)])
+    assert out == "ok" and seen["bundle"] == [{"n": 1}]
+    assert os.path.dirname(seen["path"]) == seen["cwd"] == os.path.realpath(seen["cwd"])
+    assert seen["read_root"] == [seen["cwd"], str(extra)]
+    assert seen["allow_gh"] is True and list(seen["env_allow"]) == []
+    assert not os.path.exists(seen["cwd"])

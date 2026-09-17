@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import threading
 from collections.abc import Callable
@@ -37,7 +38,6 @@ from pipeline import reviewers
 from pipeline.security_driver import (
     LENSES, REVIEW_FENCED_TAIL, REVIEW_PROMPT, VERIFY_CHUNK_SIZE,
     VERIFY_FENCED_TAIL, VERIFY_PROMPT)
-from pipeline.settings import REPO_ROOT
 from pipeline.store import Store
 from pipeline.storekit import now as _now
 from pipeline.wire import Finding, VerdictItem
@@ -111,13 +111,18 @@ EXIT_AGENT_UNAVAILABLE = 3
 _outages: list[str] = []
 
 
-def _call_agent_json(prompt: str, step: str, on_event: Callable[[tuple], object]) -> dict | None:
+def _call_agent_json(prompt: str, step: str, diff_path: str,
+                     on_event: Callable[[tuple], object]) -> dict | None:
     """Run one headless agent and return its parsed JSON, or None if the run or
-    the JSON extraction failed (logged under `step`). Shared by the review and
-    verify passes — both run a single agent, then parse a JSON object."""
+    the JSON extraction failed (logged under `step`). It runs in a private empty
+    directory under the CLI's bare environment, reads `diff_path` alone, and
+    reaches upstream through read-only gh. Shared by the review and verify
+    passes — both run a single agent, then parse a JSON object."""
     try:
-        text = headless_agent.run_agent(prompt, allow_gh=True, cwd=str(REPO_ROOT),
-                                        on_event=on_event)
+        with headless_agent.workdir("security-review-") as tmp:
+            text = headless_agent.run_agent(prompt, allow_gh=True, cwd=tmp,
+                                            read_root=[tmp, diff_path], env_allow=(),
+                                            on_event=on_event)
         return headless_agent.extract_json(text)
     except headless_agent.AgentUnavailable as e:
         _say(f"    ! {step} could not run: {e}")
@@ -137,7 +142,7 @@ def _review_lens(pr: int, title: str, diff_path: str, lens: str, lens_prompt: st
         "__PR__": pr, "__TITLE__": title, "__DIFF_PATH__": diff_path,
         "__LENS__": lens, "__LENS_PROMPT__": lens_prompt,
         "__BOT_EVIDENCE__": json.dumps(bot_evidence) if bot_evidence else "none"}) + REVIEW_FENCED_TAIL
-    data = _call_agent_json(prompt, f"{lens} lens", on_event)
+    data = _call_agent_json(prompt, f"{lens} lens", diff_path, on_event)
     findings = data.get("findings") if data else None
     if not isinstance(findings, list):
         return {"ok": False, "findings": []}
@@ -159,7 +164,8 @@ def _verify(pr: int, diff_path: str, flagged: list[Finding]) -> tuple[list[Findi
         prompt = headless_agent.fill(VERIFY_PROMPT, {
             "__N__": len(chunk), "__PR__": pr, "__DIFF_PATH__": diff_path,
             "__CHUNK__": json.dumps(chunk)}) + VERIFY_FENCED_TAIL
-        data = _call_agent_json(prompt, f"verify chunk {start}", headless_agent.print_progress)
+        data = _call_agent_json(prompt, f"verify chunk {start}", diff_path,
+                                headless_agent.print_progress)
         if data is None:
             complete = False
             continue
@@ -193,7 +199,9 @@ def review_pr(pr: int, title: str, head: str,
     (security_driver.eligible); the engine reviews whatever it's handed."""
     # Ensure the diff for the current head is cached (review + verify Read it).
     _say("① Caching diff…")
-    diff_path = diff_cache.DIFFS / f"{head}.diff"
+    # Resolved, because an agent's read rule names the resolved path and the
+    # prompt must name the same one.
+    diff_path = os.path.realpath(diff_cache.DIFFS / f"{head}.diff")
     if not diff_cache.fetch_diff(pr, head, store=store):
         _say(f"✗ could not fetch diff for PR #{pr}")
         return None
@@ -213,7 +221,7 @@ def review_pr(pr: int, title: str, head: str,
             if line is not None:
                 prog.emit(i, line)
         try:
-            results[i] = _review_lens(pr, title, str(diff_path),
+            results[i] = _review_lens(pr, title, diff_path,
                                       lens["key"], lens["prompt"], on_event,
                                       bot_evidence=bot_evidence)
         finally:
@@ -237,7 +245,7 @@ def review_pr(pr: int, title: str, head: str,
     # Refute the flagged findings; only confirmed ones survive.
     if flagged:
         _say(f"③ Verifying {len(flagged)} flagged finding(s)…")
-        confirmed, verify_ok = _verify(pr, str(diff_path), flagged)
+        confirmed, verify_ok = _verify(pr, diff_path, flagged)
     else:
         confirmed, verify_ok = [], True
     reds = [f for f in confirmed if f["severity"] == "red"]

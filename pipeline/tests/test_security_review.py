@@ -237,3 +237,28 @@ def test_agent_outage_exits_with_its_own_code_and_writes_nothing(tmp_path, monke
     assert rs.run(store, 100) == rs.EXIT_AGENT_UNAVAILABLE
     assert store.load_pr(100).section("security") is None
     assert not [r for r in store.runs() if getattr(r, "phase", "") == "security:review-one"]
+
+
+def test_every_security_agent_reads_only_a_private_directory_and_the_prs_diff(
+        tmp_path, monkeypatch):
+    import os
+    store = Store(str(tmp_path))
+    _eligible_pr(store)
+    runs: list[dict] = []
+
+    def fake(prompt, **k):
+        runs.append(k)
+        if prompt.startswith("Pre-merge security review"):
+            return _fenced({"lens_summary": "s", "findings": [
+                {"severity": "yellow", "title": "t", "detail": "d"}]})
+        return _fenced({"results": []})
+
+    monkeypatch.setattr(rs.headless_agent, "run_agent", fake)
+    monkeypatch.setattr(rs.diff_cache, "fetch_diff", lambda *a, **k: True)
+    assert rs.run(store, 100) == 0
+    head = store.load_pr(100).head_sha
+    diff = os.path.realpath(rs.diff_cache.DIFFS / f"{head}.diff")
+    assert len(runs) == len(rs.LENSES) + 1
+    for k in runs:
+        assert k["read_root"] == [k["cwd"], diff] and k["allow_gh"] is True
+        assert list(k["env_allow"]) == [] and k["cwd"].startswith(os.path.realpath(os.environ.get("TMPDIR", "/tmp")))

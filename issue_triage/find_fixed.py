@@ -15,9 +15,7 @@ threads only ever run agents.
 from __future__ import annotations
 
 import argparse
-import json
 import sys
-import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -26,7 +24,6 @@ from issue_triage import issue_fixed_driver
 from issue_triage.issue_store import IssueStore
 from pipeline import settings
 from pipeline import headless_agent
-from pipeline.settings import REPO_ROOT
 
 _print_lock = threading.Lock()
 
@@ -44,7 +41,7 @@ def _label(entries: list[dict]) -> str:
 def run_batch_agent(entries: list[dict]) -> list[dict]:
     """Run one gh-enabled headless find-fixed agent over a pre-built bundle slice
     and return its in-batch, valid verdicts. Pure with respect to the store —
-    writes only a temp bundle file."""
+    the agent reads only a private bundle directory."""
     label = _label(entries)
 
     def on_event(ev) -> None:
@@ -52,15 +49,13 @@ def run_batch_agent(entries: list[dict]) -> list[dict]:
             inp = ev[2] if len(ev) > 2 else {}
             _say(f"    [{label}] · {headless_agent.tool_summary(ev[1], inp)}")
 
-    with tempfile.NamedTemporaryFile(
-            "w", suffix=".json", prefix="find-fixed-", delete=False) as f:
-        f.write(json.dumps(entries, indent=1))
-        bundle_path = f.name
-    prompt = (issue_fixed_driver.FIND_FIXED_PROMPT.replace("__BUNDLE_PATH__", bundle_path)
-              .replace("__REPO__", settings.repo())
-              + issue_fixed_driver.FIND_FIXED_FENCED_TAIL)
-    text = headless_agent.run_agent(prompt, allow_gh=True, cwd=str(REPO_ROOT),
-                                    on_event=on_event)
+    def prompt(bundle_path: str) -> str:
+        return (issue_fixed_driver.FIND_FIXED_PROMPT.replace("__BUNDLE_PATH__", bundle_path)
+                .replace("__REPO__", settings.repo())
+                + issue_fixed_driver.FIND_FIXED_FENCED_TAIL)
+
+    text = headless_agent.run_on_bundle(entries, prompt, prefix="find-fixed-",
+                                        allow_gh=True, on_event=on_event)
     verdicts = headless_agent.extract_json(text).get("verdicts") or []
     in_batch = {e["number"] for e in entries}
     good = [v for v in verdicts

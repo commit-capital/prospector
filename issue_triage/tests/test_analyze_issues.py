@@ -60,14 +60,14 @@ def test_analyze_batch_prompt_carries_bundle_path(tmp_path, monkeypatch):
 
     def fake_run(prompt, **kw):
         seen["prompt"] = prompt
+        path = next(tok for tok in prompt.split() if "issue-analyze-" in tok)
+        seen["bundle"] = json.loads(open(path.rstrip(".,—")).read())
         return _fenced([])
 
     monkeypatch.setattr(analyze_issues.headless_agent, "run_agent", fake_run)
     analyze_issues.analyze_batch(st, [1, 3])
     assert "__BUNDLE_PATH__" not in seen["prompt"]
-    path = next(tok for tok in seen["prompt"].split() if "issue-analyze-" in tok)
-    bundle = json.loads(open(path.rstrip(".,—")).read())
-    assert [e["number"] for e in bundle] == [1, 3]
+    assert [e["number"] for e in seen["bundle"]] == [1, 3]
 
 
 def test_main_batches_and_reports(tmp_path, monkeypatch, capsys):
@@ -189,3 +189,18 @@ def test_main_nothing_pending(tmp_path, monkeypatch, capsys):
     rc = analyze_issues.main(["--store", str(tmp_path)])
     assert rc == 0
     assert "nothing pending" in capsys.readouterr().out
+
+
+def test_the_agent_reads_only_its_private_bundle_directory(tmp_path, monkeypatch):
+    import os
+    st = _seed(tmp_path, 1)
+    seen = {}
+
+    def fake_run(prompt, **kw):
+        seen.update(kw)
+        return _fenced([])
+
+    monkeypatch.setattr(analyze_issues.headless_agent, "run_agent", fake_run)
+    analyze_issues.analyze_batch(st, [1])
+    assert seen["read_root"] == [seen["cwd"]] and list(seen["env_allow"]) == []
+    assert "issue-analyze-" in seen["cwd"] and not os.path.exists(seen["cwd"])

@@ -464,6 +464,22 @@ def run_agent(prompt: str, *, allow_gh: bool, cwd: str, system_prompt: str | Non
     return text
 
 
+def run_on_bundle(bundle: object, prompt: Callable[[str], str], *, prefix: str,
+                  allow_gh: bool, on_event=None,
+                  read_root: Sequence[str] = ()) -> str:
+    """Run one agent over `bundle`, written as JSON into a private directory
+    that is the run's cwd and, with `read_root`, everything it may read, under
+    the CLI's bare environment. `prompt` builds the prompt from the bundle
+    file's resolved path; the directory lives only for the run. One field per
+    line, since the agent's Read tool truncates very long lines."""
+    with workdir(prefix) as tmp:
+        path = os.path.join(tmp, "bundle.json")
+        with open(path, "w") as fh:
+            fh.write(json.dumps(bundle, indent=1))
+        return run_agent(prompt(path), allow_gh=allow_gh, cwd=tmp,
+                         read_root=[tmp, *read_root], env_allow=(), on_event=on_event)
+
+
 def probe(timeout: int = 180) -> str | None:
     """Whether the CLI can serve a prompt on this machine right now: one
     trivial headless run on the cheapest model. None when it answered, else
