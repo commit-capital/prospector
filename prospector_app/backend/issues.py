@@ -144,21 +144,20 @@ _STATE_RANK = {"merged": 0, "closed": 1}
 # a merged fixer the already-fixed detector attributed by symptom.
 _FIXER_KINDS = ("explicit", "github", "fix-found")
 
-_pr_links_cache: tuple[tuple[int, int], dict[int, list[pr_index.PrLink]]] | None = None
+_pr_links_cache: tuple[int, dict[int, list[pr_index.PrLink]]] | None = None
 
 
 def _pr_links() -> dict[int, list[pr_index.PrLink]] | None:
     """Issue number -> the PRs whose own bodies link it, inverted from the app's
-    PR snapshot and cached on that snapshot's identity. None while the snapshot
-    cold-loads: the accessor takes any list as authoritative, so the stored links
-    stand until the index is real."""
+    PR snapshot and cached on that snapshot's generation — the snapshot's
+    identity. None while the snapshot cold-loads: the accessor takes any list as
+    authoritative, so the stored links stand until the index is real."""
     global _pr_links_cache
     if data.snapshot_loading():
         return None
-    snap = data.prs()
-    key = (data.generation(), id(snap))
-    if _pr_links_cache is None or _pr_links_cache[0] != key:
-        _pr_links_cache = (key, pr_index.build(snap.values()))
+    generation = data.generation()
+    if _pr_links_cache is None or _pr_links_cache[0] != generation:
+        _pr_links_cache = (generation, pr_index.build(data.prs().values()))
     return _pr_links_cache[1]
 
 
@@ -172,7 +171,9 @@ def _links_for(iss: Issue) -> list[dict]:
 def _link_state(cand: dict, store_states: dict[int, str]) -> str | None:
     """A link's PR state: the app's PR snapshot, else what the link's own source
     knows — GitHub's closing reference carries the state of a PR no ingest has
-    captured."""
+    captured. That fallback state is the one the issue ingest saw, and it moves
+    only when the issue's own facts do, so a referenced PR that merged since
+    reads open until the next ingest of that issue."""
     return store_states.get(cand["pr"], cand.get("state"))
 
 

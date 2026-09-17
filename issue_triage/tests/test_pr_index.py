@@ -16,7 +16,23 @@ def test_build_inverts_direct_links_only():
     assert sorted(idx) == [1]
     assert [(link["pr"], link["how"], link["state"]) for link in idx[1]] == [
         (10, "explicit", "open"), (11, "body-ref", "merged")]
-    assert idx[1][0]["head_sha"] == "h10" and idx[1][0]["draft"] is False
+    assert idx[1][0]["draft"] is False
+
+
+def test_a_link_carries_only_the_fields_the_accessor_reads():
+    idx = pr_index.build([_pr(10, [{"issue": 1, "how": "explicit"}])])
+    assert set(idx[1][0]) == {"pr", "how", "state", "draft", "title"}
+
+
+def test_build_keeps_open_and_merged_prs_only():
+    linked = [{"issue": 1, "how": "explicit"}]
+    idx = pr_index.build([_pr(10, linked), _pr(11, linked, state="merged"),
+                          _pr(12, linked, state="closed"), _pr(13, linked, state=None)])
+    assert [link["pr"] for link in idx[1]] == [10, 11]
+
+
+def test_an_issue_only_closed_prs_link_is_absent():
+    assert pr_index.build([_pr(12, [{"issue": 1, "how": "explicit"}], state="closed")]) == {}
 
 
 def test_explicit_beats_body_ref_for_the_same_pr_and_issue():

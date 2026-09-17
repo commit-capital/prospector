@@ -12,6 +12,10 @@ if TYPE_CHECKING:
 # The link kinds a PR's own body establishes.
 DIRECT = ("explicit", "body-ref")
 
+# The PR states that link an issue: an open PR is pending work on it and a
+# merged one is evidence it is fixed — the corpus issue_ingest matches against.
+LINKING_STATES = ("open", "merged")
+
 
 class PrLink(TypedDict):
     pr: int
@@ -19,15 +23,15 @@ class PrLink(TypedDict):
     state: str | None
     draft: bool
     title: str | None
-    updated_at: str | None
-    head_sha: str | None
 
 
 def build(prs: Iterable[Pr]) -> dict[int, list[PrLink]]:
-    """Issue number → its direct PR links, one per PR (explicit over body-ref),
-    ordered by PR number."""
+    """Issue number → its direct links from open and merged PRs, one per PR
+    (explicit over body-ref), ordered by PR number."""
     best: dict[tuple[int, int], PrLink] = {}
     for pr in prs:
+        if pr.state not in LINKING_STATES:
+            continue
         for entry in pr.linked_issues:
             how = entry.get("how")
             if how not in DIRECT or entry.get("issue") is None:
@@ -36,8 +40,7 @@ def build(prs: Iterable[Pr]) -> dict[int, list[PrLink]]:
             if key in best and best[key]["how"] == "explicit":
                 continue
             best[key] = {"pr": pr.n, "how": how, "state": pr.state, "draft": pr.draft,
-                         "title": pr.title, "updated_at": pr.updated_at,
-                         "head_sha": pr.head_sha}
+                         "title": pr.title}
     out: dict[int, list[PrLink]] = {}
     for (issue, _), link in sorted(best.items()):
         out.setdefault(issue, []).append(link)
@@ -45,6 +48,6 @@ def build(prs: Iterable[Pr]) -> dict[int, list[PrLink]]:
 
 
 def from_store() -> dict[int, list[PrLink]]:
-    """The index over every PR the PR store holds."""
+    """The index over the PR store."""
     from pipeline.store import Store
     return build(Store().all_prs().values())

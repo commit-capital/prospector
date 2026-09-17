@@ -12,8 +12,7 @@ def _issue(candidates, github=None):
 
 
 def _link(pr, how, state="open"):
-    return {"pr": pr, "how": how, "state": state, "draft": False, "title": f"PR {pr}",
-            "updated_at": None, "head_sha": None}
+    return {"pr": pr, "how": how, "state": state, "draft": False, "title": f"PR {pr}"}
 
 
 def test_the_index_replaces_stored_direct_kinds_and_keeps_issue_owned_ones():
@@ -51,8 +50,15 @@ def test_stored_candidates_are_copied_not_handed_back():
     assert got[0] is not cand
 
 
+def test_every_ranked_kind_is_one_the_pipeline_writes():
+    assert set(issue_links.HOW_RANK) == {"explicit", "github", "fix-found", "issue-ref",
+                                         "body-ref", "subsystem"}
+    assert issue_links.REFERENCED <= set(issue_links.HOW_RANK)
+    assert sorted(set(issue_links.HOW_RANK.values())) == list(range(issue_links.UNRANKED))
+
+
 def test_referenced_excludes_tag_and_bare_body_matches():
-    assert issue_links.referenced({"how": "github"}) and issue_links.referenced({"how": "fix-match"})
+    assert issue_links.referenced({"how": "github"})
     assert not issue_links.referenced({"how": "subsystem"})
     assert not issue_links.referenced({"how": "body-ref"})
 

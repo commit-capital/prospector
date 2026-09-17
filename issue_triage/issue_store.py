@@ -137,13 +137,12 @@ class IssueStore:
         rec, stamp = got
         return self._issue_view(rec), stamp
 
-    def save_issue_if(self, issue: issue_model.Issue | dict,
+    def save_issue_if(self, issue: issue_model.Issue,
                       expected_saved_at: str | None) -> bool:
         """Write `issue` only while the row's write-stamp still equals
         `expected_saved_at`, and report whether the write landed. False means
         another writer got there first and this record is stale."""
-        rec = issue if isinstance(issue, dict) else issue.raw
-        return self._issues.save_if(rec, expected_saved_at)
+        return self._issues.save_if(issue.raw, expected_saved_at)
 
     def edit_issue(self, n: int) -> issue_model.Issue:
         """A typed, auto-saving handle for mutating issue `n`. Raises KeyError if
