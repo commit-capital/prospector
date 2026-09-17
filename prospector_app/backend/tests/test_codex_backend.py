@@ -420,11 +420,12 @@ def test_read_only_rules_include_text_filters_and_repo_search():
 @pytest.mark.parametrize("can_write", [False, True])
 @pytest.mark.parametrize("can_resubmit", [False, True])
 def test_no_write_or_exec_capable_filter_is_allow_listed(can_write, can_resubmit):
-    # An execpolicy `allow` rule bypasses the sandbox on the command's first
-    # attempt (bypass_sandbox=true → SandboxType::None), so an allow-listed
-    # command runs outside it and its writes land. `sed`, `awk`, `sort`, and
-    # `uniq` each have a file-write or program-exec form, so none is granted;
-    # the filters that remain read and print only.
+    # An execpolicy `allow` decision can run the command outside the filesystem
+    # sandbox, and does whenever the permissions profile denies no reads — which
+    # is the profile `_flags` builds. So the rule, not the sandbox, is the bound
+    # on an allow-listed command. `sed`, `awk`, `sort`, and `uniq` each have a
+    # file-write or program-exec form, so none is granted; the filters that
+    # remain read and print only.
     rules = codex_backend.isolation_rules(can_write, can_resubmit)
     for tool in ("sed", "awk", "sort", "uniq"):
         assert json.dumps([tool]) not in rules
