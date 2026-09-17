@@ -80,7 +80,6 @@ _REMEMBER_ALLOW = _helper_allow("remember")
 _FILE_ISSUE_ALLOW = _helper_allow("file-issue")
 _UNCLUSTER_ALLOW = _helper_allow("uncluster")
 _GH_READ_ALLOW = _helper_allow("gh-read")
-_GIT_ALLOW = ["Bash(git diff:*)"]
 _STORE_READ_ALLOW = _helper_allow("store-read")
 _REINGEST_ALLOW = _helper_allow("reingest")
 _RESUBMIT_ALLOW = _helper_allow("resubmit")
@@ -104,7 +103,7 @@ def isolation_flags(can_write: bool, can_resubmit: bool) -> list[str]:
     `can_resubmit` is the confirming operator and adds the resubmit helper plus
     the Edit/Write tools its worktree authoring needs."""
     allowed = ["Read", "Grep", "Glob", *_GH_ALLOW, *_FILTER_ALLOW, *_GH_READ_ALLOW,
-               *_GIT_ALLOW, *_REMEMBER_ALLOW, *_UNCLUSTER_ALLOW, *_STORE_READ_ALLOW,
+               *_REMEMBER_ALLOW, *_UNCLUSTER_ALLOW, *_STORE_READ_ALLOW,
                *_REINGEST_ALLOW, *_FILE_ISSUE_ALLOW]
     disallowed = [*_DISALLOWED_TOOLS, *_FILTER_DENY]
     if can_write:

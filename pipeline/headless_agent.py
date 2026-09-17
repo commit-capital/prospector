@@ -119,16 +119,12 @@ def fill(template: str, subs: dict[str, object]) -> str:
 # history, and a single commit come through prospector_app/agent/gh-read, which
 # fixes the method and builds the endpoint itself (the chat agent's window too).
 GH_READ = str(REPO_ROOT / "prospector_app" / "agent" / "gh-read")
-_GH_READ_ALLOW = [
+_GH_ALLOW = [
     "Bash(gh pr view:*)", "Bash(gh pr diff:*)", "Bash(gh pr list:*)",
     "Bash(gh pr checks:*)", "Bash(gh issue view:*)", "Bash(gh issue list:*)",
     "Bash(gh search prs:*)", "Bash(gh search issues:*)",
     f"Bash({GH_READ}:*)",
 ]
-# The gh rules of an agent with no `read_root`. A `git` prefix rule admits
-# `--output=<path>`, a write to any file the operator can write, so an agent
-# with a `read_root` never carries one.
-_GH_ALLOW = [*_GH_READ_ALLOW, "Bash(git log:*)"]
 _DISALLOWED = [
     "Task", "Edit", "Write", "NotebookEdit",
     "EnterPlanMode", "ExitPlanMode", "EnterWorktree", "ExitWorktree",
@@ -177,18 +173,32 @@ def _inside(path: str, roots: Sequence[str]) -> bool:
     return any(os.path.isdir(r) and (real == r or real.startswith(r + "/")) for r in roots)
 
 
+def _names_git(rule: str) -> bool:
+    """Whether `rule` is a Bash rule whose command is git itself. Such a rule
+    admits `--output=<path>`, a write to any file the operator can write, and
+    `--no-index`, a read of any."""
+    if not rule.startswith("Bash("):
+        return False
+    command = re.split(r"[\s:)]", rule[len("Bash("):], maxsplit=1)[0]
+    return os.path.basename(command) == "git"
+
+
 def _flags(allow_gh: bool, edit_root: str | None = None,
            allow: Sequence[str] = (),
            read_root: str | Sequence[str] | None = None,
            git_root: str | None = None) -> list[str]:
+    for rule in allow:
+        if _names_git(rule):
+            raise ValueError(f"{rule!r} is a git prefix rule: git reaches an agent "
+                             "through git_root alone")
     if read_root is None:
         if edit_root or git_root:
             raise ValueError("edit_root and git_root need a read_root: an agent "
                              "that works in a worktree reads inside it")
-        tools = ["Read", "Grep", "Glob", *(_GH_ALLOW if allow_gh else []), *allow]
+        reads = ["Read", "Grep", "Glob"]
     else:
-        tools = [*_read_rules(_roots(read_root)),
-                 *(_GH_READ_ALLOW if allow_gh else []), *allow]
+        reads = _read_rules(_roots(read_root))
+    tools = [*reads, *(_GH_ALLOW if allow_gh else []), *allow]
     disallowed = list(_DISALLOWED)
     if edit_root:
         # Under dontAsk a rule that fails to match is a silent denial of every
@@ -389,7 +399,8 @@ def run_agent(prompt: str, *, allow_gh: bool, cwd: str, system_prompt: str | Non
     among them, or ValueError. `edit_root` grants Edit/Write scoped to that
     directory and `git_root` read-only git in that worktree; both need a
     `read_root`. `allow` adds permission rules on top, such as
-    `Bash(<tool>:*)` for one more host command. `env_allow` holds the agent's
+    `Bash(<tool>:*)` for one more host command; a rule whose command is `git`
+    itself is a ValueError. `env_allow` holds the agent's
     environment, which its Bash commands inherit, to the CLI's own needs plus
     the variables it names — a tool that needs deployment configuration loads
     the repository .env itself; `env_extra` is merged in on top. Raises

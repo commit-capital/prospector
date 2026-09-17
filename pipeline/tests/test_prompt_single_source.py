@@ -99,6 +99,13 @@ class TestPlaceholders:
         assert "attribute the claim explicitly to the author" in ad.ANALYZE_PROMPT
         assert 'Use "diff verified" only' in ad.ANALYZE_PROMPT
 
+    def test_analyze_names_the_history_reads_its_agent_holds(self):
+        gh_read = ad.headless_agent.GH_READ
+        assert f"`{gh_read} commits <path>`" in ad.ANALYZE_PROMPT
+        assert f"`{gh_read} commit <sha>`" in ad.ANALYZE_PROMPT
+        assert "__GH_READ__" not in ad.ANALYZE_PROMPT
+        assert "git log" not in ad.ANALYZE_PROMPT and "gh api" not in ad.ANALYZE_PROMPT
+
     def test_analyze_separates_background_behavior_and_output(self) -> None:
         assert ad.ANALYZE_PROMPT.startswith("# Background\n")
         assert ad.ANALYZE_PROMPT.count("# Background") == 1

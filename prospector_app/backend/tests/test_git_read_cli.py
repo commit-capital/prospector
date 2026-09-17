@@ -102,10 +102,20 @@ def test_output_cannot_be_written_to_a_file(wt, tmp_path, sub):
     ["diff", "--ext-diff"], ["show", "--textconv", "HEAD"], ["diff", "-O/etc/hosts"],
     ["log", "--show-signature"], ["log", "-L1,2:a.txt"], ["status", "--no-index"],
     ["grep", "one"], ["-C", "/", "log"], ["log", "-n", "five"], ["config", "--list"],
+    ["-c", "core.pager=x", "log"], ["--git-dir=/x", "log"], ["--work-tree=/x", "log"],
+    ["--exec-path=/x", "log"], ["log", "--git-dir=/x"], ["log", "--work-tree=/x"],
+    ["log", "--exec-path=/x"], ["log", "--upload-pack=/x"], ["status", "--output=x"],
 ])
 def test_an_option_or_subcommand_off_the_list_is_refused(wt, args):
     r = _run(wt, *args)
     assert r.returncode == 2 and "git-read" in r.stderr
+
+
+def test_a_config_pair_after_the_query_configures_nothing(wt):
+    # After the subcommand `-c` is git's combined-diff option, so the pair
+    # reaches git as a revision it cannot resolve.
+    r = _run(wt, "log", "-c", f"format.pretty={CANARY}")
+    assert r.returncode != 0 and CANARY not in r.stdout
 
 
 def test_repository_configuration_runs_no_program(wt, tmp_path):
