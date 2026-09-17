@@ -13,7 +13,7 @@ def _index_link(pr, how="explicit"):
     """One PR-index entry — what pr_index.build yields for an open PR whose body
     links the issue."""
     return {"pr": pr, "how": how, "state": "open", "draft": False,
-            "title": f"PR {pr}", "updated_at": None, "head_sha": None}
+            "title": f"PR {pr}"}
 
 
 def _seed(tmp_path, monkeypatch):
@@ -834,6 +834,26 @@ def test_pr_links_indexes_the_snapshot_and_is_unavailable_while_it_loads(monkeyp
         "pr": 901, "meta": {"title": "fix boot", "state": "open"},
         "issues": {"linked": [{"issue": 10, "how": "explicit"}]}})})
     assert [link["pr"] for link in (issues._pr_links() or {})[10]] == [901]
+
+
+def test_pr_links_rebuilds_only_when_the_snapshot_generation_moves(monkeypatch):
+    from pipeline.model import Pr
+
+    def snap(n):
+        return {n: Pr(None, {"pr": n, "meta": {"title": f"PR {n}", "state": "open"},
+                             "issues": {"linked": [{"issue": 10, "how": "explicit"}]}})}
+
+    first, second = snap(901), snap(902)
+    generation = [7]
+    monkeypatch.setattr(issues, "_pr_links_cache", None)
+    monkeypatch.setattr("prospector_app.backend.data.snapshot_loading", lambda: False)
+    monkeypatch.setattr("prospector_app.backend.data.generation", lambda: generation[0])
+    monkeypatch.setattr("prospector_app.backend.data.prs", lambda: first)
+    assert [link["pr"] for link in (issues._pr_links() or {})[10]] == [901]
+    monkeypatch.setattr("prospector_app.backend.data.prs", lambda: second)
+    assert [link["pr"] for link in (issues._pr_links() or {})[10]] == [901]
+    generation[0] = 8
+    assert [link["pr"] for link in (issues._pr_links() or {})[10]] == [902]
 
 
 def test_row_carries_the_fix_scans_fixer_without_a_store_state(tmp_path, monkeypatch):

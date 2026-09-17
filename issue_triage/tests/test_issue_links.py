@@ -12,8 +12,7 @@ def _issue(candidates, github=None):
 
 
 def _link(pr, how, state="open"):
-    return {"pr": pr, "how": how, "state": state, "draft": False, "title": f"PR {pr}",
-            "updated_at": None, "head_sha": None}
+    return {"pr": pr, "how": how, "state": state, "draft": False, "title": f"PR {pr}"}
 
 
 def test_the_index_replaces_stored_direct_kinds_and_keeps_issue_owned_ones():

@@ -23,8 +23,6 @@ class PrLink(TypedDict):
     state: str | None
     draft: bool
     title: str | None
-    updated_at: str | None
-    head_sha: str | None
 
 
 def build(prs: Iterable[Pr]) -> dict[int, list[PrLink]]:
@@ -42,8 +40,7 @@ def build(prs: Iterable[Pr]) -> dict[int, list[PrLink]]:
             if key in best and best[key]["how"] == "explicit":
                 continue
             best[key] = {"pr": pr.n, "how": how, "state": pr.state, "draft": pr.draft,
-                         "title": pr.title, "updated_at": pr.updated_at,
-                         "head_sha": pr.head_sha}
+                         "title": pr.title}
     out: dict[int, list[PrLink]] = {}
     for (issue, _), link in sorted(best.items()):
         out.setdefault(issue, []).append(link)

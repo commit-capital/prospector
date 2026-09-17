@@ -101,7 +101,7 @@ def test_bundle_without_pr_states_marks_every_candidate_unknown(tmp_path):
     iss.set_links([{"pr": 7, "how": "explicit", "title": "fix"}])
     b = issue_analyze_driver.bundle(st)
     assert b[0]["candidate_prs"] == [
-        {"pr": 7, "how": "explicit", "title": "fix", "state": "unknown"}]
+        {"pr": 7, "how": "explicit", "title": "fix", "state": "unknown", "draft": False}]
 
 
 def test_bundle_takes_its_candidates_from_the_pr_index(tmp_path):
@@ -113,9 +113,20 @@ def test_bundle_takes_its_candidates_from_the_pr_index(tmp_path):
     b = issue_analyze_driver.bundle(
         st, only=[5], pr_states={8: "open"},
         pr_links={5: [{"pr": 8, "how": "explicit", "state": "open", "draft": False,
-                       "title": "fix", "updated_at": None, "head_sha": None}]})
+                       "title": "fix"}]})
     assert b[0]["candidate_prs"] == [
-        {"pr": 8, "how": "explicit", "title": "fix", "state": "open"}]
+        {"pr": 8, "how": "explicit", "title": "fix", "state": "open", "draft": False}]
+
+
+def test_bundle_carries_a_candidates_draft_flag(tmp_path):
+    st = issue_store.IssueStore(tmp_path)
+    st.create_issue(5, META)
+    b = issue_analyze_driver.bundle(
+        st, only=[5], pr_states={8: "open"},
+        pr_links={5: [{"pr": 8, "how": "explicit", "state": "open", "draft": True,
+                       "title": "wip"}]})
+    assert b[0]["candidate_prs"] == [
+        {"pr": 8, "how": "explicit", "title": "wip", "state": "open", "draft": True}]
 
 
 def test_bundle_only_restricts_to_named_issues(tmp_path):

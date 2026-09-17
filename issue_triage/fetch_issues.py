@@ -81,8 +81,9 @@ def _thumbs_up(groups: list[dict] | None) -> int:
 
 
 def _closing_refs(node: dict) -> list[dict]:
-    """The PRs GitHub reports as closing this issue, one `{pr, state, draft}` each.
-    States are lowercased to match the store's PR vocabulary."""
+    """The PRs GitHub reports as closing this issue, one `{pr, state, draft}` each,
+    over the first ten the query asks for. States are lowercased to match the
+    store's PR vocabulary."""
     refs = (node.get("closedByPullRequestsReferences") or {}).get("nodes") or []
     return [{"pr": ref["number"], "state": (ref.get("state") or "").lower(),
              "draft": bool(ref.get("isDraft"))} for ref in refs]

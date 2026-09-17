@@ -133,7 +133,7 @@ def test_bundle_takes_its_candidates_from_the_pr_index(tmp_path):
     entry = issue_fixed_driver.bundle(
         st, only=[5],
         pr_links={5: [{"pr": 8, "how": "explicit", "state": "open", "draft": False,
-                       "title": "fix", "updated_at": None, "head_sha": None}]})[0]
+                       "title": "fix"}]})[0]
     assert entry["candidate_prs"] == [{"pr": 8, "how": "explicit", "title": "fix"}]
 
 
