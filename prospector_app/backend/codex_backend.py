@@ -1,13 +1,15 @@
 """Codex CLI implementation of the conversational-agent boundary.
 
 Each chat thread gets an isolated Codex home containing its resume state and an
-execpolicy allowlist. Codex runs in a network-restricted sandbox; a session that
-grants resubmit runs it workspace-write so the agent can author the confirmed
-resubmit edit, and the bot-authenticated helpers ride separately on the session's
-bot-token grant. Only the same GitHub reads and curated helper commands exposed
-to Claude may run outside the sandbox. The operator's file-backed Codex login is
-linked into the isolated home, while user configuration and repository
-instructions stay out of the app agent's prompt.
+execpolicy allowlist. Codex runs in a network-restricted, read-only sandbox; a
+session that grants resubmit runs a permissions profile that adds write access
+to the clones `resubmit prepare` makes, the body-file directory and the temp
+directories, so the agent can author the confirmed resubmit edit, and the
+bot-authenticated helpers ride separately on the session's bot-token grant.
+Only the same GitHub reads and curated helper commands exposed to Claude may
+run outside the sandbox. The operator's file-backed Codex login is linked into
+the isolated home, while user configuration and repository instructions stay
+out of the app agent's prompt.
 """
 from __future__ import annotations
 
@@ -70,6 +72,8 @@ _WRITE_ALLOW = _helper_prefixes(
 
 _RESUBMIT_ALLOW = _helper_prefixes("resubmit")
 
+_PROFILE = "chat"
+
 _CODEX_CONTEXT = """
 
 ## Codex cockpit
@@ -77,13 +81,15 @@ You are running through the Codex CLI. The operating manual's references to
 Claude Code's cockpit describe this app's provider-independent boundary. Run
 the documented commands with the shell tool exactly as written. Commands not
 granted by the cockpit remain inside the network-disabled sandbox. A session
-that grants resubmit runs that sandbox workspace-write for the confirmed
-resubmit flow. An approval or network denial means the action did not run. Do
-not ask the operator for a Codex approval prompt; this embedded surface has none.
+that grants resubmit lets that sandbox write to the worktrees `resubmit
+prepare` makes and to the body-file directory; the rest of the Prospector
+checkout is read-only. An approval or network denial means the action did not
+run. Do not ask the operator for a Codex approval prompt; this embedded surface
+has none.
 
-Use filesystem write tools only for a resubmit the operator confirmed, and only
-inside the worktree printed by `resubmit prepare`. Never edit the primary
-Prospector checkout.
+Use filesystem write tools only for a `--body-file` in the directory the manual
+names, and for a resubmit the operator confirmed,
+inside the worktree printed by `resubmit prepare`.
 """.rstrip()
 
 _OUTPUT_HEADING = "\n# Output\n"
@@ -150,6 +156,24 @@ def _config(key: str, value: object) -> list[str]:
     return ["-c", f"{key}={json.dumps(value)}"]
 
 
+def _write_profile() -> list[str]:
+    """The permissions profile of a session that grants resubmit: read
+    everywhere, write to the clones `resubmit prepare` makes, the body-file
+    directory, and the temp directories a shell here-document needs. Codex
+    parses a `-c` value as TOML, so the table is rendered as one."""
+    filesystem = {
+        "/": "read",
+        os.path.realpath(agent_backend.RESUBMIT_ROOT): "write",
+        os.path.realpath(agent_backend.BODY_DIR): "write",
+        ":tmpdir": "write",
+        "/tmp": "write",
+    }
+    table = ", ".join(f"{json.dumps(path)} = {json.dumps(mode)}"
+                      for path, mode in filesystem.items())
+    return [*_config("default_permissions", _PROFILE),
+            "-c", f"permissions.{_PROFILE}.filesystem={{{table}}}"]
+
+
 def _with_codex_context(system_prompt: str) -> str:
     behavior, output_heading, output = system_prompt.partition(_OUTPUT_HEADING)
     if not output_heading:
@@ -162,7 +186,8 @@ def _flags(system_prompt: str | None, can_resubmit: bool) -> list[str]:
         "--json",
         "--ignore-user-config",
         "--strict-config",
-        *_config("sandbox_mode", "workspace-write" if can_resubmit else "read-only"),
+        # Codex refuses `sandbox_mode` beside a permissions profile.
+        *(_write_profile() if can_resubmit else _config("sandbox_mode", "read-only")),
         *_config("approval_policy", "never"),
         *_config("project_doc_max_bytes", 0),
         *_config("include_apps_instructions", False),
@@ -183,8 +208,6 @@ def _flags(system_prompt: str | None, can_resubmit: bool) -> list[str]:
         *_config("shell_environment_policy.ignore_default_excludes", False),
         *_config("shell_environment_policy.exclude", _SHELL_EXCLUDES),
     ]
-    if can_resubmit:
-        flags += _config("sandbox_workspace_write.network_access", False)
     if system_prompt is not None:
         flags += _config("developer_instructions", _with_codex_context(system_prompt))
     return flags
