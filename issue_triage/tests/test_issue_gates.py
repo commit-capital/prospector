@@ -179,6 +179,7 @@ def _judge(**over):
     (RED, _judge(symptom_match={"confidence": "low"}), False, None, "wrong-symptom"),
     (RED, _judge(defect={"is_defect": False}), False, None, "not-a-defect"),
     (RED, _judge(defect={"confidence": "low"}), False, None, "not-a-defect"),
+    (RED, _judge(symptom_match={"confidence": "certain"}), False, None, None),
 ])
 def test_reproduction_outcome(red, judge, gave_up, invalid, want):
     assert issue_gates.reproduction_outcome(red, judge, gave_up=gave_up, invalid=invalid) == want
