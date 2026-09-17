@@ -664,7 +664,7 @@ async def stream_chat(question: str, pr: int | None = None, cluster: int | None 
             # interactive session grants it regardless of token minting.
             can_resubmit=True,
             cwd=REPO_ROOT,
-            env=safety_guard.operator_env(),
+            env=safety_guard.agent_env(),
         )
     )
     parts: list[str] = []
