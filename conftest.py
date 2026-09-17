@@ -21,6 +21,11 @@ if _worker:
     os.environ["TRIAGE_STORE_URL"] = f"sqlite:///{_store_dir}/store.db"
 else:
     os.environ.pop("TRIAGE_STORE_URL", None)
+# The developer's Docker daemon is the one a live verify worker on this machine
+# boots its pinned base image from, and verify_gc's sweep ends in `docker rmi`.
+# Every docker call a test leaves unstubbed reaches this socket and fails.
+os.environ["DOCKER_HOST"] = "unix:///nonexistent/prospector-tests.sock"
+os.environ.pop("DOCKER_CONTEXT", None)
 # A developer's own worker name must never leak into a test's host stamps.
 os.environ.pop("TRIAGE_WORKER_ID", None)
 os.environ.setdefault("TRIAGE_REPO", "test-owner/test-repo")
