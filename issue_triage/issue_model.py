@@ -65,12 +65,20 @@ class Issue:
         return self._meta().get("author")
 
     @property
+    def assignees(self) -> list[str]:
+        return self._meta().get("assignees") or []
+
+    @property
     def labels(self) -> list[str]:
         return self._meta().get("labels") or []
 
     @property
     def updated_at(self) -> str | None:
         return self._meta().get("updated_at")
+
+    @property
+    def last_edited_at(self) -> str | None:
+        return self._meta().get("last_edited_at")
 
     @property
     def created_at(self) -> str | None:
@@ -153,6 +161,11 @@ class Issue:
         return (self.rec.get("links") or {}).get("candidates") or []
 
     @property
+    def github_links(self) -> list[dict]:
+        """The PRs GitHub itself reports as closing this issue."""
+        return (self.rec.get("links") or {}).get("github") or []
+
+    @property
     def cluster_id(self) -> int | None:
         return (self.rec.get("cluster") or {}).get("id")
 
@@ -177,20 +190,47 @@ class Issue:
         _stamp(self.rec, "meta", meta, None)
         self._persist()
 
+    def _links_with(self, **changes: list[dict]) -> dict[str, list[dict]]:
+        """The stored `links` section carrying `changes`, its freshness stamps
+        dropped (`_stamp` writes them back). Each link source — the computed
+        `candidates`, GitHub's own `github` references — is written on its own,
+        so the section merges."""
+        kept: dict[str, list[dict]] = {
+            k: v for k, v in (self.rec.get("links") or {}).items()
+            if k not in ("checked_at", "against_updated_at")}
+        kept.update(changes)
+        return kept
+
     def apply_facts(self, meta: dict, *, summary: dict | None = None,
-                    repro: dict | None = None, links: list | None = None) -> None:
-        """Stamp the ingest-owned fact sections and persist them in one save.
-        `meta` is always set; `summary`, `repro`, and `links` are set only when
-        provided. A single write lands an issue's whole ingest atomically
-        (mirrors Pr.apply_facts)."""
+                    repro: dict | None = None, links: list[dict] | None = None,
+                    github: list[dict] | None = None) -> None:
+        """Stage the ingest-owned fact sections and persist them in one save, so
+        a single write lands an issue's whole ingest atomically (mirrors
+        Pr.apply_facts)."""
+        self.stage_facts(meta, summary=summary, repro=repro, links=links, github=github)
+        self._persist()
+
+    def stage_facts(self, meta: dict, *, summary: dict | None = None,
+                    repro: dict | None = None, links: list[dict] | None = None,
+                    github: list[dict] | None = None) -> None:
+        """Stamp the ingest-owned fact sections in memory without persisting.
+        `meta` is always set; `summary`, `repro`, `links` (the computed candidate
+        PRs) and `github` (GitHub's closing references) are set only when
+        provided. A caller staging onto a freshly read record persists it with a
+        compare-and-swap (IssueStore.save_issue_if); `apply_facts` stages through
+        this method and saves."""
         _stamp(self.rec, "meta", meta, None)
         if summary is not None:
             _stamp(self.rec, "summary", summary, None)
         if repro is not None:
             _stamp(self.rec, "repro", repro, None)
+        changes: dict[str, list[dict]] = {}
         if links is not None:
-            _stamp(self.rec, "links", {"candidates": links}, None)
-        self._persist()
+            changes["candidates"] = links
+        if github is not None:
+            changes["github"] = github
+        if changes:
+            _stamp(self.rec, "links", self._links_with(**changes), None)
 
     def set_summary(self, subsystem: str | None, identifiers: list[str], *,
                     updated_at: str | None = None) -> None:
@@ -202,7 +242,7 @@ class Issue:
         self._persist()
 
     def set_links(self, candidates: list[dict]) -> None:
-        _stamp(self.rec, "links", {"candidates": candidates}, None)
+        _stamp(self.rec, "links", self._links_with(candidates=candidates), None)
         self._persist()
 
     def route_to(self, disposition: str, rationale: str, *, canonical: int | None = None,
@@ -234,7 +274,7 @@ class Issue:
         if not any(c.get("pr") == int(fixed_by) and c.get("how") == "fix-found"
                    for c in candidates):
             candidates.append({"pr": int(fixed_by), "how": "fix-found", "title": title})
-        _stamp(self.rec, "links", {"candidates": candidates}, None)
+        _stamp(self.rec, "links", self._links_with(candidates=candidates), None)
         scan: dict = {"status": "fixed", "fixed_by": int(fixed_by)}
         if upstream_date:
             scan["upstream_date"] = upstream_date

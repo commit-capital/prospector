@@ -22,48 +22,90 @@ if TYPE_CHECKING:
     from pipeline.store import Store
 
 
-def _meta(raw: dict) -> dict:
+def _partial(raw: dict) -> bool:
+    """True for a raw fetched by a transport that cannot see every fact — the REST
+    single-issue refetch, which reports neither the closing references nor the
+    body's edit time."""
+    return raw.get("github_links") is None
+
+
+def _meta(raw: dict, prev: issue_model.Issue | None) -> dict:
+    """The meta section to write for `raw`. A partial raw carries no edit time, so
+    an issue already in the store keeps the one it has."""
+    last_edited_at = raw.get("last_edited_at")
+    if prev is not None and _partial(raw):
+        last_edited_at = prev.last_edited_at
     return {
         "title": raw.get("title", ""),
         "body": raw.get("body") or "",
         "state": raw.get("state", "open"),
         "state_reason": raw.get("state_reason"),
         "author": raw.get("author", ""),
+        "assignees": raw.get("assignees") or [],
         "labels": raw.get("labels") or [],
         "comments": raw.get("comments", 0),
         "reactions_total": raw.get("reactions_total", 0),
         "thumbs_up": raw.get("thumbs_up", 0),
         "created_at": raw.get("created_at"),
         "updated_at": raw.get("updated_at"),
+        "last_edited_at": last_edited_at,
         "url": f"https://github.com/{config.repo()}/issues/{raw['number']}",
     }
 
 
 def _facts_unchanged(iss: issue_model.Issue, meta: dict, summary: dict,
-                     repro: dict) -> bool:
-    """True when re-ingesting reproduces identical meta/summary/repro, so the
-    write is a no-op. `links` is intentionally NOT compared: the existing snapshot
-    omits the (large) candidate arrays to keep the corpus load off Supabase's
-    statement timeout, so an unchanged issue keeps its stored links until its
-    meta/summary/repro move. Ignores the checked_at / against_updated_at stamps."""
+                     repro: dict, github: list[dict] | None) -> bool:
+    """True when re-ingesting reproduces identical meta/summary/repro and the same
+    GitHub closing references, so the write is a no-op. `meta` is the section that
+    would be written, so a fact a partial raw cannot see reads as unchanged; a
+    None `github` — unknown — reads the same way. The candidate links are NOT
+    compared: the existing snapshot omits the (large) candidate arrays to keep the
+    corpus load off Supabase's statement timeout, so an unchanged issue keeps its
+    stored candidates until its other facts move. Ignores the checked_at /
+    against_updated_at stamps."""
     rec = iss.rec
 
     def same(section: str, new: dict) -> bool:
         stored = rec.get(section)
         return stored is not None and all(stored.get(k) == v for k, v in new.items())
 
+    if github is not None and (rec.get("links") or {}).get("github", []) != github:
+        return False
     return same("meta", meta) and same("summary", summary) and same("repro", repro)
+
+
+def _swap_facts(store: IssueStore, raw: dict, summary: dict, repro: dict,
+                links: list[dict], github: list[dict] | None) -> bool:
+    """Write `raw`'s facts over issue `raw['number']` as the store holds it now:
+    re-read the record, stage the facts onto it, and swap it in while its
+    write-stamp still matches, so a section another writer saved during the run
+    stands. False when the store holds no such issue; a RuntimeError when two
+    attempts both lose the swap."""
+    n = int(raw["number"])
+    for _ in range(2):
+        got = store.stamped_issue(n)
+        if got is None:
+            return False
+        iss, stamp = got
+        iss.stage_facts(_meta(raw, iss), summary=summary, repro=repro, links=links,
+                        github=github)
+        if store.save_issue_if(iss, stamp):
+            return True
+    raise RuntimeError(f"issue #{n} kept changing under ingest")
 
 
 def ingest_records(store: IssueStore, raws: list[dict], prs: list[dict]) -> int:
     """Upsert each normalized issue raw whose facts changed: meta + summary +
     repro + links. meta/summary/repro are computed for every raw (cheap) and
-    compared to the store; only issues that differ are written, and links are
-    recomputed only for those — so an unchanged re-ingest skips the per-issue
-    upsert, which is the loop's dominant cost against a networked store. The
-    corpus is loaded once WITHOUT its candidate arrays (loading them all
-    intermittently exceeds the store's statement timeout); each changed issue
-    lands as a single write (Issue.apply_facts) on one reused connection
+    compared, along with the raw's GitHub closing references, to the store; only
+    issues that differ are written, and the candidate links are recomputed only
+    for those — so an unchanged re-ingest skips the per-issue upsert, which is
+    the loop's dominant cost against a networked store. The comparison reads a
+    corpus loaded once WITHOUT its candidate arrays (loading them all
+    intermittently exceeds the store's statement timeout); each changed issue is
+    then re-read in full and written over the record it read, under a
+    compare-and-swap on that record's write-stamp, so a section another writer
+    saved mid-run survives. Every read and write shares one reused connection
     (store.batch). A moved updated_at (or edited body) re-stamps the facts so
     freshness flips. Returns how many issues were written."""
     if not raws:
@@ -74,17 +116,19 @@ def ingest_records(store: IssueStore, raws: list[dict], prs: list[dict]) -> int:
     with store.batch():
         for raw in raws:
             n = raw["number"]
-            meta = _meta(raw)
+            prev = existing.get(n)
+            meta = _meta(raw, prev)
             s = summarize_issues.summarize({"number": n, "title": meta["title"], "body": meta["body"]})
             summary = {"subsystem": s["subsystem"], "identifiers": s["identifiers"]}
             repro = repro_grade.grade_repro(meta["body"])
-            prev = existing.get(n)
-            if prev is not None and _facts_unchanged(prev, meta, summary, repro):
+            github = raw.get("github_links")
+            if prev is not None and _facts_unchanged(prev, meta, summary, repro, github):
                 continue
             links = link_prs.candidate_prs(
                 n, s["subsystem"], prs, refs, issue_text=f"{meta['title']}\n{meta['body']}")
-            iss = prev or issue_model.Issue(store, {"issue": int(n)})
-            iss.apply_facts(meta, summary=summary, repro=repro, links=links)
+            if prev is None or not _swap_facts(store, raw, summary, repro, links, github):
+                issue_model.Issue(store, {"issue": int(n)}).apply_facts(
+                    meta, summary=summary, repro=repro, links=links, github=github)
             written += 1
     return written
 
@@ -95,8 +139,9 @@ def reconcile_closures(store: IssueStore, open_now: set[int], prs: list[dict],
     """Issues in the store still marked open but absent from the open fetch have
     closed upstream (or fell past fetch_all's pagination cap); refetch each one
     and upsert it through ingest_records, so its meta AND derived facts (summary,
-    repro, links) match the refetched content. An unfetchable issue is left
-    untouched. Returns how many issues changed state."""
+    repro, candidate links) match the refetched content. The refetch is a partial
+    view, and the facts it cannot see keep their stored values. An unfetchable
+    issue is left untouched. Returns how many issues changed state."""
     refetched: list[dict] = []
     transitions = 0
     for n, iss in store.all_issues(omit_candidates=True).items():

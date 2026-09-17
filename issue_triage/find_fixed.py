@@ -21,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from issue_triage import issue_fixed_driver
+from issue_triage import pr_index
 from issue_triage.issue_store import IssueStore
 from pipeline import settings
 from pipeline import headless_agent
@@ -74,7 +75,8 @@ def run_batch_agent(entries: list[dict]) -> list[dict]:
 def scan_batch(store: IssueStore, numbers: list[int]) -> int:
     """Bundle `numbers`, run one gh-enabled agent over them, and apply its
     verdicts. Synchronous, single-batch convenience. Returns verdicts applied."""
-    entries = issue_fixed_driver.bundle(store, only=numbers)
+    entries = issue_fixed_driver.bundle(store, only=numbers,
+                                        pr_links=pr_index.from_store())
     good = run_batch_agent(entries)
     return issue_fixed_driver.apply_verdicts(store, good)
 
@@ -101,7 +103,7 @@ def main(argv: list[str] | None = None) -> int:
     if not todo:
         _say("✓ nothing to scan — every open issue has a current fix-scan.")
         return 0
-    entries = issue_fixed_driver.bundle(store, only=todo)
+    entries = issue_fixed_driver.bundle(store, only=todo, pr_links=pr_index.from_store())
     pending_batches = [entries[i:i + args.batch] for i in range(0, len(entries), args.batch)]
     total = len(pending_batches)
     applied = 0

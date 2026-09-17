@@ -115,6 +115,29 @@ def test_fix_scan_status_validated(tmp_path):
         st.save_issue(iss.rec)
 
 
+def test_stamped_issue_is_none_for_a_missing_row(tmp_path):
+    assert issue_store.IssueStore(tmp_path).stamped_issue(404) is None
+
+
+def test_save_issue_if_writes_while_the_stamp_holds(tmp_path):
+    st = issue_store.IssueStore(tmp_path)
+    st.create_issue(5, dict(GOOD_META))
+    iss, stamp = st.stamped_issue(5)
+    iss.rec["meta"]["title"] = "edited"
+    assert st.save_issue_if(iss, stamp) is True
+    assert st.load_issue(5).title == "edited"
+
+
+def test_save_issue_if_refuses_a_stale_stamp(tmp_path):
+    st = issue_store.IssueStore(tmp_path)
+    st.create_issue(5, dict(GOOD_META))
+    iss, stamp = st.stamped_issue(5)
+    st.edit_issue(5).record_fix_scan("not-fixed")
+    iss.rec["meta"]["title"] = "edited"
+    assert st.save_issue_if(iss, stamp) is False
+    assert st.load_issue(5).title == "Bug"
+
+
 def test_runs_ledger_appends(tmp_path):
     st = issue_store.IssueStore(tmp_path)
     st.append_run({"phase": "ingest", "issues": 3})

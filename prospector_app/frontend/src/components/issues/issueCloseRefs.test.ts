@@ -26,6 +26,11 @@ test("issueFixer falls back to an explicit merged reference", () => {
   assert.equal(issueFixer(r), 11);
 });
 
+test("issueFixer falls back to a merged GitHub closing reference", () => {
+  const r = row(1, { linked_prs: [pr(11, "github", "merged")] });
+  assert.equal(issueFixer(r), 11);
+});
+
 test("issueFixer ignores unmerged, unknown-state, issue-ref, and subsystem-only PRs", () => {
   const r = row(1, { linked_prs: [pr(10, "explicit", "open"), pr(13, "explicit", null), pr(11, "issue-ref", "merged"), pr(12, "subsystem", "merged"), pr(14, "fix-found", "merged")] });
   assert.equal(issueFixer(r), null);

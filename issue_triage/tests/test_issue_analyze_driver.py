@@ -104,6 +104,20 @@ def test_bundle_without_pr_states_marks_every_candidate_unknown(tmp_path):
         {"pr": 7, "how": "explicit", "title": "fix", "state": "unknown"}]
 
 
+def test_bundle_takes_its_candidates_from_the_pr_index(tmp_path):
+    """A PR opened after the issue's last ingest is bundled from the PR index;
+    a stored explicit candidate the index no longer holds is not."""
+    st = issue_store.IssueStore(tmp_path)
+    iss = st.create_issue(5, META)
+    iss.set_links([{"pr": 7, "how": "explicit", "title": "stale"}])
+    b = issue_analyze_driver.bundle(
+        st, only=[5], pr_states={8: "open"},
+        pr_links={5: [{"pr": 8, "how": "explicit", "state": "open", "draft": False,
+                       "title": "fix", "updated_at": None, "head_sha": None}]})
+    assert b[0]["candidate_prs"] == [
+        {"pr": 8, "how": "explicit", "title": "fix", "state": "open"}]
+
+
 def test_bundle_only_restricts_to_named_issues(tmp_path):
     """`only` bundles exactly the named issues (unknown numbers skipped), letting
     the headless path batch pending issues across several calls."""

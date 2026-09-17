@@ -1004,7 +1004,9 @@ function activitySearch(scope: ActivityScopeParams = {}, initial?: Record<string
 
 // --- GitHub Issues, folded into the app (#192) ---
 export interface IssuePR {
-  pr: number; title?: string | null; how?: "explicit" | "fix-found" | "issue-ref" | "subsystem" | null;
+  pr: number; title?: string | null;
+  // The vocabulary issue_triage/issue_links.py ranks — strongest evidence first.
+  how?: "explicit" | "github" | "fix-found" | "fix-match" | "issue-ref" | "body-ref" | "subsystem" | null;
   in_store?: boolean; state?: "open" | "merged" | "closed" | null;
 }
 export interface IssueRow {
@@ -1163,7 +1165,8 @@ export interface IssueDupGroup {
   linked_prs: IssuePR[];
   dups: IssueDup[];
   dup_comment: string;            // default note for close-as-dup, prefilled into the box
-  fixed_comment: string | null;   // default note for close-as-fixed, or null when no fixer
+  fixed_by: number | null;        // the merged fixer the card closes against, or null when none
+  fixed_comment: string | null;   // default note for close-as-fixed, written from fixed_by
 }
 /** One tier-1 already-fixed issue: open, close-fixed disposition, current fix
  *  scan, and a fixer PR a live check shows merged. `comment` is the templated

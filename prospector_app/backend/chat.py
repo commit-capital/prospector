@@ -378,8 +378,9 @@ def _cluster_context(cid: int) -> str:
 # log doesn't blow the prompt.
 _ISSUE_BODY_BUDGET = 6000
 
-_HOW_LABEL = {"explicit": "explicit Fixes/Closes", "fix-found": "detector-found fix",
-              "issue-ref": "references the issue", "subsystem": "same subsystem"}
+_HOW_LABEL = {"explicit": "explicit Fixes/Closes", "github": "GitHub closing reference",
+              "fix-found": "detector-found fix", "issue-ref": "references the issue",
+              "body-ref": "named in the PR body", "subsystem": "same subsystem"}
 
 
 def _issue_context(n: int) -> str:

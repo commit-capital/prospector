@@ -16,6 +16,8 @@ import json
 import sys
 from typing import TYPE_CHECKING
 
+from issue_triage import issue_links
+from issue_triage import pr_index
 from issue_triage.issue_freshness import is_current
 from issue_triage.issue_store import IssueStore
 from pipeline import profile
@@ -68,7 +70,8 @@ def load_pr_states() -> dict[int, str]:
 
 
 def _issue_bundle(iss: Issue, cluster: IssueCluster | None,
-                  pr_states: dict[int, str]) -> dict:
+                  pr_states: dict[int, str],
+                  pr_links: list[pr_index.PrLink] | None) -> dict:
     return {
         "number": iss.number,
         "title": iss.title,
@@ -77,8 +80,9 @@ def _issue_bundle(iss: Issue, cluster: IssueCluster | None,
         "trusted_author": iss.author in profile.active().trusted_authors,
         "subsystem": iss.subsystem,
         "repro_grade": iss.repro_grade,
-        "candidate_prs": [dict(c, state=pr_states.get(int(c["pr"]), "unknown"))
-                          for c in iss.candidate_prs],
+        "candidate_prs": [{"pr": c["pr"], "how": c["how"], "title": c["title"],
+                           "state": pr_states.get(int(c["pr"]), "unknown")}
+                          for c in issue_links.linked_prs(iss, pr_links)],
         "cluster": None if cluster is None else {
             "id": cluster.id,
             "members": cluster.members,
@@ -90,12 +94,15 @@ def _issue_bundle(iss: Issue, cluster: IssueCluster | None,
 
 
 def bundle(store: IssueStore, only: list[int] | None = None,
-           pr_states: dict[int, str] | None = None) -> list[dict]:
+           pr_states: dict[int, str] | None = None,
+           pr_links: dict[int, list[pr_index.PrLink]] | None = None) -> list[dict]:
     """The evidence bundle handed to the agentic consumers — one entry per pending
     issue, with its cluster context. `only` restricts the bundle to those issue
     numbers (the headless path batches pending issues across several calls).
     `pr_states` maps PR number to current state (`load_pr_states`); a candidate PR
-    missing from it is bundled as "unknown", never as open."""
+    missing from it is bundled as "unknown", never as open. `pr_links` is the PR
+    index (`pr_index.from_store`), authoritative for what a PR body links; None
+    leaves each issue's stored links standing."""
     issues = store.all_issues()
     clusters = store.all_issue_clusters()
     want = pending(store) if only is None else [n for n in only if n in issues]
@@ -103,7 +110,8 @@ def bundle(store: IssueStore, only: list[int] | None = None,
     for n in want:
         iss = issues[n]
         cl = clusters.get(iss.cluster_id) if iss.cluster_id else None
-        out.append(_issue_bundle(iss, cl, pr_states or {}))
+        links = None if pr_links is None else pr_links.get(n, [])
+        out.append(_issue_bundle(iss, cl, pr_states or {}, links))
     return out
 
 
@@ -130,7 +138,8 @@ def main(argv: list[str] | None = None) -> None:
     if cmd == "pending":
         print("\n".join(str(n) for n in pending(store)))
     elif cmd == "bundle":
-        print(json.dumps({"issues": bundle(store, pr_states=load_pr_states()),
+        print(json.dumps({"issues": bundle(store, pr_states=load_pr_states(),
+                                           pr_links=pr_index.from_store()),
                           "criteria": DISPOSITION_CRITERIA}, indent=1))
     elif cmd == "commit":
         payload = json.loads(open(argv[1]).read())

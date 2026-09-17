@@ -69,6 +69,35 @@ def test_record_curation_sets_confirmed_and_canonical(tmp_path):
     assert reloaded.canonical == 5
 
 
+def test_set_links_preserves_the_stored_github_references(tmp_path):
+    st = issue_store.IssueStore(tmp_path)
+    iss = st.create_issue(5, META)
+    iss.apply_facts(META, links=[{"pr": 7, "how": "explicit", "title": "fix"}],
+                    github=[{"pr": 9, "state": "open", "draft": False}])
+    iss.set_links([{"pr": 8, "how": "explicit", "title": "other"}])
+    got = st.load_issue(5)
+    assert [c["pr"] for c in got.candidate_prs] == [8]
+    assert [g["pr"] for g in got.github_links] == [9]
+
+
+def test_writing_github_references_preserves_the_stored_candidates(tmp_path):
+    st = issue_store.IssueStore(tmp_path)
+    iss = st.create_issue(5, META)
+    iss.set_links([{"pr": 7, "how": "explicit", "title": "fix"}])
+    iss.apply_facts(META, github=[{"pr": 9, "state": "open", "draft": False}])
+    got = st.load_issue(5)
+    assert [c["pr"] for c in got.candidate_prs] == [7]
+    assert [g["pr"] for g in got.github_links] == [9]
+
+
+def test_meta_accessors_read_assignees_and_last_edit(tmp_path):
+    st = issue_store.IssueStore(tmp_path)
+    st.create_issue(5, {**META, "assignees": ["dev"], "last_edited_at": "T2"})
+    got = st.load_issue(5)
+    assert got.assignees == ["dev"]
+    assert got.last_edited_at == "T2"
+
+
 def test_record_fixed_sets_disposition_link_and_scan(tmp_path):
     st = issue_store.IssueStore(tmp_path)
     iss = st.create_issue(5, {"title": "t", "state": "open", "updated_at": "T1"})

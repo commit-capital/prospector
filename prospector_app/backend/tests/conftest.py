@@ -25,15 +25,18 @@ def _cold_data_snapshot(monkeypatch):
     cache. A test that wants data populated loads it (monkeypatch _store + refresh,
     or monkeypatch data.prs/clusters directly)."""
     from prospector_app.backend import data
+    from prospector_app.backend import issues
     from prospector_app.backend import service
     for attr, val in (("_prs", {}), ("_clusters", {}), ("_pr_to_clusters_idx", {}),
                       ("_pr_watermark", None), ("_clu_watermark", None),
                       ("_generation", 0), ("_loaded", False), ("_last_check", 0.0)):
         monkeypatch.setattr(data, attr, val)
-    # The row cache is keyed on the snapshot's identity, so drop it with the
-    # snapshot — a monkeypatched corpus must never serve another test's rows.
+    # The row cache and the issue->PR link index are keyed on the snapshot's
+    # identity, so drop them with the snapshot — a monkeypatched corpus must never
+    # serve another test's rows or links.
     monkeypatch.setattr(service, "_ROW_CACHE", {})
     monkeypatch.setattr(service, "_ROW_CACHE_KEY", None)
+    monkeypatch.setattr(issues, "_pr_links_cache", None)
     yield
     # A freshen a test kicked onto a daemon thread publishes under _check_lock and
     # releases it last; let it finish so it never blocks the next test's cold load

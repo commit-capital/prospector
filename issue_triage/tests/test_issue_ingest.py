@@ -1,4 +1,6 @@
 """INGEST driver: fetch raws -> deterministic facts in the store (pure half)."""
+import pytest
+
 from issue_triage import issue_freshness
 from issue_triage import issue_ingest
 from issue_triage import issue_store
@@ -210,6 +212,70 @@ def test_ingest_relinks_only_when_the_issue_itself_changes(tmp_path):
     assert 77 in [c["pr"] for c in st.load_issue(5).candidate_prs]
 
 
+def test_ingest_writes_assignees_and_edit_time(tmp_path):
+    st = issue_store.IssueStore(tmp_path)
+    issue_ingest.ingest_records(
+        st, [{**RAW, "assignees": ["dev"], "last_edited_at": "2026-06-03T00:00:00Z",
+              "github_links": []}], prs=[])
+    iss = st.load_issue(5)
+    assert iss.assignees == ["dev"]
+    assert iss.last_edited_at == "2026-06-03T00:00:00Z"
+
+
+def test_ingest_rewrites_when_only_the_closing_references_change(tmp_path):
+    st = issue_store.IssueStore(tmp_path)
+    raw = dict(RAW, github_links=[])
+    assert issue_ingest.ingest_records(st, [raw], prs=[]) == 1
+    assert issue_ingest.ingest_records(st, [raw], prs=[]) == 0
+    raw2 = dict(raw, github_links=[{"pr": 9, "state": "open", "draft": False}])
+    assert issue_ingest.ingest_records(st, [raw2], prs=[]) == 1
+    assert st.load_issue(5).github_links == raw2["github_links"]
+
+
+def test_unknown_closing_references_keep_the_stored_ones(tmp_path):
+    """The REST refetch cannot see closing references, so it reports them unknown
+    (None) and the stored ones survive the rewrite it triggers."""
+    st = issue_store.IssueStore(tmp_path)
+    linked = dict(RAW, github_links=[{"pr": 9, "state": "open", "draft": False}])
+    issue_ingest.ingest_records(st, [linked], prs=[])
+    issue_ingest.ingest_records(st, [dict(RAW, title="edited", github_links=None)], prs=[])
+    assert [g["pr"] for g in st.load_issue(5).github_links] == [9]
+
+
+def test_a_partial_refetch_keeps_the_edit_time_and_closing_references(tmp_path):
+    """The REST refetch sees neither fact, so a closure sweep moves the state and
+    title it did fetch and leaves both stored facts standing."""
+    st = issue_store.IssueStore(tmp_path)
+    full = dict(RAW, last_edited_at="2026-09-01T00:00:00Z",
+                github_links=[{"pr": 9, "state": "open", "draft": False}])
+    issue_ingest.ingest_records(st, [full], prs=[])
+    partial = dict(RAW, title="edited", state="closed", github_links=None)
+    issue_ingest.ingest_records(st, [partial], prs=[])
+    iss = st.load_issue(5)
+    assert iss.last_edited_at == "2026-09-01T00:00:00Z"
+    assert [g["pr"] for g in iss.github_links] == [9]
+    assert iss.state == "closed" and iss.title == "edited"
+
+
+def test_a_full_fetch_clears_a_stored_edit_time(tmp_path):
+    st = issue_store.IssueStore(tmp_path)
+    issue_ingest.ingest_records(
+        st, [dict(RAW, last_edited_at="2026-09-01T00:00:00Z", github_links=[])], prs=[])
+    assert issue_ingest.ingest_records(
+        st, [dict(RAW, last_edited_at=None, github_links=[])], prs=[]) == 1
+    assert st.load_issue(5).last_edited_at is None
+
+
+def test_record_fixed_preserves_github_links(tmp_path):
+    st = issue_store.IssueStore(tmp_path)
+    issue_ingest.ingest_records(
+        st, [dict(RAW, github_links=[{"pr": 9, "state": "open", "draft": False}])], prs=[])
+    st.edit_issue(5).record_fixed(44, rationale="r")
+    iss = st.load_issue(5)
+    assert [g["pr"] for g in iss.github_links] == [9]
+    assert any(c["pr"] == 44 and c["how"] == "fix-found" for c in iss.candidate_prs)
+
+
 def test_reingest_preserves_pipeline_sections(tmp_path):
     """Re-ingesting refreshes the fact sections but leaves the pipeline-owned
     sections (analysis) on the record."""
@@ -219,3 +285,71 @@ def test_reingest_preserves_pipeline_sections(tmp_path):
     issue_ingest.ingest_records(st, [{**RAW, "updated_at": "2026-06-09T00:00:00Z"}], prs=[])
     iss = st.load_issue(5)
     assert iss.disposition == "close-dup" and iss.canonical == 4
+
+
+def test_ingest_keeps_a_section_written_after_its_snapshot_was_taken(tmp_path, monkeypatch):
+    st = issue_store.IssueStore(tmp_path)
+    issue_ingest.ingest_records(st, [RAW], prs=[])
+    real = st.all_issues
+
+    def snapshot_then_concurrent_write(**kw):
+        snap = real(**kw)
+        st.edit_issue(RAW["number"]).record_fix_scan("not-fixed", rationale="mid-ingest")
+        return snap
+
+    monkeypatch.setattr(st, "all_issues", snapshot_then_concurrent_write)
+    issue_ingest.ingest_records(st, [dict(RAW, title="edited")], prs=[])
+    iss = st.load_issue(RAW["number"])
+    assert iss.title == "edited"
+    assert (iss.fix_scan or {}).get("status") == "not-fixed"
+
+
+def test_ingest_recreates_an_issue_deleted_after_its_snapshot(tmp_path, monkeypatch):
+    st = issue_store.IssueStore(tmp_path)
+    issue_ingest.ingest_records(st, [RAW], prs=[])
+    real = st.all_issues
+
+    def snapshot_then_delete(**kw):
+        snap = real(**kw)
+        st._issues.delete(RAW["number"])
+        return snap
+
+    monkeypatch.setattr(st, "all_issues", snapshot_then_delete)
+    assert issue_ingest.ingest_records(st, [dict(RAW, title="edited")], prs=[]) == 1
+    assert st.load_issue(RAW["number"]).title == "edited"
+
+
+def test_ingest_retries_the_swap_a_concurrent_write_loses(tmp_path, monkeypatch):
+    st = issue_store.IssueStore(tmp_path)
+    issue_ingest.ingest_records(st, [RAW], prs=[])
+    real = st.stamped_issue
+    raced: list[int] = []
+
+    def read_then_concurrent_write(n: int):
+        got = real(n)
+        if not raced:
+            raced.append(n)
+            st.edit_issue(n).record_fix_scan("not-fixed", rationale="mid-swap")
+        return got
+
+    monkeypatch.setattr(st, "stamped_issue", read_then_concurrent_write)
+    issue_ingest.ingest_records(st, [dict(RAW, title="edited")], prs=[])
+    iss = st.load_issue(RAW["number"])
+    assert raced == [5]
+    assert iss.title == "edited"
+    assert (iss.fix_scan or {}).get("status") == "not-fixed"
+
+
+def test_ingest_gives_up_when_every_swap_loses(tmp_path, monkeypatch):
+    st = issue_store.IssueStore(tmp_path)
+    issue_ingest.ingest_records(st, [RAW], prs=[])
+    real = st.stamped_issue
+
+    def read_then_concurrent_write(n: int):
+        got = real(n)
+        st.edit_issue(n).record_fix_scan("not-fixed", rationale="mid-swap")
+        return got
+
+    monkeypatch.setattr(st, "stamped_issue", read_then_concurrent_write)
+    with pytest.raises(RuntimeError, match="issue #5 kept changing under ingest"):
+        issue_ingest.ingest_records(st, [dict(RAW, title="edited")], prs=[])
