@@ -80,8 +80,8 @@ own branches while still being unable to reach the triage repository.
   names a path segment below `pr-*`, because the CLI lets a trailing `/**` match
   the `pr-<n>.resubmit.json` that sits beside a clone and that `push` reads its
   target from. On Codex the same session runs a permissions profile
-  (`codex_backend._write_profile`) that reads everywhere and writes to those two
-  directories and the temp directories; the profile grants whole directories, so
+  (`codex_backend._write_profile`) that reads everywhere (issue #282) and writes
+  to those two directories and the temp directories; the profile grants whole directories, so
   a clone's `.git` and the `pr-<n>.resubmit.json` beside it are inside its
   reach. The worker opts into its configured
   machine identity separately. On Claude the session's **reads** are held to the
@@ -97,8 +97,7 @@ own branches while still being unable to reach the triage repository.
   `jq` is an allowlisted filter and `jq -n env` prints the environment; helpers
   re-read the store URL from the repo-root `.env` that `pipeline.settings` loads
   on import, so a deployment configured by process environment alone, with no
-  `.env` on disk, has no `store-read` in chat. Codex reads everywhere still
-  (issue #282). These
+  `.env` on disk, has no `store-read` in chat. These
   paths do not use the per-PR merge gate. Chat PR close, reopen, and review
   operations, plus issue closes, call their corresponding executor paths; other
   upstream chat writes use `prospector_app/agent/gh-write`, which validates the
