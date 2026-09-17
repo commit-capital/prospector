@@ -200,8 +200,6 @@ def _flags(system_prompt: str | None, can_resubmit: bool) -> list[str]:
         *_config("allow_login_shell", False),
         *_config("check_for_update_on_startup", False),
         *_config("web_search", "disabled"),
-        *_config("orchestrator.skills.enabled", False),
-        *_config("orchestrator.mcp.enabled", False),
         *_config("features.multi_agent", False),
         *_config("features.apps", False),
         *_config("features.plugins", False),
@@ -215,6 +213,32 @@ def _flags(system_prompt: str | None, can_resubmit: bool) -> list[str]:
         flags += _config("developer_instructions", _with_codex_context(system_prompt))
     return flags
 
+
+
+_CONFIG_ERROR = "Error loading config.toml"
+_ABSENT_THREAD = "00000000-0000-0000-0000-000000000000"
+
+
+def config_complaint(flags: list[str]) -> str | None:
+    """The installed CLI's refusal of these flags, or None when it accepts them.
+
+    Resuming an absent thread under an empty Codex home reaches configuration
+    loading and stops there, so the probe needs no login and sends no request.
+    """
+    with tempfile.TemporaryDirectory() as home:
+        try:
+            result = subprocess.run(
+                [CODEX_BIN, "exec", "resume", *flags, _ABSENT_THREAD, "probe"],
+                capture_output=True, text=True, timeout=60,
+                stdin=subprocess.DEVNULL, cwd=home,
+                env={**os.environ, "CODEX_HOME": home},
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            return type(error).__name__
+    output = result.stdout + result.stderr
+    if _CONFIG_ERROR not in output:
+        return None
+    return " ".join(output[output.index(_CONFIG_ERROR):].split())
 
 def _inner_command(command: str) -> str:
     try:
@@ -343,6 +367,10 @@ class CodexBackend(agent_backend.AgentBackend):
         if not (_operator_home(os.environ) / "auth.json").is_file():
             return {"provider": self.provider, "ok": False,
                     "problem": "Codex authentication is not file-backed"}
+        complaint = config_complaint(_flags(system_prompt="probe", can_resubmit=True))
+        if complaint is not None:
+            return {"provider": self.provider, "ok": False,
+                    "problem": f"Codex cannot start: {complaint}"}
         status = (result.stdout or result.stderr).strip()
         prefix = "Logged in using "
         auth_method = status[len(prefix):] if status.startswith(prefix) else status
