@@ -153,6 +153,11 @@ class Issue:
         return (self.rec.get("links") or {}).get("candidates") or []
 
     @property
+    def github_links(self) -> list[dict]:
+        """The PRs GitHub itself reports as closing this issue."""
+        return (self.rec.get("links") or {}).get("github") or []
+
+    @property
     def cluster_id(self) -> int | None:
         return (self.rec.get("cluster") or {}).get("id")
 
