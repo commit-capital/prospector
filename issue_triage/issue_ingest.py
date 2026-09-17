@@ -22,7 +22,19 @@ if TYPE_CHECKING:
     from pipeline.store import Store
 
 
-def _meta(raw: dict) -> dict:
+def _partial(raw: dict) -> bool:
+    """True for a raw fetched by a transport that cannot see every fact — the REST
+    single-issue refetch, which reports neither the closing references nor the
+    body's edit time."""
+    return raw.get("github_links") is None
+
+
+def _meta(raw: dict, prev: issue_model.Issue | None) -> dict:
+    """The meta section to write for `raw`. A partial raw carries no edit time, so
+    an issue already in the store keeps the one it has."""
+    last_edited_at = raw.get("last_edited_at")
+    if prev is not None and _partial(raw):
+        last_edited_at = prev.last_edited_at
     return {
         "title": raw.get("title", ""),
         "body": raw.get("body") or "",
@@ -36,7 +48,7 @@ def _meta(raw: dict) -> dict:
         "thumbs_up": raw.get("thumbs_up", 0),
         "created_at": raw.get("created_at"),
         "updated_at": raw.get("updated_at"),
-        "last_edited_at": raw.get("last_edited_at"),
+        "last_edited_at": last_edited_at,
         "url": f"https://github.com/{config.repo()}/issues/{raw['number']}",
     }
 
@@ -44,12 +56,13 @@ def _meta(raw: dict) -> dict:
 def _facts_unchanged(iss: issue_model.Issue, meta: dict, summary: dict,
                      repro: dict, github: list[dict] | None) -> bool:
     """True when re-ingesting reproduces identical meta/summary/repro and the same
-    GitHub closing references, so the write is a no-op. A None `github` is unknown
-    and reads as no difference. The candidate links are NOT compared: the existing
-    snapshot omits the (large) candidate arrays to keep the corpus load off
-    Supabase's statement timeout, so an unchanged issue keeps its stored candidates
-    until its other facts move. Ignores the checked_at / against_updated_at
-    stamps."""
+    GitHub closing references, so the write is a no-op. `meta` is the section that
+    would be written, so a fact a partial raw cannot see reads as unchanged; a
+    None `github` — unknown — reads the same way. The candidate links are NOT
+    compared: the existing snapshot omits the (large) candidate arrays to keep the
+    corpus load off Supabase's statement timeout, so an unchanged issue keeps its
+    stored candidates until its other facts move. Ignores the checked_at /
+    against_updated_at stamps."""
     rec = iss.rec
 
     def same(section: str, new: dict) -> bool:
@@ -81,12 +94,12 @@ def ingest_records(store: IssueStore, raws: list[dict], prs: list[dict]) -> int:
     with store.batch():
         for raw in raws:
             n = raw["number"]
-            meta = _meta(raw)
+            prev = existing.get(n)
+            meta = _meta(raw, prev)
             s = summarize_issues.summarize({"number": n, "title": meta["title"], "body": meta["body"]})
             summary = {"subsystem": s["subsystem"], "identifiers": s["identifiers"]}
             repro = repro_grade.grade_repro(meta["body"])
             github = raw.get("github_links")
-            prev = existing.get(n)
             if prev is not None and _facts_unchanged(prev, meta, summary, repro, github):
                 continue
             links = link_prs.candidate_prs(
@@ -103,8 +116,9 @@ def reconcile_closures(store: IssueStore, open_now: set[int], prs: list[dict],
     """Issues in the store still marked open but absent from the open fetch have
     closed upstream (or fell past fetch_all's pagination cap); refetch each one
     and upsert it through ingest_records, so its meta AND derived facts (summary,
-    repro, candidate links) match the refetched content. An unfetchable issue is
-    left untouched. Returns how many issues changed state."""
+    repro, candidate links) match the refetched content. The refetch is a partial
+    view, and the facts it cannot see keep their stored values. An unfetchable
+    issue is left untouched. Returns how many issues changed state."""
     refetched: list[dict] = []
     transitions = 0
     for n, iss in store.all_issues(omit_candidates=True).items():

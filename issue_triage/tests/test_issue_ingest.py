@@ -213,7 +213,8 @@ def test_ingest_relinks_only_when_the_issue_itself_changes(tmp_path):
 def test_ingest_writes_assignees_and_edit_time(tmp_path):
     st = issue_store.IssueStore(tmp_path)
     issue_ingest.ingest_records(
-        st, [{**RAW, "assignees": ["dev"], "last_edited_at": "2026-06-03T00:00:00Z"}], prs=[])
+        st, [{**RAW, "assignees": ["dev"], "last_edited_at": "2026-06-03T00:00:00Z",
+              "github_links": []}], prs=[])
     iss = st.load_issue(5)
     assert iss.assignees == ["dev"]
     assert iss.last_edited_at == "2026-06-03T00:00:00Z"
@@ -237,6 +238,30 @@ def test_unknown_closing_references_keep_the_stored_ones(tmp_path):
     issue_ingest.ingest_records(st, [linked], prs=[])
     issue_ingest.ingest_records(st, [dict(RAW, title="edited", github_links=None)], prs=[])
     assert [g["pr"] for g in st.load_issue(5).github_links] == [9]
+
+
+def test_a_partial_refetch_keeps_the_edit_time_and_closing_references(tmp_path):
+    """The REST refetch sees neither fact, so a closure sweep moves the state and
+    title it did fetch and leaves both stored facts standing."""
+    st = issue_store.IssueStore(tmp_path)
+    full = dict(RAW, last_edited_at="2026-09-01T00:00:00Z",
+                github_links=[{"pr": 9, "state": "open", "draft": False}])
+    issue_ingest.ingest_records(st, [full], prs=[])
+    partial = dict(RAW, title="edited", state="closed", github_links=None)
+    issue_ingest.ingest_records(st, [partial], prs=[])
+    iss = st.load_issue(5)
+    assert iss.last_edited_at == "2026-09-01T00:00:00Z"
+    assert [g["pr"] for g in iss.github_links] == [9]
+    assert iss.state == "closed" and iss.title == "edited"
+
+
+def test_a_full_fetch_clears_a_stored_edit_time(tmp_path):
+    st = issue_store.IssueStore(tmp_path)
+    issue_ingest.ingest_records(
+        st, [dict(RAW, last_edited_at="2026-09-01T00:00:00Z", github_links=[])], prs=[])
+    assert issue_ingest.ingest_records(
+        st, [dict(RAW, last_edited_at=None, github_links=[])], prs=[]) == 1
+    assert st.load_issue(5).last_edited_at is None
 
 
 def test_record_fixed_preserves_github_links(tmp_path):

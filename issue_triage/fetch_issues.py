@@ -48,8 +48,9 @@ def is_pull_request(raw: dict) -> bool:
 def normalize_issue(raw: dict) -> dict:
     """Normalize a REST issues-endpoint payload (the single-issue refetch path).
 
-    The endpoint reports neither the body's edit time nor the closing references.
-    A None `github_links` reads as unknown, so ingest keeps the stored ones."""
+    The payload carries neither the body's edit time nor GitHub's closing
+    references, so both read None. That None marks the row a partial view, and
+    ingest keeps the stored value of every fact it leaves out."""
     reactions = raw.get("reactions") or {}
     return {
         "number": raw["number"],
