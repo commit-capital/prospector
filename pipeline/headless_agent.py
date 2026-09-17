@@ -7,20 +7,27 @@ CLAUDE.md / hooks / plugins / skills / MCP) + --setting-sources "" (load no
 settings file, so no repo grant or deny reaches this agent) + --permission-mode
 dontAsk (never prompt, silently deny anything off the allowlist) + a read-only
 toolset. Unlike the chat agent we do NOT grant `gh issue create`; ANALYZE only
-needs read-only gh to cite already-landed upstream fixes. An opt-in `edit_root`
-grants Edit/Write scoped to a single worktree plus read-only git, for the
-conflict resolver and the fix author; the rule names the worktree in the CLI's
-`//absolute` form, since a single leading slash is project-root-relative.
+needs read-only gh to cite already-landed upstream fixes.
+
+Every agent here reads text an outsider wrote, so its reach is what bounds a
+prompt injection. `read_root` holds Read/Grep/Glob to named directories and
+files, `env_allow` holds the environment to what the CLI and the named tools
+need, `edit_root` grants Edit/Write inside one worktree, and `git_root` grants
+read-only git there through prospector_app/agent/git-read. Rules name paths in
+the CLI's `//absolute` form, since a single leading slash is
+project-root-relative.
 """
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+import contextlib
 import os
 import re
 import shutil
 import signal
 import subprocess
+import tempfile
 import threading
 
 from pipeline import settings
@@ -112,12 +119,16 @@ def fill(template: str, subs: dict[str, object]) -> str:
 # history, and a single commit come through prospector_app/agent/gh-read, which
 # fixes the method and builds the endpoint itself (the chat agent's window too).
 GH_READ = str(REPO_ROOT / "prospector_app" / "agent" / "gh-read")
-_GH_ALLOW = [
+_GH_READ_ALLOW = [
     "Bash(gh pr view:*)", "Bash(gh pr diff:*)", "Bash(gh pr list:*)",
     "Bash(gh pr checks:*)", "Bash(gh issue view:*)", "Bash(gh issue list:*)",
     "Bash(gh search prs:*)", "Bash(gh search issues:*)",
-    f"Bash({GH_READ}:*)", "Bash(git log:*)",
+    f"Bash({GH_READ}:*)",
 ]
+# The gh rules of an agent with no `read_root`. A `git` prefix rule admits
+# `--output=<path>`, a write to any file the operator can write, so an agent
+# with a `read_root` never carries one.
+_GH_ALLOW = [*_GH_READ_ALLOW, "Bash(git log:*)"]
 _DISALLOWED = [
     "Task", "Edit", "Write", "NotebookEdit",
     "EnterPlanMode", "ExitPlanMode", "EnterWorktree", "ExitWorktree",
@@ -125,29 +136,68 @@ _DISALLOWED = [
     "WebFetch", "WebSearch", "AskUserQuestion",
 ]
 
+# Read-only git inside one worktree: a fixed set of subcommands and options,
+# every path held inside the worktree, which the tool reads from GIT_READ_ENV
+# in its environment and never from argv.
+GIT_READ = str(REPO_ROOT / "prospector_app" / "agent" / "git-read")
+GIT_READ_ENV = "PROSPECTOR_GIT_WORKTREE"
 
-# Read-only git the conflict resolver may run inside its worktree to see both
-# sides of a conflict. No push, no commit — the resubmit tool owns every git
-# write.
-_GIT_READ_ALLOW = [
-    "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(git status:*)",
-]
+# What the CLI itself needs to start and authenticate. Everything else an
+# `env_allow` agent sees is named by its caller.
+_CLI_ENV = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG", "TERM")
+_CLI_ENV_PREFIXES = ("LC_", "ANTHROPIC_", "CLAUDE_")
+
+
+def _real(path: str) -> str:
+    return os.path.realpath(path).rstrip("/")
+
+
+def _roots(read_root: str | Sequence[str]) -> list[str]:
+    """The read roots as resolved paths. The CLI matches a rule against the
+    resolved form of the path the agent names and never against a symlink, so
+    rules name resolved paths and prompts must hand the agent resolved paths."""
+    return [_real(r) for r in ([read_root] if isinstance(read_root, str) else read_root)]
+
+
+def _read_rules(roots: Sequence[str]) -> list[str]:
+    """Read/Grep/Glob rules over `roots`: a directory grants its subtree, any
+    other path grants that one file. Each tool needs its own rule — a scoped
+    Read beside a bare Grep leaves every file greppable."""
+    rules: list[str] = []
+    for root in roots:
+        if os.path.isdir(root):
+            rules += [f"Read(/{root}/**)", f"Grep(/{root}/**)", f"Glob(/{root}/**)"]
+        else:
+            rules += [f"Read(/{root})", f"Grep(/{root})"]
+    return rules
+
+
+def _inside(path: str, roots: Sequence[str]) -> bool:
+    real = _real(path)
+    return any(os.path.isdir(r) and (real == r or real.startswith(r + "/")) for r in roots)
 
 
 def _flags(allow_gh: bool, edit_root: str | None = None,
-           allow: Sequence[str] = ()) -> list[str]:
-    tools = ["Read", "Grep", "Glob", *(_GH_ALLOW if allow_gh else []), *allow]
+           allow: Sequence[str] = (),
+           read_root: str | Sequence[str] | None = None,
+           git_root: str | None = None) -> list[str]:
+    if read_root is None:
+        if edit_root or git_root:
+            raise ValueError("edit_root and git_root need a read_root: an agent "
+                             "that works in a worktree reads inside it")
+        tools = ["Read", "Grep", "Glob", *(_GH_ALLOW if allow_gh else []), *allow]
+    else:
+        tools = [*_read_rules(_roots(read_root)),
+                 *(_GH_READ_ALLOW if allow_gh else []), *allow]
     disallowed = list(_DISALLOWED)
     if edit_root:
-        # A rule path beginning with one slash resolves against the project
-        # root; "//" is the CLI's filesystem-absolute form. The CLI matches it
-        # against the path the agent passes, and a rule naming a symlink never
-        # matches, so the rule names the resolved root and the caller's worktree
-        # path must itself be free of symlinks. Under dontAsk a rule that fails
-        # to match is a silent denial of every edit.
-        root = "/" + os.path.realpath(edit_root).rstrip("/")
-        tools += [f"Edit({root}/**)", f"Write({root}/**)", *_GIT_READ_ALLOW]
+        # Under dontAsk a rule that fails to match is a silent denial of every
+        # edit, so the rule names the resolved root.
+        root = "/" + _real(edit_root)
+        tools += [f"Edit({root}/**)", f"Write({root}/**)"]
         disallowed = [t for t in disallowed if t not in ("Edit", "Write")]
+    if git_root:
+        tools.append(f"Bash({GIT_READ}:*)")
     return [
         "--allowedTools", ",".join(tools),
         "--disallowedTools", *disallowed,
@@ -155,6 +205,38 @@ def _flags(allow_gh: bool, edit_root: str | None = None,
         "--safe-mode",
         "--setting-sources", "",
     ]
+
+
+def _assert_scoped(cwd: str, read_root: str | Sequence[str],
+                   edit_root: str | None, git_root: str | None) -> None:
+    """Raise ValueError unless the run's cwd, edit_root and git_root each lie
+    inside a directory read root. The CLI reads its working directory whatever
+    the rules say, and git-read prints any file of its worktree, so each is
+    reach the roots must already cover."""
+    roots = _roots(read_root)
+    for name, path in (("cwd", cwd), ("edit_root", edit_root), ("git_root", git_root)):
+        if path and not _inside(path, roots):
+            raise ValueError(f"{name} {path!r} is outside the agent's read roots")
+
+
+def _agent_env(env_allow: Sequence[str] | None,
+               env_extra: Mapping[str, str] | None) -> dict[str, str]:
+    env = operator_env()
+    if env_allow is not None:
+        keep = {*_CLI_ENV, *env_allow}
+        env = {k: v for k, v in env.items()
+               if k in keep or k.startswith(_CLI_ENV_PREFIXES)}
+    if env_extra:
+        env.update(env_extra)
+    return env
+
+
+@contextlib.contextmanager
+def workdir(prefix: str) -> Iterator[str]:
+    """A private directory for one agent run, as its resolved path: the cwd and
+    read root of an agent whose inputs are files written for it."""
+    with tempfile.TemporaryDirectory(prefix=prefix) as tmp:
+        yield os.path.realpath(tmp)
 
 
 def parse_stream(lines, on_event=None, on_result=None, on_raw=None) -> str:
@@ -292,31 +374,42 @@ def json_reply(run: Callable[[], str]) -> tuple[dict, str]:
 def run_agent(prompt: str, *, allow_gh: bool, cwd: str, system_prompt: str | None = None,
               model: str | None = None, on_event=None, timeout: int = 1200,
               edit_root: str | None = None, allow: Sequence[str] = (),
-              env_extra: Mapping[str, str] | None = None) -> str:
+              env_extra: Mapping[str, str] | None = None,
+              read_root: str | Sequence[str] | None = None,
+              env_allow: Sequence[str] | None = None,
+              git_root: str | None = None) -> str:
     """Spawn headless claude, stream its output through parse_stream, return the
     final text. The prompt travels over stdin — it can embed a whole PR diff,
     and argv has an OS size cap. `model` pins a specific model (e.g. a cheap
     Haiku for mechanical work); None takes `settings.agent_model()`, and only
     an empty TRIAGE_AGENT_MODEL leaves the CLI's own default in charge.
-    `edit_root` grants
-    Edit/Write scoped to that directory (plus read-only git). `allow` adds
-    permission rules on top of the read-only set, such as `Bash(<tool>:*)` for
-    one more host command; `env_extra` is merged into the agent's environment,
-    which its Bash commands inherit. Raises RuntimeError on a non-zero exit,
+    `read_root` names the directories and files Read/Grep/Glob may reach — one
+    path or several, a directory granting its subtree and any other path that
+    one file; `cwd`, `edit_root` and `git_root` must lie inside a directory
+    among them, or ValueError. `edit_root` grants Edit/Write scoped to that
+    directory and `git_root` read-only git in that worktree; both need a
+    `read_root`. `allow` adds permission rules on top, such as
+    `Bash(<tool>:*)` for one more host command. `env_allow` holds the agent's
+    environment, which its Bash commands inherit, to the CLI's own needs plus
+    the variables it names — a tool that needs deployment configuration loads
+    the repository .env itself; `env_extra` is merged in on top. Raises
+    RuntimeError on a non-zero exit,
     and EditsBlockedError when an Edit/Write inside `edit_root` was
     permission-denied — the grant not working, so the run's outcome is the
     machine's, not the agent's. Raises AgentDeclined when the API's safeguards
     refused the prompt, and AgentUnavailable when the CLI could serve none."""
-    cmd = [CLAUDE_BIN, "-p", *_flags(allow_gh, edit_root, allow),
+    cmd = [CLAUDE_BIN, "-p", *_flags(allow_gh, edit_root, allow, read_root, git_root),
            "--output-format", "stream-json", "--verbose", "--include-partial-messages"]
     model = model or settings.agent_model()
     if model:
         cmd += ["--model", model]
     if system_prompt:
         cmd += ["--append-system-prompt", system_prompt]
-    env = operator_env()
-    if env_extra:
-        env.update(env_extra)
+    if read_root is not None:
+        _assert_scoped(cwd, read_root, edit_root, git_root)
+    env = _agent_env(env_allow, env_extra)
+    if git_root:
+        env[GIT_READ_ENV] = _real(git_root)
     try:
         proc = subprocess.Popen(cmd, cwd=cwd, stdin=subprocess.PIPE,
                                 stdout=subprocess.PIPE,
@@ -376,8 +469,9 @@ def probe(timeout: int = 180) -> str | None:
     trivial headless run on the cheapest model. None when it answered, else
     the reason it could not — what a tripped agent lane retests with."""
     try:
-        run_agent("Reply with the single word ok.", allow_gh=False,
-                  cwd=str(REPO_ROOT), model="haiku", timeout=timeout)
+        with workdir("agent-probe-") as tmp:
+            run_agent("Reply with the single word ok.", allow_gh=False, cwd=tmp,
+                      read_root=tmp, env_allow=(), model="haiku", timeout=timeout)
     except RuntimeError as e:
         return str(e)
     return None

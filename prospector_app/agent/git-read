@@ -1,0 +1,178 @@
+#!/usr/bin/env python3
+"""A headless agent's read-only window into one git worktree.
+
+A `Bash(git diff:*)` prefix rule cannot be held to reading: `git diff
+--no-index <file> /dev/null` prints any host file, two paths with one outside
+the worktree engage that mode with no flag at all, and `--output=<path>` on
+diff, log and show writes any file. This command is the safe slice: four
+subcommands, each option matched against a fixed list by its exact spelling,
+and every other argument held inside the worktree.
+
+The worktree comes from PROSPECTOR_GIT_WORKTREE, set by
+pipeline/headless_agent.py for the run, never from argv or the cwd. git runs
+with that directory as its explicit git-dir and work-tree, under an environment
+built here, with no system or user configuration, no external diff, textconv,
+fsmonitor or signature program, no lazy fetch, and no index refresh.
+
+Usage:
+    git-read status [--short] [--branch]
+    git-read log [-n N] [--oneline] [--stat] [-p] [<revision range>] [-- <path>...]
+    git-read show [--stat] <revision>[:<path>]     # `:2:<path>` / `:3:<path>` are a conflict's two sides
+    git-read diff [--cached] [--stat] [<revision> [<revision>]] [-- <path>...]
+
+Paths are relative to the worktree root. Standalone and stdlib-only, so it runs
+under whatever python3 the agent's PATH holds.
+"""
+from __future__ import annotations
+
+import os
+import re
+import subprocess
+import sys
+
+WORKTREE_ENV = "PROSPECTOR_GIT_WORKTREE"
+TIMEOUT_SECONDS = 120
+
+_DIFF_FLAGS = frozenset({
+    "-p", "-u", "--patch", "-s", "--no-patch", "--stat", "--numstat", "--shortstat",
+    "--summary", "--name-only", "--name-status", "--raw", "-w", "-b",
+    "--ignore-all-space", "--ignore-space-change", "--ignore-space-at-eol",
+    "--ignore-blank-lines", "--word-diff", "--minimal", "--patience", "--histogram",
+    "-M", "-C", "--find-renames", "--find-copies", "--no-renames", "-W",
+    "--function-context", "--cc", "-c", "-m", "--first-parent", "--full-index", "-a",
+    "--text", "-R", "--no-color", "--check", "--pickaxe-regex", "--pickaxe-all",
+})
+_DIFF_VALUED = (
+    re.compile(r"-U\d+"), re.compile(r"--unified=\d+"), re.compile(r"--inter-hunk-context=\d+"),
+    re.compile(r"--diff-filter=[A-Za-z*]+"), re.compile(r"--stat=[\d,]+"),
+    re.compile(r"-[MC]\d+%?"), re.compile(r"--find-(?:renames|copies)=\d+%?"),
+    re.compile(r"--word-diff=(?:color|plain|porcelain|none)"),
+    re.compile(r"--diff-algorithm=(?:patience|minimal|histogram|myers)"),
+    re.compile(r"-[SG].+", re.S),
+)
+_WALK_FLAGS = frozenset({
+    "--oneline", "--graph", "--decorate", "--no-decorate", "--all", "--branches",
+    "--remotes", "--tags", "--merges", "--no-merges", "--merge", "--left-right",
+    "--left-only", "--right-only", "--cherry-pick", "--cherry-mark", "--boundary",
+    "--ancestry-path", "--reverse", "--follow", "--abbrev-commit", "--no-abbrev-commit",
+    "--topo-order", "--date-order", "--full-history", "--simplify-merges", "--parents",
+    "--children", "--source", "-i", "--regexp-ignore-case", "-E", "--extended-regexp",
+    "-F", "--fixed-strings", "--invert-grep", "--all-match", "-g", "--walk-reflogs",
+})
+_WALK_VALUED = (
+    re.compile(r"-n\d+"), re.compile(r"-\d+"), re.compile(r"--(?:max-count|skip|abbrev)=\d+"),
+    re.compile(r"--(?:min|max)-parents=\d+"),
+    re.compile(r"--(?:since|after|until|before|author|committer|grep|format|pretty|date"
+               r"|decorate)=.*", re.S),
+)
+_DIFF_ONLY_FLAGS = frozenset({
+    "--cached", "--staged", "--merge-base", "--ours", "--theirs", "--base",
+    "-1", "-2", "-3", "--exit-code", "--quiet",
+})
+_STATUS_FLAGS = frozenset({
+    "-s", "--short", "-b", "--branch", "--long", "--porcelain", "--porcelain=v1",
+    "--porcelain=v2", "--ignored", "--renames", "--no-renames", "-u", "-uno", "-unormal",
+    "-uall", "--untracked-files=no", "--untracked-files=normal", "--untracked-files=all",
+})
+
+# subcommand -> (exact flags, valued-option patterns, arguments git always gets)
+_GRAMMAR: dict[str, tuple[frozenset[str], tuple[re.Pattern[str], ...], list[str]]] = {
+    "status": (_STATUS_FLAGS, (), []),
+    "diff": (_DIFF_FLAGS | _DIFF_ONLY_FLAGS, _DIFF_VALUED, ["--no-ext-diff", "--no-textconv"]),
+    "log": (_DIFF_FLAGS | _WALK_FLAGS, _DIFF_VALUED + _WALK_VALUED,
+            ["--no-ext-diff", "--no-textconv"]),
+    "show": (_DIFF_FLAGS | _WALK_FLAGS, _DIFF_VALUED + _WALK_VALUED,
+             ["--no-ext-diff", "--no-textconv"]),
+}
+
+# Configuration that names a program git would run during a read.
+_CONFIG = ["-c", "core.fsmonitor=false", "-c", "log.showSignature=false",
+           "-c", "core.hooksPath=/dev/null"]
+
+
+class Refused(Exception):
+    pass
+
+
+def _inside(worktree: str, arg: str) -> bool:
+    """Whether `arg`, read as a path from the worktree root, stays inside the
+    worktree with every symlink resolved. git reads a bare argument as a path
+    when it names no revision, and two paths with one outside the worktree make
+    `git diff` compare files with no repository involved."""
+    if os.path.isabs(arg) or "\0" in arg:
+        return False
+    real = os.path.realpath(os.path.join(worktree, arg))
+    return real == worktree or real.startswith(worktree + os.sep)
+
+
+def validated(sub: str, args: list[str], worktree: str) -> list[str]:
+    """`args` as git may receive them after `sub`, or Refused naming the first
+    argument this tool does not pass on. An option is accepted by its exact
+    spelling, so an abbreviation git would expand is refused with the rest."""
+    if sub not in _GRAMMAR:
+        raise Refused(f"no such query {sub!r}: use status, log, show or diff")
+    flags, valued, _ = _GRAMMAR[sub]
+    out: list[str] = []
+    pathspecs = False
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        i += 1
+        if pathspecs or not arg.startswith("-"):
+            if sub == "status" and not pathspecs:
+                raise Refused(f"status takes no revision: {arg!r}")
+            if not _inside(worktree, arg):
+                raise Refused(f"{arg!r} is not a path inside the worktree (paths are "
+                              "relative to its root)")
+            out.append(arg)
+        elif arg == "--":
+            pathspecs = True
+            out.append(arg)
+        elif arg == "-n" and sub in ("log", "show"):
+            if i >= len(args) or not args[i].isdigit():
+                raise Refused("-n takes a number")
+            out += ["-n", args[i]]
+            i += 1
+        elif arg in flags or any(p.fullmatch(arg) for p in valued):
+            out.append(arg)
+        else:
+            raise Refused(f"option {arg!r} is not one git-read passes on")
+    return out
+
+
+def _env() -> dict[str, str]:
+    env = {k: os.environ[k] for k in ("PATH", "HOME", "LANG", "LC_ALL") if k in os.environ}
+    env.update({"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_OPTIONAL_LOCKS": "0", "GIT_NO_LAZY_FETCH": "1",
+                "GIT_TERMINAL_PROMPT": "0", "GIT_PAGER": "cat"})
+    return env
+
+
+def main(argv: list[str]) -> int:
+    pinned = os.environ.get(WORKTREE_ENV, "")
+    if not pinned or not os.path.isdir(pinned):
+        print(f"git-read: not running under an agent with a worktree ({WORKTREE_ENV} unset)",
+              file=sys.stderr)
+        return 2
+    worktree = os.path.realpath(pinned)
+    if not argv:
+        print("git-read: usage: git-read status|log|show|diff [options] [revisions] "
+              "[-- paths]", file=sys.stderr)
+        return 2
+    try:
+        args = validated(argv[0], argv[1:], worktree)
+    except Refused as e:
+        print(f"git-read: {e}", file=sys.stderr)
+        return 2
+    cmd = ["git", "--no-pager", f"--git-dir={os.path.join(worktree, '.git')}",
+           f"--work-tree={worktree}", *_CONFIG, argv[0], *_GRAMMAR[argv[0]][2], *args]
+    try:
+        return subprocess.run(cmd, cwd=worktree, env=_env(), stdin=subprocess.DEVNULL,
+                              timeout=TIMEOUT_SECONDS).returncode
+    except subprocess.TimeoutExpired:
+        print(f"git-read: git {argv[0]} did not finish in {TIMEOUT_SECONDS}s", file=sys.stderr)
+        return 124
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
