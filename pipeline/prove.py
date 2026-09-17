@@ -79,7 +79,8 @@ def run_command(base: PinnedBase, patch: Path, cmd: str, *,
     error, a base that cannot pass the command itself — lands in the record;
     nothing raises into the caller."""
     t0 = time.monotonic()
-    result: dict = {"cmd": cmd, "label": label, "base_sha": base.sha}
+    result: dict = {"cmd": cmd, "label": label, "base_sha": base.sha,
+                    "output_tail": ""}
     try:
         _command_over(result, base, patch, cmd, phase, label)
     except Exception as e:
@@ -116,6 +117,8 @@ def _command_over(result: dict, base: PinnedBase, patch: Path, cmd: str,
     excerpt = verify_driver.error_excerpt(tail)
     if exit_code == gates.SENTINEL_TEST_FAIL:
         result["error_excerpt"] = excerpt
+        # The sandbox runs a pristine base for the compile and build phases
+        # only, so a failing green leg reads as the patch's own verdict.
         if phase == "compile":
             _record_base_fault(result, base, cmd)
     elif exit_code == gates.SENTINEL_PATCH_CONFLICT:
@@ -130,8 +133,7 @@ def _command_over(result: dict, base: PinnedBase, patch: Path, cmd: str,
 
 def _record_base_fault(result: dict, base: PinnedBase, cmd: str) -> None:
     """Re-run `cmd` over the pristine base and, when it fails there too, record
-    the failure as the lane's own fault. The sandbox takes its pristine flag on
-    the compile and build phases, which is the reach of this check."""
+    the failure as the lane's own fault."""
     base_failure = verify_driver.base_command_failure(
         base.image, cmd, lambda: verify_driver.run_phase(
             "compile", base.image, tier=base.tier, test_cmd=cmd,

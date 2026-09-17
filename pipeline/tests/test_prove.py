@@ -79,6 +79,7 @@ def test_run_command_refuses_a_dependency_manifest(phases, tmp_path):
                  "+++ b/package.json\n@@ -1 +1 @@\n-a\n+b\n")
     rec = prove.run_command(BASE, p, "pnpm -r typecheck", phase="compile", label="l")
     assert "refused" in rec and "exit" not in rec
+    assert rec["output_tail"] == ""
 
 
 def test_run_command_reads_a_base_that_fails_the_compile_as_the_lanes_fault(phases, monkeypatch):
@@ -88,6 +89,23 @@ def test_run_command_reads_a_base_that_fails_the_compile_as_the_lanes_fault(phas
     rec = prove.run_command(BASE, prove.compose("i", FIX), "pnpm -r typecheck",
                             phase="compile", label="l")
     assert rec["exit"] == 20 and rec["error_kind"] == "base-compile"
+
+
+def test_run_command_never_asks_the_pristine_base_about_a_green(phases, monkeypatch):
+    _, exits = phases
+    exits[:] = [gates.SENTINEL_TEST_FAIL]
+    asked: list[str] = []
+
+    def pristine(image, cmd, run):
+        asked.append(cmd)
+        return "exit 20: TS2304"
+
+    monkeypatch.setattr(vd, "base_command_failure", pristine)
+    rec = prove.run_command(BASE, prove.compose("i", TEST, FIX), "pnpm -s test",
+                            phase="green", label="l")
+    assert asked == []
+    assert rec["exit"] == 20 and rec["error_excerpt"]
+    assert "error" not in rec and "error_kind" not in rec
 
 
 def test_pinned_raises_no_base_without_an_image(monkeypatch):
