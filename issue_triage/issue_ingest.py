@@ -74,18 +74,40 @@ def _facts_unchanged(iss: issue_model.Issue, meta: dict, summary: dict,
     return same("meta", meta) and same("summary", summary) and same("repro", repro)
 
 
+def _swap_facts(store: IssueStore, raw: dict, summary: dict, repro: dict,
+                links: list[dict], github: list[dict] | None) -> bool:
+    """Write `raw`'s facts over issue `raw['number']` as the store holds it now:
+    re-read the record, stage the facts onto it, and swap it in while its
+    write-stamp still matches, so a section another writer saved during the run
+    stands. False when the store holds no such issue; a RuntimeError when two
+    attempts both lose the swap."""
+    n = int(raw["number"])
+    for _ in range(2):
+        got = store.stamped_issue(n)
+        if got is None:
+            return False
+        iss, stamp = got
+        iss.stage_facts(_meta(raw, iss), summary=summary, repro=repro, links=links,
+                        github=github)
+        if store.save_issue_if(iss, stamp):
+            return True
+    raise RuntimeError(f"issue #{n} kept changing under ingest")
+
+
 def ingest_records(store: IssueStore, raws: list[dict], prs: list[dict]) -> int:
     """Upsert each normalized issue raw whose facts changed: meta + summary +
     repro + links. meta/summary/repro are computed for every raw (cheap) and
     compared, along with the raw's GitHub closing references, to the store; only
     issues that differ are written, and the candidate links are recomputed only
     for those — so an unchanged re-ingest skips the per-issue upsert, which is
-    the loop's dominant cost against a networked store. The corpus is loaded once
-    WITHOUT its candidate arrays (loading them all intermittently exceeds the
-    store's statement timeout); each changed issue lands as a single write
-    (Issue.apply_facts) on one reused connection (store.batch). A moved
-    updated_at (or edited body) re-stamps the facts so freshness flips. Returns
-    how many issues were written."""
+    the loop's dominant cost against a networked store. The comparison reads a
+    corpus loaded once WITHOUT its candidate arrays (loading them all
+    intermittently exceeds the store's statement timeout); each changed issue is
+    then re-read in full and written over the record it read, under a
+    compare-and-swap on that record's write-stamp, so a section another writer
+    saved mid-run survives. Every read and write shares one reused connection
+    (store.batch). A moved updated_at (or edited body) re-stamps the facts so
+    freshness flips. Returns how many issues were written."""
     if not raws:
         return 0
     existing = store.all_issues(omit_candidates=True)
@@ -104,8 +126,9 @@ def ingest_records(store: IssueStore, raws: list[dict], prs: list[dict]) -> int:
                 continue
             links = link_prs.candidate_prs(
                 n, s["subsystem"], prs, refs, issue_text=f"{meta['title']}\n{meta['body']}")
-            iss = prev or issue_model.Issue(store, {"issue": int(n)})
-            iss.apply_facts(meta, summary=summary, repro=repro, links=links, github=github)
+            if prev is None or not _swap_facts(store, raw, summary, repro, links, github):
+                issue_model.Issue(store, {"issue": int(n)}).apply_facts(
+                    meta, summary=summary, repro=repro, links=links, github=github)
             written += 1
     return written
 

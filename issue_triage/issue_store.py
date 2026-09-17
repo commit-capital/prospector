@@ -128,6 +128,23 @@ class IssueStore:
     def save_issue(self, rec) -> None:
         self._issues.save(rec)
 
+    def stamped_issue(self, n: int) -> tuple[issue_model.Issue, str | None] | None:
+        """Issue `n` bound to this store, plus the row's saved_at write-stamp —
+        the read half of a save_issue_if compare-and-swap. None when absent."""
+        got = self._issues.stamped(n)
+        if got is None:
+            return None
+        rec, stamp = got
+        return self._issue_view(rec), stamp
+
+    def save_issue_if(self, issue: issue_model.Issue | dict,
+                      expected_saved_at: str | None) -> bool:
+        """Write `issue` only while the row's write-stamp still equals
+        `expected_saved_at`, and report whether the write landed. False means
+        another writer got there first and this record is stale."""
+        rec = issue if isinstance(issue, dict) else issue.raw
+        return self._issues.save_if(rec, expected_saved_at)
+
     def edit_issue(self, n: int) -> issue_model.Issue:
         """A typed, auto-saving handle for mutating issue `n`. Raises KeyError if
         the issue is not in the store."""

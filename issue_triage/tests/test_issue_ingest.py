@@ -1,4 +1,6 @@
 """INGEST driver: fetch raws -> deterministic facts in the store (pure half)."""
+import pytest
+
 from issue_triage import issue_freshness
 from issue_triage import issue_ingest
 from issue_triage import issue_store
@@ -283,3 +285,71 @@ def test_reingest_preserves_pipeline_sections(tmp_path):
     issue_ingest.ingest_records(st, [{**RAW, "updated_at": "2026-06-09T00:00:00Z"}], prs=[])
     iss = st.load_issue(5)
     assert iss.disposition == "close-dup" and iss.canonical == 4
+
+
+def test_ingest_keeps_a_section_written_after_its_snapshot_was_taken(tmp_path, monkeypatch):
+    st = issue_store.IssueStore(tmp_path)
+    issue_ingest.ingest_records(st, [RAW], prs=[])
+    real = st.all_issues
+
+    def snapshot_then_concurrent_write(**kw):
+        snap = real(**kw)
+        st.edit_issue(RAW["number"]).record_fix_scan("not-fixed", rationale="mid-ingest")
+        return snap
+
+    monkeypatch.setattr(st, "all_issues", snapshot_then_concurrent_write)
+    issue_ingest.ingest_records(st, [dict(RAW, title="edited")], prs=[])
+    iss = st.load_issue(RAW["number"])
+    assert iss.title == "edited"
+    assert (iss.fix_scan or {}).get("status") == "not-fixed"
+
+
+def test_ingest_recreates_an_issue_deleted_after_its_snapshot(tmp_path, monkeypatch):
+    st = issue_store.IssueStore(tmp_path)
+    issue_ingest.ingest_records(st, [RAW], prs=[])
+    real = st.all_issues
+
+    def snapshot_then_delete(**kw):
+        snap = real(**kw)
+        st._issues.delete(RAW["number"])
+        return snap
+
+    monkeypatch.setattr(st, "all_issues", snapshot_then_delete)
+    assert issue_ingest.ingest_records(st, [dict(RAW, title="edited")], prs=[]) == 1
+    assert st.load_issue(RAW["number"]).title == "edited"
+
+
+def test_ingest_retries_the_swap_a_concurrent_write_loses(tmp_path, monkeypatch):
+    st = issue_store.IssueStore(tmp_path)
+    issue_ingest.ingest_records(st, [RAW], prs=[])
+    real = st.stamped_issue
+    raced: list[int] = []
+
+    def read_then_concurrent_write(n: int):
+        got = real(n)
+        if not raced:
+            raced.append(n)
+            st.edit_issue(n).record_fix_scan("not-fixed", rationale="mid-swap")
+        return got
+
+    monkeypatch.setattr(st, "stamped_issue", read_then_concurrent_write)
+    issue_ingest.ingest_records(st, [dict(RAW, title="edited")], prs=[])
+    iss = st.load_issue(RAW["number"])
+    assert raced == [5]
+    assert iss.title == "edited"
+    assert (iss.fix_scan or {}).get("status") == "not-fixed"
+
+
+def test_ingest_gives_up_when_every_swap_loses(tmp_path, monkeypatch):
+    st = issue_store.IssueStore(tmp_path)
+    issue_ingest.ingest_records(st, [RAW], prs=[])
+    real = st.stamped_issue
+
+    def read_then_concurrent_write(n: int):
+        got = real(n)
+        st.edit_issue(n).record_fix_scan("not-fixed", rationale="mid-swap")
+        return got
+
+    monkeypatch.setattr(st, "stamped_issue", read_then_concurrent_write)
+    with pytest.raises(RuntimeError, match="issue #5 kept changing under ingest"):
+        issue_ingest.ingest_records(st, [dict(RAW, title="edited")], prs=[])

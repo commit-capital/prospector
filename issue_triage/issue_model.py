@@ -204,11 +204,21 @@ class Issue:
     def apply_facts(self, meta: dict, *, summary: dict | None = None,
                     repro: dict | None = None, links: list[dict] | None = None,
                     github: list[dict] | None = None) -> None:
-        """Stamp the ingest-owned fact sections and persist them in one save.
+        """Stage the ingest-owned fact sections and persist them in one save, so
+        a single write lands an issue's whole ingest atomically (mirrors
+        Pr.apply_facts)."""
+        self.stage_facts(meta, summary=summary, repro=repro, links=links, github=github)
+        self._persist()
+
+    def stage_facts(self, meta: dict, *, summary: dict | None = None,
+                    repro: dict | None = None, links: list[dict] | None = None,
+                    github: list[dict] | None = None) -> None:
+        """Stamp the ingest-owned fact sections in memory without persisting.
         `meta` is always set; `summary`, `repro`, `links` (the computed candidate
         PRs) and `github` (GitHub's closing references) are set only when
-        provided. A single write lands an issue's whole ingest atomically
-        (mirrors Pr.apply_facts)."""
+        provided. A caller staging onto a freshly read record persists it with a
+        compare-and-swap (IssueStore.save_issue_if); `apply_facts` stages through
+        this method and saves."""
         _stamp(self.rec, "meta", meta, None)
         if summary is not None:
             _stamp(self.rec, "summary", summary, None)
@@ -221,7 +231,6 @@ class Issue:
             changes["github"] = github
         if changes:
             _stamp(self.rec, "links", self._links_with(**changes), None)
-        self._persist()
 
     def set_summary(self, subsystem: str | None, identifiers: list[str], *,
                     updated_at: str | None = None) -> None:
