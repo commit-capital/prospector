@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import subprocess
+import time
 import tomllib
 from pathlib import Path
 
@@ -429,3 +431,108 @@ def test_no_write_or_exec_capable_filter_is_allow_listed(can_write, can_resubmit
     rules = codex_backend.isolation_rules(can_write, can_resubmit)
     for tool in ("sed", "awk", "sort", "uniq"):
         assert json.dumps([tool]) not in rules
+
+
+@pytest.mark.skipif(shutil.which("codex") is None, reason="needs the codex CLI")
+@pytest.mark.parametrize("can_resubmit", [False, True])
+def test_the_installed_cli_accepts_the_flags_the_app_passes(can_resubmit: bool) -> None:
+    flags = codex_backend._flags(system_prompt="probe", can_resubmit=can_resubmit)
+    assert codex_backend.config_complaint(flags) is None
+
+
+@pytest.mark.skipif(shutil.which("codex") is None, reason="needs the codex CLI")
+def test_the_probe_reports_a_configuration_the_installed_cli_refuses() -> None:
+    complaint = codex_backend.config_complaint(
+        ["--ignore-user-config", "--strict-config", "-c", "no_such_table.key=false"],
+    )
+    assert complaint is not None
+    assert "no_such_table" in complaint
+
+
+@pytest.mark.skipif(shutil.which("codex") is None, reason="needs the codex CLI")
+def test_ignoring_user_config_keeps_a_codex_home_skill_out_of_the_prompt(tmp_path) -> None:
+    """The one flag that withholds skills, measured against a skill it would find."""
+    skill = tmp_path / "skills" / "prospector-probe-skill"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: prospector-probe-skill\ndescription: probe\n---\n\nbody\n",
+    )
+    env = {**os.environ, "CODEX_HOME": str(tmp_path)}
+
+    def prompt_input(*flags: str) -> str:
+        result = subprocess.run(
+            [codex_backend.CODEX_BIN, "debug", "prompt-input", *flags, "probe"],
+            capture_output=True, text=True, timeout=120,
+            stdin=subprocess.DEVNULL, cwd=tmp_path, env=env,
+        )
+        return result.stdout + result.stderr
+
+    assert "prospector-probe-skill" in prompt_input()
+    assert "--ignore-user-config" in codex_backend._flags(
+        system_prompt=None, can_resubmit=False)
+    assert "prospector-probe-skill" not in prompt_input("--ignore-user-config")
+
+
+def test_readiness_reports_a_refused_configuration(tmp_path, monkeypatch) -> None:
+    operator_home = tmp_path / "operator-codex"
+    operator_home.mkdir()
+    (operator_home / "auth.json").write_text("{}")
+    monkeypatch.setenv("CODEX_HOME", str(operator_home))
+    monkeypatch.setattr(codex_backend.shutil, "which", lambda name: "/usr/bin/codex")
+    monkeypatch.setattr(
+        codex_backend.subprocess,
+        "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(
+            argv, 0, stdout="Logged in using ChatGPT\n", stderr="",
+        ),
+    )
+    monkeypatch.setattr(
+        codex_backend, "config_complaint",
+        lambda flags: "Error loading config.toml: unknown configuration field `x`",
+    )
+
+    readiness = codex_backend.CodexBackend().readiness()
+    assert readiness["ok"] is False
+    assert readiness["problem"] == (
+        "Codex cannot start: Error loading config.toml: "
+        "unknown configuration field `x`"
+    )
+
+
+@pytest.mark.skipif(shutil.which("codex") is None, reason="needs the codex CLI")
+def test_ignoring_user_config_keeps_a_codex_home_mcp_server_unlaunched(tmp_path) -> None:
+    """The one flag that withholds MCP servers, measured against one it would launch."""
+    marker = tmp_path / "server-launched"
+    (tmp_path / "config.toml").write_text(
+        "[mcp_servers.probe]\n"
+        'command = "/usr/bin/touch"\n'
+        f'args = ["{marker}"]\n',
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    subprocess.run(["git", "init", "-q", str(workspace)], check=True)
+    env = {**os.environ, "CODEX_HOME": str(tmp_path)}
+
+    def launched(*flags: str) -> bool:
+        """Whether a bounded run of the CLI reaches the declared server."""
+        marker.unlink(missing_ok=True)
+        proc = subprocess.Popen(
+            [codex_backend.CODEX_BIN, "exec", "--json", *flags, "probe"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, cwd=workspace, env=env,
+        )
+        try:
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                if marker.exists() or proc.poll() is not None:
+                    break
+                time.sleep(0.2)
+        finally:
+            proc.kill()
+            proc.wait()
+        return marker.exists()
+
+    assert launched() is True
+    assert "--ignore-user-config" in codex_backend._flags(
+        system_prompt=None, can_resubmit=False)
+    assert launched("--ignore-user-config") is False
