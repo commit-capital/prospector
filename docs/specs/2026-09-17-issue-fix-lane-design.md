@@ -394,18 +394,12 @@ prints up to 4,000 characters of `output_tail`. `sandbox_check.main` is
 untouched. `pipeline/check_records.py` holds the path-keyed `append` /
 `collect`; `sandbox_check.record_check` / `collect_checks` delegate to it.
 
-`headless_agent.run_agent` gains `read_root: str | None = None` and
-`env_allow: Sequence[str] | None = None`. With `None` the flag list and the
-environment are today's, byte for byte. With `read_root` the bare `Read`,
-`Grep`, `Glob` grants become `Read(//root/**)`, `Grep(//root/**)`,
-`Glob(//root/**)` over the realpath — scoping `Read` alone leaves `Grep` and
-`Glob` host-wide — and the read-only git rules are withheld, because
-`git diff --no-index <file> /dev/null` reads any host file. With `env_allow`
-the agent's environment is the CLI's own needs (`PATH`, `HOME`, `USER`,
-`LOGNAME`, `SHELL`, `TMPDIR`, `LANG`, `LC_*`, `TERM`, and the `ANTHROPIC_` /
-`CLAUDE_` prefixes) plus the named variables, then `env_extra`. The lane
-names the Docker launcher variables; `pipeline/settings` loads the
-repository `.env` in the tool's own process.
+Lane agents run through `headless_agent.run_agent` with `read_root` set to the
+agent's clone (Read, Grep, and Glob each scoped to it), `env_allow` naming the
+Docker launcher variables (`verify_driver.LAUNCHER_ENV_ALLOW`) on top of the
+CLI's own needs, `edit_root` for the stages that write, and no `git_root`:
+a lane clone is a single commit, and the host reads its diff itself.
+`pipeline/settings` loads the repository `.env` in the tool's own process.
 
 ## Propose path
 
