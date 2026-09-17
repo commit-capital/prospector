@@ -2,13 +2,14 @@
 its conflicted paths, returning the per-file rationale it records.
 
 The worktree is a `resubmit prepare --merge` clone paused on conflicts. The
-agent edits only the conflicted files (headless_agent's edit_root scopes its
-Edit/Write to the worktree, and resubmit's `continue` refuses stray edits
+agent edits only the conflicted files (headless_agent scopes its reads, edits
+and git to the worktree, and resubmit's `continue` refuses stray edits
 fail-closed). The agent stages nothing and commits nothing — git writes belong
 to the resubmit tool.
 """
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from typing import TypedDict
 
@@ -43,8 +44,10 @@ For each conflicted file:
    =======
    ...
    >>>>>>> <sha>         (the base branch — "theirs")
-   `git diff` in the worktree shows the combined view; `git log` shows both
-   histories.
+   `__GIT__ diff` shows the combined view, `__GIT__ log --merge` the commits
+   on both sides that touch the conflicted files, and `__GIT__ show :2:<file>`
+   / `:3:<file>` each side's whole version. It is the only git available, it
+   only reads, and its paths are relative to the worktree root.
 2. Edit the file to remove every conflict marker, keeping BOTH sides' intent
    whenever they do not genuinely contradict — for example, two independent
    additions at the same location are both kept.
@@ -72,6 +75,7 @@ def _prompt(worktree: str, conflict_paths: list[str], pr: int, title: str, body:
         "__TITLE__": title,
         "__BODY__": (body or "(no description)").strip()[:4000],
         "__PATHS__": "\n".join(f"  {p}" for p in conflict_paths),
+        "__GIT__": headless_agent.GIT_READ,
     })
 
 
@@ -85,9 +89,11 @@ def resolve(worktree: str, conflict_paths: list[str], *, pr: int, title: str,
     when the agent process fails and ValueError when its output is not a
     well-formed verdict — both mean no resolution exists and the caller aborts
     the worktree."""
+    worktree = os.path.realpath(worktree)
     text = headless_agent.run_agent(
         _prompt(worktree, conflict_paths, pr, title, body, base_branch),
-        allow_gh=False, cwd=worktree, edit_root=worktree,
+        allow_gh=False, cwd=worktree, edit_root=worktree, read_root=worktree,
+        git_root=worktree, env_allow=(),
         timeout=AGENT_TIMEOUT_SECONDS, on_event=on_event)
     verdict = headless_agent.extract_json(text)
     if "give_up" in verdict:

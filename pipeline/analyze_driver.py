@@ -27,6 +27,7 @@ from pipeline import actions
 from pipeline import diff_cache
 from pipeline import freshness
 from pipeline import gates
+from pipeline import headless_agent
 from pipeline import profile
 from pipeline import redundancy
 from pipeline import review_policy
@@ -301,6 +302,22 @@ ANALYZE_FENCED_TAIL = """
 # Output
 
 Return ONLY a JSON object (no prose) with exactly: cluster_id (integer), outcome (string), rationale (string), prs (array of {pr, head_sha, disposition, rationale, and for close-dup: canonical; for close-fixed: upstream_pr/upstream_date; for request-changes: asks[]}). Output it as a ```json fenced block."""
+
+
+def run_analyze_agent(bundle: dict, on_event=None) -> str:
+    """Run the headless ANALYZE agent over one cluster bundle and return its
+    answer. It reads the bundle and the members' cached diffs, reaches upstream
+    through read-only gh, and nothing else on the machine."""
+    members, diffs = headless_agent.with_resolved_diffs(bundle.get("members") or [])
+
+    def prompt(bundle_path: str) -> str:
+        return (ANALYZE_PROMPT.replace("__BUNDLE_PATH__", bundle_path)
+                .replace("__BRANCH__", settings.default_branch()) + ANALYZE_FENCED_TAIL)
+
+    cid = (bundle.get("cluster") or {}).get("id")
+    return headless_agent.run_on_bundle(
+        {**bundle, "members": members}, prompt, prefix=f"analyze-cluster-{cid}-",
+        allow_gh=True, on_event=on_event, read_root=diffs)
 
 
 def write_bundles(store: Store, max_n: int | None = None) -> dict:

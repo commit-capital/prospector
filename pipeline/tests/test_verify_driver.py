@@ -62,7 +62,7 @@ class TestLauncherEnv:
     def test_is_never_os_environ(self, monkeypatch):
         monkeypatch.setenv("DEPLOYMENT_PRIVATE_KEY", "POISON")
         assert vd.launcher_env() is not os.environ
-        assert set(vd.launcher_env()) <= set(vd._LAUNCHER_ENV_ALLOW)
+        assert set(vd.launcher_env()) <= set(vd.LAUNCHER_ENV_ALLOW)
 
 
 class TestScrub:

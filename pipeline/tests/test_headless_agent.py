@@ -1,4 +1,6 @@
 import json
+import os
+
 import pytest
 from pipeline import headless_agent as ha
 
@@ -78,13 +80,12 @@ def test_flags_edit_root_scopes_edit_and_write(tmp_path):
     real.mkdir()
     link = tmp_path / "link"
     link.symlink_to(real)
-    flags = ha._flags(False, edit_root=f"{link}/")
+    flags = ha._flags(False, edit_root=f"{link}/", read_root=str(link))
     allowed = flags[flags.index("--allowedTools") + 1]
     target = real.resolve()
     assert f"Edit(/{target}/**)" in allowed
     assert f"Write(/{target}/**)" in allowed
     assert f"Edit({link}/**)" not in allowed
-    assert "Bash(git diff:*)" in allowed
     i = flags.index("--disallowedTools")
     disallowed = flags[i + 1:flags.index("--permission-mode")]
     assert "Edit" not in disallowed
@@ -184,7 +185,8 @@ def test_run_agent_raises_when_edits_inside_the_grant_are_denied(monkeypatch, tm
     monkeypatch.setattr(ha.subprocess, "Popen",
                         lambda cmd, **kw: _denial_proc(cmd, denials))
     with pytest.raises(ha.EditsBlockedError):
-        ha.run_agent("go", allow_gh=False, cwd=str(wt), edit_root=str(wt))
+        ha.run_agent("go", allow_gh=False, cwd=str(wt), edit_root=str(wt),
+                     read_root=str(wt))
 
 
 def test_run_agent_raises_on_in_root_denial_through_a_symlinked_root(monkeypatch, tmp_path):
@@ -197,7 +199,8 @@ def test_run_agent_raises_on_in_root_denial_through_a_symlinked_root(monkeypatch
     monkeypatch.setattr(ha.subprocess, "Popen",
                         lambda cmd, **kw: _denial_proc(cmd, denials))
     with pytest.raises(ha.EditsBlockedError):
-        ha.run_agent("go", allow_gh=False, cwd=str(real), edit_root=str(real))
+        ha.run_agent("go", allow_gh=False, cwd=str(real), edit_root=str(real),
+                     read_root=str(real))
 
 
 def test_run_agent_keeps_denials_outside_the_edit_root(monkeypatch, tmp_path):
@@ -208,8 +211,8 @@ def test_run_agent_keeps_denials_outside_the_edit_root(monkeypatch, tmp_path):
                 "tool_input": {"file_path": "/etc/hosts"}}]
     monkeypatch.setattr(ha.subprocess, "Popen",
                         lambda cmd, **kw: _denial_proc(cmd, denials))
-    assert ha.run_agent("go", allow_gh=False, cwd=str(wt),
-                        edit_root=str(wt)) == "ok"
+    assert ha.run_agent("go", allow_gh=False, cwd=str(wt), edit_root=str(wt),
+                        read_root=str(wt)) == "ok"
 
 
 def test_run_agent_without_edit_root_keeps_edit_denials(monkeypatch):
@@ -228,8 +231,8 @@ def test_run_agent_keeps_non_edit_denials_inside_the_root(monkeypatch, tmp_path)
                 "tool_input": {"command": f"rm {wt}/a.py"}}]
     monkeypatch.setattr(ha.subprocess, "Popen",
                         lambda cmd, **kw: _denial_proc(cmd, denials))
-    assert ha.run_agent("go", allow_gh=False, cwd=str(wt),
-                        edit_root=str(wt)) == "ok"
+    assert ha.run_agent("go", allow_gh=False, cwd=str(wt), edit_root=str(wt),
+                        read_root=str(wt)) == "ok"
 
 
 def test_flags_allow_adds_rules_on_top_of_the_read_only_set():
@@ -386,3 +389,204 @@ def test_json_reply_runs_once_more_when_the_first_answer_is_cut_off():
 def test_json_reply_raises_after_a_second_cut_off_answer():
     with pytest.raises(ValueError):
         ha.json_reply(lambda: "no json here")
+
+
+_TAIL = ["--permission-mode", "dontAsk", "--safe-mode", "--setting-sources", ""]
+_GH_RULES = ("Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr list:*),"
+             "Bash(gh pr checks:*),Bash(gh issue view:*),Bash(gh issue list:*),"
+             "Bash(gh search prs:*),Bash(gh search issues:*),"
+             f"Bash({ha.GH_READ}:*)")
+_DENIED = ["Task", "Edit", "Write", "NotebookEdit", "EnterPlanMode", "ExitPlanMode",
+           "EnterWorktree", "ExitWorktree", "Skill", "Workflow", "SendMessage",
+           "WebFetch", "WebSearch", "AskUserQuestion"]
+
+
+def test_flags_without_read_root_are_the_unscoped_list_verbatim():
+    assert ha._flags(False) == [
+        "--allowedTools", "Read,Grep,Glob", "--disallowedTools", *_DENIED, *_TAIL]
+    assert ha._flags(True) == [
+        "--allowedTools", f"Read,Grep,Glob,{_GH_RULES},Bash(git log:*)",
+        "--disallowedTools", *_DENIED, *_TAIL]
+    assert ha._flags(False, allow=["Bash(/x/tool:*)"]) == [
+        "--allowedTools", "Read,Grep,Glob,Bash(/x/tool:*)",
+        "--disallowedTools", *_DENIED, *_TAIL]
+
+
+def _allowed(flags: list[str]) -> list[str]:
+    return flags[flags.index("--allowedTools") + 1].split(",")
+
+
+def test_read_root_replaces_the_bare_read_tools_with_rules_over_the_resolved_root(tmp_path):
+    real = tmp_path / "wt"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    root = f"/{real.resolve()}"
+    assert _allowed(ha._flags(False, read_root=f"{link}/")) == [
+        f"Read({root}/**)", f"Grep({root}/**)", f"Glob({root}/**)"]
+
+
+def test_a_read_root_naming_a_file_grants_that_file_alone(tmp_path):
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    patch = tmp_path / "patches" / "abc.patch"
+    patch.parent.mkdir()
+    patch.write_text("diff --git a/x b/x\n")
+    allowed = _allowed(ha._flags(False, read_root=[str(wt), str(patch)]))
+    root, file = f"/{wt.resolve()}", f"/{patch.resolve()}"
+    assert allowed == [f"Read({root}/**)", f"Grep({root}/**)", f"Glob({root}/**)",
+                       f"Read({file})", f"Grep({file})"]
+
+
+def test_a_scoped_agent_gets_gh_without_any_git_prefix_rule(tmp_path):
+    allowed = _allowed(ha._flags(True, read_root=str(tmp_path)))
+    assert "Bash(gh pr view:*)" in allowed and f"Bash({ha.GH_READ}:*)" in allowed
+    assert not any(a.startswith("Bash(git ") for a in allowed)
+
+
+def test_git_root_grants_the_pinned_reader_and_no_git_prefix_rule(tmp_path):
+    allowed = _allowed(ha._flags(True, edit_root=str(tmp_path), read_root=str(tmp_path),
+                                 git_root=str(tmp_path)))
+    assert f"Bash({ha.GIT_READ}:*)" in allowed
+    assert not any(a.startswith("Bash(git ") for a in allowed)
+
+
+def test_an_edit_root_alone_grants_no_git(tmp_path):
+    allowed = _allowed(ha._flags(False, edit_root=str(tmp_path), read_root=str(tmp_path)))
+    assert not any("git" in a for a in allowed)
+
+
+@pytest.mark.parametrize("kwargs", [{"edit_root": "/wt"}, {"git_root": "/wt"}])
+def test_edit_and_git_grants_are_refused_without_a_read_root(kwargs):
+    with pytest.raises(ValueError, match="read_root"):
+        ha._flags(False, **kwargs)
+
+
+def _capture_popen(monkeypatch) -> dict:
+    seen: dict = {}
+
+    def fake_popen(cmd, **kwargs):
+        seen.update(kwargs, cmd=cmd)
+        return _FakeProc(cmd)
+
+    monkeypatch.setattr(ha.subprocess, "Popen", fake_popen)
+    return seen
+
+
+def test_a_scoped_run_refuses_a_cwd_outside_its_directory_roots(monkeypatch, tmp_path):
+    # The CLI reads its working directory whatever the rules say.
+    seen = _capture_popen(monkeypatch)
+    root = tmp_path / "root"
+    root.mkdir()
+    patch = tmp_path / "other" / "pr.patch"
+    patch.parent.mkdir()
+    patch.write_text("x")
+    for cwd in (tmp_path, patch.parent):
+        with pytest.raises(ValueError, match="cwd"):
+            ha.run_agent("go", allow_gh=False, cwd=str(cwd),
+                         read_root=[str(root), str(patch)])
+    assert not seen
+    sub = root / "pkg"
+    sub.mkdir()
+    assert ha.run_agent("go", allow_gh=False, cwd=str(sub), read_root=str(root)) == "ok"
+
+
+@pytest.mark.parametrize("grant", ["edit_root", "git_root"])
+def test_a_scoped_run_refuses_an_edit_or_git_root_outside_its_read_roots(
+        monkeypatch, tmp_path, grant):
+    _capture_popen(monkeypatch)
+    root = tmp_path / "root"
+    root.mkdir()
+    with pytest.raises(ValueError, match=grant):
+        ha.run_agent("go", allow_gh=False, cwd=str(root), read_root=str(root),
+                     **{grant: str(tmp_path)})
+
+
+def test_git_root_pins_the_reader_to_the_resolved_worktree(monkeypatch, tmp_path):
+    seen = _capture_popen(monkeypatch)
+    real = tmp_path / "wt"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    ha.run_agent("go", allow_gh=False, cwd=str(real), read_root=str(link),
+                 git_root=str(link))
+    assert seen["env"][ha.GIT_READ_ENV] == str(real.resolve())
+
+
+def test_env_allow_keeps_the_clis_needs_the_named_variables_and_env_extra(monkeypatch):
+    seen = _capture_popen(monkeypatch)
+    for k, v in {"TRIAGE_STORE_URL": "postgres://secret", "SSH_AUTH_SOCK": "/s",
+                 "AWS_SECRET_ACCESS_KEY": "k", "DOCKER_HOST": "unix:///d.sock",
+                 "ANTHROPIC_API_KEY": "sk", "CLAUDE_CONFIG_DIR": "/c", "LC_ALL": "C",
+                 "HOME": "/home/op", "PATH": "/bin"}.items():
+        monkeypatch.setenv(k, v)
+    ha.run_agent("go", allow_gh=False, cwd="/tmp", env_allow=["DOCKER_HOST"],
+                 env_extra={"PROSPECTOR_CHECK_PR": "7"})
+    env = seen["env"]
+    assert {"DOCKER_HOST", "ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR", "LC_ALL", "HOME",
+            "PATH", "PROSPECTOR_CHECK_PR"} <= set(env)
+    assert not {"TRIAGE_STORE_URL", "SSH_AUTH_SOCK", "AWS_SECRET_ACCESS_KEY"} & set(env)
+    assert all(k in ha._CLI_ENV or k.startswith(ha._CLI_ENV_PREFIXES)
+               or k in ("DOCKER_HOST", "PROSPECTOR_CHECK_PR") for k in env)
+
+
+def test_without_env_allow_the_agent_inherits_the_operator_environment(monkeypatch):
+    seen = _capture_popen(monkeypatch)
+    monkeypatch.setenv("TRIAGE_STORE_URL", "postgres://secret")
+    ha.run_agent("go", allow_gh=False, cwd="/tmp")
+    assert seen["env"]["TRIAGE_STORE_URL"] == "postgres://secret"
+
+
+def test_workdir_is_a_resolved_private_directory_that_lives_for_the_block():
+    with ha.workdir("agent-test-") as tmp:
+        assert os.path.isdir(tmp) and os.path.realpath(tmp) == tmp
+        assert os.path.basename(tmp).startswith("agent-test-")
+    assert not os.path.exists(tmp)
+
+
+def test_probe_runs_scoped_to_an_empty_directory_under_the_env_allowlist(monkeypatch):
+    seen = _capture_popen(monkeypatch)
+    monkeypatch.setenv("TRIAGE_STORE_URL", "postgres://secret")
+    assert ha.probe() is None
+    allowed = _allowed(seen["cmd"])
+    root = f"/{seen['cwd']}"
+    assert allowed == [f"Read({root}/**)", f"Grep({root}/**)", f"Glob({root}/**)"]
+    assert "TRIAGE_STORE_URL" not in seen["env"]
+
+
+def test_run_on_bundle_runs_the_agent_in_a_private_directory_holding_the_bundle(
+        monkeypatch, tmp_path):
+    seen: dict = {}
+
+    def fake_run(prompt, **kw):
+        path = prompt.removeprefix("read ")
+        seen.update(kw, path=path, bundle=json.load(open(path)))
+        return "ok"
+
+    monkeypatch.setattr(ha, "run_agent", fake_run)
+    extra = tmp_path / "abc.diff"
+    extra.write_text("d")
+    out = ha.run_on_bundle([{"n": 1}], lambda p: f"read {p}", prefix="wave-",
+                           allow_gh=True, read_root=[str(extra)])
+    assert out == "ok" and seen["bundle"] == [{"n": 1}]
+    assert os.path.dirname(seen["path"]) == seen["cwd"] == os.path.realpath(seen["cwd"])
+    assert seen["read_root"] == [seen["cwd"], str(extra)]
+    assert seen["allow_gh"] is True and list(seen["env_allow"]) == []
+    assert not os.path.exists(seen["cwd"])
+
+
+def test_every_agent_run_in_the_source_names_its_read_roots_and_environment():
+    import ast
+    from pathlib import Path
+    root = Path(ha.__file__).resolve().parents[1]
+    unscoped: list[str] = []
+    for tree_dir in ("pipeline", "issue_triage", "alert_triage", "prospector_app/backend"):
+        for path in (root / tree_dir).rglob("*.py"):
+            if "tests" in path.parts:
+                continue
+            for node in ast.walk(ast.parse(path.read_text())):
+                if (isinstance(node, ast.Call)
+                        and getattr(node.func, "attr", getattr(node.func, "id", "")) == "run_agent"
+                        and not {"read_root", "env_allow"} <= {k.arg for k in node.keywords}):
+                    unscoped.append(f"{path.relative_to(root)}:{node.lineno}")
+    assert unscoped == []

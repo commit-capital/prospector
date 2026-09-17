@@ -2,7 +2,8 @@
 unattended, by asking a second agent to refute it.
 
 Same contract as review_fix: the reviewer runs in its own process with
-read-only tools, no network, `cwd` at the merge worktree. Only a well-formed,
+read-only tools and read-only git held to the merge worktree, no network, the
+CLI's bare environment, `cwd` at the merge worktree. Only a well-formed,
 explicit `safe` returns safe; a refusal, malformed answer, timeout, or crashed
 process returns `unsafe`, so autopush is unreachable by breaking the reviewer.
 Each of a resolve's two reviewers runs under its own lens, looking for a
@@ -10,6 +11,7 @@ different family of failures.
 """
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 
 from pipeline import headless_agent
@@ -53,7 +55,8 @@ __LENS__
 
 The worktree at __WORKTREE__ holds the merged result (HEAD is the merge
 commit; HEAD^1 is the PR's branch, HEAD^2 the base). Read whatever you need
-there — `git log`, `git show`, and both parents are available.
+there. `__GIT__ log`, `__GIT__ show` and `__GIT__ diff` reach both parents; it
+is the only git available, and its paths are relative to the worktree root.
 
 What the pull request is about, from this project's triage records:
 __STORE_CONTEXT__
@@ -116,6 +119,7 @@ def _prompt(worktree: str, *, pr: int, title: str, merge_diff: str, patch: str,
         "__MERGE_DIFF__": _clip(merge_diff),
         "__RESOLUTIONS__": _resolutions_block(resolutions),
         "__PATCH__": _clip(patch),
+        "__GIT__": headless_agent.GIT_READ,
     })
 
 
@@ -138,12 +142,14 @@ def review(worktree: str, *, pr: int, title: str, merge_diff: str, patch: str,
     from the machine's failure to judge it."""
     if lens not in LENSES:
         raise ValueError(f"unknown review lens: {lens!r}")
+    worktree = os.path.realpath(worktree)
     try:
         text = headless_agent.run_agent(
             _prompt(worktree, pr=pr, title=title, merge_diff=merge_diff,
                     patch=patch, resolutions=resolutions, history=history,
                     store_context=store_context, lens=lens),
-            allow_gh=False, cwd=worktree, edit_root=None,
+            allow_gh=False, cwd=worktree, edit_root=None, read_root=worktree,
+            git_root=worktree, env_allow=(),
             timeout=AGENT_TIMEOUT_SECONDS, on_event=on_event)
     except RuntimeError as e:
         return _unsafe(f"the reviewing agent did not finish: {e}", failed=True)

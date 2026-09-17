@@ -16,7 +16,6 @@ import base64
 import json
 import os
 import re
-import tempfile
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
@@ -151,7 +150,7 @@ def describe(*, pr: int, title: str, body: str, diff: str, template: str,
     process fails and ValueError when its output is not a well-formed verdict
     or the body fails the checks: a required heading missing, or the author's
     text not carried verbatim."""
-    with tempfile.TemporaryDirectory(prefix="describe-pr-") as tmp:
+    with headless_agent.workdir("describe-pr-") as tmp:
         for name, text in (("TEMPLATE.md", template), ("BODY.md", body),
                            ("DIFF.patch", diff),
                            ("FINDINGS.md", "\n\n".join(
@@ -161,8 +160,8 @@ def describe(*, pr: int, title: str, body: str, diff: str, template: str,
             with open(os.path.join(tmp, name), "w") as fh:
                 fh.write(text)
         verdict, text = headless_agent.json_reply(lambda: headless_agent.run_agent(
-            _prompt(pr, title, required), allow_gh=False, cwd=tmp,
-            timeout=AGENT_TIMEOUT_SECONDS, on_event=on_event))
+            _prompt(pr, title, required), allow_gh=False, cwd=tmp, read_root=tmp,
+            env_allow=(), timeout=AGENT_TIMEOUT_SECONDS, on_event=on_event))
     if "give_up" in verdict:
         return {"give_up": str(verdict["give_up"])}
     new = verdict.get("body")

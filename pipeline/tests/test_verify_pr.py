@@ -5,6 +5,8 @@ sandbox are stubbed — gates.verify_outcome is exercised for real through
 verify_driver.commit_outcomes."""
 from __future__ import annotations
 
+import os
+
 import socket
 
 import pytest
@@ -45,7 +47,7 @@ def test_blind_output_contract_excludes_driver_owned_test_fields():
 def test_blind_agent_cannot_supply_driver_owned_test_fields(store, monkeypatch):
     monkeypatch.setattr(
         vp, "_call_agent_json",
-        lambda prompt, step: ({"faithful": True, "has_test": True,
+        lambda prompt, step, read_root=(): ({"faithful": True, "has_test": True,
                                "test_cmd": "agent-chosen command"}, None))
     item, failure = vp._blind_verdict(store.load_pr(1), "/tmp/base")
     assert failure is None
@@ -108,7 +110,7 @@ def pinned(store, tmp_path, monkeypatch):
     answers = {"blind adequacy": dict(BLIND_OK), "post-run judge": dict(JUDGE_OK)}
     calls: list[str] = []
 
-    def fake_agent(prompt, step):
+    def fake_agent(prompt, step, read_root=()):
         calls.append(step)
         ans = answers.get(step)
         return (ans, None) if ans is not None else (None, f"{step}: stubbed failure")
@@ -396,7 +398,7 @@ class TestTransientAgentFailures:
     def test_blind_failure_parks_queued_with_forensics(self, store, pinned, monkeypatch):
         calls: list[str] = []
 
-        def fake(prompt, step):
+        def fake(prompt, step, read_root=()):
             calls.append(step)
             return None, f"{step}: claude exited 1; last output: kaboom"
 
@@ -415,7 +417,7 @@ class TestTransientAgentFailures:
             (None, "blind adequacy: claude exited 1"), (dict(BLIND_OK), None)]
         calls: list[str] = []
 
-        def fake(prompt, step):
+        def fake(prompt, step, read_root=()):
             calls.append(step)
             if step == "blind adequacy":
                 return seq.pop(0)
@@ -427,7 +429,7 @@ class TestTransientAgentFailures:
         assert calls.count("blind adequacy") == 2
 
     def test_unusable_blind_json_is_named_in_the_log_tail(self, store, pinned, monkeypatch):
-        def fake(prompt, step):
+        def fake(prompt, step, read_root=()):
             return {"weird": 1}, None
 
         monkeypatch.setattr(vp, "_call_agent_json", fake)
@@ -441,7 +443,7 @@ class TestTransientAgentFailures:
     def test_judge_failure_parks_queued_with_forensics(self, store, pinned, monkeypatch):
         calls: list[str] = []
 
-        def fake(prompt, step):
+        def fake(prompt, step, read_root=()):
             calls.append(step)
             if step == "blind adequacy":
                 return dict(BLIND_OK), None
@@ -641,7 +643,7 @@ class TestBlindReproRejection:
         seq = list(blind_answers)
         seen: dict = {"blind_prompts": [], "calls": []}
 
-        def fake(prompt, step):
+        def fake(prompt, step, read_root=()):
             seen["calls"].append(step)
             if step == "blind adequacy":
                 seen["blind_prompts"].append(prompt)
@@ -848,3 +850,60 @@ def test_a_failed_canary_is_not_cached(monkeypatch):
     assert vp._harness_problems("img", "b", 1) == []
     assert calls == ["img", "img"]
     vp._canary_cache.clear()
+
+
+class TestAgentReach:
+    """The verify agents read the pinned base clone and the PR's cached diff,
+    and nothing else on the machine."""
+
+    def test_every_agent_runs_in_a_private_directory_under_the_bare_environment(
+            self, monkeypatch, tmp_path):
+        seen: dict = {}
+
+        def fake_run(prompt, **kw):
+            seen.update(kw)
+            return '{"ok": true}'
+
+        monkeypatch.setattr(vp.headless_agent, "run_agent", fake_run)
+        clone = tmp_path / "clone"
+        clone.mkdir()
+        data, failure = vp._call_agent_json("p", "blind adequacy", [str(clone)])
+        assert data == {"ok": True} and failure is None
+        assert seen["read_root"] == [seen["cwd"], str(clone)]
+        assert not os.path.exists(seen["cwd"]) and not seen["cwd"].startswith(str(clone))
+        assert list(seen["env_allow"]) == [] and seen["allow_gh"] is False
+
+    def test_blind_and_author_are_handed_the_clone_and_the_one_diff(
+            self, store, pinned, monkeypatch, tmp_path):
+        roots: dict[str, list[str]] = {}
+        prompts: dict[str, str] = {}
+
+        def fake(prompt, step, read_root=()):
+            roots[step] = list(read_root)
+            prompts[step] = prompt
+            return None, "stub"
+
+        monkeypatch.setattr(vp, "_call_agent_json", fake)
+        real = tmp_path / "pinned-clone"
+        real.mkdir()
+        link = tmp_path / "link"
+        link.symlink_to(real)
+        rec = store.load_pr(1)
+        vp._blind_verdict(rec, str(link))
+        vp._author_verdict(rec, str(link))
+        diff = os.path.realpath(diff_cache.DIFFS / f"{rec.head_sha}.diff")
+        clone = str(real.resolve())
+        assert roots == {"blind adequacy": [clone, diff], "author test": [clone, diff]}
+        assert f"is at {clone} " in prompts["blind adequacy"]
+        assert f"Diff at {diff} " in prompts["author test"]
+
+    def test_the_judge_is_handed_nothing_to_read(self, monkeypatch):
+        roots: list = []
+
+        def fake(prompt, step, read_root=()):
+            roots.append(list(read_root))
+            return None, "stub"
+
+        monkeypatch.setattr(vp, "_call_agent_json", fake)
+        vp._judge_verdict(1, "sig", None, {"red_exit": 1}, {"ran": False})
+        assert roots == [[]]

@@ -51,6 +51,8 @@ def test_batch_runs_agent_with_gh_enabled(tmp_path, monkeypatch):
     monkeypatch.setattr(find_fixed.headless_agent, "run_agent", fake_run)
     find_fixed.scan_batch(st, [1])
     assert seen["allow_gh"] is True
+    assert seen["read_root"] == [seen["cwd"]] and "find-fixed-" in seen["cwd"]
+    assert list(seen["env_allow"]) == []
 
 
 def test_batch_drops_fixed_verdict_without_causal_evidence(tmp_path, monkeypatch):

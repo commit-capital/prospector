@@ -2,8 +2,9 @@
 branch, by asking a second agent to refute it.
 
 The reviewer runs in its own process with no memory of writing the code and no
-ability to change it: read-only tools, no network, `cwd` at the worktree so it
-can read the code the patch lands in. Its prompt asks for a reason to reject
+ability to change it: read-only tools held to the worktree, no network, the
+CLI's bare environment, `cwd` at the worktree so it can read the code the patch
+lands in. Its prompt asks for a reason to reject
 rather than an opinion, because an author grading its own work is the one
 verdict worth nothing.
 
@@ -13,6 +14,7 @@ push side is unreachable by breaking the reviewer.
 """
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 
 from pipeline import headless_agent
@@ -127,10 +129,12 @@ def review(worktree: str, patch: str, *, pr: int, goal: str,
     timed out, or answered without one — also carries `failed: True`, so the
     caller can tell a judgment on the change from the machine's failure to
     judge it."""
+    worktree = os.path.realpath(worktree)
     try:
         text = headless_agent.run_agent(
             _prompt(worktree, patch, pr, goal, findings, review_summary),
-            allow_gh=False, cwd=worktree, edit_root=None,
+            allow_gh=False, cwd=worktree, edit_root=None, read_root=worktree,
+            env_allow=(),
             timeout=AGENT_TIMEOUT_SECONDS, on_event=on_event)
     except RuntimeError as e:
         return _unsafe(f"the reviewing agent did not finish: {e}", failed=True)

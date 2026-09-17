@@ -10,11 +10,8 @@ every committed batch. Mirrors alert_triage/find_fixed.py.
 from __future__ import annotations
 
 import argparse
-import json
-import os
 import re
 import sys
-import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -26,7 +23,6 @@ from alert_triage.alert_freshness import FIX_SCAN_MAX_AGE_DAYS, is_current
 from pipeline import headless_agent
 from pipeline import settings
 from pipeline import storekit
-from pipeline.settings import REPO_ROOT
 
 if TYPE_CHECKING:
     from alert_triage import advisory_model
@@ -207,22 +203,15 @@ def run_batch_agent(entries: list[dict], roster_rows: list[dict]) -> list[dict]:
             inp = ev[2] if len(ev) > 2 else {}
             _say(f"    [{label}] · {headless_agent.tool_summary(ev[1], inp)}")
 
-    with tempfile.NamedTemporaryFile(
-            "w", suffix=".json", prefix="advisory-find-fixed-", delete=False) as f:
-        f.write(json.dumps({"advisories": entries, "roster": roster_rows}, indent=1))
-        bundle_path = f.name
-    prompt = (PROMPT.replace("__BUNDLE_PATH__", bundle_path)
-              .replace("__GH_READ__", headless_agent.GH_READ)
-              .replace("__REPO__", settings.repo()) + FENCED_TAIL)
-    try:
-        text = headless_agent.run_agent(prompt, allow_gh=True, cwd=str(REPO_ROOT),
-                                        on_event=on_event)
-    finally:
-        # The bundle holds private report text; it lives only for the run.
-        try:
-            os.unlink(bundle_path)
-        except FileNotFoundError:
-            pass
+    def prompt(bundle_path: str) -> str:
+        return (PROMPT.replace("__BUNDLE_PATH__", bundle_path)
+                .replace("__GH_READ__", headless_agent.GH_READ)
+                .replace("__REPO__", settings.repo()) + FENCED_TAIL)
+
+    # The bundle holds private report text; its directory lives only for the run.
+    text = headless_agent.run_on_bundle(
+        {"advisories": entries, "roster": roster_rows}, prompt,
+        prefix="advisory-find-fixed-", allow_gh=True, on_event=on_event)
     verdicts = headless_agent.extract_json(text).get("verdicts") or []
     good = filter_batch_verdicts(entries, verdicts)
     if len(good) < len(verdicts):

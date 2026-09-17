@@ -8,7 +8,6 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 import re
-import tempfile
 from typing import Literal
 
 from pipeline import analyze_driver
@@ -281,7 +280,7 @@ def render_case(case: EvalCase, case_dir: Path) -> str:
 
 def run_live(cases: list[EvalCase], model: str | None = None) -> dict[str, dict[str, object]]:
     predictions: dict[str, dict[str, object]] = {}
-    with tempfile.TemporaryDirectory(prefix="prospector-prompt-eval-") as raw_root:
+    with headless_agent.workdir("prospector-prompt-eval-") as raw_root:
         root = Path(raw_root)
         for case in cases:
             case_dir = _safe_path(root, case.id)
@@ -291,6 +290,8 @@ def run_live(cases: list[EvalCase], model: str | None = None) -> dict[str, dict[
                 prompt,
                 allow_gh=False,
                 cwd=str(case_dir),
+                read_root=str(case_dir),
+                env_allow=(),
                 model=model,
                 on_event=headless_agent.print_progress,
             )

@@ -2,9 +2,12 @@
 change against a stated goal, returning the per-file rationale it records.
 
 The worktree is a `resubmit prepare` clone of the contributor's head branch.
-headless_agent's edit_root scopes Edit/Write to that clone, so the agent's reach
-is the PR's own checkout and nothing else on the machine. It stages nothing and
-commits nothing — git writes belong to the resubmit tool.
+headless_agent scopes the agent's reads, edits and git to that clone, plus the
+one file holding the PR's diff, and its environment to the CLI's needs and the
+sandbox check's, so the agent's reach is the PR's own checkout and nothing else
+on the machine — no key, no .env, no deployment variable it could write into
+the patch. It stages nothing and commits nothing — git writes belong to the
+resubmit tool.
 
 The agent's inputs are contributor-controlled text, and its output becomes a
 commit on someone else's branch. Two things follow. The prompt states that
@@ -15,11 +18,12 @@ along.
 """
 from __future__ import annotations
 
+import os
 import sys
 from collections.abc import Callable
 from typing import TypedDict
 
-from pipeline import headless_agent
+from pipeline import headless_agent, verify_driver
 from pipeline.settings import REPO_ROOT
 
 # The one host command the agent may run: the sandbox check, which exercises the
@@ -73,7 +77,8 @@ How to work:
    tidy anything the goal did not ask for — unrelated edits are what get a
    change rejected.
 3. Do not weaken, skip, or delete a test to make something pass.
-4. Do not stage, commit, push, or run any git command that writes.
+4. Do not stage, commit, or push. `__GIT__ status` and `__GIT__ diff` show your
+   own edits; it is the only git available, and it only reads.
 __CHECK__
 Report every file you changed. Your final message must be exactly one JSON
 object, nothing else:
@@ -170,6 +175,7 @@ def _prompt(worktree: str, pr: int, title: str, body: str, goal: str,
         "__CHECKS__": _checks_block(ci_failures),
         "__WITHHELD__": _withheld_block(withheld_globs),
         "__CHECK__": _check_block(diff_path is not None),
+        "__GIT__": headless_agent.GIT_READ,
     })
 
 
@@ -199,22 +205,29 @@ def author(worktree: str, *, pr: int, title: str, body: str, goal: str,
     `review_summary` is the review provider's own prose on the PR. `diff_path`
     names the PR's diff against its base on the host; when it is given the
     agent may also run the sandbox check, which needs that diff to build the
-    tree it measures. `gh` is granted only when there are failing checks to
+    tree it measures, and the Docker launcher variables join its environment. `gh` is granted only when there are failing checks to
     read, since a review finding needs no network and the store carries no CI
     logs to hand over. `withheld_globs` are the path patterns the agent is told
     not to edit; the caller's re-gate over the finished patch is what enforces
     them."""
+    worktree = os.path.realpath(worktree)
+    read_root = [worktree]
     allow: list[str] = []
+    env_allow: list[str] = []
     env_extra: dict[str, str] | None = None
     if diff_path is not None:
+        diff_path = os.path.realpath(diff_path)
+        read_root.append(diff_path)
         allow = [f"Bash({CHECK_TOOL}:*)"]
+        env_allow = [k for k in verify_driver.LAUNCHER_ENV_ALLOW if k.startswith("DOCKER_")]
         env_extra = check_env(pr, head_sha, worktree, diff_path)
     verdict, text = headless_agent.json_reply(lambda: headless_agent.run_agent(
         _prompt(worktree, pr, title, body, goal, findings, ci_failures,
                 review_summary, diff_path, withheld_globs),
         allow_gh=bool(ci_failures), cwd=worktree, edit_root=worktree,
         timeout=AGENT_TIMEOUT_SECONDS, on_event=on_event, allow=allow,
-        env_extra=env_extra))
+        env_extra=env_extra, read_root=read_root, git_root=worktree,
+        env_allow=env_allow))
     if "give_up" in verdict:
         return {"give_up": str(verdict["give_up"])}
     raw = verdict.get("changes")

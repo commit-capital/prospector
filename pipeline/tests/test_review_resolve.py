@@ -17,8 +17,10 @@ def _run(monkeypatch, reply, **over) -> dict:
     calls: dict = {}
 
     def fake_run_agent(prompt, *, allow_gh, cwd, edit_root=None, timeout=0,
-                       on_event=None, system_prompt=None, model=None):
-        calls.update(prompt=prompt, allow_gh=allow_gh, cwd=cwd, edit_root=edit_root)
+                       on_event=None, system_prompt=None, model=None,
+                       read_root=None, env_allow=None, git_root=None):
+        calls.update(read_root=read_root, env_allow=env_allow, git_root=git_root,
+                     prompt=prompt, allow_gh=allow_gh, cwd=cwd, edit_root=edit_root)
         if isinstance(reply, Exception):
             raise reply
         return reply
@@ -95,3 +97,11 @@ def test_an_unknown_lens_is_rejected():
         review_resolve.review("/wt", pr=7, title="t", merge_diff="", patch="d",
                               resolutions=[], history="", store_context="",
                               lens="vibes")
+
+
+def test_the_reviewer_reads_and_runs_git_only_inside_the_worktree(monkeypatch):
+    calls = _run(monkeypatch, json.dumps({"verdict": "safe", "reason": "r"}))["calls"]
+    assert calls["read_root"] == "/wt" and calls["cwd"] == "/wt"
+    assert calls["edit_root"] is None and calls["git_root"] == "/wt"
+    assert list(calls["env_allow"]) == []
+    assert f"{headless_agent.GIT_READ} log" in calls["prompt"]

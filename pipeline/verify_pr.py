@@ -30,9 +30,10 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import os
 import sys
 import traceback
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, TypeVar, cast
@@ -43,7 +44,6 @@ from pipeline import headless_agent
 from pipeline import settings
 from pipeline import verify_driver
 from pipeline import wire
-from pipeline.settings import REPO_ROOT
 from pipeline.store import AUTO_REQUEST_SOURCES, Store
 from pipeline.storekit import now as _now
 from pipeline.verify_driver import AUTHOR_PROMPT, BLIND_PROMPT, JUDGE_PROMPT
@@ -268,14 +268,18 @@ def _image_exists(image: str) -> bool:
 _agent_outage: list[str] = []
 
 
-def _call_agent_json(prompt: str, step: str) -> tuple[dict | None, str | None]:
+def _call_agent_json(prompt: str, step: str,
+                     read_root: Sequence[str] = ()) -> tuple[dict | None, str | None]:
     """Run one headless agent (read-only tools, no gh — both verify judgments
     are functions of the diff, the claimed defect, and the pinned tree alone).
-    Returns (data, failure): the parsed JSON and None, or None and the failure
-    detail when the run or extraction failed."""
+    It runs in a private empty directory under the CLI's bare environment and
+    reads `read_root` alone. Returns (data, failure): the parsed JSON and None,
+    or None and the failure detail when the run or extraction failed."""
     try:
-        text = headless_agent.run_agent(prompt, allow_gh=False, cwd=str(REPO_ROOT),
-                                        on_event=headless_agent.print_progress)
+        with headless_agent.workdir("verify-agent-") as tmp:
+            text = headless_agent.run_agent(prompt, allow_gh=False, cwd=tmp,
+                                            read_root=[tmp, *read_root], env_allow=(),
+                                            on_event=headless_agent.print_progress)
         return headless_agent.extract_json(text), None
     except headless_agent.AgentUnavailable as e:
         _say(f"    ! {step} could not run: {e}")
@@ -318,6 +322,13 @@ def _retry_once(call: Callable[[], tuple[_T | None, str | None]],
     return None, "; ".join(f for f in (failure, failure2) if f) or None
 
 
+def _agent_inputs(rec: Pr, clone_dir: str) -> tuple[str, str]:
+    """The pinned base clone and this head's cached diff as resolved paths: the
+    two things a verify agent reads, named the way its read rules name them."""
+    return (os.path.realpath(clone_dir),
+            os.path.realpath(diff_cache.DIFFS / f"{rec.head_sha or ''}.diff"))
+
+
 def _blind_verdict(rec: Pr, clone_dir: str,
                    addendum: str = "") -> tuple[BlindItem | None, str | None]:
     """Signal 1 for this PR via a headless agent: the canonical BLIND_PROMPT,
@@ -329,13 +340,14 @@ def _blind_verdict(rec: Pr, clone_dir: str,
     linked_ns = {e.get("issue") for e in rec.linked_issues}
     texts = verify_driver.issue_texts({n for n in linked_ns if isinstance(n, int)})
     linked = [{**e, **texts.get(e.get("issue"), {})} for e in rec.linked_issues]
+    clone, diff = _agent_inputs(rec, clone_dir)
     prompt = headless_agent.fill(BLIND_PROMPT, {
         "__PR__": rec.n, "__TITLE__": rec.title or "",
-        "__DIFF_PATH__": str(diff_cache.DIFFS / f"{head}.diff"),
-        "__BASE_CLONE__": clone_dir,
+        "__DIFF_PATH__": diff,
+        "__BASE_CLONE__": clone,
         "__LINKED_ISSUES__": json.dumps(linked, indent=1),
     }) + addendum + BLIND_FENCED_TAIL
-    data, failure = _call_agent_json(prompt, "blind adequacy")
+    data, failure = _call_agent_json(prompt, "blind adequacy", [clone, diff])
     if data is None:
         return None, failure
     if not isinstance(data.get("faithful"), bool):
@@ -405,17 +417,17 @@ def _author_verdict(rec: Pr, clone_dir: str) -> AuthorItem | None:
     """The AUTHOR pass for a PR that ships no test: a headless agent authors a
     reproduction test from the diff, the linked issues' text, and the pinned
     base clone. None on an unusable answer."""
-    head = rec.head_sha or ""
     linked_ns = {e.get("issue") for e in rec.linked_issues}
     texts = verify_driver.issue_texts({n for n in linked_ns if isinstance(n, int)})
     linked = [{**e, **texts.get(e.get("issue"), {})} for e in rec.linked_issues]
+    clone, diff = _agent_inputs(rec, clone_dir)
     prompt = headless_agent.fill(AUTHOR_PROMPT, {
         "__PR__": rec.n, "__TITLE__": rec.title or "",
-        "__DIFF_PATH__": str(diff_cache.DIFFS / f"{head}.diff"),
-        "__BASE_CLONE__": clone_dir,
+        "__DIFF_PATH__": diff,
+        "__BASE_CLONE__": clone,
         "__LINKED_ISSUES__": json.dumps(linked, indent=1),
     }) + AUTHOR_FENCED_TAIL
-    data, _ = _call_agent_json(prompt, "author test")
+    data, _ = _call_agent_json(prompt, "author test", [clone, diff])
     if data is None or not isinstance(data.get("can_author"), bool):
         return None
     return AuthorItem.from_dict({"pr": rec.n, **data})

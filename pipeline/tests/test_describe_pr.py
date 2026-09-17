@@ -18,8 +18,10 @@ def _run(monkeypatch, reply: str, body: str = "Fixes the retry loop.", **over) -
 
     def fake_run_agent(prompt, *, allow_gh, cwd, edit_root=None, timeout=0,
                        on_event=None, system_prompt=None, model=None, allow=(),
-                       env_extra=None):
-        calls.update(prompt=prompt, allow_gh=allow_gh, cwd=cwd, edit_root=edit_root)
+                       env_extra=None,
+                       read_root=None, env_allow=None, git_root=None):
+        calls.update(read_root=read_root, env_allow=env_allow, git_root=git_root,
+                     prompt=prompt, allow_gh=allow_gh, cwd=cwd, edit_root=edit_root)
         return reply
 
     monkeypatch.setattr(headless_agent, "run_agent", fake_run_agent)
@@ -93,3 +95,11 @@ class TestDescribe:
     def test_garbage_is_an_error_not_a_body(self, monkeypatch):
         with pytest.raises(ValueError):
             _run(monkeypatch, "I could not decide.")
+
+
+def test_the_describer_reads_only_its_scratch_directory(monkeypatch):
+    import os
+    _, calls = _run(monkeypatch, json.dumps({"body": "## Thinking Path\n## What Changed\n"
+                                             "## Verification\n\nFixes the retry loop."}))
+    assert calls["read_root"] == calls["cwd"] == os.path.realpath(calls["cwd"])
+    assert list(calls["env_allow"]) == []

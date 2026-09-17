@@ -11,10 +11,8 @@ Progress is printed to stdout one line per step; the app streams it as SSE.
 from __future__ import annotations
 
 import argparse
-import json
 import subprocess
 import sys
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pipeline import analyze_driver
@@ -24,9 +22,6 @@ from pipeline import headless_agent
 from pipeline import ingest
 from pipeline import redundancy
 from pipeline import reformat_rationales
-from pipeline import settings
-from pipeline.analyze_driver import ANALYZE_FENCED_TAIL, ANALYZE_PROMPT
-from pipeline.cluster_driver import SUMMARIZE_FENCED_TAIL, summarize_prompt
 from pipeline.freshness import is_current
 from pipeline.settings import REPO_ROOT
 from pipeline.store import Store
@@ -34,10 +29,10 @@ from pipeline.store import Store
 if TYPE_CHECKING:
     from pipeline.model import Cluster
 
-# The decision criteria are the canonical ANALYZE_PROMPT / summarize_prompt() owned
-# by the drivers and shipped to the workflows via index.json — consumed here, never
-# restated. This headless path only differs in the per-call bundle/batch path (the
-# `__BUNDLE_PATH__` / `__BATCH_PATH__` placeholder) and the fenced-block output tail.
+# The decision criteria are the canonical ANALYZE / SUMMARIZE prompts owned by
+# the drivers and shipped to the workflows via index.json. The drivers' own
+# headless runners (run_analyze_agent / run_summarize_agent) fill and run them,
+# so nothing is restated here.
 
 
 def _say(msg: str) -> None:
@@ -108,11 +103,7 @@ def _run(store: Store, cid: int, cluster: Cluster) -> int:
             sha = pr.head_sha or ""
             batch.append({"pr": n, "head_sha": sha, "title": pr.title,
                           "diff_path": str(diff_cache.DIFFS / f"{sha}.diff")})
-        bp = Path(f"/tmp/triage-summarize-{cid}.json")
-        bp.write_text(json.dumps(batch))
-        text = headless_agent.run_agent(
-            summarize_prompt().replace("__BATCH_PATH__", str(bp)) + SUMMARIZE_FENCED_TAIL,
-            allow_gh=False, cwd=str(REPO_ROOT), on_event=_agent_progress)
+        text = cluster_driver.run_summarize_agent(batch, _agent_progress)
         items = headless_agent.extract_json(text).get("items", [])
         ok, errs = cluster_driver.commit_summaries(store, items)
         _say(f"    summaries written: {ok}; errors: {len(errs)}")
@@ -124,12 +115,10 @@ def _run(store: Store, cid: int, cluster: Cluster) -> int:
     # 5. Force re-analyze (bypass the staleness-gated pending(); always re-run).
     _say("⑤ Re-classifying the cluster…")
     bundle = analyze_driver.bundle(store, cid, master=redundancy.MasterTree())
-    bp = Path(f"/tmp/triage-analyze-{cid}.json")
-    bp.write_text(json.dumps(bundle))
-    text = headless_agent.run_agent(
-        ANALYZE_PROMPT.replace("__BUNDLE_PATH__", str(bp))
-                      .replace("__BRANCH__", settings.default_branch()) + ANALYZE_FENCED_TAIL,
-        allow_gh=True, cwd=str(REPO_ROOT), on_event=_agent_progress)
+    if bundle is None:
+        _say(f"✗ cluster {cid} is not in the store")
+        return 1
+    text = analyze_driver.run_analyze_agent(bundle, _agent_progress)
     payload = headless_agent.extract_json(text)
     errs = analyze_driver.commit_analysis(store, payload)
     if errs:

@@ -71,7 +71,7 @@ DIFFS = Path(__file__).resolve().parent / "cache" / "diffs"
 # these few non-secret vars to resolve its own context; nothing else is forwarded.
 # The launcher builds the container env from its own explicit allowlist, so a
 # host secret is held back at two independent layers.
-_LAUNCHER_ENV_ALLOW = ("PATH", "HOME", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG")
+LAUNCHER_ENV_ALLOW = ("PATH", "HOME", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG")
 
 # Credential-bearing files deleted from the checkout before it is baked into an
 # image layer. `.env.example` is kept — it is documentation, not a credential.
@@ -130,7 +130,7 @@ _BASE_SHA_RE = re.compile(r"[0-9a-f]{7,40}")
 
 def launcher_env() -> dict[str, str]:
     """The allowlisted environment for any subprocess that reaches Docker."""
-    return {k: os.environ[k] for k in _LAUNCHER_ENV_ALLOW if k in os.environ}
+    return {k: os.environ[k] for k in LAUNCHER_ENV_ALLOW if k in os.environ}
 
 
 def base_image_tag(base_sha: str, tier: int) -> str:

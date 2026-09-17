@@ -14,17 +14,13 @@ CLI:
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from collections import Counter
-from pathlib import Path
 
 from pipeline import cluster_driver
 from pipeline import diff_cache
 from pipeline import headless_agent
 from pipeline import settings
-from pipeline.cluster_driver import SUMMARIZE_FENCED_TAIL, summarize_prompt
-from pipeline.settings import REPO_ROOT
 from pipeline.store import Store
 
 _CLUSTER_PROMPT = """Read the JSON file at {unit_path} — it is {{subsystem, part, prs:[...]}}, a group of pull-request summaries from __REPO__. Each PR has primary_change (its dominant intent, by diffstat weight), secondary_changes (incidental other intents), one_liner, mechanism, identifiers, and paths.
@@ -80,11 +76,7 @@ def run(store: Store, cid: int) -> int:
         diff_cache.fetch_diff(n, sha, store=store)
         batch.append({"pr": n, "head_sha": sha, "title": rec.title,
                       "diff_path": str(diff_cache.DIFFS / f"{sha}.diff")})
-    bp = Path(f"/tmp/recluster-summarize-{cid}.json")
-    bp.write_text(json.dumps(batch))
-    text = headless_agent.run_agent(
-        summarize_prompt().replace("__BATCH_PATH__", str(bp)) + SUMMARIZE_FENCED_TAIL,
-        allow_gh=False, cwd=str(REPO_ROOT), on_event=_agent_progress)
+    text = cluster_driver.run_summarize_agent(batch, _agent_progress)
     items = headless_agent.extract_json(text).get("items", [])
     ok, errs = cluster_driver.commit_summaries(store, items)
     _say(f"   summaries written: {ok}; errors: {len(errs)}")
@@ -104,11 +96,9 @@ def run(store: Store, cid: int) -> int:
             subs[s["subsystem"]] += 1
     unit = {"subsystem": subs.most_common(1)[0][0] if subs else "other",
             "part": 0, "prs": prs}
-    up = Path(f"/tmp/recluster-unit-{cid}.json")
-    up.write_text(json.dumps(unit))
-    text = headless_agent.run_agent(
-        _CLUSTER_PROMPT.format(unit_path=up), allow_gh=False,
-        cwd=str(REPO_ROOT), on_event=_agent_progress)
+    text = headless_agent.run_on_bundle(
+        unit, lambda path: _CLUSTER_PROMPT.format(unit_path=path),
+        prefix=f"recluster-unit-{cid}-", allow_gh=False, on_event=_agent_progress)
     proposed = headless_agent.extract_json(text).get("clusters", [])
     result = cluster_driver.commit_clusters(store, proposed)
     _say(f"   commit-clusters: {result}")
