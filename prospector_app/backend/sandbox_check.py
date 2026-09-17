@@ -16,16 +16,15 @@ never written from here.
 """
 from __future__ import annotations
 
-import json
 import os
 import shlex
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TypedDict
 
-from pipeline import compile_preflight, diffpaths, gates, profile, settings
+from pipeline import check_records, compile_preflight, diffpaths, gates, profile, settings
+from pipeline.check_records import CheckRecord
 
 USAGE = ("usage: sandbox-check typecheck | "
          "sandbox-check test <repo-relative test file>...")
@@ -36,23 +35,6 @@ RECORD_CHARS = 1500
 # How many records the worker collects for one request; an agent runs the
 # check a few times, so more is a runaway.
 MAX_CHECKS = 20
-
-
-class CheckRecord(TypedDict):
-    """One sandbox run the authoring agent made, as the request stores it.
-    `exit` is the sandbox's sentinel exit when the command ran and None when
-    it did not; `error_kind` names why it did not — the preflight's own kind
-    when it gives one, `refused` for a run the preflight declined to make, else
-    `infrastructure`."""
-    kind: str
-    files: list[str]
-    cmd: str | None
-    exit: int | None
-    error_kind: str | None
-    error: str | None
-    error_excerpt: str | None
-    duration_s: float | None
-    at: str
 
 
 def lane_command(argv: list[str]) -> tuple[str | None, str | None]:
@@ -134,34 +116,14 @@ def record_check(pr: int, record: CheckRecord) -> None:
     """Append `record` for the worker to collect. Best-effort: a record that
     cannot be written is reported on stderr and the run's verdict still
     reaches the agent."""
-    p = checks_path(pr)
-    try:
-        p.parent.mkdir(parents=True, exist_ok=True)
-        with p.open("a") as f:
-            f.write(json.dumps(record) + "\n")
-    except OSError as e:
-        print(f"sandbox-check: the run could not be recorded: {e}", file=sys.stderr)
+    check_records.append(checks_path(pr), record)
 
 
 def collect_checks(pr: int) -> list[dict]:
     """The records the agent's runs left for `pr`, oldest first and at most
     MAX_CHECKS, consuming the file so the next request starts empty. A line
     that is not a JSON object is skipped."""
-    p = checks_path(pr)
-    try:
-        text = p.read_text()
-    except FileNotFoundError:
-        return []
-    p.unlink(missing_ok=True)
-    out: list[dict] = []
-    for line in text.splitlines():
-        try:
-            rec = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(rec, dict):
-            out.append(rec)
-    return out[:MAX_CHECKS]
+    return check_records.collect(checks_path(pr), MAX_CHECKS)
 
 
 def discard_checks(pr: int) -> None:

@@ -1178,24 +1178,20 @@ AUTHORED_MAX_FILES = 3
 AUTHORED_MAX_BYTES = 64 * 1024
 
 
-def validate_authored(item: wire.AuthorItem, *, base_clone: Path,
-                      pr_paths: list[str]) -> tuple[str | None, str | None]:
-    """(derived red/green command, None) for a valid authored test, or
+def validate_test_files(files: list[wire.VerifyAuthoredFile], expected_red_signature: str | None, *,
+                        base_clone: Path, taken_paths: list[str]) -> tuple[str | None, str | None]:
+    """(derived red/green command, None) for a valid set of test files, or
     (None, skipped_reason). Fail-closed: one rule violation invalidates the
     whole artifact, and nothing invalid reaches a sandbox.
 
-    The rules keep the driver the sole author of anything executable. Authored
-    paths must be NEW files under the active profile's test conventions —
-    absent from the pinned base clone and disjoint from the PR's own changed
-    paths — so the authored patch cannot alter production code, the PR's diff,
-    or any file the suite already runs. The command is derived from the
-    authored paths by derive_test_command, exactly like the test lane's."""
-    if not item.can_author:
-        return None, "agent-declined"
-    files = item.files
+    Authored paths must be NEW files under the active profile's test
+    conventions — absent from the pinned base clone and disjoint from
+    `taken_paths` — so the files cannot alter production code or collide
+    with a path already taken. The command is derived from the paths by
+    derive_test_command, exactly like the test lane's."""
     if not files or len(files) > AUTHORED_MAX_FILES:
         return None, f"file-count-not-1-to-{AUTHORED_MAX_FILES}"
-    pr_set = {diffpaths.normalize_path(p) for p in pr_paths}
+    taken = {diffpaths.normalize_path(p) for p in taken_paths}
     total = 0
     for f in files:
         path, contents = f["path"], f["contents"]
@@ -1209,17 +1205,33 @@ def validate_authored(item: wire.AuthorItem, *, base_clone: Path,
             return None, "path-not-a-test-path"
         if (base_clone / path).exists():
             return None, "path-exists-on-base"
-        if path in pr_set:
-            return None, "path-in-pr-diff"
+        if path in taken:
+            return None, "path-taken"
     if len({f["path"] for f in files}) != len(files):
         return None, "duplicate-paths"
     if total > AUTHORED_MAX_BYTES:
         return None, "contents-too-large"
-    if not (item.expected_red_signature or "").strip():
+    if not (expected_red_signature or "").strip():
         return None, "no-expected-red-signature"
     cmd = derive_test_command([f["path"] for f in files])
     assert cmd is not None, "every authored path satisfies is_test_path"
     return cmd, None
+
+
+def validate_authored(item: wire.AuthorItem, *, base_clone: Path,
+                      pr_paths: list[str]) -> tuple[str | None, str | None]:
+    """(derived red/green command, None) for a valid authored test, or
+    (None, skipped_reason). Fail-closed: one rule violation invalidates the
+    whole artifact, and nothing invalid reaches a sandbox.
+
+    Declines an item whose agent refused to author before checking anything
+    else, then applies validate_test_files's file rules against the PR's own
+    changed paths — a path already in that diff reads as path-in-pr-diff."""
+    if not item.can_author:
+        return None, "agent-declined"
+    cmd, why = validate_test_files(item.files, item.expected_red_signature,
+                                   base_clone=base_clone, taken_paths=pr_paths)
+    return cmd, "path-in-pr-diff" if why == "path-taken" else why
 
 
 def authored_test_patch(head_sha: str, files: list[wire.VerifyAuthoredFile]) -> Path:
