@@ -4,7 +4,8 @@ The bulk fetch pages the GraphQL issues connection (issues only — no PRs to
 filter, no shared PR-interleave pagination budget). Single-issue refetch uses the
 REST issues endpoint. Both capture the engagement signals the pain score needs
 (reactions, comments, author) plus the issue's state, so closures can be written
-back to the store.
+back to the store. Only the bulk fetch sees GitHub's own closing references; the
+refetch reports them unknown.
 """
 from __future__ import annotations
 
@@ -23,12 +24,16 @@ query($owner:String!, $name:String!, $cursor:String) {
       nodes {
         number title body
         state stateReason
-        createdAt updatedAt
+        createdAt updatedAt lastEditedAt
         author { login }
+        assignees(first:10) { nodes { login } }
         labels(first:50) { nodes { name } }
         comments { totalCount }
         reactions { totalCount }
         reactionGroups { content reactors { totalCount } }
+        closedByPullRequestsReferences(first:10, includeClosedPrs:true) {
+          nodes { number state isDraft }
+        }
       }
     }
   }
@@ -41,7 +46,10 @@ def is_pull_request(raw: dict) -> bool:
 
 
 def normalize_issue(raw: dict) -> dict:
-    """Normalize a REST issues-endpoint payload (the single-issue refetch path)."""
+    """Normalize a REST issues-endpoint payload (the single-issue refetch path).
+
+    The endpoint reports neither the body's edit time nor the closing references.
+    A None `github_links` reads as unknown, so ingest keeps the stored ones."""
     reactions = raw.get("reactions") or {}
     return {
         "number": raw["number"],
@@ -53,9 +61,12 @@ def normalize_issue(raw: dict) -> dict:
         "reactions_total": reactions.get("total_count", 0),
         "thumbs_up": reactions.get("+1", 0),
         "author": (raw.get("user") or {}).get("login", ""),
+        "assignees": [a["login"] for a in raw.get("assignees") or []],
         "created_at": raw.get("created_at"),
         "updated_at": raw.get("updated_at"),
+        "last_edited_at": None,
         "state_reason": raw.get("state_reason"),
+        "github_links": None,
     }
 
 
@@ -68,10 +79,19 @@ def _thumbs_up(groups: list[dict] | None) -> int:
     return 0
 
 
+def _closing_refs(node: dict) -> list[dict]:
+    """The PRs GitHub reports as closing this issue, one `{pr, state, draft}` each.
+    States are lowercased to match the store's PR vocabulary."""
+    refs = (node.get("closedByPullRequestsReferences") or {}).get("nodes") or []
+    return [{"pr": ref["number"], "state": (ref.get("state") or "").lower(),
+             "draft": bool(ref.get("isDraft"))} for ref in refs]
+
+
 def normalize_gql(node: dict) -> dict:
     """Map a GraphQL issue node onto the exact dict normalize_issue produces from
     REST. State enums are lowercased to match REST ('OPEN'→'open')."""
     labels = (node.get("labels") or {}).get("nodes") or []
+    assignees = (node.get("assignees") or {}).get("nodes") or []
     reason = node.get("stateReason")
     return {
         "number": node["number"],
@@ -83,9 +103,12 @@ def normalize_gql(node: dict) -> dict:
         "reactions_total": (node.get("reactions") or {}).get("totalCount", 0),
         "thumbs_up": _thumbs_up(node.get("reactionGroups")),
         "author": (node.get("author") or {}).get("login", ""),
+        "assignees": [a["login"] for a in assignees],
         "created_at": node.get("createdAt"),
         "updated_at": node.get("updatedAt"),
+        "last_edited_at": node.get("lastEditedAt"),
         "state_reason": reason.lower() if reason else None,
+        "github_links": _closing_refs(node),
     }
 
 

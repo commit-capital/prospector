@@ -66,6 +66,21 @@ def test_normalize_gql_tolerates_null_author_and_no_thumbs():
     assert rec["thumbs_up"] == 0
 
 
+def test_normalize_gql_carries_assignees_edit_time_and_closing_references():
+    node = {"number": 5, "title": "t", "state": "OPEN", "updatedAt": "u",
+            "lastEditedAt": "e", "assignees": {"nodes": [{"login": "dev"}]},
+            "closedByPullRequestsReferences": {"nodes": [
+                {"number": 9, "state": "OPEN", "isDraft": True}]}}
+    rec = normalize_gql(node)
+    assert rec["assignees"] == ["dev"] and rec["last_edited_at"] == "e"
+    assert rec["github_links"] == [{"pr": 9, "state": "open", "draft": True}]
+
+
+def test_the_rest_refetch_reports_closing_references_unknown():
+    rec = normalize_issue({"number": 5, "assignees": [{"login": "dev"}]})
+    assert rec["github_links"] is None and rec["assignees"] == ["dev"]
+
+
 def _page(numbers: list[int], has_next: bool, cursor: str) -> dict:
     return {"repository": {"issues": {
         "pageInfo": {"hasNextPage": has_next, "endCursor": cursor},
@@ -107,3 +122,9 @@ def test_issues_query_is_read_only():
     q = fetch_issues._ISSUES_QUERY.strip()
     assert q.startswith("query")
     assert "mutation" not in q.lower()
+
+
+def test_issues_query_asks_for_the_fields_the_normalizer_reads():
+    q = fetch_issues._ISSUES_QUERY
+    for field in ("lastEditedAt", "assignees(", "closedByPullRequestsReferences("):
+        assert field in q

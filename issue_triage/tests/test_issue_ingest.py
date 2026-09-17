@@ -210,6 +210,45 @@ def test_ingest_relinks_only_when_the_issue_itself_changes(tmp_path):
     assert 77 in [c["pr"] for c in st.load_issue(5).candidate_prs]
 
 
+def test_ingest_writes_assignees_and_edit_time(tmp_path):
+    st = issue_store.IssueStore(tmp_path)
+    issue_ingest.ingest_records(
+        st, [{**RAW, "assignees": ["dev"], "last_edited_at": "2026-06-03T00:00:00Z"}], prs=[])
+    iss = st.load_issue(5)
+    assert iss.assignees == ["dev"]
+    assert iss.last_edited_at == "2026-06-03T00:00:00Z"
+
+
+def test_ingest_rewrites_when_only_the_closing_references_change(tmp_path):
+    st = issue_store.IssueStore(tmp_path)
+    raw = dict(RAW, github_links=[])
+    assert issue_ingest.ingest_records(st, [raw], prs=[]) == 1
+    assert issue_ingest.ingest_records(st, [raw], prs=[]) == 0
+    raw2 = dict(raw, github_links=[{"pr": 9, "state": "open", "draft": False}])
+    assert issue_ingest.ingest_records(st, [raw2], prs=[]) == 1
+    assert st.load_issue(5).github_links == raw2["github_links"]
+
+
+def test_unknown_closing_references_keep_the_stored_ones(tmp_path):
+    """The REST refetch cannot see closing references, so it reports them unknown
+    (None) and the stored ones survive the rewrite it triggers."""
+    st = issue_store.IssueStore(tmp_path)
+    linked = dict(RAW, github_links=[{"pr": 9, "state": "open", "draft": False}])
+    issue_ingest.ingest_records(st, [linked], prs=[])
+    issue_ingest.ingest_records(st, [dict(RAW, title="edited", github_links=None)], prs=[])
+    assert [g["pr"] for g in st.load_issue(5).github_links] == [9]
+
+
+def test_record_fixed_preserves_github_links(tmp_path):
+    st = issue_store.IssueStore(tmp_path)
+    issue_ingest.ingest_records(
+        st, [dict(RAW, github_links=[{"pr": 9, "state": "open", "draft": False}])], prs=[])
+    st.edit_issue(5).record_fixed(44, rationale="r")
+    iss = st.load_issue(5)
+    assert [g["pr"] for g in iss.github_links] == [9]
+    assert any(c["pr"] == 44 and c["how"] == "fix-found" for c in iss.candidate_prs)
+
+
 def test_reingest_preserves_pipeline_sections(tmp_path):
     """Re-ingesting refreshes the fact sections but leaves the pipeline-owned
     sections (analysis) on the record."""
