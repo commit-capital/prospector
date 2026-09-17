@@ -79,7 +79,11 @@ own branches while still being unable to reach the triage repository.
   directory, and nothing else (`claude_backend._edit_rules`); each clone rule
   names a path segment below `pr-*`, because the CLI lets a trailing `/**` match
   the `pr-<n>.resubmit.json` that sits beside a clone and that `push` reads its
-  target from. The worker opts into its configured
+  target from. On Codex the same session runs a permissions profile
+  (`codex_backend._write_profile`) that reads everywhere and writes to those two
+  directories and the temp directories; the profile grants whole directories, so
+  a clone's `.git` and the `pr-<n>.resubmit.json` beside it are inside its
+  reach. The worker opts into its configured
   machine identity separately. These
   paths do not use the per-PR merge gate. Chat PR close, reopen, and review
   operations, plus issue closes, call their corresponding executor paths; other

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -54,6 +56,55 @@ def config_value(command: list[str], key: str) -> object:
         if arg == "-c" and command[index + 1].startswith(prefix):
             return json.loads(command[index + 1][len(prefix):])
     raise AssertionError(f"missing Codex config: {key}")
+
+
+def toml_value(command: list[str], key: str) -> object:
+    prefix = f"{key}="
+    for index, arg in enumerate(command):
+        if arg == "-c" and command[index + 1].startswith(prefix):
+            return tomllib.loads("value = " + command[index + 1][len(prefix):])["value"]
+    raise AssertionError(f"missing Codex config: {key}")
+
+
+def _config_keys(command: list[str]) -> list[str]:
+    return [command[index + 1].split("=", 1)[0]
+            for index, arg in enumerate(command) if arg == "-c"]
+
+
+def test_a_resubmit_session_writes_to_clones_body_files_and_temp_alone():
+    flags = codex_backend._flags(system_prompt=None, can_resubmit=True)
+    assert config_value(flags, "default_permissions") == "chat"
+    assert toml_value(flags, "permissions.chat.filesystem") == {
+        "/": "read",
+        os.path.realpath(agent_backend.RESUBMIT_ROOT): "write",
+        os.path.realpath(agent_backend.BODY_DIR): "write",
+        ":tmpdir": "write",
+        "/tmp": "write",
+    }
+
+
+def test_a_resubmit_session_names_no_sandbox_mode_beside_its_profile():
+    # Codex refuses a command line that sets both.
+    keys = _config_keys(codex_backend._flags(system_prompt=None, can_resubmit=True))
+    assert not [key for key in keys if key.startswith("sandbox_")]
+
+
+def test_a_session_without_the_resubmit_grant_is_read_only_with_no_profile():
+    flags = codex_backend._flags(system_prompt=None, can_resubmit=False)
+    assert config_value(flags, "sandbox_mode") == "read-only"
+    assert not [key for key in _config_keys(flags)
+                if key == "default_permissions" or key.startswith("permissions.")]
+
+
+def test_the_profile_grants_no_write_inside_the_checkout_but_its_two_directories():
+    table = toml_value(codex_backend._flags(system_prompt=None, can_resubmit=True),
+                       "permissions.chat.filesystem")
+    assert isinstance(table, dict)
+    checkout = str(Path(codex_backend.__file__).resolve().parents[2])
+    written = [path for path, mode in table.items()
+               if mode == "write" and (path + "/").startswith(checkout + "/")]
+    assert sorted(written) == sorted([os.path.realpath(agent_backend.RESUBMIT_ROOT),
+                                      os.path.realpath(agent_backend.BODY_DIR)])
 
 
 def test_codex_context_stays_inside_the_behavior_layer() -> None:
@@ -160,9 +211,9 @@ def test_start_isolates_config_and_normalizes_jsonl_events(tmp_path, monkeypatch
     assert isinstance(instructions, str)
     assert "PROSPECTOR MANUAL" in instructions
     assert "inside the worktree printed by `resubmit prepare`" in instructions
-    # The default request grants resubmit, so the sandbox is workspace-write;
+    # The default request grants resubmit, so the sandbox is the chat profile;
     # withholding the grant is what keeps it read-only.
-    assert config_value(command, "sandbox_mode") == "workspace-write"
+    assert config_value(command, "default_permissions") == "chat"
     read_only = codex_backend._flags(system_prompt=None, can_resubmit=False)
     assert config_value(read_only, "sandbox_mode") == "read-only"
     assert config_value(command, "approval_policy") == "never"
@@ -225,8 +276,7 @@ def test_resume_uses_the_saved_thread_and_writable_policy(tmp_path, monkeypatch)
     assert command[:3] == ["/usr/bin/codex", "exec", "resume"]
     assert command[-2:] == ["saved-thread", "Is this safe?"]
     assert all("developer_instructions=" not in arg for arg in command)
-    assert config_value(command, "sandbox_mode") == "workspace-write"
-    assert config_value(command, "sandbox_workspace_write.network_access") is False
+    assert config_value(command, "default_permissions") == "chat"
     child_env = captured["env"]
     assert isinstance(child_env, dict)
     rules = (Path(child_env["CODEX_HOME"]) / "rules" / "default.rules").read_text()
