@@ -209,6 +209,11 @@ def test_a_disclosed_in_bounds_fix_clears_the_regate():
     (FIX + "Binary files a/i.png and b/i.png differ\n", CHANGES, "binary"),
     (FIX.replace("--- a/src/x.ts", "old mode 100644\nnew mode 100755\n--- a/src/x.ts"), CHANGES,
      "mode"),
+    (FIX + "x" * 200_000, CHANGES, "over 200000"),
+    (FIX + "GIT binary patch\n", CHANGES, "binary"),
+    (FIX + "new file mode 120000\n", CHANGES, "symlink"),
+    (FIX + "new file mode 160000\n", CHANGES, "submodule"),
+    (FIX + "new file mode 100755\n", CHANGES, "executable"),
 ])
 def test_the_regate_refuses(patch, changes, needle):
     ok, why = issue_gates.fix_patch_regate(patch, changes=changes, max_lines=300)
@@ -231,6 +236,13 @@ def test_the_regate_refuses_tier_zero(monkeypatch):
     monkeypatch.setattr(issue_gates.risktier, "pr_tier", lambda paths: 0)
     ok, why = issue_gates.fix_patch_regate(FIX, changes=CHANGES, max_lines=300)
     assert not ok and "tier" in why
+
+
+def test_the_regate_refuses_a_malicious_scan(monkeypatch):
+    monkeypatch.setattr(issue_gates.threats, "scan_diff",
+                        lambda patch: {"verdict": "malicious", "signatures": ["self-decoder"]})
+    ok, why = issue_gates.fix_patch_regate(FIX, changes=CHANGES, max_lines=300)
+    assert not ok and "threat signature" in why
 
 
 PROVEN = {"proof": {"red": {"exit": 20, "exit_confirm": 20},
@@ -271,6 +283,9 @@ def test_related_tests_the_base_fails_too_do_not_count_against_the_fix():
     ({"reviews": [PROVEN["reviews"][0],
                   {"lens": "scope-safety", "verdict": "unsafe", "reason": "widens auth",
                    "concerns": []}]}, "fix-rejected"),
+    ({"reviews": [PROVEN["reviews"][0],
+                  {"lens": "scope-safety", "verdict": "safe", "reason": "", "concerns": [],
+                   "failed": True}]}, "fix-rejected"),
 ])
 def test_the_bar_names_the_shortfall(over, ending):
     got, why = issue_gates.fix_proof_bar(_result(**over))
