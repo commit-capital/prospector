@@ -211,7 +211,16 @@ runs the profile's compile command or test runner inside the verify sandbox over
 current default-branch HEAD + the PR diff + the agent's current edits
 (`prospector_app/backend/sandbox_check.py`, pins read from `PROSPECTOR_CHECK_*`
 set by `author_fix`, never argv); the host runs none of the contributor's code,
-and the agent gets no other Bash. Every run the agent makes leaves a bounded
+and the agent's only other Bash is `prospector_app/agent/git-read`, read-only git
+pinned to that clone. Every headless agent's Read/Grep/Glob is held to the
+directories and files it is handed (`headless_agent.run_agent`'s `read_root`:
+its worktree, a private directory made for the run, the one diff file, the
+pinned base clone), its cwd lies inside them because the CLI reads its cwd
+whatever the rules say, and its environment is the CLI's own needs plus the
+variables its caller names (`env_allow`), so no key, `.env`, or deployment
+variable is in reach of text an outsider wrote. No agent carries a `git`
+prefix rule: `git diff` reads any host file through `--no-index` and
+`--output=<path>` writes one. Every run the agent makes leaves a bounded
 record (the lane, the files, the exit, and why it could not run when it did
 not) in `<verify scratch>/autofix/pr-<n>.checks.jsonl`, which the worker
 collects after the agent returns and stores as `fix_request.result.checks` on
