@@ -2251,6 +2251,32 @@ class TestValidateAuthored:
         assert skip == "duplicate-paths"
 
 
+class TestValidateTestFiles:
+    """The file rules alone: the issue lane validates reproduction tests with
+    no PR and no AuthorItem."""
+
+    FILES = [{"path": "ui/src/pages/routine-toast.test.tsx", "contents": "test('t', () => {})\n"}]
+
+    def test_valid_files_derive_the_command(self, tmp_path):
+        cmd, why = vd.validate_test_files(self.FILES, "AssertionError: x",
+                                          base_clone=tmp_path, taken_paths=[])
+        assert why is None and cmd is not None and "routine-toast.test.tsx" in cmd
+
+    def test_a_taken_path_is_refused(self, tmp_path):
+        _, why = vd.validate_test_files(self.FILES, "sig", base_clone=tmp_path,
+                                        taken_paths=["ui/src/pages/routine-toast.test.tsx"])
+        assert why == "path-taken"
+
+    def test_validate_authored_still_names_the_pr_diff(self, tmp_path):
+        _, why = vd.validate_authored(_author_item(), base_clone=tmp_path,
+                                      pr_paths=["ui/src/pages/routine-toast.test.tsx"])
+        assert why == "path-in-pr-diff"
+
+    def test_a_missing_signature_is_refused(self, tmp_path):
+        _, why = vd.validate_test_files(self.FILES, None, base_clone=tmp_path, taken_paths=[])
+        assert why == "no-expected-red-signature"
+
+
 class TestAuthoredPatches:
     def test_patch_applies_and_creates_the_files(self, tmp_path, monkeypatch):
         monkeypatch.setattr(vd, "SCRATCH", tmp_path / "scratch")
