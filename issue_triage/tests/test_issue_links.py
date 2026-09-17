@@ -51,8 +51,15 @@ def test_stored_candidates_are_copied_not_handed_back():
     assert got[0] is not cand
 
 
+def test_every_ranked_kind_is_one_the_pipeline_writes():
+    assert set(issue_links.HOW_RANK) == {"explicit", "github", "fix-found", "issue-ref",
+                                         "body-ref", "subsystem"}
+    assert issue_links.REFERENCED <= set(issue_links.HOW_RANK)
+    assert sorted(set(issue_links.HOW_RANK.values())) == list(range(issue_links.UNRANKED))
+
+
 def test_referenced_excludes_tag_and_bare_body_matches():
-    assert issue_links.referenced({"how": "github"}) and issue_links.referenced({"how": "fix-match"})
+    assert issue_links.referenced({"how": "github"})
     assert not issue_links.referenced({"how": "subsystem"})
     assert not issue_links.referenced({"how": "body-ref"})
 

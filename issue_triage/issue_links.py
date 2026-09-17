@@ -12,15 +12,15 @@ if TYPE_CHECKING:
 
 # Evidence strength, strongest first. A PR body's "Fixes #N" and GitHub's own
 # closing reference are the same claim from two mouths, so they tie.
-HOW_RANK: dict[str, int] = {"explicit": 0, "github": 0, "fix-found": 1, "fix-match": 2,
-                            "issue-ref": 3, "body-ref": 4, "subsystem": 5}
+HOW_RANK: dict[str, int] = {"explicit": 0, "github": 0, "fix-found": 1,
+                            "issue-ref": 2, "body-ref": 3, "subsystem": 4}
 
 # A kind no rank names sorts after every known one.
-UNRANKED = 6
+UNRANKED = 5
 
 # The kinds where something names the PR and the issue together. A subsystem tag
 # and a bare #N in a PR body are weaker: neither claims the PR addresses this issue.
-REFERENCED = frozenset({"explicit", "github", "fix-found", "fix-match", "issue-ref"})
+REFERENCED = frozenset({"explicit", "github", "fix-found", "issue-ref"})
 
 
 def how_rank(cand: dict) -> int:

@@ -61,13 +61,12 @@ const EVIDENCE: Record<string, string> = {
   explicit: "explicit Fixes/Closes/Resolves reference in the PR body",
   github: "GitHub lists this PR as closing the issue",
   "fix-found": "merged fix attributed to this issue by the already-fixed detector",
-  "fix-match": "open PR matched to this issue by symptom",
   "issue-ref": "referenced from the issue's own text",
 };
 
 // Which kinds count as reference-backed — issue_links.REFERENCED, the same set
 // the row's referenced_pr_count is summed over.
-const REFERENCED = new Set(["explicit", "github", "fix-found", "fix-match", "issue-ref"]);
+const REFERENCED = new Set(["explicit", "github", "fix-found", "issue-ref"]);
 
 export function LinkedPRs({ prs, count, referencedCount }: { prs: IssuePR[]; count?: number; referencedCount?: number }) {
   const referenced = prs.filter((p) => REFERENCED.has(p.how ?? ""));
