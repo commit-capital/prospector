@@ -29,8 +29,8 @@ only where a golden test pins the PR path byte for byte.
 - No reporter-confirmation preview builds.
 - No research agent for expected-behavior / obsolete close reasons.
 - No unattended propose (the `propose_bar` is specified, not built).
-- No replay of closed issues with the merged fix reversed onto the pin; the
-  lane is measured against open PRs on current code.
+- No replay that reverses one merged fix onto today's tree: the tree it yields
+  never existed. The history replay runs on the actual pre-merge tree.
 - No shared scaffolding extracted from `fix_worker.py`; its module state is
   monkeypatched by the PR-lane tests.
 
@@ -643,13 +643,56 @@ top directory. Hold-out: `sha1(issue) % 4 == 0`. Ledger phases `trial:run` and
 `trial:instance`; aggregates derived on read;
 `prospector_app/backend/trials_view.py` and one Control-tab card.
 
-Replaying closed issues with the merged fix reversed onto the pin is not built:
-at ~740 merges a month few reversals apply, and the tree it yields never
-existed.
+**History replay — the calibration run** (`pipeline/evals/issue_fix_replay.py`,
+job `fix-replay`). A batch that answers "would the lane have fixed bugs whose
+fix is known?" on closed issues, run once the lane parks fixes and again when
+the lane's prompts or model change. It shares the lane core and the scoring
+with the blind trials.
+
+The tree is the real one: the merged PR's first parent `P`, materialized on
+the pin's image as `pin + git diff --binary <pin> <P>` with dependency-manifest
+paths left out, so the source is history's and the installed dependencies are
+the image's. Upstream's lockfile moves nearly daily, so an instance is held to
+evidence, not to equal manifests: R6 below. No image is built.
+
+Instance rules: R1 closed as completed with exactly one merged closing PR; R2
+its merge commit is an ancestor of the pin, landed diff from `git show`; R3
+the landed diff touches a test path and a non-test path, no dependency
+manifest, ≤ 400 non-test lines, ≤ 10 files; R4 the issue predates the PR and
+was not edited after it opened, and the report never names the PR's number,
+URL, or SHA (discard, never scrub); R5 not bot- or lane-authored; R6 the known
+fix proves itself in this sandbox — the oracle command
+`derive_test_command(oracle_test_files)` exits 20 twice over `tree(P) ⧺ the
+PR's test hunks` and 0 twice over `tree(P) ⧺ the landed diff`. Discards are
+counted by reason; exits 10, 30, 40, and a timeout are sandbox faults and are
+retried.
+
+The lane runs with `pre_patch` = the transform to `tree(P)`: its clone is a
+single-commit repository of that tree (`patchkit.fresh_repo`), so no history
+reaches the agent; agents get `allow_gh=False`, `read_root`, and an anonymized
+`RP-<hash>` id; a replay of tool events marks any path outside the instance
+directory `contaminated`. Every sandbox patch is one diff from the pin
+(`patchkit.flatten` of the transform and the lane's patches, which touch the
+same files).
+
+Scores, all from host exits: `reproduced`; `repro_valid` (the lane's test is
+red on `tree(P)` and green on `tree(P) ⧺ the landed fix`); `fixed`;
+`oracle_pass` (the merged PR's tests pass over `tree(P) ⧺ the lane's non-test
+hunks`); `false_accept` (every reviewer safe ∧ oracle failed ∧ not
+`oracle_coupled` — the test hunks reference symbols the fix hunks add);
+`false_reject`; `test_tamper`; `localized`; per-stage seconds and cost;
+failures by subsystem and top directory. After scoring, a comparison reviewer
+in a fresh context reads the landed fix beside the lane's and returns
+`{relation: equivalent | lane-better | landed-better | lane-wrong | undetermined,
+evidence[{file, quote}], confidence}`; it informs the report and sets no
+score. Ledger phases `replay:run` and `replay:instance`; the run is resumable
+by instance, bounded by `--limit` and the lane's daily budget; aggregates are
+derived on read and shown beside the trials on the Control-tab card.
 
 **Autonomy** (`lane_autonomy`, a 30-day window of hold-out, uncontaminated
-instances at the current lane revision and model; a revision or model change
-resets it). Hunter: ≥ 20 instances, `test_validated` ≥ 40% of reproduced,
+instances — trials and replay alike, a replay's `oracle_pass` reading as
+`fix_validated` and its `repro_valid` as `test_validated` — at the current
+lane revision and model; a revision or model change resets it). Hunter: ≥ 20 instances, `test_validated` ≥ 40% of reproduced,
 machine faults ≤ 10%. Human-approved propose (the operator's call): suggested
 ≥ 20 instances whose PR ships tests, `fix_validated` ≥ 70% among
 reviewer-accepted fixes, ≤ 2 false accepts, zero `test_tamper`. Unattended
@@ -744,9 +787,10 @@ closes `Fixes #N`. S11: Actions disabled on the push user's fork.
 Two tracks in parallel; the task-by-task plan is
 `docs/plans/2026-09-17-issue-fix-lane.md`. Lane: L1 sandbox primitives and
 seams → L2 record shape, policy, queue → L3 reproduce lane → L4 fix, prove,
-review, park → L5 blind trials against open PRs (cell C first, then D–F) → L6
-propose (built dry-run; live after L5 clears the bar) → L7 hunter → L8
-unattended bar. Funnel: F1 fresh links → F2 threads → F3 tier-0 → F4 coverage →
+review, park → L5 blind trials against open PRs (cell C first, then D–F) and,
+beside it, L5b the history replay (`patchkit`, the `pre_patch` slot, the
+`fix-replay` job) → L6 propose (built dry-run; live after the owner reads the
+L5 numbers) → L7 hunter → L8 unattended bar. Funnel: F1 fresh links → F2 threads → F3 tier-0 → F4 coverage →
 F5 ASSESS → F6 candidacy, standing, worklists → F7 needs-info → F8 FIX-MATCH →
 F9 FIND-FIXED upgrades → F10 sweep. L5 needs F1; L7 needs F6; the
 `issues` profile section lands with whichever of L2 / F3 comes first.
