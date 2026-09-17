@@ -802,13 +802,31 @@ closes `Fixes #N`. S11: Actions disabled on the push user's fork.
 
 ## Build order
 
-Two tracks in parallel; the task-by-task plan is
-`docs/plans/2026-09-17-issue-fix-lane.md`. Lane: L1 sandbox primitives and
-seams → L2 record shape, policy, queue → L3 reproduce lane → L4 fix, prove,
-review, park → L5 blind trials against open PRs (cell C first, then D–F) and,
-beside it, L5b the history replay (`patchkit`, the `pre_patch` slot, the
-`fix-replay` job) → L6 propose (built dry-run; live after the owner reads the
-L5 numbers) → L7 hunter → L8 unattended bar. Funnel: F1 fresh links → F2 threads → F3 tier-0 → F4 coverage →
-F5 ASSESS → F6 candidacy, standing, worklists → F7 needs-info → F8 FIX-MATCH →
-F9 FIND-FIXED upgrades → F10 sweep. L5 needs F1; L7 needs F6; the
-`issues` profile section lands with whichever of L2 / F3 comes first.
+Lightweight first: the least code that answers "can the lane fix this
+repository's bugs?", then a decision on the numbers, then — only as far as the
+numbers justify — the machinery that operates it. Everything above is the
+design each step draws from; nothing in it is built ahead of the step that
+needs it.
+
+1. **L1** sandbox primitives and seams; **F1** fresh issue→PR links.
+2. **The lane core as a command.** `issue_triage/fix_lane.py` with the four
+   agent stages (reproduce, judge, fix, review), `issue-sandbox-check`, and the
+   host re-gate, run for one issue from the command line on the pin; it writes a
+   result file under the verify scratch and one `issue-fix:run` ledger row. No
+   issue sections, queue, worker thread, health lane, Setup switch, or panel.
+3. **Replay v0** — one script: a list of (issue, merged fixing PR) pairs, the
+   pin's image only, rule R6 to validate each instance, the lane core, the merged
+   PR's tests over the lane's fix, a markdown table plus `replay:instance` ledger
+   rows. The epoch planner, extra epoch images, the garbage-collection keep
+   marker, `--concurrency`, the comparison reviewer, and the Control-tab card are
+   added only when v0's sample proves too thin or its numbers earn a second run.
+4. **Decision with the owner on the replay's numbers.**
+5. As justified: the queue, records, worker, and panel (the store and
+   state-machine sections above); blind trials against open PRs; propose, built
+   dry-run and switched live by the owner; the hunter; the unattended bar.
+
+Funnel: F1, then the one view the lane's operator needs — open issues with no
+open linked PR (`issue_gates.coverage` over deterministic links alone). Threads,
+issue forms, ASSESS, candidacy rank, needs-info, FIX-MATCH, the FIND-FIXED
+upgrades, and the sweep wait for the replay to show which report features
+predict a reproduction.
