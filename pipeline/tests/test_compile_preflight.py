@@ -112,11 +112,13 @@ class TestRunForMerge:
             order.append("build")
             return verify_driver.base_image_tag(sha, tier)
         monkeypatch.setattr(verify_driver, "build_base_image", fake_build)
+        monkeypatch.setattr(verify_driver, "collect_garbage",
+                            lambda pinned, **kw: order.append("sweep") or {"ok": True})
         monkeypatch.setattr(verify_driver, "run_phase",
                             lambda *a, **k: (order.append("run"), (0, ""))[1])
         res = compile_preflight.run_for_merge(7, "a" * 40)
         assert res is not None and res["exit"] == 0
-        assert order == ["build", "run"]
+        assert order == ["build", "sweep", "run"]
 
     def test_a_build_is_followed_by_a_sweep_that_keeps_the_verify_pin(
             self, configured, monkeypatch, tmp_path):
