@@ -1007,7 +1007,7 @@ export interface IssuePR {
   pr: number; title?: string | null;
   // The vocabulary issue_triage/issue_links.py ranks — strongest evidence first.
   how?: "explicit" | "github" | "fix-found" | "issue-ref" | "body-ref" | "subsystem" | null;
-  in_store?: boolean; state?: "open" | "merged" | "closed" | null;
+  in_store?: boolean; state?: "open" | "merged" | "closed" | null; draft?: boolean;
 }
 export interface IssueRow {
   number: number;

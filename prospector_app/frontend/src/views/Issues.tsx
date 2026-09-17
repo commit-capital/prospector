@@ -15,6 +15,7 @@ import { IssueColumnFilterPopout, ISSUE_FILTERABLE_COLS, isIssueColFilterActive 
 import { TrustedAuthorName } from "../components/TrustedAuthor";
 import { AuthorHover } from "../components/AuthorHover";
 import { perIssueRefs } from "../components/issues/issueCloseRefs";
+import { EVIDENCE, REFERENCED, linkStateChip } from "../components/issues/issueLinkChips";
 import { IssueCloseConfirmDialog, type IssueClosePlan } from "../components/issues/IssueCloseConfirmDialog";
 
 const PAGE_SIZE = 50;
@@ -56,18 +57,7 @@ export function DispositionChip({ d }: { d: IssueTriageDisposition | null }) {
 // claiming to fix it, is weak evidence and collapses into a muted count. A PR in
 // the app's store — open, merged, or closed — opens in the in-app flyout
 // (pr-ref); one that isn't in the store links out to GitHub, with a state chip
-// (purple merged / muted closed) when its state is known.
-const EVIDENCE: Record<string, string> = {
-  explicit: "explicit Fixes/Closes/Resolves reference in the PR body",
-  github: "GitHub lists this PR as closing the issue",
-  "fix-found": "merged fix attributed to this issue by the already-fixed detector",
-  "issue-ref": "referenced from the issue's own text",
-};
-
-// Which kinds count as reference-backed — issue_links.REFERENCED, the same set
-// the row's referenced_pr_count is summed over.
-const REFERENCED = new Set(["explicit", "github", "fix-found", "issue-ref"]);
-
+// (purple merged, muted closed, muted draft) when its state is known.
 export function LinkedPRs({ prs, count, referencedCount }: { prs: IssuePR[]; count?: number; referencedCount?: number }) {
   const referenced = prs.filter((p) => REFERENCED.has(p.how ?? ""));
   const total = count ?? prs.length;
@@ -77,15 +67,15 @@ export function LinkedPRs({ prs, count, referencedCount }: { prs: IssuePR[]; cou
   return (
     <span className="issue-prs">
       {referenced.slice(0, 6).map((p, i) => {
-        const resolved = p.state === "merged" || p.state === "closed";
+        const chip = linkStateChip(p);
         const evidence = EVIDENCE[p.how ?? ""];
         return (
           <span key={p.pr} title={p.title ? `${p.title} — ${evidence}` : evidence}>{i > 0 && " "}
             {p.in_store
               ? <PRLink n={p.pr} className="pr-ref" />
               : <GitHubPRLink n={p.pr} className="pr-ref" />}
-            {resolved && <span className={`chip sm ${p.state === "merged" ? "chip-purple" : "chip-muted"}`}
-                               title="Current state on GitHub">{p.state}</span>}
+            {chip && <span className={`chip sm ${chip.cls}`}
+                           title="Current state on GitHub">{chip.label}</span>}
           </span>
         );
       })}
