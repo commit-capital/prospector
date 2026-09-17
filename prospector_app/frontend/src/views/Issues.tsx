@@ -61,6 +61,7 @@ const EVIDENCE: Record<string, string> = {
   explicit: "explicit Fixes/Closes/Resolves reference in the PR body",
   github: "GitHub lists this PR as closing the issue",
   "fix-found": "merged fix attributed to this issue by the already-fixed detector",
+  "fix-match": "open PR matched to this issue by symptom",
   "issue-ref": "referenced from the issue's own text",
 };
 
@@ -131,11 +132,10 @@ function DupGroupCard({ g }: { g: IssueDupGroup }) {
   const ref = useRef<HTMLElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
-  // The merged PR that explicitly references an issue in this cluster, if any —
-  // enables "close as fixed". Only an explicit Fixes/Closes reference qualifies:
-  // a subsystem tag-match or a PR merely named in the issue's text (which can be
-  // anti-evidence — "still broken despite PR #N") is never offered as the fixer.
-  const fixer = g.linked_prs.find((p) => p.how === "explicit" && p.state === "merged")?.pr ?? null;
+  // The merged PR that fixes an issue in this cluster, if any — enables "close as
+  // fixed". The backend picks it and writes fixed_comment from that same pick, so
+  // the button and the prefilled note always name the one PR.
+  const fixer = g.fixed_by;
 
   // Dismiss the close-mode menu on a click outside it.
   useEffect(() => {

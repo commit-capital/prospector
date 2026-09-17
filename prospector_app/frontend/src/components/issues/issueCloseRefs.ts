@@ -1,10 +1,14 @@
 import type { IssueDisposition, IssueRow } from "../../api";
 
-// A PR the issue's own text names is never the fixer ("still broken despite
-// #N" is anti-evidence). The executor re-verifies the merged state live.
+// The kinds where the PR itself claims to close the issue. A PR the issue's own
+// text names is never the fixer ("still broken despite #N" is anti-evidence),
+// and a detector-found fixer counts only through the fix scan's own verdict
+// (row.fixed_by). The executor re-verifies the merged state live.
+const CLAIMS_FIX = new Set(["explicit", "github"]);
+
 export function issueFixer(row: IssueRow): number | null {
   if (row.fixed_by !== null) return row.fixed_by;
-  return row.linked_prs.find((p) => p.how === "explicit" && p.state === "merged")?.pr
+  return row.linked_prs.find((p) => CLAIMS_FIX.has(p.how ?? "") && p.state === "merged")?.pr
     ?? null;
 }
 

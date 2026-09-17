@@ -778,6 +778,51 @@ def test_dup_group_unions_index_links_across_cluster_members(tmp_path, monkeypat
     assert [p["pr"] for p in g["linked_prs"]] == [901, 902]
 
 
+def test_duplicate_groups_refresh_when_the_pr_snapshot_moves(tmp_path, monkeypatch):
+    """The worklist's links come from the PR index, so a PR that appears in a
+    later snapshot reaches the group with no issue-store write to move the
+    watermark."""
+    st = _seed(tmp_path, monkeypatch)
+    st.edit_issue(10).set_links([])
+    monkeypatch.setattr(issues, "_store_pr_states", lambda: ({901: "open", 902: "open"}, False))
+    monkeypatch.setattr(issues, "_pr_links", lambda: {10: [_index_link(901)]})
+    monkeypatch.setattr(issues.data, "generation", lambda: 1)
+    assert [p["pr"] for p in issues.duplicate_groups()[0]["linked_prs"]] == [901]
+    monkeypatch.setattr(issues, "_pr_links",
+                        lambda: {10: [_index_link(901), _index_link(902)]})
+    monkeypatch.setattr(issues.data, "generation", lambda: 2)
+    assert [p["pr"] for p in issues.duplicate_groups()[0]["linked_prs"]] == [901, 902]
+
+
+def test_a_github_fixer_the_pr_store_never_saw_counts_as_merged(tmp_path, monkeypatch):
+    """A link's state is resolved once, so a GitHub closing reference naming a PR
+    no ingest captured shows a merged chip and counts as a merged fixer."""
+    st = _seed(tmp_path, monkeypatch)
+    st.edit_issue(10).apply_facts(
+        {"title": "crash on boot", "state": "open", "author": "al",
+         "updated_at": "2026-01-02T00:00:00Z"},
+        links=[], github=[{"pr": 901, "state": "merged", "draft": False}])
+    monkeypatch.setattr(issues, "_store_pr_states", lambda: ({}, False))
+    monkeypatch.setattr(issues, "_pr_links", lambda: {})
+    row = issues.get_issue(10)
+    assert [(p["pr"], p["how"], p["state"]) for p in row["linked_prs"]] == [(901, "github", "merged")]
+    assert row["referenced_merged_count"] == 1
+
+
+def test_dup_group_names_the_fixer_its_prefilled_comment_uses(tmp_path, monkeypatch):
+    """The card closes against the fixer the group names, so the button and the
+    prefilled note can never cite different PRs."""
+    st = _seed(tmp_path, monkeypatch)
+    st.edit_issue(10).apply_facts(
+        {"title": "crash on boot", "state": "open", "author": "al",
+         "updated_at": "2026-01-02T00:00:00Z"},
+        links=[], github=[{"pr": 901, "state": "merged", "draft": False}])
+    monkeypatch.setattr(issues, "_pr_links", lambda: {})
+    g = issues.duplicate_groups()[0]
+    assert g["fixed_by"] == 901
+    assert g["fixed_comment"] == issues.fixed_issue_comment(901)
+
+
 def test_pr_links_indexes_the_snapshot_and_is_unavailable_while_it_loads(monkeypatch):
     from pipeline.model import Pr
 

@@ -1165,7 +1165,8 @@ export interface IssueDupGroup {
   linked_prs: IssuePR[];
   dups: IssueDup[];
   dup_comment: string;            // default note for close-as-dup, prefilled into the box
-  fixed_comment: string | null;   // default note for close-as-fixed, or null when no fixer
+  fixed_by: number | null;        // the merged fixer the card closes against, or null when none
+  fixed_comment: string | null;   // default note for close-as-fixed, written from fixed_by
 }
 /** One tier-1 already-fixed issue: open, close-fixed disposition, current fix
  *  scan, and a fixer PR a live check shows merged. `comment` is the templated

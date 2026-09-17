@@ -89,9 +89,10 @@ drivers (`issue_ingest`, `issue_cluster_driver`) import — `fetch_all`, `summar
 
 `issue_ingest` writes each issue's candidate PRs into the store (`set_links`); the
 PR pipeline (`pipeline/ingest.py:load_issue_links`) reads them from there, inverting
-issue→PRs into its PR→issues map. Readers go through `issue_links.linked_prs`
-instead, which reads the PR side's own `issues.linked` back through `pr_index`. `pain-weights.json` holds the pain-ranking
-weights, loaded by `issue_cluster_driver`.
+issue→PRs into its PR→issues map. Every display, bundling and gating reader takes
+its links from `issue_links.linked_prs`, which reads the PR side's own
+`issues.linked` back through `pr_index`. `pain-weights.json` holds the
+pain-ranking weights, loaded by `issue_cluster_driver`.
 
 ## Skills
 

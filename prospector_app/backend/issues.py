@@ -150,8 +150,8 @@ _pr_links_cache: tuple[tuple[int, int], dict[int, list[pr_index.PrLink]]] | None
 def _pr_links() -> dict[int, list[pr_index.PrLink]] | None:
     """Issue number -> the PRs whose own bodies link it, inverted from the app's
     PR snapshot and cached on that snapshot's identity. None while the snapshot
-    cold-loads: an empty index would read as "no PR body links this issue", which
-    would drop every stored explicit link the accessor defers to it for."""
+    cold-loads: the accessor takes any list as authoritative, so the stored links
+    stand until the index is real."""
     global _pr_links_cache
     if data.snapshot_loading():
         return None
@@ -169,16 +169,34 @@ def _links_for(iss: Issue) -> list[dict]:
     return issue_links.linked_prs(iss, None if index is None else index.get(iss.number, []))
 
 
+def _link_state(cand: dict, store_states: dict[int, str]) -> str | None:
+    """A link's PR state: the app's PR snapshot, else what the link's own source
+    knows — GitHub's closing reference carries the state of a PR no ingest has
+    captured."""
+    return store_states.get(cand["pr"], cand.get("state"))
+
+
+def _ordered_links(links: list[dict], *, limit: int | None = None) -> list[dict]:
+    """`links` ordered by evidence kind (issue_links.HOW_RANK) and then
+    most-resolved first (merged, closed, then open/unknown). Trimming to `limit`
+    happens after the sort, so a trim never drops the strongest fix evidence."""
+    if limit == 0:
+        return []
+    return sorted(links, key=lambda c: (issue_links.how_rank(c),
+                                        _STATE_RANK.get(c.get("state") or "", 2),
+                                        c["pr"]))[:limit]
+
+
 def _cluster_linked_prs(members: list[int], issues: dict[int, Issue],
                         store_states: dict[int, str],
                         live_states: dict[int, str] | None = None) -> list[dict]:
     """Union of linked PRs across every issue in the cluster, deduped by PR
-    number, each stamped with its real `state` (open/merged/closed) and `in_store`.
-    Explicit Fixes/Closes matches lead, then issue-ref matches, then subsystem
-    matches, each kind most-resolved first. A subsystem match landing on a
-    duplicate (not the canonical) is the common case, so a cluster's fixing PRs
-    must be gathered across all members, not read off the canonical alone. The
-    strongest evidence kind wins when members link the same PR differently."""
+    number, each stamped with its real `state` (open/merged/closed) and `in_store`,
+    ordered by evidence kind (issue_links.HOW_RANK) and then most-resolved first.
+    A subsystem match landing on a duplicate (not the canonical) is the common
+    case, so a cluster's fixing PRs must be gathered across all members, not read
+    off the canonical alone. The strongest evidence kind wins when members link
+    the same PR differently."""
     by_pr: dict[int, dict] = {}
     for n in members:
         iss = issues.get(n)
@@ -199,30 +217,10 @@ def _cluster_linked_prs(members: list[int], issues: dict[int, Issue],
         stored = store_states.get(cand["pr"])
         if stored in terminal:
             return stored
-        return live.get(cand["pr"]) or stored or cand.get("state")
+        return live.get(cand["pr"]) or _link_state(cand, store_states)
 
-    out = [{**cand, "in_store": pr in store_states, "state": _state(cand)}
-           for pr, cand in by_pr.items()]
-    return sorted(out, key=lambda c: (issue_links.how_rank(c),
-                                      _STATE_RANK.get(c["state"], 2), c["pr"]))
-
-
-def _issue_linked_prs(links: list[dict], store_states: dict[int, str] | None,
-                      *, limit: int | None = None) -> list[dict]:
-    """The issue's linked PRs — explicit Fixes/Closes matches first, then
-    issue-ref matches, then subsystem tag-matches, each kind most-resolved first
-    (merged, closed, then open/unknown) when store states are available. Trimming
-    to `limit` happens after the sort, so a trim never drops the strongest fix
-    evidence."""
-    if limit == 0:
-        return []
-    if store_states is None:
-        return sorted(links, key=issue_links.how_rank)[:limit]
-    stamped = [{**c, "in_store": c["pr"] in store_states,
-                "state": store_states.get(c["pr"], c.get("state"))} for c in links]
-    stamped.sort(key=lambda c: (issue_links.how_rank(c),
-                                _STATE_RANK.get(c["state"], 2), c["pr"]))
-    return stamped[:limit]
+    return _ordered_links([{**cand, "in_store": pr in store_states, "state": _state(cand)}
+                           for pr, cand in by_pr.items()])
 
 
 def _row(iss: Issue, clusters_by_id: dict[int, IssueCluster], store_states: dict[int, str] | None,
@@ -231,7 +229,12 @@ def _row(iss: Issue, clusters_by_id: dict[int, IssueCluster], store_states: dict
     cl = clusters_by_id.get(cid) if cid is not None else None
     members = cl.members if cl else [iss.number]
     canonical = cl.canonical if cl else None
+    # Each link's state is resolved once here, so the chip and the merged-fixer
+    # count can never read the same link differently.
     links = _links_for(iss)
+    if store_states is not None:
+        links = [{**c, "in_store": c["pr"] in store_states,
+                  "state": _link_state(c, store_states)} for c in links]
     return {
         "number": iss.number,
         "title": iss.title,
@@ -259,14 +262,14 @@ def _row(iss: Issue, clusters_by_id: dict[int, IssueCluster], store_states: dict
         "duplicates": [m for m in members if m != iss.number],
         "disposition": iss.disposition,
         "fixed_by": iss.fixed_by if iss.disposition == "close-fixed" else None,
-        "linked_prs": _issue_linked_prs(links, store_states, limit=link_limit),
+        "linked_prs": _ordered_links(links, limit=link_limit),
         "linked_pr_count": len(links),
         "referenced_pr_count": sum(1 for c in links if issue_links.referenced(c)),
         # Merged reference-backed fixers — the "likely fixed" signal the prs sort
         # leads with.
         "referenced_merged_count": 0 if store_states is None else sum(
             1 for c in links
-            if issue_links.referenced(c) and store_states.get(c["pr"]) == "merged"),
+            if issue_links.referenced(c) and c.get("state") == "merged"),
     }
 
 
@@ -422,19 +425,21 @@ def query_issues(q: str = "", sort: str | None = None, direction: str | None = N
             "pr_states_loading": pr_states_loading}
 
 
-_dup_groups_cache: tuple[tuple[str | None, str | None], list[dict]] | None = None
+_dup_groups_cache: tuple[tuple[str | None, str | None, int], list[dict]] | None = None
 
 
 def duplicate_groups() -> list[dict]:
     """The curated close-as-dup worklist, grouped by canonical issue: each group is
     a set of confirmed duplicate issues to close against one canonical, with the
-    candidate PRs from every member cross-linked. Most painful first (#192).
-    While the PR snapshot is still cold-loading, every candidate PR's state is
+    linked PRs from every member cross-linked. Most painful first (#192).
+    The cache key carries the PR snapshot's generation beside the issue
+    watermarks, because a group's links and its fixer come from the PR index too.
+    While the PR snapshot is still cold-loading, every linked PR's state is
     resolved live and `in_store` reads false; that result is served but never
     cached, so the first read after the load hydrates from the store."""
     global _dup_groups_cache
     _sync_store_root()
-    key = issue_data.watermarks()
+    key = (*issue_data.watermarks(), data.generation())
     if _dup_groups_cache is not None and _dup_groups_cache[0] == key:
         return _dup_groups_cache[1]
     issues = issue_data.full_issues()
@@ -493,6 +498,9 @@ def duplicate_groups() -> list[dict]:
             # The exact default notes the executor would post, so the card prefills
             # the editable box with them rather than paraphrasing in a placeholder.
             "dup_comment": dup_issue_comment(canon),
+            # The fixer the card closes against, beside the note naming it — one
+            # pick, so the button and the note cannot cite different PRs.
+            "fixed_by": fixer,
             "fixed_comment": fixed_issue_comment(fixer) if fixer is not None else None,
         })
     groups = sorted(groups, key=lambda g: -(g.get("pain") or 0))
