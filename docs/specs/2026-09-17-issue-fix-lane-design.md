@@ -650,10 +650,23 @@ the lane's prompts or model change. It shares the lane core and the scoring
 with the blind trials.
 
 The tree is the real one: the merged PR's first parent `P`, materialized on
-the pin's image as `pin + git diff --binary <pin> <P>` with dependency-manifest
-paths left out, so the source is history's and the installed dependencies are
-the image's. Upstream's lockfile moves nearly daily, so an instance is held to
-evidence, not to equal manifests: R6 below. No image is built.
+an **epoch** image as `epoch + git diff --binary <epoch> <P>` with
+dependency-manifest paths left out, so the source is history's and the
+installed dependencies are the image's. The machine's pin is one epoch and
+costs no build; any other epoch costs one `build_base_image(sha, tier=1)`.
+
+`fix-replay plan` chooses the epochs, deterministically and with no agent or
+sandbox run: it lists the instances passing R1–R5, reads each `P`'s direct
+dependency declarations (the `dependencies`, `devDependencies`, and
+`peerDependencies` maps of every workspace manifest, from the base clone's
+history), groups instances whose declarations are equal, and prints each
+group's size, date span, and whether it matches the pin. Upstream's lockfile
+is refreshed nearly daily, so the lockfile is left out of the grouping; an
+instance is held to evidence instead — R6 below. The operator names the
+groups to run (`--epochs`, default the pin's group alone); a group's epoch is
+its newest `P`. `verify_gc.collect` keeps an epoch image while a keep marker
+under the verify scratch names it; the run writes the marker and removes it
+when it ends, and a marker older than seven days is ignored.
 
 Instance rules: R1 closed as completed with exactly one merged closing PR; R2
 its merge commit is an ancestor of the pin, landed diff from `git show`; R3
@@ -685,9 +698,14 @@ failures by subsystem and top directory. After scoring, a comparison reviewer
 in a fresh context reads the landed fix beside the lane's and returns
 `{relation: equivalent | lane-better | landed-better | lane-wrong | undetermined,
 evidence[{file, quote}], confidence}`; it informs the report and sets no
-score. Ledger phases `replay:run` and `replay:instance`; the run is resumable
-by instance, bounded by `--limit` and the lane's daily budget; aggregates are
-derived on read and shown beside the trials on the Control-tab card.
+score. Ledger phases `replay:run` and `replay:instance`, each instance
+carrying per-stage seconds, agent runs, and token cost from the CLI's result
+event; aggregates are derived on read and shown beside the trials on the
+Control-tab card. The run is resumable by instance and bounded by `--limit`
+and a run budget; `--concurrency` (default 2) keeps that many instances in
+flight, their agents overlapping while the large sandbox phases serialize
+behind the host's phase lock. A run starts with a pilot of ten instances and
+prints the measured cost per instance before it continues.
 
 **Autonomy** (`lane_autonomy`, a 30-day window of hold-out, uncontaminated
 instances — trials and replay alike, a replay's `oracle_pass` reading as
