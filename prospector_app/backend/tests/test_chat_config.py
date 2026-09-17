@@ -442,17 +442,27 @@ def test_context_documents_the_review_retrigger(monkeypatch):
     assert "{retrigger_mention}" not in sp
 
 
-def test_text_filters_are_allowlisted_without_their_write_forms():
+def test_only_text_filters_with_no_write_or_exec_form_are_allowlisted():
+    # Every allowlisted filter reads its input and prints to stdout, with no
+    # option that writes a file or runs a program. `sed`, `awk`, `sort`, and
+    # `uniq` each have one — `sed`'s `w` command, `awk`'s `print >`/`system()`,
+    # `sort`'s `-o`/`--compress-program`, `uniq`'s positional output file — and
+    # a `Bash(<tool>:*)` prefix rule cannot reach inside the command to forbid
+    # it, so none of the four is granted. A prompt injection reads attacker text
+    # from a PR, so an allowlisted filter must not be a route to a write.
     for token in (False, True):
         flags = claude_backend.isolation_flags(token, can_resubmit=True)
         allowed = _flag(flags, "--allowedTools")
-        for tool in ("head", "tail", "grep", "sed", "awk", "sort", "uniq", "wc", "cut", "tr", "jq"):
+        for tool in ("head", "tail", "grep", "wc", "cut", "tr", "jq"):
             assert f"Bash({tool}:*)" in allowed
+        for tool in ("sed", "awk", "sort", "uniq"):
+            assert f"Bash({tool}" not in allowed
         assert "python3" not in allowed
+        # No `Bash(...)` deny rule remains: a denylist over a write-capable
+        # allow is what let `sort -u -o` and `sed -n -e w` through, so the
+        # boundary is the allowlist alone.
         denied = _multi(flags, "--disallowedTools")
-        for form in ("Bash(sed -i:*)", "Bash(sed --in-place:*)",
-                     "Bash(sort -o:*)", "Bash(sort --output:*)", "Bash(tee:*)"):
-            assert form in denied
+        assert not any(rule.startswith("Bash(") for rule in denied)
 
 
 def test_gh_search_repos_is_allowlisted_and_gh_auth_is_not():

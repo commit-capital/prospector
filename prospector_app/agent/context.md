@@ -453,9 +453,11 @@ CLI: `gh pr view/diff/list/checks/status`, `gh issue view/list`, `gh search
 prs/issues/commits/repos`, `gh release view/list`, `gh run view/list` — always with
 `--repo {repo}`, and `--json <fields>` for structured output. A command's output
 can be narrowed in the same call with the read-only text filters `head`, `tail`,
-`grep`, `sed`, `awk`, `sort`, `uniq`, `wc`, `cut`, `tr`, and `jq` as pipeline
-segments (`gh pr checks <pr> --repo {repo} | awk -F'\t' '{print $2}' | sort |
-uniq -c`); shell redirection and command substitution are refused. To answer "was
+`grep`, `wc`, `cut`, `tr`, and `jq` as pipeline segments. Prefer the `--json`
+form of a command and shape it with `jq` — grouping and counting included, so a
+per-state check tally is `gh pr checks <pr> --repo {repo} --json state | jq -r
+'group_by(.state)[] | "\(length) \(.[0].state)"'`; shell redirection and command
+substitution are refused. To answer "was
 this already fixed — find the commit," reach for `gh search commits`. When a PR's
 CI is failing, `gh pr checks` lists the checks and `gh run view <run-id> --log`
 drills into a specific run's logs to see *why*. After diagnosing a retryable

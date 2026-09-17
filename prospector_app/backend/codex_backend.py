@@ -59,9 +59,12 @@ _READ_ALLOW: tuple[tuple[str, ...], ...] = (
     ("gh", "release", "list"),
     ("gh", "run", "view"),
     ("gh", "run", "list"),
-    # Text filters; the sandbox, not the rule, bounds what they may write.
-    ("head",), ("tail",), ("grep",), ("sed",), ("awk",), ("sort",), ("uniq",),
-    ("wc",), ("cut",), ("tr",), ("jq",),
+    # Text filters. The bound on an allow-listed command is the rule, not the
+    # sandbox: a Codex `allow` decision can run the command outside the
+    # filesystem sandbox, so a filter here must grant no more than a read. Each
+    # kept one only reads its input and prints to stdout; filters whose grammar
+    # hides a write or an exec (`sed`, `awk`, `sort`, `uniq`) are left out.
+    ("head",), ("tail",), ("grep",), ("wc",), ("cut",), ("tr",), ("jq",),
     *_helper_prefixes("gh-read", "remember", "uncluster", "store-read",
                       "reingest", "file-issue"),
 )

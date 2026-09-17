@@ -44,19 +44,17 @@ _GH_ALLOW = [
     "Bash(gh release list:*)", "Bash(gh run view:*)", "Bash(gh run list:*)",
 ]
 
-# Read-only text filters, so a read's output can be narrowed within the one
-# command (`gh pr checks … | awk`, `resubmit diff | grep`). The in-place and
-# output-file forms of sed and sort are denied; the harness refuses a shell
-# redirection on its own.
+# Text filters that narrow a read's output within the one command
+# (`gh pr checks … | grep`, `resubmit diff | cut`). Each one only reads its
+# input and prints to stdout — none has an option that writes a file or runs a
+# program, so a `Bash(<tool>:*)` prefix rule grants no more than a read. Filters
+# whose grammar hides a write (`sed`'s `w`, `awk`'s `print >`/`system()`,
+# `sort`'s `-o`/`--compress-program`, `uniq`'s positional output file) are not
+# here: a prefix rule cannot reach inside the command to forbid that form, and a
+# denylist over it is evadable by reordering flags.
 _FILTER_ALLOW = [
-    "Bash(head:*)", "Bash(tail:*)", "Bash(grep:*)", "Bash(sed:*)", "Bash(awk:*)",
-    "Bash(sort:*)", "Bash(uniq:*)", "Bash(wc:*)", "Bash(cut:*)", "Bash(tr:*)",
-    "Bash(jq:*)",
-]
-_FILTER_DENY = [
-    "Bash(sed -i:*)", "Bash(sed --in-place:*)",
-    "Bash(sort -o:*)", "Bash(sort --output:*)",
-    "Bash(tee:*)",
+    "Bash(head:*)", "Bash(tail:*)", "Bash(grep:*)", "Bash(wc:*)",
+    "Bash(cut:*)", "Bash(tr:*)", "Bash(jq:*)",
 ]
 
 
@@ -117,7 +115,7 @@ def isolation_flags(can_write: bool, can_resubmit: bool) -> list[str]:
     allowed = ["Read", "Grep", "Glob", *_GH_ALLOW, *_FILTER_ALLOW, *_GH_READ_ALLOW,
                *_REMEMBER_ALLOW, *_UNCLUSTER_ALLOW, *_STORE_READ_ALLOW,
                *_REINGEST_ALLOW, *_FILE_ISSUE_ALLOW]
-    disallowed = [*_DISALLOWED_TOOLS, *_FILTER_DENY]
+    disallowed = list(_DISALLOWED_TOOLS)
     if can_write:
         allowed += [*_GH_WRITE_ALLOW, *_PR_EXECUTOR_ALLOW, *_ISSUE_CLOSE_ALLOW]
     if can_resubmit:
