@@ -14,6 +14,7 @@ from pipeline import settings
 from prospector_app.backend import agent_backend
 from prospector_app.backend import chat
 from prospector_app.backend import claude_backend
+from prospector_app.backend import safety_guard
 
 
 def _flag(flags, name):
@@ -472,3 +473,91 @@ def test_gh_search_repos_is_allowlisted_and_gh_auth_is_not():
         allowed = _flag(claude_backend.isolation_flags(token, can_resubmit=True), "--allowedTools")
         assert "Bash(gh search repos:*)" in allowed
         assert "Bash(gh auth" not in allowed
+
+
+def _read_rules(flags: list[str]) -> list[str]:
+    return [rule for rule in _flag(flags, "--allowedTools").split(",")
+            if rule.split("(")[0] in ("Read", "Grep", "Glob")]
+
+
+@pytest.mark.parametrize("can_write", [False, True])
+def test_reads_are_scoped_to_the_checkout(can_write):
+    # A bare Read/Grep/Glob reads every file the operator can, and the agent
+    # reads text an outsider wrote. The grant is the checkout: the source it
+    # answers questions about, its operating manual, and the clones and body
+    # files a resubmit session works in all sit inside it.
+    root = "/" + os.path.realpath(chat.REPO_ROOT)
+    assert _read_rules(claude_backend.isolation_flags(can_write, can_resubmit=True)) == [
+        f"Read({root}/**)", f"Grep({root}/**)", f"Glob({root}/**)"]
+
+
+def test_the_deployment_env_file_is_denied_inside_the_checkout():
+    # The CLI reads its own working directory whatever the allow rules say, and
+    # chat runs at the checkout root, so .env is reachable by the grant alone.
+    denied = _multi(claude_backend.isolation_flags(True, can_resubmit=True),
+                    "--disallowedTools")
+    root = "/" + os.path.realpath(chat.REPO_ROOT)
+    assert f"Read({root}/.env)" in denied
+    assert f"Read({root}/.env.*)" in denied
+
+
+def test_the_configured_private_keys_are_denied(monkeypatch, tmp_path):
+    # The bot App key and the contributor-push SSH key live outside the
+    # checkout by default. Naming them holds a deployment that files one inside.
+    bot = tmp_path / "private-key.pem"
+    push = tmp_path / "push-key"
+    monkeypatch.setenv("TRIAGE_BOT_KEY_FILE", str(bot))
+    monkeypatch.setenv("TRIAGE_PUSH_SSH_KEY_FILE", str(push))
+    denied = _multi(claude_backend.isolation_flags(True, can_resubmit=True),
+                    "--disallowedTools")
+    assert f"Read(/{os.path.realpath(bot)})" in denied
+    assert f"Read(/{os.path.realpath(push)})" in denied
+
+
+def test_an_unset_key_path_denies_nothing(monkeypatch):
+    # An empty TRIAGE_BOT_KEY_FILE must not resolve to the working directory
+    # and deny the checkout the agent is meant to read.
+    monkeypatch.delenv("TRIAGE_BOT_KEY_FILE", raising=False)
+    monkeypatch.delenv("TRIAGE_PUSH_SSH_KEY_FILE", raising=False)
+    denied = _multi(claude_backend.isolation_flags(True, can_resubmit=True),
+                    "--disallowedTools")
+    root = "/" + os.path.realpath(chat.REPO_ROOT)
+    assert [rule for rule in denied if rule.startswith("Read(")] == [
+        f"Read({root}/.env)", f"Read({root}/.env.*)"]
+
+
+def test_agent_env_keeps_what_the_cli_and_the_helpers_need(monkeypatch):
+    monkeypatch.setenv("TRIAGE_REPO", "owner/repo")
+    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "example-bot")
+    monkeypatch.setenv("PROSPECTOR_FEEDBACK_REPO", "owner/prospector")
+    env = safety_guard.agent_env()
+    assert env["TRIAGE_REPO"] == "owner/repo"
+    assert env["TRIAGE_BOT_LOGIN"] == "example-bot"
+    assert env["PROSPECTOR_FEEDBACK_REPO"] == "owner/prospector"
+    for name in ("PATH", "HOME"):
+        assert name in env
+
+
+def test_agent_env_drops_the_store_url(monkeypatch):
+    # `jq` is an allowlisted filter and `jq -n env` prints the environment, so
+    # the store URL's password is one command away. Helpers re-read it from the
+    # repo-root .env, which pipeline.settings loads on import.
+    monkeypatch.setenv("TRIAGE_STORE_URL", "postgresql://user:pw@host/db")
+    assert "TRIAGE_STORE_URL" not in safety_guard.agent_env()
+
+
+def test_agent_env_drops_variables_the_agent_has_no_use_for(monkeypatch):
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "unrelated-operator-secret")
+    monkeypatch.setenv("OPENAI_API_KEY", "unrelated-operator-secret")
+    env = safety_guard.agent_env()
+    assert "AWS_SECRET_ACCESS_KEY" not in env
+    assert "OPENAI_API_KEY" not in env
+
+
+def test_agent_env_drops_an_ambient_github_token(monkeypatch):
+    # `gh` falls back to the operator's keyring login rather than a stale token.
+    monkeypatch.setenv("GH_TOKEN", "ghs_stale")
+    monkeypatch.setenv("GITHUB_TOKEN", "ghs_stale")
+    env = safety_guard.agent_env()
+    assert "GH_TOKEN" not in env
+    assert "GITHUB_TOKEN" not in env

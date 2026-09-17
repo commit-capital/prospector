@@ -84,12 +84,26 @@ own branches while still being unable to reach the triage repository.
   directories and the temp directories; the profile grants whole directories, so
   a clone's `.git` and the `pr-<n>.resubmit.json` beside it are inside its
   reach. The worker opts into its configured
-  machine identity separately. These
+  machine identity separately. On Claude the session's **reads** are held to the
+  checkout (`claude_backend._read_rules`), which holds the source it answers
+  questions about, its operating manual, and the clones and body files a
+  resubmit works in; the deployment's `.env` and the private keys
+  `TRIAGE_BOT_KEY_FILE` and `TRIAGE_PUSH_SSH_KEY_FILE` name are denied inside it
+  by `claude_backend._secret_denies`, because the CLI reads its working
+  directory whatever the allow rules say and a deny rule is what reaches the
+  Read and Grep tools and an allowlisted text filter's file argument alike. The
+  turn's environment is `safety_guard.agent_env` — the operator's, held to what
+  the CLI and the curated helpers need, with `TRIAGE_STORE_URL` withheld because
+  `jq` is an allowlisted filter and `jq -n env` prints the environment; helpers
+  re-read the store URL from the repo-root `.env` that `pipeline.settings` loads
+  on import, so a deployment configured by process environment alone, with no
+  `.env` on disk, has no `store-read` in chat. Codex reads everywhere still
+  (issue #282). These
   paths do not use the per-PR merge gate. Chat PR close, reopen, and review
   operations, plus issue closes, call their corresponding executor paths; other
   upstream chat writes use `prospector_app/agent/gh-write`, which validates the
   operation, pins the configured repository, and mints a token for each invocation.
-  Chat reads use the operator environment. The chat agent cannot merge.
+  Chat reads use the operator's `gh` login. The chat agent cannot merge.
 
 Every executor write, including a dry-run, is appended to the app activity
 log. Resubmit pushes and branch updates append best-effort entries under the
