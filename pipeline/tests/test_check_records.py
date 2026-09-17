@@ -32,4 +32,11 @@ def test_append_to_an_unwritable_path_reports_and_does_not_raise(tmp_path, capsy
     blocker = tmp_path / "file"
     blocker.write_text("x")
     check_records.append(blocker / "child.jsonl", _rec())
-    assert "could not be recorded" in capsys.readouterr().err
+    assert capsys.readouterr().err.startswith("sandbox-check: the run could not be recorded")
+
+
+def test_the_calling_tool_names_itself_in_the_report(tmp_path, capsys):
+    blocker = tmp_path / "file"
+    blocker.write_text("x")
+    check_records.append(blocker / "child.jsonl", _rec(), tool="issue-check")
+    assert capsys.readouterr().err.startswith("issue-check: the run could not be recorded")

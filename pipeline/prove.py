@@ -1,17 +1,20 @@
 """Host-observed proof on this machine's pinned base: a test patch that fails
 (red), a test-plus-fix patch that passes (green), and a command over a patched
 tree. Every run uses the image the verify pin names, so a caller never builds
-one. The exits are the verdict; the captured output is evidence."""
+one. The exits are the verdict; the captured output is evidence. A sandbox
+whose isolation probe fails lands in `run_command`'s record as its exit and
+raises `ProbeFailure` out of the legs."""
 from __future__ import annotations
 
+import hashlib
 import logging
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypedDict
 
 from pipeline import diffpaths, gates, verify_driver
-from pipeline.verify_driver import SCRATCH
 
 if TYPE_CHECKING:
     from pipeline.store import Store
@@ -54,10 +57,19 @@ def pinned(store: Store) -> PinnedBase:
     return PinnedBase(sha=sha, tier=tier, image=image, clone=clone)
 
 
+# A label is host-chosen and becomes a file name, so it is held to plain
+# file-name characters with no parent-directory segment.
+_LABEL_RE = re.compile(r"[A-Za-z0-9._-]+")
+
+
 def compose(label: str, *parts: Path | str | None) -> Path:
     """One patch file holding `parts` in order, under the verify scratch so the
-    sandbox can mount it. Parts must touch disjoint paths: the sandbox applies
-    the file in one `git apply`."""
+    sandbox can mount it. Named for `label` and the digest of the composed text,
+    so one composition is one file and the directory is bounded by the distinct
+    compositions on this machine. Parts must touch disjoint paths: the sandbox
+    applies the file in one `git apply`."""
+    if not _LABEL_RE.fullmatch(label) or ".." in label:
+        raise ValueError(f"label is not a file name: {label!r}")
     texts = [p.read_text() if isinstance(p, Path) else p for p in parts if p]
     seen: set[str] = set()
     for text in texts:
@@ -65,10 +77,11 @@ def compose(label: str, *parts: Path | str | None) -> Path:
         if seen & paths:
             raise ValueError(f"patch parts share paths: {sorted(seen & paths)}")
         seen |= paths
-    out = SCRATCH / "issue-fix"
+    body = "".join(t if t.endswith("\n") else t + "\n" for t in texts)
+    out = verify_driver.SCRATCH / "issue-fix"
     out.mkdir(parents=True, exist_ok=True)
-    path = out / f"{label}.{time.monotonic_ns()}.patch"
-    path.write_text("".join(t if t.endswith("\n") else t + "\n" for t in texts))
+    path = out / f"{label}.{hashlib.sha256(body.encode()).hexdigest()[:12]}.patch"
+    path.write_text(body)
     return path
 
 
@@ -168,9 +181,12 @@ def green_legs(base: PinnedBase, *, patch: Path, test_cmd: str, label: str) -> L
 
 def _legs(base: PinnedBase, phase: Literal["red", "green"], want: int, *,
           patch: Path, test_cmd: str, label: str) -> Legs:
-    """Two legs of `phase`, the second run only when the first exits `want`. A
-    probe failure raises: no code runs on a sandbox whose isolation is
-    unproven, so such a leg refuses and emits no verdict."""
+    """Two legs of `phase`, the second run only when the first exits `want`. Any
+    other exit — a timeout's 124 included — is returned as observed in `exit`,
+    for the caller's policy to read. `output_tail` is the first leg's; the
+    confirm leg's tail is dropped. A probe failure raises: no code runs on a
+    sandbox whose isolation is unproven, so such a leg refuses and emits no
+    verdict."""
     t0 = time.monotonic()
 
     def leg() -> tuple[int, str]:

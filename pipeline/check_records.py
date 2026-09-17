@@ -10,11 +10,10 @@ from typing import TypedDict
 
 
 class CheckRecord(TypedDict):
-    """One sandbox run the authoring agent made, as the request stores it.
-    `exit` is the sandbox's sentinel exit when the command ran and None when
-    it did not; `error_kind` names why it did not — the preflight's own kind
-    when it gives one, `refused` for a run the preflight declined to make, else
-    `infrastructure`."""
+    """One sandbox run an authoring agent made. `exit` is the sandbox's sentinel
+    exit when the command ran and None when it did not; `error_kind` names why
+    it did not — `refused` for a run the check tool declined to make, the kind
+    the run itself names when it names one, else `infrastructure`."""
     kind: str
     files: list[str]
     cmd: str | None
@@ -26,15 +25,16 @@ class CheckRecord(TypedDict):
     at: str
 
 
-def append(path: Path, record: CheckRecord) -> None:
+def append(path: Path, record: CheckRecord, *, tool: str = "sandbox-check") -> None:
     """Append `record` to `path`. Best-effort: a record that cannot be written
-    is reported on stderr and the run's verdict still reaches the agent."""
+    is reported on stderr under `tool`, the name the agent knows its check
+    command by, and the run's verdict still reaches the agent."""
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a") as f:
             f.write(json.dumps(record) + "\n")
     except OSError as e:
-        print(f"sandbox-check: the run could not be recorded: {e}", file=sys.stderr)
+        print(f"{tool}: the run could not be recorded: {e}", file=sys.stderr)
 
 
 def collect(path: Path, limit: int) -> list[dict]:
