@@ -19,8 +19,10 @@ def _run(monkeypatch, reply: str, **over) -> dict:
 
     def fake_run_agent(prompt, *, allow_gh, cwd, edit_root=None, timeout=0,
                        on_event=None, system_prompt=None, model=None, allow=(),
-                       env_extra=None):
-        calls.update(prompt=prompt, allow_gh=allow_gh, cwd=cwd, edit_root=edit_root,
+                       env_extra=None,
+                       read_root=None, env_allow=None, git_root=None):
+        calls.update(read_root=read_root, env_allow=env_allow, git_root=git_root,
+                     prompt=prompt, allow_gh=allow_gh, cwd=cwd, edit_root=edit_root,
                      timeout=timeout, allow=list(allow), env_extra=env_extra)
         return reply
 
@@ -154,3 +156,41 @@ def test_a_reported_path_the_patch_does_not_contain_is_refused():
     with pytest.raises(ValueError, match="reported"):
         author_fix.assert_disclosed([{"path": "a.ts", "rationale": "r"},
                                      {"path": "b.ts", "rationale": "r"}], ["a.ts"])
+
+
+def test_the_author_reads_only_its_worktree_and_the_prs_diff(monkeypatch):
+    r = _run(monkeypatch, json.dumps({"summary": "s", "changes": []}),
+             diff_path="/scratch/patches/abc.patch", head_sha="abc")
+    assert r["calls"]["read_root"] == ["/wt", "/scratch/patches/abc.patch"]
+    assert r["calls"]["git_root"] == "/wt"
+    assert _run(monkeypatch, json.dumps({"summary": "s", "changes": []})
+                )["calls"]["read_root"] == ["/wt"]
+
+
+def test_the_authors_environment_is_the_clis_plus_what_the_sandbox_check_needs(monkeypatch):
+    r = _run(monkeypatch, json.dumps({"summary": "s", "changes": []}),
+             diff_path="/scratch/patches/abc.patch", head_sha="abc")
+    assert set(r["calls"]["env_allow"]) == {"DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG"}
+    assert r["calls"]["env_extra"]["PROSPECTOR_CHECK_PR_PATCH"] == "/scratch/patches/abc.patch"
+    bare = _run(monkeypatch, json.dumps({"summary": "s", "changes": []}))
+    assert list(bare["calls"]["env_allow"]) == [] and bare["calls"]["env_extra"] is None
+
+
+def test_the_prompt_hands_the_agent_resolved_paths_and_the_git_reader(monkeypatch, tmp_path):
+    real = tmp_path / "wt"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    calls: dict = {}
+
+    def fake(prompt, **kw):
+        calls.update(kw, prompt=prompt)
+        return json.dumps({"summary": "s", "changes": []})
+
+    monkeypatch.setattr(headless_agent, "run_agent", fake)
+    author_fix.author(str(link), pr=7, title="t", body="b", goal="g", findings=FINDINGS,
+                      ci_failures=[])
+    resolved = str(real.resolve())
+    assert calls["cwd"] == calls["edit_root"] == resolved
+    assert f"worktree at {resolved}," in calls["prompt"]
+    assert f"{headless_agent.GIT_READ} status" in calls["prompt"]

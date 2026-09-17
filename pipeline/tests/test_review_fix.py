@@ -16,8 +16,10 @@ def _run(monkeypatch, reply, **over) -> dict:
     calls: dict = {}
 
     def fake_run_agent(prompt, *, allow_gh, cwd, edit_root=None, timeout=0,
-                       on_event=None, system_prompt=None, model=None):
-        calls.update(prompt=prompt, allow_gh=allow_gh, cwd=cwd, edit_root=edit_root)
+                       on_event=None, system_prompt=None, model=None,
+                       read_root=None, env_allow=None, git_root=None):
+        calls.update(read_root=read_root, env_allow=env_allow, git_root=git_root,
+                     prompt=prompt, allow_gh=allow_gh, cwd=cwd, edit_root=edit_root)
         if isinstance(reply, Exception):
             raise reply
         return reply
@@ -89,3 +91,10 @@ def test_the_review_summary_reaches_the_reviewer(monkeypatch):
     r = _run(monkeypatch, json.dumps({"verdict": "safe", "reason": "ok"}),
              review_summary="The guard misses terminalResultSeen.")
     assert "misses terminalResultSeen" in r["calls"]["prompt"]
+
+
+def test_the_reviewer_reads_only_the_worktree_under_the_bare_environment(monkeypatch):
+    calls = _run(monkeypatch, json.dumps({"verdict": "safe", "reason": "r"}))["calls"]
+    assert calls["read_root"] == "/wt" and calls["cwd"] == "/wt"
+    assert calls["edit_root"] is None and calls["git_root"] is None
+    assert list(calls["env_allow"]) == []
