@@ -13,6 +13,7 @@ from issue_triage import config
 from issue_triage import fetch_issues
 from issue_triage import issue_model
 from issue_triage import link_prs
+from issue_triage import pr_index
 from issue_triage import repro_grade
 from issue_triage import summarize_issues
 from issue_triage.issue_store import IssueStore
@@ -188,7 +189,8 @@ def _load_prs(pr_store: Store | None = None) -> list[dict]:
     parse reads them."""
     from pipeline.store import Store
     store = pr_store or Store()
-    keep = {n: pr for n, pr in store.all_prs().items() if pr.state in ("open", "merged")}
+    keep = {n: pr for n, pr in store.all_prs().items()
+            if pr.state in pr_index.LINKING_STATES}
     bodies = store.pr_bodies(list(keep))
     out: list[dict] = []
     for n, pr in keep.items():
