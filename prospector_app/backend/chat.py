@@ -41,6 +41,7 @@ local-machine handle — stays in gitignored cache/.
 from __future__ import annotations
 
 import json
+import os
 import time
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
@@ -137,6 +138,7 @@ def system_prompt() -> str:
                 .replace("{feedback_repo}", settings.feedback_repo() or "(none configured)")
                 .replace("{review_bar}", review_bar)
                 .replace("{pr_template}", pr_template)
+                .replace("{body_dir}", os.path.realpath(agent_backend.BODY_DIR))
                 .replace("{retrigger_mention}", ", ".join(mentions) or "(none configured)"))
 
 
@@ -649,6 +651,7 @@ async def stream_chat(question: str, pr: int | None = None, cluster: int | None 
 
     _save(ctx_id, "user", anchored + question, None)
 
+    agent_backend.BODY_DIR.mkdir(parents=True, exist_ok=True)
     run = await backend.start(
         agent_backend.AgentRequest(
             thread_key=ctx_id,

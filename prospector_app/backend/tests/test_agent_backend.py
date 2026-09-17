@@ -89,6 +89,30 @@ def test_chat_orchestration_consumes_normalized_backend_events(
     assert chat.load_thread("pr-12")[-1]["text"] == "provider answer"
 
 
+def test_a_turn_starts_with_the_body_directory_in_place(temp_store, tmp_path, monkeypatch):
+    class Backend(FakeBackend):
+        async def start(self, request: agent_backend.AgentRequest) -> FakeTurn:
+            self.body_dir_ready = agent_backend.BODY_DIR.is_dir()
+            return await super().start(request)
+
+    backend = Backend()
+    monkeypatch.setenv("TRIAGE_AGENT_PROVIDER", "claude")
+    monkeypatch.setattr(chat, "_BACKENDS", {"claude": backend})
+    monkeypatch.setattr(chat, "SESSION_DIR", tmp_path / "cache" / "chat")
+    monkeypatch.setattr(agent_backend, "BODY_DIR", tmp_path / "cache" / "chat-bodies")
+    monkeypatch.setattr(chat, "_op_slug", lambda: "tester")
+    monkeypatch.setattr(chat, "_bot_token", lambda: None)
+    monkeypatch.setattr(chat, "system_prompt", lambda: "AGENT-MANUAL")
+    monkeypatch.setattr(chat, "_build_context", lambda *a, **k: "PR-CONTEXT")
+
+    async def drive():
+        return [event async for event in chat.stream_chat("post the review", pr=12)]
+
+    asyncio.run(drive())
+
+    assert backend.body_dir_ready is True
+
+
 def test_stop_dispatches_to_the_backend(monkeypatch):
     backend = FakeBackend()
     monkeypatch.setattr(chat, "_BACKENDS", {"claude": backend})

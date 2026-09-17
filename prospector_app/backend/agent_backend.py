@@ -6,6 +6,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+_CACHE = Path(__file__).resolve().parents[1] / "cache"
+# The two places a session that grants resubmit may write: `resubmit prepare`
+# clones a PR head to RESUBMIT_ROOT/pr-<n>, and the agent authors a --body-file
+# in BODY_DIR.
+RESUBMIT_ROOT = _CACHE / "resubmit"
+BODY_DIR = _CACHE / "chat-bodies"
+
 
 @dataclass(frozen=True)
 class AgentRequest:

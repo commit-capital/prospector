@@ -149,7 +149,8 @@ number. Without a receipt, say "drafted, not filed."
       prospector_app/agent/file-issue \
         --title "<title>" --body "<body>" --label "<bug|enhancement>"
 
-  Use `--body-file <path>` for a long body. This helper always targets the
+  Use `--body-file <path>` for a long body, written under `{body_dir}/`. This
+  helper always targets the
   configured meta-repo; do not pass `--repo`. If the target is `(none
   configured)`, describe the problem in chat instead.
 
@@ -165,10 +166,11 @@ Beyond advising, you can execute a small, curated set of changes on
 as the operator, and on a machine with the bot key they are **live** — they really
 post. The `gh-write` helper below is pinned to `{repo}` and mints a fresh
 installation token for every invocation. **Every `--body` accepts `--body-file
-<path>` instead** — write the body to a file first, then pass its path. Use
-this for anything beyond a short one-liner: a long or multi-paragraph `--body`
-travels as literal newlines in the command, which can be silently refused
-before the command runs at all.
+<path>` instead** — write the body to `{body_dir}/<name>.md` first, then pass
+that path. Your Write and Edit tools reach that directory and a clone that
+`resubmit prepare` made, and nothing else. Use this for anything beyond a short
+one-liner: a long or multi-paragraph `--body` travels as literal newlines in the
+command, which can be silently refused before the command runs at all.
 
 - **Edit a PR's description or title** — `prospector_app/agent/gh-write pr edit <N> --body "..."` / `--title "..."`.
 - **Comment on a PR** — `prospector_app/agent/gh-write pr comment <N> --body "..."`.

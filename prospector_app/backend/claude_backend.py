@@ -95,13 +95,25 @@ _DISALLOWED_TOOLS = [
 ]
 
 
+def _edit_rules() -> list[str]:
+    """Edit/Write rules over the prepared clones and the body directory, naming
+    resolved paths in the CLI's `//absolute` form. Each clone rule names a
+    segment below `pr-*`: the CLI lets a trailing `/**` match no segment, and
+    `pr-<n>.resubmit.json`, which `resubmit push` reads its target from, sits
+    beside each clone."""
+    clones = "/" + os.path.realpath(agent_backend.RESUBMIT_ROOT)
+    bodies = "/" + os.path.realpath(agent_backend.BODY_DIR)
+    patterns = (f"{clones}/pr-*/*", f"{clones}/pr-*/*/**", f"{bodies}/**")
+    return [f"{tool}({pattern})" for tool in ("Edit", "Write") for pattern in patterns]
+
+
 def isolation_flags(can_write: bool, can_resubmit: bool) -> list[str]:
     """Build the complete Claude tool and harness boundary for one turn.
 
     The two grants are independent identities: `can_write` is the bot (a
     mintable installation token) and adds the bot-authenticated helpers;
     `can_resubmit` is the confirming operator and adds the resubmit helper plus
-    the Edit/Write tools its worktree authoring needs."""
+    Edit/Write over the clones it prepares and the body directory."""
     allowed = ["Read", "Grep", "Glob", *_GH_ALLOW, *_FILTER_ALLOW, *_GH_READ_ALLOW,
                *_REMEMBER_ALLOW, *_UNCLUSTER_ALLOW, *_STORE_READ_ALLOW,
                *_REINGEST_ALLOW, *_FILE_ISSUE_ALLOW]
@@ -109,7 +121,7 @@ def isolation_flags(can_write: bool, can_resubmit: bool) -> list[str]:
     if can_write:
         allowed += [*_GH_WRITE_ALLOW, *_PR_EXECUTOR_ALLOW, *_ISSUE_CLOSE_ALLOW]
     if can_resubmit:
-        allowed += [*_RESUBMIT_ALLOW, "Edit", "Write"]
+        allowed += [*_RESUBMIT_ALLOW, *_edit_rules()]
         disallowed = [t for t in disallowed if t not in ("Edit", "Write")]
     return [
         "--allowedTools", ",".join(allowed),

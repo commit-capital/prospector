@@ -47,6 +47,13 @@ def push_identity(monkeypatch, tmp_path_factory):
     return key
 
 
+def test_the_chat_agents_write_rules_cover_where_prepare_clones():
+    from prospector_app.backend import agent_backend
+    assert resubmit.WORKTREE_ROOT == agent_backend.RESUBMIT_ROOT
+    assert resubmit._worktree(7) == agent_backend.RESUBMIT_ROOT / "pr-7"
+    assert resubmit._meta_path(7).parent == agent_backend.RESUBMIT_ROOT
+
+
 # --- eligibility: the preflight that decides whether a push is even possible ----
 
 def _pr(**over):
