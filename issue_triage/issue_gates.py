@@ -12,7 +12,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from issue_triage.issue_freshness import is_current
-from pipeline.gates import SENTINEL_PASS, SENTINEL_TEST_FAIL
+from pipeline import author_fix, diffpaths, gates, risktier, threats
 
 if TYPE_CHECKING:
     from issue_triage.issue_model import Issue, IssueCluster
@@ -123,9 +123,9 @@ def reproduction_outcome(red: dict, judge: dict | None, *, gave_up: bool,
     if gave_up or invalid:
         return "unwritable"
     first, confirm = red.get("exit"), red.get("exit_confirm")
-    if first == SENTINEL_PASS or confirm == SENTINEL_PASS:
+    if first == gates.SENTINEL_PASS or confirm == gates.SENTINEL_PASS:
         return "not-reproduced"
-    if first != SENTINEL_TEST_FAIL or confirm != SENTINEL_TEST_FAIL:
+    if first != gates.SENTINEL_TEST_FAIL or confirm != gates.SENTINEL_TEST_FAIL:
         return None
     symptom = _rating(judge, "symptom_match", "matches")
     defect = _rating(judge, "defect", "is_defect")
@@ -136,3 +136,96 @@ def reproduction_outcome(red: dict, judge: dict | None, *, gave_up: bool,
     if defect != (True, True):
         return "not-a-defect"
     return "reproduced"
+
+
+REVIEW_LENSES = ("root-cause", "scope-safety")
+FIX_PATCH_MAX_CHARS = 200_000
+
+# Diff lines a fix may not carry, with what each one is.
+_REFUSED_DIFF_LINES = (
+    ("Binary files ", "a binary file"), ("GIT binary patch", "a binary file"),
+    ("new file mode 120000", "a symlink"), ("new file mode 160000", "a submodule"),
+    ("old mode ", "a file-mode change"), ("new file mode 100755", "an executable file"),
+)
+
+
+def changed_line_count(patch: str) -> int:
+    return sum(1 for line in patch.splitlines()
+              if (line.startswith("+") and not line.startswith("+++"))
+              or (line.startswith("-") and not line.startswith("---")))
+
+
+def fix_patch_regate(patch: str, *, changes: list[author_fix.Change],
+                     max_lines: int) -> tuple[bool, str]:
+    """Whether an agent's finished fix may go on to proof: (ok, reason). The
+    patch is held to what the agent reported and to the paths, size, and kinds
+    of change an issue-driven fix may make. Fail-closed."""
+    if not patch.startswith("diff "):
+        return False, "the fix is empty or not a diff"
+    if len(patch) > FIX_PATCH_MAX_CHARS:
+        return False, f"the fix is over {FIX_PATCH_MAX_CHARS} characters"
+    for line in patch.splitlines():
+        for marker, what in _REFUSED_DIFF_LINES:
+            if line.startswith(marker):
+                return False, f"the fix carries {what}"
+    paths = diffpaths.changed_paths(patch)
+    if not paths:
+        return False, "the fix names no path"
+    try:
+        author_fix.assert_disclosed(changes, paths)
+    except ValueError as e:
+        return False, str(e)
+    tests = [p for p in paths if diffpaths.is_test_path(p)]
+    if tests:
+        return False, f"the fix touches test files: {', '.join(tests)}"
+    if gates.deps_touched(paths):
+        return False, "the fix changes a dependency manifest"
+    withheld = gates.fix_withheld_paths(paths)
+    if withheld:
+        return False, f"the fix touches withheld paths: {', '.join(withheld)}"
+    tier = risktier.pr_tier(paths)
+    if tier is None or tier == 0:
+        return False, "the fix touches a tier-0 path"
+    scan = threats.scan_diff(patch)
+    if scan["verdict"] == "malicious":
+        return False, f"the fix matches a threat signature: {', '.join(scan['signatures'])}"
+    count = changed_line_count(patch)
+    if count > max_lines:
+        return False, f"the fix changes {count} lines (limit {max_lines})"
+    return True, "clean"
+
+
+def _twice(legs: dict | None, want: int) -> bool:
+    return bool(legs) and legs.get("exit") == want and legs.get("exit_confirm") == want
+
+
+def fix_proof_bar(result: dict) -> tuple[str | None, str]:
+    """(None, …) when a fix is proven and reviewed, else the ending it falls
+    short at — "fix-unproven" for the host's proof, "fix-rejected" for a
+    reviewer — with the reason. Only an explicit `safe` from every lens in
+    REVIEW_LENSES passes."""
+    proof = result.get("proof") or {}
+    if not _twice(proof.get("red"), gates.SENTINEL_TEST_FAIL):
+        return "fix-unproven", "the reproduction is not red twice on the base"
+    if not _twice(proof.get("green"), gates.SENTINEL_PASS):
+        return "fix-unproven", "the reproduction is not green twice with the fix applied"
+    compiled = proof.get("compile")
+    if compiled is not None:
+        not_run = compiled.get("refused") or compiled.get("error")
+        if not_run or compiled.get("exit") != gates.SENTINEL_PASS:
+            return "fix-unproven", ("the compile lane did not pass: "
+                                    + str(not_run or compiled.get("error_excerpt")
+                                          or f"exit {compiled.get('exit')}"))
+    related = proof.get("related_tests")
+    if related and not related.get("base_fails"):
+        block = gates.related_tests_block(related, "the fix")
+        if block:
+            return "fix-unproven", block
+    reviews = {r.get("lens"): r for r in result.get("reviews") or []}
+    for lens in REVIEW_LENSES:
+        review = reviews.get(lens)
+        if review is None:
+            return "fix-rejected", f"no {lens} review"
+        if review.get("verdict") != "safe" or review.get("failed"):
+            return "fix-rejected", f"{lens}: {review.get('reason') or 'not safe'}"
+    return None, "proven on the base and safe under both lenses"

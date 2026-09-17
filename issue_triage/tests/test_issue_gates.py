@@ -1,4 +1,6 @@
 """issue_gates: close-as-dup policy + derived cluster state."""
+import copy
+
 import pytest
 
 from issue_triage import issue_gates
@@ -185,5 +187,92 @@ def test_reproduction_outcome(red, judge, gave_up, invalid, want):
 def test_every_outcome_is_in_the_vocabulary():
     assert set(issue_gates.REPRODUCTION_OUTCOMES) == {
         "reproduced", "not-reproduced", "unwritable", "wrong-symptom", "not-a-defect"}
+
+
+FIX = ("diff --git a/src/x.ts b/src/x.ts\n--- a/src/x.ts\n+++ b/src/x.ts\n"
+       "@@ -1,2 +1,2 @@\n ctx\n-old\n+new\n")
+CHANGES = [{"path": "src/x.ts", "rationale": "r"}]
+
+
+def test_a_disclosed_in_bounds_fix_clears_the_regate():
+    assert issue_gates.fix_patch_regate(FIX, changes=CHANGES, max_lines=300) == (True, "clean")
+
+
+@pytest.mark.parametrize("patch,changes,needle", [
+    ("", CHANGES, "not a diff"),
+    (FIX, [], "did not report"),
+    (FIX.replace("src/x.ts", "src/x.test.ts"), [{"path": "src/x.test.ts", "rationale": ""}],
+     "test files"),
+    (FIX.replace("src/x.ts", "package.json"), [{"path": "package.json", "rationale": ""}],
+     "dependency manifest"),
+    (FIX + "Binary files a/i.png and b/i.png differ\n", CHANGES, "binary"),
+    (FIX.replace("--- a/src/x.ts", "old mode 100644\nnew mode 100755\n--- a/src/x.ts"), CHANGES,
+     "mode"),
+])
+def test_the_regate_refuses(patch, changes, needle):
+    ok, why = issue_gates.fix_patch_regate(patch, changes=changes, max_lines=300)
+    assert not ok and needle in why
+
+
+def test_the_regate_counts_changed_lines_against_the_limit():
+    ok, why = issue_gates.fix_patch_regate(FIX, changes=CHANGES, max_lines=1)
+    assert not ok and "2 lines" in why
+    assert issue_gates.changed_line_count(FIX) == 2
+
+
+def test_the_regate_refuses_a_withheld_path(monkeypatch):
+    monkeypatch.setattr(issue_gates.gates, "fix_withheld_paths", lambda paths: list(paths))
+    ok, why = issue_gates.fix_patch_regate(FIX, changes=CHANGES, max_lines=300)
+    assert not ok and "withheld" in why
+
+
+def test_the_regate_refuses_tier_zero(monkeypatch):
+    monkeypatch.setattr(issue_gates.risktier, "pr_tier", lambda paths: 0)
+    ok, why = issue_gates.fix_patch_regate(FIX, changes=CHANGES, max_lines=300)
+    assert not ok and "tier" in why
+
+
+PROVEN = {"proof": {"red": {"exit": 20, "exit_confirm": 20},
+                    "green": {"exit": 0, "exit_confirm": 0}, "compile": None,
+                    "related_tests": None},
+          "reviews": [{"lens": "root-cause", "verdict": "safe", "reason": "", "concerns": []},
+                      {"lens": "scope-safety", "verdict": "safe", "reason": "", "concerns": []}]}
+
+
+def _result(**over):
+    out = copy.deepcopy(PROVEN)
+    for dotted, value in over.items():
+        node = out
+        *parents, leaf = dotted.split("__")
+        for p in parents:
+            node = node[p]
+        node[leaf] = value
+    return out
+
+
+def test_a_proven_doubly_reviewed_fix_passes_the_bar():
+    assert issue_gates.fix_proof_bar(PROVEN)[0] is None
+
+
+def test_related_tests_the_base_fails_too_do_not_count_against_the_fix():
+    related = {"files": ["a.test.ts"], "run": {"exit": 20}, "base_fails": True}
+    assert issue_gates.fix_proof_bar(_result(proof__related_tests=related))[0] is None
+
+
+@pytest.mark.parametrize("over,ending", [
+    ({"proof__green": {"exit": 20, "exit_confirm": None}}, "fix-unproven"),
+    ({"proof__green": {"exit": 0, "exit_confirm": 20}}, "fix-unproven"),
+    ({"proof__red": {"exit": 0, "exit_confirm": None}}, "fix-unproven"),
+    ({"proof__compile": {"exit": 20, "error_excerpt": "TS2304"}}, "fix-unproven"),
+    ({"proof__compile": {"refused": "empty"}}, "fix-unproven"),
+    ({"proof__related_tests": {"files": ["a.test.ts"], "run": {"exit": 20}}}, "fix-unproven"),
+    ({"reviews": PROVEN["reviews"][:1]}, "fix-rejected"),
+    ({"reviews": [PROVEN["reviews"][0],
+                  {"lens": "scope-safety", "verdict": "unsafe", "reason": "widens auth",
+                   "concerns": []}]}, "fix-rejected"),
+])
+def test_the_bar_names_the_shortfall(over, ending):
+    got, why = issue_gates.fix_proof_bar(_result(**over))
+    assert got == ending and why
 
 
