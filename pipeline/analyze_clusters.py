@@ -18,9 +18,7 @@ agents, never touch the store.
 from __future__ import annotations
 
 import argparse
-import json
 import sys
-import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -28,9 +26,6 @@ from pathlib import Path
 from pipeline import analyze_driver
 from pipeline import headless_agent
 from pipeline import redundancy
-from pipeline import settings
-from pipeline.analyze_driver import ANALYZE_FENCED_TAIL, ANALYZE_PROMPT
-from pipeline.settings import REPO_ROOT
 from pipeline.store import Store
 from pipeline.storekit import now as _now
 
@@ -45,8 +40,7 @@ def _say(msg: str) -> None:
 
 def run_cluster_agent(cid: int, bundle: dict) -> dict:
     """Run one headless analyze agent over a pre-built cluster bundle and
-    return its parsed payload. Pure with respect to the store — writes only a
-    temp bundle file. Raises ValueError if the agent's reply carries no
+    return its parsed payload. Pure with respect to the store. Raises ValueError if the agent's reply carries no
     parseable JSON."""
 
     def on_event(ev) -> None:
@@ -54,16 +48,7 @@ def run_cluster_agent(cid: int, bundle: dict) -> dict:
             inp = ev[2] if len(ev) > 2 else {}
             _say(f"    [cluster {cid}] · {headless_agent.tool_summary(ev[1], inp)}")
 
-    with tempfile.NamedTemporaryFile(
-            "w", suffix=".json", prefix=f"analyze-cluster-{cid}-", delete=False) as f:
-        f.write(json.dumps(bundle, indent=1))
-        bundle_path = f.name
-    prompt = (ANALYZE_PROMPT.replace("__BUNDLE_PATH__", bundle_path)
-                            .replace("__BRANCH__", settings.default_branch())
-              + ANALYZE_FENCED_TAIL)
-    text = headless_agent.run_agent(prompt, allow_gh=True, cwd=str(REPO_ROOT),
-                                    on_event=on_event)
-    return headless_agent.extract_json(text)
+    return headless_agent.extract_json(analyze_driver.run_analyze_agent(bundle, on_event))
 
 
 def main(argv: list[str] | None = None) -> int:

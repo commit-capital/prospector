@@ -148,3 +148,25 @@ def test_invalid_payload_is_not_committed(tmp_path, monkeypatch, capsys):
     assert rc == 1
     assert "validation failed" in out
     assert st.load_pr(1).disposition is None
+
+
+def test_the_analyze_agent_reads_only_its_bundle_and_the_members_diffs(monkeypatch, tmp_path):
+    import os
+    real = tmp_path / "diffs"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    seen: dict = {}
+
+    def fake_run(prompt, **kw):
+        path = next(t for t in prompt.split() if "analyze-cluster-" in t).rstrip(".,—")
+        seen.update(kw, bundle=json.load(open(path)))
+        return _fenced(7)
+
+    monkeypatch.setattr(analyze_clusters.headless_agent, "run_agent", fake_run)
+    analyze_clusters.run_cluster_agent(7, {"cluster": {"id": 7}, "members": [
+        {"pr": 1, "diff_path": str(link / "a.diff")}, {"pr": 2}]})
+    resolved = os.path.realpath(real / "a.diff")
+    assert seen["read_root"] == [seen["cwd"], resolved]
+    assert seen["bundle"]["members"][0]["diff_path"] == resolved
+    assert seen["allow_gh"] is True and list(seen["env_allow"]) == []

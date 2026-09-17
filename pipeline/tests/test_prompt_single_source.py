@@ -21,10 +21,17 @@ WORKFLOWS = Path(__file__).resolve().parents[1] / "workflows"
 class TestHeadlessPathsImportCanonical:
     """The per-PR headless paths consume the SAME object the driver ships — not a copy."""
 
-    def test_analyze_and_summarize(self):
-        assert triage_cluster.ANALYZE_PROMPT is ad.ANALYZE_PROMPT
-        assert triage_cluster.summarize_prompt is cd.summarize_prompt
-        assert recluster.summarize_prompt is cd.summarize_prompt
+    def test_analyze_and_summarize(self, monkeypatch):
+        prompts: list[str] = []
+        monkeypatch.setattr(ad.headless_agent, "run_agent",
+                            lambda prompt, **kw: prompts.append(prompt) or "{}")
+        ad.run_analyze_agent({"cluster": {"id": 1}, "members": []})
+        cd.run_summarize_agent([])
+        assert prompts[0].startswith(ad.ANALYZE_PROMPT[:100])
+        assert prompts[1].startswith(cd.summarize_prompt()[:200])
+        for module in (triage_cluster, recluster):
+            assert not hasattr(module, "ANALYZE_PROMPT")
+            assert not hasattr(module, "summarize_prompt")
 
     def test_security(self):
         assert security_review.REVIEW_PROMPT is sd.REVIEW_PROMPT

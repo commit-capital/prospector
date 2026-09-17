@@ -20,10 +20,8 @@ Progress is printed to stdout one line per step; the app streams it as SSE.
 from __future__ import annotations
 
 import argparse
-import json
 import subprocess
 import sys
-from pathlib import Path
 
 from pipeline import analyze_driver
 from pipeline import cluster_driver
@@ -32,17 +30,15 @@ from pipeline import headless_agent
 from pipeline import ingest
 from pipeline import redundancy
 from pipeline import reformat_rationales
-from pipeline import settings
-from pipeline.analyze_driver import ANALYZE_FENCED_TAIL, ANALYZE_PROMPT
-from pipeline.cluster_driver import SUMMARIZE_FENCED_TAIL, SUMMARIZE_PROMPT
 from pipeline.freshness import is_current
 from pipeline.settings import REPO_ROOT
 from pipeline.store import Store
 from pipeline.storekit import now as _now
 
-# The decision criteria are the canonical ANALYZE_PROMPT / SUMMARIZE_PROMPT owned by
-# the drivers — consumed here, never restated. This single-PR path only differs from
-# triage_cluster in scope (one PR's facts, not a whole cluster's members).
+# The decision criteria are the canonical ANALYZE / SUMMARIZE prompts, filled and
+# run by the drivers' own headless runners — never restated here. This single-PR
+# path only differs from triage_cluster in scope (one PR's facts, not a whole
+# cluster's members).
 
 
 def _say(msg: str) -> None:
@@ -72,11 +68,7 @@ def _resummarize(store: Store, pr: int, head_sha: str, title: str | None) -> Non
     validated accessor. Reuses the canonical SUMMARIZE_PROMPT + commit path."""
     batch = [{"pr": pr, "head_sha": head_sha, "title": title,
               "diff_path": str(diff_cache.DIFFS / f"{head_sha}.diff")}]
-    bp = Path(f"/tmp/reingest-summarize-{pr}.json")
-    bp.write_text(json.dumps(batch))
-    text = headless_agent.run_agent(
-        SUMMARIZE_PROMPT.replace("__BATCH_PATH__", str(bp)) + SUMMARIZE_FENCED_TAIL,
-        allow_gh=False, cwd=str(REPO_ROOT), on_event=_agent_progress)
+    text = cluster_driver.run_summarize_agent(batch, _agent_progress)
     items = headless_agent.extract_json(text).get("items", [])
     ok, errs = cluster_driver.commit_summaries(store, items)
     _say(f"    summaries written: {ok}; errors: {len(errs)}")
@@ -89,12 +81,9 @@ def _analyze_cluster(store: Store, cid: int) -> list[str]:
     (empty = committed). Reuses the canonical ANALYZE_PROMPT + commit/validate path,
     so a moved member re-dispositions the whole cluster consistently."""
     bundle = analyze_driver.bundle(store, cid, master=redundancy.MasterTree())
-    bp = Path(f"/tmp/reingest-analyze-{cid}.json")
-    bp.write_text(json.dumps(bundle))
-    text = headless_agent.run_agent(
-        ANALYZE_PROMPT.replace("__BUNDLE_PATH__", str(bp))
-                      .replace("__BRANCH__", settings.default_branch()) + ANALYZE_FENCED_TAIL,
-        allow_gh=True, cwd=str(REPO_ROOT), on_event=_agent_progress)
+    if bundle is None:
+        return [f"cluster {cid} is not in the store"]
+    text = analyze_driver.run_analyze_agent(bundle, _agent_progress)
     payload = headless_agent.extract_json(text)
     return analyze_driver.commit_analysis(store, payload)
 

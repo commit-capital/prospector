@@ -573,3 +573,20 @@ def test_run_on_bundle_runs_the_agent_in_a_private_directory_holding_the_bundle(
     assert seen["read_root"] == [seen["cwd"], str(extra)]
     assert seen["allow_gh"] is True and list(seen["env_allow"]) == []
     assert not os.path.exists(seen["cwd"])
+
+
+def test_every_agent_run_in_the_source_names_its_read_roots_and_environment():
+    import ast
+    from pathlib import Path
+    root = Path(ha.__file__).resolve().parents[1]
+    unscoped: list[str] = []
+    for tree_dir in ("pipeline", "issue_triage", "alert_triage", "prospector_app/backend"):
+        for path in (root / tree_dir).rglob("*.py"):
+            if "tests" in path.parts:
+                continue
+            for node in ast.walk(ast.parse(path.read_text())):
+                if (isinstance(node, ast.Call)
+                        and getattr(node.func, "attr", getattr(node.func, "id", "")) == "run_agent"
+                        and not {"read_root", "env_allow"} <= {k.arg for k in node.keywords}):
+                    unscoped.append(f"{path.relative_to(root)}:{node.lineno}")
+    assert unscoped == []

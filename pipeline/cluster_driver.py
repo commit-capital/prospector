@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 
 from pipeline import diff_cache
 from pipeline import gates
+from pipeline import headless_agent
 from pipeline import profile
 from pipeline import settings
 from pipeline import storekit
@@ -106,6 +107,17 @@ def summarize_prompt() -> str:
     return (SUMMARIZE_PROMPT
             .replace("__REPO__", settings.repo())
             .replace("__SUBSYSTEMS__", ", ".join(taxonomy.subsystem_names())))
+
+
+def run_summarize_agent(batch: list[dict], on_event=None) -> str:
+    """Run the headless SUMMARIZE agent over `batch` ({pr, head_sha, title,
+    diff_path} entries) and return its answer. It reads the batch file and the
+    diffs the batch lists, and nothing else on the machine."""
+    entries, diffs = headless_agent.with_resolved_diffs(batch)
+    return headless_agent.run_on_bundle(
+        entries,
+        lambda path: summarize_prompt().replace("__BATCH_PATH__", path) + SUMMARIZE_FENCED_TAIL,
+        prefix="summarize-", allow_gh=False, on_event=on_event, read_root=diffs)
 
 
 def write_batches(manifest: list[DiffManifestItem], batch_size: int = 10) -> dict:

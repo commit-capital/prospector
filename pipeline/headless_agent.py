@@ -480,6 +480,14 @@ def run_on_bundle(bundle: object, prompt: Callable[[str], str], *, prefix: str,
                          read_root=[tmp, *read_root], env_allow=(), on_event=on_event)
 
 
+def with_resolved_diffs(entries: Sequence[dict]) -> tuple[list[dict], list[str]]:
+    """`entries` with each `diff_path` resolved, and those paths: the form a
+    read rule names, so the bundle the agent reads and its rules agree."""
+    out = [{**e, "diff_path": os.path.realpath(e["diff_path"])} if e.get("diff_path") else e
+           for e in entries]
+    return out, [e["diff_path"] for e in out if e.get("diff_path")]
+
+
 def probe(timeout: int = 180) -> str | None:
     """Whether the CLI can serve a prompt on this machine right now: one
     trivial headless run on the cheapest model. None when it answered, else

@@ -38,7 +38,6 @@ from pipeline.store import DEFAULT_ROOT, Store
 
 HAIKU = "claude-haiku-4-5-20251001"
 SONNET = "claude-sonnet-5"
-PIPELINE_DIR = str(__import__("pathlib").Path(__file__).resolve().parent)
 
 _PROMPT = """You are preparing a PR-triage cluster rationale for on-screen display. Return ONLY a JSON object inside a ```json fenced block with exactly two keys: "summary" and "body".
 
@@ -99,8 +98,10 @@ def _parse_reply(text: str) -> tuple[str, str] | None:
 
 def _ask_cli(src: str, model: str) -> tuple[str, str] | None:
     try:
-        text = headless_agent.run_agent(_PROMPT.format(src=src), allow_gh=False,
-                                        cwd=PIPELINE_DIR, model=model, timeout=240)
+        with headless_agent.workdir("reformat-rationale-") as tmp:
+            text = headless_agent.run_agent(_PROMPT.format(src=src), allow_gh=False,
+                                            cwd=tmp, read_root=tmp, env_allow=(),
+                                            model=model, timeout=240)
     except Exception:
         return None
     return _parse_reply(text)
