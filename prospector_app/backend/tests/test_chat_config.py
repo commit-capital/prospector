@@ -282,14 +282,13 @@ def test_sanctioned_helpers_accept_relative_and_resolved_absolute_paths():
             assert f"Bash({absolute}:*)" in allowed
 
 
-def test_git_diff_is_allowlisted_read_only():
-    # `git diff` is read-only, so it's on the always-on allowlist (with or without a
-    # token) — but only that subcommand; mutating git commands stay denied.
-    for token in (False, True):
-        allowed = _flag(claude_backend.isolation_flags(token, can_resubmit=True), "--allowedTools")
-        assert "Bash(git diff:*)" in allowed
-        for danger in ("git commit", "git push", "git checkout", "git reset"):
-            assert danger not in allowed
+@pytest.mark.parametrize("can_write", [False, True])
+@pytest.mark.parametrize("can_resubmit", [False, True])
+def test_no_git_prefix_rule_is_allowlisted(can_write, can_resubmit):
+    # A `git` prefix rule is a write: `--output=<path>` on diff, log and show
+    # writes any file. The agent reads a prepared clone through `resubmit`.
+    allowed = _flag(claude_backend.isolation_flags(can_write, can_resubmit), "--allowedTools")
+    assert [rule for rule in allowed.split(",") if rule.startswith("Bash(git")] == []
 
 
 def test_write_and_agentic_tools_are_disallowed_but_bash_is_not():

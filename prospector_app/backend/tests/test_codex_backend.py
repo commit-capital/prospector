@@ -5,6 +5,8 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from prospector_app.backend import agent_backend
 from prospector_app.backend import chat
 from prospector_app.backend import codex_backend
@@ -347,6 +349,13 @@ def test_readiness_requires_a_binary_login_and_file_auth(tmp_path, monkeypatch):
     )
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-home"))
     assert backend.readiness()["problem"] == "Codex authentication is not file-backed"
+
+
+@pytest.mark.parametrize("can_write", [False, True])
+@pytest.mark.parametrize("can_resubmit", [False, True])
+def test_no_rule_lets_git_run_outside_the_sandbox(can_write, can_resubmit):
+    rules = codex_backend.isolation_rules(can_write, can_resubmit)
+    assert '["git"' not in rules
 
 
 def test_read_only_rules_include_text_filters_and_repo_search():

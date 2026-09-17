@@ -1,3 +1,4 @@
+import itertools
 import json
 import os
 
@@ -405,7 +406,7 @@ def test_flags_without_read_root_are_the_unscoped_list_verbatim():
     assert ha._flags(False) == [
         "--allowedTools", "Read,Grep,Glob", "--disallowedTools", *_DENIED, *_TAIL]
     assert ha._flags(True) == [
-        "--allowedTools", f"Read,Grep,Glob,{_GH_RULES},Bash(git log:*)",
+        "--allowedTools", f"Read,Grep,Glob,{_GH_RULES}",
         "--disallowedTools", *_DENIED, *_TAIL]
     assert ha._flags(False, allow=["Bash(/x/tool:*)"]) == [
         "--allowedTools", "Read,Grep,Glob,Bash(/x/tool:*)",
@@ -454,6 +455,39 @@ def test_git_root_grants_the_pinned_reader_and_no_git_prefix_rule(tmp_path):
 def test_an_edit_root_alone_grants_no_git(tmp_path):
     allowed = _allowed(ha._flags(False, edit_root=str(tmp_path), read_root=str(tmp_path)))
     assert not any("git" in a for a in allowed)
+
+
+def _git_rules(allowed: list[str]) -> list[str]:
+    """The Bash rules whose command is git or a tool named for it, judged by
+    the command's basename: the checkout's own path may spell `git`."""
+    return [a for a in allowed if a.startswith("Bash(")
+            and os.path.basename(a[len("Bash("):].split(":")[0].split()[0]).startswith("git")]
+
+
+@pytest.mark.parametrize(
+    "allow_gh,scoped,edit,git",
+    [c for c in itertools.product([False, True], repeat=4) if c[1] or not (c[2] or c[3])])
+def test_the_pinned_reader_is_the_only_rule_that_names_git(tmp_path, allow_gh, scoped, edit, git):
+    root = str(tmp_path)
+    allowed = _allowed(ha._flags(allow_gh, edit_root=root if edit else None,
+                                 read_root=root if scoped else None,
+                                 git_root=root if git else None))
+    assert _git_rules(allowed) == ([f"Bash({ha.GIT_READ}:*)"] if git else [])
+
+
+@pytest.mark.parametrize("rule", [
+    "Bash(git log:*)", "Bash(git diff:*)", "Bash(git:*)", "Bash(git)", "Bash(git *)",
+    "Bash(/usr/bin/git show:*)",
+])
+def test_a_caller_cannot_add_a_git_prefix_rule(tmp_path, rule):
+    for read_root in (None, str(tmp_path)):
+        with pytest.raises(ValueError, match="git_root"):
+            ha._flags(False, allow=[rule], read_root=read_root)
+
+
+def test_a_caller_may_still_add_a_tool_whose_name_only_starts_with_git(tmp_path):
+    rule = "Bash(/x/agent/git-helper:*)"
+    assert rule in _allowed(ha._flags(False, allow=[rule], read_root=str(tmp_path)))
 
 
 @pytest.mark.parametrize("kwargs", [{"edit_root": "/wt"}, {"git_root": "/wt"}])

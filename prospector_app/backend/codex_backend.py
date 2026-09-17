@@ -57,7 +57,6 @@ _READ_ALLOW: tuple[tuple[str, ...], ...] = (
     ("gh", "release", "list"),
     ("gh", "run", "view"),
     ("gh", "run", "list"),
-    ("git", "diff"),
     # Text filters; the sandbox, not the rule, bounds what they may write.
     ("head",), ("tail",), ("grep",), ("sed",), ("awk",), ("sort",), ("uniq",),
     ("wc",), ("cut",), ("tr",), ("jq",),
