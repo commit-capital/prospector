@@ -12,6 +12,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from issue_triage.issue_freshness import is_current
+from pipeline.gates import SENTINEL_PASS, SENTINEL_TEST_FAIL
 
 if TYPE_CHECKING:
     from issue_triage.issue_model import Issue, IssueCluster
@@ -95,3 +96,43 @@ def issue_cluster_state(cluster: IssueCluster, issues: dict[int, Issue],
     if len(active) <= 1:
         return "no-dups"
     return "done"
+
+
+REPRODUCTION_OUTCOMES = ("reproduced", "not-reproduced", "unwritable", "wrong-symptom",
+                         "not-a-defect")
+_CONFIDENCES = ("high", "medium", "low")
+
+
+def _rating(judge: dict | None, key: str, flag: str) -> tuple[bool, bool] | None:
+    """(the judge's answer, whether it holds it above low confidence), or None
+    when the rating is missing or malformed."""
+    part = (judge or {}).get(key)
+    if not isinstance(part, dict) or not isinstance(part.get(flag), bool):
+        return None
+    if part.get("confidence") not in _CONFIDENCES:
+        return None
+    return part[flag], part["confidence"] != "low"
+
+
+def reproduction_outcome(red: dict, judge: dict | None, *, gave_up: bool,
+                         invalid: str | None) -> str | None:
+    """What a reproduction attempt amounts to, from the host's two red exits and
+    the judge's ratings. None is a machine fault: a sandbox exit that is not a
+    test verdict, or a judge that gave no usable rating. The judge rates; this
+    decides — a rating held with low confidence reads as a no."""
+    if gave_up or invalid:
+        return "unwritable"
+    first, confirm = red.get("exit"), red.get("exit_confirm")
+    if first == SENTINEL_PASS or confirm == SENTINEL_PASS:
+        return "not-reproduced"
+    if first != SENTINEL_TEST_FAIL or confirm != SENTINEL_TEST_FAIL:
+        return None
+    symptom = _rating(judge, "symptom_match", "matches")
+    defect = _rating(judge, "defect", "is_defect")
+    if symptom is None or defect is None:
+        return None
+    if symptom != (True, True):
+        return "wrong-symptom"
+    if defect != (True, True):
+        return "not-a-defect"
+    return "reproduced"

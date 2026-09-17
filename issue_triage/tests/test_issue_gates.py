@@ -1,4 +1,6 @@
 """issue_gates: close-as-dup policy + derived cluster state."""
+import pytest
+
 from issue_triage import issue_gates
 from issue_triage import issue_store
 
@@ -147,5 +149,41 @@ def test_cluster_state_needs_curation_when_unconfirmed(tmp_path):
     cl = st.create_issue_cluster(1, "c")
     cl.set_members([4, 5])
     assert issue_gates.issue_cluster_state(cl, st.all_issues()) == "needs-curation"
+
+
+RED = {"exit": 20, "exit_confirm": 20}
+SURE = {"symptom_match": {"matches": True, "confidence": "high", "reasoning": "r"},
+        "defect": {"is_defect": True, "confidence": "medium", "reasoning": "r"}}
+
+
+def _judge(**over):
+    out = {k: dict(v) for k, v in SURE.items()}
+    for key, change in over.items():
+        out[key].update(change)
+    return out
+
+
+@pytest.mark.parametrize("red,judge,gave_up,invalid,want", [
+    (RED, SURE, False, None, "reproduced"),
+    (RED, SURE, True, None, "unwritable"),
+    (RED, SURE, False, "path-not-a-test-path", "unwritable"),
+    ({"exit": 0, "exit_confirm": None}, SURE, False, None, "not-reproduced"),
+    ({"exit": 20, "exit_confirm": 0}, SURE, False, None, "not-reproduced"),
+    ({"exit": 124, "exit_confirm": None}, SURE, False, None, None),
+    ({"exit": 20, "exit_confirm": 30}, SURE, False, None, None),
+    (RED, None, False, None, None),
+    (RED, {"symptom_match": {"matches": "yes"}}, False, None, None),
+    (RED, _judge(symptom_match={"matches": False}), False, None, "wrong-symptom"),
+    (RED, _judge(symptom_match={"confidence": "low"}), False, None, "wrong-symptom"),
+    (RED, _judge(defect={"is_defect": False}), False, None, "not-a-defect"),
+    (RED, _judge(defect={"confidence": "low"}), False, None, "not-a-defect"),
+])
+def test_reproduction_outcome(red, judge, gave_up, invalid, want):
+    assert issue_gates.reproduction_outcome(red, judge, gave_up=gave_up, invalid=invalid) == want
+
+
+def test_every_outcome_is_in_the_vocabulary():
+    assert set(issue_gates.REPRODUCTION_OUTCOMES) == {
+        "reproduced", "not-reproduced", "unwritable", "wrong-symptom", "not-a-defect"}
 
 
