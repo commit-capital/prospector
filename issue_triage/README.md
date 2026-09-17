@@ -24,6 +24,12 @@ gated and logged.**
   edit/comment/label/state change — the analog of a PR's `head_sha`), its
   summary/repro/analysis go stale **automatically**; `is_current()` is the single
   check.
+- **Links** (`issue_links.py` + `pr_index.py`): the ONE accessor for an issue's
+  linked PRs. `linked_prs` merges the issue's stored candidates, GitHub's own
+  closing references, and an index of the PR store's `issues.linked` sections
+  into one entry per PR under its strongest evidence; the index owns what a PR
+  body claims, so a PR opened or edited after the issue's last ingest shows up
+  everywhere links are displayed, bundled, or gated on.
 - **Gates** (`issue_gates.py`): the ONE policy module. `close_dup_allowed` (pipeline
   auto-recommend) and `close_dup_eligibility` (the app/executor pre-write gate —
   adds a live "canonical open or closed as fixed" check), plus the derived
@@ -83,7 +89,8 @@ drivers (`issue_ingest`, `issue_cluster_driver`) import — `fetch_all`, `summar
 
 `issue_ingest` writes each issue's candidate PRs into the store (`set_links`); the
 PR pipeline (`pipeline/ingest.py:load_issue_links`) reads them from there, inverting
-issue→PRs into its PR→issues map. `pain-weights.json` holds the pain-ranking
+issue→PRs into its PR→issues map. Readers go through `issue_links.linked_prs`
+instead, which reads the PR side's own `issues.linked` back through `pr_index`. `pain-weights.json` holds the pain-ranking
 weights, loaded by `issue_cluster_driver`.
 
 ## Skills

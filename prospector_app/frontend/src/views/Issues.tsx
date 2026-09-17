@@ -48,25 +48,31 @@ export function DispositionChip({ d }: { d: IssueTriageDisposition | null }) {
 }
 
 // The PRs that may address an issue. Evidence-backed matches — an explicit
-// Fixes/Closes/Resolves in the PR body, a merged fixer the already-fixed
-// detector attributed by symptom (fix-found), or a PR the issue's own text names
-// (issue-ref) — render as links, strongest evidence first and most-resolved first
-// (merged, then closed, then open); a PR that merely shares the issue's subsystem
-// tag is weak evidence and collapses into a muted count. A PR in the app's
-// store — open, merged, or closed — opens in the in-app flyout (pr-ref); one that
-// isn't in the store links out to GitHub, with a state chip (purple merged /
-// muted closed) when its state is known.
+// Fixes/Closes/Resolves in the PR body, GitHub's own closing reference, a merged
+// fixer the already-fixed detector attributed by symptom (fix-found), or a PR the
+// issue's own text names (issue-ref) — render as links, strongest evidence first
+// and most-resolved first (merged, then closed, then open); a PR that merely
+// shares the issue's subsystem tag, or names the issue in its body without
+// claiming to fix it, is weak evidence and collapses into a muted count. A PR in
+// the app's store — open, merged, or closed — opens in the in-app flyout
+// (pr-ref); one that isn't in the store links out to GitHub, with a state chip
+// (purple merged / muted closed) when its state is known.
 const EVIDENCE: Record<string, string> = {
   explicit: "explicit Fixes/Closes/Resolves reference in the PR body",
+  github: "GitHub lists this PR as closing the issue",
   "fix-found": "merged fix attributed to this issue by the already-fixed detector",
   "issue-ref": "referenced from the issue's own text",
 };
 
+// Which kinds count as reference-backed — issue_links.REFERENCED, the same set
+// the row's referenced_pr_count is summed over.
+const REFERENCED = new Set(["explicit", "github", "fix-found", "fix-match", "issue-ref"]);
+
 export function LinkedPRs({ prs, count, referencedCount }: { prs: IssuePR[]; count?: number; referencedCount?: number }) {
-  const referenced = prs.filter((p) => (p.how ?? "") in EVIDENCE);
+  const referenced = prs.filter((p) => REFERENCED.has(p.how ?? ""));
   const total = count ?? prs.length;
   const nReferenced = referencedCount ?? referenced.length;
-  const nSubsystem = total - nReferenced;
+  const nWeak = total - nReferenced;
   if (!total) return <span className="muted">—</span>;
   return (
     <span className="issue-prs">
@@ -84,10 +90,10 @@ export function LinkedPRs({ prs, count, referencedCount }: { prs: IssuePR[]; cou
         );
       })}
       {nReferenced > 6 && <span className="muted small"> +{nReferenced - 6}</span>}
-      {nSubsystem > 0 && (
+      {nWeak > 0 && (
         <span className="muted small"
-              title="PRs that only share the issue's subsystem tag — no reference either way">
-          {nReferenced > 0 ? ` +${nSubsystem} same-subsystem` : `${nSubsystem} same-subsystem`}
+              title="PRs that only share the issue's subsystem tag, or name it in a PR body without claiming to fix it">
+          {nReferenced > 0 ? ` +${nWeak} weakly linked` : `${nWeak} weakly linked`}
         </span>
       )}
     </span>

@@ -61,7 +61,20 @@ _JSON = JSON().with_variant(JSONB, "postgresql")
 #      scanner's normalized feedback, keyed by reviewer id) and the `reviewers`
 #      registry records each bot's latest activity; an older reader finds no
 #      Greptile score in `signals` and judges every PR un-reviewed.
-STORE_SCHEMA_VERSION = 22
+# 20 — verify_request error_kind gains "agent-unavailable" (older validators
+#      refuse to save a record carrying it), and each worker's lane health lives
+#      in its own `worker_health:<worker id>` registry row, which older code has
+#      no accessor for.
+# 21 — verify_request error_kind gains "base-lane", the ending for a lane command
+#      the pristine base fails too; older validators refuse to save it.
+# 22 — fix_request carries an `objection` (the machine judgment a continuation
+#      authors from) and the "objection" source; an older validator refuses the
+#      source and an older worker drops the objection when it writes the record
+#      back.
+# 23 — an issue's links section carries sibling keys beside candidates (github
+#      closing references); an older ingest or find-fixed write replaces the
+#      section whole and drops them.
+STORE_SCHEMA_VERSION = 23
 
 # saved_at is a microsecond-resolution ISO timestamp stamped on every save — when
 # the store row was last written (distinct from `updated_at`, which mirrors the

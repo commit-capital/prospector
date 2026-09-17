@@ -42,3 +42,9 @@ def build(prs: Iterable[Pr]) -> dict[int, list[PrLink]]:
     for (issue, _), link in sorted(best.items()):
         out.setdefault(issue, []).append(link)
     return out
+
+
+def from_store() -> dict[int, list[PrLink]]:
+    """The index over every PR the PR store holds."""
+    from pipeline.store import Store
+    return build(Store().all_prs().values())

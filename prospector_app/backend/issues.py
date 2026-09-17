@@ -1,9 +1,11 @@
 """GitHub Issues, folded into the app (#192).
 
 A read-only projection over the issue store (issue_triage/store/): the migrated
-issues, their dedup clusters, pain, repro grades, and the issue<->PR candidate
-links. Assembles the rows + the curated close-as-dup worklist the Issues view
-shows, and cross-links each issue to the PRs that may address it.
+issues, their dedup clusters, pain, repro grades, and the issue<->PR links.
+Assembles the rows + the curated close-as-dup worklist the Issues view shows, and
+cross-links each issue to the PRs that may address it through
+issue_links.linked_prs over the stored links and an index of the app's PR
+snapshot.
 
 Writes (close-as-dup) go through the app executor as the configured bot, gated by
 issue_gates.close_dup_eligibility (via close_dup_gate) and logged like every other
@@ -17,6 +19,8 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from issue_triage import issue_links
+from issue_triage import pr_index
 from pipeline import settings
 from pipeline import profile
 from pipeline import storekit
@@ -129,30 +133,46 @@ def _live_pr_states(numbers: list[int]) -> dict[int, str]:
     return {n: _pr_state_cache[n][1] for n in numbers if n in _pr_state_cache}
 
 
-# Explicit Fixes/Closes candidates lead — the PR's own claim it fixes the issue;
-# fix-found candidates (a merged fixer the already-fixed detector attributed by
-# symptom) follow; issue-ref candidates (the issue's text naming the PR) next;
-# subsystem tag-matches last. Within each kind, a merged PR (likely resolved)
+# Within one evidence kind — issue_links.HOW_RANK orders those, explicit and
+# GitHub's own closing reference leading — a merged PR (likely resolved) sorts
 # first, a closed (abandoned) one next, open/unknown last. Ties break by PR
 # number.
 _STATE_RANK = {"merged": 0, "closed": 1}
-_HOW_RANK = {"explicit": 0, "fix-found": 1, "issue-ref": 2}
+
+# The link kinds that claim the PR fixes the issue, so close-as-fixed can act on
+# them: the PR body's own Fixes/Closes/Resolves, GitHub's closing reference, and
+# a merged fixer the already-fixed detector attributed by symptom.
+_FIXER_KINDS = ("explicit", "github", "fix-found")
+
+_pr_links_cache: tuple[tuple[int, int], dict[int, list[pr_index.PrLink]]] | None = None
 
 
-def _how_rank(cand: dict) -> int:
-    return _HOW_RANK.get(cand.get("how") or "", 3)
+def _pr_links() -> dict[int, list[pr_index.PrLink]] | None:
+    """Issue number -> the PRs whose own bodies link it, inverted from the app's
+    PR snapshot and cached on that snapshot's identity. None while the snapshot
+    cold-loads: an empty index would read as "no PR body links this issue", which
+    would drop every stored explicit link the accessor defers to it for."""
+    global _pr_links_cache
+    if data.snapshot_loading():
+        return None
+    snap = data.prs()
+    key = (data.generation(), id(snap))
+    if _pr_links_cache is None or _pr_links_cache[0] != key:
+        _pr_links_cache = (key, pr_index.build(snap.values()))
+    return _pr_links_cache[1]
 
 
-def _referenced(cand: dict) -> bool:
-    """An evidence-backed candidate — explicit, detector-found, or issue-ref —
-    never a tag-match."""
-    return cand.get("how") in ("explicit", "fix-found", "issue-ref")
+def _links_for(iss: Issue) -> list[dict]:
+    """The issue's linked PRs, one entry per PR under its strongest evidence,
+    read through the ONE accessor over its stored links and the PR index."""
+    index = _pr_links()
+    return issue_links.linked_prs(iss, None if index is None else index.get(iss.number, []))
 
 
 def _cluster_linked_prs(members: list[int], issues: dict[int, Issue],
                         store_states: dict[int, str],
                         live_states: dict[int, str] | None = None) -> list[dict]:
-    """Union of candidate PRs across every issue in the cluster, deduped by PR
+    """Union of linked PRs across every issue in the cluster, deduped by PR
     number, each stamped with its real `state` (open/merged/closed) and `in_store`.
     Explicit Fixes/Closes matches lead, then issue-ref matches, then subsystem
     matches, each kind most-resolved first. A subsystem match landing on a
@@ -164,13 +184,10 @@ def _cluster_linked_prs(members: list[int], issues: dict[int, Issue],
         iss = issues.get(n)
         if not iss:
             continue
-        for cand in iss.candidate_prs:
-            pr = cand.get("pr")
-            if pr is None:
-                continue
-            existing = by_pr.get(pr)
-            if existing is None or _how_rank(cand) < _how_rank(existing):
-                by_pr[pr] = cand
+        for cand in _links_for(iss):
+            existing = by_pr.get(cand["pr"])
+            if existing is None or issue_links.how_rank(cand) < issue_links.how_rank(existing):
+                by_pr[cand["pr"]] = cand
     terminal = {"merged", "closed"}
     # A terminal store state (merged/closed) is authoritative and needs no live
     # fetch; any other PR is resolved live, since a store snapshot marked 'open'
@@ -178,17 +195,21 @@ def _cluster_linked_prs(members: list[int], issues: dict[int, Issue],
     live = (live_states if live_states is not None
             else _live_pr_states([pr for pr in by_pr if store_states.get(pr) not in terminal]))
 
-    def _state(pr: int) -> str | None:
-        stored = store_states.get(pr)
-        return stored if stored in terminal else (live.get(pr) or stored)
+    def _state(cand: dict) -> str | None:
+        stored = store_states.get(cand["pr"])
+        if stored in terminal:
+            return stored
+        return live.get(cand["pr"]) or stored or cand.get("state")
 
-    out = [{**by_pr[pr], "in_store": pr in store_states, "state": _state(pr)} for pr in by_pr]
-    return sorted(out, key=lambda c: (_how_rank(c), _STATE_RANK.get(c["state"], 2), c["pr"]))
+    out = [{**cand, "in_store": pr in store_states, "state": _state(cand)}
+           for pr, cand in by_pr.items()]
+    return sorted(out, key=lambda c: (issue_links.how_rank(c),
+                                      _STATE_RANK.get(c["state"], 2), c["pr"]))
 
 
-def _issue_linked_prs(iss: Issue, store_states: dict[int, str] | None,
+def _issue_linked_prs(links: list[dict], store_states: dict[int, str] | None,
                       *, limit: int | None = None) -> list[dict]:
-    """The issue's candidate PRs — explicit Fixes/Closes matches first, then
+    """The issue's linked PRs — explicit Fixes/Closes matches first, then
     issue-ref matches, then subsystem tag-matches, each kind most-resolved first
     (merged, closed, then open/unknown) when store states are available. Trimming
     to `limit` happens after the sort, so a trim never drops the strongest fix
@@ -196,10 +217,11 @@ def _issue_linked_prs(iss: Issue, store_states: dict[int, str] | None,
     if limit == 0:
         return []
     if store_states is None:
-        return sorted((dict(c) for c in iss.candidate_prs), key=_how_rank)[:limit]
+        return sorted(links, key=issue_links.how_rank)[:limit]
     stamped = [{**c, "in_store": c["pr"] in store_states,
-                "state": store_states.get(c["pr"])} for c in iss.candidate_prs]
-    stamped.sort(key=lambda c: (_how_rank(c), _STATE_RANK.get(c["state"], 2), c.get("pr") or 0))
+                "state": store_states.get(c["pr"], c.get("state"))} for c in links]
+    stamped.sort(key=lambda c: (issue_links.how_rank(c),
+                                _STATE_RANK.get(c["state"], 2), c["pr"]))
     return stamped[:limit]
 
 
@@ -209,6 +231,7 @@ def _row(iss: Issue, clusters_by_id: dict[int, IssueCluster], store_states: dict
     cl = clusters_by_id.get(cid) if cid is not None else None
     members = cl.members if cl else [iss.number]
     canonical = cl.canonical if cl else None
+    links = _links_for(iss)
     return {
         "number": iss.number,
         "title": iss.title,
@@ -236,14 +259,14 @@ def _row(iss: Issue, clusters_by_id: dict[int, IssueCluster], store_states: dict
         "duplicates": [m for m in members if m != iss.number],
         "disposition": iss.disposition,
         "fixed_by": iss.fixed_by if iss.disposition == "close-fixed" else None,
-        "linked_prs": _issue_linked_prs(iss, store_states, limit=link_limit),
-        "linked_pr_count": len(iss.candidate_prs),
-        "referenced_pr_count": sum(1 for c in iss.candidate_prs if _referenced(c)),
+        "linked_prs": _issue_linked_prs(links, store_states, limit=link_limit),
+        "linked_pr_count": len(links),
+        "referenced_pr_count": sum(1 for c in links if issue_links.referenced(c)),
         # Merged reference-backed fixers — the "likely fixed" signal the prs sort
         # leads with.
         "referenced_merged_count": 0 if store_states is None else sum(
-            1 for c in iss.candidate_prs
-            if _referenced(c) and store_states.get(c["pr"]) == "merged"),
+            1 for c in links
+            if issue_links.referenced(c) and store_states.get(c["pr"]) == "merged"),
     }
 
 
@@ -444,20 +467,19 @@ def duplicate_groups() -> list[dict]:
         cand["pr"]
         for cl, _, _ in pending
         for n in cl.members if issues.get(n)
-        for cand in issues[n].candidate_prs
-        if cand.get("pr") is not None and store_states.get(cand["pr"]) not in terminal
+        for cand in _links_for(issues[n])
+        if store_states.get(cand["pr"]) not in terminal
     }
     live_states = _live_pr_states(sorted(pr_numbers))
     groups: list[dict] = []
     for cl, dups, canon_iss in pending:
         canon = cl.canonical
         linked = _cluster_linked_prs(cl.members, issues, store_states, live_states)
-        # The merged PR that fixes a cluster member — explicit or detector-found,
-        # the two kinds close_fixed_gate accepts — offered as the card's "close as
-        # fixed" fixer. `linked` is rank-sorted, so an explicit fixer wins.
+        # The merged PR that fixes a cluster member — one of the kinds
+        # close_fixed_gate accepts — offered as the card's "close as fixed"
+        # fixer. `linked` is rank-sorted, so the strongest claim wins.
         fixer = next((lp["pr"] for lp in linked
-                      if lp.get("how") in ("explicit", "fix-found")
-                      and lp.get("state") == "merged"), None)
+                      if lp.get("how") in _FIXER_KINDS and lp.get("state") == "merged"), None)
         groups.append({
             "canonical": canon,
             "canonical_title": canon_iss.title if canon_iss else None,
@@ -538,14 +560,14 @@ def _live_state(n: int) -> str | None:
 
 def close_fixed_gate(n: int, fixed_by: int) -> tuple[bool, str]:
     """The executor's pre-write gate for closing issue `n` as fixed by PR `fixed_by`.
-    `fixed_by` must be a recorded fix candidate — an explicit Fixes/Closes/Resolves
-    reference or a detector-found (`fix-found`) fixer — of the issue or one of its
-    cluster siblings — the same fixer link the card surfaces — so neither an
-    arbitrary merged PR nor a mere subsystem tag-match can close an
-    issue; and it must be currently merged, re-verified live at write time (the
-    render-warmed cache entry is evicted first, never trusting a stored snapshot —
-    the staleness that motivates this path). The issue's own state is resolved live
-    too, so an already-closed issue is blocked at this gate. See
+    `fixed_by` must claim to fix the issue or one of its cluster siblings — an
+    explicit Fixes/Closes/Resolves reference, GitHub's own closing reference, or a
+    detector-found (`fix-found`) fixer — read fresh through the same accessor the
+    card surfaces, so neither an arbitrary merged PR nor a mere subsystem tag-match
+    can close an issue; and it must be currently merged, re-verified live at write
+    time (the render-warmed cache entry is evicted first, never trusting a stored
+    snapshot — the staleness that motivates this path). The issue's own state is
+    resolved live too, so an already-closed issue is blocked at this gate. See
     issue_gates.close_fixed_eligibility."""
     st = _store()
     issues = st.all_issues()
@@ -557,8 +579,8 @@ def close_fixed_gate(n: int, fixed_by: int) -> tuple[bool, str]:
         cl = st.load_issue_cluster(iss.cluster_id)
         if cl:
             members = cl.members
-    candidates = {c.get("pr") for m in members if issues.get(m)
-                  for c in issues[m].candidate_prs if c.get("how") in ("explicit", "fix-found")}
+    candidates = {c["pr"] for m in members if issues.get(m)
+                  for c in _links_for(issues[m]) if c.get("how") in _FIXER_KINDS}
     if int(fixed_by) not in candidates:
         return False, f"#{fixed_by} is not a fix candidate of issue #{n}"
     from issue_triage import issue_gates

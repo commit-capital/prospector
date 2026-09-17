@@ -17,6 +17,8 @@ import json
 import sys
 from typing import TYPE_CHECKING
 
+from issue_triage import issue_links
+from issue_triage import pr_index
 from issue_triage.issue_freshness import is_current
 from issue_triage.issue_store import IssueStore
 from pipeline import storekit
@@ -74,7 +76,8 @@ def candidates(store: IssueStore) -> list[int]:
     return sorted(todo, key=lambda n: (-pain.get(n, 0.0), n))
 
 
-def _issue_bundle(iss: Issue, cluster: IssueCluster | None) -> dict:
+def _issue_bundle(iss: Issue, cluster: IssueCluster | None,
+                  pr_links: list[pr_index.PrLink] | None) -> dict:
     return {
         "number": iss.number,
         "title": iss.title,
@@ -84,16 +87,20 @@ def _issue_bundle(iss: Issue, cluster: IssueCluster | None) -> dict:
         "subsystem": iss.subsystem,
         "repro_grade": iss.repro_grade,
         "identifiers": iss.identifiers,
-        "candidate_prs": iss.candidate_prs,
+        "candidate_prs": [{"pr": c["pr"], "how": c["how"], "title": c["title"]}
+                          for c in issue_links.linked_prs(iss, pr_links)],
         "cluster": None if cluster is None else {
             "id": cluster.id, "members": cluster.members, "pain": cluster.pain},
     }
 
 
-def bundle(store: IssueStore, only: list[int] | None = None) -> list[dict]:
+def bundle(store: IssueStore, only: list[int] | None = None,
+           pr_links: dict[int, list[pr_index.PrLink]] | None = None) -> list[dict]:
     """The evidence bundle handed to the agentic runner — one entry per candidate
     issue, with its cluster context. `only` restricts to those numbers (the runner
-    batches candidates across several calls)."""
+    batches candidates across several calls). `pr_links` is the PR index
+    (`pr_index.from_store`), authoritative for what a PR body links; None leaves
+    each issue's stored links standing."""
     issues = store.all_issues()
     clusters = store.all_issue_clusters()
     want = candidates(store) if only is None else [n for n in only if n in issues]
@@ -101,7 +108,7 @@ def bundle(store: IssueStore, only: list[int] | None = None) -> list[dict]:
     for n in want:
         iss = issues[n]
         cl = clusters.get(iss.cluster_id) if iss.cluster_id else None
-        out.append(_issue_bundle(iss, cl))
+        out.append(_issue_bundle(iss, cl, None if pr_links is None else pr_links.get(n, [])))
     return out
 
 
@@ -151,7 +158,8 @@ def main(argv: list[str] | None = None) -> None:
     if cmd == "candidates":
         print("\n".join(str(n) for n in candidates(store)))
     elif cmd == "bundle":
-        print(json.dumps({"issues": bundle(store), "criteria": FIX_CRITERIA}, indent=1))
+        print(json.dumps({"issues": bundle(store, pr_links=pr_index.from_store()),
+                          "criteria": FIX_CRITERIA}, indent=1))
     elif cmd == "commit":
         payload = json.loads(open(argv[1]).read())
         verdicts = payload["verdicts"] if isinstance(payload, dict) else payload

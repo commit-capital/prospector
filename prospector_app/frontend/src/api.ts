@@ -1004,7 +1004,9 @@ function activitySearch(scope: ActivityScopeParams = {}, initial?: Record<string
 
 // --- GitHub Issues, folded into the app (#192) ---
 export interface IssuePR {
-  pr: number; title?: string | null; how?: "explicit" | "fix-found" | "issue-ref" | "subsystem" | null;
+  pr: number; title?: string | null;
+  // The vocabulary issue_triage/issue_links.py ranks — strongest evidence first.
+  how?: "explicit" | "github" | "fix-found" | "fix-match" | "issue-ref" | "body-ref" | "subsystem" | null;
   in_store?: boolean; state?: "open" | "merged" | "closed" | null;
 }
 export interface IssueRow {

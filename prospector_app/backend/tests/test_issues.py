@@ -9,12 +9,22 @@ from prospector_app.backend import safety_guard
 from pipeline import settings
 
 
+def _index_link(pr, how="explicit"):
+    """One PR-index entry — what pr_index.build yields for an open PR whose body
+    links the issue."""
+    return {"pr": pr, "how": how, "state": "open", "draft": False,
+            "title": f"PR {pr}", "updated_at": None, "head_sha": None}
+
+
 def _seed(tmp_path, monkeypatch):
     """A canonical (#10) and its confirmed duplicate (#11) in one cluster. PR 900 is
     in the PR store and open (opens in-app); anything else is off-store, its real
-    state resolved live (stubbed here — never touches GitHub)."""
+    state resolved live (stubbed here — never touches GitHub). The PR index reads
+    unavailable, so the stored candidates stand; a test that wants it stubs
+    _pr_links itself."""
     monkeypatch.setattr(issues, "STORE_ROOT", tmp_path)
     monkeypatch.setattr(issues, "_store_pr_states", lambda: ({900: "open"}, False))
+    monkeypatch.setattr(issues, "_pr_links", lambda: None)
     monkeypatch.setattr(issues, "_live_pr_states", lambda nums: {})
     monkeypatch.setattr(issues, "_live_state", lambda n: "open")
     monkeypatch.setattr(issues.data, "author_stats", lambda handle: {
@@ -696,6 +706,89 @@ def test_dup_group_offers_fix_found_fixer(tmp_path, monkeypatch):
     monkeypatch.setattr(issues, "_live_pr_states", lambda nums: {950: "merged"})
     g = next(g for g in issues.duplicate_groups() if g["cluster"] == 5)
     assert g["fixed_comment"] is not None and "#950" in g["fixed_comment"]
+
+
+def test_row_links_a_pr_the_index_holds_and_the_issue_never_stored(tmp_path, monkeypatch):
+    """A PR opened after the issue's last ingest reaches the row through the PR
+    index, counted as reference-backed."""
+    st = _seed(tmp_path, monkeypatch)
+    st.edit_issue(10).set_links([])
+    monkeypatch.setattr(issues, "_store_pr_states", lambda: ({901: "open"}, False))
+    monkeypatch.setattr(issues, "_pr_links", lambda: {10: [_index_link(901)]})
+    row = issues.get_issue(10)
+    assert [(p["pr"], p["how"], p["state"]) for p in row["linked_prs"]] == [(901, "explicit", "open")]
+    assert row["linked_pr_count"] == 1 and row["referenced_pr_count"] == 1
+
+
+def test_an_available_index_replaces_stored_direct_links_an_unavailable_one_does_not(
+        tmp_path, monkeypatch):
+    """An index entry is authoritative for what a PR body claims, so a stored
+    explicit candidate the index no longer holds drops out; with the index
+    unavailable the stored snapshot stands."""
+    st = _seed(tmp_path, monkeypatch)
+    st.edit_issue(10).set_links([{"pr": 900, "title": "fix boot", "how": "explicit"}])
+    monkeypatch.setattr(issues, "_pr_links", lambda: {})
+    assert issues.get_issue(10)["linked_prs"] == []
+    monkeypatch.setattr(issues, "_pr_links", lambda: None)
+    assert [p["pr"] for p in issues.get_issue(10)["linked_prs"]] == [900]
+
+
+def test_close_fixed_gate_accepts_a_fixer_only_the_index_links(tmp_path, monkeypatch):
+    """The gate reads the same fresh links the card shows, so a merged PR whose
+    body says "Fixes #10" closes the issue even though the issue's stored
+    candidates predate it."""
+    st = _seed(tmp_path, monkeypatch)
+    st.edit_issue(10).set_links([])
+    monkeypatch.setattr(issues, "_pr_links", lambda: {10: [_index_link(901)]})
+    monkeypatch.setattr(issues, "_live_pr_states", lambda nums: {901: "merged"})
+    ok, reason = issues.close_fixed_gate(10, 901)
+    assert ok, reason
+
+
+def test_close_fixed_gate_accepts_a_github_closing_reference(tmp_path, monkeypatch):
+    """GitHub's own closing reference is the same claim as an explicit one."""
+    st = _seed(tmp_path, monkeypatch)
+    st.edit_issue(10).apply_facts(
+        {"title": "crash on boot", "state": "open", "author": "al",
+         "updated_at": "2026-01-02T00:00:00Z"},
+        links=[], github=[{"pr": 901, "state": "merged", "draft": False}])
+    monkeypatch.setattr(issues, "_pr_links", lambda: {})
+    monkeypatch.setattr(issues, "_live_pr_states", lambda nums: {901: "merged"})
+    ok, reason = issues.close_fixed_gate(10, 901)
+    assert ok, reason
+
+
+def test_close_fixed_gate_still_refuses_a_subsystem_tag_match(tmp_path, monkeypatch):
+    _seed(tmp_path, monkeypatch)  # PR 900 is linked to #10 with how="subsystem"
+    monkeypatch.setattr(issues, "_pr_links", lambda: {})
+    monkeypatch.setattr(issues, "_live_pr_states", lambda nums: {900: "merged"})
+    ok, reason = issues.close_fixed_gate(10, 900)
+    assert not ok and "not a fix candidate" in reason
+
+
+def test_dup_group_unions_index_links_across_cluster_members(tmp_path, monkeypatch):
+    """A PR the index links to a duplicate surfaces on the group beside one it
+    links to the canonical."""
+    st = _seed(tmp_path, monkeypatch)
+    st.edit_issue(10).set_links([])
+    monkeypatch.setattr(issues, "_store_pr_states", lambda: ({901: "open", 902: "open"}, False))
+    monkeypatch.setattr(issues, "_pr_links",
+                        lambda: {10: [_index_link(901)], 11: [_index_link(902)]})
+    g = issues.duplicate_groups()[0]
+    assert [p["pr"] for p in g["linked_prs"]] == [901, 902]
+
+
+def test_pr_links_indexes_the_snapshot_and_is_unavailable_while_it_loads(monkeypatch):
+    from pipeline.model import Pr
+
+    monkeypatch.setattr(issues, "_pr_links_cache", None)
+    monkeypatch.setattr("prospector_app.backend.data.snapshot_loading", lambda: True)
+    assert issues._pr_links() is None
+    monkeypatch.setattr("prospector_app.backend.data.snapshot_loading", lambda: False)
+    monkeypatch.setattr("prospector_app.backend.data.prs", lambda: {901: Pr(None, {
+        "pr": 901, "meta": {"title": "fix boot", "state": "open"},
+        "issues": {"linked": [{"issue": 10, "how": "explicit"}]}})})
+    assert [link["pr"] for link in (issues._pr_links() or {})[10]] == [901]
 
 
 def test_row_carries_the_fix_scans_fixer_without_a_store_state(tmp_path, monkeypatch):

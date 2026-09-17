@@ -124,6 +124,19 @@ def test_bundle_flags_live_comment_evidence(tmp_path):
     assert entry["comments"] == 2
 
 
+def test_bundle_takes_its_candidates_from_the_pr_index(tmp_path):
+    """A PR opened after the issue's last ingest is bundled from the PR index;
+    a stored explicit candidate the index no longer holds is not."""
+    st = issue_store.IssueStore(tmp_path)
+    iss = st.create_issue(5, META)
+    iss.set_links([{"pr": 7, "how": "explicit", "title": "stale"}])
+    entry = issue_fixed_driver.bundle(
+        st, only=[5],
+        pr_links={5: [{"pr": 8, "how": "explicit", "state": "open", "draft": False,
+                       "title": "fix", "updated_at": None, "head_sha": None}]})[0]
+    assert entry["candidate_prs"] == [{"pr": 8, "how": "explicit", "title": "fix"}]
+
+
 def test_prompt_embeds_criteria_and_placeholders():
     assert issue_fixed_driver.FIX_CRITERIA in issue_fixed_driver.FIND_FIXED_PROMPT
     assert "__BUNDLE_PATH__" in issue_fixed_driver.FIND_FIXED_PROMPT
