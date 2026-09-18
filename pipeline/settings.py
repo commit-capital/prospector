@@ -376,6 +376,11 @@ def fix_autopush_max_lines() -> int:
     return _positive_int("TRIAGE_FIX_AUTOPUSH_MAX_LINES", 300)
 
 
+def issue_fix_max_lines() -> int:
+    """The most changed lines an issue-fix lane's agent-authored fix may carry."""
+    return _positive_int("TRIAGE_ISSUE_FIX_MAX_LINES", 300)
+
+
 # Reject a malformed TRIAGE_FIX_AUTOPUSH while the process is still starting.
 # parse_fix_autopush exits on an unknown action, and that belongs at boot rather
 # than at whichever read happens to reach it first.

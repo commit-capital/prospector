@@ -1,0 +1,7 @@
+#!/bin/sh
+# The issue-fix lane agent's sandbox check: the project's typecheck or test
+# runner over (the machine's pinned base + the stage's frozen reproduction tests
+# + the agent's edits) inside the verify sandbox. The worker names its own
+# interpreter in PROSPECTOR_PYTHON so the module resolves from the app's
+# environment.
+exec "${PROSPECTOR_PYTHON:-python3}" -m prospector_app.backend.issue_sandbox_check "$@"

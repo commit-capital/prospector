@@ -57,6 +57,21 @@ def pinned(store: Store) -> PinnedBase:
     return PinnedBase(sha=sha, tier=tier, image=image, clone=clone)
 
 
+def held(base_sha: str, tier: int) -> PinnedBase:
+    """The base named by `base_sha` and `tier`, with the image and clone they
+    derive present on local disk. `NoBase` when the daemon, the image, or the
+    clone is absent; never builds."""
+    image = verify_driver.base_image_tag(base_sha, tier)
+    clone = verify_driver.base_clone_dir(base_sha)
+    if not verify_driver.daemon_available():
+        raise NoBase("the Docker daemon is not answering")
+    if not verify_driver.image_exists(image):
+        raise NoBase(f"the base image {image} is not on this machine")
+    if not clone.is_dir():
+        raise NoBase(f"the base clone {clone} is not on this machine")
+    return PinnedBase(sha=base_sha, tier=tier, image=image, clone=clone)
+
+
 # A label is host-chosen and becomes a file name, so it is held to plain
 # file-name characters with no parent-directory segment.
 _LABEL_RE = re.compile(r"[A-Za-z0-9._-]+")

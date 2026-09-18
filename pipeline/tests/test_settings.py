@@ -25,3 +25,14 @@ def test_fix_hunt_limit_default_and_override(monkeypatch):
     assert settings.fix_hunt_limit() == 3
     monkeypatch.setenv("TRIAGE_FIX_HUNT_LIMIT", "0")
     assert settings.fix_hunt_limit() == 3
+
+
+def test_issue_fix_max_lines_default_and_override(monkeypatch):
+    monkeypatch.delenv("TRIAGE_ISSUE_FIX_MAX_LINES", raising=False)
+    assert settings.issue_fix_max_lines() == 300
+    monkeypatch.setenv("TRIAGE_ISSUE_FIX_MAX_LINES", "50")
+    assert settings.issue_fix_max_lines() == 50
+    monkeypatch.setenv("TRIAGE_ISSUE_FIX_MAX_LINES", "junk")
+    assert settings.issue_fix_max_lines() == 300
+    monkeypatch.setenv("TRIAGE_ISSUE_FIX_MAX_LINES", "0")
+    assert settings.issue_fix_max_lines() == 300
