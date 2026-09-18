@@ -363,7 +363,8 @@ def build_base_image(sha: str, *, tier: int) -> str:
     tag = base_image_tag(sha, tier)
     _run_build_step(
         f"building {tag}",
-        ["docker", "build", "--network", "none", "-t", tag, "--build-arg", f"TIER={tier}",
+        ["docker", "build", "--force-rm", "--network", "none", "-t", tag,
+         "--build-arg", f"TIER={tier}",
          "--build-arg", f"BASE_IMAGE={sandbox_image()}",
          "-f", str(SANDBOX / "Dockerfile.base"), str(ctx)],
         env=launcher_env())
@@ -1807,7 +1808,7 @@ def build_image() -> str:
     pnpm = profile.active().verify.pnpm_version
     tag = sandbox_image()
     subprocess.run(
-        ["docker", "build", "-t", tag,
+        ["docker", "build", "--force-rm", "-t", tag,
          "--build-arg", f"PNPM_VERSION={pnpm}",
          "-f", str(SANDBOX / "Dockerfile"), str(SANDBOX)],
         check=True, env=launcher_env())

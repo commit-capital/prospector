@@ -278,6 +278,26 @@ class TestCollect:
         assert image_prune and f"label={gc.LABEL}" in image_prune[0]
         assert not [c for c in calls if c[1:3] == ["builder", "prune"]]
 
+    def test_stopped_build_containers_go_before_the_image_prune(self, tmp_path, monkeypatch):
+        """A failed classic-builder step leaves its container stopped, holding
+        the previous step's layer out of the image prune. The container prune is
+        scoped to our label and to containers old enough that no concurrent
+        build is about to commit them."""
+        monkeypatch.setattr(gc, "SCRATCH", tmp_path)
+        calls: list[list[str]] = []
+
+        def run(cmd: list[str], **kw: object) -> subprocess.CompletedProcess[str]:
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(gc.subprocess, "run", run)
+        gc.collect("a" * 12)
+        prunes = [c[1:3] for c in calls if "prune" in c]
+        assert prunes.index(["container", "prune"]) < prunes.index(["image", "prune"])
+        container_prune = next(c for c in calls if c[1:3] == ["container", "prune"])
+        assert f"label={gc.LABEL}" in container_prune
+        assert f"until={gc.STOPPED_CONTAINER_MIN_AGE}" in container_prune
+
     def test_images_are_removed_without_force(self, tmp_path, monkeypatch):
         """Every sandbox container runs --rm, so an un-forced rmi fails only
         while a phase container is live against that image — the last safety net
