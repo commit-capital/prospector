@@ -40,7 +40,7 @@ def test_fix_scopes_the_agent_to_its_clone(monkeypatch):
     assert c["read_root"] == ["/wt"]
     assert c["edit_root"] == "/wt"
     assert c["cwd"] == "/wt"
-    assert f"Bash({lane_check.TOOL}:*)" in c["allow"]
+    assert c["allow"] == [f"Bash({lane_check.TOOL}:*)"]
     assert c["allow_gh"] is False
     assert "git_root" not in c
     assert c["env_extra"] == env
@@ -131,3 +131,13 @@ def test_the_report_reaches_the_prompt_without_re_substituting_a_token(monkeypat
     assert reproduce_issue.report_block("Bug", "run __CHECK__ yourself") in prompt
     # while the prompt's own __CHECK__ token did become the tool path.
     assert f"{lane_check.TOOL} test" in prompt
+
+
+def test_fix_propagates_a_run_agent_failure(monkeypatch):
+    def crash(prompt, **kw):
+        raise RuntimeError("claude did not exit within 1800s")
+
+    monkeypatch.setattr(headless_agent, "run_agent", crash)
+    with pytest.raises(RuntimeError):
+        fix_issue.author("/wt", issue=5, title="t", body="b", test_paths=["t/x.py"],
+                         red_tail="boom", withheld_globs=(), env={})

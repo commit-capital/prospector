@@ -8,7 +8,7 @@ import json
 
 import pytest
 
-from issue_triage import review_issue_fix
+from issue_triage import issue_gates, review_issue_fix
 from pipeline import headless_agent
 
 PATCH = ("diff --git a/src/parse.ts b/src/parse.ts\n@@\n"
@@ -156,3 +156,7 @@ def test_every_returned_dict_carries_the_lens(monkeypatch):
                   RuntimeError("boom")]:
         out = _run(monkeypatch, reply, lens="scope-safety")["out"]
         assert out["lens"] == "scope-safety"
+
+
+def test_every_review_lens_has_a_question():
+    assert set(review_issue_fix._QUESTIONS) == set(issue_gates.REVIEW_LENSES)

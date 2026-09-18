@@ -38,7 +38,7 @@ def test_reproduce_scopes_the_agent_to_its_clone(monkeypatch):
     assert c["read_root"] == ["/wt"]
     assert c["edit_root"] == "/wt"
     assert c["cwd"] == "/wt"
-    assert f"Bash({lane_check.TOOL}:*)" in c["allow"]
+    assert c["allow"] == [f"Bash({lane_check.TOOL}:*)"]
     assert c["allow_gh"] is False
     assert "git_root" not in c
     assert c["env_extra"] == env
