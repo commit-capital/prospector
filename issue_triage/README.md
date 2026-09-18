@@ -33,7 +33,8 @@ gated and logged.**
 - **Gates** (`issue_gates.py`): the ONE policy module. `close_dup_allowed` (pipeline
   auto-recommend) and `close_dup_eligibility` (the app/executor pre-write gate —
   adds a live "canonical open or closed as fixed" check), plus the derived
-  `issue_cluster_state`.
+  `issue_cluster_state`; it also holds the issue-fix lane's gates
+  (`reproduction_outcome`, `fix_patch_regate`, `fix_proof_bar`).
   A close-as-dup requires a **confirmed** curation verdict — written by the
   `/diagnose-issue-cluster` agent, not by a human; the human approval is the
   operator's at RESOLVE.

@@ -1,10 +1,15 @@
-"""The ONE issue close-as-dup gate policy + derived cluster state.
+"""The ONE issue-side policy module: close-as-dup, derived cluster state, and the
+issue-fix lane's gates.
 
 close_dup_allowed is the pipeline's static auto-recommend (drives the dup
 worklist); close_dup_eligibility adds live upstream checks that the duplicate and
 is still open, and is the app/executor's pre-write gate — the issue-side analog of
 gates.py's merge_allowed vs merge_eligibility.
 issue_cluster_state is the derived board chip, computed on read, never stored.
+reproduction_outcome names a reproduction attempt's result from the host's red
+exits and the judge's ratings; fix_patch_regate and fix_proof_bar hold an
+agent-authored fix to what it may touch and to host-observed proof plus two
+refuting reviews.
 """
 from __future__ import annotations
 

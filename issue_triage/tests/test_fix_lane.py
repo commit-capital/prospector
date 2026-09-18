@@ -447,3 +447,12 @@ def test_related_tests_the_base_also_fails_do_not_sink_the_fix(lane, monkeypatch
     entry = res.result["proof"]["related_tests"]
     assert entry["files"] == ["src/other.test.ts"]
     assert entry["base_fails"] is True
+
+
+def test_a_review_stage_outage_ends_agent_unavailable(lane):
+    def outage(wt, patch, lens):
+        raise headless_agent.AgentUnavailable("not logged in")
+
+    lane.scripts.review = outage
+    res = lane.run()
+    assert res.ending == "agent-unavailable" and res.fault is True

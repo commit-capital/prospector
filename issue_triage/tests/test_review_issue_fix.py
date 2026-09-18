@@ -99,12 +99,16 @@ def test_a_crashed_reviewer_reads_as_unsafe_and_failed(monkeypatch):
     assert "900s" in out["reason"]
 
 
-def test_an_agent_outage_still_reads_as_unsafe_and_failed(monkeypatch):
-    # A reviewer failure never reaches the push side, so an outage here is
-    # swallowed as unsafe rather than propagated.
-    out = _run(monkeypatch, headless_agent.AgentUnavailable("not logged in"))["out"]
-    assert out["verdict"] == "unsafe"
-    assert out["failed"] is True
+def test_an_agent_outage_propagates(monkeypatch):
+    # An agent outage is the lane's to classify (agent-unavailable), not a
+    # review verdict; the reviewer re-raises it as the judge does.
+    with pytest.raises(headless_agent.AgentUnavailable):
+        _run(monkeypatch, headless_agent.AgentUnavailable("not logged in"))
+
+
+def test_a_declined_review_propagates(monkeypatch):
+    with pytest.raises(headless_agent.AgentDeclined):
+        _run(monkeypatch, headless_agent.AgentDeclined("safeguards flagged this message"))
 
 
 def test_unparseable_output_reads_as_unsafe_and_failed(monkeypatch):

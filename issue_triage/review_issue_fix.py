@@ -123,6 +123,8 @@ def review(worktree: str, patch: str, *, lens: str, title: str, body: str,
             prompt, allow_gh=False, cwd=worktree, edit_root=None,
             read_root=worktree, env_allow=(), timeout=AGENT_TIMEOUT_SECONDS,
             on_event=on_event)
+    except (headless_agent.AgentUnavailable, headless_agent.AgentDeclined):
+        raise
     except RuntimeError as e:
         return _unsafe(lens, f"the reviewing agent did not finish: {e}", failed=True)
     try:
