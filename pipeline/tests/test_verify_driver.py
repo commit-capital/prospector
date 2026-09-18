@@ -316,6 +316,29 @@ class TestPrepareBase:
         tree_carrying = [c for c in calls if c[0] == "docker" and c[1] in ("build", "run")]
         assert tree_carrying == []
 
+    def test_both_image_builds_remove_a_failed_steps_container(self, tmp_path, monkeypatch):
+        """A failed classic-builder step otherwise leaves its container stopped,
+        pinning the multi-gigabyte layer beneath it against every prune."""
+        monkeypatch.setattr(vd, "SCRATCH", tmp_path / "scratch")
+        builds: list[list[str]] = []
+
+        def step(what: str, cmd: list[str], **kwargs: object) -> None:
+            if cmd[:2] == ["docker", "build"]:
+                builds.append(cmd)
+
+        def run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            builds.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(vd, "_run_build_step", step)
+        monkeypatch.setattr(vd, "scrub_checkout", lambda src: None)
+        monkeypatch.setattr(vd, "assert_scrubbed", lambda src: None)
+        monkeypatch.setattr(vd.subprocess, "run", run)
+        vd.build_base_image("deadbeefcafebabe1234", tier=0)
+        vd.build_image()
+        assert len(builds) == 2
+        assert all("--force-rm" in cmd for cmd in builds)
+
     def test_a_public_certificate_is_not_a_credential(self, tmp_path):
         """A .pem is a credential file only when it carries a private key."""
         src = tmp_path / "src"

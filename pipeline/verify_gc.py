@@ -47,6 +47,13 @@ _SHA12_RE = re.compile(r"^[0-9a-f]{12}$")
 # daemon.
 LABEL = "prospector.verify-base=1"
 
+# How old a stopped container carrying LABEL must be before a sweep removes it.
+# A classic-builder step that fails leaves its container stopped, and that
+# container holds the previous step's multi-gigabyte layer out of every image
+# prune. A step container that has just exited and is about to be committed by
+# a concurrent build is younger than this.
+STOPPED_CONTAINER_MIN_AGE = "1h"
+
 # How many generations survive a sweep: the pin plus one more.
 KEEP_GENERATIONS = 2
 
@@ -233,8 +240,12 @@ def _prune_build_leftovers() -> None:
     """Reclaim what the two-stage base build leaves behind. Dockerfile.base
     stages a multi-gigabyte pnpm store that never enters the shipped image; the
     layers land as dangling images under the classic builder, pruned under our
-    own label, and as build cache under BuildKit, cleared whole once it passes
+    own label once the stopped containers of failed steps that hold them are
+    gone, and as build cache under BuildKit, cleared whole once it passes
     BUILD_CACHE_KEEP_BYTES."""
+    subprocess.run(["docker", "container", "prune", "-f", "--filter", f"label={LABEL}",
+                    "--filter", f"until={STOPPED_CONTAINER_MIN_AGE}"],
+                   capture_output=True, text=True, env=_env())
     subprocess.run(["docker", "image", "prune", "-f", "--filter", f"label={LABEL}"],
                    capture_output=True, text=True, env=_env())
     _clear_build_cache_past(BUILD_CACHE_KEEP_BYTES)
