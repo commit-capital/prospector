@@ -63,3 +63,36 @@ def test_authored_patch_is_the_edits_since_the_one_commit(tmp_path):
     patch = lane_tree.authored_patch(repo)
     assert "-export const x = 1;" in patch and "+export const x = 2;" in patch
     assert "b/src/y.ts" in patch
+
+
+def test_new_files_reads_a_rename_as_delete_plus_new(tmp_path):
+    repo = lane_tree.materialize(_base(tmp_path), tmp_path / "w")
+    subprocess.run(["git", "-C", str(repo), "mv", "src/x.ts", "src/z.ts"],
+                   check=True, capture_output=True, text=True)
+    untracked, other = lane_tree.new_files(repo)
+    assert untracked == [] and other == ["src/x.ts", "src/z.ts"]
+
+
+def test_materialize_ignores_ambient_git_config(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    hooks = home / "hooks"
+    hooks.mkdir(parents=True)
+    sentinel = tmp_path / "hook-fired"
+    hook = hooks / "pre-commit"
+    hook.write_text(f"#!/bin/sh\ntouch {sentinel}\n")
+    hook.chmod(0o755)
+    (home / ".gitconfig").write_text(
+        f"[core]\n\thooksPath = {hooks}\n[user]\n\tname = EVIL\n\temail = evil@example.com\n")
+    monkeypatch.setenv("HOME", str(home))
+    repo = lane_tree.materialize(_base(tmp_path), tmp_path / "w")
+    assert not sentinel.exists()
+    who = subprocess.run(["git", "-C", str(repo), "log", "--format=%an <%ae>"],
+                         check=True, capture_output=True, text=True).stdout.strip()
+    assert who == "prospector <prospector@localhost>"
+
+
+def test_read_files_returns_no_partial_contents_on_a_later_bad_file(tmp_path):
+    repo = lane_tree.materialize(_base(tmp_path), tmp_path / "w")
+    (repo / "bin.test.ts").write_bytes(b"\xff\xfe")
+    files, why = lane_tree.read_files(repo, ["src/x.ts", "bin.test.ts"])
+    assert files == [] and why == "not UTF-8 text: bin.test.ts"

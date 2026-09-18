@@ -34,7 +34,7 @@ def materialize(base_clone: Path, dest: Path,
     for f in files:
         target = dest / f["path"]
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(f["contents"])
+        target.write_text(f["contents"], encoding="utf-8")
     _git(dest, "init", "-q")
     _git(dest, "add", "-A")
     _git(dest, "commit", "-q", "--no-gpg-sign", "-m", "base")
@@ -43,7 +43,10 @@ def materialize(base_clone: Path, dest: Path,
 
 def new_files(worktree: Path) -> tuple[list[str], list[str]]:
     """(untracked paths, the paths of every other status entry)."""
-    out = _git(worktree, "status", "--porcelain", "-z", "--untracked-files=all")
+    # Rename detection off, so every record carries its two-char status prefix
+    # and a moved file reads as a delete of the old path plus a new one.
+    out = _git(worktree, "-c", "status.renames=false", "status", "--porcelain", "-z",
+               "--untracked-files=all")
     untracked: list[str] = []
     other: list[str] = []
     for entry in filter(None, out.split("\0")):
