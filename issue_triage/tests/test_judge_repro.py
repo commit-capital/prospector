@@ -129,3 +129,21 @@ def test_the_prompt_marks_report_and_output_untrusted_and_reserves_the_decision(
     prompt = _judge(monkeypatch, lambda p, **k: _fenced(SURE))["calls"]["prompt"]
     assert "data" in prompt.lower()
     assert "you do not decide" in prompt.lower()
+
+
+def test_a_non_string_confidence_becomes_a_soft_failure(monkeypatch):
+    bad = {"symptom_match": {"matches": True, "confidence": 9, "reasoning": "r"},
+           "defect": {"is_defect": True, "confidence": "high", "reasoning": "r"}}
+    assert _judge(monkeypatch, lambda p, **k: _fenced(bad))["out"]["failed"] is True
+
+
+def test_a_non_string_reasoning_becomes_a_soft_failure(monkeypatch):
+    bad = {"symptom_match": {"matches": True, "confidence": "high", "reasoning": 1},
+           "defect": {"is_defect": True, "confidence": "high", "reasoning": "r"}}
+    assert _judge(monkeypatch, lambda p, **k: _fenced(bad))["out"]["failed"] is True
+
+
+def test_a_token_in_the_report_is_not_re_substituted_into_the_judge_prompt(monkeypatch):
+    prompt = _judge(monkeypatch, lambda p, **k: _fenced(SURE),
+                    title="Bug", body="run __RED_TAIL__ yourself")["calls"]["prompt"]
+    assert reproduce_issue.report_block("Bug", "run __RED_TAIL__ yourself") in prompt
