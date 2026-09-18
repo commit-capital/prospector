@@ -87,8 +87,8 @@ def _fault(ending: str) -> bool:
 
 
 def _is_judged_rejection(review: dict) -> bool:
-    """Whether a review is a reviewer's decision to reject, rather than the
-    reviewer's own failure to reach one."""
+    """True when a review is a reviewer's decision to reject; False when the
+    reviewer itself never reached a verdict."""
     return review.get("verdict") != "safe" and not review.get("failed")
 
 

@@ -413,3 +413,37 @@ def test_the_happy_path_emits_its_steps_in_order(lane):
     assert "re-gating the fix" in steps
     assert "proving green" in steps
     assert steps.index("reviewing: root-cause") < steps.index("reviewing: scope-safety")
+
+
+def test_a_passing_compile_continues_to_review_and_fixes(lane, monkeypatch):
+    from pipeline import profile
+    configured = profile.parse_profile(
+        {"version": 1, "verify": {"compile_cmd": "tsc --noEmit"}}, "t")
+    monkeypatch.setattr(profile, "active", lambda: configured)
+    res = lane.run()
+    assert res.ending == "fixed" and res.fault is False
+    assert res.result["proof"]["compile"]["exit"] == gates.SENTINEL_PASS
+    assert [r["lens"] for r in res.result["reviews"]] == ["root-cause", "scope-safety"]
+
+
+def test_related_tests_the_base_also_fails_do_not_sink_the_fix(lane, monkeypatch):
+    from pipeline import resolve_evidence
+    monkeypatch.setattr(resolve_evidence, "related_tests",
+                        lambda wt, paths: ["src/other.test.ts"])
+    monkeypatch.setattr(verify_driver, "derive_test_command",
+                        lambda paths: "npx vitest run " + " ".join(paths))
+
+    def run_command(phase, cmd, patch):
+        # Both the related-tests run and its base re-run fail, so the failure
+        # predates the fix and must not count against it.
+        if "other.test.ts" in cmd:
+            return {"cmd": cmd, "exit": gates.SENTINEL_TEST_FAIL, "output_tail": "fail",
+                    "duration_s": 1.0}
+        return {"cmd": cmd, "exit": gates.SENTINEL_PASS, "output_tail": "ok", "duration_s": 1.0}
+
+    lane.scripts.run_command = run_command
+    res = lane.run()
+    assert res.ending == "fixed" and res.fault is False
+    entry = res.result["proof"]["related_tests"]
+    assert entry["files"] == ["src/other.test.ts"]
+    assert entry["base_fails"] is True
