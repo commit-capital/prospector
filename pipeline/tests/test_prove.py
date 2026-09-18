@@ -214,3 +214,42 @@ def test_pinned_raises_no_base_without_a_clone(pin, monkeypatch, tmp_path):
     monkeypatch.setattr(vd, "SCRATCH", tmp_path / "elsewhere")
     with pytest.raises(prove.NoBase, match="clone"):
         prove.pinned(object())
+
+
+HELD_SHA = "c" * 40
+
+
+@pytest.fixture
+def held(monkeypatch, tmp_path):
+    clone = tmp_path / "held-clone"
+    clone.mkdir()
+    monkeypatch.setattr(vd, "base_image_tag", lambda sha, tier: f"pr-verify-base:{sha[:12]}-t{tier}")
+    monkeypatch.setattr(vd, "base_clone_dir", lambda sha: clone)
+    monkeypatch.setattr(vd, "daemon_available", lambda: True)
+    monkeypatch.setattr(vd, "image_exists", lambda image: True)
+    return clone
+
+
+def test_held_names_the_image_and_clone_the_given_sha_and_tier_derive(held):
+    base = prove.held(HELD_SHA, 1)
+    assert (base.sha, base.tier) == (HELD_SHA, 1)
+    assert base.image == vd.base_image_tag(HELD_SHA, 1)
+    assert base.clone == held and base.clone.is_dir()
+
+
+def test_held_raises_no_base_when_the_docker_daemon_is_down(held, monkeypatch):
+    monkeypatch.setattr(vd, "daemon_available", lambda: False)
+    with pytest.raises(prove.NoBase, match="daemon"):
+        prove.held(HELD_SHA, 1)
+
+
+def test_held_raises_no_base_without_an_image(held, monkeypatch):
+    monkeypatch.setattr(vd, "image_exists", lambda image: False)
+    with pytest.raises(prove.NoBase, match="image"):
+        prove.held(HELD_SHA, 1)
+
+
+def test_held_raises_no_base_without_a_clone(held, monkeypatch, tmp_path):
+    monkeypatch.setattr(vd, "base_clone_dir", lambda sha: tmp_path / "gone")
+    with pytest.raises(prove.NoBase, match="clone"):
+        prove.held(HELD_SHA, 1)

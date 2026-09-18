@@ -13,14 +13,18 @@ removed on the way out.
 """
 from __future__ import annotations
 
+import argparse
 import hashlib
+import json
 import shutil
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
 from issue_triage import (
+    fetch_issues,
     fix_issue,
     issue_gates,
     judge_repro,
@@ -29,6 +33,7 @@ from issue_triage import (
     reproduce_issue,
     review_issue_fix,
 )
+from issue_triage.issue_store import IssueStore
 from pipeline import (
     check_records,
     diffpaths,
@@ -39,9 +44,11 @@ from pipeline import (
     resolve_evidence,
     risktier,
     settings,
+    storekit,
     threats,
     verify_driver,
 )
+from pipeline.store import Store
 from pipeline.wire import VerifyAuthoredFile
 
 ENDINGS_VERDICT = ("reproduced", "fixed", "not-reproduced", "unwritable", "wrong-symptom",
@@ -338,3 +345,110 @@ def run(spec: LaneSpec, *, workdir: Path,
     finally:
         shutil.rmtree(repro_dir, ignore_errors=True)
         shutil.rmtree(fix_dir, ignore_errors=True)
+
+
+def _reported(store: IssueStore, n: int) -> tuple[str, str] | None:
+    """The reported title and body for issue `n`: the stored record when the
+    store holds it, else a live fetch. None when neither knows the issue."""
+    issue = store.load_issue(n)
+    if issue is not None:
+        return issue.title or "", issue.body or ""
+    raw = fetch_issues.fetch_issue(n)
+    if raw is not None:
+        return raw["title"], raw.get("body") or ""
+    return None
+
+
+def _parse_args(argv: list[str]) -> argparse.Namespace:
+    ap = argparse.ArgumentParser(
+        prog="python -m issue_triage.fix_lane",
+        description="Run one reported issue through the fix lane on this machine's "
+                    "held base, writing a result file and one ledger row.")
+    ap.add_argument("--issue", type=int, required=True, help="the issue number to run")
+    ap.add_argument("--reproduce-only", action="store_true",
+                    help="stop after the reproduction proves red; author no fix")
+    ap.add_argument("--base-sha",
+                    help="prove against a base this machine already holds, named by "
+                         "its SHA (default: the verify pin)")
+    ap.add_argument("--tier", type=int, default=0,
+                    help="the risk tier the held base was built at (with --base-sha)")
+    return ap.parse_args(argv)
+
+
+def main(argv: list[str]) -> int:
+    args = _parse_args(argv)
+    n: int = args.issue
+    action: Literal["reproduce", "fix"] = "reproduce" if args.reproduce_only else "fix"
+
+    try:
+        base = prove.held(args.base_sha, args.tier) if args.base_sha else prove.pinned(Store())
+    except prove.NoBase as e:
+        print(str(e), file=sys.stderr)
+        return 2
+
+    store = IssueStore()
+    reported = _reported(store, n)
+    if reported is None:
+        print(f"issue #{n} is not in the store and could not be fetched", file=sys.stderr)
+        return 2
+    title, body = reported
+    reported_sha = report_sha(title, body)
+
+    def still_valid() -> str | None:
+        live = fetch_issues.fetch_issue(n)
+        if live is None:
+            return None
+        if live.get("state") != "open":
+            return "issue-closed"
+        if report_sha(live["title"], live.get("body") or "") != reported_sha:
+            return "report-edited"
+        return None
+
+    spec = LaneSpec(issue=n, title=title, body=body, base=base, action=action)
+    workdir = settings.verify_scratch() / "issue-fix" / f"issue-{n}"
+    started = storekit.now()
+    res = run(spec, workdir=workdir, on_step=lambda step: print(step, flush=True),
+              still_valid=still_valid)
+    finished = storekit.now()
+
+    workdir.mkdir(parents=True, exist_ok=True)
+    (workdir / "result.json").write_text(json.dumps({
+        "issue": n,
+        "report_sha": reported_sha,
+        "base_sha": base.sha,
+        "action": action,
+        "ending": res.ending,
+        "fault": res.fault,
+        "detail": res.detail,
+        "agent_runs": res.agent_runs,
+        "started": started,
+        "finished": finished,
+        "reproduction": res.reproduction,
+        "result": res.result,
+    }, indent=2) + "\n")
+
+    store.append_run({
+        "phase": "issue-fix:run",
+        "issue": n,
+        "started": started,
+        "finished": finished,
+        "trigger": "cli",
+        "stats": {
+            "action": action,
+            "ending": res.ending,
+            "fault": res.fault,
+            "detail": res.detail,
+            "host": settings.worker_id(),
+            "base_sha": base.sha,
+            "report_sha": reported_sha,
+            "agent_runs": res.agent_runs,
+        },
+    })
+
+    print(f"{res.ending}: {res.detail}")
+    print(f"result: {workdir / 'result.json'}")
+    return 1 if res.fault else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -328,6 +328,31 @@ fix run history reads that lane, and `fix_history_backfill.py` seeds it from the
 endings a store already holds. The queue view itself holds an ending for half an
 hour, so a run that starts and finishes between two polls is still readable.
 
+**ISSUE FIX** (`issue_triage/fix_lane.py`) drives one reported issue through
+reproduce → judge → fix → prove → review over single-commit clones of a base
+this machine already holds, and touches nothing upstream. `run` is the
+integrator: each locked-down agent (`allow_gh=False`, its own clone as
+`read_root`) authors or judges, and only host-observed sandbox exits and
+`issue_gates` name the ending — a reproduction outcome from
+`issue_gates.reproduction_outcome` over the two red legs `prove` observed, a
+fix's fate from `issue_gates.fix_proof_bar` over the green legs, the compile
+preflight, the related-tests run, and two refuting reviews (root-cause,
+scope-safety). The reproduction agent's authored test is held to the host's
+rules and proven red on the base; the fix agent then opens on a clone whose one
+commit already carries that frozen test, and its change is re-gated
+(`issue_gates.fix_patch_regate`, capped at `settings.issue_fix_max_lines()`
+changed lines) on the paths it really touched before it is proven green. All
+proof runs on the pinned base's image — `prove.pinned` reads the verify pin,
+`prove.held(sha, tier)` names a base by hand — and neither builds one; every
+fault (an agent outage, a sandbox that could not run, a base that fails the
+compile) is a machine condition, never a verdict, and the clones are removed on
+the way out. The command `python -m issue_triage.fix_lane --issue N
+[--reproduce-only] [--base-sha SHA --tier T]` resolves the report from the issue
+store or a live fetch, cancels when the issue closed or its report was edited
+under the run, writes `<verify scratch>/issue-fix/issue-<n>/result.json`, and
+appends one `issue-fix:run` row to the issue runs ledger. It holds no per-PR
+merge gate and makes no upstream write.
+
 **WORKER HEALTH** (`pipeline/worker_health.py` + `prospector_app/backend/lane_health.py`
 + `escalation.py`) is the ONE policy for a worker that is failing rather than
 the PRs. Every ending a worker writes is booked per lane (`security`, `verify`,

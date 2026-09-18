@@ -70,6 +70,33 @@ The app's Issues tab is a read-only projection over this store
 (`prospector_app/backend/issues.py`); the close-as-dup worklist is the confirmed
 duplicates, most painful first.
 
+## Issue-fix lane
+
+`fix_lane.py` runs one reported issue through **reproduce → judge → fix → prove
+→ review** over single-commit clones of a base this machine already holds. Every
+agent is locked down (no GitHub, its own clone its only writable root); only
+host-observed sandbox exits and `issue_gates` name the ending. It makes **no
+upstream write** — the outcome is a result file plus one ledger row.
+
+```bash
+uv run python -m issue_triage.fix_lane --issue N                          # reproduce + fix on the verify pin
+uv run python -m issue_triage.fix_lane --issue N --reproduce-only         # stop once the reproduction proves red
+uv run python -m issue_triage.fix_lane --issue N --base-sha SHA --tier T  # prove against a base held by hand
+```
+
+The base is the verify pin (`prove.pinned`) unless `--base-sha` names one this
+machine already holds (`prove.held`, `--tier` defaults to 0); neither builds an
+image. The report comes from the issue store, else a live fetch. The run writes
+`<verify scratch>/issue-fix/issue-<n>/result.json` and appends one
+`issue-fix:run` row to the issue runs ledger.
+
+**Endings.** A verdict exits 0: `reproduced`, `fixed`, `not-reproduced`,
+`wrong-symptom`, `not-a-defect`, `unwritable`, `no-fix`, `fix-untrusted`,
+`fix-unproven`, `fix-rejected`, `declined`, `cancelled`. A fault — a machine
+condition, never a verdict — exits 1: `agent-unavailable`, `run-failed`,
+`sandbox`, `base-compile`. Exit 2 is no held base or an unknown issue, and
+writes no result file or ledger row.
+
 ## Pain score
 
 Balanced normalized blend of **distinct reporters · reactions/👍 · comments**,
