@@ -134,6 +134,7 @@ def test_an_unknown_issue_exits_two_with_no_ledger_row(cli, monkeypatch):
     code = fix_lane.main(["--issue", "999"])
     assert code == 2
     assert cli.state["appended"] == []
+    assert not (cli.scratch / "issue-fix" / "issue-999" / "result.json").exists()
 
 
 def test_a_base_sha_proves_against_the_named_held_base(cli, monkeypatch):
@@ -155,3 +156,25 @@ def test_the_stored_issue_is_preferred_over_a_live_fetch(cli):
     spec = cli.state["specs"][0]
     assert (spec.title, spec.body) == ("Stored title", "stored body")
     assert _result_file(cli)["report_sha"] == fix_lane.report_sha("Stored title", "stored body")
+
+
+def test_still_valid_reports_closed_edited_and_continues_on_a_failed_fetch(cli, monkeypatch):
+    seen: dict = {}
+
+    def run_capturing(spec, *, workdir, on_step, still_valid):
+        cli.state["fetched"] = {"title": "Crash on empty", "body": "boom", "state": "open"}
+        seen["open_same"] = still_valid()
+        cli.state["fetched"] = {"title": "Crash on empty", "body": "boom", "state": "closed"}
+        seen["closed"] = still_valid()
+        cli.state["fetched"] = {"title": "Crash on empty", "body": "reworded", "state": "open"}
+        seen["edited"] = still_valid()
+        cli.state["fetched"] = None
+        seen["fetch_failed"] = still_valid()
+        return cli.state["result"]
+
+    monkeypatch.setattr(fix_lane, "run", run_capturing)
+    fix_lane.main(["--issue", "7"])
+    assert seen["open_same"] is None
+    assert seen["closed"] == "issue-closed"
+    assert seen["edited"] == "report-edited"
+    assert seen["fetch_failed"] is None
