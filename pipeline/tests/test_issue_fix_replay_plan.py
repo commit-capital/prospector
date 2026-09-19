@@ -67,6 +67,7 @@ def base_repo(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         {**{f"src/mod{i}.py": f"m{i}\n" for i in range(10)},
          "tests/test_app.py": "def test_w(): pass\n"},
         "bigfiles")
+    shas["onlytest"] = _commit(repo, {"tests/test_only.py": "def test_o(): pass\n"}, "onlytest")
     shas["pin"] = _commit(repo, {"README.md": "readme\nmore\n"}, "pin")
     _git(repo, "checkout", "-q", "-b", "off", shas["base"])
     shas["off"] = _commit(repo, {"src/app.py": "one\noff\n", "tests/test_app.py": "def test_o(): pass\n"}, "off")
@@ -260,3 +261,44 @@ def test_group_by_deps_groups_equal_declarations(tmp_path, generic_profile) -> N
     members = {frozenset(i.issue for i in v) for v in groups.values()}
     assert frozenset({1, 2}) in members
     assert frozenset({3}) in members
+
+
+def test_r3_no_nontest_file_discarded(base_repo, generic_profile) -> None:
+    repo, shas = base_repo
+    cand = _candidate(shas["onlytest"], closing_prs=[_pr(42, shas["onlytest"])])
+    inst, reason = _screen(repo, shas, cand, generic_profile)
+    assert inst is None
+    assert reason == "no-nontest-file"
+
+
+def test_r4_issue_created_after_pr_discarded(base_repo, generic_profile) -> None:
+    repo, shas = base_repo
+    after = datetime(2024, 3, 2, 8, 0, 0)
+    cand = _candidate(shas["ok"], created_at=after, updated_at=after)
+    inst, reason = _screen(repo, shas, cand, generic_profile)
+    assert inst is None
+    assert reason == "issue-created-after-pr"
+
+
+def test_landed_diff_uses_the_first_parent_for_a_two_parent_merge(tmp_path, generic_profile) -> None:
+    # A real "Merge pull request" commit: git show prints an empty combined diff,
+    # so screen must read the diff against the merge's first parent instead.
+    repo = tmp_path / "merge"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _commit(repo, {"src/app.py": "one\n", "README.md": "r\n"}, "base")
+    default = _git(repo, "rev-parse", "--abbrev-ref", "HEAD").strip()
+    _git(repo, "checkout", "-q", "-b", "feature")
+    _commit(repo, {"src/app.py": "one\ntwo\n", "tests/test_app.py": "def test_x(): pass\n"}, "feature")
+    _git(repo, "checkout", "-q", default)
+    _git(repo, "merge", "-q", "--no-ff", "feature", "-m", "Merge pull request #42")
+    merge = _git(repo, "rev-parse", "HEAD").strip()
+    pin = _commit(repo, {"README.md": "r\nmore\n"}, "pin")
+    assert _git(repo, "show", merge).count("diff --git") == 0  # git show is empty for the merge
+
+    inst, reason = replay.screen(_candidate(merge, closing_prs=[_pr(42, merge)]),
+                                 base_clone=repo, pin_sha=pin, profile=generic_profile)
+    assert reason is None
+    assert inst is not None
+    assert inst.test_files == ["tests/test_app.py"]
+    assert inst.nontest_files == ["src/app.py"]

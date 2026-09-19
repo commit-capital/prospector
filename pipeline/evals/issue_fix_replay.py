@@ -78,9 +78,9 @@ def _git(repo: Path, *args: str) -> str:
 
 
 def _is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
-    """True when `ancestor` is reachable from `descendant`. A missing object or
-    any other git failure reads as not-an-ancestor, so the candidate fails
-    closed."""
+    """True when `ancestor` is reachable from `descendant`. A non-zero exit —
+    a missing object, or the plain negative answer — reads as not-an-ancestor,
+    so the candidate fails closed."""
     done = subprocess.run(
         ["git", "-C", str(repo), "merge-base", "--is-ancestor", ancestor, descendant],
         capture_output=True, text=True, timeout=300, env=_git_env())
@@ -116,6 +116,7 @@ def _is_dep_manifest(path: str, profile: RepoProfile) -> bool:
     """True when `path` is one of `profile`'s dependency manifests. Entries
     without a "/" match the basename (fnmatch); entries with one match the whole
     path in the diffpaths glob dialect."""
+    # Same manifest match gates._is_manifest applies, over an explicit glob list.
     p = diffpaths.normalize_path(path)
     if not p:
         return False
@@ -143,7 +144,9 @@ def screen(candidate: Candidate, *, base_clone: Path, pin_sha: str, profile: Rep
     # R2: the merge commit is an ancestor of the pin; the landed diff is its own.
     if not _is_ancestor(base_clone, pr.merge_sha, pin_sha):
         return None, "merge-not-ancestor-of-pin"
-    landed_diff = _git(base_clone, "show", pr.merge_sha)
+    # git show prints a merge commit's combined diff (empty for a non-conflicting
+    # two-parent merge); the landed change is the diff against the first parent.
+    landed_diff = _git(base_clone, "diff", f"{pr.merge_sha}^1", pr.merge_sha)
 
     # R3: touches a test path and a non-test path, no dependency manifest,
     # bounded non-test lines and files.
