@@ -126,7 +126,9 @@ def flatten(base_clone: Path, *patches: Path | str | None, label: str) -> Path:
     """One diff from a base with no history, holding `patches` applied in
     order to `base_clone`'s tree in a throwaway one-commit repository. Unlike
     `compose`, patches may touch the same paths, applied to the base in
-    sequence. Named and scratched like `compose`.
+    sequence. Named and scratched like `compose`. The diff carries full blob ids
+    and binary content, so it applies (`--3way` included) in a clone of any
+    history size.
     Raises `ValueError` at the first patch that does not apply, naming its
     index among the non-None patches."""
     _check_label(label)
@@ -146,7 +148,7 @@ def flatten(base_clone: Path, *patches: Path | str | None, label: str) -> Path:
             except subprocess.CalledProcessError as e:
                 raise ValueError(f"patch {i} does not apply: {e.stderr.strip()}") from e
         _git(repo, "add", "-N", ".")
-        body = _git(repo, "diff", "HEAD")
+        body = _git(repo, "diff", "--full-index", "--binary", "HEAD")
     out = verify_driver.SCRATCH / "issue-fix"
     out.mkdir(parents=True, exist_ok=True)
     path = out / f"{label}.{hashlib.sha256(body.encode()).hexdigest()[:12]}.patch"

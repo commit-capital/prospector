@@ -60,7 +60,11 @@ apply_patch() {
   fi
   local err rc
   err="$(git -c core.checkStat=minimal apply --3way "$PATCH_FILE" 2>&1)"; rc=$?
-  printf '%s\n' "$err" >&2
+  # A --3way apply reports every file it touched; only the rest is kept in the
+  # output tail the host reads, so the error lines survive its size cap.
+  printf '%s\n' "$err" \
+    | grep -vE '^(Falling back to direct application|Applied patch .* cleanly\.|Checking patch )' >&2 \
+    || true
   [ "$rc" -eq 0 ] && return 0
   # git names a patch that does not fit the tree in a handful of phrases; that
   # is the conflict the sentinel means. Every other failure — a corrupt or

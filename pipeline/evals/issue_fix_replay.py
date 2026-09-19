@@ -233,6 +233,7 @@ class LaneRun(Protocol):
     """The host-observed shape of a lane result the scorer reads. Its structural
     match keeps the lane package out of this module's imports."""
     ending: str
+    detail: str
     reproduction: dict | None
     result: dict | None
     agent_runs: int
@@ -296,29 +297,34 @@ def oracle_command(test_files: list[str]) -> str | None:
 
 
 def validate_known_fix(base: prove.PinnedBase, pre_patch: str, instance: Instance, *,
-                       label: str) -> tuple[bool, str]:
+                       label: str, legs: dict[str, prove.Legs] | None = None
+                       ) -> tuple[bool, str]:
     """R6: the merged PR's own test fails on `tree(P)` and passes once the whole
     landed diff is applied, each leg confirmed. `(True, "")` when it does;
     `(False, "sandbox")` on a harness fault the caller retries; `(False, "no-oracle"
-    | "red" | "green")` on a definitive miss."""
+    | "red" | "green")` on a definitive miss. The legs it runs land in `legs`
+    under `red` and `green`, and a boot-probe failure under `probe`."""
+    legs = {} if legs is None else legs
     oracle = oracle_command(instance.test_files)
     if oracle is None:
         return False, "no-oracle"
     test_hunks = diffpaths.filter_diff(instance.landed_diff, diffpaths.is_test_path)
     try:
-        red = prove.red_legs(
+        red = legs["red"] = prove.red_legs(
             base, patch=prove.flatten(base.clone, pre_patch, test_hunks, label=label),
             test_cmd=oracle, label=label)
         status = _leg_status(red, gates.SENTINEL_TEST_FAIL)
         if status != "ok":
             return False, "sandbox" if status == "sandbox" else "red"
-        green = prove.green_legs(
+        green = legs["green"] = prove.green_legs(
             base, patch=prove.flatten(base.clone, pre_patch, instance.landed_diff, label=label),
             test_cmd=oracle, label=label)
         status = _leg_status(green, gates.SENTINEL_PASS)
         if status != "ok":
             return False, "sandbox" if status == "sandbox" else "green"
-    except verify_driver.ProbeFailure:
+    except verify_driver.ProbeFailure as e:
+        legs["probe"] = {"exit": None, "exit_confirm": None, "output_tail": str(e),
+                         "duration_s": 0.0}
         return False, "sandbox"
     return True, ""
 
@@ -405,10 +411,14 @@ def run_instance(instance: Instance, *, base: prove.PinnedBase, base_sha: str,
     ending without scoring."""
     label = f"replay-{instance.issue}"
     pre_patch = transform_to_p(base.clone, instance.merge_sha, base_sha, profile)
-    ok, reason = validate_known_fix(base, pre_patch, instance, label=label)
+    r6_legs: dict[str, prove.Legs] = {}
+    t_r6 = time.monotonic()
+    ok, reason = validate_known_fix(base, pre_patch, instance, label=label, legs=r6_legs)
+    r6_seconds = round(time.monotonic() - t_r6, 1)
     if not ok:
         return {"issue": instance.issue, "pr": instance.pr,
-                "ending": f"r6-{reason}", "reason": reason}
+                "ending": f"r6-{reason}", "reason": reason, "r6_seconds": r6_seconds,
+                "detail": _legs_detail(r6_legs) or reason}
     t0 = time.monotonic()
     lane_result = run_lane(issue=instance.issue, title=instance.report_title,
                            body=instance.report_body, base=base, pre_patch=pre_patch,
@@ -417,12 +427,28 @@ def run_instance(instance: Instance, *, base: prove.PinnedBase, base_sha: str,
     if lane_result.ending in _LANE_FAULT_ENDINGS:
         # A faulted lane spends none of the oracle and repro_valid sandbox legs.
         return {"issue": instance.issue, "pr": instance.pr, "ending": lane_result.ending,
-                "seconds": seconds, "agent_runs": lane_result.agent_runs}
+                "seconds": seconds, "r6_seconds": r6_seconds,
+                "agent_runs": lane_result.agent_runs, "detail": lane_result.detail}
     oracle_runs: dict[str, prove.Legs] = {}
     scores = score(instance, lane_result, oracle_runs, base=base, pre_patch=pre_patch,
                    label=label)
     return {"issue": instance.issue, "pr": instance.pr, "ending": lane_result.ending,
-            "seconds": seconds, "oracle_runs": oracle_runs, **scores}
+            "seconds": seconds, "r6_seconds": r6_seconds, "detail": lane_result.detail,
+            "oracle_runs": oracle_runs, **scores}
+
+
+# The longest detail an instance record carries.
+_DETAIL_MAX = 300
+
+
+def _legs_detail(legs: dict[str, prove.Legs]) -> str:
+    """The last leg run, as `<leg> exit <first>/<confirm>: <error excerpt>`, or
+    empty when none ran."""
+    if not legs:
+        return ""
+    name, leg = list(legs.items())[-1]
+    excerpt = verify_driver.error_excerpt(leg["output_tail"])
+    return f"{name} exit {leg['exit']}/{leg['exit_confirm']}: {excerpt}"[:_DETAIL_MAX]
 
 
 # -- Candidate assembly from the store + live gh reads ------------------------
@@ -570,8 +596,10 @@ def select_instances(base: prove.PinnedBase, base_sha: str, *, profile: RepoProf
 # -- Scorecard table ----------------------------------------------------------
 
 _TABLE_COLUMNS = ("issue", "pr", "ending", "reproduced", "repro_valid", "fixed",
-                  "oracle_pass", "false_accept", "seconds", "agent_runs")
+                  "oracle_pass", "false_accept", "seconds", "agent_runs", "detail")
 _TABLE_BOOLS = ("reproduced", "repro_valid", "fixed", "oracle_pass", "false_accept")
+# The longest detail a table cell shows; the ledger row carries the whole of it.
+_TABLE_DETAIL_MAX = 120
 
 
 def _cell(value: object) -> str:
@@ -588,6 +616,8 @@ def _instance_row(rec: dict) -> str:
     cells = [str(rec.get("issue", "-")), str(rec.get("pr", "-")), _cell(rec.get("ending"))]
     cells += [_cell(rec.get(k)) for k in _TABLE_BOOLS]
     cells += [_cell(rec.get("seconds")), _cell(rec.get("agent_runs"))]
+    detail = str(rec.get("detail") or "").replace("\n", " ").replace("|", "\\|")
+    cells.append(detail[:_TABLE_DETAIL_MAX] or "-")
     return "| " + " | ".join(cells) + " |"
 
 
@@ -596,7 +626,7 @@ def _aggregate_row(records: list[dict]) -> str:
     seconds = sum(r["seconds"] for r in records if isinstance(r.get("seconds"), int | float))
     runs = sum(r["agent_runs"] for r in records if isinstance(r.get("agent_runs"), int))
     # Leading blanks for the pr and ending columns.
-    cells = [f"total ({len(records)})", "", ""] + counts + [f"{seconds:.1f}", str(runs)]
+    cells = [f"total ({len(records)})", "", ""] + counts + [f"{seconds:.1f}", str(runs), ""]
     return "| " + " | ".join(cells) + " |"
 
 
@@ -648,6 +678,10 @@ def _run_stats(records: list[dict], *, run_id: str, base_sha: str, concurrency: 
         "avg_seconds": round(_avg_seconds(records), 1),
         "agent_runs": sum(r["agent_runs"] for r in records if isinstance(r.get("agent_runs"), int)),
     }
+
+
+def _progress(line: str) -> None:
+    print(f"replay: {line}", file=sys.stderr, flush=True)
 
 
 def _recorded(pr_store: store.Store, run_id: str) -> dict[int, dict]:
@@ -735,13 +769,16 @@ def run(base: prove.PinnedBase, base_sha: str, *, profile: RepoProfile,
     out_dir = settings.verify_scratch() / "replay" / run_id
     started = storekit.now()
     completed = 0
+    _progress(f"run {run_id[:12]}: {len(todo)} to run, {len(results)} already recorded")
+
+    def one(inst: Instance) -> dict:
+        _progress(f"issue {inst.issue} (PR #{inst.pr}): started")
+        return run_instance(inst, base=base, base_sha=base_sha, profile=profile,
+                            workdir=out_dir / f"issue-{inst.issue}", run_lane=_run_lane)
+
     if todo:
         with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
-            futures = {
-                pool.submit(run_instance, inst, base=base, base_sha=base_sha,
-                            profile=profile, workdir=out_dir / f"issue-{inst.issue}",
-                            run_lane=_run_lane): inst
-                for inst in todo}
+            futures = {pool.submit(one, inst): inst for inst in todo}
             for fut in as_completed(futures):
                 try:
                     rec = fut.result()
@@ -753,6 +790,9 @@ def run(base: prove.PinnedBase, base_sha: str, *, profile: RepoProfile,
                     rec = {"issue": inst.issue, "pr": inst.pr, "ending": _CRASH_ENDING,
                            "seconds": 0.0, "agent_runs": 0}
                 results[rec["issue"]] = rec
+                _progress(f"issue {rec['issue']}: {rec.get('ending')} "
+                          f"({completed + 1}/{len(todo)}, r6 {_cell(rec.get('r6_seconds'))}s, "
+                          f"lane {_cell(rec.get('seconds'))}s) {rec.get('detail') or ''}".rstrip())
                 pr_store.append_run({
                     "phase": "replay:instance", "started": started,
                     "finished": storekit.now(), "trigger": "cli",

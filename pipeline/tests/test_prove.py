@@ -352,3 +352,19 @@ def test_flatten_writes_under_the_scratch_dir_as_a_valid_unified_diff(flatten_sc
     out = prove.flatten(base, edit_patch, label="issue-12")
     assert out.parent == tmp_path / "scratch" / "issue-fix"
     assert out.read_text().startswith("diff ")
+
+
+def test_flatten_carries_full_blob_ids_and_binary_content(flatten_scratch, tmp_path):
+    base = _flatten_base(tmp_path)
+    (base / "logo.png").write_bytes(b"\x89PNG\x00old")
+    binary = _patch_from(tmp_path, "bin", base,
+                         lambda w: (w / "logo.png").write_bytes(b"\x89PNG\x00new"))
+    binary = _flatten_git(tmp_path / "bin", "diff", "--binary", "HEAD")
+    edit = _patch_from(tmp_path, "edit", base,
+                       lambda w: _replace(w / "src" / "x.ts", "line 3", "line 3 edited"))
+
+    text = prove.flatten(base, binary, edit, label="issue-12").read_text()
+
+    assert "GIT binary patch" in text
+    index_lines = [ln for ln in text.splitlines() if ln.startswith("index ")]
+    assert index_lines and all(len(ln.split()[1].split("..")[0]) == 40 for ln in index_lines)
