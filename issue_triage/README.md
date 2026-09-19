@@ -118,8 +118,9 @@ time, and writes a markdown scorecard to `<verify scratch>/replay/<run-id>/table
 plus one `replay:instance` ledger row per instance and a `replay:run` summary. A
 run is keyed by its base, so re-invoking continues it (`--resume` re-runs the
 faulted instances). A failed instance is data, so the run still exits 0. The
-pilot's numbers — reproduced, fix rate, oracle pass, false accepts, cost per
-instance — gate whether the lane goes live.
+pilot's numbers — reproduced, fix rate, oracle pass, false accepts, and wall-time
+and agent runs per instance — gate whether the lane goes live. Per-run token cost
+is a later addition: it needs `fix_lane.LaneResult` to carry the CLI's cost event.
 
 ## Pain score
 

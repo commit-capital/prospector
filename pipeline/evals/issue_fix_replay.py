@@ -407,6 +407,10 @@ def run_instance(instance: Instance, *, base: prove.PinnedBase, base_sha: str,
 
 # -- Candidate assembly from the store + live gh reads ------------------------
 
+# How many newest closed issues to assemble by default: the cap bounds the live
+# gh fetches a run makes, and recent issues share the current pin's dependencies.
+_DEFAULT_CANDIDATES = 300
+
 
 def _parse_dt(value: str | None) -> datetime | None:
     """A GitHub ISO timestamp as an aware datetime, or None when it is empty or
@@ -449,7 +453,9 @@ def candidates_from_store(*, limit: int | None = None) -> list[Candidate]:
     issue_store = IssueStore()
     index = pr_index.from_store()
     out: list[Candidate] = []
-    for n, iss in sorted(issue_store.all_issues().items()):
+    # Newest issue first, so `limit` caps the gh fetches on the issues most likely
+    # to share the current pin's dependency set.
+    for n, iss in sorted(issue_store.all_issues().items(), reverse=True):
         if iss.state != "closed":
             continue
         closers: list[ClosingPr] = []
@@ -532,9 +538,10 @@ def _pin_group(groups: dict[frozenset[tuple[str, str]], list[Instance]], *,
 
 
 def select_instances(base: prove.PinnedBase, base_sha: str, *, profile: RepoProfile,
-                     lane_logins: frozenset[str]) -> list[Instance]:
+                     lane_logins: frozenset[str],
+                     candidate_cap: int = _DEFAULT_CANDIDATES) -> list[Instance]:
     """The pin's dependency group of screened instances, ready to run."""
-    instances, _ = _screen(candidates_from_store(), base.clone, base_sha,
+    instances, _ = _screen(candidates_from_store(limit=candidate_cap), base.clone, base_sha,
                            profile=profile, lane_logins=lane_logins)
     groups = group_by_deps(instances, base.clone, profile)
     return _pin_group(groups, base_clone=base.clone, base_sha=base_sha, profile=profile)
@@ -589,6 +596,11 @@ _FAULT_ENDINGS = frozenset({"r6-sandbox", "sandbox", "agent-unavailable", "run-f
 # Instances measured before the average cost per instance is reported.
 _COST_SAMPLE = 10
 
+# Newest ledger rows scanned to find this run's recorded instances — an
+# index-bounded read, not a full-table scan. A resume within the pilot's window
+# sees its rows; a missed older record only re-runs that one instance.
+_RESUME_SCAN = 20000
+
 
 def _is_fault(ending: str | None) -> bool:
     return ending in _FAULT_ENDINGS
@@ -626,7 +638,7 @@ def _recorded(pr_store: store.Store, run_id: str) -> dict[int, dict]:
     """The instance stats already in the ledger for `run_id`, keyed by issue —
     the read that makes a run resumable."""
     out: dict[int, dict] = {}
-    for rec in pr_store.runs():
+    for rec in pr_store.runs(limit=_RESUME_SCAN):
         if not isinstance(rec, storekit.PhaseRun) or rec.phase != "replay:instance":
             continue
         stats = rec.raw.get("stats") or {}
@@ -654,12 +666,12 @@ def _merge_committed(base_clone: Path, merge_sha: str) -> str | None:
 
 
 def plan(base: prove.PinnedBase, base_sha: str, *, profile: RepoProfile,
-         lane_logins: frozenset[str]) -> None:
+         lane_logins: frozenset[str], candidate_cap: int = _DEFAULT_CANDIDATES) -> None:
     """Assemble and screen the corpus, then print each dependency group's size,
     date span, and whether it matches the machine's pin. No agent or sandbox runs
     — the safety valve to inspect the corpus before a run."""
-    instances, discards = _screen(candidates_from_store(), base.clone, base_sha,
-                                  profile=profile, lane_logins=lane_logins)
+    instances, discards = _screen(candidates_from_store(limit=candidate_cap), base.clone,
+                                  base_sha, profile=profile, lane_logins=lane_logins)
     discarded = sum(discards.values())
     print(f"screened {len(instances) + discarded} candidates: "
           f"{len(instances)} pass, {discarded} discarded", flush=True)
@@ -676,7 +688,8 @@ def plan(base: prove.PinnedBase, base_sha: str, *, profile: RepoProfile,
 
 def run(base: prove.PinnedBase, base_sha: str, *, profile: RepoProfile,
         lane_logins: frozenset[str], limit: int | None = None, concurrency: int = 2,
-        resume: bool = False, run_id: str | None = None) -> int:
+        resume: bool = False, run_id: str | None = None,
+        candidate_cap: int = _DEFAULT_CANDIDATES) -> int:
     """Run the pin's group through the lane, score each instance, and write one
     `replay:instance` ledger row per instance, a `replay:run` summary, and a
     markdown table. A run is keyed by its base, so re-invoking continues it:
@@ -684,7 +697,8 @@ def run(base: prove.PinnedBase, base_sha: str, *, profile: RepoProfile,
     Returns 0 on completion (a failed instance is data), non-zero on a setup
     error."""
     run_id = run_id or base_sha
-    instances = select_instances(base, base_sha, profile=profile, lane_logins=lane_logins)
+    instances = select_instances(base, base_sha, profile=profile, lane_logins=lane_logins,
+                                 candidate_cap=candidate_cap)
     if not instances:
         print("no candidate instances to replay", file=sys.stderr)
         return 2
@@ -753,6 +767,8 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     ap.add_argument("command", choices=("plan", "run"),
                     help="plan inspects the corpus; run scores a batch")
     ap.add_argument("--limit", type=int, default=None, help="cap the instances run (pilot: 10)")
+    ap.add_argument("--candidates", type=int, default=_DEFAULT_CANDIDATES,
+                    help="cap the newest closed issues assembled (bounds the gh fetches)")
     ap.add_argument("--concurrency", type=int, default=2, help="instances kept in flight")
     ap.add_argument("--resume", action="store_true",
                     help="re-run only the faulted instances already recorded for this base")
@@ -774,10 +790,10 @@ def main(argv: list[str]) -> int:
     active = profile.active()
     logins = _lane_logins()
     if args.command == "plan":
-        plan(base, base.sha, profile=active, lane_logins=logins)
+        plan(base, base.sha, profile=active, lane_logins=logins, candidate_cap=args.candidates)
         return 0
     return run(base, base.sha, profile=active, lane_logins=logins, limit=args.limit,
-               concurrency=args.concurrency, resume=args.resume)
+               concurrency=args.concurrency, resume=args.resume, candidate_cap=args.candidates)
 
 
 if __name__ == "__main__":

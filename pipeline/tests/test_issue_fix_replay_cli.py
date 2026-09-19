@@ -24,8 +24,10 @@ class FakeStore:
         storekit.parse_run(record)
         self.rows.append(record)
 
-    def runs(self) -> list[storekit.RunRecord]:
-        return [storekit.parse_run(r) for r in self.rows]
+    def runs(self, limit: int | None = None, since: str | None = None
+             ) -> list[storekit.RunRecord]:
+        rows = self.rows if limit is None else self.rows[-limit:]
+        return [storekit.parse_run(r) for r in rows]
 
 
 def _base(tmp_path: Path) -> prove.PinnedBase:
@@ -220,11 +222,24 @@ def test_plan_prints_groups_and_runs_no_instance(wired, monkeypatch, capsys) -> 
     assert "2 pass" in out
 
 
-def _seed_closed_issue(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, meta: dict) -> None:
+def _closed_meta(**over: object) -> dict:
+    meta = {"title": "Boom", "body": "it crashes", "state": "closed",
+            "state_reason": "completed", "author": "bob",
+            "created_at": "2024-01-01T00:00:00Z", "last_edited_at": "2024-01-05T00:00:00Z",
+            "updated_at": "2024-06-01T00:00:00Z"}
+    meta.update(over)
+    return meta
+
+
+def _seed_closed_issues(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                        specs: list[tuple[int, int, dict]]) -> None:
+    """Seed each (issue, pr, meta) into one IssueStore, give each a merged github
+    closer, and route candidates_from_store's store, PR index, and PR fetch to it."""
     from issue_triage import issue_store, pr_index
     store = issue_store.IssueStore(tmp_path)
-    iss = store.create_issue(7, meta)
-    iss.apply_facts(meta, github=[{"pr": 42, "state": "merged", "draft": False}])
+    for number, pr, meta in specs:
+        iss = store.create_issue(number, meta)
+        iss.apply_facts(meta, github=[{"pr": pr, "state": "merged", "draft": False}])
     monkeypatch.setattr(issue_store, "IssueStore", lambda: store)
     monkeypatch.setattr(pr_index, "from_store", lambda: {})
     monkeypatch.setattr(replay, "_gh_pr", lambda number: {
@@ -233,10 +248,7 @@ def _seed_closed_issue(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, meta: di
 
 
 def test_candidate_updated_at_is_the_last_edit_not_the_close_bump(tmp_path, monkeypatch) -> None:
-    _seed_closed_issue(tmp_path, monkeypatch, {
-        "title": "Boom", "body": "it crashes", "state": "closed", "state_reason": "completed",
-        "author": "bob", "created_at": "2024-01-01T00:00:00Z",
-        "last_edited_at": "2024-01-05T00:00:00Z", "updated_at": "2024-06-01T00:00:00Z"})
+    _seed_closed_issues(tmp_path, monkeypatch, [(7, 42, _closed_meta())])
 
     cands = replay.candidates_from_store()
 
@@ -245,22 +257,29 @@ def test_candidate_updated_at_is_the_last_edit_not_the_close_bump(tmp_path, monk
     assert cand.issue == 7
     assert cand.closed_completed is True
     assert cand.reporter == "bob"
-    # updated_at tracks the last edit, never GitHub's close-bumped updated_at.
+    # updated_at is the issue's last-edit time, unaffected by its close.
     assert cand.updated_at == replay._parse_dt("2024-01-05T00:00:00Z")
     assert cand.created_at == replay._parse_dt("2024-01-01T00:00:00Z")
     assert [(p.number, p.author, p.merged) for p in cand.closing_prs] == [(42, "carol", True)]
 
 
 def test_candidate_updated_at_falls_back_to_creation_when_never_edited(tmp_path, monkeypatch) -> None:
-    _seed_closed_issue(tmp_path, monkeypatch, {
-        "title": "Boom", "body": "b", "state": "closed", "state_reason": "not_planned",
-        "author": "bob", "created_at": "2024-01-01T00:00:00Z", "last_edited_at": None,
-        "updated_at": "2024-06-01T00:00:00Z"})
+    _seed_closed_issues(tmp_path, monkeypatch,
+                        [(7, 42, _closed_meta(state_reason="not_planned", last_edited_at=None))])
 
     cand = replay.candidates_from_store()[0]
 
     assert cand.closed_completed is False  # not_planned is not a completed close
     assert cand.updated_at == replay._parse_dt("2024-01-01T00:00:00Z")
+
+
+def test_candidates_limit_takes_the_newest_issues_first(tmp_path, monkeypatch) -> None:
+    _seed_closed_issues(tmp_path, monkeypatch,
+                        [(7, 42, _closed_meta()), (9, 44, _closed_meta())])
+
+    cands = replay.candidates_from_store(limit=1)
+
+    assert [c.issue for c in cands] == [9]  # newest issue first, then the cap
 
 
 def test_help_exits_zero() -> None:
@@ -277,11 +296,14 @@ def test_main_run_forwards_the_flags(monkeypatch, tmp_path) -> None:
     seen: dict[str, object] = {}
 
     def fake_run(b, base_sha, *, profile, lane_logins, limit, concurrency, resume,
-                 run_id=None) -> int:
-        seen.update(base_sha=base_sha, limit=limit, concurrency=concurrency, resume=resume)
+                 candidate_cap, run_id=None) -> int:
+        seen.update(base_sha=base_sha, limit=limit, concurrency=concurrency, resume=resume,
+                    candidate_cap=candidate_cap)
         return 0
 
     monkeypatch.setattr(replay, "run", fake_run)
-    rc = replay.main(["run", "--limit", "5", "--concurrency", "3", "--resume"])
+    rc = replay.main(["run", "--limit", "5", "--concurrency", "3", "--resume",
+                      "--candidates", "50"])
     assert rc == 0
-    assert seen == {"base_sha": base.sha, "limit": 5, "concurrency": 3, "resume": True}
+    assert seen == {"base_sha": base.sha, "limit": 5, "concurrency": 3, "resume": True,
+                    "candidate_cap": 50}
