@@ -67,10 +67,15 @@ def main(argv: list[str]) -> int:
         print(f"check refused: this stage has used its {max_runs} sandbox runs")
         return 1
     test_patch = env.get("PROSPECTOR_ISSUE_CHECK_TEST_PATCH")
+    pre_patch = env.get("PROSPECTOR_ISSUE_CHECK_PRE_PATCH")
     label = f"issue-{issue}-check"
     try:
-        patch = prove.compose(label, Path(test_patch) if test_patch else None,
-                              sandbox_check.authored_patch(worktree))
+        parts: list[Path | str | None] = [Path(test_patch) if test_patch else None,
+                                          sandbox_check.authored_patch(worktree)]
+        # The agent's clone holds the base plus the pre-patch, and its diff is
+        # against that tree; the sandbox starts from the base alone.
+        patch = (prove.flatten(base.clone, Path(pre_patch).read_text(), *parts, label=label)
+                 if pre_patch else prove.compose(label, *parts))
         rec = prove.run_command(base, patch, cmd, label=label,
                                 phase="compile" if argv == ["typecheck"] else "green")
     except (ValueError, subprocess.SubprocessError, OSError) as e:

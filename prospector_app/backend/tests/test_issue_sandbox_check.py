@@ -40,6 +40,36 @@ def _stub_compose(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(prove, "compose", lambda *a, **k: composed)
 
 
+def test_a_pre_patch_composes_the_tree_the_agent_s_clone_holds(monkeypatch, tmp_path):
+    # The agent's diff is against base+pre_patch; the sandbox starts from the
+    # base, so the pre-patch leads the composition and flatten (not compose)
+    # carries it — the parts touch the same paths.
+    pre = tmp_path / "pre.patch"
+    pre.write_text("diff --git a/src/app.ts b/src/app.ts\n+pre\n")
+    _under_lane(monkeypatch, tmp_path)
+    monkeypatch.setenv("PROSPECTOR_ISSUE_CHECK_PRE_PATCH", str(pre))
+    flattened = tmp_path / "flat.patch"
+    flattened.write_text("diff --git a/x b/x\n+x\n")
+    seen: dict = {}
+
+    def fake_flatten(base_clone, *parts, label):
+        seen["clone"] = base_clone
+        seen["parts"] = parts
+        return flattened
+
+    monkeypatch.setattr(prove, "flatten", fake_flatten)
+    monkeypatch.setattr(prove, "compose",
+                        lambda *a, **k: pytest.fail("compose cannot carry a pre-patch"))
+    monkeypatch.setattr(prove, "run_command",
+                        lambda base, patch, cmd, *, phase, label: {
+                            "cmd": cmd, "exit": 0, "patch": str(patch)})
+
+    assert issue_sandbox_check.main(["typecheck"]) == 0
+    assert seen["clone"] == Path(tmp_path / "clone")
+    assert seen["parts"][0] == pre.read_text()
+    assert seen["parts"][-1] == "diff --git a/e b/e\n+e\n"
+
+
 def test_missing_env_is_a_usage_error(monkeypatch, capsys):
     for k in ("PROSPECTOR_ISSUE_CHECK_ISSUE", "PROSPECTOR_ISSUE_CHECK_BASE_SHA",
               "PROSPECTOR_ISSUE_CHECK_TIER", "PROSPECTOR_ISSUE_CHECK_IMAGE",
