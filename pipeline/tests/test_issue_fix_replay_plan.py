@@ -203,9 +203,9 @@ def test_r5_bot_author_discarded(base_repo, generic_profile) -> None:
 
 def test_r5_lane_reporter_discarded(base_repo, generic_profile) -> None:
     repo, shas = base_repo
-    inst, reason = replay.screen(_candidate(shas["ok"], reporter="commitperclip-bot"),
+    inst, reason = replay.screen(_candidate(shas["ok"], reporter="example-lane-bot"),
                                  base_clone=repo, pin_sha=shas["pin"], profile=generic_profile,
-                                 lane_logins=frozenset({"commitperclip-bot"}))
+                                 lane_logins=frozenset({"example-lane-bot"}))
     assert inst is None
     assert reason == "bot-or-lane-author"
 
