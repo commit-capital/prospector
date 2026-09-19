@@ -112,6 +112,16 @@ class TestScrub:
             "auto-install-peers=false\nnode-linker=hoisted\n")
         vd.assert_scrubbed(src)
 
+    @pytest.mark.parametrize("rel", [".env", "a/.env.local", ".env.runner-e2e.example",
+                                     ".netrc", "b/.git-credentials", "c/.npmrc"])
+    def test_scrubbed_path_names_what_the_scrub_touches(self, rel):
+        assert vd.scrubbed_path(rel)
+
+    @pytest.mark.parametrize("rel", [".env.example", "docs/.env.example", "src/env.ts",
+                                     "environment.md"])
+    def test_scrubbed_path_leaves_the_rest(self, rel):
+        assert not vd.scrubbed_path(rel)
+
     def test_an_npmrc_of_only_credentials_is_deleted(self, tmp_path):
         src = self._checkout(tmp_path)
         (src / ".npmrc").write_text("_auth=dXNlcjpwYXNz\n")

@@ -18,6 +18,7 @@ import re
 import subprocess
 import sys
 import time
+import traceback
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -154,7 +155,7 @@ def screen(candidate: Candidate, *, base_clone: Path, pin_sha: str, profile: Rep
         return None, "merge-not-ancestor-of-pin"
     # git show prints a merge commit's combined diff (empty for a non-conflicting
     # two-parent merge); the landed change is the diff against the first parent.
-    landed_diff = _git(base_clone, "diff", f"{pr.merge_sha}^1", pr.merge_sha)
+    landed_diff = _git(base_clone, "diff", "--binary", f"{pr.merge_sha}^1", pr.merge_sha)
 
     # R3: touches a test path and a non-test path, no dependency manifest,
     # bounded non-test lines and files.
@@ -280,9 +281,12 @@ def transform_to_p(base_clone: Path, merge_sha: str, base_sha: str,
                    profile: RepoProfile) -> str:
     """The diff carrying the epoch tree at `base_sha` to `tree(P)`, the merge
     commit's first parent, with dependency-manifest sections dropped so the
-    source is history's while the installed dependencies stay the image's."""
-    raw = _git(base_clone, "diff", base_sha, f"{merge_sha}^1")
-    return diffpaths.filter_diff(raw, lambda p: not _is_dep_manifest(p, profile))
+    source is history's while the installed dependencies stay the image's, and
+    the sections for files the base's scrub removes or rewrites dropped so the
+    diff applies to the scrubbed clone. Binary files carry their full content."""
+    raw = _git(base_clone, "diff", "--binary", base_sha, f"{merge_sha}^1")
+    return diffpaths.filter_diff(
+        raw, lambda p: not _is_dep_manifest(p, profile) and not verify_driver.scrubbed_path(p))
 
 
 def oracle_command(test_files: list[str]) -> str | None:
@@ -382,13 +386,15 @@ def score(instance: Instance, lane_result: LaneRun, oracle_runs: dict[str, prove
     }
 
 
+# The ending recorded for an instance whose run raised.
+_CRASH_ENDING = "error"
 # Instance endings that are a machine fault rather than a scored verdict: the R6
-# sandbox fault plus the lane's own faults. A --resume re-runs any of them.
+# sandbox fault, the lane's own faults, and a crash. A --resume re-runs any of them.
 _FAULT_ENDINGS = frozenset({"r6-sandbox", "sandbox", "agent-unavailable", "run-failed",
-                            "base-compile"})
-# The lane's own fault endings (`_FAULT_ENDINGS` minus the R6 sandbox one): a run
-# that ends in one of these is a machine condition, so it is not scored.
-_LANE_FAULT_ENDINGS = _FAULT_ENDINGS - frozenset({"r6-sandbox"})
+                            "base-compile", _CRASH_ENDING})
+# The lane's own fault endings (`_FAULT_ENDINGS` minus the R6 sandbox one and the
+# crash): a run that ends in one of these is a machine condition, so it is not scored.
+_LANE_FAULT_ENDINGS = _FAULT_ENDINGS - frozenset({"r6-sandbox", _CRASH_ENDING})
 
 
 def run_instance(instance: Instance, *, base: prove.PinnedBase, base_sha: str,
@@ -742,7 +748,9 @@ def run(base: prove.PinnedBase, base_sha: str, *, profile: RepoProfile,
                 except Exception:
                     # A crashed instance is recorded as an error; the batch goes on.
                     inst = futures[fut]
-                    rec = {"issue": inst.issue, "pr": inst.pr, "ending": "error",
+                    print(f"instance {inst.issue} crashed:", file=sys.stderr)
+                    traceback.print_exc(file=sys.stderr)
+                    rec = {"issue": inst.issue, "pr": inst.pr, "ending": _CRASH_ENDING,
                            "seconds": 0.0, "agent_runs": 0}
                 results[rec["issue"]] = rec
                 pr_store.append_run({

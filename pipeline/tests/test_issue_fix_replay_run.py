@@ -175,6 +175,31 @@ def test_transform_to_p_drops_dependency_manifest_sections(tmp_path, generic_pro
     assert "src/other.py" not in transform  # reached only via the merge's second parent
 
 
+def test_transform_to_p_applies_to_the_scrubbed_base(tmp_path, generic_profile) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "logo.png").write_bytes(b"\x89PNG\x00old")
+    base = _commit(repo, {"src/app.py": "one\n", ".env.e2e.example": "A=1\n"}, "P")
+    default = _git(repo, "rev-parse", "--abbrev-ref", "HEAD").strip()
+    _git(repo, "checkout", "-q", "-b", "side", base)
+    _commit(repo, {"src/other.py": "s\n"}, "side")
+    _git(repo, "checkout", "-q", default)
+    _git(repo, "merge", "-q", "--no-ff", "side", "-m", "Merge #42")
+    merge = _git(repo, "rev-parse", "HEAD").strip()
+    # The pin is later history: it edits a binary file and a file the scrub removes.
+    (repo / "logo.png").write_bytes(b"\x89PNG\x00new")
+    pin = _commit(repo, {"src/app.py": "one\ntwo\n", ".env.e2e.example": "A=2\n"}, "later")
+    verify_driver.scrub_checkout(repo)
+
+    transform = replay.transform_to_p(repo, merge, pin, generic_profile)
+
+    assert "GIT binary patch" in transform
+    assert ".env.e2e.example" not in transform
+    subprocess.run(["git", "-C", str(repo), "apply", "--check", "-"], check=True,
+                   input=transform, text=True, capture_output=True)
+
+
 # --- score ------------------------------------------------------------------
 
 

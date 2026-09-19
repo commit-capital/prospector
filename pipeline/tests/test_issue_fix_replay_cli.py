@@ -186,6 +186,18 @@ def test_resume_reruns_a_faulted_instance(wired, monkeypatch) -> None:
     assert calls == [7]  # a faulted recording is retried under --resume
 
 
+def test_resume_reruns_a_crashed_instance(wired, monkeypatch) -> None:
+    insts = [_inst(7, 42)]
+    recs = {7: _rec(7, 42)}
+    _seed_instance(wired.store, 7, ending="error")
+    calls = _mock_pipeline(monkeypatch, insts, recs)
+
+    replay.run(wired.base, wired.base.sha, profile=wired.profile,
+               lane_logins=frozenset(), resume=True, run_id="R1")
+
+    assert calls == [7]
+
+
 def test_without_resume_a_recorded_instance_is_reused_not_rerun(wired, monkeypatch) -> None:
     insts = [_inst(7, 42), _inst(8, 43)]
     recs = {i.issue: _rec(i.issue, i.pr) for i in insts}

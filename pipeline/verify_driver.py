@@ -189,6 +189,15 @@ def scrub_checkout(src: Path) -> None:
             path.unlink()
 
 
+def scrubbed_path(path: str) -> bool:
+    """True when `scrub_checkout` deletes or rewrites the file at the
+    repository-relative `path`, so a scrubbed tree does not hold its content."""
+    name = path.rsplit("/", 1)[-1]
+    if name.startswith(".env"):
+        return not _KEEP.search(name)
+    return name in (".netrc", ".git-credentials", ".npmrc")
+
+
 def assert_scrubbed(src: Path) -> None:
     """Refuse to build unless the tree is provably free of credential files. An
     image layer is durable, so a credential in any layer stays readable once a
