@@ -2,6 +2,9 @@
 which phases run, over which patch, and how their exits read."""
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -253,3 +256,99 @@ def test_held_raises_no_base_without_a_clone(held, monkeypatch, tmp_path):
     monkeypatch.setattr(vd, "base_clone_dir", lambda sha: tmp_path / "gone")
     with pytest.raises(prove.NoBase, match="clone"):
         prove.held(HELD_SHA, 1)
+
+
+# flatten: real git in tmp_path, mirroring issue_triage/tests/test_lane_tree.py's
+# hermetic base fixture. Nothing here is mocked.
+
+_FLATTEN_GIT_ENV = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null",
+                    "GIT_AUTHOR_NAME": "prospector", "GIT_AUTHOR_EMAIL": "prospector@localhost",
+                    "GIT_COMMITTER_NAME": "prospector", "GIT_COMMITTER_EMAIL": "prospector@localhost"}
+
+
+def _flatten_git(repo, *args, input=None):
+    env = {**{k: os.environ[k] for k in ("PATH", "HOME") if k in os.environ}, **_FLATTEN_GIT_ENV}
+    return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True,
+                          text=True, timeout=60, env=env, input=input).stdout
+
+
+def _flatten_base(tmp_path):
+    base = tmp_path / "base-clone"
+    (base / "src").mkdir(parents=True)
+    (base / "src" / "x.ts").write_text("\n".join(f"line {n}" for n in range(1, 11)) + "\n")
+    (base / ".git").mkdir()
+    (base / ".git" / "marker").write_text("not part of the tree")
+    return base
+
+
+def _patch_from(tmp_path, name, base, edit):
+    """A unified diff of `edit(work)` against a fresh one-commit copy of `base`,
+    captured with real git so `git apply` accepts it."""
+    work = tmp_path / name
+    shutil.copytree(base, work, ignore=shutil.ignore_patterns(".git"))
+    _flatten_git(work, "init", "-q")
+    _flatten_git(work, "add", "-A")
+    _flatten_git(work, "commit", "-q", "--no-gpg-sign", "-m", "base")
+    edit(work)
+    _flatten_git(work, "add", "-N", ".")
+    return _flatten_git(work, "diff", "HEAD")
+
+
+def _replace(path, old, new):
+    path.write_text(path.read_text().replace(old, new))
+
+
+@pytest.fixture
+def flatten_scratch(monkeypatch, tmp_path):
+    monkeypatch.setattr(vd, "SCRATCH", tmp_path / "scratch")
+
+
+def test_flatten_combines_two_patches_that_edit_the_same_file(flatten_scratch, tmp_path):
+    base = _flatten_base(tmp_path)
+    top = _patch_from(tmp_path, "top", base,
+                      lambda w: _replace(w / "src" / "x.ts", "line 2", "line 2 top"))
+    bottom = _patch_from(tmp_path, "bottom", base,
+                         lambda w: _replace(w / "src" / "x.ts", "line 9", "line 9 bottom"))
+    top_file = tmp_path / "top.patch"
+    top_file.write_text(top)
+
+    with pytest.raises(ValueError, match="src/x.ts"):
+        prove.compose("issue-9", top, bottom)
+
+    out = prove.flatten(base, top_file, bottom, label="issue-9")
+    text = out.read_text()
+    assert "line 2 top" in text and "line 9 bottom" in text
+
+
+def test_flatten_combines_a_new_file_patch_with_an_edit_patch(flatten_scratch, tmp_path):
+    base = _flatten_base(tmp_path)
+    new_patch = _patch_from(tmp_path, "new", base,
+                            lambda w: (w / "src" / "y.ts").write_text("export const y = 1;\n"))
+    edit_patch = _patch_from(tmp_path, "edit", base,
+                             lambda w: _replace(w / "src" / "x.ts", "line 5", "line 5 edited"))
+
+    out = prove.flatten(base, new_patch, None, edit_patch, label="issue-10")
+    text = out.read_text()
+    assert "b/src/y.ts" in text and "export const y = 1;" in text
+    assert "line 5 edited" in text
+
+
+def test_flatten_raises_naming_the_index_of_a_patch_that_does_not_apply(flatten_scratch, tmp_path):
+    base = _flatten_base(tmp_path)
+    first = _patch_from(tmp_path, "first", base,
+                        lambda w: _replace(w / "src" / "x.ts", "line 2", "line 2 first"))
+    conflicting = _patch_from(tmp_path, "second", base,
+                              lambda w: _replace(w / "src" / "x.ts", "line 2", "line 2 second"))
+
+    with pytest.raises(ValueError, match="patch 1 does not apply"):
+        prove.flatten(base, first, conflicting, label="issue-11")
+
+
+def test_flatten_writes_under_the_scratch_dir_as_a_valid_unified_diff(flatten_scratch, tmp_path):
+    base = _flatten_base(tmp_path)
+    edit_patch = _patch_from(tmp_path, "edit", base,
+                             lambda w: _replace(w / "src" / "x.ts", "line 3", "line 3 edited"))
+
+    out = prove.flatten(base, edit_patch, label="issue-12")
+    assert out.parent == tmp_path / "scratch" / "issue-fix"
+    assert out.read_text().startswith("diff ")

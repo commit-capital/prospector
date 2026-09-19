@@ -1,6 +1,18 @@
 import subprocess
 
+import pytest
+
 from issue_triage import lane_tree
+
+_PRE_PATCH = (
+    "diff --git a/src/x.ts b/src/x.ts\n"
+    "index e69de29..0000000 100644\n"
+    "--- a/src/x.ts\n"
+    "+++ b/src/x.ts\n"
+    "@@ -1 +1 @@\n"
+    "-export const x = 1;\n"
+    "+export const x = 2;\n"
+)
 
 
 def _base(tmp_path):
@@ -96,3 +108,16 @@ def test_read_files_returns_no_partial_contents_on_a_later_bad_file(tmp_path):
     (repo / "bin.test.ts").write_bytes(b"\xff\xfe")
     files, why = lane_tree.read_files(repo, ["src/x.ts", "bin.test.ts"])
     assert files == [] and why == "not UTF-8 text: bin.test.ts"
+
+
+def test_materialize_applies_a_pre_patch_before_committing(tmp_path):
+    repo = lane_tree.materialize(_base(tmp_path), tmp_path / "w", pre_patch=_PRE_PATCH)
+    assert len(_log(repo)) == 1
+    assert (repo / "src" / "x.ts").read_text() == "export const x = 2;\n"
+    assert lane_tree.new_files(repo) == ([], [])
+
+
+def test_materialize_raises_on_a_pre_patch_that_does_not_apply(tmp_path):
+    bad = _PRE_PATCH.replace("-export const x = 1;", "-export const x = 999;")
+    with pytest.raises(ValueError, match="pre_patch does not apply"):
+        lane_tree.materialize(_base(tmp_path), tmp_path / "w", pre_patch=bad)

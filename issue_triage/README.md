@@ -98,6 +98,30 @@ condition, never a verdict — exits 1: `agent-unavailable`, `run-failed`,
 `sandbox`, `base-compile`. Exit 2 is no held base or an unknown issue, and
 writes no result file or ledger row.
 
+## History replay
+
+`pipeline/evals/issue_fix_replay.py` measures the fix lane against the past: it
+takes closed issues whose merged PR is the known human fix, rebuilds each bug's
+pre-fix tree, runs the lane on it, and scores the run against that PR's own tests
+as a hidden oracle. It runs entirely on a base this machine already holds and
+makes no upstream write.
+
+```bash
+uv run python -m pipeline.evals.issue_fix_replay plan             # inspect the corpus, run nothing
+uv run python -m pipeline.evals.issue_fix_replay run --limit 10   # score a pilot batch of ten
+```
+
+`plan` assembles and screens the corpus and prints each dependency group's size,
+date span, and whether it matches the pin — the safety valve to look before a
+run. `run` takes the pin's group, runs `--concurrency` (default 2) instances at a
+time, and writes a markdown scorecard to `<verify scratch>/replay/<run-id>/table.md`
+plus one `replay:instance` ledger row per instance and a `replay:run` summary. A
+run is keyed by its base, so re-invoking continues it (`--resume` re-runs the
+faulted instances). A failed instance is data, so the run still exits 0. The
+pilot's numbers — reproduced, fix rate, oracle pass, false accepts, and wall-time
+and agent runs per instance — gate whether the lane goes live. Per-run token cost
+is a later addition: it needs `fix_lane.LaneResult` to carry the CLI's cost event.
+
 ## Pain score
 
 Balanced normalized blend of **distinct reporters · reactions/👍 · comments**,

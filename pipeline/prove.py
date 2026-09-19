@@ -8,7 +8,11 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import re
+import shutil
+import subprocess
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -77,14 +81,18 @@ def held(base_sha: str, tier: int) -> PinnedBase:
 _LABEL_RE = re.compile(r"[A-Za-z0-9._-]+")
 
 
+def _check_label(label: str) -> None:
+    if not _LABEL_RE.fullmatch(label) or ".." in label:
+        raise ValueError(f"label is not a file name: {label!r}")
+
+
 def compose(label: str, *parts: Path | str | None) -> Path:
     """One patch file holding `parts` in order, under the verify scratch so the
     sandbox can mount it. Named for `label` and the digest of the composed text,
     so one composition is one file and the directory is bounded by the distinct
     compositions on this machine. Parts must touch disjoint paths: the sandbox
     applies the file in one `git apply`."""
-    if not _LABEL_RE.fullmatch(label) or ".." in label:
-        raise ValueError(f"label is not a file name: {label!r}")
+    _check_label(label)
     texts = [p.read_text() if isinstance(p, Path) else p for p in parts if p]
     seen: set[str] = set()
     for text in texts:
@@ -93,6 +101,52 @@ def compose(label: str, *parts: Path | str | None) -> Path:
             raise ValueError(f"patch parts share paths: {sorted(seen & paths)}")
         seen |= paths
     body = "".join(t if t.endswith("\n") else t + "\n" for t in texts)
+    out = verify_driver.SCRATCH / "issue-fix"
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / f"{label}.{hashlib.sha256(body.encode()).hexdigest()[:12]}.patch"
+    path.write_text(body)
+    return path
+
+
+# flatten's throwaway repo runs with no user or system configuration and a
+# fixed identity, like the lane clone issue_triage/lane_tree.py builds.
+_GIT_ENV = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null",
+            "GIT_AUTHOR_NAME": "prospector", "GIT_AUTHOR_EMAIL": "prospector@localhost",
+            "GIT_COMMITTER_NAME": "prospector", "GIT_COMMITTER_EMAIL": "prospector@localhost"}
+
+
+def _git(repo: Path, *args: str, input: str | None = None) -> str:
+    env = {**{k: os.environ[k] for k in ("PATH", "HOME") if k in os.environ}, **_GIT_ENV}
+    done = subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True,
+                          text=True, timeout=300, env=env, input=input)
+    return done.stdout
+
+
+def flatten(base_clone: Path, *patches: Path | str | None, label: str) -> Path:
+    """One diff from a base with no history, holding `patches` applied in
+    order to `base_clone`'s tree in a throwaway one-commit repository. Unlike
+    `compose`, patches may touch the same paths, applied to the base in
+    sequence. Named and scratched like `compose`.
+    Raises `ValueError` at the first patch that does not apply, naming its
+    index among the non-None patches."""
+    _check_label(label)
+    parts = [p for p in patches if p is not None]
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(os.path.realpath(tmp)) / "repo"
+        shutil.copytree(base_clone, repo, symlinks=True, ignore=shutil.ignore_patterns(".git"))
+        _git(repo, "init", "-q")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "--no-gpg-sign", "-m", "base")
+        for i, part in enumerate(parts):
+            try:
+                if isinstance(part, Path):
+                    _git(repo, "apply", "--whitespace=nowarn", str(part.resolve()))
+                else:
+                    _git(repo, "apply", "--whitespace=nowarn", "-", input=part)
+            except subprocess.CalledProcessError as e:
+                raise ValueError(f"patch {i} does not apply: {e.stderr.strip()}") from e
+        _git(repo, "add", "-N", ".")
+        body = _git(repo, "diff", "HEAD")
     out = verify_driver.SCRATCH / "issue-fix"
     out.mkdir(parents=True, exist_ok=True)
     path = out / f"{label}.{hashlib.sha256(body.encode()).hexdigest()[:12]}.patch"

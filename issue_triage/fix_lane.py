@@ -77,6 +77,7 @@ class LaneSpec:
     body: str
     base: prove.PinnedBase
     action: Literal["reproduce", "fix"] = "fix"
+    pre_patch: str | None = None
 
 
 @dataclass
@@ -153,6 +154,11 @@ def run(spec: LaneSpec, *, workdir: Path,
         return LaneResult(ending=ending, fault=_fault(ending), detail=detail,
                           reproduction=reproduction, result=result, agent_runs=agent_runs)
 
+    def proof_patch(*parts: Path | str | None) -> Path:
+        if spec.pre_patch is not None:
+            return prove.flatten(spec.base.clone, spec.pre_patch, *parts, label=label)
+        return prove.compose(label, *parts)
+
     try:
         # --- reproduction, with one retry on a rejected set or a passing red ---
         retry_note: str | None = None
@@ -167,7 +173,8 @@ def run(spec: LaneSpec, *, workdir: Path,
 
         for _attempt in range(MAX_REPRO_ATTEMPTS):
             on_step("preparing the clone")
-            clone = lane_tree.materialize(spec.base.clone, repro_dir / "src")
+            clone = lane_tree.materialize(spec.base.clone, repro_dir / "src",
+                                          pre_patch=spec.pre_patch)
             on_step("agent authoring the reproduction")
             agent_runs += 1
             verdict = reproduce_issue.author(
@@ -186,7 +193,7 @@ def run(spec: LaneSpec, *, workdir: Path,
                 continue
             assert test_cmd is not None and test_patch is not None  # a clean set has both
             on_step("proving red on the pinned base")
-            red = prove.red_legs(spec.base, patch=prove.compose(label, test_patch),
+            red = prove.red_legs(spec.base, patch=proof_patch(test_patch),
                                  test_cmd=test_cmd, label=label)
             if red.get("exit") == gates.SENTINEL_PASS:
                 retry_note = "the reproduction passed on the pinned base"
@@ -240,7 +247,8 @@ def run(spec: LaneSpec, *, workdir: Path,
             return finish("cancelled", reason)
 
         on_step("agent authoring the fix")
-        fix_clone = lane_tree.materialize(spec.base.clone, fix_dir / "src", files)
+        fix_clone = lane_tree.materialize(spec.base.clone, fix_dir / "src", files,
+                                          pre_patch=spec.pre_patch)
         agent_runs += 1
         fix_verdict = fix_issue.author(
             str(fix_clone), issue=spec.issue, title=spec.title, body=spec.body,
@@ -278,14 +286,14 @@ def run(spec: LaneSpec, *, workdir: Path,
 
         on_step("proving green")
         result["proof"]["green"] = prove.green_legs(
-            spec.base, patch=prove.compose(label, test_patch, fix_patch),
+            spec.base, patch=proof_patch(test_patch, fix_patch),
             test_cmd=test_cmd, label=label)
 
         compile_cmd = profile.active().verify.compile_cmd
         if compile_cmd:
             on_step("compile preflight")
             compiled = prove.run_command(
-                spec.base, prove.compose(label, test_patch, fix_patch), compile_cmd,
+                spec.base, proof_patch(test_patch, fix_patch), compile_cmd,
                 phase="compile", label=label)
             result["proof"]["compile"] = compiled
             if compiled.get("error_kind") == "base-compile":
@@ -299,11 +307,11 @@ def run(spec: LaneSpec, *, workdir: Path,
         if related_cmd:
             on_step("related tests")
             entry: dict = {"files": related, "run": prove.run_command(
-                spec.base, prove.compose(label, test_patch, fix_patch), related_cmd,
+                spec.base, proof_patch(test_patch, fix_patch), related_cmd,
                 phase="green", label=label)}
             if entry["run"].get("exit") == gates.SENTINEL_TEST_FAIL:
                 base_run = prove.run_command(
-                    spec.base, prove.compose(label, test_patch), related_cmd,
+                    spec.base, proof_patch(test_patch), related_cmd,
                     phase="green", label=label)
                 if base_run.get("exit") == gates.SENTINEL_TEST_FAIL:
                     entry["base_fails"] = True
