@@ -34,3 +34,14 @@ def test_records_path_sits_under_the_verify_scratch(tmp_path, monkeypatch):
     monkeypatch.setenv("TRIAGE_VERIFY_SCRATCH", str(tmp_path / "scratch"))
     assert lane_check.records_path(31, "fix") == (
         settings.verify_scratch() / "issue-fix" / "issue-31" / "fix.checks.jsonl")
+
+
+def test_check_env_names_the_pre_patch_only_when_one_is_given(tmp_path):
+    without = lane_check.check_env(issue=7, base=_base(), worktree=tmp_path / "wt",
+                                   records=tmp_path / "r.jsonl", test_patch=None)
+    assert "PROSPECTOR_ISSUE_CHECK_PRE_PATCH" not in without
+
+    with_pre = lane_check.check_env(issue=7, base=_base(), worktree=tmp_path / "wt",
+                                    records=tmp_path / "r.jsonl", test_patch=None,
+                                    pre_patch=tmp_path / "pre.patch")
+    assert with_pre["PROSPECTOR_ISSUE_CHECK_PRE_PATCH"] == str(tmp_path / "pre.patch")

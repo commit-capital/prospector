@@ -149,6 +149,11 @@ def run(spec: LaneSpec, *, workdir: Path,
     label = f"issue-{spec.issue}"
     repro_dir = workdir / "repro"
     fix_dir = workdir / "fix"
+    pre_patch_file: Path | None = None
+    if spec.pre_patch is not None:
+        workdir.mkdir(parents=True, exist_ok=True)
+        pre_patch_file = workdir / "pre.patch"
+        pre_patch_file.write_text(spec.pre_patch)
 
     def finish(ending: str, detail: str) -> LaneResult:
         return LaneResult(ending=ending, fault=_fault(ending), detail=detail,
@@ -181,7 +186,8 @@ def run(spec: LaneSpec, *, workdir: Path,
                 str(clone), issue=spec.issue, title=spec.title, body=spec.body,
                 env=lane_check.check_env(
                     issue=spec.issue, base=spec.base, worktree=clone,
-                    records=lane_check.records_path(spec.issue, "repro"), test_patch=None),
+                    records=lane_check.records_path(spec.issue, "repro"), test_patch=None,
+                    pre_patch=pre_patch_file),
                 retry_note=retry_note)
             if "give_up" in verdict:
                 gave_up = str(verdict["give_up"])
@@ -256,7 +262,8 @@ def run(spec: LaneSpec, *, workdir: Path,
             withheld_globs=gates.fix_withheld_globs(),
             env=lane_check.check_env(
                 issue=spec.issue, base=spec.base, worktree=fix_clone,
-                records=lane_check.records_path(spec.issue, "fix"), test_patch=test_patch))
+                records=lane_check.records_path(spec.issue, "fix"), test_patch=test_patch,
+                pre_patch=pre_patch_file))
         fix_checks = check_records.collect(
             lane_check.records_path(spec.issue, "fix"), CHECKS_LIMIT)
         if "give_up" in fix_verdict:

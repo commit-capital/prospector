@@ -60,13 +60,13 @@ def lane_command(argv: list[str]) -> tuple[str | None, str | None]:
 
 
 def authored_patch(worktree: str) -> str:
-    """The agent's uncommitted edits as a diff against the worktree's HEAD; new
-    files are marked intent-to-add so they appear. Read-only: nothing is
-    staged for commit."""
+    """The agent's uncommitted edits as a diff against the worktree's HEAD, with
+    full blob ids and binary content; new files are marked intent-to-add so they
+    appear. Read-only: nothing is staged for commit."""
     subprocess.run(["git", "-C", worktree, "add", "-N", "."], check=True,
                    capture_output=True, text=True, timeout=120)
-    r = subprocess.run(["git", "-C", worktree, "diff", "HEAD"], check=True,
-                       capture_output=True, text=True, timeout=120)
+    r = subprocess.run(["git", "-C", worktree, "diff", "--full-index", "--binary", "HEAD"],
+                       check=True, capture_output=True, text=True, timeout=120)
     return r.stdout
 
 

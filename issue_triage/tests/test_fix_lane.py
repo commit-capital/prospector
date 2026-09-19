@@ -507,6 +507,23 @@ def test_pre_patch_is_applied_before_the_agent_sees_the_clone(lane):
     assert seen == {"repro": "export const x = 42;\n", "fix": "export const x = 42;\n"}
 
 
+def test_pre_patch_reaches_the_agent_s_check_environment(lane):
+    # The agents author against base+pre_patch, so their one host check must
+    # compose the same tree; the sandbox itself starts from the base.
+    res = lane.run(pre_patch=_PRE_PATCH)
+    assert res.ending == "fixed" and res.fault is False
+    named = [call["env"]["PROSPECTOR_ISSUE_CHECK_PRE_PATCH"]
+             for call in lane.calls["reproduce"] + lane.calls["fix"]]
+    assert named and len(set(named)) == 1
+    assert Path(named[0]).read_text() == _PRE_PATCH
+
+
+def test_without_a_pre_patch_the_check_environment_names_none(lane):
+    lane.run()
+    for call in lane.calls["reproduce"] + lane.calls["fix"]:
+        assert "PROSPECTOR_ISSUE_CHECK_PRE_PATCH" not in call["env"]
+
+
 def test_pre_patch_none_uses_compose_not_flatten(lane):
     res = lane.run()
     assert res.ending == "fixed" and res.fault is False
