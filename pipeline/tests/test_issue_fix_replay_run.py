@@ -38,6 +38,11 @@ _LANE_PATCH = (
 
 FIX_ONLY = 'diff --git a/src/x.ts b/src/x.ts\n--- a/src/x.ts\n+++ b/src/x.ts\n@@ -1,1 +1,1 @@\n+export function fixme() { return 1 }\n'
 
+_TEST_ONLY = (
+    "diff --git a/src/bug.test.ts b/src/bug.test.ts\n"
+    "--- a/src/bug.test.ts\n+++ b/src/bug.test.ts\n"
+    "@@ -0,0 +1,1 @@\n+expect(fixme()).toBe(1)\n")
+
 
 def _git(repo: Path, *args: str) -> str:
     env = {**{k: os.environ[k] for k in ("PATH", "HOME") if k in os.environ}, **_GIT_ENV}
@@ -393,6 +398,16 @@ def test_run_instance_faulted_lane_is_not_scored(tmp_path, generic_profile, monk
     assert rec["detail"] == "sandbox could not boot"
     assert "oracle_pass" not in rec  # a faulted lane is not scored
     assert touched == []  # neither score nor its extra legs ran
+
+
+def test_score_without_fix_hunks_reads_as_no_oracle_pass(tmp_path, generic_profile,
+                                                         monkeypatch) -> None:
+    # The lane wrote a test and no fix: the bug is still there, so the PR's own
+    # test cannot pass and no sandbox leg is spent asking.
+    rec, runs = _score(tmp_path, monkeypatch, _lane("fixed", patch=_TEST_ONLY),
+                       red=_RED_2020, lane_green=_GREEN_00, oracle_green=_GREEN_00)
+    assert rec["oracle_pass"] is False
+    assert "oracle_pass" not in runs
 
 
 # --- coverage: metric/R6 branches that need a discriminating test -------------

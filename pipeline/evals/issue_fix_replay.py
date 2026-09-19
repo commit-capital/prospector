@@ -362,7 +362,9 @@ def score(instance: Instance, lane_result: LaneRun, oracle_runs: dict[str, prove
 
     oracle_pass = False
     oracle = oracle_command(instance.test_files)
-    if oracle is not None:
+    # A run that changed no non-test file leaves the bug in place, so the PR's
+    # own test cannot pass and the sandbox has nothing to measure.
+    if oracle is not None and lane_fix_hunks.strip():
         green = prove.green_legs(
             base, patch=prove.flatten(base.clone, pre_patch, pr_test_hunks,
                                       lane_fix_hunks, label=label),

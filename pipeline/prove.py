@@ -129,10 +129,11 @@ def flatten(base_clone: Path, *patches: Path | str | None, label: str) -> Path:
     sequence. Named and scratched like `compose`. The diff carries full blob ids
     and binary content, so it applies (`--3way` included) in a clone of any
     history size.
+    A patch that is None or holds no text contributes nothing and is skipped.
     Raises `ValueError` at the first patch that does not apply, naming its
-    index among the non-None patches."""
+    index among the patches that carry text."""
     _check_label(label)
-    parts = [p for p in patches if p is not None]
+    parts = [p for p in patches if p is not None and (isinstance(p, Path) or p.strip())]
     with tempfile.TemporaryDirectory() as tmp:
         repo = Path(os.path.realpath(tmp)) / "repo"
         shutil.copytree(base_clone, repo, symlinks=True, ignore=shutil.ignore_patterns(".git"))
