@@ -382,11 +382,21 @@ def score(instance: Instance, lane_result: LaneRun, oracle_runs: dict[str, prove
     }
 
 
+# Instance endings that are a machine fault rather than a scored verdict: the R6
+# sandbox fault plus the lane's own faults. A --resume re-runs any of them.
+_FAULT_ENDINGS = frozenset({"r6-sandbox", "sandbox", "agent-unavailable", "run-failed",
+                            "base-compile"})
+# The lane's own fault endings (`_FAULT_ENDINGS` minus the R6 sandbox one): a run
+# that ends in one of these is a machine condition, so it is not scored.
+_LANE_FAULT_ENDINGS = _FAULT_ENDINGS - frozenset({"r6-sandbox"})
+
+
 def run_instance(instance: Instance, *, base: prove.PinnedBase, base_sha: str,
                  profile: RepoProfile, workdir: Path, run_lane: LaneEntry) -> dict:
     """Build `tree(P)`, gate it on R6, run the lane on it, and score the run.
     `run_lane` is the lane entry point the caller injects. On an R6 miss the
-    record carries `r6-<reason>` and no lane runs."""
+    record carries `r6-<reason>` and no lane runs; a lane fault records the
+    ending without scoring."""
     label = f"replay-{instance.issue}"
     pre_patch = transform_to_p(base.clone, instance.merge_sha, base_sha, profile)
     ok, reason = validate_known_fix(base, pre_patch, instance, label=label)
@@ -398,6 +408,10 @@ def run_instance(instance: Instance, *, base: prove.PinnedBase, base_sha: str,
                            body=instance.report_body, base=base, pre_patch=pre_patch,
                            workdir=workdir)
     seconds = round(time.monotonic() - t0, 1)
+    if lane_result.ending in _LANE_FAULT_ENDINGS:
+        # A faulted lane spends none of the oracle and repro_valid sandbox legs.
+        return {"issue": instance.issue, "pr": instance.pr, "ending": lane_result.ending,
+                "seconds": seconds, "agent_runs": lane_result.agent_runs}
     oracle_runs: dict[str, prove.Legs] = {}
     scores = score(instance, lane_result, oracle_runs, base=base, pre_patch=pre_patch,
                    label=label)
@@ -549,8 +563,8 @@ def select_instances(base: prove.PinnedBase, base_sha: str, *, profile: RepoProf
 
 # -- Scorecard table ----------------------------------------------------------
 
-_TABLE_COLUMNS = ("issue", "pr", "reproduced", "repro_valid", "fixed", "oracle_pass",
-                  "false_accept", "seconds", "agent_runs")
+_TABLE_COLUMNS = ("issue", "pr", "ending", "reproduced", "repro_valid", "fixed",
+                  "oracle_pass", "false_accept", "seconds", "agent_runs")
 _TABLE_BOOLS = ("reproduced", "repro_valid", "fixed", "oracle_pass", "false_accept")
 
 
@@ -565,7 +579,7 @@ def _cell(value: object) -> str:
 
 
 def _instance_row(rec: dict) -> str:
-    cells = [str(rec.get("issue", "-")), str(rec.get("pr", "-"))]
+    cells = [str(rec.get("issue", "-")), str(rec.get("pr", "-")), _cell(rec.get("ending"))]
     cells += [_cell(rec.get(k)) for k in _TABLE_BOOLS]
     cells += [_cell(rec.get("seconds")), _cell(rec.get("agent_runs"))]
     return "| " + " | ".join(cells) + " |"
@@ -575,7 +589,8 @@ def _aggregate_row(records: list[dict]) -> str:
     counts = [str(sum(1 for r in records if r.get(k))) for k in _TABLE_BOOLS]
     seconds = sum(r["seconds"] for r in records if isinstance(r.get("seconds"), int | float))
     runs = sum(r["agent_runs"] for r in records if isinstance(r.get("agent_runs"), int))
-    cells = [f"total ({len(records)})", ""] + counts + [f"{seconds:.1f}", str(runs)]
+    # Leading blanks for the pr and ending columns.
+    cells = [f"total ({len(records)})", "", ""] + counts + [f"{seconds:.1f}", str(runs)]
     return "| " + " | ".join(cells) + " |"
 
 
@@ -587,11 +602,6 @@ def _render_table(records: list[dict]) -> str:
 
 
 # -- Ledger -------------------------------------------------------------------
-
-# The instance endings that are a machine fault rather than a scored verdict:
-# the R6 sandbox fault plus the lane's own fault endings. A --resume re-runs them.
-_FAULT_ENDINGS = frozenset({"r6-sandbox", "sandbox", "agent-unavailable", "run-failed",
-                            "base-compile"})
 
 # Instances measured before the average cost per instance is reported.
 _COST_SAMPLE = 10
@@ -727,7 +737,13 @@ def run(base: prove.PinnedBase, base_sha: str, *, profile: RepoProfile,
                             run_lane=_run_lane): inst
                 for inst in todo}
             for fut in as_completed(futures):
-                rec = fut.result()
+                try:
+                    rec = fut.result()
+                except Exception:
+                    # A crashed instance is recorded as an error; the batch goes on.
+                    inst = futures[fut]
+                    rec = {"issue": inst.issue, "pr": inst.pr, "ending": "error",
+                           "seconds": 0.0, "agent_runs": 0}
                 results[rec["issue"]] = rec
                 pr_store.append_run({
                     "phase": "replay:instance", "started": started,
@@ -768,7 +784,8 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
                     help="plan inspects the corpus; run scores a batch")
     ap.add_argument("--limit", type=int, default=None, help="cap the instances run (pilot: 10)")
     ap.add_argument("--candidates", type=int, default=_DEFAULT_CANDIDATES,
-                    help="cap the newest closed issues assembled (bounds the gh fetches)")
+                    help="cap the newest closed issues assembled; a large value is "
+                         "network-bound (one live gh read per closed issue's closer)")
     ap.add_argument("--concurrency", type=int, default=2, help="instances kept in flight")
     ap.add_argument("--resume", action="store_true",
                     help="re-run only the faulted instances already recorded for this base")

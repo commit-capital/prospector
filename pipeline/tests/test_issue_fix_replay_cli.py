@@ -198,6 +198,37 @@ def test_without_resume_a_recorded_instance_is_reused_not_rerun(wired, monkeypat
     assert calls == [8]
 
 
+def test_run_survives_a_crashed_instance(wired, monkeypatch) -> None:
+    insts = [_inst(7, 42), _inst(8, 43), _inst(9, 44)]
+    recs = {7: _rec(7, 42), 9: _rec(9, 44)}
+    cands = [SimpleNamespace(issue=i.issue) for i in insts]
+    monkeypatch.setattr(replay, "candidates_from_store", lambda *, limit=None: cands)
+    by_issue = {i.issue: i for i in insts}
+    monkeypatch.setattr(replay, "screen", lambda cand, **kw: (by_issue[cand.issue], None))
+
+    def fake_run_instance(inst, *, base, base_sha, profile, workdir, run_lane) -> dict:
+        if inst.issue == 8:
+            raise ValueError("patch conflict mid-score")
+        return recs[inst.issue]
+
+    monkeypatch.setattr(replay, "run_instance", fake_run_instance)
+
+    rc = replay.run(wired.base, wired.base.sha, profile=wired.profile,
+                    lane_logins=frozenset(), run_id="R1")
+
+    assert rc == 0
+    by_i = {r["stats"]["issue"]: r["stats"] for r in _instance_rows(wired.store)}
+    assert len(by_i) == 3  # the crashed instance is still recorded
+    assert by_i[8]["ending"] == "error"
+    assert "fixed" not in by_i[8]  # scores absent for the crashed one
+    assert by_i[7]["ending"] == "fixed" and by_i[9]["ending"] == "fixed"
+    run_stats = _run_rows(wired.store)[0]["stats"]
+    assert run_stats["instances"] == 3
+    assert run_stats["fixed"] == 2  # the error instance counts as not-fixed
+    table = (wired.scratch / "replay" / "R1" / "table.md").read_text()
+    assert any(ln.startswith("| 8 |") and "error" in ln for ln in table.splitlines())
+
+
 def test_run_returns_setup_error_on_no_instances(wired, monkeypatch) -> None:
     monkeypatch.setattr(replay, "candidates_from_store", lambda *, limit=None: [])
     assert replay.run(wired.base, wired.base.sha, profile=wired.profile,

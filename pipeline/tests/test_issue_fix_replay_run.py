@@ -324,6 +324,28 @@ def test_run_instance_r6_failure_skips_the_lane(tmp_path, generic_profile, monke
     assert "fixed" not in rec
 
 
+def test_run_instance_faulted_lane_is_not_scored(tmp_path, generic_profile, monkeypatch) -> None:
+    monkeypatch.setattr(replay, "transform_to_p",
+                        lambda base_clone, merge_sha, base_sha, profile: "PRE")
+    monkeypatch.setattr(replay, "validate_known_fix",
+                        lambda base, pre_patch, instance, *, label: (True, ""))
+    touched: list[str] = []
+    monkeypatch.setattr(replay, "score", lambda *a, **k: touched.append("score") or {})
+    monkeypatch.setattr(prove, "green_legs",
+                        lambda *a, **k: touched.append("green") or _GREEN_00)
+
+    def fake_run_lane(*, issue, title, body, base, pre_patch, workdir):
+        return _lane("sandbox", agent_runs=2)
+
+    rec = replay.run_instance(_instance(), base=_base(tmp_path), base_sha="e" * 40,
+                              profile=generic_profile, workdir=tmp_path / "work",
+                              run_lane=fake_run_lane)
+    assert rec["ending"] == "sandbox"
+    assert rec["agent_runs"] == 2
+    assert "oracle_pass" not in rec  # a faulted lane is not scored
+    assert touched == []  # neither score nor its extra legs ran
+
+
 # --- coverage: metric/R6 branches that need a discriminating test -------------
 
 
