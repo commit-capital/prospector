@@ -67,9 +67,10 @@ class Harness:
 
     def run(self, *, action: str = "fix", title: str = "Crash on empty",
             body: str = "It throws when given nothing.",
+            pre_patch: str | None = None,
             still_valid=None) -> fix_lane.LaneResult:
         spec = fix_lane.LaneSpec(issue=7, title=title, body=body, base=self.base,
-                                 action=action)
+                                 action=action, pre_patch=pre_patch)
         return fix_lane.run(spec, workdir=self.workdir,
                             on_step=lambda s: self.calls["steps"].append(s),
                             still_valid=still_valid or (lambda: None))
@@ -94,7 +95,7 @@ def lane(tmp_path, monkeypatch):
             "cmd": cmd, "label": "l", "base_sha": base.sha, "output_tail": "ok",
             "exit": gates.SENTINEL_PASS, "duration_s": 1.0})
     calls: dict = {"reproduce": [], "judge": [], "fix": [], "review": [], "red": 0,
-                   "green": 0, "run_command": [], "compose": [], "steps": [],
+                   "green": 0, "run_command": [], "compose": [], "flatten": [], "steps": [],
                    "fix_status": []}
 
     def fake_reproduce(worktree, *, issue, title, body, env, retry_note=None,
@@ -138,6 +139,10 @@ def lane(tmp_path, monkeypatch):
         calls["compose"].append(parts)
         return scratch / f"{label}.compose.patch"
 
+    def fake_flatten(base_clone, *parts, label):
+        calls["flatten"].append({"base_clone": base_clone, "parts": parts, "label": label})
+        return scratch / f"{label}.flatten.patch"
+
     monkeypatch.setattr(reproduce_issue, "author", fake_reproduce)
     monkeypatch.setattr(judge_repro, "judge", fake_judge)
     monkeypatch.setattr(fix_issue, "author", fake_fix)
@@ -146,6 +151,7 @@ def lane(tmp_path, monkeypatch):
     monkeypatch.setattr(prove, "green_legs", fake_green)
     monkeypatch.setattr(prove, "run_command", fake_run_command)
     monkeypatch.setattr(prove, "compose", fake_compose)
+    monkeypatch.setattr(prove, "flatten", fake_flatten)
     return Harness(base=base, workdir=tmp_path / "work", scripts=scripts, calls=calls)
 
 
@@ -456,3 +462,53 @@ def test_a_review_stage_outage_ends_agent_unavailable(lane):
     lane.scripts.review = outage
     res = lane.run()
     assert res.ending == "agent-unavailable" and res.fault is True
+
+
+# --- pre_patch (history replay) ----------------------------------------------
+
+# A real, applying diff: materialize is not mocked, so a pre_patch must be one
+# git can actually apply to the fixture base's src/x.ts.
+_PRE_PATCH = (
+    "diff --git a/src/x.ts b/src/x.ts\n"
+    "index e69de29..0000000 100644\n"
+    "--- a/src/x.ts\n"
+    "+++ b/src/x.ts\n"
+    "@@ -1 +1 @@\n"
+    "-export const x = 1;\n"
+    "+export const x = 42;\n"
+)
+
+
+def test_pre_patch_routes_the_red_and_green_legs_through_flatten(lane):
+    res = lane.run(pre_patch=_PRE_PATCH)
+    assert res.ending == "fixed" and res.fault is False
+    assert lane.calls["compose"] == []
+    assert len(lane.calls["flatten"]) == 2
+    for call in lane.calls["flatten"]:
+        assert call["base_clone"] == lane.base.clone
+        assert call["parts"][0] == _PRE_PATCH
+
+
+def test_pre_patch_is_applied_before_the_agent_sees_the_clone(lane):
+    seen: dict[str, str] = {}
+
+    def reproduce_and_capture(worktree: str) -> dict:
+        seen["repro"] = (Path(worktree) / "src" / "x.ts").read_text()
+        return _repro_writes_test(worktree)
+
+    def fix_and_capture(worktree: str) -> dict:
+        seen["fix"] = (Path(worktree) / "src" / "x.ts").read_text()
+        return _fix_edits_x(worktree)
+
+    lane.scripts.reproduce = reproduce_and_capture
+    lane.scripts.fix = fix_and_capture
+    res = lane.run(pre_patch=_PRE_PATCH)
+    assert res.ending == "fixed" and res.fault is False
+    assert seen == {"repro": "export const x = 42;\n", "fix": "export const x = 42;\n"}
+
+
+def test_pre_patch_none_uses_compose_not_flatten(lane):
+    res = lane.run()
+    assert res.ending == "fixed" and res.fault is False
+    assert lane.calls["flatten"] == []
+    assert len(lane.calls["compose"]) == 2

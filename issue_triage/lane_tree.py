@@ -17,20 +17,26 @@ _GIT_ENV = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null",
             "GIT_COMMITTER_NAME": "prospector", "GIT_COMMITTER_EMAIL": "prospector@localhost"}
 
 
-def _git(worktree: Path, *args: str) -> str:
+def _git(worktree: Path, *args: str, input: str | None = None) -> str:
     env = {**{k: os.environ[k] for k in ("PATH", "HOME") if k in os.environ}, **_GIT_ENV}
     done = subprocess.run(["git", "-C", str(worktree), *args], check=True,
-                          capture_output=True, text=True, timeout=300, env=env)
+                          capture_output=True, text=True, timeout=300, env=env, input=input)
     return done.stdout
 
 
-def materialize(base_clone: Path, dest: Path,
-                files: Sequence[VerifyAuthoredFile] = ()) -> Path:
+def materialize(base_clone: Path, dest: Path, files: Sequence[VerifyAuthoredFile] = (), *,
+                pre_patch: str | None = None) -> Path:
     """A one-commit repository at `dest` holding `base_clone`'s tree, without
-    its `.git`, plus `files`. Returns the resolved path."""
+    its `.git`, with `pre_patch` applied when given, plus `files`. Returns the
+    resolved path."""
     if dest.exists():
         shutil.rmtree(dest)
     shutil.copytree(base_clone, dest, symlinks=True, ignore=shutil.ignore_patterns(".git"))
+    if pre_patch is not None:
+        try:
+            _git(dest, "apply", "--whitespace=nowarn", "-", input=pre_patch)
+        except subprocess.CalledProcessError as e:
+            raise ValueError(f"pre_patch does not apply: {e.stderr.strip()}") from e
     for f in files:
         target = dest / f["path"]
         target.parent.mkdir(parents=True, exist_ok=True)
