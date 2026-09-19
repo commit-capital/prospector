@@ -125,8 +125,8 @@ def _git(repo: Path, *args: str, input: str | None = None) -> str:
 def flatten(base_clone: Path, *patches: Path | str | None, label: str) -> Path:
     """One diff from a base with no history, holding `patches` applied in
     order to `base_clone`'s tree in a throwaway one-commit repository. Unlike
-    `compose`, patches may touch the same paths, since they are applied in
-    sequence rather than concatenated. Named and scratched like `compose`.
+    `compose`, patches may touch the same paths, applied to the base in
+    sequence. Named and scratched like `compose`.
     Raises `ValueError` at the first patch that does not apply, naming its
     index among the non-None patches."""
     _check_label(label)
