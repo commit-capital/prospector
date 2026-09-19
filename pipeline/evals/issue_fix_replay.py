@@ -1,10 +1,12 @@
-"""History-replay instance selection: the deterministic screen that picks the
-past bugs the fix lane is scored against, and their grouping by dependency
-declarations. Pure functions over caller-supplied candidates and a base clone's
-git history — no store, network, agent, or sandbox.
+"""History replay: pick the past bugs the fix lane is scored against, build each
+one's pre-fix tree, run the lane on it, and score the run against the merged PR's
+own tests as a hidden oracle.
 
-Rules R1–R5 mirror the design spec's "History replay" screen; R6 (the sandbox
-oracle) belongs to the run phase, not here.
+The screen (R1–R5) and the dependency grouping are pure functions over
+caller-supplied candidates and a base clone's git history. The run phase — R6,
+the lane run, and scoring — proves every verdict from host-observed sandbox exits
+over `pipeline.prove`; it takes the lane entry point as a parameter, so this
+module holds no `issue_triage` import.
 """
 from __future__ import annotations
 
@@ -13,11 +15,13 @@ import json
 import os
 import re
 import subprocess
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Protocol
 
-from pipeline import diffpaths, gates
+from pipeline import diffpaths, gates, prove, verify_driver
 from pipeline.profile import RepoProfile
 
 # R3 size bounds on the landed diff.
@@ -218,3 +222,180 @@ def group_by_deps(instances: list[Instance], base_clone: Path, profile: RepoProf
         key = frozenset(dep_declarations(base_clone, inst.merge_sha, profile).items())
         groups.setdefault(key, []).append(inst)
     return groups
+
+
+class LaneRun(Protocol):
+    """The host-observed shape of a lane result the scorer reads. Its structural
+    match keeps the lane package out of this module's imports."""
+    ending: str
+    reproduction: dict | None
+    result: dict | None
+    agent_runs: int
+
+
+class LaneEntry(Protocol):
+    """The lane entry point the caller injects: one issue run on the pre-fix tree
+    named by `pre_patch`."""
+    def __call__(self, *, issue: int, title: str, body: str, base: prove.PinnedBase,
+                 pre_patch: str, workdir: Path) -> LaneRun: ...
+
+
+# Sandbox exits that are the harness's fault, not a verdict: a retry may clear
+# them. A probe failure raises out of the legs and is caught alongside these.
+_SANDBOX_FAULT_EXITS = frozenset({
+    gates.SENTINEL_PROBE_FAIL, gates.SENTINEL_PATCH_CONFLICT,
+    gates.SENTINEL_PATCH_UNREADABLE, 124})
+
+# The shortest run of identifier characters the oracle-coupling check reads off a
+# fix hunk's added lines.
+_SYMBOL_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
+
+
+def _leg_status(legs: prove.Legs, want: int) -> str:
+    """`"ok"` when both legs exit `want`, `"sandbox"` when either leg is a harness
+    fault, else `"fail"` — the verdict the two legs did not reach."""
+    seen = (legs.get("exit"), legs.get("exit_confirm"))
+    if any(e in _SANDBOX_FAULT_EXITS for e in seen):
+        return "sandbox"
+    if all(e == want for e in seen):
+        return "ok"
+    return "fail"
+
+
+def _added_symbols(diff_text: str) -> set[str]:
+    """Identifier-like tokens on the added lines of `diff_text`, a best-effort
+    read of what a patch introduces."""
+    symbols: set[str] = set()
+    for line in diff_text.splitlines():
+        if line.startswith("+") and not line.startswith("+++"):
+            symbols.update(_SYMBOL_RE.findall(line))
+    return symbols
+
+
+def transform_to_p(base_clone: Path, merge_sha: str, base_sha: str,
+                   profile: RepoProfile) -> str:
+    """The diff carrying the epoch tree at `base_sha` to `tree(P)`, the merge
+    commit's first parent, with dependency-manifest sections dropped so the
+    source is history's while the installed dependencies stay the image's."""
+    raw = _git(base_clone, "diff", base_sha, f"{merge_sha}^1")
+    return diffpaths.filter_diff(raw, lambda p: not _is_dep_manifest(p, profile))
+
+
+def oracle_command(test_files: list[str]) -> str | None:
+    """The whole-file test command for a PR's own test files — the hidden oracle
+    a replay scores against — or None when it names none."""
+    return verify_driver.derive_test_command(test_files)
+
+
+def validate_known_fix(base: prove.PinnedBase, pre_patch: str, instance: Instance, *,
+                       label: str) -> tuple[bool, str]:
+    """R6: the merged PR's own test fails on `tree(P)` and passes once the whole
+    landed diff is applied, each leg confirmed. `(True, "")` when it does;
+    `(False, "sandbox")` on a harness fault the caller retries; `(False, "no-oracle"
+    | "red" | "green")` on a definitive miss."""
+    oracle = oracle_command(instance.test_files)
+    if oracle is None:
+        return False, "no-oracle"
+    test_hunks = diffpaths.filter_diff(instance.landed_diff, diffpaths.is_test_path)
+    try:
+        red = prove.red_legs(
+            base, patch=prove.flatten(base.clone, pre_patch, test_hunks, label=label),
+            test_cmd=oracle, label=label)
+        status = _leg_status(red, gates.SENTINEL_TEST_FAIL)
+        if status != "ok":
+            return False, "sandbox" if status == "sandbox" else "red"
+        green = prove.green_legs(
+            base, patch=prove.flatten(base.clone, pre_patch, instance.landed_diff, label=label),
+            test_cmd=oracle, label=label)
+        status = _leg_status(green, gates.SENTINEL_PASS)
+        if status != "ok":
+            return False, "sandbox" if status == "sandbox" else "green"
+    except verify_driver.ProbeFailure:
+        return False, "sandbox"
+    return True, ""
+
+
+def score(instance: Instance, lane_result: LaneRun, oracle_runs: dict[str, prove.Legs], *,
+          base: prove.PinnedBase, pre_patch: str, label: str) -> dict:
+    """Score one lane run against the merged PR's tests as a hidden oracle, from
+    host-observed sandbox exits alone. The extra legs it runs land in
+    `oracle_runs` so a caller can read the exits back."""
+    lane_patch = (lane_result.result or {}).get("patch", "")
+    lane_test_hunks = diffpaths.filter_diff(lane_patch, diffpaths.is_test_path)
+    lane_fix_hunks = diffpaths.filter_diff(lane_patch, lambda p: not diffpaths.is_test_path(p))
+    pr_test_hunks = diffpaths.filter_diff(instance.landed_diff, diffpaths.is_test_path)
+    landed_fix_hunks = diffpaths.filter_diff(
+        instance.landed_diff, lambda p: not diffpaths.is_test_path(p))
+
+    reproduced = bool(lane_result.reproduction
+                      and lane_result.reproduction.get("outcome") == "reproduced")
+    fixed = lane_result.ending == "fixed"
+
+    repro_valid = False
+    lane_cmd = oracle_command(diffpaths.changed_paths(lane_test_hunks))
+    if lane_cmd is not None:
+        red = prove.red_legs(
+            base, patch=prove.flatten(base.clone, pre_patch, lane_test_hunks, label=label),
+            test_cmd=lane_cmd, label=label)
+        green = prove.green_legs(
+            base, patch=prove.flatten(base.clone, pre_patch, lane_test_hunks,
+                                      landed_fix_hunks, label=label),
+            test_cmd=lane_cmd, label=label)
+        oracle_runs["repro_valid_red"] = red
+        oracle_runs["repro_valid_green"] = green
+        repro_valid = (_leg_status(red, gates.SENTINEL_TEST_FAIL) == "ok"
+                       and _leg_status(green, gates.SENTINEL_PASS) == "ok")
+
+    oracle_pass = False
+    oracle = oracle_command(instance.test_files)
+    if oracle is not None:
+        green = prove.green_legs(
+            base, patch=prove.flatten(base.clone, pre_patch, pr_test_hunks,
+                                      lane_fix_hunks, label=label),
+            test_cmd=oracle, label=label)
+        oracle_runs["oracle_pass"] = green
+        oracle_pass = _leg_status(green, gates.SENTINEL_PASS) == "ok"
+
+    reviews = (lane_result.result or {}).get("reviews", [])
+    all_safe = bool(reviews) and all(r.get("verdict") == "safe" for r in reviews)
+    oracle_coupled = any(sym in pr_test_hunks for sym in _added_symbols(lane_fix_hunks))
+
+    repro_files = {f.get("path") for f in (lane_result.reproduction or {}).get("files", [])}
+    lane_test_paths = set(diffpaths.changed_paths(lane_test_hunks))
+    lane_paths = set(diffpaths.changed_paths(lane_patch))
+
+    return {
+        "reproduced": reproduced,
+        "fixed": fixed,
+        "repro_valid": repro_valid,
+        "oracle_pass": oracle_pass,
+        "oracle_coupled": oracle_coupled,
+        "false_accept": all_safe and not oracle_pass and not oracle_coupled,
+        "false_reject": oracle_pass and not fixed,
+        "test_tamper": bool(lane_test_paths - repro_files),
+        "localized": bool(lane_paths & set(instance.nontest_files)),
+        "agent_runs": lane_result.agent_runs,
+    }
+
+
+def run_instance(instance: Instance, *, base: prove.PinnedBase, base_sha: str,
+                 profile: RepoProfile, workdir: Path, run_lane: LaneEntry) -> dict:
+    """Build `tree(P)`, gate it on R6, run the lane on it, and score the run.
+    `run_lane` is the lane entry point the caller injects. On an R6 miss the
+    record carries `r6-<reason>` and no lane runs."""
+    label = f"replay-{instance.issue}"
+    pre_patch = transform_to_p(base.clone, instance.merge_sha, base_sha, profile)
+    ok, reason = validate_known_fix(base, pre_patch, instance, label=label)
+    if not ok:
+        return {"issue": instance.issue, "pr": instance.pr,
+                "ending": f"r6-{reason}", "reason": reason}
+    t0 = time.monotonic()
+    lane_result = run_lane(issue=instance.issue, title=instance.report_title,
+                           body=instance.report_body, base=base, pre_patch=pre_patch,
+                           workdir=workdir)
+    seconds = round(time.monotonic() - t0, 1)
+    oracle_runs: dict[str, prove.Legs] = {}
+    scores = score(instance, lane_result, oracle_runs, base=base, pre_patch=pre_patch,
+                   label=label)
+    return {"issue": instance.issue, "pr": instance.pr, "ending": lane_result.ending,
+            "seconds": seconds, "oracle_runs": oracle_runs, **scores}
