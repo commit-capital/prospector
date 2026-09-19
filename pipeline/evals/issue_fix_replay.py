@@ -10,18 +10,22 @@ module imports nothing from the lane package.
 """
 from __future__ import annotations
 
+import argparse
 import fnmatch
 import json
 import os
 import re
 import subprocess
+import sys
 import time
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
-from pipeline import diffpaths, gates, prove, verify_driver
+from pipeline import diffpaths, gates, gh, profile, prove, settings, store, storekit, verify_driver
 from pipeline.profile import RepoProfile
 
 # R3 size bounds on the landed diff.
@@ -399,3 +403,382 @@ def run_instance(instance: Instance, *, base: prove.PinnedBase, base_sha: str,
                    label=label)
     return {"issue": instance.issue, "pr": instance.pr, "ending": lane_result.ending,
             "seconds": seconds, "oracle_runs": oracle_runs, **scores}
+
+
+# -- Candidate assembly from the store + live gh reads ------------------------
+
+
+def _parse_dt(value: str | None) -> datetime | None:
+    """A GitHub ISO timestamp as an aware datetime, or None when it is empty or
+    unparseable."""
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _gh_pr(number: int) -> dict | None:
+    """A merged closing PR read live as the operator: `{merge_sha, author,
+    opened_at}`, or None when the PR is unreachable, unmerged, or missing its
+    merge commit. `merge_sha` is the commit the merge landed on the default
+    branch, whose first-parent diff is the change screening reads."""
+    raw = gh.fetch_pr(number)
+    if raw is None or not raw.get("merged"):
+        return None
+    merge_sha = raw.get("merge_commit_sha") or ""
+    opened = _parse_dt(raw.get("created_at"))
+    if not merge_sha or opened is None:
+        return None
+    return {"merge_sha": merge_sha, "author": (raw.get("user") or {}).get("login") or "",
+            "opened_at": opened}
+
+
+def candidates_from_store(*, limit: int | None = None) -> list[Candidate]:
+    """Every closed issue with a merged closing PR, assembled for screening.
+
+    Issue facts come from the issue store: `updated_at` is the issue's
+    `last_edited_at` (its true last edit) so a close never reads as an edit that
+    would fail R4. A PR's merge commit, author, and open time, and an issue's
+    close reason when the store has none, are read live as the operator. `limit`
+    caps enumeration for smoke runs."""
+    from issue_triage import issue_links, pr_index
+    from issue_triage.issue_store import IssueStore
+
+    issue_store = IssueStore()
+    index = pr_index.from_store()
+    out: list[Candidate] = []
+    for n, iss in sorted(issue_store.all_issues().items()):
+        if iss.state != "closed":
+            continue
+        closers: list[ClosingPr] = []
+        for link in issue_links.linked_prs(iss, index.get(n)):
+            # Only links that name the PR and the issue together are closer
+            # evidence; a still-open PR never closed the issue.
+            if link.get("state") == "open" or not issue_links.referenced(link):
+                continue
+            detail = _gh_pr(int(link["pr"]))
+            if detail is None:
+                continue
+            closers.append(ClosingPr(number=int(link["pr"]), merged=True,
+                                     merge_sha=detail["merge_sha"], author=detail["author"],
+                                     opened_at=detail["opened_at"]))
+        if not closers:
+            continue
+        created = _parse_dt(iss.created_at)
+        edited = _parse_dt(iss.last_edited_at) or created
+        if created is None or edited is None:
+            continue
+        reason = iss.state_reason
+        if reason is None:
+            raw = gh.gh_json(f"repos/{settings.repo()}/issues/{n}")
+            reason = (raw or {}).get("state_reason")
+        out.append(Candidate(
+            issue=n, closed_completed=reason == "completed", closing_prs=closers,
+            reporter=iss.author or "", created_at=created, updated_at=edited,
+            report_title=iss.title or "", report_body=iss.body or ""))
+        if limit is not None and len(out) >= limit:
+            break
+    return out
+
+
+def _run_lane(*, issue: int, title: str, body: str, base: prove.PinnedBase,
+              pre_patch: str, workdir: Path) -> LaneRun:
+    """The lane entry point `run_instance` injects: one fix run on the pre-fix
+    tree. The lane package is imported here so the module top stays lane-free."""
+    from issue_triage import fix_lane
+    return fix_lane.run(
+        fix_lane.LaneSpec(issue=issue, title=title, body=body, base=base,
+                          action="fix", pre_patch=pre_patch),
+        workdir=workdir)
+
+
+# -- Screening the corpus into the pin's dependency group ---------------------
+
+
+def _screen(candidates: list[Candidate], base_clone: Path, base_sha: str, *,
+            profile: RepoProfile, lane_logins: frozenset[str]
+            ) -> tuple[list[Instance], Counter[str]]:
+    """Screen every candidate, returning the passing instances and a count of the
+    discards by their first-failed reason."""
+    instances: list[Instance] = []
+    discards: Counter[str] = Counter()
+    for cand in candidates:
+        inst, reason = screen(cand, base_clone=base_clone, pin_sha=base_sha,
+                              profile=profile, lane_logins=lane_logins)
+        if inst is None:
+            discards[reason or "unknown"] += 1
+        else:
+            instances.append(inst)
+    return instances, discards
+
+
+def _pin_key(base_clone: Path, base_sha: str, profile: RepoProfile
+             ) -> frozenset[tuple[str, str]]:
+    """The dependency declarations at the pinned base, as a group key."""
+    return frozenset(dep_declarations(base_clone, base_sha, profile).items())
+
+
+def _pin_group(groups: dict[frozenset[tuple[str, str]], list[Instance]], *,
+               base_clone: Path, base_sha: str, profile: RepoProfile) -> list[Instance]:
+    """The instances whose dependencies match the pinned base — the ones the
+    machine's image installs faithfully. When none share the pin's exact set, the
+    largest group stands in so a pilot still has work."""
+    key = _pin_key(base_clone, base_sha, profile)
+    if key in groups:
+        return groups[key]
+    return max(groups.values(), key=len) if groups else []
+
+
+def select_instances(base: prove.PinnedBase, base_sha: str, *, profile: RepoProfile,
+                     lane_logins: frozenset[str]) -> list[Instance]:
+    """The pin's dependency group of screened instances, ready to run."""
+    instances, _ = _screen(candidates_from_store(), base.clone, base_sha,
+                           profile=profile, lane_logins=lane_logins)
+    groups = group_by_deps(instances, base.clone, profile)
+    return _pin_group(groups, base_clone=base.clone, base_sha=base_sha, profile=profile)
+
+
+# -- Scorecard table ----------------------------------------------------------
+
+_TABLE_COLUMNS = ("issue", "pr", "reproduced", "repro_valid", "fixed", "oracle_pass",
+                  "false_accept", "seconds", "agent_runs")
+_TABLE_BOOLS = ("reproduced", "repro_valid", "fixed", "oracle_pass", "false_accept")
+
+
+def _cell(value: object) -> str:
+    if value is None:
+        return "-"
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if isinstance(value, float):
+        return f"{value:.1f}"
+    return str(value)
+
+
+def _instance_row(rec: dict) -> str:
+    cells = [str(rec.get("issue", "-")), str(rec.get("pr", "-"))]
+    cells += [_cell(rec.get(k)) for k in _TABLE_BOOLS]
+    cells += [_cell(rec.get("seconds")), _cell(rec.get("agent_runs"))]
+    return "| " + " | ".join(cells) + " |"
+
+
+def _aggregate_row(records: list[dict]) -> str:
+    counts = [str(sum(1 for r in records if r.get(k))) for k in _TABLE_BOOLS]
+    seconds = sum(r["seconds"] for r in records if isinstance(r.get("seconds"), int | float))
+    runs = sum(r["agent_runs"] for r in records if isinstance(r.get("agent_runs"), int))
+    cells = [f"total ({len(records)})", ""] + counts + [f"{seconds:.1f}", str(runs)]
+    return "| " + " | ".join(cells) + " |"
+
+
+def _render_table(records: list[dict]) -> str:
+    header = "| " + " | ".join(_TABLE_COLUMNS) + " |"
+    sep = "| " + " | ".join("---" for _ in _TABLE_COLUMNS) + " |"
+    rows = [_instance_row(r) for r in records]
+    return "\n".join([header, sep, *rows, _aggregate_row(records)]) + "\n"
+
+
+# -- Ledger -------------------------------------------------------------------
+
+# The instance endings that are a machine fault rather than a scored verdict:
+# the R6 sandbox fault plus the lane's own fault endings. A --resume re-runs them.
+_FAULT_ENDINGS = frozenset({"r6-sandbox", "sandbox", "agent-unavailable", "run-failed",
+                            "base-compile"})
+
+# Instances measured before the average cost per instance is reported.
+_COST_SAMPLE = 10
+
+
+def _is_fault(ending: str | None) -> bool:
+    return ending in _FAULT_ENDINGS
+
+
+def _avg_seconds(records: list[dict]) -> float:
+    times = [r["seconds"] for r in records if isinstance(r.get("seconds"), int | float)]
+    return sum(times) / len(times) if times else 0.0
+
+
+def _instance_stats(rec: dict, *, run_id: str, base_sha: str) -> dict:
+    stats = {k: v for k, v in rec.items() if k != "oracle_runs"}
+    stats.update(run_id=run_id, base_sha=base_sha, host=settings.worker_id())
+    return stats
+
+
+def _run_stats(records: list[dict], *, run_id: str, base_sha: str, concurrency: int,
+               limit: int | None) -> dict:
+    return {
+        "run_id": run_id, "base_sha": base_sha, "host": settings.worker_id(),
+        "concurrency": concurrency, "limit": limit, "instances": len(records),
+        "reproduced": sum(1 for r in records if r.get("reproduced")),
+        "repro_valid": sum(1 for r in records if r.get("repro_valid")),
+        "fixed": sum(1 for r in records if r.get("fixed")),
+        "oracle_pass": sum(1 for r in records if r.get("oracle_pass")),
+        "false_accept": sum(1 for r in records if r.get("false_accept")),
+        "false_reject": sum(1 for r in records if r.get("false_reject")),
+        "r6_failures": sum(1 for r in records if str(r.get("ending", "")).startswith("r6-")),
+        "avg_seconds": round(_avg_seconds(records), 1),
+        "agent_runs": sum(r["agent_runs"] for r in records if isinstance(r.get("agent_runs"), int)),
+    }
+
+
+def _recorded(pr_store: store.Store, run_id: str) -> dict[int, dict]:
+    """The instance stats already in the ledger for `run_id`, keyed by issue —
+    the read that makes a run resumable."""
+    out: dict[int, dict] = {}
+    for rec in pr_store.runs():
+        if not isinstance(rec, storekit.PhaseRun) or rec.phase != "replay:instance":
+            continue
+        stats = rec.raw.get("stats") or {}
+        if stats.get("run_id") == run_id and isinstance(stats.get("issue"), int):
+            out[stats["issue"]] = stats
+    return out
+
+
+# -- Commands -----------------------------------------------------------------
+
+
+def _date_span(base_clone: Path, members: list[Instance]) -> str:
+    dates = [_parse_dt(_merge_committed(base_clone, m.merge_sha)) for m in members]
+    got = [d for d in dates if d is not None]
+    if not got:
+        return "dates unknown"
+    return f"{min(got).date()}..{max(got).date()}"
+
+
+def _merge_committed(base_clone: Path, merge_sha: str) -> str | None:
+    try:
+        return _git(base_clone, "show", "-s", "--format=%cI", merge_sha).strip()
+    except subprocess.CalledProcessError:
+        return None
+
+
+def plan(base: prove.PinnedBase, base_sha: str, *, profile: RepoProfile,
+         lane_logins: frozenset[str]) -> None:
+    """Assemble and screen the corpus, then print each dependency group's size,
+    date span, and whether it matches the machine's pin. No agent or sandbox runs
+    — the safety valve to inspect the corpus before a run."""
+    instances, discards = _screen(candidates_from_store(), base.clone, base_sha,
+                                  profile=profile, lane_logins=lane_logins)
+    discarded = sum(discards.values())
+    print(f"screened {len(instances) + discarded} candidates: "
+          f"{len(instances)} pass, {discarded} discarded", flush=True)
+    for reason, count in discards.most_common():
+        print(f"  discard {reason}: {count}")
+    groups = group_by_deps(instances, base.clone, profile)
+    pin_key = _pin_key(base.clone, base_sha, profile)
+    print(f"{len(groups)} dependency group(s):")
+    for key, members in sorted(groups.items(), key=lambda kv: len(kv[1]), reverse=True):
+        match = "pin" if key == pin_key else "off-pin"
+        print(f"  [{match}] {len(members)} instance(s), {_date_span(base.clone, members)}, "
+              f"issues {sorted(m.issue for m in members)}")
+
+
+def run(base: prove.PinnedBase, base_sha: str, *, profile: RepoProfile,
+        lane_logins: frozenset[str], limit: int | None = None, concurrency: int = 2,
+        resume: bool = False, run_id: str | None = None) -> int:
+    """Run the pin's group through the lane, score each instance, and write one
+    `replay:instance` ledger row per instance, a `replay:run` summary, and a
+    markdown table. A run is keyed by its base, so re-invoking continues it:
+    already-recorded instances are reused, and `resume` re-runs the faulted ones.
+    Returns 0 on completion (a failed instance is data), non-zero on a setup
+    error."""
+    run_id = run_id or base_sha
+    instances = select_instances(base, base_sha, profile=profile, lane_logins=lane_logins)
+    if not instances:
+        print("no candidate instances to replay", file=sys.stderr)
+        return 2
+    if limit is not None:
+        instances = instances[:limit]
+
+    pr_store = store.Store()
+    recorded = _recorded(pr_store, run_id)
+    results: dict[int, dict] = {}
+    todo: list[Instance] = []
+    for inst in instances:
+        prior = recorded.get(inst.issue)
+        if prior is not None and not (resume and _is_fault(prior.get("ending"))):
+            results[inst.issue] = prior
+        else:
+            todo.append(inst)
+
+    out_dir = settings.verify_scratch() / "replay" / run_id
+    started = storekit.now()
+    completed = 0
+    if todo:
+        with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
+            futures = {
+                pool.submit(run_instance, inst, base=base, base_sha=base_sha,
+                            profile=profile, workdir=out_dir / f"issue-{inst.issue}",
+                            run_lane=_run_lane): inst
+                for inst in todo}
+            for fut in as_completed(futures):
+                rec = fut.result()
+                results[rec["issue"]] = rec
+                pr_store.append_run({
+                    "phase": "replay:instance", "started": started,
+                    "finished": storekit.now(), "trigger": "cli",
+                    "stats": _instance_stats(rec, run_id=run_id, base_sha=base_sha)})
+                completed += 1
+                if completed == _COST_SAMPLE:
+                    ran = [results[i.issue] for i in todo if i.issue in results]
+                    print(f"average seconds/instance over first {_COST_SAMPLE}: "
+                          f"{_avg_seconds(ran):.1f}", flush=True)
+    finished = storekit.now()
+
+    ordered = [results[inst.issue] for inst in instances if inst.issue in results]
+    table = _render_table(ordered)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "table.md").write_text(table)
+    print(table, flush=True)
+
+    pr_store.append_run({
+        "phase": "replay:run", "started": started, "finished": finished, "trigger": "cli",
+        "stats": _run_stats(ordered, run_id=run_id, base_sha=base_sha,
+                            concurrency=concurrency, limit=limit)})
+    return 0
+
+
+def _lane_logins() -> frozenset[str]:
+    """The lane's own GitHub identities, excluded from the corpus so the bot never
+    scores its own past work."""
+    return frozenset(login for login in (settings.push_login(), settings.bot_login()) if login)
+
+
+def _parse_args(argv: list[str]) -> argparse.Namespace:
+    ap = argparse.ArgumentParser(
+        prog="python -m pipeline.evals.issue_fix_replay",
+        description="Replay the issue-fix lane over past fixed bugs and score it "
+                    "against each merged PR's own tests as a hidden oracle.")
+    ap.add_argument("command", choices=("plan", "run"),
+                    help="plan inspects the corpus; run scores a batch")
+    ap.add_argument("--limit", type=int, default=None, help="cap the instances run (pilot: 10)")
+    ap.add_argument("--concurrency", type=int, default=2, help="instances kept in flight")
+    ap.add_argument("--resume", action="store_true",
+                    help="re-run only the faulted instances already recorded for this base")
+    ap.add_argument("--base-sha", help="prove against a held base named by its SHA "
+                                       "(default: the verify pin)")
+    ap.add_argument("--tier", type=int, default=0,
+                    help="the held base's risk tier (with --base-sha)")
+    return ap.parse_args(argv)
+
+
+def main(argv: list[str]) -> int:
+    args = _parse_args(argv)
+    try:
+        base = (prove.held(args.base_sha, args.tier) if args.base_sha
+                else prove.pinned(store.Store()))
+    except prove.NoBase as e:
+        print(str(e), file=sys.stderr)
+        return 2
+    active = profile.active()
+    logins = _lane_logins()
+    if args.command == "plan":
+        plan(base, base.sha, profile=active, lane_logins=logins)
+        return 0
+    return run(base, base.sha, profile=active, lane_logins=logins, limit=args.limit,
+               concurrency=args.concurrency, resume=args.resume)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
