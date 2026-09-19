@@ -143,8 +143,11 @@ def test_r6_probe_failure_is_a_sandbox_fault(tmp_path, generic_profile, monkeypa
         raise verify_driver.ProbeFailure("isolation unproven")
 
     monkeypatch.setattr(prove, "red_legs", raise_probe)
-    ok, reason = replay.validate_known_fix(_base(tmp_path), "PRE", _instance(), label="replay-7")
+    legs: dict = {}
+    ok, reason = replay.validate_known_fix(_base(tmp_path), "PRE", _instance(),
+                                           label="replay-7", legs=legs)
     assert (ok, reason) == (False, "sandbox")
+    assert legs["probe"]["output_tail"] == "isolation unproven"
 
 
 # --- transform_to_p (real git) ----------------------------------------------
@@ -205,10 +208,10 @@ def test_transform_to_p_applies_to_the_scrubbed_base(tmp_path, generic_profile) 
 
 def _lane(ending: str, *, patch: str = _LANE_PATCH, reviews: list[dict] | None = None,
           repro_files: list[str] | None = None, outcome: str = "reproduced",
-          agent_runs: int = 3) -> SimpleNamespace:
+          agent_runs: int = 3, detail: str = "") -> SimpleNamespace:
     files = [{"path": p} for p in (repro_files if repro_files is not None else ["src/bug.test.ts"])]
     return SimpleNamespace(
-        ending=ending, agent_runs=agent_runs,
+        ending=ending, detail=detail, agent_runs=agent_runs,
         reproduction={"outcome": outcome, "files": files},
         result={"patch": patch,
                 "reviews": reviews if reviews is not None else [{"verdict": "safe"},
@@ -346,27 +349,48 @@ def test_run_instance_r6_failure_skips_the_lane(tmp_path, generic_profile, monke
                               run_lane=fake_run_lane)
     assert rec["ending"] == "r6-red"
     assert rec["reason"] == "red"
+    assert rec["detail"].startswith(f"red exit {gates.SENTINEL_PASS}/None")
+    assert isinstance(rec["r6_seconds"], float)
     assert "fixed" not in rec
+
+
+def test_run_instance_r6_sandbox_fault_carries_the_sandbox_error(tmp_path, generic_profile,
+                                                                 monkeypatch) -> None:
+    monkeypatch.setattr(replay, "transform_to_p",
+                        lambda base_clone, merge_sha, base_sha, profile: "PRE")
+    unreadable = {"exit": gates.SENTINEL_PATCH_UNREADABLE, "exit_confirm": None,
+                  "output_tail": "Applying...\nthe patch could not be applied: error: short "
+                                 "object ID 02b68fc is ambiguous\n",
+                  "duration_s": 1.0}
+    _mock_legs(monkeypatch, red=unreadable, lane_green=_GREEN_00, oracle_green=_GREEN_00)
+
+    rec = replay.run_instance(_instance(), base=_base(tmp_path), base_sha="e" * 40,
+                              profile=generic_profile, workdir=tmp_path / "work",
+                              run_lane=lambda **kw: None)
+    assert rec["ending"] == "r6-sandbox"
+    assert rec["detail"].startswith(f"red exit {gates.SENTINEL_PATCH_UNREADABLE}/None")
+    assert "short object ID 02b68fc is ambiguous" in rec["detail"]
 
 
 def test_run_instance_faulted_lane_is_not_scored(tmp_path, generic_profile, monkeypatch) -> None:
     monkeypatch.setattr(replay, "transform_to_p",
                         lambda base_clone, merge_sha, base_sha, profile: "PRE")
     monkeypatch.setattr(replay, "validate_known_fix",
-                        lambda base, pre_patch, instance, *, label: (True, ""))
+                        lambda base, pre_patch, instance, *, label, legs=None: (True, ""))
     touched: list[str] = []
     monkeypatch.setattr(replay, "score", lambda *a, **k: touched.append("score") or {})
     monkeypatch.setattr(prove, "green_legs",
                         lambda *a, **k: touched.append("green") or _GREEN_00)
 
     def fake_run_lane(*, issue, title, body, base, pre_patch, workdir):
-        return _lane("sandbox", agent_runs=2)
+        return _lane("sandbox", agent_runs=2, detail="sandbox could not boot")
 
     rec = replay.run_instance(_instance(), base=_base(tmp_path), base_sha="e" * 40,
                               profile=generic_profile, workdir=tmp_path / "work",
                               run_lane=fake_run_lane)
     assert rec["ending"] == "sandbox"
     assert rec["agent_runs"] == 2
+    assert rec["detail"] == "sandbox could not boot"
     assert "oracle_pass" not in rec  # a faulted lane is not scored
     assert touched == []  # neither score nor its extra legs ran
 

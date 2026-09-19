@@ -77,7 +77,7 @@ def read_files(worktree: Path, paths: Sequence[str]
 
 
 def authored_patch(worktree: Path) -> str:
-    """The agent's edits as a diff against the one commit; new files are marked
-    intent-to-add so they appear."""
+    """The agent's edits as a diff against the one commit, with full blob ids and
+    binary content; new files are marked intent-to-add so they appear."""
     _git(worktree, "add", "-N", ".")
-    return _git(worktree, "diff", "HEAD")
+    return _git(worktree, "diff", "--full-index", "--binary", "HEAD")
