@@ -36,6 +36,8 @@ _LANE_PATCH = (
     "--- a/src/x.ts\n+++ b/src/x.ts\n"
     "@@ -1,1 +1,1 @@\n+export function fixme() { return 1 }\n")
 
+FIX_ONLY = 'diff --git a/src/x.ts b/src/x.ts\n--- a/src/x.ts\n+++ b/src/x.ts\n@@ -1,1 +1,1 @@\n+export function fixme() { return 1 }\n'
+
 
 def _git(repo: Path, *args: str) -> str:
     env = {**{k: os.environ[k] for k in ("PATH", "HOME") if k in os.environ}, **_GIT_ENV}
@@ -170,6 +172,7 @@ def test_transform_to_p_drops_dependency_manifest_sections(tmp_path, generic_pro
     transform = replay.transform_to_p(repo, merge, base, generic_profile)
     assert "src/app.py" in transform
     assert "package.json" not in transform
+    assert "src/other.py" not in transform  # reached only via the merge's second parent
 
 
 # --- score ------------------------------------------------------------------
@@ -319,3 +322,36 @@ def test_run_instance_r6_failure_skips_the_lane(tmp_path, generic_profile, monke
     assert rec["ending"] == "r6-red"
     assert rec["reason"] == "red"
     assert "fixed" not in rec
+
+
+# --- coverage: metric/R6 branches that need a discriminating test -------------
+
+
+def test_score_reproduced_false_when_the_lane_did_not_reproduce(tmp_path, generic_profile,
+                                                                monkeypatch) -> None:
+    lane = _lane("not-reproduced", outcome="not-reproduced")
+    rec, _ = _score(tmp_path, monkeypatch, lane,
+                    red=_RED_2020, lane_green=_GREEN_00, oracle_green=_GREEN_00)
+    assert rec["reproduced"] is False
+
+
+def test_score_repro_valid_false_when_a_leg_does_not_confirm(tmp_path, generic_profile,
+                                                             monkeypatch) -> None:
+    rec, _ = _score(tmp_path, monkeypatch, _lane("fixed"),
+                    red=_RED_2020, lane_green=_legs(gates.SENTINEL_TEST_FAIL, None),
+                    oracle_green=_GREEN_00)
+    assert rec["repro_valid"] is False
+    assert rec["oracle_pass"] is True
+
+
+def test_score_repro_valid_false_when_the_lane_patch_has_no_test_hunk(tmp_path, generic_profile,
+                                                                      monkeypatch) -> None:
+    rec, _ = _score(tmp_path, monkeypatch, _lane("fixed", patch=FIX_ONLY),
+                    red=_RED_2020, lane_green=_GREEN_00, oracle_green=_GREEN_00)
+    assert rec["repro_valid"] is False
+
+
+def test_r6_no_oracle_when_the_pr_ships_no_derivable_test_command(tmp_path, generic_profile) -> None:
+    ok, reason = replay.validate_known_fix(_base(tmp_path), "PRE",
+                                            _instance(test_files=[]), label="replay-7")
+    assert (ok, reason) == (False, "no-oracle")

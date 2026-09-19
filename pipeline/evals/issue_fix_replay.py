@@ -6,7 +6,7 @@ The screen (R1–R5) and the dependency grouping are pure functions over
 caller-supplied candidates and a base clone's git history. The run phase — R6,
 the lane run, and scoring — proves every verdict from host-observed sandbox exits
 over `pipeline.prove`; it takes the lane entry point as a parameter, so this
-module holds no `issue_triage` import.
+module imports nothing from the lane package.
 """
 from __future__ import annotations
 
