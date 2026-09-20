@@ -368,3 +368,13 @@ def test_flatten_carries_full_blob_ids_and_binary_content(flatten_scratch, tmp_p
     assert "GIT binary patch" in text
     index_lines = [ln for ln in text.splitlines() if ln.startswith("index ")]
     assert index_lines and all(len(ln.split()[1].split("..")[0]) == 40 for ln in index_lines)
+
+
+def test_flatten_skips_a_patch_part_that_holds_no_text(flatten_scratch, tmp_path):
+    base = _flatten_base(tmp_path)
+    edit = _patch_from(tmp_path, "edit", base,
+                       lambda w: _replace(w / "src" / "x.ts", "line 4", "line 4 edited"))
+
+    text = prove.flatten(base, edit, "", "   \n", label="issue-13").read_text()
+
+    assert "line 4 edited" in text
