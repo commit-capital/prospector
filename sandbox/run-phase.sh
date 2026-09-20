@@ -58,6 +58,9 @@ apply_patch() {
       sleep 0.25
     done
   fi
+  # An empty patch is nothing to apply: a composed tree that already equals the
+  # base leaves no diff, and git apply reads an empty file as a malformed patch.
+  [ -s "$PATCH_FILE" ] || return 0
   local err rc
   err="$(git -c core.checkStat=minimal apply --3way "$PATCH_FILE" 2>&1)"; rc=$?
   # A --3way apply reports every file it touched; only the rest is kept in the
