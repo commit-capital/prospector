@@ -29,11 +29,13 @@ def records_path(issue: int, stage: str) -> Path:
 
 
 def check_env(*, issue: int, base: prove.PinnedBase, worktree: Path, records: Path,
-              test_patch: Path | None) -> dict[str, str]:
+              test_patch: Path | None, pre_patch: Path | None = None) -> dict[str, str]:
     """The PROSPECTOR_ISSUE_CHECK_* environment the tool reads: the issue, the
-    pinned base, the agent's worktree, the records file, the run cap, and the
-    frozen reproduction tests when the stage has them. PROSPECTOR_PYTHON names
-    the interpreter the shim execs."""
+    pinned base, the agent's worktree, the records file, the run cap, the frozen
+    reproduction tests when the stage has them, and the patch carrying the base
+    to the tree the agent's clone was made from when the caller named one — the
+    agent's own diff is against that tree, so the sandbox needs it to compose the
+    same tree. PROSPECTOR_PYTHON names the interpreter the shim execs."""
     env = {
         "PROSPECTOR_ISSUE_CHECK_ISSUE": str(issue),
         "PROSPECTOR_ISSUE_CHECK_BASE_SHA": base.sha,
@@ -47,6 +49,8 @@ def check_env(*, issue: int, base: prove.PinnedBase, worktree: Path, records: Pa
     }
     if test_patch is not None:
         env["PROSPECTOR_ISSUE_CHECK_TEST_PATCH"] = str(test_patch)
+    if pre_patch is not None:
+        env["PROSPECTOR_ISSUE_CHECK_PRE_PATCH"] = str(pre_patch)
     return env
 
 
