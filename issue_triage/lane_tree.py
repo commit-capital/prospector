@@ -73,16 +73,23 @@ def authored_test_diff(worktree: Path, paths: list[str]) -> str:
 
 
 def new_files(worktree: Path) -> tuple[list[str], list[str]]:
-    """(untracked paths, the paths of every other status entry)."""
+    """(the paths the worktree adds, the paths of every other status entry).
+
+    A path is an addition when the one commit does not hold it, which the index
+    cannot change: the lane's own check tool stages an agent's new file
+    intent-to-add so its diff carries it, and porcelain then reports that file
+    as added rather than untracked."""
     # Rename detection off, so every record carries its two-char status prefix
     # and a moved file reads as a delete of the old path plus a new one.
     out = _git(worktree, "-c", "status.renames=false", "status", "--porcelain", "-z",
                "--untracked-files=all")
-    untracked: list[str] = []
+    committed = set(_git(worktree, "ls-tree", "-r", "--name-only", "HEAD").splitlines())
+    added: list[str] = []
     other: list[str] = []
     for entry in filter(None, out.split("\0")):
-        (untracked if entry.startswith("?? ") else other).append(entry[3:])
-    return sorted(untracked), sorted(other)
+        path = entry[3:]
+        (other if path in committed else added).append(path)
+    return sorted(added), sorted(other)
 
 
 def read_files(worktree: Path, paths: Sequence[str]
