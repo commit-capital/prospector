@@ -342,6 +342,99 @@ def test_help_exits_zero() -> None:
     assert exc.value.code == 0
 
 
+# --- qualify ----------------------------------------------------------------
+
+_COUPLED = (
+    "diff --git a/src/app.ts b/src/app.ts\n--- a/src/app.ts\n+++ b/src/app.ts\n"
+    "@@ -1,1 +1,2 @@\n+export function parseStatus(x: string) { return x; }\n"
+    "diff --git a/src/app.test.ts b/src/app.test.ts\n"
+    "--- a/src/app.test.ts\n+++ b/src/app.test.ts\n"
+    "@@ -0,0 +1,2 @@\n+import { parseStatus } from \"./app.ts\";\n+expect(parseStatus('a'))\n")
+
+_BEHAVIOURAL = (
+    "diff --git a/src/app.ts b/src/app.ts\n--- a/src/app.ts\n+++ b/src/app.ts\n"
+    "@@ -1,1 +1,1 @@\n+const fixed = true;\n"
+    "diff --git a/src/app.test.ts b/src/app.test.ts\n"
+    "--- a/src/app.test.ts\n+++ b/src/app.test.ts\n"
+    "@@ -0,0 +1,2 @@\n+import request from \"supertest\";\n+expect(res.status).toBe(200)\n")
+
+
+def _qualify_wired(wired, monkeypatch, instances: list[replay.Instance],
+                   r6: dict[int, tuple[bool, str]]) -> list[int]:
+    monkeypatch.setattr(replay, "select_instances", lambda *a, **k: instances)
+    monkeypatch.setattr(replay, "transform_to_p", lambda *a, **k: "PRE")
+    ran: list[int] = []
+
+    def fake_r6(base, pre_patch, instance, *, label, legs=None):
+        ran.append(instance.issue)
+        return r6.get(instance.issue, (True, ""))
+
+    monkeypatch.setattr(replay, "validate_known_fix", fake_r6)
+    return ran
+
+
+def test_qualify_drops_an_oracle_coupled_to_the_pr_s_own_exports(wired, monkeypatch, capsys):
+    coupled = replay.Instance(issue=7, pr=42, merge_sha="m" * 40, landed_diff=_COUPLED,
+                              test_files=["src/app.test.ts"], nontest_files=["src/app.ts"],
+                              report_title="T", report_body="B")
+    fair = replay.Instance(issue=8, pr=43, merge_sha="m" * 40, landed_diff=_BEHAVIOURAL,
+                           test_files=["src/app.test.ts"], nontest_files=["src/app.ts"],
+                           report_title="T", report_body="B")
+    ran = _qualify_wired(wired, monkeypatch, [coupled, fair], {})
+
+    rc = replay.qualify(wired.base, wired.base.sha, profile=wired.profile,
+                        lane_logins=frozenset(), run_id="Q1")
+
+    assert rc == 0
+    assert ran == [8]  # the coupled instance never costs a sandbox run
+    out = capsys.readouterr().out
+    assert "oracle-imports-pr-symbol" in out and "parseStatus" in out
+    assert "--issues 8" in out
+
+
+def test_qualify_keeps_one_issue_per_fix(wired, monkeypatch, capsys):
+    insts = [replay.Instance(issue=i, pr=42, merge_sha="m" * 40, landed_diff=_BEHAVIOURAL,
+                             test_files=["src/app.test.ts"], nontest_files=["src/app.ts"],
+                             report_title="T", report_body="B") for i in (9, 7, 8)]
+    ran = _qualify_wired(wired, monkeypatch, insts, {})
+
+    replay.qualify(wired.base, wired.base.sha, profile=wired.profile,
+                   lane_logins=frozenset(), run_id="Q1")
+
+    assert ran == [7]  # the lowest issue stands for the fix
+    assert "duplicate-pr" in capsys.readouterr().out
+
+
+def test_qualify_reports_an_instance_r6_refuses(wired, monkeypatch, capsys):
+    insts = [replay.Instance(issue=i, pr=40 + i, merge_sha="m" * 40,
+                             landed_diff=_BEHAVIOURAL, test_files=["src/app.test.ts"],
+                             nontest_files=["src/app.ts"], report_title="T", report_body="B")
+             for i in (7, 8)]
+    _qualify_wired(wired, monkeypatch, insts, {8: (False, "unbound")})
+
+    rc = replay.qualify(wired.base, wired.base.sha, profile=wired.profile,
+                        lane_logins=frozenset(), run_id="Q1")
+
+    out = capsys.readouterr().out
+    assert rc == 0 and "r6-unbound" in out and "--issues 7" in out
+    row = [r for r in wired.store.rows if r["phase"] == "replay:qualify"][0]
+    assert row["stats"]["fair"] == [7]
+    assert row["stats"]["verdicts"]["r6-unbound"] == 1
+
+
+def test_qualify_returns_non_zero_when_nothing_is_fair(wired, monkeypatch, capsys):
+    inst = replay.Instance(issue=7, pr=42, merge_sha="m" * 40, landed_diff=_BEHAVIOURAL,
+                           test_files=["src/app.test.ts"], nontest_files=["src/app.ts"],
+                           report_title="T", report_body="B")
+    _qualify_wired(wired, monkeypatch, [inst], {7: (False, "green")})
+
+    rc = replay.qualify(wired.base, wired.base.sha, profile=wired.profile,
+                        lane_logins=frozenset(), run_id="Q1")
+
+    assert rc == 1
+    assert "no fair instance" in capsys.readouterr().out
+
+
 def test_main_run_forwards_the_flags(monkeypatch, tmp_path) -> None:
     base = _base(tmp_path)
     monkeypatch.setattr(replay.store, "Store", lambda: FakeStore())

@@ -265,6 +265,31 @@ def test_score_reads_a_false_accept_when_the_tests_ran_and_refused_it(
     assert rec["false_accept"] is True
 
 
+def test_oracle_imports_pr_symbols_names_the_couplings(generic_profile) -> None:
+    landed = (
+        "diff --git a/src/app.ts b/src/app.ts\n--- a/src/app.ts\n+++ b/src/app.ts\n"
+        "@@ -1,1 +1,3 @@\n+export function parseStatus(x: string) { return x; }\n"
+        "+export const LIMIT = 5;\n"
+        "diff --git a/src/app.test.ts b/src/app.test.ts\n"
+        "--- a/src/app.test.ts\n+++ b/src/app.test.ts\n"
+        "@@ -0,0 +1,2 @@\n+import { parseStatus } from \"./app.ts\";\n"
+        "+expect(parseStatus(\"a\")).toBe(\"a\")\n")
+
+    assert replay.oracle_imports_pr_symbols(landed) == ["parseStatus"]  # LIMIT is unused
+
+
+def test_oracle_imports_pr_symbols_is_empty_for_a_behavioural_oracle(generic_profile) -> None:
+    landed = (
+        "diff --git a/src/app.ts b/src/app.ts\n--- a/src/app.ts\n+++ b/src/app.ts\n"
+        "@@ -1,1 +1,1 @@\n+const fixed = true;\n"
+        "diff --git a/src/app.test.ts b/src/app.test.ts\n"
+        "--- a/src/app.test.ts\n+++ b/src/app.test.ts\n"
+        "@@ -0,0 +1,2 @@\n+import request from \"supertest\";\n"
+        "+expect(res.status).toBe(200)\n")
+
+    assert replay.oracle_imports_pr_symbols(landed) == []
+
+
 # --- transform_to_p (real git) ----------------------------------------------
 
 
