@@ -386,6 +386,34 @@ def _contaminants(legs: dict[str, prove.Legs]) -> list[str]:
     return sorted(names)
 
 
+# A symbol the PR's own source hunks export. An oracle whose tests import one
+# can be satisfied only by a fix that exports the same name from the same file,
+# which is the PR's design rather than the bug's behaviour.
+_PR_EXPORT_RE = re.compile(
+    r"^\+.*\bexport\s+(?:default\s+)?(?:async\s+)?(?:function|const|let|class)\s+(\w+)")
+
+
+def pr_exported_symbols(landed_diff: str) -> set[str]:
+    """The symbols the PR's non-test hunks add as exports."""
+    source = diffpaths.filter_diff(landed_diff, lambda p: not diffpaths.is_test_path(p))
+    return {m.group(1) for line in source.splitlines() if (m := _PR_EXPORT_RE.match(line))}
+
+
+def oracle_imports_pr_symbols(landed_diff: str) -> list[str]:
+    """The PR-exported symbols its own tests import, sorted — the oracle's
+    couplings to the PR's internal design. A fix that solves the same bug behind
+    a different name cannot bind to such a test, so it is scored on the design
+    rather than on the behaviour."""
+    added = pr_exported_symbols(landed_diff)
+    if not added:
+        return []
+    tests = diffpaths.filter_diff(landed_diff, diffpaths.is_test_path)
+    imports = [line for line in tests.splitlines()
+               if line.startswith("+") and re.search(r"\bimport\b", line)]
+    return sorted({sym for sym in added
+                   for line in imports if re.search(rf"\b{re.escape(sym)}\b", line)})
+
+
 def _added_symbols(diff_text: str) -> set[str]:
     """Identifier-like tokens on the added lines of `diff_text`, a best-effort
     read of what a patch introduces."""
@@ -906,6 +934,109 @@ def _merge_committed(base_clone: Path, merge_sha: str) -> str | None:
         return None
 
 
+@dataclass(frozen=True)
+class Qualification:
+    """One candidate's fitness to score a lane run: `fair`, or why it is not."""
+    issue: int
+    pr: int
+    verdict: str
+    seconds: float
+    detail: str
+
+
+_QUALIFY_COLUMNS = ("issue", "pr", "verdict", "seconds", "detail")
+
+
+def _qualify_table(rows: list[Qualification]) -> str:
+    header = "| " + " | ".join(_QUALIFY_COLUMNS) + " |"
+    sep = "| " + " | ".join("---" for _ in _QUALIFY_COLUMNS) + " |"
+    body = [f"| {q.issue} | {q.pr} | {q.verdict} | {q.seconds:.1f} | "
+            f"{(q.detail or '-').replace('|', chr(92) + '|')[:_TABLE_DETAIL_MAX]} |"
+            for q in rows]
+    fair = sum(1 for q in rows if q.verdict == "fair")
+    return "\n".join([header, sep, *body,
+                      f"| total ({len(rows)}) |  | fair {fair} |  |  |"]) + "\n"
+
+
+def _one_per_pr(instances: list[Instance]) -> tuple[list[Instance], list[Instance]]:
+    """(one instance per PR, the rest). Several issues closed by one fix measure
+    that fix once, so the batch keeps the lowest-numbered issue of each."""
+    kept: dict[int, Instance] = {}
+    for inst in sorted(instances, key=lambda i: i.issue):
+        kept.setdefault(inst.pr, inst)
+    keep_ids = {id(i) for i in kept.values()}
+    return list(kept.values()), [i for i in instances if id(i) not in keep_ids]
+
+
+def qualify(base: prove.PinnedBase, base_sha: str, *, profile: RepoProfile,
+            lane_logins: frozenset[str], limit: int | None = None, concurrency: int = 2,
+            run_id: str | None = None, candidate_cap: int = _DEFAULT_CANDIDATES) -> int:
+    """Decide which of the pin's instances can score a lane run at all, spending
+    no agent: drop an oracle coupled to the PR's own exports, keep one issue per
+    fix, then run R6 alone over the rest. Writes a table and one
+    `replay:qualify` ledger row, and prints the fair issues as a `--issues`
+    list. Returns 0 when at least one is fair."""
+    run_id = run_id or base_sha
+    instances = select_instances(base, base_sha, profile=profile, lane_logins=lane_logins,
+                                 candidate_cap=candidate_cap)
+    rows: list[Qualification] = []
+
+    coupled = [i for i in instances if oracle_imports_pr_symbols(i.landed_diff)]
+    for inst in coupled:
+        syms = oracle_imports_pr_symbols(inst.landed_diff)
+        rows.append(Qualification(inst.issue, inst.pr, "oracle-imports-pr-symbol", 0.0,
+                                  f"its tests import {', '.join(syms)}"))
+    rest = [i for i in instances if i not in coupled]
+    kept, duplicates = _one_per_pr(rest)
+    rows.extend(Qualification(i.issue, i.pr, "duplicate-pr", 0.0,
+                              "another issue already measures this fix")
+                for i in duplicates)
+    todo = kept[:limit] if limit is not None else kept
+    rows.extend(Qualification(i.issue, i.pr, "not-attempted", 0.0, "beyond --limit")
+                for i in kept[len(todo):])
+    _progress(f"qualifying {len(todo)} instance(s) of {len(instances)}: "
+              f"{len(coupled)} coupled, {len(duplicates)} duplicate")
+
+    def one(inst: Instance) -> Qualification:
+        legs: dict[str, prove.Legs] = {}
+        t0 = time.monotonic()
+        try:
+            pre = transform_to_p(base.clone, inst.merge_sha, base_sha, profile)
+            ok, reason = validate_known_fix(base, pre, inst, label=f"qualify-{inst.issue}",
+                                            legs=legs)
+        except Exception as e:
+            return Qualification(inst.issue, inst.pr, "error",
+                                 round(time.monotonic() - t0, 1), str(e)[:_DETAIL_MAX])
+        seconds = round(time.monotonic() - t0, 1)
+        verdict = "fair" if ok else f"r6-{reason}"
+        return Qualification(inst.issue, inst.pr, verdict, seconds,
+                             _legs_detail(legs) or reason)
+
+    if todo:
+        with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
+            for q in as_completed({pool.submit(one, i) for i in todo}):
+                row = q.result()
+                rows.append(row)
+                _progress(f"issue {row.issue}: {row.verdict} ({row.seconds:.0f}s)")
+
+    rows.sort(key=lambda q: (q.verdict != "fair", q.issue))
+    table = _qualify_table(rows)
+    out_dir = settings.verify_scratch() / "replay" / f"qualify-{run_id}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "table.md").write_text(table)
+    print(table, flush=True)
+    fair = [q.issue for q in rows if q.verdict == "fair"]
+    print(f"--issues {','.join(str(i) for i in fair)}" if fair else "no fair instance",
+          flush=True)
+    store.Store().append_run({
+        "phase": "replay:qualify", "started": storekit.now(), "finished": storekit.now(),
+        "trigger": "cli",
+        "stats": {"run_id": run_id, "base_sha": base_sha, "host": settings.worker_id(),
+                  "instances": len(rows), "fair": fair,
+                  "verdicts": dict(Counter(q.verdict for q in rows))}})
+    return 0 if fair else 1
+
+
 def plan(base: prove.PinnedBase, base_sha: str, *, profile: RepoProfile,
          lane_logins: frozenset[str], candidate_cap: int = _DEFAULT_CANDIDATES) -> None:
     """Assemble and screen the corpus, then print each dependency group's size,
@@ -1022,8 +1153,9 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         prog="python -m pipeline.evals.issue_fix_replay",
         description="Replay the issue-fix lane over past fixed bugs and score it "
                     "against each merged PR's own tests as a hidden oracle.")
-    ap.add_argument("command", choices=("plan", "run"),
-                    help="plan inspects the corpus; run scores a batch")
+    ap.add_argument("command", choices=("plan", "qualify", "run"),
+                    help="plan inspects the corpus; qualify decides which instances can "
+                         "score a run, spending no agent; run scores a batch")
     ap.add_argument("--limit", type=int, default=None, help="cap the instances run (pilot: 10)")
     ap.add_argument("--candidates", type=int, default=_DEFAULT_CANDIDATES,
                     help="cap the newest closed issues assembled; a large value is "
@@ -1055,6 +1187,10 @@ def main(argv: list[str]) -> int:
     if args.command == "plan":
         plan(base, base.sha, profile=active, lane_logins=logins, candidate_cap=args.candidates)
         return 0
+    if args.command == "qualify":
+        return qualify(base, base.sha, profile=active, lane_logins=logins, limit=args.limit,
+                       concurrency=args.concurrency, run_id=args.run_id,
+                       candidate_cap=args.candidates)
     issues: set[int] | None = None
     if args.issues:
         try:
