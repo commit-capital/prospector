@@ -50,7 +50,7 @@ def test_materialize_replaces_an_existing_destination(tmp_path):
     assert not (lane_tree.materialize(_base(tmp_path), dest) / "stale").exists()
 
 
-def test_new_files_separates_untracked_from_edits_to_tracked_files(tmp_path):
+def test_new_files_separates_additions_from_edits_to_committed_files(tmp_path):
     repo = lane_tree.materialize(_base(tmp_path), tmp_path / "w")
     (repo / "src" / "new.test.ts").write_text("t\n")
     (repo / "src" / "x.ts").write_text("export const x = 2;\n")
@@ -81,8 +81,21 @@ def test_new_files_reads_a_rename_as_delete_plus_new(tmp_path):
     repo = lane_tree.materialize(_base(tmp_path), tmp_path / "w")
     subprocess.run(["git", "-C", str(repo), "mv", "src/x.ts", "src/z.ts"],
                    check=True, capture_output=True, text=True)
-    untracked, other = lane_tree.new_files(repo)
-    assert untracked == [] and other == ["src/x.ts", "src/z.ts"]
+    added, other = lane_tree.new_files(repo)
+    # The destination is an addition; the source the commit still holds is not,
+    # so a rename always leaves an entry the caller refuses.
+    assert added == ["src/z.ts"] and other == ["src/x.ts"]
+
+
+def test_new_files_counts_an_intent_to_add_file_as_an_addition(tmp_path):
+    # The lane's check tool stages the agent's new files intent-to-add so its
+    # diff carries them; porcelain then calls them added, not untracked.
+    repo = lane_tree.materialize(_base(tmp_path), tmp_path / "w")
+    (repo / "src" / "new.test.ts").write_text("t\n")
+    subprocess.run(["git", "-C", str(repo), "add", "-N", "."],
+                   check=True, capture_output=True, text=True)
+    added, other = lane_tree.new_files(repo)
+    assert added == ["src/new.test.ts"] and other == []
 
 
 def test_materialize_ignores_ambient_git_config(tmp_path, monkeypatch):
