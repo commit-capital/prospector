@@ -303,6 +303,12 @@ def _green_contained(red: prove.Legs, green: prove.Legs, landed_diff: str) -> bo
     return gates.green_accepted(signal)
 
 
+# The captured output a replay leg keeps. Containment is judged from the
+# runner's end-of-run failed-tests report, which sits behind however much the
+# test files printed; the store keeps only this module's bounded evidence, so a
+# wide cap costs one run's memory and nothing durable.
+PARSE_TAIL_BYTES = 256 * 1024
+
 # Caps on the evidence an instance row carries: enough to read why a run ended
 # as it did, bounded so one row stays a row.
 _FAILING_MAX = 10
@@ -424,19 +430,21 @@ def validate_known_fix(base: prove.PinnedBase, pre_patch: str, instance: Instanc
     try:
         red = legs["red"] = prove.red_legs(
             base, patch=prove.flatten(base.clone, pre_patch, test_hunks, label=label),
-            test_cmd=oracle, label=label)
+            test_cmd=oracle, label=label, tail_bytes=PARSE_TAIL_BYTES)
         status = _leg_status(red, gates.SENTINEL_TEST_FAIL)
         if status != "ok":
             return False, "sandbox" if status == "sandbox" else "red"
         green_patch = prove.flatten(base.clone, pre_patch, instance.landed_diff, label=label)
         green = legs["green"] = prove.green_legs(
-            base, patch=green_patch, test_cmd=oracle, label=label)
+            base, patch=green_patch, test_cmd=oracle, label=label,
+            tail_bytes=PARSE_TAIL_BYTES)
         if _leg_status(green, gates.SENTINEL_PASS) == "sandbox":
             return False, "sandbox"
         if not _green_holds(
                 red, green, instance.landed_diff, runs=legs, confirm_key="green_confirm",
                 rerun=lambda: prove.green_legs(base, patch=green_patch, test_cmd=oracle,
-                                               label=label)):
+                                               label=label,
+                                               tail_bytes=PARSE_TAIL_BYTES)):
             return False, "green"
     except verify_driver.ProbeFailure as e:
         legs["probe"] = {"exit": None, "exit_confirm": None, "output_tail": str(e),
@@ -469,11 +477,11 @@ def score(instance: Instance, lane_result: LaneRun, oracle_runs: dict[str, prove
     if lane_cmd is not None:
         red = prove.red_legs(
             base, patch=prove.flatten(base.clone, pre_patch, lane_test_hunks, label=label),
-            test_cmd=lane_cmd, label=label)
+            test_cmd=lane_cmd, label=label, tail_bytes=PARSE_TAIL_BYTES)
         green = prove.green_legs(
             base, patch=prove.flatten(base.clone, pre_patch, lane_test_hunks,
                                       landed_fix_hunks, label=label),
-            test_cmd=lane_cmd, label=label)
+            test_cmd=lane_cmd, label=label, tail_bytes=PARSE_TAIL_BYTES)
         oracle_runs["repro_valid_red"] = red
         oracle_runs["repro_valid_green"] = green
         repro_valid = (
@@ -484,7 +492,8 @@ def score(instance: Instance, lane_result: LaneRun, oracle_runs: dict[str, prove
                                  base, patch=prove.flatten(
                                      base.clone, pre_patch, lane_test_hunks,
                                      landed_fix_hunks, label=label),
-                                 test_cmd=lane_cmd, label=label)))
+                                 test_cmd=lane_cmd, label=label,
+                                 tail_bytes=PARSE_TAIL_BYTES)))
 
     oracle_pass = False
     oracle = oracle_command(instance.test_files)
@@ -493,7 +502,8 @@ def score(instance: Instance, lane_result: LaneRun, oracle_runs: dict[str, prove
     if oracle is not None and lane_fix_hunks.strip():
         oracle_patch = prove.flatten(base.clone, pre_patch, pr_test_hunks,
                                      lane_fix_hunks, label=label)
-        green = prove.green_legs(base, patch=oracle_patch, test_cmd=oracle, label=label)
+        green = prove.green_legs(base, patch=oracle_patch, test_cmd=oracle, label=label,
+                                 tail_bytes=PARSE_TAIL_BYTES)
         oracle_runs["oracle_pass"] = green
         # The oracle runs the PR's test files whole, so it carries the same
         # contamination R6 reads past; the R6 red leg is its baseline.
@@ -502,7 +512,8 @@ def score(instance: Instance, lane_result: LaneRun, oracle_runs: dict[str, prove
             else _green_holds(r6_red, green, instance.landed_diff, runs=oracle_runs,
                               confirm_key="oracle_pass_confirm",
                               rerun=lambda: prove.green_legs(
-                                  base, patch=oracle_patch, test_cmd=oracle, label=label)))
+                                  base, patch=oracle_patch, test_cmd=oracle, label=label,
+                                  tail_bytes=PARSE_TAIL_BYTES)))
 
     reviews = (lane_result.result or {}).get("reviews", [])
     all_safe = bool(reviews) and all(r.get("verdict") == "safe" for r in reviews)

@@ -1066,6 +1066,23 @@ class TestRunPhase:
         assert "O" in tail and "E" in tail
         assert tail.endswith("E")
 
+    def test_a_caller_that_parses_the_report_can_widen_the_cap(self, monkeypatch):
+        # The failed-tests report sits behind whatever the test files printed,
+        # so a caller that reads it keeps more than the storing default.
+        merged = ("O" * 20000 + "Failed Tests 1\n FAIL  app > bug").encode()
+        monkeypatch.setattr(vd.subprocess, "Popen",
+                            _FakePopen(output=merged, returncode=20))
+        _, tail = vd.run_phase("red", "img:t0", tail_bytes=16384)
+        assert len(tail) == 16384
+        assert vd.parse_failed_tests(tail) == ["app > bug"]
+
+    def test_the_default_cap_can_lose_the_report(self, monkeypatch):
+        merged = ("O" * 20000 + "Failed Tests 1\n FAIL  app > bug").encode()
+        monkeypatch.setattr(vd.subprocess, "Popen",
+                            _FakePopen(output=merged, returncode=20))
+        _, tail = vd.run_phase("red", "img:t0")
+        assert len(tail) == vd.OUTPUT_TAIL_BYTES
+
     def test_a_timeout_is_an_error_not_a_red(self, monkeypatch):
         fake = _FakePopen(output=b"", returncode=-9, raise_timeout=True)
         cleanup: list[list[str]] = []
