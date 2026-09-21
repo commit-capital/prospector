@@ -100,7 +100,34 @@ jobs:
       # remaining warnings don't fail the gate. Bar: add no new lint errors.
       - name: Lint
         run: pnpm run lint
+      - name: Frontend unit tests
+        run: pnpm test
       # `tsc -b && vite build` — the tsc step is the type gate (0 errors), the
       # vite step proves the bundle builds.
       - name: Build (type-check + bundle)
         run: pnpm run build
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          enable-cache: true
+      - name: Install the e2e backend
+        working-directory: .
+        run: uv sync --locked
+      - name: Install Vibium browser
+        run: VIBIUM_CACHE_DIR="$PWD/node_modules/.cache/vibium" pnpm exec vibium install
+      # Ubuntu restricts the user namespaces managed Chrome needs for its
+      # sandbox. Match Vibium's own CI setup on this disposable hosted runner.
+      # https://github.com/VibiumDev/vibium/blob/v26.8.21/.github/workflows/test.yml
+      - name: Configure kernel for Chrome sandbox
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Browser journeys (Vibium)
+        timeout-minutes: 5
+        run: node --test --test-concurrency=1 e2e/*.test.ts
+      - name: Upload browser diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: vibium-e2e
+          path: prospector_app/frontend/e2e/artifacts/
+          if-no-files-found: ignore
+          retention-days: 7

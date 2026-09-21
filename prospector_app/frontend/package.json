@@ -13,7 +13,8 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test": "node --test \"src/**/*.test.ts\""
+    "test": "node --test \"src/**/*.test.ts\"",
+    "test:e2e": "pnpm run build && node --test --test-concurrency=1 e2e/*.test.ts"
   },
   "dependencies": {
     "html2canvas-pro": "^2.3.2",
@@ -36,6 +37,7 @@
     "globals": "^17.8.0",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.65.0",
+    "vibium": "26.8.21",
     "vite": "^8.1.5"
   }
 }

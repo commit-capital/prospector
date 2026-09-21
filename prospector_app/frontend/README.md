@@ -38,3 +38,17 @@ Source layout:
 The browser app assumes a same-origin `/api`; do not add a second backend URL
 configuration path. The deployment boundary remains local and single-operator,
 as documented in the repository README.
+
+Browser tests use Vibium against the built app and an isolated Python backend:
+
+```bash
+# From the repository root, once:
+uv sync --locked
+pnpm --dir prospector_app/frontend install --frozen-lockfile
+
+# Builds the app and runs the browser journeys:
+pnpm --dir prospector_app/frontend test:e2e
+```
+
+See [e2e/README.md](e2e/README.md) for isolation, diagnostics, and the current
+coverage. `pnpm --dir prospector_app/frontend test` runs the faster unit tests.

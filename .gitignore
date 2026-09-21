@@ -56,3 +56,6 @@ issue_triage/SUMMARY.md
 # Per-checkout editor launch config: setup.sh generates it from
 # .claude/launch.example.json with this checkout's ports.
 /.claude/launch.json
+
+# Browser-test diagnostics (screenshots, logs, and temporary stores).
+prospector_app/frontend/e2e/artifacts/
