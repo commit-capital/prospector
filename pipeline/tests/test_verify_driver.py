@@ -1066,6 +1066,24 @@ class TestRunPhase:
         assert "O" in tail and "E" in tail
         assert tail.endswith("E")
 
+    @pytest.mark.parametrize("tail", [
+        "SyntaxError: does not provide an export named 'parseStatusFilter'",
+        "Failed to resolve import \"../services/issues.ts\"",
+        "Failed to resolve entry for package @acme/plugin-sdk",
+        "Error: Transform failed with 1 error: [TSCONFIG_ERROR] Failed to load tsconfig",
+        "Failed Suites 1\n FAIL  src/__tests__/app.test.ts",
+    ])
+    def test_tests_never_ran_names_a_suite_that_could_not_bind(self, tail):
+        assert vd.tests_never_ran(tail)
+
+    @pytest.mark.parametrize("tail", [
+        "Failed Tests 1\n FAIL  app > compute > expected 1 to be 2",
+        "Tests  1 failed | 79 passed (80)",
+        "Error: Timed out waiting for condition",
+    ])
+    def test_tests_never_ran_leaves_a_run_that_reached_the_code(self, tail):
+        assert not vd.tests_never_ran(tail)
+
     def test_a_caller_that_parses_the_report_can_widen_the_cap(self, monkeypatch):
         # The failed-tests report sits behind whatever the test files printed,
         # so a caller that reads it keeps more than the storing default.

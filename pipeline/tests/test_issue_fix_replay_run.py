@@ -221,6 +221,50 @@ def test_r6_rejects_a_green_failing_a_test_the_pr_s_own_diff_names(
     assert (ok, reason) == (False, "green")
 
 
+_NO_EXPORT = ("SyntaxError: The requested module '../services/issues.ts' does not "
+              "provide an export named 'parseStatusFilter'\n")
+
+
+def _unbound(exit_: int | None) -> dict:
+    return {"exit": exit_, "exit_confirm": None, "output_tail": _NO_EXPORT, "duration_s": 1.0}
+
+
+def test_r6_names_a_green_whose_suite_never_bound_apart_from_one_it_refused(
+        tmp_path, generic_profile, monkeypatch) -> None:
+    _mock_legs(monkeypatch, red=_RED_2020, lane_green=_GREEN_00,
+               oracle_green=_unbound(gates.SENTINEL_TEST_FAIL))
+
+    ok, reason = replay.validate_known_fix(_base(tmp_path), "PRE", _instance(),
+                                           label="replay-7")
+
+    assert (ok, reason) == (False, "unbound")
+
+
+def test_score_withholds_a_false_accept_when_the_pr_s_tests_never_ran(
+        tmp_path, generic_profile, monkeypatch) -> None:
+    # The lane's fix kept the helper module-private, so the PR's tests cannot
+    # import it: they judge neither the fix nor the PR.
+    rec, _ = _score(tmp_path, monkeypatch, _lane("fixed"),
+                    red=_RED_2020, lane_green=_GREEN_00,
+                    oracle_green=_unbound(gates.SENTINEL_TEST_FAIL))
+
+    assert rec["oracle_outcome"] == "unbound"
+    assert rec["oracle_pass"] is None
+    assert rec["false_accept"] is False
+
+
+def test_score_reads_a_false_accept_when_the_tests_ran_and_refused_it(
+        tmp_path, generic_profile, monkeypatch) -> None:
+    rec, _ = _score(tmp_path, monkeypatch, _lane("fixed"),
+                    red=_RED_2020, lane_green=_GREEN_00,
+                    oracle_green=_dirty(gates.SENTINEL_TEST_FAIL, None,
+                                        "app.test.ts > compute > returns 1"))
+
+    assert rec["oracle_outcome"] == "fail"
+    assert rec["oracle_pass"] is False
+    assert rec["false_accept"] is True
+
+
 # --- transform_to_p (real git) ----------------------------------------------
 
 

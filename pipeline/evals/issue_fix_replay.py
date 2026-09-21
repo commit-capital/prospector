@@ -420,8 +420,10 @@ def validate_known_fix(base: prove.PinnedBase, pre_patch: str, instance: Instanc
     """R6: the merged PR's own test fails on `tree(P)` and passes once the whole
     landed diff is applied, each leg confirmed. `(True, "")` when it does;
     `(False, "sandbox")` on a harness fault the caller retries; `(False, "no-oracle"
-    | "red" | "green")` on a definitive miss. The legs it runs land in `legs`
-    under `red` and `green`, and a boot-probe failure under `probe`."""
+    | "red" | "green" | "unbound")` on a definitive miss — `unbound` when the
+    suite never bound to the tree, which judges neither the fix nor the PR. The
+    legs it runs land in `legs` under `red` and `green`, and a boot-probe
+    failure under `probe`."""
     legs = {} if legs is None else legs
     oracle = oracle_command(instance.test_files)
     if oracle is None:
@@ -445,6 +447,12 @@ def validate_known_fix(base: prove.PinnedBase, pre_patch: str, instance: Instanc
                 rerun=lambda: prove.green_legs(base, patch=green_patch, test_cmd=oracle,
                                                label=label,
                                                tail_bytes=PARSE_TAIL_BYTES)):
+            # A suite the sandbox cannot load says nothing about the known fix,
+            # so it is named apart from a green the tests actually refused.
+            if any(verify_driver.tests_never_ran(leg["output_tail"])
+                   for key in ("green", "green_confirm")
+                   if (leg := legs.get(key)) is not None):
+                return False, "unbound"
             return False, "green"
     except verify_driver.ProbeFailure as e:
         legs["probe"] = {"exit": None, "exit_confirm": None, "output_tail": str(e),
@@ -495,10 +503,15 @@ def score(instance: Instance, lane_result: LaneRun, oracle_runs: dict[str, prove
                                  test_cmd=lane_cmd, label=label,
                                  tail_bytes=PARSE_TAIL_BYTES)))
 
-    oracle_pass = False
+    # How the PR's own tests answered the lane's fix: `pass`, `fail` (they ran
+    # and refused it), `unbound` (they never bound to the tree, so they judge
+    # nothing), `no-fix` (nothing to measure), `no-oracle` (no command).
+    oracle_outcome = "no-oracle"
     oracle = oracle_command(instance.test_files)
     # A run that changed no non-test file leaves the bug in place, so the PR's
     # own test cannot pass and the sandbox has nothing to measure.
+    if oracle is not None and not lane_fix_hunks.strip():
+        oracle_outcome = "no-fix"
     if oracle is not None and lane_fix_hunks.strip():
         oracle_patch = prove.flatten(base.clone, pre_patch, pr_test_hunks,
                                      lane_fix_hunks, label=label)
@@ -507,13 +520,21 @@ def score(instance: Instance, lane_result: LaneRun, oracle_runs: dict[str, prove
         oracle_runs["oracle_pass"] = green
         # The oracle runs the PR's test files whole, so it carries the same
         # contamination R6 reads past; the R6 red leg is its baseline.
-        oracle_pass = (
+        held = (
             _leg_status(green, gates.SENTINEL_PASS) == "ok" if r6_red is None
             else _green_holds(r6_red, green, instance.landed_diff, runs=oracle_runs,
                               confirm_key="oracle_pass_confirm",
                               rerun=lambda: prove.green_legs(
                                   base, patch=oracle_patch, test_cmd=oracle, label=label,
                                   tail_bytes=PARSE_TAIL_BYTES)))
+        never_ran = any(verify_driver.tests_never_ran(leg["output_tail"])
+                        for key in ("oracle_pass", "oracle_pass_confirm")
+                        if (leg := oracle_runs.get(key)) is not None)
+        oracle_outcome = "pass" if held else ("unbound" if never_ran else "fail")
+
+    # A test that never bound to the tree neither passes nor refutes: the row
+    # reads "-" and no false accept is read from it.
+    oracle_pass: bool | None = {"pass": True, "unbound": None}.get(oracle_outcome, False)
 
     reviews = (lane_result.result or {}).get("reviews", [])
     all_safe = bool(reviews) and all(r.get("verdict") == "safe" for r in reviews)
@@ -528,12 +549,14 @@ def score(instance: Instance, lane_result: LaneRun, oracle_runs: dict[str, prove
         "fixed": fixed,
         "repro_valid": repro_valid,
         "oracle_pass": oracle_pass,
+        "oracle_outcome": oracle_outcome,
         "oracle_coupled": oracle_coupled,
-        # Reviewers called it safe and the PR's own tests refuse it. Coupling is
-        # recorded beside this, never subtracted from it: a test that only the
-        # PR's own implementation can satisfy is a reason to read the row, not a
-        # reason to drop it.
-        "false_accept": all_safe and not oracle_pass,
+        # Reviewers called it safe and the PR's own tests ran and refused it.
+        # Coupling is recorded beside this, never subtracted from it: a test
+        # that only the PR's own implementation can satisfy is a reason to read
+        # the row, not a reason to drop it. Tests that never ran are not a
+        # refusal at all, so they raise nothing.
+        "false_accept": all_safe and oracle_outcome == "fail",
         "false_reject": oracle_pass and not fixed,
         "test_tamper": bool(lane_test_paths - repro_files),
         "localized": bool(lane_paths & set(instance.nontest_files)),

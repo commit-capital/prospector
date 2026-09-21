@@ -762,6 +762,30 @@ def parse_failed_tests(tail: str) -> list[str] | None:
     return names if len(names) == count else None
 
 
+# A suite that never ran: the runner reports it apart from its failing tests,
+# and the errors that produce one name a tree the tests could not bind to.
+_FAILED_SUITES_HEADER_RE = re.compile(r"Failed Suites (\d+)")
+_UNBOUND_RE = re.compile(
+    r"does not provide an export named|Failed to resolve import|"
+    r"Failed to resolve entry for package|Cannot find module|Transform failed|"
+    r"TSCONFIG_ERROR|Failed to load tsconfig|"
+    r"Missing \"\./[^\"]+\" specifier", re.IGNORECASE)
+
+
+def tests_never_ran(tail: str) -> bool:
+    """Whether a failing run failed before its tests could exercise the tree —
+    a suite the runner could not load, an import that does not resolve, an
+    export the module does not provide, a transform that failed. Such a run
+    carries no judgement of the code: it never reached it.
+
+    The tail is the untrusted test's own output. A forger gains nothing here:
+    a run that could simply have exited passing has no reason to claim it never
+    ran, and the callers read this only to withhold a verdict, never to grant
+    one."""
+    text = _ANSI_RE.sub("", tail)
+    return bool(_FAILED_SUITES_HEADER_RE.search(text) or _UNBOUND_RE.search(text))
+
+
 def failing_in_test_diff(names: list[str] | None, diff_text: str) -> list[str] | None:
     """The parsed failing tests whose leaf title (the segment after the last
     " > ") appears anywhere in the PR's test-file hunks — added, removed, or
