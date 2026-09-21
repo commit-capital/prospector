@@ -155,6 +155,71 @@ def test_r6_probe_failure_is_a_sandbox_fault(tmp_path, generic_profile, monkeypa
     assert legs["probe"]["output_tail"] == "isolation unproven"
 
 
+def _report(*names: str) -> str:
+    """A runner's end-of-run failed-tests report, the shape parse_failed_tests reads."""
+    lines = [f"Failed Tests {len(names)}"] + [f" FAIL  {n}" for n in names]
+    return "\n".join(lines) + "\n"
+
+
+def _dirty(exit_: int | None, confirm: int | None, *names: str) -> dict:
+    return {"exit": exit_, "exit_confirm": confirm, "output_tail": _report(*names),
+            "duration_s": 1.0}
+
+
+# The PR's own test, and a neighbour in the same file the PR never touched.
+_MINE = "app.test.ts > compute > returns 1"
+_NEIGHBOUR = "app.test.ts > unrelated > times out waiting"
+
+
+def test_r6_accepts_a_green_whose_failures_the_red_run_already_carried(
+        tmp_path, generic_profile, monkeypatch) -> None:
+    # The oracle runs whole files: a neighbour failing in the sandbox both with
+    # and without the fix is contamination, not the fix failing.
+    red = _dirty(gates.SENTINEL_TEST_FAIL, gates.SENTINEL_TEST_FAIL, _MINE, _NEIGHBOUR)
+    green = _dirty(gates.SENTINEL_TEST_FAIL, None, _NEIGHBOUR)
+    _mock_legs(monkeypatch, red=red, lane_green=green, oracle_green=green)
+    legs: dict = {}
+
+    ok, reason = replay.validate_known_fix(_base(tmp_path), "PRE", _instance(),
+                                           label="replay-7", legs=legs)
+
+    assert (ok, reason) == (True, "")
+    assert legs["green_confirm"] is not None  # a dirty green earns a second container
+
+
+def test_r6_rejects_a_dirty_green_a_second_container_does_not_repeat(
+        tmp_path, generic_profile, monkeypatch) -> None:
+    red = _dirty(gates.SENTINEL_TEST_FAIL, gates.SENTINEL_TEST_FAIL, _MINE, _NEIGHBOUR)
+    # The second container fails on a test the red run never carried, so its
+    # failing set is no longer contained.
+    greens = [_dirty(gates.SENTINEL_TEST_FAIL, None, _NEIGHBOUR),
+              _dirty(gates.SENTINEL_TEST_FAIL, None, "app.test.ts > other > flaky")]
+    monkeypatch.setattr(prove, "flatten", lambda base_clone, *parts, label: Path("/tmp/p"))
+    monkeypatch.setattr(prove, "red_legs", lambda base, *, patch, test_cmd, label: red)
+    monkeypatch.setattr(prove, "green_legs",
+                        lambda base, *, patch, test_cmd, label: greens.pop(0))
+
+    ok, reason = replay.validate_known_fix(_base(tmp_path), "PRE", _instance(),
+                                           label="replay-7")
+
+    assert (ok, reason) == (False, "green")
+
+
+def test_r6_rejects_a_green_failing_a_test_the_pr_s_own_diff_names(
+        tmp_path, generic_profile, monkeypatch) -> None:
+    # compute() is named by the PR's test hunks, so its failure is the PR's own
+    # test still failing — never contamination.
+    mine = "tests/test_app.py > compute() == 1"
+    red = _dirty(gates.SENTINEL_TEST_FAIL, gates.SENTINEL_TEST_FAIL, mine, _NEIGHBOUR)
+    green = _dirty(gates.SENTINEL_TEST_FAIL, None, mine)
+    _mock_legs(monkeypatch, red=red, lane_green=green, oracle_green=green)
+
+    ok, reason = replay.validate_known_fix(_base(tmp_path), "PRE", _instance(),
+                                           label="replay-7")
+
+    assert (ok, reason) == (False, "green")
+
+
 # --- transform_to_p (real git) ----------------------------------------------
 
 

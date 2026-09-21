@@ -9,6 +9,7 @@ import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 
+from pipeline import diffpaths
 from pipeline.wire import VerifyAuthoredFile
 
 # git runs with no user or system configuration and a fixed identity.
@@ -45,6 +46,30 @@ def materialize(base_clone: Path, dest: Path, files: Sequence[VerifyAuthoredFile
     _git(dest, "add", "-A")
     _git(dest, "commit", "-q", "--no-gpg-sign", "-m", "base")
     return Path(os.path.realpath(dest))
+
+
+def additive_test_edits(worktree: Path, paths: list[str]) -> list[str]:
+    """Those of `paths` whose tracked edit only adds lines to a test file — the
+    edits a reproduction may make. A removed line, a rename, a delete, or any
+    path outside the profile's test conventions is not additive, so a rewrite of
+    an existing test can never pass as one."""
+    out: list[str] = []
+    for path in paths:
+        if not diffpaths.is_test_path(path):
+            continue
+        diff = _git(worktree, "-c", "status.renames=false", "diff", "HEAD", "--", path)
+        body = [ln for ln in diff.splitlines()
+                if not ln.startswith(("--- ", "+++ ", "diff --git ", "index ", "@@"))]
+        if body and all(ln.startswith(("+", " ", "\\")) for ln in body):
+            out.append(path)
+    return out
+
+
+def authored_test_diff(worktree: Path, paths: list[str]) -> str:
+    """The authored tests as a diff against the worktree's one commit — new
+    files and additive edits alike, so a patch carries each as what it is."""
+    _git(worktree, "add", "-N", ".")
+    return _git(worktree, "diff", "--full-index", "--binary", "HEAD", "--", *paths)
 
 
 def new_files(worktree: Path) -> tuple[list[str], list[str]]:

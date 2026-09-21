@@ -208,6 +208,61 @@ def test_editing_a_tracked_file_ends_unwritable_after_the_retry(lane):
     assert lane.calls["reproduce"][1]["retry_note"]
 
 
+def _with_existing_test(lane) -> Path:
+    """An existing test file on the base the reproduction may extend."""
+    p = lane.base.clone / "src" / "existing.test.ts"
+    p.write_text("test('already here', () => { expect(1).toBe(1); });\n")
+    return p
+
+
+def test_adding_a_case_to_an_existing_test_file_is_written(lane):
+    _with_existing_test(lane)
+
+    def repro_extends(wt: str) -> dict:
+        p = Path(wt) / "src" / "existing.test.ts"
+        p.write_text(p.read_text() + "test('repro', () => { throw new Error('boom'); });\n")
+        return {"files": [{"path": "src/existing.test.ts", "purpose": "reproduces it"}],
+                "claimed_symptom": "throws", "expected_red_signature": "Error: boom",
+                "confidence": "high"}
+
+    lane.scripts.reproduce = repro_extends
+    res = lane.run(action="reproduce")
+    assert res.ending == "reproduced" and res.fault is False
+    assert len(lane.calls["reproduce"]) == 1  # no retry: the set is valid
+
+
+def test_rewriting_an_existing_test_file_still_ends_unwritable(lane):
+    _with_existing_test(lane)
+
+    def repro_rewrites(wt: str) -> dict:
+        # The existing case is gone: a removed line is not an addition.
+        (Path(wt) / "src" / "existing.test.ts").write_text(
+            "test('repro', () => { throw new Error('boom'); });\n")
+        return {"files": [{"path": "src/existing.test.ts", "purpose": "reproduces it"}],
+                "claimed_symptom": "throws", "expected_red_signature": "Error: boom",
+                "confidence": "high"}
+
+    lane.scripts.reproduce = repro_rewrites
+    res = lane.run(action="reproduce")
+    assert res.ending == "unwritable" and res.fault is False
+
+
+def test_an_undisclosed_extension_of_an_existing_test_file_is_refused(lane):
+    _with_existing_test(lane)
+
+    def repro_extends_quietly(wt: str) -> dict:
+        p = Path(wt) / "src" / "existing.test.ts"
+        p.write_text(p.read_text() + "test('extra', () => {});\n")
+        (Path(wt) / "src" / "repro.test.ts").write_text("test('r', () => {});\n")
+        return {"files": [{"path": "src/repro.test.ts", "purpose": "p"}],
+                "claimed_symptom": "s", "expected_red_signature": "sig",
+                "confidence": "high"}
+
+    lane.scripts.reproduce = repro_extends_quietly
+    res = lane.run(action="reproduce")
+    assert res.ending == "unwritable" and res.fault is False
+
+
 def test_first_red_leg_passing_ends_not_reproduced_after_the_retry(lane):
     lane.scripts.red = lambda: {"exit": gates.SENTINEL_PASS, "exit_confirm": None,
                                 "output_tail": "", "duration_s": 1.0}

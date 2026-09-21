@@ -26,7 +26,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
-from pipeline import diffpaths, gates, gh, profile, prove, settings, store, storekit, verify_driver
+from pipeline import (diffpaths, gates, gh, profile, prove, settings, store, storekit,
+                      verify_driver, wire)
 from pipeline.profile import RepoProfile
 
 # R3 size bounds on the landed diff.
@@ -268,6 +269,33 @@ def _leg_status(legs: prove.Legs, want: int) -> str:
     return "fail"
 
 
+def _green_contained(red: prove.Legs, green: prove.Legs, landed_diff: str) -> bool:
+    """Whether a green that exited failing is contamination the red run already
+    carried — `gates.green_accepted` over the two legs' own end-of-run reports,
+    the same policy the verify lane reads. A file the oracle runs whole holds
+    tests the PR never touched, and one of them failing in the sandbox says
+    nothing about the fix."""
+    green_failing = verify_driver.parse_failed_tests(green["output_tail"])
+    signal: wire.VerifyRedGreenSignal = {
+        "red_exit": red["exit"],
+        "red_failing": verify_driver.parse_failed_tests(red["output_tail"]),
+        "green_exit": green["exit"],
+        "green_failing": green_failing,
+        "failing_in_diff": verify_driver.failing_in_test_diff(green_failing, landed_diff),
+    }
+    return gates.green_accepted(signal)
+
+
+def _contaminants(legs: dict[str, prove.Legs]) -> list[str]:
+    """The contaminating tests an accepted dirty green carried, sorted."""
+    names: set[str] = set()
+    for key in ("green", "green_confirm"):
+        leg = legs.get(key)
+        if leg is not None and leg.get("exit") == gates.SENTINEL_TEST_FAIL:
+            names.update(verify_driver.parse_failed_tests(leg["output_tail"]) or [])
+    return sorted(names)
+
+
 def _added_symbols(diff_text: str) -> set[str]:
     """Identifier-like tokens on the added lines of `diff_text`, a best-effort
     read of what a patch introduces."""
@@ -316,12 +344,24 @@ def validate_known_fix(base: prove.PinnedBase, pre_patch: str, instance: Instanc
         status = _leg_status(red, gates.SENTINEL_TEST_FAIL)
         if status != "ok":
             return False, "sandbox" if status == "sandbox" else "red"
+        green_patch = prove.flatten(base.clone, pre_patch, instance.landed_diff, label=label)
         green = legs["green"] = prove.green_legs(
-            base, patch=prove.flatten(base.clone, pre_patch, instance.landed_diff, label=label),
-            test_cmd=oracle, label=label)
+            base, patch=green_patch, test_cmd=oracle, label=label)
         status = _leg_status(green, gates.SENTINEL_PASS)
+        if status == "sandbox":
+            return False, "sandbox"
         if status != "ok":
-            return False, "sandbox" if status == "sandbox" else "green"
+            if not _green_contained(red, green, instance.landed_diff):
+                return False, "green"
+            # A dirty green earns no confirm leg from prove, and one run of a
+            # contaminated file is not proof: a second container must fail the
+            # same way over the same red set.
+            confirm = legs["green_confirm"] = prove.green_legs(
+                base, patch=green_patch, test_cmd=oracle, label=label)
+            if _leg_status(confirm, gates.SENTINEL_PASS) == "sandbox":
+                return False, "sandbox"
+            if not _green_contained(red, confirm, instance.landed_diff):
+                return False, "green"
     except verify_driver.ProbeFailure as e:
         legs["probe"] = {"exit": None, "exit_confirm": None, "output_tail": str(e),
                          "duration_s": 0.0}
@@ -421,6 +461,7 @@ def run_instance(instance: Instance, *, base: prove.PinnedBase, base_sha: str,
         return {"issue": instance.issue, "pr": instance.pr,
                 "ending": f"r6-{reason}", "reason": reason, "r6_seconds": r6_seconds,
                 "detail": _legs_detail(r6_legs) or reason}
+    contaminants = _contaminants(r6_legs)
     t0 = time.monotonic()
     lane_result = run_lane(issue=instance.issue, title=instance.report_title,
                            body=instance.report_body, base=base, pre_patch=pre_patch,
@@ -430,13 +471,14 @@ def run_instance(instance: Instance, *, base: prove.PinnedBase, base_sha: str,
         # A faulted lane spends none of the oracle and repro_valid sandbox legs.
         return {"issue": instance.issue, "pr": instance.pr, "ending": lane_result.ending,
                 "seconds": seconds, "r6_seconds": r6_seconds,
+                "r6_contaminants": contaminants,
                 "agent_runs": lane_result.agent_runs, "detail": lane_result.detail}
     oracle_runs: dict[str, prove.Legs] = {}
     scores = score(instance, lane_result, oracle_runs, base=base, pre_patch=pre_patch,
                    label=label)
     return {"issue": instance.issue, "pr": instance.pr, "ending": lane_result.ending,
             "seconds": seconds, "r6_seconds": r6_seconds, "detail": lane_result.detail,
-            "oracle_runs": oracle_runs, **scores}
+            "r6_contaminants": contaminants, "oracle_runs": oracle_runs, **scores}
 
 
 # The longest detail an instance record carries.

@@ -116,20 +116,25 @@ def _validate_reproduction(clone: Path, verdict: dict, spec: LaneSpec, label: st
     as the invalid reason. On a clean set, returns (None, files, test command,
     the authored-test patch); otherwise (reason, [], None, None)."""
     untracked, other = lane_tree.new_files(clone)
-    if other:
+    # A reproduction may add a test file, and may add cases to one that exists;
+    # anything else it touched — production code, or a test line it removed or
+    # rewrote — invalidates the set.
+    extended = lane_tree.additive_test_edits(clone, other)
+    if set(other) - set(extended):
         return "edited-tracked-files", [], None, None
     reported = [str(f["path"]) for f in verdict.get("files", [])]
-    if set(untracked) != set(reported):
+    if set(untracked) | set(extended) != set(reported):
         return "undisclosed-files", [], None, None
     files, why = lane_tree.read_files(clone, reported)
     if why:
         return why, [], None, None
     cmd, skipped = verify_driver.validate_test_files(
         files, verdict.get("expected_red_signature"), base_clone=spec.base.clone,
-        taken_paths=[])
+        taken_paths=[], may_exist=frozenset(extended))
     if skipped:
         return skipped, [], None, None
-    test_patch = verify_driver.authored_test_patch(label, files)
+    test_patch = verify_driver.authored_patch_file(
+        label, lane_tree.authored_test_diff(clone, reported))
     if threats.scan_diff(test_patch.read_text())["verdict"] != "clear":
         return "threat-signature", [], None, None
     return None, files, cmd, test_patch
