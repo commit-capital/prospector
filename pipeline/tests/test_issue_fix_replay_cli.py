@@ -186,6 +186,17 @@ def test_resume_reruns_a_faulted_instance(wired, monkeypatch) -> None:
     assert calls == [7]  # a faulted recording is retried under --resume
 
 
+def test_issues_narrows_the_batch(wired, monkeypatch) -> None:
+    insts = [_inst(7, 42), _inst(8, 43), _inst(9, 44)]
+    recs = {i.issue: _rec(i.issue, i.pr) for i in insts}
+    calls = _mock_pipeline(monkeypatch, insts, recs)
+
+    replay.run(wired.base, wired.base.sha, profile=wired.profile,
+               lane_logins=frozenset(), issues={8, 9}, run_id="R1")
+
+    assert set(calls) == {8, 9}
+
+
 def test_resume_reruns_a_crashed_instance(wired, monkeypatch) -> None:
     insts = [_inst(7, 42)]
     recs = {7: _rec(7, 42)}
@@ -339,14 +350,25 @@ def test_main_run_forwards_the_flags(monkeypatch, tmp_path) -> None:
     seen: dict[str, object] = {}
 
     def fake_run(b, base_sha, *, profile, lane_logins, limit, concurrency, resume,
-                 candidate_cap, run_id=None) -> int:
+                 candidate_cap, run_id=None, issues=None) -> int:
         seen.update(base_sha=base_sha, limit=limit, concurrency=concurrency, resume=resume,
-                    candidate_cap=candidate_cap)
+                    candidate_cap=candidate_cap, run_id=run_id, issues=issues)
         return 0
 
     monkeypatch.setattr(replay, "run", fake_run)
     rc = replay.main(["run", "--limit", "5", "--concurrency", "3", "--resume",
-                      "--candidates", "50"])
+                      "--candidates", "50", "--run-id", "R9", "--issues", "7, 8"])
     assert rc == 0
     assert seen == {"base_sha": base.sha, "limit": 5, "concurrency": 3, "resume": True,
-                    "candidate_cap": 50}
+                    "candidate_cap": 50, "run_id": "R9", "issues": {7, 8}}
+
+
+def test_main_run_refuses_issues_that_are_not_numbers(monkeypatch, tmp_path, capsys) -> None:
+    base = _base(tmp_path)
+    monkeypatch.setattr(replay.store, "Store", lambda: FakeStore())
+    monkeypatch.setattr(replay.prove, "pinned", lambda store: base)
+    monkeypatch.setattr(replay.profile, "active", lambda: profile.RepoProfile())
+    monkeypatch.setattr(replay, "run", lambda *a, **k: pytest.fail("no run on a bad list"))
+
+    assert replay.main(["run", "--issues", "7,eight"]) == 2
+    assert "issue numbers" in capsys.readouterr().err

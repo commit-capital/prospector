@@ -20,6 +20,7 @@ import sys
 import time
 import traceback
 from collections import Counter
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
@@ -269,6 +270,22 @@ def _leg_status(legs: prove.Legs, want: int) -> str:
     return "fail"
 
 
+def _green_holds(red: prove.Legs, green: prove.Legs, diff_text: str, *,
+                 rerun: Callable[[], prove.Legs], runs: dict[str, prove.Legs],
+                 confirm_key: str) -> bool:
+    """Whether a green leg counts as passing: both its legs at SENTINEL_PASS, or
+    a dirty green whose failures are contamination — which a second container
+    must repeat, because `prove` runs no confirm leg for a green that exited
+    failing. The confirming legs land in `runs` under `confirm_key`."""
+    status = _leg_status(green, gates.SENTINEL_PASS)
+    if status == "ok":
+        return True
+    if status == "sandbox" or not _green_contained(red, green, diff_text):
+        return False
+    confirm = runs[confirm_key] = rerun()
+    return _green_contained(red, confirm, diff_text)
+
+
 def _green_contained(red: prove.Legs, green: prove.Legs, landed_diff: str) -> bool:
     """Whether a green that exited failing is contamination the red run already
     carried — `gates.green_accepted` over the two legs' own end-of-run reports,
@@ -284,6 +301,73 @@ def _green_contained(red: prove.Legs, green: prove.Legs, landed_diff: str) -> bo
         "failing_in_diff": verify_driver.failing_in_test_diff(green_failing, landed_diff),
     }
     return gates.green_accepted(signal)
+
+
+# Caps on the evidence an instance row carries: enough to read why a run ended
+# as it did, bounded so one row stays a row.
+_FAILING_MAX = 10
+_REVIEWS_MAX = 4
+_CHECKS_MAX = 12
+_STEPS_MAX = 40
+_REASON_MAX = 400
+
+
+def _leg_evidence(legs: dict[str, prove.Legs]) -> dict[str, dict]:
+    """Each leg's host-observed exits, duration, parsed failing set and error
+    excerpt — the record of why a verdict read as it did, which the verdict
+    itself does not carry."""
+    out: dict[str, dict] = {}
+    for name, leg in legs.items():
+        failing = verify_driver.parse_failed_tests(leg["output_tail"])
+        out[name] = {
+            "exit": leg["exit"], "exit_confirm": leg["exit_confirm"],
+            "duration_s": leg["duration_s"],
+            "failing": [str(t)[:_REASON_MAX] for t in (failing or [])[:_FAILING_MAX]],
+            "failing_parsed": failing is not None,
+            "excerpt": verify_driver.error_excerpt(leg["output_tail"])[:_DETAIL_MAX],
+        }
+    return out
+
+
+def _lane_evidence(lane_result: LaneRun) -> dict:
+    """What the lane itself reported: each reviewer's verdict, the sandbox runs
+    its agents made, and the size of the patch they produced."""
+    result = lane_result.result or {}
+    reviews = [
+        {"verdict": r.get("verdict"), "failed": r.get("failed"),
+         "lens": r.get("lens") or r.get("name"),
+         "reason": str(r.get("reason") or r.get("summary") or "")[:_REASON_MAX]}
+        for r in (result.get("reviews") or [])[:_REVIEWS_MAX]]
+    checks = [
+        {"lane": c.get("lane"), "exit": c.get("exit"), "refused": c.get("refused"),
+         "files": c.get("files")}
+        for c in (result.get("checks") or [])[:_CHECKS_MAX]]
+    patch = str(result.get("patch") or "")
+    changed = diffpaths.changed_paths(patch)
+    lines = sum(1 for ln in patch.splitlines()
+                if (ln.startswith("+") and not ln.startswith("+++"))
+                or (ln.startswith("-") and not ln.startswith("---")))
+    return {
+        "reviews": reviews, "checks": checks,
+        "patch": {"files": len(changed), "lines": lines, "paths": changed[:_CHECKS_MAX]},
+        "repro_outcome": (lane_result.reproduction or {}).get("outcome"),
+    }
+
+
+def _steps(workdir: Path) -> list[dict]:
+    """The lane's stages and their timings, as _run_lane recorded them."""
+    path = workdir / "steps.jsonl"
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return []
+    out: list[dict] = []
+    for line in lines[:_STEPS_MAX]:
+        try:
+            out.append(json.loads(line))
+        except ValueError:
+            continue
+    return out
 
 
 def _contaminants(legs: dict[str, prove.Legs]) -> list[str]:
@@ -347,21 +431,13 @@ def validate_known_fix(base: prove.PinnedBase, pre_patch: str, instance: Instanc
         green_patch = prove.flatten(base.clone, pre_patch, instance.landed_diff, label=label)
         green = legs["green"] = prove.green_legs(
             base, patch=green_patch, test_cmd=oracle, label=label)
-        status = _leg_status(green, gates.SENTINEL_PASS)
-        if status == "sandbox":
+        if _leg_status(green, gates.SENTINEL_PASS) == "sandbox":
             return False, "sandbox"
-        if status != "ok":
-            if not _green_contained(red, green, instance.landed_diff):
-                return False, "green"
-            # A dirty green earns no confirm leg from prove, and one run of a
-            # contaminated file is not proof: a second container must fail the
-            # same way over the same red set.
-            confirm = legs["green_confirm"] = prove.green_legs(
-                base, patch=green_patch, test_cmd=oracle, label=label)
-            if _leg_status(confirm, gates.SENTINEL_PASS) == "sandbox":
-                return False, "sandbox"
-            if not _green_contained(red, confirm, instance.landed_diff):
-                return False, "green"
+        if not _green_holds(
+                red, green, instance.landed_diff, runs=legs, confirm_key="green_confirm",
+                rerun=lambda: prove.green_legs(base, patch=green_patch, test_cmd=oracle,
+                                               label=label)):
+            return False, "green"
     except verify_driver.ProbeFailure as e:
         legs["probe"] = {"exit": None, "exit_confirm": None, "output_tail": str(e),
                          "duration_s": 0.0}
@@ -370,10 +446,13 @@ def validate_known_fix(base: prove.PinnedBase, pre_patch: str, instance: Instanc
 
 
 def score(instance: Instance, lane_result: LaneRun, oracle_runs: dict[str, prove.Legs], *,
-          base: prove.PinnedBase, pre_patch: str, label: str) -> dict:
+          base: prove.PinnedBase, pre_patch: str, label: str,
+          r6_red: prove.Legs | None = None) -> dict:
     """Score one lane run against the merged PR's tests as a hidden oracle, from
     host-observed sandbox exits alone. The extra legs it runs land in
-    `oracle_runs` so a caller can read the exits back."""
+    `oracle_runs` so a caller can read the exits back. `r6_red` is the R6 red
+    leg over the same command, the baseline a contaminated oracle green is
+    judged against."""
     lane_patch = (lane_result.result or {}).get("patch", "")
     lane_test_hunks = diffpaths.filter_diff(lane_patch, diffpaths.is_test_path)
     lane_fix_hunks = diffpaths.filter_diff(lane_patch, lambda p: not diffpaths.is_test_path(p))
@@ -397,20 +476,33 @@ def score(instance: Instance, lane_result: LaneRun, oracle_runs: dict[str, prove
             test_cmd=lane_cmd, label=label)
         oracle_runs["repro_valid_red"] = red
         oracle_runs["repro_valid_green"] = green
-        repro_valid = (_leg_status(red, gates.SENTINEL_TEST_FAIL) == "ok"
-                       and _leg_status(green, gates.SENTINEL_PASS) == "ok")
+        repro_valid = (
+            _leg_status(red, gates.SENTINEL_TEST_FAIL) == "ok"
+            and _green_holds(red, green, lane_test_hunks, runs=oracle_runs,
+                             confirm_key="repro_valid_green_confirm",
+                             rerun=lambda: prove.green_legs(
+                                 base, patch=prove.flatten(
+                                     base.clone, pre_patch, lane_test_hunks,
+                                     landed_fix_hunks, label=label),
+                                 test_cmd=lane_cmd, label=label)))
 
     oracle_pass = False
     oracle = oracle_command(instance.test_files)
     # A run that changed no non-test file leaves the bug in place, so the PR's
     # own test cannot pass and the sandbox has nothing to measure.
     if oracle is not None and lane_fix_hunks.strip():
-        green = prove.green_legs(
-            base, patch=prove.flatten(base.clone, pre_patch, pr_test_hunks,
-                                      lane_fix_hunks, label=label),
-            test_cmd=oracle, label=label)
+        oracle_patch = prove.flatten(base.clone, pre_patch, pr_test_hunks,
+                                     lane_fix_hunks, label=label)
+        green = prove.green_legs(base, patch=oracle_patch, test_cmd=oracle, label=label)
         oracle_runs["oracle_pass"] = green
-        oracle_pass = _leg_status(green, gates.SENTINEL_PASS) == "ok"
+        # The oracle runs the PR's test files whole, so it carries the same
+        # contamination R6 reads past; the R6 red leg is its baseline.
+        oracle_pass = (
+            _leg_status(green, gates.SENTINEL_PASS) == "ok" if r6_red is None
+            else _green_holds(r6_red, green, instance.landed_diff, runs=oracle_runs,
+                              confirm_key="oracle_pass_confirm",
+                              rerun=lambda: prove.green_legs(
+                                  base, patch=oracle_patch, test_cmd=oracle, label=label)))
 
     reviews = (lane_result.result or {}).get("reviews", [])
     all_safe = bool(reviews) and all(r.get("verdict") == "safe" for r in reviews)
@@ -426,7 +518,11 @@ def score(instance: Instance, lane_result: LaneRun, oracle_runs: dict[str, prove
         "repro_valid": repro_valid,
         "oracle_pass": oracle_pass,
         "oracle_coupled": oracle_coupled,
-        "false_accept": all_safe and not oracle_pass and not oracle_coupled,
+        # Reviewers called it safe and the PR's own tests refuse it. Coupling is
+        # recorded beside this, never subtracted from it: a test that only the
+        # PR's own implementation can satisfy is a reason to read the row, not a
+        # reason to drop it.
+        "false_accept": all_safe and not oracle_pass,
         "false_reject": oracle_pass and not fixed,
         "test_tamper": bool(lane_test_paths - repro_files),
         "localized": bool(lane_paths & set(instance.nontest_files)),
@@ -460,6 +556,7 @@ def run_instance(instance: Instance, *, base: prove.PinnedBase, base_sha: str,
     if not ok:
         return {"issue": instance.issue, "pr": instance.pr,
                 "ending": f"r6-{reason}", "reason": reason, "r6_seconds": r6_seconds,
+                "legs": _leg_evidence(r6_legs),
                 "detail": _legs_detail(r6_legs) or reason}
     contaminants = _contaminants(r6_legs)
     t0 = time.monotonic()
@@ -467,18 +564,23 @@ def run_instance(instance: Instance, *, base: prove.PinnedBase, base_sha: str,
                            body=instance.report_body, base=base, pre_patch=pre_patch,
                            workdir=workdir)
     seconds = round(time.monotonic() - t0, 1)
+    lane = _lane_evidence(lane_result)
+    steps = _steps(workdir)
     if lane_result.ending in _LANE_FAULT_ENDINGS:
         # A faulted lane spends none of the oracle and repro_valid sandbox legs.
         return {"issue": instance.issue, "pr": instance.pr, "ending": lane_result.ending,
                 "seconds": seconds, "r6_seconds": r6_seconds,
-                "r6_contaminants": contaminants,
+                "r6_contaminants": contaminants, "legs": _leg_evidence(r6_legs),
+                "lane": lane, "steps": steps,
                 "agent_runs": lane_result.agent_runs, "detail": lane_result.detail}
     oracle_runs: dict[str, prove.Legs] = {}
     scores = score(instance, lane_result, oracle_runs, base=base, pre_patch=pre_patch,
-                   label=label)
+                   label=label, r6_red=r6_legs.get("red"))
     return {"issue": instance.issue, "pr": instance.pr, "ending": lane_result.ending,
             "seconds": seconds, "r6_seconds": r6_seconds, "detail": lane_result.detail,
-            "r6_contaminants": contaminants, "oracle_runs": oracle_runs, **scores}
+            "r6_contaminants": contaminants, "oracle_runs": oracle_runs,
+            "legs": _leg_evidence({**{f"r6:{k}": v for k, v in r6_legs.items()}, **oracle_runs}),
+            "lane": lane, "steps": steps, **scores}
 
 
 # The longest detail an instance record carries.
@@ -582,12 +684,23 @@ def candidates_from_store(*, limit: int | None = None) -> list[Candidate]:
 def _run_lane(*, issue: int, title: str, body: str, base: prove.PinnedBase,
               pre_patch: str, workdir: Path) -> LaneRun:
     """The lane entry point `run_instance` injects: one fix run on the pre-fix
-    tree. The lane package is imported here so the module top stays lane-free."""
+    tree, with each stage it announces appended to `steps.jsonl` under the
+    instance's directory. The lane package is imported here so the module top
+    stays lane-free."""
     from issue_triage import fix_lane
+    workdir.mkdir(parents=True, exist_ok=True)
+    steps = workdir / "steps.jsonl"
+    started = time.monotonic()
+
+    def on_step(step: str) -> None:
+        with steps.open("a") as fh:
+            fh.write(json.dumps({"step": step, "at_s": round(time.monotonic() - started, 1)})
+                     + "\n")
+
     return fix_lane.run(
         fix_lane.LaneSpec(issue=issue, title=title, body=body, base=base,
                           action="fix", pre_patch=pre_patch),
-        workdir=workdir)
+        workdir=workdir, on_step=on_step)
 
 
 # -- Screening the corpus into the pin's dependency group ---------------------
@@ -782,12 +895,13 @@ def plan(base: prove.PinnedBase, base_sha: str, *, profile: RepoProfile,
 
 def run(base: prove.PinnedBase, base_sha: str, *, profile: RepoProfile,
         lane_logins: frozenset[str], limit: int | None = None, concurrency: int = 2,
-        resume: bool = False, run_id: str | None = None,
+        resume: bool = False, run_id: str | None = None, issues: set[int] | None = None,
         candidate_cap: int = _DEFAULT_CANDIDATES) -> int:
     """Run the pin's group through the lane, score each instance, and write one
     `replay:instance` ledger row per instance, a `replay:run` summary, and a
     markdown table. A run is keyed by its base, so re-invoking continues it:
-    already-recorded instances are reused, and `resume` re-runs the faulted ones.
+    already-recorded instances are reused, `resume` re-runs the faulted ones, and
+    `issues` narrows the batch to those issue numbers.
     Returns 0 on completion (a failed instance is data), non-zero on a setup
     error."""
     run_id = run_id or base_sha
@@ -796,6 +910,8 @@ def run(base: prove.PinnedBase, base_sha: str, *, profile: RepoProfile,
     if not instances:
         print("no candidate instances to replay", file=sys.stderr)
         return 2
+    if issues is not None:
+        instances = [i for i in instances if i.issue in issues]
     if limit is not None:
         instances = instances[:limit]
 
@@ -879,6 +995,10 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
                     help="cap the newest closed issues assembled; a large value is "
                          "network-bound (one live gh read per closed issue's closer)")
     ap.add_argument("--concurrency", type=int, default=2, help="instances kept in flight")
+    ap.add_argument("--run-id",
+                    help="the run to write and continue (default: the base sha). A new "
+                         "id re-runs every instance, which is what a harness fix asks for")
+    ap.add_argument("--issues", help="run only these issue numbers, comma-separated")
     ap.add_argument("--resume", action="store_true",
                     help="re-run only the faulted instances already recorded for this base")
     ap.add_argument("--base-sha", help="prove against a held base named by its SHA "
@@ -901,8 +1021,16 @@ def main(argv: list[str]) -> int:
     if args.command == "plan":
         plan(base, base.sha, profile=active, lane_logins=logins, candidate_cap=args.candidates)
         return 0
+    issues: set[int] | None = None
+    if args.issues:
+        try:
+            issues = {int(tok) for tok in args.issues.split(",") if tok.strip()}
+        except ValueError:
+            print(f"--issues takes issue numbers: {args.issues!r}", file=sys.stderr)
+            return 2
     return run(base, base.sha, profile=active, lane_logins=logins, limit=args.limit,
-               concurrency=args.concurrency, resume=args.resume, candidate_cap=args.candidates)
+               concurrency=args.concurrency, resume=args.resume, run_id=args.run_id,
+               issues=issues, candidate_cap=args.candidates)
 
 
 if __name__ == "__main__":
