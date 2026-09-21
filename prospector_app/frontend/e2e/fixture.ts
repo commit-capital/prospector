@@ -81,7 +81,13 @@ export async function fixture(t: TestContext) {
     if (attempt === 99) throw new Error(`server startup timed out:\n${serverLog}`);
     await delay(100);
   }
-  const bro = resources.bro = await browser.start({ headless: true });
+  // Launch failures happen before a page exists; retain the driver's own log
+  // alongside page diagnostics so CI can explain a Chrome startup failure.
+  process.env.VIBIUM_CHROMEDRIVER_LOG_DIR = artifacts;
+  const bro = resources.bro = await browser.start({ headless: true }).catch(async error => {
+    await writeFile(join(artifacts, "launch-error.txt"), String(error));
+    throw error;
+  });
   const context = await bro.newContext();
   const page = resources.page = await context.newPage();
   page.onError(error => errors.push(String(error)));

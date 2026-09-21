@@ -15,6 +15,11 @@ locally, from `prospector_app/frontend`:
 VIBIUM_CACHE_DIR="$PWD/node_modules/.cache/vibium" pnpm exec vibium install
 ```
 
+The Linux CI job enables the user namespaces Chrome's sandbox needs on its
+disposable hosted runner, following [Vibium's own CI setup](https://github.com/VibiumDev/vibium/blob/v26.8.21/.github/workflows/test.yml).
+Without that setup, Ubuntu's AppArmor restriction makes Chrome exit before a
+browser session exists. Chrome's sandbox remains enabled.
+
 With an existing build, rerun just the browser tests from that directory:
 
 ```bash
@@ -51,7 +56,9 @@ Routes, payload validation, policy gates, the executor, SQL persistence, snapsho
 refresh and React rendering are the production implementations. There are no
 test-only app routes or browser-side API mocks.
 
-Every test writes a final screenshot, page HTML, browser console/errors, failed
+Every test retains verbose ChromeDriver logs, including when browser startup
+fails before a page exists. Launch errors also land in `launch-error.txt`.
+Tests that reach a page write a final screenshot, page HTML, browser console/errors, failed
 HTTP responses, server log, POST request log, and unexpected-boundary log under
 `artifacts/<test-name>/`. CI uploads these as `vibium-e2e` for seven days, including
 on failure. Scratch stores are removed and server/browser processes stopped.
@@ -75,5 +82,6 @@ Initial repeatability check (2026-09-21): three consecutive passes of both
 journeys on macOS arm64, Node 26.8.1, Vibium 26.8.21 and managed Chrome
 153.0.8010.52. Whole-suite times were 25.1s, 24.6s and 24.9s, with no retries,
 browser runtime errors, failed app responses or unexpected external calls.
-The GitHub Actions job targets Linux and Node 24; that environment still needs
-its first CI run.
+The GitHub Actions job targets Linux and Node 24. Its initial run exposed the
+missing Ubuntu namespace setup described above; the app backend started, but
+Chrome exited before either journey ran.

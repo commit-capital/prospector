@@ -115,6 +115,11 @@ jobs:
         run: uv sync --locked
       - name: Install Vibium browser
         run: VIBIUM_CACHE_DIR="$PWD/node_modules/.cache/vibium" pnpm exec vibium install
+      # Ubuntu restricts the user namespaces managed Chrome needs for its
+      # sandbox. Match Vibium's own CI setup on this disposable hosted runner.
+      # https://github.com/VibiumDev/vibium/blob/v26.8.21/.github/workflows/test.yml
+      - name: Configure kernel for Chrome sandbox
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Browser journeys (Vibium)
         timeout-minutes: 5
         run: node --test --test-concurrency=1 e2e/*.test.ts
