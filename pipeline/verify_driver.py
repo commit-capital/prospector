@@ -1023,10 +1023,13 @@ def run_phase(phase: str, image: str, *, patch: Path | None = None, tier: int = 
               test_cmd: str = "pnpm -s test", base_sha: str = "",
               head_sha: str = "", exclude_file: Path | None = None,
               suite_config: Path | None = None,
-              timeout: int = PHASE_TIMEOUT_SECONDS, pristine: bool = False) -> tuple[int, str]:
+              timeout: int = PHASE_TIMEOUT_SECONDS, pristine: bool = False,
+              tail_bytes: int = OUTPUT_TAIL_BYTES) -> tuple[int, str]:
     """Run ONE sandbox phase and return (exit_code, captured_output_tail).
     `pristine` runs a compile or build phase over the base tree as pinned,
-    with no patch.
+    with no patch. `tail_bytes` caps the captured output a caller keeps: a
+    caller that reads the runner's end-of-run failed-tests report needs a cap
+    wide enough to hold it, and one that stores the tail keeps the default.
 
     The exit code is the authoritative result: untrusted PR code cannot forge its
     own PID 1 exit as the host observes it. The captured output is the untrusted
@@ -1044,13 +1047,14 @@ def run_phase(phase: str, image: str, *, patch: Path | None = None, tier: int = 
         return _run_phase_locked(phase, image, patch=patch, tier=tier, test_cmd=test_cmd,
                                  base_sha=base_sha, head_sha=head_sha,
                                  exclude_file=exclude_file, suite_config=suite_config,
-                                 timeout=timeout, pristine=pristine)
+                                 timeout=timeout, pristine=pristine, tail_bytes=tail_bytes)
 
 
 def _run_phase_locked(phase: str, image: str, *, patch: Path | None, tier: int,
                       test_cmd: str, base_sha: str, head_sha: str,
                       exclude_file: Path | None, suite_config: Path | None,
-                      timeout: int, pristine: bool) -> tuple[int, str]:
+                      timeout: int, pristine: bool,
+                      tail_bytes: int = OUTPUT_TAIL_BYTES) -> tuple[int, str]:
     container = container_name()
     argv = [str(SANDBOX / "sandbox-run.sh"), "--phase", phase, "--image", image,
             "--tier", str(tier), "--test-cmd", test_cmd,
@@ -1080,8 +1084,8 @@ def _run_phase_locked(phase: str, image: str, *, patch: Path | None, tier: int,
             if not chunk:
                 return
             tail.extend(chunk)
-            if len(tail) > OUTPUT_TAIL_BYTES:
-                del tail[:len(tail) - OUTPUT_TAIL_BYTES]
+            if len(tail) > tail_bytes:
+                del tail[:len(tail) - tail_bytes]
 
     reader = threading.Thread(target=drain, daemon=True)
     reader.start()

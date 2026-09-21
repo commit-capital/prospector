@@ -102,11 +102,11 @@ def _mock_legs(monkeypatch: pytest.MonkeyPatch, *, red: dict, lane_green: dict,
     monkeypatch.setattr(prove, "flatten",
                         lambda base_clone, *parts, label: Path("/tmp/patch.diff"))
     monkeypatch.setattr(prove, "red_legs",
-                        lambda base, *, patch, test_cmd, label: red)
+                        lambda base, *, patch, test_cmd, label, tail_bytes=0: red)
     monkeypatch.setattr(
         prove, "green_legs",
-        lambda base, *, patch, test_cmd, label: oracle_green if "test_app" in test_cmd
-        else lane_green)
+        lambda base, *, patch, test_cmd, label, tail_bytes=0:
+        oracle_green if "test_app" in test_cmd else lane_green)
 
 
 # --- validate_known_fix (R6) ------------------------------------------------
@@ -144,7 +144,7 @@ def test_r6_probe_failure_is_a_sandbox_fault(tmp_path, generic_profile, monkeypa
     monkeypatch.setattr(prove, "flatten",
                         lambda base_clone, *parts, label: Path("/tmp/p.diff"))
 
-    def raise_probe(base, *, patch, test_cmd, label):
+    def raise_probe(base, *, patch, test_cmd, label, tail_bytes=0):
         raise verify_driver.ProbeFailure("isolation unproven")
 
     monkeypatch.setattr(prove, "red_legs", raise_probe)
@@ -195,9 +195,10 @@ def test_r6_rejects_a_dirty_green_a_second_container_does_not_repeat(
     greens = [_dirty(gates.SENTINEL_TEST_FAIL, None, _NEIGHBOUR),
               _dirty(gates.SENTINEL_TEST_FAIL, None, "app.test.ts > other > flaky")]
     monkeypatch.setattr(prove, "flatten", lambda base_clone, *parts, label: Path("/tmp/p"))
-    monkeypatch.setattr(prove, "red_legs", lambda base, *, patch, test_cmd, label: red)
+    monkeypatch.setattr(prove, "red_legs",
+                        lambda base, *, patch, test_cmd, label, tail_bytes=0: red)
     monkeypatch.setattr(prove, "green_legs",
-                        lambda base, *, patch, test_cmd, label: greens.pop(0))
+                        lambda base, *, patch, test_cmd, label, tail_bytes=0: greens.pop(0))
 
     ok, reason = replay.validate_known_fix(_base(tmp_path), "PRE", _instance(),
                                            label="replay-7")

@@ -123,11 +123,11 @@ def lane(tmp_path, monkeypatch):
         calls["review"].append(lens)
         return scripts.review(worktree, patch, lens)
 
-    def fake_red(base_, *, patch, test_cmd, label):
+    def fake_red(base_, *, patch, test_cmd, label, tail_bytes=0):
         calls["red"] += 1
         return scripts.red()
 
-    def fake_green(base_, *, patch, test_cmd, label):
+    def fake_green(base_, *, patch, test_cmd, label, tail_bytes=0):
         calls["green"] += 1
         return scripts.green()
 

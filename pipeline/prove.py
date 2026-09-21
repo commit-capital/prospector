@@ -236,23 +236,26 @@ class Legs(TypedDict):
     duration_s: float
 
 
-def red_legs(base: PinnedBase, *, patch: Path, test_cmd: str, label: str) -> Legs:
+def red_legs(base: PinnedBase, *, patch: Path, test_cmd: str, label: str,
+             tail_bytes: int = verify_driver.OUTPUT_TAIL_BYTES) -> Legs:
     """Run the reproduction test over `base` with `patch` applied: the proof is
     a failing first leg confirmed by a second, fresh container."""
     return _legs(base, "red", gates.SENTINEL_TEST_FAIL, patch=patch,
-                 test_cmd=test_cmd, label=label)
+                 test_cmd=test_cmd, label=label, tail_bytes=tail_bytes)
 
 
-def green_legs(base: PinnedBase, *, patch: Path, test_cmd: str, label: str) -> Legs:
+def green_legs(base: PinnedBase, *, patch: Path, test_cmd: str, label: str,
+               tail_bytes: int = verify_driver.OUTPUT_TAIL_BYTES) -> Legs:
     """Run the reproduction test over `base` with the test-plus-fix patch
     applied: the proof is a passing first leg confirmed by a second, fresh
     container."""
     return _legs(base, "green", gates.SENTINEL_PASS, patch=patch,
-                 test_cmd=test_cmd, label=label)
+                 test_cmd=test_cmd, label=label, tail_bytes=tail_bytes)
 
 
 def _legs(base: PinnedBase, phase: Literal["red", "green"], want: int, *,
-          patch: Path, test_cmd: str, label: str) -> Legs:
+          patch: Path, test_cmd: str, label: str,
+          tail_bytes: int = verify_driver.OUTPUT_TAIL_BYTES) -> Legs:
     """Two legs of `phase`, the second run only when the first exits `want`. Any
     other exit — a timeout's 124 included — is returned as observed in `exit`,
     for the caller's policy to read. `output_tail` is the first leg's; the
@@ -264,7 +267,7 @@ def _legs(base: PinnedBase, phase: Literal["red", "green"], want: int, *,
     def leg() -> tuple[int, str]:
         exit_code, tail = verify_driver.run_phase(
             phase, base.image, patch=patch, tier=base.tier, test_cmd=test_cmd,
-            base_sha=base.sha, head_sha=label)
+            base_sha=base.sha, head_sha=label, tail_bytes=tail_bytes)
         if exit_code == gates.SENTINEL_PROBE_FAIL:
             raise verify_driver.ProbeFailure(
                 f"sandbox isolation could not be proven ({label}, phase {phase})")
