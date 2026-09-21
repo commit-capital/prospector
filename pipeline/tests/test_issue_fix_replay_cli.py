@@ -392,6 +392,33 @@ def test_qualify_drops_an_oracle_coupled_to_the_pr_s_own_exports(wired, monkeypa
     assert "--issues 8" in out
 
 
+_TIER0 = (
+    "diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml\n"
+    "--- a/.github/workflows/release.yml\n+++ b/.github/workflows/release.yml\n"
+    "@@ -1,1 +1,1 @@\n+  run: ship\n"
+    "diff --git a/src/app.test.ts b/src/app.test.ts\n"
+    "--- a/src/app.test.ts\n+++ b/src/app.test.ts\n"
+    "@@ -0,0 +1,1 @@\n+expect(res.status).toBe(200)\n")
+
+
+def test_qualify_drops_a_bug_whose_fix_the_lane_may_not_author(wired, monkeypatch, capsys):
+    withheld = replay.Instance(issue=7, pr=42, merge_sha="m" * 40, landed_diff=_TIER0,
+                               test_files=["src/app.test.ts"],
+                               nontest_files=[".github/workflows/release.yml"],
+                               report_title="T", report_body="B")
+    fair = replay.Instance(issue=8, pr=43, merge_sha="m" * 40, landed_diff=_BEHAVIOURAL,
+                           test_files=["src/app.test.ts"], nontest_files=["src/app.ts"],
+                           report_title="T", report_body="B")
+    ran = _qualify_wired(wired, monkeypatch, [withheld, fair], {})
+
+    replay.qualify(wired.base, wired.base.sha, profile=wired.profile,
+                   lane_logins=frozenset(), run_id="Q1")
+
+    assert ran == [8]  # the unwinnable bug never costs a sandbox run
+    out = capsys.readouterr().out
+    assert "fix-path-withheld" in out and "--issues 8" in out
+
+
 def test_qualify_keeps_one_issue_per_fix(wired, monkeypatch, capsys):
     insts = [replay.Instance(issue=i, pr=42, merge_sha="m" * 40, landed_diff=_BEHAVIOURAL,
                              test_files=["src/app.test.ts"], nontest_files=["src/app.ts"],

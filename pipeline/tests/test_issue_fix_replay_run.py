@@ -290,6 +290,33 @@ def test_oracle_imports_pr_symbols_is_empty_for_a_behavioural_oracle(generic_pro
     assert replay.oracle_imports_pr_symbols(landed) == []
 
 
+def test_fix_path_withheld_names_a_tier_0_path(generic_profile) -> None:
+    landed = (
+        "diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml\n"
+        "--- a/.github/workflows/release.yml\n+++ b/.github/workflows/release.yml\n"
+        "@@ -1,1 +1,1 @@\n+  run: ship\n")
+
+    why = replay.fix_path_withheld(landed)
+
+    assert "tier-0" in why and "release.yml" in why
+
+
+def test_fix_path_withheld_is_empty_for_a_path_the_lane_may_author(generic_profile) -> None:
+    landed = (
+        "diff --git a/src/app.ts b/src/app.ts\n--- a/src/app.ts\n+++ b/src/app.ts\n"
+        "@@ -1,1 +1,1 @@\n+const fixed = true;\n")
+
+    assert replay.fix_path_withheld(landed) == ""
+
+
+def test_fix_path_withheld_refuses_a_test_only_fix(generic_profile) -> None:
+    landed = (
+        "diff --git a/src/app.test.ts b/src/app.test.ts\n"
+        "--- a/src/app.test.ts\n+++ b/src/app.test.ts\n@@ -0,0 +1,1 @@\n+expect(1)\n")
+
+    assert replay.fix_path_withheld(landed) == "its fix changes no non-test file"
+
+
 # --- transform_to_p (real git) ----------------------------------------------
 
 

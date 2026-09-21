@@ -27,8 +27,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
-from pipeline import (diffpaths, gates, gh, profile, prove, settings, store, storekit,
-                      verify_driver, wire)
+from pipeline import (diffpaths, gates, gh, profile, prove, risktier, settings, store,
+                      storekit, verify_driver, wire)
 from pipeline.profile import RepoProfile
 
 # R3 size bounds on the landed diff.
@@ -412,6 +412,27 @@ def oracle_imports_pr_symbols(landed_diff: str) -> list[str]:
                if line.startswith("+") and re.search(r"\bimport\b", line)]
     return sorted({sym for sym in added
                    for line in imports if re.search(rf"\b{re.escape(sym)}\b", line)})
+
+
+def fix_path_withheld(landed_diff: str) -> str:
+    """Why the lane could never author this bug's fix — the regate's own path
+    rules (issue_gates.fix_patch_regate) read over the paths the merged fix
+    changed — or "" when nothing stops it. A bug whose fix must touch a path the
+    lane may not write scores the policy, not the lane."""
+    paths = [p for p in diffpaths.changed_paths(landed_diff)
+             if not diffpaths.is_test_path(p)]
+    if not paths:
+        return "its fix changes no non-test file"
+    withheld = gates.fix_withheld_paths(paths)
+    if withheld:
+        return f"its fix touches withheld paths: {', '.join(withheld)}"
+    tier = risktier.pr_tier(paths)
+    if tier is None:
+        return "its fix touches a path with no risk tier"
+    if tier == 0:
+        facet = risktier.tier_facet(paths)
+        return f"its fix touches a tier-0 path: {', '.join(facet['pinned_by'])}"
+    return ""
 
 
 def _added_symbols(diff_text: str) -> set[str]:
@@ -972,8 +993,9 @@ def qualify(base: prove.PinnedBase, base_sha: str, *, profile: RepoProfile,
             lane_logins: frozenset[str], limit: int | None = None, concurrency: int = 2,
             run_id: str | None = None, candidate_cap: int = _DEFAULT_CANDIDATES) -> int:
     """Decide which of the pin's instances can score a lane run at all, spending
-    no agent: drop an oracle coupled to the PR's own exports, keep one issue per
-    fix, then run R6 alone over the rest. Writes a table and one
+    no agent: drop an oracle coupled to the PR's own exports and a bug whose fix
+    the lane may not author, keep one issue per fix, then run R6 alone over the
+    rest. Writes a table and one
     `replay:qualify` ledger row, and prints the fair issues as a `--issues`
     list. Returns 0 when at least one is fair."""
     run_id = run_id or base_sha
@@ -981,12 +1003,18 @@ def qualify(base: prove.PinnedBase, base_sha: str, *, profile: RepoProfile,
                                  candidate_cap=candidate_cap)
     rows: list[Qualification] = []
 
-    coupled = [i for i in instances if oracle_imports_pr_symbols(i.landed_diff)]
-    for inst in coupled:
+    rest: list[Instance] = []
+    for inst in instances:
         syms = oracle_imports_pr_symbols(inst.landed_diff)
-        rows.append(Qualification(inst.issue, inst.pr, "oracle-imports-pr-symbol", 0.0,
-                                  f"its tests import {', '.join(syms)}"))
-    rest = [i for i in instances if i not in coupled]
+        if syms:
+            rows.append(Qualification(inst.issue, inst.pr, "oracle-imports-pr-symbol", 0.0,
+                                      f"its tests import {', '.join(syms)}"))
+            continue
+        why = fix_path_withheld(inst.landed_diff)
+        if why:
+            rows.append(Qualification(inst.issue, inst.pr, "fix-path-withheld", 0.0, why))
+            continue
+        rest.append(inst)
     kept, duplicates = _one_per_pr(rest)
     rows.extend(Qualification(i.issue, i.pr, "duplicate-pr", 0.0,
                               "another issue already measures this fix")
@@ -994,8 +1022,9 @@ def qualify(base: prove.PinnedBase, base_sha: str, *, profile: RepoProfile,
     todo = kept[:limit] if limit is not None else kept
     rows.extend(Qualification(i.issue, i.pr, "not-attempted", 0.0, "beyond --limit")
                 for i in kept[len(todo):])
+    static = len(instances) - len(rest)
     _progress(f"qualifying {len(todo)} instance(s) of {len(instances)}: "
-              f"{len(coupled)} coupled, {len(duplicates)} duplicate")
+              f"{static} refused on the diff alone, {len(duplicates)} duplicate")
 
     def one(inst: Instance) -> Qualification:
         legs: dict[str, prove.Legs] = {}
