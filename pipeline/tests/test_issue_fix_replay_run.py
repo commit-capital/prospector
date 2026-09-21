@@ -289,11 +289,11 @@ def _lane(ending: str, *, patch: str = _LANE_PATCH, reviews: list[dict] | None =
 
 
 def _score(tmp_path, monkeypatch, lane: SimpleNamespace, *, red: dict, lane_green: dict,
-           oracle_green: dict) -> tuple[dict, dict]:
+           oracle_green: dict, r6_red: dict | None = None) -> tuple[dict, dict]:
     _mock_legs(monkeypatch, red=red, lane_green=lane_green, oracle_green=oracle_green)
     runs: dict = {}
     rec = replay.score(_instance(), lane, runs, base=_base(tmp_path), pre_patch="PRE",
-                       label="replay-7")
+                       label="replay-7", r6_red=r6_red)
     return rec, runs
 
 
@@ -336,7 +336,7 @@ def test_score_reproduced_not_fixed_but_oracle_passing_is_false_reject(
     assert rec["false_accept"] is False
 
 
-def test_score_oracle_coupled_suppresses_false_accept(tmp_path, generic_profile,
+def test_score_records_coupling_beside_a_false_accept(tmp_path, generic_profile,
                                                       monkeypatch) -> None:
     # The lane fix adds `compute`, the very symbol the PR's test asserts on.
     coupled_patch = (
@@ -351,7 +351,9 @@ def test_score_oracle_coupled_suppresses_false_accept(tmp_path, generic_profile,
                     oracle_green=_legs(gates.SENTINEL_TEST_FAIL, None))
     assert rec["oracle_pass"] is False
     assert rec["oracle_coupled"] is True
-    assert rec["false_accept"] is False
+    # Coupling is context for reading the row, not an exemption: reviewers
+    # called this safe and the PR's own tests refuse it.
+    assert rec["false_accept"] is True
 
 
 def test_score_test_tamper_when_fix_touches_a_foreign_test(tmp_path, generic_profile,
@@ -473,6 +475,61 @@ def test_score_without_fix_hunks_reads_as_no_oracle_pass(tmp_path, generic_profi
                        red=_RED_2020, lane_green=_GREEN_00, oracle_green=_GREEN_00)
     assert rec["oracle_pass"] is False
     assert "oracle_pass" not in runs
+
+
+def test_score_accepts_an_oracle_green_contaminated_the_same_way_red_was(
+        tmp_path, generic_profile, monkeypatch) -> None:
+    # The oracle runs the PR's files whole: a neighbour failing there too is
+    # contamination the R6 red leg already carried, not the lane's fix failing.
+    r6_red = _dirty(gates.SENTINEL_TEST_FAIL, gates.SENTINEL_TEST_FAIL,
+                    "tests/test_app.py > compute() == 1", _NEIGHBOUR)
+    dirty = _dirty(gates.SENTINEL_TEST_FAIL, None, _NEIGHBOUR)
+    rec, runs = _score(tmp_path, monkeypatch, _lane("fixed"),
+                       red=_RED_2020, lane_green=_GREEN_00, oracle_green=dirty,
+                       r6_red=r6_red)
+    assert rec["oracle_pass"] is True
+    assert rec["false_accept"] is False
+    assert "oracle_pass_confirm" in runs  # a second container repeated it
+
+
+def test_score_without_an_r6_baseline_requires_a_clean_oracle_green(
+        tmp_path, generic_profile, monkeypatch) -> None:
+    dirty = _dirty(gates.SENTINEL_TEST_FAIL, None, _NEIGHBOUR)
+    rec, _ = _score(tmp_path, monkeypatch, _lane("fixed"),
+                    red=_RED_2020, lane_green=_GREEN_00, oracle_green=dirty)
+    assert rec["oracle_pass"] is False
+
+
+def test_run_instance_records_each_leg_and_what_the_lane_reported(
+        tmp_path, generic_profile, monkeypatch) -> None:
+    monkeypatch.setattr(replay, "transform_to_p",
+                        lambda base_clone, merge_sha, base_sha, profile: "PRE")
+    r6_red = _dirty(gates.SENTINEL_TEST_FAIL, gates.SENTINEL_TEST_FAIL,
+                    "tests/test_app.py > compute() == 1", _NEIGHBOUR)
+
+    def fake_r6(base, pre_patch, instance, *, label, legs=None):
+        if legs is not None:
+            legs["red"] = r6_red
+        return True, ""
+
+    monkeypatch.setattr(replay, "validate_known_fix", fake_r6)
+    _mock_legs(monkeypatch, red=_RED_2020, lane_green=_GREEN_00,
+               oracle_green=_dirty(gates.SENTINEL_TEST_FAIL, None, _NEIGHBOUR))
+
+    def fake_run_lane(*, issue, title, body, base, pre_patch, workdir):
+        return _lane("fixed", reviews=[{"verdict": "safe", "lens": "root-cause",
+                                        "reason": "addresses the named cause"}])
+
+    rec = replay.run_instance(_instance(), base=_base(tmp_path), base_sha="e" * 40,
+                              profile=generic_profile, workdir=tmp_path / "work",
+                              run_lane=fake_run_lane)
+
+    assert rec["legs"]["r6:red"]["exit"] == gates.SENTINEL_TEST_FAIL
+    assert rec["legs"]["oracle_pass"]["failing"] == [_NEIGHBOUR]
+    assert rec["legs"]["oracle_pass"]["failing_parsed"] is True
+    assert rec["lane"]["reviews"][0]["lens"] == "root-cause"
+    assert rec["lane"]["patch"]["files"] == 2
+    assert rec["lane"]["repro_outcome"] == "reproduced"
 
 
 # --- coverage: metric/R6 branches that need a discriminating test -------------
