@@ -934,6 +934,26 @@ export interface WorkWorker {
   autohunt: boolean;
 }
 
+/** One segment of the global health strip: the cause, the machine it is on,
+ *  and the app route that opens the fix. */
+export interface HealthStripItem {
+  severity: "amber" | "red";
+  text: string;
+  link: string;
+}
+
+/** The global health strip: tripped lanes, silent workers, and ingest
+ *  staleness across every machine on the store. `stalled` says no lane
+ *  anywhere can pick work. */
+export interface HealthStrip {
+  level: "ok" | "amber" | "red";
+  items: HealthStripItem[];
+  lanes_total: number;
+  lanes_down: number;
+  ingest_age_hours: number | null;
+  stalled: boolean;
+}
+
 /** What the system is doing right now, across every machine on this store —
  *  the header status label's feed. `jobs` is this backend's own Control-tab
  *  jobs; everything else is deployment-wide via the shared store. */
@@ -943,6 +963,7 @@ export interface WorkStatus {
   awaiting_review: number;
   workers: WorkWorker[];
   jobs: { running: number; labels: string[] };
+  health: HealthStrip;
 }
 
 /** The sandbox-verification queue: PRs currently in flight, plus verify-only

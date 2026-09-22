@@ -1,11 +1,12 @@
 import { Component, lazy, Suspense, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from "react";
-import { NavLink, Outlet, useLocation, useNavigate, useSearchParams } from "react-router";
+import { Link, NavLink, Outlet, useLocation, useNavigate, useSearchParams } from "react-router";
 import { ExecProvider, useExec, type Toast } from "./ExecContext";
 import { RepoMetaProvider, useRepoMeta } from "./RepoMetaContext";
+import { WorkStatusProvider, useWorkStatus } from "./WorkStatusContext";
 import { FeedbackButton } from "./components/FeedbackButton";
 import { AgentPaneProvider } from "./components/AgentPane";
 import { isReachable, subscribeHealth, pingHealth } from "./health";
-import { api, type WorkStatus } from "./api";
+import { api } from "./api";
 import { loadWithRecovery } from "./lazyLoad";
 import { timeAgo } from "./timeAgo";
 import { workStatusLabel } from "./workStatusLabel";
@@ -289,17 +290,11 @@ function SettingsMenu() {
 // sharing this store. Hover for per-machine detail; the label alone answers
 // "is anything happening?" without opening the Control tab.
 function WorkStatusBadge() {
-  const [status, setStatus] = useState<WorkStatus | null>(null);
+  const status = useWorkStatus();
   const agoPhrase = (iso?: string | null) => {
     const t = timeAgo(iso);
     return t === "just now" || t === "—" ? t : `${t} ago`;
   };
-  useEffect(() => {
-    const load = () => api.workStatus().then(setStatus).catch(() => {});
-    load();
-    const t = setInterval(load, 15_000);
-    return () => clearInterval(t);
-  }, []);
   if (!status) return null;
   const busy = status.active.length > 0 || status.jobs.running > 0;
   const stuck = status.active.some((a) => !a.worker_online);
@@ -444,6 +439,26 @@ function BackendBanner() {
   );
 }
 
+// Thin strip on every page whenever the automation is degraded anywhere on the
+// deployment: paused lanes, silent workers, stale ingest. Each segment names
+// the cause and the machine and opens the view that holds the fix. Hidden
+// while everything is healthy.
+function HealthStrip() {
+  const status = useWorkStatus();
+  const h = status?.health;
+  if (!h || h.level === "ok") return null;
+  return (
+    <div className={`health-strip ${h.level}`} role="status">
+      {h.items.map((it, i) => (
+        <span key={it.text} className="health-strip-item">
+          {i > 0 && <span className="health-strip-sep" aria-hidden="true">·</span>}
+          <Link to={it.link}>{it.text}</Link>
+        </span>
+      ))}
+    </div>
+  );
+}
+
 /** An unconfigured checkout has no data to show and its API refuses every call,
  *  so the wizard is the only page reachable until it has a deployment target.
  *  It stays reachable afterwards: the ladder's later steps run there. */
@@ -516,12 +531,14 @@ export default function App() {
   return (
     <RepoMetaProvider>
     <ExecProvider>
+      <WorkStatusProvider>
       <AgentPaneProvider>
       <ScrollToTop />
       <UnconfiguredRedirect />
       <div className="app">
         <BackendBanner />
         <StoreWriteBanner />
+        <HealthStrip />
         <header className="topbar">
           <Brand />
           <Nav />
@@ -540,6 +557,7 @@ export default function App() {
         <Flyouts />
       </div>
       </AgentPaneProvider>
+      </WorkStatusProvider>
     </ExecProvider>
     </RepoMetaProvider>
   );

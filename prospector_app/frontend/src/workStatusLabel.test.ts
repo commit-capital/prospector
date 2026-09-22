@@ -9,6 +9,8 @@ const empty: WorkStatus = {
   awaiting_review: 0,
   workers: [],
   jobs: { running: 0, labels: [] },
+  health: { level: "ok", items: [], lanes_total: 0, lanes_down: 0,
+    ingest_age_hours: null, stalled: false },
 };
 
 const minsAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();

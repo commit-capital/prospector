@@ -38,6 +38,16 @@ a:hover { text-decoration: underline; }
 .store-write-block { background: var(--red); color: #fff; padding: 10px 20px;
   text-align: center; font-weight: 700; font-size: 14px; }
 
+/* global health strip (App.tsx HealthStrip) — a thin line on every page while
+   the automation is degraded: paused lanes, silent workers, stale ingest. */
+.health-strip { display: flex; flex-wrap: wrap; justify-content: center;
+  align-items: baseline; gap: 4px 8px; padding: 5px 20px;
+  font-size: 13px; font-weight: 600; }
+.health-strip.amber { background: var(--yellow); color: #fff; }
+.health-strip.red { background: var(--red); color: #fff; }
+.health-strip a { color: inherit; text-decoration: underline; }
+.health-strip-sep { margin-right: 8px; opacity: .7; }
+
 /* layout */
 .topbar { display: flex; align-items: center; gap: 24px; padding: 10px 20px;
   background: var(--panel); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 10;
@@ -1349,6 +1359,9 @@ tr.row-done:hover > td { opacity: 1; }
 }
 .home-col { min-width: 0; display: flex; flex-direction: column; gap: 10px; }
 .home-col-head { text-transform: uppercase; letter-spacing: .04em; font-size: 10.5px; }
+/* the workers behind this column are down (Home.tsx) — its cards grey out */
+.home-col-stalled .home-card { opacity: .55; filter: grayscale(.6); }
+.home-col-stalled .home-col-head { color: var(--red); }
 .home-breakdown { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 0 12px 8px; }
 .home-breakdown-item { text-decoration: none; color: var(--muted); }
 .home-breakdown-item:hover { color: var(--fg); text-decoration: underline; }

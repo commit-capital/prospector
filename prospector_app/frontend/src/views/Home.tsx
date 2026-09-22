@@ -6,6 +6,7 @@ import { PRLink } from "../components/PRLink";
 import { useIssueFlyout } from "../useIssueFlyout";
 import { useJobStream } from "../useJobStream";
 import { useRepoMeta } from "../RepoMetaContext";
+import { useWorkStatus } from "../WorkStatusContext";
 import {
   breakdownHref, exploreHref, HOME_BREAKDOWN_ENTRIES, HOME_CARDS, HOME_COUNT_SPECS,
   HOME_ISSUE_CARDS, issuesHref, painLabel,
@@ -220,6 +221,10 @@ function HomeIssueCardRow({ card }: { card: HomeIssueCard }) {
 }
 
 export default function Home() {
+  // The "In motion" column claims the workers clear its PRs; when every lane
+  // on the deployment is paused or its worker silent, nothing will, so the
+  // column says "Stalled" and its cards grey out.
+  const stalled = useWorkStatus()?.health.stalled ?? false;
   const [counts, setCounts] = useState<number[] | null>(null);
   const [samples, setSamples] = useState<QueryResult[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -294,8 +299,10 @@ export default function Home() {
           <div className="home-col-head muted">Your move — one click each</div>
           {HOME_CARDS.filter((c) => c.column === "act").map(renderCard)}
         </section>
-        <section className="home-col">
-          <div className="home-col-head muted">In motion — the workers clear these</div>
+        <section className={"home-col" + (stalled ? " home-col-stalled" : "")}>
+          <div className="home-col-head muted">
+            {stalled ? "Stalled — the workers are down" : "In motion — the workers clear these"}
+          </div>
           {HOME_CARDS.filter((c) => c.column === "auto").map(renderCard)}
         </section>
         <section className="home-col">

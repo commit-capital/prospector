@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import TypedDict
 
-from prospector_app.backend import data, fix_queue, jobs, verify_queue
+from prospector_app.backend import data, fix_queue, health_strip, jobs, verify_queue
 
 
 class ActiveEntry(TypedDict):
@@ -45,8 +45,9 @@ def _workers(lane: str, reg: dict, online_check) -> list[WorkerEntry]:
 
 
 def now() -> dict:
-    """Active runs, queued/parked counts, every known worker's liveness, and
-    this backend's running jobs. `worker_online` on an active entry asks whether
+    """Active runs, queued/parked counts, every known worker's liveness, this
+    backend's running jobs, and the global health strip.
+    `worker_online` on an active entry asks whether
     the claiming host's worker is still beating — a claimed run whose worker
     went quiet is stuck, not slow."""
     st = data.store()
@@ -84,4 +85,5 @@ def now() -> dict:
             "awaiting_review": awaiting_review,
             "workers": verify_workers + fix_workers,
             "jobs": {"running": len(running_jobs),
-                     "labels": [j["label"] for j in running_jobs]}}
+                     "labels": [j["label"] for j in running_jobs]},
+            "health": health_strip.strip()}
