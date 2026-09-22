@@ -517,6 +517,14 @@ def system_health_get() -> system_health.SystemHealth:
     return system_health.status()
 
 
+@app.get("/api/autonomy")
+def autonomy():
+    """This machine's worker lane switches, for the header's autonomy
+    disclosure. Reads the process environment only — no probes, no network —
+    so the header can poll it."""
+    return {"flags": worker_control.flags()}
+
+
 @app.get("/api/setup/readiness")
 def setup_readiness():
     """This machine's worker and GitHub App readiness, plus its lane switches."""
