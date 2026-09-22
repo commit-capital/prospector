@@ -158,8 +158,9 @@ def _validate_reproduction(clone: Path, verdict: dict, spec: LaneSpec, label: st
     if kept_skipped:
         return f"preservation-{kept_skipped}", None
     assert cmd is not None and preserve_cmd is not None  # a clean set has a command
-    test_patch = verify_driver.authored_patch_file(
-        label, lane_tree.authored_test_diff(clone, reported + kept))
+    # Content-addressed, so a concurrent run of the same issue never swaps in
+    # its own tests.
+    test_patch = prove.compose(label, lane_tree.authored_test_diff(clone, reported + kept))
     if threats.scan_diff(test_patch.read_text())["verdict"] != "clear":
         return "threat-signature", None
     return None, Authored(files=files, preserve=preserve, test_cmd=cmd,
@@ -249,7 +250,7 @@ def run(spec: LaneSpec, *, workdir: Path,
                 str(clone), issue=spec.issue, title=spec.title, body=spec.body,
                 env=lane_check.check_env(
                     issue=spec.issue, base=spec.base, worktree=clone,
-                    records=lane_check.records_path(spec.issue, "repro"), test_patch=None,
+                    records=lane_check.records_path(workdir, "repro"), test_patch=None,
                     pre_patch=pre_patch_file),
                 retry_note=retry_note)
             if "give_up" in verdict:
@@ -314,7 +315,7 @@ def run(spec: LaneSpec, *, workdir: Path,
             "judge": judge_result,
             "give_up": gave_up,
             "checks": check_records.collect(
-                lane_check.records_path(spec.issue, "repro"), CHECKS_LIMIT),
+                lane_check.records_path(workdir, "repro"), CHECKS_LIMIT),
         }
 
         if outcome is None:
@@ -348,10 +349,10 @@ def run(spec: LaneSpec, *, workdir: Path,
             withheld_globs=gates.fix_withheld_globs(),
             env=lane_check.check_env(
                 issue=spec.issue, base=spec.base, worktree=fix_clone,
-                records=lane_check.records_path(spec.issue, "fix"), test_patch=test_patch,
+                records=lane_check.records_path(workdir, "fix"), test_patch=test_patch,
                 pre_patch=pre_patch_file))
         fix_checks = check_records.collect(
-            lane_check.records_path(spec.issue, "fix"), CHECKS_LIMIT)
+            lane_check.records_path(workdir, "fix"), CHECKS_LIMIT)
         if "give_up" in fix_verdict:
             return finish("no-fix", str(fix_verdict["give_up"]))
 

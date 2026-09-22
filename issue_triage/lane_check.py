@@ -10,7 +10,7 @@ import sys
 from collections.abc import Mapping
 from pathlib import Path
 
-from pipeline import prove, settings
+from pipeline import prove
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -21,11 +21,10 @@ TOOL = str(REPO_ROOT / "prospector_app" / "agent" / "issue-sandbox-check")
 MAX_RUNS = 8
 
 
-def records_path(issue: int, stage: str) -> Path:
-    """Where one stage's runs are recorded, under the verify scratch the sandbox
-    and the collecting worker share."""
-    return (settings.verify_scratch() / "issue-fix" / f"issue-{issue}"
-            / f"{stage}.checks.jsonl")
+def records_path(workdir: Path, stage: str) -> Path:
+    """Where one stage's runs are recorded: inside the run's own `workdir`, so
+    two runs of one issue never share a record or a run cap."""
+    return workdir / f"{stage}.checks.jsonl"
 
 
 def check_env(*, issue: int, base: prove.PinnedBase, worktree: Path, records: Path,
