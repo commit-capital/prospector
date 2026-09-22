@@ -574,7 +574,7 @@ def cluster_summaries() -> list[dict]:
     for cid, c in data.clusters().items():
         members = [prs[n] for n in c.prs if n in prs]
         active = [r for r in members if r.state == "open"]
-        state = gates.cluster_state(c, prs)
+        state, blockers = gates.cluster_verdict(c, prs)
         dispositions: dict[str, int] = {}
         security = {"green": 0, "yellow": 0, "red": 0, "unknown": 0}
         security_prs = []  # per-merge-PR detail for the rollup hover popover
@@ -606,6 +606,7 @@ def cluster_summaries() -> list[dict]:
             "root_problem": c.root_problem,
             "pr_count": len(active),
             "state": state,
+            "blockers": blockers,
             "outcome": c.outcome,
             "dispositions": dispositions,
             "security": security,
@@ -643,11 +644,14 @@ def cluster_detail(cid: int) -> dict | None:
             buckets.setdefault("resolved", []).append(r)
         else:
             buckets.setdefault(r["disposition"] or "unanalyzed", []).append(r)
+    state, blockers = gates.cluster_verdict(c, prs)
     return {
         "cluster_id": cid,
         "root_problem": c.root_problem,
         "outcome": c.outcome,
-        "state": gates.cluster_state(c, prs),
+        "state": state,
+        "blockers": blockers,
+        "narrative_stale": gates.narrative_staleness(c, prs),
         "rationale": c.rationale,
         "rationale_summary": c.rationale_summary,
         "notes": c.notes,

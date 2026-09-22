@@ -1,5 +1,6 @@
-/** Compact relative time: "just now", "5m", "3h", "2d", "4w", else a date.
- *  For the PR-queue "Updated" column and anywhere a terse recency read helps. */
+/** Compact relative time: "just now", "5m", "3h", "2d", "4w", "3mo", "2y".
+ *  For the PR-queue "Updated" column and anywhere a terse recency read helps —
+ *  always relative, so an age column never mixes formats. */
 export function timeAgo(iso?: string | null): string {
   if (!iso) return "—";
   const t = Date.parse(iso);
@@ -14,7 +15,9 @@ export function timeAgo(iso?: string | null): string {
   if (d < 7) return `${Math.floor(d)}d`;
   const w = d / 7;
   if (w < 5) return `${Math.floor(w)}w`;
-  return new Date(t).toISOString().slice(0, 10); // YYYY-MM-DD
+  const mo = d / 30.44;
+  if (mo < 12) return `${Math.floor(mo)}mo`;
+  return `${Math.floor(d / 365.25)}y`;
 }
 
 /** A logged UTC timestamp rendered in the viewer's own local time as

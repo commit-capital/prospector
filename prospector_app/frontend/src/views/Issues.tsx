@@ -489,6 +489,15 @@ function AllIssuesTable({
     openIssue(n);
   };
   const filterParts = buildIssueFilterParts(filterSpec);
+  // Canonical rows whose folded dup-group members are shown inline.
+  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const toggleExpand = (n: number): void => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(n)) next.delete(n); else next.add(n);
+      return next;
+    });
+  };
 
   return (
     <>
@@ -553,34 +562,49 @@ function AllIssuesTable({
           <th {...thProps("subsystem")}><span className="th-inner"><span className="th-label">Subsystem{indicator("subsystem")}</span>{filterBtn("subsystem")}</span></th>
         </tr></thead>
         <tbody>
-          {rows.map((r) => (
-            <tr key={r.number} onClick={rowClick(r.number)}
-                className={`rowlink ${selected.has(r.number) ? "row-selected" : ""}`}>
-              <td className="chk-col" onClick={stopRowOpen}>
-                <input type="checkbox" checked={selected.has(r.number)}
-                  onChange={() => onToggle(r.number)} title="Select this issue" />
-              </td>
-              <td className="mono">
-                <IssueLink n={r.number} />
-                {r.state === "closed" && (
-                  <span className="chip sm chip-muted" title="Closed on GitHub">✓ closed</span>
-                )}
-                {results[r.number] && (
-                  <span className={`chip chip-${results[r.number].status === "executed" ? "green"
-                    : results[r.number].status === "error" ? "red" : "muted"} sm`}
-                    title={results[r.number].detail}>{results[r.number].status}</span>
-                )}
-              </td>
-              <td>{r.title}{r.is_dup && r.canonical != null && <span className="muted small" title={`Duplicate of #${r.canonical}`}> · dup of <IssueLink n={r.canonical} /></span>}</td>
-              <td className="muted small"><AuthorHover author={r.author} trusted={r.trusted_author} stats={r.author_stats} fallback="" /></td>
-              <td className="mono small">{r.pain != null ? r.pain.toFixed(2) : "—"}</td>
-              <td><ReproChip grade={r.repro_grade} /></td>
-              <td><DispositionChip d={r.disposition} /></td>
-              <td className="mono small">{r.duplicates.length || "—"}</td>
-              <td onClick={stopRowOpen}><LinkedPRs prs={r.linked_prs} count={r.linked_pr_count} referencedCount={r.referenced_pr_count} /></td>
-              <td className="muted small">{r.subsystem ?? "—"}</td>
-            </tr>
-          ))}
+          {rows.flatMap((r) => {
+            const renderRow = (row: IssueRow, sub: boolean) => (
+              <tr key={row.number} onClick={rowClick(row.number)}
+                  className={`rowlink ${sub ? "row-sub" : ""} ${selected.has(row.number) ? "row-selected" : ""}`}>
+                <td className="chk-col" onClick={stopRowOpen}>
+                  <input type="checkbox" checked={selected.has(row.number)}
+                    onChange={() => onToggle(row.number)} title="Select this issue" />
+                </td>
+                <td className="mono">
+                  <IssueLink n={row.number} />
+                  {row.state === "closed" && (
+                    <span className="chip sm chip-muted" title="Closed on GitHub">✓ closed</span>
+                  )}
+                  {results[row.number] && (
+                    <span className={`chip chip-${results[row.number].status === "executed" ? "green"
+                      : results[row.number].status === "error" ? "red" : "muted"} sm`}
+                      title={results[row.number].detail}>{results[row.number].status}</span>
+                  )}
+                </td>
+                <td>{row.title}{row.is_dup && row.canonical != null && <span className="muted small" title={`Duplicate of #${row.canonical}`}> · dup of <IssueLink n={row.canonical} /></span>}</td>
+                <td className="muted small"><AuthorHover author={row.author} trusted={row.trusted_author} stats={row.author_stats} fallback="" /></td>
+                <td className="mono small">{row.pain != null ? row.pain.toFixed(2) : "—"}</td>
+                <td><ReproChip grade={row.repro_grade} /></td>
+                <td><DispositionChip d={row.disposition} /></td>
+                <td className="mono small">
+                  {row.duplicates.length || "—"}
+                  {!sub && (row.dup_rows?.length ?? 0) > 0 && (
+                    <button className="link-btn small row-expander"
+                      title="Duplicate issues folded under this one — click to show them"
+                      onClick={(e) => { e.stopPropagation(); toggleExpand(row.number); }}>
+                      {expanded.has(row.number) ? "▾" : "▸"} +{row.dup_rows!.length}
+                    </button>
+                  )}
+                </td>
+                <td onClick={stopRowOpen}><LinkedPRs prs={row.linked_prs} count={row.linked_pr_count} referencedCount={row.referenced_pr_count} /></td>
+                <td className="muted small">{row.subsystem ?? "—"}</td>
+              </tr>
+            );
+            return [
+              renderRow(r, false),
+              ...(expanded.has(r.number) ? (r.dup_rows ?? []).map((d) => renderRow(d, true)) : []),
+            ];
+          })}
           {!loading && rows.length === 0 && (
             <tr><td colSpan={10} className="muted">No matching issues.</td></tr>
           )}
@@ -639,6 +663,7 @@ export default function Issues() {
         direction: sortDir || undefined,
         disposition: dispFilter || undefined,
         state: stateFilter === "all" ? undefined : stateFilter,
+        collapse_dups: true,
         offset: (page - 1) * PAGE_SIZE,
         limit: PAGE_SIZE,
         ...filterSpec,
@@ -735,7 +760,7 @@ export default function Issues() {
         <h1>🐛 Issues</h1>
         <p className="muted">
           GitHub issues from <code>{repoMeta?.repo ?? "the upstream repo"}</code>, clustered by the issue-triage pipeline and
-          cross-linked to the PRs that may fix them. Link duplicates to a canonical issue and close them as
+          cross-linked to the PRs that may fix them. Link duplicates to a canonical issue and close them as{" "}
           {botLogin} — reversible, gated, and logged like every other write.
         </p>
       </div>
@@ -745,7 +770,7 @@ export default function Issues() {
       <div className="board-controls">
         <div className="segmented">
           <button className={tab === "all" ? "on" : ""} onClick={() => setTab("all")}>
-            All issues <span className="count">{total}</span>
+            All issues <span className="count">{loadingIssues && total === 0 ? "…" : total}</span>
           </button>
           <button className={tab === "dups" ? "on" : ""} onClick={() => {
             if (!dupsLoaded) setLoadingDups(true);

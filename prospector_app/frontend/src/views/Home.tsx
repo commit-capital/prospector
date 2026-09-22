@@ -406,7 +406,7 @@ export default function Home() {
   return (
     <div className="home">
       <div className="home-head">
-        <h2>Home</h2>
+        <h2>Inbox</h2>
         <div className="muted small">
           Every open PR, by whose move it is: yours, the workers&apos;, or a person&apos;s after the
           automation handed it back. Each card samples its highest-pain members and opens the matching view.

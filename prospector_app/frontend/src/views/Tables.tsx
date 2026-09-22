@@ -32,8 +32,8 @@ export default function Tables() {
           return (
             <div className="table-card" key={t.name}>
               <div className="table-card-head">
-                <Link to={`/tables/${t.name}`} className="table-card-name">{t.name}</Link>
-                <Link to={`/tables/${t.name}`} className="linkish table-card-count">{t.row_count.toLocaleString()} rows</Link>
+                <Link to={`/pipeline/data/${t.name}`} className="table-card-name">{t.name}</Link>
+                <Link to={`/pipeline/data/${t.name}`} className="linkish table-card-count">{t.row_count.toLocaleString()} rows</Link>
               </div>
               {t.description && <p className="muted small table-card-desc">{t.description}</p>}
               {t.preview.length > 0 ? (

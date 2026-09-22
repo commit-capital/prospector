@@ -60,7 +60,7 @@ test("the counts request lists card specs first, then every breakdown entry in o
 test("a breakdown link keeps the card's sort and takes the entry's spec", () => {
   const card = HOME_CARDS.find((c) => c.key === "author")!;
   const entry = card.breakdown![0];
-  const params = new URLSearchParams(breakdownHref(card, entry).slice("/explore?".length));
+  const params = new URLSearchParams(breakdownHref(card, entry).slice("/prs/list?".length));
   assert.deepEqual(JSON.parse(params.get("spec")!), entry.spec);
 });
 
@@ -106,8 +106,8 @@ test("every lane spec uses only fields the filter UI can represent", () => {
 test("exploreHref round-trips the spec through the URL", () => {
   for (const card of HOME_CARDS) {
     const href = exploreHref(card);
-    assert.ok(href.startsWith("/explore?"));
-    const params = new URLSearchParams(href.slice("/explore?".length));
+    assert.ok(href.startsWith("/prs/list?"));
+    const params = new URLSearchParams(href.slice("/prs/list?".length));
     assert.deepEqual(JSON.parse(params.get("spec")!), card.spec);
   }
 });
@@ -117,10 +117,10 @@ test("exploreHref carries sort and dir only when the card sets them", () => {
     key: "k", title: "t", blurb: "b", column: "act", spec: {}, sort: "updated", dir: "asc",
   };
   const unsorted: HomeCard = { key: "k", title: "t", blurb: "b", column: "act", spec: {} };
-  const sortedParams = new URLSearchParams(exploreHref(sorted).slice("/explore?".length));
+  const sortedParams = new URLSearchParams(exploreHref(sorted).slice("/prs/list?".length));
   assert.equal(sortedParams.get("sort"), "updated");
   assert.equal(sortedParams.get("dir"), "asc");
-  const unsortedParams = new URLSearchParams(exploreHref(unsorted).slice("/explore?".length));
+  const unsortedParams = new URLSearchParams(exploreHref(unsorted).slice("/prs/list?".length));
   assert.equal(unsortedParams.get("sort"), null);
   assert.equal(unsortedParams.get("dir"), null);
 });
@@ -195,11 +195,11 @@ test("both security samples fetch the row budget, most severe first", () => {
 });
 
 test("the security links open the Security views' two sections", () => {
-  assert.equal(SECURITY_CARD.href, "/alerts");
-  assert.ok(SECURITY_ADVISORIES_HREF.startsWith("/alerts?"));
-  assert.ok(SECURITY_ALERTS_HREF.startsWith("/alerts?"));
-  const advisoryParams = new URLSearchParams(SECURITY_ADVISORIES_HREF.slice("/alerts?".length));
-  const alertParams = new URLSearchParams(SECURITY_ALERTS_HREF.slice("/alerts?".length));
+  assert.equal(SECURITY_CARD.href, "/security");
+  assert.ok(SECURITY_ADVISORIES_HREF.startsWith("/security?"));
+  assert.ok(SECURITY_ALERTS_HREF.startsWith("/security?"));
+  const advisoryParams = new URLSearchParams(SECURITY_ADVISORIES_HREF.slice("/security?".length));
+  const alertParams = new URLSearchParams(SECURITY_ALERTS_HREF.slice("/security?".length));
   assert.equal(advisoryParams.get("security"), "advisories");
   assert.equal(alertParams.get("security"), "alerts");
 });

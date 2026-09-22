@@ -18,6 +18,7 @@ import { term } from "../glossary";
 import { usePRFlyout } from "../usePRFlyout";
 import { makeRowOpen, stopRowOpen } from "../rowOpen";
 import { useColumnPrefs } from "../useColumnPrefs";
+import { ignoreTableKey, nextRowIndex } from "../tableKeys";
 import { useExec } from "../ExecContext";
 import { useAgentPane } from "../components/AgentPane";
 import { cycleSort, type SortDir } from "../sortCycle";
@@ -74,17 +75,18 @@ function readSpec(params: URLSearchParams): FilterSpec {
 // callbacks are stable by construction in PRExplorer. Row-open clicks are
 // delegated to the <tbody> (via `data-pr`), so the row carries no URL-derived
 // handlers of its own.
-const PrRow = memo(function PrRow({ r, visibleColumns, isSelected, isOpen, cellCtx, onToggle }: {
+const PrRow = memo(function PrRow({ r, visibleColumns, isSelected, isOpen, isCursor, cellCtx, onToggle }: {
   r: PRRow;
   visibleColumns: ColumnDef[];
   isSelected: boolean;
   isOpen: boolean;
+  isCursor: boolean;
   cellCtx: CellCtx;
   onToggle: (n: number) => void;
 }) {
   return (
-    <tr data-pr={r.number}
-      className={`rowlink ${isSelected ? "sel" : ""} ${isOpen ? "row-open" : ""}`}>
+    <tr data-pr={r.number} tabIndex={-1}
+      className={`rowlink ${isSelected ? "sel" : ""} ${isOpen ? "row-open" : ""} ${isCursor ? "kb-cursor" : ""}`}>
       <td onClick={stopRowOpen}>
         <input type="checkbox" checked={isSelected} onChange={() => onToggle(r.number)} />
       </td>
@@ -268,6 +270,42 @@ export default function PRExplorer() {
   const selectAllMatching = () => setSelected(new Set(matchIds));
   const clearSel = () => setSelected(new Set());
 
+  // Keyboard model (#329): j/k move a row cursor, Enter opens the cursored
+  // PR's flyout, x toggles its selection. Focused controls, typing surfaces,
+  // and open dialogs keep their keys (ignoreTableKey). The window listener
+  // binds once and reads live state through a ref.
+  const [cursor, setCursor] = useState<number | null>(null);
+  const keyCtx = useRef({ rows, cursor, openPR, toggle });
+  useEffect(() => { keyCtx.current = { rows, cursor, openPR, toggle }; });
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (ignoreTableKey(e.target, e)) return;
+      const { rows, cursor, openPR, toggle } = keyCtx.current;
+      if (e.key === "j" || e.key === "k") {
+        e.preventDefault();
+        setCursor(nextRowIndex(cursor, e.key, rows.length));
+      } else if (e.key === "Enter" && cursor != null && rows[cursor]) {
+        e.preventDefault();
+        openPR(rows[cursor].number);
+      } else if (e.key === "x" && cursor != null && rows[cursor]) {
+        e.preventDefault();
+        toggle(rows[cursor].number);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  // The cursored row takes keyboard focus, so a screen reader announces it
+  // and the flyout's focus return lands back on it.
+  useEffect(() => {
+    if (cursor == null) return;
+    const n = keyCtx.current.rows[cursor]?.number;
+    if (n == null) return;
+    const tr = document.querySelector<HTMLTableRowElement>(`tr[data-pr="${n}"]`);
+    tr?.scrollIntoView({ block: "nearest" });
+    tr?.focus({ preventScroll: true });
+  }, [cursor]);
+
   // Deep Search: agent-judge the current match set against the query text.
   const runDeep = async (query: string) => {
     if (!query.trim() || deepBusy) return;
@@ -292,6 +330,7 @@ export default function PRExplorer() {
   const hasNext = res ? res.offset + rows.length < res.total : false;
   const goToPage = (p: number) => {
     setPage(p);
+    setCursor(null); // the cursor indexes the page's rows, so it resets with them
     window.scrollTo({ top: 0 });
   };
 
@@ -311,6 +350,7 @@ export default function PRExplorer() {
           {loading && res !== null && <span className="spinner" style={{ marginRight: 6 }} />}
           {res ? `${res.total} match` : null}
         </span>
+        <span className="muted small kb-hint">j/k rows · Enter open · x select</span>
       </div>
       <SuggestedActions view="prs" reserve />
       <ExplorerSearchBar value={searchQ} onTextChange={setSearchText} onSpec={setSpec} onDeepSearch={runDeep} deepBusy={deepBusy} deepProgress={deepProgress} />
@@ -399,10 +439,10 @@ export default function PRExplorer() {
           })}
         </tr></thead>
         <tbody onClick={onRowClick} onAuxClick={onRowAuxClick}>
-          {rows.map((r: PRRow) => (
+          {rows.map((r: PRRow, i: number) => (
             <PrRow key={r.number} r={r} visibleColumns={visibleColumns}
               isSelected={selected.has(r.number)} isOpen={openPrs.includes(r.number)}
-              cellCtx={cellCtx} onToggle={toggle} />
+              isCursor={cursor === i} cellCtx={cellCtx} onToggle={toggle} />
           ))}
         </tbody>
       </table>

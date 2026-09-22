@@ -266,7 +266,7 @@ export default function Activity() {
                 {it.action && <span className="muted small"> {it.action}</span>}
                 {it.reason && <span className="chip chip-muted sm">{it.reason}</span>}
               </td>
-              <td className="mono">{cn != null ? <Link to={`/clusters/${cn}`}>{it.cluster_id ?? cn}</Link> : "—"}</td>
+              <td className="mono">{cn != null ? <Link to={`/prs/clusters/${cn}`}>{it.cluster_id ?? cn}</Link> : "—"}</td>
               <td><span className={`chip chip-${it.status === "executed" || it.status === "reopened" || it.status === "merged" ? "green" : it.status === "error" ? "red" : "muted"}`} title={it.status ? STATUS_TIP[it.status] : undefined}>{it.status ?? (it.kind === "handoff" ? `${it.approved_count} actions` : "")}</span></td>
               <td className="muted small">{it.detail}</td>
               <td>
