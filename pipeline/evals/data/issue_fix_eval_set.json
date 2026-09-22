@@ -508,7 +508,45 @@
      "detail": "another issue already measures this fix"
     }
    ]
+  },
+  {
+   "base_sha": "50cd76d8a3f2fc06d1a5af63840abd3d7a1bcd02",
+   "span": "2026-04-08..2026-04-15",
+   "fixes": 5,
+   "qualified_at": "2026-09-22T22:46:35+00:00",
+   "instances": [
+    {
+     "issue": 19,
+     "pr": 3315,
+     "verdict": "fair",
+     "detail": "green exit 0/0: Start at  22:46:07 | Duration  1.84s (transform 508ms, setup 0ms, collect 234ms, tests 1.28s, environment 0ms, prepare 92ms)"
+    },
+    {
+     "issue": 2188,
+     "pr": 3589,
+     "verdict": "fair",
+     "detail": "green exit 0/0: Start at  22:46:03 | Duration  244ms (transform 99ms, setup 0ms, collect 126ms, tests 27ms, environment 0ms, prepare 28ms)"
+    },
+    {
+     "issue": 2848,
+     "pr": 2949,
+     "verdict": "fair",
+     "detail": "green exit 0/0: Start at  22:46:11 | Duration  292ms (transform 63ms, setup 0ms, collect 75ms, tests 134ms, environment 0ms, prepare 25ms)"
+    },
+    {
+     "issue": 3169,
+     "pr": 3209,
+     "verdict": "fair",
+     "detail": "green exit 0/0: Start at  22:46:25 | Duration  4.58s (transform 639ms, setup 0ms, collect 1.13s, tests 2.36s, environment 0ms, prepare 24ms)"
+    },
+    {
+     "issue": 3179,
+     "pr": 3232,
+     "verdict": "oracle-imports-pr-symbol",
+     "detail": "its tests import buildAgentUpdatePatch"
+    }
+   ]
   }
  ],
- "fair": 24
+ "fair": 28
 }
