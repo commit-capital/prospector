@@ -112,7 +112,87 @@
      "detail": "its tests import nextCronTickInTimeZone"
     }
    ]
+  },
+  {
+   "base_sha": "502d60b2a89ae91d9e79aa01c6cd00e8b7814800",
+   "span": "2026-03-30..2026-04-06",
+   "fixes": 9,
+   "qualified_at": "2026-09-22T21:44:55+00:00",
+   "instances": [
+    {
+     "issue": 1990,
+     "pr": 2649,
+     "verdict": "fair",
+     "detail": "green exit 0/0: Start at  21:44:43 | Duration  372ms (transform 189ms, setup 0ms, collect 242ms, tests 44ms, environment 0ms, prepare 27ms)"
+    },
+    {
+     "issue": 2234,
+     "pr": 2305,
+     "verdict": "fair",
+     "detail": "green exit 0/0: Start at  21:44:44 | Duration  203ms (transform 66ms, setup 0ms, collect 80ms, tests 35ms, environment 0ms, prepare 27ms)"
+    },
+    {
+     "issue": 2336,
+     "pr": 2338,
+     "verdict": "fair",
+     "detail": "green exit 0/0: Start at  21:44:51 | Duration  507ms (transform 105ms, setup 0ms, collect 159ms, tests 67ms, environment 193ms, prepare 26ms)"
+    },
+    {
+     "issue": 2536,
+     "pr": 2542,
+     "verdict": "fair",
+     "detail": "green exit 0/0: Start at  21:44:51 | Duration  344ms (transform 139ms, setup 0ms, collect 246ms, tests 13ms, environment 0ms, prepare 26ms)"
+    },
+    {
+     "issue": 472,
+     "pr": 2065,
+     "verdict": "fix-path-withheld",
+     "detail": "its fix touches a tier-0 path: server/src/services/heartbeat.ts"
+    },
+    {
+     "issue": 1052,
+     "pr": 2449,
+     "verdict": "error",
+     "detail": "patch 0 does not apply: error: patch failed: adapter-plugin.md:1\nerror: adapter-plugin.md: patch does not apply"
+    },
+    {
+     "issue": 1268,
+     "pr": 2048,
+     "verdict": "error",
+     "detail": "patch 0 does not apply: error: patch failed: adapter-plugin.md:1\nerror: adapter-plugin.md: patch does not apply"
+    },
+    {
+     "issue": 1461,
+     "pr": 2048,
+     "verdict": "duplicate-pr",
+     "detail": "another issue already measures this fix"
+    },
+    {
+     "issue": 1557,
+     "pr": 2048,
+     "verdict": "duplicate-pr",
+     "detail": "another issue already measures this fix"
+    },
+    {
+     "issue": 1734,
+     "pr": 1744,
+     "verdict": "error",
+     "detail": "patch 0 does not apply: error: patch failed: adapter-plugin.md:1\nerror: adapter-plugin.md: patch does not apply"
+    },
+    {
+     "issue": 2394,
+     "pr": 2449,
+     "verdict": "duplicate-pr",
+     "detail": "another issue already measures this fix"
+    },
+    {
+     "issue": 2910,
+     "pr": 2951,
+     "verdict": "r6-red",
+     "detail": "red exit 0/None: Start at  21:44:54 | Duration  92ms (transform 16ms, setup 0ms, collect 14ms, tests 1ms, environment 0ms, prepare 23ms)"
+    }
+   ]
   }
  ],
- "fair": 4
+ "fair": 8
 }
