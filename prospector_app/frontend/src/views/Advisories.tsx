@@ -7,6 +7,7 @@ import { PRLink } from "../components/PRLink";
 import { useRepoMeta } from "../RepoMetaContext";
 import { stopRowOpen } from "../rowOpen";
 import { cycleSort, type SortDir } from "../sortCycle";
+import { stripMdHeading } from "../mdHeading";
 import { timeAgo } from "../timeAgo";
 
 const PAGE_SIZE = 50;
@@ -91,7 +92,7 @@ function DetailPanel({ ghsa, onClose }: { ghsa: string; onClose: () => void }) {
       {d && (
         <>
           <p><StateChip s={d.state} /> <SeverityChip s={d.severity} />{d.cve_id && <span className="chip chip-muted sm mono">{d.cve_id}</span>}</p>
-          <p><b>{d.summary}</b></p>
+          <p><b>{stripMdHeading(d.summary)}</b></p>
           <p className="muted small">Reported by {d.reporter ?? "—"} · {(d.created_at ?? "").slice(0, 10)}{d.cwe_ids.length > 0 && ` · ${d.cwe_ids.join(", ")}`}</p>
           <p><a href={d.html_url} target="_blank" rel="noreferrer" className="gh-pr-link">Open on GitHub ↗</a></p>
           {d.verdict && (
@@ -263,7 +264,7 @@ export default function Advisories() {
                     </td>
                     <td><StateChip s={r.state} /></td>
                     <td><SeverityChip s={r.severity} /></td>
-                    <td>{r.summary}</td>
+                    <td>{stripMdHeading(r.summary)}</td>
                     <td className="small">{r.reporter ?? "—"}</td>
                     <td className="muted small">{timeAgo(r.created_at)}</td>
                     <td><VerdictChip r={r} /></td>

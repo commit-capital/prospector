@@ -734,7 +734,7 @@ export default function Issues() {
         <h1>🐛 Issues</h1>
         <p className="muted">
           GitHub issues from <code>{repoMeta?.repo ?? "the upstream repo"}</code>, clustered by the issue-triage pipeline and
-          cross-linked to the PRs that may fix them. Link duplicates to a canonical issue and close them as
+          cross-linked to the PRs that may fix them. Link duplicates to a canonical issue and close them as{" "}
           {botLogin} — reversible, gated, and logged like every other write.
         </p>
       </div>
@@ -744,7 +744,7 @@ export default function Issues() {
       <div className="board-controls">
         <div className="segmented">
           <button className={tab === "all" ? "on" : ""} onClick={() => setTab("all")}>
-            All issues <span className="count">{total}</span>
+            All issues <span className="count">{loadingIssues && total === 0 ? "…" : total}</span>
           </button>
           <button className={tab === "dups" ? "on" : ""} onClick={() => {
             if (!dupsLoaded) setLoadingDups(true);

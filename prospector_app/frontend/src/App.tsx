@@ -563,7 +563,7 @@ function Nav() {
 function Content() {
   const { meta } = useRepoMeta();
   const { pathname } = useLocation();
-  if (!meta) return null;
+  if (!meta) return <div className="pad muted">loading…</div>;
   if (!meta.configured && pathname !== "/welcome") return null;
   return (
     <>
