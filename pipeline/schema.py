@@ -74,7 +74,10 @@ _JSON = JSON().with_variant(JSONB, "postgresql")
 # 23 — an issue's links section carries sibling keys beside candidates (github
 #      closing references); an older ingest or find-fixed write replaces the
 #      section whole and drops them.
-STORE_SCHEMA_VERSION = 23
+# 24 — a close-dup analysis carries its coverage map (`concerns`) and the
+#      computed `sanity_trips`; an older writer's reconcile rewrites the
+#      analysis section from a fixed key list and drops both.
+STORE_SCHEMA_VERSION = 24
 
 # saved_at is a microsecond-resolution ISO timestamp stamped on every save — when
 # the store row was last written (distinct from `updated_at`, which mirrors the

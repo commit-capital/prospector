@@ -677,6 +677,10 @@ def pr_detail(n: int) -> dict | None:
     row["verify_request"] = verify_view.verify_request_view(rec)
     row["fix_request"] = rec.fix_request
     row["analysis_detail"] = rec.section("analysis")
+    # The close-dup coverage map + tripped sanity checks, typed for the flyout's
+    # coverage table (analysis_detail stays the raw section).
+    row["concerns"] = rec.concerns
+    row["sanity_trips"] = rec.sanity_trips
     row["summary"] = rec.section("summary")
     row["author_stats"] = data.author_stats(rec.author)
     sig = rec.signals or {}

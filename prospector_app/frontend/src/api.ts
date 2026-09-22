@@ -973,6 +973,18 @@ export interface SystemHealth {
   workers_stalled: boolean;
 }
 
+/** One close-dup coverage-map entry: a substantive change in the PR and where
+ *  it is covered — landed on the default branch, carried by another PR, or
+ *  nowhere (unique work). */
+export interface DupConcern {
+  label: string;
+  coverage: "landed" | "pr" | "unique";
+  paths?: string[];
+  covered_by?: number;
+  landed_sha?: string;
+  evidence?: string;
+}
+
 export interface PRDetail extends PRRow {
   body?: string | null;
   base?: string | null;
@@ -982,6 +994,8 @@ export interface PRDetail extends PRRow {
   verify_request?: VerifyRequest | null;
   fix_request?: FixRequest | null;
   analysis_detail?: unknown;
+  concerns?: DupConcern[];
+  sanity_trips?: string[];
   size?: { additions: number | null; deletions: number | null; changed_files: number | null };
   reviews_detail?: ReviewsDetail | null;
   ci_checks?: { name: string; conclusion: string; status: string }[];

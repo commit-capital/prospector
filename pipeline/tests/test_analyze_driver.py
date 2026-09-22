@@ -174,7 +174,9 @@ class TestCommitAnalysis:
         p = {"cluster_id": 1, "outcome": "merge-ready", "rationale": "1 is best",
              "prs": [
                  {"pr": 1, "disposition": "merge", "rationale": "best impl", "head_sha": "h1"},
-                 {"pr": 2, "disposition": "close-dup", "canonical": 1, "rationale": "subset", "head_sha": "h1"},
+                 {"pr": 2, "disposition": "close-dup", "canonical": 1, "rationale": "subset", "head_sha": "h1",
+                  "concerns": [{"label": "the fix", "paths": [], "coverage": "pr",
+                                "covered_by": 1, "evidence": "same hunk in #1"}]},
                  {"pr": 3, "disposition": "request-changes", "asks": ["add a test"],
                   "rationale": "complementary but untested", "head_sha": "h1"},
              ]}
@@ -261,6 +263,7 @@ class TestCommitAnalysis:
         s = self._setup(tmp_path)
         p = self._payload(outcome="close-out")
         p["prs"][0]["disposition"] = "close-dup"; p["prs"][0]["canonical"] = 3
+        p["prs"][0]["concerns"] = [{"label": "the fix", "coverage": "pr", "covered_by": 3}]
         p["prs"][0].pop("asks", None)
         p["prs"][1]["canonical"] = 1
         p["prs"][2]["disposition"] = "close-stale"; p["prs"][2].pop("asks", None)
@@ -580,7 +583,8 @@ class TestCommitAnalysesDir:
         (outdir / "cluster-001.json").write_text(json.dumps({"cluster_id": 1, "outcome": "merge-ready",
             "rationale": "1 wins", "prs": [
                 {"pr": 1, "disposition": "merge", "rationale": "best", "head_sha": "h1"},
-                {"pr": 2, "disposition": "close-dup", "canonical": 1, "rationale": "dup", "head_sha": "h1"}]}))
+                {"pr": 2, "disposition": "close-dup", "canonical": 1, "rationale": "dup", "head_sha": "h1",
+                 "concerns": [{"label": "the fix", "coverage": "pr", "covered_by": 1}]}]}))
         (outdir / "cluster-002.json").write_text(json.dumps({"cluster_id": 2, "outcome": "awaiting-authors",
             "rationale": "needs work", "prs": [
                 {"pr": 3, "disposition": "request-changes", "asks": ["add a test"], "rationale": "x", "head_sha": "h1"},
