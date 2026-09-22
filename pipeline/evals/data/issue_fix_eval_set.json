@@ -704,7 +704,39 @@
      "detail": "another issue already measures this fix"
     }
    ]
+  },
+  {
+   "base_sha": "33353ce62b5d6e9409e0fac9ba2cbc82d05f25fe",
+   "span": "2026-06-19..2026-06-20",
+   "fixes": 3,
+   "qualified_at": "2026-09-22T23:43:33+00:00",
+   "instances": [
+    {
+     "issue": 1749,
+     "pr": 5017,
+     "verdict": "fair",
+     "detail": "green exit 0/0: \u001b[2m   Start at \u001b[22m 23:43:19 | \u001b[2m   Duration \u001b[22m 483ms\u001b[2m (transform 77ms, setup 0ms, import 103ms, tests 279ms, environment 0ms)\u001b[22m"
+    },
+    {
+     "issue": 8369,
+     "pr": 8370,
+     "verdict": "fair",
+     "detail": "green exit 0/0: \u001b[2m   Start at \u001b[22m 23:43:30 | \u001b[2m   Duration \u001b[22m 943ms\u001b[2m (transform 263ms, setup 16ms, import 413ms, tests 286ms, environment 175ms)\u001b[22m"
+    },
+    {
+     "issue": 3173,
+     "pr": 5017,
+     "verdict": "duplicate-pr",
+     "detail": "another issue already measures this fix"
+    },
+    {
+     "issue": 5027,
+     "pr": 5102,
+     "verdict": "r6-unbound",
+     "detail": "green exit 20/None: \u001b[2m   Start at \u001b[22m 23:43:20 | \u001b[2m   Duration \u001b[22m 1.08s\u001b[2m (transform 523ms, setup 58ms, import 7ms, tests 2ms, environment 0ms)\u001b[22m"
+    }
+   ]
   }
  ],
- "fair": 38
+ "fair": 40
 }
