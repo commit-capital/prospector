@@ -1362,6 +1362,9 @@ export interface OnboardingApplyBody {
 export const api = {
   setupReadiness: () =>
     get<{ readiness: SetupReadiness; flags: WorkerFlags; bot_permissions: BotPermissionReadiness }>("/api/setup/readiness"),
+  /** This machine's worker lane switches alone — cheap enough for the header's
+   *  autonomy disclosure to poll. */
+  autonomy: () => get<{ flags: WorkerFlags }>("/api/autonomy"),
   /** The deployment bundle a teammate pastes. `includeKey` adds the bot's
    *  private key, so their machine executes approved writes too;
    *  `includePushKey` the contributor-push identity, so it runs autofix. */
@@ -1479,7 +1482,8 @@ export const api = {
   alertCaps: () => get<AlertCaps>("/api/alerts/caps"),
   getAlert: (source: AlertSource, n: number) => get<AlertDetail>(`/api/alerts/${source}/${n}`),
   queryAdvisories: (opts: {
-    q?: string; sort?: string; direction?: string; state?: string | string[]; verdict?: string;
+    q?: string; sort?: string; direction?: string; state?: string | string[];
+    severity?: string[]; verdict?: string;
     offset?: number; limit?: number;
   } = {}) =>
     fetch("/api/advisories/query", {
@@ -2013,6 +2017,10 @@ export interface FirehoseStats {
     author: string | null; closed_at: string | null; reason: string | null;
   }>;
   iss_action_counts: Record<string, number>;
+  // When each corpus was last refreshed from upstream — days after these
+  // stamps carry no ingested data and render hatched, not as zero.
+  ingest_as_of: string | null;
+  issue_ingest_as_of: string | null;
 }
 
 export interface ActivityPerson {

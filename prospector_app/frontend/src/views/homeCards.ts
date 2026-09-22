@@ -169,6 +169,42 @@ export function exploreHref(card: HomeCard): string {
   return `/explore?${params}`;
 }
 
+// The Security card under "Your move": open critical/high advisories the
+// find-fixed pass still marks not-fixed, plus every open secret-scanning
+// alert. It reads the advisory and alert stores, not the PR matcher, so its
+// two sides are query options for POST /api/advisories/query and
+// POST /api/alerts/query rather than a FilterSpec.
+export const SECURITY_CARD = {
+  key: "security",
+  title: "Security needs a look",
+  blurb: "Critical or high advisories the find-fixed pass still marks not-fixed, plus any open secret-scanning alert. Triage each in the Security views.",
+  href: "/alerts",
+};
+
+// The advisory side: open (triage/draft) critical or high reports whose
+// fix-scan verdict is not-fixed, most severe first, ties oldest first.
+export const SECURITY_ADVISORY_QUERY: {
+  state: string[]; severity: string[]; verdict: string; sort: string; limit: number;
+} = {
+  state: ["triage", "draft"],
+  severity: ["critical", "high"],
+  verdict: "not-fixed",
+  sort: "severity",
+  limit: SAMPLE_LIMIT,
+};
+export const SECURITY_ADVISORIES_HREF = "/alerts?security=advisories";
+
+// The alert side: every open secret-scanning alert, most severe first.
+export const SECURITY_ALERT_QUERY: {
+  source: string; state: string; sort: string; limit: number;
+} = {
+  source: "secret-scanning",
+  state: "open",
+  sort: "severity",
+  limit: SAMPLE_LIMIT,
+};
+export const SECURITY_ALERTS_HREF = "/alerts?security=alerts";
+
 // The card-level job button on a Home issue card: the Control-tab job that
 // moves the card's issues forward, run with a count capped at `batch`.
 export interface HomeIssueAction {

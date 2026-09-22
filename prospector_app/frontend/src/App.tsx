@@ -6,7 +6,8 @@ import { WorkStatusProvider, useWorkStatus } from "./WorkStatusContext";
 import { FeedbackButton } from "./components/FeedbackButton";
 import { AgentPaneProvider } from "./components/AgentPane";
 import { isReachable, subscribeHealth, pingHealth } from "./health";
-import { api } from "./api";
+import { api, type WorkerFlags } from "./api";
+import { unattendedActions, unattendedDetail, unattendedPushes } from "./autonomy";
 import { loadWithRecovery } from "./lazyLoad";
 import { timeAgo } from "./timeAgo";
 import { workStatusLabel } from "./workStatusLabel";
@@ -174,6 +175,53 @@ function DryRunBadge() {
     >
       {dryRun ? "DRY RUN" : "● LIVE"}
     </button>
+  );
+}
+
+/** How often the autonomy pill re-reads the lane switches — often enough that
+ *  a Setup toggle shows up here within a poll. */
+const AUTONOMY_POLL_MS = 30_000;
+
+// "autonomous: rebases, conflicts · as triage-bot" — what this machine
+// does without being asked, under which identities, read from the same lane
+// switches the Setup tab writes. A disclosure, not a warning: it links to the
+// policy, and the tooltip carries the full sentences.
+function AutonomyPill() {
+  const { botLogin, pushIdentity } = useExec();
+  const [flags, setFlags] = useState<WorkerFlags | null>(null);
+  useEffect(() => {
+    const load = () => api.autonomy().then((d) => setFlags(d.flags)).catch(() => {});
+    load();
+    const t = setInterval(load, AUTONOMY_POLL_MS);
+    return () => clearInterval(t);
+  }, []);
+  if (!flags) return null;
+  const acts = unattendedActions(flags);
+  const pushLogin = pushIdentity?.login;
+  const who = unattendedPushes(flags) && pushLogin && pushLogin !== botLogin
+    ? `${botLogin} + ${pushLogin}` : botLogin;
+  const title = [
+    "What this machine does without being asked:",
+    ...(acts.length ? unattendedDetail(flags).map((d) => `• ${d}`) : ["• nothing"]),
+    `Posts upstream as ${botLogin}${pushLogin ? `; pushes to PR branches as ${pushLogin}` : ""}.`,
+    "Click for the autonomy policy (Setup).",
+  ].join("\n");
+  return (
+    <NavLink to="/setup" className="autonomy-pill" title={title}>
+      autonomous: {acts.length ? acts.join(", ") : "nothing"} · as {who}
+    </NavLink>
+  );
+}
+
+/** The mode cluster: the dry-run/live switch joined with the autonomy
+ *  disclosure, so mode, unattended reach, and identity read as one unit from
+ *  any page. */
+function ModeCluster() {
+  return (
+    <div className="mode-cluster">
+      <DryRunBadge />
+      <AutonomyPill />
+    </div>
   );
 }
 
@@ -545,7 +593,7 @@ export default function App() {
           <div className="topbar-right">
             <WorkStatusBadge />
             <LiveStatus />
-            <DryRunBadge />
+            <ModeCluster />
             <FeedbackButton />
             <SettingsMenu />
           </div>

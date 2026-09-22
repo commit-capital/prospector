@@ -330,3 +330,44 @@ def test_author_scope_excludes_issue_and_other_author_events():
     ]
     scope = activity.ActivityScope.from_selection(prs, pr_author="upstream-dev")
     assert scope.events(events) == [events[0]]
+
+
+# ── ingest_as_of ──────────────────────────────────────────────────────────────
+
+def _run(phase: str, started: str | None = None, finished: str | None = None):
+    from pipeline import storekit
+    rec: dict = {"phase": phase}
+    if started is not None:
+        rec["started"] = started
+    if finished is not None:
+        rec["finished"] = finished
+    return storekit.parse_run(rec)
+
+
+def test_ingest_as_of_picks_newest_full_or_new_pr_ingest():
+    pr_runs = [
+        _run("ingest", "2026-06-01T09:00:00+00:00", "2026-06-01T10:00:00+00:00"),
+        _run("ingest:new", "2026-06-03T09:00:00+00:00", "2026-06-03T10:00:00+00:00"),
+        _run("ingest", "2026-06-02T09:00:00+00:00", "2026-06-02T10:00:00+00:00"),
+        # Targeted refresh: doesn't fetch the open-PR list, so it never counts.
+        _run("ingest:prs", "2026-06-09T09:00:00+00:00", "2026-06-09T10:00:00+00:00"),
+        _run("threat-scan", "2026-06-08T09:00:00+00:00", "2026-06-08T10:00:00+00:00"),
+    ]
+    out = activity.ingest_as_of(pr_runs, [])
+    assert out["ingest_as_of"] == "2026-06-03T10:00:00+00:00"
+    assert out["issue_ingest_as_of"] is None
+
+
+def test_ingest_as_of_issue_ledger_reads_its_own_ingest_phase():
+    issue_runs = [
+        _run("ingest", "2026-06-05T09:00:00+00:00", "2026-06-05T10:00:00+00:00"),
+        _run("analyze", "2026-06-07T09:00:00+00:00", "2026-06-07T10:00:00+00:00"),
+    ]
+    out = activity.ingest_as_of([], issue_runs)
+    assert out["ingest_as_of"] is None
+    assert out["issue_ingest_as_of"] == "2026-06-05T10:00:00+00:00"
+
+
+def test_ingest_as_of_falls_back_to_started_when_unfinished():
+    out = activity.ingest_as_of([_run("ingest", started="2026-06-04T09:00:00+00:00")], [])
+    assert out["ingest_as_of"] == "2026-06-04T09:00:00+00:00"
