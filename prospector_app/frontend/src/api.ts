@@ -952,6 +952,27 @@ export interface WorkStatus {
  *  run history from the runs ledger over the selected window. */
 export interface VerifyQueue { queue: VerifyQueueEntry[]; history: AutohuntRun[]; }
 
+/** One problem the health strip names: a lane count, a tripped or offline
+ *  worker, or a stale ingest. `detail` is the hover tooltip. */
+export interface SystemHealthItem {
+  kind: "lanes" | "trip" | "offline" | "ingest";
+  severity: "amber" | "red";
+  label: string;
+  detail?: string | null;
+  host?: string | null;
+}
+
+/** Systemwide health across every machine on this store: worker lanes down
+ *  and stale ingests. `workers_stalled` means every known worker lane is
+ *  down, so nothing "in motion" is actually moving. */
+export interface SystemHealth {
+  severity: "ok" | "amber" | "red";
+  items: SystemHealthItem[];
+  lanes_total: number;
+  lanes_down: number;
+  workers_stalled: boolean;
+}
+
 export interface PRDetail extends PRRow {
   body?: string | null;
   base?: string | null;
@@ -1826,6 +1847,8 @@ export const api = {
     return get<FixQueue>(`/api/fix/queue?${qs}`);
   },
   workStatus: () => get<WorkStatus>("/api/status/now"),
+
+  systemHealth: () => get<SystemHealth>("/api/system-health"),
   /** Reopen a tripped worker lane by the operator's say-so. */
   workerHealthResume: async (host: string, lane: string): Promise<void> => {
     const r = await fetch("/api/worker/health/resume", {
