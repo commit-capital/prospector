@@ -256,7 +256,12 @@ export default function Activity() {
                 </InfoTip>
                 {it.dry_run && <InfoTip entry={term("dry-run")} cue={false} focusable={false}><span className="chip chip-muted sm">dry</span></InfoTip>}
               </td>
-              <td className="muted small" title={it.identity ? `posted as ${it.identity}` : undefined}>{it.operator ?? it.identity ?? "—"}</td>
+              <td className="muted small"
+                title={[it.identity ? `posted as ${it.identity}` : null,
+                        it.machine ? `recorded on ${it.machine}` : null].filter(Boolean).join(" · ") || undefined}>
+                {it.operator ?? it.identity ?? "—"}
+                {it.machine && <span className="mono"> · {it.machine}</span>}
+              </td>
               <td className="mono">
                 {it.pr ? <PRLink n={it.pr} />
                   : it.issue ? (

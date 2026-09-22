@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from pipeline.model import Pr
 
 from prospector_app.backend import automation, data
+from prospector_app.backend import claims
 from prospector_app.backend import filters  # spec predicate
 from prospector_app.backend import pr_checks
 from prospector_app.backend import responses
@@ -450,6 +451,8 @@ def query_prs(spec: dict, sort: str | None = None, direction: str | None = None,
     Returns a page of rows plus match_ids (every matching PR number) so the UI can
     select-all across pages."""
     eff = dict(spec)
+    if eff.get("claimed") == "mine":
+        eff["claimed"] = claims.me()["by"]
     snap = data.prs()
     cache = _row_cache(snap)
     rows = []
@@ -471,10 +474,12 @@ def query_prs(spec: dict, sort: str | None = None, direction: str | None = None,
             if row is None:
                 continue
             cache[n] = row
-        # Response signals and their acks live outside the snapshot (registry +
-        # store, own short-TTL caches), so overlay them fresh on the cached row —
-        # an ack must drop the PR from the responses queue on the very next query.
-        row = {**row, "responses": responses.for_pr(n)}
+        # Response signals and their acks, and operator claims, live outside the
+        # snapshot (registry + store, own short-TTL caches), so overlay them
+        # fresh on the cached row — an ack must drop the PR from the responses
+        # queue, and a teammate's claim must appear, on the very next query.
+        row = {**row, "responses": responses.for_pr(n),
+               "claim": claims.for_item("pr", n)}
         if filters.matches(row, eff):
             rows.append(row)
     key = _SORT_KEYS.get(sort or "", _SORT_KEYS["pr"])

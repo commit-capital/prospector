@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router";
 import {
-  api, type AdvisoryQueryResult, type AlertQueryResult, type AutonomousItem, type IssueRow,
+  api, type AdvisoryQueryResult, type AlertQueryResult, type AutonomousItem, type FilterSpec,
+  type IssueRow,
   type PRRow, type QueryResult,
 } from "../api";
 import { HomeProgressRow } from "../components/HomeProgressRow";
@@ -24,6 +25,13 @@ import {
 // While the backend snapshot is cold-loading, counts come back null with
 // loading:true — re-ask on this cadence until real numbers arrive.
 const COUNTS_POLL_MS = 1500;
+
+type ClaimFilter = "everyone" | "mine" | "unclaimed";
+const CLAIM_FILTER_TIP: Record<ClaimFilter, string> = {
+  everyone: "Every open PR, whoever claimed it.",
+  mine: "Only the PRs you claimed.",
+  unclaimed: "Only the PRs nobody has claimed yet.",
+};
 
 // A sample row's job button: starts the card's per-PR job for this row and
 // shows it running (reattaching to a run already going, started anywhere).
@@ -56,6 +64,12 @@ function SamplePR({ r, rowAction, onActionDone, reason }: {
       </td>
       <td className="home-sample-title" title={r.summary?.one_liner ?? undefined}>
         {r.title ?? "(no title)"}
+        {r.claim && (
+          <span className="chip chip-gold sm"
+            title={`Claimed by ${r.claim.by} on ${r.claim.machine} — being worked; pick another item or coordinate first.`}>
+            claimed · {r.claim.by}
+          </span>
+        )}
         {reason && <div className="small muted home-sample-reason" title={reason}>{reason}</div>}
       </td>
       <td className="home-sample-pain mono small" title="Community Pain Score — linked-issue pain + PR engagement">
@@ -481,14 +495,23 @@ export default function Home() {
   const [counts, setCounts] = useState<number[] | null>(null);
   const [samples, setSamples] = useState<QueryResult[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // Everyone / Mine / Unclaimed over the shared claim markers — with several
+  // operators working the backlog, "mine" narrows every PR card to the items
+  // this operator claimed, "unclaimed" to the ones nobody is working yet.
+  const [claimFilter, setClaimFilter] = useState<ClaimFilter>("everyone");
+  const withClaim = (spec: FilterSpec): FilterSpec =>
+    claimFilter === "everyone" ? spec : { ...spec, claimed: claimFilter };
   // Bumped when a sample row's job finishes, so the PR counts + samples
   // refetch and a PR the job moved forward changes cards.
   const [generation, setGeneration] = useState(0);
   useEffect(() => {
     let cancelled = false;
     let timer: number | undefined;
+    const specs = claimFilter === "everyone"
+      ? HOME_COUNT_SPECS
+      : HOME_COUNT_SPECS.map((s) => ({ ...s, claimed: claimFilter }));
     const load = () => {
-      api.prCounts(HOME_COUNT_SPECS)
+      api.prCounts(specs)
         .then((r) => {
           if (cancelled) return;
           if (r.counts) setCounts(r.counts);
@@ -500,19 +523,19 @@ export default function Home() {
     };
     load();
     return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [generation]);
+  }, [generation, claimFilter]);
   // Each card's inline sample. Fetched only once the counts poll has landed —
   // the snapshot is published by then, so these queries serve from memory.
   useEffect(() => {
     if (counts === null) return;
     let cancelled = false;
-    Promise.all(HOME_CARDS.map((c) => api.queryPrs(c.spec, SAMPLE_QUERY)))
+    Promise.all(HOME_CARDS.map((c) => api.queryPrs(withClaim(c.spec), SAMPLE_QUERY)))
       .then((r) => { if (!cancelled) setSamples(r); })
       .catch((e: unknown) => {
         if (!cancelled) setErr(e instanceof Error ? e.message : String(e));
       });
     return () => { cancelled = true; };
-  }, [counts]);
+  }, [counts]); // eslint-disable-line react-hooks/exhaustive-deps -- counts refetch on a claim-filter change, so this rerun follows it
   const loading = counts === null && !err;
   // Counts and samples are index-aligned with the flat HOME_CARDS array, so
   // each column looks a card's data up by its position there.
@@ -540,6 +563,15 @@ export default function Home() {
         <div className="muted small">
           Every open PR, by whose move it is: yours, the workers&apos;, or a person&apos;s after the
           automation handed it back. Each card samples its highest-pain members and opens the matching view.
+        </div>
+        <div className="facet">
+          <span className="facet-label">show</span>
+          <div className="segmented">
+            {(["everyone", "mine", "unclaimed"] as const).map((f) => (
+              <button key={f} className={claimFilter === f ? "on" : ""}
+                onClick={() => setClaimFilter(f)} title={CLAIM_FILTER_TIP[f]}>{f}</button>
+            ))}
+          </div>
         </div>
       </div>
       <HomeProgressRow />

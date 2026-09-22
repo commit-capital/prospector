@@ -6,6 +6,7 @@ import { RunBadge } from "./RunBadge";
 import { CommentEditor } from "./CommentEditor";
 import { landed, ExecResultChip } from "./execResult";
 import { StaleOverrideConfirm } from "./FactFreshness";
+import { confirmUnclaimed } from "./claimGuard";
 import { suggestedAct, suggestedCanonical, type Act } from "../prAction";
 
 const TONE_ICON = { green: "✅", yellow: "✋", red: "⛔", muted: "↪" } as const;
@@ -120,6 +121,7 @@ export function PRActionBar({ pr, runState, onActed }:
   const fire = async () => {
     if (blocked) return;
     if (alreadyDone && !window.confirm(`#${pr.number} was already actioned at ${runState?.at}. Act again anyway?`)) return;
+    if (!dryRun && !(await confirmUnclaimed("pr", pr.number))) return;
     let confirmMsg: string;
     if (action === "MERGE") confirmMsg = `⚠ PERMANENT: merge #${pr.number} upstream as ${botLogin}?${mergeOverride ? ` Your reason will be logged as the ${overrideNoun}.` : ""} This cannot be undone.`;
     else if (isClose(action)) confirmMsg = `Post this comment and close #${pr.number} as ${botLogin} (reopenable)?`;

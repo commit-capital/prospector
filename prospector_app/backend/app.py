@@ -32,6 +32,8 @@ from prospector_app.backend import worker_readiness
 from prospector_app.backend import bulk
 from prospector_app.backend import caps
 from prospector_app.backend import chat
+from prospector_app.backend import claims
+from prospector_app.backend import machines
 from prospector_app.backend import data
 from prospector_app.backend import deep_search
 from prospector_app.backend import decisions
@@ -226,6 +228,37 @@ def worker_health_resume(body: dict = Body(...)):
         return escalation.resume(host, lane)
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+@app.get("/api/claims")
+def claims_list():
+    """Every operator's item claims plus this backend's claiming identity —
+    the shared markers that keep two people off the same item (#323)."""
+    return {"items": claims.load(), "me": claims.me()}
+
+
+@app.post("/api/claims/{kind}/{n}")
+def claims_set(kind: str, n: int, body: dict = Body(...)):
+    """Claim or release one PR/issue for the current operator. Returns the
+    fresh claim set so the client renders what every instance now sees."""
+    action = str(body.get("action") or "")
+    if action not in ("claim", "release"):
+        raise HTTPException(400, "action must be 'claim' or 'release'")
+    try:
+        if action == "claim":
+            claims.claim(kind, n)
+        else:
+            claims.release(kind, n)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"items": claims.load(), "me": claims.me()}
+
+
+@app.get("/api/machines")
+def machines_roster():
+    """Every worker machine the shared store knows, with lane health and
+    heartbeats — the Control tab's Machines panel (#323)."""
+    return machines.roster()
 
 
 @app.get("/api/health")

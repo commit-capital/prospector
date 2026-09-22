@@ -10,6 +10,7 @@ import { ChecksPanel } from "../components/ChecksPanel";
 import { DiffView } from "../components/DiffView";
 import { Collapsible } from "../components/Collapsible";
 import { PRActionBar } from "../components/PRActionBar";
+import { ClaimControl } from "../components/ClaimControl";
 import { VerifyAction, VerifyBody } from "../components/VerifyPanel";
 import { FixAction, FixBody } from "../components/FixPanel";
 import { PRActionLog } from "../components/PRActionLog";
@@ -348,6 +349,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
           {pr.clusters.map((cid) => <Link key={cid} className="chip chip-blue" to={`/prs/clusters/${cid}`} title="A dedup cluster this PR belongs to — a group of PRs fixing the same root issue. Click to open.">cluster {cid}</Link>)}
           {pr.url && <a className="chip chip-muted" href={pr.url} target="_blank" rel="noreferrer">GitHub ↗</a>}
           {resolved && <span className={`chip ${pr.github_state === "merged" ? "chip-purple" : "chip-muted"}`} title="Current state on GitHub">{pr.github_state}</span>}
+          <ClaimControl kind="pr" n={pr.number} />
           <span className="fresh-refreshed"><FreshnessBar f={fresh} /></span>
         </div>
       </div>

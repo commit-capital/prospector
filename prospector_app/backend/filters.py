@@ -128,6 +128,16 @@ def matches(row: dict, spec: dict) -> bool:
                     return False
             elif have != want:
                 return False
+    if spec.get("claimed"):
+        # "unclaimed" or an operator name, over the row's shared claim marker
+        # (#323); the service layer resolves the "mine" alias to a name.
+        want = str(spec["claimed"])
+        by = (row.get("claim") or {}).get("by")
+        if want == "unclaimed":
+            if by is not None:
+                return False
+        elif by != want:
+            return False
     if spec.get("paths"):
         # case-insensitive substring over the PR's changed file paths (from the
         # cached diff). A PR with no cached diff has [] and never matches.
