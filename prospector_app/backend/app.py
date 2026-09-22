@@ -52,6 +52,7 @@ from prospector_app.backend import review_refresh
 from prospector_app.backend import responses as responses_mod
 from prospector_app.backend import service
 from prospector_app.backend import suggested_actions
+from prospector_app.backend import system_health
 from prospector_app.backend import tables
 from prospector_app.backend import training
 from prospector_app.backend import fix_queue
@@ -507,6 +508,13 @@ def status_now():
     host, queued/parked counts, worker liveness, and this backend's running
     jobs."""
     return work_status.now()
+
+
+@app.get("/api/system-health")
+def system_health_get() -> system_health.SystemHealth:
+    """Systemwide health for the strip every page shows: worker lanes down
+    across every machine on this store, and stale ingests."""
+    return system_health.status()
 
 
 @app.get("/api/autonomy")
