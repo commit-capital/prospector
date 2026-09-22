@@ -949,6 +949,27 @@ export interface WorkStatus {
  *  run history from the runs ledger over the selected window. */
 export interface VerifyQueue { queue: VerifyQueueEntry[]; history: AutohuntRun[]; }
 
+/** One problem the health strip names: a lane count, a tripped or offline
+ *  worker, or a stale ingest. `detail` is the hover tooltip. */
+export interface SystemHealthItem {
+  kind: "lanes" | "trip" | "offline" | "ingest";
+  severity: "amber" | "red";
+  label: string;
+  detail?: string | null;
+  host?: string | null;
+}
+
+/** Systemwide health across every machine on this store: worker lanes down
+ *  and stale ingests. `workers_stalled` means every known worker lane is
+ *  down, so nothing "in motion" is actually moving. */
+export interface SystemHealth {
+  severity: "ok" | "amber" | "red";
+  items: SystemHealthItem[];
+  lanes_total: number;
+  lanes_down: number;
+  workers_stalled: boolean;
+}
+
 export interface PRDetail extends PRRow {
   body?: string | null;
   base?: string | null;
@@ -1461,7 +1482,8 @@ export const api = {
   alertCaps: () => get<AlertCaps>("/api/alerts/caps"),
   getAlert: (source: AlertSource, n: number) => get<AlertDetail>(`/api/alerts/${source}/${n}`),
   queryAdvisories: (opts: {
-    q?: string; sort?: string; direction?: string; state?: string | string[]; verdict?: string;
+    q?: string; sort?: string; direction?: string; state?: string | string[];
+    severity?: string[]; verdict?: string;
     offset?: number; limit?: number;
   } = {}) =>
     fetch("/api/advisories/query", {
@@ -1822,6 +1844,8 @@ export const api = {
     return get<FixQueue>(`/api/fix/queue?${qs}`);
   },
   workStatus: () => get<WorkStatus>("/api/status/now"),
+
+  systemHealth: () => get<SystemHealth>("/api/system-health"),
   /** Reopen a tripped worker lane by the operator's say-so. */
   workerHealthResume: async (host: string, lane: string): Promise<void> => {
     const r = await fetch("/api/worker/health/resume", {
@@ -1995,6 +2019,10 @@ export interface FirehoseStats {
     author: string | null; closed_at: string | null; reason: string | null;
   }>;
   iss_action_counts: Record<string, number>;
+  // When each corpus was last refreshed from upstream — days after these
+  // stamps carry no ingested data and render hatched, not as zero.
+  ingest_as_of: string | null;
+  issue_ingest_as_of: string | null;
 }
 
 export interface ActivityPerson {

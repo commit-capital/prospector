@@ -1,15 +1,21 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router";
-import { api, type IssueRow, type PRRow, type QueryResult } from "../api";
+import {
+  api, type AdvisoryQueryResult, type AlertQueryResult, type IssueRow, type PRRow,
+  type QueryResult,
+} from "../api";
 import { LinkedIssues } from "../components/LinkedIssues";
 import { PRLink } from "../components/PRLink";
 import { useIssueFlyout } from "../useIssueFlyout";
 import { useJobStream } from "../useJobStream";
 import { useRepoMeta } from "../RepoMetaContext";
+import { useSystemHealth } from "../useSystemHealth";
 import {
   breakdownHref, exploreHref, HOME_BREAKDOWN_ENTRIES, HOME_CARDS, HOME_COUNT_SPECS,
   HOME_ISSUE_CARDS, issuesHref, painLabel,
   SAMPLE_ISSUE_LIMIT, SAMPLE_LIMIT, SAMPLE_QUERY,
+  SECURITY_ADVISORIES_HREF, SECURITY_ADVISORY_QUERY, SECURITY_ALERT_QUERY,
+  SECURITY_ALERTS_HREF, SECURITY_CARD,
   type HomeCard, type HomeIssueAction, type HomeIssueCard, type HomeRowAction,
 } from "./homeCards";
 
@@ -109,6 +115,125 @@ function HomeCardRow({ card, count, sample, breakdown, onActionDone }: {
             <Link to={href} className="home-show-all small">
               Show all {sample.total} in the Explorer →
             </Link>
+          </>
+        )}
+        {total === 0 && <div className="muted small">None right now.</div>}
+      </div>
+    </div>
+  );
+}
+
+const SECURITY_SEVERITY_CLS: Record<string, string> = {
+  critical: "chip-red", high: "chip-red", medium: "chip-yellow",
+};
+const SECURITY_SEVERITY_RANK: Record<string, number> = {
+  critical: 3, high: 2, medium: 1, low: 0,
+};
+
+// How many merged sample rows the Security card shows: one more than the PR
+// cards' SAMPLE_LIMIT, so an open secret alert still surfaces when advisories
+// fill their own slice.
+const SECURITY_SAMPLE_LIMIT = SAMPLE_LIMIT + 1;
+
+// One Security sample row, whichever store it came from: the link opens its
+// detail panel in the Security views.
+interface SecuritySample {
+  key: string;
+  severity: string;
+  created: string;
+  label: string;
+  href: string;
+}
+
+// The Security card under "Your move": open critical/high advisories the
+// find-fixed pass still marks not-fixed, plus every open secret-scanning
+// alert. Each side is counted by the same query its link opens; the sample
+// merges both most severe first, ties oldest first, so an open critical item
+// leads it.
+function HomeSecurityCard() {
+  const [data, setData] = useState<{ advisories: AdvisoryQueryResult; alerts: AlertQueryResult } | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([api.queryAdvisories(SECURITY_ADVISORY_QUERY), api.queryAlerts(SECURITY_ALERT_QUERY)])
+      .then(([advisories, alerts]) => { if (!cancelled) { setData({ advisories, alerts }); setFailed(false); } })
+      .catch(() => { if (!cancelled) setFailed(true); });
+    return () => { cancelled = true; };
+  }, []);
+  const total = data ? data.advisories.total + data.alerts.total : null;
+  const samples: SecuritySample[] = data
+    ? [
+      ...data.advisories.items.map((r) => ({
+        key: r.ghsa_id,
+        severity: r.severity,
+        created: r.created_at ?? "",
+        label: r.summary ?? r.ghsa_id,
+        href: `${SECURITY_ADVISORIES_HREF}&advisory=${encodeURIComponent(r.ghsa_id)}`,
+      })),
+      ...data.alerts.items.map((r) => ({
+        key: `${r.source}/${r.number}`,
+        severity: r.severity,
+        created: r.created_at ?? "",
+        label: r.title ?? r.secret_type ?? `#${r.number}`,
+        href: `${SECURITY_ALERTS_HREF}&alert_source=${r.source}&alert=${r.number}`,
+      })),
+    ]
+      .sort((a, b) =>
+        (SECURITY_SEVERITY_RANK[b.severity] ?? -1) - (SECURITY_SEVERITY_RANK[a.severity] ?? -1)
+        || a.created.localeCompare(b.created))
+      .slice(0, SECURITY_SAMPLE_LIMIT)
+    : [];
+  const breakdown = data
+    ? [
+      { label: "advisories not fixed", count: data.advisories.total, href: SECURITY_ADVISORIES_HREF },
+      { label: "open secret alerts", count: data.alerts.total, href: SECURITY_ALERTS_HREF },
+    ].filter((b) => b.count !== 0)
+    : [];
+  return (
+    <div className="act-card home-card">
+      <Link to={SECURITY_CARD.href} className="home-card-head act-card-clickable" title="Open the Security views">
+        <div className={"act-card-n" + (total === null && !failed ? " home-count-loading" : "")}>
+          {failed ? "?" : total ?? "…"}
+        </div>
+        <div className="home-card-text">
+          <div className="act-card-l">{SECURITY_CARD.title}</div>
+          <div className="small muted home-card-blurb">{SECURITY_CARD.blurb}</div>
+        </div>
+      </Link>
+      {breakdown.length > 0 && (
+        <div className="home-breakdown small">
+          {breakdown.map((b) => (
+            <Link key={b.label} to={b.href} className="home-breakdown-item"
+              title={`Open the ${b.label} in the Security views`}>
+              <span className="mono">{b.count}</span> {b.label}
+            </Link>
+          ))}
+        </div>
+      )}
+      <div className="home-card-side">
+        {failed && <div className="muted small">Failed to load security data.</div>}
+        {samples.length > 0 && (
+          <>
+            <table className="home-sample-table">
+              <tbody>
+                {samples.map((s) => (
+                  <tr key={s.key} className="home-sample-row">
+                    <td className="home-sample-title" title={s.label}>
+                      <Link to={s.href}>{s.label}</Link>
+                    </td>
+                    <td className="home-sample-pain small">
+                      <span className={`chip ${SECURITY_SEVERITY_CLS[s.severity] ?? "chip-muted"} sm`}
+                        title="Severity">{s.severity}</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {total !== null && total > samples.length && (
+              <Link to={SECURITY_CARD.href} className="home-show-all small">
+                Show all {total} in Security →
+              </Link>
+            )}
           </>
         )}
         {total === 0 && <div className="muted small">None right now.</div>}
@@ -220,6 +345,9 @@ function HomeIssueCardRow({ card }: { card: HomeIssueCard }) {
 }
 
 export default function Home() {
+  // While every known worker lane is down (tripped or its machine offline),
+  // the workers' column is not actually moving: retitle it and grey its cards.
+  const stalled = useSystemHealth()?.workers_stalled ?? false;
   const [counts, setCounts] = useState<number[] | null>(null);
   const [samples, setSamples] = useState<QueryResult[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -293,9 +421,12 @@ export default function Home() {
         <section className="home-col">
           <div className="home-col-head muted">Your move — one click each</div>
           {HOME_CARDS.filter((c) => c.column === "act").map(renderCard)}
+          <HomeSecurityCard />
         </section>
-        <section className="home-col">
-          <div className="home-col-head muted">In motion — the workers clear these</div>
+        <section className={"home-col" + (stalled ? " home-col-stalled" : "")}>
+          <div className="home-col-head muted">
+            {stalled ? "Stalled — the workers are down" : "In motion — the workers clear these"}
+          </div>
           {HOME_CARDS.filter((c) => c.column === "auto").map(renderCard)}
         </section>
         <section className="home-col">

@@ -52,6 +52,7 @@ from prospector_app.backend import review_refresh
 from prospector_app.backend import responses as responses_mod
 from prospector_app.backend import service
 from prospector_app.backend import suggested_actions
+from prospector_app.backend import system_health
 from prospector_app.backend import tables
 from prospector_app.backend import training
 from prospector_app.backend import fix_queue
@@ -507,6 +508,13 @@ def status_now():
     host, queued/parked counts, worker liveness, and this backend's running
     jobs."""
     return work_status.now()
+
+
+@app.get("/api/system-health")
+def system_health_get() -> system_health.SystemHealth:
+    """Systemwide health for the strip every page shows: worker lanes down
+    across every machine on this store, and stale ingests."""
+    return system_health.status()
 
 
 @app.get("/api/autonomy")
@@ -1062,11 +1070,13 @@ def list_advisories():
 @app.post("/api/advisories/query")
 def advisories_query(payload: dict = Body(default_factory=dict)):
     """Paginated Advisories-table endpoint. Body: {q?, sort?, direction?,
-    state?, verdict?, offset?, limit?}; verdict "none" selects unscanned."""
+    state?, severity?, verdict?, offset?, limit?}; verdict "none" selects
+    unscanned."""
     return advisories_mod.query_advisories(
         q=payload.get("q") or "",
         sort=payload.get("sort"), direction=payload.get("direction"),
-        state=payload.get("state"), verdict=payload.get("verdict"),
+        state=payload.get("state"), severity=payload.get("severity"),
+        verdict=payload.get("verdict"),
         offset=int(payload.get("offset", 0)),
         limit=min(int(payload.get("limit", 50)), 500),
     )
@@ -1262,6 +1272,7 @@ def activity_firehose(days: int = Query(30, le=400), all_time: bool = False,
     stats = activity.firehose_stats(scoped_prs, all_issues, days, events, start_date=start_date)
     stats["reopened_after_close"] = activity.reopened_after_close(scoped_prs, events)
     stats["iss_action_counts"] = activity.issue_action_counts(events)
+    stats.update(activity.ingest_as_of(data.runs(), issues_mod.cached_runs()))
     return stats
 
 
