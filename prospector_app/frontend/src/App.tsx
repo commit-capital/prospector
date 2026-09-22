@@ -1,11 +1,12 @@
 import { Component, lazy, Suspense, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from "react";
-import { NavLink, Outlet, useLocation, useNavigate, useSearchParams } from "react-router";
+import { Link, NavLink, Outlet, useLocation, useNavigate, useSearchParams } from "react-router";
 import { ExecProvider, useExec, type Toast } from "./ExecContext";
 import { RepoMetaProvider, useRepoMeta } from "./RepoMetaContext";
 import { FeedbackButton } from "./components/FeedbackButton";
 import { AgentPaneProvider } from "./components/AgentPane";
 import { isReachable, subscribeHealth, pingHealth } from "./health";
 import { api, type WorkStatus } from "./api";
+import { useSystemHealth } from "./useSystemHealth";
 import { loadWithRecovery } from "./lazyLoad";
 import { timeAgo } from "./timeAgo";
 import { workStatusLabel } from "./workStatusLabel";
@@ -419,6 +420,29 @@ function Toasts() {
   );
 }
 
+// The thin systemwide health strip on every page: worker lanes down on any
+// machine sharing this store (tripped, or the worker offline), and stale
+// ingests. Amber for a partial problem, red for a full outage; hidden while
+// everything is healthy. The whole strip opens the Control tab, which holds
+// the Resume banner and the ingest buttons that fix what it names.
+function HealthStrip() {
+  const health = useSystemHealth();
+  if (!health || health.severity === "ok") return null;
+  return (
+    <Link to="/control" className={`health-strip health-strip-${health.severity}`} role="alert"
+      title="Open the Control tab to resume lanes or re-run ingest">
+      <span aria-hidden="true">⚠</span>
+      {health.items.map((it, i) => (
+        <span key={`${it.kind}-${it.host ?? i}`} className="health-strip-item"
+          title={it.detail ?? undefined}>
+          {i > 0 && <span className="health-strip-sep" aria-hidden="true">·</span>}
+          {it.label}
+        </span>
+      ))}
+    </Link>
+  );
+}
+
 // Loud, dismissable-by-recovery banner shown whenever the backend API can't be
 // reached. Polls /api/health (faster while down) so the page heals itself once
 // the backend is back up, without a manual refresh.
@@ -533,6 +557,7 @@ export default function App() {
             <SettingsMenu />
           </div>
         </header>
+        <HealthStrip />
         <main className="content">
           <Content />
         </main>
