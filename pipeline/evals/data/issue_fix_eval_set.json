@@ -1,0 +1,118 @@
+{
+ "version": 1,
+ "repo": "paperclipai/paperclip",
+ "tier": 1,
+ "bases": [
+  {
+   "base_sha": "362c30ccdcf52a39bfa0fc42e7725e66c1a36091",
+   "span": "2026-06-11..2026-06-12",
+   "fixes": 12,
+   "qualified_at": "2026-09-22T20:42:53+00:00",
+   "instances": [
+    {
+     "issue": 2257,
+     "pr": 8018,
+     "verdict": "fair",
+     "detail": "green exit 0/0: \u001b[2m   Start at \u001b[22m 20:38:47 | \u001b[2m   Duration \u001b[22m 15.24s\u001b[2m (transform 1.51s, setup 79ms, import 4.01s, tests 11.01s, environment 0ms)\u001b[22m"
+    },
+    {
+     "issue": 4923,
+     "pr": 5942,
+     "verdict": "fair",
+     "detail": "green exit 0/0: \u001b[2m   Start at \u001b[22m 20:41:07 | \u001b[2m   Duration \u001b[22m 52.19s\u001b[2m (transform 1.04s, setup 34ms, import 1.96s, tests 50.14s, environment 0ms)\u001b[22m"
+    },
+    {
+     "issue": 7890,
+     "pr": 7935,
+     "verdict": "fair",
+     "detail": "green exit 0/0: \u001b[2m   Start at \u001b[22m 20:40:42 | \u001b[2m   Duration \u001b[22m 2.15s\u001b[2m (transform 348ms, setup 36ms, import 1.01s, tests 1.05s, environment 0ms)\u001b[22m"
+    },
+    {
+     "issue": 7972,
+     "pr": 8041,
+     "verdict": "fair",
+     "detail": "green exit 0/0: \u001b[2m   Start at \u001b[22m 20:40:54 | \u001b[2m   Duration \u001b[22m 310ms\u001b[2m (transform 20ms, setup 15ms, import 12ms, tests 59ms, environment 173ms)\u001b[22m"
+    },
+    {
+     "issue": 11,
+     "pr": 2482,
+     "verdict": "r6-red",
+     "detail": "red exit 0/None: \u001b[2m   Start at \u001b[22m 20:38:06 | \u001b[2m   Duration \u001b[22m 13.72s\u001b[2m (transform 563ms, setup 38ms, import 2.10s, tests 11.53s, environment 0ms)\u001b[22m"
+    },
+    {
+     "issue": 1033,
+     "pr": 4318,
+     "verdict": "fix-path-withheld",
+     "detail": "its fix touches a tier-0 path: server/src/services/heartbeat.ts"
+    },
+    {
+     "issue": 1390,
+     "pr": 2482,
+     "verdict": "duplicate-pr",
+     "detail": "another issue already measures this fix"
+    },
+    {
+     "issue": 1690,
+     "pr": 5872,
+     "verdict": "oracle-imports-pr-symbol",
+     "detail": "its tests import applyTrustProxy, parseTrustProxyEnv"
+    },
+    {
+     "issue": 3072,
+     "pr": 8013,
+     "verdict": "oracle-imports-pr-symbol",
+     "detail": "its tests import redactSensitive"
+    },
+    {
+     "issue": 3817,
+     "pr": 4973,
+     "verdict": "fix-path-withheld",
+     "detail": "its fix touches a tier-0 path: server/src/services/heartbeat.ts"
+    },
+    {
+     "issue": 3935,
+     "pr": 4973,
+     "verdict": "fix-path-withheld",
+     "detail": "its fix touches a tier-0 path: server/src/services/heartbeat.ts"
+    },
+    {
+     "issue": 3980,
+     "pr": 4973,
+     "verdict": "fix-path-withheld",
+     "detail": "its fix touches a tier-0 path: server/src/services/heartbeat.ts"
+    },
+    {
+     "issue": 4194,
+     "pr": 4318,
+     "verdict": "fix-path-withheld",
+     "detail": "its fix touches a tier-0 path: server/src/services/heartbeat.ts"
+    },
+    {
+     "issue": 4342,
+     "pr": 5213,
+     "verdict": "r6-green",
+     "detail": "green_confirm exit 20/None: \u001b[2m   Start at \u001b[22m 20:40:06 | \u001b[2m   Duration \u001b[22m 23.83s\u001b[2m (transform 1.13s, setup 36ms, import 2.08s, tests 21.66s, environment 0ms)\u001b[22m"
+    },
+    {
+     "issue": 4628,
+     "pr": 4890,
+     "verdict": "oracle-imports-pr-symbol",
+     "detail": "its tests import parseStatusFilter"
+    },
+    {
+     "issue": 5177,
+     "pr": 5942,
+     "verdict": "duplicate-pr",
+     "detail": "another issue already measures this fix"
+    },
+    {
+     "issue": 8033,
+     "pr": 8034,
+     "verdict": "oracle-imports-pr-symbol",
+     "detail": "its tests import nextCronTickInTimeZone"
+    }
+   ]
+  }
+ ],
+ "fair": 4
+}
