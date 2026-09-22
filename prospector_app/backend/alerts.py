@@ -133,7 +133,9 @@ def query_alerts(q: str = "", sort: str | None = None, direction: str | None = N
     or None returns everything); `severity` accepts one value or a list
     (OR'd); `verdict` filters the fix-scan verdict, with "none" selecting
     unscanned alerts; `q` is a case-insensitive substring match over number,
-    title, rule id, package, secret type, and path."""
+    title, rule id, package, secret type, and path. With no `sort` (or an
+    unknown one) rows order by severity, most severe first, ties oldest
+    first — an open critical alert always leads the list."""
     rows, pr_states_loading = list_alerts()
     if source and source != "all":
         rows = [r for r in rows if r["source"] == source]
@@ -150,10 +152,13 @@ def query_alerts(q: str = "", sort: str | None = None, direction: str | None = N
                 if needle == str(r["number"])
                 or any(needle in (r[k] or "").lower()
                        for k in ("title", "rule_id", "package", "secret_type", "path"))]
-    key = _SORT_KEYS.get(sort or "", _SORT_KEYS["updated"])
+    key_name = sort if sort in _SORT_KEYS else "severity"
     reverse = (direction == "desc" if direction in ("asc", "desc")
-               else (sort or "updated") in _DEFAULT_DESC)
-    rows.sort(key=lambda r: (key(r), r["id"]), reverse=reverse)
+               else key_name in _DEFAULT_DESC)
+    # Two stable passes: whatever the sort column, equal rows order oldest
+    # first, so "severity" reads as severity-then-age.
+    rows.sort(key=lambda r: (r["created_at"] or "", r["id"]))
+    rows.sort(key=_SORT_KEYS[key_name], reverse=reverse)
     total = len(rows)
     return {"items": rows[offset:offset + limit], "total": total,
             "offset": offset, "limit": limit,

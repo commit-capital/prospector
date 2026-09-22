@@ -19,7 +19,7 @@ def seeded(tmp_path, monkeypatch):
         meta = {
             "source": source, "number": number, "state": "open",
             "raw_state": "open", "severity": "medium",
-            "created_at": "2026-08-01T00:00:00Z",
+            "created_at": f"2026-07-0{number}T00:00:00Z",
             "updated_at": f"2026-08-0{number}T00:00:00Z",
             "html_url": f"https://github.com/o/r/security/{source}/{number}",
         }
@@ -78,6 +78,15 @@ def test_query_alerts_serves_rows_while_pr_snapshot_loads(seeded, monkeypatch):
     assert out["total"] == 3
     dep = next(r for r in out["items"] if r["source"] == "dependabot")
     assert dep["links"][0]["state"] == "open"  # the recorded state, unhydrated
+
+
+def test_query_default_orders_severity_then_age(seeded):
+    # dependabot#2 and secret-scanning#3 are both critical; #2 was created
+    # earlier, so it leads. code-scanning#1 (high) follows the criticals.
+    out = alerts_mod.query_alerts()
+    assert [r["number"] for r in out["items"]] == [2, 3, 1]
+    out = alerts_mod.query_alerts(sort="not-a-column")
+    assert [r["number"] for r in out["items"]] == [2, 3, 1]
 
 
 def test_query_filters_and_sorts(seeded):
