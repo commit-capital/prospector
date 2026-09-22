@@ -106,16 +106,24 @@ _DEFAULT_DESC = {"severity", "updated", "created", "links"}
 
 
 def query_advisories(q: str = "", sort: str | None = None, direction: str | None = None,
-                     state: str | list[str] | None = None, verdict: str | None = None,
+                     state: str | list[str] | None = None,
+                     severity: str | list[str] | None = None,
+                     verdict: str | None = None,
                      offset: int = 0, limit: int = 50) -> dict:
     """Paginated table query. `state` is one value or a list (OR'd; "all" in
-    either form, or None, = everything); `verdict` filters the fix-scan
-    verdict, "none" selecting unscanned; `q` is a case-insensitive substring
-    over ghsa, summary, reporter, and CVE id."""
+    either form, or None, = everything); `severity` accepts one value or a
+    list (OR'd); `verdict` filters the fix-scan verdict, "none" selecting
+    unscanned; `q` is a case-insensitive substring over ghsa, summary,
+    reporter, and CVE id. With no `sort` (or an unknown one) rows order by
+    severity, most severe first, ties oldest first — an open critical
+    advisory always leads the list."""
     rows, loading = list_advisories()
     wanted = [s for s in (state if isinstance(state, list) else [state]) if s]
     if wanted and "all" not in wanted:
         rows = [r for r in rows if r["state"] in wanted]
+    if severity:
+        wanted_sev = severity if isinstance(severity, list) else [severity]
+        rows = [r for r in rows if r["severity"] in wanted_sev]
     if verdict:
         rows = [r for r in rows if (r["verdict"] or "none") == verdict]
     needle = q.strip().lower()
@@ -123,9 +131,12 @@ def query_advisories(q: str = "", sort: str | None = None, direction: str | None
         rows = [r for r in rows
                 if any(needle in (r[k] or "").lower()
                        for k in ("ghsa_id", "summary", "reporter", "cve_id"))]
-    key = _SORT_KEYS.get(sort or "", _SORT_KEYS["updated"])
+    key_name = sort if sort in _SORT_KEYS else "severity"
     reverse = (direction == "desc" if direction in ("asc", "desc")
-               else (sort or "updated") in _DEFAULT_DESC)
-    rows.sort(key=lambda r: (key(r), r["id"]), reverse=reverse)
+               else key_name in _DEFAULT_DESC)
+    # Two stable passes: whatever the sort column, equal rows order oldest
+    # first, so "severity" reads as severity-then-age.
+    rows.sort(key=lambda r: (r["created_at"] or "", r["id"]))
+    rows.sort(key=_SORT_KEYS[key_name], reverse=reverse)
     return {"items": rows[offset:offset + limit], "total": len(rows),
             "offset": offset, "limit": limit, "pr_states_loading": loading}

@@ -34,7 +34,7 @@ def seeded(tmp_path, monkeypatch):
                   links=[{"kind": "pr", "number": 10, "how": "text-ref", "state": "open"}])
     a.record_fix_scan("fixed", by="agent", fix_commit="c647b8cc2ea6", evidence="gone")
     b = seed(G2, summary="SSRF via skill import (again)", reporter="bob",
-             updated_at="2026-08-02T00:00:00Z")
+             created_at="2026-08-02T00:00:00Z", updated_at="2026-08-02T00:00:00Z")
     b.record_fix_scan("duplicate", by="agent", duplicate_of=G1, evidence="same")
     seed(G3, state="published", cve_id="CVE-2026-41679")
     monkeypatch.setattr(adv_mod, "STORE_ROOT", tmp_path)
@@ -67,6 +67,30 @@ def test_query_filters_state_verdict_and_text(seeded):
     assert [r["ghsa_id"] for r in adv_mod.query_advisories(q="cve-2026")["items"]] == [G3]
     out = adv_mod.query_advisories(sort="severity", direction="desc", limit=1)
     assert out["total"] == 3 and out["items"][0]["ghsa_id"] == G1
+
+
+def test_query_default_orders_severity_then_age(seeded):
+    # G1 is the one critical; G2 and G3 are both medium and G3 was created
+    # first, so it leads G2. An unknown sort falls back to the same order.
+    assert [r["ghsa_id"] for r in adv_mod.query_advisories()["items"]] == [G1, G3, G2]
+    out = adv_mod.query_advisories(sort="not-a-column")
+    assert [r["ghsa_id"] for r in out["items"]] == [G1, G3, G2]
+
+
+def test_query_severity_filter(seeded):
+    out = adv_mod.query_advisories(severity=["critical", "high"])
+    assert [r["ghsa_id"] for r in out["items"]] == [G1]
+    assert [r["ghsa_id"] for r in adv_mod.query_advisories(severity="medium")["items"]] == [G3, G2]
+
+
+def test_query_route_passes_severity(seeded):
+    from fastapi.testclient import TestClient
+    from prospector_app.backend import app as appmod
+    c = TestClient(appmod.app, raise_server_exceptions=False)
+    r = c.post("/api/advisories/query",
+               json={"severity": ["critical", "high"], "state": ["triage", "draft"]})
+    assert r.status_code == 200
+    assert [x["ghsa_id"] for x in r.json()["items"]] == [G1]
 
 
 def test_detail_carries_description_and_404s_on_unknown(seeded):
