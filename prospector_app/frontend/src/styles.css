@@ -1163,6 +1163,11 @@ tr.row-done:hover > td { opacity: 1; }
 .title-cell .chip { flex: none; }
 .title-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conflict-mark { color: var(--red); }
+.safety-cell { white-space: nowrap; font-size: 11px; }
+/* the keyboard cursor row (j/k) — an outline, distinct from selection tint */
+.pr-table tbody tr.kb-cursor { outline: 2px solid var(--accent); outline-offset: -2px; }
+.pr-table tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.kb-hint { margin-left: auto; }
 /* filters row + the column-visibility menu share one toolbar line */
 .explorer-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; }
 .col-menu { position: relative; }
