@@ -1,115 +1,30 @@
 """Telling a human that a worker has stopped working properly.
 
 A tripped lane and a worker that stopped beating are the two conditions the
-system cannot fix on its own. Each is escalated the same three ways: a
-`worker:trip` or `worker:offline` entry in the runs ledger, the health record
-the Control tab's banner reads, and an issue on PROSPECTOR_FEEDBACK_REPO filed
-as the operator (the only identity that can reach the meta-repo), labeled so it
-can be filtered, and deduplicated per failure signature for a week.
+system cannot fix on its own. Both reach the operator through the app: the
+health strip atop every page and the Control tab's banner read the worker
+health records and the heartbeats live, so an alert clears the moment its
+condition does. A trip also appends a `worker:trip` entry to the runs ledger.
 """
 from __future__ import annotations
 
 import json
-import re
-import subprocess
-import tempfile
-import threading
 import traceback
 from datetime import datetime, timezone
-from pathlib import Path
 
-from pipeline import gh, settings, worker_health
+from pipeline import settings, worker_health
 from pipeline.storekit import now as _now
-from prospector_app.backend import data, verify_queue, worker_log
-
-LABEL = "worker-health"
-LABEL_COLOR = "D93F0B"
-
-# How often any live backend looks for workers that stopped beating.
-WATCH_SECONDS = 600.0
-
-_watch_thread: threading.Thread | None = None
-_stop = threading.Event()
-
-
-def _issue_number(url: str) -> int | None:
-    m = re.search(r"/issues/(\d+)", url)
-    return int(m.group(1)) if m else None
-
-
-def file_issue(title: str, body: str) -> tuple[int | None, str | None]:
-    """Create the issue on the feedback repo as the operator. Returns (number,
-    url), or (None, None) when no repo is configured or gh could not file it.
-    Never raises: escalation must not take the worker down with it."""
-    repo = settings.feedback_repo()
-    if not repo:
-        return None, None
-    env = gh.operator_env()
-    try:
-        subprocess.run(["gh", "label", "create", LABEL, "--repo", repo, "--force",
-                        "--color", LABEL_COLOR,
-                        "--description", "Filed by Prospector when a worker trips or goes dark"],
-                       capture_output=True, text=True, timeout=30, env=env)
-        with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as fh:
-            fh.write(body)
-            body_path = fh.name
-        try:
-            for labels in (["--label", LABEL], []):
-                r = subprocess.run(["gh", "issue", "create", "--repo", repo, "--title", title,
-                                    "--body-file", body_path, *labels],
-                                   capture_output=True, text=True, timeout=60, env=env)
-                if r.returncode == 0:
-                    url = r.stdout.strip().splitlines()[-1] if r.stdout.strip() else ""
-                    return _issue_number(url), url or None
-            print(f"[escalation] could not file issue on {repo}: "
-                  f"{(r.stderr or r.stdout).strip()[:300]}", flush=True)
-        finally:
-            Path(body_path).unlink(missing_ok=True)
-    except (OSError, subprocess.SubprocessError) as e:
-        print(f"[escalation] could not file issue on {repo}: {e}", flush=True)
-    return None, None
-
-
-def _trip_body(host: str, lanes: list[str], rec: dict) -> str:
-    first = worker_health.lane(rec, lanes[0])
-    tripped = first.get("tripped") or {}
-    names = ", ".join(f"**{lane}**" for lane in lanes)
-    lines = [
-        f"Prospector's {names} lane{'s' if len(lanes) > 1 else ''} on worker **{host}** "
-        f"tripped and stopped picking work.",
-        "",
-        f"- kind: `{tripped.get('kind')}`",
-        f"- reason: {tripped.get('reason')}",
-        f"- tripped at: {tripped.get('at')}",
-        f"- repository: {settings.repo()}",
-        "",
-        "A lane tripped on the agent CLI or the sandbox retests itself every 15 minutes "
-        "and reopens on a pass; one tripped on anything else opens once after six hours. "
-        "The Control tab's banner has a Resume button for a manual override.",
-        "",
-        "### Last machine failures",
-    ]
-    for lane in lanes:
-        for f in (worker_health.lane(rec, lane).get("recent") or [])[-worker_health.RECENT_KEEP:]:
-            pr = f" (PR #{f.get('pr')})" if f.get("pr") else ""
-            lines.append(f"- {lane} {f.get('at')} `{f.get('kind')}`{pr}: {f.get('reason')}")
-    tail = worker_log.tail(3000)
-    if tail:
-        lines += ["", "### Worker log tail", "```", tail.strip(), "```"]
-    lines += ["", "_Filed automatically by prospector_app/backend/escalation.py._"]
-    return "\n".join(lines)
+from prospector_app.backend import data, verify_queue
 
 
 def escalate_trip(lanes: list[str]) -> None:
     """Record this worker's fresh trip of `lanes` (one cause, one or more
-    lanes) in the ledger and file the issue, or skip it when one is recent for
-    the same failure kind on any lane of this worker."""
+    lanes) in the ledger."""
     if not lanes:
         return
     host = settings.worker_id()
     st = data.store()
-    rec = worker_health.load(st, host)
-    tripped = worker_health.lane(rec, lanes[0]).get("tripped") or {}
+    tripped = worker_health.lane(worker_health.load(st, host), lanes[0]).get("tripped") or {}
     kind = str(tripped.get("kind") or "unknown")
     reason = str(tripped.get("reason") or "")
     try:
@@ -118,22 +33,7 @@ def escalate_trip(lanes: list[str]) -> None:
                                  "reason": reason[:600]}})
     except Exception:
         traceback.print_exc()
-    sig = worker_health.signature(kind, "")
-    if not worker_health.issue_due(rec, lanes[0], sig):
-        print(f"[escalation] {', '.join(lanes)} tripped on {host}; an issue for this "
-              f"failure kind is recent", flush=True)
-        return
-    number, url = file_issue(
-        f"[worker-health] {host}: {', '.join(lanes)} lane"
-        f"{'s' if len(lanes) > 1 else ''} tripped ({kind})",
-        _trip_body(host, lanes, rec))
-
-    def _record(r: dict) -> None:
-        for lane in lanes:
-            worker_health.record_issue(r, lane, sig=sig, number=number, url=url)
-    worker_health.update(st, host, _record)
-    print(f"[escalation] {', '.join(lanes)} tripped on {host}: {reason[:200]}"
-          + (f" — filed {url}" if url else " — no issue filed"), flush=True)
+    print(f"[escalation] {', '.join(lanes)} tripped on {host}: {reason[:200]}", flush=True)
 
 
 def offline_workers(now: datetime | None = None) -> list[dict]:
@@ -158,72 +58,6 @@ def offline_workers(now: datetime | None = None) -> list[dict]:
     return out
 
 
-def check_offline_workers(now: datetime | None = None) -> list[str]:
-    """Escalate each worker that has gone dark, once per silence: the ledger
-    entry and the issue key on the worker and the beat it went dark after.
-    Returns the hosts escalated this pass."""
-    st = data.store()
-    escalated: list[str] = []
-    seen: set[str] = set()
-    for w in offline_workers(now):
-        host = str(w["host"])
-        if host in seen:
-            continue
-        seen.add(host)
-        rec = worker_health.load(st, host)
-        sig = worker_health.signature("offline", f"since {w['last_beat']}")
-        if not worker_health.issue_due(rec, "worker", sig, now):
-            continue
-        hours = float(w["age_seconds"]) / 3600
-        reason = (f"no heartbeat from {host} since {w['last_beat']} "
-                  f"({hours:.1f} hours)")
-        try:
-            st.append_run({"phase": "worker:offline", "started": _now(), "finished": _now(),
-                           "stats": {"host": host, "reason": reason}})
-        except Exception:
-            traceback.print_exc()
-        body = "\n".join([
-            f"Prospector worker **{host}** stopped beating.",
-            "",
-            f"- last heartbeat: {w['last_beat']} ({hours:.1f} hours ago)",
-            f"- repository: {settings.repo()}",
-            "",
-            "Work it had claimed is reclaimable by any other worker once its heartbeat is "
-            "stale. Bring the machine back, or clear its registry entries if it is retired.",
-            "",
-            "_Filed automatically by prospector_app/backend/escalation.py._"])
-        number, url = file_issue(f"[worker-health] {host}: worker offline", body)
-        worker_health.update(st, host, lambda r: worker_health.record_issue(
-            r, "worker", sig=sig, number=number, url=url))
-        print(f"[escalation] {reason}" + (f" — filed {url}" if url else ""), flush=True)
-        escalated.append(host)
-    return escalated
-
-
-def _watch_loop() -> None:
-    while not _stop.is_set():
-        try:
-            check_offline_workers()
-        except Exception:
-            traceback.print_exc()
-        _stop.wait(WATCH_SECONDS)
-
-
-def start_watch() -> bool:
-    """Start the offline-worker watch on this backend when a feedback repo is
-    configured to escalate into. Idempotent."""
-    global _watch_thread
-    if not settings.feedback_repo():
-        return False
-    if _watch_thread is not None and _watch_thread.is_alive():
-        return True
-    _stop.clear()
-    _watch_thread = threading.Thread(target=_watch_loop, daemon=True,
-                                     name="escalation-watch")
-    _watch_thread.start()
-    return True
-
-
 def health_status() -> dict:
     """Every worker's lane health for the app: `{hosts: [{host, lanes}]}`,
     tripped lanes first."""
@@ -231,7 +65,7 @@ def health_status() -> dict:
     out = []
     for host, rec in sorted(hosts.items()):
         lanes = {name: {k: entry.get(k) for k in
-                        ("consecutive_failures", "tripped", "retest", "issue",
+                        ("consecutive_failures", "tripped", "retest",
                          "recent", "last_success_at")}
                  for name, entry in (rec.get("lanes") or {}).items()}
         out.append({"host": host, "lanes": lanes,

@@ -1807,10 +1807,6 @@ class TestLaneHealth:
     def test_agent_outage_during_resolve_fails_and_trips_the_agent_lanes(
             self, store, monkeypatch, tmp_path):
         from pipeline import worker_health
-        from prospector_app.backend import escalation
-        filed: list[str] = []
-        monkeypatch.setattr(escalation, "file_issue",
-                            lambda t, b: (filed.append(t) or None, None))
         monkeypatch.setenv("TRIAGE_FIX_WORKER", "1")
         fix_queue.queue_pr(1, "rebase")
         fake = _ConflictedResubmit(tmp_path)
@@ -1831,12 +1827,9 @@ class TestLaneHealth:
         assert not worker_health.is_tripped(rec, "security")
         trips = [r for r in store.runs() if getattr(r, "phase", "") == "worker:trip"]
         assert [r.raw["stats"]["lanes"] for r in trips] == [["fix"]]
-        assert len(filed) == 1 and "agent-unavailable" in filed[0]
 
     def test_three_machine_failures_trip_the_fix_lane(self, store, monkeypatch, tmp_path):
         from pipeline import worker_health
-        from prospector_app.backend import escalation
-        monkeypatch.setattr(escalation, "file_issue", lambda t, b: (None, None))
         for _ in range(3):
             fix_queue.queue_pr(1, "update")
             monkeypatch.setattr(fix_worker, "_resubmit", _Probe(rc=0))

@@ -5,7 +5,7 @@ Every ending a worker writes is either the PR's (a refusal, a verdict, a push)
 or the machine's (a sandbox that would not start, an agent that could not run,
 a crash). The machine's endings are counted here per lane, and a run of them
 trips the lane: it picks nothing until a self-test passes or an operator
-resumes it, and the trip is escalated (a ledger entry, a banner, an issue).
+resumes it, and the trip is escalated (a ledger entry and the app's banner).
 
 The record is one registry row per worker (`Store.load_worker_health`), with
 one entry per lane in LANES:
@@ -13,14 +13,12 @@ one entry per lane in LANES:
     {"consecutive_failures": int, "recent": [failure, ...],
      "last_success_at": iso | None,
      "tripped": {"at", "kind", "reason"} | None,
-     "retest": {"at", "ok", "detail"} | None,
-     "issue": {"signature", "number", "url", "filed_at"} | None}
+     "retest": {"at", "ok", "detail"} | None}
 
 Functions here are pure over that record; `update` is the one write path.
 """
 from __future__ import annotations
 
-import re
 import threading
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -40,11 +38,9 @@ RETEST_SECONDS = 15 * 60
 # How long a lane tripped on a condition no self-test can answer stays closed
 # before it is opened once to see whether the cause passed on its own.
 COOL_DOWN_SECONDS = 6 * 3600
-# How long one failure signature suppresses a second issue.
-ISSUE_DEDUP_SECONDS = 7 * 24 * 3600
-# How stale a worker's heartbeat is before its silence is escalated.
+# How stale a worker's heartbeat is before the app reports it offline.
 OFFLINE_AFTER_SECONDS = 3600
-# Failures kept on the record for the operator and the issue body.
+# Failures kept on the record for the operator.
 RECENT_KEEP = 5
 
 _lock = threading.Lock()
@@ -154,35 +150,6 @@ def record_retest(rec: dict, name: str, *, ok: bool, detail: str,
     now = now or _now()
     lane(rec, name)["retest"] = {"at": now, "ok": ok, "detail": detail[:600]}
     rec["updated_at"] = now
-
-
-def signature(kind: str, reason: str) -> str:
-    """One string per failure shape: the kind plus the reason with numbers,
-    hashes, and paths flattened, so the same breakage files one issue."""
-    text = re.sub(r"[0-9a-f]{7,}", "#", reason.lower())
-    text = re.sub(r"\d+", "#", text)
-    text = re.sub(r"/\S+", "/…", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return f"{kind}: {text[:120]}"
-
-
-def issue_due(rec: dict, name: str, sig: str, now: datetime | None = None) -> bool:
-    """Whether a trip with this signature warrants a new issue: no lane of
-    this worker has one filed for it within ISSUE_DEDUP_SECONDS. The check
-    spans lanes because one cause (an agent outage) trips several at once."""
-    now = now or datetime.now(timezone.utc)
-    lane(rec, name)
-    for entry in (rec.get("lanes") or {}).values():
-        issue = entry.get("issue") or {}
-        if issue.get("signature") == sig and _since(issue.get("filed_at"), now) < ISSUE_DEDUP_SECONDS:
-            return False
-    return True
-
-
-def record_issue(rec: dict, name: str, *, sig: str, number: int | None,
-                 url: str | None, now: str | None = None) -> None:
-    lane(rec, name)["issue"] = {"signature": sig, "number": number, "url": url,
-                                "filed_at": now or _now()}
 
 
 def load(store: Store, host: str) -> dict:

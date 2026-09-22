@@ -855,8 +855,6 @@ class TestLaneHealth:
     def test_agent_unavailable_exit_trips_every_agent_lane_and_parks_nothing(
             self, store, monkeypatch):
         from pipeline import security_review, worker_health
-        from prospector_app.backend import escalation
-        monkeypatch.setattr(escalation, "file_issue", lambda t, b: (None, None))
         monkeypatch.setenv("TRIAGE_VERIFY_WORKER", "1")
         monkeypatch.setenv("TRIAGE_FIX_WORKER", "1")
         store.save_pr(_clean_merge_pr(1))
@@ -877,8 +875,6 @@ class TestLaneHealth:
 
     def test_three_failed_runs_trip_the_security_lane(self, store, monkeypatch):
         from pipeline import worker_health
-        from prospector_app.backend import escalation
-        monkeypatch.setattr(escalation, "file_issue", lambda t, b: (None, None))
         for n in (1, 2, 3):
             store.save_pr(_clean_merge_pr(n))
         data.refresh()
@@ -906,8 +902,6 @@ class TestLaneHealth:
 
     def test_a_verify_ending_is_booked_by_its_fault(self, store, monkeypatch):
         from pipeline import worker_health
-        from prospector_app.backend import escalation
-        monkeypatch.setattr(escalation, "file_issue", lambda t, b: (None, None))
         for n in (1, 2, 3):
             store.save_pr(_clean_merge_pr(n))
             store.edit_pr(n).record_verify_request(

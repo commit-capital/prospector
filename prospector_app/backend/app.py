@@ -87,7 +87,6 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     _launch_live_sweep()
     _launch_verify_worker()
     _launch_fix_worker()
-    _launch_escalation_watch()
     _launch_stale_refresh()
     yield
 
@@ -195,16 +194,6 @@ def _launch_fix_worker():
     if "pytest" in sys.modules:
         return
     fix_worker.startup()
-
-
-def _launch_escalation_watch():
-    """Start the offline-worker watch: any live backend escalates a worker
-    whose heartbeat has gone stale, once per silence, into the feedback repo.
-    Skipped under pytest."""
-    import sys
-    if "pytest" in sys.modules:
-        return
-    escalation.start_watch()
 
 
 def _launch_stale_refresh():
