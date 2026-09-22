@@ -509,6 +509,14 @@ def status_now():
     return work_status.now()
 
 
+@app.get("/api/autonomy")
+def autonomy():
+    """This machine's worker lane switches, for the header's autonomy
+    disclosure. Reads the process environment only — no probes, no network —
+    so the header can poll it."""
+    return {"flags": worker_control.flags()}
+
+
 @app.get("/api/setup/readiness")
 def setup_readiness():
     """This machine's worker and GitHub App readiness, plus its lane switches."""
@@ -1054,11 +1062,13 @@ def list_advisories():
 @app.post("/api/advisories/query")
 def advisories_query(payload: dict = Body(default_factory=dict)):
     """Paginated Advisories-table endpoint. Body: {q?, sort?, direction?,
-    state?, verdict?, offset?, limit?}; verdict "none" selects unscanned."""
+    state?, severity?, verdict?, offset?, limit?}; verdict "none" selects
+    unscanned."""
     return advisories_mod.query_advisories(
         q=payload.get("q") or "",
         sort=payload.get("sort"), direction=payload.get("direction"),
-        state=payload.get("state"), verdict=payload.get("verdict"),
+        state=payload.get("state"), severity=payload.get("severity"),
+        verdict=payload.get("verdict"),
         offset=int(payload.get("offset", 0)),
         limit=min(int(payload.get("limit", 50)), 500),
     )

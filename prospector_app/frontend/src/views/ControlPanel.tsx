@@ -270,7 +270,7 @@ function HuntLaneSummary({ phase, counts }: { phase: "security" | "verify"; coun
 
 export default function ControlPanel() {
   const { meta: repoMeta } = useRepoMeta();
-  const { dryRun, pushToast } = useExec();
+  const { dryRun, pushToast, pushIdentity } = useExec();
   const [specs, setSpecs] = useState<JobSpec[]>([]);
   const [jobs, setJobs] = useState<JobRec[]>([]);
   const [cluster, setCluster] = useState("");
@@ -993,7 +993,7 @@ export default function ControlPanel() {
                               onClick={() => runFixAction(e.pr, "approve")}
                               title={dryRun
                                 ? "Dry run: preview what this would push — nothing reaches GitHub until you switch to Live."
-                                : `Push this ${e.action} to PR #${e.pr} as the machine user.`}>
+                                : `Push this ${e.action} to PR #${e.pr} as ${pushIdentity?.login ?? "the machine user"}.`}>
                               {fixBusy === e.pr ? "…" : dryRun ? "✓ Push (dry run)" : "✓ Push"}
                             </button>
                             <button className="btn-secondary sm" disabled={fixBusy != null}
