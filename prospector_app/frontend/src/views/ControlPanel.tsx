@@ -993,7 +993,7 @@ export default function ControlPanel() {
                               onClick={() => runFixAction(e.pr, "approve")}
                               title={dryRun
                                 ? "Dry run: preview what this would push — nothing reaches GitHub until you switch to Live."
-                                : `Push this ${e.action} to PR #${e.pr} as the machine user.`}>
+                                : `Push this ${e.action} to PR #${e.pr} as ${fixQueue.runner.push_login ?? "the contributor-push user"}.`}>
                               {fixBusy === e.pr ? "…" : dryRun ? "✓ Push (dry run)" : "✓ Push"}
                             </button>
                             <button className="btn-secondary sm" disabled={fixBusy != null}

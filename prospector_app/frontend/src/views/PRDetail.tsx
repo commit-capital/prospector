@@ -370,8 +370,8 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
           above even the recommended Action section below. */}
       <ChecksPanel c={pr.checks} actions={checksActions} bodies={checksBodies} />
 
-      {/* Autofix: have the configured machine user push a small fix to the
-          contributor's branch, rather than asking the author and waiting.
+      {/* Autofix: have the configured contributor-push user push a small fix
+          to the contributor's branch, rather than asking the author and waiting.
           Content-authoring actions park their diff here for approval — nothing
           reaches GitHub until "Approve & push". */}
       <section className="panel">

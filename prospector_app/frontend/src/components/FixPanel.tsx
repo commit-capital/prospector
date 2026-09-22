@@ -25,7 +25,7 @@ function unavailable(runner: FixRunner | null, req: FixRequest | null,
   if (runner != null && !runner.can_queue) {
     return "No autofix worker has been seen against this store, so a queued action "
          + "would never run. Start a backend with TRIAGE_FIX_WORKER=1 on the machine "
-         + "holding the machine user's push key.";
+         + "holding the contributor-push user's key.";
   }
   const status = req?.status;
   if (status && IN_FLIGHT.includes(status)) {

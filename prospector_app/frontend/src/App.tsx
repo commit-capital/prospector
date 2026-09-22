@@ -157,22 +157,56 @@ function StoreWriteBanner() {
   return <div className="store-write-block" role="alert">⛔ {storeWriteBlock}</div>;
 }
 
-function DryRunBadge() {
-  const { botLogin, dryRun, setDryRun, livePossible, liveError, storeWriteBlock } = useExec();
+// The header noun for each autofix action the deployment pushes without asking.
+const AUTOPUSH_NOUNS: Record<string, string> = {
+  update: "branch updates", rebase: "rebases", fix: "fixes",
+  describe: "descriptions", resolve: "conflicts",
+};
+
+/** The header's mode cluster: the dry-run/live switch plus a one-line
+ *  disclosure of what the deployment pushes without asking and under which
+ *  identities — readable from every page, linking to the Setup page where the
+ *  policy is configured per machine. */
+function ModeCluster() {
+  const { identities, botLogin, dryRun, setDryRun, livePossible, liveError, storeWriteBlock,
+    pushIdentity, autopush } = useExec();
   const dryRunTitle = storeWriteBlock
     ? storeWriteBlock
     : livePossible
     ? "Toggle dry-run / live. Dry run previews every action you take in the UI — upstream posts and PR-branch pushes alike — without touching GitHub."
     : `No ${botLogin} token on this machine — dry-run only${liveError ? ` (${liveError})` : ""}`;
+  const autoNouns = autopush.map((a) => AUTOPUSH_NOUNS[a] ?? a);
+  const pushLogin = pushIdentity?.available ? pushIdentity.login : null;
+  const policyTitle = [
+    autoNouns.length
+      ? `Pushed to contributors' PR branches without asking: ${autoNouns.join(", ")}. Every other prepared change waits for your approval.`
+      : "Every prepared change waits for your approval before anything is pushed.",
+    `Comments, closes, reviews and merges are posted as ${botLogin}.`,
+    pushLogin
+      ? `Pushes to contributors' PR branches are made as ${pushLogin}.`
+      : "No contributor-push identity on this machine — pushes run on the machine that holds one.",
+    "Configured per machine in Setup.",
+  ].join(" ");
   return (
-    <button
-      className={`mode-badge ${dryRun ? "dry" : "live"}`}
-      onClick={() => setDryRun(!dryRun)}
-      disabled={!livePossible || !!storeWriteBlock}
-      title={dryRunTitle}
-    >
-      {dryRun ? "DRY RUN" : "● LIVE"}
-    </button>
+    <div className="mode-cluster">
+      <button
+        className={`mode-badge ${dryRun ? "dry" : "live"}`}
+        onClick={() => setDryRun(!dryRun)}
+        disabled={!livePossible || !!storeWriteBlock}
+        title={dryRunTitle}
+      >
+        {dryRun ? "DRY RUN" : "● LIVE"}
+      </button>
+      {identities.length > 0 && (
+        <NavLink to="/setup" className="mode-policy" title={policyTitle}>
+          <span>{autoNouns.length > 0 ? `autonomous: ${autoNouns.join(", ")}` : "asks before pushing"}</span>
+          <span className="mode-policy-idents">
+            {" · as "}<b>{botLogin}</b>
+            {pushLogin && pushLogin !== botLogin && <>{" · pushes as "}<b>{pushLogin}</b></>}
+          </span>
+        </NavLink>
+      )}
+    </div>
   );
 }
 
@@ -528,7 +562,7 @@ export default function App() {
           <div className="topbar-right">
             <WorkStatusBadge />
             <LiveStatus />
-            <DryRunBadge />
+            <ModeCluster />
             <FeedbackButton />
             <SettingsMenu />
           </div>

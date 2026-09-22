@@ -231,6 +231,24 @@ def test_identities_reports_the_push_lane(monkeypatch, tmp_path):
     assert out["push"] == {"login": "test-push-bot", "available": True}
 
 
+def test_identities_reports_the_autopush_policy(monkeypatch):
+    # The header's autonomy disclosure reads which actions push without a
+    # person's approval off this payload, sorted for a stable render.
+    _reset_caches()
+    executor._live_possible = True
+    monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", "update,rebase")
+    out = executor.identities()
+    assert out["autopush"] == ["rebase", "update"]
+
+
+def test_identities_reports_an_empty_autopush_policy(monkeypatch):
+    _reset_caches()
+    executor._live_possible = True
+    monkeypatch.delenv("TRIAGE_FIX_AUTOPUSH", raising=False)
+    out = executor.identities()
+    assert out["autopush"] == []
+
+
 def test_identities_reports_an_unconfigured_push_lane(monkeypatch):
     _reset_caches()
     executor._live_possible = True

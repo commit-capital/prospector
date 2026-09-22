@@ -2015,6 +2015,10 @@ export interface PushIdentityInfo { login: string | null; available: boolean }
 export interface IdentitiesResult {
   identities: Identity[]; live_possible: boolean; live_error: string | null;
   push: PushIdentityInfo;
+  /** The autofix actions this deployment pushes without a person's approval
+   *  (empty = every prepared change parks for review) — the header's autonomy
+   *  disclosure. */
+  autopush: FixRequestAction[];
 }
 // `status: "stale"` is a refusal the operator can confirm past: the write quotes
 // facts the author has moved beyond, and `stale` names the drift.

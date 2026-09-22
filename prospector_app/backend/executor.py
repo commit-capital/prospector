@@ -163,6 +163,10 @@ def identities() -> dict:
         # PR head branches over its SSH key, with its own availability.
         "push": {"login": settings.push_login() or None,
                  "available": settings.push_identity_configured()},
+        # The autofix actions this machine pushes without a person's approval
+        # (TRIAGE_FIX_AUTOPUSH; empty = every prepared change parks for
+        # review). The app header's autonomy disclosure renders it.
+        "autopush": sorted(settings.fix_autopush()),
     }
 
 

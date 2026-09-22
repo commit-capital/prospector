@@ -172,6 +172,15 @@ a:hover { text-decoration: underline; }
 .feedback-screenshot-preview { max-width: 100%; max-height: 220px; border-radius: 4px;
   border: 1px solid var(--border); cursor: context-menu; object-fit: contain; }
 
+.mode-cluster { display: inline-flex; align-items: center; gap: 6px; }
+/* The autonomy disclosure beside the mode switch: muted like the other status
+   pills — it informs, it does not warn — and it opens the Setup policy. */
+.mode-policy { display: inline-flex; align-items: center; border: 1px solid var(--border);
+  border-radius: 6px; padding: 3px 8px; font-size: 11px; color: var(--muted);
+  white-space: nowrap; text-decoration: none; }
+.mode-policy:hover { color: var(--text); border-color: var(--muted); }
+.mode-policy b { font-weight: 600; }
+.mode-policy-idents { white-space: pre; }
 .mode-badge { border-radius: 6px; padding: 3px 9px; font-size: 11px; font-weight: 700; cursor: pointer; border: 1px solid; letter-spacing: .03em; }
 .mode-badge.dry { color: var(--gold); border-color: var(--gold); background: transparent; }
 .mode-badge.live { color: #fff; background: var(--red); border-color: var(--red); }
