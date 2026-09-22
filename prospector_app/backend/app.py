@@ -61,6 +61,7 @@ from prospector_app.backend import verify_queue
 from prospector_app.backend import verify_worker
 from prospector_app.backend import work_status
 
+from pipeline import actions as pipeline_actions
 from pipeline import reviewers
 from pipeline import settings
 
@@ -1321,24 +1322,43 @@ def activity_people():
 
 
 @app.get("/api/action-items")
-def action_items(status: str | None = None, kind: str | None = None):
-    items = data.action_items()
+def action_items(status: str | None = None, kind: str | None = None,
+                 limit: int = 0, offset: int = 0):
+    """The worklist, paged: a real secret leak always sorts first, a
+    fixture-marked one last, everything else keeps the registry's order in
+    between. `limit` 0 returns the whole filtered set; `total` counts it
+    either way. A rotate-secret item stored before fixture marking existed is
+    marked here on read."""
+    all_items = data.action_items()
+    for it in all_items:
+        if it.get("kind") == "rotate-secret" and "fixture" not in it:
+            it["fixture"] = pipeline_actions.likely_fixture(it.get("evidence") or "")
+    counts: dict[str, int] = {}
+    for i in all_items:
+        counts[i.get("status", "open")] = counts.get(i.get("status", "open"), 0) + 1
+    items = all_items
+    if status:
+        items = [i for i in items if i.get("status") == status]
+    if kind:
+        items = [i for i in items if i.get("kind") == kind]
+
+    def rank(i: dict) -> tuple[bool, int]:
+        secret = i.get("kind") == "rotate-secret"
+        return (i.get("status") != "open",
+                0 if secret and not i.get("fixture") else 2 if secret else 1)
+    items.sort(key=rank)
+    total = len(items)
+    if limit > 0:
+        items = items[offset:offset + limit]
     prs = data.prs()
-    for it in items:  # enrich with the source PR's title/url/author for the worklist
+    for it in items:  # enrich the returned page with its source PRs' metadata
         pr_num = it.get("pr")
         rec = prs.get(pr_num) if isinstance(pr_num, int) else None
         it["pr_title"] = rec.title if rec else None
         it["pr_url"] = rec.url if rec else None
         it["pr_author"] = rec.author if rec else None
         it["pr_summary"] = (rec.section("summary") or {}).get("one_liner") if rec else None
-    if status:
-        items = [i for i in items if i.get("status") == status]
-    if kind:
-        items = [i for i in items if i.get("kind") == kind]
-    counts: dict[str, int] = {}
-    for i in data.action_items():
-        counts[i.get("status", "open")] = counts.get(i.get("status", "open"), 0) + 1
-    return {"items": items, "counts": counts}
+    return {"items": items, "counts": counts, "total": total}
 
 
 @app.post("/api/action-items/{item_id:path}/status")

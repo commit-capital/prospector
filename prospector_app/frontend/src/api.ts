@@ -1875,10 +1875,10 @@ export const api = {
     const r = await fetch(`/api/activity/sync?limit=${limit}`, { method: "POST" });
     return r.json() as Promise<{ synced: boolean; items: ActivityItem[] }>;
   },
-  actionItems: (params: { status?: string; kind?: string } = {}) => {
+  actionItems: (params: { status?: string; kind?: string; limit?: number; offset?: number } = {}) => {
     const qs = new URLSearchParams();
-    for (const [k, v] of Object.entries(params)) if (v) qs.set(k, v);
-    return get<{ items: ActionItem[]; counts: Record<string, number> }>(`/api/action-items?${qs}`);
+    for (const [k, v] of Object.entries(params)) if (v) qs.set(k, String(v));
+    return get<{ items: ActionItem[]; counts: Record<string, number>; total: number }>(`/api/action-items?${qs}`);
   },
   setActionItemStatus: async (id: string, status: string) => {
     const r = await fetch(`/api/action-items/${encodeURIComponent(id)}/status`, {
@@ -2038,6 +2038,8 @@ export interface ActivityPerson {
 export interface ActionItem {
   id: string; kind: string; pr: number; summary: string; evidence: string;
   detail: string; status: string; created: string;
+  // rotate-secret only: the evidence reads as a test fixture, not a live leak
+  fixture?: boolean;
   pr_title?: string | null; pr_url?: string | null; pr_author?: string | null;
   pr_summary?: string | null;
 }
