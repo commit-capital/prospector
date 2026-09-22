@@ -6,6 +6,8 @@ import {
   breakdownHref, exploreHref, HOME_BREAKDOWN_ENTRIES, HOME_CARDS, HOME_COUNT_SPECS,
   HOME_ISSUE_CARDS, ISSUE_ANALYZE_BATCH, issuesHref,
   painLabel, SAMPLE_LIMIT, SAMPLE_QUERY,
+  SECURITY_ADVISORIES_HREF, SECURITY_ADVISORY_QUERY, SECURITY_ALERT_QUERY,
+  SECURITY_ALERTS_HREF, SECURITY_CARD,
   type HomeCard,
 } from "./homeCards.ts";
 
@@ -160,6 +162,39 @@ test("no card runs a per-row job — the workers pick these up themselves", () =
   for (const card of HOME_CARDS) {
     assert.equal(card.rowAction, undefined, card.key);
   }
+});
+
+test("the security card's key is disjoint from every other card's", () => {
+  const keys = [...HOME_CARDS.map((c) => c.key), ...HOME_ISSUE_CARDS.map((c) => c.key)];
+  assert.ok(!keys.includes(SECURITY_CARD.key));
+});
+
+test("the security card counts open critical/high not-fixed advisories", () => {
+  assert.deepEqual(SECURITY_ADVISORY_QUERY.state, ["triage", "draft"]);
+  assert.deepEqual(SECURITY_ADVISORY_QUERY.severity, ["critical", "high"]);
+  assert.equal(SECURITY_ADVISORY_QUERY.verdict, "not-fixed");
+});
+
+test("the security card counts every open secret-scanning alert", () => {
+  assert.equal(SECURITY_ALERT_QUERY.source, "secret-scanning");
+  assert.equal(SECURITY_ALERT_QUERY.state, "open");
+});
+
+test("both security samples fetch the row budget, most severe first", () => {
+  for (const q of [SECURITY_ADVISORY_QUERY, SECURITY_ALERT_QUERY]) {
+    assert.equal(q.sort, "severity");
+    assert.equal(q.limit, SAMPLE_LIMIT);
+  }
+});
+
+test("the security links open the Security views' two sections", () => {
+  assert.equal(SECURITY_CARD.href, "/alerts");
+  assert.ok(SECURITY_ADVISORIES_HREF.startsWith("/alerts?"));
+  assert.ok(SECURITY_ALERTS_HREF.startsWith("/alerts?"));
+  const advisoryParams = new URLSearchParams(SECURITY_ADVISORIES_HREF.slice("/alerts?".length));
+  const alertParams = new URLSearchParams(SECURITY_ALERTS_HREF.slice("/alerts?".length));
+  assert.equal(advisoryParams.get("security"), "advisories");
+  assert.equal(alertParams.get("security"), "alerts");
 });
 
 test("painLabel formats a score to two decimals and hides missing ones", () => {
