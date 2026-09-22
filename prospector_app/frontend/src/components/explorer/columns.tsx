@@ -248,7 +248,7 @@ export const COLUMNS: ColumnDef[] = [
     ) },
   { key: "cluster", label: "Cluster", defaultOn: true, term: "col.cluster", stopOpen: true, cellClass: "mono",
     cell: (r) => r.clusters.length > 0
-      ? <>{r.clusters.map((cid, i) => <span key={cid}>{i > 0 ? ", " : ""}<Link to={`/clusters/${cid}`}>{cid}</Link></span>)}</>
+      ? <>{r.clusters.map((cid, i) => <span key={cid}>{i > 0 ? ", " : ""}<Link to={`/prs/clusters/${cid}`}>{cid}</Link></span>)}</>
       : "—" },
   { key: "safety", label: "Safety", defaultOn: true, term: "col.safety",
     cell: (r) => (

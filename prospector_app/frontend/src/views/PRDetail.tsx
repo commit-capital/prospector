@@ -343,7 +343,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
           {pr.trusted_author && <span className="chip chip-gold sm" title="Trusted contributor — named by the repository profile; in ANALYZE their PR breaks an otherwise-close canonical tie (a tiebreaker, never an override of a clearly-better PR).">trusted</span>}
           <DriftChip s={pr.drift_state} />
           <TierChip tier={pr.risk_tier} pinnedBy={pr.risk_tier_paths} />
-          {pr.clusters.map((cid) => <Link key={cid} className="chip chip-blue" to={`/clusters/${cid}`} title="A dedup cluster this PR belongs to — a group of PRs fixing the same root issue. Click to open.">cluster {cid}</Link>)}
+          {pr.clusters.map((cid) => <Link key={cid} className="chip chip-blue" to={`/prs/clusters/${cid}`} title="A dedup cluster this PR belongs to — a group of PRs fixing the same root issue. Click to open.">cluster {cid}</Link>)}
           {pr.url && <a className="chip chip-muted" href={pr.url} target="_blank" rel="noreferrer">GitHub ↗</a>}
           {resolved && <span className={`chip ${pr.github_state === "merged" ? "chip-purple" : "chip-muted"}`} title="Current state on GitHub">{pr.github_state}</span>}
           <span className="fresh-refreshed"><FreshnessBar f={fresh} /></span>

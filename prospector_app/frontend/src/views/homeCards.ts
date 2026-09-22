@@ -166,7 +166,7 @@ export function exploreHref(card: HomeCard): string {
   params.set("spec", JSON.stringify(card.spec));
   if (card.sort) params.set("sort", card.sort);
   if (card.dir) params.set("dir", card.dir);
-  return `/explore?${params}`;
+  return `/prs/list?${params}`;
 }
 
 // The Security card under "Your move": open critical/high advisories the
@@ -178,7 +178,7 @@ export const SECURITY_CARD = {
   key: "security",
   title: "Security needs a look",
   blurb: "Critical or high advisories the find-fixed pass still marks not-fixed, plus any open secret-scanning alert. Triage each in the Security views.",
-  href: "/alerts",
+  href: "/security",
 };
 
 // The advisory side: open (triage/draft) critical or high reports whose
@@ -192,7 +192,7 @@ export const SECURITY_ADVISORY_QUERY: {
   sort: "severity",
   limit: SAMPLE_LIMIT,
 };
-export const SECURITY_ADVISORIES_HREF = "/alerts?security=advisories";
+export const SECURITY_ADVISORIES_HREF = "/security?security=advisories";
 
 // The alert side: every open secret-scanning alert, most severe first.
 export const SECURITY_ALERT_QUERY: {
@@ -203,7 +203,7 @@ export const SECURITY_ALERT_QUERY: {
   sort: "severity",
   limit: SAMPLE_LIMIT,
 };
-export const SECURITY_ALERTS_HREF = "/alerts?security=alerts";
+export const SECURITY_ALERTS_HREF = "/security?security=alerts";
 
 // The card-level job button on a Home issue card: the Control-tab job that
 // moves the card's issues forward, run with a count capped at `batch`.
