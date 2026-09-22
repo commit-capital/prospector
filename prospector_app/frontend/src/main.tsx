@@ -56,7 +56,7 @@ const router = createBrowserRouter([
     path: "/",
     element: <App />,
     children: [
-      // The five destinations: Inbox, PRs, Issues, Security, Pipeline.
+      // The five destinations: Home, PRs, Issues, Security, Pipeline.
       { index: true, lazy: lazyView(() => import("./views/Home")) },
       { path: "prs", element: <Navigate to="/prs/list" replace /> },
       { path: "prs/list", lazy: lazyView(() => import("./views/PRExplorer")) },
