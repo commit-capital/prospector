@@ -9,6 +9,7 @@ import { api, type WorkStatus } from "./api";
 import { loadWithRecovery } from "./lazyLoad";
 import { timeAgo } from "./timeAgo";
 import { workStatusLabel } from "./workStatusLabel";
+import { modePolicyLabel, modePolicyTitle } from "./modeCluster";
 
 const PRFlyout = lazy(() => loadWithRecovery("pr-flyout", async () => ({
   default: (await import("./components/PRFlyout")).PRFlyout,
@@ -157,22 +158,37 @@ function StoreWriteBanner() {
   return <div className="store-write-block" role="alert">⛔ {storeWriteBlock}</div>;
 }
 
-function DryRunBadge() {
-  const { botLogin, dryRun, setDryRun, livePossible, liveError, storeWriteBlock } = useExec();
+/** The header's mode cluster: the dry-run/live toggle plus a disclosure of
+ *  what the system does without asking and under which accounts —
+ *  "autonomous: branch updates, conflicts · as commitperclip-bot". The
+ *  disclosure links to Setup, where the autonomy policy is set. */
+function ModeCluster() {
+  const { botLogin, dryRun, setDryRun, livePossible, liveError, storeWriteBlock,
+    autopush, pushIdentity } = useExec();
+  const { meta } = useRepoMeta();
   const dryRunTitle = storeWriteBlock
     ? storeWriteBlock
     : livePossible
     ? "Toggle dry-run / live. Dry run previews every action you take in the UI — upstream posts and PR-branch pushes alike — without touching GitHub."
     : `No ${botLogin} token on this machine — dry-run only${liveError ? ` (${liveError})` : ""}`;
+  const pushLogin = pushIdentity?.login ?? null;
   return (
-    <button
-      className={`mode-badge ${dryRun ? "dry" : "live"}`}
-      onClick={() => setDryRun(!dryRun)}
-      disabled={!livePossible || !!storeWriteBlock}
-      title={dryRunTitle}
-    >
-      {dryRun ? "DRY RUN" : "● LIVE"}
-    </button>
+    <div className="mode-cluster">
+      <button
+        className={`mode-badge ${dryRun ? "dry" : "live"}`}
+        onClick={() => setDryRun(!dryRun)}
+        disabled={!livePossible || !!storeWriteBlock}
+        title={dryRunTitle}
+      >
+        {dryRun ? "DRY RUN" : "● LIVE"}
+      </button>
+      {meta?.configured && (
+        <NavLink to="/setup" className="mode-policy"
+          title={modePolicyTitle(autopush, botLogin, pushLogin, meta.repo)}>
+          {modePolicyLabel(autopush, botLogin, pushLogin)}
+        </NavLink>
+      )}
+    </div>
   );
 }
 
@@ -528,7 +544,7 @@ export default function App() {
           <div className="topbar-right">
             <WorkStatusBadge />
             <LiveStatus />
-            <DryRunBadge />
+            <ModeCluster />
             <FeedbackButton />
             <SettingsMenu />
           </div>

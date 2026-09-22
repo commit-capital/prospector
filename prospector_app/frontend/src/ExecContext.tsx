@@ -18,6 +18,9 @@ interface ExecState {
   // The contributor-push user that pushes to PR head branches (its own lane,
   // separate from the bot App); null until /api/identities answers.
   pushIdentity: PushIdentityInfo | null;
+  // The unattended-push policy on this machine — the autofix actions
+  // TRIAGE_FIX_AUTOPUSH names — for the header's mode cluster.
+  autopush: string[];
   // A stale server checkout cannot safely act against a newer shared store.
   storeWriteBlock: string | null;
   // Re-probes live_possible (see api.refreshIdentities) instead of waiting for
@@ -45,7 +48,7 @@ interface ExecState {
 const Ctx = createContext<ExecState>({
   identities: [], botLogin: "bot", identity: "", setIdentity: () => {},
   dryRun: true, setDryRun: () => {}, livePossible: false,
-  liveError: null, pushIdentity: null, storeWriteBlock: null, retryLive: async () => false,
+  liveError: null, pushIdentity: null, autopush: [], storeWriteBlock: null, retryLive: async () => false,
   canMergeUpstream: false, login: null, reviewers: [], activeReviewers: () => [],
   toasts: [], pushToast: () => {}, dismissToast: () => {}, actionTick: 0, reportResult: () => {},
 });
@@ -110,6 +113,7 @@ export function ExecProvider({ children }: { children: ReactNode }) {
   const [livePossible, setLivePossible] = useState(false);
   const [liveError, setLiveError] = useState<string | null>(null);
   const [pushIdentity, setPushIdentity] = useState<PushIdentityInfo | null>(null);
+  const [autopush, setAutopush] = useState<string[]>([]);
   const [storeWriteBlock, setStoreWriteBlock] = useState<string | null>(null);
   // Persist dry-run/live per-tab so a full reload (e.g. a manual address-bar edit,
   // which tears down this provider) keeps the mode. sessionStorage not localStorage:
@@ -139,6 +143,7 @@ export function ExecProvider({ children }: { children: ReactNode }) {
       setLivePossible(d.live_possible);
       setLiveError(d.live_error);
       setPushIdentity(d.push ?? null);
+      setAutopush(d.autopush ?? []);
       if (!d.live_possible) setDryRun(true);
     }).catch(() => {});
     api.capabilities().then((c) => {
@@ -163,6 +168,7 @@ export function ExecProvider({ children }: { children: ReactNode }) {
     setLivePossible(d.live_possible);
     setLiveError(d.live_error);
     setPushIdentity(d.push ?? null);
+    setAutopush(d.autopush ?? []);
     if (!d.live_possible) setDryRun(true);
     let writeBlock = storeWriteBlock;
     await api.capabilities().then((c) => {
@@ -221,7 +227,7 @@ export function ExecProvider({ children }: { children: ReactNode }) {
   return (
     <Ctx.Provider value={{
       identities, botLogin, identity, setIdentity, dryRun, setDryRun: setDryRunGuarded, livePossible,
-      liveError, pushIdentity, storeWriteBlock, retryLive, canMergeUpstream, login, reviewers, activeReviewers,
+      liveError, pushIdentity, autopush, storeWriteBlock, retryLive, canMergeUpstream, login, reviewers, activeReviewers,
       toasts, pushToast, dismissToast, actionTick, reportResult,
     }}>
       {children}

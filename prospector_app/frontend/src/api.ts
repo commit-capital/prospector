@@ -2015,6 +2015,10 @@ export interface PushIdentityInfo { login: string | null; available: boolean }
 export interface IdentitiesResult {
   identities: Identity[]; live_possible: boolean; live_error: string | null;
   push: PushIdentityInfo;
+  // The unattended-push policy on this machine: the autofix actions
+  // TRIAGE_FIX_AUTOPUSH names, in a stable order. The header's mode cluster
+  // discloses it beside the identities.
+  autopush: string[];
 }
 // `status: "stale"` is a refusal the operator can confirm past: the write quotes
 // facts the author has moved beyond, and `stale` names the drift.

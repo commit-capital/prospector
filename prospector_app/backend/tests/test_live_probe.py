@@ -242,6 +242,24 @@ def test_identities_reports_an_unconfigured_push_lane(monkeypatch):
     assert out["identities"][0]["note"] is None
 
 
+def test_identities_reports_the_autopush_policy(monkeypatch):
+    # The unattended-push policy rides the identities payload so the header's
+    # mode cluster can disclose it, in FIX_ACTIONS order whatever the env says.
+    _reset_caches()
+    executor._live_possible = True
+    monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", "resolve, update,rebase")
+    out = executor.identities()
+    assert out["autopush"] == ["update", "rebase", "resolve"]
+
+
+def test_identities_reports_an_empty_autopush_policy(monkeypatch):
+    _reset_caches()
+    executor._live_possible = True
+    monkeypatch.delenv("TRIAGE_FIX_AUTOPUSH", raising=False)
+    out = executor.identities()
+    assert out["autopush"] == []
+
+
 def test_refresh_route_reprobes_and_returns_fresh_identities(monkeypatch):
     """The known footgun end to end: a stale cached False survives until the
     operator hits the retry action, which is this route."""

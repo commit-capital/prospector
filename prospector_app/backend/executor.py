@@ -151,6 +151,7 @@ def refresh_live() -> None:
 def identities() -> dict:
     live = live_possible()
     error = None if live else mint_error()
+    autopush = settings.fix_autopush()
     note = None if live else (f"no {settings.bot_login()} token on this machine — dry-run only"
                               + (f" ({error})" if error else ""))
     return {
@@ -163,6 +164,10 @@ def identities() -> dict:
         # PR head branches over its SSH key, with its own availability.
         "push": {"login": settings.push_login() or None,
                  "available": settings.push_identity_configured()},
+        # The unattended-push policy on this machine: the autofix actions
+        # TRIAGE_FIX_AUTOPUSH names, in FIX_ACTIONS order. The header's mode
+        # cluster discloses it beside the identities.
+        "autopush": [a for a in settings.FIX_ACTIONS if a in autopush],
     }
 
 
