@@ -5,7 +5,8 @@ import { RepoMetaProvider, useRepoMeta } from "./RepoMetaContext";
 import { FeedbackButton } from "./components/FeedbackButton";
 import { AgentPaneProvider } from "./components/AgentPane";
 import { isReachable, subscribeHealth, pingHealth } from "./health";
-import { api, type WorkStatus } from "./api";
+import { api, type WorkStatus, type WorkerFlags } from "./api";
+import { autonomyPosture } from "./autonomyLabel";
 import { loadWithRecovery } from "./lazyLoad";
 import { timeAgo } from "./timeAgo";
 import { workStatusLabel } from "./workStatusLabel";
@@ -157,22 +158,51 @@ function StoreWriteBanner() {
   return <div className="store-write-block" role="alert">⛔ {storeWriteBlock}</div>;
 }
 
-function DryRunBadge() {
-  const { botLogin, dryRun, setDryRun, livePossible, liveError, storeWriteBlock } = useExec();
+// The header's mode cluster: the dry-run/live switch for actions taken in the
+// UI, then a disclosure of what this machine does without being asked and the
+// identities it acts under. A disclosure, not a warning — it links to the
+// autonomy policy card in Setup, so the answer is one click from any page.
+function ModeCluster() {
+  const { botLogin, dryRun, setDryRun, livePossible, liveError, storeWriteBlock, pushIdentity } = useExec();
+  const [flags, setFlags] = useState<WorkerFlags | null>(null);
+  useEffect(() => {
+    const load = () => api.autonomy().then((d) => setFlags(d.flags)).catch(() => {});
+    load();
+    const t = setInterval(load, 30_000); // a Setup toggle shows up without a reload
+    return () => clearInterval(t);
+  }, []);
   const dryRunTitle = storeWriteBlock
     ? storeWriteBlock
     : livePossible
     ? "Toggle dry-run / live. Dry run previews every action you take in the UI — upstream posts and PR-branch pushes alike — without touching GitHub."
     : `No ${botLogin} token on this machine — dry-run only${liveError ? ` (${liveError})` : ""}`;
+  const posture = flags ? autonomyPosture(flags) : null;
+  const pushLogin = pushIdentity?.available && pushIdentity.login && pushIdentity.login !== botLogin
+    ? pushIdentity.login : null;
+  const policyTitle = posture
+    ? [
+        ...posture.detail,
+        `Posts upstream as ${botLogin} (the bot GitHub App).`,
+        ...(pushLogin ? [`Pushes to PR branches as ${pushLogin} (its own SSH key).`] : []),
+        "Click for the full policy (Setup → Automatic Work Queues).",
+      ].join("\n")
+    : "";
   return (
-    <button
-      className={`mode-badge ${dryRun ? "dry" : "live"}`}
-      onClick={() => setDryRun(!dryRun)}
-      disabled={!livePossible || !!storeWriteBlock}
-      title={dryRunTitle}
-    >
-      {dryRun ? "DRY RUN" : "● LIVE"}
-    </button>
+    <div className="mode-cluster">
+      <button
+        className={`mode-badge ${dryRun ? "dry" : "live"}`}
+        onClick={() => setDryRun(!dryRun)}
+        disabled={!livePossible || !!storeWriteBlock}
+        title={dryRunTitle}
+      >
+        {dryRun ? "DRY RUN" : "● LIVE"}
+      </button>
+      {posture && (
+        <NavLink to="/setup#automation" className="mode-policy" title={policyTitle}>
+          {posture.label} · as {botLogin}{pushLogin ? ` + ${pushLogin}` : ""}
+        </NavLink>
+      )}
+    </div>
   );
 }
 
@@ -528,7 +558,7 @@ export default function App() {
           <div className="topbar-right">
             <WorkStatusBadge />
             <LiveStatus />
-            <DryRunBadge />
+            <ModeCluster />
             <FeedbackButton />
             <SettingsMenu />
           </div>

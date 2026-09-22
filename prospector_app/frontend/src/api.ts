@@ -1819,6 +1819,8 @@ export const api = {
     return get<FixQueue>(`/api/fix/queue?${qs}`);
   },
   workStatus: () => get<WorkStatus>("/api/status/now"),
+  /** This machine's worker lane switches, for the header's autonomy disclosure. */
+  autonomy: () => get<{ flags: WorkerFlags }>("/api/autonomy"),
   /** Reopen a tripped worker lane by the operator's say-so. */
   workerHealthResume: async (host: string, lane: string): Promise<void> => {
     const r = await fetch("/api/worker/health/resume", {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
 import {
   api,
@@ -119,6 +119,16 @@ export default function Setup() {
   // "Set this computer up" link lands here already expanded.
   const [params] = useSearchParams();
   const [expanded, setExpanded] = useState(params.get("provision") === "1");
+  // The page renders only once readiness answers, so the browser's own
+  // hash-anchor scroll finds nothing on navigation; scroll once ourselves.
+  const scrolledToHash = useRef(false);
+  useEffect(() => {
+    if (scrolledToHash.current || readiness == null) return;
+    scrolledToHash.current = true;
+    if (window.location.hash === "#automation") {
+      document.getElementById("automation")?.scrollIntoView();
+    }
+  }, [readiness]);
 
   const load = useCallback(async () => {
     try {
@@ -198,10 +208,13 @@ export default function Setup() {
 
       {botPermissions?.configured && <BotPermissionsCard permissions={botPermissions} />}
 
-      {optedIn || expanded || provisioned
-        ? <WorkerSection readiness={readiness} flags={flags} busy={busy} onToggle={toggle}
-            onChanged={() => void load()} />
-        : <ProvisionBanner onStart={() => setExpanded(true)} />}
+      {/* #automation is the header mode cluster's landing spot. */}
+      <div id="automation">
+        {optedIn || expanded || provisioned
+          ? <WorkerSection readiness={readiness} flags={flags} busy={busy} onToggle={toggle}
+              onChanged={() => void load()} />
+          : <ProvisionBanner onStart={() => setExpanded(true)} />}
+      </div>
 
       <ShareSection />
 
