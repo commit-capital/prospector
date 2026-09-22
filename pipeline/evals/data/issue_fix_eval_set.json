@@ -248,7 +248,75 @@
      "detail": "its fix touches a tier-0 path: server/src/services/heartbeat.ts"
     }
    ]
+  },
+  {
+   "base_sha": "9cfa37fce3c25988917b0631147413d171bf4e32",
+   "span": "2026-04-07..2026-04-07",
+   "fixes": 7,
+   "qualified_at": "2026-09-22T22:10:09+00:00",
+   "instances": [
+    {
+     "issue": 856,
+     "pr": 2866,
+     "verdict": "fair",
+     "detail": "green exit 0/0: Start at  22:09:55 | Duration  107ms (transform 19ms, setup 0ms, collect 18ms, tests 3ms, environment 0ms, prepare 27ms)"
+    },
+    {
+     "issue": 1892,
+     "pr": 1961,
+     "verdict": "fair",
+     "detail": "green exit 0/0: Start at  22:10:02 | Duration  3.69s (transform 543ms, setup 0ms, collect 1.68s, tests 1.36s, environment 0ms, prepare 26ms)"
+    },
+    {
+     "issue": 2879,
+     "pr": 2937,
+     "verdict": "fair",
+     "detail": "green exit 0/0: Start at  22:10:03 | Duration  110ms (transform 22ms, setup 0ms, collect 17ms, tests 16ms, environment 0ms, prepare 25ms)"
+    },
+    {
+     "issue": 863,
+     "pr": 2866,
+     "verdict": "duplicate-pr",
+     "detail": "another issue already measures this fix"
+    },
+    {
+     "issue": 1205,
+     "pr": 2143,
+     "verdict": "oracle-imports-pr-symbol",
+     "detail": "its tests import resolveSessionKey"
+    },
+    {
+     "issue": 1451,
+     "pr": 2866,
+     "verdict": "duplicate-pr",
+     "detail": "another issue already measures this fix"
+    },
+    {
+     "issue": 1968,
+     "pr": 2441,
+     "verdict": "r6-red",
+     "detail": "red exit 0/None: Start at  22:09:58 | Duration  319ms (transform 117ms, setup 0ms, collect 214ms, tests 21ms, environment 0ms, prepare 26ms)"
+    },
+    {
+     "issue": 2110,
+     "pr": 2148,
+     "verdict": "oracle-imports-pr-symbol",
+     "detail": "its tests import GoalPropertiesToggleButton"
+    },
+    {
+     "issue": 2131,
+     "pr": 2143,
+     "verdict": "oracle-imports-pr-symbol",
+     "detail": "its tests import resolveSessionKey"
+    },
+    {
+     "issue": 2898,
+     "pr": 2936,
+     "verdict": "r6-red",
+     "detail": "red exit 0/None: Start at  22:10:06 | Duration  152ms (transform 15ms, setup 0ms, collect 54ms, tests 13ms, environment 0ms, prepare 27ms)"
+    }
+   ]
   }
  ],
- "fair": 13
+ "fair": 16
 }
