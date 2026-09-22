@@ -176,6 +176,12 @@ a:hover { text-decoration: underline; }
 .mode-badge.dry { color: var(--gold); border-color: var(--gold); background: transparent; }
 .mode-badge.live { color: #fff; background: var(--red); border-color: var(--red); }
 .mode-badge:disabled { opacity: .7; cursor: not-allowed; }
+/* the autonomy disclosure beside the mode badge — informational, not a warning */
+.mode-cluster { display: inline-flex; align-items: center; gap: 6px; }
+.mode-policy { font-size: 11px; color: var(--muted); text-decoration: none;
+  border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px; white-space: nowrap; }
+.mode-policy:hover { color: var(--text); border-color: var(--muted); }
+.policy table.rows td { padding: 4px 12px 4px 0; vertical-align: top; }
 .btn-live { background: var(--red) !important; }
 .exec-results { margin-top: 14px; }
 .exec-results h4 { margin: 0 0 6px; font-size: 13px; }

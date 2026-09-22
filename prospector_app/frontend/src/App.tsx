@@ -5,7 +5,8 @@ import { RepoMetaProvider, useRepoMeta } from "./RepoMetaContext";
 import { FeedbackButton } from "./components/FeedbackButton";
 import { AgentPaneProvider } from "./components/AgentPane";
 import { isReachable, subscribeHealth, pingHealth } from "./health";
-import { api, type WorkStatus } from "./api";
+import { api, type FixRunner, type WorkStatus } from "./api";
+import { autopushSummary, IDENTITY_ROLES } from "./autonomy";
 import { loadWithRecovery } from "./lazyLoad";
 import { timeAgo } from "./timeAgo";
 import { workStatusLabel } from "./workStatusLabel";
@@ -87,6 +88,7 @@ const VIEW_NAMES: [string, string][] = [
   ["/alerts", "Alerts"],
   ["/action-items", "Action Items"],
   ["/control", "Control"],
+  ["/policy", "Policy"],
   ["/setup", "Setup"],
   ["/welcome", "First-time setup"],
   ["/activity", "Activity"],
@@ -157,22 +159,43 @@ function StoreWriteBanner() {
   return <div className="store-write-block" role="alert">⛔ {storeWriteBlock}</div>;
 }
 
-function DryRunBadge() {
+// The header's mode cluster: the dry-run/live toggle plus a disclosure of
+// what this deployment does without asking and under which identity, so the
+// autonomy posture is readable from any page without opening a menu. The
+// disclosure links to the Policy page, which spells the whole policy out.
+function ModeCluster() {
   const { botLogin, dryRun, setDryRun, livePossible, liveError, storeWriteBlock } = useExec();
+  const [runner, setRunner] = useState<FixRunner | null>(null);
+  useEffect(() => {
+    api.fixRunner().then(setRunner).catch(() => {});
+  }, []);
   const dryRunTitle = storeWriteBlock
     ? storeWriteBlock
     : livePossible
     ? "Toggle dry-run / live. Dry run previews every action you take in the UI — upstream posts and PR-branch pushes alike — without touching GitHub."
     : `No ${botLogin} token on this machine — dry-run only${liveError ? ` (${liveError})` : ""}`;
+  const summary = runner ? autopushSummary(runner.autopush ?? []) : null;
+  const pushLogin = runner?.push_login;
+  const policyTitle = `${botLogin} ${IDENTITY_ROLES.bot}`
+    + (pushLogin ? `; ${pushLogin} ${IDENTITY_ROLES.push}` : "")
+    + (summary ? `. Pushed without asking: ${summary}.` : ". Every push waits for a person's approval.")
+    + " Open the full policy.";
   return (
-    <button
-      className={`mode-badge ${dryRun ? "dry" : "live"}`}
-      onClick={() => setDryRun(!dryRun)}
-      disabled={!livePossible || !!storeWriteBlock}
-      title={dryRunTitle}
-    >
-      {dryRun ? "DRY RUN" : "● LIVE"}
-    </button>
+    <span className="mode-cluster">
+      <button
+        className={`mode-badge ${dryRun ? "dry" : "live"}`}
+        onClick={() => setDryRun(!dryRun)}
+        disabled={!livePossible || !!storeWriteBlock}
+        title={dryRunTitle}
+      >
+        {dryRun ? "DRY RUN" : "● LIVE"}
+      </button>
+      {runner && (
+        <NavLink to="/policy" className="mode-policy" title={policyTitle}>
+          {summary ? `autonomous: ${summary}` : "asks before pushing"} · as {botLogin}
+        </NavLink>
+      )}
+    </span>
   );
 }
 
@@ -277,6 +300,7 @@ function SettingsMenu() {
             </button>
           </div>
           <div className="settings-sep" />
+          <NavLink to="/policy" className="settings-link" onClick={() => setOpen(false)}>📜 Policy</NavLink>
           <NavLink to="/setup" className="settings-link" onClick={() => setOpen(false)}>🛠️ Setup</NavLink>
           <NavLink to="/tables" className="settings-link" onClick={() => setOpen(false)}>🗄️ Tables</NavLink>
         </div>
@@ -528,7 +552,7 @@ export default function App() {
           <div className="topbar-right">
             <WorkStatusBadge />
             <LiveStatus />
-            <DryRunBadge />
+            <ModeCluster />
             <FeedbackButton />
             <SettingsMenu />
           </div>
