@@ -434,7 +434,81 @@
      "detail": "red exit 0/None: \u001b[2m   Start at \u001b[22m 22:23:03 | \u001b[2m   Duration \u001b[22m 4.91s\u001b[2m (transform 1.06s, setup 28ms, import 2.52s, tests 1.37s, environment 694ms)\u001b[22m"
     }
    ]
+  },
+  {
+   "base_sha": "69e513efe161d2eefdcde1257d09f91c94c51e7d",
+   "span": "2026-05-18..2026-06-03",
+   "fixes": 5,
+   "qualified_at": "2026-09-22T22:36:13+00:00",
+   "instances": [
+    {
+     "issue": 2258,
+     "pr": 6311,
+     "verdict": "fair",
+     "detail": "green exit 0/0: Start at  22:35:46 | Duration  1.53s (transform 241ms, setup 12ms, collect 532ms, tests 444ms, environment 374ms, prepare 47ms)"
+    },
+    {
+     "issue": 2391,
+     "pr": 5671,
+     "verdict": "fair",
+     "detail": "green exit 0/0: Start at  22:35:43 | Duration  727ms (transform 283ms, setup 28ms, collect 601ms, tests 4ms, environment 0ms, prepare 26ms)"
+    },
+    {
+     "issue": 6350,
+     "pr": 6423,
+     "verdict": "fair",
+     "detail": "green exit 0/0: Start at  22:36:05 | Duration  3.20s (transform 609ms, setup 29ms, collect 1.78s, tests 920ms, environment 173ms, prepare 84ms)"
+    },
+    {
+     "issue": 45,
+     "pr": 7478,
+     "verdict": "fix-path-withheld",
+     "detail": "its fix touches a tier-0 path: server/src/services/budgets.ts, server/src/services/heartbeat.ts"
+    },
+    {
+     "issue": 1348,
+     "pr": 7478,
+     "verdict": "fix-path-withheld",
+     "detail": "its fix touches a tier-0 path: server/src/services/budgets.ts, server/src/services/heartbeat.ts"
+    },
+    {
+     "issue": 2612,
+     "pr": 5220,
+     "verdict": "r6-red",
+     "detail": "red exit 0/None: Start at  22:35:49 | Duration  11.03s (transform 455ms, setup 27ms, collect 1.32s, tests 9.31s, environment 0ms, prepare 26ms)"
+    },
+    {
+     "issue": 3394,
+     "pr": 5671,
+     "verdict": "duplicate-pr",
+     "detail": "another issue already measures this fix"
+    },
+    {
+     "issue": 3661,
+     "pr": 5220,
+     "verdict": "duplicate-pr",
+     "detail": "another issue already measures this fix"
+    },
+    {
+     "issue": 3830,
+     "pr": 5220,
+     "verdict": "duplicate-pr",
+     "detail": "another issue already measures this fix"
+    },
+    {
+     "issue": 4094,
+     "pr": 5671,
+     "verdict": "duplicate-pr",
+     "detail": "another issue already measures this fix"
+    },
+    {
+     "issue": 5501,
+     "pr": 5671,
+     "verdict": "duplicate-pr",
+     "detail": "another issue already measures this fix"
+    }
+   ]
   }
  ],
- "fair": 21
+ "fair": 24
 }
