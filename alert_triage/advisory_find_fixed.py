@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from alert_triage import advisory_dups
 from alert_triage.advisory_store import (ADVISORY_VERDICTS, GHSA_ALPHABET, GHSA_PATTERN,
                                          OPEN_STATES, AdvisoryStore)
 from alert_triage.alert_freshness import FIX_SCAN_MAX_AGE_DAYS, is_current
@@ -127,13 +128,27 @@ def bundle(store: AdvisoryStore, only: list[int] | None = None) -> list[dict]:
 
 def apply_verdicts(store: AdvisoryStore, verdicts: list[dict]) -> int:
     """Apply verdicts; the model's validator enforces the per-verdict field
-    rules, and an unknown verdict raises before any write."""
+    rules, and an unknown verdict raises before any write. A duplicate verdict
+    whose pointer would close a loop over the store's current `duplicate_of`
+    edges (the batch's own accepted pointers included) is skipped, so two
+    advisories can never end up marked duplicates of each other."""
     applied = 0
+    pointers = {a.ghsa_id: a.duplicate_of for a in store.all_advisories().values()
+                if a.duplicate_of}
     with store.batch():
         for v in verdicts:
             if v.get("verdict") not in ADVISORY_VERDICTS:
                 raise ValueError(f"bad verdict {v.get('verdict')!r} for id {v.get('id')!r}")
             adv = store.edit_advisory(int(v["id"]))
+            if v["verdict"] == "duplicate":
+                target = v.get("duplicate_of") or ""
+                if advisory_dups.would_cycle(pointers, adv.ghsa_id, target):
+                    _say(f"    ! {adv.ghsa_id}: duplicate_of {target} would close "
+                         "a loop — verdict skipped")
+                    continue
+                pointers[adv.ghsa_id] = target
+            elif adv.ghsa_id in pointers:
+                del pointers[adv.ghsa_id]
             adv.record_fix_scan(v["verdict"], by=v.get("by") or "agent",
                                 evidence=v.get("evidence"),
                                 duplicate_of=v.get("duplicate_of"),

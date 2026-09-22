@@ -104,6 +104,48 @@ def test_query_filters_and_sorts(seeded):
     assert [r["number"] for r in out["items"]] == [1]
 
 
+def test_group_packages_folds_dependabot_rows_per_package(tmp_path, monkeypatch):
+    store = AlertStore(tmp_path)
+
+    def seed(number: int, **over):
+        meta = {
+            "source": "dependabot", "number": number, "state": "open",
+            "raw_state": "open", "severity": "medium",
+            "created_at": f"2026-07-0{number}T00:00:00Z",
+            "updated_at": f"2026-07-0{number}T00:00:00Z",
+            "html_url": f"https://github.com/o/r/security/dependabot/{number}",
+        }
+        meta.update(over)
+        a = Alert(store, {"id": alert_id(meta["source"], number)})
+        a.apply_facts(meta)
+
+    seed(1, package="undici", ecosystem="npm", severity="medium")
+    seed(2, package="undici", ecosystem="npm", severity="high")
+    seed(3, package="undici", ecosystem="npm", severity="medium")
+    seed(4, package="lodash", ecosystem="npm", severity="low")
+    seed(5, source="code-scanning", rule_id="js/xss", severity="high")
+    monkeypatch.setattr(alerts_mod, "STORE_ROOT", tmp_path)
+    monkeypatch.setattr(alerts_mod, "_synced_store_root", None)
+    monkeypatch.setattr(alerts_mod, "_store_pr_states", lambda: ({}, False))
+    try:
+        out = alerts_mod.query_alerts(group_packages=True)
+        # One row per package: the most severe undici alert leads, the other
+        # two fold under it in sort order; ungrouped sources pass through.
+        assert out["total"] == 3
+        undici = next(r for r in out["items"] if r["package"] == "undici")
+        assert undici["number"] == 2 and undici["group_count"] == 2
+        assert [g["number"] for g in undici["group_rows"]] == [1, 3]
+        lodash = next(r for r in out["items"] if r["package"] == "lodash")
+        assert lodash["group_count"] == 0 and "group_rows" not in lodash
+        assert any(r["source"] == "code-scanning" for r in out["items"])
+        flat = alerts_mod.query_alerts()
+        assert flat["total"] == 5
+    finally:
+        alerts_mod.STORE_ROOT = None
+        alerts_mod._synced_store_root = None
+        alert_data.set_store_root(None)
+
+
 def test_get_alert_detail(seeded):
     d = alerts_mod.get_alert("code-scanning", 1)
     assert d is not None

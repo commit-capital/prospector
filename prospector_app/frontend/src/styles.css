@@ -288,6 +288,10 @@ select { background: var(--panel); border: 1px solid var(--border); color: var(-
 .grid tbody tr.rowlink:hover { background: var(--panel2); }
 .grid tbody tr.row-selected { background: var(--accent-soft, rgba(80,130,255,0.10)); }
 .grid tbody tr.row-selected:hover { background: var(--accent-soft, rgba(80,130,255,0.16)); }
+/* a group member expanded under its lead row */
+.grid tbody tr.row-sub { background: var(--panel); }
+.grid tbody tr.row-sub td:first-child { padding-left: 22px; }
+.row-expander { margin-left: 6px; white-space: nowrap; }
 .row-ready { background: var(--ready-tint); }
 .cluster-title { font-weight: 600; }
 

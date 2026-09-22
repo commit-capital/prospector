@@ -933,9 +933,9 @@ def list_issues():
 def issues_query(payload: dict = Body(default_factory=dict)):
     """Paginated Issue-table endpoint. Body: {q?, sort?, direction?, disposition?,
     state?, author?, pain?, repro_grade?, subsystem?, dups?, linked_prs?, labels?,
-    offset?, limit?}; disposition "none" selects unanalyzed issues, state
-    "open"/"closed" filters by lifecycle ("all"/absent returns both). See
-    issues.query_issues for the per-field filter semantics."""
+    collapse_dups?, offset?, limit?}; disposition "none" selects unanalyzed
+    issues, state "open"/"closed" filters by lifecycle ("all"/absent returns
+    both). See issues.query_issues for the per-field filter semantics."""
     return issues_mod.query_issues(
         q=payload.get("q") or "",
         sort=payload.get("sort"), direction=payload.get("direction"),
@@ -947,6 +947,7 @@ def issues_query(payload: dict = Body(default_factory=dict)):
         dups=payload.get("dups"),
         linked_prs=payload.get("linked_prs"),
         labels=payload.get("labels") or None,
+        collapse_dups=bool(payload.get("collapse_dups")),
         offset=int(payload.get("offset", 0)), limit=min(int(payload.get("limit", 50)), 500),
     )
 
@@ -1035,13 +1036,15 @@ def list_alerts():
 @app.post("/api/alerts/query")
 def alerts_query(payload: dict = Body(default_factory=dict)):
     """Paginated Alerts-table endpoint. Body: {q?, sort?, direction?, source?,
-    state?, severity?, verdict?, offset?, limit?}; verdict "none" selects
-    unscanned alerts. See alerts.query_alerts for per-field semantics."""
+    state?, severity?, verdict?, group_packages?, offset?, limit?}; verdict
+    "none" selects unscanned alerts. See alerts.query_alerts for per-field
+    semantics."""
     return alerts_mod.query_alerts(
         q=payload.get("q") or "",
         sort=payload.get("sort"), direction=payload.get("direction"),
         source=payload.get("source"), state=payload.get("state"),
         severity=payload.get("severity"), verdict=payload.get("verdict"),
+        group_packages=bool(payload.get("group_packages")),
         offset=int(payload.get("offset", 0)),
         limit=min(int(payload.get("limit", 50)), 500),
     )
@@ -1075,13 +1078,14 @@ def list_advisories():
 @app.post("/api/advisories/query")
 def advisories_query(payload: dict = Body(default_factory=dict)):
     """Paginated Advisories-table endpoint. Body: {q?, sort?, direction?,
-    state?, severity?, verdict?, offset?, limit?}; verdict "none" selects
-    unscanned."""
+    state?, severity?, verdict?, collapse_dups?, offset?, limit?}; verdict
+    "none" selects unscanned."""
     return advisories_mod.query_advisories(
         q=payload.get("q") or "",
         sort=payload.get("sort"), direction=payload.get("direction"),
         state=payload.get("state"), severity=payload.get("severity"),
         verdict=payload.get("verdict"),
+        collapse_dups=bool(payload.get("collapse_dups")),
         offset=int(payload.get("offset", 0)),
         limit=min(int(payload.get("limit", 50)), 500),
     )

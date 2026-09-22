@@ -1062,6 +1062,8 @@ export interface IssueRow {
   linked_pr_count: number;
   referenced_pr_count: number;
   referenced_merged_count: number;
+  /** Dup-group members folded under this row when the query collapsed dups. */
+  dup_rows?: IssueRow[];
 }
 /** Per-column filters for the Issues table (#494) — the issue-side analog of
  *  PR Explorer's FilterSpec. `author` is a starts-with match, `subsystem` and
@@ -1129,6 +1131,9 @@ export interface AlertRow {
   link_count: number;
   dismissed_reason: string | null;
   quality: boolean;
+  /** Dependabot rows folded under this one when the query grouped by package. */
+  group_rows?: AlertRow[];
+  group_count?: number;
 }
 /** Full alert detail for the side panel: the row plus the raw meta section and
  *  the valid dismissal reasons for the alert's source. */
@@ -1160,6 +1165,11 @@ export interface AdvisoryRow {
   evidence: string | null;
   links: AlertLink[];
   link_count: number;
+  /** The dup group's resolved lead — this row's own GHSA when it is the lead. */
+  canonical: string;
+  /** Group members folded under this row when the query collapsed dups. */
+  dup_rows?: AdvisoryRow[];
+  dup_count?: number;
 }
 /** Detail for the side panel: the row plus the report body and the full fix-scan section. */
 export interface AdvisoryDetail extends AdvisoryRow {
@@ -1463,7 +1473,7 @@ export const api = {
   listIssues: () => get<{ items: IssueRow[]; pr_states_loading: boolean }>("/api/issues"),
   queryIssues: (opts: {
     q?: string; sort?: string; direction?: string; disposition?: string; state?: string;
-    offset?: number; limit?: number;
+    collapse_dups?: boolean; offset?: number; limit?: number;
   } & IssueFilterSpec = {}) =>
     fetch("/api/issues/query", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -1476,7 +1486,8 @@ export const api = {
   listAlerts: () => get<{ items: AlertRow[]; pr_states_loading: boolean }>("/api/alerts"),
   queryAlerts: (opts: {
     q?: string; sort?: string; direction?: string; source?: string; state?: string;
-    severity?: string[]; verdict?: string; offset?: number; limit?: number;
+    severity?: string[]; verdict?: string; group_packages?: boolean;
+    offset?: number; limit?: number;
   } = {}) =>
     fetch("/api/alerts/query", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -1487,7 +1498,7 @@ export const api = {
   queryAdvisories: (opts: {
     q?: string; sort?: string; direction?: string; state?: string | string[];
     severity?: string[]; verdict?: string;
-    offset?: number; limit?: number;
+    collapse_dups?: boolean; offset?: number; limit?: number;
   } = {}) =>
     fetch("/api/advisories/query", {
       method: "POST", headers: { "Content-Type": "application/json" },

@@ -51,6 +51,12 @@ function StateChip({ r }: { r: AlertRow }) {
   return <span className={`chip sm ${r.state === "fixed" ? "chip-green" : "chip-muted"}`} title={hint}>{r.state}</span>;
 }
 
+// An open alert with a merged linked PR: the fix likely landed and the alert
+// is waiting on a dismissal or GitHub's own re-check.
+function fixMergedOpen(r: AlertRow): boolean {
+  return r.state === "open" && r.links.some((l) => l.kind === "pr" && l.state === "merged");
+}
+
 // Candidate PRs/issues found by the deterministic linker or the find-fixed
 // agent. PRs open the in-app flyout when possible; issues link to GitHub.
 function AlertLinks({ r }: { r: AlertRow }) {
@@ -223,6 +229,15 @@ function AlertsTable() {
     ? { source: selectedSource, number: Number(selectedNumber) }
     : null;
   const [generation, setGeneration] = useState(0);
+  // Lead-row ids whose folded package-group members are shown inline.
+  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const toggleExpand = (id: number): void => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
   // One result object per completed fetch, keyed by the query params it was
   // fetched for; "loading" is derived by comparing keys, so the effect never
   // sets state synchronously. Stale rows keep rendering while the next page
@@ -247,6 +262,7 @@ function AlertsTable() {
         source: sourceFilter || undefined,
         state: stateFilter || "all",
         verdict: verdictFilter || undefined,
+        group_packages: true,
         offset: (page - 1) * PAGE_SIZE,
         limit: PAGE_SIZE,
       }).then((res) => {
@@ -369,23 +385,46 @@ function AlertsTable() {
             <th onClick={() => clickSort("updated")}>Updated{indicator("updated")}</th>
           </tr></thead>
           <tbody>
-            {rows.map((r) => (
-              <tr key={r.id} className={`rowlink ${selected && selected.source === r.source && selected.number === r.number ? "row-selected" : ""}`}
-                  onClick={() => selectAlert(r.source, r.number)}>
-                <td className="mono">
-                  <a href={r.html_url} target="_blank" rel="noreferrer" className="gh-pr-link"
-                     title="Open this alert on GitHub ↗" onClick={stopRowOpen}>#{r.number}</a>
-                </td>
-                <td><SourceChip s={r.source} /></td>
-                <td><SeverityChip s={r.severity} />{r.quality && <span className="chip chip-muted sm" title="A code-quality finding (no security severity)">q</span>}</td>
-                <td>{identity(r)}</td>
-                <td className="mono small">{location(r)}</td>
-                <td><StateChip r={r} /></td>
-                <td><VerdictChip v={r.verdict} /></td>
-                <td onClick={stopRowOpen}><AlertLinks r={r} /></td>
-                <td className="muted small">{(r.updated_at ?? "").slice(0, 10) || "—"}</td>
-              </tr>
-            ))}
+            {rows.flatMap((r) => {
+              const renderRow = (row: AlertRow, sub: boolean) => (
+                <tr key={row.id} className={`rowlink ${sub ? "row-sub" : ""} ${selected && selected.source === row.source && selected.number === row.number ? "row-selected" : ""}`}
+                    onClick={() => selectAlert(row.source, row.number)}>
+                  <td className="mono">
+                    <a href={row.html_url} target="_blank" rel="noreferrer" className="gh-pr-link"
+                       title="Open this alert on GitHub ↗" onClick={stopRowOpen}>#{row.number}</a>
+                  </td>
+                  <td><SourceChip s={row.source} /></td>
+                  <td><SeverityChip s={row.severity} />{row.quality && <span className="chip chip-muted sm" title="A code-quality finding (no security severity)">q</span>}</td>
+                  <td>
+                    {identity(row)}
+                    {!sub && (row.group_count ?? 0) > 0 && (
+                      <button className="link-btn small row-expander"
+                        title="More alerts for this package — click to show them"
+                        onClick={(e) => { e.stopPropagation(); toggleExpand(row.id); }}>
+                        {expanded.has(row.id) ? "▾" : "▸"} +{row.group_count}
+                      </button>
+                    )}
+                  </td>
+                  <td className="mono small">{location(row)}</td>
+                  <td>
+                    <StateChip r={row} />
+                    {fixMergedOpen(row) && (
+                      <span className="chip chip-blue sm"
+                        title="A linked PR is merged but the alert is still open — likely fixed, awaiting a dismissal or GitHub's re-check">
+                        fix merged?
+                      </span>
+                    )}
+                  </td>
+                  <td><VerdictChip v={row.verdict} /></td>
+                  <td onClick={stopRowOpen}><AlertLinks r={row} /></td>
+                  <td className="muted small">{(row.updated_at ?? "").slice(0, 10) || "—"}</td>
+                </tr>
+              );
+              return [
+                renderRow(r, false),
+                ...(expanded.has(r.id) ? (r.group_rows ?? []).map((g) => renderRow(g, true)) : []),
+              ];
+            })}
             {!loading && rows.length === 0 && (
               <tr><td colSpan={9} className="muted">No matching alerts. Run the alert ingest from the Control tab to fetch them.</td></tr>
             )}
