@@ -1,6 +1,6 @@
 ---
 name: babysit-pr
-description: Use after opening or pushing to a Prospector PR (commit-capital/prospector), or when asked to watch, babysit, or shepherd a PR to green. Drives the PR until every required check passes — waiting on CI without sleeping, fixing real failures, rerunning flakes once, catching up with main — and squash-merges it when the issue it closes is assigned to the operator.
+description: Use after opening or pushing to a Prospector PR (commit-capital/prospector), or when asked to watch, babysit, or shepherd a PR to green. Drives the PR until every required check passes — waiting on CI without sleeping, fixing real failures, rerunning flakes once, catching up with main — and squash-merges it only for an operator who opted in to merging their own PRs.
 ---
 
 # Babysit a Prospector PR to green
@@ -93,19 +93,30 @@ destination, and it refuses a push chained after a `cd`.
 Never force-push unless you rebased on purpose, and then only with
 `--force-with-lease`.
 
-## 3. Merge — only when authorized
+## 3. Merge — only for an operator who opted in
+
+Some maintainers want their own agent PRs merged the moment they are green;
+others review and merge every PR themselves. The choice is per person, and it
+lives on that person's machine, never in this repository:
+
+```bash
+git config --global --get prospector.autoMerge   # "true" means opted in
+```
 
 Merge only when **all** of these hold:
 
-1. Every required check is `pass` on the current head, and the PR is not a draft.
-2. `mergeStateStatus` is `CLEAN` (not `BEHIND`, `BLOCKED`, `DIRTY`, or `UNSTABLE`).
-3. The PR closes at least one issue (`closingIssuesReferences`, i.e. a
-   `Fixes #N` line), and **every** closing issue is assigned to the operator —
-   the login `gh api user --jq .login` prints (`brandonburr`). Check with
-   `gh issue view <n> --json assignees`.
-4. No review is `CHANGES_REQUESTED` and no review comment is unanswered
+1. The operator opted in: the command above prints `true`. Anything else —
+   unset, `false`, an error — means hand the PR back.
+2. The PR's author is the operator: `gh pr view N --json author --jq
+   .author.login` equals `gh api user --jq .login`. An opt-in covers the
+   operator's own PRs, never someone else's.
+3. Every required check is `pass` on the current head, and the PR is not a draft.
+4. `mergeStateStatus` is `CLEAN` (not `BEHIND`, `BLOCKED`, `DIRTY`, or `UNSTABLE`).
+5. No review is `CHANGES_REQUESTED` and no review comment is unanswered
    (`gh pr view N --json reviews,reviewDecision`).
-5. Nothing in this session's conversation told you to hold the PR.
+6. Every issue the PR closes (`closingIssuesReferences`) is assigned to the
+   operator or to no one — an issue someone else owns is theirs to sign off.
+7. Nothing in this session's conversation told you to hold the PR.
 
 Then:
 
@@ -113,14 +124,13 @@ Then:
 gh pr merge N --squash --delete-branch
 ```
 
-The assignment is the operator's standing authorization for that issue's fix; it
-covers this merge and nothing else. If any condition fails — no linked issue,
-an issue assigned to someone else or to no one — leave the PR open, green, and
-report it as ready for review. Never enable GitHub auto-merge, and never merge
-with `--admin`.
+If any condition fails, leave the PR open and green and report it as ready for
+review. Never enable GitHub auto-merge, and never merge with `--admin`.
 
-After merging, confirm: `gh pr view N --json state,mergeCommit` reads `MERGED`,
-and the closing issue reads `CLOSED`.
+After merging, confirm `gh pr view N --json state,mergeCommit` reads `MERGED`,
+and any issue it closes reads `CLOSED`.
+
+To opt in on a machine: `git config --global prospector.autoMerge true`.
 
 ## 4. Report
 
