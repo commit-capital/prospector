@@ -231,7 +231,9 @@ export const COLUMNS: ColumnDef[] = [
     ) },
   { key: "conflicts", label: "Conflicts", defaultOn: true, term: "col.conflicts",
     cell: (r) => (r.signals?.conflicts
-      ? <InfoTip entry={term("col.conflicts")} cue={false} focusable={false}><span className="conflict-mark">⚠</span></InfoTip>
+      ? <InfoTip entry={term("col.conflicts")} cue={false} focusable={false}>
+          <span className="conflict-mark" role="img" aria-label="has merge conflicts">⚠</span>
+        </InfoTip>
       : "—") },
   { key: "author", label: "Author", defaultOn: true, term: "col.author", cellClass: "muted small",
     cell: (r) => <AuthorHover author={r.author} trusted={r.trusted_author} stats={r.author_stats} /> },
@@ -253,7 +255,9 @@ export const COLUMNS: ColumnDef[] = [
   { key: "safety", label: "Safety", defaultOn: true, term: "col.safety",
     cell: (r) => (
       <InfoTip body={safetyBody(r)} cue={false} focusable={false}>
-        <span>{r.safety === "GREEN" ? "🟢" : r.safety === "YELLOW" ? "🟡" : r.safety === "RED" ? "🔴" : "—"}</span>
+        <span className="safety-cell">
+          {r.safety === "GREEN" ? "🟢 GREEN" : r.safety === "YELLOW" ? "🟡 YELLOW" : r.safety === "RED" ? "🔴 RED" : "—"}
+        </span>
       </InfoTip>
     ) },
   { key: "disposition", label: "Disposition", defaultOn: true, term: "col.disposition",
