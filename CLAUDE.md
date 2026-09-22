@@ -337,11 +337,16 @@ integrator: each locked-down agent (`allow_gh=False`, its own clone as
 `issue_gates.reproduction_outcome` over the two red legs `prove` observed, a
 fix's fate from `issue_gates.fix_proof_bar` over the green legs, the compile
 preflight, the related-tests run, and two refuting reviews (root-cause,
-scope-safety). The reproduction agent's authored test is held to the host's
-rules and proven red on the base; the fix agent then opens on a clone whose one
-commit already carries that frozen test, and its change is re-gated
+scope-safety). The reproduction agent's authored tests are held to the host's
+rules: the reproduction must prove red on the base, and the preservation tests
+it writes beside it — the neighbouring behavior a fix must keep — must prove
+green there. The fix agent then opens on a clone whose one commit already
+carries both frozen sets, and its change is re-gated
 (`issue_gates.fix_patch_regate`, capped at `settings.issue_fix_max_lines()`
-changed lines) on the paths it really touched before it is proven green. All
+changed lines) on the paths it really touched before the reproduction must turn
+green and the preservation tests stay green. The scope-safety reviewer returns
+an inventory of every behavior the change alters, each marked asked-for or not,
+and `review_issue_fix` reads any unasked change as unsafe. All
 proof runs on the pinned base's image — `prove.pinned` reads the verify pin,
 `prove.held(sha, tier)` names a base by hand — and neither builds one; every
 fault (an agent outage, a sandbox that could not run, a base that fails the

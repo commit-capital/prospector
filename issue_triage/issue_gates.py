@@ -207,13 +207,18 @@ def _twice(legs: dict | None, want: int) -> bool:
 def fix_proof_bar(result: dict) -> tuple[str | None, str]:
     """(None, …) when a fix is proven and reviewed, else the ending it falls
     short at — "fix-unproven" for the host's proof, "fix-rejected" for a
-    reviewer — with the reason. Only an explicit `safe` from every lens in
-    REVIEW_LENSES passes."""
+    reviewer — with the reason. The proof is the reproduction red on the base
+    and green with the fix, the preservation tests green with the fix, the
+    compile lane, and the related tests. Only an explicit `safe` from every lens
+    in REVIEW_LENSES passes."""
     proof = result.get("proof") or {}
     if not _twice(proof.get("red"), gates.SENTINEL_TEST_FAIL):
         return "fix-unproven", "the reproduction is not red twice on the base"
     if not _twice(proof.get("green"), gates.SENTINEL_PASS):
         return "fix-unproven", "the reproduction is not green twice with the fix applied"
+    if not _twice(proof.get("preserve"), gates.SENTINEL_PASS):
+        return "fix-unproven", ("the preservation tests do not pass twice with the fix "
+                                "applied: it changes behavior they pin")
     compiled = proof.get("compile")
     if compiled is not None:
         not_run = compiled.get("refused") or compiled.get("error")

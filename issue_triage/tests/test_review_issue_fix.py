@@ -32,7 +32,8 @@ def _run(monkeypatch, reply, *, lens: str = "root-cause", **over) -> dict:
     kwargs = {"lens": lens, "title": "Crash on empty input",
               "body": "It throws when given nothing.",
               "root_cause": "parse() indexes into an empty list",
-              "test_paths": ["src/__tests__/repro.test.ts"]}
+              "test_paths": ["src/__tests__/repro.test.ts"],
+              "evidence": "- Preservation tests (src/keep.test.ts): passed twice."}
     kwargs.update(over)
     return {"out": review_issue_fix.review("/wt", PATCH, **kwargs), "calls": calls}
 
@@ -47,7 +48,7 @@ def test_an_unknown_lens_is_rejected_before_any_agent_call(monkeypatch):
     monkeypatch.setattr(headless_agent, "run_agent", fake)
     with pytest.raises(ValueError):
         review_issue_fix.review("/wt", PATCH, lens="style", title="t", body="b",
-                                root_cause="rc", test_paths=[])
+                                root_cause="rc", test_paths=[], evidence="")
     assert called["n"] == 0
 
 
@@ -147,7 +148,7 @@ def test_a_long_patch_is_clipped_with_its_tail_kept(monkeypatch):
 
     monkeypatch.setattr(headless_agent, "run_agent", fake_run_agent)
     review_issue_fix.review("/wt", big, lens="root-cause", title="t", body="b",
-                            root_cause="rc", test_paths=[])
+                            root_cause="rc", test_paths=[], evidence="")
     assert "characters of this patch omitted" in calls["prompt"]
     assert tail in calls["prompt"]  # the tail is kept
     assert middle not in calls["prompt"]  # the middle is dropped
@@ -164,3 +165,57 @@ def test_every_returned_dict_carries_the_lens(monkeypatch):
 
 def test_every_review_lens_has_a_question():
     assert set(review_issue_fix._QUESTIONS) == set(issue_gates.REVIEW_LENSES)
+
+
+_ASKED = {"input": "?id=bad", "before": "500", "after": "400", "requested": True}
+_UNASKED = {"input": "?id= (empty)", "before": "200, filter ignored", "after": "400",
+            "requested": False}
+
+
+def test_a_scope_safe_verdict_whose_inventory_holds_only_the_asked_change_passes(
+        monkeypatch):
+    out = _run(monkeypatch, json.dumps({"verdict": "safe", "reason": "r",
+                                        "behavior_changes": [_ASKED]}),
+               lens="scope-safety")["out"]
+    assert out["verdict"] == "safe"
+    assert out["behavior_changes"] == [_ASKED]
+
+
+def test_a_scope_safe_verdict_listing_an_unasked_change_reads_as_unsafe(monkeypatch):
+    out = _run(monkeypatch, json.dumps({"verdict": "safe", "reason": "r",
+                                        "behavior_changes": [_ASKED, _UNASKED]}),
+               lens="scope-safety")["out"]
+    assert out["verdict"] == "unsafe"
+    assert "failed" not in out
+    assert "?id= (empty)" in out["reason"]
+
+
+@pytest.mark.parametrize("inventory", [None, [], [{"input": "x"}], "none"])
+def test_a_scope_safe_verdict_without_a_usable_inventory_reads_as_failed(
+        monkeypatch, inventory):
+    reply = {"verdict": "safe", "reason": "r"}
+    if inventory is not None:
+        reply["behavior_changes"] = inventory
+    out = _run(monkeypatch, json.dumps(reply), lens="scope-safety")["out"]
+    assert out["verdict"] == "unsafe"
+    assert out["failed"] is True
+
+
+def test_the_root_cause_lens_needs_no_inventory(monkeypatch):
+    out = _run(monkeypatch, json.dumps({"verdict": "safe", "reason": "r"}),
+               lens="root-cause")["out"]
+    assert out["verdict"] == "safe"
+
+
+def test_the_host_evidence_and_each_lens_s_output_reach_the_prompt(monkeypatch):
+    scope = _run(monkeypatch, json.dumps({"verdict": "unsafe", "reason": "r"}),
+                 lens="scope-safety")["calls"]["prompt"]
+    root = _run(monkeypatch, json.dumps({"verdict": "unsafe", "reason": "r"}),
+                lens="root-cause")["calls"]["prompt"]
+    assert "Preservation tests (src/keep.test.ts): passed twice." in scope
+    assert '"behavior_changes"' in scope
+    assert '"behavior_changes"' not in root
+
+
+def test_every_review_lens_has_an_output_shape():
+    assert set(review_issue_fix._OUTPUT) == set(issue_gates.REVIEW_LENSES)

@@ -246,7 +246,8 @@ def test_the_regate_refuses_a_malicious_scan(monkeypatch):
 
 
 PROVEN = {"proof": {"red": {"exit": 20, "exit_confirm": 20},
-                    "green": {"exit": 0, "exit_confirm": 0}, "compile": None,
+                    "green": {"exit": 0, "exit_confirm": 0},
+                    "preserve": {"exit": 0, "exit_confirm": 0}, "compile": None,
                     "related_tests": None},
           "reviews": [{"lens": "root-cause", "verdict": "safe", "reason": "", "concerns": []},
                       {"lens": "scope-safety", "verdict": "safe", "reason": "", "concerns": []}]}
@@ -276,6 +277,8 @@ def test_related_tests_the_base_fails_too_do_not_count_against_the_fix():
     ({"proof__green": {"exit": 20, "exit_confirm": None}}, "fix-unproven"),
     ({"proof__green": {"exit": 0, "exit_confirm": 20}}, "fix-unproven"),
     ({"proof__red": {"exit": 0, "exit_confirm": None}}, "fix-unproven"),
+    ({"proof__preserve": {"exit": 20, "exit_confirm": None}}, "fix-unproven"),
+    ({"proof__preserve": None}, "fix-unproven"),
     ({"proof__compile": {"exit": 20, "error_excerpt": "TS2304"}}, "fix-unproven"),
     ({"proof__compile": {"refused": "empty"}}, "fix-unproven"),
     ({"proof__related_tests": {"files": ["a.test.ts"], "run": {"exit": 20}}}, "fix-unproven"),

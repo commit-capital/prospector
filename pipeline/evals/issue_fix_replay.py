@@ -621,7 +621,9 @@ def score(instance: Instance, lane_result: LaneRun, oracle_runs: dict[str, prove
     all_safe = bool(reviews) and all(r.get("verdict") == "safe" for r in reviews)
     oracle_coupled = any(sym in pr_test_hunks for sym in _added_symbols(lane_fix_hunks))
 
-    repro_files = {f.get("path") for f in (lane_result.reproduction or {}).get("files", [])}
+    reproduction = lane_result.reproduction or {}
+    repro_files = {f.get("path") for key in ("files", "preserve")
+                   for f in reproduction.get(key) or []}
     lane_test_paths = set(diffpaths.changed_paths(lane_test_hunks))
     lane_paths = set(diffpaths.changed_paths(lane_patch))
 
