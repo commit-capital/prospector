@@ -4,8 +4,9 @@ import { ALL_CHECKS_PASS, CHECK_DEFS } from "../components/explorer/checkDefs.ts
 import { LANES } from "../components/explorer/lanes.ts";
 import {
   breakdownHref, exploreHref, HOME_BREAKDOWN_ENTRIES, HOME_CARDS, HOME_COUNT_SPECS,
-  HOME_ISSUE_CARDS, ISSUE_ANALYZE_BATCH, issuesHref,
+  HOME_ISSUE_CARDS, HOME_SECURITY_CARD, ISSUE_ANALYZE_BATCH, issuesHref,
   painLabel, SAMPLE_LIMIT, SAMPLE_QUERY,
+  SECURITY_ADVISORY_QUERY, SECURITY_SECRET_QUERY, securityHref,
   type HomeCard,
 } from "./homeCards.ts";
 
@@ -131,8 +132,33 @@ test("cards sample two PRs each so every card fits above the fold", () => {
 });
 
 test("issue card keys are unique and disjoint from PR card keys", () => {
-  const keys = [...HOME_CARDS.map((c) => c.key), ...HOME_ISSUE_CARDS.map((c) => c.key)];
+  const keys = [
+    ...HOME_CARDS.map((c) => c.key),
+    ...HOME_ISSUE_CARDS.map((c) => c.key),
+    HOME_SECURITY_CARD.key,
+  ];
   assert.equal(new Set(keys).size, keys.length);
+});
+
+test("the security card counts uncleared critical/high advisories and open secrets", () => {
+  assert.deepEqual(SECURITY_ADVISORY_QUERY.state, ["triage", "draft"]);
+  assert.deepEqual(SECURITY_ADVISORY_QUERY.severity, ["critical", "high"]);
+  assert.deepEqual(SECURITY_ADVISORY_QUERY.verdict, ["not-fixed", "none"]);
+  assert.equal(SECURITY_SECRET_QUERY.source, "secret-scanning");
+  assert.equal(SECURITY_SECRET_QUERY.state, "open");
+});
+
+test("the security card samples worst-first within the row budget", () => {
+  for (const query of [SECURITY_ADVISORY_QUERY, SECURITY_SECRET_QUERY]) {
+    assert.equal(query.sort, "severity");
+    assert.equal(query.direction, "desc");
+    assert.equal(query.limit, SAMPLE_LIMIT);
+  }
+});
+
+test("securityHref opens the matching Alerts sub-view", () => {
+  assert.equal(securityHref("advisories"), "/alerts?security=advisories");
+  assert.equal(securityHref("alerts"), "/alerts?security=alerts");
 });
 
 test("the issue cards cover the close-fixed picks and the unanalyzed backlog", () => {

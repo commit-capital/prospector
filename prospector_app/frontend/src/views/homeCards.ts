@@ -217,3 +217,44 @@ export const HOME_ISSUE_CARDS: HomeIssueCard[] = [
 export function issuesHref(card: HomeIssueCard): string {
   return `/issues?disposition=${encodeURIComponent(card.disposition)}`;
 }
+
+// The Security card in the "Your move" column: open security work read from
+// the 🛡️ Alerts store — critical/high advisories the find-fixed pass has not
+// cleared, plus any open secret-scanning alert. Counts and samples come from
+// the same query endpoints the Alerts tab serves, so the card's numbers match
+// the rows its links open.
+export const HOME_SECURITY_CARD: { key: string; title: string; blurb: string } = {
+  key: "security",
+  title: "Security to triage",
+  blurb: "Critical or high advisories with no fix landed, plus any open leaked-secret alert. Worst first in the Alerts tab.",
+};
+
+// The advisories half of the Security card: open reports (triage or draft) at
+// critical/high severity whose fix scan says not-fixed or has never run.
+export const SECURITY_ADVISORY_QUERY: {
+  state: string[]; severity: string[]; verdict: string[];
+  sort: string; direction: string; limit: number;
+} = {
+  state: ["triage", "draft"],
+  severity: ["critical", "high"],
+  verdict: ["not-fixed", "none"],
+  sort: "severity",
+  direction: "desc",
+  limit: SAMPLE_LIMIT,
+};
+
+// The alerts half: every open secret-scanning alert, whatever its severity.
+export const SECURITY_SECRET_QUERY: {
+  source: string; state: string; sort: string; direction: string; limit: number;
+} = {
+  source: "secret-scanning",
+  state: "open",
+  sort: "severity",
+  direction: "desc",
+  limit: SAMPLE_LIMIT,
+};
+
+// The Alerts-tab link for one of the Security card's halves.
+export function securityHref(section: "advisories" | "alerts"): string {
+  return `/alerts?security=${section}`;
+}

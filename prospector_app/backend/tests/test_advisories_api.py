@@ -34,9 +34,10 @@ def seeded(tmp_path, monkeypatch):
                   links=[{"kind": "pr", "number": 10, "how": "text-ref", "state": "open"}])
     a.record_fix_scan("fixed", by="agent", fix_commit="c647b8cc2ea6", evidence="gone")
     b = seed(G2, summary="SSRF via skill import (again)", reporter="bob",
-             updated_at="2026-08-02T00:00:00Z")
+             created_at="2026-08-05T00:00:00Z", updated_at="2026-08-02T00:00:00Z")
     b.record_fix_scan("duplicate", by="agent", duplicate_of=G1, evidence="same")
-    seed(G3, state="published", cve_id="CVE-2026-41679")
+    seed(G3, state="published", cve_id="CVE-2026-41679",
+         created_at="2026-08-02T00:00:00Z")
     monkeypatch.setattr(adv_mod, "STORE_ROOT", tmp_path)
     monkeypatch.setattr(adv_mod, "_synced_store_root", None)
     monkeypatch.setattr(adv_mod, "_store_pr_states", lambda: ({10: "merged"}, False))
@@ -67,6 +68,19 @@ def test_query_filters_state_verdict_and_text(seeded):
     assert [r["ghsa_id"] for r in adv_mod.query_advisories(q="cve-2026")["items"]] == [G3]
     out = adv_mod.query_advisories(sort="severity", direction="desc", limit=1)
     assert out["total"] == 3 and out["items"][0]["ghsa_id"] == G1
+
+
+def test_query_default_sorts_severity_then_oldest(seeded):
+    out = adv_mod.query_advisories()
+    assert [r["ghsa_id"] for r in out["items"]] == [G1, G3, G2]
+
+
+def test_query_filters_severity_and_verdict_lists(seeded):
+    assert [r["ghsa_id"] for r in adv_mod.query_advisories(severity=["critical", "high"])["items"]] == [G1]
+    assert [r["ghsa_id"] for r in adv_mod.query_advisories(severity="medium")["items"]] == [G3, G2]
+    assert [r["ghsa_id"] for r in adv_mod.query_advisories(verdict=["fixed", "duplicate"])["items"]] == [G1, G2]
+    out = adv_mod.query_advisories(state=["published"], severity=["medium"], verdict=["not-fixed", "none"])
+    assert [r["ghsa_id"] for r in out["items"]] == [G3]
 
 
 def test_detail_carries_description_and_404s_on_unknown(seeded):

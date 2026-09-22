@@ -37,7 +37,8 @@ def seeded(tmp_path, monkeypatch):
     dep.record_fix_scan("likely-fixed", action="dismiss-fixed",
                         evidence="merged bump", by="deterministic")
     seed("secret-scanning", 3, secret_type="github_pat",
-         secret_type_display_name="GitHub PAT", severity="critical")
+         secret_type_display_name="GitHub PAT", severity="critical",
+         created_at="2026-08-03T00:00:00Z")
     monkeypatch.setattr(alerts_mod, "STORE_ROOT", tmp_path)
     monkeypatch.setattr(alerts_mod, "_synced_store_root", None)
     monkeypatch.setattr(alerts_mod, "_store_pr_states", lambda: ({10: "merged"}, False))
@@ -78,6 +79,11 @@ def test_query_alerts_serves_rows_while_pr_snapshot_loads(seeded, monkeypatch):
     assert out["total"] == 3
     dep = next(r for r in out["items"] if r["source"] == "dependabot")
     assert dep["links"][0]["state"] == "open"  # the recorded state, unhydrated
+
+
+def test_query_default_sorts_severity_then_oldest(seeded):
+    out = alerts_mod.query_alerts()
+    assert [r["number"] for r in out["items"]] == [2, 3, 1]
 
 
 def test_query_filters_and_sorts(seeded):
