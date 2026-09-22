@@ -584,7 +584,57 @@
      "detail": "its tests import getProcessSessionRemoteSource"
     }
    ]
+  },
+  {
+   "base_sha": "028c5aa00a3ef61d4ff9ce4df7030cbc4fbb79ac",
+   "span": "2026-04-30..2026-05-05",
+   "fixes": 4,
+   "qualified_at": "2026-09-22T23:10:43+00:00",
+   "instances": [
+    {
+     "issue": 2905,
+     "pr": 5143,
+     "verdict": "fair",
+     "detail": "green exit 0/0: Start at  23:10:30 | Duration  161ms (transform 60ms, setup 0ms, collect 67ms, tests 1ms, environment 0ms, prepare 30ms)"
+    },
+    {
+     "issue": 3321,
+     "pr": 5273,
+     "verdict": "fair",
+     "detail": "green exit 0/0: Start at  23:10:31 | Duration  590ms (transform 188ms, setup 21ms, collect 259ms, tests 23ms, environment 0ms, prepare 89ms)"
+    },
+    {
+     "issue": 4935,
+     "pr": 4963,
+     "verdict": "fair",
+     "detail": "green exit 0/0: Start at  23:10:40 | Duration  1.15s (transform 512ms, setup 25ms, collect 40ms, tests 999ms, environment 0ms, prepare 24ms)"
+    },
+    {
+     "issue": 3316,
+     "pr": 5143,
+     "verdict": "duplicate-pr",
+     "detail": "another issue already measures this fix"
+    },
+    {
+     "issue": 3504,
+     "pr": 5273,
+     "verdict": "duplicate-pr",
+     "detail": "another issue already measures this fix"
+    },
+    {
+     "issue": 4245,
+     "pr": 5143,
+     "verdict": "duplicate-pr",
+     "detail": "another issue already measures this fix"
+    },
+    {
+     "issue": 4366,
+     "pr": 4903,
+     "verdict": "fix-path-withheld",
+     "detail": "its fix touches withheld paths: .github/workflows/pr.yml"
+    }
+   ]
   }
  ],
- "fair": 31
+ "fair": 34
 }
