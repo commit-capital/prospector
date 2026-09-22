@@ -4,6 +4,7 @@ no upstream write path for advisories.
 """
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -91,10 +92,21 @@ def get_advisory(ghsa: str) -> dict | None:
 
 
 _SEVERITY_RANK = {"critical": 3, "high": 2, "medium": 1, "low": 0, "unknown": -1}
+
+
+def _age_rank(r: dict) -> float:
+    """The negated created timestamp, so equal severities read oldest first
+    under the severity sort's descending default; undated rows sort last."""
+    try:
+        return -datetime.fromisoformat(r["created_at"]).timestamp()
+    except (TypeError, ValueError):
+        return float("-inf")
+
+
 _SORT_KEYS = {
     "ghsa": lambda r: r["ghsa_id"],
     "state": lambda r: r["state"] or "",
-    "severity": lambda r: _SEVERITY_RANK.get(r["severity"] or "", -2),
+    "severity": lambda r: (_SEVERITY_RANK.get(r["severity"] or "", -2), _age_rank(r)),
     "summary": lambda r: (r["summary"] or "").lower(),
     "reporter": lambda r: (r["reporter"] or "").lower(),
     "verdict": lambda r: r["verdict"] or "",
@@ -106,16 +118,22 @@ _DEFAULT_DESC = {"severity", "updated", "created", "links"}
 
 
 def query_advisories(q: str = "", sort: str | None = None, direction: str | None = None,
-                     state: str | list[str] | None = None, verdict: str | None = None,
+                     state: str | list[str] | None = None,
+                     severity: str | list[str] | None = None,
+                     verdict: str | None = None,
                      offset: int = 0, limit: int = 50) -> dict:
     """Paginated table query. `state` is one value or a list (OR'd; "all" in
-    either form, or None, = everything); `verdict` filters the fix-scan
-    verdict, "none" selecting unscanned; `q` is a case-insensitive substring
-    over ghsa, summary, reporter, and CVE id."""
+    either form, or None, = everything); `severity` accepts one value or a
+    list (OR'd); `verdict` filters the fix-scan verdict, "none" selecting
+    unscanned; `q` is a case-insensitive substring over ghsa, summary,
+    reporter, and CVE id."""
     rows, loading = list_advisories()
     wanted = [s for s in (state if isinstance(state, list) else [state]) if s]
     if wanted and "all" not in wanted:
         rows = [r for r in rows if r["state"] in wanted]
+    if severity:
+        wanted_severity = severity if isinstance(severity, list) else [severity]
+        rows = [r for r in rows if r["severity"] in wanted_severity]
     if verdict:
         rows = [r for r in rows if (r["verdict"] or "none") == verdict]
     needle = q.strip().lower()

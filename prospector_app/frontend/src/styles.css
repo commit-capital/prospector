@@ -1398,6 +1398,10 @@ tr.row-done:hover > td { opacity: 1; }
   .home-sample-pain { display: none; }
 }
 .home-row-run { white-space: nowrap; }
+/* A Security card sample is one clipped line: mono ref, severity chip, text. */
+.home-security-item { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.home-security-item a { color: var(--accent); text-decoration: none; }
+.home-security-item a:hover { text-decoration: underline; }
 .home-show-all { margin-top: 4px; align-self: flex-end; color: var(--accent); text-decoration: none; }
 .home-show-all:hover { text-decoration: underline; }
 .home-card-action {

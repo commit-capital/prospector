@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ALL_CHECKS_PASS, CHECK_DEFS } from "../components/explorer/checkDefs.ts";
 import { LANES } from "../components/explorer/lanes.ts";
+import type { AdvisoryRow, AdvisorySeverity, AlertRow, AlertSeverity } from "../api.ts";
 import {
-  breakdownHref, exploreHref, HOME_BREAKDOWN_ENTRIES, HOME_CARDS, HOME_COUNT_SPECS,
-  HOME_ISSUE_CARDS, ISSUE_ANALYZE_BATCH, issuesHref,
+  advisoryHref, breakdownHref, exploreHref, HOME_BREAKDOWN_ENTRIES, HOME_CARDS, HOME_COUNT_SPECS,
+  HOME_ISSUE_CARDS, HOME_SECURITY_CARD, ISSUE_ANALYZE_BATCH, issuesHref,
   painLabel, SAMPLE_LIMIT, SAMPLE_QUERY,
+  SECURITY_ADVISORY_QUERY, SECURITY_ALERT_QUERY, secretAlertHref, securityHref, securitySamples,
   type HomeCard,
 } from "./homeCards.ts";
 
@@ -130,8 +132,11 @@ test("cards sample two PRs each so every card fits above the fold", () => {
   assert.equal(SAMPLE_LIMIT, 2);
 });
 
-test("issue card keys are unique and disjoint from PR card keys", () => {
-  const keys = [...HOME_CARDS.map((c) => c.key), ...HOME_ISSUE_CARDS.map((c) => c.key)];
+test("issue and security card keys are unique and disjoint from PR card keys", () => {
+  const keys = [
+    ...HOME_CARDS.map((c) => c.key), ...HOME_ISSUE_CARDS.map((c) => c.key),
+    HOME_SECURITY_CARD.key,
+  ];
   assert.equal(new Set(keys).size, keys.length);
 });
 
@@ -160,6 +165,51 @@ test("no card runs a per-row job — the workers pick these up themselves", () =
   for (const card of HOME_CARDS) {
     assert.equal(card.rowAction, undefined, card.key);
   }
+});
+
+test("the security card's advisory query asks for open critical/high not-fixed reports", () => {
+  assert.deepEqual(SECURITY_ADVISORY_QUERY.state, ["triage", "draft"]);
+  assert.deepEqual(SECURITY_ADVISORY_QUERY.severity, ["critical", "high"]);
+  assert.equal(SECURITY_ADVISORY_QUERY.verdict, "not-fixed");
+  assert.equal(SECURITY_ADVISORY_QUERY.sort, "severity");
+  assert.equal(SECURITY_ADVISORY_QUERY.direction, "desc");
+  assert.equal(SECURITY_ADVISORY_QUERY.limit, SAMPLE_LIMIT);
+});
+
+test("the security card's alert query asks for every open secret-scanning alert", () => {
+  assert.equal(SECURITY_ALERT_QUERY.source, "secret-scanning");
+  assert.equal(SECURITY_ALERT_QUERY.state, "open");
+  assert.equal(SECURITY_ALERT_QUERY.sort, "severity");
+  assert.equal(SECURITY_ALERT_QUERY.direction, "desc");
+  assert.equal(SECURITY_ALERT_QUERY.limit, SAMPLE_LIMIT);
+});
+
+test("security hrefs open the 🛡️ Alerts tab's sections and detail panes", () => {
+  assert.equal(securityHref("advisories"), "/alerts?security=advisories");
+  assert.equal(securityHref("alerts"), "/alerts?security=alerts");
+  assert.equal(advisoryHref("GHSA-1111-2222-3333"),
+    "/alerts?security=advisories&advisory=GHSA-1111-2222-3333");
+  assert.equal(secretAlertHref(7), "/alerts?security=alerts&alert_source=secret-scanning&alert=7");
+});
+
+test("security samples merge both families, most severe then oldest, capped at the row budget", () => {
+  const advisory = (ghsa: string, severity: AdvisorySeverity, created: string): AdvisoryRow => {
+    const row: Partial<AdvisoryRow> = { ghsa_id: ghsa, severity, summary: `s-${ghsa}`, created_at: created };
+    return row as AdvisoryRow;
+  };
+  const alert = (n: number, severity: AlertSeverity, created: string): AlertRow => {
+    const row: Partial<AlertRow> = { number: n, severity, title: `a-${n}`, secret_type: "pat", created_at: created };
+    return row as AlertRow;
+  };
+  const samples = securitySamples(
+    [advisory("GHSA-a", "high", "2026-01-05"), advisory("GHSA-b", "critical", "2026-03-01")],
+    [alert(1, "critical", "2026-02-01")],
+  );
+  assert.deepEqual(samples.map((s) => s.key), ["alert-1", "advisory-GHSA-b"].slice(0, SAMPLE_LIMIT));
+  assert.equal(samples.length, Math.min(3, SAMPLE_LIMIT));
+  assert.equal(samples[0].href, secretAlertHref(1));
+  assert.equal(samples[0].ref, "#1");
+  assert.equal(samples[0].text, "a-1");
 });
 
 test("painLabel formats a score to two decimals and hides missing ones", () => {

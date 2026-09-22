@@ -1,4 +1,4 @@
-import type { FilterSpec } from "../api";
+import type { AdvisoryRow, AlertRow, FilterSpec } from "../api";
 
 // Which Home column a card renders in: `act` (a click of yours moves these
 // PRs), `auto` (a worker queue or hunter moves them; nothing for a person to
@@ -216,4 +216,97 @@ export const HOME_ISSUE_CARDS: HomeIssueCard[] = [
 
 export function issuesHref(card: HomeIssueCard): string {
   return `/issues?disposition=${encodeURIComponent(card.disposition)}`;
+}
+
+// The Security card under "Your move": the open security items that need a
+// person — critical/high advisories the find-fixed pass still marks
+// not-fixed, plus every open secret-scanning alert. Counts and samples come
+// from the same queries the 🛡️ Alerts tab serves, so the card's number is
+// the row count its links open.
+export const HOME_SECURITY_CARD: { key: string; title: string; blurb: string } = {
+  key: "security",
+  title: "Security",
+  blurb: "Critical or high advisories the fix scan still marks not-fixed, plus any open secret-scanning alert.",
+};
+
+// The advisory half: open (triage/draft) critical or high reports whose
+// find-fixed verdict is not-fixed, most severe then oldest first.
+export const SECURITY_ADVISORY_QUERY: {
+  state: string[]; severity: string[]; verdict: string;
+  sort: string; direction: "desc"; limit: number;
+} = {
+  state: ["triage", "draft"],
+  severity: ["critical", "high"],
+  verdict: "not-fixed",
+  sort: "severity",
+  direction: "desc",
+  limit: SAMPLE_LIMIT,
+};
+
+// The alert half: every open secret-scanning alert, whatever its severity —
+// a committed credential is a person's move at any level.
+export const SECURITY_ALERT_QUERY: {
+  source: string; state: string; sort: string; direction: "desc"; limit: number;
+} = {
+  source: "secret-scanning",
+  state: "open",
+  sort: "severity",
+  direction: "desc",
+  limit: SAMPLE_LIMIT,
+};
+
+// 🛡️ Alerts tab links: a sub-view for the card's headline and breakdown
+// links, and per-item deep links that open a row's detail pane there.
+export function securityHref(section: "advisories" | "alerts"): string {
+  return `/alerts?security=${section}`;
+}
+
+export function advisoryHref(ghsa: string): string {
+  return `/alerts?security=advisories&advisory=${encodeURIComponent(ghsa)}`;
+}
+
+export function secretAlertHref(n: number): string {
+  return `/alerts?security=alerts&alert_source=secret-scanning&alert=${n}`;
+}
+
+// One sample row on the Security card, normalized from either family: the
+// mono reference (GHSA id or alert number) linking to its detail pane, the
+// summary text, and the severity chip's value.
+export interface SecuritySample {
+  key: string;
+  href: string;
+  ref: string;
+  text: string;
+  severity: string;
+  created_at: string | null;
+}
+
+const SECURITY_SEVERITY_RANK: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
+
+// The card's sample rows: both families merged, most severe first and oldest
+// first within a severity — the order the Security views default to, so the
+// card's top row is the first row there.
+export function securitySamples(advisories: AdvisoryRow[], alerts: AlertRow[]): SecuritySample[] {
+  const rows: SecuritySample[] = [
+    ...advisories.map((a) => ({
+      key: `advisory-${a.ghsa_id}`,
+      href: advisoryHref(a.ghsa_id),
+      ref: a.ghsa_id,
+      text: a.summary ?? "(no summary)",
+      severity: a.severity,
+      created_at: a.created_at,
+    })),
+    ...alerts.map((a) => ({
+      key: `alert-${a.number}`,
+      href: secretAlertHref(a.number),
+      ref: `#${a.number}`,
+      text: a.title ?? a.secret_type ?? "(secret alert)",
+      severity: a.severity,
+      created_at: a.created_at,
+    })),
+  ];
+  rows.sort((x, y) =>
+    (SECURITY_SEVERITY_RANK[y.severity] ?? 0) - (SECURITY_SEVERITY_RANK[x.severity] ?? 0)
+    || (x.created_at ?? "9999").localeCompare(y.created_at ?? "9999"));
+  return rows.slice(0, SAMPLE_LIMIT);
 }

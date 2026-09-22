@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router";
-import { api, type IssueRow, type PRRow, type QueryResult } from "../api";
+import {
+  api, type AdvisoryQueryResult, type AlertQueryResult, type IssueRow, type PRRow, type QueryResult,
+} from "../api";
 import { LinkedIssues } from "../components/LinkedIssues";
 import { PRLink } from "../components/PRLink";
 import { useIssueFlyout } from "../useIssueFlyout";
@@ -8,8 +10,9 @@ import { useJobStream } from "../useJobStream";
 import { useRepoMeta } from "../RepoMetaContext";
 import {
   breakdownHref, exploreHref, HOME_BREAKDOWN_ENTRIES, HOME_CARDS, HOME_COUNT_SPECS,
-  HOME_ISSUE_CARDS, issuesHref, painLabel,
+  HOME_ISSUE_CARDS, HOME_SECURITY_CARD, issuesHref, painLabel,
   SAMPLE_ISSUE_LIMIT, SAMPLE_LIMIT, SAMPLE_QUERY,
+  SECURITY_ADVISORY_QUERY, SECURITY_ALERT_QUERY, securityHref, securitySamples,
   type HomeCard, type HomeIssueAction, type HomeIssueCard, type HomeRowAction,
 } from "./homeCards";
 
@@ -219,6 +222,73 @@ function HomeIssueCardRow({ card }: { card: HomeIssueCard }) {
   );
 }
 
+const SECURITY_SEVERITY_CLS: Record<string, string> = {
+  critical: "chip-red", high: "chip-red", medium: "chip-yellow", low: "chip-muted",
+};
+
+// The Security card: critical/high advisories the find-fixed pass still marks
+// not-fixed, plus every open secret-scanning alert — the same queries the 🛡️
+// Alerts tab serves, most severe then oldest first, so the card's top sample
+// is the first row there. Each sample links to its detail pane.
+function HomeSecurityCardRow() {
+  const [result, setResult] = useState<{ advisories: AdvisoryQueryResult; alerts: AlertQueryResult } | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([api.queryAdvisories(SECURITY_ADVISORY_QUERY), api.queryAlerts(SECURITY_ALERT_QUERY)])
+      .then(([advisories, alerts]) => { if (!cancelled) { setResult({ advisories, alerts }); setFailed(false); } })
+      .catch(() => { if (!cancelled) setFailed(true); });
+    return () => { cancelled = true; };
+  }, []);
+  const total = result ? result.advisories.total + result.alerts.total : null;
+  const samples = result ? securitySamples(result.advisories.items, result.alerts.items) : [];
+  const breakdown = result ? [
+    { label: "advisories not fixed", count: result.advisories.total, href: securityHref("advisories") },
+    { label: "open secret alerts", count: result.alerts.total, href: securityHref("alerts") },
+  ].filter((b) => b.count > 0) : [];
+  return (
+    <div className="act-card home-card">
+      <Link to={securityHref("advisories")} className="home-card-head act-card-clickable" title="Open the 🛡️ Alerts tab">
+        <div className={"act-card-n" + (total === null && !failed ? " home-count-loading" : "")}>
+          {failed ? "?" : total ?? "…"}
+        </div>
+        <div className="home-card-text">
+          <div className="act-card-l">{HOME_SECURITY_CARD.title}</div>
+          <div className="small muted home-card-blurb">{HOME_SECURITY_CARD.blurb}</div>
+        </div>
+      </Link>
+      {breakdown.length > 0 && (
+        <div className="home-breakdown small">
+          {breakdown.map((b) => (
+            <Link key={b.label} to={b.href} className="home-breakdown-item"
+              title={`Open the ${b.label} in the 🛡️ Alerts tab`}>
+              <span className="mono">{b.count}</span> {b.label}
+            </Link>
+          ))}
+        </div>
+      )}
+      <div className="home-card-side">
+        {failed && <div className="muted small">Failed to load security items.</div>}
+        {samples.length > 0 && total !== null && (
+          <>
+            {samples.map((s) => (
+              <div key={s.key} className="home-security-item small">
+                <Link to={s.href} className="mono" title="Open this item's detail pane">{s.ref}</Link>{" "}
+                <span className={`chip ${SECURITY_SEVERITY_CLS[s.severity] ?? "chip-muted"} sm`}>{s.severity}</span>{" "}
+                <span title={s.text}>{s.text}</span>
+              </div>
+            ))}
+            <Link to={securityHref("advisories")} className="home-show-all small">
+              Show all {total} in 🛡️ Alerts →
+            </Link>
+          </>
+        )}
+        {total === 0 && <div className="muted small">None right now.</div>}
+      </div>
+    </div>
+  );
+}
+
 export default function Home() {
   const [counts, setCounts] = useState<number[] | null>(null);
   const [samples, setSamples] = useState<QueryResult[] | null>(null);
@@ -293,6 +363,7 @@ export default function Home() {
         <section className="home-col">
           <div className="home-col-head muted">Your move — one click each</div>
           {HOME_CARDS.filter((c) => c.column === "act").map(renderCard)}
+          <HomeSecurityCardRow />
         </section>
         <section className="home-col">
           <div className="home-col-head muted">In motion — the workers clear these</div>

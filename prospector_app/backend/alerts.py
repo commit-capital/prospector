@@ -10,6 +10,7 @@ write (executor.dismiss_alert).
 """
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -111,11 +112,22 @@ def get_alert(source: str, number: int) -> dict | None:
 
 
 _SEVERITY_RANK = {"critical": 3, "high": 2, "medium": 1, "low": 0}
+
+
+def _age_rank(r: dict) -> float:
+    """The negated created timestamp, so equal severities read oldest first
+    under the severity sort's descending default; undated rows sort last."""
+    try:
+        return -datetime.fromisoformat(r["created_at"]).timestamp()
+    except (TypeError, ValueError):
+        return float("-inf")
+
+
 _SORT_KEYS = {
     "number": lambda r: r["number"],
     "source": lambda r: r["source"],
     "state": lambda r: r["state"],
-    "severity": lambda r: _SEVERITY_RANK.get(r["severity"] or "", -1),
+    "severity": lambda r: (_SEVERITY_RANK.get(r["severity"] or "", -1), _age_rank(r)),
     "verdict": lambda r: r["verdict"] or "",
     "title": lambda r: (r["title"] or "").lower(),
     "links": lambda r: r["link_count"],
