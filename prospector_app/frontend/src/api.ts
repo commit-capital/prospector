@@ -1992,6 +1992,9 @@ export interface FirehoseStats {
     author: string | null; closed_at: string | null; reason: string | null;
   }>;
   iss_action_counts: Record<string, number>;
+  /** Last successful full ingest per corpus — the instant up to which the
+   *  incoming series and counts are known. Null when no ingest has run. */
+  ingest_as_of: { pr: string | null; issue: string | null };
 }
 
 export interface ActivityPerson {

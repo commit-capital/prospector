@@ -580,6 +580,30 @@ def firehose_stats(
     }
 
 
+# Runs-ledger phases that fetch the full upstream open list, so their stamp is
+# the moment the store's picture of upstream was last true. Targeted refreshes
+# (``ingest:prs``, ``ingest:smoke``) re-read only named or capped records and
+# never advance it.
+PR_INGEST_PHASES: tuple[str, ...] = ("ingest", "ingest:new")
+ISSUE_INGEST_PHASES: tuple[str, ...] = ("ingest",)
+
+
+def last_ingest_at(records: list[storekit.RunRecord],
+                   phases: tuple[str, ...] = PR_INGEST_PHASES) -> str | None:
+    """Finished stamp of the most recent full-ingest run on a runs ledger, or
+    None when the ledger holds no such run. Charts and counts built from
+    ingested data are only known up to this instant — days past it are
+    unknown, not zero."""
+    latest: str | None = None
+    for rec in records:
+        if not isinstance(rec, storekit.PhaseRun) or rec.phase not in phases:
+            continue
+        finished = rec.finished or rec.started
+        if finished and (latest is None or finished > latest):
+            latest = finished
+    return latest
+
+
 def _latest_landed_state_action(events: list[dict]) -> dict[int, dict]:
     """The latest landed state-changing action (close / merge / reopen) per PR,
     from a newest-first event list — the first such event seen for each PR wins."""

@@ -1,5 +1,7 @@
 """Tests for activity.firehose_stats() and activity.reopened_after_close() (#238)."""
 from datetime import date, timedelta, timezone
+
+from pipeline import storekit
 from prospector_app.backend import activity
 
 
@@ -272,6 +274,46 @@ def test_closed_by_us_prs_are_the_latest_landed_closes():
         _ev("2026-06-21T10:00:00+00:00", "merge", pr=7),     # 7 latest = merge → excluded
     ]
     assert activity.closed_by_us_prs(events) == [42]
+
+
+# ── last_ingest_at ────────────────────────────────────────────────────────────
+
+def _run(phase: str, started: str | None, finished: str | None) -> storekit.PhaseRun:
+    return storekit.PhaseRun(phase=phase, started=started, finished=finished, raw={})
+
+
+def test_last_ingest_at_picks_latest_full_ingest():
+    records = [
+        _run("ingest", "2026-06-01T10:00:00", "2026-06-01T10:05:00"),
+        _run("ingest:new", "2026-06-03T10:00:00", "2026-06-03T10:01:00"),
+        _run("cluster:commit", "2026-06-05T10:00:00", "2026-06-05T10:02:00"),
+    ]
+    assert activity.last_ingest_at(records) == "2026-06-03T10:01:00"
+
+
+def test_last_ingest_at_ignores_targeted_refreshes():
+    records = [
+        _run("ingest", "2026-06-01T10:00:00", "2026-06-01T10:05:00"),
+        _run("ingest:prs", "2026-06-09T10:00:00", "2026-06-09T10:01:00"),
+        _run("ingest:smoke", "2026-06-09T11:00:00", "2026-06-09T11:01:00"),
+    ]
+    assert activity.last_ingest_at(records) == "2026-06-01T10:05:00"
+
+
+def test_last_ingest_at_issue_phases():
+    records = [
+        _run("ingest", "2026-06-02T10:00:00", "2026-06-02T10:03:00"),
+        _run("ingest:smoke", "2026-06-08T10:00:00", "2026-06-08T10:01:00"),
+        _run("analyze", "2026-06-09T10:00:00", "2026-06-09T10:01:00"),
+    ]
+    assert activity.last_ingest_at(records, activity.ISSUE_INGEST_PHASES) == "2026-06-02T10:03:00"
+
+
+def test_last_ingest_at_falls_back_to_started_and_handles_empty():
+    assert activity.last_ingest_at([]) is None
+    assert activity.last_ingest_at([_run("cluster:commit", "2026-06-01T10:00:00", None)]) is None
+    records = [_run("ingest", "2026-06-01T10:00:00", None)]
+    assert activity.last_ingest_at(records) == "2026-06-01T10:00:00"
 
 
 # ── pr_author filter ──────────────────────────────────────────────────────────

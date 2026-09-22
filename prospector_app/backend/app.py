@@ -1254,6 +1254,13 @@ def activity_firehose(days: int = Query(30, le=400), all_time: bool = False,
     stats = activity.firehose_stats(scoped_prs, all_issues, days, events, start_date=start_date)
     stats["reopened_after_close"] = activity.reopened_after_close(scoped_prs, events)
     stats["iss_action_counts"] = activity.issue_action_counts(events)
+    # Incoming series come from ingested store data, so they are only known up
+    # to each corpus's last full ingest; the frontend greys the days past it.
+    stats["ingest_as_of"] = {
+        "pr": activity.last_ingest_at(data.runs()),
+        "issue": activity.last_ingest_at(issues_mod.cached_runs(),
+                                         activity.ISSUE_INGEST_PHASES),
+    }
     return stats
 
 
