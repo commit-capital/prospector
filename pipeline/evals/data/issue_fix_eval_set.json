@@ -634,7 +634,39 @@
      "detail": "its fix touches withheld paths: .github/workflows/pr.yml"
     }
    ]
+  },
+  {
+   "base_sha": "d62c5adb7ab5941ec6aa3968ef69d6dbd075ab9d",
+   "span": "2026-07-15..2026-07-16",
+   "fixes": 4,
+   "qualified_at": "2026-09-22T23:22:48+00:00",
+   "instances": [
+    {
+     "issue": 3759,
+     "pr": 3809,
+     "verdict": "fair",
+     "detail": "green exit 0/0: \u001b[2m   Start at \u001b[22m 23:22:26 | \u001b[2m   Duration \u001b[22m 989ms\u001b[2m (transform 336ms, setup 14ms, import 531ms, tests 194ms, environment 199ms)\u001b[22m"
+    },
+    {
+     "issue": 6529,
+     "pr": 9650,
+     "verdict": "fair",
+     "detail": "green exit 0/0: \u001b[2m   Start at \u001b[22m 23:22:36 | \u001b[2m   Duration \u001b[22m 5.41s\u001b[2m (transform 1.76s, setup 36ms, import 3.19s, tests 2.14s, environment 0ms)\u001b[22m"
+    },
+    {
+     "issue": 6233,
+     "pr": 9651,
+     "verdict": "oracle-imports-pr-symbol",
+     "detail": "its tests import DEFAULT_LIVENESS_REESCALATION_COOLDOWN_MS"
+    },
+    {
+     "issue": 6647,
+     "pr": 6648,
+     "verdict": "r6-red",
+     "detail": "red exit 0/None: \u001b[2m   Start at \u001b[22m 23:22:32 | \u001b[2m   Duration \u001b[22m 82ms\u001b[2m (transform 22ms, setup 14ms, import 15ms, tests 3ms, environment 0ms)\u001b[22m"
+    }
+   ]
   }
  ],
- "fair": 34
+ "fair": 36
 }
