@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router";
 import { api, type IssueRow, type PRRow, type QueryResult } from "../api";
+import { useSystemHealth } from "../useSystemHealth";
 import { LinkedIssues } from "../components/LinkedIssues";
 import { PRLink } from "../components/PRLink";
 import { useIssueFlyout } from "../useIssueFlyout";
@@ -256,6 +257,9 @@ export default function Home() {
     return () => { cancelled = true; };
   }, [counts]);
   const loading = counts === null && !err;
+  // The "In motion" column claims the workers clear it; while no lane
+  // anywhere can pick work, the claim is suspended and the column says so.
+  const stalled = useSystemHealth()?.stalled ?? false;
   // Counts and samples are index-aligned with the flat HOME_CARDS array, so
   // each column looks a card's data up by its position there.
   const renderCard = (card: HomeCard) => {
@@ -294,8 +298,10 @@ export default function Home() {
           <div className="home-col-head muted">Your move — one click each</div>
           {HOME_CARDS.filter((c) => c.column === "act").map(renderCard)}
         </section>
-        <section className="home-col">
-          <div className="home-col-head muted">In motion — the workers clear these</div>
+        <section className={"home-col" + (stalled ? " home-col-stalled" : "")}>
+          <div className="home-col-head muted">
+            {stalled ? "Stalled — the workers are down" : "In motion — the workers clear these"}
+          </div>
           {HOME_CARDS.filter((c) => c.column === "auto").map(renderCard)}
         </section>
         <section className="home-col">

@@ -38,6 +38,20 @@ a:hover { text-decoration: underline; }
 .store-write-block { background: var(--red); color: #fff; padding: 10px 20px;
   text-align: center; font-weight: 700; font-size: 14px; }
 
+/* deployment health strip (App.tsx HealthStrip) — one thin line under the
+   topbar on every page, naming each broken thing with its machine; every
+   item links to the page with the fix. Sticky just below the topbar. */
+.health-strip { position: sticky; top: var(--topbar-h, 0); z-index: 9;
+  display: flex; flex-wrap: wrap; gap: 4px 20px; padding: 5px 20px;
+  font-size: 12.5px; font-weight: 600;
+  width: calc(100% + var(--ap-w, 0)); margin-left: calc(-1 * var(--ap-w, 0)); }
+.health-strip-amber { background: color-mix(in srgb, var(--yellow) 16%, var(--panel));
+  border-bottom: 1px solid var(--yellow); }
+.health-strip-red { background: color-mix(in srgb, var(--red) 12%, var(--panel));
+  border-bottom: 1px solid var(--red); }
+.health-strip-item { color: var(--text); text-decoration: none; }
+.health-strip-item:hover { text-decoration: underline; }
+
 /* layout */
 .topbar { display: flex; align-items: center; gap: 24px; padding: 10px 20px;
   background: var(--panel); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 10;
@@ -1349,6 +1363,10 @@ tr.row-done:hover > td { opacity: 1; }
 }
 .home-col { min-width: 0; display: flex; flex-direction: column; gap: 10px; }
 .home-col-head { text-transform: uppercase; letter-spacing: .04em; font-size: 10.5px; }
+/* a column whose workers are all down: its heading turns red ("Stalled") and
+   its cards grey out — the claim that the workers clear them is suspended. */
+.home-col-stalled .home-col-head { color: var(--red); }
+.home-col-stalled .home-card { opacity: .55; filter: grayscale(.6); }
 .home-breakdown { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 0 12px 8px; }
 .home-breakdown-item { text-decoration: none; color: var(--muted); }
 .home-breakdown-item:hover { color: var(--fg); text-decoration: underline; }

@@ -1,11 +1,12 @@
 import { Component, lazy, Suspense, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from "react";
-import { NavLink, Outlet, useLocation, useNavigate, useSearchParams } from "react-router";
+import { Link, NavLink, Outlet, useLocation, useNavigate, useSearchParams } from "react-router";
 import { ExecProvider, useExec, type Toast } from "./ExecContext";
 import { RepoMetaProvider, useRepoMeta } from "./RepoMetaContext";
 import { FeedbackButton } from "./components/FeedbackButton";
 import { AgentPaneProvider } from "./components/AgentPane";
 import { isReachable, subscribeHealth, pingHealth } from "./health";
 import { api, type WorkStatus } from "./api";
+import { useSystemHealth } from "./useSystemHealth";
 import { loadWithRecovery } from "./lazyLoad";
 import { timeAgo } from "./timeAgo";
 import { workStatusLabel } from "./workStatusLabel";
@@ -149,6 +150,25 @@ function ScrollToTop() {
   const { pathname } = useLocation();
   useEffect(() => { window.scrollTo(0, 0); }, [pathname]);
   return null;
+}
+
+// The thin strip under the topbar on every page: one line per broken thing
+// anywhere on the deployment — a paused lane, a silent worker, stale ingest —
+// naming the machine and the cause, each linking to the page with the fix.
+// Renders nothing while everything is healthy.
+function HealthStrip() {
+  const health = useSystemHealth();
+  if (!health || health.items.length === 0) return null;
+  return (
+    <div className={`health-strip health-strip-${health.severity}`} role="alert">
+      {health.items.map((item) => (
+        <Link key={item.text} to={item.href} className="health-strip-item"
+          title="Open the page with the fix">
+          <span aria-hidden="true">{item.severity === "red" ? "⛔" : "⚠️"}</span> {item.text}
+        </Link>
+      ))}
+    </div>
+  );
 }
 
 function StoreWriteBanner() {
@@ -533,6 +553,7 @@ export default function App() {
             <SettingsMenu />
           </div>
         </header>
+        <HealthStrip />
         <main className="content">
           <Content />
         </main>

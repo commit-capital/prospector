@@ -945,6 +945,24 @@ export interface WorkStatus {
   jobs: { running: number; labels: string[] };
 }
 
+/** One broken thing on the deployment, for the strip every page shows: what
+ *  is wrong and where, with the app route that holds the fix. */
+export interface SystemHealthItem {
+  severity: "amber" | "red";
+  text: string;
+  href: string;
+}
+
+/** Deployment-wide health: the strip's items (red first), the worst severity,
+ *  each lane's liveness across every machine, and `stalled` — no lane with a
+ *  registered worker can pick work, so Home's "In motion" claim is suspended. */
+export interface SystemHealth {
+  items: SystemHealthItem[];
+  severity: "ok" | "amber" | "red";
+  lanes: Record<string, { hosts: number; ok: boolean }>;
+  stalled: boolean;
+}
+
 /** The sandbox-verification queue: PRs currently in flight, plus verify-only
  *  run history from the runs ledger over the selected window. */
 export interface VerifyQueue { queue: VerifyQueueEntry[]; history: AutohuntRun[]; }
@@ -1819,6 +1837,7 @@ export const api = {
     return get<FixQueue>(`/api/fix/queue?${qs}`);
   },
   workStatus: () => get<WorkStatus>("/api/status/now"),
+  systemHealth: () => get<SystemHealth>("/api/status/health"),
   /** Reopen a tripped worker lane by the operator's say-so. */
   workerHealthResume: async (host: string, lane: string): Promise<void> => {
     const r = await fetch("/api/worker/health/resume", {
