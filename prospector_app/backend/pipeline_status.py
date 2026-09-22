@@ -121,6 +121,51 @@ def _seconds_per_run(records: list[storekit.RunRecord], phase: str) -> float | N
     return sum(durations) / len(durations) if durations else None
 
 
+def _ledger_records(name: str) -> list[storekit.RunRecord]:
+    """One named runs ledger, oldest first: the PR store's, the issue store's,
+    or the alert store's."""
+    if name == "pr":
+        return data.runs()
+    if name == "issue":
+        return _issue_runs()
+    from prospector_app.backend import alert_data
+    return alert_data.runs()
+
+
+def job_runtimes() -> dict[str, dict[str, str | float | None]]:
+    """Per Control-tab job kind with a ledger mapping: when its phases last ran
+    and the typical whole-run duration, averaged over recent runs of all its
+    phases. `typical_seconds` is None until a run has recorded a real elapsed
+    duration."""
+    from prospector_app.backend import jobs
+    ledgers: dict[str, list[storekit.RunRecord]] = {}
+    out: dict[str, dict[str, str | float | None]] = {}
+    for kind, spec in jobs.JOB_SPECS.items():
+        ledger = spec.get("ledger")
+        if ledger is None:
+            continue
+        name, phases = ledger
+        if name not in ledgers:
+            ledgers[name] = _ledger_records(name)
+        records = ledgers[name]
+        last: str | None = None
+        durations: list[float] = []
+        for rec in reversed(records):
+            if not isinstance(rec, storekit.PhaseRun) or rec.phase not in phases:
+                continue
+            finished = rec.finished or rec.started
+            if finished and (last is None or finished > last):
+                last = finished
+            seconds = _elapsed_seconds(rec.started, rec.finished)
+            if seconds is not None and len(durations) < _ESTIMATE_SAMPLES:
+                durations.append(seconds)
+        out[kind] = {
+            "last_run": last,
+            "typical_seconds": sum(durations) / len(durations) if durations else None,
+        }
+    return out
+
+
 def _issue_coverage() -> dict:
     """Issue coverage counts: how many open issues have a current analysis vs.
     are still pending — the same missing-or-stale selection

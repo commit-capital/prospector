@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { usePRFlyout } from "../usePRFlyout";
+import { useDialogFocus } from "../useDialogFocus";
 import { useResizableWidth } from "../useResizableWidth";
 import { PRDetailContent } from "../views/PRDetail";
 
@@ -14,6 +15,8 @@ export function PRFlyout() {
   const { width, startResize } = useResizableWidth("app-flyout-width", 640);
   // explicit per-pane heights (px) once the user drags a pane divider
   const [heights, setHeights] = useState<Record<number, number>>({});
+  const asideRef = useRef<HTMLElement>(null);
+  useDialogFocus(asideRef);
 
   useEffect(() => {
     if (!prs.length) return;
@@ -44,18 +47,21 @@ export function PRFlyout() {
     <>
       <div className="flyout-scrim" onClick={close} />
       <aside className={`flyout ${maximized ? "flyout-max" : ""} ${stacked ? "flyout-stacked" : ""}`}
-        role="dialog" aria-label={prs.length === 1 ? `PR ${prs[0]}` : `${prs.length} PRs`}
+        role="dialog" aria-modal="true" aria-label={prs.length === 1 ? `PR ${prs[0]}` : `${prs.length} PRs`}
+        ref={asideRef} tabIndex={-1}
         style={maximized ? undefined : { width }}>
         <div className="flyout-resize" onMouseDown={startResize} title="Drag to resize" role="separator" aria-orientation="vertical" />
         <div className="flyout-bar">
           {stacked && <span className="flyout-count">{prs.length} PRs stacked</span>}
-          <button className="flyout-btn" title={maximized ? "Restore" : "Maximize"} onClick={() => setMaximized((m) => !m)}>
+          <button className="flyout-btn" title={maximized ? "Restore" : "Maximize"}
+            aria-label={maximized ? "Restore" : "Maximize"} onClick={() => setMaximized((m) => !m)}>
             {maximized ? "⤡" : "⤢"}
           </button>
           {!stacked && (
-            <a className="flyout-btn" title="Open full page" href={`/prs/${prs[0]}`} target="_blank" rel="noreferrer">↗</a>
+            <a className="flyout-btn" title="Open full page" aria-label="Open full page"
+              href={`/prs/${prs[0]}`} target="_blank" rel="noreferrer">↗</a>
           )}
-          <button className="flyout-btn flyout-close" title="Close all (Esc)" onClick={close}>✕</button>
+          <button className="flyout-btn flyout-close" title="Close all (Esc)" aria-label="Close (Escape)" onClick={close}>✕</button>
         </div>
         <div className="flyout-panes">
           {prs.map((pr, i) => (

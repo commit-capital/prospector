@@ -32,10 +32,31 @@ export interface HomeCard {
 }
 
 // One counted link under a card: a narrower spec inside the card's own.
+// `hint` says what would have let the agent act alone on these PRs.
 export interface HomeBreakdown {
   label: string;
   spec: FilterSpec;
+  hint?: string;
 }
+
+// What would have let the agent act alone, per handed bucket — every
+// escalation names its reason (the row's automation.reason), and this is the
+// reason's counterpart: the missing condition that would have kept the PR in
+// the automation's hands.
+export const HANDED_UNBLOCK: Record<string, string> = {
+  "author-conflicts": "A head that rebases or merges cleanly — conflicts are the author's (or a hunted resolve under TRIAGE_FIX_HUNT_RESOLVE).",
+  "author-ci": "CI green at the author's head — the bot only repairs CI it broke itself.",
+  "author-declined": "Nothing — the agent judged the change unsafe to write and said why.",
+  "author-verify": "A verification run that confirms the fix red→green.",
+  "author-rejected": "A patch the refuting reviewer calls safe.",
+  "author-other": "An author push that clears the recorded refusal.",
+  "needs-human": "Nothing — a needs-human pick is a decision reserved for a person.",
+  "security-red": "Nothing — a RED security verdict always stops the automation.",
+  "security-yellow": "TRIAGE_FIX_HUNT_SECURITY=1, which lets the hunter fix YELLOW findings as objections.",
+  "asks": "A profile naming the gate fixable, or your typed guidance for the fix.",
+  "gated": "Paths outside CODEOWNERS gating and the profile's deny globs — the bot may not author there.",
+  "other": "Depends on the row's own reason — open it to see what stands in the way.",
+};
 
 // How many sample PRs each card fetches into the table on its right side,
 // kept small so every card fits above the fold; the "Show all" link opens
@@ -119,12 +140,12 @@ export const HOME_CARDS: HomeCard[] = [
     column: "handed",
     spec: { automation_owner: "author" },
     breakdown: [
-      { label: "needs a rebase", spec: bucket("author-conflicts") },
-      { label: "red CI", spec: bucket("author-ci") },
-      { label: "agent declined", spec: bucket("author-declined") },
-      { label: "verification failed", spec: bucket("author-verify") },
-      { label: "fix rejected by reviewer", spec: bucket("author-rejected") },
-      { label: "other", spec: bucket("author-other") },
+      { label: "needs a rebase", spec: bucket("author-conflicts"), hint: HANDED_UNBLOCK["author-conflicts"] },
+      { label: "red CI", spec: bucket("author-ci"), hint: HANDED_UNBLOCK["author-ci"] },
+      { label: "agent declined", spec: bucket("author-declined"), hint: HANDED_UNBLOCK["author-declined"] },
+      { label: "verification failed", spec: bucket("author-verify"), hint: HANDED_UNBLOCK["author-verify"] },
+      { label: "fix rejected by reviewer", spec: bucket("author-rejected"), hint: HANDED_UNBLOCK["author-rejected"] },
+      { label: "other", spec: bucket("author-other"), hint: HANDED_UNBLOCK["author-other"] },
     ],
   },
   {
@@ -134,12 +155,12 @@ export const HOME_CARDS: HomeCard[] = [
     column: "handed",
     spec: bucket("needs-human", "security-red", "security-yellow", "asks", "gated", "other"),
     breakdown: [
-      { label: "needs a human decision", spec: bucket("needs-human") },
-      { label: "security RED", spec: bucket("security-red") },
-      { label: "security YELLOW", spec: bucket("security-yellow") },
-      { label: "analysis asks", spec: bucket("asks") },
-      { label: "gated path", spec: bucket("gated") },
-      { label: "other", spec: bucket("other") },
+      { label: "needs a human decision", spec: bucket("needs-human"), hint: HANDED_UNBLOCK["needs-human"] },
+      { label: "security RED", spec: bucket("security-red"), hint: HANDED_UNBLOCK["security-red"] },
+      { label: "security YELLOW", spec: bucket("security-yellow"), hint: HANDED_UNBLOCK["security-yellow"] },
+      { label: "analysis asks", spec: bucket("asks"), hint: HANDED_UNBLOCK["asks"] },
+      { label: "gated path", spec: bucket("gated"), hint: HANDED_UNBLOCK["gated"] },
+      { label: "other", spec: bucket("other"), hint: HANDED_UNBLOCK["other"] },
     ],
   },
 ];
@@ -166,8 +187,44 @@ export function exploreHref(card: HomeCard): string {
   params.set("spec", JSON.stringify(card.spec));
   if (card.sort) params.set("sort", card.sort);
   if (card.dir) params.set("dir", card.dir);
-  return `/explore?${params}`;
+  return `/prs/list?${params}`;
 }
+
+// The Security card under "Your move": open critical/high advisories the
+// find-fixed pass still marks not-fixed, plus every open secret-scanning
+// alert. It reads the advisory and alert stores, not the PR matcher, so its
+// two sides are query options for POST /api/advisories/query and
+// POST /api/alerts/query rather than a FilterSpec.
+export const SECURITY_CARD = {
+  key: "security",
+  title: "Security needs a look",
+  blurb: "Critical or high advisories the find-fixed pass still marks not-fixed, plus any open secret-scanning alert. Triage each in the Security views.",
+  href: "/security",
+};
+
+// The advisory side: open (triage/draft) critical or high reports whose
+// fix-scan verdict is not-fixed, most severe first, ties oldest first.
+export const SECURITY_ADVISORY_QUERY: {
+  state: string[]; severity: string[]; verdict: string; sort: string; limit: number;
+} = {
+  state: ["triage", "draft"],
+  severity: ["critical", "high"],
+  verdict: "not-fixed",
+  sort: "severity",
+  limit: SAMPLE_LIMIT,
+};
+export const SECURITY_ADVISORIES_HREF = "/security?security=advisories";
+
+// The alert side: every open secret-scanning alert, most severe first.
+export const SECURITY_ALERT_QUERY: {
+  source: string; state: string; sort: string; limit: number;
+} = {
+  source: "secret-scanning",
+  state: "open",
+  sort: "severity",
+  limit: SAMPLE_LIMIT,
+};
+export const SECURITY_ALERTS_HREF = "/security?security=alerts";
 
 // The card-level job button on a Home issue card: the Control-tab job that
 // moves the card's issues forward, run with a count capped at `batch`.

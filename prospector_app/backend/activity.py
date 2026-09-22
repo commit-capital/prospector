@@ -580,6 +580,37 @@ def firehose_stats(
     }
 
 
+# The runs-ledger phases that refresh each corpus's incoming picture. The full
+# PR ingest and the new-PR pass both fetch the complete open-PR list; targeted
+# refreshes (ingest:prs) touch only named PRs and don't count.
+_PR_INGEST_PHASES = frozenset({"ingest", "ingest:new"})
+_ISSUE_INGEST_PHASES = frozenset({"ingest"})
+
+
+def _latest_finished(runs: list[storekit.RunRecord], phases: frozenset[str]) -> str | None:
+    best: str | None = None
+    for rec in runs:
+        if not isinstance(rec, storekit.PhaseRun) or rec.phase not in phases:
+            continue
+        finished = rec.finished or rec.started
+        if finished and (best is None or finished > best):
+            best = finished
+    return best
+
+
+def ingest_as_of(pr_runs: list[storekit.RunRecord],
+                 issue_runs: list[storekit.RunRecord]) -> dict[str, str | None]:
+    """When each corpus was last refreshed from upstream: the finished-at stamp
+    of the newest PR and issue ingest runs, for the dashboard to mark charts
+    and counts built from ingested data. The ledger records a run when it
+    completes, so the newest entry is the last successful one. ``None`` where
+    a corpus has never been ingested."""
+    return {
+        "ingest_as_of": _latest_finished(pr_runs, _PR_INGEST_PHASES),
+        "issue_ingest_as_of": _latest_finished(issue_runs, _ISSUE_INGEST_PHASES),
+    }
+
+
 def _latest_landed_state_action(events: list[dict]) -> dict[int, dict]:
     """The latest landed state-changing action (close / merge / reopen) per PR,
     from a newest-first event list — the first such event seen for each PR wins."""

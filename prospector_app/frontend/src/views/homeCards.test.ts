@@ -6,6 +6,8 @@ import {
   breakdownHref, exploreHref, HOME_BREAKDOWN_ENTRIES, HOME_CARDS, HOME_COUNT_SPECS,
   HOME_ISSUE_CARDS, ISSUE_ANALYZE_BATCH, issuesHref,
   painLabel, SAMPLE_LIMIT, SAMPLE_QUERY,
+  SECURITY_ADVISORIES_HREF, SECURITY_ADVISORY_QUERY, SECURITY_ALERT_QUERY,
+  SECURITY_ALERTS_HREF, SECURITY_CARD,
   type HomeCard,
 } from "./homeCards.ts";
 
@@ -58,7 +60,7 @@ test("the counts request lists card specs first, then every breakdown entry in o
 test("a breakdown link keeps the card's sort and takes the entry's spec", () => {
   const card = HOME_CARDS.find((c) => c.key === "author")!;
   const entry = card.breakdown![0];
-  const params = new URLSearchParams(breakdownHref(card, entry).slice("/explore?".length));
+  const params = new URLSearchParams(breakdownHref(card, entry).slice("/prs/list?".length));
   assert.deepEqual(JSON.parse(params.get("spec")!), entry.spec);
 });
 
@@ -74,6 +76,13 @@ test("the ready card is the merge-ready standing, oldest first", () => {
   assert.deepEqual(ready.spec, { automation_bucket: "merge-ready" });
   assert.equal(ready.sort, "updated");
   assert.equal(ready.dir, "asc");
+});
+
+test("explorer lanes carry the Home cards' names where the populations overlap", () => {
+  const ready = HOME_CARDS.find((c) => c.key === "ready")!;
+  const yourCall = HOME_CARDS.find((c) => c.key === "your-call")!;
+  assert.ok(LANES.find((l) => l.key === "merge-ready")!.label.includes(ready.title));
+  assert.ok(LANES.find((l) => l.key === "needs-human")!.label.includes(yourCall.title));
 });
 
 test("every lane spec uses only fields the filter UI can represent", () => {
@@ -97,8 +106,8 @@ test("every lane spec uses only fields the filter UI can represent", () => {
 test("exploreHref round-trips the spec through the URL", () => {
   for (const card of HOME_CARDS) {
     const href = exploreHref(card);
-    assert.ok(href.startsWith("/explore?"));
-    const params = new URLSearchParams(href.slice("/explore?".length));
+    assert.ok(href.startsWith("/prs/list?"));
+    const params = new URLSearchParams(href.slice("/prs/list?".length));
     assert.deepEqual(JSON.parse(params.get("spec")!), card.spec);
   }
 });
@@ -108,10 +117,10 @@ test("exploreHref carries sort and dir only when the card sets them", () => {
     key: "k", title: "t", blurb: "b", column: "act", spec: {}, sort: "updated", dir: "asc",
   };
   const unsorted: HomeCard = { key: "k", title: "t", blurb: "b", column: "act", spec: {} };
-  const sortedParams = new URLSearchParams(exploreHref(sorted).slice("/explore?".length));
+  const sortedParams = new URLSearchParams(exploreHref(sorted).slice("/prs/list?".length));
   assert.equal(sortedParams.get("sort"), "updated");
   assert.equal(sortedParams.get("dir"), "asc");
-  const unsortedParams = new URLSearchParams(exploreHref(unsorted).slice("/explore?".length));
+  const unsortedParams = new URLSearchParams(exploreHref(unsorted).slice("/prs/list?".length));
   assert.equal(unsortedParams.get("sort"), null);
   assert.equal(unsortedParams.get("dir"), null);
 });
@@ -160,6 +169,39 @@ test("no card runs a per-row job — the workers pick these up themselves", () =
   for (const card of HOME_CARDS) {
     assert.equal(card.rowAction, undefined, card.key);
   }
+});
+
+test("the security card's key is disjoint from every other card's", () => {
+  const keys = [...HOME_CARDS.map((c) => c.key), ...HOME_ISSUE_CARDS.map((c) => c.key)];
+  assert.ok(!keys.includes(SECURITY_CARD.key));
+});
+
+test("the security card counts open critical/high not-fixed advisories", () => {
+  assert.deepEqual(SECURITY_ADVISORY_QUERY.state, ["triage", "draft"]);
+  assert.deepEqual(SECURITY_ADVISORY_QUERY.severity, ["critical", "high"]);
+  assert.equal(SECURITY_ADVISORY_QUERY.verdict, "not-fixed");
+});
+
+test("the security card counts every open secret-scanning alert", () => {
+  assert.equal(SECURITY_ALERT_QUERY.source, "secret-scanning");
+  assert.equal(SECURITY_ALERT_QUERY.state, "open");
+});
+
+test("both security samples fetch the row budget, most severe first", () => {
+  for (const q of [SECURITY_ADVISORY_QUERY, SECURITY_ALERT_QUERY]) {
+    assert.equal(q.sort, "severity");
+    assert.equal(q.limit, SAMPLE_LIMIT);
+  }
+});
+
+test("the security links open the Security views' two sections", () => {
+  assert.equal(SECURITY_CARD.href, "/security");
+  assert.ok(SECURITY_ADVISORIES_HREF.startsWith("/security?"));
+  assert.ok(SECURITY_ALERTS_HREF.startsWith("/security?"));
+  const advisoryParams = new URLSearchParams(SECURITY_ADVISORIES_HREF.slice("/security?".length));
+  const alertParams = new URLSearchParams(SECURITY_ALERTS_HREF.slice("/security?".length));
+  assert.equal(advisoryParams.get("security"), "advisories");
+  assert.equal(alertParams.get("security"), "alerts");
 });
 
 test("painLabel formats a score to two decimals and hides missing ones", () => {

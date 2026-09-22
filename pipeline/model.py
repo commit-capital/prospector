@@ -200,46 +200,65 @@ class Pr:
         analysis reads as not-mergeable and the merge gate blocks it (#189)."""
         return (self.rec.get("signals") or {}).get("mergeable")
 
+    def _stored_route(self) -> tuple[str, str | None, list[str]] | None:
+        """The route current facts force on the stored verdict: merge picks go
+        through gates.merge_demotion, close-dup picks through gates.dup_demotion
+        (a unique concern or a tripped sanity check). None when nothing blocks."""
+        stored = self._analysis().get("disposition")
+        if stored == "merge":
+            return gates.merge_demotion(self)
+        if stored == "close-dup":
+            return gates.dup_demotion(self)
+        return None
+
     @property
     def disposition(self) -> str | None:
         """The PR's effective disposition: the stored ANALYZE verdict, with the
         route any current fact forces on a merge pick (a security verdict, a
-        verify outcome, the quality-gate merge bar — gates.merge_demotion)
-        derived at read time. Nothing derived is stored, so a re-run, a logged
-        override, or a signal refresh is reflected immediately."""
-        stored = self._analysis().get("disposition")
-        if stored != "merge":
-            return stored
-        route = gates.merge_demotion(self)
-        return route[0] if route is not None else "merge"
+        verify outcome, the quality-gate merge bar — gates.merge_demotion) or
+        on a close-dup pick (its coverage map — gates.dup_demotion) derived at
+        read time. Nothing derived is stored, so a re-run, a logged override,
+        or a signal refresh is reflected immediately."""
+        route = self._stored_route()
+        return route[0] if route is not None else self._analysis().get("disposition")
 
     @property
     def rationale(self) -> str | None:
-        """The effective rationale: a forced security/verify route supplies its
-        own; otherwise the stored ANALYZE rationale (a quality-gate block keeps
-        it — the gap speaks through the derived asks)."""
-        a = self._analysis()
-        if a.get("disposition") == "merge":
-            route = gates.merge_demotion(self)
-            if route is not None and route[1] is not None:
-                return route[1]
-        return a.get("rationale")
+        """The effective rationale: a forced security/verify or dup-coverage
+        route supplies its own; otherwise the stored ANALYZE rationale (a
+        quality-gate block keeps it — the gap speaks through the derived
+        asks)."""
+        route = self._stored_route()
+        if route is not None and route[1] is not None:
+            return route[1]
+        return self._analysis().get("rationale")
 
     @property
     def asks(self) -> list | None:
-        """The effective author asks: the stored ANALYZE asks, with the
-        quality-gate asks a blocked merge pick derives appended."""
-        a = self._analysis()
-        asks = a.get("asks")
-        if a.get("disposition") == "merge":
-            route = gates.merge_demotion(self)
-            if route is not None and route[2]:
-                return (asks or []) + route[2]
+        """The effective author asks: the stored ANALYZE asks, with the asks a
+        blocked merge pick or a demoted close-dup pick derives appended."""
+        asks = self._analysis().get("asks")
+        route = self._stored_route()
+        if route is not None and route[2]:
+            return (asks or []) + route[2]
         return asks
 
     @property
     def canonical(self) -> int | None:
         return self._analysis().get("canonical")
+
+    @property
+    def concerns(self) -> list[dict]:
+        """The close-dup coverage map: each substantive change in the PR with
+        where it is covered (landed on the default branch / another PR /
+        unique). Empty for analyses that predate coverage maps."""
+        return self._analysis().get("concerns") or []
+
+    @property
+    def sanity_trips(self) -> list[str]:
+        """The close-dup sanity checks that tripped when the analysis was
+        committed (gates.dup_sanity_trips against the canonical)."""
+        return self._analysis().get("sanity_trips") or []
 
     @property
     def upstream_pr(self) -> int | None:
@@ -342,12 +361,15 @@ class Pr:
     def route_to(self, disposition: str, rationale: str, *, asks: list | None = None,
                  canonical: int | None = None, upstream_pr: int | None = None,
                  upstream_commit: str | None = None, upstream_date: str | None = None,
-                 head_sha: str | None = None, from_cluster: int | None = None) -> None:
+                 head_sha: str | None = None, from_cluster: int | None = None,
+                 concerns: list[dict] | None = None,
+                 sanity_trips: list[str] | None = None) -> None:
         """Set this PR's analysis disposition — ANALYZE's verdict, stored
-        verbatim. The route current facts force on a merge pick (a security
-        verdict, a verify outcome, the quality-gate merge bar) is derived at
-        read time by the disposition/rationale/asks properties
-        (gates.merge_demotion), never stored."""
+        verbatim, with a close-dup's coverage map (`concerns`) and computed
+        `sanity_trips` beside it. The route current facts force on a merge
+        pick (gates.merge_demotion) or a close-dup pick (gates.dup_demotion)
+        is derived at read time by the disposition/rationale/asks properties,
+        never stored."""
         section: dict = {"disposition": disposition, "rationale": rationale}
         if from_cluster is not None:
             section["from_cluster"] = int(from_cluster)
@@ -362,6 +384,10 @@ class Pr:
         cleaned = [a for a in (asks or []) if a]
         if cleaned:
             section["asks"] = cleaned
+        if concerns:
+            section["concerns"] = concerns
+        if sanity_trips:
+            section["sanity_trips"] = sanity_trips
         _stamp(self.rec, "analysis", section, head_sha)
         self._persist()
 

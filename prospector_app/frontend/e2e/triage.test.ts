@@ -43,7 +43,8 @@ test("find a PR, preview a close, and read its durable Activity receipt", { time
   assert.equal((await api("/api/prs/101")).github_state, "open", "preview must preserve PR state");
 
   await page.find({ title: "Close all (Esc)" }).click();
-  await page.find('nav a[href="/activity"]').click();
+  // The old /activity route redirects to Pipeline → Throughput & audit.
+  await page.go(`${url}/activity`);
   await page.waitUntil("document.querySelector('.activity-count')?.innerText.includes('1 dry')");
   assert.match(await page.find('.activity-count').text(), /0 succeeded/);
   assert.match(await page.find('tbody').text(), /#101/);

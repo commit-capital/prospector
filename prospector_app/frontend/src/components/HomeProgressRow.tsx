@@ -87,26 +87,26 @@ export function HomeProgressRow() {
     <div className="home-progress">
       <Tile label="Open backlog" value={String(backlog.current)}
         delta={backlog.delta_7d} downIsGood series={backlog.series} days={data.days}
-        lastIngestAt={data.last_ingest_at} to="/explore"
-        title="Open PRs + open issues as the store knows them — click for the PR Explorer"
+        lastIngestAt={data.last_ingest_at} to="/prs/list"
+        title="Open PRs + open issues as the store knows them — click for the PR list"
         sub="open PRs + issues" />
       <Tile label="Resolved this week" value={String(resolved.week_total)}
         delta={resolved.week_total - resolved.prev_week_total} downIsGood={false}
         series={resolved.series} days={data.days}
-        lastIngestAt={data.last_ingest_at} to="/activity"
-        title="Merged and closed by Prospector in the last 7 days — click for the Activity log"
+        lastIngestAt={data.last_ingest_at} to="/pipeline/activity"
+        title="Merged and closed by Prospector in the last 7 days — click for Pipeline → Activity"
         sub={`${resolved.auto_7d} on its own · ${resolved.person_7d} by a person`} />
       <Tile label="Escalation rate"
         value={escalation.rate_7d === null ? "—" : `${Math.round(escalation.rate_7d * 100)}%`}
         delta={escDelta} downIsGood series={escalation.series} days={data.days}
-        lastIngestAt={data.last_ingest_at} to="/control"
-        title="The share of agent decisions handed to a person (parked fixes, failed verifications, RED verdicts) — click for the Control tab"
+        lastIngestAt={data.last_ingest_at} to="/pipeline/policy"
+        title="The share of agent decisions handed to a person (parked fixes, failed verifications, RED verdicts) — click for Pipeline → Policy"
         sub={`${escalation.escalated_7d}/${escalation.decisions_7d} decisions`} />
       <Tile label="Time to first action"
         value={first_action.median_hours_7d === null ? "—" : fmtHours(first_action.median_hours_7d)}
         delta={firstDelta} downIsGood series={first_action.series} days={data.days}
-        lastIngestAt={data.last_ingest_at} to="/activity"
-        title="Median time from a PR opening to Prospector's first verdict or post — click for the Activity log"
+        lastIngestAt={data.last_ingest_at} to="/pipeline/activity"
+        title="Median time from a PR opening to Prospector's first verdict or post — click for Pipeline → Activity"
         sub={`${first_action.sampled_7d} PRs this week`} />
       {staleNote && (
         <div className="home-progress-stale muted small" role="note">

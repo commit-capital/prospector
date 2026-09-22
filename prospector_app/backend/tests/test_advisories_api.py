@@ -34,7 +34,7 @@ def seeded(tmp_path, monkeypatch):
                   links=[{"kind": "pr", "number": 10, "how": "text-ref", "state": "open"}])
     a.record_fix_scan("fixed", by="agent", fix_commit="c647b8cc2ea6", evidence="gone")
     b = seed(G2, summary="SSRF via skill import (again)", reporter="bob",
-             updated_at="2026-08-02T00:00:00Z")
+             created_at="2026-08-02T00:00:00Z", updated_at="2026-08-02T00:00:00Z")
     b.record_fix_scan("duplicate", by="agent", duplicate_of=G1, evidence="same")
     seed(G3, state="published", cve_id="CVE-2026-41679")
     monkeypatch.setattr(adv_mod, "STORE_ROOT", tmp_path)
@@ -67,6 +67,71 @@ def test_query_filters_state_verdict_and_text(seeded):
     assert [r["ghsa_id"] for r in adv_mod.query_advisories(q="cve-2026")["items"]] == [G3]
     out = adv_mod.query_advisories(sort="severity", direction="desc", limit=1)
     assert out["total"] == 3 and out["items"][0]["ghsa_id"] == G1
+
+
+def test_query_default_orders_severity_then_age(seeded):
+    # G1 is the one critical; G2 and G3 are both medium and G3 was created
+    # first, so it leads G2. An unknown sort falls back to the same order.
+    assert [r["ghsa_id"] for r in adv_mod.query_advisories()["items"]] == [G1, G3, G2]
+    out = adv_mod.query_advisories(sort="not-a-column")
+    assert [r["ghsa_id"] for r in out["items"]] == [G1, G3, G2]
+
+
+def test_query_severity_filter(seeded):
+    out = adv_mod.query_advisories(severity=["critical", "high"])
+    assert [r["ghsa_id"] for r in out["items"]] == [G1]
+    assert [r["ghsa_id"] for r in adv_mod.query_advisories(severity="medium")["items"]] == [G3, G2]
+
+
+def test_query_route_passes_severity(seeded):
+    from fastapi.testclient import TestClient
+    from prospector_app.backend import app as appmod
+    c = TestClient(appmod.app, raise_server_exceptions=False)
+    r = c.post("/api/advisories/query",
+               json={"severity": ["critical", "high"], "state": ["triage", "draft"]})
+    assert r.status_code == 200
+    assert [x["ghsa_id"] for x in r.json()["items"]] == [G1]
+
+
+def test_rows_carry_the_resolved_canonical(seeded):
+    rows, _ = adv_mod.list_advisories()
+    by_ghsa = {r["ghsa_id"]: r for r in rows}
+    assert by_ghsa[G2]["canonical"] == G1
+    assert by_ghsa[G1]["canonical"] == G1
+    assert by_ghsa[G3]["canonical"] == G3
+
+
+def test_collapse_dups_folds_members_under_their_canonical(seeded):
+    out = adv_mod.query_advisories(collapse_dups=True)
+    assert [r["ghsa_id"] for r in out["items"]] == [G1, G3]
+    assert out["total"] == 2
+    lead = out["items"][0]
+    assert lead["dup_count"] == 1
+    assert [d["ghsa_id"] for d in lead["dup_rows"]] == [G2]
+    assert out["items"][1]["dup_count"] == 0
+
+
+def test_collapse_dups_keeps_a_member_whose_canonical_was_filtered_out(seeded):
+    # G2's canonical G1 is judged "fixed", so a not-fixed/duplicate-only filter
+    # can remove it; G2 then stays a top-level row.
+    out = adv_mod.query_advisories(verdict="duplicate", collapse_dups=True)
+    assert [r["ghsa_id"] for r in out["items"]] == [G2]
+    assert out["items"][0]["dup_count"] == 0
+
+
+def test_collapse_dups_shows_a_cycle_as_one_lead(seeded):
+    store = seeded
+    a = store.edit_advisory(advisory_id(G2))
+    a.record_fix_scan("duplicate", by="agent", duplicate_of=G3)
+    b = store.edit_advisory(advisory_id(G3))
+    b.record_fix_scan("duplicate", by="agent", duplicate_of=G2)
+    adv_mod._sync_store_root()
+    advisory_data.refresh()
+    out = adv_mod.query_advisories(collapse_dups=True)
+    assert [r["ghsa_id"] for r in out["items"]] == [G1, G2]
+    lead = next(r for r in out["items"] if r["ghsa_id"] == G2)
+    assert lead["canonical"] == G2
+    assert [d["ghsa_id"] for d in lead["dup_rows"]] == [G3]
 
 
 def test_detail_carries_description_and_404s_on_unknown(seeded):

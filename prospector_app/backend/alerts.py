@@ -124,16 +124,44 @@ _SORT_KEYS = {
 _DEFAULT_DESC = {"severity", "updated", "links", "number"}
 
 
+def _collapse_packages(rows: list[dict]) -> list[dict]:
+    """One row per Dependabot package: rows sharing (package, ecosystem) fold
+    under the first — most severe under the default sort — as `group_rows`,
+    and every kept Dependabot row carries `group_count` (its folded rows).
+    Rows from other sources, and Dependabot rows with no package, pass
+    through untouched."""
+    leads: list[dict] = []
+    lead_by_key: dict[tuple[str, str | None], dict] = {}
+    for r in rows:
+        if r["source"] != "dependabot" or not r["package"]:
+            leads.append(r)
+            continue
+        key = (r["package"], r["ecosystem"])
+        lead = lead_by_key.get(key)
+        if lead is None:
+            lead_by_key[key] = r
+            leads.append(r)
+        else:
+            lead.setdefault("group_rows", []).append(r)
+    for r in lead_by_key.values():
+        r["group_count"] = len(r.get("group_rows") or [])
+    return leads
+
+
 def query_alerts(q: str = "", sort: str | None = None, direction: str | None = None,
                  source: str | None = None, state: str | None = None,
                  severity: str | list[str] | None = None,
-                 verdict: str | None = None,
+                 verdict: str | None = None, group_packages: bool = False,
                  offset: int = 0, limit: int = 50) -> dict:
     """Paginated Alerts-table query. `source`/`state` are exact matches ("all"
     or None returns everything); `severity` accepts one value or a list
     (OR'd); `verdict` filters the fix-scan verdict, with "none" selecting
     unscanned alerts; `q` is a case-insensitive substring match over number,
-    title, rule id, package, secret type, and path."""
+    title, rule id, package, secret type, and path; `group_packages` folds
+    Dependabot rows for one package under a single row, so a package counts
+    and pages as one row. With no `sort` (or an unknown one) rows order by
+    severity, most severe first, ties oldest first — an open critical alert
+    always leads the list."""
     rows, pr_states_loading = list_alerts()
     if source and source != "all":
         rows = [r for r in rows if r["source"] == source]
@@ -150,10 +178,15 @@ def query_alerts(q: str = "", sort: str | None = None, direction: str | None = N
                 if needle == str(r["number"])
                 or any(needle in (r[k] or "").lower()
                        for k in ("title", "rule_id", "package", "secret_type", "path"))]
-    key = _SORT_KEYS.get(sort or "", _SORT_KEYS["updated"])
+    key_name = sort if sort in _SORT_KEYS else "severity"
     reverse = (direction == "desc" if direction in ("asc", "desc")
-               else (sort or "updated") in _DEFAULT_DESC)
-    rows.sort(key=lambda r: (key(r), r["id"]), reverse=reverse)
+               else key_name in _DEFAULT_DESC)
+    # Two stable passes: whatever the sort column, equal rows order oldest
+    # first, so "severity" reads as severity-then-age.
+    rows.sort(key=lambda r: (r["created_at"] or "", r["id"]))
+    rows.sort(key=_SORT_KEYS[key_name], reverse=reverse)
+    if group_packages:
+        rows = _collapse_packages(rows)
     total = len(rows)
     return {"items": rows[offset:offset + limit], "total": total,
             "offset": offset, "limit": limit,

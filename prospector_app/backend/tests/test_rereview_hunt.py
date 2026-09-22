@@ -39,7 +39,8 @@ def _wire(monkeypatch, token: str | None = "tok", status: str = "executed"):
     scheduled: list[int] = []
     monkeypatch.setattr(rereview_hunt.executor, "mint_bot_token", lambda: token)
     monkeypatch.setattr(rereview_hunt.executor, "retrigger_review",
-                        lambda n, rid, *, token, dry_run: posted.append((n, rid)) or {"status": status})
+                        lambda n, rid, *, token, dry_run, initiator="operator":
+                        posted.append((n, rid)) or {"status": status})
     monkeypatch.setattr(rereview_hunt.review_refresh, "capture", lambda n, rid: object())
     monkeypatch.setattr(rereview_hunt.review_refresh, "schedule",
                         lambda n, rid, baseline: scheduled.append(n))

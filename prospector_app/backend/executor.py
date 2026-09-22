@@ -713,7 +713,8 @@ def comment_line(n: int, file: str, line: int, body: str, *, token: str | None, 
     return res
 
 
-def retrigger_review(n: int, reviewer_id: str, *, token: str | None, dry_run: bool) -> dict:
+def retrigger_review(n: int, reviewer_id: str, *, token: str | None, dry_run: bool,
+                     initiator: str = "operator") -> dict:
     """Post the named reviewer's mention as a plain PR comment to re-trigger its
     review.
 
@@ -721,9 +722,11 @@ def retrigger_review(n: int, reviewer_id: str, *, token: str | None, dry_run: bo
     against the PR's current head with no new commit. Each call posts it again.
     Head-relative rather than evidence-quoting — a re-review is how a verdict
     that trails the code catches up — so a moved head is a reason to run it,
-    not to hold it."""
+    not to hold it. ``initiator`` is the audit attribution on the activity
+    entry: "worker" when the automation asks on its own (the re-review hunter,
+    the post-push retrigger), "operator" for a person's click."""
     base = {"pr": int(n), "cluster_id": _cluster_id(n), "action": "REVIEW_RETRIGGER",
-            "reviewer": reviewer_id}
+            "reviewer": reviewer_id, "initiator": initiator}
     reviewer = reviewers.REVIEWERS.get(reviewer_id)
     mention = reviewer.retrigger_mention if reviewer is not None else None
     if mention is None:

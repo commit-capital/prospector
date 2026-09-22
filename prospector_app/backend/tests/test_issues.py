@@ -102,6 +102,19 @@ def test_query_issues_pages_and_trims_linked_prs(tmp_path, monkeypatch):
     assert [p["pr"] for p in row["linked_prs"]] == [909, 900, 901, 902, 903, 904]
 
 
+def test_query_issues_collapse_dups_folds_members(tmp_path, monkeypatch):
+    _seed(tmp_path, monkeypatch)
+    out = issues.query_issues(collapse_dups=True)
+    assert out["total"] == 1
+    row = out["items"][0]
+    assert row["number"] == 10
+    assert [d["number"] for d in row["dup_rows"]] == [11]
+    # A filter that removes the canonical keeps the member as a top-level row.
+    out = issues.query_issues(q="also", collapse_dups=True)
+    assert [r["number"] for r in out["items"]] == [11]
+    assert out["items"][0]["dup_rows"] == []
+
+
 def test_store_pr_states_cold_snapshot_returns_empty_loading(monkeypatch):
     monkeypatch.setattr("prospector_app.backend.data.snapshot_loading", lambda: True)
     assert issues._store_pr_states() == ({}, True)

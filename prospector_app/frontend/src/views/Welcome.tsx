@@ -432,7 +432,7 @@ function Ladder({ state, onChange }: { state: OnboardingState; onChange: () => v
         ? <section className="setup-card setup-done">
             <h3>✅ This computer runs automated tasks</h3>
             <p className="muted small">
-              Manage its lanes on the <Link to="/setup">Setup tab</Link>.
+              Manage its lanes on the <Link to="/pipeline/setup">Setup tab</Link>.
             </p>
           </section>
         : <section className="setup-card">
@@ -441,7 +441,7 @@ function Ladder({ state, onChange }: { state: OnboardingState; onChange: () => v
               Analyze, test, and fix pull requests in a sandbox on this machine.
               Heavier, and meant for a computer you can leave running.
             </p>
-            <Link to="/setup?provision=1">Set this computer up →</Link>
+            <Link to="/pipeline/setup?provision=1">Set this computer up →</Link>
           </section>}
     </>
   );

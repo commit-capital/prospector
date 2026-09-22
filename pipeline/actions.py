@@ -12,6 +12,8 @@ than duplicates, and a human-set status survives re-emission.
 """
 from __future__ import annotations
 
+import re
+
 # kind → human label. Closed vocabulary; validated on make_item.
 KINDS = {
     "rotate-secret": "Potential secret leaked",
@@ -22,12 +24,35 @@ KINDS = {
 }
 STATUSES = {"open", "done", "dismissed"}
 
+# A rotate-secret item's evidence is "<path>: <added-line excerpt>". These read
+# the two halves for the shapes of a test fixture rather than a live
+# credential: a test/fixture/example path, or a marker word in the excerpt.
+_FIXTURE_PATH = re.compile(
+    r"(?:^|/)(?:tests?|__tests__|testing|specs?|fixtures?|testdata|mocks?|"
+    r"examples?|samples?)(?:/|$)|(?:^|/)(?:test_|conftest\.)|_test\.|\.(?:spec|test)\.",
+    re.IGNORECASE)
+_FIXTURE_TEXT = re.compile(
+    r"fixture|dummy|fake|placeholder|pretend|example|sample|leakmarker|"
+    r"not[_-]?a[_-]?real|redacted|changeme", re.IGNORECASE)
+
+
+def likely_fixture(evidence: str) -> bool:
+    """Whether a rotate-secret item's evidence reads as a test fixture rather
+    than a live credential."""
+    if not evidence:
+        return False
+    path, sep, excerpt = evidence.partition(":")
+    if not sep:
+        return bool(_FIXTURE_TEXT.search(evidence))
+    return bool(_FIXTURE_PATH.search(path.strip()) or _FIXTURE_TEXT.search(excerpt))
+
 
 def make_item(kind: str, *, pr: int, summary: str, created: str,
-              evidence: str = "", detail: str = "") -> dict:
+              evidence: str = "", detail: str = "",
+              fixture: bool | None = None) -> dict:
     if kind not in KINDS:
         raise ValueError(f"kind {kind!r} not in {sorted(KINDS)}")
-    return {
+    item = {
         "id": f"{kind}:{int(pr)}",
         "kind": kind,
         "pr": int(pr),
@@ -37,6 +62,9 @@ def make_item(kind: str, *, pr: int, summary: str, created: str,
         "status": "open",
         "created": created,
     }
+    if fixture is not None:
+        item["fixture"] = fixture
+    return item
 
 
 def empty_registry() -> dict:
@@ -59,6 +87,8 @@ def upsert(reg: dict, item: dict) -> dict:
         existing["summary"] = item["summary"]
         existing["evidence"] = item["evidence"] or existing.get("evidence", "")
         existing["detail"] = item["detail"] or existing.get("detail", "")
+        if "fixture" in item:
+            existing["fixture"] = item["fixture"]
         # status and created are intentionally preserved
     items.sort(key=lambda i: (i["status"] != "open", i["kind"], i["pr"]))
     return reg

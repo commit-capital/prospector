@@ -1,5 +1,5 @@
 import { Component, lazy, Suspense, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from "react";
-import { NavLink, Outlet, useLocation, useNavigate, useSearchParams } from "react-router";
+import { Link, NavLink, Outlet, useLocation, useNavigate, useSearchParams } from "react-router";
 import { ExecProvider, useExec, type Toast } from "./ExecContext";
 import { RepoMetaProvider, useRepoMeta } from "./RepoMetaContext";
 import { FeedbackButton } from "./components/FeedbackButton";
@@ -7,6 +7,7 @@ import { AgentPaneProvider } from "./components/AgentPane";
 import { isReachable, subscribeHealth, pingHealth } from "./health";
 import { api, type WorkStatus, type WorkerFlags } from "./api";
 import { unattendedActions, unattendedDetail, unattendedPushes } from "./autonomy";
+import { useSystemHealth } from "./useSystemHealth";
 import { loadWithRecovery } from "./lazyLoad";
 import { timeAgo } from "./timeAgo";
 import { workStatusLabel } from "./workStatusLabel";
@@ -80,27 +81,61 @@ function Flyouts() {
 }
 
 // Maps the active route to the nav label shown in the tab title, longest-prefix
-// first so nested routes (e.g. /explore/123) resolve to their parent view.
+// first so nested routes (e.g. /prs/clusters/123) resolve to their parent view.
 const VIEW_NAMES: [string, string][] = [
-  ["/explore", "PR Explorer"],
-  ["/differ", "PR Differ"],
+  ["/prs/clusters", "Clusters"],
+  ["/prs/compare", "Compare"],
+  ["/prs", "PRs"],
   ["/issues", "Issues"],
-  ["/alerts", "Alerts"],
-  ["/action-items", "Action Items"],
-  ["/control", "Control"],
-  ["/setup", "Setup"],
+  ["/security/actions", "Action Items"],
+  ["/security", "Security"],
+  ["/pipeline/activity", "Activity"],
+  ["/pipeline/policy", "Policy"],
+  ["/pipeline/setup", "Machines & policy"],
+  ["/pipeline/data", "Data"],
+  ["/pipeline", "Pipeline"],
   ["/welcome", "First-time setup"],
-  ["/activity", "Activity"],
-  ["/tables", "Tables"],
-  ["/clusters", "Clusters"],
-  ["/", "Home"],
+  ["/", "Inbox"],
 ];
 
 function viewName(pathname: string): string {
-  const cluster = pathname.match(/^\/clusters\/([^/]+)/);
+  const cluster = pathname.match(/^\/prs\/clusters\/([^/]+)/);
   if (cluster) return `Cluster ${cluster[1]}`;
   return VIEW_NAMES.find(([prefix]) => pathname === prefix || pathname.startsWith(prefix + "/"))?.[1]
     ?? VIEW_NAMES[VIEW_NAMES.length - 1][1];
+}
+
+// Each destination's sub-views, shown as a second nav row while inside it.
+const SUB_NAVS: { prefix: string; tabs: { to: string; label: string; end?: boolean }[] }[] = [
+  { prefix: "/prs", tabs: [
+    { to: "/prs/list", label: "List" },
+    { to: "/prs/clusters", label: "By cluster" },
+    { to: "/prs/compare", label: "Compare" },
+  ] },
+  { prefix: "/security", tabs: [
+    { to: "/security", label: "Advisories & alerts", end: true },
+    { to: "/security/actions", label: "Action items" },
+  ] },
+  { prefix: "/pipeline", tabs: [
+    { to: "/pipeline/control", label: "Health & queues" },
+    { to: "/pipeline/activity", label: "Throughput & audit" },
+    { to: "/pipeline/policy", label: "Policy" },
+    { to: "/pipeline/setup", label: "Machines & policy" },
+    { to: "/pipeline/data", label: "Data" },
+  ] },
+];
+
+function SubNav() {
+  const { pathname } = useLocation();
+  const section = SUB_NAVS.find((s) => pathname === s.prefix || pathname.startsWith(s.prefix + "/"));
+  if (!section) return null;
+  return (
+    <nav className="subnav" aria-label="Section">
+      {section.tabs.map((t) => (
+        <NavLink key={t.to} to={t.to} end={t.end}>{t.label}</NavLink>
+      ))}
+    </nav>
+  );
 }
 
 // Labels which checkout this app is serving — the git branch and worktree
@@ -203,10 +238,10 @@ function AutonomyPill() {
     "What this machine does without being asked:",
     ...(acts.length ? unattendedDetail(flags).map((d) => `• ${d}`) : ["• nothing"]),
     `Posts upstream as ${botLogin}${pushLogin ? `; pushes to PR branches as ${pushLogin}` : ""}.`,
-    "Click for the autonomy policy (Setup).",
+    "Click for the autonomy policy (Pipeline → Machines & policy).",
   ].join("\n");
   return (
-    <NavLink to="/setup" className="autonomy-pill" title={title}>
+    <NavLink to="/pipeline/setup" className="autonomy-pill" title={title}>
       autonomous: {acts.length ? acts.join(", ") : "nothing"} · as {who}
     </NavLink>
   );
@@ -224,8 +259,8 @@ function ModeCluster() {
   );
 }
 
-/** The ⚙️ menu: the header controls that are set once and left alone —
- *  posting identity, the live-token re-probe, theme, and the utility pages.
+/** The settings menu: personal preferences and the header controls that are
+ *  set once and left alone — posting identity, the live-token re-probe, theme.
  *  What stays in the bar is what an operator touches mid-review: live sync,
  *  the dry-run/live switch, and feedback. */
 function SettingsMenu() {
@@ -277,7 +312,10 @@ function SettingsMenu() {
     <div className="settings-menu" ref={ref}>
       <button className="settings-btn" onClick={() => setOpen(!open)} title="Settings"
         aria-haspopup="menu" aria-expanded={open}>
-        ⚙️
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+          <path d="M8 5.25A2.75 2.75 0 1 0 8 10.75 2.75 2.75 0 0 0 8 5.25Zm0 4A1.25 1.25 0 1 1 8 6.75a1.25 1.25 0 0 1 0 2.5Z" />
+          <path d="M9.05 1.5c.53 0 .98.38 1.07.9l.15.86c.05.26.23.47.47.58.24.1.52.09.74-.06l.72-.5a1.09 1.09 0 0 1 1.39.13l.98.98c.37.37.43.96.13 1.4l-.5.71c-.15.22-.16.5-.06.74.11.24.32.42.58.47l.86.15c.52.09.9.54.9 1.07v1.1c0 .53-.38.98-.9 1.07l-.86.15c-.26.05-.47.23-.58.47-.1.24-.09.52.06.74l.5.72c.3.43.24 1.02-.13 1.39l-.98.98c-.37.37-.96.43-1.4.13l-.71-.5a.79.79 0 0 0-.74-.06.79.79 0 0 0-.47.58l-.15.86c-.09.52-.54.9-1.07.9h-1.1c-.53 0-.98-.38-1.07-.9l-.15-.86a.79.79 0 0 0-.47-.58.79.79 0 0 0-.74.06l-.72.5c-.43.3-1.02.24-1.39-.13l-.98-.98a1.09 1.09 0 0 1-.13-1.4l.5-.71c.15-.22.16-.5.06-.74a.79.79 0 0 0-.58-.47l-.86-.15a1.09 1.09 0 0 1-.9-1.07v-1.1c0-.53.38-.98.9-1.07l.86-.15c.26-.05.47-.23.58-.47.1-.24.09-.52-.06-.74l-.5-.72a1.09 1.09 0 0 1 .13-1.39l.98-.98c.37-.37.96-.43 1.4-.13l.71.5c.22.15.5.16.74.06.24-.11.42-.32.47-.58l.15-.86c.09-.52.54-.9 1.07-.9h1.1Zm-.63 1.5-.11.65c-.13.72-.61 1.3-1.26 1.58-.65.27-1.4.23-2-.19l-.54-.37-.61.61.37.54c.42.6.46 1.35.19 2a2.29 2.29 0 0 1-1.58 1.26l-.65.11v.86l.65.11c.72.13 1.3.61 1.58 1.26.27.65.23 1.4-.19 2l-.37.54.61.61.54-.37c.6-.42 1.35-.46 2-.19.65.27 1.13.86 1.26 1.58l.11.65h.86l.11-.65c.13-.72.61-1.3 1.26-1.58.65-.27 1.4-.23 2 .19l.54.37.61-.61-.37-.54c-.42-.6-.46-1.35-.19-2 .27-.65.86-1.13 1.58-1.26l.65-.11v-.86l-.65-.11a2.29 2.29 0 0 1-1.58-1.26c-.27-.65-.23-1.4.19-2l.37-.54-.61-.61-.54.37c-.6.42-1.35.46-2 .19a2.29 2.29 0 0 1-1.26-1.58l-.11-.65h-.86Z" />
+        </svg>
       </button>
       {open && (
         <div className="settings-dropdown" role="menu">
@@ -321,12 +359,10 @@ function SettingsMenu() {
           )}
           <div className="settings-row">
             <button className="theme-toggle" onClick={flipTheme} title="Toggle light/dark">
-              {theme === "dark" ? "☀️ light mode" : "🌙 dark mode"}
+              {theme === "dark" ? "light mode" : "dark mode"}
             </button>
           </div>
-          <div className="settings-sep" />
-          <NavLink to="/setup" className="settings-link" onClick={() => setOpen(false)}>🛠️ Setup</NavLink>
-          <NavLink to="/tables" className="settings-link" onClick={() => setOpen(false)}>🗄️ Tables</NavLink>
+
         </div>
       )}
     </div>
@@ -361,7 +397,7 @@ function WorkStatusBadge() {
       <div className="work-status-flyout" role="tooltip">
         {status.active.map((a) => (
           <div key={`${a.lane}-${a.pr}`} className="work-status-row">
-            <span>{a.lane === "verify" ? "🧪" : "🔧"} {a.lane} <b>#{a.pr}</b>
+            <span>{a.lane} <b>#{a.pr}</b>
               {a.action ? ` · ${a.action}` : ""}{a.step ? ` · ${a.step}` : ""}</span>
             <span className={a.worker_online ? "muted" : "work-status-stuck"}>
               {a.host ?? "?"} · {a.worker_online
@@ -372,7 +408,7 @@ function WorkStatusBadge() {
         ))}
         {status.jobs.labels.map((label) => (
           <div key={label} className="work-status-row">
-            <span>⚙️ job · {label}</span>
+            <span>job · {label}</span>
             <span className="muted">this machine</span>
           </div>
         ))}
@@ -467,6 +503,29 @@ function Toasts() {
   );
 }
 
+// The thin systemwide health strip on every page: worker lanes down on any
+// machine sharing this store (tripped, or the worker offline), and stale
+// ingests. Amber for a partial problem, red for a full outage; hidden while
+// everything is healthy. The whole strip opens Pipeline → Health & queues,
+// which holds the Resume banner and the ingest buttons that fix what it names.
+function HealthStrip() {
+  const health = useSystemHealth();
+  if (!health || health.severity === "ok") return null;
+  return (
+    <Link to="/pipeline/control" className={`health-strip health-strip-${health.severity}`} role="alert"
+      title="Open Pipeline → Health & queues to resume lanes or re-run ingest">
+      <span aria-hidden="true">⚠</span>
+      {health.items.map((it, i) => (
+        <span key={`${it.kind}-${it.host ?? i}`} className="health-strip-item"
+          title={it.detail ?? undefined}>
+          {i > 0 && <span className="health-strip-sep" aria-hidden="true">·</span>}
+          {it.label}
+        </span>
+      ))}
+    </Link>
+  );
+}
+
 // Loud, dismissable-by-recovery banner shown whenever the backend API can't be
 // reached. Polls /api/health (faster while down) so the page heals itself once
 // the backend is back up, without a manual refresh.
@@ -518,15 +577,11 @@ function Nav() {
   }
   return (
     <nav>
-      <NavLink to="/" end>🏠 Home</NavLink>
-      <NavLink to="/clusters">Clusters</NavLink>
-      <NavLink to="/explore">🔭 PR Explorer</NavLink>
-      <NavLink to="/differ">🔬 PR Differ</NavLink>
-      <NavLink to="/issues">🐛 Issues</NavLink>
-      <NavLink to="/alerts">🛡️ Alerts</NavLink>
-      <NavLink to="/action-items">🗂️ Action Items</NavLink>
-      <NavLink to="/control">🎛️ Control</NavLink>
-      <NavLink to="/activity">📋 Activity</NavLink>
+      <NavLink to="/" end>Inbox</NavLink>
+      <NavLink to="/prs">PRs</NavLink>
+      <NavLink to="/issues">Issues</NavLink>
+      <NavLink to="/security">Security</NavLink>
+      <NavLink to="/pipeline">Pipeline</NavLink>
     </nav>
   );
 }
@@ -539,7 +594,7 @@ function Nav() {
 function Content() {
   const { meta } = useRepoMeta();
   const { pathname } = useLocation();
-  if (!meta) return null;
+  if (!meta) return <div className="pad muted">loading…</div>;
   if (!meta.configured && pathname !== "/welcome") return null;
   return (
     <>
@@ -581,6 +636,8 @@ export default function App() {
             <SettingsMenu />
           </div>
         </header>
+        <SubNav />
+        <HealthStrip />
         <main className="content">
           <Content />
         </main>
