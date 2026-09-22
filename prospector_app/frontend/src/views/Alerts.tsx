@@ -461,7 +461,7 @@ export default function Alerts() {
   };
   return (
     <div className="view alerts-view">
-      <h2>🛡️ Alerts</h2>
+      <h2>Security</h2>
       <SuggestedActions view="alerts" onActionDone={() => setDataGen((g) => g + 1)} />
       <div className="segmented" title="Advisories are privately reported vulnerabilities; alerts are automated scanner findings">
         <button className={section === "advisories" ? "on" : ""} onClick={() => selectSection("advisories")}>Advisories</button>

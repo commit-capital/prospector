@@ -183,7 +183,7 @@ export default function ClusterBoard() {
       <div className="board">
         <div className="callout">
           No clusters yet. The store has PR records (see <Link to="/prs">PR Queue</Link>) but the
-          CLUSTER phase hasn't run — kick it off from <Link to="/control">Control</Link> once available.
+          CLUSTER phase hasn't run — kick it off from <Link to="/pipeline/control">Control</Link> once available.
         </div>
       </div>
     );
@@ -222,7 +222,7 @@ export default function ClusterBoard() {
             return (
               <tr key={c.cluster_id}
                 className={`rowlink ${c.state === "ready" ? "row-ready" : ""}`}
-                onClick={() => navigate(`/clusters/${c.cluster_id}`)}>
+                onClick={() => navigate(`/prs/clusters/${c.cluster_id}`)}>
                 <td className="mono">{c.cluster_id}</td>
                 <td><span className="cluster-title">{c.root_problem?.slice(0, 110)}</span></td>
                 <td className="mono">{c.pr_count}</td>

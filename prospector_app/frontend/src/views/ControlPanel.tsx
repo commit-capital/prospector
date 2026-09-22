@@ -265,7 +265,7 @@ function HuntLaneSummary({ phase, counts }: { phase: "security" | "verify"; coun
             // the Explorer's default open-only filter.
             const spec: FilterSpec = { numbers: ids, state: "all" };
             return (
-              <Link key={result} to={`/explore?spec=${encodeURIComponent(JSON.stringify(spec))}`}
+              <Link key={result} to={`/prs/list?spec=${encodeURIComponent(JSON.stringify(spec))}`}
                 className={resultChip(phase, result)} style={{ cursor: "pointer" }}
                 title={`Open ${ids.length} PR${ids.length === 1 ? "" : "s"} with this ${phase} result in PR Explorer`}>
                 {result} {n}

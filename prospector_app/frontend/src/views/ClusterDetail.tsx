@@ -507,7 +507,7 @@ export default function ClusterDetail() {
   return (
     <div className="detail">
       <div className="detail-head">
-        <Link to="/clusters" className="back">← Clusters</Link>
+        <Link to="/prs/clusters" className="back">← Clusters</Link>
         <h1>Cluster {cd.cluster_id}: {cd.root_problem}</h1>
         <p className="muted">
           <InfoTip entry={clusterStateEntry(cd.state)} cue={false} focusable={false}>
@@ -813,7 +813,7 @@ export default function ClusterDetail() {
           <div className="cluster-diff-tools">
             <AddPrSearch onAdd={addCompare} exclude={comparePrs} placeholder="add a PR by number (e.g. a canonical)…" />
             {comparePrs.length > 0 && (
-              <Link className="link-btn" to={`/differ?prs=${comparePrs.join(",")}`} title="Open this comparison full-screen in the PR Differ">pop out ↗</Link>
+              <Link className="link-btn" to={`/prs/compare?prs=${comparePrs.join(",")}`} title="Open this comparison full-screen in the PR Differ">pop out ↗</Link>
             )}
           </div>
         </div>
