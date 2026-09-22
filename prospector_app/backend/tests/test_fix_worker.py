@@ -54,9 +54,14 @@ class _Probe:
         self.rc, self.stdout, self.calls = rc, stdout, []
         self.overrides = overrides or {}
         self.applied: list[str] = []
+        # The `unattended` flag of each pushing subcommand, so tests can assert
+        # which pushes were the automation's own call.
+        self.push_unattended: list[bool] = []
 
-    def __call__(self, n, *args, stdin: str | None = None):
+    def __call__(self, n, *args, stdin: str | None = None, unattended: bool = False):
         self.calls.append(args)
+        if args[0] == "push" or args == ("update",):
+            self.push_unattended.append(unattended)
         if args[0] == "apply" and stdin is not None:
             self.applied.append(stdin)
         rc, out = self.overrides.get(args[0], (self.rc, self.stdout))
@@ -110,6 +115,9 @@ def test_update_pushes_when_autopush_names_it(store, monkeypatch):
 
     assert store.load_pr(1).fix_request["status"] == "pushed"
     assert _pushed(probe)
+    # An autopushed action skips the parking approval, so its push is marked
+    # the automation's own for the activity log.
+    assert probe.push_unattended == [True]
 
 
 def test_a_conflicted_probe_refuses_rather_than_parking(store, monkeypatch):
@@ -158,7 +166,7 @@ class _StepReader(_Probe):
         super().__init__(*args, **kwargs)
         self.steps: dict[tuple, str | None] = {}
 
-    def __call__(self, n, *args, stdin: str | None = None):
+    def __call__(self, n, *args, stdin: str | None = None, unattended: bool = False):
         self.steps[args] = (data.store().load_pr(1).fix_request or {}).get("step")
         return super().__call__(n, *args, stdin=stdin)
 
@@ -251,6 +259,9 @@ def test_approving_an_update_re_merges_against_current_base(store, monkeypatch):
 
     assert store.load_pr(1).fix_request["status"] == "pushed"
     assert ("update",) in probe.calls, "the merge is re-run, not replayed from cache"
+    # An operator's approval authorized this push, so it is not the
+    # automation's own in the activity log.
+    assert probe.push_unattended == [False]
 
 
 def test_approving_refuses_when_the_base_now_conflicts(store, monkeypatch):
@@ -401,7 +412,7 @@ class _ConflictedResubmit:
         self.wt = str(tmp_path / "wt")
         self.merged = False
 
-    def __call__(self, n, *args):
+    def __call__(self, n, *args, stdin: str | None = None, unattended: bool = False):
         self.calls.append(args)
         rc, out = 0, ""
         if args[0] == "state":
@@ -1458,7 +1469,7 @@ class _ReadyMergeResubmit(_Probe):
         super().__init__()
         self.wt = str(tmp_path / "wt")
 
-    def __call__(self, n, *args, stdin: str | None = None):
+    def __call__(self, n, *args, stdin: str | None = None, unattended: bool = False):
         if args[0] == "state":
             self.calls.append(args)
             out = json.dumps({"phase": "ready", "mode": "merge",
@@ -1906,7 +1917,7 @@ class TestMergeCommitFallback:
         def __init__(self):
             self.calls = []
 
-        def __call__(self, n, *args, stdin=None):
+        def __call__(self, n, *args, stdin=None, unattended=False):
             self.calls.append(args)
             if args[:2] == ("prepare", "--rebase"):
                 return type("R", (), {"returncode": 9, "stdout": "", "stderr":

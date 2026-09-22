@@ -1773,6 +1773,8 @@ export const api = {
     });
     return r.json() as Promise<ExecResult>;
   },
+  autonomousFeed: (limit = 50) =>
+    get<{ items: AutonomousItem[] }>(`/api/activity/autonomous?limit=${limit}`),
   activityProgress: (scope: ActivityScopeParams = {}) =>
     get<ActivityProgress>(`/api/activity/progress?${activitySearch(scope)}`),
   activityIssueProgress: (scope: Pick<ActivityScopeParams, "operator"> = {}) =>
@@ -1979,6 +1981,19 @@ export interface ActivityItem {
   detail?: string; dry_run?: boolean; identity?: string; operator?: string;
   operator_email?: string; cluster?: number;
   cluster_id?: string | null; approved_count?: number; by?: string; reason?: string;
+}
+
+/** One "Done on its own" feed row: a landed upstream action no person
+ *  approved, with the undo the app can offer (null = none). */
+export interface AutonomousItem {
+  at: string | null;
+  kind: string;
+  action?: string | null;
+  pr?: number | null;
+  issue?: number | null;
+  identity?: string | null;
+  detail?: string | null;
+  undo: "reopen-pr" | "reopen-issue" | null;
 }
 
 export interface ActivityProgress {

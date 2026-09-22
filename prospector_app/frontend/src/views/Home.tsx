@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router";
 import {
-  api, type AdvisoryQueryResult, type AlertQueryResult, type IssueRow, type PRRow,
-  type QueryResult,
+  api, type AdvisoryQueryResult, type AlertQueryResult, type AutonomousItem, type IssueRow,
+  type PRRow, type QueryResult,
 } from "../api";
 import { LinkedIssues } from "../components/LinkedIssues";
 import { PRLink } from "../components/PRLink";
@@ -38,11 +38,14 @@ function RowJobButton({ action, pr, onDone }: { action: HomeRowAction; pr: numbe
 
 // One sample PR row in a Home card's table: number (opens the detail flyout),
 // title, Community Pain Score, and the issues the PR fixes (open the issue
-// flyout) — plus the card's per-PR job button when it carries one.
-function SamplePR({ r, rowAction, onActionDone }: {
+// flyout) — plus the card's per-PR job button when it carries one. `reason`
+// (a handed card's escalation reason) renders as a second line under the
+// title, so every escalation says why it was handed back.
+function SamplePR({ r, rowAction, onActionDone, reason }: {
   r: PRRow;
   rowAction?: HomeRowAction;
   onActionDone: () => void;
+  reason?: string | null;
 }) {
   return (
     <tr className="home-sample-row">
@@ -51,6 +54,7 @@ function SamplePR({ r, rowAction, onActionDone }: {
       </td>
       <td className="home-sample-title" title={r.summary?.one_liner ?? undefined}>
         {r.title ?? "(no title)"}
+        {reason && <div className="small muted home-sample-reason" title={reason}>{reason}</div>}
       </td>
       <td className="home-sample-pain mono small" title="Community Pain Score — linked-issue pain + PR engagement">
         {painLabel(r.pain_score)}
@@ -76,7 +80,7 @@ function HomeCardRow({ card, count, sample, breakdown, onActionDone }: {
   card: HomeCard;
   count: number | null;
   sample: QueryResult | null;
-  breakdown: { label: string; href: string; count: number | null }[];
+  breakdown: { label: string; href: string; count: number | null; hint?: string }[];
   onActionDone: () => void;
 }) {
   const href = exploreHref(card);
@@ -96,7 +100,9 @@ function HomeCardRow({ card, count, sample, breakdown, onActionDone }: {
         <div className="home-breakdown small">
           {breakdown.filter((b) => b.count !== 0).map((b) => (
             <Link key={b.label} to={b.href} className="home-breakdown-item"
-              title={`Open the ${b.label} PRs in the PR Explorer`}>
+              title={b.hint
+                ? `What would let the agent act alone: ${b.hint}`
+                : `Open the ${b.label} PRs in the PR Explorer`}>
               <span className="mono">{b.count ?? "…"}</span> {b.label}
             </Link>
           ))}
@@ -108,7 +114,8 @@ function HomeCardRow({ card, count, sample, breakdown, onActionDone }: {
             <table className="home-sample-table">
               <tbody>
                 {sample.items.map((r) => (
-                  <SamplePR key={r.number} r={r} rowAction={card.rowAction} onActionDone={onActionDone} />
+                  <SamplePR key={r.number} r={r} rowAction={card.rowAction} onActionDone={onActionDone}
+                    reason={card.column === "handed" ? r.automation?.reason : undefined} />
                 ))}
               </tbody>
             </table>
@@ -237,6 +244,127 @@ function HomeSecurityCard() {
           </>
         )}
         {total === 0 && <div className="muted small">None right now.</div>}
+      </div>
+    </div>
+  );
+}
+
+// How many rows the "Done on its own" feed shows on Home; the Activity log
+// holds the full record.
+const AUTO_FEED_LIMIT = 8;
+
+// A short verb for a feed row, from the event's kind and mechanical action.
+function feedLabel(item: AutonomousItem): string {
+  const action = (item.action ?? "").toUpperCase();
+  if (action === "REVIEW_RETRIGGER") return "asked for a re-review";
+  if (action === "UPDATE_BRANCH") return "merged the base in";
+  if (action === "REBASE") return "rebased onto the base";
+  if (action === "RESOLVE_CONFLICTS") return "resolved merge conflicts";
+  if (item.kind === "resubmit") return "pushed a change";
+  if (item.kind === "close") return "closed";
+  if (item.kind === "issue-close") return "closed issue";
+  if (item.kind === "merge") return "merged";
+  if (item.kind === "comment") return "commented";
+  return item.kind;
+}
+
+// A compact relative age for a feed row ("3h", "2d"); empty when unparseable.
+function agoLabel(iso: string | null): string {
+  if (!iso) return "";
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "";
+  const mins = Math.max(0, (Date.now() - t) / 60000);
+  if (mins < 60) return `${Math.max(1, Math.round(mins))}m`;
+  if (mins < 48 * 60) return `${Math.round(mins / 60)}h`;
+  return `${Math.round(mins / (24 * 60))}d`;
+}
+
+// The undo a feed row offers: the matching reopen, live (not a dry-run) —
+// the operator's click is the authorization.
+function FeedUndoButton({ item, onDone }: { item: AutonomousItem; onDone: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const run = async () => {
+    setBusy(true);
+    try {
+      if (item.undo === "reopen-pr" && item.pr != null) await api.reopenPr(item.pr, false);
+      else if (item.undo === "reopen-issue" && item.issue != null) await api.reopenIssue(item.issue, false);
+      onDone();
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <button className="link-btn" disabled={busy} onClick={run}
+      title="Undo this action by reopening it upstream">
+      {busy ? "undoing…" : "undo"}
+    </button>
+  );
+}
+
+// The "Done on its own" feed: the automation's latest landed upstream actions
+// that no person approved — autopushed fixes and rebases, machine-approved
+// resolves, its own re-review asks — with an undo where one exists. Backed by
+// GET /api/activity/autonomous over the activity log's worker-initiated
+// entries, so every autonomous upstream action lands here as it is logged.
+function HomeAutoFeedCard() {
+  const [items, setItems] = useState<AutonomousItem[] | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [generation, setGeneration] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    api.autonomousFeed(AUTO_FEED_LIMIT)
+      .then((r) => { if (!cancelled) { setItems(r.items); setFailed(false); } })
+      .catch(() => { if (!cancelled) setFailed(true); });
+    return () => { cancelled = true; };
+  }, [generation]);
+  return (
+    <div className="act-card home-card">
+      <div className="home-card-head">
+        <div className={"act-card-n" + (items === null && !failed ? " home-count-loading" : "")}>
+          {failed ? "?" : items?.length ?? "…"}
+        </div>
+        <div className="home-card-text">
+          <div className="act-card-l">Done on its own</div>
+          <div className="small muted home-card-blurb">
+            The automation&apos;s latest upstream actions no person approved. Undo where an
+            undo exists; the Activity log holds the full record.
+          </div>
+        </div>
+      </div>
+      <div className="home-card-side">
+        {failed && <div className="muted small">Failed to load the feed.</div>}
+        {items && items.length > 0 && (
+          <>
+            <table className="home-sample-table">
+              <tbody>
+                {items.map((it, i) => (
+                  <tr key={`${it.at ?? ""}-${it.pr ?? ""}-${it.issue ?? ""}-${i}`} className="home-sample-row">
+                    <td className="home-sample-pr">
+                      {it.pr != null
+                        ? <PRLink n={it.pr} className="mono" />
+                        : it.issue != null ? <span className="mono">#{it.issue}</span> : null}
+                    </td>
+                    <td className="home-sample-title" title={it.detail ?? undefined}>
+                      {feedLabel(it)}
+                    </td>
+                    <td className="home-sample-pain small muted">{agoLabel(it.at)}</td>
+                    <td className="home-sample-run small">
+                      {it.undo && (it.pr != null || it.issue != null) && (
+                        <FeedUndoButton item={it} onDone={() => setGeneration((g) => g + 1)} />
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <Link to="/activity" className="home-show-all small">
+              Full record in the Activity log →
+            </Link>
+          </>
+        )}
+        {items && items.length === 0 && (
+          <div className="muted small">Nothing yet — autonomous actions appear here as they land.</div>
+        )}
       </div>
     </div>
   );
@@ -395,6 +523,7 @@ export default function Home() {
         label: e.entry.label,
         href: breakdownHref(card, e.entry),
         count: counts ? counts[HOME_CARDS.length + e.j] : null,
+        hint: e.entry.hint,
       }));
     return (
       <HomeCardRow key={card.key} card={card} count={counts ? counts[i] : null}
@@ -428,6 +557,7 @@ export default function Home() {
             {stalled ? "Stalled — the workers are down" : "In motion — the workers clear these"}
           </div>
           {HOME_CARDS.filter((c) => c.column === "auto").map(renderCard)}
+          <HomeAutoFeedCard />
         </section>
         <section className="home-col">
           <div className="home-col-head muted">Handed back — needs a person</div>

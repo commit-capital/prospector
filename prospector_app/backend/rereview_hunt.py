@@ -112,7 +112,8 @@ def request_rereviews(limit: int = PER_PASS) -> list[int]:
         if requested(bookings, n, head):
             continue
         baseline = review_refresh.capture(n, r.id)
-        res = executor.retrigger_review(n, r.id, token=token, dry_run=False)
+        res = executor.retrigger_review(n, r.id, token=token, dry_run=False,
+                                        initiator="worker")
         stamp = _now()
         data.store().append_run({
             "phase": PHASE, "pr": n, "started": stamp, "finished": stamp,

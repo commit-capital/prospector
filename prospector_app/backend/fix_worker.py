@@ -59,7 +59,7 @@ from pipeline.storekit import now as _now
 from prospector_app.backend import (activity, data, executor, fix_queue, lane_health,
                                     review_refresh, safety_guard, sandbox_check, service,
                                     verify_worker, worker_log, worker_selftest)
-from prospector_app.backend.resubmit_identity import worker_env
+from prospector_app.backend.resubmit_identity import unattended_env, worker_env
 
 if TYPE_CHECKING:
     from pipeline.model import Pr
@@ -406,15 +406,18 @@ def _oldest(status: str, mine_only: tuple[str, ...] = ()) -> int | None:
     return best_n
 
 
-def _resubmit(pr: int, *args: str,
-              stdin: str | None = None) -> subprocess.CompletedProcess[str]:
+def _resubmit(pr: int, *args: str, stdin: str | None = None,
+              unattended: bool = False) -> subprocess.CompletedProcess[str]:
     """Run the resubmit helper, which owns every git mechanic and the push
     identity. The worker opts into its machine user here; interactive invocations
     of the same helper retain the operator identity. `stdin` feeds a patch to
-    `apply` down the pipe, so the reviewed bytes never land on disk."""
+    `apply` down the pipe, so the reviewed bytes never land on disk.
+    `unattended` marks a push made on the automation's own judgment — no person
+    approved the exact change — which the resubmit's activity-log entry records
+    as ``initiator="worker"`` for the Home "Done on its own" feed."""
     return subprocess.run([str(RESUBMIT), str(pr), *args], cwd=str(REPO_ROOT),
                           input=stdin, capture_output=True, text=True, timeout=1800,
-                          env=worker_env())
+                          env=unattended_env() if unattended else worker_env())
 
 
 # What each resubmit exit means, in the words an operator would use. The raw
@@ -663,7 +666,9 @@ def run_one(n: int) -> None:
         if action not in settings.fix_autopush():
             _park(n, claimed, action, result, host)
             return
-        _push(n, claimed, action, result)
+        # An autopushed action skips the parking approval, so the push is the
+        # automation's own call whoever queued the request.
+        _push(n, claimed, action, result, unattended=True)
     except Exception:
         _resubmit(n, "abort")
         raise
@@ -956,7 +961,7 @@ def _author_fix(n: int, claimed: dict) -> None:
         ok, why = gates.fix_autopush_bar(result, paths)
         result["autopush_bar"] = {"ok": ok, "reason": why}
         if ok:
-            _push(n, claimed, "fix", result)
+            _push(n, claimed, "fix", result, unattended=True)
             return
     _park(n, claimed, "fix", result, settings.worker_id())
 
@@ -1737,7 +1742,11 @@ def push_approved(n: int) -> None:
             return
     elif action == "fix" and not _rebuild_fix(n, claimed, result):
         return
-    _push(n, claimed, action, claimed.get("result") or {})
+    # A resolve the auto-review bar cleared was approved by the machine, not a
+    # person, so its push is the automation's own; every other approval here is
+    # an operator's click.
+    machine_approved = bool(((result.get("auto_review") or {}).get("bar") or {}).get("ok"))
+    _push(n, claimed, action, claimed.get("result") or {}, unattended=machine_approved)
 
 
 def _rebuild_fix(n: int, claimed: dict, result: dict) -> bool:
@@ -1769,7 +1778,7 @@ def _rebuild_fix(n: int, claimed: dict, result: dict) -> bool:
     return True
 
 
-def _push(n: int, req: dict, action: str, result: dict) -> None:
+def _push(n: int, req: dict, action: str, result: dict, unattended: bool = False) -> None:
     # `update` merges against current base and pushes in one command, so it is
     # its own re-derivation; the other actions push a tree already prepared. A
     # `resolve` worktree already holds its merge commit, so its push is flagless.
@@ -1778,7 +1787,7 @@ def _push(n: int, req: dict, action: str, result: dict) -> None:
             ["push", "--confirm-rewrite", str(req.get("against_head_sha") or "")]
             if action == "rebase" else
             ["push", "-m", str(result.get("message") or _commit_message(action))])
-    r = _resubmit(n, *args)
+    r = _resubmit(n, *args, unattended=unattended)
     if r.returncode != 0:
         _resubmit(n, "abort")
         _settle(n, req, r.returncode, (r.stderr or r.stdout).strip())
@@ -1822,7 +1831,8 @@ def _retrigger_review(n: int) -> None:
         if not r.retrigger_mention:
             continue
         baseline = review_refresh.capture(n, r.id) if token else None
-        res = executor.retrigger_review(n, r.id, token=token, dry_run=token is None)
+        res = executor.retrigger_review(n, r.id, token=token, dry_run=token is None,
+                                        initiator="worker")
         if res.get("status") == "executed" and baseline is not None:
             review_refresh.schedule(n, r.id, baseline)
         print(f"[fix-worker] {r.label} retrigger for PR #{n}: {res.get('status')}",
