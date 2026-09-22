@@ -5,8 +5,8 @@ Status: proposed, for review
 
 ## Goal
 
-A pipeline that takes a reported Paperclip bug and, without a person in the
-loop, clarifies it, reproduces it, fixes it, proves the fix, and proposes it.
+A pipeline that takes a bug reported on the triaged repository and, without a
+person in the loop, clarifies it, reproduces it, fixes it, proves the fix, and proposes it.
 The one human act is the final "merge this" click. The factory earns that
 autonomy by being measured: it proposes a merge only for fixes whose evidence
 clears a bar whose precision has been demonstrated on the evaluation set.
@@ -80,9 +80,10 @@ Turn the report into **acceptance tests** before any fix exists:
   which layer validates, and marks each as decided by the report, decided by
   codebase convention (naming the precedent file), or open.
 
-An **open** decision becomes a question to the reporter or a maintainer, with
-the options and the factory's default. The run parks until it is answered, or
-proceeds on the convention default after a timeout. The answer becomes a test.
+An **open** decision becomes a question on the issue, with the options and the
+factory's default. The reporter or any maintainer may answer it. The run parks
+until it is answered, or proceeds on the convention default after a week. The
+answer becomes a test.
 
 The spec stage is the one place judgment is concentrated, and it is judgment
 about *what should happen*, which a person can answer in a sentence, not about
@@ -90,10 +91,10 @@ whether code is correct.
 
 ### 3. Fix ×N
 
-Run N independent fix agents (default 3), each in its own clone, from the same
+Run three independent fix agents, each in its own clone, from the same
 frozen spec. Each has the inner loop it has today: the sandbox check running
 targeted tests and the typecheck. Candidates are independent: no shared memory,
-different seeds, optionally different models.
+different seeds, and a mix of models, at least one of them Opus 5.5.
 
 ### 4. Judge (deterministic)
 
@@ -181,7 +182,7 @@ and *coverage* = proposed ÷ bugs, which is the value delivered.
 changes, and the full set (every bug × 3 passes, overnight) for decisions. No
 change ships on an anecdote.
 
-**Autonomy bar (proposed):** the factory may propose unattended once precision
+**Autonomy bar:** the factory may propose unattended once precision
 holds at 90% or better over at least 30 proposals on the full set.
 
 ## Build order
@@ -189,7 +190,7 @@ holds at 90% or better over at least 30 proposals on the full set.
 Each step is measured against the one before on the full set.
 
 1. **Evaluation set.** Built in progress. The goal is about 40 fair bugs; the
-   Paperclip corpus alone looks like about 25–30, and a public TypeScript
+   triaged repository's own history alone looks like about 25–30, and a public TypeScript
    benchmark subset is the fallback.
 2. **Baselines:** the current lane as it is, and a plain single-agent loop with
    the suite as its check, to learn what the multi-stage lane buys.
@@ -213,13 +214,15 @@ Each step is measured against the one before on the full set.
 - **Disk:** about 5–6 GB per held era base, around 50 GB for the set, on
   Colima's 150 GB disk.
 
-## Open decisions
+## Decisions
 
-- **Question channel.** Asking needs an upstream write: an issue comment as the
-  bot, through a gated, logged executor path like the existing ones. Who else
-  may answer: any maintainer, or the reporter only?
-- **Timeout** before a convention default applies to an unanswered question.
-- **N,** and whether candidates vary the model.
-- **Full-suite budget** per candidate: every survivor, or only the selected one
-  plus the runner-up.
-- **The autonomy bar's numbers.**
+- **Question channel.** Asking is an upstream write: an issue comment as the
+  bot, through a gated, logged executor path like the existing ones. The
+  reporter or any maintainer may answer.
+- **Timeout:** an unanswered question falls back to the convention default
+  after a week.
+- **Candidates:** three per bug, mixing models, with at least one on Opus 5.5.
+- **Full-suite budget:** every candidate that passes the earlier judge checks
+  runs the full suite.
+- **Autonomy bar:** 90% precision or better over at least 30 proposals on the
+  full set.
