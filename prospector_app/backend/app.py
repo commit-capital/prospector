@@ -54,6 +54,7 @@ from prospector_app.backend import service
 from prospector_app.backend import suggested_actions
 from prospector_app.backend import tables
 from prospector_app.backend import training
+from prospector_app.backend import trust_ladder
 from prospector_app.backend import fix_queue
 from prospector_app.backend import fix_worker
 from prospector_app.backend import verify_queue
@@ -848,6 +849,14 @@ def get_capabilities():
     return {"login": c.get("login"), "merge_upstream": c.get("merge_upstream", False),
             "reviewers": c.get("reviewers") or [], "store_schema": c.get("store_schema"),
             "write_block": c.get("write_block")}
+
+
+@app.get("/api/policy/trust-ladder")
+def trust_ladder_policy():
+    """Each autonomous action type's earned rung and live agreement/reversal
+    rates, with the bars they are held to — the Policy page's data. Derived on
+    read from captured decisions and autofix endings; nothing is stored."""
+    return trust_ladder.ladder()
 
 
 @app.post("/api/merge/pr/{n}")

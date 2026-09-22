@@ -88,6 +88,7 @@ const VIEW_NAMES: [string, string][] = [
   ["/alerts", "Alerts"],
   ["/action-items", "Action Items"],
   ["/control", "Control"],
+  ["/policy", "Policy"],
   ["/setup", "Setup"],
   ["/welcome", "First-time setup"],
   ["/activity", "Activity"],
@@ -326,6 +327,7 @@ function SettingsMenu() {
           </div>
           <div className="settings-sep" />
           <NavLink to="/setup" className="settings-link" onClick={() => setOpen(false)}>🛠️ Setup</NavLink>
+          <NavLink to="/policy" className="settings-link" onClick={() => setOpen(false)}>📜 Policy</NavLink>
           <NavLink to="/tables" className="settings-link" onClick={() => setOpen(false)}>🗄️ Tables</NavLink>
         </div>
       )}

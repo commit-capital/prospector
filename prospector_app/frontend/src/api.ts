@@ -1707,6 +1707,7 @@ export const api = {
   jobSpecs: () => get<{ specs: JobSpec[] }>("/api/jobs/specs"),
   jobsList: () => get<{ jobs: JobRec[] }>("/api/jobs"),
   identities: () => get<IdentitiesResult>("/api/identities"),
+  trustLadder: () => get<TrustLadder>("/api/policy/trust-ladder"),
   // "Retry live mode" — re-probes whether this machine can mint a bot
   // token, since the backend only probes once and caches the result for its
   // whole lifetime otherwise (see /api/identities/refresh).
@@ -2023,6 +2024,22 @@ export interface PushIdentityInfo { login: string | null; available: boolean }
 export interface IdentitiesResult {
   identities: Identity[]; live_possible: boolean; live_error: string | null;
   push: PushIdentityInfo;
+}
+
+/** `hits` of `n` judged events; `rate` reads 0 with no evidence. */
+export interface TrustRate { hits: number; n: number; rate: number }
+/** One action type's earned rung and the live rates that earned it. */
+export interface TrustType {
+  id: string; rung: string; agreement: TrustRate; reversal: TrustRate;
+}
+/** What a type's window must show to sit at (or above) one rung. */
+export interface TrustBar { min_decisions: number; min_agreement: number; max_reversal: number }
+/** The trust ladder: every autonomous action type's rung and live rates,
+ *  with the bars they are held to — derived on read, never stored. */
+export interface TrustLadder {
+  rungs: string[]; window: number;
+  bars: Record<string, TrustBar>;
+  types: TrustType[];
 }
 // `status: "stale"` is a refusal the operator can confirm past: the write quotes
 // facts the author has moved beyond, and `stale` names the drift.

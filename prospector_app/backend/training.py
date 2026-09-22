@@ -55,6 +55,9 @@ def _features(pr: int) -> dict:
     au = row.get("author_stats") or {}
     return {
         "title": row.get("title"),
+        # The pipeline's suggested disposition at the moment of decision — what
+        # the trust ladder's agreement rate compares the human's verdict against.
+        "disposition": row.get("disposition"),
         "size": (signals.get("additions") or 0) + (signals.get("deletions") or 0),
         "additions": signals.get("additions"),
         "deletions": signals.get("deletions"),
@@ -98,6 +101,15 @@ def capture(pr: int, decision: str, *, reason: str | None = None, tags: list | N
         conn.execute(insert(schema.training_decisions)
                      .values(**schema.training_decision_row(rec)))
     return rec
+
+
+def decisions() -> list[dict]:
+    """Every captured decision record, oldest first."""
+    with _engine().connect() as conn:
+        rows = conn.execute(select(schema.training_decisions.c.data)
+                            .order_by(schema.training_decisions.c.at,
+                                      schema.training_decisions.c.rowid)).all()
+    return [rec for (rec,) in rows if isinstance(rec, dict)]
 
 
 def stats() -> dict:
