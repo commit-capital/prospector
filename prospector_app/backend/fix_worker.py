@@ -196,13 +196,14 @@ def key_safety_failure() -> str | None:
 
 
 def beat() -> None:
-    """Write this worker's liveness, autohunt opt-in, and today's continuation
-    budget into the shared store."""
+    """Write this worker's liveness, autohunt opt-in, unattended-push actions,
+    and today's continuation budget into the shared store."""
     st = data.store()
     st.save_fix_worker({
         "host": settings.worker_id(), "pid": os.getpid(),
         "last_beat": _now(), "current_pr": state["current_pr"],
         "autohunt": enabled_autohunt(),
+        "autopush": sorted(settings.fix_autopush()),
         "objection_budget": {"used": _budget_used(st),
                              "limit": settings.fix_objection_budget()}})
 

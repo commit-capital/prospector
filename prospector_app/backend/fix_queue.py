@@ -337,13 +337,24 @@ def runner_status() -> dict:
     key does the work — so an online worker anywhere is what makes queueing
     meaningful. A worker only starts once its key passes
     fix_worker.key_safety_failure, so a beating worker already proves a usable
-    push identity exists."""
+    push identity exists.
+
+    `autopush` is this backend's own configured set; `autopush_active` is the
+    deployment's unattended-push policy in force — the union of every online
+    worker's recorded set, plus this backend's own when it runs the worker
+    (which covers the window before its first beat)."""
     from prospector_app.backend import fix_worker
     records = worker_records(data.store().load_fix_worker())
     hosts = [{"host": r.get("host"), "online": beat_online(r.get("last_beat")),
               "last_beat": r.get("last_beat"), "current_pr": r.get("current_pr"),
-              "autohunt": bool(r.get("autohunt"))} for r in records]
+              "autohunt": bool(r.get("autohunt")),
+              "autopush": sorted(str(a) for a in (r.get("autopush") or []))}
+             for r in records]
     online = any(h["online"] for h in hosts)
+    active: set[str] = set(settings.fix_autopush()) if fix_worker.enabled() else set()
+    for r in records:
+        if beat_online(r.get("last_beat")):
+            active.update(str(a) for a in (r.get("autopush") or []))
     fresh: dict = hosts[0] if hosts else {}
     return {"configured": fix_worker.enabled(),
             "online": online,
@@ -351,6 +362,7 @@ def runner_status() -> dict:
             "push_identity": settings.push_identity_configured(),
             "push_login": settings.push_login() or None,
             "autopush": sorted(settings.fix_autopush()),
+            "autopush_active": sorted(active),
             "host": fresh.get("host"), "current_pr": fresh.get("current_pr"),
             "last_beat": fresh.get("last_beat"), "hosts": hosts,
             "objection_budget": records[0].get("objection_budget") if records else None}

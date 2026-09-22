@@ -627,6 +627,9 @@ export interface RunnerHost {
   last_beat?: string | null;
   current_pr?: number | null;
   autohunt: boolean;
+  /** The unattended-push actions that machine's worker recorded, when it is a
+   *  fix worker; verify hosts and records from before the field carry none. */
+  autopush?: FixRequestAction[];
 }
 
 /** An autofix action the push bot may run on a contributor's PR head branch.
@@ -733,7 +736,12 @@ export interface FixRunner {
   can_queue: boolean;
   push_identity: boolean;
   push_login?: string | null;
-  autopush: FixAction[];
+  /** This backend's own configured unattended-push actions. */
+  autopush: FixRequestAction[];
+  /** The deployment's unattended-push policy in force: the union of every
+   *  online worker's recorded set, plus this backend's own when it runs the
+   *  worker. What the header's autonomy disclosure reads. */
+  autopush_active: FixRequestAction[];
   /** Today's objection continuations on the freshest worker, against its daily cap. */
   objection_budget?: { used: number; limit: number } | null;
   host?: string | null;

@@ -5,8 +5,9 @@ import { RepoMetaProvider, useRepoMeta } from "./RepoMetaContext";
 import { FeedbackButton } from "./components/FeedbackButton";
 import { AgentPaneProvider } from "./components/AgentPane";
 import { isReachable, subscribeHealth, pingHealth } from "./health";
-import { api, type WorkStatus } from "./api";
+import { api, type FixRunner, type WorkStatus } from "./api";
 import { loadWithRecovery } from "./lazyLoad";
+import { autonomyLabel, identityLabel } from "./modeCluster";
 import { timeAgo } from "./timeAgo";
 import { workStatusLabel } from "./workStatusLabel";
 
@@ -157,22 +158,51 @@ function StoreWriteBanner() {
   return <div className="store-write-block" role="alert">⛔ {storeWriteBlock}</div>;
 }
 
-function DryRunBadge() {
-  const { botLogin, dryRun, setDryRun, livePossible, liveError, storeWriteBlock } = useExec();
+/** The header's mode cluster: the dry-run/live switch, then a disclosure of
+ *  what the deployment does without asking — the unattended-push actions in
+ *  force on any online worker — and the identities it acts under. A
+ *  disclosure, not a warning; clicking it opens the autonomy policy in Setup. */
+function ModeCluster() {
+  const { botLogin, dryRun, setDryRun, livePossible, liveError, storeWriteBlock, pushIdentity } = useExec();
+  const { meta } = useRepoMeta();
+  const [runner, setRunner] = useState<FixRunner | null>(null);
+  useEffect(() => {
+    const load = () => api.fixRunner().then(setRunner).catch(() => {});
+    load();
+    const t = setInterval(load, 60_000);
+    return () => clearInterval(t);
+  }, []);
   const dryRunTitle = storeWriteBlock
     ? storeWriteBlock
     : livePossible
     ? "Toggle dry-run / live. Dry run previews every action you take in the UI — upstream posts and PR-branch pushes alike — without touching GitHub."
     : `No ${botLogin} token on this machine — dry-run only${liveError ? ` (${liveError})` : ""}`;
+  const active = runner?.autopush_active ?? [];
+  const pushLogin = runner?.push_login ?? pushIdentity?.login ?? null;
+  const policyTitle = [
+    active.length > 0
+      ? "The named changes are pushed to contributors' branches without asking once their checks pass; everything else waits for a person's approval."
+      : "Every prepared change waits for a person's approval before it is pushed.",
+    `Posts to ${meta?.display_name ?? "the triage repo"} as the ${botLogin} GitHub App.`,
+    pushLogin
+      ? `Pushes to PR branches as the ${pushLogin} GitHub user.`
+      : "No contributor-push identity is configured.",
+    "Click to open the autonomy policy in Setup.",
+  ].join(" ");
   return (
-    <button
-      className={`mode-badge ${dryRun ? "dry" : "live"}`}
-      onClick={() => setDryRun(!dryRun)}
-      disabled={!livePossible || !!storeWriteBlock}
-      title={dryRunTitle}
-    >
-      {dryRun ? "DRY RUN" : "● LIVE"}
-    </button>
+    <div className="mode-cluster">
+      <button
+        className={`mode-badge ${dryRun ? "dry" : "live"}`}
+        onClick={() => setDryRun(!dryRun)}
+        disabled={!livePossible || !!storeWriteBlock}
+        title={dryRunTitle}
+      >
+        {dryRun ? "DRY RUN" : "● LIVE"}
+      </button>
+      <NavLink to="/setup" className="mode-policy" title={policyTitle}>
+        {autonomyLabel(active)} · {identityLabel(botLogin, pushLogin)}
+      </NavLink>
+    </div>
   );
 }
 
@@ -528,7 +558,7 @@ export default function App() {
           <div className="topbar-right">
             <WorkStatusBadge />
             <LiveStatus />
-            <DryRunBadge />
+            <ModeCluster />
             <FeedbackButton />
             <SettingsMenu />
           </div>

@@ -261,6 +261,45 @@ def test_the_worker_machine_can_queue_before_its_first_beat(store, push_key):
     assert st["can_queue"] is True
 
 
+def test_autopush_active_unions_online_workers(store, monkeypatch):
+    # The header's autonomy disclosure reads the deployment's unattended-push
+    # policy in force: every online worker's recorded set, never a stale one's.
+    monkeypatch.delenv("TRIAGE_FIX_WORKER", raising=False)
+    old_beat = (datetime.now(timezone.utc)
+                - timedelta(seconds=fix_queue.STALE_BEAT_SECONDS + 60)).isoformat()
+    store.save_fix_worker({"host": "mac-studio", "last_beat": _now(),
+                           "current_pr": None, "autohunt": True,
+                           "autopush": ["rebase", "update"]})
+    store.save_fix_worker({"host": "sandbox-box", "last_beat": _now(),
+                           "current_pr": None, "autohunt": False,
+                           "autopush": ["resolve"]})
+    store.save_fix_worker({"host": "old-box", "last_beat": old_beat,
+                           "current_pr": None, "autohunt": False,
+                           "autopush": ["fix"]})
+    st = fix_queue.runner_status()
+    assert st["autopush_active"] == ["rebase", "resolve", "update"]
+    by_host = {h["host"]: h for h in st["hosts"]}
+    assert by_host["mac-studio"]["autopush"] == ["rebase", "update"]
+    assert by_host["old-box"]["autopush"] == ["fix"]
+
+
+def test_autopush_active_counts_this_backend_before_its_first_beat(store, monkeypatch):
+    # The machine that runs the worker in-process answers from its own .env
+    # even before the worker thread's first heartbeat lands.
+    monkeypatch.setenv("TRIAGE_FIX_WORKER", "1")
+    monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", "update")
+    st = fix_queue.runner_status()
+    assert st["autopush_active"] == ["update"]
+    assert st["autopush"] == ["update"]
+
+
+def test_autopush_active_is_empty_when_nothing_pushes_unattended(store, monkeypatch):
+    monkeypatch.delenv("TRIAGE_FIX_WORKER", raising=False)
+    monkeypatch.delenv("TRIAGE_FIX_AUTOPUSH", raising=False)
+    st = fix_queue.runner_status()
+    assert st["autopush_active"] == []
+
+
 def test_a_stale_worker_beat_stops_queueing(store, monkeypatch):
     # A worker that stopped beating cannot drain, so a queued action would sit
     # forever — say so rather than accepting the click.
