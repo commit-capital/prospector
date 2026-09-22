@@ -33,6 +33,7 @@ from prospector_app.backend import caps
 from prospector_app.backend import chat
 from prospector_app.backend import data
 from prospector_app.backend import deep_search
+from prospector_app.backend import deployment_health
 from prospector_app.backend import decisions
 from prospector_app.backend import executor
 from prospector_app.backend import feedback
@@ -515,6 +516,14 @@ def autonomy():
     disclosure. Reads the process environment only — no probes, no network —
     so the header can poll it."""
     return {"flags": worker_control.flags()}
+
+
+@app.get("/api/status/health")
+def status_health() -> deployment_health.HealthSummary:
+    """Cross-machine deployment health — the feed behind the strip every page
+    shows: tripped lanes and dark workers named per machine, stale ingest, and
+    whether any live worker is left to drain the queues."""
+    return deployment_health.summary()
 
 
 @app.get("/api/setup/readiness")

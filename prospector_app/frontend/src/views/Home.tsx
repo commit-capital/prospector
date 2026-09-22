@@ -4,6 +4,7 @@ import { api, type IssueRow, type PRRow, type QueryResult } from "../api";
 import { LinkedIssues } from "../components/LinkedIssues";
 import { PRLink } from "../components/PRLink";
 import { useIssueFlyout } from "../useIssueFlyout";
+import { useDeploymentHealth } from "../useDeploymentHealth";
 import { useJobStream } from "../useJobStream";
 import { useRepoMeta } from "../RepoMetaContext";
 import {
@@ -256,6 +257,10 @@ export default function Home() {
     return () => { cancelled = true; };
   }, [counts]);
   const loading = counts === null && !err;
+  // The workers' column reads as stalled when no live, untripped worker is
+  // left on any known lane — the queues then drain nothing on their own.
+  const health = useDeploymentHealth();
+  const autoStalled = health?.auto_stalled ?? false;
   // Counts and samples are index-aligned with the flat HOME_CARDS array, so
   // each column looks a card's data up by its position there.
   const renderCard = (card: HomeCard) => {
@@ -294,8 +299,11 @@ export default function Home() {
           <div className="home-col-head muted">Your move — one click each</div>
           {HOME_CARDS.filter((c) => c.column === "act").map(renderCard)}
         </section>
-        <section className="home-col">
-          <div className="home-col-head muted">In motion — the workers clear these</div>
+        <section className={"home-col" + (autoStalled ? " home-col-stalled" : "")}>
+          <div className={"home-col-head" + (autoStalled ? " home-col-head-stalled" : " muted")}
+            title={autoStalled ? health?.stalled_reason ?? undefined : undefined}>
+            {autoStalled ? "Stalled — the workers are down" : "In motion — the workers clear these"}
+          </div>
           {HOME_CARDS.filter((c) => c.column === "auto").map(renderCard)}
         </section>
         <section className="home-col">

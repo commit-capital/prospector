@@ -945,6 +945,28 @@ export interface WorkStatus {
   jobs: { running: number; labels: string[] };
 }
 
+/** One problem on the deployment-health strip: what is failing, on which
+ *  machine, and the route that fixes it. `detail` rides as hover text. */
+export interface DeploymentHealthItem {
+  key: string;
+  level: "amber" | "red";
+  text: string;
+  detail: string | null;
+  to: string;
+}
+
+/** Cross-machine deployment health behind the strip every page shows: tripped
+ *  lanes and dark workers named per machine, stale ingest, and whether any
+ *  live, untripped worker is left to drain the queues (`auto_stalled` greys
+ *  Home's "In motion" column). */
+export interface DeploymentHealth {
+  level: "ok" | "amber" | "red";
+  items: DeploymentHealthItem[];
+  auto_stalled: boolean;
+  stalled_reason: string | null;
+  lanes_down: string[];
+}
+
 /** The sandbox-verification queue: PRs currently in flight, plus verify-only
  *  run history from the runs ledger over the selected window. */
 export interface VerifyQueue { queue: VerifyQueueEntry[]; history: AutohuntRun[]; }
@@ -1822,6 +1844,7 @@ export const api = {
     return get<FixQueue>(`/api/fix/queue?${qs}`);
   },
   workStatus: () => get<WorkStatus>("/api/status/now"),
+  deploymentHealth: () => get<DeploymentHealth>("/api/status/health"),
   /** Reopen a tripped worker lane by the operator's say-so. */
   workerHealthResume: async (host: string, lane: string): Promise<void> => {
     const r = await fetch("/api/worker/health/resume", {

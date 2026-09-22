@@ -3,6 +3,7 @@ import { NavLink, Outlet, useLocation, useNavigate, useSearchParams } from "reac
 import { ExecProvider, useExec, type Toast } from "./ExecContext";
 import { RepoMetaProvider, useRepoMeta } from "./RepoMetaContext";
 import { FeedbackButton } from "./components/FeedbackButton";
+import { HealthStrip } from "./components/HealthStrip";
 import { AgentPaneProvider } from "./components/AgentPane";
 import { isReachable, subscribeHealth, pingHealth } from "./health";
 import { api, type WorkStatus, type WorkerFlags } from "./api";
@@ -581,6 +582,7 @@ export default function App() {
             <SettingsMenu />
           </div>
         </header>
+        <HealthStrip />
         <main className="content">
           <Content />
         </main>
