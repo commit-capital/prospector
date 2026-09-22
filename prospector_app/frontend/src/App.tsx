@@ -6,7 +6,7 @@ import { FeedbackButton } from "./components/FeedbackButton";
 import { AgentPaneProvider } from "./components/AgentPane";
 import { isReachable, subscribeHealth, pingHealth } from "./health";
 import { api, type WorkStatus, type WorkerFlags } from "./api";
-import { unattendedActions, unattendedDetail, unattendedPushes } from "./autonomy";
+import { autonomyTooltip } from "./autonomy";
 import { useSystemHealth } from "./useSystemHealth";
 import { loadWithRecovery } from "./lazyLoad";
 import { timeAgo } from "./timeAgo";
@@ -193,35 +193,15 @@ function StoreWriteBanner() {
   return <div className="store-write-block" role="alert">⛔ {storeWriteBlock}</div>;
 }
 
-function DryRunBadge() {
-  const { botLogin, dryRun, setDryRun, livePossible, liveError, storeWriteBlock } = useExec();
-  const dryRunTitle = storeWriteBlock
-    ? storeWriteBlock
-    : livePossible
-    ? "Toggle dry-run / live. Dry run previews every action you take in the UI — upstream posts and PR-branch pushes alike — without touching GitHub."
-    : `No ${botLogin} token on this machine — dry-run only${liveError ? ` (${liveError})` : ""}`;
-  return (
-    <button
-      className={`mode-badge ${dryRun ? "dry" : "live"}`}
-      onClick={() => setDryRun(!dryRun)}
-      disabled={!livePossible || !!storeWriteBlock}
-      title={dryRunTitle}
-    >
-      {dryRun ? "DRY RUN" : "● LIVE"}
-    </button>
-  );
-}
-
-/** How often the autonomy pill re-reads the lane switches — often enough that
- *  a Setup toggle shows up here within a poll. */
+/** How often the dry-run button re-reads the lane switches its tooltip
+ *  discloses — often enough that a Setup toggle shows up here within a poll. */
 const AUTONOMY_POLL_MS = 30_000;
 
-// "autonomous: rebases, conflicts · as triage-bot" — what this machine
-// does without being asked, under which identities, read from the same lane
-// switches the Setup tab writes. A disclosure, not a warning: it links to the
-// policy, and the tooltip carries the full sentences.
-function AutonomyPill() {
-  const { botLogin, pushIdentity } = useExec();
+// The dry-run/live switch. Its tooltip also carries the autonomy disclosure —
+// what this machine does without being asked, under which identities — read
+// from the same lane switches the Setup tab writes.
+function DryRunBadge() {
+  const { botLogin, dryRun, setDryRun, livePossible, liveError, storeWriteBlock, pushIdentity } = useExec();
   const [flags, setFlags] = useState<WorkerFlags | null>(null);
   useEffect(() => {
     const load = () => api.autonomy().then((d) => setFlags(d.flags)).catch(() => {});
@@ -229,33 +209,23 @@ function AutonomyPill() {
     const t = setInterval(load, AUTONOMY_POLL_MS);
     return () => clearInterval(t);
   }, []);
-  if (!flags) return null;
-  const acts = unattendedActions(flags);
-  const pushLogin = pushIdentity?.login;
-  const who = unattendedPushes(flags) && pushLogin && pushLogin !== botLogin
-    ? `${botLogin} + ${pushLogin}` : botLogin;
-  const title = [
-    "What this machine does without being asked:",
-    ...(acts.length ? unattendedDetail(flags).map((d) => `• ${d}`) : ["• nothing"]),
-    `Posts upstream as ${botLogin}${pushLogin ? `; pushes to PR branches as ${pushLogin}` : ""}.`,
-    "Click for the autonomy policy (Pipeline → Machines & policy).",
-  ].join("\n");
+  const dryRunTitle = storeWriteBlock
+    ? storeWriteBlock
+    : livePossible
+    ? "Toggle dry-run / live. Dry run previews every action you take in the UI — upstream posts and PR-branch pushes alike — without touching GitHub."
+    : `No ${botLogin} token on this machine — dry-run only${liveError ? ` (${liveError})` : ""}`;
+  const title = flags
+    ? [dryRunTitle, "", ...autonomyTooltip(flags, botLogin, pushIdentity?.login)].join("\n")
+    : dryRunTitle;
   return (
-    <NavLink to="/pipeline/setup" className="autonomy-pill" title={title}>
-      autonomous: {acts.length ? acts.join(", ") : "nothing"} · as {who}
-    </NavLink>
-  );
-}
-
-/** The mode cluster: the dry-run/live switch joined with the autonomy
- *  disclosure, so mode, unattended reach, and identity read as one unit from
- *  any page. */
-function ModeCluster() {
-  return (
-    <div className="mode-cluster">
-      <DryRunBadge />
-      <AutonomyPill />
-    </div>
+    <button
+      className={`mode-badge ${dryRun ? "dry" : "live"}`}
+      onClick={() => setDryRun(!dryRun)}
+      disabled={!livePossible || !!storeWriteBlock}
+      title={title}
+    >
+      {dryRun ? "DRY RUN" : "● LIVE"}
+    </button>
   );
 }
 
@@ -631,7 +601,7 @@ export default function App() {
           <div className="topbar-right">
             <WorkStatusBadge />
             <LiveStatus />
-            <ModeCluster />
+            <DryRunBadge />
             <FeedbackButton />
             <SettingsMenu />
           </div>
