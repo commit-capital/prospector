@@ -685,6 +685,9 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* suggested actions — Control-tab jobs surfaced on the view they feed */
 .suggest-bar { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+/* a reserved slot: one card-height held open while suggestions load (or come
+   back empty), so the table below never shifts once rendered */
+.suggest-slot { min-height: 38px; }
 .suggest-card { display: flex; align-items: center; gap: 10px; background: color-mix(in srgb, var(--gold) 8%, var(--panel)); border: 1px solid var(--gold); border-radius: 8px; padding: 6px 12px; }
 .suggest-card-text { flex: 1; min-width: 0; }
 .suggest-tail { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: ui-monospace, monospace; }
@@ -1150,6 +1153,20 @@ tr.row-done:hover > td { opacity: 1; }
 .pr-table th:first-child, .pr-table td:first-child { width: 26px; text-align: center; }
 .pr-table tbody tr.sel { background: var(--ready-tint); }
 .pr-table .num { color: var(--accent); font-weight: 600; cursor: pointer; }
+/* the title column takes the width the fixed columns leave, on one line */
+.pr-table td.col-title { width: 100%; max-width: 0; }
+.title-cell { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.title-cell .chip { flex: none; }
+.title-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conflict-mark { color: var(--red); }
+/* filters row + the column-visibility menu share one toolbar line */
+.explorer-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; }
+.col-menu { position: relative; }
+.col-menu-dropdown { position: absolute; left: 0; top: calc(100% + 6px); z-index: 900;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 12px; display: flex; flex-direction: column; gap: 4px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .18); }
+.col-menu-row { font-size: 12.5px; white-space: nowrap; }
 
 /* column header layout: label + sort arrow on the left, filter button on the right */
 .th-inner { display: flex; align-items: center; justify-content: space-between; gap: 4px; }

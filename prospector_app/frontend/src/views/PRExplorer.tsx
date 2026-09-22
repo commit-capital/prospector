@@ -53,8 +53,12 @@ let lastQuery: { key: string; result: QueryResult } | null = null;
 // ascending. Mirrors the backend `_DEFAULT_DESC` so the caret matches the order.
 const DESC_FIRST = new Set([
   "pr", "greptile", "review", "scans", "safety", "updated", "loc", "files",
-  "checks", "merge", "age", "author_rate", "pain", "issues",
+  "checks", "merge", "conflicts", "age", "author_rate", "pain", "issues",
 ]);
+
+// With no sort in the URL the table orders by Community Pain descending — the
+// main ranking signal — so the most painful PRs lead.
+const DEFAULT_SORT = { key: "pain", dir: "desc" as SortDir };
 
 function readSpec(params: URLSearchParams): FilterSpec {
   try { return JSON.parse(params.get(SPEC_PARAM) || "{}"); } catch { return {}; }
@@ -171,8 +175,8 @@ export default function PRExplorer() {
   // header caret matches what the engine returns: quality/size columns lead with
   // descending (biggest/best first), text columns with ascending (A→Z). This set
   // mirrors the backend's `_DEFAULT_DESC` (service.py).
-  const sortKey = params.get("sort") || "";
-  const dir = (params.get("dir") || "") as SortDir | "";
+  const sortKey = params.get("sort") || DEFAULT_SORT.key;
+  const dir = (params.get("dir") || DEFAULT_SORT.dir) as SortDir;
   const sortByCol = (col: string) => {
     const next = cycleSort({ key: sortKey, dir }, col, DESC_FIRST);
     const p = new URLSearchParams(params);
@@ -307,11 +311,13 @@ export default function PRExplorer() {
           {res ? `${res.total} match` : null}
         </span>
       </div>
-      <SuggestedActions view="prs" />
+      <SuggestedActions view="prs" reserve />
       <ExplorerSearchBar value={searchQ} onTextChange={setSearchText} onSpec={setSpec} onDeepSearch={runDeep} deepBusy={deepBusy} deepProgress={deepProgress} />
       <LaneChips spec={spec} onChange={setSpec} />
-      <FilterControls spec={spec} onChange={setSpec} visibleColKeys={new Set(visibleColumns.map((c) => c.key))} />
-      <ColumnToggles isOn={colOn} toggle={toggleCol} reset={resetCols} />
+      <div className="explorer-toolbar">
+        <FilterControls spec={spec} onChange={setSpec} visibleColKeys={new Set(visibleColumns.map((c) => c.key))} />
+        <ColumnToggles isOn={colOn} toggle={toggleCol} reset={resetCols} />
+      </div>
       <FilterSummary parts={buildPrFilterParts(spec, setSpec, reviewerLabels)} total={res?.total ?? null} />
       {deep && (
         <div className="deep-banner">
