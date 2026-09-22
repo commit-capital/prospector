@@ -169,6 +169,7 @@ export interface ClusterSummary {
   root_problem: string;
   pr_count: number;
   state: ClusterState;
+  blockers: string[];
   outcome: string | null;
   dispositions: Record<string, number>;
   security: SafetyRollup;
@@ -441,6 +442,8 @@ export interface ClusterDetail {
   root_problem: string;
   outcome: string | null;
   state: ClusterState;
+  blockers: string[];
+  narrative_stale: string[];
   rationale: string | null;
   rationale_summary: string | null;
   notes: string | null;
