@@ -1264,6 +1264,7 @@ def activity_firehose(days: int = Query(30, le=400), all_time: bool = False,
     stats = activity.firehose_stats(scoped_prs, all_issues, days, events, start_date=start_date)
     stats["reopened_after_close"] = activity.reopened_after_close(scoped_prs, events)
     stats["iss_action_counts"] = activity.issue_action_counts(events)
+    stats.update(activity.ingest_as_of(data.runs(), issues_mod.cached_runs()))
     return stats
 
 
