@@ -24,6 +24,7 @@ from prospector_app.backend import activity
 from prospector_app.backend import advisories as advisories_mod
 from prospector_app.backend import alerts as alerts_mod
 from prospector_app.backend import autohunt_view
+from prospector_app.backend import autonomous_feed
 from prospector_app.backend import escalation
 from prospector_app.backend import rereview_hunt, stale_refresh
 from prospector_app.backend import worker_control
@@ -1198,6 +1199,13 @@ def activity_sync(limit: int = 200):
     """Return the current activity feed. The ``synced`` key is kept for frontend
     compatibility; activity reads directly from the DB so no sync is needed."""
     return {"synced": False, "items": activity.recent(limit)}
+
+
+@app.get("/api/activity/autonomous")
+def activity_autonomous(limit: int = Query(50, le=200)):
+    """The Home "Done on its own" feed: landed upstream actions no person
+    approved, newest first, each carrying the undo the app can offer."""
+    return {"items": autonomous_feed.feed(limit)}
 
 
 @app.get("/api/activity/summary")
