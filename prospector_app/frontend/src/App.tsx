@@ -1,5 +1,5 @@
 import { Component, lazy, Suspense, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from "react";
-import { NavLink, Outlet, useLocation, useNavigate, useSearchParams } from "react-router";
+import { Link, NavLink, Outlet, useLocation, useNavigate, useSearchParams } from "react-router";
 import { ExecProvider, useExec, type Toast } from "./ExecContext";
 import { RepoMetaProvider, useRepoMeta } from "./RepoMetaContext";
 import { FeedbackButton } from "./components/FeedbackButton";
@@ -7,6 +7,7 @@ import { AgentPaneProvider } from "./components/AgentPane";
 import { isReachable, subscribeHealth, pingHealth } from "./health";
 import { api, type WorkStatus, type WorkerFlags } from "./api";
 import { unattendedActions, unattendedDetail, unattendedPushes } from "./autonomy";
+import { useSystemHealth } from "./useSystemHealth";
 import { loadWithRecovery } from "./lazyLoad";
 import { timeAgo } from "./timeAgo";
 import { workStatusLabel } from "./workStatusLabel";
@@ -80,28 +81,61 @@ function Flyouts() {
 }
 
 // Maps the active route to the nav label shown in the tab title, longest-prefix
-// first so nested routes (e.g. /explore/123) resolve to their parent view.
+// first so nested routes (e.g. /prs/clusters/123) resolve to their parent view.
 const VIEW_NAMES: [string, string][] = [
-  ["/explore", "PR Explorer"],
-  ["/differ", "PR Differ"],
+  ["/prs/clusters", "Clusters"],
+  ["/prs/compare", "Compare"],
+  ["/prs", "PRs"],
   ["/issues", "Issues"],
-  ["/alerts", "Alerts"],
-  ["/action-items", "Action Items"],
-  ["/control", "Control"],
-  ["/policy", "Policy"],
-  ["/setup", "Setup"],
+  ["/security/actions", "Action Items"],
+  ["/security", "Security"],
+  ["/pipeline/activity", "Activity"],
+  ["/pipeline/policy", "Policy"],
+  ["/pipeline/setup", "Machines & policy"],
+  ["/pipeline/data", "Data"],
+  ["/pipeline", "Pipeline"],
   ["/welcome", "First-time setup"],
-  ["/activity", "Activity"],
-  ["/tables", "Tables"],
-  ["/clusters", "Clusters"],
-  ["/", "Home"],
+  ["/", "Inbox"],
 ];
 
 function viewName(pathname: string): string {
-  const cluster = pathname.match(/^\/clusters\/([^/]+)/);
+  const cluster = pathname.match(/^\/prs\/clusters\/([^/]+)/);
   if (cluster) return `Cluster ${cluster[1]}`;
   return VIEW_NAMES.find(([prefix]) => pathname === prefix || pathname.startsWith(prefix + "/"))?.[1]
     ?? VIEW_NAMES[VIEW_NAMES.length - 1][1];
+}
+
+// Each destination's sub-views, shown as a second nav row while inside it.
+const SUB_NAVS: { prefix: string; tabs: { to: string; label: string; end?: boolean }[] }[] = [
+  { prefix: "/prs", tabs: [
+    { to: "/prs/list", label: "List" },
+    { to: "/prs/clusters", label: "By cluster" },
+    { to: "/prs/compare", label: "Compare" },
+  ] },
+  { prefix: "/security", tabs: [
+    { to: "/security", label: "Advisories & alerts", end: true },
+    { to: "/security/actions", label: "Action items" },
+  ] },
+  { prefix: "/pipeline", tabs: [
+    { to: "/pipeline/control", label: "Health & queues" },
+    { to: "/pipeline/activity", label: "Throughput & audit" },
+    { to: "/pipeline/policy", label: "Policy" },
+    { to: "/pipeline/setup", label: "Machines & policy" },
+    { to: "/pipeline/data", label: "Data" },
+  ] },
+];
+
+function SubNav() {
+  const { pathname } = useLocation();
+  const section = SUB_NAVS.find((s) => pathname === s.prefix || pathname.startsWith(s.prefix + "/"));
+  if (!section) return null;
+  return (
+    <nav className="subnav" aria-label="Section">
+      {section.tabs.map((t) => (
+        <NavLink key={t.to} to={t.to} end={t.end}>{t.label}</NavLink>
+      ))}
+    </nav>
+  );
 }
 
 // Labels which checkout this app is serving — the git branch and worktree
@@ -204,10 +238,10 @@ function AutonomyPill() {
     "What this machine does without being asked:",
     ...(acts.length ? unattendedDetail(flags).map((d) => `• ${d}`) : ["• nothing"]),
     `Posts upstream as ${botLogin}${pushLogin ? `; pushes to PR branches as ${pushLogin}` : ""}.`,
-    "Click for the autonomy policy (Setup).",
+    "Click for the autonomy policy (Pipeline → Machines & policy).",
   ].join("\n");
   return (
-    <NavLink to="/setup" className="autonomy-pill" title={title}>
+    <NavLink to="/pipeline/setup" className="autonomy-pill" title={title}>
       autonomous: {acts.length ? acts.join(", ") : "nothing"} · as {who}
     </NavLink>
   );
@@ -225,8 +259,8 @@ function ModeCluster() {
   );
 }
 
-/** The ⚙️ menu: the header controls that are set once and left alone —
- *  posting identity, the live-token re-probe, theme, and the utility pages.
+/** The ⚙️ menu: personal preferences and the header controls that are set
+ *  once and left alone — posting identity, the live-token re-probe, theme.
  *  What stays in the bar is what an operator touches mid-review: live sync,
  *  the dry-run/live switch, and feedback. */
 function SettingsMenu() {
@@ -325,10 +359,6 @@ function SettingsMenu() {
               {theme === "dark" ? "☀️ light mode" : "🌙 dark mode"}
             </button>
           </div>
-          <div className="settings-sep" />
-          <NavLink to="/setup" className="settings-link" onClick={() => setOpen(false)}>🛠️ Setup</NavLink>
-          <NavLink to="/policy" className="settings-link" onClick={() => setOpen(false)}>📜 Policy</NavLink>
-          <NavLink to="/tables" className="settings-link" onClick={() => setOpen(false)}>🗄️ Tables</NavLink>
         </div>
       )}
     </div>
@@ -469,6 +499,29 @@ function Toasts() {
   );
 }
 
+// The thin systemwide health strip on every page: worker lanes down on any
+// machine sharing this store (tripped, or the worker offline), and stale
+// ingests. Amber for a partial problem, red for a full outage; hidden while
+// everything is healthy. The whole strip opens Pipeline → Health & queues,
+// which holds the Resume banner and the ingest buttons that fix what it names.
+function HealthStrip() {
+  const health = useSystemHealth();
+  if (!health || health.severity === "ok") return null;
+  return (
+    <Link to="/pipeline/control" className={`health-strip health-strip-${health.severity}`} role="alert"
+      title="Open Pipeline → Health & queues to resume lanes or re-run ingest">
+      <span aria-hidden="true">⚠</span>
+      {health.items.map((it, i) => (
+        <span key={`${it.kind}-${it.host ?? i}`} className="health-strip-item"
+          title={it.detail ?? undefined}>
+          {i > 0 && <span className="health-strip-sep" aria-hidden="true">·</span>}
+          {it.label}
+        </span>
+      ))}
+    </Link>
+  );
+}
+
 // Loud, dismissable-by-recovery banner shown whenever the backend API can't be
 // reached. Polls /api/health (faster while down) so the page heals itself once
 // the backend is back up, without a manual refresh.
@@ -520,15 +573,11 @@ function Nav() {
   }
   return (
     <nav>
-      <NavLink to="/" end>🏠 Home</NavLink>
-      <NavLink to="/clusters">Clusters</NavLink>
-      <NavLink to="/explore">🔭 PR Explorer</NavLink>
-      <NavLink to="/differ">🔬 PR Differ</NavLink>
-      <NavLink to="/issues">🐛 Issues</NavLink>
-      <NavLink to="/alerts">🛡️ Alerts</NavLink>
-      <NavLink to="/action-items">🗂️ Action Items</NavLink>
-      <NavLink to="/control">🎛️ Control</NavLink>
-      <NavLink to="/activity">📋 Activity</NavLink>
+      <NavLink to="/" end>Inbox</NavLink>
+      <NavLink to="/prs">PRs</NavLink>
+      <NavLink to="/issues">Issues</NavLink>
+      <NavLink to="/security">Security</NavLink>
+      <NavLink to="/pipeline">Pipeline</NavLink>
     </nav>
   );
 }
@@ -541,7 +590,7 @@ function Nav() {
 function Content() {
   const { meta } = useRepoMeta();
   const { pathname } = useLocation();
-  if (!meta) return null;
+  if (!meta) return <div className="pad muted">loading…</div>;
   if (!meta.configured && pathname !== "/welcome") return null;
   return (
     <>
@@ -583,6 +632,8 @@ export default function App() {
             <SettingsMenu />
           </div>
         </header>
+        <SubNav />
+        <HealthStrip />
         <main className="content">
           <Content />
         </main>

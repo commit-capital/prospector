@@ -10,7 +10,7 @@ import { ALL_CHECKS_PASS } from "./checkDefs.ts";
 
 // Every gate green and ready to merge right now — the `review` and `scans`
 // check rows carry every active reviewer's and scanner's bar. The Home tab's
-// "PRs ready to merge" card narrows this same spec to the pipeline's merge picks.
+// "Ready to merge" card narrows this same spec to the pipeline's merge picks.
 export const MERGE_READY_SPEC: FilterSpec = {
   checks: ALL_CHECKS_PASS,
   safety: "GREEN",
@@ -33,9 +33,10 @@ export const LANES: Lane[] = [
   { key: "stale", label: "🗑️ Stale",
     spec: { age_days: { op: ">", value: 30 },
             greptile: { op: "<", value: 5 }, greptile_stale: false } },
-  { key: "merge-ready", label: "✅ Merge-ready", spec: MERGE_READY_SPEC },
+  // Named like the Home cards they mirror, so one population carries one name.
+  { key: "merge-ready", label: "✅ Ready to merge", spec: MERGE_READY_SPEC },
   // A RED security verdict already reads as needs-human (gates.forced_disposition),
   // so the single disposition filter covers those too.
-  { key: "needs-human", label: "👤 Needs human",
+  { key: "needs-human", label: "👤 Your call",
     spec: { disposition: "needs-human" } },
 ];

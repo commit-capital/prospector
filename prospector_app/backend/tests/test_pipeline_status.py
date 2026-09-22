@@ -241,6 +241,41 @@ def test_seconds_per_run_averages_whole_run_durations():
     assert pipeline_status._seconds_per_run(records, "ingest") == 5.0
 
 
+def test_job_runtimes_reads_each_jobs_ledger_phases(monkeypatch, tmp_path):
+    """Each job kind with a ledger mapping reports its phases' latest run and
+    the typical whole-run duration averaged over recent runs."""
+    from prospector_app.backend import alert_data, data, issues
+    monkeypatch.setattr(issues, "STORE_ROOT", tmp_path)
+    monkeypatch.setattr(data, "runs", lambda: [storekit.parse_run(d) for d in [
+        {"phase": "ingest", "started": "2026-07-01T10:00:00+00:00",
+         "finished": "2026-07-01T10:00:04+00:00"},
+        {"phase": "ingest", "started": "2026-07-02T10:00:00+00:00",
+         "finished": "2026-07-02T10:00:06+00:00"},
+        {"phase": "verify:single", "started": "2026-07-03T10:00:00+00:00",
+         "finished": "2026-07-03T10:02:00+00:00"},
+    ]])
+    monkeypatch.setattr(alert_data, "runs", lambda: [storekit.parse_run(d) for d in [
+        {"phase": "alert-ingest", "started": "2026-07-04T10:00:00+00:00",
+         "finished": "2026-07-04T10:00:30+00:00"},
+        {"phase": "advisory-find-fixed", "started": "2026-07-05T10:00:00+00:00",
+         "finished": "2026-07-05T10:01:00+00:00"},
+    ]])
+
+    runtimes = pipeline_status.job_runtimes()
+
+    assert runtimes["ingest"] == {"last_run": "2026-07-02T10:00:06+00:00",
+                                  "typical_seconds": 5.0}
+    assert runtimes["verify-pr"] == {"last_run": "2026-07-03T10:02:00+00:00",
+                                     "typical_seconds": 120.0}
+    # A multi-phase ledger reads as the latest of any of its phases.
+    assert runtimes["security-sweep"]["last_run"] == "2026-07-05T10:01:00+00:00"
+    # Never run → no stamp and no duration.
+    assert runtimes["threat-scan"] == {"last_run": None, "typical_seconds": None}
+    # No ledger mapping → not reported at all.
+    assert "selftest" not in runtimes
+    assert "triage-cluster" not in runtimes
+
+
 def test_clustering_freshness_reads_the_latest_of_commit_and_assign(monkeypatch, tmp_path):
     from prospector_app.backend import data, issues
     monkeypatch.setattr(issues, "STORE_ROOT", tmp_path)

@@ -81,7 +81,7 @@ export default function Policy() {
         automation&rsquo;s work is undone or rejected, both over the last {ladder.window}{" "}
         judged events. The rung is recomputed on every read, so a reversal spike
         demotes a type with no human action. The rung is a disclosure — the
-        autopush and hunt switches on each machine&rsquo;s Setup page remain the
+        autopush and hunt switches under Machines &amp; policy remain the
         enforcement.
       </p>
       <table className="trust-table">

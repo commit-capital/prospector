@@ -93,6 +93,47 @@ def test_query_route_passes_severity(seeded):
     assert [x["ghsa_id"] for x in r.json()["items"]] == [G1]
 
 
+def test_rows_carry_the_resolved_canonical(seeded):
+    rows, _ = adv_mod.list_advisories()
+    by_ghsa = {r["ghsa_id"]: r for r in rows}
+    assert by_ghsa[G2]["canonical"] == G1
+    assert by_ghsa[G1]["canonical"] == G1
+    assert by_ghsa[G3]["canonical"] == G3
+
+
+def test_collapse_dups_folds_members_under_their_canonical(seeded):
+    out = adv_mod.query_advisories(collapse_dups=True)
+    assert [r["ghsa_id"] for r in out["items"]] == [G1, G3]
+    assert out["total"] == 2
+    lead = out["items"][0]
+    assert lead["dup_count"] == 1
+    assert [d["ghsa_id"] for d in lead["dup_rows"]] == [G2]
+    assert out["items"][1]["dup_count"] == 0
+
+
+def test_collapse_dups_keeps_a_member_whose_canonical_was_filtered_out(seeded):
+    # G2's canonical G1 is judged "fixed", so a not-fixed/duplicate-only filter
+    # can remove it; G2 then stays a top-level row.
+    out = adv_mod.query_advisories(verdict="duplicate", collapse_dups=True)
+    assert [r["ghsa_id"] for r in out["items"]] == [G2]
+    assert out["items"][0]["dup_count"] == 0
+
+
+def test_collapse_dups_shows_a_cycle_as_one_lead(seeded):
+    store = seeded
+    a = store.edit_advisory(advisory_id(G2))
+    a.record_fix_scan("duplicate", by="agent", duplicate_of=G3)
+    b = store.edit_advisory(advisory_id(G3))
+    b.record_fix_scan("duplicate", by="agent", duplicate_of=G2)
+    adv_mod._sync_store_root()
+    advisory_data.refresh()
+    out = adv_mod.query_advisories(collapse_dups=True)
+    assert [r["ghsa_id"] for r in out["items"]] == [G1, G2]
+    lead = next(r for r in out["items"] if r["ghsa_id"] == G2)
+    assert lead["canonical"] == G2
+    assert [d["ghsa_id"] for d in lead["dup_rows"]] == [G3]
+
+
 def test_detail_carries_description_and_404s_on_unknown(seeded):
     d = adv_mod.get_advisory(G1)
     assert d is not None and d["description"] == "## Details\nbody"

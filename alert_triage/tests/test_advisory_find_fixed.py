@@ -111,6 +111,58 @@ def test_apply_verdicts_validates_and_records(tmp_path):
         ff.apply_verdicts(store, [{"id": advisory_id(G1), "verdict": "maybe"}])
 
 
+def test_apply_verdicts_skips_a_cycle_within_one_batch(tmp_path):
+    store = AdvisoryStore(tmp_path)
+    _seed(store, G1)
+    _seed(store, G2)
+    n = ff.apply_verdicts(store, [
+        {"id": advisory_id(G1), "verdict": "duplicate", "duplicate_of": G2},
+        {"id": advisory_id(G2), "verdict": "duplicate", "duplicate_of": G1},
+    ])
+    assert n == 1
+    a = store.load_advisory(advisory_id(G1))
+    assert a is not None and a.duplicate_of == G2
+    b = store.load_advisory(advisory_id(G2))
+    assert b is not None and b.verdict is None
+
+
+def test_apply_verdicts_skips_a_cycle_against_stored_pointers(tmp_path):
+    store = AdvisoryStore(tmp_path)
+    _seed(store, G1)
+    _seed(store, G2)
+    _seed(store, G3)
+    stored = store.edit_advisory(advisory_id(G1))
+    stored.record_fix_scan("duplicate", by="agent", duplicate_of=G2)
+    also = store.edit_advisory(advisory_id(G2))
+    also.record_fix_scan("duplicate", by="agent", duplicate_of=G3)
+    # G3 → G1 would close the three-member loop; G3 → G2 closes a shorter one.
+    assert ff.apply_verdicts(store, [
+        {"id": advisory_id(G3), "verdict": "duplicate", "duplicate_of": G1},
+    ]) == 0
+    assert ff.apply_verdicts(store, [
+        {"id": advisory_id(G3), "verdict": "duplicate", "duplicate_of": G2},
+    ]) == 0
+    c = store.load_advisory(advisory_id(G3))
+    assert c is not None and c.verdict is None
+
+
+def test_apply_verdicts_repoint_away_reopens_the_slot(tmp_path):
+    store = AdvisoryStore(tmp_path)
+    _seed(store, G1)
+    _seed(store, G2)
+    stored = store.edit_advisory(advisory_id(G1))
+    stored.record_fix_scan("duplicate", by="agent", duplicate_of=G2)
+    # A fresh non-duplicate verdict for G1 drops its pointer, so G2 → G1 in the
+    # same batch no longer closes a loop.
+    n = ff.apply_verdicts(store, [
+        {"id": advisory_id(G1), "verdict": "not-fixed", "evidence": "still there"},
+        {"id": advisory_id(G2), "verdict": "duplicate", "duplicate_of": G1},
+    ])
+    assert n == 2
+    b = store.load_advisory(advisory_id(G2))
+    assert b is not None and b.duplicate_of == G1
+
+
 def test_filter_batch_verdicts_drops_foreign_and_unknown():
     entries = [{"id": 1, "ghsa_id": G1}, {"id": 2, "ghsa_id": G2}]
     raw = [{"id": 1, "verdict": "not-fixed"}, {"id": 3, "verdict": "fixed"},

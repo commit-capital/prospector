@@ -52,6 +52,7 @@ from prospector_app.backend import review_refresh
 from prospector_app.backend import responses as responses_mod
 from prospector_app.backend import service
 from prospector_app.backend import suggested_actions
+from prospector_app.backend import system_health
 from prospector_app.backend import tables
 from prospector_app.backend import training
 from prospector_app.backend import trust_ladder
@@ -61,6 +62,7 @@ from prospector_app.backend import verify_queue
 from prospector_app.backend import verify_worker
 from prospector_app.backend import work_status
 
+from pipeline import actions as pipeline_actions
 from pipeline import reviewers
 from pipeline import settings
 
@@ -510,6 +512,13 @@ def status_now():
     return work_status.now()
 
 
+@app.get("/api/system-health")
+def system_health_get() -> system_health.SystemHealth:
+    """Systemwide health for the strip every page shows: worker lanes down
+    across every machine on this store, and stale ingests."""
+    return system_health.status()
+
+
 @app.get("/api/autonomy")
 def autonomy():
     """This machine's worker lane switches, for the header's autonomy
@@ -777,7 +786,11 @@ def chat_stop(pr: int | None = None, cluster: int | None = None, issue: int | No
 # ---------------------------------------------------------------------------
 @app.get("/api/jobs/specs")
 def job_specs():
-    return {"specs": jobs.list_specs()}
+    runtimes = pipeline_status.job_runtimes()
+    return {"specs": [
+        {**s, **runtimes.get(s["kind"], {"last_run": None, "typical_seconds": None})}
+        for s in jobs.list_specs()
+    ]}
 
 
 @app.get("/api/jobs")
@@ -929,9 +942,9 @@ def list_issues():
 def issues_query(payload: dict = Body(default_factory=dict)):
     """Paginated Issue-table endpoint. Body: {q?, sort?, direction?, disposition?,
     state?, author?, pain?, repro_grade?, subsystem?, dups?, linked_prs?, labels?,
-    offset?, limit?}; disposition "none" selects unanalyzed issues, state
-    "open"/"closed" filters by lifecycle ("all"/absent returns both). See
-    issues.query_issues for the per-field filter semantics."""
+    collapse_dups?, offset?, limit?}; disposition "none" selects unanalyzed
+    issues, state "open"/"closed" filters by lifecycle ("all"/absent returns
+    both). See issues.query_issues for the per-field filter semantics."""
     return issues_mod.query_issues(
         q=payload.get("q") or "",
         sort=payload.get("sort"), direction=payload.get("direction"),
@@ -943,6 +956,7 @@ def issues_query(payload: dict = Body(default_factory=dict)):
         dups=payload.get("dups"),
         linked_prs=payload.get("linked_prs"),
         labels=payload.get("labels") or None,
+        collapse_dups=bool(payload.get("collapse_dups")),
         offset=int(payload.get("offset", 0)), limit=min(int(payload.get("limit", 50)), 500),
     )
 
@@ -1031,13 +1045,15 @@ def list_alerts():
 @app.post("/api/alerts/query")
 def alerts_query(payload: dict = Body(default_factory=dict)):
     """Paginated Alerts-table endpoint. Body: {q?, sort?, direction?, source?,
-    state?, severity?, verdict?, offset?, limit?}; verdict "none" selects
-    unscanned alerts. See alerts.query_alerts for per-field semantics."""
+    state?, severity?, verdict?, group_packages?, offset?, limit?}; verdict
+    "none" selects unscanned alerts. See alerts.query_alerts for per-field
+    semantics."""
     return alerts_mod.query_alerts(
         q=payload.get("q") or "",
         sort=payload.get("sort"), direction=payload.get("direction"),
         source=payload.get("source"), state=payload.get("state"),
         severity=payload.get("severity"), verdict=payload.get("verdict"),
+        group_packages=bool(payload.get("group_packages")),
         offset=int(payload.get("offset", 0)),
         limit=min(int(payload.get("limit", 50)), 500),
     )
@@ -1071,13 +1087,14 @@ def list_advisories():
 @app.post("/api/advisories/query")
 def advisories_query(payload: dict = Body(default_factory=dict)):
     """Paginated Advisories-table endpoint. Body: {q?, sort?, direction?,
-    state?, severity?, verdict?, offset?, limit?}; verdict "none" selects
-    unscanned."""
+    state?, severity?, verdict?, collapse_dups?, offset?, limit?}; verdict
+    "none" selects unscanned."""
     return advisories_mod.query_advisories(
         q=payload.get("q") or "",
         sort=payload.get("sort"), direction=payload.get("direction"),
         state=payload.get("state"), severity=payload.get("severity"),
         verdict=payload.get("verdict"),
+        collapse_dups=bool(payload.get("collapse_dups")),
         offset=int(payload.get("offset", 0)),
         limit=min(int(payload.get("limit", 50)), 500),
     )
@@ -1322,24 +1339,43 @@ def activity_people():
 
 
 @app.get("/api/action-items")
-def action_items(status: str | None = None, kind: str | None = None):
-    items = data.action_items()
+def action_items(status: str | None = None, kind: str | None = None,
+                 limit: int = 0, offset: int = 0):
+    """The worklist, paged: a real secret leak always sorts first, a
+    fixture-marked one last, everything else keeps the registry's order in
+    between. `limit` 0 returns the whole filtered set; `total` counts it
+    either way. A rotate-secret item stored before fixture marking existed is
+    marked here on read."""
+    all_items = data.action_items()
+    for it in all_items:
+        if it.get("kind") == "rotate-secret" and "fixture" not in it:
+            it["fixture"] = pipeline_actions.likely_fixture(it.get("evidence") or "")
+    counts: dict[str, int] = {}
+    for i in all_items:
+        counts[i.get("status", "open")] = counts.get(i.get("status", "open"), 0) + 1
+    items = all_items
+    if status:
+        items = [i for i in items if i.get("status") == status]
+    if kind:
+        items = [i for i in items if i.get("kind") == kind]
+
+    def rank(i: dict) -> tuple[bool, int]:
+        secret = i.get("kind") == "rotate-secret"
+        return (i.get("status") != "open",
+                0 if secret and not i.get("fixture") else 2 if secret else 1)
+    items.sort(key=rank)
+    total = len(items)
+    if limit > 0:
+        items = items[offset:offset + limit]
     prs = data.prs()
-    for it in items:  # enrich with the source PR's title/url/author for the worklist
+    for it in items:  # enrich the returned page with its source PRs' metadata
         pr_num = it.get("pr")
         rec = prs.get(pr_num) if isinstance(pr_num, int) else None
         it["pr_title"] = rec.title if rec else None
         it["pr_url"] = rec.url if rec else None
         it["pr_author"] = rec.author if rec else None
         it["pr_summary"] = (rec.section("summary") or {}).get("one_liner") if rec else None
-    if status:
-        items = [i for i in items if i.get("status") == status]
-    if kind:
-        items = [i for i in items if i.get("kind") == kind]
-    counts: dict[str, int] = {}
-    for i in data.action_items():
-        counts[i.get("status", "open")] = counts.get(i.get("status", "open"), 0) + 1
-    return {"items": items, "counts": counts}
+    return {"items": items, "counts": counts, "total": total}
 
 
 @app.post("/api/action-items/{item_id:path}/status")
