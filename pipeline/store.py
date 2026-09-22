@@ -159,6 +159,14 @@ def validate_pr(rec: dict) -> None:
             raise ValidationError("analysis.canonical: required for close-dup")
         if a.get("upstream_pr") is not None and not isinstance(a.get("upstream_pr"), int):
             raise ValidationError("analysis.upstream_pr: must be int")
+        if a.get("concerns") is not None:
+            errs = gates.concern_errors(a["concerns"])
+            if errs:
+                raise ValidationError(f"analysis.{errs[0]}")
+        trips = a.get("sanity_trips")
+        if trips is not None and (not isinstance(trips, list)
+                                  or not all(isinstance(t, str) for t in trips)):
+            raise ValidationError("analysis.sanity_trips: must be a list of strings")
     cl = rec.get("cluster")
     if cl is not None:
         if "id" in cl:

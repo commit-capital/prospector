@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router";
 import { api, type TableColumn } from "../api";
 import { formatCell, stringify } from "./tableCell";
+import { SkeletonRows } from "../components/SkeletonRows";
 
 const PAGE_SIZE = 50;
 const FILTER_PREFIX = "f_";
@@ -96,15 +97,12 @@ export default function TableDetail() {
       <div className="detail-head">
         <h1>🗄️ {name}</h1>
         <p className="muted">
-          <Link to="/tables" className="linkish">← all tables</Link> · {total.toLocaleString()} rows
+          <Link to="/pipeline/data" className="linkish">← all tables</Link> · {total.toLocaleString()} rows
         </p>
       </div>
       {err && <div className="error">{err}</div>}
       {loading && rows.length === 0 ? (
-        <div className="explorer-loading">
-          <span className="spinner explorer-loading-spinner" />
-          <span className="explorer-loading-label">Loading…</span>
-        </div>
+        <SkeletonRows label="Loading…" />
       ) : (
         <>
           <div className="table-scroll">

@@ -349,13 +349,32 @@ def _sort_rows(rows: list[dict], sort: str | None, direction: str | None) -> Non
     rows[:] = present + missing
 
 
+def _collapse_dup_members(rows: list[dict]) -> list[dict]:
+    """One row per dup group: each member row whose canonical row is also in
+    the set folds under it as `dup_rows` (lowest number first). A member whose
+    canonical the filters removed stays a top-level row."""
+    present = {r["number"] for r in rows}
+    folded: dict[int, list[dict]] = {}
+    kept: list[dict] = []
+    for r in rows:
+        if r["is_dup"] and r["canonical"] in present:
+            folded.setdefault(r["canonical"], []).append(r)
+        else:
+            kept.append(r)
+    for r in kept:
+        members = folded.get(r["number"], [])
+        members.sort(key=lambda m: m["number"])
+        r["dup_rows"] = members
+    return kept
+
+
 def query_issues(q: str = "", sort: str | None = None, direction: str | None = None,
                  disposition: str | None = None, state: str | None = None,
                  author: str | None = None, pain: dict | None = None,
                  repro_grade: str | list[str] | None = None,
                  subsystem: str | None = None,
                  dups: dict | None = None, linked_prs: dict | None = None,
-                 labels: str | None = None,
+                 labels: str | None = None, collapse_dups: bool = False,
                  offset: int = 0, limit: int = 50) -> dict:
     """Paginated issue-table query. Uses the light cached snapshot for filtering
     and sorting, then hydrates only the returned page with full candidate PR data.
@@ -364,7 +383,8 @@ def query_issues(q: str = "", sort: str | None = None, direction: str | None = N
     so either builds from the full snapshot instead.
     `disposition` filters to one triage disposition; "none" selects unanalyzed
     issues. `state` filters by GitHub lifecycle state ("open"/"closed"); "all" or
-    None returns both. `author` is a case-insensitive starts-with match; `subsystem`
+    None returns both. `collapse_dups` folds each dup group's members under
+    their canonical row, so a group counts and pages as one row. `author` is a case-insensitive starts-with match; `subsystem`
     and `labels` are case-insensitive substring matches (`labels` against any of
     the issue's labels); `repro_grade` accepts one value or a list (OR'd); `pain`,
     `dups` (duplicate count), and `linked_prs` (linked-PR count) are `{op, value}`
@@ -415,6 +435,8 @@ def query_issues(q: str = "", sort: str | None = None, direction: str | None = N
             or needle in (r["author"] or "").lower()
             or needle in (r["subsystem"] or "").lower()
         ]
+    if collapse_dups:
+        rows = _collapse_dup_members(rows)
     _sort_rows(rows, sort, direction)
     total = len(rows)
     page = rows[offset:offset + limit]
@@ -422,8 +444,11 @@ def query_issues(q: str = "", sort: str | None = None, direction: str | None = N
     hydrated = []
     for r in page:
         iss = full.get(r["number"])
-        hydrated.append(_row(iss, clusters, store_states, link_limit=6,
-                             snapshot_loading=pr_states_loading) if iss else r)
+        row = (_row(iss, clusters, store_states, link_limit=6,
+                    snapshot_loading=pr_states_loading) if iss else r)
+        if collapse_dups and row is not r:
+            row["dup_rows"] = r["dup_rows"]
+        hydrated.append(row)
     return {"items": hydrated, "total": total, "offset": offset, "limit": limit,
             "pr_states_loading": pr_states_loading}
 

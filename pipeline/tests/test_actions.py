@@ -49,6 +49,33 @@ class TestUpsert:
         assert {i["id"] for i in reg["items"]} == {"rotate-secret:10", "salvage-fix:10"}
 
 
+class TestLikelyFixture:
+    def test_marker_text_reads_as_fixture(self):
+        assert actions.likely_fixture("src/client.py: key = 'sk-ant-LEAKMARKER0123456789'")
+        assert actions.likely_fixture("keys.txt: a pretend private key for the demo")
+
+    def test_test_paths_read_as_fixture(self):
+        assert actions.likely_fixture("tests/test_auth.py: AKIA1234567890ABCDEF")
+        assert actions.likely_fixture("pkg/fixtures/creds.json: ghp_" + "a" * 36)
+        assert actions.likely_fixture("src/auth.spec.ts: xoxb-1234567890-abcdefghij")
+
+    def test_live_looking_leak_is_not_a_fixture(self):
+        assert not actions.likely_fixture("src/config.py: AWS_KEY = 'AKIA1234567890ABCDEF'")
+        assert not actions.likely_fixture("")
+
+    def test_fixture_flag_travels_through_make_item_and_upsert(self):
+        reg = actions.empty_registry()
+        actions.upsert(reg, actions.make_item(
+            "rotate-secret", pr=7, summary="x", created=NOW, fixture=True))
+        assert reg["items"][0]["fixture"] is True
+        # A re-scan that reads the evidence as live flips the mark in place.
+        actions.upsert(reg, actions.make_item(
+            "rotate-secret", pr=7, summary="x", created=NOW, fixture=False))
+        assert reg["items"][0]["fixture"] is False
+        # An item made without the flag carries no fixture key at all.
+        assert "fixture" not in actions.make_item("review", pr=8, summary="y", created=NOW)
+
+
 class TestStore:
     def test_round_trip(self, tmp_path):
         s = Store(tmp_path)

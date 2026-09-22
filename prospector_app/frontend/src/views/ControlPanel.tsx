@@ -5,6 +5,16 @@ import { useRepoMeta } from "../RepoMetaContext";
 import { useExec } from "../ExecContext";
 import { PRLink } from "../components/PRLink";
 import { SandboxChecks } from "../components/SandboxChecks";
+import { groupNeedsAttention } from "./needsAttention";
+
+/** The parked-and-ready chip, worded by what the action actually produced. */
+const PARKED_READY: Record<string, string> = {
+  update: "✅ Branch update ready",
+  rebase: "✅ Rebase ready",
+  resolve: "✅ Conflicts resolved",
+  fix: "✅ Fix drafted",
+  describe: "✅ Description drafted",
+};
 
 const HUNT_RANGE_OPTIONS = [
   { label: "7 days", days: 7, allTime: false },
@@ -255,7 +265,7 @@ function HuntLaneSummary({ phase, counts }: { phase: "security" | "verify"; coun
             // the Explorer's default open-only filter.
             const spec: FilterSpec = { numbers: ids, state: "all" };
             return (
-              <Link key={result} to={`/explore?spec=${encodeURIComponent(JSON.stringify(spec))}`}
+              <Link key={result} to={`/prs/list?spec=${encodeURIComponent(JSON.stringify(spec))}`}
                 className={resultChip(phase, result)} style={{ cursor: "pointer" }}
                 title={`Open ${ids.length} PR${ids.length === 1 ? "" : "s"} with this ${phase} result in PR Explorer`}>
                 {result} {n}
@@ -340,6 +350,9 @@ export default function ControlPanel() {
   const [clusterAnalyzeCount, setClusterAnalyzeCount] = useState("20"); // clusters per analyze-clusters run
   const [log, setLog] = useState<string[]>([]);
   const [running, setRunning] = useState<string | null>(null); // kind of running job
+  // Which job kind the log pane belongs to — it keeps pointing at the last
+  // attached job after it finishes, so the output stays under its row.
+  const [logKind, setLogKind] = useState<string | null>(null);
   const esRef = useRef<EventSource | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
 
@@ -427,6 +440,7 @@ export default function ControlPanel() {
   const attachStream = (url: string, kind: string) => {
     esRef.current?.close();
     setRunning(kind);
+    setLogKind(kind);
     const es = new EventSource(url);
     esRef.current = es;
     es.addEventListener("log", (e: MessageEvent) => setLog((l) => [...l, e.data]));
@@ -519,19 +533,20 @@ export default function ControlPanel() {
     attachStream(`/api/jobs/run/${spec.kind}${params}`, spec.kind);
   };
 
-  const runByKind = (kind: string) => {
-    const spec = specs.find((s) => s.kind === kind);
-    if (spec) run(spec);
-  };
-
   const cov = pipeline?.coverage;
   const icov = pipeline?.issue_coverage;
   const est = pipeline?.estimates;
 
-  // Rough wall-clock estimates for the Quick Action buttons below, from recent
-  // runs-ledger history. null (rendered as nothing) until a phase has enough
-  // history to project from — see pipeline_status.py's `estimates`.
-  const estIngest = fmtDuration(est?.ingest_seconds);
+  // The failed hunt runs, folded by lane and reason for the worker-health card.
+  const attention = hunt
+    ? groupNeedsAttention(hunt.status.security_failed,
+        hunt.status.security_failed_reasons ?? {}, hunt.status.verify_failed)
+    : [];
+
+  // Rough wall-clock projections for the job rows whose workload scales with
+  // the backlog, from recent runs-ledger history. null (rendered as nothing)
+  // until a phase has enough history to project from — see pipeline_status.py's
+  // `estimates`. Every other row shows its ledger-typical whole-run duration.
   const estThreatScan = cov && est?.threat_scan_seconds_per_pr != null
     ? fmtDuration(est.threat_scan_seconds_per_pr * cov.total) : null;
   const clusterCountNum = Number(clusterAnalyzeCount);
@@ -559,8 +574,55 @@ export default function ControlPanel() {
         </p>
       </div>
 
+      {/* ── Worker health — lane outages read before any job button ── */}
+      <h3 style={{ marginTop: 0 }}>Worker health</h3>
+      {hunt ? (
+        <>
+          {hunt.status.health && (
+            <WorkerHealthBanner health={hunt.status.health}
+              onResume={() => api.autohunt(huntRange.days, huntRange.allTime).then(setHunt).catch(() => {})} />
+          )}
+          <div className="jobspec" style={{ alignItems: "flex-start", flexDirection: "column", gap: 6 }}>
+            <span className="jobspec-label">
+              {hunt.status.enabled
+                ? <span className="chip chip-green">auto-hunt enabled on {hunt.status.runner.host ?? "?"}</span>
+                : <span className="chip chip-muted">auto-hunt not enabled</span>}
+              {" "}
+              {hunt.status.runner.online
+                ? <span className="chip chip-green">runner online</span>
+                : <span className="chip chip-red">runner offline</span>}
+              {hunt.status.runner.current_pr != null && (
+                <>{" "}<PRLink n={hunt.status.runner.current_pr} className="chip chip-blue">running #{hunt.status.runner.current_pr}</PRLink></>
+              )}
+            </span>
+            <BaseHealth base={hunt.status.base} />
+            <span className="muted small">
+              {hunt.status.security_pool} awaiting security · {hunt.status.verify_pool} GREEN awaiting verify
+            </span>
+            {attention.length > 0 && (
+              <span className="small">
+                <span className="muted small">needs attention (runs failed): </span>
+                {attention.map((g) => {
+                  const spec: FilterSpec = { numbers: g.prs, state: "all" };
+                  return (
+                    <Link key={`${g.lane}-${g.reason}`}
+                      to={`/explore?spec=${encodeURIComponent(JSON.stringify(spec))}`}
+                      className="chip chip-red sm"
+                      title={`${g.prs.length} failed ${g.lane} run${g.prs.length === 1 ? "" : "s"}: ${g.reason} — open them in PR Explorer`}>
+                      {g.lane === "security" ? "🛡" : "🧪"} {g.reason.length > 48 ? `${g.reason.slice(0, 48)}…` : g.reason} ×{g.prs.length}
+                    </Link>
+                  );
+                })}
+              </span>
+            )}
+          </div>
+        </>
+      ) : (
+        <div className="muted small" style={{ marginBottom: 14 }}>Loading worker health…</div>
+      )}
+
       {/* ── Pipeline Status ── */}
-      <h3 style={{ marginTop: 0, marginBottom: 4 }}>Pipeline status</h3>
+      <h3 style={{ marginBottom: 4 }}>Pipeline status</h3>
 
       {pipeline ? (
         <>
@@ -614,117 +676,84 @@ export default function ControlPanel() {
 
       <MachinesSection />
 
-      {/* ── Quick Actions ── */}
-      <h3>Quick actions</h3>
+      {/* ── Jobs — every pipeline job once; output streams under the running row ── */}
+      <h3>Jobs</h3>
+      <p className="muted small" style={{ margin: "0 0 8px" }}>
+        Each job runs server-side and keeps going if you leave this page.
+        🤖 agentic jobs run AI agents and cost tokens; ⚙️ deterministic ones don't.
+      </p>
       <div className="jobspecs">
-        {/* Ingest */}
-        {specs.filter((s) => s.kind === "ingest").map((s) => (
-          <div className="jobspec" key={s.kind}>
-            <span className="jobspec-label">
-              <b>Ingest</b> — refresh PR metadata + signals from GitHub. Cheap and safe to re-run.
-              {estIngest && (
-                <span className="muted small" title="averaged over recent ingest runs"> · takes {estIngest}</span>
-              )}
-              {pipeline?.phases.find((p) => p.phase === "ingest")?.last_run && (
-                <span className="muted small"> · last run {ago(pipeline.phases.find((p) => p.phase === "ingest")?.last_run)}</span>
-              )}
-            </span>
-            <button className="btn-secondary sm" disabled={running !== null} onClick={() => run(s)}>
-              {running === s.kind ? "Running…" : "▶ Run ingest"}
-            </button>
-          </div>
-        ))}
-
-        {/* Threat scan */}
-        {specs.filter((s) => s.kind === "threat-scan").map((s) => (
-          <div className="jobspec" key={s.kind}>
-            <span className="jobspec-label">
-              <b>Threat scan</b> — deterministic attack-pattern scan over PR diffs + author blocklist check.
-              Fetches any uncached diffs from GitHub first (read-only), so coverage doesn&apos;t wait on a Clustering run.
-              {cov && estThreatScan && (
-                <span className="muted small" title="every run rescans all open PRs, not just the unscanned ones">
-                  {" "}· takes {estThreatScan} for all {cov.total.toLocaleString()} open PRs
-                </span>
-              )}
-              {pipeline?.phases.find((p) => p.phase === "threat-scan")?.last_run && (
-                <span className="muted small"> · last run {ago(pipeline.phases.find((p) => p.phase === "threat-scan")?.last_run)}</span>
-              )}
-              {cov && cov.threat.stale + cov.threat.never > 0 && (
-                <span className="muted small">
-                  <br />⚠ {(cov.threat.stale + cov.threat.never).toLocaleString()} PRs lack a scan of their latest push
-                  ({cov.threat.never.toLocaleString()} never scanned, {cov.threat.stale.toLocaleString()} pushed to since their scan).
-                  {cov.threat.diff_uncached_here > 0 ? (
-                    <> A run here fetches {cov.threat.diff_uncached_here.toLocaleString()} missing
-                    diff{cov.threat.diff_uncached_here === 1 ? "" : "s"} from GitHub as it scans, so it may take longer.</>
-                  ) : (
-                    <> All of their diffs are already cached on this machine.</>
+        {specs.map((s) => {
+          const clusterBacklog = s.kind === "analyze-clusters" && cov != null && cov.analysis.never > 0;
+          const issueBacklog = s.kind === "issue-analyze" && icov != null && icov.pending_analysis > 0;
+          const duration = s.kind === "threat-scan" ? estThreatScan
+            : s.kind === "analyze-clusters" ? estAnalyzeClusters
+            : s.kind === "issue-analyze" ? estIssueAnalyze
+            : fmtDuration(s.typical_seconds);
+          return (
+            <Fragment key={s.kind}>
+              <div className="jobspec" style={clusterBacklog || issueBacklog
+                ? { background: "color-mix(in srgb, var(--gold) 8%, var(--panel))", borderColor: "var(--gold)" }
+                : undefined}>
+                <span className="jobspec-label">
+                  <b>{s.label}</b> — {s.detail}
+                  <span className="muted small">
+                    {" "}· {s.agentic
+                      ? <span title="runs AI agents — costs tokens">🤖 agentic</span>
+                      : <span title="no agents — costs nothing but time">⚙️ deterministic</span>}
+                    {" "}· last run {ago(s.last_run)}
+                    {duration && <> · takes {duration}</>}
+                  </span>
+                  {s.kind === "threat-scan" && cov && cov.threat.stale + cov.threat.never > 0 && (
+                    <span className="muted small">
+                      <br />⚠ {(cov.threat.stale + cov.threat.never).toLocaleString()} PRs lack a scan of their latest push
+                      ({cov.threat.never.toLocaleString()} never scanned, {cov.threat.stale.toLocaleString()} pushed to since their scan).
+                      {cov.threat.diff_uncached_here > 0 ? (
+                        <> A run here fetches {cov.threat.diff_uncached_here.toLocaleString()} missing
+                        diff{cov.threat.diff_uncached_here === 1 ? "" : "s"} from GitHub as it scans, so it may take longer.</>
+                      ) : (
+                        <> All of their diffs are already cached on this machine.</>
+                      )}
+                    </span>
+                  )}
+                  {clusterBacklog && cov && (
+                    <span className="muted small">
+                      <br />{cov.analysis.never.toLocaleString()} PRs haven't been analyzed yet. Analysis works
+                      per cluster, so it only reaches clustered PRs{cov.not_clustered > 0 && (
+                        <> — {cov.not_clustered.toLocaleString()} PRs are unclustered until Clustering runs</>
+                      )}.
+                    </span>
+                  )}
+                  {issueBacklog && icov && (
+                    <span className="muted small">
+                      <br />{icov.pending_analysis.toLocaleString()} open issues have no disposition yet.
+                    </span>
                   )}
                 </span>
+                {s.needs_cluster && (
+                  <input className="search sm" placeholder="cluster #" value={cluster} onChange={(e) => setCluster(e.target.value)} />
+                )}
+                {s.needs_pr && (
+                  <input className="search sm" placeholder="PR #" value={prNum} onChange={(e) => setPrNum(e.target.value)} />
+                )}
+                {s.needs_count && (
+                  <input className="search sm" type="number" min={1} style={{ width: 72 }}
+                    placeholder={s.kind === "analyze-clusters" ? "# clusters" : "# issues"}
+                    value={countFor(s.kind)}
+                    onChange={(e) => (s.kind === "analyze-clusters" ? setClusterAnalyzeCount : setAnalyzeCount)(e.target.value)} />
+                )}
+                <button className="btn-secondary sm" disabled={running !== null} onClick={() => run(s)}>
+                  {running === s.kind ? "Running…" : "▶ Run"}
+                </button>
+              </div>
+              {logKind === s.kind && (
+                <div className="joblog" ref={logRef}>
+                  {log.map((l, i) => <div key={i} className="logline">{l}</div>)}
+                </div>
               )}
-            </span>
-            <button className="btn-secondary sm" disabled={running !== null} onClick={() => run(s)}>
-              {running === s.kind ? "Running…" : "▶ Run threat scan"}
-            </button>
-          </div>
-        ))}
-
-        {/* Analyze backlog note */}
-        {cov && cov.analysis.never > 0 && (
-          <div className="jobspec" style={{ background: "color-mix(in srgb, var(--gold) 8%, var(--panel))", borderColor: "var(--gold)" }}>
-            <span className="jobspec-label">
-              <b>Analysis backlog</b> — {cov.analysis.never.toLocaleString()} PRs haven't been analyzed yet.
-              Each run analyzes the lowest-id pending clusters in parallel (gh reads only,
-              nothing upstream). Analysis works per cluster, so it only reaches clustered
-              PRs{cov.not_clustered > 0 && (
-                <> — {cov.not_clustered.toLocaleString()} PRs are unclustered until Clustering runs</>
-              )}.
-              {estAnalyzeClusters && (
-                <span className="muted small" title="averaged over recent analyze-clusters runs">
-                  {" "}· takes {estAnalyzeClusters} for {Math.min(clusterCountNum, cov.analysis.never).toLocaleString()} clusters
-                </span>
-              )}
-              {pipeline?.phases.find((p) => p.phase === "analyze:commit")?.last_run && (
-                <span className="muted small"> · last run {ago(pipeline.phases.find((p) => p.phase === "analyze:commit")?.last_run)}</span>
-              )}
-            </span>
-            <input className="search sm" type="number" min={1} style={{ width: 72 }}
-              value={clusterAnalyzeCount} onChange={(e) => setClusterAnalyzeCount(e.target.value)}
-              title="How many pending clusters to analyze this run" />
-            <button className="btn-secondary sm" disabled={running !== null} onClick={() => runByKind("analyze-clusters")}>
-              {running === "analyze-clusters" ? "Running…" : "▶ Analyze clusters"}
-            </button>
-            <button className="btn-secondary sm" disabled={running !== null}
-              onClick={() => runByKind("triage-cluster")}
-              title="Triage one specific cluster (also refreshes its PRs from GitHub first) — enter a cluster ID below in the full job runner">
-              Triage one cluster ↓
-            </button>
-          </div>
-        )}
-
-        {/* Issue analysis backlog */}
-        {icov && icov.pending_analysis > 0 && (
-          <div className="jobspec" style={{ background: "color-mix(in srgb, var(--gold) 8%, var(--panel))", borderColor: "var(--gold)" }}>
-            <span className="jobspec-label">
-              <b>Issue analysis backlog</b> — {icov.pending_analysis.toLocaleString()} open issues have no
-              disposition yet. Each run analyzes the lowest-id pending issues in parallel batches (store
-              writes only, nothing upstream).
-              {estIssueAnalyze && (
-                <span className="muted small" title="averaged over recent issue-analyze runs">
-                  {" "}· takes {estIssueAnalyze} for {Math.min(issueCountNum, icov.pending_analysis).toLocaleString()} issues
-                </span>
-              )}
-              {pipeline?.phases.find((p) => p.phase === "issue-analyze")?.last_run && (
-                <span className="muted small"> · last run {ago(pipeline.phases.find((p) => p.phase === "issue-analyze")?.last_run)}</span>
-              )}
-            </span>
-            <input className="search sm" type="number" min={1} style={{ width: 72 }}
-              value={analyzeCount} onChange={(e) => setAnalyzeCount(e.target.value)}
-              title="How many pending issues to analyze this run" />
-            <button className="btn-secondary sm" disabled={running !== null} onClick={() => runByKind("issue-analyze")}>
-              {running === "issue-analyze" ? "Running…" : "▶ Analyze issues"}
-            </button>
-          </div>
-        )}
+            </Fragment>
+          );
+        })}
 
         {/* Refresh live PR state */}
         <div className="jobspec">
@@ -769,79 +798,10 @@ export default function ControlPanel() {
         </div>
       </div>
 
-      {/* ── Full job runner ── */}
-      <h3>Job runner</h3>
-      <div className="jobspecs">
-        {specs.map((s) => (
-          <div className="jobspec" key={s.kind}>
-            <span className="jobspec-label">{s.label}</span>
-            {s.needs_cluster && (
-              <input className="search sm" placeholder="cluster #" value={cluster} onChange={(e) => setCluster(e.target.value)} />
-            )}
-            {s.needs_pr && (
-              <input className="search sm" placeholder="PR #" value={prNum} onChange={(e) => setPrNum(e.target.value)} />
-            )}
-            {s.needs_count && (
-              <input className="search sm" type="number" min={1}
-                placeholder={s.kind === "analyze-clusters" ? "# clusters" : "# issues"}
-                value={countFor(s.kind)}
-                onChange={(e) => (s.kind === "analyze-clusters" ? setClusterAnalyzeCount : setAnalyzeCount)(e.target.value)} />
-            )}
-            <button className="btn-secondary sm" disabled={running !== null} onClick={() => run(s)}>
-              {running === s.kind ? "Running…" : "Run"}
-            </button>
-          </div>
-        ))}
-      </div>
-
-      <h3>Live output</h3>
-      <div className="joblog" ref={logRef}>
-        {log.length === 0 ? <span className="muted small">No job running. Click Run above.</span>
-          : log.map((l, i) => <div key={i} className="logline">{l}</div>)}
-      </div>
-
-      {/* ── Auto-hunt ── */}
-      <h3>Auto-hunt</h3>
+      {/* ── Auto-hunt results ── */}
+      <h3>Auto-hunt results</h3>
       {hunt ? (
         <>
-          {hunt.status.health && (
-            <WorkerHealthBanner health={hunt.status.health}
-              onResume={() => api.autohunt(huntRange.days, huntRange.allTime).then(setHunt).catch(() => {})} />
-          )}
-          <div className="jobspec" style={{ alignItems: "flex-start", flexDirection: "column", gap: 6 }}>
-            <span className="jobspec-label">
-              {hunt.status.enabled
-                ? <span className="chip chip-green">enabled on {hunt.status.runner.host ?? "?"}</span>
-                : <span className="chip chip-muted">not enabled</span>}
-              {" "}
-              {hunt.status.runner.online
-                ? <span className="chip chip-green">runner online</span>
-                : <span className="chip chip-red">runner offline</span>}
-              {hunt.status.runner.current_pr != null && (
-                <>{" "}<PRLink n={hunt.status.runner.current_pr} className="chip chip-blue">running #{hunt.status.runner.current_pr}</PRLink></>
-              )}
-            </span>
-            <BaseHealth base={hunt.status.base} />
-            <span className="muted small">
-              {hunt.status.security_pool} awaiting security · {hunt.status.verify_pool} GREEN awaiting verify
-            </span>
-            {(hunt.status.security_failed.length > 0 || hunt.status.verify_failed.length > 0) && (
-              <span className="small">
-                <span className="muted small">needs attention (run failed): </span>
-                {hunt.status.security_failed.map((n) => (
-                  <span key={`sec-${n}`} title={hunt.status.security_failed_reasons?.[String(n)] ?? undefined}>
-                    <PRLink n={n} className="chip chip-red sm">🛡 #{n} · auto</PRLink>
-                  </span>
-                ))}
-                {hunt.status.verify_failed.map((f) => (
-                  <PRLink key={`ver-${f.pr}`} n={f.pr} className="chip chip-red sm">
-                    🧪 #{f.pr}{f.error_kind ? ` · ${f.error_kind}` : ""} · {f.source === "auto-resweep" ? "re-sweep" : f.source === "auto" ? "auto" : "manual"}
-                  </PRLink>
-                ))}
-              </span>
-            )}
-          </div>
-
           <div className="jobspec-label" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 12 }}>
             <span className="muted small">
               result summary · {hunt.summary.days == null ? "all time" : `last ${hunt.summary.days} days`}
@@ -983,6 +943,7 @@ export default function ControlPanel() {
             Proven in the sandbox, pushed to nobody. Approving re-runs the merge or
             rebase against current base before anything reaches the branch. A run that
             ends keeps its place here for half an hour, then moves to the run history.
+            Parked changes also wait under “Your move” on <Link to="/">Home</Link>.
             {fixQueue.runner.objection_budget && (
               <> · continuations today {fixQueue.runner.objection_budget.used}/{fixQueue.runner.objection_budget.limit}</>
             )}
@@ -1007,7 +968,7 @@ export default function ControlPanel() {
                           title={e.resolvable
                             ? "The action produced a change and the compile preflight did not reject it."
                             : "The change is parked, but its compile preflight did not pass."}>
-                          {e.resolvable ? "✅ Conflicts resolvable" : "⚠ Needs a look"}
+                          {e.resolvable ? PARKED_READY[e.action] ?? "✅ Ready" : "⚠ Needs a look"}
                         </span>
                         {e.auto_review && (
                           <span className={e.auto_review.ok ? "chip chip-green sm" : "chip chip-amber sm"}

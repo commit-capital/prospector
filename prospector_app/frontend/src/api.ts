@@ -211,6 +211,7 @@ export interface ClusterSummary {
   root_problem: string;
   pr_count: number;
   state: ClusterState;
+  blockers: string[];
   outcome: string | null;
   dispositions: Record<string, number>;
   security: SafetyRollup;
@@ -484,6 +485,8 @@ export interface ClusterDetail {
   root_problem: string;
   outcome: string | null;
   state: ClusterState;
+  blockers: string[];
+  narrative_stale: string[];
   rationale: string | null;
   rationale_summary: string | null;
   notes: string | null;
@@ -992,6 +995,39 @@ export interface WorkStatus {
  *  run history from the runs ledger over the selected window. */
 export interface VerifyQueue { queue: VerifyQueueEntry[]; history: AutohuntRun[]; }
 
+/** One problem the health strip names: a lane count, a tripped or offline
+ *  worker, or a stale ingest. `detail` is the hover tooltip. */
+export interface SystemHealthItem {
+  kind: "lanes" | "trip" | "offline" | "ingest";
+  severity: "amber" | "red";
+  label: string;
+  detail?: string | null;
+  host?: string | null;
+}
+
+/** Systemwide health across every machine on this store: worker lanes down
+ *  and stale ingests. `workers_stalled` means every known worker lane is
+ *  down, so nothing "in motion" is actually moving. */
+export interface SystemHealth {
+  severity: "ok" | "amber" | "red";
+  items: SystemHealthItem[];
+  lanes_total: number;
+  lanes_down: number;
+  workers_stalled: boolean;
+}
+
+/** One close-dup coverage-map entry: a substantive change in the PR and where
+ *  it is covered — landed on the default branch, carried by another PR, or
+ *  nowhere (unique work). */
+export interface DupConcern {
+  label: string;
+  coverage: "landed" | "pr" | "unique";
+  paths?: string[];
+  covered_by?: number;
+  landed_sha?: string;
+  evidence?: string;
+}
+
 export interface PRDetail extends PRRow {
   body?: string | null;
   base?: string | null;
@@ -1001,6 +1037,8 @@ export interface PRDetail extends PRRow {
   verify_request?: VerifyRequest | null;
   fix_request?: FixRequest | null;
   analysis_detail?: unknown;
+  concerns?: DupConcern[];
+  sanity_trips?: string[];
   size?: { additions: number | null; deletions: number | null; changed_files: number | null };
   reviews_detail?: ReviewsDetail | null;
   ci_checks?: { name: string; conclusion: string; status: string }[];
@@ -1081,6 +1119,8 @@ export interface IssueRow {
   linked_pr_count: number;
   referenced_pr_count: number;
   referenced_merged_count: number;
+  /** Dup-group members folded under this row when the query collapsed dups. */
+  dup_rows?: IssueRow[];
 }
 /** Per-column filters for the Issues table (#494) — the issue-side analog of
  *  PR Explorer's FilterSpec. `author` is a starts-with match, `subsystem` and
@@ -1149,6 +1189,9 @@ export interface AlertRow {
   link_count: number;
   dismissed_reason: string | null;
   quality: boolean;
+  /** Dependabot rows folded under this one when the query grouped by package. */
+  group_rows?: AlertRow[];
+  group_count?: number;
 }
 /** Full alert detail for the side panel: the row plus the raw meta section and
  *  the valid dismissal reasons for the alert's source. */
@@ -1180,6 +1223,11 @@ export interface AdvisoryRow {
   evidence: string | null;
   links: AlertLink[];
   link_count: number;
+  /** The dup group's resolved lead — this row's own GHSA when it is the lead. */
+  canonical: string;
+  /** Group members folded under this row when the query collapsed dups. */
+  dup_rows?: AdvisoryRow[];
+  dup_count?: number;
 }
 /** Detail for the side panel: the row plus the report body and the full fix-scan section. */
 export interface AdvisoryDetail extends AdvisoryRow {
@@ -1483,7 +1531,7 @@ export const api = {
   listIssues: () => get<{ items: IssueRow[]; pr_states_loading: boolean }>("/api/issues"),
   queryIssues: (opts: {
     q?: string; sort?: string; direction?: string; disposition?: string; state?: string;
-    offset?: number; limit?: number;
+    collapse_dups?: boolean; offset?: number; limit?: number;
   } & IssueFilterSpec = {}) =>
     fetch("/api/issues/query", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -1496,7 +1544,8 @@ export const api = {
   listAlerts: () => get<{ items: AlertRow[]; pr_states_loading: boolean }>("/api/alerts"),
   queryAlerts: (opts: {
     q?: string; sort?: string; direction?: string; source?: string; state?: string;
-    severity?: string[]; verdict?: string; offset?: number; limit?: number;
+    severity?: string[]; verdict?: string; group_packages?: boolean;
+    offset?: number; limit?: number;
   } = {}) =>
     fetch("/api/alerts/query", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -1507,7 +1556,7 @@ export const api = {
   queryAdvisories: (opts: {
     q?: string; sort?: string; direction?: string; state?: string | string[];
     severity?: string[]; verdict?: string;
-    offset?: number; limit?: number;
+    collapse_dups?: boolean; offset?: number; limit?: number;
   } = {}) =>
     fetch("/api/advisories/query", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -1751,6 +1800,7 @@ export const api = {
   jobSpecs: () => get<{ specs: JobSpec[] }>("/api/jobs/specs"),
   jobsList: () => get<{ jobs: JobRec[] }>("/api/jobs"),
   identities: () => get<IdentitiesResult>("/api/identities"),
+  trustLadder: () => get<TrustLadder>("/api/policy/trust-ladder"),
   // "Retry live mode" — re-probes whether this machine can mint a bot
   // token, since the backend only probes once and caches the result for its
   // whole lifetime otherwise (see /api/identities/refresh).
@@ -1782,6 +1832,8 @@ export const api = {
     });
     return r.json() as Promise<ExecResult>;
   },
+  autonomousFeed: (limit = 50) =>
+    get<{ items: AutonomousItem[] }>(`/api/activity/autonomous?limit=${limit}`),
   activityProgress: (scope: ActivityScopeParams = {}) =>
     get<ActivityProgress>(`/api/activity/progress?${activitySearch(scope)}`),
   activityIssueProgress: (scope: Pick<ActivityScopeParams, "operator"> = {}) =>
@@ -1877,6 +1929,8 @@ export const api = {
     return get<FixQueue>(`/api/fix/queue?${qs}`);
   },
   workStatus: () => get<WorkStatus>("/api/status/now"),
+
+  systemHealth: () => get<SystemHealth>("/api/system-health"),
   /** Reopen a tripped worker lane by the operator's say-so. */
   workerHealthResume: async (host: string, lane: string): Promise<void> => {
     const r = await fetch("/api/worker/health/resume", {
@@ -1903,10 +1957,10 @@ export const api = {
     const r = await fetch(`/api/activity/sync?limit=${limit}`, { method: "POST" });
     return r.json() as Promise<{ synced: boolean; items: ActivityItem[] }>;
   },
-  actionItems: (params: { status?: string; kind?: string } = {}) => {
+  actionItems: (params: { status?: string; kind?: string; limit?: number; offset?: number } = {}) => {
     const qs = new URLSearchParams();
-    for (const [k, v] of Object.entries(params)) if (v) qs.set(k, v);
-    return get<{ items: ActionItem[]; counts: Record<string, number> }>(`/api/action-items?${qs}`);
+    for (const [k, v] of Object.entries(params)) if (v) qs.set(k, String(v));
+    return get<{ items: ActionItem[]; counts: Record<string, number>; total: number }>(`/api/action-items?${qs}`);
   },
   setActionItemStatus: async (id: string, status: string) => {
     const r = await fetch(`/api/action-items/${encodeURIComponent(id)}/status`, {
@@ -1998,6 +2052,19 @@ export interface ActivityItem {
   cluster_id?: string | null; approved_count?: number; by?: string; reason?: string;
 }
 
+/** One "Done on its own" feed row: a landed upstream action no person
+ *  approved, with the undo the app can offer (null = none). */
+export interface AutonomousItem {
+  at: string | null;
+  kind: string;
+  action?: string | null;
+  pr?: number | null;
+  issue?: number | null;
+  identity?: string | null;
+  detail?: string | null;
+  undo: "reopen-pr" | "reopen-issue" | null;
+}
+
 export interface ActivityProgress {
   open_total: number; universe: number; actioned: number; remaining: number;
   merged: number; closed: number; by_reason: Record<string, number>; pct: number;
@@ -2066,6 +2133,8 @@ export interface ActivityPerson {
 export interface ActionItem {
   id: string; kind: string; pr: number; summary: string; evidence: string;
   detail: string; status: string; created: string;
+  // rotate-secret only: the evidence reads as a test fixture, not a live leak
+  fixture?: boolean;
   pr_title?: string | null; pr_url?: string | null; pr_author?: string | null;
   pr_summary?: string | null;
 }
@@ -2077,6 +2146,22 @@ export interface PushIdentityInfo { login: string | null; available: boolean }
 export interface IdentitiesResult {
   identities: Identity[]; live_possible: boolean; live_error: string | null;
   push: PushIdentityInfo;
+}
+
+/** `hits` of `n` judged events; `rate` reads 0 with no evidence. */
+export interface TrustRate { hits: number; n: number; rate: number }
+/** One action type's earned rung and the live rates that earned it. */
+export interface TrustType {
+  id: string; rung: string; agreement: TrustRate; reversal: TrustRate;
+}
+/** What a type's window must show to sit at (or above) one rung. */
+export interface TrustBar { min_decisions: number; min_agreement: number; max_reversal: number }
+/** The trust ladder: every autonomous action type's rung and live rates,
+ *  with the bars they are held to — derived on read, never stored. */
+export interface TrustLadder {
+  rungs: string[]; window: number;
+  bars: Record<string, TrustBar>;
+  types: TrustType[];
 }
 // `status: "stale"` is a refusal the operator can confirm past: the write quotes
 // facts the author has moved beyond, and `stale` names the drift.
@@ -2113,5 +2198,19 @@ export interface RunState {
   done: boolean; undoable: boolean;
 }
 
-export interface JobSpec { kind: string; label: string; needs_cluster: boolean; needs_pr?: boolean; needs_count?: boolean }
+export interface JobSpec {
+  kind: string;
+  label: string;
+  /** One sentence on what the job does. */
+  detail: string;
+  /** Whether the job runs headless agents (costs tokens); false = deterministic. */
+  agentic: boolean;
+  /** When the job's ledger phases last ran; null for jobs with no ledger row. */
+  last_run: string | null;
+  /** Typical whole-run duration from recent ledger history, or null. */
+  typical_seconds: number | null;
+  needs_cluster: boolean;
+  needs_pr?: boolean;
+  needs_count?: boolean;
+}
 export interface JobRec { id: number; kind: string; cluster: number | null; pr?: number | null; count?: number | null; status: "queued" | "running" | "done" | "failed"; label: string; started: string; returncode: number | null }

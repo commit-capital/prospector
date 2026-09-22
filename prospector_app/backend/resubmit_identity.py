@@ -20,11 +20,25 @@ from pipeline.gh import operator_env
 
 MACHINE_USER_ENV = "PROSPECTOR_RESUBMIT_MACHINE_USER"
 
+# Audit marker, separate from the identity choice: "worker" when the push
+# reached upstream on the automation's own judgment (a hunted action or a
+# machine-approved resolve), "operator" when a person clicked or approved it.
+# The activity log stamps it on each resubmit event as ``initiator``, which is
+# what the Home "Done on its own" feed selects on.
+INITIATOR_ENV = "PROSPECTOR_RESUBMIT_INITIATOR"
+
 
 def uses_machine_user(env: dict[str, str] | None = None) -> bool:
     """Whether this invocation was explicitly launched by the autofix worker."""
     source = os.environ if env is None else env
     return source.get(MACHINE_USER_ENV) == "1"
+
+
+def initiator(env: dict[str, str] | None = None) -> str:
+    """Who this invocation acts for in the audit trail: "worker" only when the
+    unattended marker is set, "operator" otherwise."""
+    source = os.environ if env is None else env
+    return "worker" if source.get(INITIATOR_ENV) == "worker" else "operator"
 
 
 def push_env(base: dict[str, str] | None = None) -> dict[str, str]:
@@ -70,4 +84,12 @@ def worker_env(base: dict[str, str] | None = None) -> dict[str, str]:
     """Mark a resubmit subprocess as an unattended machine-user invocation."""
     env = dict(os.environ if base is None else base)
     env[MACHINE_USER_ENV] = "1"
+    return env
+
+
+def unattended_env(base: dict[str, str] | None = None) -> dict[str, str]:
+    """`worker_env` plus the audit marker that this push is the automation's
+    own judgment — no person approved the exact change going upstream."""
+    env = worker_env(base)
+    env[INITIATOR_ENV] = "worker"
     return env

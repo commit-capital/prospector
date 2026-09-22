@@ -7,7 +7,9 @@ import { PRLink } from "../components/PRLink";
 import { useRepoMeta } from "../RepoMetaContext";
 import { stopRowOpen } from "../rowOpen";
 import { cycleSort, type SortDir } from "../sortCycle";
+import { stripMdHeading } from "../mdHeading";
 import { timeAgo } from "../timeAgo";
+import { SkeletonRows } from "../components/SkeletonRows";
 
 const PAGE_SIZE = 50;
 type SortKey = "ghsa" | "state" | "severity" | "summary" | "reporter" | "verdict" | "links" | "created" | "updated";
@@ -40,11 +42,21 @@ function SeverityChip({ s }: { s: AdvisorySeverity }) {
 function VerdictChip({ r }: { r: AdvisoryRow }) {
   if (!r.verdict) return <span className="muted">—</span>;
   const { cls, hint } = VERDICT_CHIP[r.verdict];
-  return (
-    <span className={`chip ${cls} sm`} title={hint}>
-      {r.verdict}{r.verdict === "duplicate" && r.duplicate_of ? ` → ${r.duplicate_of}` : ""}
-    </span>
-  );
+  if (r.verdict === "duplicate") {
+    // The pointer resolves through the dup chain; a lead whose own verdict is
+    // duplicate marks a circular chain, shown as ↔ rather than a onward chain.
+    const cycleLead = r.canonical === r.ghsa_id;
+    const target = cycleLead ? r.duplicate_of : r.canonical || r.duplicate_of;
+    return (
+      <span className={`chip ${cls} sm`}
+        title={cycleLead
+          ? "Circular duplicate pointers — the group resolves to this row as its lead"
+          : hint}>
+        duplicate {target ? `${cycleLead ? "↔" : "→"} ${target}` : ""}
+      </span>
+    );
+  }
+  return <span className={`chip ${cls} sm`} title={hint}>{r.verdict}</span>;
 }
 
 function Links({ r }: { r: AdvisoryRow }) {
@@ -91,7 +103,7 @@ function DetailPanel({ ghsa, onClose }: { ghsa: string; onClose: () => void }) {
       {d && (
         <>
           <p><StateChip s={d.state} /> <SeverityChip s={d.severity} />{d.cve_id && <span className="chip chip-muted sm mono">{d.cve_id}</span>}</p>
-          <p><b>{d.summary}</b></p>
+          <p><b>{stripMdHeading(d.summary)}</b></p>
           <p className="muted small">Reported by {d.reporter ?? "—"} · {(d.created_at ?? "").slice(0, 10)}{d.cwe_ids.length > 0 && ` · ${d.cwe_ids.join(", ")}`}</p>
           <p><a href={d.html_url} target="_blank" rel="noreferrer" className="gh-pr-link">Open on GitHub ↗</a></p>
           {d.verdict && (
@@ -151,6 +163,15 @@ export default function Advisories() {
   const selected = params.get("advisory");
   const queryKey = JSON.stringify([q, sortKey, sortDir, stateFilter, verdictFilter, page]);
   const [result, setResult] = useState<{ key: string; items: AdvisoryRow[]; total: number; err?: string } | null>(null);
+  // Lead-row ids whose folded dup-group members are shown inline.
+  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const toggleExpand = (id: number): void => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
 
   useEffect(() => {
     api.alertCaps().then(setCaps).catch(() => setCaps(null));
@@ -164,6 +185,7 @@ export default function Advisories() {
       api.queryAdvisories({
         q, sort: sortKey || undefined, direction: sortDir || undefined,
         state: states.length ? states : "all", verdict: verdictFilter || undefined,
+        collapse_dups: true,
         offset: (page - 1) * PAGE_SIZE, limit: PAGE_SIZE,
       }).then((res) => {
         if (!active) return;
@@ -239,7 +261,7 @@ export default function Advisories() {
         <button className="btn-secondary sm" disabled={page >= pages || loading} onClick={() => setPage(page + 1)}>Next</button>
       </div>
       {loading && !result && (
-        <div className="explorer-loading"><span className="spinner explorer-loading-spinner" /><span className="explorer-loading-label">Loading advisories…</span></div>
+        <SkeletonRows label="Loading advisories…" />
       )}
       {result && (
         <div className="alerts-layout">
@@ -256,20 +278,34 @@ export default function Advisories() {
                 <th onClick={() => clickSort("links")}>Links{indicator("links")}</th>
               </tr></thead>
               <tbody>
-                {rows.map((r) => (
-                  <tr key={r.id} className={`rowlink ${selected === r.ghsa_id ? "row-selected" : ""}`} onClick={() => selectAdvisory(r.ghsa_id)}>
-                    <td className="mono small">
-                      <a href={r.html_url} target="_blank" rel="noreferrer" className="gh-pr-link" title="Open on GitHub ↗" onClick={stopRowOpen}>{r.ghsa_id}</a>
-                    </td>
-                    <td><StateChip s={r.state} /></td>
-                    <td><SeverityChip s={r.severity} /></td>
-                    <td>{r.summary}</td>
-                    <td className="small">{r.reporter ?? "—"}</td>
-                    <td className="muted small">{timeAgo(r.created_at)}</td>
-                    <td><VerdictChip r={r} /></td>
-                    <td onClick={stopRowOpen}><Links r={r} /></td>
-                  </tr>
-                ))}
+                {rows.flatMap((r) => {
+                  const renderRow = (row: AdvisoryRow, sub: boolean) => (
+                    <tr key={row.id} className={`rowlink ${sub ? "row-sub" : ""} ${selected === row.ghsa_id ? "row-selected" : ""}`}
+                        onClick={() => selectAdvisory(row.ghsa_id)}>
+                      <td className="mono small">
+                        <a href={row.html_url} target="_blank" rel="noreferrer" className="gh-pr-link" title="Open on GitHub ↗" onClick={stopRowOpen}>{row.ghsa_id}</a>
+                        {!sub && (row.dup_count ?? 0) > 0 && (
+                          <button className="link-btn small row-expander"
+                            title="Advisories resolved as duplicates of this one — click to show them"
+                            onClick={(e) => { e.stopPropagation(); toggleExpand(row.id); }}>
+                            {expanded.has(row.id) ? "▾" : "▸"} +{row.dup_count}
+                          </button>
+                        )}
+                      </td>
+                      <td><StateChip s={row.state} /></td>
+                      <td><SeverityChip s={row.severity} /></td>
+                      <td>{stripMdHeading(row.summary)}</td>
+                      <td className="small">{row.reporter ?? "—"}</td>
+                      <td className="muted small">{timeAgo(row.created_at)}</td>
+                      <td><VerdictChip r={row} /></td>
+                      <td onClick={stopRowOpen}><Links r={row} /></td>
+                    </tr>
+                  );
+                  return [
+                    renderRow(r, false),
+                    ...(expanded.has(r.id) ? (r.dup_rows ?? []).map((d) => renderRow(d, true)) : []),
+                  ];
+                })}
                 {!loading && rows.length === 0 && (
                   <tr><td colSpan={8} className="muted">No matching advisories. Run the security sweep from the Control tab to fetch them.</td></tr>
                 )}

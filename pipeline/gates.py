@@ -1708,28 +1708,201 @@ def merge_demotion(pr: Pr) -> tuple[str, str | None, list[str]] | None:
 
 
 # ---------------------------------------------------------------------------
+# Concern-level duplicate coverage (#326) — the close-dup consequence, derived
+# on read like merge_demotion, plus the commit-time sanity checks and the
+# fail-closed unattended-close bar.
+# ---------------------------------------------------------------------------
+
+# Where one concern's change is covered: landed on the default branch (with the
+# commit), covered by another open PR, or nowhere — unique work.
+CONCERN_COVERAGE: tuple[str, ...] = ("landed", "pr", "unique")
+
+
+def concern_errors(concerns: object) -> list[str]:
+    """Shape errors for a close-dup row's coverage map. A valid map is a
+    non-empty list of {label, coverage, evidence?, paths?} dicts where
+    coverage "landed" names the default-branch commit in `landed_sha` and
+    coverage "pr" names the covering PR in `covered_by`."""
+    if not isinstance(concerns, list) or not concerns:
+        return ["concerns: must be a non-empty list"]
+    errs: list[str] = []
+    for i, c in enumerate(concerns):
+        if not isinstance(c, dict):
+            errs.append(f"concerns[{i}]: must be an object")
+            continue
+        if not isinstance(c.get("label"), str) or not c["label"].strip():
+            errs.append(f"concerns[{i}].label: required non-empty string")
+        coverage = c.get("coverage")
+        if coverage not in CONCERN_COVERAGE:
+            errs.append(f"concerns[{i}].coverage: {coverage!r} not in {list(CONCERN_COVERAGE)}")
+        elif coverage == "pr" and not isinstance(c.get("covered_by"), int):
+            errs.append(f"concerns[{i}].covered_by: required int PR number for coverage 'pr'")
+        elif coverage == "landed" and (not isinstance(c.get("landed_sha"), str)
+                                       or not c["landed_sha"].strip()):
+            errs.append(f"concerns[{i}].landed_sha: required commit for coverage 'landed'")
+        paths = c.get("paths")
+        if paths is not None and (not isinstance(paths, list)
+                                  or not all(isinstance(p, str) for p in paths)):
+            errs.append(f"concerns[{i}].paths: must be a list of strings")
+        evidence = c.get("evidence")
+        if evidence is not None and not isinstance(evidence, str):
+            errs.append(f"concerns[{i}].evidence: must be a string")
+    return errs
+
+
+def _summary_paths(pr: Pr) -> list[str] | None:
+    """The changed paths the PR's summary recorded, or None when no summary
+    holds them — the comparison basis for the dup sanity checks."""
+    paths = (pr.section("summary") or {}).get("paths")
+    if isinstance(paths, list) and all(isinstance(p, str) for p in paths):
+        return paths
+    return None
+
+
+def _changed_lines(pr: Pr) -> int | None:
+    ds = (pr.signals or {}).get("diffstat") or {}
+    a, d = ds.get("additions"), ds.get("deletions")
+    return a + d if isinstance(a, int) and isinstance(d, int) else None
+
+
+def _changed_file_count(pr: Pr) -> int | None:
+    ds = (pr.signals or {}).get("diffstat") or {}
+    if isinstance(ds.get("changed_files"), int):
+        return ds["changed_files"]
+    paths = _summary_paths(pr)
+    return len(paths) if paths is not None else None
+
+
+def dup_sanity_trips(dup: Pr, canonical: Pr) -> list[str]:
+    """Deterministic checks that force a human onto a close-dup pick: the
+    duplicate is far larger than its canonical (over twice the changed lines
+    or files), touches paths the canonical does not, or carries tests the
+    canonical lacks. Compares the two records' diffstat and summary paths; a
+    missing comparison basis is itself a trip, so an uncomparable pair never
+    reads as a clean dup."""
+    trips: list[str] = []
+    dl, cl = _changed_lines(dup), _changed_lines(canonical)
+    df, cf = _changed_file_count(dup), _changed_file_count(canonical)
+    if dl is not None and cl is not None and dl > 2 * max(cl, 1):
+        trips.append(f"duplicate changes {dl} lines vs the canonical's {cl}")
+    if df is not None and cf is not None and df > 2 * max(cf, 1):
+        trips.append(f"duplicate touches {df} files vs the canonical's {cf}")
+    if (dl is None or cl is None) and (df is None or cf is None):
+        trips.append("cannot compare sizes — diffstat and summary paths missing")
+    dpaths, cpaths = _summary_paths(dup), _summary_paths(canonical)
+    if dpaths is None or cpaths is None:
+        trips.append("cannot compare changed paths — a summary is missing")
+    else:
+        extra = sorted(set(dpaths) - set(cpaths))
+        if extra:
+            shown = ", ".join(extra[:5]) + (" …" if len(extra) > 5 else "")
+            trips.append(f"duplicate touches paths the canonical does not: {shown}")
+        if (any(diffpaths.is_test_path(p) for p in dpaths)
+                and not any(diffpaths.is_test_path(p) for p in cpaths)):
+            trips.append("duplicate carries tests the canonical lacks")
+    return trips
+
+
+def dup_demotion(pr: Pr) -> tuple[str, str, list[str]] | None:
+    """The route a stored `close-dup` pick reads as, from its own coverage map:
+    (disposition, rationale, extra_asks) — or None when the map clears the
+    close (or the analysis predates coverage maps). A tripped sanity check
+    reads as needs-human; a unique concern reads as request-changes asking for
+    the split, so a PR carrying uncovered work is never close-dup. Read by
+    Pr.disposition / Pr.rationale / Pr.asks — derived on read, never stored,
+    like merge_demotion."""
+    a = pr.section("analysis") or {}
+    if a.get("disposition") != "close-dup":
+        return None
+    trips = a.get("sanity_trips") or []
+    if trips:
+        return ("needs-human",
+                "Close-dup sanity check: " + "; ".join(str(t) for t in trips) + ".",
+                [])
+    uniques = [c for c in (a.get("concerns") or [])
+               if isinstance(c, dict) and c.get("coverage") == "unique"]
+    if uniques:
+        labels = ", ".join(str(c.get("label") or "?") for c in uniques)
+        return ("request-changes",
+                f"Marked duplicate, but not every change is covered elsewhere — "
+                f"unique: {labels}.",
+                [f"Split the uncovered change ({labels}) into its own PR — "
+                 f"the rest is already covered."])
+    return None
+
+
+def dup_autoclose_eligibility(pr: Pr, canonical: Pr | None, *,
+                              shadow_agreement_ok: bool = False) -> tuple[bool, list[str]]:
+    """The unattended dup-close bar (rung 3 of the trust ladder): a current
+    close-dup analysis whose every concern is covered, no sanity trip, an
+    untrusted author, a canonical that is merged or open and clean, and a
+    shadow-agreement signal its caller affirms. Fail-closed: with no affirmed
+    shadow signal it refuses, so nothing closes unattended until that tracking
+    exists. Returns (allowed, reasons) naming every failing condition."""
+    reasons: list[str] = []
+    a = pr.section("analysis") or {}
+    if a.get("disposition") != "close-dup":
+        reasons.append("disposition is not close-dup")
+    if pr.state != "open":
+        reasons.append(f"PR is {pr.state or 'unknown'}, not open")
+    if not is_current(pr, "analysis"):
+        reasons.append("analysis is stale")
+    concerns = a.get("concerns") or []
+    if not concerns:
+        reasons.append("no coverage map")
+    elif any(isinstance(c, dict) and c.get("coverage") == "unique" for c in concerns):
+        reasons.append("a concern is unique — not fully covered")
+    trips = a.get("sanity_trips") or []
+    if trips:
+        reasons.append("sanity check tripped: " + "; ".join(str(t) for t in trips))
+    if pr.author in profile.active().trusted_authors:
+        reasons.append("trusted author — never auto-closed")
+    if canonical is None:
+        reasons.append("canonical record missing")
+    elif canonical.state == "open":
+        clean, why = pr_clean(canonical)
+        if not clean:
+            reasons.append("canonical open but not clean: " + "; ".join(why[:3]))
+    elif canonical.state != "merged":
+        reasons.append(f"canonical is {canonical.state or 'unknown'}")
+    if not shadow_agreement_ok:
+        reasons.append("shadow-mode agreement is not affirmed")
+    return (not reasons, reasons)
+
+
+# ---------------------------------------------------------------------------
 # Derived cluster state (the board chip) — computed on read, never stored.
 # ---------------------------------------------------------------------------
-def cluster_state(cluster: Cluster, prs: dict[int, Pr], today: str | None = None) -> str:
+def cluster_verdict(cluster: Cluster, prs: dict[int, Pr],
+                    today: str | None = None) -> tuple[str, list[str]]:
+    """The cluster's derived state plus the concrete gates behind it: one line
+    per member fact that puts the cluster in that state, each naming the PR.
+    Empty for a state nothing blocks (ready, done, a stored waiting outcome).
+    Computed on read from current facts, never stored — the ONE derivation
+    behind the board chip (its state) and the detail header (state plus
+    blockers)."""
     members = [prs[n] for n in cluster.prs if n in prs]
     active = [r for r in members if r.state == "open"]
     if members and not active:
-        return "done"
+        return "done", []
     outcome = cluster.outcome
     if not outcome:
-        return "needs-analysis"
+        return "needs-analysis", ["no analysis recorded yet — run ANALYZE"]
     # a moved head on any actively-routed PR sends the cluster back to analysis
-    if any(r.section("analysis") and not is_current(r, "analysis") for r in active):
-        return "needs-analysis"
+    stale = [r.n for r in active
+             if r.section("analysis") and not is_current(r, "analysis")]
     # an active member with no proposal row joined after the analysis — the
     # stored outcome never considered it (#137); analyze_driver.pending applies
     # the same coverage check, so the chip and the driver's queue agree
-    if any(cluster.proposal_for(r.n) is None for r in active):
-        return "needs-analysis"
+    uncovered = [r.n for r in active if cluster.proposal_for(r.n) is None]
+    if stale or uncovered:
+        return "needs-analysis", (
+            [f"#{n}'s analysis is stale (head moved) — re-run ANALYZE" for n in stale]
+            + [f"#{n} joined after the analysis — re-run ANALYZE" for n in uncovered])
     if outcome in ("awaiting-authors", "needs-first-party-work", "blocked-on-decision"):
-        return outcome
+        return outcome, []
     if outcome == "close-out":
-        return "ready"
+        return "ready", []
     # merge-ready: every merge-routed PR needs a current GREEN (or override) and
     # a current verified-fix
     merge_routed = [r for r in active if r.disposition == "merge"]
@@ -1738,12 +1911,48 @@ def cluster_state(cluster: Cluster, prs: dict[int, Pr], today: str | None = None
     # a merge that no member carries. A member still owed work names the state then;
     # a cluster with only closes left is the operator's to execute.
     if not merge_routed:
-        if any(r.disposition == "needs-human" for r in active):
-            return "blocked-on-decision"
-        if any(r.disposition == "request-changes" for r in active):
-            return "awaiting-authors"
+        undecided = [r for r in active if r.disposition == "needs-human"]
+        if undecided:
+            return "blocked-on-decision", [
+                f"#{r.n} needs a human decision"
+                + (f": {r.rationale}" if r.rationale else "") for r in undecided]
+        changes = [r for r in active if r.disposition == "request-changes"]
+        if changes:
+            return "awaiting-authors", [
+                f"#{r.n} is back to request-changes" for r in changes]
+    blockers = []
     for r in merge_routed:
-        ok, _ = merge_allowed(r, today)
+        ok, reason = merge_allowed(r, today)
         if not ok:
-            return "security-pending"
-    return "ready"
+            blockers.append(f"#{r.n}: {reason}")
+    if blockers:
+        return "security-pending", blockers
+    return "ready", []
+
+
+def cluster_state(cluster: Cluster, prs: dict[int, Pr], today: str | None = None) -> str:
+    return cluster_verdict(cluster, prs, today)[0]
+
+
+def narrative_staleness(cluster: Cluster, prs: dict[int, Pr]) -> list[str]:
+    """Why the stored analysis narrative may no longer describe its members:
+    one line per open member whose current derived disposition differs from
+    this cluster's proposed one, or whose non-GREEN security verdict was
+    recorded after the analysis was written. Empty while the narrative still
+    matches the facts. Derived on read, never stored."""
+    reasons: list[str] = []
+    written = cluster.checked_at or ""
+    for n in cluster.prs:
+        pr = prs.get(int(n))
+        if pr is None or pr.state != "open":
+            continue
+        proposed = (cluster.proposal_for(pr.n) or {}).get("disposition")
+        current = pr.disposition
+        if proposed and current and current != proposed:
+            reasons.append(f"#{pr.n} is now {current}; the analysis proposed {proposed}")
+        sec = pr.section("security") or {}
+        verdict = sec.get("verdict")
+        recorded = sec.get("checked_at") or ""
+        if verdict and verdict != "GREEN" and written and recorded > written:
+            reasons.append(f"#{pr.n} got a {verdict} security verdict after the analysis")
+    return reasons

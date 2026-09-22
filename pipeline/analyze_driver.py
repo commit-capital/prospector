@@ -50,25 +50,60 @@ _SALVAGE_RE = re.compile(
     r"worth (?:keeping|extracting|saving)|extract(?:ed|ing)? .*\bfix\b)\b",
     re.IGNORECASE,
 )
+# Salvage language that names nothing to do: the rationale denies there is
+# anything to salvage, or says the salvageable piece already landed. Either
+# reading disqualifies the rationale from raising a worklist item.
+_SALVAGE_NEGATED_RE = re.compile(
+    r"\b(?:nothing|no|not|little|isn't|is not)\b[^.;]{0,60}\bsalvag",
+    re.IGNORECASE,
+)
+_ALREADY_LANDED_RE = re.compile(
+    r"\balready\b[^.;]{0,40}\b(?:landed|merged|fixed|implemented|addressed|"
+    r"upstream|in main)\b|\blanded (?:in|on|separately|upstream)\b|"
+    r"\bsuperseded by\b|\bwas (?:already )?merged\b|\bno longer needed\b",
+    re.IGNORECASE,
+)
+
+
+def salvage_worthy(disposition: str | None, rationale: str) -> bool:
+    """Whether an analysis rationale names a concrete piece to salvage: it
+    carries salvage/spin-off language, does not deny there is anything to
+    salvage, and does not say the piece already landed. A merge pick needs no
+    salvage whatever its prose."""
+    if disposition == "merge" or not _SALVAGE_RE.search(rationale):
+        return False
+    return not (_SALVAGE_NEGATED_RE.search(rationale)
+                or _ALREADY_LANDED_RE.search(rationale))
 
 
 def backfill_salvage_items(store: Store, today: str) -> int:
-    """Scan committed analyses for salvage/spin-off language and emit a
-    salvage-fix action item per matching PR. Idempotent + status-preserving
-    via actions.upsert. Returns the count of items emitted/refreshed."""
+    """Scan committed analyses for salvageable work — salvage/spin-off language
+    whose rationale passes `salvage_worthy`, or a coverage-map concern nothing
+    else covers — and emit a salvage-fix action item per matching PR.
+    Idempotent + status-preserving via actions.upsert; an open salvage item
+    whose PR no longer qualifies is dropped, so the open list holds only
+    actionable salvage. Returns the count emitted/refreshed."""
     reg = store.load_action_items()
-    n = 0
+    worthy: set[int] = set()
     for pr, rec in store.all_prs().items():
         rationale = rec.rationale or ""
-        if rec.disposition in ("merge",) or not _SALVAGE_RE.search(rationale):
+        unique = [str(c.get("label") or "") for c in rec.concerns
+                  if isinstance(c, dict) and c.get("coverage") == "unique"]
+        if not unique and not salvage_worthy(rec.disposition, rationale):
             continue
+        worthy.add(pr)
+        detail = rationale
+        if unique:
+            detail = "Not covered elsewhere: " + "; ".join(filter(None, unique)) + ". " + rationale
         actions.upsert(reg, actions.make_item(
             "salvage-fix", pr=pr, created=today,
             summary=f"Salvage the good fix out of PR #{pr} into a clean first-party PR",
-            detail=rationale[:500]))
-        n += 1
+            detail=detail[:500]))
+    reg["items"] = [it for it in reg.get("items", [])
+                    if not (it["kind"] == "salvage-fix" and it["status"] == "open"
+                            and it["pr"] not in worthy)]
     store.save_action_items(reg)
-    return n
+    return len(worthy)
 
 DIFFS = Path(__file__).resolve().parent / "cache" / "diffs"
 
@@ -106,10 +141,12 @@ def disposition_orphans(store: Store) -> int:
         cl = rec.section("cluster") or {}
         if cl.get("ids") or not is_current(rec, "cluster"):
             continue                      # clustered, or not a confirmed singleton
-        if is_current(rec, "analysis") and rec.disposition != "close-dup":
+        stored = (rec.section("analysis") or {}).get("disposition")
+        if is_current(rec, "analysis") and stored != "close-dup":
             continue                      # already dispositioned at this head
-        # close-dup on a confirmed standalone is self-contradictory: the canonical
-        # relationship only holds within a cluster, so fall through and re-disposition.
+        # A stored close-dup on a confirmed standalone is self-contradictory
+        # whatever route it derives as: the canonical relationship only holds
+        # within a cluster, so fall through and re-disposition.
         # Dependency bumps are out of scope (see gates.is_dependabot_bump): the
         # CLUSTER wave keeps new ones out, but a bump summarized + marked
         # standalone before that rule still reaches here — leave it un-dispositioned
@@ -261,6 +298,8 @@ Decide per PR (every member MUST get exactly one):
 
 Close dispositions apply to the whole PR. Before `close-dup` or `close-fixed`, account for every substantive primary and secondary change; if the canonical or upstream fix covers only one concern, keep the PR open (usually `request-changes` to split it) or use `needs-human`.
 
+Every `close-dup` row MUST carry `concerns` — its coverage map: one entry per substantive change in the PR (start from the summary's primary_change and secondary_changes, and read the diff), each `{label, paths (the files that change carries it in), coverage, evidence}`. `coverage` is "landed" (the change is already on __BRANCH__ — set `landed_sha` to the commit) or "pr" (another open PR carries it — set `covered_by` to that PR's number). Name specific evidence (the covering hunk, function, or commit subject). A change nothing else covers is coverage "unique" — and a PR with a unique concern is NOT a duplicate: keep it open (`request-changes` asking to split out the unique part) or use `needs-human`, never `close-dup`.
+
 Before finalizing any close-dup group, inspect the defect's call site on __BRANCH__ with read-only source or `gh` reads and state in the cluster rationale whether the failing condition still exists there, naming the function and guard you checked. When it no longer exists, every member of the group is close-fixed, the would-be canonical included, each citing the upstream PR that removed it; a canonical with nothing left to land is not a canonical.
 
 A cluster's members may fix more than one distinct defect in the same subsystem. Judge each defect on its own: a close-dup canonical must fix the SAME defect as the PR it closes, so never fold the fix for one defect into close-dup of a PR that fixes another. Check the canonical's own disposition before closing duplicates against it: when the canonical is needs-human or otherwise has no path to merge and the member is an independently landable fix, keep the member open (merge or request-changes) rather than stranding the only fix for a live defect behind a blocked canonical. Surface cross-PR functional dependencies in the rationale and asks: when part of a member's change is inert until a separate unmerged fix lands (e.g. a threshold value whose trigger a different defect keeps from firing), name the dependency explicitly and do not credit the inert portion when comparing candidates.
@@ -301,7 +340,7 @@ ANALYZE_FENCED_TAIL = """
 
 # Output
 
-Return ONLY a JSON object (no prose) with exactly: cluster_id (integer), outcome (string), rationale (string), prs (array of {pr, head_sha, disposition, rationale, and for close-dup: canonical; for close-fixed: upstream_pr/upstream_date; for request-changes: asks[]}). Output it as a ```json fenced block."""
+Return ONLY a JSON object (no prose) with exactly: cluster_id (integer), outcome (string), rationale (string), prs (array of {pr, head_sha, disposition, rationale, and for close-dup: canonical + concerns[] ({label, paths[], coverage: landed|pr|unique, landed_sha?, covered_by?, evidence}); for close-fixed: upstream_pr/upstream_date; for request-changes: asks[]}). Output it as a ```json fenced block."""
 
 
 def run_analyze_agent(bundle: dict, on_event=None) -> str:
@@ -371,7 +410,9 @@ def reconcile_pr(store: Store, n: int) -> None:
         upstream_commit=winner.get("upstream_commit"),
         upstream_date=winner.get("upstream_date"),
         head_sha=pr.head_sha,
-        from_cluster=winner["cluster_id"])
+        from_cluster=winner["cluster_id"],
+        concerns=winner.get("concerns"),
+        sanity_trips=winner.get("sanity_trips"))
 
 
 def commit_analysis(store: Store, payload: dict) -> list[str]:
@@ -418,6 +459,9 @@ def commit_analysis(store: Store, payload: dict) -> list[str]:
             if canon is None or int(canon) not in canonical_targets:
                 errs.append(f"pr {n}: close-dup canonical {canon!r} must be a cluster member "
                             f"that is not itself a close-dup")
+            # A dup close is a per-change claim: the row must map every
+            # substantive change to where it is covered.
+            errs.extend(f"pr {n}: {e}" for e in gates.concern_errors(r.get("concerns")))
         if d == "request-changes" and not [a for a in r.get("asks") or [] if a]:
             errs.append(f"pr {n}: request-changes needs non-empty asks")
     if outcome == "merge-ready" and not any(r.get("disposition") == "merge" for r in rows.values()):
@@ -425,9 +469,18 @@ def commit_analysis(store: Store, payload: dict) -> list[str]:
     if errs:
         return errs
 
-    # Pin each proposal's head_sha to the member's current head, not the echoed value.
+    # Pin each proposal's head_sha to the member's current head, not the echoed
+    # value, and stamp each close-dup row with the deterministic sanity checks
+    # against its canonical — computed here, never taken from the agent.
     for n, r in rows.items():
         r["head_sha"] = members[n].head_sha
+        r.pop("sanity_trips", None)
+        if r.get("disposition") == "close-dup":
+            canonical = members.get(int(r["canonical"]))
+            if canonical is not None:
+                trips = gates.dup_sanity_trips(members[n], canonical)
+                if trips:
+                    r["sanity_trips"] = trips
     c.set_proposals(list(rows.values()))
     c.record_analysis(outcome, payload.get("rationale"),
                       payload.get("notes", c.notes))

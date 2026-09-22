@@ -407,6 +407,7 @@ _SORT_KEYS = {
     "checks": _checks_ratio,
     "drift": lambda r: (not r["drift_state"], r["drift_state"] or ""),
     "merge": lambda r: 1 if (r["merge_gate"] or {}).get("ok") else 0,
+    "conflicts": lambda r: 1 if (r["signals"] or {}).get("conflicts") else 0,
     "tier": lambda r: (r["risk_tier"] is None, r["risk_tier"] if r["risk_tier"] is not None else 0),
     "age": lambda r: r["age_days"] if r["age_days"] is not None else -1,
     "author_rate": _author_rate,
@@ -417,7 +418,7 @@ _SORT_KEYS = {
         if issue.get("how") in ("explicit", "fix-found", "issue-ref")),
 }
 _DEFAULT_DESC = {"pr", "greptile", "review", "scans", "safety", "updated", "loc", "files",
-                 "checks", "merge", "age", "author_rate", "pain", "issues"}
+                 "checks", "merge", "conflicts", "age", "author_rate", "pain", "issues"}
 
 
 # A pr_row is a pure projection of its store record, the cluster index, the
@@ -578,7 +579,7 @@ def cluster_summaries() -> list[dict]:
     for cid, c in data.clusters().items():
         members = [prs[n] for n in c.prs if n in prs]
         active = [r for r in members if r.state == "open"]
-        state = gates.cluster_state(c, prs)
+        state, blockers = gates.cluster_verdict(c, prs)
         dispositions: dict[str, int] = {}
         security = {"green": 0, "yellow": 0, "red": 0, "unknown": 0}
         security_prs = []  # per-merge-PR detail for the rollup hover popover
@@ -610,6 +611,7 @@ def cluster_summaries() -> list[dict]:
             "root_problem": c.root_problem,
             "pr_count": len(active),
             "state": state,
+            "blockers": blockers,
             "outcome": c.outcome,
             "dispositions": dispositions,
             "security": security,
@@ -647,11 +649,14 @@ def cluster_detail(cid: int) -> dict | None:
             buckets.setdefault("resolved", []).append(r)
         else:
             buckets.setdefault(r["disposition"] or "unanalyzed", []).append(r)
+    state, blockers = gates.cluster_verdict(c, prs)
     return {
         "cluster_id": cid,
         "root_problem": c.root_problem,
         "outcome": c.outcome,
-        "state": gates.cluster_state(c, prs),
+        "state": state,
+        "blockers": blockers,
+        "narrative_stale": gates.narrative_staleness(c, prs),
         "rationale": c.rationale,
         "rationale_summary": c.rationale_summary,
         "notes": c.notes,
@@ -677,6 +682,10 @@ def pr_detail(n: int) -> dict | None:
     row["verify_request"] = verify_view.verify_request_view(rec)
     row["fix_request"] = rec.fix_request
     row["analysis_detail"] = rec.section("analysis")
+    # The close-dup coverage map + tripped sanity checks, typed for the flyout's
+    # coverage table (analysis_detail stays the raw section).
+    row["concerns"] = rec.concerns
+    row["sanity_trips"] = rec.sanity_trips
     row["summary"] = rec.section("summary")
     row["author_stats"] = data.author_stats(rec.author)
     sig = rec.signals or {}

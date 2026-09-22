@@ -74,10 +74,13 @@ _JSON = JSON().with_variant(JSONB, "postgresql")
 # 23 — an issue's links section carries sibling keys beside candidates (github
 #      closing references); an older ingest or find-fixed write replaces the
 #      section whole and drops them.
-# 24 — the claims registry (which operator is working each PR/issue, one shared
+# 24 — a close-dup analysis carries its coverage map (`concerns`) and the
+#      computed `sanity_trips`; an older writer's reconcile rewrites the
+#      analysis section from a fixed key list and drops both.
+# 25 — the claims registry (which operator is working each PR/issue, one shared
 #      row every instance reads and the action bars warn from); older code has
 #      no accessor for it.
-STORE_SCHEMA_VERSION = 24
+STORE_SCHEMA_VERSION = 25
 
 # saved_at is a microsecond-resolution ISO timestamp stamped on every save — when
 # the store row was last written (distinct from `updated_at`, which mirrors the

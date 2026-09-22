@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useIssueFlyout } from "../useIssueFlyout";
+import { useDialogFocus } from "../useDialogFocus";
 import { useRepoMeta } from "../RepoMetaContext";
 import { useResizableWidth } from "../useResizableWidth";
 import { IssueDetailContent } from "../views/IssueDetail";
@@ -12,6 +13,8 @@ export function IssueFlyout() {
   const { issueUrl } = useRepoMeta();
   const [maximized, setMaximized] = useState(false);
   const { width, startResize } = useResizableWidth("app-flyout-width", 640);
+  const asideRef = useRef<HTMLElement>(null);
+  useDialogFocus(asideRef);
 
   useEffect(() => {
     if (issue == null) return;
@@ -26,16 +29,18 @@ export function IssueFlyout() {
     <>
       <div className="flyout-scrim" onClick={close} />
       <aside className={`flyout ${maximized ? "flyout-max" : ""}`}
-        role="dialog" aria-label={`Issue ${issue}`}
+        role="dialog" aria-modal="true" aria-label={`Issue ${issue}`}
+        ref={asideRef} tabIndex={-1}
         style={maximized ? undefined : { width }}>
         <div className="flyout-resize" onMouseDown={startResize} title="Drag to resize" role="separator" aria-orientation="vertical" />
         <div className="flyout-bar">
-          <button className="flyout-btn" title={maximized ? "Restore" : "Maximize"} onClick={() => setMaximized((m) => !m)}>
+          <button className="flyout-btn" title={maximized ? "Restore" : "Maximize"}
+            aria-label={maximized ? "Restore" : "Maximize"} onClick={() => setMaximized((m) => !m)}>
             {maximized ? "⤡" : "⤢"}
           </button>
-          <a className="flyout-btn" title="Open on GitHub"
+          <a className="flyout-btn" title="Open on GitHub" aria-label="Open on GitHub"
              href={issueUrl(issue)} target="_blank" rel="noreferrer">↗</a>
-          <button className="flyout-btn flyout-close" title="Close (Esc)" onClick={close}>✕</button>
+          <button className="flyout-btn flyout-close" title="Close (Esc)" aria-label="Close (Escape)" onClick={close}>✕</button>
         </div>
         <div className="flyout-panes">
           <section className="flyout-pane">

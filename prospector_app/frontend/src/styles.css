@@ -15,6 +15,12 @@
   --ready-tint: rgba(47, 129, 247, 0.06);
   --reason-tint: rgba(248, 81, 73, 0.08);
 }
+/* Design tokens shared by both themes: the type scale and the 4px spacing
+   scale. New CSS takes its font sizes and gaps from these variables. */
+:root {
+  --fs-xs: 10.5px; --fs-sm: 11.5px; --fs-md: 12.5px; --fs-base: 14px; --fs-lg: 16px;
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 20px; --sp-6: 24px;
+}
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text);
   font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -37,6 +43,20 @@ a:hover { text-decoration: underline; }
   padding: 1px 6px; border-radius: 4px; font-size: 13px; }
 .store-write-block { background: var(--red); color: #fff; padding: 10px 20px;
   text-align: center; font-weight: 700; font-size: 14px; }
+
+/* systemwide health strip (App.tsx HealthStrip) — worker lanes down on any
+   machine + stale ingests, on every page just under the topbar. */
+.health-strip { display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  padding: 4px 20px; font-size: 12.5px; font-weight: 600; text-decoration: none;
+  border-bottom: 1px solid var(--border);
+  width: calc(100% + var(--ap-w, 0)); margin-left: calc(-1 * var(--ap-w, 0)); }
+.health-strip:hover .health-strip-item { text-decoration: underline; }
+.health-strip-amber { color: var(--yellow);
+  background: color-mix(in srgb, var(--yellow) 12%, var(--panel)); }
+.health-strip-red { color: var(--red);
+  background: color-mix(in srgb, var(--red) 10%, var(--panel)); }
+.health-strip-item { display: inline-flex; align-items: center; gap: 6px; }
+.health-strip-sep { opacity: .6; }
 
 /* layout */
 .topbar { display: flex; align-items: center; gap: 24px; padding: 10px 20px;
@@ -69,6 +89,14 @@ a:hover { text-decoration: underline; }
 .topbar nav { display: flex; gap: 16px; }
 .topbar nav a { color: var(--muted); padding: 4px 2px; }
 .topbar nav a.active { color: var(--text); border-bottom: 2px solid var(--accent); }
+
+/* second nav row (App.tsx SubNav): the active destination's sub-views */
+.subnav { display: flex; gap: 18px; padding: 5px 20px; font-size: 13px;
+  background: var(--panel2); border-bottom: 1px solid var(--border);
+  width: calc(100% + var(--ap-w, 0)); margin-left: calc(-1 * var(--ap-w, 0)); }
+.subnav a { color: var(--muted); padding: 2px 0; }
+.subnav a:hover { color: var(--text); }
+.subnav a.active { color: var(--text); font-weight: 600; border-bottom: 2px solid var(--accent); }
 .readonly-badge { margin-left: auto; font-size: 12px; color: var(--yellow);
   border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px; }
 .theme-toggle { background: var(--panel2); border: 1px solid var(--border); border-radius: 6px;
@@ -262,7 +290,8 @@ select { background: var(--panel); border: 1px solid var(--border); color: var(-
 .grid th { text-align: left; color: var(--muted); font-weight: 600; font-size: 12px;
   padding: 8px 10px; border-bottom: 1px solid var(--border); }
 .grid td { padding: 9px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
-.grid th.num, .grid td.num { text-align: right; white-space: nowrap; }
+.grid th.num, .grid td.num { text-align: right; white-space: nowrap;
+  font-variant-numeric: tabular-nums; }
 /* a LOC value that's mostly generated noise (effective ≪ raw) — muted + flagged */
 .grid td.loc-noisy { color: var(--muted); }
 .grid.compact td, .grid.compact th { padding: 6px 8px; }
@@ -274,23 +303,38 @@ select { background: var(--panel); border: 1px solid var(--border); color: var(-
 .grid tbody tr.rowlink:hover { background: var(--panel2); }
 .grid tbody tr.row-selected { background: var(--accent-soft, rgba(80,130,255,0.10)); }
 .grid tbody tr.row-selected:hover { background: var(--accent-soft, rgba(80,130,255,0.16)); }
+/* a group member expanded under its lead row */
+.grid tbody tr.row-sub { background: var(--panel); }
+.grid tbody tr.row-sub td:first-child { padding-left: 22px; }
+.row-expander { margin-left: 6px; white-space: nowrap; }
 .row-ready { background: var(--ready-tint); }
 .cluster-title { font-weight: 600; }
 
-/* chips */
-.chip { display: inline-block; padding: 1px 7px; border-radius: 20px; font-size: 11.5px;
-  border: 1px solid var(--border); white-space: nowrap; margin-right: 4px; }
-.chip.sm { font-size: 10.5px; padding: 0 6px; }
-.chip[title], a[title], .checks-chip { cursor: help; }
+/* badges — the one status-badge look (components/Badge.tsx). Tones: red =
+   blocks a decision or is a security risk; amber = stale or needs a refresh;
+   green = passed its gate; grey = informational. The chip-* classes are the
+   same system's older spellings and share every rule. */
+.chip, .badge { display: inline-block; padding: 1px 7px; border-radius: 20px; font-size: var(--fs-sm);
+  border: 1px solid var(--border); white-space: nowrap; margin-right: var(--sp-1); }
+.chip.sm, .badge.sm { font-size: var(--fs-xs); padding: 0 6px; }
+.chip[title], .badge[title], a[title], .checks-chip { cursor: help; }
 .grid tbody tr.rowlink a[title] { cursor: pointer; }
-.chip-green { color: var(--green); border-color: var(--green); }
-.chip-yellow { color: var(--yellow); border-color: var(--yellow); }
-.chip-red { color: var(--red); border-color: var(--red); }
+.chip-green, .badge-green { color: var(--green); border-color: var(--green); }
+.chip-yellow, .badge-amber { color: var(--yellow); border-color: var(--yellow); }
+.chip-red, .badge-red { color: var(--red); border-color: var(--red); }
 .chip-blue { color: var(--accent); border-color: var(--accent); }
 .chip-amber { color: var(--gold); border-color: var(--gold); }
 .chip-purple { color: var(--purple); border-color: var(--purple); }
 .chip-gold { color: var(--gold); border-color: var(--gold); }
-.chip-muted { color: var(--muted); }
+.chip-muted, .badge-grey { color: var(--muted); }
+
+/* skeleton rows — table-shaped loading placeholder (components/SkeletonRows.tsx) */
+.skeleton-rows { display: flex; flex-direction: column; gap: var(--sp-2); padding: var(--sp-4) 0; }
+.skeleton-row { height: var(--sp-4); border-radius: var(--sp-1);
+  background: linear-gradient(90deg, var(--panel2) 25%, var(--panel) 50%, var(--panel2) 75%);
+  background-size: 200% 100%; animation: skeleton-shimmer 1.4s ease-in-out infinite; }
+@keyframes skeleton-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce) { .skeleton-row { animation: none; } }
 .ack-btn { background: transparent; font: inherit; cursor: pointer; }
 .ack-btn:hover { border-color: var(--accent); color: var(--accent); }
 .ack-btn:disabled { cursor: default; opacity: .6; }
@@ -299,7 +343,7 @@ select { background: var(--panel); border: 1px solid var(--border); color: var(-
 .act-close { color: var(--muted); }
 .act-review { color: var(--purple); border-color: var(--purple); }
 .rollup { position: relative; }
-.rollup .chip { margin-right: 2px; }
+.rollup .chip, .rollup .badge { margin-right: 2px; }
 .rollup-seg { cursor: help; }
 /* Segment containing a stale verdict — the merge gate treats it as not run. */
 .rollup-seg-stale { opacity: .55; border-style: dashed; }
@@ -422,6 +466,10 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .rationale p { margin: 0 0 9px; }
 .rationale p:last-child { margin-bottom: 0; }
 .rationale code { background: var(--panel2); padding: 1px 5px; border-radius: 4px; }
+/* the derived verdict's failing gates, one line per member fact */
+.cluster-blockers { max-width: 72ch; margin: 6px 0; color: var(--text); line-height: 1.6; }
+/* the narrative-staleness callout above the rationale */
+.cluster-narrative-stale { max-width: 72ch; margin: 8px 0 4px; }
 /* one-line TL;DR above the rationale — a scannable headline, not the wall */
 .rationale-tldr { max-width: 72ch; margin: 10px 0 6px; font-size: 13px; line-height: 1.5; color: var(--text); }
 .tldr-label { font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
@@ -671,6 +719,9 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* suggested actions — Control-tab jobs surfaced on the view they feed */
 .suggest-bar { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+/* a reserved slot: one card-height held open while suggestions load (or come
+   back empty), so the table below never shifts once rendered */
+.suggest-slot { min-height: 38px; }
 .suggest-card { display: flex; align-items: center; gap: 10px; background: color-mix(in srgb, var(--gold) 8%, var(--panel)); border: 1px solid var(--gold); border-radius: 8px; padding: 6px 12px; }
 .suggest-card-text { flex: 1; min-width: 0; }
 .suggest-tail { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: ui-monospace, monospace; }
@@ -867,6 +918,16 @@ html.ap-resizing .agentpane { transition: none; }
 .fresh-callout div + div { margin-top: 4px; }
 .fresh-refreshed { font-size: 11.5px; }
 
+/* The Policy page's trust ladder: one row per autonomous action type, its
+   earned rung highlighted among the four. */
+.trust-table { width: 100%; max-width: 980px; border-collapse: collapse; font-size: 12.5px; margin: 10px 0; }
+.trust-table th { text-align: left; font-weight: 600; color: var(--muted);
+  padding: 4px 8px; border-bottom: 1px solid var(--border); }
+.trust-table td { padding: 7px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.trust-table tr:last-child td { border-bottom: none; }
+.trust-rungs { display: inline-flex; gap: 4px; }
+.trust-rung-off { opacity: .45; }
+
 /* Per-fact provenance: when each pipeline fact was computed and which commit
    it describes, so a recommendation can be dated before it's acted on. */
 .facts-table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 8px; }
@@ -877,6 +938,11 @@ html.ap-resizing .agentpane { transition: none; }
 .facts-table code { font-size: 11.5px; }
 .facts-table .fact-stale td:first-child { font-weight: 600; }
 .facts-table tr.fact-stale { background: color-mix(in srgb, var(--gold) 8%, transparent); }
+
+/* Close-dup coverage map: each substantive change and where it is covered. */
+.dup-coverage { margin: 8px 0; }
+.dup-coverage-title { text-transform: uppercase; letter-spacing: .04em; font-size: 10.5px; margin-bottom: 4px; }
+.dup-sanity { margin-top: 6px; font-size: 12px; }
 
 /* Action run-state (#10) — already-landed actions, log-backed */
 .run-badge { vertical-align: middle; white-space: nowrap; }
@@ -1136,6 +1202,25 @@ tr.row-done:hover > td { opacity: 1; }
 .pr-table th:first-child, .pr-table td:first-child { width: 26px; text-align: center; }
 .pr-table tbody tr.sel { background: var(--ready-tint); }
 .pr-table .num { color: var(--accent); font-weight: 600; cursor: pointer; }
+/* the title column takes the width the fixed columns leave, on one line */
+.pr-table td.col-title { width: 100%; max-width: 0; }
+.title-cell { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.title-cell .chip { flex: none; }
+.title-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conflict-mark { color: var(--red); }
+.safety-cell { white-space: nowrap; font-size: 11px; }
+/* the keyboard cursor row (j/k) — an outline, distinct from selection tint */
+.pr-table tbody tr.kb-cursor { outline: 2px solid var(--accent); outline-offset: -2px; }
+.pr-table tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.kb-hint { margin-left: auto; }
+/* filters row + the column-visibility menu share one toolbar line */
+.explorer-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; }
+.col-menu { position: relative; }
+.col-menu-dropdown { position: absolute; left: 0; top: calc(100% + 6px); z-index: 900;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 12px; display: flex; flex-direction: column; gap: 4px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .18); }
+.col-menu-row { font-size: 12.5px; white-space: nowrap; }
 
 /* column header layout: label + sort arrow on the left, filter button on the right */
 .th-inner { display: flex; align-items: center; justify-content: space-between; gap: 4px; }
@@ -1355,6 +1440,9 @@ tr.row-done:hover > td { opacity: 1; }
 }
 .home-col { min-width: 0; display: flex; flex-direction: column; gap: 10px; }
 .home-col-head { text-transform: uppercase; letter-spacing: .04em; font-size: 10.5px; }
+/* the workers' column while every worker lane is down: nothing is moving */
+.home-col-stalled .home-col-head { color: var(--red); }
+.home-col-stalled .act-card { opacity: .55; filter: grayscale(.7); }
 .home-breakdown { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 0 12px 8px; }
 .home-breakdown-item { text-decoration: none; color: var(--muted); }
 .home-breakdown-item:hover { color: var(--fg); text-decoration: underline; }
@@ -1393,6 +1481,7 @@ tr.row-done:hover > td { opacity: 1; }
 .home-sample-pr a { color: var(--accent); text-decoration: none; }
 .home-sample-pr a:hover { text-decoration: underline; }
 .home-sample-title { text-overflow: ellipsis; font-size: 12.5px; }
+.home-sample-reason { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .home-sample-pain { width: 76px; text-align: right; color: var(--muted); }
 .home-sample-issues { width: 128px; text-align: right; }
 .home-sample-issues .issue-prs { flex-wrap: nowrap; justify-content: flex-end; max-width: 100%; }
