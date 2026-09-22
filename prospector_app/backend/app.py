@@ -785,7 +785,11 @@ def chat_stop(pr: int | None = None, cluster: int | None = None, issue: int | No
 # ---------------------------------------------------------------------------
 @app.get("/api/jobs/specs")
 def job_specs():
-    return {"specs": jobs.list_specs()}
+    runtimes = pipeline_status.job_runtimes()
+    return {"specs": [
+        {**s, **runtimes.get(s["kind"], {"last_run": None, "typical_seconds": None})}
+        for s in jobs.list_specs()
+    ]}
 
 
 @app.get("/api/jobs")

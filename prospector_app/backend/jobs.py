@@ -42,6 +42,14 @@ PIPELINE_PY = ["uv", "run", "python"]
 
 class JobSpec(TypedDict):
     label: str
+    # One sentence on what the job does, for the row under its Run button.
+    detail: str
+    # Whether the job runs headless agents (costs tokens); False = deterministic.
+    agentic: bool
+    # Where the job's runs land: a ledger name ("pr" | "issue" | "alert") plus
+    # the phase names its runs are stamped with — how the UI shows each job's
+    # last run and typical duration. Absent for jobs that leave no ledger row.
+    ledger: NotRequired[tuple[str, tuple[str, ...]]]
     argv: NotRequired[list[str]]
     argv_fn: NotRequired[Callable[[int], list[str]]]
     needs_cluster: NotRequired[bool]
@@ -74,73 +82,90 @@ class Job(JobView):
 class JobSpecView(TypedDict):
     kind: str
     label: str
+    detail: str
+    agentic: bool
     needs_cluster: bool
     needs_pr: bool
     needs_count: bool
 
 
 JOB_SPECS: dict[str, JobSpec] = {
-    "selftest": {
-        "label": "Self-test (echo)",
-        "argv": [*PIPELINE_PY, "-u", "-c",
-                 "import time\nfor i in range(5):\n    print(f'tick {i}', flush=True)\n    time.sleep(0.3)\nprint('done')"],
-    },
     "ingest": {
-        "label": "Ingest (refresh PRs + signals, then issues · read-only)",
+        "label": "Ingest",
+        "detail": "refresh PR metadata + signals from GitHub, then the chained issue ingest. Cheap and safe to re-run. Read-only.",
+        "agentic": False,
+        "ledger": ("pr", ("ingest",)),
         "argv": [*PIPELINE_PY, "-u", str(REPO_ROOT / "pipeline" / "ingest.py")],
     },
+    "threat-scan": {
+        "label": "Threat scan",
+        "detail": "deterministic attack-pattern scan over PR diffs + author blocklist check. Fetches any uncached diffs from GitHub first (read-only), so coverage doesn't wait on a Clustering run.",
+        "agentic": False,
+        "ledger": ("pr", ("threat-scan",)),
+        "argv": [*PIPELINE_PY, "-u", str(REPO_ROOT / "pipeline" / "threat_scan.py")],
+    },
+    "analyze-clusters": {
+        "label": "Analyze clusters",
+        "detail": "dispositions for the lowest-id pending clusters, in parallel. gh reads and store writes only, nothing upstream.",
+        "agentic": True,
+        "ledger": ("pr", ("analyze:commit",)),
+        "needs_count": True,
+        "argv_fn": lambda n: [*PIPELINE_PY, "-u",
+                              str(REPO_ROOT / "pipeline" / "analyze_clusters.py"),
+                              "--limit", str(n)],
+    },
     "issue-ingest": {
-        "label": "Issue ingest (refresh issues + reconcile closures · read-only)",
+        "label": "Issue ingest",
+        "detail": "refresh issues + reconcile closures. Read-only.",
+        "agentic": False,
+        "ledger": ("issue", ("ingest",)),
         "argv": [*PIPELINE_PY, "-u", str(REPO_ROOT / "issue_triage" / "issue_ingest.py")],
     },
     "issue-analyze": {
-        "label": "Issue analyze (dispositions for pending issues · agentic · no fix scan)",
+        "label": "Issue analyze",
+        "detail": "dispositions for the lowest-id pending issues, in parallel batches. Store writes only, no fix scan.",
+        "agentic": True,
+        "ledger": ("issue", ("analyze",)),
         "needs_count": True,
         "argv_fn": lambda n: [*PIPELINE_PY, "-u",
                               str(REPO_ROOT / "issue_triage" / "analyze_issues.py"),
                               "--limit", str(n)],
     },
     "issue-find-fixed": {
-        "label": "Issue find-fixed (detect already-fixed issues · agentic · gh-heavy)",
+        "label": "Issue find-fixed",
+        "detail": "detect already-fixed open issues. gh-heavy, pain-ranked waves.",
+        "agentic": True,
+        "ledger": ("issue", ("find-fixed",)),
         "needs_count": True,
         "argv_fn": lambda n: [*PIPELINE_PY, "-u",
                               str(REPO_ROOT / "issue_triage" / "find_fixed.py"),
                               "--limit", str(n)],
     },
     "security-sweep": {
-        "label": "Security sweep (alerts + advisories: ingest as the bot, then find-fixed · agentic · gh-heavy)",
+        "label": "Security sweep",
+        "detail": "alerts + advisories: ingest as the bot, then find-fixed. gh-heavy.",
+        "agentic": True,
+        "ledger": ("alert", ("alert-ingest", "alert-find-fixed",
+                             "advisory-ingest", "advisory-find-fixed")),
         "needs_count": True,
         "argv_fn": lambda n: [*PIPELINE_PY, "-u",
                               str(REPO_ROOT / "alert_triage" / "security_sweep.py"),
                               "--limit", str(n)],
     },
-    "threat-scan": {
-        "label": "Threat scan (deterministic · fetches uncached diffs · read-only)",
-        "argv": [*PIPELINE_PY, "-u", str(REPO_ROOT / "pipeline" / "threat_scan.py")],
-    },
-    "threat-scan-pr": {
-        "label": "Threat scan (single PR)",
-        "needs_pr": True,
-        "argv_fn": lambda pr: [*PIPELINE_PY, "-u",
-                               str(REPO_ROOT / "pipeline" / "threat_scan.py"),
-                               "--only", str(pr)],
-    },
     "triage-cluster": {
-        "label": "Triage cluster (refresh facts + classify)",
+        "label": "Triage cluster",
+        "detail": "refresh one cluster's PRs from GitHub, then classify it.",
+        "agentic": True,
         "needs_cluster": True,
         "argv_fn": lambda cid: [*PIPELINE_PY, "-u",
                                 str(REPO_ROOT / "pipeline" / "triage_cluster.py"),
                                 "--cluster", str(cid)],
     },
-    "analyze-clusters": {
-        "label": "Analyze clusters (dispositions for pending clusters · agentic)",
-        "needs_count": True,
-        "argv_fn": lambda n: [*PIPELINE_PY, "-u",
-                              str(REPO_ROOT / "pipeline" / "analyze_clusters.py"),
-                              "--limit", str(n)],
-    },
     "security-review": {
         "label": "Security review (single PR)",
+        "detail": "3-lens adversarial review + refuting verifier on one PR.",
+        "agentic": True,
+        "ledger": ("pr", ("security:commit",)),
         "needs_pr": True,
         "max_concurrency": 2,
         "argv_fn": lambda pr: [*PIPELINE_PY, "-u",
@@ -148,11 +173,30 @@ JOB_SPECS: dict[str, JobSpec] = {
                                "--pr", str(pr)],
     },
     "verify-pr": {
-        "label": "Sandbox verification (single PR · needs the Docker sandbox)",
+        "label": "Sandbox verification (single PR)",
+        "detail": "run one PR's tests red→green in the Docker sandbox. Needs the sandbox provisioned on this machine.",
+        "agentic": True,
+        "ledger": ("pr", ("verify:single",)),
         "needs_pr": True,
         "argv_fn": lambda pr: [*PIPELINE_PY, "-u",
                                str(REPO_ROOT / "pipeline" / "verify_pr.py"),
                                "--pr", str(pr)],
+    },
+    "threat-scan-pr": {
+        "label": "Threat scan (single PR)",
+        "detail": "the deterministic attack-pattern scan over one PR's diff.",
+        "agentic": False,
+        "needs_pr": True,
+        "argv_fn": lambda pr: [*PIPELINE_PY, "-u",
+                               str(REPO_ROOT / "pipeline" / "threat_scan.py"),
+                               "--only", str(pr)],
+    },
+    "selftest": {
+        "label": "Self-test (echo)",
+        "detail": "a trivial echo that proves the job-streaming path works.",
+        "agentic": False,
+        "argv": [*PIPELINE_PY, "-u", "-c",
+                 "import time\nfor i in range(5):\n    print(f'tick {i}', flush=True)\n    time.sleep(0.3)\nprint('done')"],
     },
 }
 
@@ -167,7 +211,8 @@ _LIMITERS: WeakKeyDictionary[
 
 
 def list_specs() -> list[JobSpecView]:
-    return [{"kind": k, "label": v["label"], "needs_cluster": v.get("needs_cluster", False),
+    return [{"kind": k, "label": v["label"], "detail": v["detail"], "agentic": v["agentic"],
+             "needs_cluster": v.get("needs_cluster", False),
              "needs_pr": v.get("needs_pr", False), "needs_count": v.get("needs_count", False)}
             for k, v in JOB_SPECS.items()]
 

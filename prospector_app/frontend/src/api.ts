@@ -2087,5 +2087,19 @@ export interface RunState {
   done: boolean; undoable: boolean;
 }
 
-export interface JobSpec { kind: string; label: string; needs_cluster: boolean; needs_pr?: boolean; needs_count?: boolean }
+export interface JobSpec {
+  kind: string;
+  label: string;
+  /** One sentence on what the job does. */
+  detail: string;
+  /** Whether the job runs headless agents (costs tokens); false = deterministic. */
+  agentic: boolean;
+  /** When the job's ledger phases last ran; null for jobs with no ledger row. */
+  last_run: string | null;
+  /** Typical whole-run duration from recent ledger history, or null. */
+  typical_seconds: number | null;
+  needs_cluster: boolean;
+  needs_pr?: boolean;
+  needs_count?: boolean;
+}
 export interface JobRec { id: number; kind: string; cluster: number | null; pr?: number | null; count?: number | null; status: "queued" | "running" | "done" | "failed"; label: string; started: string; returncode: number | null }
