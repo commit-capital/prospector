@@ -1330,6 +1330,23 @@ export interface PushProbeResult {
   problem: string | null;
 }
 
+/** The Home progress row's four tiles: each a current number, a daily series
+ *  for its sparkline, and last-7-days vs the 7 before for its delta. Rate and
+ *  median entries are null where no decisions or touches exist to measure. */
+export interface HomeProgress {
+  days: string[];
+  /** When the last full ingest finished — the sparklines grey the days after
+   *  it instead of drawing them as zero. Null: no ingest has ever run. */
+  last_ingest_at: string | null;
+  backlog: { current: number; series: number[]; delta_7d: number };
+  resolved: { series: number[]; week_total: number; prev_week_total: number;
+              auto_7d: number; person_7d: number };
+  escalation: { series: (number | null)[]; rate_7d: number | null;
+                prev_rate_7d: number | null; decisions_7d: number; escalated_7d: number };
+  first_action: { series: (number | null)[]; median_hours_7d: number | null;
+                  prev_median_hours_7d: number | null; sampled_7d: number };
+}
+
 /** One step of setup. `bundle` supplies `env` and `profile` in their place. */
 export interface OnboardingApplyBody {
   step: "connect" | "join" | "writes" | "worker" | "profile" | "agent";
@@ -1344,6 +1361,7 @@ export const api = {
   /** This machine's worker lane switches alone — cheap enough for the header's
    *  autonomy disclosure to poll. */
   autonomy: () => get<{ flags: WorkerFlags }>("/api/autonomy"),
+  homeProgress: () => get<HomeProgress>("/api/home/progress"),
   /** The deployment bundle a teammate pastes. `includeKey` adds the bot's
    *  private key, so their machine executes approved writes too;
    *  `includePushKey` the contributor-push identity, so it runs autofix. */

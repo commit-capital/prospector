@@ -36,6 +36,7 @@ from prospector_app.backend import deep_search
 from prospector_app.backend import decisions
 from prospector_app.backend import executor
 from prospector_app.backend import feedback
+from prospector_app.backend import home_progress
 from prospector_app.backend import instance
 from prospector_app.backend import issue_data
 from prospector_app.backend import issues as issues_mod
@@ -507,6 +508,16 @@ def status_now():
     host, queued/parked counts, worker liveness, and this backend's running
     jobs."""
     return work_status.now()
+
+
+@app.get("/api/home/progress")
+def home_progress_row():
+    """The Home progress row's four tiles — backlog burn-down, resolved this
+    week, escalation rate, time to first action — with their 30-day series
+    and the last-ingest stamp the sparklines grey their stale tail by."""
+    issues, _loading = issues_mod.list_issues()
+    return home_progress.progress(data.prs(), issues, activity.all_events(),
+                                  data.runs())
 
 
 @app.get("/api/autonomy")
