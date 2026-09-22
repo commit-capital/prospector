@@ -406,6 +406,7 @@ _SORT_KEYS = {
     "checks": _checks_ratio,
     "drift": lambda r: (not r["drift_state"], r["drift_state"] or ""),
     "merge": lambda r: 1 if (r["merge_gate"] or {}).get("ok") else 0,
+    "conflicts": lambda r: 1 if (r["signals"] or {}).get("conflicts") else 0,
     "tier": lambda r: (r["risk_tier"] is None, r["risk_tier"] if r["risk_tier"] is not None else 0),
     "age": lambda r: r["age_days"] if r["age_days"] is not None else -1,
     "author_rate": _author_rate,
@@ -416,7 +417,7 @@ _SORT_KEYS = {
         if issue.get("how") in ("explicit", "fix-found", "issue-ref")),
 }
 _DEFAULT_DESC = {"pr", "greptile", "review", "scans", "safety", "updated", "loc", "files",
-                 "checks", "merge", "age", "author_rate", "pain", "issues"}
+                 "checks", "merge", "conflicts", "age", "author_rate", "pain", "issues"}
 
 
 # A pr_row is a pure projection of its store record, the cluster index, the
