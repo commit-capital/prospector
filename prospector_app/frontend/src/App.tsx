@@ -1,10 +1,11 @@
 import { Component, lazy, Suspense, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from "react";
-import { NavLink, Outlet, useLocation, useNavigate, useSearchParams } from "react-router";
+import { Link, NavLink, Outlet, useLocation, useNavigate, useSearchParams } from "react-router";
 import { ExecProvider, useExec, type Toast } from "./ExecContext";
 import { RepoMetaProvider, useRepoMeta } from "./RepoMetaContext";
 import { FeedbackButton } from "./components/FeedbackButton";
 import { AgentPaneProvider } from "./components/AgentPane";
 import { isReachable, subscribeHealth, pingHealth } from "./health";
+import { useHealthStrip } from "./useHealthStrip";
 import { api, type WorkStatus } from "./api";
 import { loadWithRecovery } from "./lazyLoad";
 import { timeAgo } from "./timeAgo";
@@ -285,6 +286,31 @@ function SettingsMenu() {
   );
 }
 
+// The global health strip: every condition that means the automation is not
+// running normally — a tripped lane, a silent worker, stale ingest — on any
+// machine sharing the store. Renders on every page, amber or red by the worst
+// item, each item linking to where it's fixed; hidden while all is well.
+function HealthStrip() {
+  const { meta } = useRepoMeta();
+  const status = useHealthStrip(!!meta?.configured);
+  if (!meta?.configured || !status || status.items.length === 0) return null;
+  const worst = status.items.some((i) => i.severity === "red") ? "red" : "amber";
+  return (
+    <div className={`health-strip health-strip-${worst}`} role="status">
+      <span className="health-strip-icon" aria-hidden="true">⚠</span>
+      {status.items.map((it, i) => (
+        <span key={`${it.kind}-${it.host ?? ""}-${it.text}`} className="health-strip-entry">
+          {i > 0 && <span className="health-strip-sep" aria-hidden="true">·</span>}
+          <Link to={it.link} className={`health-strip-item ${it.severity}`}
+            title={it.detail ?? "Open the Control tab"}>
+            {it.text}
+          </Link>
+        </span>
+      ))}
+    </div>
+  );
+}
+
 // "fix #908 · rebase · 4m" — what the system is doing right now, on any machine
 // sharing this store. Hover for per-machine detail; the label alone answers
 // "is anything happening?" without opening the Control tab.
@@ -533,6 +559,7 @@ export default function App() {
             <SettingsMenu />
           </div>
         </header>
+        <HealthStrip />
         <main className="content">
           <Content />
         </main>

@@ -945,6 +945,24 @@ export interface WorkStatus {
   jobs: { running: number; labels: string[] };
 }
 
+/** One condition on the global health strip — a tripped lane, a silent
+ *  worker, or stale ingest — with the in-app link to where it's fixed. */
+export interface HealthStripItem {
+  kind: string;
+  severity: "amber" | "red";
+  text: string;
+  detail: string | null;
+  link: string;
+  host: string | null;
+}
+
+/** The health strip's whole answer: items red-first, and whether no worker
+ *  lane anywhere can pick work (Home greys its worker column on it). */
+export interface HealthStripStatus {
+  items: HealthStripItem[];
+  stalled: boolean;
+}
+
 /** The sandbox-verification queue: PRs currently in flight, plus verify-only
  *  run history from the runs ledger over the selected window. */
 export interface VerifyQueue { queue: VerifyQueueEntry[]; history: AutohuntRun[]; }
@@ -1819,6 +1837,7 @@ export const api = {
     return get<FixQueue>(`/api/fix/queue?${qs}`);
   },
   workStatus: () => get<WorkStatus>("/api/status/now"),
+  healthStrip: () => get<HealthStripStatus>("/api/health/strip"),
   /** Reopen a tripped worker lane by the operator's say-so. */
   workerHealthResume: async (host: string, lane: string): Promise<void> => {
     const r = await fetch("/api/worker/health/resume", {

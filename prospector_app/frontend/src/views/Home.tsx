@@ -3,6 +3,7 @@ import { Link } from "react-router";
 import { api, type IssueRow, type PRRow, type QueryResult } from "../api";
 import { LinkedIssues } from "../components/LinkedIssues";
 import { PRLink } from "../components/PRLink";
+import { useHealthStrip } from "../useHealthStrip";
 import { useIssueFlyout } from "../useIssueFlyout";
 import { useJobStream } from "../useJobStream";
 import { useRepoMeta } from "../RepoMetaContext";
@@ -220,6 +221,9 @@ function HomeIssueCardRow({ card }: { card: HomeIssueCard }) {
 }
 
 export default function Home() {
+  // Whether no worker lane anywhere can pick work — the "In motion" column's
+  // promise is then false, so it reads "Stalled" and its cards grey out.
+  const stalled = useHealthStrip()?.stalled ?? false;
   const [counts, setCounts] = useState<number[] | null>(null);
   const [samples, setSamples] = useState<QueryResult[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -294,8 +298,12 @@ export default function Home() {
           <div className="home-col-head muted">Your move — one click each</div>
           {HOME_CARDS.filter((c) => c.column === "act").map(renderCard)}
         </section>
-        <section className="home-col">
-          <div className="home-col-head muted">In motion — the workers clear these</div>
+        <section className={"home-col" + (stalled ? " home-col-stalled" : "")}>
+          <div className={"home-col-head" + (stalled ? " home-col-head-stalled" : " muted")}>
+            {stalled
+              ? "Stalled — the workers are down (see the health strip)"
+              : "In motion — the workers clear these"}
+          </div>
           {HOME_CARDS.filter((c) => c.column === "auto").map(renderCard)}
         </section>
         <section className="home-col">

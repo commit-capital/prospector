@@ -56,6 +56,7 @@ from prospector_app.backend import tables
 from prospector_app.backend import training
 from prospector_app.backend import fix_queue
 from prospector_app.backend import fix_worker
+from prospector_app.backend import health_strip
 from prospector_app.backend import verify_queue
 from prospector_app.backend import verify_worker
 from prospector_app.backend import work_status
@@ -221,6 +222,14 @@ def worker_health_resume(body: dict = Body(...)):
         return escalation.resume(host, lane)
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+@app.get("/api/health/strip")
+def health_strip_get():
+    """Machine-health conditions for the global strip: tripped lanes, silent
+    workers, and stale ingest across every machine, plus whether the worker
+    fleet as a whole is stalled."""
+    return health_strip.cached_status()
 
 
 @app.get("/api/health")
