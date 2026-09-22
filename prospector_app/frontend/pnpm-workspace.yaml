@@ -1,3 +1,7 @@
 allowBuilds:
   # Browser installation is explicit in the e2e job; ordinary builds need no Chrome.
   vibium: false
+
+# Resolve only releases at least seven days old (minutes), so a compromised or
+# broken publish has time to be caught and yanked before it can land here.
+minimumReleaseAge: 10080

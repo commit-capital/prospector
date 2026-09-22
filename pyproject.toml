@@ -11,14 +11,14 @@ license = "MIT"
 authors = [{ name = "Commit Capital" }]
 requires-python = "==3.14.*"
 dependencies = [
-  "fastapi==0.140.13",
+  "fastapi==0.141.1",
   "httpx==0.28.1",
-  "psycopg[binary]==3.3.4",
-  "pydantic==2.13.4",
-  "python-dotenv==1.2.2",
-  "sqlalchemy==2.0.51",
-  "sse-starlette==3.4.6",
-  "uvicorn[standard]==0.51.0",
+  "psycopg[binary]==3.3.5",
+  "pydantic==2.13.5",
+  "python-dotenv==1.2.3",
+  "sqlalchemy==2.0.53",
+  "sse-starlette==3.4.11",
+  "uvicorn[standard]==0.53.0",
 ]
 
 [project.urls]
@@ -30,10 +30,10 @@ prospector = "pipeline.cli:main"
 
 [dependency-groups]
 dev = [
-  "pyright==1.1.411",  # type-checks the typed Pr/Cluster domain model; reads pyrightconfig.json
+  "pyright==1.1.414",  # type-checks the typed Pr/Cluster domain model; reads pyrightconfig.json
   "pytest==9.1.1",
   "pytest-xdist==3.8.0",  # `-n auto` fans the suite across cores (see addopts)
-  "ruff==0.16.0",  # lints for dead code, modernizations, and N999 (no hyphenated package dirs)
+  "ruff==0.16.7",  # lints for dead code, modernizations, and N999 (no hyphenated package dirs)
 ]
 
 [tool.setuptools]
