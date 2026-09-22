@@ -111,7 +111,8 @@ def query_advisories(q: str = "", sort: str | None = None, direction: str | None
     """Paginated table query. `state` is one value or a list (OR'd; "all" in
     either form, or None, = everything); `verdict` filters the fix-scan
     verdict, "none" selecting unscanned; `q` is a case-insensitive substring
-    over ghsa, summary, reporter, and CVE id."""
+    over ghsa, summary, reporter, and CVE id. The default sort is severity,
+    most severe first; every sort breaks ties oldest first."""
     rows, loading = list_advisories()
     wanted = [s for s in (state if isinstance(state, list) else [state]) if s]
     if wanted and "all" not in wanted:
@@ -123,9 +124,10 @@ def query_advisories(q: str = "", sort: str | None = None, direction: str | None
         rows = [r for r in rows
                 if any(needle in (r[k] or "").lower()
                        for k in ("ghsa_id", "summary", "reporter", "cve_id"))]
-    key = _SORT_KEYS.get(sort or "", _SORT_KEYS["updated"])
+    key = _SORT_KEYS.get(sort or "", _SORT_KEYS["severity"])
     reverse = (direction == "desc" if direction in ("asc", "desc")
-               else (sort or "updated") in _DEFAULT_DESC)
-    rows.sort(key=lambda r: (key(r), r["id"]), reverse=reverse)
+               else (sort or "severity") in _DEFAULT_DESC)
+    rows.sort(key=lambda r: (r["created_at"] or "", r["id"]))
+    rows.sort(key=key, reverse=reverse)
     return {"items": rows[offset:offset + limit], "total": len(rows),
             "offset": offset, "limit": limit, "pr_states_loading": loading}

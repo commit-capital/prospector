@@ -6,6 +6,7 @@ import {
   breakdownHref, exploreHref, HOME_BREAKDOWN_ENTRIES, HOME_CARDS, HOME_COUNT_SPECS,
   HOME_ISSUE_CARDS, ISSUE_ANALYZE_BATCH, issuesHref,
   painLabel, SAMPLE_LIMIT, SAMPLE_QUERY,
+  SECURITY_ADVISORIES_HREF, SECURITY_CARD, SECURITY_SECRETS_HREF, securityItemHref,
   type HomeCard,
 } from "./homeCards.ts";
 
@@ -131,8 +132,36 @@ test("cards sample two PRs each so every card fits above the fold", () => {
 });
 
 test("issue card keys are unique and disjoint from PR card keys", () => {
-  const keys = [...HOME_CARDS.map((c) => c.key), ...HOME_ISSUE_CARDS.map((c) => c.key)];
+  const keys = [...HOME_CARDS.map((c) => c.key), ...HOME_ISSUE_CARDS.map((c) => c.key),
+    SECURITY_CARD.key];
   assert.equal(new Set(keys).size, keys.length);
+});
+
+test("the security card links open the Alerts tab's two sub-views", () => {
+  assert.ok(SECURITY_ADVISORIES_HREF.startsWith("/alerts?"));
+  const advisories = new URLSearchParams(SECURITY_ADVISORIES_HREF.slice("/alerts?".length));
+  assert.equal(advisories.get("security"), "advisories");
+  const secrets = new URLSearchParams(SECURITY_SECRETS_HREF.slice("/alerts?".length));
+  assert.equal(secrets.get("security"), "alerts");
+  assert.equal(secrets.get("source"), "secret-scanning");
+});
+
+test("securityItemHref opens the item's detail panel in the Alerts tab", () => {
+  const advisory = securityItemHref({
+    kind: "advisory", key: "GHSA-aaaa-bbbb-cccc", ghsa_id: "GHSA-aaaa-bbbb-cccc",
+    severity: "critical", title: "SSRF", created_at: null, html_url: "https://x",
+  });
+  const advisoryParams = new URLSearchParams(advisory.slice("/alerts?".length));
+  assert.equal(advisoryParams.get("security"), "advisories");
+  assert.equal(advisoryParams.get("advisory"), "GHSA-aaaa-bbbb-cccc");
+  const secret = securityItemHref({
+    kind: "secret", key: "secret-7", number: 7,
+    severity: "critical", title: "GitHub PAT", created_at: null, html_url: "https://x",
+  });
+  const secretParams = new URLSearchParams(secret.slice("/alerts?".length));
+  assert.equal(secretParams.get("security"), "alerts");
+  assert.equal(secretParams.get("alert_source"), "secret-scanning");
+  assert.equal(secretParams.get("alert"), "7");
 });
 
 test("the issue cards cover the close-fixed picks and the unanalyzed backlog", () => {

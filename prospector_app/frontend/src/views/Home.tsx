@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router";
-import { api, type IssueRow, type PRRow, type QueryResult } from "../api";
+import { api, type IssueRow, type PRRow, type QueryResult, type SecurityAttention, type SecurityAttentionItem } from "../api";
 import { LinkedIssues } from "../components/LinkedIssues";
 import { PRLink } from "../components/PRLink";
 import { useIssueFlyout } from "../useIssueFlyout";
@@ -10,6 +10,7 @@ import {
   breakdownHref, exploreHref, HOME_BREAKDOWN_ENTRIES, HOME_CARDS, HOME_COUNT_SPECS,
   HOME_ISSUE_CARDS, issuesHref, painLabel,
   SAMPLE_ISSUE_LIMIT, SAMPLE_LIMIT, SAMPLE_QUERY,
+  SECURITY_ADVISORIES_HREF, SECURITY_CARD, SECURITY_SECRETS_HREF, securityItemHref,
   type HomeCard, type HomeIssueAction, type HomeIssueCard, type HomeRowAction,
 } from "./homeCards";
 
@@ -219,6 +220,83 @@ function HomeIssueCardRow({ card }: { card: HomeIssueCard }) {
   );
 }
 
+// One sample row on the Security card: severity, then the advisory summary or
+// alert title, both opening the item's detail panel in the 🛡️ Alerts tab.
+function SampleSecurityItem({ item }: { item: SecurityAttentionItem }) {
+  const severityCls = item.severity === "medium" ? "chip-yellow"
+    : item.severity === "low" || item.severity === "unknown" ? "chip-muted" : "chip-red";
+  const fallback = item.kind === "advisory" ? item.ghsa_id : `secret #${item.number}`;
+  return (
+    <tr className="home-sample-row">
+      <td className="home-sample-pr">
+        <Link to={securityItemHref(item)} className={`chip ${severityCls} sm`}
+          title="Open in the 🛡️ Alerts tab">{item.severity}</Link>
+      </td>
+      <td className="home-sample-title" title={item.title ?? undefined}>
+        <Link to={securityItemHref(item)}>{item.title ?? fallback}</Link>
+      </td>
+    </tr>
+  );
+}
+
+// The Security card: open critical/high advisories the find-fixed pass has
+// not judged fixed, plus every open secret-scanning alert — one attention
+// query for the count, the per-kind links, and the most severe (then oldest)
+// sample items.
+function HomeSecurityCard() {
+  const [data, setData] = useState<SecurityAttention | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    api.securityAttention()
+      .then((d) => { if (!cancelled) { setData(d); setFailed(false); } })
+      .catch(() => { if (!cancelled) setFailed(true); });
+    return () => { cancelled = true; };
+  }, []);
+  const total = data ? data.total : null;
+  return (
+    <div className="act-card home-card">
+      <Link to={SECURITY_ADVISORIES_HREF} className="home-card-head act-card-clickable"
+        title="Open the 🛡️ Alerts tab">
+        <div className={"act-card-n" + (total === null && !failed ? " home-count-loading" : "")}>
+          {failed ? "?" : total ?? "…"}
+        </div>
+        <div className="home-card-text">
+          <div className="act-card-l">{SECURITY_CARD.title}</div>
+          <div className="small muted home-card-blurb">{SECURITY_CARD.blurb}</div>
+        </div>
+      </Link>
+      {data !== null && data.total > 0 && (
+        <div className="home-breakdown small">
+          {data.advisories > 0 && (
+            <Link to={SECURITY_ADVISORIES_HREF} className="home-breakdown-item"
+              title="Open the Advisories view">
+              <span className="mono">{data.advisories}</span> unfixed advisor{data.advisories === 1 ? "y" : "ies"}
+            </Link>
+          )}
+          {data.secrets > 0 && (
+            <Link to={SECURITY_SECRETS_HREF} className="home-breakdown-item"
+              title="Open the secret-scanning alerts">
+              <span className="mono">{data.secrets}</span> secret alert{data.secrets === 1 ? "" : "s"}
+            </Link>
+          )}
+        </div>
+      )}
+      <div className="home-card-side">
+        {failed && <div className="muted small">Failed to load security data.</div>}
+        {data !== null && data.total > 0 && (
+          <table className="home-sample-table">
+            <tbody>
+              {data.items.map((i) => <SampleSecurityItem key={i.key} item={i} />)}
+            </tbody>
+          </table>
+        )}
+        {total === 0 && <div className="muted small">None right now.</div>}
+      </div>
+    </div>
+  );
+}
+
 export default function Home() {
   const [counts, setCounts] = useState<number[] | null>(null);
   const [samples, setSamples] = useState<QueryResult[] | null>(null);
@@ -293,6 +371,7 @@ export default function Home() {
         <section className="home-col">
           <div className="home-col-head muted">Your move — one click each</div>
           {HOME_CARDS.filter((c) => c.column === "act").map(renderCard)}
+          <HomeSecurityCard />
         </section>
         <section className="home-col">
           <div className="home-col-head muted">In motion — the workers clear these</div>

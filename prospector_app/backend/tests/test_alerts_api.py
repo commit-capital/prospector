@@ -19,7 +19,7 @@ def seeded(tmp_path, monkeypatch):
         meta = {
             "source": source, "number": number, "state": "open",
             "raw_state": "open", "severity": "medium",
-            "created_at": "2026-08-01T00:00:00Z",
+            "created_at": f"2026-07-0{number}T00:00:00Z",
             "updated_at": f"2026-08-0{number}T00:00:00Z",
             "html_url": f"https://github.com/o/r/security/{source}/{number}",
         }
@@ -83,6 +83,10 @@ def test_query_alerts_serves_rows_while_pr_snapshot_loads(seeded, monkeypatch):
 def test_query_filters_and_sorts(seeded):
     out = alerts_mod.query_alerts()
     assert out["pr_states_loading"] is False
+    # Default sort: most severe first, ties oldest first.
+    assert [r["number"] for r in out["items"]] == [2, 3, 1]
+    out = alerts_mod.query_alerts(sort="updated")
+    assert [r["number"] for r in out["items"]] == [3, 2, 1]
     out = alerts_mod.query_alerts(source="dependabot")
     assert [r["number"] for r in out["items"]] == [2] and out["total"] == 1
     out = alerts_mod.query_alerts(verdict="none")

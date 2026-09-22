@@ -1,4 +1,4 @@
-import type { FilterSpec } from "../api";
+import type { FilterSpec, SecurityAttentionItem } from "../api";
 
 // Which Home column a card renders in: `act` (a click of yours moves these
 // PRs), `auto` (a worker queue or hunter moves them; nothing for a person to
@@ -216,4 +216,25 @@ export const HOME_ISSUE_CARDS: HomeIssueCard[] = [
 
 export function issuesHref(card: HomeIssueCard): string {
   return `/issues?disposition=${encodeURIComponent(card.disposition)}`;
+}
+
+// The Security card in the "Your move" column: open critical/high advisories
+// the find-fixed pass has not judged fixed, plus every open secret-scanning
+// alert. Count and samples come from GET /api/security/attention, most severe
+// (then oldest) first.
+export const SECURITY_CARD = {
+  key: "security",
+  title: "Security",
+  blurb: "Critical or high advisories the fix scan still finds unfixed, plus any open secret-scanning alert.",
+} as const;
+
+export const SECURITY_ADVISORIES_HREF = "/alerts?security=advisories";
+export const SECURITY_SECRETS_HREF = "/alerts?security=alerts&source=secret-scanning";
+
+// A sample item's in-app link: the advisory or alert detail panel inside the
+// 🛡️ Alerts tab.
+export function securityItemHref(item: SecurityAttentionItem): string {
+  return item.kind === "advisory"
+    ? `/alerts?security=advisories&advisory=${encodeURIComponent(item.ghsa_id)}`
+    : `/alerts?security=alerts&alert_source=secret-scanning&alert=${item.number}`;
 }

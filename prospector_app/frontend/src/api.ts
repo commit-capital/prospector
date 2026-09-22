@@ -1146,6 +1146,17 @@ export interface AdvisoryDetail extends AdvisoryRow {
   fix_scan: Record<string, unknown> | null;
 }
 export interface AdvisoryQueryResult { items: AdvisoryRow[]; total: number; offset: number; limit: number; pr_states_loading: boolean }
+/** One item on the Home Security card: an open critical/high advisory the
+ *  find-fixed pass has not judged fixed, or an open secret-scanning alert. */
+export type SecurityAttentionItem =
+  | { kind: "advisory"; key: string; ghsa_id: string; severity: AdvisorySeverity; title: string | null; created_at: string | null; html_url: string }
+  | { kind: "secret"; key: string; number: number; severity: AlertSeverity; title: string | null; created_at: string | null; html_url: string };
+export interface SecurityAttention {
+  total: number;
+  advisories: number;
+  secrets: number;
+  items: SecurityAttentionItem[];
+}
 interface IssueDup {
   number: number;
   title: string | null;
@@ -1466,6 +1477,7 @@ export const api = {
       body: JSON.stringify(opts),
     }).then((r) => r.json() as Promise<AdvisoryQueryResult>),
   getAdvisory: (ghsa: string) => get<AdvisoryDetail>(`/api/advisories/${ghsa}`),
+  securityAttention: () => get<SecurityAttention>("/api/security/attention"),
   dismissAlert: async (source: AlertSource, n: number, reason: string, comment: string, dryRun: boolean) => {
     const r = await fetch(`/api/execute/alert/${source}/${n}/dismiss?dry_run=${dryRun}`, {
       method: "POST", headers: { "Content-Type": "application/json" },

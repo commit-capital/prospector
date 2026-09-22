@@ -50,6 +50,7 @@ from prospector_app.backend import pr_search
 from prospector_app.backend import repo_meta
 from prospector_app.backend import review_refresh
 from prospector_app.backend import responses as responses_mod
+from prospector_app.backend import security_attention
 from prospector_app.backend import service
 from prospector_app.backend import suggested_actions
 from prospector_app.backend import tables
@@ -1062,6 +1063,14 @@ def advisories_query(payload: dict = Body(default_factory=dict)):
         offset=int(payload.get("offset", 0)),
         limit=min(int(payload.get("limit", 50)), 500),
     )
+
+
+@app.get("/api/security/attention")
+def security_attention_summary():
+    """The Home Security card: open critical/high advisories the find-fixed
+    pass has not judged fixed, plus open secret-scanning alerts — counts and
+    the most severe (then oldest) sample items."""
+    return security_attention.attention()
 
 
 @app.get("/api/advisories/{ghsa}")
