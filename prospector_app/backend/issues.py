@@ -24,6 +24,7 @@ from issue_triage import pr_index
 from pipeline import settings
 from pipeline import profile
 from pipeline import storekit
+from prospector_app.backend import claims
 from prospector_app.backend import data
 from prospector_app.backend import issue_data
 from prospector_app.backend.filters import num_cmp
@@ -316,6 +317,7 @@ def get_issue(n: int) -> dict | None:
     row["dup_comment"] = dup_issue_comment(int(canon)) if canon else None
     cl = clusters.get(i.cluster_id) if i.cluster_id else None
     row["cluster_label"] = (cl.curation or {}).get("label") if cl else None
+    row["claim"] = claims.for_item("issue", int(n))
     return row
 
 

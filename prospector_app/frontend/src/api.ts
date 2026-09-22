@@ -63,6 +63,8 @@ export interface FilterSpec {
   conflicts?: boolean;
   has_tests?: boolean;
   draft?: boolean;
+  // "mine" / "unclaimed" / an operator name, over the row's shared claim marker
+  claimed?: string;
   state?: "closed" | "all";       // PR Explorer defaults to open PRs only; widen to include closed/merged
   trusted_author?: boolean;
   clean?: boolean;
@@ -121,6 +123,46 @@ export interface DeepResult {
 export interface PRResponseAck {
   at: string;
   by: string;
+}
+
+/** Who is working an item (PR or issue), from which machine, since when.
+ *  Shared across operators so two people don't act on the same item. */
+export interface ItemClaim {
+  by: string;
+  machine: string;
+  at: string;
+}
+
+/** Every live claim keyed "pr:123" / "issue:45", plus this backend's claiming identity. */
+export interface ClaimSet {
+  items: Record<string, ItemClaim>;
+  me: { by: string; machine: string };
+}
+
+/** One worker lane's health on a machine, from the shared worker_health registry. */
+export interface MachineLaneHealth {
+  tripped: boolean;
+  consecutive_failures: number;
+  last_success_at: string | null;
+}
+/** One lane's heartbeat on a machine (verify or fix worker). */
+export interface MachineBeat {
+  last_beat: string | null;
+  online: boolean;
+  current_pr: number | null;
+  autohunt: boolean;
+}
+/** One worker machine the shared store knows. */
+export interface MachineRow {
+  host: string;
+  lanes: Record<string, MachineLaneHealth>;
+  beats: Record<string, MachineBeat>;
+  online: boolean;
+  base_pinned: boolean;
+}
+export interface MachinesRoster {
+  machines: MachineRow[];
+  local: string;
 }
 
 /** How the community responded to our triage since we acted (replied / reopened /
@@ -305,6 +347,7 @@ export interface PRRow {
   merge_gate?: { ok: boolean; reason: string; overridable?: boolean; override_kind?: "security" | "verify" | null };
   age_days?: number | null;
   responses?: PRResponses | null;
+  claim?: ItemClaim | null;
   pain_score?: number | null;
   automation?: AutomationStanding | null;
   pain_breakdown?: PainBreakdown | null;
@@ -1072,6 +1115,7 @@ export interface IssueDetail extends IssueRow {
   fixed_comment: string | null;
   dup_comment: string | null;
   cluster_label: string | null;
+  claim?: ItemClaim | null;
 }
 export interface IssueExecResult { issue: number; action: string; status: string; detail: string; canonical?: number | null; forced?: boolean }
 
@@ -1747,6 +1791,16 @@ export const api = {
     if (allTime) qs.set("all_time", "true");
     return get<FirehoseStats>(`/api/activity/firehose?${qs}`);
   },
+  claims: () => get<ClaimSet>("/api/claims"),
+  setClaim: async (kind: "pr" | "issue", n: number, action: "claim" | "release"): Promise<ClaimSet> => {
+    const r = await fetch(`/api/claims/${kind}/${n}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action }),
+    });
+    if (!r.ok) throw new Error(`/api/claims/${kind}/${n} → ${r.status}`);
+    return r.json() as Promise<ClaimSet>;
+  },
+  machines: () => get<MachinesRoster>("/api/machines"),
   prAuthors: () => get<{ authors: Array<{ login: string; pr_count: number }> }>("/api/activity/pr-authors"),
   activityPeople: () => get<{ people: ActivityPerson[] }>("/api/activity/people"),
   activitySummary: (p: { group_by?: string; since?: string; until?: string; identity?: string; operator?: string; pr_author?: string; include_dry_run?: boolean } = {}) => {
@@ -1940,7 +1994,7 @@ export interface PipelineStatus {
 export interface ActivityItem {
   at: string; kind: string; pr?: number; issue?: number; action?: string; status?: string;
   detail?: string; dry_run?: boolean; identity?: string; operator?: string;
-  operator_email?: string; cluster?: number;
+  operator_email?: string; machine?: string; cluster?: number;
   cluster_id?: string | null; approved_count?: number; by?: string; reason?: string;
 }
 

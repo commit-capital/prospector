@@ -74,7 +74,10 @@ _JSON = JSON().with_variant(JSONB, "postgresql")
 # 23 — an issue's links section carries sibling keys beside candidates (github
 #      closing references); an older ingest or find-fixed write replaces the
 #      section whole and drops them.
-STORE_SCHEMA_VERSION = 23
+# 24 — the claims registry (which operator is working each PR/issue, one shared
+#      row every instance reads and the action bars warn from); older code has
+#      no accessor for it.
+STORE_SCHEMA_VERSION = 24
 
 # saved_at is a microsecond-resolution ISO timestamp stamped on every save — when
 # the store row was last written (distinct from `updated_at`, which mirrors the

@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
-import { api, type JobSpec, type JobRec, type PipelineStatus, type Autohunt, type AutohuntResultCounts, type FilterSpec, type VerifyBaseHealth, type VerifyBaseHost, type VerifyQueue, type FixQueue, type WorkerHealth, type WorkerHealthHost } from "../api";
+import { api, type JobSpec, type JobRec, type PipelineStatus, type Autohunt, type AutohuntResultCounts, type FilterSpec, type MachinesRoster, type VerifyBaseHealth, type VerifyBaseHost, type VerifyQueue, type FixQueue, type WorkerHealth, type WorkerHealthHost } from "../api";
 import { useRepoMeta } from "../RepoMetaContext";
 import { useExec } from "../ExecContext";
 import { PRLink } from "../components/PRLink";
@@ -267,6 +267,67 @@ function HuntLaneSummary({ phase, counts }: { phase: "security" | "verify"; coun
     </div>
   );
 }
+
+// Every worker machine the shared store knows — heartbeats, lane health, and
+// what each is working on — so a deployment with several machines reads whole
+// from any app, not just the machine serving it (#323).
+function MachinesSection() {
+  const [roster, setRoster] = useState<MachinesRoster | null>(null);
+  useEffect(() => {
+    api.machines().then(setRoster).catch(() => {});
+  }, []);
+  if (!roster || roster.machines.length === 0) return null;
+  return (
+    <>
+      <h3>Machines</h3>
+      <p className="muted small" style={{ margin: "0 0 8px" }}>
+        Every machine on this store: worker heartbeats, lane health, and the PR each is on.
+        A tripped lane resumes from the banner above.
+      </p>
+      <table className="grid compact">
+        <thead><tr><th>Machine</th><th>Lanes</th><th>Verify worker</th><th>Fix worker</th><th></th></tr></thead>
+        <tbody>
+          {roster.machines.map((m) => (
+            <tr key={m.host}>
+              <td className="mono">
+                {m.host}
+                {m.host === roster.local && <span className="chip chip-muted sm">this machine</span>}
+              </td>
+              <td>
+                {Object.entries(m.lanes).map(([lane, h]) => (
+                  <span key={lane}
+                    className={`chip sm ${h.tripped ? "chip-red" : "chip-green"}`}
+                    title={h.tripped
+                      ? `${lane} lane tripped after ${h.consecutive_failures} consecutive failures — Resume reopens it.`
+                      : `${lane} lane healthy · last success ${ago(h.last_success_at)}`}>
+                    {lane}{h.tripped ? " tripped" : ""}
+                  </span>
+                ))}
+                {Object.keys(m.lanes).length === 0 && <span className="muted small">no health recorded</span>}
+              </td>
+              {(["verify", "fix"] as const).map((lane) => {
+                const b = m.beats[lane];
+                return (
+                  <td key={lane} className="small">
+                    {b ? (
+                      <span className={b.online ? "" : "muted"} title={fmt(b.last_beat)}>
+                        {b.online ? "● online" : `○ ${ago(b.last_beat)}`}
+                        {b.current_pr != null && <> · <PRLink n={b.current_pr} /></>}
+                        {b.autohunt && <span className="chip chip-muted sm">hunt</span>}
+                      </span>
+                    ) : <span className="muted">—</span>}
+                  </td>
+                );
+              })}
+              <td className="small muted">{m.base_pinned ? "base pinned" : ""}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </>
+  );
+}
+
 
 export default function ControlPanel() {
   const { meta: repoMeta } = useRepoMeta();
@@ -550,6 +611,8 @@ export default function ControlPanel() {
       ) : (
         <div className="muted small" style={{ marginBottom: 14 }}>Loading pipeline status…</div>
       )}
+
+      <MachinesSection />
 
       {/* ── Quick Actions ── */}
       <h3>Quick actions</h3>

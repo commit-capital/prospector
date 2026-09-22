@@ -8,6 +8,7 @@ import { useRepoMeta } from "../RepoMetaContext";
 import { TrustedAuthorName } from "../components/TrustedAuthor";
 import { DispositionChip, LinkedPRs, ReproChip } from "./Issues";
 import { IssueActionBar } from "../components/IssueActionBar";
+import { ClaimControl } from "../components/ClaimControl";
 
 // An issue reference inside the flyout: a plain click swaps this panel to that
 // issue; a modifier-click follows the href to github.com.
@@ -58,6 +59,7 @@ export function IssueDetailContent({ issue }: { issue: number }) {
               cluster {d.cluster}</Link>
           )}
           <a className="chip chip-muted" href={d.url} target="_blank" rel="noreferrer">GitHub ↗</a>
+          <ClaimControl kind="issue" n={d.number} />
         </div>
         <div className="muted small">
           opened {d.created_at?.slice(0, 10)} · updated {d.updated_at?.slice(0, 10)}

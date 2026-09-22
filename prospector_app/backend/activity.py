@@ -36,6 +36,7 @@ from datetime import date, datetime, timedelta, timezone, tzinfo
 from typing import TYPE_CHECKING
 
 from pipeline import schema
+from pipeline import settings
 from pipeline import store
 from pipeline import storekit
 
@@ -205,6 +206,9 @@ def record(kind: str, **fields) -> dict:
     fields.setdefault("operator", op["name"])
     if op["email"]:
         fields.setdefault("operator_email", op["email"])
+    # Which machine recorded the event — with several operators and worker
+    # machines sharing one log, attribution needs the host beside the person.
+    fields.setdefault("machine", settings.worker_id())
     # Timezone-aware UTC, never naive local: the merged feed orders by this instant.
     entry = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "kind": kind, **fields}
     entry = normalize(entry)  # store the semantic kind, not the mechanical one
