@@ -513,9 +513,19 @@ export default function ClusterDetail() {
           <InfoTip entry={clusterStateEntry(cd.state)} cue={false} focusable={false}>
             <span className="chip chip-muted">{cd.state}</span>
           </InfoTip>
-          {cd.outcome && <> · outcome: <InfoTip entry={term(`outcome.${cd.outcome}`)}><b>{cd.outcome}</b></InfoTip></>}
-          {cd.analyzed_at && <> · analyzed {cd.analyzed_at.slice(0, 10)}</>}
+          {cd.outcome && <span className="small"> · analysis proposed <InfoTip entry={term(`outcome.${cd.outcome}`)}>{cd.outcome}</InfoTip></span>}
+          {cd.analyzed_at && <span className="small"> · analyzed {cd.analyzed_at.slice(0, 10)}</span>}
         </p>
+        {(cd.blockers ?? []).length > 0 && (
+          <div className="cluster-blockers small">
+            {cd.blockers.map((b) => <div key={b}>⛔ Blocked: {b}</div>)}
+          </div>
+        )}
+        {(cd.narrative_stale ?? []).length > 0 && (cd.rationale_summary || cd.rationale) && (
+          <div className="callout cluster-narrative-stale small">
+            ⚠️ The narrative below may be stale — {cd.narrative_stale.join("; ")}. Re-run the analysis to refresh it.
+          </div>
+        )}
         {cd.rationale_summary && (
           <p className="rationale-tldr"><span className="tldr-label">TL;DR</span> {cd.rationale_summary}</p>
         )}

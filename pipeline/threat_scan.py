@@ -208,10 +208,12 @@ def main(argv: list[str] | None = None) -> int:
             # the PR's disposition — emit an action item for a human to confirm or
             # dismiss (upsert: re-running the scan never reopens one already closed).
             if "secret-leak" in result["signatures"]:
+                evidence = result["detail"].get("secret-leak", "")
                 actions.upsert(action_items, actions.make_item(
                     "rotate-secret", pr=n, created=today,
                     summary=f"Potential secret leaked in PR #{n} ({rec.author or '?'})",
-                    evidence=result["detail"].get("secret-leak", ""),
+                    evidence=evidence,
+                    fixture=actions.likely_fixture(evidence),
                     detail="A live-looking credential was committed in this PR's diff. "
                            "Confirm it: if real, rotate the key at its provider and notify "
                            "upstream — closing/merging the PR does not invalidate an "

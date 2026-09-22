@@ -50,25 +50,53 @@ _SALVAGE_RE = re.compile(
     r"worth (?:keeping|extracting|saving)|extract(?:ed|ing)? .*\bfix\b)\b",
     re.IGNORECASE,
 )
+# Salvage language that names nothing to do: the rationale denies there is
+# anything to salvage, or says the salvageable piece already landed. Either
+# reading disqualifies the rationale from raising a worklist item.
+_SALVAGE_NEGATED_RE = re.compile(
+    r"\b(?:nothing|no|not|little|isn't|is not)\b[^.;]{0,60}\bsalvag",
+    re.IGNORECASE,
+)
+_ALREADY_LANDED_RE = re.compile(
+    r"\balready\b[^.;]{0,40}\b(?:landed|merged|fixed|implemented|addressed|"
+    r"upstream|in main)\b|\blanded (?:in|on|separately|upstream)\b|"
+    r"\bsuperseded by\b|\bwas (?:already )?merged\b|\bno longer needed\b",
+    re.IGNORECASE,
+)
+
+
+def salvage_worthy(disposition: str | None, rationale: str) -> bool:
+    """Whether an analysis rationale names a concrete piece to salvage: it
+    carries salvage/spin-off language, does not deny there is anything to
+    salvage, and does not say the piece already landed. A merge pick needs no
+    salvage whatever its prose."""
+    if disposition == "merge" or not _SALVAGE_RE.search(rationale):
+        return False
+    return not (_SALVAGE_NEGATED_RE.search(rationale)
+                or _ALREADY_LANDED_RE.search(rationale))
 
 
 def backfill_salvage_items(store: Store, today: str) -> int:
     """Scan committed analyses for salvage/spin-off language and emit a
-    salvage-fix action item per matching PR. Idempotent + status-preserving
-    via actions.upsert. Returns the count of items emitted/refreshed."""
+    salvage-fix action item per PR whose rationale passes `salvage_worthy`.
+    Idempotent + status-preserving via actions.upsert; an open salvage item
+    whose PR's current rationale no longer qualifies is dropped, so the open
+    list holds only actionable salvage. Returns the count emitted/refreshed."""
     reg = store.load_action_items()
-    n = 0
+    worthy: set[int] = set()
     for pr, rec in store.all_prs().items():
-        rationale = rec.rationale or ""
-        if rec.disposition in ("merge",) or not _SALVAGE_RE.search(rationale):
+        if not salvage_worthy(rec.disposition, rec.rationale or ""):
             continue
+        worthy.add(pr)
         actions.upsert(reg, actions.make_item(
             "salvage-fix", pr=pr, created=today,
             summary=f"Salvage the good fix out of PR #{pr} into a clean first-party PR",
-            detail=rationale[:500]))
-        n += 1
+            detail=(rec.rationale or "")[:500]))
+    reg["items"] = [it for it in reg.get("items", [])
+                    if not (it["kind"] == "salvage-fix" and it["status"] == "open"
+                            and it["pr"] not in worthy)]
     store.save_action_items(reg)
-    return n
+    return len(worthy)
 
 DIFFS = Path(__file__).resolve().parent / "cache" / "diffs"
 

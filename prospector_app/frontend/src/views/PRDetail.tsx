@@ -31,8 +31,9 @@ const DISPO_ICON: Record<string, string> = {
   "merge": "✅", "request-changes": "✋", "close-dup": "🗑️", "close-fixed": "🗑️", "close-stale": "🗑️", "needs-human": "👤",
 };
 
-/** PR detail content — designed for the flyout. Security/safety first, then
- *  size + checks, then concerns/greptile/ci, then the diff at the bottom. */
+/** PR detail content — designed for the flyout. Verdict and primary action
+ *  first, then the merge blockers, checks, summary context, and the diff at
+ *  the bottom, so the decision surface is visible without scrolling. */
 export function PRDetailContent({ pr: prNum }: { pr: number }) {
   const [pr, setPr] = useState<PD>();
   const [diff, setDiff] = useState<DiffResult | null>(null);
@@ -355,41 +356,11 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
         onRerunAnalysis={pr.clusters.length ? runAnalyze : undefined}
         rerunning={analyzeJob.running} rerunLog={analyzeJob.log} />
 
-      {/* When each fact was computed and which commit it describes — so a
-          recommendation can be dated before anyone acts on it. */}
-      <FactFreshnessPanel facts={pr.fact_freshness} headSha={pr.head_sha}
-        liveHeadSha={pr.live_head_sha} />
-
-      <section className="prc-section">
-        <h3>Issues this may fix</h3>
-        <LinkedIssues issues={pr.issues} />
-      </section>
-
-      {/* #550/#581: what checks ran, when, and what they found — plus the
-          action that unblocks each one, right there — the topline item,
-          above even the recommended Action section below. */}
-      <ChecksPanel c={pr.checks} actions={checksActions} bodies={checksBodies} />
-
-      {/* Autofix: have the configured machine user push a small fix to the
-          contributor's branch, rather than asking the author and waiting.
-          Content-authoring actions park their diff here for approval — nothing
-          reaches GitHub until "Approve & push". */}
-      <section className="panel">
-        <div className="panel-head">
-          <h3>Autofix</h3>
-          <div className="panel-actions">
-            <FixAction req={pr.fix_request ?? null} runner={fixRunner} busy={fixBusy}
-              resolved={resolved} onQueue={queueFix} onDequeue={dequeueFix}
-              onApprove={approveFix} />
-          </div>
-        </div>
-        <FixBody req={pr.fix_request ?? null} runner={fixRunner} />
-      </section>
-
-      {/* Deferred (dependency bump): the merge/security/action surface is all
-          noise here — the pipeline doesn't triage these and the author lands
-          them upstream. Replace the whole action stack with one banner; keep the
-          informational tiles + diff below for context. */}
+      {/* Verdict and primary action first, before anything scrolls. Deferred
+          (dependency bump): the merge/security/action surface is all noise
+          here — the pipeline doesn't triage these and the author lands them
+          upstream. One banner stands in for the whole action stack; the
+          informational tiles + diff below stay for context. */}
       {pr.out_of_scope ? (
         <div className="verdict-banner v-safe">
           <span className="vb-icon">📦</span>
@@ -413,7 +384,37 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
         </div>
       ) : (
        <>
-      {/* 1. SECURITY / SAFETY verdict — first and foremost */}
+      {/* the one action surface — comment / approve / request-changes / merge /
+          close, with the agent's recommendation folded in as the pre-selected
+          action, so the primary button matches what the agent suggests. */}
+      <section className="prc-section">
+        <h3>Action</h3>
+        {pr.disposition && (() => {
+          const entry = dispositionEntry(pr.disposition);
+          const attn = pr.disposition === "needs-human";
+          return (
+            <div className={`dispo-banner ${attn ? "dispo-attn" : ""}`}>
+              <span className="dispo-ico" aria-hidden="true">{DISPO_ICON[pr.disposition] ?? "•"}</span>
+              <div>
+                <div className="dispo-head">
+                  <InfoTip entry={entry}>{entry?.title ?? pr.disposition}</InfoTip>
+                </div>
+                {pr.proposed_action?.rationale
+                  ? <div className="dispo-why">{pr.proposed_action.rationale}</div>
+                  : entry?.triggers && <div className="dispo-why muted">{entry.triggers}</div>}
+                {pr.proposed_action?.fresh === false && (
+                  <div className="dispo-stale">⟳ This analysis is stale — the PR head moved since it ran.</div>
+                )}
+              </div>
+            </div>
+          );
+        })()}
+        <PRActionLog pr={pr.number} refresh={actLog} />
+        <PRActionBar pr={pr} runState={rs} onActed={() => { run.refresh(); setActLog((k) => k + 1); reloadPr(); }} />
+      </section>
+
+      {/* Blockers, directly under the action they gate. SECURITY / SAFETY
+          verdict first. */}
       {sum && (
         <div className={`verdict-banner v-${sum.level}`}>
           <span className="vb-icon">{LEVEL_ICON[sum.level]}</span>
@@ -424,7 +425,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
         </div>
       )}
 
-      {/* CODEOWNERS manual-merge requirement — loud, above the suggestion (#15/#26) */}
+      {/* CODEOWNERS manual-merge requirement (#15/#26) */}
       {pr.human_merge?.required && (
         <div className="codeowners-callout" title="The upstream repo's branch ruleset requires a code owner to approve/merge these paths.">
           <div className="co-headline">⛔ Requires human merge — touches CODEOWNERS-gated code</div>
@@ -452,37 +453,34 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
         );
       })()}
 
-      {/* the one action surface — comment / approve / request-changes / merge /
-          close / reopen, with the agent's recommendation folded in. */}
-      <section className="prc-section">
-        <h3>Action</h3>
-        {pr.disposition && (() => {
-          const entry = dispositionEntry(pr.disposition);
-          const attn = pr.disposition === "needs-human";
-          return (
-            <div className={`dispo-banner ${attn ? "dispo-attn" : ""}`}>
-              <span className="dispo-ico" aria-hidden="true">{DISPO_ICON[pr.disposition] ?? "•"}</span>
-              <div>
-                <div className="dispo-head">
-                  <InfoTip entry={entry}>{entry?.title ?? pr.disposition}</InfoTip>
-                </div>
-                {pr.proposed_action?.rationale
-                  ? <div className="dispo-why">{pr.proposed_action.rationale}</div>
-                  : entry?.triggers && <div className="dispo-why muted">{entry.triggers}</div>}
-                {pr.proposed_action?.fresh === false && (
-                  <div className="dispo-stale">⟳ This analysis is stale — the PR head moved since it ran.</div>
-                )}
-              </div>
-            </div>
-          );
-        })()}
-        <PRActionLog pr={pr.number} refresh={actLog} />
-        <PRActionBar pr={pr} runState={rs} onActed={() => { run.refresh(); setActLog((k) => k + 1); reloadPr(); }} />
-      </section>
        </>
       )}
 
-      {/* 2. at-a-glance: size */}
+      {/* Provenance for every fact above and below — one line that expands. */}
+      <FactFreshnessPanel facts={pr.fact_freshness} headSha={pr.head_sha}
+        liveHeadSha={pr.live_head_sha} />
+
+      {/* #550/#581: what checks ran, when, and what they found — plus the
+          action that unblocks each one, right there. */}
+      <ChecksPanel c={pr.checks} actions={checksActions} bodies={checksBodies} />
+
+      {/* Autofix: have the configured machine user push a small fix to the
+          contributor's branch, rather than asking the author and waiting.
+          Content-authoring actions park their diff here for approval — nothing
+          reaches GitHub until "Approve & push". */}
+      <section className="panel">
+        <div className="panel-head">
+          <h3>Autofix</h3>
+          <div className="panel-actions">
+            <FixAction req={pr.fix_request ?? null} runner={fixRunner} busy={fixBusy}
+              resolved={resolved} onQueue={queueFix} onDequeue={dequeueFix}
+              onApprove={approveFix} />
+          </div>
+        </div>
+        <FixBody req={pr.fix_request ?? null} runner={fixRunner} />
+      </section>
+
+      {/* at-a-glance: size */}
       <div className="stat-tiles">
         <div className="tile">
           <div className="tile-label">Change size</div>
@@ -518,7 +516,12 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
           feedback, and CI check runs now live as expandable detail inside
           their own rows in the Checks panel above, next to their action. */}
 
-      {/* 3. agent summary — diff-grounded one-liner + mechanism, distinct from
+      <section className="prc-section">
+        <h3>Issues this may fix</h3>
+        <LinkedIssues issues={pr.issues} />
+      </section>
+
+      {/* agent summary — diff-grounded one-liner + mechanism, distinct from
           the submitter's PR description below. */}
       {pr.summary?.one_liner && (
         <section className="prc-section">
@@ -530,7 +533,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
         </section>
       )}
 
-      {/* 4. description */}
+      {/* description */}
       {pr.body && (
         <section className="prc-section">
           <Collapsible summary={<>📝 PR description</>}>
@@ -541,11 +544,11 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
         </section>
       )}
 
-      {/* 5. condensed upstream history — comments, reviews, commits, and
+      {/* condensed upstream history — comments, reviews, commits, and
           reopen/close/force-push/rename events, oldest first */}
       <PRHistory pr={pr.number} />
 
-      {/* 6. the diff, last — click a line for the explain/comment popup. When a
+      {/* the diff, last — click a line for the explain/comment popup. When a
           "Resolve merge conflicts" attempt refused on conflicts, the captured
           conflict diff is offered as a second mode beside the PR's own change
           (#46). */}

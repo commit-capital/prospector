@@ -646,6 +646,34 @@ class TestBoard:
         assert [r["number"] for r in cd["buckets"]["unanalyzed"]] == [2]
         assert cd["state"] == "needs-analysis"
 
+    def test_summary_and_detail_carry_the_verdicts_blockers(self, patched):
+        prs = {1: _pr(1, analysis=_analysis())}
+        clusters = {7: _cluster([prs[1]], outcome="merge-ready")}
+        patched(prs, clusters)
+        row = service.cluster_summaries()[0]
+        assert row["state"] == "security-pending"
+        assert row["blockers"] and row["blockers"][0].startswith("#1: ")
+        cd = service.cluster_detail(7)
+        assert cd["blockers"] == row["blockers"]
+
+    def test_detail_flags_a_stale_narrative(self, patched):
+        later = (datetime.now(timezone.utc)
+                 + timedelta(minutes=5)).isoformat(timespec="seconds")
+        red = _green(verdict="RED", findings=[{"title": "authz bypass"}],
+                     checked_at=later)
+        prs = {1: _pr(1, analysis=_analysis(), security=red)}
+        clusters = {7: _cluster([prs[1]], outcome="merge-ready")}
+        patched(prs, clusters)
+        cd = service.cluster_detail(7)
+        assert "#1 is now needs-human; the analysis proposed merge" in cd["narrative_stale"]
+        assert "#1 got a RED security verdict after the analysis" in cd["narrative_stale"]
+
+    def test_detail_narrative_fresh_when_facts_match(self, patched):
+        prs = {1: _pr(1, analysis=_analysis(), security=_green(), verify=_verified())}
+        clusters = {7: _cluster([prs[1]], outcome="merge-ready")}
+        patched(prs, clusters)
+        assert service.cluster_detail(7)["narrative_stale"] == []
+
     def test_cluster_summary_includes_pain_score(self, patched):
         pr = _pr(1, issues={"linked": [{"issue": 42, "pain": 0.5, "how": "explicit"}],
                              "checked_at": NOW})

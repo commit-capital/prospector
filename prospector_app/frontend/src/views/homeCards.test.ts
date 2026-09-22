@@ -78,6 +78,13 @@ test("the ready card is the merge-ready standing, oldest first", () => {
   assert.equal(ready.dir, "asc");
 });
 
+test("explorer lanes carry the Home cards' names where the populations overlap", () => {
+  const ready = HOME_CARDS.find((c) => c.key === "ready")!;
+  const yourCall = HOME_CARDS.find((c) => c.key === "your-call")!;
+  assert.ok(LANES.find((l) => l.key === "merge-ready")!.label.includes(ready.title));
+  assert.ok(LANES.find((l) => l.key === "needs-human")!.label.includes(yourCall.title));
+});
+
 test("every lane spec uses only fields the filter UI can represent", () => {
   // The chip bar / column popouts cover these spec fields; a lane must never
   // carry a field the operator can't see or edit after clicking it.

@@ -38,6 +38,20 @@ a:hover { text-decoration: underline; }
 .store-write-block { background: var(--red); color: #fff; padding: 10px 20px;
   text-align: center; font-weight: 700; font-size: 14px; }
 
+/* systemwide health strip (App.tsx HealthStrip) — worker lanes down on any
+   machine + stale ingests, on every page just under the topbar. */
+.health-strip { display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  padding: 4px 20px; font-size: 12.5px; font-weight: 600; text-decoration: none;
+  border-bottom: 1px solid var(--border);
+  width: calc(100% + var(--ap-w, 0)); margin-left: calc(-1 * var(--ap-w, 0)); }
+.health-strip:hover .health-strip-item { text-decoration: underline; }
+.health-strip-amber { color: var(--yellow);
+  background: color-mix(in srgb, var(--yellow) 12%, var(--panel)); }
+.health-strip-red { color: var(--red);
+  background: color-mix(in srgb, var(--red) 10%, var(--panel)); }
+.health-strip-item { display: inline-flex; align-items: center; gap: 6px; }
+.health-strip-sep { opacity: .6; }
+
 /* layout */
 .topbar { display: flex; align-items: center; gap: 24px; padding: 10px 20px;
   background: var(--panel); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 10;
@@ -426,6 +440,10 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .rationale p { margin: 0 0 9px; }
 .rationale p:last-child { margin-bottom: 0; }
 .rationale code { background: var(--panel2); padding: 1px 5px; border-radius: 4px; }
+/* the derived verdict's failing gates, one line per member fact */
+.cluster-blockers { max-width: 72ch; margin: 6px 0; color: var(--text); line-height: 1.6; }
+/* the narrative-staleness callout above the rationale */
+.cluster-narrative-stale { max-width: 72ch; margin: 8px 0 4px; }
 /* one-line TL;DR above the rationale — a scannable headline, not the wall */
 .rationale-tldr { max-width: 72ch; margin: 10px 0 6px; font-size: 13px; line-height: 1.5; color: var(--text); }
 .tldr-label { font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
@@ -675,6 +693,9 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* suggested actions — Control-tab jobs surfaced on the view they feed */
 .suggest-bar { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+/* a reserved slot: one card-height held open while suggestions load (or come
+   back empty), so the table below never shifts once rendered */
+.suggest-slot { min-height: 38px; }
 .suggest-card { display: flex; align-items: center; gap: 10px; background: color-mix(in srgb, var(--gold) 8%, var(--panel)); border: 1px solid var(--gold); border-radius: 8px; padding: 6px 12px; }
 .suggest-card-text { flex: 1; min-width: 0; }
 .suggest-tail { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: ui-monospace, monospace; }
@@ -1140,6 +1161,20 @@ tr.row-done:hover > td { opacity: 1; }
 .pr-table th:first-child, .pr-table td:first-child { width: 26px; text-align: center; }
 .pr-table tbody tr.sel { background: var(--ready-tint); }
 .pr-table .num { color: var(--accent); font-weight: 600; cursor: pointer; }
+/* the title column takes the width the fixed columns leave, on one line */
+.pr-table td.col-title { width: 100%; max-width: 0; }
+.title-cell { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.title-cell .chip { flex: none; }
+.title-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conflict-mark { color: var(--red); }
+/* filters row + the column-visibility menu share one toolbar line */
+.explorer-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; }
+.col-menu { position: relative; }
+.col-menu-dropdown { position: absolute; left: 0; top: calc(100% + 6px); z-index: 900;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 12px; display: flex; flex-direction: column; gap: 4px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .18); }
+.col-menu-row { font-size: 12.5px; white-space: nowrap; }
 
 /* column header layout: label + sort arrow on the left, filter button on the right */
 .th-inner { display: flex; align-items: center; justify-content: space-between; gap: 4px; }
@@ -1359,6 +1394,9 @@ tr.row-done:hover > td { opacity: 1; }
 }
 .home-col { min-width: 0; display: flex; flex-direction: column; gap: 10px; }
 .home-col-head { text-transform: uppercase; letter-spacing: .04em; font-size: 10.5px; }
+/* the workers' column while every worker lane is down: nothing is moving */
+.home-col-stalled .home-col-head { color: var(--red); }
+.home-col-stalled .act-card { opacity: .55; filter: grayscale(.7); }
 .home-breakdown { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 0 12px 8px; }
 .home-breakdown-item { text-decoration: none; color: var(--muted); }
 .home-breakdown-item:hover { color: var(--fg); text-decoration: underline; }

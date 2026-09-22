@@ -169,6 +169,7 @@ export interface ClusterSummary {
   root_problem: string;
   pr_count: number;
   state: ClusterState;
+  blockers: string[];
   outcome: string | null;
   dispositions: Record<string, number>;
   security: SafetyRollup;
@@ -441,6 +442,8 @@ export interface ClusterDetail {
   root_problem: string;
   outcome: string | null;
   state: ClusterState;
+  blockers: string[];
+  narrative_stale: string[];
   rationale: string | null;
   rationale_summary: string | null;
   notes: string | null;
@@ -948,6 +951,27 @@ export interface WorkStatus {
 /** The sandbox-verification queue: PRs currently in flight, plus verify-only
  *  run history from the runs ledger over the selected window. */
 export interface VerifyQueue { queue: VerifyQueueEntry[]; history: AutohuntRun[]; }
+
+/** One problem the health strip names: a lane count, a tripped or offline
+ *  worker, or a stale ingest. `detail` is the hover tooltip. */
+export interface SystemHealthItem {
+  kind: "lanes" | "trip" | "offline" | "ingest";
+  severity: "amber" | "red";
+  label: string;
+  detail?: string | null;
+  host?: string | null;
+}
+
+/** Systemwide health across every machine on this store: worker lanes down
+ *  and stale ingests. `workers_stalled` means every known worker lane is
+ *  down, so nothing "in motion" is actually moving. */
+export interface SystemHealth {
+  severity: "ok" | "amber" | "red";
+  items: SystemHealthItem[];
+  lanes_total: number;
+  lanes_down: number;
+  workers_stalled: boolean;
+}
 
 export interface PRDetail extends PRRow {
   body?: string | null;
@@ -1834,6 +1858,8 @@ export const api = {
     return get<FixQueue>(`/api/fix/queue?${qs}`);
   },
   workStatus: () => get<WorkStatus>("/api/status/now"),
+
+  systemHealth: () => get<SystemHealth>("/api/system-health"),
   /** Reopen a tripped worker lane by the operator's say-so. */
   workerHealthResume: async (host: string, lane: string): Promise<void> => {
     const r = await fetch("/api/worker/health/resume", {
@@ -1860,10 +1886,10 @@ export const api = {
     const r = await fetch(`/api/activity/sync?limit=${limit}`, { method: "POST" });
     return r.json() as Promise<{ synced: boolean; items: ActivityItem[] }>;
   },
-  actionItems: (params: { status?: string; kind?: string } = {}) => {
+  actionItems: (params: { status?: string; kind?: string; limit?: number; offset?: number } = {}) => {
     const qs = new URLSearchParams();
-    for (const [k, v] of Object.entries(params)) if (v) qs.set(k, v);
-    return get<{ items: ActionItem[]; counts: Record<string, number> }>(`/api/action-items?${qs}`);
+    for (const [k, v] of Object.entries(params)) if (v) qs.set(k, String(v));
+    return get<{ items: ActionItem[]; counts: Record<string, number>; total: number }>(`/api/action-items?${qs}`);
   },
   setActionItemStatus: async (id: string, status: string) => {
     const r = await fetch(`/api/action-items/${encodeURIComponent(id)}/status`, {
@@ -2007,6 +2033,10 @@ export interface FirehoseStats {
     author: string | null; closed_at: string | null; reason: string | null;
   }>;
   iss_action_counts: Record<string, number>;
+  // When each corpus was last refreshed from upstream — days after these
+  // stamps carry no ingested data and render hatched, not as zero.
+  ingest_as_of: string | null;
+  issue_ingest_as_of: string | null;
 }
 
 export interface ActivityPerson {
@@ -2019,6 +2049,8 @@ export interface ActivityPerson {
 export interface ActionItem {
   id: string; kind: string; pr: number; summary: string; evidence: string;
   detail: string; status: string; created: string;
+  // rotate-secret only: the evidence reads as a test fixture, not a live leak
+  fixture?: boolean;
   pr_title?: string | null; pr_url?: string | null; pr_author?: string | null;
   pr_summary?: string | null;
 }
@@ -2066,5 +2098,19 @@ export interface RunState {
   done: boolean; undoable: boolean;
 }
 
-export interface JobSpec { kind: string; label: string; needs_cluster: boolean; needs_pr?: boolean; needs_count?: boolean }
+export interface JobSpec {
+  kind: string;
+  label: string;
+  /** One sentence on what the job does. */
+  detail: string;
+  /** Whether the job runs headless agents (costs tokens); false = deterministic. */
+  agentic: boolean;
+  /** When the job's ledger phases last ran; null for jobs with no ledger row. */
+  last_run: string | null;
+  /** Typical whole-run duration from recent ledger history, or null. */
+  typical_seconds: number | null;
+  needs_cluster: boolean;
+  needs_pr?: boolean;
+  needs_count?: boolean;
+}
 export interface JobRec { id: number; kind: string; cluster: number | null; pr?: number | null; count?: number | null; status: "queued" | "running" | "done" | "failed"; label: string; started: string; returncode: number | null }

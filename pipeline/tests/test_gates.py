@@ -452,6 +452,108 @@ class TestClusterState:
         assert gates.cluster_state(c, {1: pr}, today="2026-06-10") != "done"
 
 
+class TestClusterVerdict:
+    """cluster_verdict = cluster_state plus the concrete gates behind it, each
+    naming the member PR."""
+
+    _cluster = TestClusterState._cluster
+
+    def test_security_pending_names_the_member_and_gate(self):
+        pr = _pr(analysis=_merge_analysis())
+        c = self._cluster([pr])
+        state, blockers = gates.cluster_verdict(c, {1: pr}, today="2026-06-10")
+        assert state == "security-pending"
+        assert len(blockers) == 1
+        assert blockers[0].startswith("#1: ") and "SECURITY" in blockers[0]
+
+    def test_needs_analysis_names_the_stale_member(self):
+        pr = _pr(analysis=_merge_analysis(against_head_sha="OLD"))
+        c = self._cluster([pr])
+        state, blockers = gates.cluster_verdict(c, {1: pr}, today="2026-06-10")
+        assert state == "needs-analysis"
+        assert blockers == ["#1's analysis is stale (head moved) — re-run ANALYZE"]
+
+    def test_needs_analysis_names_the_uncovered_member(self):
+        pr = _pr(analysis=_merge_analysis())
+        c = self._cluster([pr], proposals=[])
+        state, blockers = gates.cluster_verdict(c, {1: pr}, today="2026-06-10")
+        assert state == "needs-analysis"
+        assert blockers == ["#1 joined after the analysis — re-run ANALYZE"]
+
+    def test_blocked_on_decision_names_the_needs_human_member(self):
+        pr = _pr(analysis=_merge_analysis(disposition="needs-human", rationale="deps bump"))
+        c = self._cluster([pr])
+        state, blockers = gates.cluster_verdict(c, {1: pr}, today="2026-06-10")
+        assert state == "blocked-on-decision"
+        assert blockers == ["#1 needs a human decision: deps bump"]
+
+    def test_awaiting_authors_names_the_request_changes_member(self):
+        pr = _pr(analysis=_merge_analysis(disposition="request-changes"))
+        c = self._cluster([pr])
+        state, blockers = gates.cluster_verdict(c, {1: pr}, today="2026-06-10")
+        assert state == "awaiting-authors"
+        assert blockers == ["#1 is back to request-changes"]
+
+    def test_ready_and_stored_waiting_outcomes_carry_no_blockers(self):
+        pr = _pr(analysis=_merge_analysis(), security=_green(), verify=_verified())
+        c = self._cluster([pr])
+        assert gates.cluster_verdict(c, {1: pr}, today="2026-06-10") == ("ready", [])
+        waiting = self._cluster([pr], outcome="awaiting-authors")
+        assert gates.cluster_verdict(waiting, {1: pr}, today="2026-06-10") == (
+            "awaiting-authors", [])
+
+    def test_cluster_state_is_the_verdict_state(self):
+        pr = _pr(analysis=_merge_analysis())
+        c = self._cluster([pr])
+        assert gates.cluster_state(c, {1: pr}, today="2026-06-10") == \
+            gates.cluster_verdict(c, {1: pr}, today="2026-06-10")[0]
+
+
+class TestNarrativeStaleness:
+    WRITTEN = "2026-06-01T00:00:00+00:00"
+
+    def _cluster(self, prs, proposals=None, checked_at=WRITTEN):
+        if proposals is None:
+            proposals = [{"pr": r.n, "disposition": "merge"} for r in prs]
+        rec = {"id": 1, "root_problem": "x", "prs": [r.n for r in prs],
+               "outcome": "merge-ready", "proposals": proposals,
+               "checked_at": checked_at}
+        return Cluster(None, rec)
+
+    def test_matching_facts_read_fresh(self):
+        pr = _pr(analysis=_merge_analysis(), security=_green(), verify=_verified())
+        c = self._cluster([pr])
+        assert gates.narrative_staleness(c, {1: pr}) == []
+
+    def test_demoted_pick_and_late_red_verdict_both_flag(self):
+        # The narrative proposed a merge; a RED verdict recorded after it was
+        # written re-routes the pick to needs-human.
+        pr = _pr(analysis=_merge_analysis(),
+                 security=_green(verdict="RED", findings=[{"title": "authz bypass"}]))
+        c = self._cluster([pr])
+        reasons = gates.narrative_staleness(c, {1: pr})
+        assert "#1 is now needs-human; the analysis proposed merge" in reasons
+        assert "#1 got a RED security verdict after the analysis" in reasons
+
+    def test_verdict_recorded_before_the_narrative_does_not_flag_on_time(self):
+        # A YELLOW the analysis already knew about (recorded before it was
+        # written) flags only through the disposition it demotes, never as a
+        # post-analysis verdict.
+        pr = _pr(analysis=_merge_analysis(),
+                 security=_green(verdict="YELLOW", findings=[{"title": "weak check"}],
+                                 checked_at="2026-05-20T00:00:00+00:00"))
+        c = self._cluster([pr])
+        reasons = gates.narrative_staleness(c, {1: pr})
+        assert reasons == ["#1 is now request-changes; the analysis proposed merge"]
+
+    def test_closed_members_are_skipped(self):
+        pr = _pr(analysis=_merge_analysis(),
+                 security=_green(verdict="RED", findings=[{"title": "authz bypass"}]))
+        pr.raw["meta"]["state"] = "merged"
+        c = self._cluster([pr])
+        assert gates.narrative_staleness(c, {1: pr}) == []
+
+
 def test_reconcile_disposition_most_blocking_wins():
     proposals = [
         {"pr": 1, "disposition": "merge", "cluster_id": 10},

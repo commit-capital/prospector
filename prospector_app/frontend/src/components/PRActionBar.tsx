@@ -6,13 +6,9 @@ import { RunBadge } from "./RunBadge";
 import { CommentEditor } from "./CommentEditor";
 import { landed, ExecResultChip } from "./execResult";
 import { StaleOverrideConfirm } from "./FactFreshness";
+import { suggestedAct, suggestedCanonical, type Act } from "../prAction";
 
 const TONE_ICON = { green: "✅", yellow: "✋", red: "⛔", muted: "↪" } as const;
-
-// Every action the operator can take on a PR, in one menu. Reopen is the
-// always-visible ↩ button, not a row.
-type Act = "MERGE" | "APPROVE" | "REQUEST_CHANGES" | "COMMENT"
-  | "CLOSE" | "CLOSE_DUP" | "CLOSE_FIXED" | "CLOSE_STALE" | "CLOSE_OVERSIZED";
 
 const OPTS: { v: Act; label: string }[] = [
   { v: "MERGE", label: "merge" },
@@ -29,25 +25,6 @@ const OPTS: { v: Act; label: string }[] = [
 const isClose = (a: Act) => a.startsWith("CLOSE");
 const isReviewEvent = (a: Act) => a === "APPROVE" || a === "REQUEST_CHANGES" || a === "COMMENT";
 const reviewEvent = (a: Act) => a === "APPROVE" ? "approve" : a === "REQUEST_CHANGES" ? "request-changes" : "comment";
-
-/** The agent's recommended disposition → the matching dropdown action, so the
- *  bar opens pre-selected on what the agent suggests. */
-function suggestedAct(pr: PRDetail): Act {
-  const a = pr.suggestion?.accept;
-  if (!a) return "COMMENT";
-  if (a.kind === "merge") return "MERGE";
-  if (a.kind === "close") return (a.action as Act) || "CLOSE";
-  // review
-  return a.event === "approve" ? "APPROVE" : a.event === "request-changes" ? "REQUEST_CHANGES" : "COMMENT";
-}
-
-/** The canonical PR the agent identified for a close-dup, so the bar opens with
- *  the "#" already filled — and the comment preview cites it — instead of an
- *  empty box that previews the neutral "duplicate during triage" wording (#195). */
-function suggestedCanonical(pr: PRDetail): string {
-  const a = pr.suggestion?.accept;
-  return a?.kind === "close" && a.canonical ? String(a.canonical) : "";
-}
 
 /** One action surface for the PR detail page: comment / approve / request-changes
  *  / merge / close, plus reopen. The agent's recommendation is folded in as the
@@ -216,7 +193,9 @@ export function PRActionBar({ pr, runState, onActed }:
             <span className="btn-stable-label">{fireLabel}</span>
             {busy && <span className="spinner btn-stable-spinner" aria-hidden="true" />}
           </button>
-          <button className="btn-secondary sm" onClick={reopen} disabled={busy} title="Undo: reopen + remove bot comment + withdraw any change request">↩ Reopen</button>
+          {runState?.done && runState.undoable && (
+            <button className="btn-secondary sm" onClick={reopen} disabled={busy} title="Undo: reopen + remove bot comment + withdraw any change request">↩ Reopen</button>
+          )}
           {runState && !result && <RunBadge rs={runState} compact />}
           {result && <ExecResultChip result={result} />}
         </div>
