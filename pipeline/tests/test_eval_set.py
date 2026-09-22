@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from pipeline import profile, prove, verify_driver, verify_gc
+from pipeline import profile, prove, storekit, verify_driver, verify_gc
 from pipeline.evals import eval_set
 from pipeline.evals import issue_fix_replay as replay
 
@@ -136,19 +136,71 @@ def test_the_epoch_falls_back_to_the_last_merge_when_the_dependencies_move_at_on
     assert got == last
 
 
+# --- the set in the ledger ---------------------------------------------------
+
+
+class FakeStore:
+    """A pipeline.store.Store stand-in whose ledger validates each row the way
+    the real one does."""
+
+    def __init__(self) -> None:
+        self.rows: list[dict] = []
+
+    def append_run(self, record: dict) -> None:
+        storekit.parse_run(record)
+        self.rows.append(record)
+
+    def runs(self, limit: int | None = None, since: str | None = None
+             ) -> list[storekit.RunRecord]:
+        rows = self.rows if limit is None else self.rows[-limit:]
+        return [storekit.parse_run(r) for r in rows]
+
+
+@pytest.fixture
+def ledger(monkeypatch) -> FakeStore:
+    fake = FakeStore()
+    monkeypatch.setattr(eval_set, "Store", lambda: fake)
+    monkeypatch.setenv("TRIAGE_REPO", "acme/widgets")
+    return fake
+
+
+def _base_row(sha: str, *verdicts: str) -> dict:
+    return {"base_sha": sha, "span": "span", "fixes": len(verdicts), "qualified_at": "t",
+            "instances": [{"issue": n + 1, "pr": n + 1, "verdict": v, "detail": ""}
+                          for n, v in enumerate(verdicts)]}
+
+
+def test_the_manifest_is_the_ledger_s_latest_row_per_base_for_this_repository(ledger):
+    eval_set.record_base(_base_row("a" * 40, "fair", "r6-red"))
+    eval_set.record_base(_base_row("b" * 40, "fair"))
+    eval_set.record_base(_base_row("a" * 40, "fair", "fair"))
+    ledger.rows.append({"phase": eval_set.BASE_PHASE, "started": "t", "finished": "t",
+                        "stats": {**_base_row("c" * 40, "fair"), "repo": "other/repo"}})
+    manifest = eval_set.load_manifest()
+    assert [b["base_sha"] for b in manifest["bases"]] == ["b" * 40, "a" * 40]
+    assert manifest["fair"] == 3
+
+
+def test_an_import_records_only_the_bases_the_ledger_lacks(ledger, tmp_path):
+    eval_set.record_base(_base_row("a" * 40, "fair"))
+    path = tmp_path / "set.json"
+    path.write_text(json.dumps({"bases": [_base_row("a" * 40, "fair"),
+                                          _base_row("b" * 40, "fair")]}))
+    eval_set.import_file(path)
+    assert [r["stats"]["base_sha"] for r in ledger.rows] == ["a" * 40, "b" * 40]
+
+
 # --- build ------------------------------------------------------------------
 
 
 @pytest.fixture
-def builder(tmp_path, monkeypatch):
+def builder(tmp_path, monkeypatch, ledger):
     """A build over two groups, with GitHub, the pin, the base build and R6 mocked;
     returns the calls it made."""
-    monkeypatch.setattr(eval_set, "MANIFEST", tmp_path / "set.json")
     monkeypatch.setattr(verify_gc, "HELD_FILE", tmp_path / "held-bases")
     monkeypatch.setattr(profile, "active", lambda: profile.RepoProfile())
     pin = prove.PinnedBase(sha="p" * 40, tier=1, image="img", clone=tmp_path / "pin")
     monkeypatch.setattr(prove, "pinned", lambda store: pin)
-    monkeypatch.setattr(eval_set, "Store", lambda: None)
     monkeypatch.setattr(eval_set, "harvest", lambda refresh=False: {"issues": [], "prs": []})
     monkeypatch.setattr(replay, "candidates_from_store", lambda limit=None: [])
     big = [_inst("a" * 40, 1), _inst("a" * 40, 2), _inst("b" * 40, 3)]
@@ -159,7 +211,7 @@ def builder(tmp_path, monkeypatch):
     monkeypatch.setattr(replay, "_date_span", lambda clone, members: "span")
     monkeypatch.setattr(eval_set, "epoch",
                         lambda clone, members, key, head, prof: members[0].merge_sha)
-    calls: dict = {"built": [], "qualified": []}
+    calls: dict = {"built": [], "qualified": [], "lane": []}
     present: set[str] = set()
 
     def held(sha, tier):
@@ -193,7 +245,7 @@ def test_a_build_holds_builds_and_qualifies_one_base_per_group_most_fixes_first(
     _build()
     assert builder["built"] == ["a" * 40, "c" * 40]
     assert verify_gc.held_shas() == frozenset({"a" * 12, "c" * 12})
-    manifest = json.loads(eval_set.MANIFEST.read_text())
+    manifest = eval_set.load_manifest()
     assert [b["base_sha"] for b in manifest["bases"]] == ["a" * 40, "c" * 40]
     assert manifest["fair"] == 3  # issues 1, 3 and 5
     assert manifest["bases"][0]["instances"][0] == {"issue": 1, "pr": 1, "verdict": "fair",
@@ -210,9 +262,56 @@ def test_a_build_resumes_past_the_bases_the_manifest_names(builder):
 def test_a_dry_run_builds_nothing(builder):
     _build(dry_run=True)
     assert builder["built"] == [] and builder["qualified"] == []
-    assert not eval_set.MANIFEST.exists()
+    assert eval_set.load_manifest()["bases"] == []
 
 
 def test_groups_below_the_minimum_fixes_are_left_out(builder):
     _build(min_fixes=3)
     assert builder["qualified"] == ["a" * 40]
+
+
+# --- run and scorecard --------------------------------------------------------
+
+
+def test_the_scorecard_reads_precision_over_proposals_and_coverage_over_bugs():
+    records = [
+        {"issue": 1, "ending": "fixed", "oracle_pass": True, "agent_runs": 5, "seconds": 10.0},
+        {"issue": 1, "ending": "fixed", "oracle_pass": False, "contract_mismatch": True},
+        {"issue": 2, "ending": "fixed", "oracle_pass": False},
+        {"issue": 2, "ending": "not-a-defect"},
+        {"issue": 3, "ending": "agent-unavailable"},
+    ]
+    card = eval_set.scorecard(records, bugs=3)
+    assert (card["runs"], card["scored"], card["faults"]) == (5, 4, 1)
+    assert (card["proposed"], card["correct"]) == (3, 2)
+    assert card["precision"] == 0.667
+    assert card["coverage"] == 0.667  # bugs 1 and 2 got a proposal
+    assert card["bugs_correct"] == 1
+
+
+def test_a_run_replays_each_fair_bug_once_per_pass_and_resumes(builder, ledger, tmp_path,
+                                                                monkeypatch):
+    monkeypatch.setattr(eval_set.settings, "verify_scratch", lambda: tmp_path / "vs")
+    _build()
+    ran: list[tuple[int, str]] = []
+
+    def run_instance(inst, *, base, base_sha, profile, workdir, run_lane, judge_contract):
+        ran.append((inst.issue, base_sha))
+        return {"issue": inst.issue, "pr": inst.pr, "ending": "fixed", "oracle_pass": True,
+                "seconds": 1.0, "agent_runs": 4}
+
+    monkeypatch.setattr(replay, "run_instance", run_instance)
+    assert eval_set.run(name="base", passes=2, concurrency=1, refresh=False, issues=None,
+                        resume=False) == 0
+    assert sorted(ran) == [(1, "a" * 40), (1, "a" * 40), (3, "a" * 40), (3, "a" * 40),
+                           (5, "c" * 40), (5, "c" * 40)]
+    runs = [r["stats"] for r in ledger.rows if r["phase"] == "replay:instance"]
+    assert sorted({s["run_id"] for s in runs}) == ["base-p1", "base-p2"]
+    card = [r["stats"] for r in ledger.rows if r["phase"] == eval_set.RUN_PHASE][-1]
+    assert (card["proposed"], card["precision"], card["coverage"]) == (6, 1.0, 1.0)
+    assert (tmp_path / "vs" / "replay" / "base" / "scorecard.md").exists()
+
+    ran.clear()
+    eval_set.run(name="base", passes=2, concurrency=1, refresh=False, issues=None,
+                 resume=False)
+    assert ran == []

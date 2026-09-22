@@ -133,22 +133,32 @@ pilot's numbers — reproduced, fix rate, oracle pass, false accepts, and wall-t
 and agent runs per instance — gate whether the lane goes live.
 
 The **evaluation set** is the frozen yardstick the lane is measured against,
-built by `pipeline/evals/eval_set.py`:
+built and run by `pipeline/evals/eval_set.py`:
 
 ```bash
-uv run python -m pipeline.evals.eval_set --dry-run   # the plan: groups, fixes, epochs
-uv run python -m pipeline.evals.eval_set             # build until 40 fair bugs (--target)
+uv run python -m pipeline.evals.eval_set build --dry-run   # the plan: groups, fixes, epochs
+uv run python -m pipeline.evals.eval_set build             # build until 40 fair bugs (--target)
+uv run python -m pipeline.evals.eval_set run --name <run>  # every fair bug x 3 passes, scored
 ```
 
-It harvests every closed issue and merged PR from GitHub (cached under
+`build` harvests every closed issue and merged PR from GitHub (cached under
 `<verify scratch>/replay/eval-harvest.json`, `--refresh` to re-read), joins the
 issue store's own candidates, and screens and groups them as `plan` does. Each
 dependency group, most distinct fixes first, gets one base built at its epoch —
 the first commit after the group's last fixing merge whose dependencies still
 match, so the base holds every fix and equals none — held against the verify
-sweep (`verify_gc.hold`). Its bugs are qualified without an agent, and every
-verdict is written to `pipeline/evals/data/issue_fix_eval_set.json`, the
-committed manifest. A build resumes past the bases the manifest names.
+sweep (`verify_gc.hold`). Its bugs are qualified without an agent, and the
+base's verdicts are appended to the runs ledger as an `eval-set:base` row: the
+set is deployment data, so it lives in the store, never the tree. A build
+resumes past the bases the ledger names.
+
+`run` replays every fair bug through the lane `--passes` times (default 3),
+each pass its own replay run id `<run>-p<k>`, `--concurrency` instances at a
+time, and writes `<verify scratch>/replay/<run>/scorecard.md` plus an
+`eval-set:run` ledger row: runs that proposed a fix (ended `fixed`), how many of
+those the hidden oracle accepts or refuses only on the maintainers' own contract
+(precision), and how many bugs got a proposal at all (coverage). Re-invoking
+continues a run; `--resume` re-runs its machine faults.
 
 A PR's tests encode the maintainers' design as well as the bug, so when they
 refuse a fix the scorer asks a blind judge (`pipeline/evals/oracle_contract.py`,
