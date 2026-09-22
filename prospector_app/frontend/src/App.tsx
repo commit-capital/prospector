@@ -95,7 +95,7 @@ const VIEW_NAMES: [string, string][] = [
   ["/pipeline/data", "Data"],
   ["/pipeline", "Pipeline"],
   ["/welcome", "First-time setup"],
-  ["/", "Inbox"],
+  ["/", "Home"],
 ];
 
 function viewName(pathname: string): string {
@@ -577,7 +577,7 @@ function Nav() {
   }
   return (
     <nav>
-      <NavLink to="/" end>Inbox</NavLink>
+      <NavLink to="/" end>Home</NavLink>
       <NavLink to="/prs">PRs</NavLink>
       <NavLink to="/issues">Issues</NavLink>
       <NavLink to="/security">Security</NavLink>
