@@ -90,6 +90,7 @@ const VIEW_NAMES: [string, string][] = [
   ["/security/actions", "Action Items"],
   ["/security", "Security"],
   ["/pipeline/activity", "Activity"],
+  ["/pipeline/policy", "Policy"],
   ["/pipeline/setup", "Machines & policy"],
   ["/pipeline/data", "Data"],
   ["/pipeline", "Pipeline"],
@@ -118,6 +119,7 @@ const SUB_NAVS: { prefix: string; tabs: { to: string; label: string; end?: boole
   { prefix: "/pipeline", tabs: [
     { to: "/pipeline/control", label: "Health & queues" },
     { to: "/pipeline/activity", label: "Throughput & audit" },
+    { to: "/pipeline/policy", label: "Policy" },
     { to: "/pipeline/setup", label: "Machines & policy" },
     { to: "/pipeline/data", label: "Data" },
   ] },

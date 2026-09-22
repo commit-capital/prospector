@@ -918,6 +918,16 @@ html.ap-resizing .agentpane { transition: none; }
 .fresh-callout div + div { margin-top: 4px; }
 .fresh-refreshed { font-size: 11.5px; }
 
+/* The Policy page's trust ladder: one row per autonomous action type, its
+   earned rung highlighted among the four. */
+.trust-table { width: 100%; max-width: 980px; border-collapse: collapse; font-size: 12.5px; margin: 10px 0; }
+.trust-table th { text-align: left; font-weight: 600; color: var(--muted);
+  padding: 4px 8px; border-bottom: 1px solid var(--border); }
+.trust-table td { padding: 7px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.trust-table tr:last-child td { border-bottom: none; }
+.trust-rungs { display: inline-flex; gap: 4px; }
+.trust-rung-off { opacity: .45; }
+
 /* Per-fact provenance: when each pipeline fact was computed and which commit
    it describes, so a recommendation can be dated before it's acted on. */
 .facts-table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 8px; }
