@@ -384,7 +384,57 @@
      "detail": "its fix touches a tier-0 path: server/src/services/heartbeat.ts"
     }
    ]
+  },
+  {
+   "base_sha": "aad97d93fed01dae178eb9f1805f345a4d43e690",
+   "span": "2026-08-14..2026-08-18",
+   "fixes": 6,
+   "qualified_at": "2026-09-22T22:23:33+00:00",
+   "instances": [
+    {
+     "issue": 684,
+     "pr": 9500,
+     "verdict": "fair",
+     "detail": "green exit 0/0: \u001b[2m   Start at \u001b[22m 22:22:32 | \u001b[2m   Duration \u001b[22m 6.61s\u001b[2m (transform 332ms, setup 26ms, import 401ms, tests 6.08s, environment 0ms)\u001b[22m"
+    },
+    {
+     "issue": 4758,
+     "pr": 4771,
+     "verdict": "fair",
+     "detail": "green exit 0/0: \u001b[2m   Start at \u001b[22m 22:22:57 | \u001b[2m   Duration \u001b[22m 18.26s\u001b[2m (transform 1.29s, setup 38ms, import 2.29s, tests 15.88s, environment 0ms)\u001b[22m"
+    },
+    {
+     "issue": 1314,
+     "pr": 11589,
+     "verdict": "fix-path-withheld",
+     "detail": "its fix touches a tier-0 path: server/src/middleware/auth.ts"
+    },
+    {
+     "issue": 2444,
+     "pr": 9500,
+     "verdict": "duplicate-pr",
+     "detail": "another issue already measures this fix"
+    },
+    {
+     "issue": 8246,
+     "pr": 9917,
+     "verdict": "fix-path-withheld",
+     "detail": "its fix touches a tier-0 path: server/src/services/heartbeat.ts"
+    },
+    {
+     "issue": 9209,
+     "pr": 9237,
+     "verdict": "r6-green",
+     "detail": "green exit 20/None: \u001b[2minclude: \u001b[22m\u001b[33m**/*.{test,spec}.?(c|m)[jt]s?(x)\u001b[39m | \u001b[2mexclude:  \u001b[22m\u001b[33m**/node_modules/**\u001b[2m, \u001b[22m**/.git/**\u001b[39m"
+    },
+    {
+     "issue": 11476,
+     "pr": 11478,
+     "verdict": "r6-red",
+     "detail": "red exit 0/None: \u001b[2m   Start at \u001b[22m 22:23:03 | \u001b[2m   Duration \u001b[22m 4.91s\u001b[2m (transform 1.06s, setup 28ms, import 2.52s, tests 1.37s, environment 694ms)\u001b[22m"
+    }
+   ]
   }
  ],
- "fair": 19
+ "fair": 21
 }
