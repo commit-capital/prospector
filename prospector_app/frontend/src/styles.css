@@ -1434,6 +1434,18 @@ tr.row-done:hover > td { opacity: 1; }
 .home { max-width: 2200px; }
 .home-head { margin-bottom: 16px; }
 .home-head h2 { margin: 0 0 4px; }
+.home-progress { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
+.home-tile { flex: 1; min-width: 168px; padding: 10px 12px; text-decoration: none;
+  display: flex; flex-direction: column; gap: 2px; }
+.home-tile:hover { text-decoration: none; border-color: var(--muted); }
+.home-tile-top { display: flex; align-items: baseline; gap: 8px; }
+.home-tile-n { line-height: 1.1; }
+.home-tile-delta.good { color: var(--green); }
+.home-tile-delta.bad { color: var(--yellow); }
+.home-tile-spark path { stroke: var(--accent); stroke-width: 1.5; }
+.home-tile-stale { fill: var(--muted); opacity: .18; }
+.home-tile-sub { line-height: 1.3; }
+.home-progress-stale { flex-basis: 100%; margin-top: -4px; }
 .home-columns {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(min(430px, 100%), 1fr));
   gap: 12px; align-items: start; margin-bottom: 10px;

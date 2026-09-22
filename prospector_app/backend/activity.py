@@ -431,7 +431,7 @@ def summarize(events, *, group_by: str = "day", include_dry_run: bool = False,
             continue
         if operator and (ev.get("operator") or "—") != operator:
             continue
-        day = _local_day(ev.get("at"), local_tz)
+        day = local_day(ev.get("at"), local_tz)
         if since and day and day < since:
             continue
         if until and day and day > until:
@@ -458,7 +458,7 @@ def summarize(events, *, group_by: str = "day", include_dry_run: bool = False,
     }
 
 
-def _local_day(stamp: str | None, tz: tzinfo) -> str:
+def local_day(stamp: str | None, tz: tzinfo) -> str:
     """The calendar day of a UTC-stamped ISO timestamp in timezone ``tz``.
 
     The store stamps every ``at`` / ``created_at`` in UTC, but the app shows
@@ -512,13 +512,13 @@ def firehose_stats(
 
     pr_incoming: dict[str, int] = {d: 0 for d in days}
     for rec in prs.values():
-        day = _local_day(rec.created_at, local_tz)
+        day = local_day(rec.created_at, local_tz)
         if day in day_set:
             pr_incoming[day] += 1
 
     iss_incoming: dict[str, int] = {d: 0 for d in days}
     for iss in issues:
-        day = _local_day(iss.get("created_at"), local_tz)
+        day = local_day(iss.get("created_at"), local_tz)
         if day in day_set:
             iss_incoming[day] += 1
 
@@ -533,7 +533,7 @@ def firehose_stats(
         if not is_landed(ev):
             continue
         kind = ev.get("kind")
-        day = _local_day(ev.get("at"), local_tz)
+        day = local_day(ev.get("at"), local_tz)
         if kind == "issue-close":
             if day in iss_closed:
                 iss_closed[day] += 1

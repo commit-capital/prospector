@@ -4,6 +4,7 @@ import {
   api, type AdvisoryQueryResult, type AlertQueryResult, type AutonomousItem, type IssueRow,
   type PRRow, type QueryResult,
 } from "../api";
+import { HomeProgressRow } from "../components/HomeProgressRow";
 import { LinkedIssues } from "../components/LinkedIssues";
 import { PRLink } from "../components/PRLink";
 import { useIssueFlyout } from "../useIssueFlyout";
@@ -541,6 +542,7 @@ export default function Home() {
           automation handed it back. Each card samples its highest-pain members and opens the matching view.
         </div>
       </div>
+      <HomeProgressRow />
       {err && <div className="error">Failed to load PRs: {err}</div>}
       {loading && <SkeletonRows label="Loading PR data…" />}
       <div className="home-columns">
