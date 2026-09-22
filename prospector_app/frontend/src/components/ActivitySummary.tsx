@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { api, type ActivitySummary as Sum, type ActivityBucket, type ActivityProgress, type IssueActivityProgress, type FirehoseStats, type ActivityPerson, type ActivityScopeParams } from "../api";
 import { useRepoMeta } from "../RepoMetaContext";
+import { localDateTime, timeAgo } from "../timeAgo";
 
 const RANGE_OPTIONS = [
   { label: "7 days", days: 7, allTime: false },
@@ -43,6 +44,36 @@ function fmtDate(iso: string | null | undefined): string {
   return iso.slice(0, 10);
 }
 
+// The index of the first chart day with no ingested data — the day after the
+// last successful ingest. null when every day is covered, or when the corpus
+// has never been ingested at all (there is no fresh region to contrast with).
+function staleFromIndex(days: string[], asOf: string | null | undefined): number | null {
+  if (!asOf) return null;
+  const t = Date.parse(asOf);
+  if (Number.isNaN(t)) return null;
+  const asOfDay = localDay(new Date(t));
+  const idx = days.findIndex((d) => d > asOfDay);
+  return idx === -1 ? null : idx;
+}
+
+// A day label renders on every labelStep-th day plus the final day; a step
+// label within half a step of the final one is dropped so the two never
+// collide at the axis's right edge.
+function showDayLabel(i: number, n: number, labelStep: number): boolean {
+  if (i === n - 1) return true;
+  return i % labelStep === 0 && n - 1 - i >= Math.ceil(labelStep / 2);
+}
+
+/** "as of ingest 3h" marker for a chart or count built from ingested data. */
+function AsOfIngest({ stamp }: { stamp: string | null }) {
+  return (
+    <span className="muted small"
+      title={stamp ? `last successful ingest: ${localDateTime(stamp)}` : "no successful ingest recorded"}>
+      {stamp ? `as of ingest ${timeAgo(stamp)}` : "no ingest yet"}
+    </span>
+  );
+}
+
 // ── Shared SVG chart primitives ───────────────────────────────────────────────
 
 interface VelSeries {
@@ -51,23 +82,34 @@ interface VelSeries {
   color: string;
   values: number[];
   dashed?: boolean;
+  // Index of the first day past the series' last successful ingest. Values
+  // from here on are absences, not zeros: the line/bars stop and the region
+  // is hatched. undefined/null when every day carries real data.
+  staleFrom?: number | null;
 }
 
-// Daily series — cumulative is rendered separately in its own chart.
+// Daily series — cumulative is rendered separately in its own chart. `ingest`
+// names the corpus whose ingest stamp bounds the series' data; the triage-action
+// series come from the app's own activity log and are always current.
 const VEL_SERIES_META = [
-  { key: "pr_incoming",  label: "PRs opened",             color: "var(--gold)" },
-  { key: "pr_merged",    label: "PRs merged",              color: "var(--green)" },
-  { key: "pr_closed",    label: "PRs closed (no merge)",   color: "var(--accent)" },
-  { key: "iss_incoming", label: "Issues opened",           color: "var(--purple)" },
-  { key: "iss_closed",   label: "Issues closed",           color: "var(--muted)" },
+  { key: "pr_incoming",  label: "PRs opened",             color: "var(--gold)",   ingest: "pr" },
+  { key: "pr_merged",    label: "PRs merged",              color: "var(--green)",  ingest: null },
+  { key: "pr_closed",    label: "PRs closed (no merge)",   color: "var(--accent)", ingest: null },
+  { key: "iss_incoming", label: "Issues opened",           color: "var(--purple)", ingest: "iss" },
+  { key: "iss_closed",   label: "Issues closed",           color: "var(--muted)",  ingest: null },
 ] as const;
 
 function buildDailySeries(fh: FirehoseStats): VelSeries[] {
+  const staleIdx = {
+    pr: staleFromIndex(fh.days, fh.ingest_as_of),
+    iss: staleFromIndex(fh.days, fh.issue_ingest_as_of),
+  };
   return VEL_SERIES_META.map((m) => ({
     key: m.key,
     label: m.label,
     color: m.color,
     values: fh[m.key as keyof FirehoseStats] as number[],
+    staleFrom: m.ingest ? staleIdx[m.ingest] : null,
   }));
 }
 
@@ -94,6 +136,7 @@ function buildCumulativeSeries(fh: FirehoseStats): VelSeries[] {
       label: "Cumulative open PRs (net change)",
       color: "#e26d5a",
       values: prCumulative.map((v) => v - prMin),
+      staleFrom: staleFromIndex(fh.days, fh.ingest_as_of),
     },
     {
       key: "cumulative_issues",
@@ -101,8 +144,41 @@ function buildCumulativeSeries(fh: FirehoseStats): VelSeries[] {
       color: "var(--purple)",
       dashed: true,
       values: issCumulative.map((v) => v - issMin),
+      staleFrom: staleFromIndex(fh.days, fh.issue_ingest_as_of),
     },
   ];
+}
+
+// ── Stale-region helpers shared by the charts ─────────────────────────────────
+
+// A series' value at day `i`, or null past its last ingest — an absence, not a zero.
+function valAt(s: VelSeries, i: number): number | null {
+  return s.staleFrom != null && i >= s.staleFrom ? null : (s.values[i] ?? 0);
+}
+
+// The chart-level start of the stale region: the earliest staleFrom across the
+// series. null when no series goes stale inside the window.
+function chartStaleFrom(series: VelSeries[]): number | null {
+  const idxs = series.map((s) => s.staleFrom).filter((v): v is number => v != null);
+  return idxs.length ? Math.min(...idxs) : null;
+}
+
+/** Diagonal hatching over the days past the last successful ingest. */
+function StaleHatch({ x, width, y, height, patternId }:
+  { x: number; width: number; y: number; height: number; patternId: string }) {
+  if (width <= 0) return null;
+  return (
+    <>
+      <defs>
+        <pattern id={patternId} width={6} height={6} patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+          <line x1={0} y1={0} x2={0} y2={6} stroke="var(--muted)" strokeWidth={1} opacity={0.4} />
+        </pattern>
+      </defs>
+      <rect x={x} y={y} width={width} height={height} fill={`url(#${patternId})`}>
+        <title>after the last successful ingest — no data</title>
+      </rect>
+    </>
+  );
 }
 
 // ── Reusable SVG line chart ───────────────────────────────────────────────────
@@ -111,6 +187,7 @@ function LineChart({ series, days, height = 160 }: { series: VelSeries[]; days: 
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   const [hidden, setHidden] = useState<Set<string>>(new Set());
   const containerRef = useRef<HTMLDivElement>(null);
+  const patternId = useId();
 
   const W = 800, H = height;
   const PAD = { top: 8, right: 10, bottom: 26, left: 36 };
@@ -120,12 +197,15 @@ function LineChart({ series, days, height = 160 }: { series: VelSeries[]; days: 
 
   const visibleSeries = series.filter((s) => !hidden.has(s.key));
   const maxVal = Math.max(1, ...visibleSeries.flatMap((s) => s.values));
+  const staleFrom = chartStaleFrom(series);
 
   const toX = (i: number) => PAD.left + (n <= 1 ? pw / 2 : (i / (n - 1)) * pw);
   const toY = (v: number) => PAD.top + ph - Math.max(0, Math.min(1, v / maxVal)) * ph;
 
-  const pathFor = (values: number[]) =>
-    values.map((v, i) => `${i === 0 ? "M" : "L"} ${toX(i).toFixed(1)},${toY(v).toFixed(1)}`).join(" ");
+  // A stale series' line stops at its last real point instead of dropping to zero.
+  const pathFor = (s: VelSeries) =>
+    s.values.slice(0, s.staleFrom ?? s.values.length)
+      .map((v, i) => `${i === 0 ? "M" : "L"} ${toX(i).toFixed(1)},${toY(v).toFixed(1)}`).join(" ");
 
   const labelStep = Math.max(1, Math.ceil(n / 8));
   const yMax = maxVal;
@@ -167,8 +247,12 @@ function LineChart({ series, days, height = 160 }: { series: VelSeries[]; days: 
         })}
         <line x1={PAD.left} y1={PAD.top + ph} x2={PAD.left + pw} y2={PAD.top + ph}
           stroke="var(--border)" strokeWidth={1} />
+        {staleFrom !== null && (() => {
+          const x0 = staleFrom <= 0 ? PAD.left : toX(staleFrom - 0.5);
+          return <StaleHatch x={x0} width={PAD.left + pw - x0} y={PAD.top} height={ph} patternId={patternId} />;
+        })()}
         {days.map((d, i) => {
-          if (i % labelStep !== 0 && i !== n - 1) return null;
+          if (!showDayLabel(i, n, labelStep)) return null;
           return (
             <text key={d} x={toX(i)} y={H - 5} textAnchor="middle"
               fill="var(--muted)" fontSize={8.5}>
@@ -177,7 +261,7 @@ function LineChart({ series, days, height = 160 }: { series: VelSeries[]; days: 
           );
         })}
         {series.filter((s) => !hidden.has(s.key)).map((s) => (
-          <path key={s.key} d={pathFor(s.values)}
+          <path key={s.key} d={pathFor(s)}
             stroke={s.color} fill="none" strokeWidth={1.5}
             strokeDasharray={s.dashed ? "5,3" : undefined}
             strokeLinecap="round" strokeLinejoin="round" />
@@ -186,7 +270,7 @@ function LineChart({ series, days, height = 160 }: { series: VelSeries[]; days: 
           <line x1={toX(hoverIdx)} y1={PAD.top} x2={toX(hoverIdx)} y2={PAD.top + ph}
             stroke="var(--muted)" strokeWidth={0.5} strokeDasharray="3,3" />
         )}
-        {hoverIdx !== null && series.filter((s) => !hidden.has(s.key)).map((s) => (
+        {hoverIdx !== null && series.filter((s) => !hidden.has(s.key) && valAt(s, hoverIdx) !== null).map((s) => (
           <circle key={s.key} cx={toX(hoverIdx)} cy={toY(s.values[hoverIdx])}
             r={3} fill={s.color} />
         ))}
@@ -197,11 +281,12 @@ function LineChart({ series, days, height = 160 }: { series: VelSeries[]; days: 
           <div className="vel-tooltip-date">{days[hoverIdx]}</div>
           {series.map((s) => {
             const isHidden = hidden.has(s.key);
+            const v = valAt(s, hoverIdx);
             return (
               <div key={s.key} className={`vel-tooltip-row${isHidden ? " vel-tooltip-row-hidden" : ""}`}>
                 <span className="vel-swatch" style={{ background: s.color, opacity: isHidden ? 0.3 : 1 }} />
                 <span className="vel-tooltip-label">{s.label}</span>
-                <span className="vel-tooltip-val">{isHidden ? "—" : s.values[hoverIdx]}</span>
+                <span className="vel-tooltip-val">{isHidden ? "—" : v === null ? "no ingest" : v}</span>
               </div>
             );
           })}
@@ -237,6 +322,7 @@ function BarChart({ series, days, height = 160 }: { series: VelSeries[]; days: s
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   const [hidden, setHidden] = useState<Set<string>>(new Set());
   const containerRef = useRef<HTMLDivElement>(null);
+  const patternId = useId();
 
   const W = 800, H = height;
   const PAD = { top: 8, right: 10, bottom: 26, left: 36 };
@@ -245,9 +331,10 @@ function BarChart({ series, days, height = 160 }: { series: VelSeries[]; days: s
   const n = days.length;
 
   const visibleSeries = series.filter((s) => !hidden.has(s.key));
+  const staleFrom = chartStaleFrom(series);
 
-  // Stacked bar: sum all visible series per day
-  const stackTotals = days.map((_, i) => visibleSeries.reduce((sum, s) => sum + (s.values[i] ?? 0), 0));
+  // Stacked bar: sum all visible series per day; a stale day contributes nothing.
+  const stackTotals = days.map((_, i) => visibleSeries.reduce((sum, s) => sum + (valAt(s, i) ?? 0), 0));
   const maxVal = Math.max(1, ...stackTotals);
 
   const barW = n > 1 ? Math.max(1, (pw / n) * 0.8) : pw * 0.6;
@@ -293,8 +380,12 @@ function BarChart({ series, days, height = 160 }: { series: VelSeries[]; days: s
         })}
         <line x1={PAD.left} y1={PAD.top + ph} x2={PAD.left + pw} y2={PAD.top + ph}
           stroke="var(--border)" strokeWidth={1} />
+        {staleFrom !== null && (() => {
+          const x0 = PAD.left + Math.max(0, staleFrom) * barGap;
+          return <StaleHatch x={x0} width={PAD.left + pw - x0} y={PAD.top} height={ph} patternId={patternId} />;
+        })()}
         {days.map((d, i) => {
-          if (i % labelStep !== 0 && i !== n - 1) return null;
+          if (!showDayLabel(i, n, labelStep)) return null;
           return (
             <text key={d} x={toX(i) + barW / 2} y={H - 5} textAnchor="middle"
               fill="var(--muted)" fontSize={8.5}>
@@ -307,7 +398,7 @@ function BarChart({ series, days, height = 160 }: { series: VelSeries[]; days: s
           return (
             <g key={i} opacity={hoverIdx === i ? 1 : 0.85}>
               {visibleSeries.map((s) => {
-                const v = s.values[i] ?? 0;
+                const v = valAt(s, i) ?? 0;
                 if (v === 0) return null;
                 const h = toH(v);
                 yOffset -= h;
@@ -330,11 +421,12 @@ function BarChart({ series, days, height = 160 }: { series: VelSeries[]; days: s
           <div className="vel-tooltip-date">{days[hoverIdx]}</div>
           {series.map((s) => {
             const isHidden = hidden.has(s.key);
+            const v = valAt(s, hoverIdx);
             return (
               <div key={s.key} className={`vel-tooltip-row${isHidden ? " vel-tooltip-row-hidden" : ""}`}>
                 <span className="vel-swatch" style={{ background: s.color, opacity: isHidden ? 0.3 : 1 }} />
                 <span className="vel-tooltip-label">{s.label}</span>
-                <span className="vel-tooltip-val">{isHidden ? "—" : s.values[hoverIdx]}</span>
+                <span className="vel-tooltip-val">{isHidden ? "—" : v === null ? "no ingest" : v}</span>
               </div>
             );
           })}
@@ -366,7 +458,9 @@ function BarChart({ series, days, height = 160 }: { series: VelSeries[]; days: s
 // ── Stat card ─────────────────────────────────────────────────────────────────
 
 interface StatCardProps {
-  n: number;
+  // "—" when the tile's whole window falls after the last successful ingest,
+  // where a 0 would read as real data.
+  n: number | string;
   label: string;
   lead?: boolean;
   muted?: boolean;
@@ -479,6 +573,19 @@ export function ActivitySummary({ onQuickFilter }: ActivitySummaryProps) {
   if (!day) return <div className="muted small pad-sm">Loading metrics…</div>;
 
   const fhTotals = firehose?.totals;
+  // Staleness of the ingested (upstream) counts: a window that falls entirely
+  // after the last successful ingest has no data, so its tile shows "—".
+  const prStaleIdx = firehose ? staleFromIndex(firehose.days, firehose.ingest_as_of) : null;
+  const issStaleIdx = firehose ? staleFromIndex(firehose.days, firehose.issue_ingest_as_of) : null;
+  const weekStale = (idx: number | null) => firehose != null && idx !== null && idx <= firehose.days.length - 7;
+  const upstreamCount = (n: number | undefined, allStale: boolean) => (allStale ? "—" : n ?? 0);
+  // The chart mixes both corpora; its marker carries the older applicable stamp.
+  const chartStamps = firehose
+    ? [firehose.ingest_as_of, ...(showIssues ? [firehose.issue_ingest_as_of] : [])]
+    : [];
+  const chartIngestAt = chartStamps.length && !chartStamps.some((s) => !s)
+    ? chartStamps.reduce((a, b) => (a! < b! ? a : b))
+    : null;
   const reopened = firehose?.reopened_after_close ?? [];
   const reopenedPageCount = Math.max(1, Math.ceil(reopened.length / REOPENED_PAGE_SIZE));
   const reopenedClampedPage = Math.min(reopenedPage, reopenedPageCount - 1);
@@ -615,14 +722,16 @@ export function ActivitySummary({ onQuickFilter }: ActivitySummaryProps) {
 
       {/* PR stat cards from upstream GitHub firehose */}
       {showIncoming && <div className="act-cards-section">
-        <div className="act-cards-label muted small">Upstream · PRs</div>
+        <div className="act-cards-label muted small">
+          Upstream · PRs{firehose && <> · <AsOfIngest stamp={firehose.ingest_as_of} /></>}
+        </div>
         <div className="act-cards">
           {fhTotals ? (
             <>
-              <StatCard n={fhTotals.pr_incoming_7d} label="PRs opened this week"
-                color="var(--gold)" />
-              <StatCard n={fhTotals.pr_incoming_nd} label={`PRs opened (${rangeOpt.label})`}
-                color="var(--gold)" muted />
+              <StatCard n={upstreamCount(fhTotals.pr_incoming_7d, weekStale(prStaleIdx))}
+                label="PRs opened this week" color="var(--gold)" />
+              <StatCard n={upstreamCount(fhTotals.pr_incoming_nd, prStaleIdx === 0)}
+                label={`PRs opened (${rangeOpt.label})`} color="var(--gold)" muted />
             </>
           ) : (
             <>
@@ -635,14 +744,16 @@ export function ActivitySummary({ onQuickFilter }: ActivitySummaryProps) {
 
       {/* Issue stat cards from upstream GitHub firehose */}
       {showIncoming && showIssues && <div className="act-cards-section">
-        <div className="act-cards-label muted small">Upstream · Issues</div>
+        <div className="act-cards-label muted small">
+          Upstream · Issues{firehose && <> · <AsOfIngest stamp={firehose.issue_ingest_as_of} /></>}
+        </div>
         <div className="act-cards">
           {fhTotals ? (
             <>
-              <StatCard n={fhTotals.iss_incoming_7d} label="issues opened this week"
-                color="var(--purple)" />
-              <StatCard n={fhTotals.iss_incoming_nd} label={`issues opened (${rangeOpt.label})`}
-                color="var(--purple)" muted />
+              <StatCard n={upstreamCount(fhTotals.iss_incoming_7d, weekStale(issStaleIdx))}
+                label="issues opened this week" color="var(--purple)" />
+              <StatCard n={upstreamCount(fhTotals.iss_incoming_nd, issStaleIdx === 0)}
+                label={`issues opened (${rangeOpt.label})`} color="var(--purple)" muted />
             </>
           ) : (
             <>
@@ -658,6 +769,7 @@ export function ActivitySummary({ onQuickFilter }: ActivitySummaryProps) {
         <div className="act-firehose-head">
           <span className="act-chart-title muted small">
             {who ? "daily triage activity" : "upstream daily activity"}
+            {showIncoming && firehose && <> · <AsOfIngest stamp={chartIngestAt} /></>}
           </span>
           <div className="act-range-picker">
             {RANGE_OPTIONS.map((opt) => (
@@ -703,7 +815,7 @@ export function ActivitySummary({ onQuickFilter }: ActivitySummaryProps) {
                 <div className="act-breakdown-grid">
                   {showIncoming && (
                     <div className="act-breakdown-item">
-                      <div className="act-breakdown-n" style={{ color: "var(--gold)" }}>{fhTotals?.pr_incoming_nd ?? 0}</div>
+                      <div className="act-breakdown-n" style={{ color: "var(--gold)" }}>{upstreamCount(fhTotals?.pr_incoming_nd, prStaleIdx === 0)}</div>
                       <div className="act-breakdown-l">Opened</div>
                     </div>
                   )}
@@ -729,7 +841,7 @@ export function ActivitySummary({ onQuickFilter }: ActivitySummaryProps) {
                     <div className="act-breakdown-grid">
                       {showIncoming && (
                         <div className="act-breakdown-item">
-                          <div className="act-breakdown-n" style={{ color: "var(--purple)" }}>{fhTotals?.iss_incoming_nd ?? 0}</div>
+                          <div className="act-breakdown-n" style={{ color: "var(--purple)" }}>{upstreamCount(fhTotals?.iss_incoming_nd, issStaleIdx === 0)}</div>
                           <div className="act-breakdown-l">Opened</div>
                         </div>
                       )}
