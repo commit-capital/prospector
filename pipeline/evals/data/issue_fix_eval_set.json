@@ -546,7 +546,45 @@
      "detail": "its tests import buildAgentUpdatePatch"
     }
    ]
+  },
+  {
+   "base_sha": "1f7959bc691d2311de4d0e777207cd252896687f",
+   "span": "2026-08-09..2026-08-12",
+   "fixes": 5,
+   "qualified_at": "2026-09-22T22:59:50+00:00",
+   "instances": [
+    {
+     "issue": 8501,
+     "pr": 8550,
+     "verdict": "fair",
+     "detail": "green exit 0/0: \u001b[2m   Start at \u001b[22m 22:59:22 | \u001b[2m   Duration \u001b[22m 1.38s\u001b[2m (transform 423ms, setup 17ms, import 633ms, tests 474ms, environment 201ms)\u001b[22m"
+    },
+    {
+     "issue": 9993,
+     "pr": 9994,
+     "verdict": "fair",
+     "detail": "green exit 0/0: \u001b[2m   Start at \u001b[22m 22:59:34 | \u001b[2m   Duration \u001b[22m 6.97s\u001b[2m (transform 1.95s, setup 38ms, import 3.18s, tests 3.69s, environment 0ms)\u001b[22m"
+    },
+    {
+     "issue": 10432,
+     "pr": 10433,
+     "verdict": "fair",
+     "detail": "green exit 0/0: \u001b[2m   Start at \u001b[22m 22:59:37 | \u001b[2m   Duration \u001b[22m 307ms\u001b[2m (transform 121ms, setup 0ms, import 174ms, tests 30ms, environment 0ms)\u001b[22m"
+    },
+    {
+     "issue": 3660,
+     "pr": 3790,
+     "verdict": "oracle-imports-pr-symbol",
+     "detail": "its tests import isUniqueViolation"
+    },
+    {
+     "issue": 10874,
+     "pr": 11235,
+     "verdict": "oracle-imports-pr-symbol",
+     "detail": "its tests import getProcessSessionRemoteSource"
+    }
+   ]
   }
  ],
- "fair": 28
+ "fair": 31
 }
