@@ -81,27 +81,6 @@ class TestRetest:
         assert not wh.retest_due(wh.empty("w"), "fix", now=T0)
 
 
-class TestIssues:
-    def test_signature_flattens_numbers_hashes_and_paths(self):
-        a = wh.signature("sandbox", "image pr-verify-base:4813ed3f0c6d-t1 missing at /Users/a/x")
-        b = wh.signature("sandbox", "image pr-verify-base:fc9e9b704f6b-t1 missing at /Users/b/y")
-        assert a == b
-
-    def test_one_issue_per_signature_per_week(self):
-        rec = wh.empty("w")
-        sig = wh.signature("k", "r")
-        assert wh.issue_due(rec, "fix", sig, now=T0)
-        wh.record_issue(rec, "fix", sig=sig, number=7, url="u", now=_iso(T0))
-        assert not wh.issue_due(rec, "fix", sig, now=T0 + timedelta(days=6))
-        assert wh.issue_due(rec, "fix", sig, now=T0 + timedelta(days=8))
-        assert wh.issue_due(rec, "fix", wh.signature("k", "other"), now=T0)
-
-    def test_an_issue_on_one_lane_covers_the_same_signature_on_another(self):
-        rec = wh.empty("w")
-        sig = wh.signature("agent-unavailable", "")
-        wh.record_issue(rec, "fix", sig=sig, number=1, url="u", now=_iso(T0))
-        assert not wh.issue_due(rec, "security", sig, now=T0 + timedelta(hours=1))
-
 
 def test_update_round_trips_through_the_store(tmp_path):
     st = Store(tmp_path / "db")

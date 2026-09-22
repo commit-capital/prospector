@@ -856,12 +856,11 @@ export interface WorkerLaneFailure {
 }
 
 /** One worker lane's health: the run of consecutive machine failures, the
- *  trip stamp while it is closed, its last self-test, and the issue filed. */
+ *  trip stamp while it is closed, and its last self-test. */
 export interface WorkerLaneHealth {
   consecutive_failures?: number | null;
   tripped?: { at?: string | null; kind?: string | null; reason?: string | null } | null;
   retest?: { at?: string | null; ok?: boolean | null; detail?: string | null } | null;
-  issue?: { signature?: string | null; number?: number | null; url?: string | null; filed_at?: string | null } | null;
   recent?: WorkerLaneFailure[] | null;
   last_success_at?: string | null;
 }

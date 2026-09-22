@@ -1,10 +1,10 @@
 """A durable copy of the worker's stdout.
 
 Both workers report by printing to the backend's stdout, which is a terminal
-or a service log outside this process's control. A trip escalation quotes the
-last lines of that output, and an operator diagnosing a machine that has been
-failing for days needs more than the terminal's scrollback, so the workers
-also mirror every line to a file under the verify scratch directory.
+or a service log outside this process's control. An operator diagnosing a
+machine that has been failing for days needs more than the terminal's
+scrollback, so the workers also mirror every line to a file under the verify
+scratch directory.
 """
 from __future__ import annotations
 
@@ -72,11 +72,3 @@ def install() -> Path | None:
         sys.stdout = _installed
         return target
 
-
-def tail(chars: int = 4000) -> str:
-    """The last `chars` of the log, or "" when there is none."""
-    try:
-        data = path().read_bytes()
-    except OSError:
-        return ""
-    return data[-chars:].decode("utf-8", errors="replace")

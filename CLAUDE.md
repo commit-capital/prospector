@@ -378,14 +378,14 @@ agent or the sandbox retests itself every fifteen minutes
 (`worker_selftest.py`: the CLI probe, or the daemon, pinned image and clone)
 and reopens on a pass; one tripped on anything else (crashed runs, held
 verdicts) opens once after a six-hour cool-down; the Control tab's banner
-offers Resume. Every trip appends a `worker:trip` ledger entry and files one
-issue per failure kind per week per worker on `PROSPECTOR_FEEDBACK_REPO` as the
-operator, labeled `worker-health`; any live backend's escalation watch files
-the same for a worker whose heartbeat has been silent an hour, and a worker
-stopping on purpose drops its heartbeat so it is never escalated. Each
+offers Resume. Every trip appends a `worker:trip` ledger entry. The operator
+hears of a tripped lane, or of a worker whose heartbeat has been silent an
+hour, through the app alone: the health strip atop every page reads both live
+and clears when the condition does, and a worker stopping on purpose drops its
+heartbeat so it never reads as offline. No issue is filed for either. Each
 worker's health is its own `worker_health:<id>` registry row. Worker stdout
-is mirrored to `<verify scratch>/logs/worker-<id>.log` (`worker_log.py`),
-which the issue quotes. The security lane's skip set carries a reason per PR
+is mirrored to `<verify scratch>/logs/worker-<id>.log` (`worker_log.py`).
+The security lane's skip set carries a reason per PR
 and expires after six hours.
 
 **HOME** (`prospector_app/backend/automation.py` + `prospector_app/frontend/src/views/homeCards.ts`)
