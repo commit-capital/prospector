@@ -1051,14 +1051,38 @@ def qualify(base: prove.PinnedBase, base_sha: str, *, profile: RepoProfile,
             lane_logins: frozenset[str], limit: int | None = None, concurrency: int = 2,
             run_id: str | None = None, candidate_cap: int = _DEFAULT_CANDIDATES) -> int:
     """Decide which of the pin's instances can score a lane run at all, spending
-    no agent: drop an oracle coupled to the PR's own exports and a bug whose fix
-    the lane may not author, keep one issue per fix, then run R6 alone over the
-    rest. Writes a table and one
-    `replay:qualify` ledger row, and prints the fair issues as a `--issues`
-    list. Returns 0 when at least one is fair."""
+    no agent (`qualify_instances`). Writes a table and one `replay:qualify`
+    ledger row, and prints the fair issues as a `--issues` list. Returns 0 when
+    at least one is fair."""
     run_id = run_id or base_sha
     instances = select_instances(base, base_sha, profile=profile, lane_logins=lane_logins,
                                  candidate_cap=candidate_cap)
+    rows = qualify_instances(base, base_sha, instances, profile=profile, limit=limit,
+                             concurrency=concurrency)
+    table = _qualify_table(rows)
+    out_dir = settings.verify_scratch() / "replay" / f"qualify-{run_id}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "table.md").write_text(table)
+    print(table, flush=True)
+    fair = [q.issue for q in rows if q.verdict == "fair"]
+    print(f"--issues {','.join(str(i) for i in fair)}" if fair else "no fair instance",
+          flush=True)
+    store.Store().append_run({
+        "phase": "replay:qualify", "started": storekit.now(), "finished": storekit.now(),
+        "trigger": "cli",
+        "stats": {"run_id": run_id, "base_sha": base_sha, "host": settings.worker_id(),
+                  "instances": len(rows), "fair": fair,
+                  "verdicts": dict(Counter(q.verdict for q in rows))}})
+    return 0 if fair else 1
+
+
+def qualify_instances(base: prove.PinnedBase, base_sha: str, instances: list[Instance], *,
+                      profile: RepoProfile, limit: int | None = None,
+                      concurrency: int = 2) -> list[Qualification]:
+    """Each of `instances`' fitness to score a lane run over `base`, fair ones
+    first: an oracle coupled to the PR's own exports and a bug whose fix the
+    lane may not author are refused on the diff alone, one issue per fix is
+    kept, and R6 runs over the rest."""
     rows: list[Qualification] = []
 
     rest: list[Instance] = []
@@ -1107,21 +1131,7 @@ def qualify(base: prove.PinnedBase, base_sha: str, *, profile: RepoProfile,
                 _progress(f"issue {row.issue}: {row.verdict} ({row.seconds:.0f}s)")
 
     rows.sort(key=lambda q: (q.verdict != "fair", q.issue))
-    table = _qualify_table(rows)
-    out_dir = settings.verify_scratch() / "replay" / f"qualify-{run_id}"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "table.md").write_text(table)
-    print(table, flush=True)
-    fair = [q.issue for q in rows if q.verdict == "fair"]
-    print(f"--issues {','.join(str(i) for i in fair)}" if fair else "no fair instance",
-          flush=True)
-    store.Store().append_run({
-        "phase": "replay:qualify", "started": storekit.now(), "finished": storekit.now(),
-        "trigger": "cli",
-        "stats": {"run_id": run_id, "base_sha": base_sha, "host": settings.worker_id(),
-                  "instances": len(rows), "fair": fair,
-                  "verdicts": dict(Counter(q.verdict for q in rows))}})
-    return 0 if fair else 1
+    return rows
 
 
 def plan(base: prove.PinnedBase, base_sha: str, *, profile: RepoProfile,

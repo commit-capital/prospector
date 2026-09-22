@@ -132,6 +132,24 @@ faulted instances). A failed instance is data, so the run still exits 0. The
 pilot's numbers — reproduced, fix rate, oracle pass, false accepts, and wall-time
 and agent runs per instance — gate whether the lane goes live.
 
+The **evaluation set** is the frozen yardstick the lane is measured against,
+built by `pipeline/evals/eval_set.py`:
+
+```bash
+uv run python -m pipeline.evals.eval_set --dry-run   # the plan: groups, fixes, epochs
+uv run python -m pipeline.evals.eval_set             # build until 40 fair bugs (--target)
+```
+
+It harvests every closed issue and merged PR from GitHub (cached under
+`<verify scratch>/replay/eval-harvest.json`, `--refresh` to re-read), joins the
+issue store's own candidates, and screens and groups them as `plan` does. Each
+dependency group, most distinct fixes first, gets one base built at its epoch —
+the first commit after the group's last fixing merge whose dependencies still
+match, so the base holds every fix and equals none — held against the verify
+sweep (`verify_gc.hold`). Its bugs are qualified without an agent, and every
+verdict is written to `pipeline/evals/data/issue_fix_eval_set.json`, the
+committed manifest. A build resumes past the bases the manifest names.
+
 A PR's tests encode the maintainers' design as well as the bug, so when they
 refuse a fix the scorer asks a blind judge (`pipeline/evals/oracle_contract.py`,
 shown the report, the PR's test hunks and the failing names, never the fix)
