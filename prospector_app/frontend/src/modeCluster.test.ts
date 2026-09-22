@@ -10,20 +10,20 @@ test("autopushNames merges update/rebase and keeps display order", () => {
 
 test("modePolicyLabel discloses the autonomous actions and the identity", () => {
   assert.equal(
-    modePolicyLabel(["update", "rebase", "resolve"], "commitperclip-bot", "commitperclip-bot"),
-    "autonomous: branch updates, conflicts · as commitperclip-bot");
+    modePolicyLabel(["update", "rebase", "resolve"], "my-triage-bot", "my-triage-bot"),
+    "autonomous: branch updates, conflicts · as my-triage-bot");
 });
 
 test("modePolicyLabel names the push account when it differs from the bot", () => {
   assert.equal(
-    modePolicyLabel(["resolve"], "commitperclip-bot", "commitperclip"),
-    "autonomous: conflicts · as commitperclip-bot · pushes as commitperclip");
+    modePolicyLabel(["resolve"], "my-triage-bot", "my-triage-push"),
+    "autonomous: conflicts · as my-triage-bot · pushes as my-triage-push");
 });
 
 test("modePolicyLabel with no autonomous pushes says the system asks first", () => {
   assert.equal(
-    modePolicyLabel([], "commitperclip-bot", "commitperclip"),
-    "asks before pushing · as commitperclip-bot");
+    modePolicyLabel([], "my-triage-bot", "my-triage-push"),
+    "asks before pushing · as my-triage-bot");
 });
 
 test("modePolicyTitle spells out both lanes", () => {

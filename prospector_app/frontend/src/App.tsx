@@ -160,7 +160,7 @@ function StoreWriteBanner() {
 
 /** The header's mode cluster: the dry-run/live toggle plus a disclosure of
  *  what the system does without asking and under which accounts —
- *  "autonomous: branch updates, conflicts · as commitperclip-bot". The
+ *  "autonomous: branch updates, conflicts · as my-triage-bot". The
  *  disclosure links to Setup, where the autonomy policy is set. */
 function ModeCluster() {
   const { botLogin, dryRun, setDryRun, livePossible, liveError, storeWriteBlock,

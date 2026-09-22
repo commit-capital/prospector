@@ -23,7 +23,7 @@ export function autopushNames(autopush: string[]): string[] {
 }
 
 /** The cluster's policy segment, e.g.
- *  "autonomous: branch updates, conflicts · as commitperclip-bot". When the
+ *  "autonomous: branch updates, conflicts · as my-triage-bot". When the
  *  unattended pushes run under a different account than the bot App posts as,
  *  both names appear, so the identity acting is never a guess. */
 export function modePolicyLabel(autopush: string[], botLogin: string, pushLogin: string | null): string {
