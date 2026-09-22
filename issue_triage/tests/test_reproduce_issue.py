@@ -13,6 +13,7 @@ from pipeline import headless_agent
 
 FILES_REPLY = json.dumps({
     "files": [{"path": "src/__tests__/repro.test.ts", "purpose": "reproduces the crash"}],
+    "preserve": [{"path": "src/__tests__/keep.test.ts", "purpose": "a valid list still parses"}],
     "claimed_symptom": "throws on empty input",
     "expected_red_signature": "TypeError: cannot read length of undefined",
     "confidence": "high"})
@@ -87,6 +88,8 @@ def test_a_well_formed_answer_parses(monkeypatch):
     out = _run(monkeypatch, FILES_REPLY)["out"]
     assert out["files"] == [{"path": "src/__tests__/repro.test.ts",
                              "purpose": "reproduces the crash"}]
+    assert out["preserve"] == [{"path": "src/__tests__/keep.test.ts",
+                                "purpose": "a valid list still parses"}]
     assert out["claimed_symptom"] == "throws on empty input"
     assert out["expected_red_signature"] == "TypeError: cannot read length of undefined"
     assert out["confidence"] == "high"
@@ -130,3 +133,22 @@ def test_a_retry_note_becomes_a_previous_attempt_section(monkeypatch):
 
 def test_a_first_attempt_has_no_previous_attempt_section(monkeypatch):
     assert "## Your previous attempt" not in _run(monkeypatch, FILES_REPLY)["calls"]["prompt"]
+
+
+def test_a_missing_preserve_list_reads_as_empty_for_the_host_to_refuse(monkeypatch):
+    reply = json.loads(FILES_REPLY)
+    del reply["preserve"]
+    assert _run(monkeypatch, json.dumps(reply))["out"]["preserve"] == []
+
+
+def test_a_preserve_entry_without_a_path_is_rejected(monkeypatch):
+    reply = json.loads(FILES_REPLY)
+    reply["preserve"] = [{"purpose": "no path"}]
+    with pytest.raises(ValueError):
+        _run(monkeypatch, json.dumps(reply))
+
+
+def test_the_prompt_asks_for_preservation_tests(monkeypatch):
+    prompt = _run(monkeypatch, FILES_REPLY)["calls"]["prompt"]
+    assert "## Preservation tests" in prompt
+    assert '"preserve"' in prompt

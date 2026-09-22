@@ -1218,7 +1218,8 @@ AUTHORED_MAX_BYTES = 64 * 1024
 
 def validate_test_files(files: list[wire.VerifyAuthoredFile], expected_red_signature: str | None, *,
                         base_clone: Path, taken_paths: list[str],
-                        may_exist: frozenset[str] = frozenset()) -> tuple[str | None, str | None]:
+                        may_exist: frozenset[str] = frozenset(),
+                        red: bool = True) -> tuple[str | None, str | None]:
     """(derived red/green command, None) for a valid set of test files, or
     (None, skipped_reason). Fail-closed: one rule violation invalidates the
     whole artifact, and nothing invalid reaches a sandbox.
@@ -1228,8 +1229,9 @@ def validate_test_files(files: list[wire.VerifyAuthoredFile], expected_red_signa
     `taken_paths` — so the files cannot alter production code or collide
     with a path already taken. `may_exist` names the paths whose caller has
     already established that an existing file may be extended there; every
-    other rule applies to them unchanged. The command is derived from the paths
-    by derive_test_command, exactly like the test lane's."""
+    other rule applies to them unchanged. A set expected to pass (`red` False)
+    names no red signature. The command is derived from the paths by
+    derive_test_command, exactly like the test lane's."""
     if not files or len(files) > AUTHORED_MAX_FILES:
         return None, f"file-count-not-1-to-{AUTHORED_MAX_FILES}"
     taken = {diffpaths.normalize_path(p) for p in taken_paths}
@@ -1252,7 +1254,7 @@ def validate_test_files(files: list[wire.VerifyAuthoredFile], expected_red_signa
         return None, "duplicate-paths"
     if total > AUTHORED_MAX_BYTES:
         return None, "contents-too-large"
-    if not (expected_red_signature or "").strip():
+    if red and not (expected_red_signature or "").strip():
         return None, "no-expected-red-signature"
     cmd = derive_test_command([f["path"] for f in files])
     assert cmd is not None, "every authored path satisfies is_test_path"
@@ -1292,16 +1294,6 @@ def authored_test_patch(head_sha: str, files: list[wire.VerifyAuthoredFile]) -> 
     out.mkdir(parents=True, exist_ok=True)
     p = out / f"{head_sha}.authored.patch"
     p.write_text("".join(chunks))
-    return p
-
-
-def authored_patch_file(head_sha: str, diff_text: str) -> Path:
-    """`diff_text` written under SCRATCH as the authored-test patch, for a caller
-    whose tests are a diff against a tree rather than whole new files."""
-    out = SCRATCH / "patches"
-    out.mkdir(parents=True, exist_ok=True)
-    p = out / f"{head_sha}.authored.patch"
-    p.write_text(diff_text)
     return p
 
 

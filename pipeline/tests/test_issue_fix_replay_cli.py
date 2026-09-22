@@ -74,7 +74,7 @@ def _mock_pipeline(monkeypatch: pytest.MonkeyPatch, instances: list[replay.Insta
     calls: list[int] = []
 
     def fake_run_instance(inst: replay.Instance, *, base, base_sha, profile, workdir,
-                          run_lane) -> dict:
+                          run_lane, judge_contract) -> dict:
         calls.append(inst.issue)
         return recs[inst.issue]
 
@@ -229,7 +229,8 @@ def test_run_survives_a_crashed_instance(wired, monkeypatch) -> None:
     by_issue = {i.issue: i for i in insts}
     monkeypatch.setattr(replay, "screen", lambda cand, **kw: (by_issue[cand.issue], None))
 
-    def fake_run_instance(inst, *, base, base_sha, profile, workdir, run_lane) -> dict:
+    def fake_run_instance(inst, *, base, base_sha, profile, workdir, run_lane,
+                          judge_contract=None) -> dict:
         if inst.issue == 8:
             raise ValueError("patch conflict mid-score")
         return recs[inst.issue]
@@ -492,3 +493,33 @@ def test_main_run_refuses_issues_that_are_not_numbers(monkeypatch, tmp_path, cap
 
     assert replay.main(["run", "--issues", "7,eight"]) == 2
     assert "issue numbers" in capsys.readouterr().err
+
+
+def test_plan_orders_groups_by_distinct_fixes_and_names_each_epoch(
+        tmp_path, monkeypatch, capsys) -> None:
+    one_pr = [replay.Instance(issue=i, pr=9, merge_sha="a" * 40, landed_diff="",
+                              test_files=[], nontest_files=[], report_title="",
+                              report_body="") for i in (1, 2, 3)]
+    two_prs = [replay.Instance(issue=4, pr=10, merge_sha="b" * 40, landed_diff="",
+                               test_files=[], nontest_files=[], report_title="",
+                               report_body=""),
+               replay.Instance(issue=5, pr=11, merge_sha="c" * 40, landed_diff="",
+                               test_files=[], nontest_files=[], report_title="",
+                               report_body="")]
+    committed = {"a" * 40: "2026-06-01T00:00:00Z", "b" * 40: "2026-06-02T00:00:00Z",
+                 "c" * 40: "2026-06-03T00:00:00Z"}
+    monkeypatch.setattr(replay, "candidates_from_store", lambda limit=None: [])
+    monkeypatch.setattr(replay, "_screen", lambda *a, **k: ([*one_pr, *two_prs],
+                                                            replay.Counter()))
+    monkeypatch.setattr(replay, "group_by_deps", lambda instances, clone, profile: {
+        frozenset({("x", "1")}): one_pr, frozenset({("x", "2")}): two_prs})
+    monkeypatch.setattr(replay, "_pin_key", lambda *a: frozenset())
+    monkeypatch.setattr(replay, "_merge_committed", lambda clone, sha: committed[sha])
+
+    replay.plan(_base(tmp_path), "e" * 40, profile=profile.RepoProfile(),
+                lane_logins=frozenset())
+
+    groups = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("  [")]
+    assert groups[0].startswith("  [off-pin] 2 fix(es) over 2 issue(s)")
+    assert f"epoch {'c' * 40}" in groups[0]
+    assert groups[1].startswith("  [off-pin] 1 fix(es) over 3 issue(s)")

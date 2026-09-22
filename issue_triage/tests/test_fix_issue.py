@@ -28,6 +28,7 @@ def _run(monkeypatch, reply: str, worktree: str = "/wt", **over) -> dict:
     kwargs = {"issue": 5, "title": "Crash on empty input",
               "body": "It throws when given nothing.",
               "test_paths": ["src/__tests__/repro.test.ts"],
+              "preserve_paths": ["src/__tests__/keep.test.ts"],
               "red_tail": "TypeError: cannot read length of undefined",
               "withheld_globs": ("pipeline/**",), "env": {"K": "V"}}
     kwargs.update(over)
@@ -61,7 +62,7 @@ def test_fix_hands_the_agent_resolved_paths(monkeypatch, tmp_path):
 
     monkeypatch.setattr(headless_agent, "run_agent", fake)
     fix_issue.author(str(link), issue=5, title="t", body="b",
-                     test_paths=["t/x.py"], red_tail="boom",
+                     test_paths=["t/x.py"], preserve_paths=["t/k.py"], red_tail="boom",
                      withheld_globs=(), env={})
     resolved = os.path.realpath(str(link))
     assert calls["cwd"] == calls["edit_root"] == resolved
@@ -100,6 +101,7 @@ def test_the_check_tool_and_test_paths_reach_the_prompt(monkeypatch):
     assert f"{lane_check.TOOL} typecheck" in prompt
     assert "a/b_test.py" in prompt
     assert "c/d_test.py" in prompt
+    assert "src/__tests__/keep.test.ts" in prompt
 
 
 def test_the_withheld_globs_reach_the_prompt(monkeypatch):
@@ -140,4 +142,5 @@ def test_fix_propagates_a_run_agent_failure(monkeypatch):
     monkeypatch.setattr(headless_agent, "run_agent", crash)
     with pytest.raises(RuntimeError):
         fix_issue.author("/wt", issue=5, title="t", body="b", test_paths=["t/x.py"],
-                         red_tail="boom", withheld_globs=(), env={})
+                         preserve_paths=["t/k.py"], red_tail="boom", withheld_globs=(),
+                         env={})

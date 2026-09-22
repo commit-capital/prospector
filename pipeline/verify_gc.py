@@ -18,6 +18,10 @@ start of a verify run (`verify_pr._run_inner`) and held for the run's duration,
 while `compile_preflight` builds and uses an image for current default-branch
 HEAD from the app's own threads. That newest-other slot is what keeps a
 concurrent reader's artifacts alive without any cross-thread locking.
+
+A generation named in the held list (`HELD_FILE`) is kept by identity too and
+takes no slot: the issue-fix evaluation set holds a base per period of history,
+built once and replayed against for as long as the set names it.
 """
 from __future__ import annotations
 
@@ -56,6 +60,9 @@ STOPPED_CONTAINER_MIN_AGE = "1h"
 
 # How many generations survive a sweep: the pin plus one more.
 KEEP_GENERATIONS = 2
+
+# The held generations, one sha12 per line.
+HELD_FILE = SCRATCH / "held-bases"
 
 # How much BuildKit cache a sweep tolerates. A base build stages a
 # multi-gigabyte pnpm store per default-branch head, and every cache record it
@@ -208,19 +215,38 @@ def list_generations() -> list[Generation]:
 _OLDEST = datetime.min.replace(tzinfo=timezone.utc)
 
 
-def plan(generations: list[Generation], pinned_sha: str | None) -> Plan:
+def held_shas() -> frozenset[str]:
+    """The sha12s the held list names; empty when there is no list."""
+    try:
+        lines = HELD_FILE.read_text().splitlines()
+    except OSError:
+        return frozenset()
+    return frozenset(ln.strip() for ln in lines if _SHA12_RE.fullmatch(ln.strip()))
+
+
+def hold(sha: str) -> None:
+    """Add `sha`'s generation to the held list."""
+    held = held_shas() | {sha[:12]}
+    HELD_FILE.parent.mkdir(parents=True, exist_ok=True)
+    HELD_FILE.write_text("".join(f"{s}\n" for s in sorted(held)))
+
+
+def plan(generations: list[Generation], pinned_sha: str | None,
+         held: frozenset[str] = frozenset()) -> Plan:
     """Which generations survive and what the sweep removes.
 
     The pinned SHA is kept by identity and holds a slot whether or not this
     machine carries its artifacts — a pin prepared on another host still means
-    only one local generation survives. The remaining slots go to the most
-    recently created generations, newest first, ties broken on the SHA so the
-    same survey always plans the same sweep."""
+    only one local generation survives. `held` generations are kept by identity
+    and hold no slot. The remaining slots go to the most recently created
+    generations, newest first, ties broken on the SHA so the same survey always
+    plans the same sweep."""
     pin = pinned_sha[:12] if pinned_sha else None
     keep = [pin] if pin else []
-    ranked = sorted((g for g in generations if g.sha12 != pin),
+    ranked = sorted((g for g in generations if g.sha12 != pin and g.sha12 not in held),
                     key=lambda g: (g.created or _OLDEST, g.sha12), reverse=True)
     keep += [g.sha12 for g in ranked[:KEEP_GENERATIONS - len(keep)]]
+    keep += sorted(g.sha12 for g in generations if g.sha12 in held and g.sha12 != pin)
     doomed = [g for g in generations if g.sha12 not in keep]
     return Plan(keep=tuple(keep),
                 images=tuple(t for g in doomed for t in g.images),
@@ -302,7 +328,7 @@ def collect(pinned_sha: str | None, *, sandbox_tag: str | None = None,
                     "error": None}
     try:
         generations = list_generations()
-        p = plan(generations, pinned_sha)
+        p = plan(generations, pinned_sha, held_shas())
         result["keep"] = list(p.keep)
         by_sha = {g.sha12: g for g in generations}
         for sha in sorted({g.sha12 for g in generations} - set(p.keep)):

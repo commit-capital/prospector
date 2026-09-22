@@ -386,11 +386,12 @@ def _lane(ending: str, *, patch: str = _LANE_PATCH, reviews: list[dict] | None =
 
 
 def _score(tmp_path, monkeypatch, lane: SimpleNamespace, *, red: dict, lane_green: dict,
-           oracle_green: dict, r6_red: dict | None = None) -> tuple[dict, dict]:
+           oracle_green: dict, r6_red: dict | None = None,
+           judge_contract: replay.ContractJudge | None = None) -> tuple[dict, dict]:
     _mock_legs(monkeypatch, red=red, lane_green=lane_green, oracle_green=oracle_green)
     runs: dict = {}
     rec = replay.score(_instance(), lane, runs, base=_base(tmp_path), pre_patch="PRE",
-                       label="replay-7", r6_red=r6_red)
+                       label="replay-7", r6_red=r6_red, judge_contract=judge_contract)
     return rec, runs
 
 
@@ -660,3 +661,87 @@ def test_r6_no_oracle_when_the_pr_ships_no_derivable_test_command(tmp_path, gene
     ok, reason = replay.validate_known_fix(_base(tmp_path), "PRE",
                                             _instance(test_files=[]), label="replay-7")
     assert (ok, reason) == (False, "no-oracle")
+
+
+# --- who owns an oracle failure -----------------------------------------------
+
+
+def _judged(contract: str, seen: list | None = None) -> replay.ContractJudge:
+    def judge(instance: replay.Instance, failing: list[str] | None) -> dict:
+        if seen is not None:
+            seen.append(failing)
+        return {"contract": contract, "tests": [], "reason": ""}
+    return judge
+
+
+def test_score_reads_a_failure_on_the_maintainers_contract_as_a_mismatch(
+        tmp_path, generic_profile, monkeypatch) -> None:
+    seen: list = []
+    rec, _ = _score(tmp_path, monkeypatch, _lane("fixed"),
+                    red=_RED_2020, lane_green=_GREEN_00,
+                    oracle_green=_dirty(gates.SENTINEL_TEST_FAIL, None,
+                                        "app.test.ts > list > returns 422"),
+                    judge_contract=_judged("maintainer", seen))
+
+    assert seen == [["app.test.ts > list > returns 422"]]
+    assert rec["oracle_outcome"] == "fail"
+    assert rec["contract_mismatch"] is True
+    assert rec["false_accept"] is False
+
+
+@pytest.mark.parametrize("contract", ["report", "unknown"])
+def test_score_keeps_a_false_accept_the_report_owns_or_no_judge_can_place(
+        tmp_path, generic_profile, monkeypatch, contract: str) -> None:
+    rec, _ = _score(tmp_path, monkeypatch, _lane("fixed"),
+                    red=_RED_2020, lane_green=_GREEN_00,
+                    oracle_green=_dirty(gates.SENTINEL_TEST_FAIL, None,
+                                        "app.test.ts > compute > returns 1"),
+                    judge_contract=_judged(contract))
+
+    assert rec["contract_mismatch"] is False
+    assert rec["false_accept"] is True
+
+
+def test_score_asks_no_judge_when_the_oracle_passes(tmp_path, generic_profile,
+                                                    monkeypatch) -> None:
+    seen: list = []
+    rec, _ = _score(tmp_path, monkeypatch, _lane("fixed"),
+                    red=_RED_2020, lane_green=_GREEN_00, oracle_green=_GREEN_00,
+                    judge_contract=_judged("maintainer", seen))
+
+    assert seen == []
+    assert rec["oracle_contract"] is None
+    assert rec["contract_mismatch"] is False
+
+
+def test_run_instance_records_the_related_tests_the_lane_ran(
+        tmp_path, generic_profile, monkeypatch) -> None:
+    monkeypatch.setattr(replay, "transform_to_p",
+                        lambda base_clone, merge_sha, base_sha, profile: "PRE")
+    monkeypatch.setattr(replay, "validate_known_fix",
+                        lambda base, pre_patch, instance, *, label, legs=None: (True, ""))
+    _mock_legs(monkeypatch, red=_RED_2020, lane_green=_GREEN_00, oracle_green=_GREEN_00)
+
+    def fake_run_lane(*, issue, title, body, base, pre_patch, workdir):
+        lane = _lane("fixed")
+        lane.result["proof"] = {"related_tests": {
+            "files": ["src/issues.test.ts"], "run": {"exit": gates.SENTINEL_PASS}}}
+        return lane
+
+    rec = replay.run_instance(_instance(), base=_base(tmp_path), base_sha="e" * 40,
+                              profile=generic_profile, workdir=tmp_path / "work",
+                              run_lane=fake_run_lane)
+
+    assert rec["lane"]["related_tests"] == {"files": ["src/issues.test.ts"],
+                                            "exit": gates.SENTINEL_PASS, "base_fails": False}
+
+def test_score_reads_the_lane_s_preservation_tests_as_its_own(tmp_path, generic_profile,
+                                                              monkeypatch) -> None:
+    keep = ("diff --git a/src/keep.test.ts b/src/keep.test.ts\n"
+            "--- a/src/keep.test.ts\n+++ b/src/keep.test.ts\n"
+            "@@ -0,0 +1,1 @@\n+expect(fixme(2)).toBe(2)\n")
+    lane = _lane("fixed", patch=keep + _LANE_PATCH)
+    lane.reproduction["preserve"] = [{"path": "src/keep.test.ts"}]
+    rec, _ = _score(tmp_path, monkeypatch, lane,
+                    red=_RED_2020, lane_green=_GREEN_00, oracle_green=_GREEN_00)
+    assert rec["test_tamper"] is False

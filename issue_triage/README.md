@@ -79,6 +79,15 @@ agent is locked down (no GitHub, its own clone its only writable root); only
 host-observed sandbox exits and `issue_gates` name the ending. It makes **no
 upstream write** — the outcome is a result file plus one ledger row.
 
+The reproduction agent writes two sets of tests: the reproduction, which must
+fail twice on the base, and **preservation tests**, which pin behavior a fix must
+keep — the inputs beside the reported one that work today, and what the other
+callers of the code at fault rely on — and must pass twice on it. A fix is
+proven only when the reproduction turns green and the preservation tests stay
+green with it applied. The scope-safety reviewer lists every behavior the fix
+alters and marks each as asked for by the report or not; the host reads any
+unasked change as unsafe.
+
 ```bash
 uv run python -m issue_triage.fix_lane --issue N                          # reproduce + fix on the verify pin
 uv run python -m issue_triage.fix_lane --issue N --reproduce-only         # stop once the reproduction proves red
@@ -111,15 +120,44 @@ uv run python -m pipeline.evals.issue_fix_replay plan             # inspect the 
 uv run python -m pipeline.evals.issue_fix_replay run --limit 10   # score a pilot batch of ten
 ```
 
-`plan` assembles and screens the corpus and prints each dependency group's size,
-date span, and whether it matches the pin — the safety valve to look before a
-run. `run` takes the pin's group, runs `--concurrency` (default 2) instances at a
+`plan` assembles and screens the corpus and prints each dependency group's
+distinct fixing PRs and issues, date span, epoch (its latest merge — the sha to
+build the group's base at), and whether it matches the pin — the safety valve to
+look before a run. Several issues closed by one PR count as one fix, since
+`qualify` measures each fix once. `run` takes the pin's group, runs `--concurrency` (default 2) instances at a
 time, and writes a markdown scorecard to `<verify scratch>/replay/<run-id>/table.md`
 plus one `replay:instance` ledger row per instance and a `replay:run` summary. A
 run is keyed by its base, so re-invoking continues it (`--resume` re-runs the
 faulted instances). A failed instance is data, so the run still exits 0. The
 pilot's numbers — reproduced, fix rate, oracle pass, false accepts, and wall-time
-and agent runs per instance — gate whether the lane goes live. Per-run token cost
+and agent runs per instance — gate whether the lane goes live.
+
+The **evaluation set** is the frozen yardstick the lane is measured against,
+built by `pipeline/evals/eval_set.py`:
+
+```bash
+uv run python -m pipeline.evals.eval_set --dry-run   # the plan: groups, fixes, epochs
+uv run python -m pipeline.evals.eval_set             # build until 40 fair bugs (--target)
+```
+
+It harvests every closed issue and merged PR from GitHub (cached under
+`<verify scratch>/replay/eval-harvest.json`, `--refresh` to re-read), joins the
+issue store's own candidates, and screens and groups them as `plan` does. Each
+dependency group, most distinct fixes first, gets one base built at its epoch —
+the first commit after the group's last fixing merge whose dependencies still
+match, so the base holds every fix and equals none — held against the verify
+sweep (`verify_gc.hold`). Its bugs are qualified without an agent, and every
+verdict is written to `pipeline/evals/data/issue_fix_eval_set.json`, the
+committed manifest. A build resumes past the bases the manifest names.
+
+A PR's tests encode the maintainers' design as well as the bug, so when they
+refuse a fix the scorer asks a blind judge (`pipeline/evals/oracle_contract.py`,
+shown the report, the PR's test hunks and the failing names, never the fix)
+whether each failing test asserts behavior the report asked for. A failure only
+the maintainers' own contract explains is `contract_mismatch`, not a
+`false_accept`; one the report owns, or the judge cannot place, stays a false
+accept. Judgments are cached by their inputs under
+`<verify scratch>/replay/oracle-contract/`, so every pass over one bug reads one. Per-run token cost
 is a later addition: it needs `fix_lane.LaneResult` to carry the CLI's cost event.
 
 ## Pain score
