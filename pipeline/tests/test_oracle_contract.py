@@ -18,15 +18,18 @@ def _answer(*bases: str, names: list[str] = _FAILING) -> str:
     ]}) + "\n```"
 
 
-def _judge(tmp_path: Path, reply: str | Exception, failing: list[str] | None = _FAILING
-           ) -> tuple[dict, list[str]]:
+def _judge(tmp_path: Path, reply: str | Exception | list[str | Exception],
+           failing: list[str] | None = _FAILING) -> tuple[dict, list[str]]:
+    """Judge with `reply` as every agent answer, or a list of answers in turn."""
     prompts: list[str] = []
+    replies = iter(reply) if isinstance(reply, list) else None
 
     def run(prompt: str) -> str:
         prompts.append(prompt)
-        if isinstance(reply, Exception):
-            raise reply
-        return reply
+        answer = next(replies) if replies is not None else reply
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
 
     out = oracle_contract.judge(title="List 500s", body="Return 400 or []", test_hunks="+it()",
                                 failing=failing, cache_dir=tmp_path / "cache", run=run)
@@ -63,7 +66,7 @@ def test_an_unparsed_failing_set_is_unknown_without_a_run(tmp_path) -> None:
 def test_a_malformed_answer_is_unknown_and_not_cached(tmp_path) -> None:
     out, prompts = _judge(tmp_path, "no json here")
     assert out["contract"] == "unknown"
-    assert len(prompts) == 2  # json_reply asks once more
+    assert len(prompts) == 2 * oracle_contract.SAMPLES  # json_reply asks once more
     assert not (tmp_path / "cache").exists()
 
 
@@ -89,3 +92,30 @@ def test_the_prompt_carries_the_report_and_the_failing_names(tmp_path) -> None:
     _, prompts = _judge(tmp_path, _answer("beyond", "allowed"))
     assert "Return 400 or []" in prompts[0]
     assert all(n in prompts[0] for n in _FAILING)
+
+
+def test_each_test_takes_the_basis_most_samples_gave_it(tmp_path) -> None:
+    out, _ = _judge(tmp_path, [_answer("stated", "beyond"), _answer("allowed", "beyond"),
+                               _answer("allowed", "beyond")])
+    assert [t["basis"] for t in out["tests"]] == ["allowed", "beyond"]
+    assert out["contract"] == "maintainer"
+
+
+def test_a_three_way_split_reads_as_stated(tmp_path) -> None:
+    out, _ = _judge(tmp_path, [_answer("stated", "beyond"), _answer("allowed", "beyond"),
+                               _answer("beyond", "beyond")])
+    assert out["tests"][0]["basis"] == "stated"
+    assert out["contract"] == "report"
+
+
+def test_one_unusable_sample_still_leaves_a_majority(tmp_path) -> None:
+    out, _ = _judge(tmp_path, [_answer("beyond", "allowed"), RuntimeError("timed out"),
+                               _answer("beyond", "allowed")])
+    assert out["contract"] == "maintainer"
+
+
+def test_fewer_usable_samples_than_the_quorum_is_unknown(tmp_path) -> None:
+    out, _ = _judge(tmp_path, [_answer("beyond", "allowed"), RuntimeError("a"),
+                               RuntimeError("b")])
+    assert out["contract"] == "unknown"
+    assert "1 of 3" in out["reason"]

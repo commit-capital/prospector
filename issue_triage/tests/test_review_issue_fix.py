@@ -167,9 +167,12 @@ def test_every_review_lens_has_a_question():
     assert set(review_issue_fix._QUESTIONS) == set(issue_gates.REVIEW_LENSES)
 
 
-_ASKED = {"input": "?id=bad", "before": "500", "after": "400", "requested": True}
+_ASKED = {"input": "?id=bad", "before": "500", "after": "400", "requested": True,
+          "worked_before": False}
 _UNASKED = {"input": "?id= (empty)", "before": "200, filter ignored", "after": "400",
-            "requested": False}
+            "requested": False, "worked_before": True}
+_SIBLING = {"input": "/count?id=bad", "before": "500", "after": "400", "requested": False,
+            "worked_before": False}
 
 
 def test_a_scope_safe_verdict_whose_inventory_holds_only_the_asked_change_passes(
@@ -190,7 +193,16 @@ def test_a_scope_safe_verdict_listing_an_unasked_change_reads_as_unsafe(monkeypa
     assert "?id= (empty)" in out["reason"]
 
 
-@pytest.mark.parametrize("inventory", [None, [], [{"input": "x"}], "none"])
+def test_an_unasked_change_to_an_input_that_already_failed_does_not_block(monkeypatch):
+    out = _run(monkeypatch, json.dumps({"verdict": "safe", "reason": "r",
+                                        "behavior_changes": [_ASKED, _SIBLING]}),
+               lens="scope-safety")["out"]
+    assert out["verdict"] == "safe"
+    assert out["behavior_changes"] == [_ASKED, _SIBLING]
+
+
+@pytest.mark.parametrize("inventory", [
+    None, [], [{"input": "x"}], "none", [{"input": "x", "requested": False}]])
 def test_a_scope_safe_verdict_without_a_usable_inventory_reads_as_failed(
         monkeypatch, inventory):
     reply = {"verdict": "safe", "reason": "r"}

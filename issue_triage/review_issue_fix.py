@@ -13,9 +13,12 @@ returns `unsafe`, so the push side is unreachable by breaking the reviewer. An
 unknown lens is the caller's error and raises.
 
 The scope-safety lens also returns an inventory of every behavior the change
-alters, each marked as asked for by the report or not. The reviewer rates; the
-host decides: a `safe` whose inventory holds a change the report did not ask
-for, or that carries no inventory, is unsafe.
+alters, each marked as asked for by the report or not, and as working before
+the change or not. The reviewer rates; the host decides: a `safe` whose
+inventory holds an unasked change to an input that worked is unsafe, and one
+that carries no usable inventory is a reviewer failure. An unasked change to an
+input that already failed — the reported defect met on a sibling path — is
+recorded and does not block.
 """
 from __future__ import annotations
 
@@ -58,8 +61,8 @@ _OUTPUT = {
    "concerns": ["<each specific problem, if any>"],
    "behavior_changes": [{"input": "<the input or caller>", "before": "<what it does now>",
                          "after": "<what it does with the change>",
-                         "requested": true | false}]}
-"behavior_changes" lists every alteration you found, the requested one included; "requested" is true only when the report asks for that change.""",
+                         "requested": true | false, "worked_before": true | false}]}
+"behavior_changes" lists every alteration you found, the requested one included; "requested" is true only when the report asks for that change; "worked_before" is true when the input got a correct, non-error answer before the change, and false when it already failed (a crash, a 500, a wrong result).""",
 }
 
 PROMPT = """\
@@ -118,17 +121,18 @@ def _unsafe(lens: str, reason: str, failed: bool = False) -> dict:
     return out
 
 
-def _unrequested(changes: object) -> list[str] | None:
-    """The inputs of an inventory's changes the report did not ask for, or None
-    when the inventory is missing, empty, or malformed — a change alters at
-    least the behavior it was written for."""
+def _broken(changes: object) -> list[str] | None:
+    """The inputs that worked before whose change the report did not ask for,
+    or None when the inventory is missing, empty, or malformed — a change alters
+    at least the behavior it was written for."""
     if not isinstance(changes, list) or not changes:
         return None
     out: list[str] = []
     for change in changes:
-        if not isinstance(change, dict) or not isinstance(change.get("requested"), bool):
+        if (not isinstance(change, dict) or not isinstance(change.get("requested"), bool)
+                or not isinstance(change.get("worked_before"), bool)):
             return None
-        if not change["requested"]:
+        if change["worked_before"] and not change["requested"]:
             out.append(str(change.get("input") or "an unnamed input"))
     return out
 
@@ -189,14 +193,14 @@ def review(worktree: str, patch: str, *, lens: str, title: str, body: str,
         return {"lens": lens, "verdict": "safe", "reason": str(verdict.get("reason") or ""),
                 "concerns": concerns}
     inventory = verdict.get("behavior_changes")
-    unrequested = _unrequested(inventory)
-    if unrequested is None:
+    broken = _broken(inventory)
+    if broken is None:
         return _unsafe(lens, "the reviewing agent returned no usable behavior-change "
                              "inventory", failed=True)
     out = {"lens": lens, "verdict": "safe", "reason": str(verdict.get("reason") or ""),
            "concerns": concerns, "behavior_changes": inventory}
-    if unrequested:
+    if broken:
         out.update(verdict="unsafe",
-                   reason=f"changes behavior the report did not ask for: "
-                          f"{'; '.join(unrequested)}")
+                   reason=f"changes inputs that worked, which the report did not ask "
+                          f"to change: {'; '.join(broken)}")
     return out
