@@ -1,4 +1,4 @@
-import type { FilterSpec } from "../api";
+import type { AdvisoryRow, AlertRow, FilterSpec } from "../api";
 
 // Which Home column a card renders in: `act` (a click of yours moves these
 // PRs), `auto` (a worker queue or hunter moves them; nothing for a person to
@@ -216,4 +216,81 @@ export const HOME_ISSUE_CARDS: HomeIssueCard[] = [
 
 export function issuesHref(card: HomeIssueCard): string {
   return `/issues?disposition=${encodeURIComponent(card.disposition)}`;
+}
+
+// The Security card under "Your move": open security work read straight from
+// the alert and advisory stores — critical/high advisories the find-fixed
+// pass still marks not-fixed, plus every open secret-scanning alert.
+export const SECURITY_CARD = {
+  key: "security",
+  title: "Security",
+  blurb: "Critical or high advisories still marked not-fixed, plus any open secret-scanning alert. Triage each in the Alerts view.",
+};
+
+// The advisories half of the card's count: open-state reports (triage/draft)
+// at critical or high severity whose fix scan says not-fixed.
+export const SECURITY_ADVISORY_QUERY: {
+  state: string[]; severity: string[]; verdict: string; sort: string; direction: "desc";
+} = {
+  state: ["triage", "draft"],
+  severity: ["critical", "high"],
+  verdict: "not-fixed",
+  sort: "severity",
+  direction: "desc",
+};
+
+// The alerts half: every open secret-scanning alert, whatever its severity —
+// a committed credential is always the operator's to act on.
+export const SECURITY_ALERT_QUERY: {
+  source: string; state: string; sort: string; direction: "desc";
+} = {
+  source: "secret-scanning",
+  state: "open",
+  sort: "severity",
+  direction: "desc",
+};
+
+// One sample row on the Security card, built from either half. `href` opens
+// the item's detail panel in the Alerts view.
+export interface SecurityItem {
+  key: string;
+  href: string;
+  label: string;
+  title: string;
+  severity: string;
+  created_at: string | null;
+}
+
+const SECURITY_SEVERITY_RANK: Record<string, number> = {
+  critical: 3, high: 2, medium: 1, low: 0,
+};
+
+// The card's sample order: highest severity first, oldest first within one —
+// the same order the Security views default to.
+export function securityOrder(a: SecurityItem, b: SecurityItem): number {
+  const rank = (SECURITY_SEVERITY_RANK[b.severity] ?? -1) - (SECURITY_SEVERITY_RANK[a.severity] ?? -1);
+  if (rank !== 0) return rank;
+  return (a.created_at ?? "").localeCompare(b.created_at ?? "");
+}
+
+export function securityAdvisoryItem(r: AdvisoryRow): SecurityItem {
+  return {
+    key: `advisory-${r.ghsa_id}`,
+    href: `/alerts?security=advisories&advisory=${encodeURIComponent(r.ghsa_id)}`,
+    label: r.ghsa_id,
+    title: r.summary ?? "(no summary)",
+    severity: r.severity,
+    created_at: r.created_at,
+  };
+}
+
+export function securityAlertItem(r: AlertRow): SecurityItem {
+  return {
+    key: `alert-${r.source}-${r.number}`,
+    href: `/alerts?security=alerts&alert_source=${encodeURIComponent(r.source)}&alert=${r.number}`,
+    label: `${r.source === "secret-scanning" ? "secret" : r.source} #${r.number}`,
+    title: r.title ?? r.secret_type ?? "(untitled alert)",
+    severity: r.severity,
+    created_at: r.created_at,
+  };
 }

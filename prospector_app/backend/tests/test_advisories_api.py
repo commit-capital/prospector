@@ -69,6 +69,43 @@ def test_query_filters_state_verdict_and_text(seeded):
     assert out["total"] == 3 and out["items"][0]["ghsa_id"] == G1
 
 
+def test_query_severity_filter(seeded):
+    out = adv_mod.query_advisories(severity=["critical", "high"])
+    assert [r["ghsa_id"] for r in out["items"]] == [G1]
+    out = adv_mod.query_advisories(severity="medium")
+    assert sorted(r["ghsa_id"] for r in out["items"]) == [G2, G3]
+
+
+def test_default_order_is_severity_then_age(tmp_path, monkeypatch):
+    store = AdvisoryStore(tmp_path)
+
+    def seed(ghsa: str, severity: str, created: str) -> None:
+        a = Advisory(store, {"id": advisory_id(ghsa)})
+        a.apply_facts({
+            "ghsa_id": ghsa, "state": "triage", "severity": severity,
+            "summary": f"report {ghsa}", "created_at": created,
+            "updated_at": "2026-09-01T00:00:00Z",
+            "html_url": f"https://github.com/o/r/security/advisories/{ghsa}",
+        })
+
+    medium, newer_crit, older_crit = ("GHSA-3333-3333-3334",
+                                      "GHSA-3333-3333-3335",
+                                      "GHSA-3333-3333-3336")
+    seed(medium, "medium", "2026-01-01T00:00:00Z")
+    seed(newer_crit, "critical", "2026-06-01T00:00:00Z")
+    seed(older_crit, "critical", "2026-03-01T00:00:00Z")
+    monkeypatch.setattr(adv_mod, "STORE_ROOT", tmp_path)
+    monkeypatch.setattr(adv_mod, "_synced_store_root", None)
+    monkeypatch.setattr(adv_mod, "_store_pr_states", lambda: ({}, False))
+    try:
+        out = adv_mod.query_advisories()
+        assert [r["ghsa_id"] for r in out["items"]] == [older_crit, newer_crit, medium]
+    finally:
+        adv_mod.STORE_ROOT = None
+        adv_mod._synced_store_root = None
+        advisory_data.set_store_root(None)
+
+
 def test_detail_carries_description_and_404s_on_unknown(seeded):
     d = adv_mod.get_advisory(G1)
     assert d is not None and d["description"] == "## Details\nbody"

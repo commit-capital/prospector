@@ -10,7 +10,10 @@ import {
   breakdownHref, exploreHref, HOME_BREAKDOWN_ENTRIES, HOME_CARDS, HOME_COUNT_SPECS,
   HOME_ISSUE_CARDS, issuesHref, painLabel,
   SAMPLE_ISSUE_LIMIT, SAMPLE_LIMIT, SAMPLE_QUERY,
+  SECURITY_ADVISORY_QUERY, SECURITY_ALERT_QUERY, SECURITY_CARD,
+  securityAdvisoryItem, securityAlertItem, securityOrder,
   type HomeCard, type HomeIssueAction, type HomeIssueCard, type HomeRowAction,
+  type SecurityItem,
 } from "./homeCards";
 
 // While the backend snapshot is cold-loading, counts come back null with
@@ -219,6 +222,77 @@ function HomeIssueCardRow({ card }: { card: HomeIssueCard }) {
   );
 }
 
+const SECURITY_SEVERITY_CLS: Record<string, string> = {
+  critical: "chip-red", high: "chip-red", medium: "chip-yellow", low: "chip-muted",
+};
+
+// The Security card: critical/high advisories still marked not-fixed plus
+// open secret-scanning alerts, counted and sampled from two store queries,
+// ordered highest severity first and oldest first within one. Links open the
+// item's detail panel in the Alerts view.
+function HomeSecurityCardRow() {
+  const [sample, setSample] = useState<{ items: SecurityItem[]; total: number } | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([
+      api.queryAdvisories({ ...SECURITY_ADVISORY_QUERY, limit: SAMPLE_LIMIT }),
+      api.queryAlerts({ ...SECURITY_ALERT_QUERY, limit: SAMPLE_LIMIT }),
+    ])
+      .then(([adv, al]) => {
+        if (cancelled) return;
+        const items = [
+          ...adv.items.map(securityAdvisoryItem),
+          ...al.items.map(securityAlertItem),
+        ].sort(securityOrder).slice(0, SAMPLE_LIMIT);
+        setSample({ items, total: adv.total + al.total });
+        setFailed(false);
+      })
+      .catch(() => { if (!cancelled) setFailed(true); });
+    return () => { cancelled = true; };
+  }, []);
+  const total = sample ? sample.total : null;
+  return (
+    <div className="act-card home-card">
+      <Link to="/alerts" className="home-card-head act-card-clickable" title="Open the Alerts view">
+        <div className={"act-card-n" + (total === null && !failed ? " home-count-loading" : "")}>
+          {failed ? "?" : total ?? "…"}
+        </div>
+        <div className="home-card-text">
+          <div className="act-card-l">{SECURITY_CARD.title}</div>
+          <div className="small muted home-card-blurb">{SECURITY_CARD.blurb}</div>
+        </div>
+      </Link>
+      <div className="home-card-side">
+        {failed && <div className="muted small">Failed to load security data.</div>}
+        {sample && sample.total > 0 && (
+          <>
+            <table className="home-sample-table">
+              <tbody>
+                {sample.items.map((it) => (
+                  <tr key={it.key} className="home-sample-row">
+                    <td className="home-sample-pr">
+                      <Link to={it.href} className="mono small" title="Open in the Alerts view">{it.label}</Link>
+                    </td>
+                    <td className="home-sample-title" title={it.title}>{it.title}</td>
+                    <td className="home-sample-pain small">
+                      <span className={`chip ${SECURITY_SEVERITY_CLS[it.severity] ?? "chip-muted"} sm`}>{it.severity}</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <Link to="/alerts" className="home-show-all small">
+              Show all {sample.total} in Alerts →
+            </Link>
+          </>
+        )}
+        {total === 0 && <div className="muted small">None right now.</div>}
+      </div>
+    </div>
+  );
+}
+
 export default function Home() {
   const [counts, setCounts] = useState<number[] | null>(null);
   const [samples, setSamples] = useState<QueryResult[] | null>(null);
@@ -293,6 +367,7 @@ export default function Home() {
         <section className="home-col">
           <div className="home-col-head muted">Your move — one click each</div>
           {HOME_CARDS.filter((c) => c.column === "act").map(renderCard)}
+          <HomeSecurityCardRow />
         </section>
         <section className="home-col">
           <div className="home-col-head muted">In motion — the workers clear these</div>

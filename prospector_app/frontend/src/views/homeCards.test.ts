@@ -6,8 +6,11 @@ import {
   breakdownHref, exploreHref, HOME_BREAKDOWN_ENTRIES, HOME_CARDS, HOME_COUNT_SPECS,
   HOME_ISSUE_CARDS, ISSUE_ANALYZE_BATCH, issuesHref,
   painLabel, SAMPLE_LIMIT, SAMPLE_QUERY,
-  type HomeCard,
+  SECURITY_ADVISORY_QUERY, SECURITY_ALERT_QUERY, SECURITY_CARD,
+  securityAdvisoryItem, securityAlertItem, securityOrder,
+  type HomeCard, type SecurityItem,
 } from "./homeCards.ts";
+import type { AdvisoryRow, AlertRow } from "../api.ts";
 
 test("card keys are unique", () => {
   const keys = HOME_CARDS.map((c) => c.key);
@@ -160,6 +163,66 @@ test("no card runs a per-row job — the workers pick these up themselves", () =
   for (const card of HOME_CARDS) {
     assert.equal(card.rowAction, undefined, card.key);
   }
+});
+
+test("the security card key is disjoint from every other card key", () => {
+  const keys = [...HOME_CARDS.map((c) => c.key), ...HOME_ISSUE_CARDS.map((c) => c.key)];
+  assert.ok(!keys.includes(SECURITY_CARD.key));
+});
+
+test("the security card counts open critical/high not-fixed advisories and open secret alerts", () => {
+  assert.deepEqual(SECURITY_ADVISORY_QUERY.state, ["triage", "draft"]);
+  assert.deepEqual(SECURITY_ADVISORY_QUERY.severity, ["critical", "high"]);
+  assert.equal(SECURITY_ADVISORY_QUERY.verdict, "not-fixed");
+  assert.equal(SECURITY_ALERT_QUERY.source, "secret-scanning");
+  assert.equal(SECURITY_ALERT_QUERY.state, "open");
+});
+
+test("both security queries ask for the highest severity first", () => {
+  for (const q of [SECURITY_ADVISORY_QUERY, SECURITY_ALERT_QUERY]) {
+    assert.equal(q.sort, "severity");
+    assert.equal(q.direction, "desc");
+  }
+});
+
+function securityItem(over: Partial<SecurityItem>): SecurityItem {
+  return { key: "k", href: "/alerts", label: "l", title: "t", severity: "low", created_at: null, ...over };
+}
+
+test("securityOrder puts the highest severity first, then the oldest", () => {
+  const items = [
+    securityItem({ key: "med", severity: "medium", created_at: "2026-01-01T00:00:00Z" }),
+    securityItem({ key: "crit-new", severity: "critical", created_at: "2026-06-01T00:00:00Z" }),
+    securityItem({ key: "crit-old", severity: "critical", created_at: "2026-03-01T00:00:00Z" }),
+    securityItem({ key: "high", severity: "high", created_at: "2026-02-01T00:00:00Z" }),
+  ];
+  assert.deepEqual(items.sort(securityOrder).map((i) => i.key),
+    ["crit-old", "crit-new", "high", "med"]);
+});
+
+test("a security advisory item links to its detail panel in the Alerts view", () => {
+  const row = {
+    ghsa_id: "GHSA-2222-2222-2223", severity: "critical", summary: "SSRF",
+    created_at: "2026-08-01T00:00:00Z",
+  } as AdvisoryRow;
+  const item = securityAdvisoryItem(row);
+  assert.equal(item.href, "/alerts?security=advisories&advisory=GHSA-2222-2222-2223");
+  assert.equal(item.label, "GHSA-2222-2222-2223");
+  assert.equal(item.title, "SSRF");
+  assert.equal(item.severity, "critical");
+});
+
+test("a security alert item links to its detail panel and reads secret sources plainly", () => {
+  const row = {
+    source: "secret-scanning", number: 1, severity: "critical",
+    title: "GitHub PAT", secret_type: "github_pat", created_at: "2026-08-01T00:00:00Z",
+  } as AlertRow;
+  const item = securityAlertItem(row);
+  assert.equal(item.href, "/alerts?security=alerts&alert_source=secret-scanning&alert=1");
+  assert.equal(item.label, "secret #1");
+  assert.equal(item.title, "GitHub PAT");
+  const untitled = securityAlertItem({ ...row, title: null });
+  assert.equal(untitled.title, "github_pat");
 });
 
 test("painLabel formats a score to two decimals and hides missing ones", () => {

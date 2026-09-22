@@ -95,6 +95,36 @@ def test_query_filters_and_sorts(seeded):
     assert [r["number"] for r in out["items"]] == [1]
 
 
+def test_default_order_is_severity_then_age(tmp_path, monkeypatch):
+    store = AlertStore(tmp_path)
+
+    def seed(source: str, number: int, severity: str, created: str) -> None:
+        a = Alert(store, {"id": alert_id(source, number)})
+        a.apply_facts({
+            "source": source, "number": number, "state": "open",
+            "raw_state": "open", "severity": severity,
+            "created_at": created, "updated_at": "2026-09-01T00:00:00Z",
+            "html_url": f"https://github.com/o/r/security/{source}/{number}",
+        })
+
+    seed("code-scanning", 1, "medium", "2026-01-01T00:00:00Z")
+    seed("code-scanning", 2, "critical", "2026-06-01T00:00:00Z")
+    seed("code-scanning", 3, "critical", "2026-03-01T00:00:00Z")
+    seed("dependabot", 4, "high", "2026-02-01T00:00:00Z")
+    monkeypatch.setattr(alerts_mod, "STORE_ROOT", tmp_path)
+    monkeypatch.setattr(alerts_mod, "_synced_store_root", None)
+    monkeypatch.setattr(alerts_mod, "_store_pr_states", lambda: ({}, False))
+    try:
+        out = alerts_mod.query_alerts()
+        assert [r["number"] for r in out["items"]] == [3, 2, 4, 1]
+        out = alerts_mod.query_alerts(sort="severity", direction="asc")
+        assert [r["number"] for r in out["items"]] == [1, 4, 3, 2]
+    finally:
+        alerts_mod.STORE_ROOT = None
+        alerts_mod._synced_store_root = None
+        alert_data.set_store_root(None)
+
+
 def test_get_alert_detail(seeded):
     d = alerts_mod.get_alert("code-scanning", 1)
     assert d is not None
