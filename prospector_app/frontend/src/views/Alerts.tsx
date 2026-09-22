@@ -212,7 +212,7 @@ function AlertsTable() {
   const [caps, setCaps] = useState<AlertCaps | null>(null);
   const [q, setQ] = useState("");
   const [page, setPage] = useState(1);
-  const [sortKey, setSortKey] = useState<AlertSortKey | "">("updated");
+  const [sortKey, setSortKey] = useState<AlertSortKey | "">("severity");
   const [sortDir, setSortDir] = useState<SortDir | "">("desc");
   const [sourceFilter, setSourceFilter] = useState("");
   const [stateFilter, setStateFilter] = useState("open");

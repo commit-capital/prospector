@@ -1461,7 +1461,8 @@ export const api = {
   alertCaps: () => get<AlertCaps>("/api/alerts/caps"),
   getAlert: (source: AlertSource, n: number) => get<AlertDetail>(`/api/alerts/${source}/${n}`),
   queryAdvisories: (opts: {
-    q?: string; sort?: string; direction?: string; state?: string | string[]; verdict?: string;
+    q?: string; sort?: string; direction?: string; state?: string | string[];
+    severity?: string[]; verdict?: string;
     offset?: number; limit?: number;
   } = {}) =>
     fetch("/api/advisories/query", {
