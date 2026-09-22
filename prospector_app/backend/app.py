@@ -1251,7 +1251,10 @@ def activity_firehose(days: int = Query(30, le=400), all_time: bool = False,
         ]
         if dates:
             start_date = min(dates)
-    stats = activity.firehose_stats(scoped_prs, all_issues, days, events, start_date=start_date)
+    ingest_runs = pipeline_status.last_ingest_runs()
+    stats = activity.firehose_stats(
+        scoped_prs, all_issues, days, events, start_date=start_date,
+        pr_ingested_at=ingest_runs["pr"], iss_ingested_at=ingest_runs["issue"])
     stats["reopened_after_close"] = activity.reopened_after_close(scoped_prs, events)
     stats["iss_action_counts"] = activity.issue_action_counts(events)
     return stats

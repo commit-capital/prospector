@@ -484,6 +484,8 @@ def firehose_stats(
     today: date | None = None,
     tz: tzinfo | None = None,
     start_date: date | None = None,
+    pr_ingested_at: str | None = None,
+    iss_ingested_at: str | None = None,
 ) -> dict:
     """Aggregate incoming-vs-triaged stats for the firehose panel.
 
@@ -500,6 +502,14 @@ def firehose_stats(
     timezone by default), and the window ends on today in that same zone — so an
     action stamped just after UTC midnight lands on the local bar the operator
     sees it on, not a UTC day past the window's edge.
+
+    ``pr_ingested_at`` / ``iss_ingested_at`` are the last-successful-ingest
+    stamps for the two ingested populations (store PRs and issues). The
+    incoming series carry no observations past those stamps, so the result's
+    ``ingest`` block gives each stamp back alongside ``pr_stale_from`` /
+    ``iss_stale_from`` — the index of the first window day *after* the ingest
+    day (0 with no ingest recorded, None when the window is fully covered) —
+    for the UI to draw as no-data rather than zero.
 
     ``today`` and ``tz`` override the wall-clock date and zone — pass them in
     tests for determinism."""
@@ -547,9 +557,21 @@ def firehose_stats(
         elif kind == "reopen" and day in pr_reopened:
             pr_reopened[day] += 1
 
+    def stale_from(ingested_at: str | None) -> int | None:
+        if not ingested_at:
+            return 0
+        ingest_day = _local_day(ingested_at, local_tz)
+        return next((i for i, d in enumerate(days) if d > ingest_day), None)
+
     last7 = set(days[-7:])
     return {
         "days": days,
+        "ingest": {
+            "pr_last_at": pr_ingested_at,
+            "iss_last_at": iss_ingested_at,
+            "pr_stale_from": stale_from(pr_ingested_at),
+            "iss_stale_from": stale_from(iss_ingested_at),
+        },
         "pr_incoming": [pr_incoming[d] for d in days],
         "pr_closed": [pr_closed[d] for d in days],
         "pr_merged": [pr_merged[d] for d in days],

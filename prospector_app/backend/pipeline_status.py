@@ -71,6 +71,17 @@ def _last_issue_runs(issue_runs: list[storekit.RunRecord]) -> dict[str, str]:
     return latest
 
 
+def last_ingest_runs() -> dict[str, str | None]:
+    """Finished-at stamps of the most recent PR-ingest and issue-ingest runs,
+    as ``{"pr": iso | None, "issue": iso | None}`` — None where the ledger
+    holds no such run. This is the freshness bound for everything the app
+    derives from ingested data (incoming PR/issue counts and charts)."""
+    return {
+        "pr": _last_runs().get("ingest"),
+        "issue": _last_issue_runs(_issue_runs()).get("ingest"),
+    }
+
+
 def _elapsed_seconds(started: str | None, finished: str | None) -> float | None:
     if not started or not finished:
         return None

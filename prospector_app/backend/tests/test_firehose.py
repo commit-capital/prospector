@@ -202,6 +202,49 @@ def test_firehose_errored_events_excluded():
     assert sum(stats["pr_closed"]) == 1
 
 
+# ── ingest freshness ──────────────────────────────────────────────────────────
+
+def test_firehose_ingest_stale_from_marks_days_past_ingest():
+    stats = activity.firehose_stats(
+        {}, [], n_days=30, events=[], today=_TODAY, tz=timezone.utc,
+        pr_ingested_at=f"{_days_ago(19)}T10:00:00+00:00",
+        iss_ingested_at=f"{_days_ago(2)}T10:00:00+00:00")
+    ing = stats["ingest"]
+    assert ing["pr_last_at"] == f"{_days_ago(19)}T10:00:00+00:00"
+    assert ing["iss_last_at"] == f"{_days_ago(2)}T10:00:00+00:00"
+    # Staleness starts the day after the ingest day, not on it.
+    assert stats["days"][ing["pr_stale_from"]] == _days_ago(18)
+    assert stats["days"][ing["iss_stale_from"]] == _days_ago(1)
+
+
+def test_firehose_ingest_today_covers_whole_window():
+    stamp = f"{_TODAY.isoformat()}T09:00:00+00:00"
+    stats = activity.firehose_stats(
+        {}, [], n_days=30, events=[], today=_TODAY, tz=timezone.utc,
+        pr_ingested_at=stamp, iss_ingested_at=stamp)
+    assert stats["ingest"]["pr_stale_from"] is None
+    assert stats["ingest"]["iss_stale_from"] is None
+
+
+def test_firehose_ingest_never_ran_marks_whole_window():
+    stats = activity.firehose_stats({}, [], n_days=30, events=[], today=_TODAY, tz=timezone.utc)
+    assert stats["ingest"] == {
+        "pr_last_at": None, "iss_last_at": None,
+        "pr_stale_from": 0, "iss_stale_from": 0,
+    }
+
+
+def test_firehose_ingest_day_buckets_in_operator_tz():
+    """An ingest stamped just after UTC midnight counts as the operator's local
+    day, on the same day-boundary basis as every series bucket."""
+    pacific = timezone(timedelta(hours=-8))
+    stats = activity.firehose_stats(
+        {}, [], n_days=30, events=[], today=date(2026, 6, 25), tz=pacific,
+        pr_ingested_at="2026-06-26T00:58:00+00:00")  # 16:58 the 25th, Pacific
+    # Local day is the window's last day, so nothing is stale.
+    assert stats["ingest"]["pr_stale_from"] is None
+
+
 # ── reopened_after_close ──────────────────────────────────────────────────────
 
 def test_reopened_after_close_detects_reopened_pr():

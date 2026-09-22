@@ -1960,6 +1960,15 @@ export interface ActivitySummary {
 
 export interface FirehoseStats {
   days: string[];
+  // Last-successful-ingest stamps for the two ingested populations, with the
+  // index of the first window day past each ingest day (0 = never ingested,
+  // null = window fully covered) — days from there on carry no observations.
+  ingest: {
+    pr_last_at: string | null;
+    iss_last_at: string | null;
+    pr_stale_from: number | null;
+    iss_stale_from: number | null;
+  };
   pr_incoming: number[];
   pr_closed: number[];
   pr_merged: number[];

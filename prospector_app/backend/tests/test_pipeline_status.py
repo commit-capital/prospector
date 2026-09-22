@@ -201,6 +201,27 @@ def test_apply_verdicts_stamps_analyze_last_run(tmp_path, monkeypatch):
     assert "analyze" in pipeline_status._last_issue_runs(st.runs())
 
 
+def test_last_ingest_runs_reads_both_ledgers(tmp_path, monkeypatch):
+    from prospector_app.backend import data
+    st = _seed_issue_store(tmp_path, monkeypatch)
+    st.append_run({"phase": "ingest", "started": "2026-07-01T09:00:00+00:00",
+                   "finished": "2026-07-01T10:00:00+00:00", "stats": {}})
+    monkeypatch.setattr(data, "runs", lambda: [storekit.parse_run(
+        {"phase": "ingest", "started": "2026-07-02T09:00:00+00:00",
+         "finished": "2026-07-02T10:00:00+00:00"})])
+
+    assert pipeline_status.last_ingest_runs() == {
+        "pr": "2026-07-02T10:00:00+00:00", "issue": "2026-07-01T10:00:00+00:00"}
+
+
+def test_last_ingest_runs_none_when_never_ran(tmp_path, monkeypatch):
+    from prospector_app.backend import data, issues
+    monkeypatch.setattr(issues, "STORE_ROOT", tmp_path)
+    monkeypatch.setattr(data, "runs", lambda: [])
+
+    assert pipeline_status.last_ingest_runs() == {"pr": None, "issue": None}
+
+
 def test_seconds_per_unit_averages_recent_samples():
     records = [storekit.parse_run(d) for d in [
         {"phase": "threat-scan", "started": "2026-07-01T10:00:00+00:00",
