@@ -38,6 +38,20 @@ a:hover { text-decoration: underline; }
 .store-write-block { background: var(--red); color: #fff; padding: 10px 20px;
   text-align: center; font-weight: 700; font-size: 14px; }
 
+/* systemwide health strip (App.tsx HealthStrip) — worker lanes down on any
+   machine + stale ingests, on every page just under the topbar. */
+.health-strip { display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  padding: 4px 20px; font-size: 12.5px; font-weight: 600; text-decoration: none;
+  border-bottom: 1px solid var(--border);
+  width: calc(100% + var(--ap-w, 0)); margin-left: calc(-1 * var(--ap-w, 0)); }
+.health-strip:hover .health-strip-item { text-decoration: underline; }
+.health-strip-amber { color: var(--yellow);
+  background: color-mix(in srgb, var(--yellow) 12%, var(--panel)); }
+.health-strip-red { color: var(--red);
+  background: color-mix(in srgb, var(--red) 10%, var(--panel)); }
+.health-strip-item { display: inline-flex; align-items: center; gap: 6px; }
+.health-strip-sep { opacity: .6; }
+
 /* layout */
 .topbar { display: flex; align-items: center; gap: 24px; padding: 10px 20px;
   background: var(--panel); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 10;
@@ -1372,6 +1386,9 @@ tr.row-done:hover > td { opacity: 1; }
 }
 .home-col { min-width: 0; display: flex; flex-direction: column; gap: 10px; }
 .home-col-head { text-transform: uppercase; letter-spacing: .04em; font-size: 10.5px; }
+/* the workers' column while every worker lane is down: nothing is moving */
+.home-col-stalled .home-col-head { color: var(--red); }
+.home-col-stalled .act-card { opacity: .55; filter: grayscale(.7); }
 .home-breakdown { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 0 12px 8px; }
 .home-breakdown-item { text-decoration: none; color: var(--muted); }
 .home-breakdown-item:hover { color: var(--fg); text-decoration: underline; }
