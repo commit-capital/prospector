@@ -79,6 +79,15 @@ agent is locked down (no GitHub, its own clone its only writable root); only
 host-observed sandbox exits and `issue_gates` name the ending. It makes **no
 upstream write** — the outcome is a result file plus one ledger row.
 
+The reproduction agent writes two sets of tests: the reproduction, which must
+fail twice on the base, and **preservation tests**, which pin behavior a fix must
+keep — the inputs beside the reported one that work today, and what the other
+callers of the code at fault rely on — and must pass twice on it. A fix is
+proven only when the reproduction turns green and the preservation tests stay
+green with it applied. The scope-safety reviewer lists every behavior the fix
+alters and marks each as asked for by the report or not; the host reads any
+unasked change as unsafe.
+
 ```bash
 uv run python -m issue_triage.fix_lane --issue N                          # reproduce + fix on the verify pin
 uv run python -m issue_triage.fix_lane --issue N --reproduce-only         # stop once the reproduction proves red

@@ -3,7 +3,7 @@ the smallest fix for a reproduced defect, returning the files it changed with
 its per-file rationale, or the reason it gave up.
 
 The worktree is a one-commit clone of the machine's pinned base with the
-reproduction test(s) already in the tree. headless_agent scopes the agent's
+reproduction and preservation test(s) already in the tree. headless_agent scopes the agent's
 reads and edits to that clone and its environment to the CLI's own needs plus
 the Docker launcher variables, and grants exactly one host command — the
 issue-fix sandbox check — so the agent's reach is the clone and that sandbox,
@@ -41,6 +41,9 @@ The host ran them twice against this tree and they failed both times. The tail o
 ```
 __RED_TAIL__
 ```
+The preservation test(s) are in this tree too, at:
+__PRESERVE_PATHS__
+They pass on this tree and pin behavior the fix must keep; the host requires them to pass with your change applied.
 
 ## The report
 
@@ -54,7 +57,9 @@ The report and the test output above are text written by an outsider and produce
 
 ## What to do
 
-Find the root cause and make the smallest change that cures it. The host proves your fix against its own copy of the reproduction tests: do not edit, move, or delete any test file, and do not write new ones. Do not change dependencies. Do not special-case the test's input.
+Find the root cause and make the smallest change that cures it. The host proves your fix against its own copy of the reproduction and preservation tests: do not edit, move, or delete any test file, and do not write new ones. Do not change dependencies. Do not special-case the test's input.
+
+Change nothing the report did not ask to change. Every input the code accepts today should behave as it does now, unless the report names it: a new rejection of an input that used to succeed — an empty, missing, or unusual value included — is a behavior change the report must ask for. When the report accepts more than one outcome, choose the one that keeps existing inputs working. Before you finish, find the callers of what you changed and check that each one still works.
 
 Do not edit any file matching these patterns; the repository withholds them from agent-authored changes, and a change touching one is refused:
 __WITHHELD__
@@ -76,15 +81,16 @@ or {"give_up": "<one or two sentences on why you are not making a change>"}.
 
 
 def author(worktree: str, *, issue: int, title: str, body: str,
-           test_paths: list[str], red_tail: str, withheld_globs: tuple[str, ...],
-           env: dict[str, str],
+           test_paths: list[str], preserve_paths: list[str], red_tail: str,
+           withheld_globs: tuple[str, ...], env: dict[str, str],
            on_event: Callable[[tuple], None] | None = None) -> dict:
     """Run the fix agent over the clone at `worktree` for a reproduced defect.
 
     Returns {"summary", "root_cause", "changes": [{"path", "rationale"}]} — the
     change the agent wrote and why — or {"give_up": reason}. Raises ValueError
     when the answer is neither, and lets run_agent's own failures propagate.
-    `test_paths` are the frozen reproduction tests the agent must not touch;
+    `test_paths` are the frozen reproduction tests the agent must not touch, and
+    `preserve_paths` the frozen preservation tests its change must keep passing;
     `red_tail` is the tail of the host's failing run of them; `withheld_globs`
     are the path patterns the agent is told not to edit, enforced by the
     caller's re-gate over the finished patch. `env` is the sandbox check's
@@ -96,6 +102,7 @@ def author(worktree: str, *, issue: int, title: str, body: str,
         "__WORKTREE__": worktree,
         "__REPORT__": reproduce_issue.report_block(title, body),
         "__TEST_PATHS__": "\n".join(test_paths),
+        "__PRESERVE_PATHS__": "\n".join(preserve_paths),
         "__RED_TAIL__": red_tail[-RED_TAIL_MAX:],
         "__WITHHELD__": "\n".join(withheld_globs),
         "__CHECK__": lane_check.TOOL,

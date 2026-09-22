@@ -2344,6 +2344,11 @@ class TestValidateTestFiles:
         _, why = vd.validate_test_files(self.FILES, None, base_clone=tmp_path, taken_paths=[])
         assert why == "no-expected-red-signature"
 
+    def test_a_set_expected_to_pass_needs_no_signature(self, tmp_path):
+        cmd, why = vd.validate_test_files(self.FILES, None, base_clone=tmp_path,
+                                          taken_paths=[], red=False)
+        assert why is None and cmd
+
 
 class TestAuthoredPatches:
     def test_patch_applies_and_creates_the_files(self, tmp_path, monkeypatch):

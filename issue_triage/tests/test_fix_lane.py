@@ -22,11 +22,20 @@ from issue_triage import (
 from pipeline import gates, headless_agent, prove, verify_driver
 
 
+def _keep(worktree: str) -> list[dict]:
+    """Write the preservation test a reproduction must carry, returning its entry."""
+    p = Path(worktree) / "src" / "keep.test.ts"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("test('keep', () => { expect(1).toBe(1); });\n")
+    return [{"path": "src/keep.test.ts", "purpose": "a valid input still works"}]
+
+
 def _repro_writes_test(worktree: str) -> dict:
     p = Path(worktree) / "src" / "repro.test.ts"
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("test('repro', () => { throw new Error('boom'); });\n")
     return {"files": [{"path": "src/repro.test.ts", "purpose": "reproduces the defect"}],
+            "preserve": _keep(worktree),
             "claimed_symptom": "throws on empty input",
             "expected_red_signature": "Error: boom",
             "confidence": "high"}
@@ -91,11 +100,12 @@ def lane(tmp_path, monkeypatch):
     scripts = SimpleNamespace(
         reproduce=_repro_writes_test, judge=_judge_reproduced, fix=_fix_edits_x,
         review=_review_safe, red=_red_confirmed, green=_green_confirmed,
+        preserve=_green_confirmed,
         run_command=lambda phase, cmd, patch: {
             "cmd": cmd, "label": "l", "base_sha": base.sha, "output_tail": "ok",
             "exit": gates.SENTINEL_PASS, "duration_s": 1.0})
     calls: dict = {"reproduce": [], "judge": [], "fix": [], "review": [], "red": 0,
-                   "green": 0, "run_command": [], "compose": [], "flatten": [], "steps": [],
+                   "green": 0, "preserve": 0, "evidence": [], "run_command": [], "compose": [], "flatten": [], "steps": [],
                    "fix_status": []}
 
     def fake_reproduce(worktree, *, issue, title, body, env, retry_note=None,
@@ -109,18 +119,20 @@ def lane(tmp_path, monkeypatch):
         calls["judge"].append({"worktree": worktree, "files": files, "red_tail": red_tail})
         return scripts.judge(worktree)
 
-    def fake_fix(worktree, *, issue, title, body, test_paths, red_tail,
+    def fake_fix(worktree, *, issue, title, body, test_paths, preserve_paths, red_tail,
                  withheld_globs, env, on_event=None):
         status = subprocess.run(["git", "-C", worktree, "status", "--porcelain"],
                                 capture_output=True, text=True).stdout
         calls["fix_status"].append(status)
         calls["fix"].append({"worktree": worktree, "test_paths": test_paths,
+                             "preserve_paths": preserve_paths,
                              "withheld_globs": withheld_globs, "env": env})
         return scripts.fix(worktree)
 
     def fake_review(worktree, patch, *, lens, title, body, root_cause, test_paths,
-                    on_event=None):
+                    evidence, on_event=None):
         calls["review"].append(lens)
+        calls["evidence"].append(evidence)
         return scripts.review(worktree, patch, lens)
 
     def fake_red(base_, *, patch, test_cmd, label, tail_bytes=0):
@@ -128,6 +140,9 @@ def lane(tmp_path, monkeypatch):
         return scripts.red()
 
     def fake_green(base_, *, patch, test_cmd, label, tail_bytes=0):
+        if "keep.test" in test_cmd:
+            calls["preserve"] += 1
+            return scripts.preserve()
         calls["green"] += 1
         return scripts.green()
 
@@ -198,7 +213,7 @@ def test_editing_a_tracked_file_ends_unwritable_after_the_retry(lane):
         (Path(wt) / "src" / "repro.test.ts").write_text("test('r', () => {});\n")
         (Path(wt) / "src" / "x.ts").write_text("export const x = 9;\n")
         return {"files": [{"path": "src/repro.test.ts", "purpose": "p"}],
-                "claimed_symptom": "s", "expected_red_signature": "sig",
+                "preserve": _keep(wt), "claimed_symptom": "s", "expected_red_signature": "sig",
                 "confidence": "high"}
 
     lane.scripts.reproduce = repro_and_edit
@@ -222,7 +237,7 @@ def test_adding_a_case_to_an_existing_test_file_is_written(lane):
         p = Path(wt) / "src" / "existing.test.ts"
         p.write_text(p.read_text() + "test('repro', () => { throw new Error('boom'); });\n")
         return {"files": [{"path": "src/existing.test.ts", "purpose": "reproduces it"}],
-                "claimed_symptom": "throws", "expected_red_signature": "Error: boom",
+                "preserve": _keep(wt), "claimed_symptom": "throws", "expected_red_signature": "Error: boom",
                 "confidence": "high"}
 
     lane.scripts.reproduce = repro_extends
@@ -239,7 +254,7 @@ def test_rewriting_an_existing_test_file_still_ends_unwritable(lane):
         (Path(wt) / "src" / "existing.test.ts").write_text(
             "test('repro', () => { throw new Error('boom'); });\n")
         return {"files": [{"path": "src/existing.test.ts", "purpose": "reproduces it"}],
-                "claimed_symptom": "throws", "expected_red_signature": "Error: boom",
+                "preserve": _keep(wt), "claimed_symptom": "throws", "expected_red_signature": "Error: boom",
                 "confidence": "high"}
 
     lane.scripts.reproduce = repro_rewrites
@@ -255,8 +270,8 @@ def test_an_undisclosed_extension_of_an_existing_test_file_is_refused(lane):
         p.write_text(p.read_text() + "test('extra', () => {});\n")
         (Path(wt) / "src" / "repro.test.ts").write_text("test('r', () => {});\n")
         return {"files": [{"path": "src/repro.test.ts", "purpose": "p"}],
-                "claimed_symptom": "s", "expected_red_signature": "sig",
-                "confidence": "high"}
+                "preserve": _keep(wt), "claimed_symptom": "s",
+                "expected_red_signature": "sig", "confidence": "high"}
 
     lane.scripts.reproduce = repro_extends_quietly
     res = lane.run(action="reproduce")
@@ -468,8 +483,12 @@ def test_agent_runs_counts_every_agent_invocation(lane):
 def test_the_happy_path_emits_its_steps_in_order(lane):
     lane.run()
     steps = lane.calls["steps"]
-    assert steps[:4] == ["preparing the clone", "agent authoring the reproduction",
-                         "proving red on the pinned base", "judging the reproduction"]
+    assert steps[:5] == ["preparing the clone", "agent authoring the reproduction",
+                         "proving red on the pinned base",
+                         "proving the preservation tests pass on the pinned base",
+                         "judging the reproduction"]
+    assert (steps.index("proving green")
+            < steps.index("proving the preservation tests still pass"))
     assert "agent authoring the fix" in steps
     assert "re-gating the fix" in steps
     assert "proving green" in steps
@@ -538,7 +557,9 @@ def test_pre_patch_routes_the_red_and_green_legs_through_flatten(lane):
     res = lane.run(pre_patch=_PRE_PATCH)
     assert res.ending == "fixed" and res.fault is False
     assert lane.calls["compose"] == []
-    assert len(lane.calls["flatten"]) == 2
+    # red, the preservation tests on the base, green, the preservation tests
+    # with the fix.
+    assert len(lane.calls["flatten"]) == 4
     for call in lane.calls["flatten"]:
         assert call["base_clone"] == lane.base.clone
         assert call["parts"][0] == _PRE_PATCH
@@ -583,4 +604,96 @@ def test_pre_patch_none_uses_compose_not_flatten(lane):
     res = lane.run()
     assert res.ending == "fixed" and res.fault is False
     assert lane.calls["flatten"] == []
-    assert len(lane.calls["compose"]) == 2
+    assert len(lane.calls["compose"]) == 4
+
+
+# --- preservation tests ------------------------------------------------------
+
+
+def _repro_without_preservation(wt: str) -> dict:
+    out = _repro_writes_test(wt)
+    (Path(wt) / "src" / "keep.test.ts").unlink()
+    out["preserve"] = []
+    return out
+
+
+def test_a_reproduction_without_preservation_tests_ends_unwritable(lane):
+    lane.scripts.reproduce = _repro_without_preservation
+    res = lane.run()
+    assert res.ending == "unwritable" and res.fault is False
+    assert lane.calls["reproduce"][1]["retry_note"] == "no-preservation-tests"
+    assert lane.calls["red"] == 0
+
+
+def test_a_preservation_test_that_is_also_the_reproduction_is_refused(lane):
+    def overlapping(wt: str) -> dict:
+        out = _repro_writes_test(wt)
+        out["preserve"] = out["preserve"] + out["files"]
+        return out
+
+    lane.scripts.reproduce = overlapping
+    res = lane.run()
+    assert res.ending == "unwritable"
+    assert res.detail == "preservation-overlaps-reproduction"
+
+
+def test_preservation_tests_failing_on_the_base_are_retried_then_unwritable(lane):
+    lane.scripts.preserve = lambda: {"exit": gates.SENTINEL_TEST_FAIL, "exit_confirm": None,
+                                     "output_tail": "fail\n", "duration_s": 1.0}
+    res = lane.run()
+    assert res.ending == "unwritable" and res.fault is False
+    assert len(lane.calls["reproduce"]) == 2
+    assert lane.calls["reproduce"][1]["retry_note"] == (
+        "the preservation tests fail on the pinned base")
+    assert lane.calls["judge"] == []
+
+
+def test_preservation_tests_that_pass_on_a_retry_go_on_to_the_fix(lane):
+    runs = iter([{"exit": gates.SENTINEL_TEST_FAIL, "exit_confirm": None,
+                  "output_tail": "fail\n", "duration_s": 1.0}])
+    lane.scripts.preserve = lambda: next(runs, _green_confirmed())
+    res = lane.run()
+    assert res.ending == "fixed"
+    assert len(lane.calls["reproduce"]) == 2
+
+
+def test_a_preservation_run_with_no_test_verdict_ends_sandbox(lane):
+    lane.scripts.preserve = lambda: {"exit": 124, "exit_confirm": None,
+                                     "output_tail": "timeout\n", "duration_s": 1.0}
+    res = lane.run()
+    assert res.ending == "sandbox" and res.fault is True
+
+
+def test_a_fix_that_breaks_a_preservation_test_ends_fix_unproven(lane):
+    runs = iter([_green_confirmed()])  # the base run passes; the fixed run does not
+    lane.scripts.preserve = lambda: next(runs, {
+        "exit": gates.SENTINEL_TEST_FAIL, "exit_confirm": None,
+        "output_tail": "empty id now 400\n", "duration_s": 1.0})
+    res = lane.run()
+    assert res.ending == "fix-unproven" and res.fault is False
+    assert "preservation" in res.detail
+    assert res.result["proof"]["preserve"]["exit"] == gates.SENTINEL_TEST_FAIL
+
+
+def test_the_fix_agent_and_its_clone_carry_the_preservation_tests(lane):
+    seen: dict = {}
+
+    def fix_and_look(wt: str) -> dict:
+        seen["kept"] = (Path(wt) / "src" / "keep.test.ts").exists()
+        return _fix_edits_x(wt)
+
+    lane.scripts.fix = fix_and_look
+    res = lane.run()
+    assert res.ending == "fixed"
+    assert seen["kept"] is True
+    assert lane.calls["fix"][0]["preserve_paths"] == ["src/keep.test.ts"]
+    assert res.reproduction["preserve"][0]["path"] == "src/keep.test.ts"
+    assert res.reproduction["preserve_on_base"]["exit"] == gates.SENTINEL_PASS
+
+
+def test_the_reviewers_are_told_what_the_host_observed(lane):
+    lane.run()
+    assert len(lane.calls["evidence"]) == 2
+    evidence = lane.calls["evidence"][1]
+    assert "Preservation tests (src/keep.test.ts)" in evidence
+    assert "passed twice" in evidence

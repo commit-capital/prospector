@@ -734,3 +734,14 @@ def test_run_instance_records_the_related_tests_the_lane_ran(
 
     assert rec["lane"]["related_tests"] == {"files": ["src/issues.test.ts"],
                                             "exit": gates.SENTINEL_PASS, "base_fails": False}
+
+def test_score_reads_the_lane_s_preservation_tests_as_its_own(tmp_path, generic_profile,
+                                                              monkeypatch) -> None:
+    keep = ("diff --git a/src/keep.test.ts b/src/keep.test.ts\n"
+            "--- a/src/keep.test.ts\n+++ b/src/keep.test.ts\n"
+            "@@ -0,0 +1,1 @@\n+expect(fixme(2)).toBe(2)\n")
+    lane = _lane("fixed", patch=keep + _LANE_PATCH)
+    lane.reproduction["preserve"] = [{"path": "src/keep.test.ts"}]
+    rec, _ = _score(tmp_path, monkeypatch, lane,
+                    red=_RED_2020, lane_green=_GREEN_00, oracle_green=_GREEN_00)
+    assert rec["test_tamper"] is False
