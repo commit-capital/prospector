@@ -96,8 +96,9 @@ const SAFETY_GLOSSARY: Record<SafetyKey, GlossaryEntry> = {
 export const TERMS: Record<string, GlossaryEntry> = {
   // table columns
   "col.pr": { title: "PR", meaning: "The pull-request number on the upstream repository." },
-  "col.loc": { title: "LOC", meaning: "Lines of code the PR changes. Shows effective LOC — the lines a human wrote — once the diff is classified, stripping generated noise (migration snapshots, locale bundles, lockfiles, vendored/built files). 'effective / raw' means most of the diff is generated. Falls back to the raw additions+deletions until the diff is analyzed. Hover for the per-category breakdown." },
+  "col.loc": { title: "Size", meaning: "Lines and files the PR changes, as one cell: '+239 · 8f' is 239 effective lines — the lines a human wrote, stripping generated noise (migration snapshots, locale bundles, lockfiles, vendored/built files) — across 8 files. 'effective/raw' means most of the diff is generated. Falls back to the raw additions+deletions until the diff is analyzed. Hover for the per-category breakdown." },
   "col.files": { title: "Files", meaning: "How many files the PR touches." },
+  "col.conflicts": { title: "Merge conflicts", meaning: "Whether the branch still merges cleanly onto the default branch. ⚠ means it doesn't — the author must rebase before it can merge." },
   "col.safety": { title: "Safety", meaning: "The security-review verdict — GREEN, YELLOW, RED, or — when the PR hasn't been reviewed." },
   "col.cluster": { title: "Cluster", meaning: "The dedup group this PR belongs to — PRs fixing the same root issue. Click to open it." },
   "col.updated": { title: "Updated", meaning: "When the PR last changed upstream. Click to sort by recency. Chips show how the author responded since we acted: ↩ reopened · ⬆ new commits · 💬 replied. Click ✓ seen to acknowledge a response — it stops showing until a newer one arrives." },
@@ -128,8 +129,8 @@ export const TERMS: Record<string, GlossaryEntry> = {
   // lane filter templates
   "lane.easy": { title: "Easy Lane", meaning: "Merge-ready (every check green), and also tiny (under 20 effective lines), leaf-surface (tier 3), and a pipeline merge pick — the fastest possible approvals. Edit any of the dropped-in filters to widen it." },
   "lane.stale": { title: "Stale (lane)", meaning: "Feedback stands and the author has gone quiet: review score below the bar, scored against the latest commit, with no PR update in over 30 days. A triage shortlist, not a verdict.", note: "Different from a stale analysis, which means the PR changed since we analyzed it." },
-  "lane.merge-ready": { title: "Merge-ready (lane)", meaning: "Every check green — review at the bar and current, CI passing, no conflicts, security GREEN, verified. The same query as the Home tab's “PRs ready to merge” card." },
-  "lane.needs-human": { title: "Needs human (lane)", meaning: "PRs the pipeline couldn't auto-decide — they need your call. The same as the needs-human disposition (a RED security verdict also lands here)." },
+  "lane.merge-ready": { title: "Ready to merge (lane)", meaning: "Every check green — review at the bar and current, CI passing, no conflicts, security GREEN, verified. The same query as the Home tab's “Ready to merge” card." },
+  "lane.needs-human": { title: "Your call (lane)", meaning: "PRs the pipeline couldn't auto-decide — they need your call. The same as the needs-human disposition (a RED security verdict also lands here), and the population behind the Home tab's “Your call” card." },
 
   // drift vs the current default branch (canonical states: applicable / already-fixed / conflicts)
   "drift.applicable": { title: "Drift: applicable", meaning: "The branch still merges cleanly onto the current default branch — worth acting on." },

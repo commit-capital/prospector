@@ -96,7 +96,7 @@ export default function TableDetail() {
       <div className="detail-head">
         <h1>🗄️ {name}</h1>
         <p className="muted">
-          <Link to="/tables" className="linkish">← all tables</Link> · {total.toLocaleString()} rows
+          <Link to="/pipeline/data" className="linkish">← all tables</Link> · {total.toLocaleString()} rows
         </p>
       </div>
       {err && <div className="error">{err}</div>}

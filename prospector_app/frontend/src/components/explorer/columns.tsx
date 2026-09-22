@@ -7,8 +7,9 @@ import type { GlossaryEntry } from "../../glossary";
 import { timeAgo } from "../../timeAgo";
 import { ReviewCell } from "./ReviewCell";
 import { ScansCell } from "./ScansCell";
+import { sizeCell } from "./sizeCell";
 import { GitHubPRLink } from "../GitHubPRLink";
-import { ConflictChip, DraftChip, TierChip, AckButton } from "../Chips";
+import { DraftChip, TierChip, AckButton } from "../Chips";
 import { AuthorHover } from "../AuthorHover";
 import { LinkedIssues } from "../LinkedIssues";
 
@@ -181,39 +182,59 @@ export const COLUMNS: ColumnDef[] = [
   // off the row so clicking anywhere else opens the in-app sidebar (#193).
   { key: "pr", label: "PR", defaultOn: true, fixed: true, term: "col.pr", stopOpen: true, cellClass: "mono",
     cell: (r) => <GitHubPRLink n={r.number} url={r.url} /> },
-  { key: "loc", label: "LOC", defaultOn: true, term: "col.loc", numeric: true, cellClass: "num mono small",
+  { key: "pain", label: "Pain", defaultOn: true, numeric: true, cellClass: "num mono small",
+    cell: (r) => {
+      const score = r.pain_score;
+      const b = r.pain_breakdown;
+      if (score == null || score === 0) return "—";
+      const tipBody = b ? (
+        <div className="tip-rows">
+          <div className="tip-head">Community Pain Score</div>
+          <div className="tip-row"><span>Issue pain</span><b>{b.issue_pain.toFixed(2)} ({b.linked_issues} issue{b.linked_issues === 1 ? "" : "s"})</b></div>
+          <div className="tip-row"><span>PR comments</span><b>{b.pr_comments}</b></div>
+          <div className="tip-row"><span>PR reactions</span><b>{b.pr_reactions}</b></div>
+        </div>
+      ) : undefined;
+      return (
+        <InfoTip body={tipBody} entry={tipBody ? undefined : { title: "Community Pain Score", meaning: "Linked-issue pain + PR engagement" }} cue={false} focusable={false}>
+          <span>{score.toFixed(2)}</span>
+        </InfoTip>
+      );
+    } },
+  { key: "loc", label: "Size", defaultOn: true, term: "col.loc", numeric: true, cellClass: "num mono small",
     cell: (r) => {
       const b = r.loc_breakdown;
-      if (b) {
-        const noisy = b.raw > 0 && b.effective / b.raw < 0.5;
-        const text = noisy ? `${b.effective} / ${b.raw}` : String(b.effective);
-        return (
-          <InfoTip body={locBody(b)} cue={false} focusable={false}>
-            <span className={noisy ? "loc-noisy" : undefined}>{text}</span>
-          </InfoTip>
-        );
-      }
       const add = r.signals?.additions, del = r.signals?.deletions;
-      if (add == null && del == null) return "—";
-      return String((add ?? 0) + (del ?? 0));
+      const effective = b ? b.effective : add == null && del == null ? null : (add ?? 0) + (del ?? 0);
+      const { text, noisy } = sizeCell(effective, b?.raw ?? null, r.signals?.changed_files ?? null);
+      if (!b) return text;
+      return (
+        <InfoTip body={locBody(b)} cue={false} focusable={false}>
+          <span className={noisy ? "loc-noisy" : undefined}>{text}</span>
+        </InfoTip>
+      );
     } },
-  { key: "files", label: "Files", defaultOn: true, term: "col.files", numeric: true, cellClass: "num mono small",
-    cell: (r) => r.signals?.changed_files ?? "—" },
   { key: "tier", label: "Tier", defaultOn: true, term: "col.tier",
     cell: (r) => (r.risk_tier == null ? "—" : <TierChip tier={r.risk_tier} />) },
-  { key: "title", label: "Title", defaultOn: true, fixed: true,
+  { key: "title", label: "Title", defaultOn: true, fixed: true, cellClass: "col-title",
     cell: (r, ctx) => (
-      <>
-        <DraftChip draft={r.draft} />{r.draft ? " " : ""}{r.title}
-        {r.signals?.conflicts && <> <ConflictChip /></>}
+      <span className="title-cell">
+        <DraftChip draft={r.draft} />
+        <span className="title-text">{r.title}</span>
         {ctx.deepReasons.has(r.number) && (
           <InfoTip cue={false} focusable={false}
             entry={{ title: "Why Deep Search matched this", meaning: ctx.deepReasons.get(r.number) || "(the agent gave no reason)" }}>
-            <span className="chip chip-blue sm"> 🪄 why</span>
+            <span className="chip chip-blue sm">🪄 why</span>
           </InfoTip>
         )}
-      </>
+      </span>
     ) },
+  { key: "conflicts", label: "Conflicts", defaultOn: true, term: "col.conflicts",
+    cell: (r) => (r.signals?.conflicts
+      ? <InfoTip entry={term("col.conflicts")} cue={false} focusable={false}>
+          <span className="conflict-mark" role="img" aria-label="has merge conflicts">⚠</span>
+        </InfoTip>
+      : "—") },
   { key: "author", label: "Author", defaultOn: true, term: "col.author", cellClass: "muted small",
     cell: (r) => <AuthorHover author={r.author} trusted={r.trusted_author} stats={r.author_stats} /> },
   { key: "updated", label: "Updated", defaultOn: true, term: "col.updated", cellClass: "muted small",
@@ -229,12 +250,14 @@ export const COLUMNS: ColumnDef[] = [
     ) },
   { key: "cluster", label: "Cluster", defaultOn: true, term: "col.cluster", stopOpen: true, cellClass: "mono",
     cell: (r) => r.clusters.length > 0
-      ? <>{r.clusters.map((cid, i) => <span key={cid}>{i > 0 ? ", " : ""}<Link to={`/clusters/${cid}`}>{cid}</Link></span>)}</>
+      ? <>{r.clusters.map((cid, i) => <span key={cid}>{i > 0 ? ", " : ""}<Link to={`/prs/clusters/${cid}`}>{cid}</Link></span>)}</>
       : "—" },
   { key: "safety", label: "Safety", defaultOn: true, term: "col.safety",
     cell: (r) => (
       <InfoTip body={safetyBody(r)} cue={false} focusable={false}>
-        <span>{r.safety === "GREEN" ? "🟢" : r.safety === "YELLOW" ? "🟡" : r.safety === "RED" ? "🔴" : "—"}</span>
+        <span className="safety-cell">
+          {r.safety === "GREEN" ? "🟢 GREEN" : r.safety === "YELLOW" ? "🟡 YELLOW" : r.safety === "RED" ? "🔴 RED" : "—"}
+        </span>
       </InfoTip>
     ) },
   { key: "disposition", label: "Disposition", defaultOn: true, term: "col.disposition",
@@ -245,6 +268,8 @@ export const COLUMNS: ColumnDef[] = [
         : <InfoTip entry={NOT_ANALYZED} cue={false} focusable={false}>—</InfoTip>) },
 
   // --- default-off opt-in columns ---
+  { key: "files", label: "Files", defaultOn: false, term: "col.files", numeric: true, cellClass: "num mono small",
+    cell: (r) => r.signals?.changed_files ?? "—" },
   { key: "review", label: "Review", defaultOn: false, term: "col.review", capability: "review",
     cell: (r) => <ReviewCell n={r.number} reviews={r.reviews ?? null}
       greptileSeverity={r.signals?.greptile_severity ?? null} /> },
@@ -300,25 +325,6 @@ export const COLUMNS: ColumnDef[] = [
         <InfoTip entry={{ title: "Agent summary", meaning: s.one_liner }}
           why={s.primary_change ? { rationale: s.primary_change, label: "Primary change" } : null} cue={false} focusable={false}>
           <span className="col-summary">{s.one_liner}</span>
-        </InfoTip>
-      );
-    } },
-  { key: "pain", label: "Pain", defaultOn: false, numeric: true, cellClass: "num mono small",
-    cell: (r) => {
-      const score = r.pain_score;
-      const b = r.pain_breakdown;
-      if (score == null || score === 0) return "—";
-      const tipBody = b ? (
-        <div className="tip-rows">
-          <div className="tip-head">Community Pain Score</div>
-          <div className="tip-row"><span>Issue pain</span><b>{b.issue_pain.toFixed(2)} ({b.linked_issues} issue{b.linked_issues === 1 ? "" : "s"})</b></div>
-          <div className="tip-row"><span>PR comments</span><b>{b.pr_comments}</b></div>
-          <div className="tip-row"><span>PR reactions</span><b>{b.pr_reactions}</b></div>
-        </div>
-      ) : undefined;
-      return (
-        <InfoTip body={tipBody} entry={tipBody ? undefined : { title: "Community Pain Score", meaning: "Linked-issue pain + PR engagement" }} cue={false} focusable={false}>
-          <span>{score.toFixed(2)}</span>
         </InfoTip>
       );
     } },

@@ -44,7 +44,7 @@ export function subjectFromLocation(pathname: string, search: string): AgentSubj
     return { kind: "issue", key: `issue:${issue}`, number: issue, label: `issue #${issue}` };
   }
 
-  const clusterMatch = pathname.match(/^\/clusters\/(\d+)/);
+  const clusterMatch = pathname.match(/^\/prs\/clusters\/(\d+)/);
   const cluster = positiveInteger(clusterMatch?.[1] ?? null);
   if (cluster !== null) {
     return {
@@ -52,7 +52,7 @@ export function subjectFromLocation(pathname: string, search: string): AgentSubj
     };
   }
 
-  if (pathname !== "/alerts") return GENERAL_SUBJECT;
+  if (pathname !== "/security") return GENERAL_SUBJECT;
 
   const ghsa = params.get("advisory");
   if (ghsa) return { kind: "advisory", key: `advisory:${ghsa}`, ghsa, label: `advisory ${ghsa}` };

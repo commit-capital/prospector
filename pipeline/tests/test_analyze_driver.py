@@ -342,6 +342,40 @@ class TestSalvageActionItems:
         done = {i["id"]: i for i in s.load_action_items()["items"]}
         assert done["salvage-fix:4983"]["status"] == "done"
 
+    def test_backfill_skips_rationales_that_name_nothing_to_salvage(self, tmp_path):
+        s = Store(tmp_path)
+        self._pr_with_rationale(s, 100, "close-stale",
+            "Superseded refactor with no salvageable value beyond what landed.")
+        self._pr_with_rationale(s, 101, "close-stale",
+            "Nothing here is worth salvaging — the canonical PR covers it all.")
+        self._pr_with_rationale(s, 102, "close-fixed",
+            "The salvageable null-guard already landed in main via #77.")
+        self._pr_with_rationale(s, 103, "needs-human",
+            "The salvageable retry-limit fix should be spun off into a clean PR.")
+        assert ad.backfill_salvage_items(s, today=NOW) == 1
+        ids = {i["id"] for i in s.load_action_items()["items"]}
+        assert ids == {"salvage-fix:103"}
+
+    def test_backfill_drops_an_open_item_whose_rationale_no_longer_qualifies(self, tmp_path):
+        from pipeline import actions
+        s = Store(tmp_path)
+        self._pr_with_rationale(s, 200, "needs-human",
+            "The salvageable fix should be spun off into a clean first-party PR.")
+        self._pr_with_rationale(s, 201, "needs-human",
+            "The salvageable fix should be spun off into a clean first-party PR.")
+        ad.backfill_salvage_items(s, today=NOW)
+        reg = s.load_action_items()
+        actions.set_status(reg, "salvage-fix:201", "done")
+        s.save_action_items(reg)
+        # A re-analysis finds both pieces already landed.
+        for n in (200, 201):
+            self._pr_with_rationale(s, n, "close-fixed",
+                "The salvageable piece already landed in main.")
+        ad.backfill_salvage_items(s, today=NOW)
+        by_id = {i["id"]: i for i in s.load_action_items()["items"]}
+        assert "salvage-fix:200" not in by_id          # open + stale → dropped
+        assert by_id["salvage-fix:201"]["status"] == "done"  # human record kept
+
 
 class TestMergeBarReads:
     def test_secret_leak_reads_request_changes(self, tmp_path):

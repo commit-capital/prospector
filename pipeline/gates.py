@@ -1873,26 +1873,36 @@ def dup_autoclose_eligibility(pr: Pr, canonical: Pr | None, *,
 # ---------------------------------------------------------------------------
 # Derived cluster state (the board chip) — computed on read, never stored.
 # ---------------------------------------------------------------------------
-def cluster_state(cluster: Cluster, prs: dict[int, Pr], today: str | None = None) -> str:
+def cluster_verdict(cluster: Cluster, prs: dict[int, Pr],
+                    today: str | None = None) -> tuple[str, list[str]]:
+    """The cluster's derived state plus the concrete gates behind it: one line
+    per member fact that puts the cluster in that state, each naming the PR.
+    Empty for a state nothing blocks (ready, done, a stored waiting outcome).
+    Computed on read from current facts, never stored — the ONE derivation
+    behind the board chip (its state) and the detail header (state plus
+    blockers)."""
     members = [prs[n] for n in cluster.prs if n in prs]
     active = [r for r in members if r.state == "open"]
     if members and not active:
-        return "done"
+        return "done", []
     outcome = cluster.outcome
     if not outcome:
-        return "needs-analysis"
+        return "needs-analysis", ["no analysis recorded yet — run ANALYZE"]
     # a moved head on any actively-routed PR sends the cluster back to analysis
-    if any(r.section("analysis") and not is_current(r, "analysis") for r in active):
-        return "needs-analysis"
+    stale = [r.n for r in active
+             if r.section("analysis") and not is_current(r, "analysis")]
     # an active member with no proposal row joined after the analysis — the
     # stored outcome never considered it (#137); analyze_driver.pending applies
     # the same coverage check, so the chip and the driver's queue agree
-    if any(cluster.proposal_for(r.n) is None for r in active):
-        return "needs-analysis"
+    uncovered = [r.n for r in active if cluster.proposal_for(r.n) is None]
+    if stale or uncovered:
+        return "needs-analysis", (
+            [f"#{n}'s analysis is stale (head moved) — re-run ANALYZE" for n in stale]
+            + [f"#{n} joined after the analysis — re-run ANALYZE" for n in uncovered])
     if outcome in ("awaiting-authors", "needs-first-party-work", "blocked-on-decision"):
-        return outcome
+        return outcome, []
     if outcome == "close-out":
-        return "ready"
+        return "ready", []
     # merge-ready: every merge-routed PR needs a current GREEN (or override) and
     # a current verified-fix
     merge_routed = [r for r in active if r.disposition == "merge"]
@@ -1901,12 +1911,48 @@ def cluster_state(cluster: Cluster, prs: dict[int, Pr], today: str | None = None
     # a merge that no member carries. A member still owed work names the state then;
     # a cluster with only closes left is the operator's to execute.
     if not merge_routed:
-        if any(r.disposition == "needs-human" for r in active):
-            return "blocked-on-decision"
-        if any(r.disposition == "request-changes" for r in active):
-            return "awaiting-authors"
+        undecided = [r for r in active if r.disposition == "needs-human"]
+        if undecided:
+            return "blocked-on-decision", [
+                f"#{r.n} needs a human decision"
+                + (f": {r.rationale}" if r.rationale else "") for r in undecided]
+        changes = [r for r in active if r.disposition == "request-changes"]
+        if changes:
+            return "awaiting-authors", [
+                f"#{r.n} is back to request-changes" for r in changes]
+    blockers = []
     for r in merge_routed:
-        ok, _ = merge_allowed(r, today)
+        ok, reason = merge_allowed(r, today)
         if not ok:
-            return "security-pending"
-    return "ready"
+            blockers.append(f"#{r.n}: {reason}")
+    if blockers:
+        return "security-pending", blockers
+    return "ready", []
+
+
+def cluster_state(cluster: Cluster, prs: dict[int, Pr], today: str | None = None) -> str:
+    return cluster_verdict(cluster, prs, today)[0]
+
+
+def narrative_staleness(cluster: Cluster, prs: dict[int, Pr]) -> list[str]:
+    """Why the stored analysis narrative may no longer describe its members:
+    one line per open member whose current derived disposition differs from
+    this cluster's proposed one, or whose non-GREEN security verdict was
+    recorded after the analysis was written. Empty while the narrative still
+    matches the facts. Derived on read, never stored."""
+    reasons: list[str] = []
+    written = cluster.checked_at or ""
+    for n in cluster.prs:
+        pr = prs.get(int(n))
+        if pr is None or pr.state != "open":
+            continue
+        proposed = (cluster.proposal_for(pr.n) or {}).get("disposition")
+        current = pr.disposition
+        if proposed and current and current != proposed:
+            reasons.append(f"#{pr.n} is now {current}; the analysis proposed {proposed}")
+        sec = pr.section("security") or {}
+        verdict = sec.get("verdict")
+        recorded = sec.get("checked_at") or ""
+        if verdict and verdict != "GREEN" and written and recorded > written:
+            reasons.append(f"#{pr.n} got a {verdict} security verdict after the analysis")
+    return reasons

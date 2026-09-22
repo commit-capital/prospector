@@ -31,10 +31,14 @@ function ActionCard({ a, onFinished }: { a: SuggestedAction; onFinished: () => v
 
 /** The view's "worth running now" pipeline actions, inline where their output
  *  shows. Renders nothing when the view's data is fresh and fully covered.
- *  `onActionDone` fires when a job finishes — a hook for the host view to
- *  reload its data; the bar refetches its own suggestions alongside. */
-export function SuggestedActions({ view, onActionDone }: {
+ *  `reserve` keeps a fixed-height slot instead, so a view whose table sits
+ *  below the bar holds its layout while the suggestions load (and after they
+ *  come back empty). `onActionDone` fires when a job finishes — a hook for
+ *  the host view to reload its data; the bar refetches its own suggestions
+ *  alongside. */
+export function SuggestedActions({ view, reserve = false, onActionDone }: {
   view: SuggestedActionView;
+  reserve?: boolean;
   onActionDone?: () => void;
 }) {
   const [items, setItems] = useState<SuggestedAction[] | null>(null);
@@ -48,13 +52,13 @@ export function SuggestedActions({ view, onActionDone }: {
     return () => { active = false; };
   }, [view, generation]);
 
-  if (!items || items.length === 0) return null;
+  if (!items || items.length === 0) return reserve ? <div className="suggest-bar suggest-slot" /> : null;
   const finished = () => {
     setGeneration((g) => g + 1);
     onActionDone?.();
   };
   return (
-    <div className="suggest-bar">
+    <div className={`suggest-bar${reserve ? " suggest-slot" : ""}`}>
       {items.map((a) => <ActionCard key={a.kind} a={a} onFinished={finished} />)}
     </div>
   );

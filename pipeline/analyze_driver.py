@@ -50,23 +50,48 @@ _SALVAGE_RE = re.compile(
     r"worth (?:keeping|extracting|saving)|extract(?:ed|ing)? .*\bfix\b)\b",
     re.IGNORECASE,
 )
+# Salvage language that names nothing to do: the rationale denies there is
+# anything to salvage, or says the salvageable piece already landed. Either
+# reading disqualifies the rationale from raising a worklist item.
+_SALVAGE_NEGATED_RE = re.compile(
+    r"\b(?:nothing|no|not|little|isn't|is not)\b[^.;]{0,60}\bsalvag",
+    re.IGNORECASE,
+)
+_ALREADY_LANDED_RE = re.compile(
+    r"\balready\b[^.;]{0,40}\b(?:landed|merged|fixed|implemented|addressed|"
+    r"upstream|in main)\b|\blanded (?:in|on|separately|upstream)\b|"
+    r"\bsuperseded by\b|\bwas (?:already )?merged\b|\bno longer needed\b",
+    re.IGNORECASE,
+)
+
+
+def salvage_worthy(disposition: str | None, rationale: str) -> bool:
+    """Whether an analysis rationale names a concrete piece to salvage: it
+    carries salvage/spin-off language, does not deny there is anything to
+    salvage, and does not say the piece already landed. A merge pick needs no
+    salvage whatever its prose."""
+    if disposition == "merge" or not _SALVAGE_RE.search(rationale):
+        return False
+    return not (_SALVAGE_NEGATED_RE.search(rationale)
+                or _ALREADY_LANDED_RE.search(rationale))
 
 
 def backfill_salvage_items(store: Store, today: str) -> int:
     """Scan committed analyses for salvageable work — salvage/spin-off language
-    in the rationale, or a coverage-map concern nothing else covers — and emit
-    a salvage-fix action item per matching PR. Idempotent + status-preserving
-    via actions.upsert. Returns the count of items emitted/refreshed."""
+    whose rationale passes `salvage_worthy`, or a coverage-map concern nothing
+    else covers — and emit a salvage-fix action item per matching PR.
+    Idempotent + status-preserving via actions.upsert; an open salvage item
+    whose PR no longer qualifies is dropped, so the open list holds only
+    actionable salvage. Returns the count emitted/refreshed."""
     reg = store.load_action_items()
-    n = 0
+    worthy: set[int] = set()
     for pr, rec in store.all_prs().items():
-        if rec.disposition in ("merge",):
-            continue
         rationale = rec.rationale or ""
         unique = [str(c.get("label") or "") for c in rec.concerns
                   if isinstance(c, dict) and c.get("coverage") == "unique"]
-        if not unique and not _SALVAGE_RE.search(rationale):
+        if not unique and not salvage_worthy(rec.disposition, rationale):
             continue
+        worthy.add(pr)
         detail = rationale
         if unique:
             detail = "Not covered elsewhere: " + "; ".join(filter(None, unique)) + ". " + rationale
@@ -74,9 +99,11 @@ def backfill_salvage_items(store: Store, today: str) -> int:
             "salvage-fix", pr=pr, created=today,
             summary=f"Salvage the good fix out of PR #{pr} into a clean first-party PR",
             detail=detail[:500]))
-        n += 1
+    reg["items"] = [it for it in reg.get("items", [])
+                    if not (it["kind"] == "salvage-fix" and it["status"] == "open"
+                            and it["pr"] not in worthy)]
     store.save_action_items(reg)
-    return n
+    return len(worthy)
 
 DIFFS = Path(__file__).resolve().parent / "cache" / "diffs"
 

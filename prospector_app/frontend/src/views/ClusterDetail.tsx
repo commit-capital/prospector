@@ -507,15 +507,25 @@ export default function ClusterDetail() {
   return (
     <div className="detail">
       <div className="detail-head">
-        <Link to="/clusters" className="back">← Clusters</Link>
+        <Link to="/prs/clusters" className="back">← Clusters</Link>
         <h1>Cluster {cd.cluster_id}: {cd.root_problem}</h1>
         <p className="muted">
           <InfoTip entry={clusterStateEntry(cd.state)} cue={false} focusable={false}>
             <span className="chip chip-muted">{cd.state}</span>
           </InfoTip>
-          {cd.outcome && <> · outcome: <InfoTip entry={term(`outcome.${cd.outcome}`)}><b>{cd.outcome}</b></InfoTip></>}
-          {cd.analyzed_at && <> · analyzed {cd.analyzed_at.slice(0, 10)}</>}
+          {cd.outcome && <span className="small"> · analysis proposed <InfoTip entry={term(`outcome.${cd.outcome}`)}>{cd.outcome}</InfoTip></span>}
+          {cd.analyzed_at && <span className="small"> · analyzed {cd.analyzed_at.slice(0, 10)}</span>}
         </p>
+        {(cd.blockers ?? []).length > 0 && (
+          <div className="cluster-blockers small">
+            {cd.blockers.map((b) => <div key={b}>⛔ Blocked: {b}</div>)}
+          </div>
+        )}
+        {(cd.narrative_stale ?? []).length > 0 && (cd.rationale_summary || cd.rationale) && (
+          <div className="callout cluster-narrative-stale small">
+            ⚠️ The narrative below may be stale — {cd.narrative_stale.join("; ")}. Re-run the analysis to refresh it.
+          </div>
+        )}
         {cd.rationale_summary && (
           <p className="rationale-tldr"><span className="tldr-label">TL;DR</span> {cd.rationale_summary}</p>
         )}
@@ -803,7 +813,7 @@ export default function ClusterDetail() {
           <div className="cluster-diff-tools">
             <AddPrSearch onAdd={addCompare} exclude={comparePrs} placeholder="add a PR by number (e.g. a canonical)…" />
             {comparePrs.length > 0 && (
-              <Link className="link-btn" to={`/differ?prs=${comparePrs.join(",")}`} title="Open this comparison full-screen in the PR Differ">pop out ↗</Link>
+              <Link className="link-btn" to={`/prs/compare?prs=${comparePrs.join(",")}`} title="Open this comparison full-screen in the PR Differ">pop out ↗</Link>
             )}
           </div>
         </div>

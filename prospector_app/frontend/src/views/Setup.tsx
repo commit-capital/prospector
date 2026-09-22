@@ -188,7 +188,7 @@ export default function Setup() {
 
   return (
     <div className="pad">
-      <h2>🛠️ Setup — {readiness.host}</h2>
+      <h2>Machines &amp; policy — {readiness.host}</h2>
       <p className="muted small">
         This page sets up the computer you are using right now. Each computer
         that does work is set up on its own; the Control tab shows all of them.
