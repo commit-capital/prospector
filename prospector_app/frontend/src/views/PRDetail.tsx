@@ -13,6 +13,8 @@ import { PRActionBar } from "../components/PRActionBar";
 import { VerifyAction, VerifyBody } from "../components/VerifyPanel";
 import { FixAction, FixBody } from "../components/FixPanel";
 import { PRActionLog } from "../components/PRActionLog";
+import { PRLink } from "../components/PRLink";
+import { coverageLabel, coverageTone } from "../dupCoverage";
 import { PRHistory } from "../components/PRHistory";
 import { LineCommentBox } from "../components/ReviewModal";
 import { useExec } from "../ExecContext";
@@ -476,6 +478,43 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
             </div>
           );
         })()}
+        {Boolean(pr.concerns?.length) && (
+          <div className="dup-coverage">
+            <div className="muted small dup-coverage-title"
+              title="The close-dup evidence: each substantive change in this PR and where it is already covered.">
+              Duplicate coverage
+            </div>
+            <table className="facts-table">
+              <thead><tr><th>Change</th><th>Covered by</th><th>Evidence</th></tr></thead>
+              <tbody>
+                {(pr.concerns ?? []).map((c, i) => (
+                  <tr key={i}>
+                    <td>
+                      {c.label}
+                      {Boolean(c.paths?.length) && (
+                        <span className="muted small"> ({(c.paths ?? []).slice(0, 3).join(", ")}{(c.paths ?? []).length > 3 ? ", …" : ""})</span>
+                      )}
+                    </td>
+                    <td>
+                      <span className={`chip chip-${coverageTone(c.coverage)} sm`}
+                        title={c.coverage === "landed" ? c.landed_sha : undefined}>
+                        {c.coverage === "pr" && c.covered_by != null
+                          ? <PRLink n={c.covered_by} />
+                          : coverageLabel(c)}
+                      </span>
+                    </td>
+                    <td className="muted small">{c.evidence ?? ""}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {Boolean(pr.sanity_trips?.length) && (
+              <div className="callout dup-sanity">
+                Sanity checks force human review: {(pr.sanity_trips ?? []).join("; ")}.
+              </div>
+            )}
+          </div>
+        )}
         <PRActionLog pr={pr.number} refresh={actLog} />
         <PRActionBar pr={pr} runState={rs} onActed={() => { run.refresh(); setActLog((k) => k + 1); reloadPr(); }} />
       </section>

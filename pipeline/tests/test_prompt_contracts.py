@@ -98,10 +98,11 @@ def test_analyze_contract() -> None:
             "Cluster outcome",
             "Selection",
         ),
-        placeholders=(("__BUNDLE_PATH__", 1), ("__BRANCH__", 6)),
+        placeholders=(("__BUNDLE_PATH__", 1), ("__BRANCH__", 7)),
         fields=(
             "cluster_id", "outcome", "rationale", "prs", "pr", "head_sha",
             "disposition", "canonical", "upstream_pr", "upstream_date", "asks",
+            "concerns", "coverage", "landed_sha", "covered_by",
         ),
     )
     prompt_contracts.assert_prompt_contract(

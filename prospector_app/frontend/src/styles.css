@@ -892,6 +892,11 @@ html.ap-resizing .agentpane { transition: none; }
 .facts-table .fact-stale td:first-child { font-weight: 600; }
 .facts-table tr.fact-stale { background: color-mix(in srgb, var(--gold) 8%, transparent); }
 
+/* Close-dup coverage map: each substantive change and where it is covered. */
+.dup-coverage { margin: 8px 0; }
+.dup-coverage-title { text-transform: uppercase; letter-spacing: .04em; font-size: 10.5px; margin-bottom: 4px; }
+.dup-sanity { margin-top: 6px; font-size: 12px; }
+
 /* Action run-state (#10) — already-landed actions, log-backed */
 .run-badge { vertical-align: middle; white-space: nowrap; }
 
