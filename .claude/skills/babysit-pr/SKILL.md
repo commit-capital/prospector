@@ -84,8 +84,11 @@ push. One you cannot: stop and report.
 explicit destination:
 
 ```bash
-git push origin HEAD:refs/heads/<headRefName>
+git -C <worktree> push origin HEAD:refs/heads/<headRefName>
 ```
+
+Run the push as its own command. The project hook must resolve every push's
+destination, and it refuses a push chained after a `cd`.
 
 Never force-push unless you rebased on purpose, and then only with
 `--force-with-lease`.
