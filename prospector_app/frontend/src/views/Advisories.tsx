@@ -8,6 +8,7 @@ import { useRepoMeta } from "../RepoMetaContext";
 import { stopRowOpen } from "../rowOpen";
 import { cycleSort, type SortDir } from "../sortCycle";
 import { timeAgo } from "../timeAgo";
+import { SkeletonRows } from "../components/SkeletonRows";
 
 const PAGE_SIZE = 50;
 type SortKey = "ghsa" | "state" | "severity" | "summary" | "reporter" | "verdict" | "links" | "created" | "updated";
@@ -239,7 +240,7 @@ export default function Advisories() {
         <button className="btn-secondary sm" disabled={page >= pages || loading} onClick={() => setPage(page + 1)}>Next</button>
       </div>
       {loading && !result && (
-        <div className="explorer-loading"><span className="spinner explorer-loading-spinner" /><span className="explorer-loading-label">Loading advisories…</span></div>
+        <SkeletonRows label="Loading advisories…" />
       )}
       {result && (
         <div className="alerts-layout">

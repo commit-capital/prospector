@@ -17,6 +17,7 @@ import { AuthorHover } from "../components/AuthorHover";
 import { perIssueRefs } from "../components/issues/issueCloseRefs";
 import { EVIDENCE, REFERENCED, linkStateChip } from "../components/issues/issueLinkChips";
 import { IssueCloseConfirmDialog, type IssueClosePlan } from "../components/issues/IssueCloseConfirmDialog";
+import { SkeletonRows } from "../components/SkeletonRows";
 
 const PAGE_SIZE = 50;
 type IssueSortKey = "number" | "title" | "author" | "pain" | "repro" | "dups" | "prs" | "disposition" | "subsystem";
@@ -768,10 +769,7 @@ export default function Issues() {
             </div>
           )}
           {loadingDups ? (
-            <div className="explorer-loading">
-              <span className="spinner explorer-loading-spinner" />
-              <span className="explorer-loading-label">Loading duplicate triage…</span>
-            </div>
+            <SkeletonRows label="Loading duplicate triage…" />
           ) : !dupsLoaded
             ? <div className="callout">Duplicate triage has not loaded yet.</div>
             : groups.length === 0
@@ -782,10 +780,7 @@ export default function Issues() {
             {likelyLoaded && !loadingLikely && <span className="muted small"> — {likelyItems.length} for human review</span>}
           </h2>
           {loadingLikely ? (
-            <div className="explorer-loading">
-              <span className="spinner explorer-loading-spinner" />
-              <span className="explorer-loading-label">Loading the likely-fixed list…</span>
-            </div>
+            <SkeletonRows label="Loading the likely-fixed list…" />
           ) : likelyLoaded ? <LikelyFixedSection items={likelyItems} /> : null}
         </>
       ) : (

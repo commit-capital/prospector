@@ -8,6 +8,7 @@ import { useRepoMeta } from "../RepoMetaContext";
 import { stopRowOpen } from "../rowOpen";
 import { cycleSort, type SortDir } from "../sortCycle";
 import Advisories from "./Advisories";
+import { SkeletonRows } from "../components/SkeletonRows";
 
 const PAGE_SIZE = 50;
 type AlertSortKey = "number" | "source" | "severity" | "title" | "state" | "verdict" | "links" | "updated";
@@ -348,10 +349,7 @@ function AlertsTable() {
         <button className="btn-secondary sm" disabled={page >= pages || loading} onClick={() => setPage(page + 1)}>Next</button>
       </div>
       {loading && !result && (
-        <div className="explorer-loading">
-          <span className="spinner explorer-loading-spinner" />
-          <span className="explorer-loading-label">Loading alerts…</span>
-        </div>
+        <SkeletonRows label="Loading alerts…" />
       )}
       {result && (
       <div className="alerts-layout">

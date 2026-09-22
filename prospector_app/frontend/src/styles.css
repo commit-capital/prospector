@@ -15,6 +15,12 @@
   --ready-tint: rgba(47, 129, 247, 0.06);
   --reason-tint: rgba(248, 81, 73, 0.08);
 }
+/* Design tokens shared by both themes: the type scale and the 4px spacing
+   scale. New CSS takes its font sizes and gaps from these variables. */
+:root {
+  --fs-xs: 10.5px; --fs-sm: 11.5px; --fs-md: 12.5px; --fs-base: 14px; --fs-lg: 16px;
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 20px; --sp-6: 24px;
+}
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text);
   font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -276,7 +282,8 @@ select { background: var(--panel); border: 1px solid var(--border); color: var(-
 .grid th { text-align: left; color: var(--muted); font-weight: 600; font-size: 12px;
   padding: 8px 10px; border-bottom: 1px solid var(--border); }
 .grid td { padding: 9px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
-.grid th.num, .grid td.num { text-align: right; white-space: nowrap; }
+.grid th.num, .grid td.num { text-align: right; white-space: nowrap;
+  font-variant-numeric: tabular-nums; }
 /* a LOC value that's mostly generated noise (effective ≪ raw) — muted + flagged */
 .grid td.loc-noisy { color: var(--muted); }
 .grid.compact td, .grid.compact th { padding: 6px 8px; }
@@ -291,20 +298,31 @@ select { background: var(--panel); border: 1px solid var(--border); color: var(-
 .row-ready { background: var(--ready-tint); }
 .cluster-title { font-weight: 600; }
 
-/* chips */
-.chip { display: inline-block; padding: 1px 7px; border-radius: 20px; font-size: 11.5px;
-  border: 1px solid var(--border); white-space: nowrap; margin-right: 4px; }
-.chip.sm { font-size: 10.5px; padding: 0 6px; }
-.chip[title], a[title], .checks-chip { cursor: help; }
+/* badges — the one status-badge look (components/Badge.tsx). Tones: red =
+   blocks a decision or is a security risk; amber = stale or needs a refresh;
+   green = passed its gate; grey = informational. The chip-* classes are the
+   same system's older spellings and share every rule. */
+.chip, .badge { display: inline-block; padding: 1px 7px; border-radius: 20px; font-size: var(--fs-sm);
+  border: 1px solid var(--border); white-space: nowrap; margin-right: var(--sp-1); }
+.chip.sm, .badge.sm { font-size: var(--fs-xs); padding: 0 6px; }
+.chip[title], .badge[title], a[title], .checks-chip { cursor: help; }
 .grid tbody tr.rowlink a[title] { cursor: pointer; }
-.chip-green { color: var(--green); border-color: var(--green); }
-.chip-yellow { color: var(--yellow); border-color: var(--yellow); }
-.chip-red { color: var(--red); border-color: var(--red); }
+.chip-green, .badge-green { color: var(--green); border-color: var(--green); }
+.chip-yellow, .badge-amber { color: var(--yellow); border-color: var(--yellow); }
+.chip-red, .badge-red { color: var(--red); border-color: var(--red); }
 .chip-blue { color: var(--accent); border-color: var(--accent); }
 .chip-amber { color: var(--gold); border-color: var(--gold); }
 .chip-purple { color: var(--purple); border-color: var(--purple); }
 .chip-gold { color: var(--gold); border-color: var(--gold); }
-.chip-muted { color: var(--muted); }
+.chip-muted, .badge-grey { color: var(--muted); }
+
+/* skeleton rows — table-shaped loading placeholder (components/SkeletonRows.tsx) */
+.skeleton-rows { display: flex; flex-direction: column; gap: var(--sp-2); padding: var(--sp-4) 0; }
+.skeleton-row { height: var(--sp-4); border-radius: var(--sp-1);
+  background: linear-gradient(90deg, var(--panel2) 25%, var(--panel) 50%, var(--panel2) 75%);
+  background-size: 200% 100%; animation: skeleton-shimmer 1.4s ease-in-out infinite; }
+@keyframes skeleton-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce) { .skeleton-row { animation: none; } }
 .ack-btn { background: transparent; font: inherit; cursor: pointer; }
 .ack-btn:hover { border-color: var(--accent); color: var(--accent); }
 .ack-btn:disabled { cursor: default; opacity: .6; }
@@ -313,7 +331,7 @@ select { background: var(--panel); border: 1px solid var(--border); color: var(-
 .act-close { color: var(--muted); }
 .act-review { color: var(--purple); border-color: var(--purple); }
 .rollup { position: relative; }
-.rollup .chip { margin-right: 2px; }
+.rollup .chip, .rollup .badge { margin-right: 2px; }
 .rollup-seg { cursor: help; }
 /* Segment containing a stale verdict — the merge gate treats it as not run. */
 .rollup-seg-stale { opacity: .55; border-style: dashed; }

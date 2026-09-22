@@ -8,6 +8,7 @@ import { ActivitySummary } from "../components/ActivitySummary";
 import { InfoTip } from "../components/InfoTip";
 import { localDateTime } from "../timeAgo";
 import { term } from "../glossary";
+import { SkeletonRows } from "../components/SkeletonRows";
 
 const KIND_ICON: Record<string, string> = { merge: "🔀", close: "📮", comment: "💬", resubmit: "🔄", reopen: "↩", undo: "⤺", handoff: "📤", reconcile: "♻️", "issue-close": "🎫" };
 const KIND_TIP: Record<string, string> = {
@@ -238,10 +239,7 @@ export default function Activity() {
       )}
 
       {loading && !items.length && (
-        <div className="explorer-loading">
-          <span className="spinner explorer-loading-spinner" />
-          <span className="explorer-loading-label">Loading activity…</span>
-        </div>
+        <SkeletonRows label="Loading activity…" />
       )}
 
       <table className="grid compact" style={loading && !items.length ? { display: "none" } : undefined}>
