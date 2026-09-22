@@ -111,15 +111,26 @@ uv run python -m pipeline.evals.issue_fix_replay plan             # inspect the 
 uv run python -m pipeline.evals.issue_fix_replay run --limit 10   # score a pilot batch of ten
 ```
 
-`plan` assembles and screens the corpus and prints each dependency group's size,
-date span, and whether it matches the pin — the safety valve to look before a
-run. `run` takes the pin's group, runs `--concurrency` (default 2) instances at a
+`plan` assembles and screens the corpus and prints each dependency group's
+distinct fixing PRs and issues, date span, epoch (its latest merge — the sha to
+build the group's base at), and whether it matches the pin — the safety valve to
+look before a run. Several issues closed by one PR count as one fix, since
+`qualify` measures each fix once. `run` takes the pin's group, runs `--concurrency` (default 2) instances at a
 time, and writes a markdown scorecard to `<verify scratch>/replay/<run-id>/table.md`
 plus one `replay:instance` ledger row per instance and a `replay:run` summary. A
 run is keyed by its base, so re-invoking continues it (`--resume` re-runs the
 faulted instances). A failed instance is data, so the run still exits 0. The
 pilot's numbers — reproduced, fix rate, oracle pass, false accepts, and wall-time
-and agent runs per instance — gate whether the lane goes live. Per-run token cost
+and agent runs per instance — gate whether the lane goes live.
+
+A PR's tests encode the maintainers' design as well as the bug, so when they
+refuse a fix the scorer asks a blind judge (`pipeline/evals/oracle_contract.py`,
+shown the report, the PR's test hunks and the failing names, never the fix)
+whether each failing test asserts behavior the report asked for. A failure only
+the maintainers' own contract explains is `contract_mismatch`, not a
+`false_accept`; one the report owns, or the judge cannot place, stays a false
+accept. Judgments are cached by their inputs under
+`<verify scratch>/replay/oracle-contract/`, so every pass over one bug reads one. Per-run token cost
 is a later addition: it needs `fix_lane.LaneResult` to carry the CLI's cost event.
 
 ## Pain score
