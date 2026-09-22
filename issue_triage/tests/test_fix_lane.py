@@ -152,7 +152,10 @@ def lane(tmp_path, monkeypatch):
 
     def fake_compose(label, *parts):
         calls["compose"].append(parts)
-        return scratch / f"{label}.compose.patch"
+        scratch.mkdir(parents=True, exist_ok=True)
+        out = scratch / f"{label}.compose.{len(calls['compose'])}.patch"
+        out.write_text("".join(p for p in parts if isinstance(p, str)))
+        return out
 
     def fake_flatten(base_clone, *parts, label):
         calls["flatten"].append({"base_clone": base_clone, "parts": parts, "label": label})
@@ -556,7 +559,8 @@ _PRE_PATCH = (
 def test_pre_patch_routes_the_red_and_green_legs_through_flatten(lane):
     res = lane.run(pre_patch=_PRE_PATCH)
     assert res.ending == "fixed" and res.fault is False
-    assert lane.calls["compose"] == []
+    # compose holds only the authored tests; every proof leg flattens.
+    assert len(lane.calls["compose"]) == 1
     # red, the preservation tests on the base, green, the preservation tests
     # with the fix.
     assert len(lane.calls["flatten"]) == 4
@@ -604,7 +608,9 @@ def test_pre_patch_none_uses_compose_not_flatten(lane):
     res = lane.run()
     assert res.ending == "fixed" and res.fault is False
     assert lane.calls["flatten"] == []
-    assert len(lane.calls["compose"]) == 4
+    # the authored tests, then red, preservation on the base, green, preservation
+    # with the fix.
+    assert len(lane.calls["compose"]) == 5
 
 
 # --- preservation tests ------------------------------------------------------
@@ -697,3 +703,21 @@ def test_the_reviewers_are_told_what_the_host_observed(lane):
     evidence = lane.calls["evidence"][1]
     assert "Preservation tests (src/keep.test.ts)" in evidence
     assert "passed twice" in evidence
+
+
+# --- one run's scratch is its own ----------------------------------------------
+
+
+def test_each_stage_records_its_checks_inside_the_run_s_workdir(lane):
+    lane.run()
+    records = [c["env"]["PROSPECTOR_ISSUE_CHECK_RECORDS"]
+               for c in lane.calls["reproduce"] + lane.calls["fix"]]
+    assert records == [str(lane.workdir / "repro.checks.jsonl"),
+                       str(lane.workdir / "fix.checks.jsonl")]
+
+
+def test_the_authored_tests_travel_as_a_composed_patch_of_their_own_text(lane):
+    lane.run()
+    authored = lane.calls["compose"][0]
+    assert len(authored) == 1
+    assert "src/repro.test.ts" in authored[0] and "src/keep.test.ts" in authored[0]

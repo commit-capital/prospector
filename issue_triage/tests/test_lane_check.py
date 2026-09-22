@@ -2,7 +2,7 @@ import sys
 from pathlib import Path
 
 from issue_triage import lane_check
-from pipeline import prove, settings
+from pipeline import prove
 
 
 def _base() -> prove.PinnedBase:
@@ -30,10 +30,9 @@ def test_the_test_patch_key_is_absent_when_the_stage_has_no_frozen_tests(tmp_pat
     assert "PROSPECTOR_ISSUE_CHECK_TEST_PATCH" not in env
 
 
-def test_records_path_sits_under_the_verify_scratch(tmp_path, monkeypatch):
-    monkeypatch.setenv("TRIAGE_VERIFY_SCRATCH", str(tmp_path / "scratch"))
-    assert lane_check.records_path(31, "fix") == (
-        settings.verify_scratch() / "issue-fix" / "issue-31" / "fix.checks.jsonl")
+def test_records_path_sits_in_the_run_s_own_workdir(tmp_path):
+    assert lane_check.records_path(tmp_path / "run-a", "fix") == (
+        tmp_path / "run-a" / "fix.checks.jsonl")
 
 
 def test_check_env_names_the_pre_patch_only_when_one_is_given(tmp_path):

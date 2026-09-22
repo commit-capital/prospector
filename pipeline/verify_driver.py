@@ -1297,16 +1297,6 @@ def authored_test_patch(head_sha: str, files: list[wire.VerifyAuthoredFile]) -> 
     return p
 
 
-def authored_patch_file(head_sha: str, diff_text: str) -> Path:
-    """`diff_text` written under SCRATCH as the authored-test patch, for a caller
-    whose tests are a diff against a tree rather than whole new files."""
-    out = SCRATCH / "patches"
-    out.mkdir(parents=True, exist_ok=True)
-    p = out / f"{head_sha}.authored.patch"
-    p.write_text(diff_text)
-    return p
-
-
 def combined_patch(head_sha: str, pr_patch: Path, authored: Path) -> Path:
     """The PR's full patch with the authored-test patch appended — one file, so
     the green phase's single apply is atomic across both."""
