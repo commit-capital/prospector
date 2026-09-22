@@ -5,8 +5,9 @@ own tests as a hidden oracle.
 The screen (R1–R5) and the dependency grouping are pure functions over
 caller-supplied candidates and a base clone's git history. The run phase — R6,
 the lane run, and scoring — proves every verdict from host-observed sandbox exits
-over `pipeline.prove`; it takes the lane entry point as a parameter, so this
-module imports nothing from the lane package.
+over `pipeline.prove`, and asks one blind judge (`oracle_contract`) whether a
+failing oracle test asserts what the report asked for; it takes the lane entry
+point as a parameter, so this module imports nothing from the lane package.
 """
 from __future__ import annotations
 
@@ -29,6 +30,7 @@ from typing import Protocol
 
 from pipeline import (diffpaths, gates, gh, profile, prove, risktier, settings, store,
                       storekit, verify_driver, wire)
+from pipeline.evals import oracle_contract
 from pipeline.profile import RepoProfile
 
 # R3 size bounds on the landed diff.
@@ -241,6 +243,12 @@ class LaneRun(Protocol):
     agent_runs: int
 
 
+class ContractJudge(Protocol):
+    """Who owns an oracle failure: the injected `oracle_contract.judge` over an
+    instance's report and PR tests and the failing names the oracle reported."""
+    def __call__(self, instance: Instance, failing: list[str] | None) -> dict: ...
+
+
 class LaneEntry(Protocol):
     """The lane entry point the caller injects: one issue run on the pre-fix tree
     named by `pre_patch`."""
@@ -337,8 +345,10 @@ def _leg_evidence(legs: dict[str, prove.Legs]) -> dict[str, dict]:
 
 def _lane_evidence(lane_result: LaneRun) -> dict:
     """What the lane itself reported: each reviewer's verdict, the sandbox runs
-    its agents made, and the size of the patch they produced."""
+    its agents made, the related tests the host ran over the fix, and the size
+    of the patch they produced."""
     result = lane_result.result or {}
+    related = (result.get("proof") or {}).get("related_tests") or {}
     reviews = [
         {"verdict": r.get("verdict"), "failed": r.get("failed"),
          "lens": r.get("lens") or r.get("name"),
@@ -355,6 +365,9 @@ def _lane_evidence(lane_result: LaneRun) -> dict:
                 or (ln.startswith("-") and not ln.startswith("---")))
     return {
         "reviews": reviews, "checks": checks,
+        "related_tests": {"files": list(related.get("files") or [])[:_CHECKS_MAX],
+                          "exit": (related.get("run") or {}).get("exit"),
+                          "base_fails": bool(related.get("base_fails"))} if related else None,
         "patch": {"files": len(changed), "lines": lines, "paths": changed[:_CHECKS_MAX]},
         "repro_outcome": (lane_result.reproduction or {}).get("outcome"),
     }
@@ -510,14 +523,26 @@ def validate_known_fix(base: prove.PinnedBase, pre_patch: str, instance: Instanc
     return True, ""
 
 
+def _oracle_failing(oracle_runs: dict[str, prove.Legs]) -> list[str] | None:
+    """The PR tests the oracle's last failing leg reported, or None when its
+    report does not account for itself."""
+    for key in ("oracle_pass_confirm", "oracle_pass"):
+        leg = oracle_runs.get(key)
+        if leg is not None and leg.get("exit") == gates.SENTINEL_TEST_FAIL:
+            return verify_driver.parse_failed_tests(leg["output_tail"])
+    return None
+
+
 def score(instance: Instance, lane_result: LaneRun, oracle_runs: dict[str, prove.Legs], *,
           base: prove.PinnedBase, pre_patch: str, label: str,
-          r6_red: prove.Legs | None = None) -> dict:
+          r6_red: prove.Legs | None = None,
+          judge_contract: ContractJudge | None = None) -> dict:
     """Score one lane run against the merged PR's tests as a hidden oracle, from
     host-observed sandbox exits alone. The extra legs it runs land in
     `oracle_runs` so a caller can read the exits back. `r6_red` is the R6 red
     leg over the same command, the baseline a contaminated oracle green is
-    judged against."""
+    judged against. `judge_contract` names who owns an oracle failure; without
+    one, every failure is the report's."""
     lane_patch = (lane_result.result or {}).get("patch", "")
     lane_test_hunks = diffpaths.filter_diff(lane_patch, diffpaths.is_test_path)
     lane_fix_hunks = diffpaths.filter_diff(lane_patch, lambda p: not diffpaths.is_test_path(p))
@@ -585,6 +610,13 @@ def score(instance: Instance, lane_result: LaneRun, oracle_runs: dict[str, prove
     # reads "-" and no false accept is read from it.
     oracle_pass: bool | None = {"pass": True, "unbound": None}.get(oracle_outcome, False)
 
+    # A failure only the maintainers' own design explains — tests pinning a
+    # contract the report never asked for — is a mismatch, not a false accept.
+    contract: dict | None = None
+    if oracle_outcome == "fail" and judge_contract is not None:
+        contract = judge_contract(instance, _oracle_failing(oracle_runs))
+    mismatch = bool(contract) and contract["contract"] == "maintainer"
+
     reviews = (lane_result.result or {}).get("reviews", [])
     all_safe = bool(reviews) and all(r.get("verdict") == "safe" for r in reviews)
     oracle_coupled = any(sym in pr_test_hunks for sym in _added_symbols(lane_fix_hunks))
@@ -600,12 +632,14 @@ def score(instance: Instance, lane_result: LaneRun, oracle_runs: dict[str, prove
         "oracle_pass": oracle_pass,
         "oracle_outcome": oracle_outcome,
         "oracle_coupled": oracle_coupled,
-        # Reviewers called it safe and the PR's own tests ran and refused it.
-        # Coupling is recorded beside this, never subtracted from it: a test
-        # that only the PR's own implementation can satisfy is a reason to read
-        # the row, not a reason to drop it. Tests that never ran are not a
-        # refusal at all, so they raise nothing.
-        "false_accept": all_safe and oracle_outcome == "fail",
+        "oracle_contract": contract,
+        "contract_mismatch": mismatch,
+        # Reviewers called it safe and the PR's own tests ran and refused it on
+        # behavior the report asked for. Coupling is recorded beside this, never
+        # subtracted from it: a test that only the PR's own implementation can
+        # satisfy is a reason to read the row, not a reason to drop it. Tests
+        # that never ran are not a refusal at all, so they raise nothing.
+        "false_accept": all_safe and oracle_outcome == "fail" and not mismatch,
         "false_reject": oracle_pass and not fixed,
         "test_tamper": bool(lane_test_paths - repro_files),
         "localized": bool(lane_paths & set(instance.nontest_files)),
@@ -625,11 +659,13 @@ _LANE_FAULT_ENDINGS = _FAULT_ENDINGS - frozenset({"r6-sandbox", _CRASH_ENDING})
 
 
 def run_instance(instance: Instance, *, base: prove.PinnedBase, base_sha: str,
-                 profile: RepoProfile, workdir: Path, run_lane: LaneEntry) -> dict:
+                 profile: RepoProfile, workdir: Path, run_lane: LaneEntry,
+                 judge_contract: ContractJudge | None = None) -> dict:
     """Build `tree(P)`, gate it on R6, run the lane on it, and score the run.
-    `run_lane` is the lane entry point the caller injects. On an R6 miss the
-    record carries `r6-<reason>` and no lane runs; a lane fault records the
-    ending without scoring."""
+    `run_lane` is the lane entry point the caller injects, and `judge_contract`
+    the oracle-failure judge `score` reads. On an R6 miss the record carries
+    `r6-<reason>` and no lane runs; a lane fault records the ending without
+    scoring."""
     label = f"replay-{instance.issue}"
     pre_patch = transform_to_p(base.clone, instance.merge_sha, base_sha, profile)
     r6_legs: dict[str, prove.Legs] = {}
@@ -658,7 +694,7 @@ def run_instance(instance: Instance, *, base: prove.PinnedBase, base_sha: str,
                 "agent_runs": lane_result.agent_runs, "detail": lane_result.detail}
     oracle_runs: dict[str, prove.Legs] = {}
     scores = score(instance, lane_result, oracle_runs, base=base, pre_patch=pre_patch,
-                   label=label, r6_red=r6_legs.get("red"))
+                   label=label, r6_red=r6_legs.get("red"), judge_contract=judge_contract)
     return {"issue": instance.issue, "pr": instance.pr, "ending": lane_result.ending,
             "seconds": seconds, "r6_seconds": r6_seconds, "detail": lane_result.detail,
             "r6_contaminants": contaminants, "oracle_runs": oracle_runs,
@@ -764,6 +800,16 @@ def candidates_from_store(*, limit: int | None = None) -> list[Candidate]:
     return out
 
 
+def _judge_contract(instance: Instance, failing: list[str] | None) -> dict:
+    """`oracle_contract.judge` over the instance's report and PR test hunks,
+    cached under the verify scratch so every pass over one bug reads one
+    judgment."""
+    return oracle_contract.judge(
+        title=instance.report_title, body=instance.report_body,
+        test_hunks=diffpaths.filter_diff(instance.landed_diff, diffpaths.is_test_path),
+        failing=failing, cache_dir=settings.verify_scratch() / "replay" / "oracle-contract")
+
+
 def _run_lane(*, issue: int, title: str, body: str, base: prove.PinnedBase,
               pre_patch: str, workdir: Path) -> LaneRun:
     """The lane entry point `run_instance` injects: one fix run on the pre-fix
@@ -836,8 +882,10 @@ def select_instances(base: prove.PinnedBase, base_sha: str, *, profile: RepoProf
 # -- Scorecard table ----------------------------------------------------------
 
 _TABLE_COLUMNS = ("issue", "pr", "ending", "reproduced", "repro_valid", "fixed",
-                  "oracle_pass", "false_accept", "seconds", "agent_runs", "detail")
-_TABLE_BOOLS = ("reproduced", "repro_valid", "fixed", "oracle_pass", "false_accept")
+                  "oracle_pass", "false_accept", "contract_mismatch", "seconds",
+                  "agent_runs", "detail")
+_TABLE_BOOLS = ("reproduced", "repro_valid", "fixed", "oracle_pass", "false_accept",
+                "contract_mismatch")
 # The longest detail a table cell shows; the ledger row carries the whole of it.
 _TABLE_DETAIL_MAX = 120
 
@@ -913,6 +961,7 @@ def _run_stats(records: list[dict], *, run_id: str, base_sha: str, concurrency: 
         "fixed": sum(1 for r in records if r.get("fixed")),
         "oracle_pass": sum(1 for r in records if r.get("oracle_pass")),
         "false_accept": sum(1 for r in records if r.get("false_accept")),
+        "contract_mismatch": sum(1 for r in records if r.get("contract_mismatch")),
         "false_reject": sum(1 for r in records if r.get("false_reject")),
         "r6_failures": sum(1 for r in records if str(r.get("ending", "")).startswith("r6-")),
         "avg_seconds": round(_avg_seconds(records), 1),
@@ -946,6 +995,13 @@ def _date_span(base_clone: Path, members: list[Instance]) -> str:
     if not got:
         return "dates unknown"
     return f"{min(got).date()}..{max(got).date()}"
+
+
+def _epoch(base_clone: Path, members: list[Instance]) -> str:
+    """The merge sha committed last among `members`, or "unknown"."""
+    dated = [(d, m.merge_sha) for m in members
+             if (d := _parse_dt(_merge_committed(base_clone, m.merge_sha))) is not None]
+    return max(dated)[1] if dated else "unknown"
 
 
 def _merge_committed(base_clone: Path, merge_sha: str) -> str | None:
@@ -1080,10 +1136,17 @@ def plan(base: prove.PinnedBase, base_sha: str, *, profile: RepoProfile,
         print(f"  discard {reason}: {count}")
     groups = group_by_deps(instances, base.clone, profile)
     pin_key = _pin_key(base.clone, base_sha, profile)
-    print(f"{len(groups)} dependency group(s):")
-    for key, members in sorted(groups.items(), key=lambda kv: len(kv[1]), reverse=True):
+    print(f"{len(groups)} dependency group(s), most distinct fixes first; a group's epoch "
+          "is its latest merge, the sha to build its base at:")
+
+    def fixes(members: list[Instance]) -> int:
+        return len({m.pr for m in members})
+
+    for key, members in sorted(groups.items(), key=lambda kv: (fixes(kv[1]), len(kv[1])),
+                               reverse=True):
         match = "pin" if key == pin_key else "off-pin"
-        print(f"  [{match}] {len(members)} instance(s), {_date_span(base.clone, members)}, "
+        print(f"  [{match}] {fixes(members)} fix(es) over {len(members)} issue(s), "
+              f"{_date_span(base.clone, members)}, epoch {_epoch(base.clone, members)}, "
               f"issues {sorted(m.issue for m in members)}")
 
 
@@ -1128,7 +1191,8 @@ def run(base: prove.PinnedBase, base_sha: str, *, profile: RepoProfile,
     def one(inst: Instance) -> dict:
         _progress(f"issue {inst.issue} (PR #{inst.pr}): started")
         return run_instance(inst, base=base, base_sha=base_sha, profile=profile,
-                            workdir=out_dir / f"issue-{inst.issue}", run_lane=_run_lane)
+                            workdir=out_dir / f"issue-{inst.issue}", run_lane=_run_lane,
+                            judge_contract=_judge_contract)
 
     if todo:
         with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
