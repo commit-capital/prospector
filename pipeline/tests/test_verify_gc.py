@@ -56,6 +56,20 @@ class TestPlan:
         assert "a" * 12 in p.keep
         assert p.images == () and p.clones == ()
 
+    def test_a_held_generation_survives_without_taking_a_slot(self):
+        gens = [gen("a" * 12, age_h=0.0), gen("b" * 12, age_h=5.0),
+                gen("c" * 12, age_h=500.0), gen("d" * 12, age_h=600.0)]
+        p = gc.plan(gens, "a" * 12, held=frozenset({"d" * 12}))
+        assert set(p.keep) == {"a" * 12, "b" * 12, "d" * 12}
+        assert p.images == ("pr-verify-base:" + "c" * 12 + "-t1",)
+
+    def test_the_held_list_round_trips_through_its_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(gc, "HELD_FILE", tmp_path / "held-bases")
+        assert gc.held_shas() == frozenset()
+        gc.hold("e" * 40)
+        gc.hold("f" * 12)
+        assert gc.held_shas() == frozenset({"e" * 12, "f" * 12})
+
     def test_the_most_recent_other_generation_survives(self):
         gens = [gen("a" * 12, age_h=0.0), gen("b" * 12, age_h=5.0),
                 gen("c" * 12, age_h=50.0)]
