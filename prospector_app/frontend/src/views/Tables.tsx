@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router";
 import { api, type TableSummary } from "../api";
 import { formatCell, stringify } from "./tableCell";
+import { SkeletonRows } from "../components/SkeletonRows";
 
 const PREVIEW_COLS = 4;
 
@@ -16,10 +17,7 @@ export default function Tables() {
 
   if (err) return <div className="error">Failed to load tables: {err}</div>;
   if (loading) return (
-    <div className="explorer-loading">
-      <span className="spinner explorer-loading-spinner" />
-      <span className="explorer-loading-label">Loading tables…</span>
-    </div>
+    <SkeletonRows label="Loading tables…" />
   );
 
   return (

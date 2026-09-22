@@ -10,6 +10,7 @@ import { useIssueFlyout } from "../useIssueFlyout";
 import { useJobStream } from "../useJobStream";
 import { useRepoMeta } from "../RepoMetaContext";
 import { useSystemHealth } from "../useSystemHealth";
+import { SkeletonRows } from "../components/SkeletonRows";
 import {
   breakdownHref, exploreHref, HOME_BREAKDOWN_ENTRIES, HOME_CARDS, HOME_COUNT_SPECS,
   HOME_ISSUE_CARDS, issuesHref, painLabel,
@@ -541,11 +542,7 @@ export default function Home() {
         </div>
       </div>
       {err && <div className="error">Failed to load PRs: {err}</div>}
-      {loading && (
-        <div className="home-loading" role="status">
-          <span className="spinner" /> Loading PR data…
-        </div>
-      )}
+      {loading && <SkeletonRows label="Loading PR data…" />}
       <div className="home-columns">
         <section className="home-col">
           <div className="home-col-head muted">Your move — one click each</div>

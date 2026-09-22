@@ -22,6 +22,7 @@ import { ignoreTableKey, nextRowIndex } from "../tableKeys";
 import { useExec } from "../ExecContext";
 import { useAgentPane } from "../components/AgentPane";
 import { cycleSort, type SortDir } from "../sortCycle";
+import { SkeletonRows } from "../components/SkeletonRows";
 
 const SPEC_PARAM = "spec";
 const Q_PARAM = "q";
@@ -386,10 +387,7 @@ export default function PRExplorer() {
       )}
 
       {loading && res === null && (
-        <div className="explorer-loading">
-          <span className="spinner explorer-loading-spinner" />
-          <span className="explorer-loading-label">Loading PRs…</span>
-        </div>
+        <SkeletonRows label="Loading PRs…" />
       )}
 
       {openFilter && (
