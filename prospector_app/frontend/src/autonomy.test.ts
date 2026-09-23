@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { unattendedActions, unattendedDetail, unattendedPushes } from "./autonomy.ts";
+import { autonomyTooltip, unattendedActions, unattendedDetail, unattendedPushes } from "./autonomy.ts";
 
 test("no switches means no unattended actions", () => {
   assert.deepEqual(unattendedActions({}), []);
@@ -51,4 +51,23 @@ test("describe in autopush posts as the bot but never pushes a branch", () => {
   assert.deepEqual(unattendedActions(flags), ["descriptions"]);
   assert.deepEqual(unattendedDetail(flags), ["posts rewritten PR descriptions without asking"]);
   assert.equal(unattendedPushes(flags), false);
+});
+
+test("tooltip with nothing on names the bot and the policy", () => {
+  assert.deepEqual(autonomyTooltip({}, "triage-bot", undefined), [
+    "Autonomous: nothing · as triage-bot",
+    "Posts upstream as triage-bot.",
+    "Autonomy policy: Pipeline → Machines & policy.",
+  ]);
+});
+
+test("tooltip lists each unattended action and the push identity when it pushes", () => {
+  const flags = { TRIAGE_FIX_AUTOPUSH: "update,rebase", TRIAGE_FIX_HUNT_RESOLVE: "1" };
+  assert.deepEqual(autonomyTooltip(flags, "triage-bot", "pusher"), [
+    "Autonomous: rebases, conflicts · as triage-bot + pusher",
+    "• pushes branch updates without asking",
+    "• resolves conflicts on its own (each waits for approval)",
+    "Posts upstream as triage-bot; pushes to PR branches as pusher.",
+    "Autonomy policy: Pipeline → Machines & policy.",
+  ]);
 });
