@@ -315,3 +315,20 @@ def test_a_run_replays_each_fair_bug_once_per_pass_and_resumes(builder, ledger, 
     eval_set.run(name="base", passes=2, concurrency=1, refresh=False, issues=None,
                  resume=False)
     assert ran == []
+
+
+def test_a_run_measures_the_lane_it_names(builder, ledger, tmp_path, monkeypatch):
+    monkeypatch.setattr(eval_set.settings, "verify_scratch", lambda: tmp_path / "vs")
+    _build()
+    lanes: set = set()
+
+    def run_instance(inst, *, base, base_sha, profile, workdir, run_lane, judge_contract):
+        lanes.add(run_lane)
+        return {"issue": inst.issue, "pr": inst.pr, "ending": "no-fix", "agent_runs": 1}
+
+    monkeypatch.setattr(replay, "run_instance", run_instance)
+    eval_set.run(name="solo", passes=1, concurrency=1, refresh=False, issues=None,
+                 resume=False, lane="solo")
+    assert lanes == {replay._run_solo}
+    card = [r["stats"] for r in ledger.rows if r["phase"] == eval_set.RUN_PHASE][-1]
+    assert card["lane"] == "solo"

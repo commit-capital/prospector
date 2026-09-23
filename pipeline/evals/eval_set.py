@@ -22,8 +22,9 @@ pre-fix tree differs from it. The base is held against the verify sweep
 (`issue_fix_replay.qualify_instances`), and its row records every verdict. A
 build resumes: a group whose epoch the manifest already names is skipped.
 
-`run` replays every fair bug through the lane, PASSES times, each pass its own
-replay run id, and writes a scorecard: how many runs proposed a fix (ended
+`run` replays every fair bug through a lane — the staged lane (`fix_lane`) or
+the one-agent lane (`solo_lane`) — PASSES times, each pass its own replay run
+id, and writes a scorecard: how many runs proposed a fix (ended
 `fixed`), how many of those the hidden oracle accepted — precision — and how
 many bugs got a proposal at all — coverage.
 """
@@ -364,8 +365,12 @@ def _scorecard_md(name: str, card: dict, records: list[dict]) -> str:
     return "\n".join(lines) + "\n"
 
 
+# The lanes a run can measure, by name: the staged lane and the one-agent lane.
+LANES: dict[str, replay.LaneEntry] = {"staged": replay._run_lane, "solo": replay._run_solo}
+
+
 def run(*, name: str, passes: int, concurrency: int, refresh: bool,
-        issues: set[int] | None, resume: bool) -> int:
+        issues: set[int] | None, resume: bool, lane: str = "staged") -> int:
     """Replay every fair bug of the set through the lane `passes` times, pass by
     pass, each pass recorded as replay run `<name>-p<k>`. Re-invoking continues
     a run: recorded instances are kept, and `resume` re-runs the faulted ones.
@@ -406,7 +411,7 @@ def run(*, name: str, passes: int, concurrency: int, refresh: bool,
         base = bases[fair[inst.issue]]
         return replay.run_instance(
             inst, base=base, base_sha=base.sha, profile=prof,
-            workdir=out_dir / f"p{k}" / f"issue-{inst.issue}", run_lane=replay._run_lane,
+            workdir=out_dir / f"p{k}" / f"issue-{inst.issue}", run_lane=LANES[lane],
             judge_contract=replay._judge_contract)
 
     done = 0
@@ -429,7 +434,7 @@ def run(*, name: str, passes: int, concurrency: int, refresh: bool,
                 "trigger": "cli",
                 "stats": {**replay._instance_stats(rec, run_id=f"{name}-p{k}",
                                                    base_sha=bases[fair[inst.issue]].sha),
-                          "eval": name, "pass": k}})
+                          "eval": name, "lane": lane, "pass": k}})
             print(f"[{done}/{len(jobs)}] issue {inst.issue} pass {k}: {rec.get('ending')} "
                   f"({replay._cell(rec.get('seconds'))}s) {rec.get('detail') or ''}"[:300],
                   flush=True)
@@ -441,7 +446,8 @@ def run(*, name: str, passes: int, concurrency: int, refresh: bool,
     print(md, flush=True)
     pr_store.append_run({"phase": RUN_PHASE, "started": started, "finished": storekit.now(),
                          "trigger": "cli",
-                         "stats": {"eval": name, "passes": passes, "concurrency": concurrency,
+                         "stats": {"eval": name, "lane": lane, "passes": passes,
+                                   "concurrency": concurrency,
                                    "host": settings.worker_id(), **card}})
     return 0
 
@@ -467,6 +473,8 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     r.add_argument("--issues", help="run only these issue numbers, comma-separated")
     r.add_argument("--resume", action="store_true", help="re-run the faulted instances")
     r.add_argument("--refresh", action="store_true", help="re-harvest from GitHub")
+    r.add_argument("--lane", choices=sorted(LANES), default="staged",
+                   help="the staged lane or the one-agent lane")
     i = sub.add_parser("import", help="record the bases a manifest file names")
     i.add_argument("path", type=Path)
     return ap.parse_args(argv)
@@ -481,7 +489,8 @@ def main(argv: list[str]) -> int:
             issues = ({int(n) for n in args.issues.split(",") if n.strip()}
                       if args.issues else None)
             return run(name=args.name, passes=args.passes, concurrency=args.concurrency,
-                       refresh=args.refresh, issues=issues, resume=args.resume)
+                       refresh=args.refresh, issues=issues, resume=args.resume,
+                       lane=args.lane)
         return build(target=args.target, min_fixes=args.min_fixes, refresh=args.refresh,
                      concurrency=args.concurrency, dry_run=args.dry_run)
     except prove.NoBase as e:
