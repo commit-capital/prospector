@@ -667,9 +667,10 @@ def test_r6_no_oracle_when_the_pr_ships_no_derivable_test_command(tmp_path, gene
 
 
 def _judged(contract: str, seen: list | None = None) -> replay.ContractJudge:
-    def judge(instance: replay.Instance, failing: list[str] | None) -> dict:
+    def judge(instance: replay.Instance, failing: list[str] | None, failures: str) -> dict:
         if seen is not None:
             seen.append(failing)
+            assert "Failed Tests" in failures
         return {"contract": contract, "tests": [], "reason": ""}
     return judge
 
@@ -680,13 +681,48 @@ def test_score_reads_a_failure_on_the_maintainers_contract_as_a_mismatch(
     rec, _ = _score(tmp_path, monkeypatch, _lane("fixed"),
                     red=_RED_2020, lane_green=_GREEN_00,
                     oracle_green=_dirty(gates.SENTINEL_TEST_FAIL, None,
-                                        "app.test.ts > list > returns 422"),
+                                        "tests/test_app.py > list > returns 422"),
+                    r6_red=_dirty(gates.SENTINEL_TEST_FAIL, gates.SENTINEL_TEST_FAIL,
+                                  "tests/test_app.py > list > returns 422"),
                     judge_contract=_judged("maintainer", seen))
 
-    assert seen == [["app.test.ts > list > returns 422"]]
+    assert seen == [["tests/test_app.py > list > returns 422"]]
     assert rec["oracle_outcome"] == "fail"
+    assert rec["oracle_regressed"] == []
     assert rec["contract_mismatch"] is True
     assert rec["false_accept"] is False
+
+
+def test_score_never_excuses_a_test_the_fix_turned_from_passing_to_failing(
+        tmp_path, generic_profile, monkeypatch) -> None:
+    seen: list = []
+    rec, _ = _score(tmp_path, monkeypatch, _lane("fixed"),
+                    red=_RED_2020, lane_green=_GREEN_00,
+                    oracle_green=_dirty(gates.SENTINEL_TEST_FAIL, None,
+                                        "tests/test_app.py > list > returns 422",
+                                        "tests/test_app.py > list > keeps the empty filter"),
+                    r6_red=_dirty(gates.SENTINEL_TEST_FAIL, gates.SENTINEL_TEST_FAIL,
+                                  "tests/test_app.py > list > returns 422"),
+                    judge_contract=_judged("maintainer", seen))
+
+    assert seen == []
+    assert rec["oracle_regressed"] == ["tests/test_app.py > list > keeps the empty filter"]
+    assert rec["contract_mismatch"] is False
+    assert rec["false_accept"] is True
+
+
+def test_score_excuses_nothing_without_a_pre_fix_failing_set_to_compare(
+        tmp_path, generic_profile, monkeypatch) -> None:
+    seen: list = []
+    rec, _ = _score(tmp_path, monkeypatch, _lane("fixed"),
+                    red=_RED_2020, lane_green=_GREEN_00,
+                    oracle_green=_dirty(gates.SENTINEL_TEST_FAIL, None,
+                                        "tests/test_app.py > list > returns 422"),
+                    judge_contract=_judged("maintainer", seen))
+
+    assert seen == []
+    assert rec["oracle_regressed"] is None
+    assert rec["contract_mismatch"] is False
 
 
 @pytest.mark.parametrize("contract", ["report", "unknown"])

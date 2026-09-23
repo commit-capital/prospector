@@ -245,8 +245,10 @@ class LaneRun(Protocol):
 
 class ContractJudge(Protocol):
     """Who owns an oracle failure: the injected `oracle_contract.judge` over an
-    instance's report and PR tests and the failing names the oracle reported."""
-    def __call__(self, instance: Instance, failing: list[str] | None) -> dict: ...
+    instance's report and PR tests, the failing names the oracle reported, and
+    its report of how they failed."""
+    def __call__(self, instance: Instance, failing: list[str] | None,
+                 failures: str) -> dict: ...
 
 
 class LaneEntry(Protocol):
@@ -265,6 +267,9 @@ _SANDBOX_FAULT_EXITS = frozenset({
 # The shortest run of identifier characters the oracle-coupling check reads off a
 # fix hunk's added lines.
 _SYMBOL_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
+
+# Terminal colour codes in a runner's captured output.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
 
 def _leg_status(legs: prove.Legs, want: int) -> str:
@@ -523,14 +528,43 @@ def validate_known_fix(base: prove.PinnedBase, pre_patch: str, instance: Instanc
     return True, ""
 
 
-def _oracle_failing(oracle_runs: dict[str, prove.Legs]) -> list[str] | None:
-    """The PR tests the oracle's last failing leg reported, or None when its
-    report does not account for itself."""
+def _oracle_failed_leg(oracle_runs: dict[str, prove.Legs]) -> prove.Legs | None:
     for key in ("oracle_pass_confirm", "oracle_pass"):
         leg = oracle_runs.get(key)
         if leg is not None and leg.get("exit") == gates.SENTINEL_TEST_FAIL:
-            return verify_driver.parse_failed_tests(leg["output_tail"])
+            return leg
     return None
+
+
+def _oracle_failing(oracle_runs: dict[str, prove.Legs]) -> list[str] | None:
+    """The PR tests the oracle's last failing leg reported, or None when its
+    report does not account for itself."""
+    leg = _oracle_failed_leg(oracle_runs)
+    return verify_driver.parse_failed_tests(leg["output_tail"]) if leg else None
+
+
+def _oracle_failures(oracle_runs: dict[str, prove.Legs]) -> str:
+    """The oracle's failing leg's output from its last failed-tests report on:
+    each failure with the assertion it failed on."""
+    leg = _oracle_failed_leg(oracle_runs)
+    if leg is None:
+        return ""
+    text = _ANSI_RE.sub("", leg["output_tail"])
+    at = text.rfind("Failed Tests")
+    return text[at:] if at >= 0 else text
+
+
+def oracle_regressions(r6_red: prove.Legs | None, failing: list[str] | None
+                       ) -> list[str] | None:
+    """The oracle tests a fix made fail that passed before any fix — those the
+    R6 red run over the pre-fix tree did not report failing — sorted, or None
+    when either run's failed-tests report does not account for itself."""
+    if r6_red is None or failing is None:
+        return None
+    before = verify_driver.parse_failed_tests(r6_red["output_tail"])
+    if before is None:
+        return None
+    return sorted(set(failing) - set(before))
 
 
 def score(instance: Instance, lane_result: LaneRun, oracle_runs: dict[str, prove.Legs], *,
@@ -612,9 +646,15 @@ def score(instance: Instance, lane_result: LaneRun, oracle_runs: dict[str, prove
 
     # A failure only the maintainers' own design explains — tests pinning a
     # contract the report never asked for — is a mismatch, not a false accept.
+    # Only a test that already failed before the fix can pin new design: one
+    # the fix turned from passing to failing is a regression, never excused.
     contract: dict | None = None
-    if oracle_outcome == "fail" and judge_contract is not None:
-        contract = judge_contract(instance, _oracle_failing(oracle_runs))
+    regressed: list[str] | None = None
+    if oracle_outcome == "fail":
+        regressed = oracle_regressions(r6_red, _oracle_failing(oracle_runs))
+        if regressed == [] and judge_contract is not None:
+            contract = judge_contract(instance, _oracle_failing(oracle_runs),
+                                      _oracle_failures(oracle_runs))
     mismatch = bool(contract) and contract["contract"] == "maintainer"
 
     reviews = (lane_result.result or {}).get("reviews", [])
@@ -635,6 +675,7 @@ def score(instance: Instance, lane_result: LaneRun, oracle_runs: dict[str, prove
         "oracle_outcome": oracle_outcome,
         "oracle_coupled": oracle_coupled,
         "oracle_contract": contract,
+        "oracle_regressed": regressed,
         "contract_mismatch": mismatch,
         # Reviewers called it safe and the PR's own tests ran and refused it on
         # behavior the report asked for. Coupling is recorded beside this, never
@@ -802,14 +843,15 @@ def candidates_from_store(*, limit: int | None = None) -> list[Candidate]:
     return out
 
 
-def _judge_contract(instance: Instance, failing: list[str] | None) -> dict:
-    """`oracle_contract.judge` over the instance's report and PR test hunks,
-    cached under the verify scratch so every pass over one bug reads one
-    judgment."""
+def _judge_contract(instance: Instance, failing: list[str] | None, failures: str) -> dict:
+    """`oracle_contract.judge` over the instance's report and PR test hunks and
+    the oracle's failures, cached under the verify scratch so a repeated
+    failure reads one judgment."""
     return oracle_contract.judge(
         title=instance.report_title, body=instance.report_body,
         test_hunks=diffpaths.filter_diff(instance.landed_diff, diffpaths.is_test_path),
-        failing=failing, cache_dir=settings.verify_scratch() / "replay" / "oracle-contract")
+        failing=failing, failures=failures,
+        cache_dir=settings.verify_scratch() / "replay" / "oracle-contract")
 
 
 def _run_lane(*, issue: int, title: str, body: str, base: prove.PinnedBase,
