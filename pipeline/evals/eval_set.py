@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import threading
 import traceback
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -407,25 +408,41 @@ def run(*, name: str, passes: int, concurrency: int, refresh: bool,
     print(f"run {name}: {len(by_issue)} bugs x {passes} passes; {len(jobs)} to run, "
           f"{len(results)} already recorded", flush=True)
 
-    def one(k: int, inst: replay.Instance) -> dict:
+    # Set by the first run whose agent can serve nothing (a spent usage limit,
+    # a lost login): every run after it would fail the same way, so a job that
+    # starts once it is set does nothing, and is left for a --resume.
+    unavailable = threading.Event()
+
+    def one(k: int, inst: replay.Instance) -> dict | None:
+        if unavailable.is_set():
+            return None
         base = bases[fair[inst.issue]]
-        return replay.run_instance(
+        rec = replay.run_instance(
             inst, base=base, base_sha=base.sha, profile=prof,
             workdir=out_dir / f"p{k}" / f"issue-{inst.issue}", run_lane=LANES[lane],
             judge_contract=replay._judge_contract)
+        if rec.get("ending") == "agent-unavailable":
+            unavailable.set()
+        return rec
 
     done = 0
+    halted = ""
+    left = 0
     with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
         futures = {pool.submit(one, k, inst): (k, inst) for k, inst in jobs}
         for fut in as_completed(futures):
             k, inst = futures[fut]
             try:
-                rec = fut.result()
+                got = fut.result()
             except Exception:
                 print(f"issue {inst.issue} pass {k} crashed:", file=sys.stderr)
                 traceback.print_exc(file=sys.stderr)
-                rec = {"issue": inst.issue, "pr": inst.pr, "ending": replay._CRASH_ENDING,
+                got = {"issue": inst.issue, "pr": inst.pr, "ending": replay._CRASH_ENDING,
                        "seconds": 0.0, "agent_runs": 0}
+            if got is None:
+                left += 1
+                continue
+            rec = got
             rec["pass"] = k
             results.append(rec)
             done += 1
@@ -438,8 +455,13 @@ def run(*, name: str, passes: int, concurrency: int, refresh: bool,
             print(f"[{done}/{len(jobs)}] issue {inst.issue} pass {k}: {rec.get('ending')} "
                   f"({replay._cell(rec.get('seconds'))}s) {rec.get('detail') or ''}"[:300],
                   flush=True)
+            if rec.get("ending") == "agent-unavailable" and not halted:
+                halted = str(rec.get("detail") or "the agent is unavailable")
+                print(f"halting: {halted}", flush=True)
+    if halted:
+        print(f"{left} run(s) left for --resume", flush=True)
 
-    card = scorecard(results, bugs=len(by_issue))
+    card = {**scorecard(results, bugs=len(by_issue)), "halted": halted or None}
     out_dir.mkdir(parents=True, exist_ok=True)
     md = _scorecard_md(name, card, results)
     (out_dir / "scorecard.md").write_text(md)
@@ -449,7 +471,7 @@ def run(*, name: str, passes: int, concurrency: int, refresh: bool,
                          "stats": {"eval": name, "lane": lane, "passes": passes,
                                    "concurrency": concurrency,
                                    "host": settings.worker_id(), **card}})
-    return 0
+    return 3 if halted else 0
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
