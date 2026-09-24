@@ -332,3 +332,21 @@ def test_a_run_measures_the_lane_it_names(builder, ledger, tmp_path, monkeypatch
     assert lanes == {replay._run_solo}
     card = [r["stats"] for r in ledger.rows if r["phase"] == eval_set.RUN_PHASE][-1]
     assert card["lane"] == "solo"
+
+
+def test_a_run_halts_when_the_agent_can_serve_nothing(builder, ledger, tmp_path, monkeypatch):
+    monkeypatch.setattr(eval_set.settings, "verify_scratch", lambda: tmp_path / "vs")
+    _build()
+    ran: list[int] = []
+
+    def run_instance(inst, *, base, base_sha, profile, workdir, run_lane, judge_contract):
+        ran.append(inst.issue)
+        return {"issue": inst.issue, "pr": inst.pr, "ending": "agent-unavailable",
+                "detail": "You've hit your weekly limit", "agent_runs": 1}
+
+    monkeypatch.setattr(replay, "run_instance", run_instance)
+    assert eval_set.run(name="h", passes=2, concurrency=1, refresh=False, issues=None,
+                        resume=False) == 3
+    assert len(ran) == 1  # three bugs x two passes were queued
+    card = [r["stats"] for r in ledger.rows if r["phase"] == eval_set.RUN_PHASE][-1]
+    assert "weekly limit" in card["halted"]

@@ -39,17 +39,19 @@ CLAUDE_BIN = shutil.which("claude") or "claude"
 
 class AgentUnavailable(RuntimeError):
     """The CLI could not do any work at all: the binary is missing, or it
-    exited because it is not authenticated. This machine's condition, never a
+    exited because it is not authenticated or its account's usage limit is
+    spent. This machine's condition, never a
     verdict on the work — callers end such a run as retryable, and a worker
     trips its agent lanes until a probe passes."""
 
 
 # What the CLI prints when it cannot serve any prompt: an expired or missing
-# login, or a rejected key. Matched against the run's output on a non-zero exit.
+# login, a rejected key, or a spent usage limit. Matched against the run's
+# output on a non-zero exit.
 _UNAVAILABLE = re.compile(
     r"Failed to authenticate|OAuth (?:access )?token (?:has )?expired|Not logged in"
     r"|Please run /login|Invalid API key|invalid_api_key|authentication_error"
-    r"|API Error: 401", re.I)
+    r"|API Error: 401|hit your \w+ limit|usage limit reached", re.I)
 
 
 def _failure_text(text: str, raw_lines: list[str], results: list[dict]) -> str:

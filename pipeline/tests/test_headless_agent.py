@@ -287,6 +287,16 @@ def test_run_agent_raises_agent_unavailable_on_a_plain_text_complaint(monkeypatc
         ha.run_agent("go", allow_gh=False, cwd="/tmp")
 
 
+@pytest.mark.parametrize("complaint", [
+    "You've hit your weekly limit · resets 11pm (America/Los_Angeles)",
+    "Claude AI usage limit reached|1758700000"])
+def test_a_spent_usage_limit_reads_as_unavailable(monkeypatch, complaint):
+    lines = [json.dumps({"type": "result", "is_error": True, "result": complaint})]
+    monkeypatch.setattr(ha.subprocess, "Popen", lambda cmd, **kw: _failing_proc(cmd, lines))
+    with pytest.raises(ha.AgentUnavailable, match="limit"):
+        ha.run_agent("go", allow_gh=False, cwd="/tmp")
+
+
 def test_run_agent_raises_agent_unavailable_on_message_text_without_a_result(monkeypatch):
     lines = [_delta(_EXPIRED)]
     monkeypatch.setattr(ha.subprocess, "Popen", lambda cmd, **kw: _failing_proc(cmd, lines))
