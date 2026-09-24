@@ -19,6 +19,10 @@ if [[ "$all" == *"vitest list"* ]]; then
   case "$proj" in
     "@fix/ui")  printf '%s' '["packages/ui/src/u1.test.ts","packages/ui/src/u2.test.ts"]' > "$out" ;;
     "@fix/lib") printf '%s' '["packages/lib/src/l1.test.ts"]' > "$out" ;;
+    "")
+      # Every project at once, as vitest lists them: absolute paths with
+      # their project names.
+      printf '%s' "[{\"file\":\"$PWD/server/src/__tests__/route-a.test.ts\",\"projectName\":\"@fix/server\"},{\"file\":\"$PWD/server/src/__tests__/gs-one.test.ts\",\"projectName\":\"@fix/server\"},{\"file\":\"$PWD/packages/ui/src/u1.test.ts\",\"projectName\":\"@fix/ui\"},{\"file\":\"$PWD/packages/lib/src/l1.test.ts\",\"projectName\":\"@fix/lib\"}]" > "$out" ;;
     *) echo "stub pnpm: unknown project $proj" >&2; exit 1 ;;
   esac
   exit 0

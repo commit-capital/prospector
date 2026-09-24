@@ -1102,6 +1102,8 @@ def _run_phase_locked(phase: str, image: str, *, patch: Path | None, tier: int,
         argv += ["--patch", str(patch)]
     if pre_patch is not None:
         argv += ["--pre-patch", str(pre_patch)]
+    if phase in LARGE_PHASES:
+        argv += ["--cpus", str(settings.sandbox_large_cpus())]
     if pristine:
         argv += ["--pristine"]
     if exclude_file is not None:

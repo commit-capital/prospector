@@ -388,6 +388,12 @@ def sandbox_large_slots() -> int:
     return _positive_int("TRIAGE_SANDBOX_LARGE_SLOTS", 1)
 
 
+def sandbox_large_cpus() -> int:
+    """The CPUs each large-class sandbox phase gets. Two unless
+    TRIAGE_SANDBOX_LARGE_CPUS says more."""
+    return _positive_int("TRIAGE_SANDBOX_LARGE_CPUS", 2)
+
+
 def issue_fix_suite() -> bool:
     """Whether the issue-fix lanes run the full suite over a fix that clears
     their other checks. On unless TRIAGE_ISSUE_FIX_SUITE=0."""

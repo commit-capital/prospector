@@ -43,15 +43,28 @@ else
   bad "plan mode exited nonzero on a good tree"
 fi
 
-# --- plan fails closed on a doctored wrapper ---
+grep -q '"source":"wrapper"' "$plan" || bad "the wrapper's plan does not say so"
+
+# --- a wrapper that cannot answer: the plan comes from vitest's listing ---
+listed_ok() {  # $1 = tree, $2 = what the case is
+  local out
+  out="$(cd "$1" && node "$ROOT/verify-suite.mjs" plan 2>/dev/null)" \
+    || { bad "$2: the plan failed instead of listing"; return; }
+  echo "$out" | grep -q '"source":"vitest-list"' || bad "$2: the plan does not come from the listing"
+  echo "$out" | grep -q '"generalServer":\["server/src/__tests__/route-a.test.ts"' \
+    || bad "$2: the listing's server files are not the general-server group"
+  echo "$out" | grep -q '"@fix/lib":\["packages/lib/src/l1.test.ts"\]' \
+    || bad "$2: the listing's workspace files are missing"
+  note "$2: planned from vitest list"
+}
+
+# a wrapper whose source lacks the arrays read here
 DOCTORED="$WORK/doctored"
 cp -R "$FIX/tree" "$DOCTORED"
 sed -i.bak 's/nonServerProjects/renamedProjects/g' "$DOCTORED/scripts/run-vitest-stable.mjs"
-( cd "$DOCTORED" && node "$ROOT/verify-suite.mjs" plan > /dev/null 2>&1 )
-[ $? -ne 0 ] && note "doctored wrapper fails the plan closed" \
-             || bad "plan succeeded on a wrapper missing nonServerProjects"
+listed_ok "$DOCTORED" "a wrapper without the project arrays"
 
-# --dry-run emitting non-JSON fails the plan closed
+# --dry-run emitting non-JSON
 GARBAGE="$WORK/tree-garbage"
 cp -R "$FIX/tree" "$GARBAGE"
 cat > "$GARBAGE/scripts/run-vitest-stable.mjs" <<'STUB'
@@ -59,9 +72,21 @@ const nonServerProjects = ["@fix/ui", "@fix/lib"];
 void nonServerProjects;
 console.log("not json at all");
 STUB
-( cd "$GARBAGE" && node "$ROOT/verify-suite.mjs" plan > /dev/null 2>&1 )
-[ $? -ne 0 ] && note "non-JSON dry-run fails the plan closed" \
-             || bad "plan succeeded on a wrapper emitting no JSON"
+listed_ok "$GARBAGE" "a non-JSON dry-run"
+
+# a wrapper that does not know --dry-run
+NODRY="$WORK/tree-nodry"
+cp -R "$FIX/tree" "$NODRY"
+printf '%s\n' 'console.error("unknown flag"); process.exit(2);' > "$NODRY/scripts/run-vitest-stable.mjs"
+listed_ok "$NODRY" "a wrapper without --dry-run"
+
+# no wrapper at all
+NOWRAP="$WORK/tree-nowrap"
+cp -R "$FIX/tree" "$NOWRAP"
+rm "$NOWRAP/scripts/run-vitest-stable.mjs"
+listed_ok "$NOWRAP" "a tree with no wrapper"
+
+# --- a wrapper that answers with too little fails the plan closed ---
 
 # an empty serialized list fails the plan closed
 EMPTY="$WORK/tree-empty"
@@ -119,6 +144,25 @@ rc=$?
 [ "$rc" -eq 20 ] || bad "regress with a new failure exited $rc, want 20"
 echo "$out" | grep -q 'l1.test.ts' || bad "regress trailer lacks the new failure"
 note "a new failure exits 20 and is named in the trailer"
+
+# a listed plan runs, and the trailer says where its plan came from
+listed="$WORK/listed.json"
+( cd "$NOWRAP" && node "$ROOT/verify-suite.mjs" plan > "$listed" 2>/dev/null )
+out=$( cd "$NOWRAP" && FIXTURE_FAIL="packages/lib/src/l1.test.ts" \
+       node "$ROOT/verify-suite.mjs" run --plan "$listed" --mode regress --exclude "$excl_none" )
+rc=$?
+[ "$rc" -eq 20 ] || bad "a listed plan's regress with a new failure exited $rc, want 20"
+echo "$out" | grep -q '"plan":"vitest-list"' || bad "the trailer does not name the listed plan"
+note "a listed plan runs and names its planner"
+
+# a tree without the contract's preflight script skips it
+NOPRE="$WORK/tree-nopre"
+cp -R "$FIX/tree" "$NOPRE"
+printf '%s' '{"name":"fixture","scripts":{}}' > "$NOPRE/package.json"
+( cd "$NOPRE" && PATH="$FIX/bin:$PATH" node "$ROOT/verify-suite.mjs" run --plan "$plan" \
+    --mode baseline > /dev/null 2>&1 )
+[ $? -eq 0 ] && note "a tree without the preflight script skips it" \
+             || bad "a tree without the preflight script failed the run"
 
 # accounting: a file missing from an invocation's report is infrastructure
 FIXTURE_DROP="server/src/__tests__/gs-one.test.ts" \
