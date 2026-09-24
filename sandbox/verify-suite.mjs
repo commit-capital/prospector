@@ -4,9 +4,13 @@
 // pinned tree's own test plan from the repository's stabilized wrapper script
 // (named by SUITE_CONFIG) and issues the
 // wrapper's stabilized vitest invocations with explicit include-lists, keeping
-// going past failures and reading a JSON report file per invocation. The result
-// the host trusts is this process's exit code; the trailer printed last on
-// stdout carries the failing-file set as data.
+// going past failures and reading a JSON report file per invocation. A tree
+// whose wrapper cannot answer — none, one without --dry-run, one whose CLI or
+// source differs from the shape read here — is planned from vitest's own file
+// listing instead: every test file of every project, the server project's run
+// one file at a time like the wrapper's general-server group. The result the
+// host trusts is this process's exit code; the trailer printed last on stdout
+// carries the failing-file set, and which planner made the plan, as data.
 //
 // Exit contract:
 //   plan:                 0 plan JSON on stdout | 1 derivation failed
@@ -82,20 +86,26 @@ function invocationEnv() {
 // run-phase.sh calls `plan` BEFORE applying any patch, so the plan is a
 // function of the pinned image alone and a PR cannot influence it.
 
+// A wrapper that cannot answer the questions asked here: the tree is planned
+// from vitest's listing instead.
+class WrapperUnavailable extends Error {}
+
 function dryRun(extra) {
   const r = spawnSync("node", [WRAPPER, ...extra, "--dry-run"],
                       { cwd: ROOT, encoding: "utf8" });
-  if (r.status !== 0) die(`${WRAPPER} --dry-run failed: ${r.stderr}`);
+  if (r.status !== 0) {
+    throw new WrapperUnavailable(`${WRAPPER} --dry-run failed: ${r.stderr}`);
+  }
   try {
     return JSON.parse(r.stdout);
   } catch {
-    die(`${WRAPPER} --dry-run emitted no parsable JSON`);
+    throw new WrapperUnavailable(`${WRAPPER} --dry-run emitted no parsable JSON`);
   }
 }
 
 function extractProjects(source, name, minCount) {
   const m = source.match(new RegExp(`const ${name} = \\[([^\\]]*)\\]`, "s"));
-  if (!m) die(`cannot find the ${name} array in ${WRAPPER}`);
+  if (!m) throw new WrapperUnavailable(`cannot find the ${name} array in ${WRAPPER}`);
   const projects = [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]);
   if (projects.length < minCount) die(`${name} in ${WRAPPER} parsed suspiciously small`);
   return projects;
@@ -117,7 +127,46 @@ function listProjectFiles(project) {
   return [...new Set(items.map((it) => rel(typeof it === "string" ? it : it.file)))];
 }
 
+function listAllFiles() {
+  const out = path.join(mkdtempSync("/tmp/vs-list-"), "list.json");
+  const r = spawnSync("pnpm", ["exec", "vitest", "list", "--filesOnly", `--json=${out}`],
+                      { cwd: ROOT, env: invocationEnv(), encoding: "utf8" });
+  if (r.status !== 0) die(`vitest list failed: ${r.stderr}`);
+  let items;
+  try {
+    items = JSON.parse(readFileSync(out, "utf8"));
+  } catch {
+    die("vitest list wrote no parsable JSON");
+  }
+  const byProject = {};
+  for (const it of items) {
+    const file = rel(typeof it === "string" ? it : it.file);
+    const project = (typeof it === "object" && it.projectName) || "";
+    (byProject[project] ||= new Set()).add(file);
+  }
+  return Object.fromEntries(Object.entries(byProject).map(([p, files]) => [p, [...files]]));
+}
+
+function listedPlan() {
+  const workspaceProjects = listAllFiles();
+  const generalServer = workspaceProjects[SERVER_PROJECT] || [];
+  delete workspaceProjects[SERVER_PROJECT];
+  if (generalServer.length === 0) die(`vitest list names no ${SERVER_PROJECT} suites`);
+  return { source: "vitest-list", serialized: [], generalServer, workspaceProjects };
+}
+
 function derivePlan() {
+  if (!existsSync(path.join(ROOT, WRAPPER))) return listedPlan();
+  try {
+    return wrapperPlan();
+  } catch (e) {
+    if (!(e instanceof WrapperUnavailable)) throw e;
+    console.error(`[verify-suite] ${e.message.split("\n")[0]}; planning from vitest list`);
+    return listedPlan();
+  }
+}
+
+function wrapperPlan() {
   const serialized = dryRun([]).selectedSerializedSuites;
   const generalServer = dryRun(["--mode", "general", "--group", "general-server",
                                 "--shard-index", "0", "--shard-count", "1"])
@@ -140,11 +189,20 @@ function derivePlan() {
   for (const project of nonServerProjects) {
     workspaceProjects[project] = listProjectFiles(project);
   }
-  return { serialized, generalServer, workspaceProjects };
+  return { source: "wrapper", serialized, generalServer, workspaceProjects };
 }
 
+// The contract's preflight script. A tree whose package.json declares scripts
+// without it — one from before the script existed — has nothing to prepare.
 function preflight() {
   if (!CFG.preflight) return;
+  let scripts = null;
+  try {
+    scripts = JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8")).scripts;
+  } catch {
+    scripts = null;
+  }
+  if (scripts && typeof scripts === "object" && !(CFG.preflight in scripts)) return;
   const r = spawnSync("pnpm", ["-s", "run", CFG.preflight],
                       { cwd: ROOT, stdio: ["ignore", "ignore", "inherit"] });
   if (r.status !== 0) die(`${CFG.preflight} failed`);
@@ -170,8 +228,9 @@ function buildInvocations(plan, exclude) {
   for (const [project, files] of Object.entries(plan.workspaceProjects)) {
     const kept = keep(files);
     if (kept.length) {
-      invocations.push({ label: project, files: kept,
-                         args: ["--project", project, ...kept] });
+      // A file vitest listed under no project runs outside one.
+      invocations.push({ label: project || "(no project)", files: kept,
+                         args: [...(project ? ["--project", project] : []), ...kept] });
     }
   }
   return invocations;
@@ -272,7 +331,8 @@ function runMain(rest) {
     failed.push(...r.failed);
     if (r.anomaly) anomalies.push(inv.label);
   });
-  const result = { mode: runMode, planned, reported, excluded: exclude.size,
+  const result = { mode: runMode, plan: plan.source || "wrapper", planned, reported,
+                   excluded: exclude.size,
                    invocations: invocations.length, missing,
                    failed: [...new Set(failed)].sort(), anomalies };
   console.log("===VERIFY-SUITE:BEGIN===");

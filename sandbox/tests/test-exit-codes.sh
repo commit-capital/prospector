@@ -154,5 +154,8 @@ check "--pre-patch on red = 2 (launcher usage error)" 2 \
 check "--pre-patch on green = 2 (launcher usage error)" 2 \
   "$(run --phase green --patch "$CTX/fix.patch" --pre-patch "$CTX/fix.patch")"
 
+check "--cpus that is not a positive number = 2 (launcher usage error)" 2 \
+  "$(run --phase red --cpus 0)"
+
 [ "$fail" = 0 ] && echo "exit-code contract ok"
 exit $fail

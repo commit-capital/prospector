@@ -1,6 +1,7 @@
 """VERIFY driver: the env allowlist, the scrub-then-assert gate, and the
 base-image tag. The driver is the trusted half — it owns every store write and
 never lets an agent near one."""
+import contextlib
 import copy
 import io
 import json
@@ -1055,6 +1056,17 @@ class TestRunPhase:
         vd.run_phase("baseline", "img:t1", pre_patch=Path("/tmp/pre.patch"))
         argv = fake.seen["argv"]
         assert argv[argv.index("--pre-patch") + 1] == "/tmp/pre.patch"
+
+    def test_a_large_phase_gets_the_configured_cpus_and_a_small_one_the_default(
+            self, monkeypatch):
+        fake = _FakePopen(output=b"ok", returncode=0)
+        monkeypatch.setattr(vd.subprocess, "Popen", fake)
+        monkeypatch.setattr(vd, "_LargePhaseLock", lambda phase: contextlib.nullcontext())
+        monkeypatch.setenv("TRIAGE_SANDBOX_LARGE_CPUS", "6")
+        vd.run_phase("regress", "img:t1")
+        assert fake.seen["argv"][fake.seen["argv"].index("--cpus") + 1] == "6"
+        vd.run_phase("red", "img:t1")
+        assert "--cpus" not in fake.seen["argv"]
 
     def test_omits_exclude_file_when_not_given(self, monkeypatch):
         fake = _FakePopen(output=b"ok", returncode=0)

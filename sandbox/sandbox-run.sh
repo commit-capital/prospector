@@ -11,7 +11,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NET="${PR_VERIFY_NET:-pr-verify-net}"
 
-IMAGE="" PHASE="" PATCH="" PRE="" EXCL="" SUITE_CFG="" PROBE_DENY_ARG="" CONTAINER_NAME="" TIER=0 TEST_CMD="pnpm -s test" BASE_SHA="unknown" HEAD_SHA="unknown" PRISTINE=0
+IMAGE="" PHASE="" PATCH="" PRE="" EXCL="" SUITE_CFG="" PROBE_DENY_ARG="" CONTAINER_NAME="" CPUS=2 TIER=0 TEST_CMD="pnpm -s test" BASE_SHA="unknown" HEAD_SHA="unknown" PRISTINE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --image) IMAGE="$2"; shift 2;;
@@ -27,13 +27,15 @@ while [ $# -gt 0 ]; do
     --base-sha) BASE_SHA="$2"; shift 2;;
     --head-sha) HEAD_SHA="$2"; shift 2;;
     --container-name) CONTAINER_NAME="$2"; shift 2;;
+    --cpus) CPUS="$2"; shift 2;;
     *) echo "unknown arg: $1" >&2; exit 2;;
   esac
 done
 [ -n "$IMAGE" ] && [ -n "$PHASE" ] || {
-  echo "usage: sandbox-run.sh --image IMG --phase apply-check|repro|red|green|compile|build|baseline|regress [--patch F | --pristine] [--pre-patch F] [--exclude-file F] [--suite-config F] [--probe-deny LIST] [--tier 0|1] [--test-cmd C] [--base-sha S] [--head-sha S] [--container-name N]" >&2
+  echo "usage: sandbox-run.sh --image IMG --phase apply-check|repro|red|green|compile|build|baseline|regress [--patch F | --pristine] [--pre-patch F] [--cpus N] [--exclude-file F] [--suite-config F] [--probe-deny LIST] [--tier 0|1] [--test-cmd C] [--base-sha S] [--head-sha S] [--container-name N]" >&2
   exit 2; }
 case "$PHASE" in apply-check|repro|red|green|compile|build|baseline|regress) ;; *) echo "bad --phase: $PHASE" >&2; exit 2;; esac
+case "$CPUS" in ''|*[!0-9]*|0) echo "bad --cpus: $CPUS (a positive whole number)" >&2; exit 2;; esac
 # apply-check, green, compile, and build require a patch onto the base tree.
 # red takes one optionally — the test-only hunks, so it can run a test the
 # diff itself adds — and runs unpatched when omitted. repro always runs
@@ -165,7 +167,7 @@ if [ -n "$CONTAINER_NAME" ]; then
 fi
 docker run --rm "${name_args[@]+"${name_args[@]}"}" --network "$NET" \
   --cap-drop ALL --security-opt no-new-privileges:true \
-  --pids-limit "$PIDS" --memory "$MEM" --cpus 2 \
+  --pids-limit "$PIDS" --memory "$MEM" --cpus "$CPUS" \
   "${env_args[@]}" \
   -v "$HERE/boot-probe.sh:/boot-probe.sh:ro" \
   -v "$HERE/run-phase.sh:/run-phase.sh:ro" \
