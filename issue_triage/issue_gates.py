@@ -231,6 +231,11 @@ def fix_proof_bar(result: dict) -> tuple[str | None, str]:
         block = gates.related_tests_block(related, "the fix")
         if block:
             return "fix-unproven", block
+    suite = proof.get("suite")
+    if suite and suite.get("confirmed"):
+        named = ", ".join((suite.get("new_failures") or [])[:5]) or "files the runner did not name"
+        return "fix-unproven", ("the fix makes the full suite fail beyond the tree's own "
+                                f"failures: {named}")
     reviews = {r.get("lens"): r for r in result.get("reviews") or []}
     for lens in REVIEW_LENSES:
         review = reviews.get(lens)

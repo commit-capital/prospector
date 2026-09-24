@@ -381,6 +381,19 @@ def issue_fix_max_lines() -> int:
     return _positive_int("TRIAGE_ISSUE_FIX_MAX_LINES", 300)
 
 
+def sandbox_large_slots() -> int:
+    """How many large-class sandbox phases (6g each) this machine runs at once:
+    size it to the Docker VM's memory. One unless TRIAGE_SANDBOX_LARGE_SLOTS
+    says more."""
+    return _positive_int("TRIAGE_SANDBOX_LARGE_SLOTS", 1)
+
+
+def issue_fix_suite() -> bool:
+    """Whether the issue-fix lanes run the full suite over a fix that clears
+    their other checks. On unless TRIAGE_ISSUE_FIX_SUITE=0."""
+    return os.environ.get("TRIAGE_ISSUE_FIX_SUITE", "1") == "1"
+
+
 # Reject a malformed TRIAGE_FIX_AUTOPUSH while the process is still starting.
 # parse_fix_autopush exits on an unknown action, and that belongs at boot rather
 # than at whichever read happens to reach it first.

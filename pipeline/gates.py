@@ -218,6 +218,9 @@ SENTINEL_PATCH_CONFLICT = 30
 # the mount never matched what the host wrote, the file is corrupt, the disk is
 # full. A worker fault, never a verdict.
 SENTINEL_PATCH_UNREADABLE = 40
+# A suite phase whose tree's own test wrapper cannot derive the runner's plan:
+# the tree has no full suite this runner can run. Exited before any test does.
+SENTINEL_NO_PLAN = 50
 
 # Disposition precedence for a PR that belongs to several clusters: the most
 # blocking proposal wins (a close overrides a merge; needs-human overrides all).

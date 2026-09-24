@@ -921,21 +921,26 @@ def _stop_timed_out_phase(proc: subprocess.Popen[bytes], container: str,
     remove_container()
 
 
-# The phases the launcher runs at its large memory class (6g). Two of them at
-# once exhaust a 12 GB Docker VM and the kernel kills whichever is bigger, so
-# every large phase on this machine takes one host lock first, whichever
-# worker thread or orchestrator process is asking. The small phases (2g) run
-# unserialized.
+# The phases the launcher runs at its large memory class (6g). More of them at
+# once than the Docker VM's memory holds and the kernel kills whichever is
+# bigger, so every large phase on this machine takes one of
+# settings.sandbox_large_slots() host locks first, whichever worker thread or
+# orchestrator process is asking. The small phases (2g) run unserialized.
 LARGE_PHASES = frozenset({"compile", "build", "baseline", "regress"})
 _LARGE_LOCK_NAME = "sandbox-large.lock"
+
+
+def _large_lock_name(slot: int) -> str:
+    return _LARGE_LOCK_NAME if slot == 0 else f"sandbox-large-{slot}.lock"
 # How long a waiter stays quiet before saying what it is waiting for.
 _LOCK_WAIT_LOG_SECONDS = 30.0
 
 
 class _LargePhaseLock:
-    """An exclusive advisory lock on `<scratch>/sandbox-large.lock`, held for
-    the life of one large phase container. Blocking: the phase waits its turn
-    rather than racing another for the VM's memory."""
+    """An exclusive advisory lock on one of the large-phase slot files under
+    `<scratch>`, held for the life of one large phase container. Blocking: the
+    phase waits for a free slot rather than racing another for the VM's
+    memory."""
 
     def __init__(self, phase: str) -> None:
         self.phase = phase
@@ -945,13 +950,19 @@ class _LargePhaseLock:
         if self.phase not in LARGE_PHASES:
             return self
         SCRATCH.mkdir(parents=True, exist_ok=True)
-        self._fh = open(SCRATCH / _LARGE_LOCK_NAME, "a+")
+        slots = settings.sandbox_large_slots()
         waited = 0.0
-        while True:
-            try:
-                fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        while self._fh is None:
+            for slot in range(slots):
+                fh = open(SCRATCH / _large_lock_name(slot), "a+")
+                try:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    fh.close()
+                    continue
+                self._fh = fh
                 break
-            except BlockingIOError:
+            else:
                 if waited and waited % _LOCK_WAIT_LOG_SECONDS < 0.5:
                     print(f"[sandbox] {self.phase} phase waiting {waited:.0f}s for another "
                           f"large phase to finish", file=sys.stderr, flush=True)
@@ -1046,7 +1057,7 @@ def stop_orphaned_sandboxes() -> list[str]:
 def run_phase(phase: str, image: str, *, patch: Path | None = None, tier: int = 0,
               test_cmd: str = "pnpm -s test", base_sha: str = "",
               head_sha: str = "", exclude_file: Path | None = None,
-              suite_config: Path | None = None,
+              suite_config: Path | None = None, pre_patch: Path | None = None,
               timeout: int = PHASE_TIMEOUT_SECONDS, pristine: bool = False,
               tail_bytes: int = OUTPUT_TAIL_BYTES) -> tuple[int, str]:
     """Run ONE sandbox phase and return (exit_code, captured_output_tail).
@@ -1064,6 +1075,8 @@ def run_phase(phase: str, image: str, *, patch: Path | None = None, tier: int = 
 
     `suite_config` is the host-written full-suite contract JSON (the profile's
     verify.suite), mounted read-only for the baseline/regress phases.
+    `pre_patch`, for those phases alone, carries the base to the tree the
+    suite's plan and baseline are taken over; it applies before the plan.
 
     The launcher gets launcher_env(), never os.environ. A phase in
     LARGE_PHASES holds the host's large-phase lock from launch to exit."""
@@ -1071,13 +1084,14 @@ def run_phase(phase: str, image: str, *, patch: Path | None = None, tier: int = 
         return _run_phase_locked(phase, image, patch=patch, tier=tier, test_cmd=test_cmd,
                                  base_sha=base_sha, head_sha=head_sha,
                                  exclude_file=exclude_file, suite_config=suite_config,
+                                 pre_patch=pre_patch,
                                  timeout=timeout, pristine=pristine, tail_bytes=tail_bytes)
 
 
 def _run_phase_locked(phase: str, image: str, *, patch: Path | None, tier: int,
                       test_cmd: str, base_sha: str, head_sha: str,
                       exclude_file: Path | None, suite_config: Path | None,
-                      timeout: int, pristine: bool,
+                      timeout: int, pristine: bool, pre_patch: Path | None = None,
                       tail_bytes: int = OUTPUT_TAIL_BYTES) -> tuple[int, str]:
     container = container_name()
     argv = [str(SANDBOX / "sandbox-run.sh"), "--phase", phase, "--image", image,
@@ -1086,6 +1100,8 @@ def _run_phase_locked(phase: str, image: str, *, patch: Path | None, tier: int,
             "--container-name", container]
     if patch is not None:
         argv += ["--patch", str(patch)]
+    if pre_patch is not None:
+        argv += ["--pre-patch", str(pre_patch)]
     if pristine:
         argv += ["--pristine"]
     if exclude_file is not None:
@@ -1452,11 +1468,10 @@ def verify_pr(rec: Pr, image: str, base: str, tier: int,
               suite_config: Path | None = None,
               timeout: int = PHASE_TIMEOUT_SECONDS,
               pristine: bool = False) -> tuple[int, str]:
-        extra = {"pristine": True} if pristine else {}
         rc, tail = run_phase(name, image, tier=tier, base_sha=base, head_sha=head,
                              test_cmd=test_cmd, patch=patch,
                              exclude_file=exclude_file, suite_config=suite_config,
-                             timeout=timeout, **extra)
+                             timeout=timeout, pristine=pristine)
         if rc == gates.SENTINEL_PROBE_FAIL:
             raise ProbeFailure(
                 f"sandbox isolation could not be proven (PR #{rec.n}, phase {name}) — "

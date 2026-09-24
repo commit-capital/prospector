@@ -159,3 +159,19 @@ def test_a_fix_with_no_test_of_its_own_rests_on_the_host_s_other_checks(solo):
 def test_the_clone_is_removed_afterward(solo):
     solo["run"]()
     assert not (solo["workdir"] / "solo").exists()
+
+
+def test_a_solo_fix_that_breaks_the_full_suite_ends_fix_unproven(solo, monkeypatch):
+    monkeypatch.setattr(fix_lane, "suite_proof", lambda spec, patch, label: {
+        "exit": 20, "exit_confirm": 20, "confirmed": True, "flake": False, "excluded": 0,
+        "new_failures": ["src/old.test.ts"]})
+    res = solo["run"]()
+    assert res.ending == "fix-unproven" and "src/old.test.ts" in res.detail
+
+
+def test_a_solo_suite_fault_is_a_sandbox_fault(solo, monkeypatch):
+    def fault(spec, patch, label):
+        raise prove.SuiteFault("no trailer")
+
+    monkeypatch.setattr(fix_lane, "suite_proof", fault)
+    assert solo["run"]().ending == "sandbox"

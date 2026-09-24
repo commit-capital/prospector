@@ -1,12 +1,14 @@
 """Host-observed proof on this machine's pinned base: a test patch that fails
-(red), a test-plus-fix patch that passes (green), and a command over a patched
-tree. Every run uses the image the verify pin names, so a caller never builds
-one. The exits are the verdict; the captured output is evidence. A sandbox
-whose isolation probe fails lands in `run_command`'s record as its exit and
-raises `ProbeFailure` out of the legs."""
+(red), a test-plus-fix patch that passes (green), a command over a patched
+tree, and the full suite over a patched tree against the same tree's own
+failing set (`suite_regress`). Every run uses the image the verify pin names,
+so a caller never builds one. The exits are the verdict; the captured output is
+evidence. A sandbox whose isolation probe fails lands in `run_command`'s record
+as its exit and raises `ProbeFailure` out of the legs."""
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import re
@@ -277,3 +279,111 @@ def _legs(base: PinnedBase, phase: Literal["red", "green"], want: int, *,
     confirm = leg()[0] if first == want else None
     return Legs(exit=first, exit_confirm=confirm, output_tail=tail,
                 duration_s=round(time.monotonic() - t0, 1))
+
+
+class SuiteFault(RuntimeError):
+    """A full-suite run did not complete: a sandbox fault, a timeout, a
+    pre-patch that does not apply, or a report the runner did not account for.
+    The machine's condition, never a verdict on a fix."""
+
+
+class SuiteUnplannable(SuiteFault):
+    """The tree's own test wrapper cannot derive the suite runner's plan: the
+    tree has no full suite this runner can run."""
+
+
+# How much of a suite run's output a caller keeps: the runner prints its
+# end-of-run trailer last, and a long failing set must fit inside the cap.
+SUITE_TAIL_BYTES = 64 * 1024
+
+
+def _tree_key(base: PinnedBase, pre_patch: str | None) -> str:
+    """The suite tree's identity: the base, and the pre-patch carried over it."""
+    pre = hashlib.sha256((pre_patch or "").encode()).hexdigest()[:16]
+    return f"{base.sha[:12]}-{pre}"
+
+
+def _pre_patch_file(pre_patch: str | None, label: str) -> Path | None:
+    return compose(label, pre_patch) if pre_patch else None
+
+
+def suite_baseline(base: PinnedBase, pre_patch: str | None, *, label: str) -> list[str]:
+    """The full suite's own failing files over `base` with `pre_patch` applied,
+    cached under the verify scratch by that tree, so each tree's suite runs
+    once. Raises SuiteFault when the run does not complete, and RuntimeError
+    when the profile carries no suite contract."""
+    _check_label(label)
+    cache = verify_driver.SCRATCH / "suite-baseline" / f"{_tree_key(base, pre_patch)}.json"
+    try:
+        cached = json.loads(cache.read_text())
+        if isinstance(cached, list) and all(isinstance(f, str) for f in cached):
+            return cached
+    except (OSError, ValueError):
+        pass
+    rc, tail = verify_driver.run_phase(
+        "baseline", base.image, tier=base.tier, base_sha=base.sha, test_cmd="true",
+        suite_config=verify_driver.write_suite_config(),
+        pre_patch=_pre_patch_file(pre_patch, label),
+        timeout=verify_driver.SUITE_TIMEOUT_SECONDS, tail_bytes=SUITE_TAIL_BYTES)
+    if rc == gates.SENTINEL_NO_PLAN:
+        raise SuiteUnplannable(f"this tree's test wrapper cannot derive the suite plan: "
+                               f"{verify_driver.error_excerpt(tail)}")
+    trailer = verify_driver.parse_suite_trailer(tail)
+    failed = (trailer or {}).get("failed")
+    if (rc != gates.SENTINEL_PASS or trailer is None or trailer.get("mode") != "baseline"
+            or not isinstance(failed, list) or not all(isinstance(f, str) for f in failed)):
+        raise SuiteFault(f"the suite baseline did not complete (exit {rc}): "
+                         f"{verify_driver.error_excerpt(tail)}")
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text(json.dumps(sorted(failed)))
+    return sorted(failed)
+
+
+class SuiteRegress(TypedDict):
+    exit: int
+    exit_confirm: int | None
+    confirmed: bool
+    flake: bool
+    excluded: int
+    new_failures: list[str]
+
+
+def suite_regress(base: PinnedBase, pre_patch: str | None, patch: str, *,
+                  label: str) -> SuiteRegress:
+    """The full suite over `base` + `pre_patch` + `patch`, every file its own
+    baseline already fails excluded. A failing run is confirmed by a second
+    container; a second run that passes reads as a flake. `confirmed` is the
+    verdict: the patch makes the suite fail beyond what the tree already
+    failed. `new_failures` names the files the runner reported, as evidence.
+    Raises SuiteFault when either run does not complete."""
+    baseline = suite_baseline(base, pre_patch, label=label)
+    exclude = verify_driver.SCRATCH / "suite-exclude" / f"{_tree_key(base, pre_patch)}.json"
+    exclude.parent.mkdir(parents=True, exist_ok=True)
+    exclude.write_text(json.dumps(baseline))
+    patch_file = compose(label, patch)
+
+    def run() -> tuple[int, str]:
+        rc, tail = verify_driver.run_phase(
+            "regress", base.image, patch=patch_file, tier=base.tier, base_sha=base.sha,
+            test_cmd="true", exclude_file=exclude,
+            suite_config=verify_driver.write_suite_config(),
+            pre_patch=_pre_patch_file(pre_patch, label),
+            timeout=verify_driver.SUITE_TIMEOUT_SECONDS, tail_bytes=SUITE_TAIL_BYTES)
+        if rc not in (gates.SENTINEL_PASS, gates.SENTINEL_TEST_FAIL):
+            raise SuiteFault(f"the suite run did not complete (exit {rc}): "
+                             f"{verify_driver.error_excerpt(tail)}")
+        return rc, tail
+
+    first, tail = run()
+    out: SuiteRegress = {"exit": first, "exit_confirm": None, "confirmed": False,
+                         "flake": False, "excluded": len(baseline), "new_failures": []}
+    if first == gates.SENTINEL_TEST_FAIL:
+        out["new_failures"] = verify_driver._advisory_failures(tail)
+        second, tail2 = run()
+        out["exit_confirm"] = second
+        out["confirmed"] = second == gates.SENTINEL_TEST_FAIL
+        out["flake"] = second == gates.SENTINEL_PASS
+        if out["confirmed"]:
+            out["new_failures"] = sorted(set(out["new_failures"])
+                                         | set(verify_driver._advisory_failures(tail2)))
+    return out

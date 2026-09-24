@@ -16,6 +16,7 @@ SENTINEL_PROBE_FAIL=10
 SENTINEL_TEST_FAIL=20
 SENTINEL_PATCH_CONFLICT=30
 SENTINEL_PATCH_UNREADABLE=40
+SENTINEL_NO_PLAN=50
 
 PHASE="${PHASE:?PHASE is required}"
 TEST_CMD="${TEST_CMD:-pnpm -s test}"
@@ -24,6 +25,10 @@ PATCH_FILE="${PATCH_FILE:-}"
 # container a stale or empty view of a file the host just wrote; the apply
 # waits for the mount to match and refuses to read anything else as the patch.
 PATCH_SHA256="${PATCH_SHA256:-}"
+# The suite phases' pre-patch: the tree the plan and the baseline are taken
+# over (a history replay's pre-fix tree), applied before the plan is derived.
+PRE_PATCH_FILE="${PRE_PATCH_FILE:-}"
+PRE_PATCH_SHA256="${PRE_PATCH_SHA256:-}"
 EXCLUDE_FILE="${EXCLUDE_FILE:-}"
 SRC=/work/src
 
@@ -32,27 +37,28 @@ bash /boot-probe.sh >&2 || exit "$SENTINEL_PROBE_FAIL"
 
 cd "$SRC" || exit 1
 
-# core.checkStat=minimal defeats the racy-git false mismatch when an index written
-# by host git is re-read under Linux; structural to macOS+Colima.
-apply_patch() {
-  [ -n "$PATCH_FILE" ] || return 0
-  # A PATCH_FILE that is set but not a readable regular file is fatal: exit 1
-  # is not an accepted sentinel, so the host holds on it as an infrastructure
-  # failure.
-  [ -f "$PATCH_FILE" ] && [ -r "$PATCH_FILE" ] || {
-    echo "PATCH_FILE is set but not a readable file: $PATCH_FILE" >&2
+# Apply the mounted patch file $1 whose host sha256 is $2 ($3 names it in
+# messages). core.checkStat=minimal defeats the racy-git false mismatch when an
+# index written by host git is re-read under Linux; structural to macOS+Colima.
+apply_file() {
+  local file="$1" sha="$2" name="$3"
+  [ -n "$file" ] || return 0
+  # A file that is set but not a readable regular file is fatal: exit 1 is not
+  # an accepted sentinel, so the host holds on it as an infrastructure failure.
+  [ -f "$file" ] && [ -r "$file" ] || {
+    echo "$name is set but not a readable file: $file" >&2
     exit 1
   }
-  if [ -n "$PATCH_SHA256" ]; then
+  if [ -n "$sha" ]; then
     local tries=0 got=""
     while :; do
-      got="$(sha256sum "$PATCH_FILE" | cut -d' ' -f1)"
-      [ "$got" = "$PATCH_SHA256" ] && break
+      got="$(sha256sum "$file" | cut -d' ' -f1)"
+      [ "$got" = "$sha" ] && break
       tries=$((tries + 1))
       if [ "$tries" -ge 20 ]; then
         echo "patch mount does not match what the host wrote after ${tries} reads:" \
-             "expected sha256 $PATCH_SHA256, got $got" \
-             "($(wc -c < "$PATCH_FILE") bytes) — the worker's Docker file sharing is not coherent" >&2
+             "expected sha256 $sha, got $got" \
+             "($(wc -c < "$file") bytes) — the worker's Docker file sharing is not coherent" >&2
         exit "$SENTINEL_PATCH_UNREADABLE"
       fi
       sleep 0.25
@@ -60,9 +66,9 @@ apply_patch() {
   fi
   # An empty patch is nothing to apply: a composed tree that already equals the
   # base leaves no diff, and git apply reads an empty file as a malformed patch.
-  [ -s "$PATCH_FILE" ] || return 0
+  [ -s "$file" ] || return 0
   local err rc
-  err="$(git -c core.checkStat=minimal apply --3way "$PATCH_FILE" 2>&1)"; rc=$?
+  err="$(git -c core.checkStat=minimal apply --3way "$file" 2>&1)"; rc=$?
   # A --3way apply reports every file it touched; only the rest is kept in the
   # output tail the host reads, so the error lines survive its size cap.
   printf '%s\n' "$err" \
@@ -80,6 +86,14 @@ apply_patch() {
   echo "the patch could not be applied for a reason that is not the patch's:" \
        "$(printf '%s' "$err" | grep -m1 -E '^(error|fatal):' || printf '%s' "$err" | tail -n 1)" >&2
   exit "$SENTINEL_PATCH_UNREADABLE"
+}
+
+apply_patch() {
+  apply_file "$PATCH_FILE" "$PATCH_SHA256" PATCH_FILE
+}
+
+apply_pre_patch() {
+  apply_file "$PRE_PATCH_FILE" "$PRE_PATCH_SHA256" PRE_PATCH_FILE
 }
 
 # Run the command string inside a subshell. The parentheses are load-bearing: an
@@ -137,19 +151,23 @@ case "$PHASE" in
     [ $? -eq 0 ] && exit 0 || exit "$SENTINEL_TEST_FAIL"
     ;;
   baseline)
-    # The pinned base's own full-suite run: the failing set it reports is the
-    # regress phase's exclusion list. Failures are data — the phase fails only
-    # on infrastructure, and the host refuses to pin on that.
-    node /verify-suite.mjs plan > /tmp/verify-plan.json || exit 1
+    # The base's own full-suite run — over the pre-patch's tree when one is
+    # mounted: the failing set it reports is the regress phase's exclusion
+    # list. Failures are data — the phase fails only on infrastructure, and the
+    # host refuses to pin on that.
+    apply_pre_patch || exit "$SENTINEL_PATCH_CONFLICT"
+    node /verify-suite.mjs plan > /tmp/verify-plan.json || exit "$SENTINEL_NO_PLAN"
     node /verify-suite.mjs run --plan /tmp/verify-plan.json --mode baseline
     exit $?
     ;;
   regress)
-    # The plan is derived from the pristine tree BEFORE the patch applies, so a
-    # PR cannot influence which tests the suite runs. A conflict here
-    # contradicts the already-passed apply-check; the host reads the 30 as
-    # infrastructure for this phase, not as needs-rebase.
-    node /verify-suite.mjs plan > /tmp/verify-plan.json || exit 1
+    # The plan is derived from the pristine tree — the pre-patch's, when one is
+    # mounted — BEFORE the patch applies, so a PR cannot influence which tests
+    # the suite runs. A conflict here contradicts the already-passed
+    # apply-check; the host reads the 30 as infrastructure for this phase, not
+    # as needs-rebase.
+    apply_pre_patch || exit "$SENTINEL_PATCH_CONFLICT"
+    node /verify-suite.mjs plan > /tmp/verify-plan.json || exit "$SENTINEL_NO_PLAN"
     apply_patch || exit "$SENTINEL_PATCH_CONFLICT"
     [ -n "$EXCLUDE_FILE" ] || { echo "regress requires EXCLUDE_FILE" >&2; exit 1; }
     node /verify-suite.mjs run --plan /tmp/verify-plan.json --mode regress \
