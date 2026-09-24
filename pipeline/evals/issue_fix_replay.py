@@ -854,13 +854,8 @@ def _judge_contract(instance: Instance, failing: list[str] | None, failures: str
         cache_dir=settings.verify_scratch() / "replay" / "oracle-contract")
 
 
-def _run_lane(*, issue: int, title: str, body: str, base: prove.PinnedBase,
-              pre_patch: str, workdir: Path) -> LaneRun:
-    """The lane entry point `run_instance` injects: one fix run on the pre-fix
-    tree, with each stage it announces appended to `steps.jsonl` under the
-    instance's directory. The lane package is imported here so the module top
-    stays lane-free."""
-    from issue_triage import fix_lane
+def _step_log(workdir: Path) -> Callable[[str], None]:
+    """An `on_step` that appends each stage and its time to `steps.jsonl`."""
     workdir.mkdir(parents=True, exist_ok=True)
     steps = workdir / "steps.jsonl"
     started = time.monotonic()
@@ -869,11 +864,30 @@ def _run_lane(*, issue: int, title: str, body: str, base: prove.PinnedBase,
         with steps.open("a") as fh:
             fh.write(json.dumps({"step": step, "at_s": round(time.monotonic() - started, 1)})
                      + "\n")
+    return on_step
 
+
+def _run_lane(*, issue: int, title: str, body: str, base: prove.PinnedBase,
+              pre_patch: str, workdir: Path) -> LaneRun:
+    """The staged lane's entry point `run_instance` injects: one fix run on the
+    pre-fix tree, its stages logged to `steps.jsonl` under the instance's
+    directory. The lane package is imported here so the module top stays
+    lane-free."""
+    from issue_triage import fix_lane
     return fix_lane.run(
         fix_lane.LaneSpec(issue=issue, title=title, body=body, base=base,
                           action="fix", pre_patch=pre_patch),
-        workdir=workdir, on_step=on_step)
+        workdir=workdir, on_step=_step_log(workdir))
+
+
+def _run_solo(*, issue: int, title: str, body: str, base: prove.PinnedBase,
+              pre_patch: str, workdir: Path) -> LaneRun:
+    """The one-agent lane's entry point, alike in every other way."""
+    from issue_triage import fix_lane, solo_lane
+    return solo_lane.run(
+        fix_lane.LaneSpec(issue=issue, title=title, body=body, base=base,
+                          action="fix", pre_patch=pre_patch),
+        workdir=workdir, on_step=_step_log(workdir))
 
 
 # -- Screening the corpus into the pin's dependency group ---------------------
