@@ -119,3 +119,16 @@ def test_fewer_usable_samples_than_the_quorum_is_unknown(tmp_path) -> None:
                                RuntimeError("b")])
     assert out["contract"] == "unknown"
     assert "1 of 3" in out["reason"]
+
+
+def test_the_prompt_carries_how_each_test_failed(tmp_path) -> None:
+    prompts: list[str] = []
+
+    def run(prompt: str) -> str:
+        prompts.append(prompt)
+        return _answer("beyond", "allowed")
+
+    oracle_contract.judge(title="t", body="b", test_hunks="+it()", failing=_FAILING,
+                          failures="AssertionError: expected 400 to be 422",
+                          cache_dir=tmp_path / "cache", run=run)
+    assert "expected 400 to be 422" in prompts[0]
