@@ -2,6 +2,7 @@
 which phases run, over which patch, and how their exits read."""
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -378,3 +379,108 @@ def test_flatten_skips_a_patch_part_that_holds_no_text(flatten_scratch, tmp_path
     text = prove.flatten(base, edit, "", "   \n", label="issue-13").read_text()
 
     assert "line 4 edited" in text
+
+
+# --- the full suite ------------------------------------------------------------
+
+
+def _trailer(mode: str, failed: list[str]) -> str:
+    return ("suite output\n===VERIFY-SUITE:BEGIN===\n"
+            + json.dumps({"mode": mode, "failed": failed}) + "\n===VERIFY-SUITE:END===\n")
+
+
+@pytest.fixture
+def suite(monkeypatch, tmp_path):
+    """run_phase answering each call from a queue of (exit, tail); the calls land
+    in the returned list."""
+    monkeypatch.setattr(vd, "SCRATCH", tmp_path / "scratch")
+    monkeypatch.setattr(vd, "write_suite_config", lambda: tmp_path / "suite-config.json")
+    calls: list[dict] = []
+    answers: list[tuple[int, str]] = []
+
+    def fake(phase, image, **kw):
+        calls.append({"phase": phase, **kw})
+        return answers.pop(0)
+
+    monkeypatch.setattr(vd, "run_phase", fake)
+    return calls, answers
+
+
+def test_a_suite_baseline_runs_once_per_tree(suite):
+    calls, answers = suite
+    answers[:] = [(0, _trailer("baseline", ["b.test.ts", "a.test.ts"]))]
+    assert prove.suite_baseline(BASE, "PRE", label="l") == ["a.test.ts", "b.test.ts"]
+    assert prove.suite_baseline(BASE, "PRE", label="l") == ["a.test.ts", "b.test.ts"]
+    assert len(calls) == 1
+    assert calls[0]["phase"] == "baseline"
+    assert Path(calls[0]["pre_patch"]).read_text() == "PRE\n"
+
+
+def test_another_pre_patch_is_another_tree(suite):
+    calls, answers = suite
+    answers[:] = [(0, _trailer("baseline", [])), (0, _trailer("baseline", ["x.test.ts"]))]
+    assert prove.suite_baseline(BASE, "PRE-1", label="l") == []
+    assert prove.suite_baseline(BASE, "PRE-2", label="l") == ["x.test.ts"]
+    assert len(calls) == 2
+
+
+def test_a_base_with_no_pre_patch_mounts_none(suite):
+    calls, answers = suite
+    answers[:] = [(0, _trailer("baseline", []))]
+    prove.suite_baseline(BASE, None, label="l")
+    assert calls[0]["pre_patch"] is None
+
+
+@pytest.mark.parametrize("answer", [(1, "infra"), (0, "no trailer"),
+                                    (0, _trailer("regress", []))])
+def test_a_baseline_that_does_not_complete_is_a_fault_and_is_not_cached(suite, answer):
+    calls, answers = suite
+    answers[:] = [answer]
+    with pytest.raises(prove.SuiteFault):
+        prove.suite_baseline(BASE, "PRE", label="l")
+    answers[:] = [(0, _trailer("baseline", []))]
+    assert prove.suite_baseline(BASE, "PRE", label="l") == []
+
+
+def test_a_regress_run_excludes_the_tree_s_own_failures(suite):
+    calls, answers = suite
+    answers[:] = [(0, _trailer("baseline", ["old.test.ts"])), (0, _trailer("regress", []))]
+    out = prove.suite_regress(BASE, "PRE", FIX, label="l")
+    assert out == {"exit": 0, "exit_confirm": None, "confirmed": False, "flake": False,
+                   "excluded": 1, "new_failures": []}
+    run = calls[1]
+    assert run["phase"] == "regress"
+    assert json.loads(Path(run["exclude_file"]).read_text()) == ["old.test.ts"]
+    assert Path(run["patch"]).read_text().startswith(FIX)
+    assert Path(run["pre_patch"]).read_text() == "PRE\n"
+
+
+def test_a_regression_is_confirmed_by_a_second_container(suite):
+    calls, answers = suite
+    answers[:] = [(0, _trailer("baseline", [])), (20, _trailer("regress", ["new.test.ts"])),
+                  (20, _trailer("regress", ["new.test.ts", "two.test.ts"]))]
+    out = prove.suite_regress(BASE, None, FIX, label="l")
+    assert out["confirmed"] is True and out["flake"] is False
+    assert out["new_failures"] == ["new.test.ts", "two.test.ts"]
+
+
+def test_a_failure_the_second_container_does_not_repeat_is_a_flake(suite):
+    calls, answers = suite
+    answers[:] = [(0, _trailer("baseline", [])), (20, _trailer("regress", ["x.test.ts"])),
+                  (0, _trailer("regress", []))]
+    out = prove.suite_regress(BASE, None, FIX, label="l")
+    assert (out["confirmed"], out["flake"]) == (False, True)
+
+
+def test_a_regress_run_that_does_not_complete_is_a_fault(suite):
+    calls, answers = suite
+    answers[:] = [(0, _trailer("baseline", [])), (124, "timed out")]
+    with pytest.raises(prove.SuiteFault, match="exit 124"):
+        prove.suite_regress(BASE, None, FIX, label="l")
+
+
+def test_a_tree_whose_wrapper_cannot_plan_raises_unplannable(suite):
+    calls, answers = suite
+    answers[:] = [(gates.SENTINEL_NO_PLAN, "[verify-suite] --dry-run failed")]
+    with pytest.raises(prove.SuiteUnplannable):
+        prove.suite_baseline(BASE, "PRE", label="l")

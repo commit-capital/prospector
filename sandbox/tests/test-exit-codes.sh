@@ -148,5 +148,11 @@ check "test-cmd 'exit 30' cannot forge a patch conflict on build" 20 \
 # of a command that exited nonzero, which is an accurate account of `exit 20`.
 check "test-cmd 'exit 20' is mapped, not forged"         20 "$(run --phase red --test-cmd 'exit 20')"
 
+# --pre-patch belongs to the suite phases alone.
+check "--pre-patch on red = 2 (launcher usage error)" 2 \
+  "$(run --phase red --pre-patch "$CTX/fix.patch")"
+check "--pre-patch on green = 2 (launcher usage error)" 2 \
+  "$(run --phase green --patch "$CTX/fix.patch" --pre-patch "$CTX/fix.patch")"
+
 [ "$fail" = 0 ] && echo "exit-code contract ok"
 exit $fail

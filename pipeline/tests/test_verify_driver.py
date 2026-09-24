@@ -1049,6 +1049,13 @@ class TestRunPhase:
         assert "--exclude-file" in argv
         assert argv[argv.index("--exclude-file") + 1] == "/tmp/x.json"
 
+    def test_passes_the_pre_patch_when_given(self, monkeypatch):
+        fake = _FakePopen(output=b"ok", returncode=0)
+        monkeypatch.setattr(vd.subprocess, "Popen", fake)
+        vd.run_phase("baseline", "img:t1", pre_patch=Path("/tmp/pre.patch"))
+        argv = fake.seen["argv"]
+        assert argv[argv.index("--pre-patch") + 1] == "/tmp/pre.patch"
+
     def test_omits_exclude_file_when_not_given(self, monkeypatch):
         fake = _FakePopen(output=b"ok", returncode=0)
         monkeypatch.setattr(vd.subprocess, "Popen", fake)
@@ -2399,7 +2406,7 @@ class TestVerifyPrAuthoredLane:
 
         def fake_run_phase(name, image, *, tier, base_sha, head_sha, test_cmd,
                            suite_config=None,
-                           patch=None, exclude_file=None, timeout=0):
+                           patch=None, exclude_file=None, timeout=0, pristine=False):
             calls.append((name, test_cmd, str(patch) if patch else None))
             if name == "apply-check":
                 return 0, ""
@@ -2444,7 +2451,7 @@ class TestVerifyPrAuthoredLane:
 
         def fake_run_phase(name, image, *, tier, base_sha, head_sha, test_cmd,
                            suite_config=None,
-                           patch=None, exclude_file=None, timeout=0):
+                           patch=None, exclude_file=None, timeout=0, pristine=False):
             calls.append(name)
             if name == "apply-check":
                 return 0, ""
@@ -2487,7 +2494,7 @@ class TestVerifyPrAuthoredLane:
 
         def fake_run_phase(name, image, *, tier, base_sha, head_sha, test_cmd,
                            suite_config=None,
-                           patch=None, exclude_file=None, timeout=0):
+                           patch=None, exclude_file=None, timeout=0, pristine=False):
             calls.append((name, test_cmd, str(patch) if patch else None))
             if name == "apply-check":
                 return 0, ""
@@ -2654,6 +2661,18 @@ class TestLargePhaseLock:
         fcntl.flock(other.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         other.close()
 
+    def test_a_second_slot_lets_two_large_phases_run_at_once(self, monkeypatch, tmp_path):
+        import fcntl
+        monkeypatch.setattr(vd, "SCRATCH", tmp_path)
+        monkeypatch.setattr(vd, "stop_orphaned_sandboxes", lambda: [])
+        monkeypatch.setenv("TRIAGE_SANDBOX_LARGE_SLOTS", "2")
+        with vd._LargePhaseLock("compile"), vd._LargePhaseLock("regress"):
+            for name in (vd._large_lock_name(0), vd._large_lock_name(1)):
+                other = open(tmp_path / name, "a+")
+                with pytest.raises(BlockingIOError):
+                    fcntl.flock(other.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                other.close()
+
     def test_small_phases_take_no_lock(self, monkeypatch, tmp_path):
         monkeypatch.setattr(vd, "SCRATCH", tmp_path)
         with vd._LargePhaseLock("red"):
@@ -2771,3 +2790,4 @@ def test_error_excerpt_skips_the_package_runner_sign_off():
             " ELIFECYCLE  Command failed with exit code 127.\n"
             "Exit status 1\n")
     assert vd.error_excerpt(tail) == "sh: cargo: not found"
+

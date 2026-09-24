@@ -721,3 +721,58 @@ def test_the_authored_tests_travel_as_a_composed_patch_of_their_own_text(lane):
     authored = lane.calls["compose"][0]
     assert len(authored) == 1
     assert "src/repro.test.ts" in authored[0] and "src/keep.test.ts" in authored[0]
+
+
+# --- the full suite ------------------------------------------------------------
+
+
+def _suite(confirmed: bool, flake: bool = False) -> dict:
+    return {"exit": 20 if confirmed or flake else 0, "exit_confirm": 20 if confirmed else None,
+            "confirmed": confirmed, "flake": flake, "excluded": 3,
+            "new_failures": ["server/src/__tests__/other.test.ts"] if confirmed else []}
+
+
+def test_a_fix_that_breaks_the_full_suite_ends_fix_unproven(lane, monkeypatch):
+    seen: list = []
+
+    def suite_proof(spec, patch, label):
+        seen.append(patch)
+        return _suite(confirmed=True)
+
+    monkeypatch.setattr(fix_lane, "suite_proof", suite_proof)
+    res = lane.run()
+    assert res.ending == "fix-unproven" and res.fault is False
+    assert "other.test.ts" in res.detail
+    assert "src/x.ts" in seen[0] and "src/repro.test.ts" in seen[0]
+
+
+def test_a_suite_flake_does_not_sink_the_fix(lane, monkeypatch):
+    monkeypatch.setattr(fix_lane, "suite_proof", lambda spec, patch, label: _suite(False, True))
+    res = lane.run()
+    assert res.ending == "fixed"
+    assert res.result["proof"]["suite"]["flake"] is True
+
+
+def test_a_suite_that_cannot_complete_is_a_sandbox_fault(lane, monkeypatch):
+    def fault(spec, patch, label):
+        raise prove.SuiteFault("the suite run did not complete (exit 124)")
+
+    monkeypatch.setattr(fix_lane, "suite_proof", fault)
+    res = lane.run()
+    assert res.ending == "sandbox" and res.fault is True
+
+
+def test_the_suite_is_skipped_where_the_profile_names_no_suite(lane):
+    res = lane.run()
+    assert res.ending == "fixed"
+    assert "suite" not in res.result["proof"]
+
+
+def test_a_tree_that_cannot_plan_a_suite_records_the_skip(lane, monkeypatch):
+    monkeypatch.setattr(fix_lane, "suite_proof",
+                        lambda spec, patch, label: "this tree's suite wrapper cannot "
+                                                         "derive a plan")
+    res = lane.run()
+    assert res.ending == "fixed"
+    assert res.result["proof"]["suite"] == {
+        "skipped": "this tree's suite wrapper cannot derive a plan"}

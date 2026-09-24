@@ -11,12 +11,13 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NET="${PR_VERIFY_NET:-pr-verify-net}"
 
-IMAGE="" PHASE="" PATCH="" EXCL="" SUITE_CFG="" PROBE_DENY_ARG="" CONTAINER_NAME="" TIER=0 TEST_CMD="pnpm -s test" BASE_SHA="unknown" HEAD_SHA="unknown" PRISTINE=0
+IMAGE="" PHASE="" PATCH="" PRE="" EXCL="" SUITE_CFG="" PROBE_DENY_ARG="" CONTAINER_NAME="" TIER=0 TEST_CMD="pnpm -s test" BASE_SHA="unknown" HEAD_SHA="unknown" PRISTINE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --image) IMAGE="$2"; shift 2;;
     --phase) PHASE="$2"; shift 2;;
     --patch) PATCH="$2"; shift 2;;
+    --pre-patch) PRE="$2"; shift 2;;
     --pristine) PRISTINE=1; shift;;
     --exclude-file) EXCL="$2"; shift 2;;
     --suite-config) SUITE_CFG="$2"; shift 2;;
@@ -30,7 +31,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$IMAGE" ] && [ -n "$PHASE" ] || {
-  echo "usage: sandbox-run.sh --image IMG --phase apply-check|repro|red|green|compile|build|baseline|regress [--patch F | --pristine] [--exclude-file F] [--suite-config F] [--probe-deny LIST] [--tier 0|1] [--test-cmd C] [--base-sha S] [--head-sha S] [--container-name N]" >&2
+  echo "usage: sandbox-run.sh --image IMG --phase apply-check|repro|red|green|compile|build|baseline|regress [--patch F | --pristine] [--pre-patch F] [--exclude-file F] [--suite-config F] [--probe-deny LIST] [--tier 0|1] [--test-cmd C] [--base-sha S] [--head-sha S] [--container-name N]" >&2
   exit 2; }
 case "$PHASE" in apply-check|repro|red|green|compile|build|baseline|regress) ;; *) echo "bad --phase: $PHASE" >&2; exit 2;; esac
 # apply-check, green, compile, and build require a patch onto the base tree.
@@ -55,6 +56,14 @@ case "$PHASE" in
 esac
 if [ "$PHASE" = "regress" ] && [ -z "$EXCL" ]; then
   echo "usage: --phase regress requires --exclude-file F" >&2; exit 2
+fi
+# --pre-patch belongs to the suite phases alone: the tree their plan and
+# baseline are taken over.
+if [ -n "$PRE" ]; then
+  case "$PHASE" in
+    baseline|regress) ;;
+    *) echo "usage: --pre-patch is for --phase baseline|regress" >&2; exit 2;;
+  esac
 fi
 # The suite phases run verify-suite.mjs, which needs its repository contract.
 case "$PHASE" in
@@ -97,6 +106,17 @@ if [ -n "$PATCH" ]; then
   patch_mount=( -v "$PATCH:/patch/fix.patch:ro" )
 else
   env_args+=( -e "PATCH_FILE=" )
+fi
+
+pre_mount=()
+if [ -n "$PRE" ]; then
+  env_args+=( -e "PRE_PATCH_FILE=/patch/pre.patch" )
+  pre_sha="$(shasum -a 256 "$PRE" 2>/dev/null | cut -d' ' -f1)"
+  [ -n "$pre_sha" ] || pre_sha="$(sha256sum "$PRE" | cut -d' ' -f1)"
+  env_args+=( -e "PRE_PATCH_SHA256=$pre_sha" )
+  pre_mount=( -v "$PRE:/patch/pre.patch:ro" )
+else
+  env_args+=( -e "PRE_PATCH_FILE=" )
 fi
 
 # EXCLUDE_FILE, when set, is a host-written file path — the baseline phase's own
@@ -151,6 +171,7 @@ docker run --rm "${name_args[@]+"${name_args[@]}"}" --network "$NET" \
   -v "$HERE/run-phase.sh:/run-phase.sh:ro" \
   -v "$HERE/verify-suite.mjs:/verify-suite.mjs:ro" \
   "${patch_mount[@]+"${patch_mount[@]}"}" \
+  "${pre_mount[@]+"${pre_mount[@]}"}" \
   "${exclude_mount[@]+"${exclude_mount[@]}"}" \
   "${suite_mount[@]+"${suite_mount[@]}"}" \
   "$IMAGE" bash -lc "$container_cmd"

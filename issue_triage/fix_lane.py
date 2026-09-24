@@ -167,6 +167,38 @@ def _validate_reproduction(clone: Path, verdict: dict, spec: LaneSpec, label: st
                           preserve_cmd=preserve_cmd, test_patch=test_patch)
 
 
+def suite_proof(spec: LaneSpec, patch: str, label: str) -> prove.SuiteRegress | str | None:
+    """The full suite over the lane's tree with `patch` applied, against that
+    tree's own failing set; None when the suite is switched off or the profile
+    names no suite contract, and the reason when the tree's own test wrapper
+    cannot plan a suite. Raises prove.SuiteFault when it cannot complete."""
+    if not settings.issue_fix_suite() or profile.active().verify.suite is None:
+        return None
+    try:
+        return prove.suite_regress(spec.base, spec.pre_patch, patch, label=label)
+    except prove.SuiteUnplannable as e:
+        return str(e)
+
+
+def record_suite(proof: dict, suite: prove.SuiteRegress | str | None) -> str:
+    """Record `suite` on `proof`, returning why it refuses the fix, or ""."""
+    if suite is None:
+        return ""
+    if isinstance(suite, str):
+        proof["suite"] = {"skipped": suite}
+        return ""
+    proof["suite"] = suite
+    return suite_block(suite)
+
+
+def suite_block(suite: prove.SuiteRegress | None) -> str:
+    """Why a confirmed suite regression refuses a fix, or "" when it does not."""
+    if not suite or not suite["confirmed"]:
+        return ""
+    named = ", ".join(suite["new_failures"][:5]) or "files the runner did not name"
+    return f"the fix makes the full suite fail beyond the tree's own failures: {named}"
+
+
 def _passed_twice(legs: prove.Legs | dict) -> bool:
     return legs.get("exit") == gates.SENTINEL_PASS == legs.get("exit_confirm")
 
@@ -415,6 +447,9 @@ def run(spec: LaneSpec, *, workdir: Path,
                     entry["base_fails"] = True
             result["proof"]["related_tests"] = entry
 
+        on_step("full suite")
+        record_suite(result["proof"], suite_proof(spec, test_text + fix_patch, label))
+
         reviews: list[dict] = []
         evidence = _proof_evidence(result["proof"], authored)
         on_step("reviewing: root-cause")
@@ -446,7 +481,7 @@ def run(spec: LaneSpec, *, workdir: Path,
         return finish("agent-unavailable", str(e))
     except headless_agent.AgentDeclined as e:
         return finish("declined", str(e))
-    except (prove.NoBase, verify_driver.ProbeFailure) as e:
+    except (prove.NoBase, prove.SuiteFault, verify_driver.ProbeFailure) as e:
         return finish("sandbox", str(e))
     except (headless_agent.EditsBlockedError, RuntimeError, ValueError) as e:
         return finish("run-failed", str(e))

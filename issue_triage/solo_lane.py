@@ -234,6 +234,12 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
                 if block:
                     return finish("fix-unproven", block)
 
+        on_step("full suite")
+        block = fix_lane.record_suite(
+            result["proof"], fix_lane.suite_proof(spec, test_patch + fix_patch, label))
+        if block:
+            return finish("fix-unproven", block)
+
         detail = ("proven green with its own tests" if test_cmd
                   else "no test of its own; compile and related tests pass")
         return finish("fixed", detail)
@@ -241,7 +247,7 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
         return finish("agent-unavailable", str(e))
     except headless_agent.AgentDeclined as e:
         return finish("declined", str(e))
-    except (prove.NoBase, verify_driver.ProbeFailure) as e:
+    except (prove.NoBase, prove.SuiteFault, verify_driver.ProbeFailure) as e:
         return finish("sandbox", str(e))
     except (headless_agent.EditsBlockedError, RuntimeError, ValueError) as e:
         return finish("run-failed", str(e))

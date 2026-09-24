@@ -344,9 +344,16 @@ green there. The fix agent then opens on a clone whose one commit already
 carries both frozen sets, and its change is re-gated
 (`issue_gates.fix_patch_regate`, capped at `settings.issue_fix_max_lines()`
 changed lines) on the paths it really touched before the reproduction must turn
-green and the preservation tests stay green. The scope-safety reviewer returns
-an inventory of every behavior the change alters, each marked asked-for or not,
-and `review_issue_fix` reads any unasked change as unsafe. All
+green and the preservation tests stay green. A fix that clears its checks then
+runs the full suite (`prove.suite_regress`, `TRIAGE_ISSUE_FIX_SUITE`, on by
+default) over the lane's tree against that tree's own failing set, cached per
+tree (`prove.suite_baseline`); a failure a second container confirms refuses
+the fix, and a tree whose own test wrapper cannot plan the suite
+(`gates.SENTINEL_NO_PLAN`) records the suite as skipped. The one-agent lane
+(`issue_triage/solo_lane.py`) runs the same suite check. The scope-safety
+reviewer returns an inventory of every behavior the change alters, each marked
+asked-for or not and as working before or not, and `review_issue_fix` reads an
+unasked change to an input that worked as unsafe. All
 proof runs on the pinned base's image — `prove.pinned` reads the verify pin,
 `prove.held(sha, tier)` names a base by hand — and neither builds one; every
 fault (an agent outage, a sandbox that could not run, a base that fails the
