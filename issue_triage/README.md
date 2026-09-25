@@ -155,7 +155,10 @@ resumes past the bases the ledger names.
 `run` replays every fair bug through a lane — `--lane staged` (default, the
 lane above) or `--lane solo`, the one-agent baseline (`solo_lane.py`: one agent
 reproduces, fixes and checks in one clone, and the host's re-gate, green proof
-of its tests, compile and related tests alone decide) — `--passes` times (default 3),
+of its tests, compile, related tests and full suite alone decide) — or `--lane
+cross` (`cross_lane.py`: three such agents, their fixes cross-tested against
+each other's reproductions, only an agreed fix judged further, a disagreement
+ending `fix-disputed`) — `--passes` times (default 3),
 each pass its own replay run id `<run>-p<k>`, `--concurrency` instances at a
 time, and writes `<verify scratch>/replay/<run>/scorecard.md` plus an
 `eval-set:run` ledger row: runs that proposed a fix (ended `fixed`), how many of

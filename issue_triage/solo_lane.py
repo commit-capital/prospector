@@ -89,10 +89,12 @@ def _test_paths() -> str:
 
 
 def author(worktree: str, *, title: str, body: str, env: dict[str, str],
+           model: str | None = None,
            on_event: Callable[[tuple], None] | None = None) -> dict:
     """Run the one agent over the clone at `worktree`: its answer, either
     `{"summary", "root_cause", "tests", "changes"}` or `{"give_up", "kind"}`.
-    Raises ValueError when the answer is neither."""
+    Raises ValueError when the answer is neither. `model` pins the agent's
+    model; None takes the configured one."""
     worktree = os.path.realpath(worktree)
     prompt = headless_agent.fill(PROMPT, {
         "__WORKTREE__": worktree,
@@ -106,7 +108,7 @@ def author(worktree: str, *, title: str, body: str, env: dict[str, str],
         prompt, allow_gh=False, cwd=worktree, read_root=[worktree],
         edit_root=worktree, allow=[f"Bash({lane_check.TOOL}:*)"],
         env_allow=[k for k in verify_driver.LAUNCHER_ENV_ALLOW if k.startswith("DOCKER_")],
-        env_extra=env, timeout=AGENT_TIMEOUT_SECONDS, on_event=on_event))
+        env_extra=env, timeout=AGENT_TIMEOUT_SECONDS, model=model, on_event=on_event))
     if "give_up" in verdict:
         return {"give_up": str(verdict["give_up"]), "kind": str(verdict.get("kind") or "")}
     changes = verdict.get("changes")
@@ -117,6 +119,66 @@ def author(worktree: str, *, title: str, body: str, env: dict[str, str],
             "tests": [str(t) for t in verdict.get("tests") or [] if t],
             "changes": [{"path": str(c.get("path")), "rationale": str(c.get("rationale") or "")}
                         for c in changes if isinstance(c, dict) and c.get("path")]}
+
+
+def host_checks(spec: fix_lane.LaneSpec, *, test_patch: str, fix_patch: str,
+                test_paths: list[str], tree: Path, proof_patch: Callable[..., Path],
+                label: str, proof: dict, on_step: Callable[[str], None],
+                own_green: bool = True) -> tuple[str, str] | None:
+    """The host's checks over a fix, recorded on `proof`: its own tests green
+    twice with it applied (unless `own_green` is False — a caller that already
+    proved them), the compile, the related tests, and the full suite. None when
+    it clears them all, else the (ending, reason) it stops at. `tree` is a
+    checkout of the lane's tree the related tests are picked from."""
+    test_cmd = verify_driver.derive_test_command(test_paths)
+    if test_cmd and own_green:
+        green = prove.green_legs(spec.base, patch=proof_patch(test_patch, fix_patch),
+                                 test_cmd=test_cmd, label=label)
+        proof["green"] = green
+        if not (green.get("exit") == gates.SENTINEL_PASS
+                and green.get("exit_confirm") == gates.SENTINEL_PASS):
+            return "fix-unproven", "the agent's tests are not green twice with the fix applied"
+
+    compile_cmd = profile.active().verify.compile_cmd
+    if compile_cmd:
+        on_step("compile preflight")
+        compiled = fix_lane.compile_proof(spec, proof_patch, (test_patch, fix_patch),
+                                          compile_cmd, label)
+        proof["compile"] = compiled
+        if compiled.get("error_kind") == "base-compile":
+            return "base-compile", str(compiled.get("error")
+                                       or "the base fails the compile command")
+        not_run = compiled.get("refused") or compiled.get("error")
+        if not_run or (compiled.get("exit") != gates.SENTINEL_PASS
+                       and not compiled.get("tree_fails")):
+            return "fix-unproven", ("the compile lane did not pass: "
+                                    + str(not_run or compiled.get("error_excerpt")
+                                          or f"exit {compiled.get('exit')}"))
+
+    related = [t for t in resolve_evidence.related_tests(
+        str(tree), diffpaths.changed_paths(fix_patch)) if t not in test_paths]
+    related_cmd = verify_driver.derive_test_command(related)
+    if related_cmd:
+        on_step("related tests")
+        entry: dict = {"files": related, "run": prove.run_command(
+            spec.base, proof_patch(test_patch, fix_patch), related_cmd,
+            phase="green", label=label)}
+        if entry["run"].get("exit") == gates.SENTINEL_TEST_FAIL:
+            base_run = prove.run_command(spec.base, proof_patch(test_patch), related_cmd,
+                                         phase="green", label=label)
+            entry["base_fails"] = base_run.get("exit") == gates.SENTINEL_TEST_FAIL
+        proof["related_tests"] = entry
+        if not entry.get("base_fails"):
+            block = gates.related_tests_block(entry, "the fix")
+            if block:
+                return "fix-unproven", block
+
+    on_step("full suite")
+    block = fix_lane.record_suite(proof, fix_lane.suite_proof(spec, test_patch + fix_patch,
+                                                              label))
+    if block:
+        return "fix-unproven", block
+    return None
 
 
 def run(spec: fix_lane.LaneSpec, *, workdir: Path,
@@ -193,53 +255,11 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
             reproduction["outcome"] = (
                 "reproduced" if red.get("exit") == gates.SENTINEL_TEST_FAIL
                 and red.get("exit_confirm") == gates.SENTINEL_TEST_FAIL else "not-reproduced")
-            green = prove.green_legs(spec.base, patch=proof_patch(test_patch, fix_patch),
-                                     test_cmd=test_cmd, label=label)
-            result["proof"]["green"] = green
-            if not (green.get("exit") == gates.SENTINEL_PASS
-                    and green.get("exit_confirm") == gates.SENTINEL_PASS):
-                return finish("fix-unproven", "the agent's tests are not green twice with "
-                                              "the fix applied")
-
-        compile_cmd = profile.active().verify.compile_cmd
-        if compile_cmd:
-            on_step("compile preflight")
-            compiled = fix_lane.compile_proof(spec, proof_patch, (test_patch, fix_patch),
-                                              compile_cmd, label)
-            result["proof"]["compile"] = compiled
-            if compiled.get("error_kind") == "base-compile":
-                return finish("base-compile", str(compiled.get("error")
-                                                  or "the base fails the compile command"))
-            not_run = compiled.get("refused") or compiled.get("error")
-            if not_run or (compiled.get("exit") != gates.SENTINEL_PASS
-                           and not compiled.get("tree_fails")):
-                return finish("fix-unproven", "the compile lane did not pass: "
-                              + str(not_run or compiled.get("error_excerpt")
-                                    or f"exit {compiled.get('exit')}"))
-
-        related = [t for t in resolve_evidence.related_tests(
-            str(clone), diffpaths.changed_paths(fix_patch)) if t not in test_paths]
-        related_cmd = verify_driver.derive_test_command(related)
-        if related_cmd:
-            on_step("related tests")
-            entry: dict = {"files": related, "run": prove.run_command(
-                spec.base, proof_patch(test_patch, fix_patch), related_cmd,
-                phase="green", label=label)}
-            if entry["run"].get("exit") == gates.SENTINEL_TEST_FAIL:
-                base_run = prove.run_command(spec.base, proof_patch(test_patch), related_cmd,
-                                             phase="green", label=label)
-                entry["base_fails"] = base_run.get("exit") == gates.SENTINEL_TEST_FAIL
-            result["proof"]["related_tests"] = entry
-            if not entry.get("base_fails"):
-                block = gates.related_tests_block(entry, "the fix")
-                if block:
-                    return finish("fix-unproven", block)
-
-        on_step("full suite")
-        block = fix_lane.record_suite(
-            result["proof"], fix_lane.suite_proof(spec, test_patch + fix_patch, label))
-        if block:
-            return finish("fix-unproven", block)
+        blocked = host_checks(spec, test_patch=test_patch, fix_patch=fix_patch,
+                              test_paths=test_paths, tree=clone, proof_patch=proof_patch,
+                              label=label, proof=result["proof"], on_step=on_step)
+        if blocked:
+            return finish(*blocked)
 
         detail = ("proven green with its own tests" if test_cmd
                   else "no test of its own; compile and related tests pass")

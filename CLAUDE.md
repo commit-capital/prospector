@@ -354,7 +354,13 @@ vitest's own file listing; a tree neither can plan (`gates.SENTINEL_NO_PLAN`)
 records the suite as skipped. `TRIAGE_SANDBOX_LARGE_SLOTS` and
 `TRIAGE_SANDBOX_LARGE_CPUS` size how many large phases run at once and the CPUs
 each gets. The one-agent lane
-(`issue_triage/solo_lane.py`) runs the same suite check. The scope-safety
+(`issue_triage/solo_lane.py`) runs the same suite check through its
+`host_checks`, and the cross-tested lane (`issue_triage/cross_lane.py`) runs
+several such agents at once (`TRIAGE_ISSUE_FIX_MODELS`, one candidate per
+model), proves each candidate's tests red on the unfixed tree, runs every fix
+against every reproduction, and judges only a fix that passes each of them and
+at least two: candidates whose reproductions pin different behavior end
+`fix-disputed`. The scope-safety
 reviewer returns an inventory of every behavior the change alters, each marked
 asked-for or not and as working before or not, and `review_issue_fix` reads an
 unasked change to an input that worked as unsafe. All

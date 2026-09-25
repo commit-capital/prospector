@@ -366,8 +366,10 @@ def _scorecard_md(name: str, card: dict, records: list[dict]) -> str:
     return "\n".join(lines) + "\n"
 
 
-# The lanes a run can measure, by name: the staged lane and the one-agent lane.
-LANES: dict[str, replay.LaneEntry] = {"staged": replay._run_lane, "solo": replay._run_solo}
+# The lanes a run can measure, by name: the staged lane, the one-agent lane, and
+# the cross-tested lane.
+LANES: dict[str, replay.LaneEntry] = {"staged": replay._run_lane, "solo": replay._run_solo,
+                                      "cross": replay._run_cross}
 
 
 def run(*, name: str, passes: int, concurrency: int, refresh: bool,
@@ -496,7 +498,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     r.add_argument("--resume", action="store_true", help="re-run the faulted instances")
     r.add_argument("--refresh", action="store_true", help="re-harvest from GitHub")
     r.add_argument("--lane", choices=sorted(LANES), default="staged",
-                   help="the staged lane or the one-agent lane")
+                   help="the staged, one-agent, or cross-tested lane")
     i = sub.add_parser("import", help="record the bases a manifest file names")
     i.add_argument("path", type=Path)
     return ap.parse_args(argv)
