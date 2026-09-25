@@ -13,7 +13,8 @@ AGREEMENT of them. Two readings of the report that pin different behavior
 cannot both be passed, so a disagreement ends the run `fix-disputed`: the
 report leaves the correct behavior open. The smallest agreed fix then goes
 through the host's checks (`solo_lane.host_checks`: compile, related tests,
-the full suite) and ends `fixed` when it clears them.
+the full suite) together with the tests of every reproduction it passed
+(`shipped_reproductions`), and ends `fixed` when it clears them.
 
 `run` returns the staged lane's `LaneResult`, so the replay scores it like the
 other lanes; `agent_runs` counts every candidate.
@@ -123,6 +124,20 @@ def agreed_candidates(live: list[Candidate]) -> list[Candidate]:
             if len(c.passes) >= AGREEMENT and all(c.passes.values())]
 
 
+def shipped_reproductions(pick: Candidate, repros: list[Candidate]) -> list[Candidate]:
+    """The reproductions whose tests ship with the picked fix: the pick's own
+    first when it reproduces, then every other in index order, leaving out one
+    whose test files another shipped reproduction already writes."""
+    ordered = sorted(repros, key=lambda r: (r is not pick, r.index))
+    shipped: list[Candidate] = []
+    taken: set[str] = set()
+    for r in ordered:
+        if taken.isdisjoint(r.test_paths):
+            shipped.append(r)
+            taken.update(r.test_paths)
+    return shipped
+
+
 def run(spec: fix_lane.LaneSpec, *, workdir: Path,
         on_step: Callable[[str], None] = lambda step: None) -> fix_lane.LaneResult:
     """Several agents reproduce and fix `spec`'s issue; cross-testing their
@@ -198,10 +213,14 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
                                           "read the report's correct behavior differently")
 
         pick = min(agreed, key=lambda c: (issue_gates.changed_line_count(c.fix_patch), c.index))
-        paths = diffpaths.changed_paths(pick.test_patch + pick.fix_patch)
-        reproduction = {"outcome": "reproduced", "base_sha": spec.base.sha, "red": pick.red,
-                        "files": [{"path": p} for p in pick.test_paths]}
-        result.update({"patch": pick.test_patch + pick.fix_patch, "pick": pick.index,
+        shipped = shipped_reproductions(pick, repros)
+        test_patch = "".join(r.test_patch for r in shipped)
+        test_paths = [p for r in shipped for p in r.test_paths]
+        paths = diffpaths.changed_paths(test_patch + pick.fix_patch)
+        reproduction = {"outcome": "reproduced", "base_sha": spec.base.sha,
+                        "red": shipped[0].red, "files": [{"path": p} for p in test_paths]}
+        result["agreement"]["shipped"] = [r.index for r in shipped]
+        result.update({"patch": test_patch + pick.fix_patch, "pick": pick.index,
                        "changes": pick.verdict["changes"], "summary": pick.verdict["summary"],
                        "root_cause": pick.verdict["root_cause"],
                        "threat": threats.scan_diff(pick.fix_patch),
@@ -209,8 +228,8 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
         tree = lane_tree.materialize(spec.base.clone, workdir / "pick" / "src",
                                      pre_patch=spec.pre_patch)
         blocked = solo_lane.host_checks(
-            spec, test_patch=pick.test_patch, fix_patch=pick.fix_patch,
-            test_paths=pick.test_paths, tree=tree, proof_patch=proof_patch, label=label,
+            spec, test_patch=test_patch, fix_patch=pick.fix_patch,
+            test_paths=test_paths, tree=tree, proof_patch=proof_patch, label=label,
             proof=result["proof"], on_step=on_step, own_green=False)
         if blocked:
             return finish(*blocked)
