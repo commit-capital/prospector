@@ -62,9 +62,10 @@ def test_a_verdict_ending_writes_the_result_file_and_exits_zero(cli):
     code = fix_lane.main(["--issue", "7"])
     assert code == 0
     payload = _result_file(cli)
-    assert set(payload) == {"issue", "report_sha", "base_sha", "action", "ending",
-                            "fault", "detail", "agent_runs", "started", "finished",
-                            "reproduction", "result"}
+    assert set(payload) == {"issue", "report_sha", "base_sha", "action", "lane", "models",
+                            "ending", "fault", "detail", "agent_runs", "started",
+                            "finished", "reproduction", "result"}
+    assert payload["lane"] == "staged"
     assert payload["issue"] == 7
     assert payload["action"] == "fix"
     assert payload["ending"] == "fixed"
@@ -178,3 +179,29 @@ def test_still_valid_reports_closed_edited_and_continues_on_a_failed_fetch(cli, 
     assert seen["closed"] == "issue-closed"
     assert seen["edited"] == "report-edited"
     assert seen["fetch_failed"] is None
+
+
+def test_the_cross_lane_runs_its_own_core_and_records_its_models(cli, monkeypatch):
+    from issue_triage import cross_lane
+
+    monkeypatch.setenv("TRIAGE_ISSUE_FIX_MODELS", "opus,sonnet")
+    monkeypatch.setattr(cross_lane, "run",
+                        lambda spec, *, workdir, on_step: cli.state["result"])
+    assert fix_lane.main(["--issue", "7", "--lane", "cross"]) == 0
+    payload = _result_file(cli)
+    assert payload["lane"] == "cross" and payload["models"] == ["opus", "sonnet"]
+    assert cli.state["specs"] == []
+
+
+def test_a_fix_whose_issue_closed_under_the_run_ends_cancelled(cli, monkeypatch):
+    from issue_triage import solo_lane
+
+    monkeypatch.setattr(solo_lane, "run", lambda spec, *, workdir, on_step: cli.state["result"])
+    cli.state["fetched"] = {**cli.state["fetched"], "state": "closed"}
+    assert fix_lane.main(["--issue", "7", "--lane", "solo"]) == 0
+    payload = _result_file(cli)
+    assert payload["ending"] == "cancelled" and payload["detail"] == "issue-closed"
+
+
+def test_reproduce_only_runs_the_staged_lane_alone(cli):
+    assert fix_lane.main(["--issue", "7", "--lane", "cross", "--reproduce-only"]) == 2

@@ -246,3 +246,27 @@ def fix_proof_bar(result: dict) -> tuple[str | None, str]:
         if review.get("verdict") != "safe" or review.get("failed"):
             return "fix-rejected", f"{lens}: {review.get('reason') or 'not safe'}"
     return None, "proven on the base and safe under both lenses"
+
+
+def propose_gate(record: dict, live: dict | None, *,
+                 report_sha: Callable[[str, str], str]) -> tuple[bool, str]:
+    """Whether a finished lane run may be proposed upstream as a pull request.
+    `record` is the run's `result.json`; `live` the issue as GitHub reports it
+    now. The run must have ended `fixed` on a report that is still open and
+    unedited, carry a non-empty patch, and scan clear."""
+    if record.get("ending") != "fixed" or record.get("fault"):
+        return False, f"the run ended {record.get('ending')!r}, not 'fixed'"
+    result = record.get("result") or {}
+    patch = str(result.get("patch") or "")
+    if not patch.strip():
+        return False, "the run recorded no patch"
+    if live is None:
+        return False, "the issue cannot be read upstream"
+    if live.get("state") != "open":
+        return False, "the issue is closed"
+    if report_sha(live.get("title") or "", live.get("body") or "") != record.get("report_sha"):
+        return False, "the report was edited after the run; re-run the lane on it"
+    verdict = threats.scan_diff(patch).get("verdict")
+    if verdict != "clear":
+        return False, f"the patch scans {verdict}"
+    return True, "fixed, open, unedited, and clear"

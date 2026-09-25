@@ -1088,3 +1088,79 @@ def dismiss_alert(source: str, number: int, reason: str, comment: str, *,
     res = {**base, "status": "executed", "detail": f"dismissed {source}#{number} ({reason})"}
     activity.record("alert-dismiss", identity=settings.bot_login(), dry_run=False, **res)
     return res
+
+
+def propose_issue_fix(issue: int, *, token: str | None, dry_run: bool = True) -> dict:
+    """Open a pull request on TRIAGE_REPO carrying issue `issue`'s last lane
+    fix, for a maintainer to review. The run must pass
+    `issue_gates.propose_gate` and its rendering `fix_pr_body.problems`; the
+    push user pushes the lane branch to its fork (`propose.push_fix`) and the
+    bot opens the pull request from it (`safety_guard.propose_bot_run`). A lane
+    branch that already has a pull request is reported, never reopened. A
+    dry-run does everything up to the push; with no token every run is one.
+    Every outcome is logged to Activity."""
+    from issue_triage import fetch_issues, fix_lane, fix_pr_body, issue_gates, propose
+    from pipeline import diffpaths
+    from pipeline.gh import gh_list
+    from prospector_app.backend.safety_guard import propose_bot_run
+
+    base_res = {"issue": int(issue), "action": "PROPOSE"}
+
+    def done(status: str, detail: str, *, dry: bool, **extra: object) -> dict:
+        res = {**base_res, "status": status, "detail": detail, **extra}
+        activity.record("issue-propose", identity=settings.bot_login(), dry_run=dry, **res)
+        return res
+
+    record = propose.load_result(issue)
+    if record is None:
+        return done("blocked", f"issue #{issue} has no lane result on this machine",
+                    dry=dry_run)
+    ok, why = issue_gates.propose_gate(record, fetch_issues.fetch_issue(issue),
+                                       report_sha=fix_lane.report_sha)
+    if not ok:
+        return done("blocked", f"propose gate: {why}", dry=dry_run)
+
+    result = record["result"]
+    patch = str(result["patch"])
+    ref = propose.branch_ref(issue, record["report_sha"])
+    head = f"{settings.push_login()}:{ref}"
+    existing = gh_list(f"repos/{settings.repo()}/pulls?head={head}&state=all") or []
+    if existing:
+        return done("exists", f"{ref} already has #{existing[0]['number']}", dry=dry_run,
+                    url=existing[0].get("html_url"))
+
+    summary = str(result.get("summary") or "")
+    title_text = fix_pr_body.title(issue, summary)
+    message = fix_pr_body.commit_message(issue, summary)
+    tests = [p for p in diffpaths.changed_paths(patch) if diffpaths.is_test_path(p)]
+    body = fix_pr_body.render(
+        issue=issue, result=result, tests=tests, base_sha=record["base_sha"],
+        report_sha=record["report_sha"], models=list(record.get("models") or []),
+        test_cmd=None)
+    problems = fix_pr_body.problems(title_text, body, message, issue=issue)
+    if problems:
+        return done("blocked", "rendering: " + "; ".join(problems), dry=dry_run)
+
+    live = not dry_run and bool(token)
+    workdir = settings.verify_scratch() / "issue-fix" / f"issue-{issue}" / "propose"
+    try:
+        pushed = propose.push_fix(issue=issue, report_sha=record["report_sha"],
+                                  base_sha=record["base_sha"], patch=patch, message=message,
+                                  workdir=workdir, dry_run=not live)
+    except RuntimeError as e:
+        return done("blocked", f"push: {e}", dry=not live)
+    if not live:
+        return done("dry-run", f"would open {title_text!r} from {head}", dry=True,
+                    forced=not token and not dry_run, head_sha=pushed.head_sha)
+
+    assert token is not None
+    r = propose_bot_run({"title": title_text, "body": body, "head": head,
+                         "base": settings.default_branch(), "maintainer_can_modify": True},
+                        token)
+    if r.returncode != 0:
+        detail = (r.stderr or "").strip()[-300:] or f"gh exited {r.returncode}"
+        return done("error", f"pushed {ref} but the pull request failed: {detail}", dry=False,
+                    head_sha=pushed.head_sha)
+    pr = json.loads(r.stdout)
+    return done("executed", f"opened #{pr['number']} for issue #{issue}", dry=False,
+                pr=pr["number"], url=pr.get("html_url"), head_sha=pushed.head_sha)

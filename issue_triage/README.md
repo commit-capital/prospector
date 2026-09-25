@@ -92,13 +92,21 @@ unasked change as unsafe.
 uv run python -m issue_triage.fix_lane --issue N                          # reproduce + fix on the verify pin
 uv run python -m issue_triage.fix_lane --issue N --reproduce-only         # stop once the reproduction proves red
 uv run python -m issue_triage.fix_lane --issue N --base-sha SHA --tier T  # prove against a base held by hand
+uv run python -m issue_triage.fix_lane --issue N --lane cross             # several agents; reproductions must agree
+uv run python -m issue_triage.propose --issue N                           # dry-run a pull request for the last result
+uv run python -m issue_triage.propose --issue N --live                    # push to the push user's fork, open it as the bot
 ```
 
 The base is the verify pin (`prove.pinned`) unless `--base-sha` names one this
 machine already holds (`prove.held`, `--tier` defaults to 0); neither builds an
 image. The report comes from the issue store, else a live fetch. The run writes
 `<verify scratch>/issue-fix/issue-<n>/result.json` and appends one
-`issue-fix:run` row to the issue runs ledger.
+`issue-fix:run` row to the issue runs ledger. `propose` reads that file: a
+`fixed` run on an issue still open and unedited is committed on its proven base
+by the contributor-push user (`TRIAGE_PUSH_LOGIN`), pushed to that user's fork
+of the repository as `prospector/issue-<n>-<report sha[:8]>`, and opened as a
+pull request by the bot for a maintainer to review. The fork must already
+exist, forked by the push user.
 
 **Endings.** A verdict exits 0: `reproduced`, `fixed`, `not-reproduced`,
 `wrong-symptom`, `not-a-defect`, `unwritable`, `no-fix`, `fix-untrusted`,

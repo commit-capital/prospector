@@ -112,7 +112,7 @@ bot-authenticated chat writes and feedback issue filing do not. Executor
 enforcement lives in
 `prospector_app/backend/safety_guard.py`: an allowlist that permits only
 comment/close/reopen/review as the configured bot plus the dedicated
-`bot_merge_run` path, and refuses any write with an empty token or an empty
+`bot_merge_run` and `propose_bot_run` (an issue-fix pull request) paths, and refuses any write with an empty token or an empty
 `TRIAGE_BOT_LOGIN` — a deployment configured without a GitHub App is legal,
 reads normally, and writes nothing.
 
@@ -330,7 +330,7 @@ hour, so a run that starts and finishes between two polls is still readable.
 
 **ISSUE FIX** (`issue_triage/fix_lane.py`) drives one reported issue through
 reproduce → judge → fix → prove → review over single-commit clones of a base
-this machine already holds, and touches nothing upstream. `run` is the
+this machine already holds; only its separate propose step writes upstream. `run` is the
 integrator: each locked-down agent (`allow_gh=False`, its own clone as
 `read_root`) authors or judges, and only host-observed sandbox exits and
 `issue_gates` name the ending — a reproduction outcome from
@@ -369,11 +369,25 @@ proof runs on the pinned base's image — `prove.pinned` reads the verify pin,
 fault (an agent outage, a sandbox that could not run, a base that fails the
 compile) is a machine condition, never a verdict, and the clones are removed on
 the way out. The command `python -m issue_triage.fix_lane --issue N
-[--reproduce-only] [--base-sha SHA --tier T]` resolves the report from the issue
-store or a live fetch, cancels when the issue closed or its report was edited
-under the run, writes `<verify scratch>/issue-fix/issue-<n>/result.json`, and
-appends one `issue-fix:run` row to the issue runs ledger. It holds no per-PR
-merge gate and makes no upstream write.
+[--lane staged|solo|cross] [--reproduce-only] [--base-sha SHA --tier T]`
+resolves the report from the issue store or a live fetch, cancels when the issue
+closed or its report was edited under the run, writes
+`<verify scratch>/issue-fix/issue-<n>/result.json` (with the lane and its
+models), and appends one `issue-fix:run` row to the issue runs ledger. It makes
+no upstream write. `python -m issue_triage.propose --issue N [--live]` proposes
+that result for a maintainer's review through `executor.propose_issue_fix`: the
+run must pass `issue_gates.propose_gate` (ended `fixed`, issue still open, report
+unedited, patch scans clear) and its rendering `fix_pr_body.problems` (the
+profile's required sections, each filled by its heading; exactly `Fixes #N`;
+agent text held to inert plain text); the push user commits the exact patch on
+the proven base and pushes it to its own fork of `TRIAGE_REPO`, fenced by
+`propose.assert_propose_target` to branch `prospector/issue-<n>-<report sha[:8]>`,
+never overwriting one; and the bot opens the pull request through
+`safety_guard.propose_bot_run`, whose payload may name only that head, the
+default branch, a title, a body and maintainer edits. A branch that already has
+a pull request is reported, not reopened; with no token every run is a dry-run
+that stops before the push; every outcome is an `issue-propose` Activity entry.
+A proposal never merges: it faces `merge_eligibility` like any other PR.
 
 **WORKER HEALTH** (`pipeline/worker_health.py` + `prospector_app/backend/lane_health.py`
 + `escalation.py`) is the ONE policy for a worker that is failing rather than
