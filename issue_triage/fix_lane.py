@@ -529,6 +529,9 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     ap.add_argument("--base-sha",
                     help="prove against a base this machine already holds, named by "
                          "its SHA (default: the verify pin)")
+    ap.add_argument("--lane", choices=("staged", "solo", "cross"), default="staged",
+                    help="staged: reproduce, judge, fix, review; solo: one agent; "
+                         "cross: several agents whose reproductions must agree")
     ap.add_argument("--tier", type=int, default=0,
                     help="the risk tier the held base was built at (with --base-sha)")
     return ap.parse_args(argv)
@@ -538,6 +541,9 @@ def main(argv: list[str]) -> int:
     args = _parse_args(argv)
     n: int = args.issue
     action: Literal["reproduce", "fix"] = "reproduce" if args.reproduce_only else "fix"
+    if args.reproduce_only and args.lane != "staged":
+        print("--reproduce-only runs the staged lane alone", file=sys.stderr)
+        return 2
 
     try:
         base = prove.held(args.base_sha, args.tier) if args.base_sha else prove.pinned(Store())
@@ -566,8 +572,23 @@ def main(argv: list[str]) -> int:
     spec = LaneSpec(issue=n, title=title, body=body, base=base, action=action)
     workdir = settings.verify_scratch() / "issue-fix" / f"issue-{n}"
     started = storekit.now()
-    res = run(spec, workdir=workdir, on_step=lambda step: print(step, flush=True),
-              still_valid=still_valid)
+    on_step: Callable[[str], None] = lambda step: print(step, flush=True)
+    models = [settings.agent_model() or "default"]
+    if args.lane == "cross":
+        from issue_triage import cross_lane
+        models = list(settings.issue_fix_models())
+        res = cross_lane.run(spec, workdir=workdir, on_step=on_step)
+    elif args.lane == "solo":
+        from issue_triage import solo_lane
+        res = solo_lane.run(spec, workdir=workdir, on_step=on_step)
+    else:
+        res = run(spec, workdir=workdir, on_step=on_step, still_valid=still_valid)
+    if args.lane != "staged" and res.ending == "fixed":
+        reason = still_valid()
+        if reason:
+            res = LaneResult(ending="cancelled", fault=False, detail=reason,
+                             reproduction=res.reproduction, result=res.result,
+                             agent_runs=res.agent_runs)
     finished = storekit.now()
 
     workdir.mkdir(parents=True, exist_ok=True)
@@ -576,6 +597,8 @@ def main(argv: list[str]) -> int:
         "report_sha": reported_sha,
         "base_sha": base.sha,
         "action": action,
+        "lane": args.lane,
+        "models": models,
         "ending": res.ending,
         "fault": res.fault,
         "detail": res.detail,
@@ -594,6 +617,7 @@ def main(argv: list[str]) -> int:
         "trigger": "cli",
         "stats": {
             "action": action,
+            "lane": args.lane,
             "ending": res.ending,
             "fault": res.fault,
             "detail": res.detail,

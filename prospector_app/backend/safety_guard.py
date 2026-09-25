@@ -12,13 +12,16 @@ Backend reads use the operator's local `gh` login.
 
 Upstream writes go out only through the sanctioned bot paths below —
 `bot_run` (executor comments / closes / reopens / reviews), `chat_bot_run`
-(validated embedded-agent edits / comments / issue writes / workflow reruns), and
-`bot_merge_run` (squash-merge). All require a non-empty installation token and
+(validated embedded-agent edits / comments / issue writes / workflow reruns),
+`alert_bot_run` (alert dismissals), `propose_bot_run` (an issue-fix pull request
+opened from the push user's lane branch), and `bot_merge_run` (squash-merge).
+All require a non-empty installation token and
 a server checkout compatible with the shared store, then inject the token via
 GH_TOKEN for that one subprocess.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -209,6 +212,38 @@ def assert_alert_bot_write(argv: list[str]) -> None:
     joined = " ".join(argv)
     if not any(p.search(joined) for p in ALERT_WRITE_ALLOW):
         raise WriteAttemptBlocked(f"not an allowlisted alert write: {joined!r}")
+
+
+PROPOSE_KEYS = frozenset({"title", "body", "head", "base", "maintainer_can_modify"})
+_PROPOSE_HEAD_RE = re.compile(r"^([A-Za-z0-9-]+):prospector/issue-[1-9][0-9]{0,8}-[0-9a-f]{8}$")
+
+
+def assert_propose_write(payload: dict) -> None:
+    """Hold a proposed pull request to the one shape the issue-fix lane opens:
+    from the push user's lane branch into TRIAGE_REPO's default branch, with
+    nothing but a title, a body and maintainer edits allowed."""
+    if set(payload) != PROPOSE_KEYS:
+        raise WriteAttemptBlocked(f"a proposal carries exactly {sorted(PROPOSE_KEYS)}")
+    m = _PROPOSE_HEAD_RE.fullmatch(str(payload["head"]))
+    if not m or not settings.push_login() or m.group(1) != settings.push_login():
+        raise WriteAttemptBlocked(f"{payload['head']!r} is not the push user's lane branch")
+    if payload["base"] != settings.default_branch():
+        raise WriteAttemptBlocked(f"a proposal targets {settings.default_branch()!r}")
+    if payload["maintainer_can_modify"] is not True:
+        raise WriteAttemptBlocked("a proposal allows maintainer edits")
+    if not isinstance(payload["title"], str) or not isinstance(payload["body"], str):
+        raise WriteAttemptBlocked("a proposal's title and body are text")
+
+
+def propose_bot_run(payload: dict, token: str, *,
+                    timeout: int = 60) -> subprocess.CompletedProcess:
+    """Open a pull request on TRIAGE_REPO as the configured bot."""
+    token = _require_bot_token(token, "open a pull request")
+    assert_propose_write(payload)
+    assert_store_writes_safe()
+    argv = ["gh", "api", "--method", "POST", f"repos/{settings.repo()}/pulls", "--input", "-"]
+    return subprocess.run(argv, input=json.dumps(payload), capture_output=True, text=True,
+                          timeout=timeout, env=bot_env(token))
 
 
 _MERGE_RE = re.compile(r"^gh\s+pr\s+merge\s+\d+\b")
