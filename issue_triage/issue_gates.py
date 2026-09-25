@@ -222,7 +222,9 @@ def fix_proof_bar(result: dict) -> tuple[str | None, str]:
     compiled = proof.get("compile")
     if compiled is not None:
         not_run = compiled.get("refused") or compiled.get("error")
-        if not_run or compiled.get("exit") != gates.SENTINEL_PASS:
+        # A failure the unfixed tree shares is the tree's, not the fix's.
+        if not_run or (compiled.get("exit") != gates.SENTINEL_PASS
+                       and not compiled.get("tree_fails")):
             return "fix-unproven", ("the compile lane did not pass: "
                                     + str(not_run or compiled.get("error_excerpt")
                                           or f"exit {compiled.get('exit')}"))
