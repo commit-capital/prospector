@@ -268,6 +268,11 @@ def test_a_proven_doubly_reviewed_fix_passes_the_bar():
     assert issue_gates.fix_proof_bar(PROVEN)[0] is None
 
 
+def test_a_compile_failure_the_tree_shares_does_not_count_against_the_fix():
+    compiled = {"exit": 20, "error_excerpt": "TS5058", "tree_fails": True}
+    assert issue_gates.fix_proof_bar(_result(proof__compile=compiled))[0] is None
+
+
 def test_a_suite_flake_does_not_count_against_the_fix():
     suite = {"confirmed": False, "flake": True, "new_failures": []}
     assert issue_gates.fix_proof_bar(_result(proof__suite=suite))[0] is None

@@ -776,3 +776,52 @@ def test_a_tree_that_cannot_plan_a_suite_records_the_skip(lane, monkeypatch):
     assert res.ending == "fixed"
     assert res.result["proof"]["suite"] == {
         "skipped": "this tree's suite wrapper cannot derive a plan"}
+
+
+# --- a replay tree's own compile failure -----------------------------------------
+
+
+def _compile_profile(monkeypatch):
+    from pipeline import profile
+    configured = profile.parse_profile(
+        {"version": 1, "verify": {"compile_cmd": "tsc --noEmit"}}, "t")
+    monkeypatch.setattr(profile, "active", lambda: configured)
+
+
+def _compile_fails(lane, tree_fails_too: bool):
+    """run_command where the fixed tree fails the compile, and the unfixed tree
+    — the pre-fix patch flattened alone — fails too or passes."""
+    def run_command(phase, cmd, patch):
+        if phase != "compile":
+            return {"cmd": cmd, "exit": gates.SENTINEL_PASS, "output_tail": "", "duration_s": 1.0}
+        flattened = lane.calls["flatten"][-1]["parts"] if lane.calls["flatten"] else ()
+        fixed = len(flattened) != 1
+        failing = fixed or tree_fails_too
+        return {"cmd": cmd, "exit": gates.SENTINEL_TEST_FAIL if failing else gates.SENTINEL_PASS,
+                "error_excerpt": "TS5058: tsconfig.json", "output_tail": "", "duration_s": 1.0}
+    return run_command
+
+
+def test_a_compile_failure_the_pre_fix_tree_shares_does_not_sink_the_fix(lane, monkeypatch):
+    _compile_profile(monkeypatch)
+    lane.scripts.run_command = _compile_fails(lane, tree_fails_too=True)
+    res = lane.run(pre_patch=_PRE_PATCH)
+    assert res.ending == "fixed"
+    assert res.result["proof"]["compile"]["tree_fails"] is True
+
+
+def test_a_compile_failure_only_the_fix_brings_ends_fix_unproven(lane, monkeypatch):
+    _compile_profile(monkeypatch)
+    lane.scripts.run_command = _compile_fails(lane, tree_fails_too=False)
+    res = lane.run(pre_patch=_PRE_PATCH)
+    assert res.ending == "fix-unproven"
+    assert "tree_fails" not in res.result["proof"]["compile"]
+
+
+def test_a_live_lane_asks_no_pre_fix_tree_about_its_compile(lane, monkeypatch):
+    _compile_profile(monkeypatch)
+    lane.scripts.run_command = _compile_fails(lane, tree_fails_too=True)
+    res = lane.run()
+    assert res.ending == "fix-unproven"
+    compiles = [c for c in lane.calls["run_command"] if c["phase"] == "compile"]
+    assert len(compiles) == 1

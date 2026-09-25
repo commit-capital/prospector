@@ -204,14 +204,15 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
         compile_cmd = profile.active().verify.compile_cmd
         if compile_cmd:
             on_step("compile preflight")
-            compiled = prove.run_command(spec.base, proof_patch(test_patch, fix_patch),
-                                         compile_cmd, phase="compile", label=label)
+            compiled = fix_lane.compile_proof(spec, proof_patch, (test_patch, fix_patch),
+                                              compile_cmd, label)
             result["proof"]["compile"] = compiled
             if compiled.get("error_kind") == "base-compile":
                 return finish("base-compile", str(compiled.get("error")
                                                   or "the base fails the compile command"))
             not_run = compiled.get("refused") or compiled.get("error")
-            if not_run or compiled.get("exit") != gates.SENTINEL_PASS:
+            if not_run or (compiled.get("exit") != gates.SENTINEL_PASS
+                           and not compiled.get("tree_fails")):
                 return finish("fix-unproven", "the compile lane did not pass: "
                               + str(not_run or compiled.get("error_excerpt")
                                     or f"exit {compiled.get('exit')}"))
