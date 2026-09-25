@@ -394,6 +394,15 @@ def sandbox_large_cpus() -> int:
     return _positive_int("TRIAGE_SANDBOX_LARGE_CPUS", 2)
 
 
+def issue_fix_models() -> tuple[str, ...]:
+    """The model each candidate of the cross-tested issue-fix lane runs on, one
+    candidate per entry: TRIAGE_ISSUE_FIX_MODELS, comma-separated, else two on
+    Opus and one on Sonnet."""
+    raw = os.environ.get("TRIAGE_ISSUE_FIX_MODELS", "")
+    models = tuple(m.strip() for m in raw.split(",") if m.strip())
+    return models or ("opus", "sonnet", "opus")
+
+
 def issue_fix_suite() -> bool:
     """Whether the issue-fix lanes run the full suite over a fix that clears
     their other checks. On unless TRIAGE_ISSUE_FIX_SUITE=0."""

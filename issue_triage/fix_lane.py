@@ -55,7 +55,7 @@ from pipeline.wire import VerifyAuthoredFile
 
 ENDINGS_VERDICT = ("reproduced", "fixed", "not-reproduced", "unwritable", "wrong-symptom",
                    "not-a-defect", "no-fix", "fix-untrusted", "fix-unproven", "fix-rejected",
-                   "declined", "cancelled")
+                   "fix-disputed", "declined", "cancelled")
 ENDINGS_FAULT = ("agent-unavailable", "run-failed", "sandbox", "base-compile")
 
 # The reproduction agent gets one retry when a host validator rejects its files

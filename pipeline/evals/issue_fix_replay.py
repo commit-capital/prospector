@@ -880,6 +880,16 @@ def _run_lane(*, issue: int, title: str, body: str, base: prove.PinnedBase,
         workdir=workdir, on_step=_step_log(workdir))
 
 
+def _run_cross(*, issue: int, title: str, body: str, base: prove.PinnedBase,
+               pre_patch: str, workdir: Path) -> LaneRun:
+    """The cross-tested lane's entry point, alike in every other way."""
+    from issue_triage import cross_lane, fix_lane
+    return cross_lane.run(
+        fix_lane.LaneSpec(issue=issue, title=title, body=body, base=base,
+                          action="fix", pre_patch=pre_patch),
+        workdir=workdir, on_step=_step_log(workdir))
+
+
 def _run_solo(*, issue: int, title: str, body: str, base: prove.PinnedBase,
               pre_patch: str, workdir: Path) -> LaneRun:
     """The one-agent lane's entry point, alike in every other way."""
