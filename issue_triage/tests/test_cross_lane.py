@@ -103,8 +103,21 @@ def test_candidates_that_agree_end_fixed_with_the_smallest_fix(cross):
     assert res.ending == "fixed" and res.fault is False
     assert res.agent_runs == 3
     assert res.result["pick"] in (0, 1)  # candidate 2's fix is the largest
-    assert res.result["agreement"] == {"reproductions": [0, 1, 2], "agreed": [0, 1, 2]}
+    pick = res.result["pick"]
+    assert res.result["agreement"] == {"reproductions": [0, 1, 2], "agreed": [0, 1, 2],
+                                       "shipped": [pick] + [i for i in (0, 1, 2) if i != pick]}
     assert "src/x.ts" in res.result["patch"]
+    for test in ("a", "b", "c"):
+        assert f"src/{test}.test.ts" in res.result["patch"]
+    assert [f["path"] for f in res.reproduction["files"]][0] == f"src/{'ab'[pick]}.test.ts"
+
+
+def test_a_reproduction_writing_a_file_another_ships_is_left_out(cross):
+    cross["agents"][2] = _writes("a.test.ts", 2, extra_lines=3)
+    res = cross["run"]()
+    assert res.ending == "fixed"
+    assert sorted(res.result["agreement"]["shipped"]) == [0, 1]
+    assert res.result["patch"].count("+++ b/src/a.test.ts") == 1
 
 
 def test_each_candidate_runs_on_its_own_model(cross):

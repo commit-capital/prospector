@@ -359,8 +359,8 @@ each gets. The one-agent lane
 several such agents at once (`TRIAGE_ISSUE_FIX_MODELS`, one candidate per
 model), proves each candidate's tests red on the unfixed tree, runs every fix
 against every reproduction, and judges only a fix that passes each of them and
-at least two: candidates whose reproductions pin different behavior end
-`fix-disputed`. The scope-safety
+at least two, shipping it with the tests of every reproduction it passed:
+candidates whose reproductions pin different behavior end `fix-disputed`. The scope-safety
 reviewer returns an inventory of every behavior the change alters, each marked
 asked-for or not and as working before or not, and `review_issue_fix` reads an
 unasked change to an input that worked as unsafe. All
