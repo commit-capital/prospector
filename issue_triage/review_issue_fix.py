@@ -139,6 +139,7 @@ def _broken(changes: object) -> list[str] | None:
 
 def review(worktree: str, patch: str, *, lens: str, title: str, body: str,
            root_cause: str, test_paths: list[str], evidence: str,
+           inventory_veto: bool = True,
            on_event: Callable[[tuple], None] | None = None) -> dict:
     """Judge `patch` under one `lens`, returning
     {"lens", "verdict": "safe"|"unsafe", "reason": str, "concerns": list[str]},
@@ -150,7 +151,10 @@ def review(worktree: str, patch: str, *, lens: str, title: str, body: str,
     wrong as the reason. A reviewer that never reached a verdict — it crashed,
     timed out, or answered without one — also carries `failed: True`, so the
     caller can tell a judgment on the change from the machine's failure to
-    judge it. An unknown `lens` raises ValueError; the lenses are
+    judge it. Under the scope-safety lens, a `safe` whose inventory names an
+    unasked change to an input that worked reads as unsafe when
+    `inventory_veto`; without it the verdict stands and those inputs are
+    recorded as `unasked`. An unknown `lens` raises ValueError; the lenses are
     issue_gates.REVIEW_LENSES."""
     if lens not in issue_gates.REVIEW_LENSES:
         raise ValueError(f"unknown review lens: {lens!r}")
@@ -199,7 +203,9 @@ def review(worktree: str, patch: str, *, lens: str, title: str, body: str,
                              "inventory", failed=True)
     out = {"lens": lens, "verdict": "safe", "reason": str(verdict.get("reason") or ""),
            "concerns": concerns, "behavior_changes": inventory}
-    if broken:
+    if broken and not inventory_veto:
+        out["unasked"] = broken
+    elif broken:
         out.update(verdict="unsafe",
                    reason=f"changes inputs that worked, which the report did not ask "
                           f"to change: {'; '.join(broken)}")

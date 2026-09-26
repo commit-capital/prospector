@@ -123,6 +123,9 @@ def render(*, issue: int, result: dict, tests: list[str], base_sha: str, report_
                "permissions, secrets, authentication, supply chain). Check what it allows "
                "that was not allowed before, not only that it fixes the report."]
               if tier == 0 else []),
+            *[f"- The scope reviewer found it also changes, beyond the report: "
+              f"{_clean(item, 200)}"
+              for r in (result.get("reviews") or []) for item in (r.get("unasked") or [])[:5]],
         ],
         "model": [f"- {model_list} (Anthropic Claude, via Claude Code), writing and "
                   "checking the change in an isolated sandbox."],

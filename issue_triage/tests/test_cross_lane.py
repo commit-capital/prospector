@@ -221,6 +221,15 @@ def test_the_picked_fix_faces_the_scope_safety_reviewer_with_it_applied(cross):
     assert res.result["reviews"] == [cross["review"]]
 
 
+def test_the_inventory_vetoes_only_on_tier_0_paths(cross, monkeypatch):
+    cross["run"]()
+    assert cross["reviewed"][-1]["inventory_veto"] is False
+    from pipeline import risktier
+    monkeypatch.setattr(risktier, "tier_facet", lambda paths: {"tier": 0, "pinned_by": paths})
+    cross["run"]()
+    assert cross["reviewed"][-1]["inventory_veto"] is True
+
+
 def test_a_fix_the_reviewer_judges_unsafe_ends_fix_rejected(cross):
     cross["review"] = {"lens": "scope-safety", "verdict": "unsafe",
                        "reason": "widens access for viewers", "concerns": []}

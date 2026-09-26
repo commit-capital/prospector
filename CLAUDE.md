@@ -365,7 +365,9 @@ at least two, shipping it with the tests of every reproduction it passed:
 candidates whose reproductions pin different behavior end `fix-disputed`.
 Agreement proves a fix does what the report asks, never that it does nothing
 more, so a cross-lane fix that clears the host's checks faces the scope-safety
-reviewer too and ends `fixed` only on its explicit `safe`. The scope-safety
+reviewer too and ends `fixed` only on its explicit `safe`; its inventory of
+unasked changes to inputs that worked vetoes that `safe` only on tier-0 paths,
+and elsewhere is listed under the proposal's risks. The scope-safety
 reviewer returns an inventory of every behavior the change alters, each marked
 asked-for or not and as working before or not, and `review_issue_fix` reads an
 unasked change to an input that worked as unsafe. All

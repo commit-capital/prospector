@@ -193,6 +193,22 @@ def test_a_scope_safe_verdict_listing_an_unasked_change_reads_as_unsafe(monkeypa
     assert "?id= (empty)" in out["reason"]
 
 
+def test_without_the_inventory_veto_a_safe_verdict_stands_and_records_the_unasked(
+        monkeypatch):
+    out = _run(monkeypatch, json.dumps({"verdict": "safe", "reason": "r",
+                                        "behavior_changes": [_ASKED, _UNASKED]}),
+               lens="scope-safety", inventory_veto=False)["out"]
+    assert out["verdict"] == "safe"
+    assert out["unasked"] == ["?id= (empty)"]
+
+
+def test_without_the_inventory_veto_the_reviewer_s_own_unsafe_still_rejects(monkeypatch):
+    out = _run(monkeypatch, json.dumps({"verdict": "unsafe", "reason": "widens access",
+                                        "behavior_changes": [_ASKED]}),
+               lens="scope-safety", inventory_veto=False)["out"]
+    assert out["verdict"] == "unsafe" and out["reason"] == "widens access"
+
+
 def test_an_unasked_change_to_an_input_that_already_failed_does_not_block(monkeypatch):
     out = _run(monkeypatch, json.dumps({"verdict": "safe", "reason": "r",
                                         "behavior_changes": [_ASKED, _SIBLING]}),

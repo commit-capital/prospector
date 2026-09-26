@@ -79,6 +79,13 @@ def test_a_tier_0_change_carries_a_warning():
     assert "[!WARNING]" not in body
 
 
+def test_changes_the_scope_reviewer_found_beyond_the_report_are_listed_under_risks():
+    _, body, _ = _rendered(_result(reviews=[{"lens": "scope-safety", "verdict": "safe",
+                                             "unasked": ["whitespace-only titles"]}]))
+    risks = next(part for part in body.split("\n## ") if part.startswith("Risk"))
+    assert "beyond the report: whitespace-only titles" in risks
+
+
 def test_agent_text_is_held_to_inert_plain_text():
     cleaned = fix_pr_body._clean("see [docs](https://evil.com) and ![x](http://e) @bob\n"
                                  "<img src=x> `code` \u202eevil")
