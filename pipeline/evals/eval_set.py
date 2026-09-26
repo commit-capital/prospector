@@ -453,7 +453,7 @@ def run(*, name: str, passes: int, concurrency: int, refresh: bool,
                 "trigger": "cli",
                 "stats": {**replay._instance_stats(rec, run_id=f"{name}-p{k}",
                                                    base_sha=bases[fair[inst.issue]].sha),
-                          "eval": name, "lane": lane, "pass": k}})
+                          "eval": name, "eval_lane": lane, "pass": k}})
             print(f"[{done}/{len(jobs)}] issue {inst.issue} pass {k}: {rec.get('ending')} "
                   f"({replay._cell(rec.get('seconds'))}s) {rec.get('detail') or ''}"[:300],
                   flush=True)
