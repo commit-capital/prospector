@@ -130,6 +130,15 @@ def test_a_reproduction_writing_a_file_another_ships_is_left_out(cross):
     assert res.result["patch"].count("+++ b/src/a.test.ts") == 1
 
 
+def test_every_candidate_s_patches_are_kept_even_when_disputed(cross):
+    cross["agents"] = [_writes("a.test.ts", 2), _writes("b.test.ts", 3),
+                       _writes("c.test.ts", 4)]
+    res = cross["run"]()
+    kept = res.result["candidate_patches"]
+    assert [c["index"] for c in kept] == [0, 1, 2]
+    assert all("src/x.ts" in c["fix_patch"] and ".test.ts" in c["test_patch"] for c in kept)
+
+
 def test_each_candidate_runs_on_its_own_model(cross):
     cross["run"]()
     assert sorted(cross["models"]) == [(0, "opus"), (1, "sonnet"), (2, "opus")]

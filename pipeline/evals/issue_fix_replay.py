@@ -567,6 +567,59 @@ def oracle_regressions(r6_red: prove.Legs | None, failing: list[str] | None
     return sorted(set(failing) - set(before))
 
 
+def oracle_verdict(instance: Instance, fix_hunks: str, runs: dict[str, prove.Legs], *,
+                   base: prove.PinnedBase, pre_patch: str, label: str,
+                   r6_red: prove.Legs | None) -> str:
+    """How the PR's own tests answer `fix_hunks`: `pass`, `fail` (they ran and
+    refused it), `unbound` (they never bound to the tree, so they judge
+    nothing), `no-fix` (nothing to measure), `no-oracle` (no command). The legs
+    land in `runs` under `oracle_pass` and `oracle_pass_confirm`."""
+    oracle = oracle_command(instance.test_files)
+    if oracle is None:
+        return "no-oracle"
+    # A run that changed no non-test file leaves the bug in place, so the PR's
+    # own test cannot pass and the sandbox has nothing to measure.
+    if not fix_hunks.strip():
+        return "no-fix"
+    pr_test_hunks = diffpaths.filter_diff(instance.landed_diff, diffpaths.is_test_path)
+    oracle_patch = prove.flatten(base.clone, pre_patch, pr_test_hunks, fix_hunks, label=label)
+    green = prove.green_legs(base, patch=oracle_patch, test_cmd=oracle, label=label,
+                             tail_bytes=PARSE_TAIL_BYTES)
+    runs["oracle_pass"] = green
+    # The oracle runs the PR's test files whole, so it carries the same
+    # contamination R6 reads past; the R6 red leg is its baseline.
+    held = (
+        _leg_status(green, gates.SENTINEL_PASS) == "ok" if r6_red is None
+        else _green_holds(r6_red, green, instance.landed_diff, runs=runs,
+                          confirm_key="oracle_pass_confirm",
+                          rerun=lambda: prove.green_legs(
+                              base, patch=oracle_patch, test_cmd=oracle, label=label,
+                              tail_bytes=PARSE_TAIL_BYTES)))
+    never_ran = any(verify_driver.tests_never_ran(leg["output_tail"])
+                    for key in ("oracle_pass", "oracle_pass_confirm")
+                    if (leg := runs.get(key)) is not None)
+    return "pass" if held else ("unbound" if never_ran else "fail")
+
+
+def candidate_scores(instance: Instance, lane_result: LaneRun, *, base: prove.PinnedBase,
+                     pre_patch: str, label: str, r6_red: prove.Legs | None) -> list[dict]:
+    """Each cross-lane candidate's fix answered by the PR's own tests, beside the
+    lane's own account of it (its ending, whether its tests reproduced, which
+    reproductions its fix passed): the evidence for judging a selection rule
+    without running the agents again. Empty for a lane with no candidates."""
+    result = lane_result.result or {}
+    summaries = {c.get("index"): c for c in result.get("candidates") or []}
+    out: list[dict] = []
+    for cand in result.get("candidate_patches") or []:
+        runs: dict[str, prove.Legs] = {}
+        outcome = oracle_verdict(instance, str(cand.get("fix_patch") or ""), runs, base=base,
+                                 pre_patch=pre_patch, label=label, r6_red=r6_red)
+        out.append({**summaries.get(cand.get("index"), {}), "oracle": outcome,
+                    "oracle_regressed": (oracle_regressions(r6_red, _oracle_failing(runs))
+                                         if outcome == "fail" else None)})
+    return out
+
+
 def score(instance: Instance, lane_result: LaneRun, oracle_runs: dict[str, prove.Legs], *,
           base: prove.PinnedBase, pre_patch: str, label: str,
           r6_red: prove.Legs | None = None,
@@ -611,34 +664,8 @@ def score(instance: Instance, lane_result: LaneRun, oracle_runs: dict[str, prove
                                  test_cmd=lane_cmd, label=label,
                                  tail_bytes=PARSE_TAIL_BYTES)))
 
-    # How the PR's own tests answered the lane's fix: `pass`, `fail` (they ran
-    # and refused it), `unbound` (they never bound to the tree, so they judge
-    # nothing), `no-fix` (nothing to measure), `no-oracle` (no command).
-    oracle_outcome = "no-oracle"
-    oracle = oracle_command(instance.test_files)
-    # A run that changed no non-test file leaves the bug in place, so the PR's
-    # own test cannot pass and the sandbox has nothing to measure.
-    if oracle is not None and not lane_fix_hunks.strip():
-        oracle_outcome = "no-fix"
-    if oracle is not None and lane_fix_hunks.strip():
-        oracle_patch = prove.flatten(base.clone, pre_patch, pr_test_hunks,
-                                     lane_fix_hunks, label=label)
-        green = prove.green_legs(base, patch=oracle_patch, test_cmd=oracle, label=label,
-                                 tail_bytes=PARSE_TAIL_BYTES)
-        oracle_runs["oracle_pass"] = green
-        # The oracle runs the PR's test files whole, so it carries the same
-        # contamination R6 reads past; the R6 red leg is its baseline.
-        held = (
-            _leg_status(green, gates.SENTINEL_PASS) == "ok" if r6_red is None
-            else _green_holds(r6_red, green, instance.landed_diff, runs=oracle_runs,
-                              confirm_key="oracle_pass_confirm",
-                              rerun=lambda: prove.green_legs(
-                                  base, patch=oracle_patch, test_cmd=oracle, label=label,
-                                  tail_bytes=PARSE_TAIL_BYTES)))
-        never_ran = any(verify_driver.tests_never_ran(leg["output_tail"])
-                        for key in ("oracle_pass", "oracle_pass_confirm")
-                        if (leg := oracle_runs.get(key)) is not None)
-        oracle_outcome = "pass" if held else ("unbound" if never_ran else "fail")
+    oracle_outcome = oracle_verdict(instance, lane_fix_hunks, oracle_runs, base=base,
+                                    pre_patch=pre_patch, label=label, r6_red=r6_red)
 
     # A test that never bound to the tree neither passes nor refutes: the row
     # reads "-" and no false accept is read from it.
@@ -738,6 +765,14 @@ def run_instance(instance: Instance, *, base: prove.PinnedBase, base_sha: str,
     oracle_runs: dict[str, prove.Legs] = {}
     scores = score(instance, lane_result, oracle_runs, base=base, pre_patch=pre_patch,
                    label=label, r6_red=r6_legs.get("red"), judge_contract=judge_contract)
+    candidates = candidate_scores(instance, lane_result, base=base, pre_patch=pre_patch,
+                                  label=label, r6_red=r6_legs.get("red"))
+    if candidates:
+        workdir.mkdir(parents=True, exist_ok=True)
+        (workdir / "candidates.json").write_text(json.dumps({
+            "candidates": candidates,
+            "patches": (lane_result.result or {}).get("candidate_patches")}, indent=1) + "\n")
+        scores["candidates"] = candidates
     return {"issue": instance.issue, "pr": instance.pr, "ending": lane_result.ending,
             "seconds": seconds, "r6_seconds": r6_seconds, "detail": lane_result.detail,
             "r6_contaminants": contaminants, "oracle_runs": oracle_runs,
