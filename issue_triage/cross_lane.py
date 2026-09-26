@@ -17,7 +17,9 @@ the full suite) together with the tests of every reproduction it passed
 (`shipped_reproductions`). Agreement proves the fix does what the report asks,
 never that it does nothing more, so a fix that clears the checks then faces the
 scope-safety reviewer (`review_issue_fix`), and ends `fixed` only on its
-explicit `safe`.
+explicit `safe`. The reviewer's inventory of unasked changes to inputs that
+worked vetoes a `safe` only on tier-0 paths; elsewhere it is recorded beside the
+verdict for the maintainer who reviews the proposal.
 
 `run` returns the staged lane's `LaneResult`, so the replay scores it like the
 other lanes; `agent_runs` counts every candidate and the reviewer.
@@ -274,7 +276,8 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
         review = review_issue_fix.review(
             str(tree), pick.fix_patch, lens="scope-safety", title=spec.title, body=spec.body,
             root_cause=str(pick.verdict["root_cause"]), test_paths=test_paths,
-            evidence=_evidence(result["proof"], shipped))
+            evidence=_evidence(result["proof"], shipped),
+            inventory_veto=result["tier"].get("tier") == 0)
         result["reviews"] = [review]
         if review.get("failed"):
             return finish("run-failed", str(review.get("reason")
