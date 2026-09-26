@@ -446,8 +446,8 @@ def test_a_regress_run_excludes_the_tree_s_own_failures(suite):
     calls, answers = suite
     answers[:] = [(0, _trailer("baseline", ["old.test.ts"])), (0, _trailer("regress", []))]
     out = prove.suite_regress(BASE, "PRE", FIX, label="l")
-    assert out == {"exit": 0, "exit_confirm": None, "confirmed": False, "flake": False,
-                   "excluded": 1, "new_failures": []}
+    assert out == {"exit": 0, "exit_confirm": None, "exit_rerun": None, "confirmed": False,
+                   "flake": False, "excluded": 1, "rebaselined": [], "new_failures": []}
     run = calls[1]
     assert run["phase"] == "regress"
     assert json.loads(Path(run["exclude_file"]).read_text()) == ["old.test.ts"]
@@ -458,10 +458,40 @@ def test_a_regress_run_excludes_the_tree_s_own_failures(suite):
 def test_a_regression_is_confirmed_by_a_second_container(suite):
     calls, answers = suite
     answers[:] = [(0, _trailer("baseline", [])), (20, _trailer("regress", ["new.test.ts"])),
-                  (20, _trailer("regress", ["new.test.ts", "two.test.ts"]))]
+                  (20, _trailer("regress", ["new.test.ts", "two.test.ts"])),
+                  (0, _trailer("baseline", []))]
     out = prove.suite_regress(BASE, None, FIX, label="l")
     assert out["confirmed"] is True and out["flake"] is False
     assert out["new_failures"] == ["new.test.ts", "two.test.ts"]
+    assert out["rebaselined"] == [] and out["exit_rerun"] is None
+    assert [c["phase"] for c in calls] == ["baseline", "regress", "regress", "baseline"]
+
+
+def test_a_file_the_tree_now_fails_too_is_excluded_and_a_third_run_decides(suite):
+    calls, answers = suite
+    answers[:] = [(0, _trailer("baseline", ["old.test.ts"])),
+                  (20, _trailer("regress", ["flaky.test.ts"])),
+                  (20, _trailer("regress", ["flaky.test.ts"])),
+                  (0, _trailer("baseline", ["flaky.test.ts"])),
+                  (0, _trailer("regress", []))]
+    out = prove.suite_regress(BASE, "PRE", FIX, label="l")
+    assert out["confirmed"] is False and out["flake"] is True
+    assert out["rebaselined"] == ["flaky.test.ts"] and out["exit_rerun"] == 0
+    assert json.loads(Path(calls[4]["exclude_file"]).read_text()) == [
+        "flaky.test.ts", "old.test.ts"]
+    assert prove.suite_baseline(BASE, "PRE", label="l") == ["flaky.test.ts", "old.test.ts"]
+
+
+def test_a_regression_beyond_the_fresh_baseline_is_still_confirmed(suite):
+    calls, answers = suite
+    answers[:] = [(0, _trailer("baseline", [])),
+                  (20, _trailer("regress", ["flaky.test.ts", "real.test.ts"])),
+                  (20, _trailer("regress", ["flaky.test.ts", "real.test.ts"])),
+                  (0, _trailer("baseline", ["flaky.test.ts"])),
+                  (20, _trailer("regress", ["real.test.ts"]))]
+    out = prove.suite_regress(BASE, None, FIX, label="l")
+    assert out["confirmed"] is True and out["flake"] is False
+    assert out["new_failures"] == ["real.test.ts"]
 
 
 def test_a_failure_the_second_container_does_not_repeat_is_a_flake(suite):

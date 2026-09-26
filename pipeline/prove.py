@@ -307,19 +307,15 @@ def _pre_patch_file(pre_patch: str | None, label: str) -> Path | None:
     return compose(label, pre_patch) if pre_patch else None
 
 
-def suite_baseline(base: PinnedBase, pre_patch: str | None, *, label: str) -> list[str]:
-    """The full suite's own failing files over `base` with `pre_patch` applied,
-    cached under the verify scratch by that tree, so each tree's suite runs
-    once. Raises SuiteFault when the run does not complete, and RuntimeError
-    when the profile carries no suite contract."""
-    _check_label(label)
-    cache = verify_driver.SCRATCH / "suite-baseline" / f"{_tree_key(base, pre_patch)}.json"
-    try:
-        cached = json.loads(cache.read_text())
-        if isinstance(cached, list) and all(isinstance(f, str) for f in cached):
-            return cached
-    except (OSError, ValueError):
-        pass
+def _baseline_cache(base: PinnedBase, pre_patch: str | None) -> Path:
+    return verify_driver.SCRATCH / "suite-baseline" / f"{_tree_key(base, pre_patch)}.json"
+
+
+def _baseline_run(base: PinnedBase, pre_patch: str | None, *, label: str) -> list[str]:
+    """One full-suite run over `base` with `pre_patch` applied, returning the
+    files it fails. The container runs no lane code, so its trailer's names
+    are the tree's own. Raises SuiteUnplannable, or SuiteFault when the run does
+    not complete."""
     rc, tail = verify_driver.run_phase(
         "baseline", base.image, tier=base.tier, base_sha=base.sha, test_cmd="true",
         suite_config=verify_driver.write_suite_config(),
@@ -334,17 +330,36 @@ def suite_baseline(base: PinnedBase, pre_patch: str | None, *, label: str) -> li
             or not isinstance(failed, list) or not all(isinstance(f, str) for f in failed)):
         raise SuiteFault(f"the suite baseline did not complete (exit {rc}): "
                          f"{verify_driver.error_excerpt(tail)}")
-    cache.parent.mkdir(parents=True, exist_ok=True)
-    cache.write_text(json.dumps(sorted(failed)))
     return sorted(failed)
+
+
+def suite_baseline(base: PinnedBase, pre_patch: str | None, *, label: str) -> list[str]:
+    """The full suite's own failing files over `base` with `pre_patch` applied,
+    cached under the verify scratch by that tree, so each tree's suite runs
+    once. Raises SuiteFault when the run does not complete, and RuntimeError
+    when the profile carries no suite contract."""
+    _check_label(label)
+    cache = _baseline_cache(base, pre_patch)
+    try:
+        cached = json.loads(cache.read_text())
+        if isinstance(cached, list) and all(isinstance(f, str) for f in cached):
+            return cached
+    except (OSError, ValueError):
+        pass
+    failed = _baseline_run(base, pre_patch, label=label)
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text(json.dumps(failed))
+    return failed
 
 
 class SuiteRegress(TypedDict):
     exit: int
     exit_confirm: int | None
+    exit_rerun: int | None
     confirmed: bool
     flake: bool
     excluded: int
+    rebaselined: list[str]
     new_failures: list[str]
 
 
@@ -352,10 +367,13 @@ def suite_regress(base: PinnedBase, pre_patch: str | None, patch: str, *,
                   label: str) -> SuiteRegress:
     """The full suite over `base` + `pre_patch` + `patch`, every file its own
     baseline already fails excluded. A failing run is confirmed by a second
-    container; a second run that passes reads as a flake. `confirmed` is the
-    verdict: the patch makes the suite fail beyond what the tree already
-    failed. `new_failures` names the files the runner reported, as evidence.
-    Raises SuiteFault when either run does not complete."""
+    container; a second run that passes reads as a flake. A file flaky on the
+    tree itself can pass the cached baseline and fail both runs under load, so a
+    second failure runs the tree's baseline again: files it now fails join the
+    exclusions (and the cache), and a third run decides. `confirmed` is the
+    verdict, read from exit codes alone: the patch makes the suite fail beyond
+    what the tree fails. `new_failures` names the files the runner reported, as
+    evidence. Raises SuiteFault when a run does not complete."""
     baseline = suite_baseline(base, pre_patch, label=label)
     exclude = verify_driver.SCRATCH / "suite-exclude" / f"{_tree_key(base, pre_patch)}.json"
     exclude.parent.mkdir(parents=True, exist_ok=True)
@@ -375,15 +393,33 @@ def suite_regress(base: PinnedBase, pre_patch: str | None, patch: str, *,
         return rc, tail
 
     first, tail = run()
-    out: SuiteRegress = {"exit": first, "exit_confirm": None, "confirmed": False,
-                         "flake": False, "excluded": len(baseline), "new_failures": []}
-    if first == gates.SENTINEL_TEST_FAIL:
-        out["new_failures"] = verify_driver._advisory_failures(tail)
-        second, tail2 = run()
-        out["exit_confirm"] = second
-        out["confirmed"] = second == gates.SENTINEL_TEST_FAIL
-        out["flake"] = second == gates.SENTINEL_PASS
-        if out["confirmed"]:
-            out["new_failures"] = sorted(set(out["new_failures"])
-                                         | set(verify_driver._advisory_failures(tail2)))
+    out: SuiteRegress = {"exit": first, "exit_confirm": None, "exit_rerun": None,
+                         "confirmed": False, "flake": False, "excluded": len(baseline),
+                         "rebaselined": [], "new_failures": []}
+    if first != gates.SENTINEL_TEST_FAIL:
+        return out
+    out["new_failures"] = verify_driver._advisory_failures(tail)
+    second, tail2 = run()
+    out["exit_confirm"] = second
+    if second == gates.SENTINEL_PASS:
+        out["flake"] = True
+        return out
+    fresh = _baseline_run(base, pre_patch, label=label)
+    added = sorted(set(fresh) - set(baseline))
+    if not added:
+        out["confirmed"] = True
+        out["new_failures"] = sorted(set(out["new_failures"])
+                                     | set(verify_driver._advisory_failures(tail2)))
+        return out
+    baseline = sorted(set(baseline) | set(fresh))
+    _baseline_cache(base, pre_patch).write_text(json.dumps(baseline))
+    exclude.write_text(json.dumps(baseline))
+    out["rebaselined"] = added
+    out["excluded"] = len(baseline)
+    third, tail3 = run()
+    out["exit_rerun"] = third
+    out["confirmed"] = third == gates.SENTINEL_TEST_FAIL
+    out["flake"] = not out["confirmed"]
+    out["new_failures"] = (verify_driver._advisory_failures(tail3) if out["confirmed"]
+                           else out["new_failures"])
     return out

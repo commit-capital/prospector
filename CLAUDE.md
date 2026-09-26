@@ -347,7 +347,9 @@ changed lines) on the paths it really touched before the reproduction must turn
 green and the preservation tests stay green. A fix that clears its checks then
 runs the full suite (`prove.suite_regress`, `TRIAGE_ISSUE_FIX_SUITE`, on by
 default) over the lane's tree against that tree's own failing set, cached per
-tree (`prove.suite_baseline`); a failure a second container confirms refuses
+tree (`prove.suite_baseline`); a failure a second container confirms re-runs
+the tree's baseline under the same load, files it now fails join the tree's
+exclusions, and a third run's exit decides — a failure that survives refuses
 the fix. The suite runner (`sandbox/verify-suite.mjs`) plans through the
 tree's stabilized wrapper, and plans a tree whose wrapper cannot answer from
 vitest's own file listing; a tree neither can plan (`gates.SENTINEL_NO_PLAN`)
