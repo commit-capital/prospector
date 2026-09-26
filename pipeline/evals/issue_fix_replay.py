@@ -349,15 +349,17 @@ def _leg_evidence(legs: dict[str, prove.Legs]) -> dict[str, dict]:
 
 
 def _lane_evidence(lane_result: LaneRun) -> dict:
-    """What the lane itself reported: each reviewer's verdict, the sandbox runs
-    its agents made, the related tests the host ran over the fix, and the size
-    of the patch they produced."""
+    """What the lane itself reported: each reviewer's verdict and the unasked
+    changes it listed, the sandbox runs its agents made, the related tests the
+    host ran over the fix, the size of the patch they produced, and which
+    candidate the cross lane picked."""
     result = lane_result.result or {}
     related = (result.get("proof") or {}).get("related_tests") or {}
     reviews = [
         {"verdict": r.get("verdict"), "failed": r.get("failed"),
          "lens": r.get("lens") or r.get("name"),
-         "reason": str(r.get("reason") or r.get("summary") or "")[:_REASON_MAX]}
+         "reason": str(r.get("reason") or r.get("summary") or "")[:_REASON_MAX],
+         "unasked": [str(u)[:_REASON_MAX] for u in (r.get("unasked") or [])[:_CHECKS_MAX]]}
         for r in (result.get("reviews") or [])[:_REVIEWS_MAX]]
     checks = [
         {"lane": c.get("lane"), "exit": c.get("exit"), "refused": c.get("refused"),
@@ -375,6 +377,7 @@ def _lane_evidence(lane_result: LaneRun) -> dict:
                           "base_fails": bool(related.get("base_fails"))} if related else None,
         "patch": {"files": len(changed), "lines": lines, "paths": changed[:_CHECKS_MAX]},
         "repro_outcome": (lane_result.reproduction or {}).get("outcome"),
+        "pick": result.get("pick"),
     }
 
 

@@ -324,7 +324,8 @@ def test_a_run_measures_the_lane_it_names(builder, ledger, tmp_path, monkeypatch
 
     def run_instance(inst, *, base, base_sha, profile, workdir, run_lane, judge_contract):
         lanes.add(run_lane)
-        return {"issue": inst.issue, "pr": inst.pr, "ending": "no-fix", "agent_runs": 1}
+        return {"issue": inst.issue, "pr": inst.pr, "ending": "no-fix", "agent_runs": 1,
+                "lane": {"reviews": []}}
 
     monkeypatch.setattr(replay, "run_instance", run_instance)
     eval_set.run(name="solo", passes=1, concurrency=1, refresh=False, issues=None,
@@ -332,6 +333,9 @@ def test_a_run_measures_the_lane_it_names(builder, ledger, tmp_path, monkeypatch
     assert lanes == {replay._run_solo}
     card = [r["stats"] for r in ledger.rows if r["phase"] == eval_set.RUN_PHASE][-1]
     assert card["lane"] == "solo"
+    instance = [r["stats"] for r in ledger.rows if r["phase"] == "replay:instance"]
+    assert instance and all(st["eval_lane"] == "solo" for st in instance)
+    assert all(st["lane"] == {"reviews": []} for st in instance)
 
 
 def test_a_run_halts_when_the_agent_can_serve_nothing(builder, ledger, tmp_path, monkeypatch):
