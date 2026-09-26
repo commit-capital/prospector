@@ -5,6 +5,7 @@ only the module's own wiring runs; `transform_to_p` alone touches real git."""
 from __future__ import annotations
 
 import os
+import json
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -781,3 +782,51 @@ def test_score_reads_the_lane_s_preservation_tests_as_its_own(tmp_path, generic_
     rec, _ = _score(tmp_path, monkeypatch, lane,
                     red=_RED_2020, lane_green=_GREEN_00, oracle_green=_GREEN_00)
     assert rec["test_tamper"] is False
+
+
+def test_run_instance_scores_every_cross_candidate_against_the_oracle(
+        tmp_path, generic_profile, monkeypatch) -> None:
+    monkeypatch.setattr(replay, "transform_to_p",
+                        lambda base_clone, merge_sha, base_sha, profile: "PRE")
+    good = FIX_ONLY
+    bad = FIX_ONLY.replace("return 1", "return 2")
+    monkeypatch.setattr(prove, "flatten", lambda base_clone, *parts, label: Path(
+        "/tmp/good" if any(p == good or "def compute" in p for p in parts) else "/tmp/other"))
+    monkeypatch.setattr(prove, "red_legs",
+                        lambda base, *, patch, test_cmd, label, tail_bytes=0: _RED_2020)
+    monkeypatch.setattr(
+        prove, "green_legs", lambda base, *, patch, test_cmd, label, tail_bytes=0:
+        _GREEN_00 if "test_app" not in test_cmd or str(patch) == "/tmp/good"
+        else _legs(gates.SENTINEL_TEST_FAIL, None))
+    lane = _lane("fix-disputed", patch="")
+    lane.result["candidates"] = [
+        {"index": 0, "model": "opus", "ending": None, "reproduces": True, "passes": {"0": True}},
+        {"index": 1, "model": "sonnet", "ending": None, "reproduces": True,
+         "passes": {"1": True}},
+        {"index": 2, "model": "opus", "ending": "no-fix", "reproduces": False, "passes": {}}]
+    lane.result["candidate_patches"] = [
+        {"index": 0, "test_patch": "", "fix_patch": good},
+        {"index": 1, "test_patch": "", "fix_patch": bad},
+        {"index": 2, "test_patch": "", "fix_patch": ""}]
+
+    rec = replay.run_instance(_instance(), base=_base(tmp_path), base_sha="e" * 40,
+                              profile=generic_profile, workdir=tmp_path / "work",
+                              run_lane=lambda **kw: lane)
+    assert [(c["index"], c["model"], c["oracle"]) for c in rec["candidates"]] == [
+        (0, "opus", "pass"), (1, "sonnet", "fail"), (2, "opus", "no-fix")]
+    assert rec["candidates"][0]["passes"] == {"0": True}
+    written = json.loads((tmp_path / "work" / "candidates.json").read_text())
+    assert written["candidates"] == rec["candidates"]
+    assert written["patches"][1]["fix_patch"] == bad
+
+
+def test_run_instance_records_no_candidates_for_a_one_agent_lane(
+        tmp_path, generic_profile, monkeypatch) -> None:
+    monkeypatch.setattr(replay, "transform_to_p",
+                        lambda base_clone, merge_sha, base_sha, profile: "PRE")
+    _mock_legs(monkeypatch, red=_RED_2020, lane_green=_GREEN_00, oracle_green=_GREEN_00)
+    rec = replay.run_instance(_instance(), base=_base(tmp_path), base_sha="e" * 40,
+                              profile=generic_profile, workdir=tmp_path / "work",
+                              run_lane=lambda **kw: _lane("fixed"))
+    assert "candidates" not in rec
+    assert not (tmp_path / "work" / "candidates.json").exists()

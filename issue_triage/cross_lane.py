@@ -205,7 +205,9 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
                 lambda im: _author(spec, workdir, Candidate(index=im[0], model=im[1]),
                                    pre_patch_file), enumerate(models)))
         result = {"candidates": [c.summary() for c in cands], "proof": {}, "reviews": [],
-                  "patch": ""}
+                  "patch": "",
+                  "candidate_patches": [{"index": c.index, "test_patch": c.test_patch,
+                                         "fix_patch": c.fix_patch} for c in cands]}
         live = [c for c in cands if c.ending is None]
         if not live:
             endings = [c.ending for c in cands]
