@@ -374,13 +374,18 @@ def json_reply(run: Callable[[], str]) -> tuple[dict, str]:
     """`run` the agent and parse the JSON object out of its answer, running it
     once more when the first answer carries no parseable object — a reply cut
     off mid-string is the run's accident, not the prompt's verdict. Returns
-    the object with the text it came from; the second failure raises."""
+    the object with the text it came from; the second failure raises, naming
+    how the answer ended."""
     text = run()
     try:
         return extract_json(text), text
     except ValueError:
         text = run()
-        return extract_json(text), text
+        try:
+            return extract_json(text), text
+        except ValueError as e:
+            tail = " ".join(text.split())[-300:] or "(an empty answer)"
+            raise ValueError(f"{e}; the answer ended: {tail}") from e
 
 
 def run_agent(prompt: str, *, allow_gh: bool, cwd: str, system_prompt: str | None = None,

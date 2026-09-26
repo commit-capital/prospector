@@ -163,7 +163,8 @@ def changed_line_count(patch: str) -> int:
 def fix_patch_regate(patch: str, *, changes: list[author_fix.Change],
                      max_lines: int) -> tuple[bool, str]:
     """Whether an agent's finished fix may go on to proof: (ok, reason). The
-    patch is held to what the agent reported and to the paths, size, and kinds
+    patch is held to what the agent reported — the test files it reported
+    aside, which belong to its reproduction — and to the paths, size, and kinds
     of change an issue-driven fix may make. Fail-closed."""
     if not patch.startswith("diff "):
         return False, "the fix is empty or not a diff"
@@ -176,13 +177,14 @@ def fix_patch_regate(patch: str, *, changes: list[author_fix.Change],
     paths = diffpaths.changed_paths(patch)
     if not paths:
         return False, "the fix names no path"
-    try:
-        author_fix.assert_disclosed(changes, paths)
-    except ValueError as e:
-        return False, str(e)
     tests = [p for p in paths if diffpaths.is_test_path(p)]
     if tests:
         return False, f"the fix touches test files: {', '.join(tests)}"
+    try:
+        author_fix.assert_disclosed(
+            [c for c in changes if not diffpaths.is_test_path(c["path"])], paths)
+    except ValueError as e:
+        return False, str(e)
     if gates.deps_touched(paths):
         return False, "the fix changes a dependency manifest"
     withheld = gates.fix_withheld_paths(paths)
