@@ -14,10 +14,13 @@ cannot both be passed, so a disagreement ends the run `fix-disputed`: the
 report leaves the correct behavior open. The smallest agreed fix then goes
 through the host's checks (`solo_lane.host_checks`: compile, related tests,
 the full suite) together with the tests of every reproduction it passed
-(`shipped_reproductions`), and ends `fixed` when it clears them.
+(`shipped_reproductions`). Agreement proves the fix does what the report asks,
+never that it does nothing more, so a fix that clears the checks then faces the
+scope-safety reviewer (`review_issue_fix`), and ends `fixed` only on its
+explicit `safe`.
 
 `run` returns the staged lane's `LaneResult`, so the replay scores it like the
-other lanes; `agent_runs` counts every candidate.
+other lanes; `agent_runs` counts every candidate and the reviewer.
 """
 from __future__ import annotations
 
@@ -27,7 +30,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from issue_triage import fix_lane, issue_gates, lane_check, lane_tree, solo_lane
+from issue_triage import fix_lane, issue_gates, lane_check, lane_tree, review_issue_fix, solo_lane
 from pipeline import (
     check_records,
     diffpaths,
@@ -138,6 +141,35 @@ def shipped_reproductions(pick: Candidate, repros: list[Candidate]) -> list[Cand
     return shipped
 
 
+def _evidence(proof: dict, shipped: list[Candidate]) -> str:
+    """What the host observed, in words, for the scope-safety reviewer."""
+    lines = [f"- {len(shipped)} independent reproduction(s) "
+             f"({', '.join(p for r in shipped for p in r.test_paths)}) each failed twice on "
+             "the unfixed tree and passed twice with this change applied."]
+    compiled = proof.get("compile")
+    if compiled:
+        lines.append("- The compile command passes with the change applied."
+                     if compiled.get("exit") == gates.SENTINEL_PASS
+                     else "- The compile command fails on the unfixed tree too.")
+    related = proof.get("related_tests")
+    if related:
+        run = related.get("run") or {}
+        verdict = ("passed" if run.get("exit") == gates.SENTINEL_PASS
+                   else "failed, and fails on the unfixed tree too" if related.get("base_fails")
+                   else f"failed (exit {run.get('exit')})")
+        lines.append(f"- Related existing tests ({', '.join(related.get('files') or [])}): "
+                     f"{verdict}.")
+    else:
+        lines.append("- Related existing tests: none were found for the changed paths.")
+    suite = proof.get("suite")
+    if suite and not suite.get("skipped"):
+        lines.append("- The full test suite shows no failure the unfixed tree does not.")
+    lines.append("- Every reproduction checks the behavior the report asks for; none checks "
+                 "what must stay unchanged, so no test here would catch a change that does "
+                 "more than the report asks.")
+    return "\n".join(lines)
+
+
 def run(spec: fix_lane.LaneSpec, *, workdir: Path,
         on_step: Callable[[str], None] = lambda step: None) -> fix_lane.LaneResult:
     """Several agents reproduce and fix `spec`'s issue; cross-testing their
@@ -233,8 +265,23 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
             proof=result["proof"], on_step=on_step, own_green=False)
         if blocked:
             return finish(*blocked)
+
+        on_step("reviewing: scope-safety")
+        lane_tree.apply_patch(tree, test_patch + pick.fix_patch)
+        agent_runs += 1
+        review = review_issue_fix.review(
+            str(tree), pick.fix_patch, lens="scope-safety", title=spec.title, body=spec.body,
+            root_cause=str(pick.verdict["root_cause"]), test_paths=test_paths,
+            evidence=_evidence(result["proof"], shipped))
+        result["reviews"] = [review]
+        if review.get("failed"):
+            return finish("run-failed", str(review.get("reason")
+                                            or "the reviewing agent did not finish"))
+        if review.get("verdict") != "safe":
+            return finish("fix-rejected", f"scope-safety: {review.get('reason') or 'not safe'}")
         return finish("fixed", f"{len(agreed)} of {len(live)} fixes pass all {len(repros)} "
-                               "reproductions; the smallest clears the host's checks")
+                               "reproductions; the smallest clears the host's checks and the "
+                               "scope-safety review")
     except headless_agent.AgentUnavailable as e:
         return finish("agent-unavailable", str(e))
     except headless_agent.AgentDeclined as e:

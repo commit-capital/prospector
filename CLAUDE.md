@@ -360,7 +360,10 @@ several such agents at once (`TRIAGE_ISSUE_FIX_MODELS`, one candidate per
 model), proves each candidate's tests red on the unfixed tree, runs every fix
 against every reproduction, and judges only a fix that passes each of them and
 at least two, shipping it with the tests of every reproduction it passed:
-candidates whose reproductions pin different behavior end `fix-disputed`. The scope-safety
+candidates whose reproductions pin different behavior end `fix-disputed`.
+Agreement proves a fix does what the report asks, never that it does nothing
+more, so a cross-lane fix that clears the host's checks faces the scope-safety
+reviewer too and ends `fixed` only on its explicit `safe`. The scope-safety
 reviewer returns an inventory of every behavior the change alters, each marked
 asked-for or not and as working before or not, and `review_issue_fix` reads an
 unasked change to an input that worked as unsafe. All
@@ -379,7 +382,7 @@ that result for a maintainer's review through `executor.propose_issue_fix`: the
 run must pass `issue_gates.propose_gate` (ended `fixed`, issue still open, report
 unedited, patch scans clear) and its rendering `fix_pr_body.problems` (the
 profile's required sections, each filled by its heading; exactly `Fixes #N`;
-agent text held to inert plain text); the push user commits the exact patch on
+agent text held to inert plain text; a tier-0 change carries a warning); the push user commits the exact patch on
 the proven base and pushes it to its own fork of `TRIAGE_REPO`, fenced by
 `propose.assert_propose_target` to branch `prospector/issue-<n>-<report sha[:8]>`,
 never overwriting one; and the bot opens the pull request through

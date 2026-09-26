@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from issue_triage import cross_lane, fix_lane, solo_lane
+from issue_triage import cross_lane, fix_lane, review_issue_fix, solo_lane
 from pipeline import gates, headless_agent, prove, resolve_evidence, verify_driver
 
 
@@ -88,6 +88,16 @@ def cross(tmp_path, monkeypatch):
     monkeypatch.setattr(prove, "green_legs", fake_green)
     monkeypatch.setattr(prove, "run_command", lambda *a, **k: {"exit": 0, "output_tail": ""})
     monkeypatch.setattr(resolve_evidence, "related_tests", lambda wt, paths: [])
+    state["review"] = {"lens": "scope-safety", "verdict": "safe", "reason": "only x",
+                       "concerns": []}
+    state["reviewed"] = []
+
+    def fake_review(worktree, patch, **kw):
+        state["reviewed"].append({"worktree": worktree, "patch": patch, **kw})
+        assert (Path(worktree) / "src" / "x.ts").read_text().startswith("export const x = 2")
+        return state["review"]
+
+    monkeypatch.setattr(review_issue_fix, "review", fake_review)
 
     def run() -> fix_lane.LaneResult:
         spec = fix_lane.LaneSpec(issue=7, title="x is wrong", body="x should be 2", base=base)
@@ -101,7 +111,7 @@ def cross(tmp_path, monkeypatch):
 def test_candidates_that_agree_end_fixed_with_the_smallest_fix(cross):
     res = cross["run"]()
     assert res.ending == "fixed" and res.fault is False
-    assert res.agent_runs == 3
+    assert res.agent_runs == 4
     assert res.result["pick"] in (0, 1)  # candidate 2's fix is the largest
     pick = res.result["pick"]
     assert res.result["agreement"] == {"reproductions": [0, 1, 2], "agreed": [0, 1, 2],
@@ -192,3 +202,33 @@ def test_every_clone_is_removed_afterward(cross):
     cross["run"]()
     assert not any(p.name.startswith("cand-") or p.name == "pick"
                    for p in cross["workdir"].iterdir() if p.is_dir())
+
+
+def test_the_picked_fix_faces_the_scope_safety_reviewer_with_it_applied(cross):
+    res = cross["run"]()
+    [review] = cross["reviewed"]
+    assert review["lens"] == "scope-safety" and "src/x.ts" in review["patch"]
+    assert "reproduction" in review["evidence"]
+    assert res.result["reviews"] == [cross["review"]]
+
+
+def test_a_fix_the_reviewer_judges_unsafe_ends_fix_rejected(cross):
+    cross["review"] = {"lens": "scope-safety", "verdict": "unsafe",
+                       "reason": "widens access for viewers", "concerns": []}
+    res = cross["run"]()
+    assert res.ending == "fix-rejected" and "widens access" in res.detail
+
+
+def test_a_reviewer_that_never_reached_a_verdict_is_a_machine_fault(cross):
+    cross["review"] = {"lens": "scope-safety", "verdict": "unsafe", "failed": True,
+                       "reason": "the reviewing agent did not finish", "concerns": []}
+    res = cross["run"]()
+    assert res.ending == "run-failed" and res.fault is True
+
+
+def test_no_review_runs_when_the_host_s_checks_refuse(cross, monkeypatch):
+    monkeypatch.setattr(fix_lane, "suite_proof", lambda spec, patch, label: {
+        "exit": 20, "exit_confirm": 20, "confirmed": True, "flake": False, "excluded": 0,
+        "new_failures": ["src/other.test.ts"]})
+    cross["run"]()
+    assert cross["reviewed"] == []
