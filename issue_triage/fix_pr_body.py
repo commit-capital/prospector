@@ -105,6 +105,7 @@ def render(*, issue: int, result: dict, tests: list[str], base_sha: str, report_
     changes = [f"- `{_clean(c.get('path', ''), 200)}`: {_clean(c.get('rationale', ''))}"
                for c in (result.get("changes") or [])]
     model_list = ", ".join(sorted(set(models))) or "unrecorded"
+    tier = (result.get("tier") or {}).get("tier")
     blocks = {
         "summary": [
             f"- Issue #{issue} reports a defect in {settings.repo()}.",
@@ -117,7 +118,11 @@ def render(*, issue: int, result: dict, tests: list[str], base_sha: str, report_
         "risks": [
             "- Written by an automated pipeline, not a person: review it as you would an "
             "outside contribution.",
-            f"- Risk tier of the touched paths: {(result.get('tier') or {}).get('tier', '?')}.",
+            f"- Risk tier of the touched paths: {'?' if tier is None else tier}.",
+            *(["- It touches code the repository marks as its highest risk (tier 0: "
+               "permissions, secrets, authentication, supply chain). Check what it allows "
+               "that was not allowed before, not only that it fixes the report."]
+              if tier == 0 else []),
         ],
         "model": [f"- {model_list} (Anthropic Claude, via Claude Code), writing and "
                   "checking the change in an isolated sandbox."],
@@ -137,6 +142,8 @@ def render(*, issue: int, result: dict, tests: list[str], base_sha: str, report_
         "> [!NOTE]",
         "> Opened by Prospector's automated issue-fix pipeline. A maintainer reviews "
         "and decides; nothing here merges on its own.",
+        *(["", "> [!WARNING]", "> This change touches highest-risk code (tier 0). See Risks."]
+          if tier == 0 else []),
         "",
     ]
     for heading, lines in sections:

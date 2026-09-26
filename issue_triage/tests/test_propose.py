@@ -72,6 +72,13 @@ def test_each_required_section_carries_the_block_its_heading_names(monkeypatch):
     assert "Fixes #7" in by_head["Linked Issues"]
 
 
+def test_a_tier_0_change_carries_a_warning():
+    _, body, _ = _rendered(_result(tier={"tier": 0}))
+    assert "[!WARNING]" in body and "highest risk (tier 0" in body
+    _, body, _ = _rendered()
+    assert "[!WARNING]" not in body
+
+
 def test_agent_text_is_held_to_inert_plain_text():
     cleaned = fix_pr_body._clean("see [docs](https://evil.com) and ![x](http://e) @bob\n"
                                  "<img src=x> `code` \u202eevil")

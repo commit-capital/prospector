@@ -48,6 +48,16 @@ def materialize(base_clone: Path, dest: Path, files: Sequence[VerifyAuthoredFile
     return Path(os.path.realpath(dest))
 
 
+def apply_patch(worktree: Path, patch: str) -> None:
+    """Apply `patch` to `worktree`'s files. Raises ValueError when it does not apply."""
+    if not patch.strip():
+        return
+    try:
+        _git(worktree, "apply", "--whitespace=nowarn", "-", input=patch)
+    except subprocess.CalledProcessError as e:
+        raise ValueError(f"the patch does not apply: {e.stderr.strip()}") from e
+
+
 def additive_test_edits(worktree: Path, paths: list[str]) -> list[str]:
     """Those of `paths` whose tracked edit only adds lines to a test file — the
     edits a reproduction may make. A removed line, a rename, a delete, or any
