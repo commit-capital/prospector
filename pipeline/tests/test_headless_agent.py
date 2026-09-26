@@ -398,7 +398,7 @@ def test_json_reply_runs_once_more_when_the_first_answer_is_cut_off():
 
 
 def test_json_reply_raises_after_a_second_cut_off_answer():
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="the answer ended: no json here"):
         ha.json_reply(lambda: "no json here")
 
 

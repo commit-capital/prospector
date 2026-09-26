@@ -199,6 +199,17 @@ def test_a_disclosed_in_bounds_fix_clears_the_regate():
     assert issue_gates.fix_patch_regate(FIX, changes=CHANGES, max_lines=300) == (True, "clean")
 
 
+def test_a_test_file_reported_beside_the_fix_belongs_to_the_reproduction():
+    changes = CHANGES + [{"path": "src/x.test.ts", "rationale": "reproduces it"}]
+    assert issue_gates.fix_patch_regate(FIX, changes=changes, max_lines=300) == (True, "clean")
+
+
+def test_an_unreported_source_file_is_refused_beside_a_reported_test():
+    ok, why = issue_gates.fix_patch_regate(
+        FIX, changes=[{"path": "src/x.test.ts", "rationale": ""}], max_lines=300)
+    assert not ok and "did not report" in why
+
+
 @pytest.mark.parametrize("patch,changes,needle", [
     ("", CHANGES, "not a diff"),
     (FIX, [], "did not report"),
