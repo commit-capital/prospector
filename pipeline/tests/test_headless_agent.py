@@ -571,7 +571,16 @@ def test_env_allow_keeps_the_clis_needs_the_named_variables_and_env_extra(monkey
             "PATH", "PROSPECTOR_CHECK_PR"} <= set(env)
     assert not {"TRIAGE_STORE_URL", "SSH_AUTH_SOCK", "AWS_SECRET_ACCESS_KEY"} & set(env)
     assert all(k in ha._CLI_ENV or k.startswith(ha._CLI_ENV_PREFIXES)
+               or k in ha._FOREGROUND_ENV
                or k in ("DOCKER_HOST", "PROSPECTOR_CHECK_PR") for k in env)
+
+
+@pytest.mark.parametrize("env_allow", [None, ["DOCKER_HOST"]])
+def test_every_agent_runs_its_commands_in_the_foreground(monkeypatch, env_allow):
+    seen = _capture_popen(monkeypatch)
+    ha.run_agent("go", allow_gh=False, cwd="/tmp", env_allow=env_allow)
+    assert seen["env"]["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == "1"
+    assert int(seen["env"]["BASH_MAX_TIMEOUT_MS"]) >= 1_800_000
 
 
 def test_without_env_allow_the_agent_inherits_the_operator_environment(monkeypatch):

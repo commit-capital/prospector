@@ -231,6 +231,15 @@ def _assert_scoped(cwd: str, read_root: str | Sequence[str],
             raise ValueError(f"{name} {path!r} is outside the agent's read roots")
 
 
+# A headless run ends when the agent's turn does, so a command it sends to the
+# background never reports back: the agent says it will wait and the run ends
+# with no answer. Every command runs in the foreground, and may take as long as
+# a sandbox check does.
+_FOREGROUND_ENV = {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
+                   "BASH_DEFAULT_TIMEOUT_MS": "1800000",
+                   "BASH_MAX_TIMEOUT_MS": "1800000"}
+
+
 def _agent_env(env_allow: Sequence[str] | None,
                env_extra: Mapping[str, str] | None) -> dict[str, str]:
     env = operator_env()
@@ -238,6 +247,7 @@ def _agent_env(env_allow: Sequence[str] | None,
         keep = {*_CLI_ENV, *env_allow}
         env = {k: v for k, v in env.items()
                if k in keep or k.startswith(_CLI_ENV_PREFIXES)}
+    env.update(_FOREGROUND_ENV)
     if env_extra:
         env.update(env_extra)
     return env
