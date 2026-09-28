@@ -152,7 +152,9 @@ fi
 
 # 3. Run: caps dropped, limits set, read-only mounts only. The exit code IS the
 # result — propagate it verbatim. The limits are per-phase: the whole-repo
-# phases (compile and build run a whole-repo command whose peak needs 6g;
+# phases (compile and build run a whole-repo command whose peak needs 10g —
+# the target repository's server type-check builds its Rust runner and a
+# plugin SDK before a whole-project tsc;
 # baseline and regress run the full suite, whose many node processes are
 # thread-heavy — and threads count against the pids cgroup, so a starved
 # worker dies in uv_thread_create before it can run a single test) get the
@@ -160,7 +162,7 @@ fi
 # tasks, which still stops a fork bomb in PR code.
 MEM=2g
 PIDS=512
-case "$PHASE" in compile|build|baseline|regress) MEM=6g; PIDS=2048;; esac
+case "$PHASE" in compile|build|baseline|regress) MEM=10g; PIDS=2048;; esac
 name_args=()
 if [ -n "$CONTAINER_NAME" ]; then
   name_args=( --name "$CONTAINER_NAME" )

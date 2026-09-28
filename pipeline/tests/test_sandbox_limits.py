@@ -23,7 +23,7 @@ def test_bounded_phases_default_to_the_small_limits():
 def test_whole_repo_phases_get_whole_repo_limits():
     # One case arm covers all four whole-repo phases: they run a command over
     # the entire tree, so they share one limit class.
-    m = re.search(r"^case \"\$PHASE\" in ([^)]*)\) MEM=6g; PIDS=2048;; esac$",
+    m = re.search(r"^case \"\$PHASE\" in ([^)]*)\) MEM=10g; PIDS=2048;; esac$",
                   _script(), re.MULTILINE)
     assert m is not None, "whole-repo limit arm not found in sandbox-run.sh"
     assert set(m.group(1).split("|")) == {"compile", "build", "baseline", "regress"}

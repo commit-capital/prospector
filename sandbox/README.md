@@ -18,11 +18,12 @@ hand or debugging a machine that will not come up:
 1. **A Docker daemon.** The setup command starts Colima on macOS and Docker
    Engine on Linux. A macOS runtime's VM must share `$HOME` so the scratch root
    is mountable; see `TRIAGE_VERIFY_SCRATCH` in `.env.example`. Size the host or
-   VM for the profile's merge-gate lanes: the compile/build phases run in 6g
-   containers; the driver holds one host lock across every 6g phase, so a
-   merge preflight and a worker lane never overlap in the VM, and 12GB is
-   enough with lanes configured. On macOS the VM must share files over virtiofs
-   (`colima start --memory 12 --vm-type vz --mount-type virtiofs`): sshfs and
+   VM for the profile's merge-gate lanes: the compile/build phases run in 10g
+   containers; the driver holds one host lock across every 10g phase, so a
+   merge preflight and a worker lane never overlap in the VM, and 16GB is
+   enough with lanes configured (add 10GB per extra `TRIAGE_SANDBOX_LARGE_SLOTS`).
+   On macOS the VM must share files over virtiofs
+   (`colima start --memory 16 --vm-type vz --mount-type virtiofs`): sshfs and
    9p can hand a container an empty or stale view of a patch the host just
    wrote, which fails every apply while the daemon looks healthy. The Setup
    tab's "Docker file sharing" row reports the running VM's mount type.

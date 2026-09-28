@@ -27,6 +27,7 @@ import subprocess
 import sys
 import threading
 import time
+import tomllib
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -276,6 +277,69 @@ def prefetch_store(src: Path, store: Path) -> None:
         env=launcher_env())
 
 
+# A toolchain channel or component a repository's toolchain file names: a
+# release, a dated or named channel, a component. Anything else is refused.
+_RUST_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def rust_workspaces(src: Path) -> list[Path]:
+    """The directories under `src` holding a Cargo.lock, outside dependency
+    trees and build output."""
+    return sorted(lock.parent for lock in src.rglob("Cargo.lock")
+                  if not {"node_modules", "target"} & set(lock.relative_to(src).parts))
+
+
+def rust_toolchain(src: Path, workspace: Path) -> tuple[str, list[str]]:
+    """The channel and components of the toolchain file nearest `workspace`,
+    searching up to `src` (`rust-toolchain.toml`, or the legacy plain
+    `rust-toolchain`); ("stable", []) when none governs it. Raises BuildFailure
+    on a file this cannot read or a name it will not pass on."""
+    for d in [workspace, *workspace.parents]:
+        toml_file, plain = d / "rust-toolchain.toml", d / "rust-toolchain"
+        try:
+            if toml_file.is_file():
+                table = tomllib.loads(toml_file.read_text()).get("toolchain") or {}
+                channel = str(table.get("channel") or "stable")
+                components = [str(c) for c in table.get("components") or []]
+            elif plain.is_file():
+                channel, components = plain.read_text().strip(), []
+            else:
+                if d == src:
+                    break
+                continue
+        except (OSError, ValueError) as e:
+            raise BuildFailure(f"reading the Rust toolchain file in {d}: {e}") from e
+        bad = [n for n in (channel, *components) if not _RUST_NAME_RE.fullmatch(n)]
+        if bad:
+            raise BuildFailure(f"the Rust toolchain file in {d} names {bad!r}")
+        return channel, components
+    return "stable", []
+
+
+def prefetch_rust(src: Path, rust: Path) -> None:
+    """Install into `rust` the toolchain each of `src`'s Rust workspaces pins
+    and the crates its lockfile names, so the image build and every phase
+    compile them with no network. Like `prefetch_store`, it runs inside the
+    sandbox image, with egress, as its unprivileged user; every value from the
+    tree reaches it as an argument, never through a shell."""
+    installed: set[tuple[str, tuple[str, ...]]] = set()
+    for ws in rust_workspaces(src):
+        channel, components = rust_toolchain(src, ws)
+        rel = ws.relative_to(src).as_posix()
+        run = ["docker", "run", "--rm", "-v", f"{src}:/work/src", "-v", f"{rust}:/work/rust",
+               "-w", f"/work/src/{rel}", sandbox_image()]
+        if (channel, tuple(components)) not in installed:
+            comps = [a for c in components for a in ("-c", c)]
+            _run_build_step(f"installing the Rust {channel} toolchain",
+                            [*run, "rustup", "toolchain", "install", channel,
+                             "--profile", "minimal", *comps],
+                            env=launcher_env())
+            installed.add((channel, tuple(components)))
+        _run_build_step(f"prefetching the crates of {rel}",
+                        [*run, "cargo", f"+{channel}", "fetch", "--locked"],
+                        env=launcher_env())
+
+
 def daemon_available() -> bool:
     """True when the local Docker daemon answers. A daemon that is not running
     fails an image query exactly as a missing image does, so this separates an
@@ -345,18 +409,21 @@ def _run_build_step(what: str, argv: list[str], *, env: dict[str, str]) -> None:
 
 def build_base_image(sha: str, *, tier: int) -> str:
     """Produce a scrubbed remote-stripped clone of `sha` under SCRATCH and build
-    the per-batch base image from it (Tier 1 prefetches the pnpm store first so
-    the build installs offline). Returns the image tag. Upstream is public, so
+    the per-batch base image from it (Tier 1 prefetches the pnpm store and the
+    Rust toolchains and crates first so the build installs offline). Returns
+    the image tag. Upstream is public, so
     the clone is unauthenticated — there is no tokenized remote to leak."""
     if not _BASE_SHA_RE.fullmatch(sha):
         raise ValueError(f"invalid base_sha {sha!r}: expected 7-40 lowercase hex characters")
     src = base_clone_dir(sha)
     ctx = src.parent
     pnpm_store = ctx / "pnpm-store"
+    rust = ctx / "rust"
     if ctx.exists():
         shutil.rmtree(ctx)
     src.parent.mkdir(parents=True, exist_ok=True)
     pnpm_store.mkdir(parents=True, exist_ok=True)
+    rust.mkdir(parents=True, exist_ok=True)
 
     _run_build_step(f"cloning {settings.repo()}",
                     ["git", "clone", f"https://github.com/{settings.repo()}.git", str(src)],
@@ -368,6 +435,7 @@ def build_base_image(sha: str, *, tier: int) -> str:
 
     if tier == 1:
         prefetch_store(src, pnpm_store)
+        prefetch_rust(src, rust)
 
     tag = base_image_tag(sha, tier)
     _run_build_step(
@@ -924,7 +992,7 @@ def _stop_timed_out_phase(proc: subprocess.Popen[bytes], container: str,
     remove_container()
 
 
-# The phases the launcher runs at its large memory class (6g). More of them at
+# The phases the launcher runs at its large memory class (10g). More of them at
 # once than the Docker VM's memory holds and the kernel kills whichever is
 # bigger, so every large phase on this machine takes one of
 # settings.sandbox_large_slots() host locks first, whichever worker thread or

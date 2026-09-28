@@ -37,6 +37,11 @@ COPY --chown=sandbox:sandbox src /work/src
 # The store is staged under /work, which the base image owns as `sandbox`:
 # this stage builds and runs as non-root.
 COPY --chown=sandbox:sandbox pnpm-store /work/pnpm-store
+# The toolchain and crates the tree's Rust workspaces pin, installed by
+# `verify_driver.prefetch_rust`; empty for a tree with none. Cargo reads only
+# what is here: nothing in this build or a phase container can fetch a crate.
+COPY --chown=sandbox:sandbox rust /work/rust
+ENV CARGO_NET_OFFLINE=true
 
 WORKDIR /work/src
 
@@ -55,6 +60,19 @@ RUN if [ "$TIER" = "1" ]; then \
       pnpm install --offline --frozen-lockfile --store-dir /work/pnpm-store; \
     fi
 
+# Tier 1 also compiles each Rust workspace once, the checks and the release
+# build its package scripts run, so a phase's cargo finds the crates built and
+# rebuilds only what a patch touched. A workspace that does not build is left
+# for the phase to report.
+RUN if [ "$TIER" = "1" ]; then \
+      find . -name Cargo.lock -not -path '*/node_modules/*' -not -path '*/target/*' \
+        | while read -r lock; do \
+            dir=$(dirname "$lock"); \
+            (cd "$dir" && cargo check --locked --workspace && cargo build --release --locked) \
+              || echo "rust prebuild failed in $dir; the phase will report it" >&2; \
+          done; \
+    fi
+
 FROM ${BASE_IMAGE}
 
 ARG BASE_IMAGE
@@ -65,6 +83,8 @@ LABEL prospector.verify-base=1 prospector.sandbox-image=${BASE_IMAGE}
 # is the inode: the copied files carry their full content without the store
 # directory existing anywhere in this image.
 COPY --from=builder --chown=sandbox:sandbox /work/src /work/src
+COPY --from=builder --chown=sandbox:sandbox /work/rust /work/rust
+ENV CARGO_NET_OFFLINE=true
 
 WORKDIR /work/src
 

@@ -67,7 +67,7 @@ def _docker_daemon() -> tuple[bool, str, str]:
 # is how a healthy-looking sandbox fails every patch apply.
 COHERENT_MOUNT = "virtiofs"
 RECREATE_COLIMA = ("recreate the VM: `colima stop && colima delete && "
-                   "colima start --memory 12 --vm-type vz --mount-type virtiofs`")
+                   "colima start --memory 16 --vm-type vz --mount-type virtiofs`")
 
 
 def colima_mount_type() -> str | None:

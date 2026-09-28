@@ -5,14 +5,21 @@ FROM node:lts-trixie-slim
 
 # postgresql-client supplies the psql binary the target repository's backup
 # tests spawn for their COPY-fallback restore path (#3718: its absence failed
-# that test identically in red and green).
+# that test identically in red and green). rustup, a C toolchain, cmake and
+# pkg-config build a tree's Rust crates, native ones among them (ring,
+# aws-lc-sys); rustup installs no toolchain here — a base build installs the one
+# the tree pins (`verify_driver.prefetch_rust`).
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     bash \
+    build-essential \
     ca-certificates \
+    cmake \
     git \
     jq \
+    pkg-config \
     postgresql-client \
+    rustup \
   && rm -rf /var/lib/apt/lists/*
 
 RUN corepack enable
@@ -25,6 +32,8 @@ RUN userdel -r node 2>/dev/null || true \
   && chown -R sandbox:sandbox /work
 
 ENV HOME=/home/sandbox \
+  RUSTUP_HOME=/work/rust/rustup \
+  CARGO_HOME=/work/rust/cargo \
   PNPM_HOME=/home/sandbox/.local/share/pnpm \
   PATH=/home/sandbox/.local/share/pnpm:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
