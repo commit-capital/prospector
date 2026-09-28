@@ -2707,7 +2707,7 @@ class TestLargePhaseLock:
     def test_the_class_matches_the_launchers(self):
         import re
         text = (vd.SANDBOX / "sandbox-run.sh").read_text()
-        m = re.search(r'case "\$PHASE" in ([a-z|]+)\) MEM=6g', text)
+        m = re.search(r'case "\$PHASE" in ([a-z|]+)\) MEM=10g', text)
         assert m is not None
         assert set(m.group(1).split("|")) == set(vd.LARGE_PHASES)
 
@@ -2817,3 +2817,65 @@ def test_error_excerpt_skips_the_package_runner_sign_off():
             "Exit status 1\n")
     assert vd.error_excerpt(tail) == "sh: cargo: not found"
 
+
+
+class TestPrefetchRust:
+    """A base build installs the toolchain each Rust workspace pins and fetches
+    its crates, in the sandbox image, with the tree's values passed as argv."""
+
+    def _tree(self, tmp_path):
+        src = tmp_path / "src"
+        (src / "packages/runner/runner").mkdir(parents=True)
+        (src / "packages/runner/rust-toolchain.toml").write_text(
+            '[toolchain]\nchannel = "1.97.1"\nprofile = "minimal"\ncomponents = ["rustfmt"]\n')
+        (src / "packages/runner/runner/Cargo.lock").write_text("")
+        (src / "node_modules/dep").mkdir(parents=True)
+        (src / "node_modules/dep/Cargo.lock").write_text("")
+        (src / "packages/runner/runner/target/x").mkdir(parents=True)
+        (src / "packages/runner/runner/target/x/Cargo.lock").write_text("")
+        return src
+
+    def test_workspaces_leave_out_dependency_trees_and_build_output(self, tmp_path):
+        src = self._tree(tmp_path)
+        assert vd.rust_workspaces(src) == [src / "packages/runner/runner"]
+
+    def test_the_nearest_toolchain_file_names_the_channel_and_components(self, tmp_path):
+        src = self._tree(tmp_path)
+        assert vd.rust_toolchain(src, src / "packages/runner/runner") == ("1.97.1", ["rustfmt"])
+
+    def test_a_workspace_no_toolchain_file_governs_uses_stable(self, tmp_path):
+        (tmp_path / "src/w").mkdir(parents=True)
+        assert vd.rust_toolchain(tmp_path / "src", tmp_path / "src/w") == ("stable", [])
+
+    def test_a_legacy_plain_toolchain_file_is_read(self, tmp_path):
+        (tmp_path / "src/w").mkdir(parents=True)
+        (tmp_path / "src/rust-toolchain").write_text("nightly-2026-01-01\n")
+        assert vd.rust_toolchain(tmp_path / "src", tmp_path / "src/w") == (
+            "nightly-2026-01-01", [])
+
+    @pytest.mark.parametrize("channel", ["1.97; rm -rf /", "--help", "$(id)"])
+    def test_a_toolchain_name_it_will_not_pass_on_is_refused(self, tmp_path, channel):
+        (tmp_path / "src/w").mkdir(parents=True)
+        (tmp_path / "src/rust-toolchain.toml").write_text(f'[toolchain]\nchannel = "{channel}"\n')
+        with pytest.raises(vd.BuildFailure):
+            vd.rust_toolchain(tmp_path / "src", tmp_path / "src/w")
+
+    def test_prefetch_installs_the_toolchain_then_fetches_the_crates(self, tmp_path, monkeypatch):
+        src = self._tree(tmp_path)
+        steps = []
+        monkeypatch.setattr(vd, "_run_build_step", lambda what, argv, env: steps.append(argv))
+        monkeypatch.setattr(vd, "sandbox_image", lambda: "pr-verify:test")
+        vd.prefetch_rust(src, tmp_path / "rust")
+        install, fetch = steps
+        assert install[-8:] == ["rustup", "toolchain", "install", "1.97.1",
+                                "--profile", "minimal", "-c", "rustfmt"]
+        assert fetch[-4:] == ["cargo", "+1.97.1", "fetch", "--locked"]
+        assert "/work/src/packages/runner/runner" in fetch
+        assert f"{tmp_path / 'rust'}:/work/rust" in fetch
+
+    def test_a_tree_with_no_rust_fetches_nothing(self, tmp_path, monkeypatch):
+        (tmp_path / "src").mkdir()
+        steps = []
+        monkeypatch.setattr(vd, "_run_build_step", lambda what, argv, env: steps.append(argv))
+        vd.prefetch_rust(tmp_path / "src", tmp_path / "rust")
+        assert steps == []

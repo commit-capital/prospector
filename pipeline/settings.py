@@ -382,7 +382,7 @@ def issue_fix_max_lines() -> int:
 
 
 def sandbox_large_slots() -> int:
-    """How many large-class sandbox phases (6g each) this machine runs at once:
+    """How many large-class sandbox phases (10g each) this machine runs at once:
     size it to the Docker VM's memory. One unless TRIAGE_SANDBOX_LARGE_SLOTS
     says more."""
     return _positive_int("TRIAGE_SANDBOX_LARGE_SLOTS", 1)
