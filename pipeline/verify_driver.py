@@ -404,7 +404,7 @@ def prepare_base(store: Store, *, base_sha: str | None = None, tier: int = 0) ->
     else:
         rc, tail = run_phase("baseline", tag, tier=tier, base_sha=sha, test_cmd="true",
                              suite_config=write_suite_config(),
-                             timeout=SUITE_TIMEOUT_SECONDS)
+                             timeout=SUITE_TIMEOUT_SECONDS, tail_bytes=SUITE_TAIL_BYTES)
         trailer = parse_suite_trailer(tail)
         trailer_failed = (trailer or {}).get("failed")
         if (rc != gates.SENTINEL_PASS or trailer is None
@@ -672,6 +672,9 @@ def commit_blind(store: Store, items: list[BlindItem]) -> tuple[int, list[str]]:
 # means what it says regardless of multi-byte characters) so neither host
 # memory nor the store grows with how much the container prints.
 OUTPUT_TAIL_BYTES = 8192
+# How much of a full-suite run's output is kept: enough for the trailer, which
+# names every failing file, when a tree fails a few hundred of them.
+SUITE_TAIL_BYTES = 64 * 1024
 PHASE_TIMEOUT_SECONDS = 1800
 
 # The full-suite phases run upstream's entire stabilized plan; the measured
@@ -1469,11 +1472,12 @@ def verify_pr(rec: Pr, image: str, base: str, tier: int,
               exclude_file: Path | None = None,
               suite_config: Path | None = None,
               timeout: int = PHASE_TIMEOUT_SECONDS,
-              pristine: bool = False) -> tuple[int, str]:
+              pristine: bool = False,
+              tail_bytes: int = OUTPUT_TAIL_BYTES) -> tuple[int, str]:
         rc, tail = run_phase(name, image, tier=tier, base_sha=base, head_sha=head,
                              test_cmd=test_cmd, patch=patch,
                              exclude_file=exclude_file, suite_config=suite_config,
-                             timeout=timeout, pristine=pristine)
+                             timeout=timeout, pristine=pristine, tail_bytes=tail_bytes)
         if rc == gates.SENTINEL_PROBE_FAIL:
             raise ProbeFailure(
                 f"sandbox isolation could not be proven (PR #{rec.n}, phase {name}) — "
@@ -1592,7 +1596,7 @@ def verify_pr(rec: Pr, image: str, base: str, tier: int,
         excl = write_exclude_file(base, baseline)
         r1, t1 = phase("regress", patch=patch, test_cmd="true",
                        exclude_file=excl, suite_config=suite_config,
-                       timeout=SUITE_TIMEOUT_SECONDS)
+                       timeout=SUITE_TIMEOUT_SECONDS, tail_bytes=SUITE_TAIL_BYTES)
         regress: wire.VerifyRegressSignal = {
             "ran": True, "exit_first": r1, "exit_confirm": None,
             "confirmed": False, "flake": False,
@@ -1601,7 +1605,7 @@ def verify_pr(rec: Pr, image: str, base: str, tier: int,
             regress["new_failures"] = _advisory_failures(t1)
             r2, t2 = phase("regress", patch=patch, test_cmd="true",
                            exclude_file=excl, suite_config=suite_config,
-                           timeout=SUITE_TIMEOUT_SECONDS)
+                           timeout=SUITE_TIMEOUT_SECONDS, tail_bytes=SUITE_TAIL_BYTES)
             regress["exit_confirm"] = r2
             regress["confirmed"] = r2 == gates.SENTINEL_TEST_FAIL
             regress["flake"] = r2 == gates.SENTINEL_PASS

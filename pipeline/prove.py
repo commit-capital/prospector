@@ -292,10 +292,6 @@ class SuiteUnplannable(SuiteFault):
     tree has no full suite this runner can run."""
 
 
-# How much of a suite run's output a caller keeps: the runner prints its
-# end-of-run trailer last, and a long failing set must fit inside the cap.
-SUITE_TAIL_BYTES = 64 * 1024
-
 
 def _tree_key(base: PinnedBase, pre_patch: str | None) -> str:
     """The suite tree's identity: the base, and the pre-patch carried over it."""
@@ -320,7 +316,7 @@ def _baseline_run(base: PinnedBase, pre_patch: str | None, *, label: str) -> lis
         "baseline", base.image, tier=base.tier, base_sha=base.sha, test_cmd="true",
         suite_config=verify_driver.write_suite_config(),
         pre_patch=_pre_patch_file(pre_patch, label),
-        timeout=verify_driver.SUITE_TIMEOUT_SECONDS, tail_bytes=SUITE_TAIL_BYTES)
+        timeout=verify_driver.SUITE_TIMEOUT_SECONDS, tail_bytes=verify_driver.SUITE_TAIL_BYTES)
     if rc == gates.SENTINEL_NO_PLAN:
         raise SuiteUnplannable(f"this tree's test wrapper cannot derive the suite plan: "
                                f"{verify_driver.error_excerpt(tail)}")
@@ -386,7 +382,7 @@ def suite_regress(base: PinnedBase, pre_patch: str | None, patch: str, *,
             test_cmd="true", exclude_file=exclude,
             suite_config=verify_driver.write_suite_config(),
             pre_patch=_pre_patch_file(pre_patch, label),
-            timeout=verify_driver.SUITE_TIMEOUT_SECONDS, tail_bytes=SUITE_TAIL_BYTES)
+            timeout=verify_driver.SUITE_TIMEOUT_SECONDS, tail_bytes=verify_driver.SUITE_TAIL_BYTES)
         if rc not in (gates.SENTINEL_PASS, gates.SENTINEL_TEST_FAIL):
             raise SuiteFault(f"the suite run did not complete (exit {rc}): "
                              f"{verify_driver.error_excerpt(tail)}")

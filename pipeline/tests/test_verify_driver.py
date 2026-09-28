@@ -623,6 +623,17 @@ class TestPrepareBaseBaseline:
         assert reg["host"]
         assert reg["arch"]
 
+    def test_the_capture_keeps_a_trailer_naming_hundreds_of_files(self, tmp_path, monkeypatch):
+        self._quiet(tmp_path, monkeypatch)
+        failing = [f"server/src/__tests__/case-{i:03d}.test.ts" for i in range(300)]
+        tail = _suite_tail(failing)
+        assert len(tail.encode()) > vd.OUTPUT_TAIL_BYTES
+        monkeypatch.setattr(vd, "run_phase", lambda phase, image, tail_bytes=vd.OUTPUT_TAIL_BYTES,
+                            **kw: (0, tail.encode()[-tail_bytes:].decode()))
+        s = Store(tmp_path)
+        vd.prepare_base(s, base_sha="a" * 12, tier=0)
+        assert vd.local_pin(s)["baseline_failing"] == failing
+
     def test_a_profile_without_a_suite_pins_without_a_baseline_run(self, tmp_path, monkeypatch):
         monkeypatch.setattr(vd.subprocess, "run", lambda *a, **k: _SubprocessOK())
         monkeypatch.setattr(vd, "SCRATCH", tmp_path / "scratch")
@@ -2418,7 +2429,8 @@ class TestVerifyPrAuthoredLane:
 
         def fake_run_phase(name, image, *, tier, base_sha, head_sha, test_cmd,
                            suite_config=None,
-                           patch=None, exclude_file=None, timeout=0, pristine=False):
+                           patch=None, exclude_file=None, timeout=0, pristine=False,
+                           tail_bytes=0):
             calls.append((name, test_cmd, str(patch) if patch else None))
             if name == "apply-check":
                 return 0, ""
@@ -2463,7 +2475,8 @@ class TestVerifyPrAuthoredLane:
 
         def fake_run_phase(name, image, *, tier, base_sha, head_sha, test_cmd,
                            suite_config=None,
-                           patch=None, exclude_file=None, timeout=0, pristine=False):
+                           patch=None, exclude_file=None, timeout=0, pristine=False,
+                           tail_bytes=0):
             calls.append(name)
             if name == "apply-check":
                 return 0, ""
@@ -2506,7 +2519,8 @@ class TestVerifyPrAuthoredLane:
 
         def fake_run_phase(name, image, *, tier, base_sha, head_sha, test_cmd,
                            suite_config=None,
-                           patch=None, exclude_file=None, timeout=0, pristine=False):
+                           patch=None, exclude_file=None, timeout=0, pristine=False,
+                           tail_bytes=0):
             calls.append((name, test_cmd, str(patch) if patch else None))
             if name == "apply-check":
                 return 0, ""
