@@ -282,6 +282,9 @@ def validate_cluster(rec: dict) -> None:
                     f"proposals[].disposition: {p.get('disposition')!r} not in {sorted(DISPOSITIONS)}")
 
 
+# PR records `pr_bodies` reads per statement.
+PR_BODIES_BATCH = 200
+
 class Store:
     def __init__(self, root: Path | str | None = None):
         self.root = Path(root) if root is not None else DEFAULT_ROOT
@@ -375,21 +378,24 @@ class Store:
         return {r[0]: r[1] for r in storekit.read_retrying(self.engine, q) if r[1]}
 
     def pr_bodies(self, ns: list[int]) -> dict[int, str | None]:
-        """The stored `meta.body` for each of `ns` — the field `all_prs` omits —
-        fetched on demand for the detail and deep-search paths. Reads the records
-        for just these PRs and projects the body in Python, so it stays
-        dialect-agnostic; these paths touch few PRs (one open detail, or deep
-        search's ≤500 capped candidate set)."""
+        """The stored `meta.body` for each of `ns` — the field `all_prs` omits.
+        Reads the records PR_BODIES_BATCH at a time and projects the body in
+        Python, so it stays dialect-agnostic and no one statement reads enough
+        whole records to reach a shared database's statement timeout (issue
+        ingest asks for every linking PR at once)."""
         from sqlalchemy import select
         ids = [int(n) for n in ns]
-        if not ids:
-            return {}
-        def q(conn) -> list:
-            return conn.execute(
-                select(schema.prs.c.pr, schema.prs.c.data)
-                .where(schema.prs.c.pr.in_(ids))).all()
-        rows = storekit.read_retrying(self.engine, q)
-        return {r[0]: (r[1].get("meta") or {}).get("body") for r in rows}
+        out: dict[int, str | None] = {}
+        for start in range(0, len(ids), PR_BODIES_BATCH):
+            batch = ids[start:start + PR_BODIES_BATCH]
+
+            def q(conn, batch: list[int] = batch) -> list:
+                return conn.execute(
+                    select(schema.prs.c.pr, schema.prs.c.data)
+                    .where(schema.prs.c.pr.in_(batch))).all()
+            out.update({r[0]: (r[1].get("meta") or {}).get("body")
+                        for r in storekit.read_retrying(self.engine, q)})
+        return out
 
     def edit_pr(self, n: int) -> model.Pr:
         """A typed, auto-saving handle for mutating PR `n`. Raises KeyError if the
