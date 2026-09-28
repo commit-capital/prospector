@@ -1164,3 +1164,75 @@ def propose_issue_fix(issue: int, *, token: str | None, dry_run: bool = True) ->
     pr = json.loads(r.stdout)
     return done("executed", f"opened #{pr['number']} for issue #{issue}", dry=False,
                 pr=pr["number"], url=pr.get("html_url"), head_sha=pushed.head_sha)
+
+
+def ask_issue_question(issue: int, *, token: str | None, dry_run: bool = True) -> dict:
+    """Ask issue `issue` the question its last lane run's dispute raised, as a
+    bot comment. The run must pass `issue_gates.question_gate` and the rendered
+    comment `dispute_question.problems`. The drafted question is kept beside the
+    run's result, so a dry-run's draft is the one a live run posts; a question
+    already posted is reported, never asked twice. A live post holds the run's
+    base image against the verify sweep until the answer resumes it. With no
+    token every run is a dry-run. Every outcome is logged to Activity."""
+    from datetime import datetime, timezone
+
+    from issue_triage import dispute_question, fetch_issues, fix_lane, issue_gates, propose
+    from pipeline import verify_gc
+
+    base_res = {"issue": int(issue), "action": "QUESTION"}
+
+    def done(status: str, detail: str, *, dry: bool, **extra: object) -> dict:
+        res = {**base_res, "status": status, "detail": detail, **extra}
+        activity.record("issue-question", identity=settings.bot_login(), dry_run=dry, **res)
+        return res
+
+    record = propose.load_result(issue)
+    if record is None:
+        return done("blocked", f"issue #{issue} has no lane result on this machine",
+                    dry=dry_run)
+    live = fetch_issues.fetch_issue(issue)
+    ok, why = issue_gates.question_gate(record, live, report_sha=fix_lane.report_sha)
+    if not ok:
+        return done("blocked", f"question gate: {why}", dry=dry_run)
+
+    path = propose.result_dir(issue) / "question.json"
+    saved = json.loads(path.read_text()) if path.exists() else {}
+    if saved.get("report_sha") != record["report_sha"]:
+        saved = {}
+    if saved.get("posted"):
+        return done("exists", f"already asked: {saved['posted'].get('url')}", dry=dry_run,
+                    url=saved["posted"].get("url"))
+    question = saved.get("question")
+    if question is None:
+        try:
+            assert live is not None  # the gate read it
+            question = dispute_question.draft(live.get("title") or "", live.get("body") or "",
+                                              record["result"])
+        except (RuntimeError, ValueError) as e:
+            return done("error", f"drafting the question failed: {e}", dry=dry_run)
+    saved = {"report_sha": record["report_sha"], "question": question}
+    path.write_text(dispute_question.dumps(saved))
+    if "no_question" in question:
+        return done("blocked", f"no question to ask: {question['no_question']}", dry=dry_run)
+
+    asked = datetime.now(timezone.utc)
+    body = dispute_question.render(issue, question, report_sha=record["report_sha"],
+                                   default_after=asked + dispute_question.ANSWER_WAIT)
+    problems = dispute_question.problems(body)
+    if problems:
+        return done("blocked", "rendering: " + "; ".join(problems), dry=dry_run)
+    if dry_run or not token:
+        return done("dry-run", f"would ask: {question['question'][:200]}", dry=True,
+                    forced=not token and not dry_run, body=body)
+
+    r = bot_run(["gh", "issue", "comment", str(issue), "--repo", settings.repo(),
+                 "--body", body], token)
+    if r.returncode != 0:
+        detail = (r.stderr or "").strip()[-300:] or f"gh exited {r.returncode}"
+        return done("error", detail, dry=False)
+    url = (r.stdout or "").strip().splitlines()[-1] if (r.stdout or "").strip() else None
+    saved["posted"] = {"url": url, "asked_at": asked.isoformat(timespec="seconds")}
+    path.write_text(dispute_question.dumps(saved))
+    verify_gc.hold(record["base_sha"])
+    return done("executed", f"asked issue #{issue}: {question['question'][:200]}", dry=False,
+                url=url)

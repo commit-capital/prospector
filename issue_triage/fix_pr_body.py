@@ -6,7 +6,7 @@ repository's required sections (`describe_pr.required_sections`), the issue it
 fixes, the tests that reproduce it and the runs that proved the fix, the models
 that wrote it. The agents contribute only three short fields — the summary, the
 root cause, and each changed file's rationale — and those are text an outsider's
-report shaped, so `_clean` holds them to one line of plain text before they
+report shaped, so `inert` holds them to one line of plain text before they
 land. `problems` is the gate every rendering passes before it is proposed.
 """
 from __future__ import annotations
@@ -30,7 +30,7 @@ _MD_LINK_RE = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")
 _MENTION_RE = re.compile(r"(?<![\w`])@(?=[A-Za-z0-9-])")
 
 
-def _clean(text: str, limit: int = FIELD_MAX) -> str:
+def inert(text: str, limit: int = FIELD_MAX) -> str:
     """Agent-written text as one line of plain Markdown-inert prose: no line
     breaks, HTML, images, links, bidi controls or live @mentions."""
     one = _BIDI_RE.sub("", str(text))
@@ -44,7 +44,7 @@ def _clean(text: str, limit: int = FIELD_MAX) -> str:
 
 
 def title(issue: int, summary: str) -> str:
-    return _clean(f"fix: {summary}", TITLE_MAX) or f"fix: issue #{issue}"
+    return inert(f"fix: {summary}", TITLE_MAX) or f"fix: issue #{issue}"
 
 
 def commit_message(issue: int, summary: str) -> str:
@@ -102,15 +102,15 @@ def render(*, issue: int, result: dict, tests: list[str], base_sha: str, report_
     (`describe_pr.required_sections`) each filled from `result` by its heading,
     any content block no required section carries under its own heading, and
     the marker that names what it came from."""
-    changes = [f"- `{_clean(c.get('path', ''), 200)}`: {_clean(c.get('rationale', ''))}"
+    changes = [f"- `{inert(c.get('path', ''), 200)}`: {inert(c.get('rationale', ''))}"
                for c in (result.get("changes") or [])]
     model_list = ", ".join(sorted(set(models))) or "unrecorded"
     tier = (result.get("tier") or {}).get("tier")
     blocks = {
         "summary": [
             f"- Issue #{issue} reports a defect in {settings.repo()}.",
-            f"- Root cause, as the fixing agent read it: {_clean(result.get('root_cause', ''))}",
-            f"- This pull request: {_clean(result.get('summary', ''))}",
+            f"- Root cause, as the fixing agent read it: {inert(result.get('root_cause', ''))}",
+            f"- This pull request: {inert(result.get('summary', ''))}",
         ],
         "issue": [f"Fixes #{issue}"],
         "changes": changes or ["- (no change recorded)"],
@@ -124,7 +124,7 @@ def render(*, issue: int, result: dict, tests: list[str], base_sha: str, report_
                "that was not allowed before, not only that it fixes the report."]
               if tier == 0 else []),
             *[f"- The scope reviewer found it also changes, beyond the report: "
-              f"{_clean(item, 200)}"
+              f"{inert(item, 200)}"
               for r in (result.get("reviews") or []) for item in (r.get("unasked") or [])[:5]],
         ],
         "model": [f"- {model_list} (Anthropic Claude, via Claude Code), writing and "

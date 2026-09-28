@@ -394,7 +394,24 @@ never overwriting one; and the bot opens the pull request through
 default branch, a title, a body and maintainer edits. A branch that already has
 a pull request is reported, not reopened; with no token every run is a dry-run
 that stops before the push; every outcome is an `issue-propose` Activity entry.
-A proposal never merges: it faces `merge_eligibility` like any other PR.
+A proposal never merges: it faces `merge_eligibility` like any other PR. A
+cross-lane run that ends `fix-disputed` records its readings (groups of
+candidates whose fixes pass each other's reproductions, `cross_lane.readings`)
+and every candidate's patches and verdict. `python -m issue_triage.question
+--issue N --ask [--live]` asks the issue one question through
+`executor.ask_issue_question`: `issue_gates.question_gate` (disputed, open,
+unedited), a locked-down agent with no tools drafting one lettered option per
+reading and a default (`dispute_question.draft`, kept beside the result so a
+dry-run's draft is the one posted), the host's framing with the agent text held
+inert and `dispute_question.problems`, then a bot `gh issue comment`,
+Activity-logged (`issue-question`), asked once, holding the run's base against
+the verify sweep. `--resume` reads the first reply after the question from the
+issue's author or a maintainer whose first line names an option, or takes the
+default after a week, and resumes the run on that reading
+(`cross_lane.judge_reading`, the recorded cross-test results read back, the
+pick through the host's checks and the scope-safety review), writing the new
+ending over `result.json` (the disputed one kept as `disputed.json`) for
+`propose`.
 
 **WORKER HEALTH** (`pipeline/worker_health.py` + `prospector_app/backend/lane_health.py`
 + `escalation.py`) is the ONE policy for a worker that is failing rather than

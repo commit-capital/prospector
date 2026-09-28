@@ -596,6 +596,7 @@ def main(argv: list[str]) -> int:
         "issue": n,
         "report_sha": reported_sha,
         "base_sha": base.sha,
+        "base_tier": base.tier,
         "action": action,
         "lane": args.lane,
         "models": models,

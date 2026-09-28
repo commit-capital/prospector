@@ -155,9 +155,14 @@ def push_fix(*, issue: int, report_sha: str, base_sha: str, patch: str, message:
         shutil.rmtree(workdir, ignore_errors=True)
 
 
+def result_dir(issue: int) -> Path:
+    """Where `fix_lane` keeps the issue's latest run."""
+    return settings.verify_scratch() / "issue-fix" / f"issue-{issue}"
+
+
 def load_result(issue: int) -> dict | None:
     """The issue's latest lane result, as `fix_lane` wrote it, or None."""
-    path = settings.verify_scratch() / "issue-fix" / f"issue-{issue}" / "result.json"
+    path = result_dir(issue) / "result.json"
     try:
         return json.loads(path.read_text())
     except (OSError, ValueError):

@@ -26,6 +26,7 @@ other lanes; `agent_runs` counts every candidate and the reviewer.
 """
 from __future__ import annotations
 
+import itertools
 import shutil
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -129,6 +130,36 @@ def agreed_candidates(live: list[Candidate]) -> list[Candidate]:
             if len(c.passes) >= AGREEMENT and all(c.passes.values())]
 
 
+def _agree(a: Candidate, b: Candidate) -> bool:
+    """Each fix passes the other's reproduction, where the other has one."""
+    return ((not b.reproduces or a.passes.get(b.index, False))
+            and (not a.reproduces or b.passes.get(a.index, False)))
+
+
+def readings(live: list[Candidate]) -> list[list[Candidate]]:
+    """The live candidates grouped by the behavior they pin: each group's fixes
+    pass every reproduction in the group, and it holds at least one
+    reproduction. The largest groups come first; a candidate belongs to the
+    first group that holds it."""
+    groups: list[list[Candidate]] = []
+    for k in range(len(live), 0, -1):
+        for combo in itertools.combinations(live, k):
+            if not any(c.reproduces for c in combo):
+                continue
+            if any(set(c.index for c in combo) <= set(c.index for c in g) for g in groups):
+                continue
+            if all(_agree(a, b) for a, b in itertools.combinations(combo, 2)):
+                groups.append(list(combo))
+    out: list[list[Candidate]] = []
+    taken: set[int] = set()
+    for g in groups:
+        rest = [c for c in g if c.index not in taken]
+        if any(c.reproduces for c in rest):
+            out.append(rest)
+            taken.update(c.index for c in rest)
+    return out
+
+
 def shipped_reproductions(pick: Candidate, repros: list[Candidate]) -> list[Candidate]:
     """The reproductions whose tests ship with the picked fix: the pick's own
     first when it reproduces, then every other in index order, leaving out one
@@ -172,6 +203,79 @@ def _evidence(proof: dict, shipped: list[Candidate]) -> str:
     return "\n".join(lines)
 
 
+def _judge_pick(spec: fix_lane.LaneSpec, workdir: Path, pick: Candidate,
+                repros: list[Candidate], result: dict, *,
+                proof_patch: Callable[..., Path], label: str,
+                on_step: Callable[[str], None]) -> tuple[str | None, str, dict, int]:
+    """Ship `pick` with the tests of `repros` and put it through the host's
+    checks and the scope-safety review, recording both on `result`. Returns the
+    ending it stops at (None when it clears every check) with the reason, the
+    reproduction record, and the agent runs spent. The review tree is removed on
+    the way out."""
+    shipped = shipped_reproductions(pick, repros)
+    test_patch = "".join(r.test_patch for r in shipped)
+    test_paths = [p for r in shipped for p in r.test_paths]
+    paths = diffpaths.changed_paths(test_patch + pick.fix_patch)
+    reproduction = {"outcome": "reproduced", "base_sha": spec.base.sha,
+                    "red": shipped[0].red, "files": [{"path": p} for p in test_paths]}
+    result.setdefault("agreement", {})["shipped"] = [r.index for r in shipped]
+    result.update({"patch": test_patch + pick.fix_patch, "pick": pick.index,
+                   "changes": pick.verdict["changes"], "summary": pick.verdict["summary"],
+                   "root_cause": pick.verdict["root_cause"],
+                   "threat": threats.scan_diff(pick.fix_patch),
+                   "tier": risktier.tier_facet(paths), "checks": pick.checks})
+    try:
+        tree = lane_tree.materialize(spec.base.clone, workdir / "pick" / "src",
+                                     pre_patch=spec.pre_patch)
+        blocked = solo_lane.host_checks(
+            spec, test_patch=test_patch, fix_patch=pick.fix_patch,
+            test_paths=test_paths, tree=tree, proof_patch=proof_patch, label=label,
+            proof=result["proof"], on_step=on_step, own_green=False)
+        if blocked:
+            return blocked[0], blocked[1], reproduction, 0
+
+        on_step("reviewing: scope-safety")
+        lane_tree.apply_patch(tree, test_patch + pick.fix_patch)
+        review = review_issue_fix.review(
+            str(tree), pick.fix_patch, lens="scope-safety", title=spec.title, body=spec.body,
+            root_cause=str(pick.verdict["root_cause"]), test_paths=test_paths,
+            evidence=_evidence(result["proof"], shipped),
+            inventory_veto=result["tier"].get("tier") == 0)
+        result["reviews"] = [review]
+        if review.get("failed"):
+            return "run-failed", str(review.get("reason")
+                                     or "the reviewing agent did not finish"), reproduction, 1
+        if review.get("verdict") != "safe":
+            return ("fix-rejected", f"scope-safety: {review.get('reason') or 'not safe'}",
+                    reproduction, 1)
+        return None, "", reproduction, 1
+    finally:
+        shutil.rmtree(workdir / "pick", ignore_errors=True)
+
+
+def _proof_patcher(spec: fix_lane.LaneSpec, label: str) -> Callable[..., Path]:
+    def proof_patch(*parts: str) -> Path:
+        if spec.pre_patch is not None:
+            return prove.flatten(spec.base.clone, spec.pre_patch, *parts, label=label)
+        return prove.compose(label, *parts)
+    return proof_patch
+
+
+def _faulted(e: Exception) -> tuple[str, str]:
+    """The ending a lane exception names."""
+    if isinstance(e, headless_agent.AgentUnavailable):
+        return "agent-unavailable", str(e)
+    if isinstance(e, headless_agent.AgentDeclined):
+        return "declined", str(e)
+    if isinstance(e, (prove.NoBase, prove.SuiteFault, verify_driver.ProbeFailure)):
+        return "sandbox", str(e)
+    return "run-failed", str(e)
+
+
+_LANE_ERRORS = (prove.NoBase, prove.SuiteFault, verify_driver.ProbeFailure,
+                headless_agent.EditsBlockedError, RuntimeError, ValueError)
+
+
 def run(spec: fix_lane.LaneSpec, *, workdir: Path,
         on_step: Callable[[str], None] = lambda step: None) -> fix_lane.LaneResult:
     """Several agents reproduce and fix `spec`'s issue; cross-testing their
@@ -194,10 +298,7 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
         pre_patch_file = workdir / "pre.patch"
         pre_patch_file.write_text(spec.pre_patch)
 
-    def proof_patch(*parts: str) -> Path:
-        if spec.pre_patch is not None:
-            return prove.flatten(spec.base.clone, spec.pre_patch, *parts, label=label)
-        return prove.compose(label, *parts)
+    proof_patch = _proof_patcher(spec, label)
 
     try:
         on_step(f"{len(models)} agents reproducing and fixing")
@@ -209,7 +310,9 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
         result = {"candidates": [c.summary() for c in cands], "proof": {}, "reviews": [],
                   "patch": "",
                   "candidate_patches": [{"index": c.index, "test_patch": c.test_patch,
-                                         "fix_patch": c.fix_patch} for c in cands]}
+                                         "fix_patch": c.fix_patch, "test_paths": c.test_paths,
+                                         "verdict": c.verdict, "checks": c.checks}
+                                        for c in cands]}
         live = [c for c in cands if c.ending is None]
         if not live:
             endings = [c.ending for c in cands]
@@ -245,55 +348,73 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
             if len(repros) < AGREEMENT:
                 return finish("fix-unproven", f"{len(repros)} independent reproduction(s); "
                                               f"an agreed fix needs {AGREEMENT}")
+            result["readings"] = [[c.index for c in g] for g in readings(live)]
             return finish("fix-disputed", "no fix passes every reproduction: the candidates "
                                           "read the report's correct behavior differently")
 
         pick = min(agreed, key=lambda c: (issue_gates.changed_line_count(c.fix_patch), c.index))
-        shipped = shipped_reproductions(pick, repros)
-        test_patch = "".join(r.test_patch for r in shipped)
-        test_paths = [p for r in shipped for p in r.test_paths]
-        paths = diffpaths.changed_paths(test_patch + pick.fix_patch)
-        reproduction = {"outcome": "reproduced", "base_sha": spec.base.sha,
-                        "red": shipped[0].red, "files": [{"path": p} for p in test_paths]}
-        result["agreement"]["shipped"] = [r.index for r in shipped]
-        result.update({"patch": test_patch + pick.fix_patch, "pick": pick.index,
-                       "changes": pick.verdict["changes"], "summary": pick.verdict["summary"],
-                       "root_cause": pick.verdict["root_cause"],
-                       "threat": threats.scan_diff(pick.fix_patch),
-                       "tier": risktier.tier_facet(paths), "checks": pick.checks})
-        tree = lane_tree.materialize(spec.base.clone, workdir / "pick" / "src",
-                                     pre_patch=spec.pre_patch)
-        blocked = solo_lane.host_checks(
-            spec, test_patch=test_patch, fix_patch=pick.fix_patch,
-            test_paths=test_paths, tree=tree, proof_patch=proof_patch, label=label,
-            proof=result["proof"], on_step=on_step, own_green=False)
-        if blocked:
-            return finish(*blocked)
-
-        on_step("reviewing: scope-safety")
-        lane_tree.apply_patch(tree, test_patch + pick.fix_patch)
-        agent_runs += 1
-        review = review_issue_fix.review(
-            str(tree), pick.fix_patch, lens="scope-safety", title=spec.title, body=spec.body,
-            root_cause=str(pick.verdict["root_cause"]), test_paths=test_paths,
-            evidence=_evidence(result["proof"], shipped),
-            inventory_veto=result["tier"].get("tier") == 0)
-        result["reviews"] = [review]
-        if review.get("failed"):
-            return finish("run-failed", str(review.get("reason")
-                                            or "the reviewing agent did not finish"))
-        if review.get("verdict") != "safe":
-            return finish("fix-rejected", f"scope-safety: {review.get('reason') or 'not safe'}")
+        ending, detail, reproduction, spent = _judge_pick(
+            spec, workdir, pick, repros, result, proof_patch=proof_patch, label=label,
+            on_step=on_step)
+        agent_runs += spent
+        if ending:
+            return finish(ending, detail)
         return finish("fixed", f"{len(agreed)} of {len(live)} fixes pass all {len(repros)} "
                                "reproductions; the smallest clears the host's checks and the "
                                "scope-safety review")
-    except headless_agent.AgentUnavailable as e:
-        return finish("agent-unavailable", str(e))
-    except headless_agent.AgentDeclined as e:
-        return finish("declined", str(e))
-    except (prove.NoBase, prove.SuiteFault, verify_driver.ProbeFailure) as e:
-        return finish("sandbox", str(e))
-    except (headless_agent.EditsBlockedError, RuntimeError, ValueError) as e:
-        return finish("run-failed", str(e))
-    finally:
-        shutil.rmtree(workdir / "pick", ignore_errors=True)
+    except _LANE_ERRORS as e:
+        return finish(*_faulted(e))
+
+
+def _restore(result: dict) -> list[Candidate]:
+    """The candidates a finished run recorded, rebuilt from its result."""
+    patches = {c["index"]: c for c in result.get("candidate_patches") or []}
+    out: list[Candidate] = []
+    for s in result.get("candidates") or []:
+        p = patches.get(s["index"]) or {}
+        out.append(Candidate(
+            index=s["index"], model=s.get("model") or "", ending=s.get("ending"),
+            detail=s.get("detail") or "", verdict=p.get("verdict") or {},
+            test_patch=p.get("test_patch") or "", fix_patch=p.get("fix_patch") or "",
+            test_paths=list(p.get("test_paths") or []), checks=list(p.get("checks") or []),
+            reproduces=bool(s.get("reproduces")),
+            passes={int(k): bool(v) for k, v in (s.get("passes") or {}).items()}))
+    return out
+
+
+def judge_reading(spec: fix_lane.LaneSpec, *, workdir: Path, result: dict, reading: list[int],
+                  on_step: Callable[[str], None] = lambda step: None) -> fix_lane.LaneResult:
+    """Resume a `fix-disputed` run on one reading, chosen by an answer to the
+    question it raised: the smallest fix among `reading`'s candidates that
+    passes every reproduction in it goes through the host's checks and the
+    scope-safety review. `result` is the disputed run's own; the candidates'
+    cross-test results are read from it, never re-run."""
+    label = f"cross-{spec.issue}"
+    result = {**result, "proof": {}, "reviews": [], "patch": "", "reading": reading}
+    agent_runs = 0
+    reproduction: dict | None = None
+
+    def finish(ending: str, detail: str) -> fix_lane.LaneResult:
+        return fix_lane.LaneResult(ending=ending, fault=ending in fix_lane.ENDINGS_FAULT,
+                                   detail=detail, reproduction=reproduction, result=result,
+                                   agent_runs=agent_runs)
+
+    group = [c for c in _restore(result) if c.index in reading and c.ending is None]
+    repros = [c for c in group if c.reproduces]
+    fits = [c for c in group if c.verdict and all(c.passes.get(r.index) for r in repros)]
+    if not repros or not fits:
+        return finish("fix-unproven", "the chosen reading has no fix that passes its "
+                                      "reproductions")
+    workdir.mkdir(parents=True, exist_ok=True)
+    pick = min(fits, key=lambda c: (issue_gates.changed_line_count(c.fix_patch), c.index))
+    try:
+        ending, detail, reproduction, agent_runs = _judge_pick(
+            spec, workdir, pick, repros, result, proof_patch=_proof_patcher(spec, label),
+            label=label, on_step=on_step)
+    except _LANE_ERRORS as e:
+        return finish(*_faulted(e))
+    if ending:
+        return finish(ending, detail)
+    return finish("fixed", f"the answer chose reading {reading}; its smallest fix passes its "
+                           f"{len(repros)} reproduction(s) and clears the host's checks and the "
+                           "scope-safety review")

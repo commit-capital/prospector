@@ -62,7 +62,7 @@ def test_a_verdict_ending_writes_the_result_file_and_exits_zero(cli):
     code = fix_lane.main(["--issue", "7"])
     assert code == 0
     payload = _result_file(cli)
-    assert set(payload) == {"issue", "report_sha", "base_sha", "action", "lane", "models",
+    assert set(payload) == {"issue", "report_sha", "base_sha", "base_tier", "action", "lane", "models",
                             "ending", "fault", "detail", "agent_runs", "started",
                             "finished", "reproduction", "result"}
     assert payload["lane"] == "staged"

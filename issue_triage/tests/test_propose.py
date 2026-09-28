@@ -87,7 +87,7 @@ def test_changes_the_scope_reviewer_found_beyond_the_report_are_listed_under_ris
 
 
 def test_agent_text_is_held_to_inert_plain_text():
-    cleaned = fix_pr_body._clean("see [docs](https://evil.com) and ![x](http://e) @bob\n"
+    cleaned = fix_pr_body.inert("see [docs](https://evil.com) and ![x](http://e) @bob\n"
                                  "<img src=x> `code` \u202eevil")
     assert cleaned == "see docs and x @\u200bbob 'code' evil"
 

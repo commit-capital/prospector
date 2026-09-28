@@ -272,3 +272,21 @@ def propose_gate(record: dict, live: dict | None, *,
     if verdict != "clear":
         return False, f"the patch scans {verdict}"
     return True, "fixed, open, unedited, and clear"
+
+
+def question_gate(record: dict, live: dict | None, *,
+                  report_sha: Callable[[str, str], str]) -> tuple[bool, str]:
+    """Whether a finished lane run may ask its issue a question: it ended
+    `fix-disputed` with at least two readings, on a report that is still open
+    and unedited."""
+    if record.get("ending") != "fix-disputed":
+        return False, f"the run ended {record.get('ending')!r}, not 'fix-disputed'"
+    if len((record.get("result") or {}).get("readings") or []) < 2:
+        return False, "the run recorded fewer than two readings"
+    if live is None:
+        return False, "the issue cannot be read upstream"
+    if live.get("state") != "open":
+        return False, "the issue is closed"
+    if report_sha(live.get("title") or "", live.get("body") or "") != record.get("report_sha"):
+        return False, "the report was edited after the run; re-run the lane on it"
+    return True, "disputed, open, and unedited"
