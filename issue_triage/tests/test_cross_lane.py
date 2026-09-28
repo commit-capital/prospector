@@ -94,7 +94,7 @@ def cross(tmp_path, monkeypatch):
 
     def fake_review(worktree, patch, **kw):
         state["reviewed"].append({"worktree": worktree, "patch": patch, **kw})
-        assert (Path(worktree) / "src" / "x.ts").read_text().startswith("export const x = 2")
+        assert (Path(worktree) / "src" / "x.ts").read_text() != "export const x = 1;\n"
         return state["review"]
 
     monkeypatch.setattr(review_issue_fix, "review", fake_review)
@@ -250,3 +250,43 @@ def test_no_review_runs_when_the_host_s_checks_refuse(cross, monkeypatch):
         "new_failures": ["src/other.test.ts"]})
     cross["run"]()
     assert cross["reviewed"] == []
+
+
+def test_a_dispute_records_each_reading_the_candidates_split_into(cross):
+    cross["agents"] = [_writes("a.test.ts", 2), _writes("b.test.ts", 3),
+                       _writes("c.test.ts", 2, extra_lines=1)]
+    res = cross["run"]()
+    assert res.ending == "fix-disputed"
+    assert res.result["readings"] == [[0, 2], [1]]
+    kept = {c["index"]: c for c in res.result["candidate_patches"]}
+    assert kept[1]["verdict"]["summary"] == "Fix x" and kept[1]["test_paths"] == ["src/b.test.ts"]
+
+
+@pytest.mark.parametrize("reading,shipped", [([0, 2], [0, 2]), ([1], [1])])
+def test_an_answer_resumes_a_dispute_on_the_reading_it_chose(cross, reading, shipped):
+    cross["agents"] = [_writes("a.test.ts", 2), _writes("b.test.ts", 3),
+                       _writes("c.test.ts", 2, extra_lines=1)]
+    disputed = cross["run"]()
+    before = cross["green_runs"]
+    spec = fix_lane.LaneSpec(issue=7, title="x is wrong", body="x should be 2",
+                             base=prove.PinnedBase(sha="a" * 40, tier=2, image="img",
+                                                   clone=cross["workdir"].parent / "base"))
+    res = cross_lane.judge_reading(spec, workdir=cross["workdir"], result=disputed.result,
+                                   reading=reading)
+    assert res.ending == "fixed", res.detail
+    assert res.result["pick"] == reading[0] and res.result["reading"] == reading
+    assert res.result["agreement"]["shipped"] == shipped
+    assert res.agent_runs == 1
+    assert cross["green_runs"] == before  # the cross-test results are read, not re-run
+
+
+def test_a_reading_with_no_fix_passing_its_reproductions_is_unproven(cross):
+    cross["agents"] = [_writes("a.test.ts", 2), _writes("b.test.ts", 3),
+                       _writes("c.test.ts", 4)]
+    disputed = cross["run"]()
+    spec = fix_lane.LaneSpec(issue=7, title="t", body="b",
+                             base=prove.PinnedBase(sha="a" * 40, tier=2, image="img",
+                                                   clone=cross["workdir"].parent / "base"))
+    res = cross_lane.judge_reading(spec, workdir=cross["workdir"], result=disputed.result,
+                                   reading=[0, 1])
+    assert res.ending == "fix-unproven"

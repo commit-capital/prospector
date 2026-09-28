@@ -95,6 +95,8 @@ uv run python -m issue_triage.fix_lane --issue N --base-sha SHA --tier T  # prov
 uv run python -m issue_triage.fix_lane --issue N --lane cross             # several agents; reproductions must agree
 uv run python -m issue_triage.propose --issue N                           # dry-run a pull request for the last result
 uv run python -m issue_triage.propose --issue N --live                    # push to the push user's fork, open it as the bot
+uv run python -m issue_triage.question --issue N --ask [--live]          # a disputed run asks the issue one question
+uv run python -m issue_triage.question --issue N --resume                # resume it on the answer (or the default after a week)
 ```
 
 The base is the verify pin (`prove.pinned`) unless `--base-sha` names one this

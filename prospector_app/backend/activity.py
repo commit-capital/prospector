@@ -63,7 +63,7 @@ def _engine() -> storekit.Engine:
 
 # The semantic vocabulary (#40). Aggregation groups on these.
 KINDS = ("merge", "close", "comment", "resubmit", "reopen", "undo", "handoff", "reconcile",
-         "issue-close", "issue-reopen", "alert-dismiss", "issue-propose")
+         "issue-close", "issue-reopen", "alert-dismiss", "issue-propose", "issue-question")
 
 
 @dataclass(frozen=True)
