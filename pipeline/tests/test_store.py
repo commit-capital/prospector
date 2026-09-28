@@ -60,6 +60,18 @@ class TestPRRoundTrip:
         # the body is still persisted — load_pr returns the full record
         assert store.load_pr(1).body == "the full description"
 
+    def test_pr_bodies_reads_in_batches(self, store, monkeypatch):
+        from pipeline import store as store_mod
+        monkeypatch.setattr(store_mod, "PR_BODIES_BATCH", 1)
+        for n, body in ((1, "one"), (2, "two"), (3, "three")):
+            store.save_pr(_pr(n, meta=dict(_pr(n)["meta"], body=body)))
+        reads = []
+        real = store_mod.storekit.read_retrying
+        monkeypatch.setattr(store_mod.storekit, "read_retrying",
+                            lambda engine, q: reads.append(1) or real(engine, q))
+        assert store.pr_bodies([1, 2, 3]) == {1: "one", 2: "two", 3: "three"}
+        assert len(reads) == 3
+
     def test_pr_states_maps_every_pr_to_its_state(self, store):
         store.save_pr(_pr(1))
         store.save_pr(_pr(2, meta=dict(_pr(2)["meta"], state="merged")))
