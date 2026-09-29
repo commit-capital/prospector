@@ -392,8 +392,8 @@ the proven base and pushes it to its own fork of `TRIAGE_REPO`, fenced by
 never overwriting one (a branch already holding the same change on the same base,
 left by an opening that failed after its push, is reused); and the bot opens the pull request through
 `safety_guard.propose_bot_run`, whose payload may name only that head, the
-default branch, a title and a body (only a fork's owner may grant maintainers
-edits on it). A branch that already has
+default branch, a title and a body, declining maintainer edits (only a fork's
+owner may grant them, and GitHub grants them by default). A branch that already has
 a pull request is reported, not reopened; with no token every run is a dry-run
 that stops before the push; every outcome is an `issue-propose` Activity entry.
 A proposal never merges: it faces `merge_eligibility` like any other PR. A

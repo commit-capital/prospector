@@ -30,7 +30,7 @@ def push_user(monkeypatch):
 
 def _payload(**over) -> dict:
     return {"title": "fix: x", "body": "Fixes #7", "head": HEAD,
-            "base": sg.settings.default_branch(), **over}
+            "base": sg.settings.default_branch(), "maintainer_can_modify": False, **over}
 
 
 def test_the_guard_admits_a_lane_branch_proposal():
@@ -41,7 +41,7 @@ def test_the_guard_admits_a_lane_branch_proposal():
     (_payload(head="someone:prospector/issue-7-01234567"), "not the push user's lane branch"),
     (_payload(head="pushbot:main"), "not the push user's lane branch"),
     (_payload(base="release"), "targets"),
-    (_payload(maintainer_can_modify=True), "carries exactly"),
+    (_payload(maintainer_can_modify=True), "declines maintainer edits"),
     (_payload(draft=False), "carries exactly"),
     ({k: v for k, v in _payload().items() if k != "body"}, "carries exactly"),
 ])
