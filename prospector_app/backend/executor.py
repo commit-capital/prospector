@@ -1090,6 +1090,20 @@ def dismiss_alert(source: str, number: int, reason: str, comment: str, *,
     return res
 
 
+def _gh_api_error(r: subprocess.CompletedProcess) -> str:
+    """Why a `gh api` call failed: GitHub's own messages from the response body
+    `gh` prints, else the tail of its stderr."""
+    try:
+        doc = json.loads(r.stdout or "")
+    except ValueError:
+        doc = None
+    if isinstance(doc, dict) and doc.get("message"):
+        errors = [str(e.get("message") or e.get("code") or e)
+                  for e in doc.get("errors") or [] if isinstance(e, dict)]
+        return "; ".join([str(doc["message"]), *errors])[-300:]
+    return (r.stderr or "").strip()[-300:]
+
+
 def propose_issue_fix(issue: int, *, token: str | None, dry_run: bool = True) -> dict:
     """Open a pull request on TRIAGE_REPO carrying issue `issue`'s last lane
     fix, for a maintainer to review. The run must pass
@@ -1155,15 +1169,15 @@ def propose_issue_fix(issue: int, *, token: str | None, dry_run: bool = True) ->
 
     assert token is not None
     r = propose_bot_run({"title": title_text, "body": body, "head": head,
-                         "base": settings.default_branch(), "maintainer_can_modify": True},
-                        token)
+                         "base": settings.default_branch()}, token)
     if r.returncode != 0:
-        detail = (r.stderr or "").strip()[-300:] or f"gh exited {r.returncode}"
+        detail = _gh_api_error(r) or f"gh exited {r.returncode}"
         return done("error", f"pushed {ref} but the pull request failed: {detail}", dry=False,
                     head_sha=pushed.head_sha)
     pr = json.loads(r.stdout)
     return done("executed", f"opened #{pr['number']} for issue #{issue}", dry=False,
-                pr=pr["number"], url=pr.get("html_url"), head_sha=pushed.head_sha)
+                pr=pr["number"], url=pr.get("html_url"), head_sha=pushed.head_sha,
+                reused=pushed.reused)
 
 
 def ask_issue_question(issue: int, *, token: str | None, dry_run: bool = True) -> dict:

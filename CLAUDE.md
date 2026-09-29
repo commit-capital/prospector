@@ -389,9 +389,11 @@ profile's required sections, each filled by its heading; exactly `Fixes #N`;
 agent text held to inert plain text; a tier-0 change carries a warning); the push user commits the exact patch on
 the proven base and pushes it to its own fork of `TRIAGE_REPO`, fenced by
 `propose.assert_propose_target` to branch `prospector/issue-<n>-<report sha[:8]>`,
-never overwriting one; and the bot opens the pull request through
+never overwriting one (a branch already holding the same change on the same base,
+left by an opening that failed after its push, is reused); and the bot opens the pull request through
 `safety_guard.propose_bot_run`, whose payload may name only that head, the
-default branch, a title, a body and maintainer edits. A branch that already has
+default branch, a title and a body (only a fork's owner may grant maintainers
+edits on it). A branch that already has
 a pull request is reported, not reopened; with no token every run is a dry-run
 that stops before the push; every outcome is an `issue-propose` Activity entry.
 A proposal never merges: it faces `merge_eligibility` like any other PR. A
