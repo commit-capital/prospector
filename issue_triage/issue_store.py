@@ -27,8 +27,11 @@ ISSUE_STATES = {"open", "closed"}
 ISSUE_RESOLUTION_STATES = {"pending", "closed-dup"}
 REPRO_GRADES = {"A", "B", "C", "D", "F"}
 FIX_SCAN_STATES = {"fixed", "likely-fixed", "not-fixed"}
+ISSUE_FIX_ACTIONS = ("solve", "send-back", "answer", "ask-reporter", "propose")
+ISSUE_FIX_STATUSES = ("queued", "running", "done", "failed", "cancelled")
+ISSUE_FIX_SOURCES = ("operator", "hunter", "reporter")
 ISSUE_SECTIONS = ("meta", "summary", "repro", "cluster", "analysis", "links", "resolution",
-                  "fix_scan")
+                  "fix_scan", "fix_request", "fix_run", "fix_thread")
 
 
 def validate_issue(rec: dict) -> None:
@@ -65,6 +68,19 @@ def validate_issue(rec: dict) -> None:
     if fs and fs.get("status") not in FIX_SCAN_STATES:
         raise ValidationError(
             f"fix_scan.status: {fs.get('status')!r} not in {sorted(FIX_SCAN_STATES)}")
+    fr = rec.get("fix_request")
+    if fr:
+        for field, allowed in (("action", ISSUE_FIX_ACTIONS), ("status", ISSUE_FIX_STATUSES),
+                               ("source", ISSUE_FIX_SOURCES)):
+            if fr.get(field) not in allowed:
+                raise ValidationError(
+                    f"fix_request.{field}: {fr.get(field)!r} not in {list(allowed)}")
+    run = rec.get("fix_run")
+    if run and not isinstance(run.get("ending"), str):
+        raise ValidationError("fix_run.ending: required")
+    thread = rec.get("fix_thread")
+    if thread and not isinstance(thread.get("entries"), list):
+        raise ValidationError("fix_thread.entries: required list")
 
 
 def validate_issue_cluster(rec: dict) -> None:
@@ -143,6 +159,27 @@ class IssueStore:
         `expected_saved_at`, and report whether the write landed. False means
         another writer got there first and this record is stale."""
         return self._issues.save_if(issue.raw, expected_saved_at)
+
+    def claim_fix_request(self, n: int, *, host: str,
+                          hosts: frozenset[str] | None = None) -> dict | None:
+        """Claim issue `n`'s queued fix request for `host`: set it `running`
+        under a compare-and-swap, so two workers never both take it. A request
+        whose follow-up needs the files of an earlier run is claimed only by the
+        host that run names (`hosts`, None for any). Returns the claimed section,
+        or None when the request is not queued, belongs to another host, or
+        another writer got there first."""
+        got = self.stamped_issue(n)
+        if got is None:
+            return None
+        issue, stamp = got
+        req = issue.fix_request
+        if not req or req.get("status") != "queued":
+            return None
+        if hosts is not None and host not in hosts:
+            return None
+        claimed = {**req, "status": "running", "host": host, "started_at": storekit.now()}
+        issue.stage_fix_request(claimed)
+        return claimed if self.save_issue_if(issue, stamp) else None
 
     def edit_issue(self, n: int) -> issue_model.Issue:
         """A typed, auto-saving handle for mutating issue `n`. Raises KeyError if

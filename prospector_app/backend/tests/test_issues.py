@@ -877,3 +877,28 @@ def test_row_carries_the_fix_scans_fixer_without_a_store_state(tmp_path, monkeyp
     assert rows[10]["disposition"] == "close-fixed" and rows[10]["fixed_by"] == 950
     assert rows[10]["linked_prs"][0]["state"] is None
     assert rows[11]["fixed_by"] is None
+
+
+def test_rows_and_detail_carry_the_fix_attempt(tmp_path, monkeypatch):
+    st = _seed(tmp_path, monkeypatch)
+    st.edit_issue(10).record_fix_run({"ending": "fixed", "detail": "proven", "patch": "p",
+                                      "host": "studio"})
+    st.edit_issue(10).append_fix_thread({"at": "t", "by": "op", "kind": "comment",
+                                         "text": "hi"})
+    rows = {r["number"]: r for r in issues.list_issues()[0]}
+    assert rows[10]["fix_status"] == "review" and rows[10]["fix_reason"] == "proven"
+    assert rows[11]["fix_status"] is None
+    detail = issues.get_issue(10)
+    assert detail["fix_run"]["ending"] == "fixed" and detail["fix_thread"][0]["text"] == "hi"
+
+
+def test_the_query_filters_and_sorts_on_fix_status(tmp_path, monkeypatch):
+    st = _seed(tmp_path, monkeypatch)
+    st.edit_issue(10).record_fix_run({"ending": "fix-disputed", "detail": "d", "host": "s",
+                                      "question": {"question": "2 or 3?", "options": []}})
+    got = issues.query_issues(fix_status="question", state="all")
+    assert [r["number"] for r in got["items"]] == [10]
+    assert issues.query_issues(fix_status="none", state="all")["total"] == 1
+    assert issues.query_issues(fix_status=["any"], state="all")["total"] == 1
+    sorted_rows = issues.query_issues(sort="fix", direction="asc", state="all")["items"]
+    assert sorted_rows[0]["number"] == 10

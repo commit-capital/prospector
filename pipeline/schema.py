@@ -80,7 +80,10 @@ _JSON = JSON().with_variant(JSONB, "postgresql")
 # 25 — the claims registry (which operator is working each PR/issue, one shared
 #      row every instance reads and the action bars warn from); older code has
 #      no accessor for it.
-STORE_SCHEMA_VERSION = 25
+# 26 — issues carry the issue-fix review sections (`fix_request`, `fix_run`,
+#      `fix_thread`); an older issue validator warns on them as unknown and an
+#      older reader has no accessor.
+STORE_SCHEMA_VERSION = 26
 
 # saved_at is a microsecond-resolution ISO timestamp stamped on every save — when
 # the store row was last written (distinct from `updated_at`, which mirrors the

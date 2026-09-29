@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from issue_triage import fix_review
 from issue_triage import issue_links
 from issue_triage import pr_index
 from pipeline import settings
@@ -234,6 +235,7 @@ def _row(iss: Issue, clusters_by_id: dict[int, IssueCluster], store_states: dict
     # Each link's state is resolved once here, so the chip and the merged-fixer
     # count can never read the same link differently.
     links = _links_for(iss)
+    fix = fix_review.fix_status(iss)
     if store_states is not None:
         links = [{**c, "in_store": c["pr"] in store_states,
                   "state": _link_state(c, store_states)} for c in links]
@@ -272,6 +274,8 @@ def _row(iss: Issue, clusters_by_id: dict[int, IssueCluster], store_states: dict
         "referenced_merged_count": 0 if store_states is None else sum(
             1 for c in links
             if issue_links.referenced(c) and c.get("state") == "merged"),
+        "fix_status": fix[0] if fix else None,
+        "fix_reason": fix[1] if fix else None,
     }
 
 
@@ -318,6 +322,9 @@ def get_issue(n: int) -> dict | None:
     cl = clusters.get(i.cluster_id) if i.cluster_id else None
     row["cluster_label"] = (cl.curation or {}).get("label") if cl else None
     row["claim"] = claims.for_item("issue", int(n))
+    row["fix_request"] = i.fix_request
+    row["fix_run"] = i.fix_run
+    row["fix_thread"] = i.fix_thread
     return row
 
 
@@ -335,6 +342,9 @@ _ISSUE_SORT_KEYS = {
     "prs": lambda r: (r["referenced_merged_count"], r["referenced_pr_count"], r["linked_pr_count"]),
     "disposition": lambda r: _DISP_RANK.get(r["disposition"] or ""),
     "subsystem": lambda r: (r["subsystem"] or "").lower(),
+    # The operator's moves first, in fix_review.STATUSES order.
+    "fix": lambda r: (None if r["fix_status"] is None
+                      else fix_review.STATUSES.index(r["fix_status"])),
 }
 _ISSUE_DEFAULT_DESC = {"number", "pain", "repro", "dups", "prs"}
 
@@ -375,6 +385,7 @@ def query_issues(q: str = "", sort: str | None = None, direction: str | None = N
                  subsystem: str | None = None,
                  dups: dict | None = None, linked_prs: dict | None = None,
                  labels: str | None = None, collapse_dups: bool = False,
+                 fix_status: str | list[str] | None = None,
                  offset: int = 0, limit: int = 50) -> dict:
     """Paginated issue-table query. Uses the light cached snapshot for filtering
     and sorting, then hydrates only the returned page with full candidate PR data.
@@ -389,7 +400,8 @@ def query_issues(q: str = "", sort: str | None = None, direction: str | None = N
     the issue's labels); `repro_grade` accepts one value or a list (OR'd); `pain`,
     `dups` (duplicate count), and `linked_prs` (linked-PR count) are `{op, value}`
     numeric compares — see filters.num_cmp — and a missing row value never matches
-    one. While the PR snapshot is still cold-loading, the result carries
+    one. `fix_status` accepts one fix_review status or a list (OR'd); "any"
+    selects every issue with a fix attempt and "none" those without. While the PR snapshot is still cold-loading, the result carries
     `pr_states_loading` true and answers immediately with unhydrated linked-PR
     chips, no author stats, and (for sort=prs) no merged-fixer ranking — the
     view refetches until the flag clears."""
@@ -422,6 +434,12 @@ def query_issues(q: str = "", sort: str | None = None, direction: str | None = N
         rows = [r for r in rows if num_cmp(len(r["duplicates"]), dups)]
     if linked_prs is not None:
         rows = [r for r in rows if num_cmp(r["linked_pr_count"], linked_prs)]
+    if fix_status:
+        wanted_fix = fix_status if isinstance(fix_status, list) else [fix_status]
+        rows = [r for r in rows
+                if ("any" in wanted_fix and r["fix_status"] is not None)
+                or ("none" in wanted_fix and r["fix_status"] is None)
+                or r["fix_status"] in wanted_fix]
     if labels:
         needle_label = labels.strip().lower()
         if needle_label:

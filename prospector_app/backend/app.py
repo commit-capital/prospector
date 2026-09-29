@@ -87,6 +87,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     _launch_live_sweep()
     _launch_verify_worker()
     _launch_fix_worker()
+    _launch_issue_fix_worker()
     _launch_stale_refresh()
     yield
 
@@ -183,6 +184,16 @@ def _launch_verify_worker():
     if "pytest" in sys.modules:
         return
     verify_worker.startup()
+
+
+def _launch_issue_fix_worker():
+    """Start the issue-fix review lane on a machine that runs it
+    (TRIAGE_ISSUE_FIX_WORKER=1). Skipped under pytest."""
+    import sys
+    if "pytest" in sys.modules:
+        return
+    from prospector_app.backend import issue_fix_worker
+    issue_fix_worker.startup()
 
 
 def _launch_fix_worker():
@@ -976,7 +987,7 @@ def list_issues():
 def issues_query(payload: dict = Body(default_factory=dict)):
     """Paginated Issue-table endpoint. Body: {q?, sort?, direction?, disposition?,
     state?, author?, pain?, repro_grade?, subsystem?, dups?, linked_prs?, labels?,
-    collapse_dups?, offset?, limit?}; disposition "none" selects unanalyzed
+    collapse_dups?, fix_status?, offset?, limit?}; disposition "none" selects unanalyzed
     issues, state "open"/"closed" filters by lifecycle ("all"/absent returns
     both). See issues.query_issues for the per-field filter semantics."""
     return issues_mod.query_issues(
@@ -991,6 +1002,7 @@ def issues_query(payload: dict = Body(default_factory=dict)):
         linked_prs=payload.get("linked_prs"),
         labels=payload.get("labels") or None,
         collapse_dups=bool(payload.get("collapse_dups")),
+        fix_status=payload.get("fix_status") or None,
         offset=int(payload.get("offset", 0)), limit=min(int(payload.get("limit", 50)), 500),
     )
 
@@ -1019,6 +1031,36 @@ def issue_detail(n: int):
     if d is None:
         raise HTTPException(404, f"issue {n} not in store")
     return d
+
+
+@app.post("/api/issues/{n}/fix")
+def issue_fix_request(n: int, payload: models.IssueFixBody):
+    """Queue an action on issue #n's fix attempt for the issue-fix worker:
+    `solve` (optional guidance), `send-back` (comments), `answer` (an option's
+    label or a written answer), `ask-reporter`, `propose` (dry_run as the page
+    runs). The operator's words join the attempt's thread. 409 when the action
+    does not fit the attempt or a request is already in flight."""
+    from issue_triage import fix_review
+    answer = ({"label": payload.answer_label} if payload.answer_label
+              else {"text": payload.answer_text} if payload.answer_text else None)
+    ok, why = fix_review.queue(issue_data.store(), n, payload.action,
+                               by=activity.operator()["name"], guidance=payload.guidance,
+                               answer=answer, dry_run=payload.dry_run)
+    if not ok:
+        raise HTTPException(409, why)
+    issue_data.refresh()
+    return {"ok": True, "detail": why}
+
+
+@app.post("/api/issues/{n}/fix/cancel")
+def issue_fix_cancel(n: int):
+    """Cancel issue #n's queued fix request; a running one finishes."""
+    from issue_triage import fix_review
+    ok, why = fix_review.cancel(issue_data.store(), n, by=activity.operator()["name"])
+    if not ok:
+        raise HTTPException(409, why)
+    issue_data.refresh()
+    return {"ok": True, "detail": why}
 
 
 @app.post("/api/execute/issue/{n}/close-dup")

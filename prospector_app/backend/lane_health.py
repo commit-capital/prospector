@@ -15,12 +15,14 @@ from prospector_app.backend import data, escalation, worker_selftest
 
 def enabled_lanes() -> tuple[str, ...]:
     """The lanes this machine runs: `security` and `verify` on a verify
-    worker, `fix` on an autofix worker."""
+    worker, `fix` on an autofix worker, `issue-fix` on an issue-fix worker."""
     lanes: list[str] = []
     if settings.verify_worker_enabled():
         lanes += ["security", "verify"]
     if settings.fix_worker_enabled():
         lanes.append("fix")
+    if settings.issue_fix_worker_enabled():
+        lanes.append("issue-fix")
     return tuple(lanes)
 
 

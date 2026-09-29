@@ -415,6 +415,34 @@ pick through the host's checks and the scope-safety review), writing the new
 ending over `result.json` (the disputed one kept as `disputed.json`) for
 `propose`.
 
+**ISSUE FIX REVIEW** (`issue_triage/fix_review.py` + `fix_review_runner.py` +
+`prospector_app/backend/issue_fix_worker.py`) brings the factory into the app.
+Each issue carries three sections (schema 26): `fix_request`, the one pending
+action (`solve`, `send-back`, `answer`, `ask-reporter`, `propose`), which
+`fix_review.queue` admits only when it fits the latest attempt and nothing is
+in flight; `fix_run`, that attempt distilled for display (`fix_review.distill`:
+each candidate's own account, the agreement, the picked change, the checks, the
+reviewers, the question, the proposal — no transcripts); and `fix_thread`, the
+operator's words and the worker's notes. `fix_review.fix_status` derives on
+read whose move it is (`review`, `question`, `running`, `reporter`, `pr-open`,
+`failed`, `declined`); the Issues query filters and sorts on it. The worker
+lane (`TRIAGE_ISSUE_FIX_WORKER=1`, health lane `issue-fix`) claims one request at
+a time by compare-and-swap (`IssueStore.claim_fix_request`) — a `solve` on any
+issue-fix worker, every follow-up only on the host its run names, since it needs
+that run's files and held base — and `fix_review_runner.run_request` carries it
+out: `solve` runs the cross lane with the operator's guidance (ranked above the
+agent's own reading, `solo_lane.GUIDANCE`) and drafts a dispute's question at
+once; `send-back` has a small agent read the comments (`route`), then either one
+agent revises the current change on a clone that holds it
+(`solo_lane.run(start_patch=…, review=True)`) or the cross lane restarts with the
+comments as guidance; `answer` resumes a dispute on the chosen reading or
+re-solves with a written answer; `ask-reporter` and `propose` take the executor's
+bot paths. Between requests the lane reads replies to questions asked on GitHub
+every half hour, and `TRIAGE_ISSUE_FIX_HUNT=1` lets it queue one `solve` for a
+fresh, well-reproduced issue with no linked PR within
+`TRIAGE_ISSUE_FIX_HUNT_BUDGET` a UTC day. `POST /api/issues/{n}/fix` queues an
+action as the operator; `/fix/cancel` cancels a queued one.
+
 **WORKER HEALTH** (`pipeline/worker_health.py` + `prospector_app/backend/lane_health.py`
 + `escalation.py`) is the ONE policy for a worker that is failing rather than
 the PRs. Every ending a worker writes is booked per lane (`security`, `verify`,
