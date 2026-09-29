@@ -444,13 +444,13 @@ function HomeIssueCardRow({ card }: { card: HomeIssueCard }) {
   useEffect(() => {
     let cancelled = false;
     api.queryIssues({
-      disposition: card.disposition, state: "open",
+      disposition: card.disposition, fix_status: card.fix, state: "open",
       sort: "pain", direction: "desc", limit: SAMPLE_LIMIT,
     })
       .then((d) => { if (!cancelled) { setSample({ items: d.items, total: d.total }); setFailed(false); } })
       .catch(() => { if (!cancelled) setFailed(true); });
     return () => { cancelled = true; };
-  }, [card.disposition, generation]);
+  }, [card.disposition, card.fix, generation]);
   const href = issuesHref(card);
   const total = sample ? sample.total : null;
   return (

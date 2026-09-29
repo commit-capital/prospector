@@ -205,3 +205,23 @@ def test_a_dry_run_proposal_opens_nothing(store, monkeypatch):
     _, outcome = fix_review_runner.run_request(store, 7, req)
     assert seen == {"token": None, "dry_run": True} and outcome == "Dry run: would open it"
     assert fix_review.fix_status(store.load_issue(7))[0] == "review"
+
+
+# --- the backfill ------------------------------------------------------------------
+
+def test_the_backfill_records_this_machine_s_results_once(store, tmp_path, monkeypatch):
+    import json
+    from issue_triage import fix_review_backfill
+    monkeypatch.setenv("TRIAGE_VERIFY_SCRATCH", str(tmp_path / "vs"))
+    d = tmp_path / "vs" / "issue-fix" / "issue-7"
+    d.mkdir(parents=True)
+    (d / "result.json").write_text(json.dumps({
+        "ending": "fixed", "detail": "d", "report_sha": "r",
+        "result": {"patch": "diff --git a/x b/x\n"}}))
+    monkeypatch.setattr(fix_review_backfill, "_proposal", lambda n: {"pr": 9, "url": "u"})
+    assert fix_review_backfill.backfill(store, draft_questions=False, live=False) == [
+        "#7: fixed, PR 9"]
+    assert store.load_issue(7).fix_run is None
+    fix_review_backfill.backfill(store, draft_questions=False, live=True)
+    assert store.load_issue(7).fix_run["proposal"] == {"pr": 9, "url": "u"}
+    assert fix_review_backfill.backfill(store, draft_questions=False, live=True) == []

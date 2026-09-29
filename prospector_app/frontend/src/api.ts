@@ -1056,6 +1056,20 @@ export interface DiffResult {
   source: string;
 }
 
+/** POST a JSON body; resolves to the JSON reply, and rejects with the
+ *  server's `detail` (or the status line) when the reply is not ok. */
+async function postJson<T = { ok: boolean; detail: string }>(url: string, body: unknown): Promise<T> {
+  const r = await fetch(url, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    let detail = `${r.status} ${r.statusText}`;
+    try { detail = ((await r.json()) as { detail?: string }).detail ?? detail; } catch { /* no body */ }
+    throw new Error(detail);
+  }
+  return (await r.json()) as T;
+}
+
 async function get<T>(url: string): Promise<T> {
   let r: Response;
   try {
@@ -1118,8 +1132,110 @@ export interface IssueRow {
   linked_pr_count: number;
   referenced_pr_count: number;
   referenced_merged_count: number;
+  /** Whose move the issue's fix attempt waits on (issue_triage/fix_review.py). */
+  fix_status?: IssueFixStatus | null;
+  fix_reason?: string | null;
   /** Dup-group members folded under this row when the query collapsed dups. */
   dup_rows?: IssueRow[];
+}
+/** fix_review.STATUSES — the operator's moves first. */
+export type IssueFixStatus = "review" | "question" | "running" | "reporter" | "pr-open" | "failed" | "declined";
+export type IssueFixAction = "solve" | "send-back" | "answer" | "ask-reporter" | "propose";
+export interface IssueFixRequest {
+  action: IssueFixAction;
+  status: "queued" | "running" | "done" | "failed" | "cancelled";
+  source: "operator" | "hunter" | "reporter";
+  requested_by?: string;
+  queued_at?: string;
+  host?: string;
+  started_at?: string;
+  finished_at?: string;
+  guidance?: string;
+  answer?: { label?: string; text?: string };
+  dry_run?: boolean;
+  reason?: string;
+}
+export interface IssueFixChange { path: string; rationale: string }
+/** One candidate agent's own account of its attempt. `passes` maps each
+ *  reproduction's candidate index to whether this candidate's fix passed it. */
+export interface IssueFixCandidate {
+  index: number;
+  model: string | null;
+  ending: string | null;
+  detail: string | null;
+  reproduces: boolean | null;
+  passes: Record<string, boolean> | null;
+  fix_lines: number | null;
+  tests: string[] | null;
+  summary: string | null;
+  root_cause: string | null;
+  changes: IssueFixChange[] | null;
+}
+export interface IssueFixReview {
+  lens: string | null;
+  verdict: string | null;
+  failed?: boolean | null;
+  reason: string | null;
+  concerns: string[];
+  unasked: string[];
+}
+export interface IssueFixQuestion {
+  question: string;
+  options: { label: string; behavior: string }[];
+  default: string;
+  default_reason: string;
+  labels?: string[];
+  asked?: { url?: string | null; at?: string };
+  answered?: { label?: string; text?: string };
+  no_question?: string;
+}
+export interface IssueFixProof {
+  compile?: { exit?: number; tree_fails?: boolean; error?: string; excerpt?: string };
+  related_tests?: { files: string[]; exit?: number | null; base_fails?: boolean };
+  suite?: { skipped?: string; confirmed?: boolean; flake?: boolean; excluded?: number;
+            new_failures?: string[]; rebaselined?: string[] };
+}
+/** The latest fix attempt, distilled for display (fix_review.distill). */
+export interface IssueFixRun {
+  lane: string | null;
+  ending: string;
+  fault: boolean;
+  detail: string | null;
+  host: string | null;
+  base_sha: string | null;
+  models: string[];
+  started: string | null;
+  finished: string | null;
+  agent_runs: number | null;
+  summary: string | null;
+  root_cause: string | null;
+  changes: IssueFixChange[];
+  pick: number | null;
+  patch: string;
+  patch_truncated: boolean;
+  tests: string[];
+  agreement: { reproductions?: number[]; agreed?: number[]; shipped?: number[] } | null;
+  readings: number[][] | null;
+  tier: { tier: number | null; pinned_by: string[] } | null;
+  proof: IssueFixProof;
+  reviews: IssueFixReview[];
+  candidates: IssueFixCandidate[];
+  question: IssueFixQuestion | null;
+  proposal: { pr: number | string | null; url: string | null } | null;
+}
+export interface IssueFixThreadEntry {
+  at: string;
+  by: string;
+  kind: "comment" | "answer" | "note";
+  action?: IssueFixAction;
+  text: string;
+}
+export interface IssueFixBody {
+  action: IssueFixAction;
+  guidance?: string;
+  answer_label?: string;
+  answer_text?: string;
+  dry_run?: boolean;
 }
 /** Per-column filters for the Issues table (#494) — the issue-side analog of
  *  PR Explorer's FilterSpec. `author` is a starts-with match, `subsystem` and
@@ -1155,6 +1271,9 @@ export interface IssueDetail extends IssueRow {
   dup_comment: string | null;
   cluster_label: string | null;
   claim?: ItemClaim | null;
+  fix_request?: IssueFixRequest | null;
+  fix_run?: IssueFixRun | null;
+  fix_thread?: IssueFixThreadEntry[];
 }
 export interface IssueExecResult { issue: number; action: string; status: string; detail: string; canonical?: number | null; forced?: boolean }
 
@@ -1548,7 +1667,7 @@ export const api = {
   listIssues: () => get<{ items: IssueRow[]; pr_states_loading: boolean }>("/api/issues"),
   queryIssues: (opts: {
     q?: string; sort?: string; direction?: string; disposition?: string; state?: string;
-    collapse_dups?: boolean; offset?: number; limit?: number;
+    collapse_dups?: boolean; fix_status?: string | string[]; offset?: number; limit?: number;
   } & IssueFilterSpec = {}) =>
     fetch("/api/issues/query", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -1558,6 +1677,10 @@ export const api = {
   issuesAlreadyFixed: () =>
     get<{ fixed: IssueFixedItem[]; likely_fixed: IssueLikelyFixedItem[] }>("/api/issues/already-fixed"),
   getIssue: (n: number) => get<IssueDetail>(`/api/issues/${n}`),
+  /** Queue an action on the issue's fix attempt; rejects with the server's
+   *  reason when it does not fit (409). */
+  issueFix: (n: number, body: IssueFixBody) => postJson(`/api/issues/${n}/fix`, body),
+  cancelIssueFix: (n: number) => postJson(`/api/issues/${n}/fix/cancel`, {}),
   listAlerts: () => get<{ items: AlertRow[]; pr_states_loading: boolean }>("/api/alerts"),
   queryAlerts: (opts: {
     q?: string; sort?: string; direction?: string; source?: string; state?: string;
