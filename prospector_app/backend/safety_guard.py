@@ -214,15 +214,15 @@ def assert_alert_bot_write(argv: list[str]) -> None:
         raise WriteAttemptBlocked(f"not an allowlisted alert write: {joined!r}")
 
 
-PROPOSE_KEYS = frozenset({"title", "body", "head", "base"})
+PROPOSE_KEYS = frozenset({"title", "body", "head", "base", "maintainer_can_modify"})
 _PROPOSE_HEAD_RE = re.compile(r"^([A-Za-z0-9-]+):prospector/issue-[1-9][0-9]{0,8}-[0-9a-f]{8}$")
 
 
 def assert_propose_write(payload: dict) -> None:
     """Hold a proposed pull request to the one shape the issue-fix lane opens:
     from the push user's lane branch into TRIAGE_REPO's default branch, with
-    nothing but a title and a body. GitHub lets only the fork's owner grant
-    maintainers edits on its branch, so the bot asks for none."""
+    nothing but a title and a body, and maintainer edits explicitly declined:
+    GitHub lets only the fork's owner grant them, and grants them by default."""
     if set(payload) != PROPOSE_KEYS:
         raise WriteAttemptBlocked(f"a proposal carries exactly {sorted(PROPOSE_KEYS)}")
     m = _PROPOSE_HEAD_RE.fullmatch(str(payload["head"]))
@@ -230,6 +230,8 @@ def assert_propose_write(payload: dict) -> None:
         raise WriteAttemptBlocked(f"{payload['head']!r} is not the push user's lane branch")
     if payload["base"] != settings.default_branch():
         raise WriteAttemptBlocked(f"a proposal targets {settings.default_branch()!r}")
+    if payload["maintainer_can_modify"] is not False:
+        raise WriteAttemptBlocked("a proposal declines maintainer edits")
     if not isinstance(payload["title"], str) or not isinstance(payload["body"], str):
         raise WriteAttemptBlocked("a proposal's title and body are text")
 

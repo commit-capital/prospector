@@ -1169,7 +1169,8 @@ def propose_issue_fix(issue: int, *, token: str | None, dry_run: bool = True) ->
 
     assert token is not None
     r = propose_bot_run({"title": title_text, "body": body, "head": head,
-                         "base": settings.default_branch()}, token)
+                         "base": settings.default_branch(), "maintainer_can_modify": False},
+                        token)
     if r.returncode != 0:
         detail = _gh_api_error(r) or f"gh exited {r.returncode}"
         return done("error", f"pushed {ref} but the pull request failed: {detail}", dry=False,
