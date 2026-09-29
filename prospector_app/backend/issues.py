@@ -294,12 +294,13 @@ def list_issues() -> tuple[list[dict], bool]:
 
 def get_issue(n: int) -> dict | None:
     """One issue's detail: its table row plus body, the full analysis section
-    (disposition, gist, rationale, asks, canonical), and its cluster's curated
-    label — what the issue flyout renders. While the PR snapshot is still
-    cold-loading, the linked-PR chips and author stats are served unhydrated."""
+    (disposition, gist, rationale, asks, canonical), its cluster's curated
+    label, and its fix attempt — what the issue flyout renders. The issue is
+    read from its own row, so it is current and costs one read. While the PR
+    snapshot is still cold-loading, the linked-PR chips and author stats are
+    served unhydrated."""
     _sync_store_root()
-    issues = issue_data.full_issues()
-    i = issues.get(int(n))
+    i = issue_data.load_full_issues([int(n)]).get(int(n))
     if i is None:
         return None
     clusters = issue_data.clusters()

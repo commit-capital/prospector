@@ -238,14 +238,16 @@ export interface HomeIssueAction {
 // default.
 export const ISSUE_ANALYZE_BATCH = 200;
 
-// One Home issue card: a headline count over an Issues-view disposition
-// filter, linking there with that filter in the URL. `disposition` uses the
-// issues query API's vocabulary, where "none" selects unanalyzed issues.
+// One Home issue card: a headline count over an Issues-view filter, linking
+// there with that filter in the URL — a triage `disposition` (the issues query
+// API's vocabulary, where "none" selects unanalyzed issues) or an auto-fix
+// `fix` status (fix_review.STATUSES).
 export interface HomeIssueCard {
   key: string;
   title: string;
   blurb: string;
-  disposition: "close-fixed" | "none";
+  disposition?: "close-fixed" | "none";
+  fix?: "review" | "question";
   action?: HomeIssueAction;
   lead?: boolean;
 }
@@ -255,6 +257,19 @@ export interface HomeIssueCard {
 // come from POST /api/issues/query — the same matcher behind the Issues table —
 // so each card's number is exactly the row count its link opens.
 export const HOME_ISSUE_CARDS: HomeIssueCard[] = [
+  {
+    key: "issues-fix-review",
+    title: "Fixes to review",
+    blurb: "The auto-fix factory proved a fix for each — read the change and the reviewer's verdict, then open the PR or send it back.",
+    fix: "review",
+    lead: true,
+  },
+  {
+    key: "issues-fix-question",
+    title: "Questions for you",
+    blurb: "The fixing agents read these reports differently — pick what should happen and the fix continues.",
+    fix: "question",
+  },
   {
     key: "issues-close-fixed",
     title: "Issues to close as fixed",
@@ -272,5 +287,6 @@ export const HOME_ISSUE_CARDS: HomeIssueCard[] = [
 ];
 
 export function issuesHref(card: HomeIssueCard): string {
-  return `/issues?disposition=${encodeURIComponent(card.disposition)}`;
+  if (card.fix) return `/issues?fix=${encodeURIComponent(card.fix)}`;
+  return `/issues?disposition=${encodeURIComponent(card.disposition ?? "")}`;
 }

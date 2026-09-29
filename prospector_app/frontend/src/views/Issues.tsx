@@ -18,9 +18,10 @@ import { perIssueRefs } from "../components/issues/issueCloseRefs";
 import { EVIDENCE, REFERENCED, linkStateChip } from "../components/issues/issueLinkChips";
 import { IssueCloseConfirmDialog, type IssueClosePlan } from "../components/issues/IssueCloseConfirmDialog";
 import { SkeletonRows } from "../components/SkeletonRows";
+import { FixStatusChip } from "../components/IssueFixPanel";
 
 const PAGE_SIZE = 50;
-type IssueSortKey = "number" | "title" | "author" | "pain" | "repro" | "dups" | "prs" | "disposition" | "subsystem";
+type IssueSortKey = "number" | "title" | "author" | "pain" | "repro" | "dups" | "prs" | "disposition" | "subsystem" | "fix";
 const ISSUE_DESC_FIRST = new Set<IssueSortKey>(["number", "pain", "repro", "dups", "prs"]);
 
 // A GitHub issue number → its issue on github.com. Row-level clicks open the
@@ -409,6 +410,27 @@ function IssueCloseBar({
   );
 }
 
+// The Auto-fix filter: a fix_review status, "needs-you" (a fix to review or a
+// question to answer), "any" attempt, or "none". Also read from ?fix=.
+const FIX_FILTERS: { key: string; label: string }[] = [
+  { key: "", label: "Auto-fix: all" },
+  { key: "needs-you", label: "Needs you" },
+  { key: "review", label: "Fix to review" },
+  { key: "question", label: "Question for you" },
+  { key: "running", label: "Working" },
+  { key: "reporter", label: "Waiting on reporter" },
+  { key: "pr-open", label: "PR open" },
+  { key: "failed", label: "Didn't finish" },
+  { key: "declined", label: "No fix" },
+  { key: "any", label: "Any attempt" },
+  { key: "none", label: "Never attempted" },
+];
+
+function fixStatusParam(key: string): string | string[] | undefined {
+  if (!key) return undefined;
+  return key === "needs-you" ? ["review", "question"] : key;
+}
+
 const DISP_FILTERS: { key: string; label: string }[] = [
   { key: "", label: "all" },
   { key: "link-pr", label: "link-pr" },
@@ -426,8 +448,8 @@ const STATE_FILTERS: { key: string; label: string }[] = [
 ];
 
 function AllIssuesTable({
-  rows, total, page, q, sortKey, sortDir, loading, dispFilter, stateFilter,
-  onQ, onPage, onSort, onDispFilter, onStateFilter, filterSpec, onFilterSpecChange,
+  rows, total, page, q, sortKey, sortDir, loading, dispFilter, stateFilter, fixFilter,
+  onQ, onPage, onSort, onDispFilter, onStateFilter, onFixFilter, filterSpec, onFilterSpecChange,
   selected, results, onToggle, onToggleAll, closeBar,
 }: {
   rows: IssueRow[];
@@ -439,11 +461,13 @@ function AllIssuesTable({
   loading: boolean;
   dispFilter: string;
   stateFilter: string;
+  fixFilter: string;
   onQ: (q: string) => void;
   onPage: (page: number) => void;
   onSort: (key: IssueSortKey) => void;
   onDispFilter: (d: string) => void;
   onStateFilter: (s: string) => void;
+  onFixFilter: (f: string) => void;
   filterSpec: IssueFilterSpec;
   onFilterSpecChange: (next: IssueFilterSpec) => void;
   selected: Set<number>;
@@ -515,6 +539,10 @@ function AllIssuesTable({
               onClick={() => onDispFilter(f.key)}>{f.label}</button>
           ))}
         </div>
+        <select value={fixFilter} onChange={(e) => onFixFilter(e.target.value)}
+          title="Filter by the auto-fix factory's status for each issue">
+          {FIX_FILTERS.map((f) => <option key={f.key} value={f.key}>{f.label}</option>)}
+        </select>
         <input className="author-in" placeholder="label contains" value={filterSpec.labels ?? ""}
           title="Filter by GitHub label (substring match)"
           onChange={(e) => onFilterSpecChange({ ...filterSpec, labels: e.target.value || undefined })} />
@@ -560,6 +588,8 @@ function AllIssuesTable({
               title="Sorts by fix evidence: merged referenced fixers first (Fixes/Closes references and PRs named in the issue text), then referenced PRs, then total linked PRs">
             <span className="th-inner"><span className="th-label">Linked PRs{indicator("prs")}</span>{filterBtn("prs")}</span></th>
           <th {...thProps("subsystem")}><span className="th-inner"><span className="th-label">Subsystem{indicator("subsystem")}</span>{filterBtn("subsystem")}</span></th>
+          <th {...thProps("fix")} title="The auto-fix factory's status; sorts the ones waiting on you first">
+            Auto-fix{indicator("fix")}</th>
         </tr></thead>
         <tbody>
           {rows.flatMap((r) => {
@@ -598,6 +628,7 @@ function AllIssuesTable({
                 </td>
                 <td onClick={stopRowOpen}><LinkedPRs prs={row.linked_prs} count={row.linked_pr_count} referencedCount={row.referenced_pr_count} /></td>
                 <td className="muted small">{row.subsystem ?? "—"}</td>
+                <td><FixStatusChip status={row.fix_status} reason={row.fix_reason} /></td>
               </tr>
             );
             return [
@@ -637,6 +668,9 @@ export default function Issues() {
   const [dispFilter, setDispFilter] = useState(
     dispParam !== null && DISP_FILTERS.some((f) => f.key === dispParam) ? dispParam : "");
   const [stateFilter, setStateFilter] = useState("open");
+  const fixParam = sp.get("fix");
+  const [fixFilter, setFixFilter] = useState(
+    fixParam !== null && FIX_FILTERS.some((f) => f.key === fixParam) ? fixParam : "");
   // Per-column filters (author/pain/repro/subsystem/dups/linked-PRs/labels) —
   // the issue-side analog of PR Explorer's filter spec (#494).
   const [filterSpec, setFilterSpec] = useState<IssueFilterSpec>({});
@@ -663,6 +697,7 @@ export default function Issues() {
         direction: sortDir || undefined,
         disposition: dispFilter || undefined,
         state: stateFilter === "all" ? undefined : stateFilter,
+        fix_status: fixStatusParam(fixFilter),
         collapse_dups: true,
         offset: (page - 1) * PAGE_SIZE,
         limit: PAGE_SIZE,
@@ -684,7 +719,7 @@ export default function Issues() {
     };
     run();
     return () => { active = false; if (timer !== undefined) window.clearTimeout(timer); };
-  }, [q, page, sortKey, sortDir, dispFilter, stateFilter, filterSpec]);
+  }, [q, page, sortKey, sortDir, dispFilter, stateFilter, fixFilter, filterSpec]);
 
   // An in-app navigation can add ?dup= while the page is already mounted
   // (e.g. an issue flyout's cluster chip); a param change lands on the
@@ -819,10 +854,12 @@ export default function Issues() {
           loading={loadingIssues}
           dispFilter={dispFilter}
           stateFilter={stateFilter}
+          fixFilter={fixFilter}
           onQ={(next) => { setLoadingIssues(true); setQ(next); setPage(1); setSelected(new Set()); setIssueResults({}); }}
           onPage={(next) => { setLoadingIssues(true); setPage(next); setSelected(new Set()); setIssueResults({}); }}
           onDispFilter={(d) => { setLoadingIssues(true); setDispFilter(d); setPage(1); setSelected(new Set()); setIssueResults({}); }}
           onStateFilter={(s) => { setLoadingIssues(true); setStateFilter(s); setPage(1); setSelected(new Set()); setIssueResults({}); }}
+          onFixFilter={(f) => { setLoadingIssues(true); setFixFilter(f); setPage(1); setSelected(new Set()); setIssueResults({}); }}
           onSort={clickSort}
           filterSpec={filterSpec}
           onFilterSpecChange={changeFilterSpec}

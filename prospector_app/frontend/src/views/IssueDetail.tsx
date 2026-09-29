@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -9,6 +9,7 @@ import { TrustedAuthorName } from "../components/TrustedAuthor";
 import { DispositionChip, LinkedPRs, ReproChip } from "./Issues";
 import { IssueActionBar } from "../components/IssueActionBar";
 import { ClaimControl } from "../components/ClaimControl";
+import { FixStatusChip, IssueFixPanel } from "../components/IssueFixPanel";
 
 // An issue reference inside the flyout: a plain click swaps this panel to that
 // issue; a modifier-click follows the href to github.com.
@@ -36,6 +37,7 @@ export function IssueDetailContent({ issue }: { issue: number }) {
   useEffect(() => {
     api.getIssue(issue).then(setD).catch((e) => setErr(String(e)));
   }, [issue]);
+  const reload = useCallback(() => { api.getIssue(issue).then(setD).catch(() => {}); }, [issue]);
 
   if (err) return <div className="error">Failed to load issue #{issue}: {err}</div>;
   if (!d) return <div className="muted" style={{ padding: 16 }}>Loading issue #{issue}…</div>;
@@ -51,6 +53,7 @@ export function IssueDetailContent({ issue }: { issue: number }) {
           <span className={`chip sm ${d.state === "open" ? "chip-green" : "chip-muted"}`}>{d.state}</span>
           <DispositionChip d={d.disposition} />
           <ReproChip grade={d.repro_grade} />
+          <FixStatusChip status={d.fix_status} reason={d.fix_reason} />
           {d.pain != null && <span className="chip chip-purple sm" title="Cluster pain rank (higher = more impactful)">pain {d.pain.toFixed(2)}</span>}
           {d.subsystem && <span className="chip chip-muted sm">{d.subsystem}</span>}
           {d.cluster != null && (
@@ -67,7 +70,10 @@ export function IssueDetailContent({ issue }: { issue: number }) {
         </div>
       </div>
 
-      <IssueActionBar d={d} onActed={() => api.getIssue(issue).then(setD).catch(() => {})} />
+      <IssueActionBar d={d} onActed={reload} />
+
+      <h3>Auto-fix</h3>
+      <IssueFixPanel d={d} onChanged={reload} />
 
       <h3>Triage</h3>
       {a ? (

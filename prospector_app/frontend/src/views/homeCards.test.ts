@@ -144,9 +144,11 @@ test("issue card keys are unique and disjoint from PR card keys", () => {
   assert.equal(new Set(keys).size, keys.length);
 });
 
-test("the issue cards cover the close-fixed picks and the unanalyzed backlog", () => {
-  assert.deepEqual(HOME_ISSUE_CARDS.map((c) => c.key), ["issues-close-fixed", "issues-unanalyzed"]);
-  assert.deepEqual(HOME_ISSUE_CARDS.map((c) => c.disposition), ["close-fixed", "none"]);
+test("the issue cards cover fixes to review, questions, close-fixed picks and the unanalyzed backlog", () => {
+  assert.deepEqual(HOME_ISSUE_CARDS.map((c) => c.key),
+    ["issues-fix-review", "issues-fix-question", "issues-close-fixed", "issues-unanalyzed"]);
+  assert.deepEqual(HOME_ISSUE_CARDS.map((c) => c.fix ?? c.disposition),
+    ["review", "question", "close-fixed", "none"]);
 });
 
 test("only the unanalyzed card runs a job, and it runs issue-analyze", () => {
@@ -156,12 +158,13 @@ test("only the unanalyzed card runs a job, and it runs issue-analyze", () => {
     { kind: "issue-analyze", label: "Analyze", batch: ISSUE_ANALYZE_BATCH });
 });
 
-test("issuesHref carries the card's disposition filter", () => {
+test("issuesHref carries the card's fix or disposition filter", () => {
   for (const card of HOME_ISSUE_CARDS) {
     const href = issuesHref(card);
     assert.ok(href.startsWith("/issues?"));
     const params = new URLSearchParams(href.slice("/issues?".length));
-    assert.equal(params.get("disposition"), card.disposition);
+    if (card.fix) assert.equal(params.get("fix"), card.fix);
+    else assert.equal(params.get("disposition"), card.disposition);
   }
 });
 

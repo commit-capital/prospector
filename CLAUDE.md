@@ -441,7 +441,15 @@ bot paths. Between requests the lane reads replies to questions asked on GitHub
 every half hour, and `TRIAGE_ISSUE_FIX_HUNT=1` lets it queue one `solve` for a
 fresh, well-reproduced issue with no linked PR within
 `TRIAGE_ISSUE_FIX_HUNT_BUDGET` a UTC day. `POST /api/issues/{n}/fix` queues an
-action as the operator; `/fix/cancel` cancels a queued one.
+action as the operator; `/fix/cancel` cancels a queued one. In the app the Issues
+explorer filters and sorts on the status (`?fix=` in the URL, `needs-you` for
+review and question), Home counts `review` and `question`, and the issue flyout's
+Auto-fix section (`components/IssueFixPanel.tsx`) shows the attempt — each agent's
+account and the agreement between them, the change in `DiffView`, the checks, the
+reviewer, the question with its options, the thread — with the actions that fit
+it, dry-run aware. The detail endpoint reads the one issue's row, so it is current
+after a click. `python -m issue_triage.fix_review_backfill [--draft-questions]
+[--live]` records the results a machine already holds on their issues.
 
 **WORKER HEALTH** (`pipeline/worker_health.py` + `prospector_app/backend/lane_health.py`
 + `escalation.py`) is the ONE policy for a worker that is failing rather than
