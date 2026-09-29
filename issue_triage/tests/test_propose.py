@@ -250,10 +250,17 @@ def test_a_dry_run_pushes_nothing(repos):
     assert not _git("--git-dir", str(repos["fork"]), "branch", "--list", REF).strip()
 
 
-def test_an_existing_lane_branch_is_never_overwritten(repos):
+def test_a_lane_branch_already_holding_the_same_change_is_reused(repos):
+    first = _push(repos)
+    again = _push(repos)
+    assert again.reused and not again.pushed and again.head_sha == first.head_sha
+
+
+def test_a_lane_branch_holding_other_content_is_never_overwritten(repos):
     _push(repos)
-    with pytest.raises(propose.ProposeRefused, match="already exists"):
-        _push(repos)
+    other = PATCH.replace("+export const x = 2;", "+export const x = 3;")
+    with pytest.raises(propose.ProposeRefused, match="other content"):
+        _push(repos, patch=other)
 
 
 def test_a_base_the_default_branch_does_not_hold_is_refused(repos):

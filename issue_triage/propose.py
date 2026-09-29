@@ -15,7 +15,9 @@ push, `assert_propose_target` holds the destination to the fence:
   receives it;
 - HEAD has exactly one parent, the proven base, which the freshly fetched
   upstream default branch contains;
-- the branch does not exist on the fork yet (a new proposal never overwrites).
+- the branch does not exist on the fork yet, or already holds this same
+  change on this same base (a proposal whose opening failed after its push is
+  reused); a proposal never overwrites a branch.
 
 The fork is never created here; the push user's account holds it. The command
 `python -m issue_triage.propose --issue N [--live]` proposes the issue's last
@@ -48,6 +50,7 @@ class Pushed:
     head_sha: str
     tree_sha: str
     pushed: bool
+    reused: bool = False
 
 
 def branch_ref(issue: int, report_sha: str) -> str:
@@ -146,7 +149,13 @@ def push_fix(*, issue: int, report_sha: str, base_sha: str, patch: str, message:
         origin_url = _git(workdir, "config", "--get", "remote.origin.url").strip()
         assert_propose_target(fork_state(), origin_url, ref, issue, report_sha[:8])
         if _git(workdir, "ls-remote", "--heads", "origin", ref, env=env).strip():
-            raise ProposeRefused(f"{ref} already exists on the fork")
+            _git(workdir, "fetch", "--quiet", "origin", f"refs/heads/{ref}", env=env)
+            existing = _git(workdir, "rev-parse", "FETCH_HEAD").strip()
+            same = (_git(workdir, "rev-parse", "FETCH_HEAD^{tree}").strip() == tree
+                    and _git(workdir, "rev-parse", "FETCH_HEAD^").strip() == base_sha)
+            if not same:
+                raise ProposeRefused(f"{ref} already exists on the fork with other content")
+            return Pushed(ref=ref, head_sha=existing, tree_sha=tree, pushed=False, reused=True)
         if not dry_run:
             _git(workdir, "push", "--quiet", f"--force-with-lease=refs/heads/{ref}:", "origin",
                  f"HEAD:refs/heads/{ref}", env=env)

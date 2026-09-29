@@ -30,8 +30,7 @@ def push_user(monkeypatch):
 
 def _payload(**over) -> dict:
     return {"title": "fix: x", "body": "Fixes #7", "head": HEAD,
-            "base": sg.settings.default_branch(),
-            "maintainer_can_modify": True, **over}
+            "base": sg.settings.default_branch(), **over}
 
 
 def test_the_guard_admits_a_lane_branch_proposal():
@@ -42,7 +41,7 @@ def test_the_guard_admits_a_lane_branch_proposal():
     (_payload(head="someone:prospector/issue-7-01234567"), "not the push user's lane branch"),
     (_payload(head="pushbot:main"), "not the push user's lane branch"),
     (_payload(base="release"), "targets"),
-    (_payload(maintainer_can_modify=False), "allows maintainer edits"),
+    (_payload(maintainer_can_modify=True), "carries exactly"),
     (_payload(draft=False), "carries exactly"),
     ({k: v for k, v in _payload().items() if k != "body"}, "carries exactly"),
 ])
@@ -148,6 +147,15 @@ def test_a_refused_push_opens_nothing(lane, monkeypatch):
     res = executor.propose_issue_fix(7, token="tok", dry_run=False)
     assert res["status"] == "blocked" and "fork cannot be read" in res["detail"]
     assert lane["posts"] == []
+
+
+def test_a_failed_open_names_github_s_own_reason(lane, monkeypatch):
+    body = ('{"message":"Validation Failed","errors":[{"resource":"PullRequest",'
+            '"code":"custom","message":"fork_collab can\'t be granted"}]}')
+    monkeypatch.setattr(sg, "propose_bot_run",
+                        lambda p, t: subprocess.CompletedProcess([], 1, body, "gh: 422"))
+    res = executor.propose_issue_fix(7, token="tok", dry_run=False)
+    assert "Validation Failed; fork_collab can't be granted" in res["detail"]
 
 
 def test_a_failed_open_after_a_push_is_an_error_naming_the_branch(lane, monkeypatch):
