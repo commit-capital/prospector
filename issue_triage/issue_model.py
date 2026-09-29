@@ -182,6 +182,48 @@ class Issue:
             return None
         return {k: v for k, v in sec.items() if k not in ("checked_at", "against_updated_at")}
 
+    def _fix_section(self, name: str) -> dict | None:
+        sec = self.rec.get(name)
+        if sec is None:
+            return None
+        return {k: v for k, v in sec.items() if k != "checked_at"}
+
+    @property
+    def fix_request(self) -> dict | None:
+        """The pending issue-fix action (`issue_store.ISSUE_FIX_ACTIONS`)."""
+        return self._fix_section("fix_request")
+
+    @property
+    def fix_run(self) -> dict | None:
+        """The latest issue-fix attempt, distilled for display."""
+        return self._fix_section("fix_run")
+
+    @property
+    def fix_thread(self) -> list[dict]:
+        """The operator's comments and answers and the worker's notes, oldest
+        first."""
+        return list((self.rec.get("fix_thread") or {}).get("entries") or [])
+
+    def stage_fix_request(self, section: dict) -> None:
+        """Stage the fix request without persisting, for a compare-and-swap."""
+        _stamp(self.rec, "fix_request", {k: v for k, v in section.items()
+                                         if k != "checked_at"}, None)
+
+    def record_fix_request(self, section: dict) -> None:
+        self.stage_fix_request(section)
+        self._persist()
+
+    def record_fix_run(self, section: dict) -> None:
+        _stamp(self.rec, "fix_run", section, None)
+        self._persist()
+
+    def append_fix_thread(self, entry: dict, *, keep: int = 50) -> None:
+        """Add `entry` ({at, by, kind, text}) to the thread, keeping the newest
+        `keep`."""
+        entries = [*self.fix_thread, entry][-keep:]
+        _stamp(self.rec, "fix_thread", {"entries": entries}, None)
+        self._persist()
+
     def _persist(self) -> None:
         assert self._store is not None, "a store-less Issue view is read-only"
         self._store.save_issue(self.rec)

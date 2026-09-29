@@ -110,6 +110,16 @@ class IssueCommentBody(BaseModel):
     comment: str = ""
 
 
+class IssueFixBody(BaseModel):
+    # The action vocabulary is issue_triage.issue_store.ISSUE_FIX_ACTIONS;
+    # fix_review.queue validates it and the fit to the attempt.
+    action: str
+    guidance: str | None = None
+    answer_label: str | None = None
+    answer_text: str | None = None
+    dry_run: bool = False
+
+
 class AlertDismissBody(BaseModel):
     # The per-source reason vocabulary lives in alert_triage.alert_gates
     # (DISMISS_REASONS); the gate validates it, so this stays a plain string.

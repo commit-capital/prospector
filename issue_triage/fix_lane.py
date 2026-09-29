@@ -80,6 +80,7 @@ class LaneSpec:
     base: prove.PinnedBase
     action: Literal["reproduce", "fix"] = "fix"
     pre_patch: str | None = None
+    guidance: str | None = None
 
 
 @dataclass
@@ -506,7 +507,7 @@ def run(spec: LaneSpec, *, workdir: Path,
         shutil.rmtree(fix_dir, ignore_errors=True)
 
 
-def _reported(store: IssueStore, n: int) -> tuple[str, str] | None:
+def reported_text(store: IssueStore, n: int) -> tuple[str, str] | None:
     """The reported title and body for issue `n`: the stored record when the
     store holds it, else a live fetch. None when neither knows the issue."""
     issue = store.load_issue(n)
@@ -537,6 +538,44 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     return ap.parse_args(argv)
 
 
+def still_valid_for(n: int, reported_sha: str) -> str | None:
+    """Why a run on issue `n`'s report no longer stands (`issue-closed`,
+    `report-edited`), or None; also None when GitHub does not answer."""
+    live = fetch_issues.fetch_issue(n)
+    if live is None:
+        return None
+    if live.get("state") != "open":
+        return "issue-closed"
+    if report_sha(live["title"], live.get("body") or "") != reported_sha:
+        return "report-edited"
+    return None
+
+
+def record_result(store: IssueStore, workdir: Path, *, issue: int, report: str,
+                  base: prove.PinnedBase, action: str, lane: str, models: list[str],
+                  res: LaneResult, started: str, finished: str, trigger: str,
+                  extra: dict | None = None) -> dict:
+    """Write a finished run's `result.json` under `workdir` and append its
+    `issue-fix:run` ledger row. Returns the record written."""
+    record = {
+        "issue": issue, "report_sha": report, "base_sha": base.sha, "base_tier": base.tier,
+        "action": action, "lane": lane, "models": models, "ending": res.ending,
+        "fault": res.fault, "detail": res.detail, "agent_runs": res.agent_runs,
+        "started": started, "finished": finished, "reproduction": res.reproduction,
+        "result": res.result, **(extra or {}),
+    }
+    workdir.mkdir(parents=True, exist_ok=True)
+    (workdir / "result.json").write_text(json.dumps(record, indent=2) + "\n")
+    store.append_run({
+        "phase": "issue-fix:run", "issue": issue, "started": started, "finished": finished,
+        "trigger": trigger,
+        "stats": {"action": action, "lane": lane, "ending": res.ending, "fault": res.fault,
+                  "detail": res.detail, "host": settings.worker_id(), "base_sha": base.sha,
+                  "report_sha": report, "agent_runs": res.agent_runs},
+    })
+    return record
+
+
 def main(argv: list[str]) -> int:
     args = _parse_args(argv)
     n: int = args.issue
@@ -552,7 +591,7 @@ def main(argv: list[str]) -> int:
         return 2
 
     store = IssueStore()
-    reported = _reported(store, n)
+    reported = reported_text(store, n)
     if reported is None:
         print(f"issue #{n} is not in the store and could not be fetched", file=sys.stderr)
         return 2
@@ -560,14 +599,7 @@ def main(argv: list[str]) -> int:
     reported_sha = report_sha(title, body)
 
     def still_valid() -> str | None:
-        live = fetch_issues.fetch_issue(n)
-        if live is None:
-            return None
-        if live.get("state") != "open":
-            return "issue-closed"
-        if report_sha(live["title"], live.get("body") or "") != reported_sha:
-            return "report-edited"
-        return None
+        return still_valid_for(n, reported_sha)
 
     spec = LaneSpec(issue=n, title=title, body=body, base=base, action=action)
     workdir = settings.verify_scratch() / "issue-fix" / f"issue-{n}"
@@ -591,44 +623,9 @@ def main(argv: list[str]) -> int:
                              agent_runs=res.agent_runs)
     finished = storekit.now()
 
-    workdir.mkdir(parents=True, exist_ok=True)
-    (workdir / "result.json").write_text(json.dumps({
-        "issue": n,
-        "report_sha": reported_sha,
-        "base_sha": base.sha,
-        "base_tier": base.tier,
-        "action": action,
-        "lane": args.lane,
-        "models": models,
-        "ending": res.ending,
-        "fault": res.fault,
-        "detail": res.detail,
-        "agent_runs": res.agent_runs,
-        "started": started,
-        "finished": finished,
-        "reproduction": res.reproduction,
-        "result": res.result,
-    }, indent=2) + "\n")
-
-    store.append_run({
-        "phase": "issue-fix:run",
-        "issue": n,
-        "started": started,
-        "finished": finished,
-        "trigger": "cli",
-        "stats": {
-            "action": action,
-            "lane": args.lane,
-            "ending": res.ending,
-            "fault": res.fault,
-            "detail": res.detail,
-            "host": settings.worker_id(),
-            "base_sha": base.sha,
-            "report_sha": reported_sha,
-            "agent_runs": res.agent_runs,
-        },
-    })
-
+    record_result(store, workdir, issue=n, report=reported_sha, base=base, action=action,
+                  lane=args.lane, models=models, res=res, started=started, finished=finished,
+                  trigger="cli")
     print(f"{res.ending}: {res.detail}")
     print(f"result: {workdir / 'result.json'}")
     return 1 if res.fault else 0

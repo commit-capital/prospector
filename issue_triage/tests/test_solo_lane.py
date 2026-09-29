@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from issue_triage import fix_lane, solo_lane
+from issue_triage import fix_lane, review_issue_fix, solo_lane
 from pipeline import gates, prove, resolve_evidence, verify_driver
 
 
@@ -40,8 +40,9 @@ def solo(tmp_path, monkeypatch):
     calls: dict = {"agent": _writes_test_and_fix, "red": RED, "green": GREEN,
                    "related": None, "env": None, "commands": []}
 
-    def fake_author(worktree, *, title, body, env, on_event=None):
+    def fake_author(worktree, *, title, body, env, guidance=None, attempt=None, on_event=None):
         calls["env"] = env
+        calls["guidance"], calls["attempt"] = guidance, attempt
         return calls["agent"](worktree)
 
     def fake_compose(label, *parts):
@@ -175,3 +176,68 @@ def test_a_solo_suite_fault_is_a_sandbox_fault(solo, monkeypatch):
 
     monkeypatch.setattr(fix_lane, "suite_proof", fault)
     assert solo["run"]().ending == "sandbox"
+
+
+EARLIER = """diff --git a/src/x.ts b/src/x.ts
+--- a/src/x.ts
++++ b/src/x.ts
+@@ -1 +1 @@
+-export const x = 1;
++export const x = 3;
+diff --git a/src/bug.test.ts b/src/bug.test.ts
+new file mode 100644
+--- /dev/null
++++ b/src/bug.test.ts
+@@ -0,0 +1 @@
++test('bug', () => expect(x).toBe(3));
+"""
+
+
+@pytest.fixture
+def revise(solo, tmp_path, monkeypatch):
+    seen: dict = {"review": {"lens": "scope-safety", "verdict": "safe", "reason": "ok",
+                             "concerns": []}, "reviewed": []}
+
+    def revises(wt: str) -> dict:
+        seen["opened_with"] = (Path(wt) / "src" / "x.ts").read_text()
+        return _writes_test_and_fix(wt)
+
+    solo["agent"] = revises
+
+    def fake_review(worktree, patch, **kw):
+        seen["reviewed"].append(kw)
+        return seen["review"]
+
+    monkeypatch.setattr(review_issue_fix, "review", fake_review)
+    base = prove.PinnedBase(sha="a" * 40, tier=2, image="img", clone=tmp_path / "base")
+
+    def run() -> fix_lane.LaneResult:
+        spec = fix_lane.LaneSpec(issue=7, title="x is wrong", body="x should be 2", base=base,
+                                 guidance="x must be 2, not 3")
+        return solo_lane.run(spec, workdir=tmp_path / "work", start_patch=EARLIER,
+                             attempt={"summary": "set x to 3", "root_cause": "r"}, review=True)
+
+    seen["run"] = run
+    return seen
+
+
+def test_a_revision_opens_on_the_earlier_attempt_with_the_guidance(solo, revise):
+    res = revise["run"]()
+    assert revise["opened_with"] == "export const x = 3;\n"
+    assert solo["guidance"] == "x must be 2, not 3"
+    assert solo["attempt"]["summary"] == "set x to 3"
+    assert res.ending == "fixed" and res.agent_runs == 2
+    assert "+export const x = 2;" in res.result["patch"]
+    assert "scope-safety review passes" in res.detail
+
+
+def test_a_revision_the_reviewer_judges_unsafe_ends_fix_rejected(solo, revise):
+    revise["review"] = {"lens": "scope-safety", "verdict": "unsafe", "reason": "too wide",
+                        "concerns": []}
+    res = revise["run"]()
+    assert res.ending == "fix-rejected" and "too wide" in res.detail
+
+
+def test_without_review_the_one_agent_lane_asks_no_reviewer(solo, revise):
+    res = solo["run"]()
+    assert res.ending == "fixed" and revise["reviewed"] == []

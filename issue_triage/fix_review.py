@@ -1,0 +1,206 @@
+"""The ONE policy for reviewing issue fixes in the app: what an operator may ask
+of an issue's fix attempt, the status the attempt is in, and the attempt as the
+app shows it.
+
+An issue holds at most one pending request (`fix_request`, actions
+`issue_store.ISSUE_FIX_ACTIONS`), which `queue` admits only when it fits the
+latest attempt (`fix_run`) and no other request is in flight; the words an
+operator gives with it land in the thread (`fix_thread`). `fix_status` derives,
+on read, whose move the attempt waits on. `distill` turns a finished run's
+`result.json` record into the `fix_run` the app renders: each candidate's own
+account, the agreement, the picked change, the checks, the reviewers, and the
+question — never an agent's transcript.
+"""
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from issue_triage import dispute_question
+from pipeline import diffpaths, settings, storekit
+
+if TYPE_CHECKING:
+    from issue_triage.issue_model import Issue
+    from issue_triage.issue_store import IssueStore
+
+IN_FLIGHT = ("queued", "running")
+FAULT_ENDINGS = ("agent-unavailable", "run-failed", "sandbox", "base-compile")
+# The largest picked change `fix_run` carries; a longer one is cut and flagged.
+PATCH_MAX = 60_000
+# The status of an issue's fix attempt, in the order the explorer groups them.
+STATUSES = ("review", "question", "running", "reporter", "pr-open", "failed", "declined")
+
+
+def fix_status(issue: Issue) -> tuple[str, str] | None:
+    """(status, reason) for issue's fix attempt, or None when it has none."""
+    req, run = issue.fix_request, issue.fix_run
+    if req and req.get("status") in IN_FLIGHT:
+        return "running", f"{req.get('action')} {req.get('status')}"
+    if req and req.get("status") == "failed":
+        return "failed", str(req.get("reason") or f"{req.get('action')} failed")
+    if not run:
+        return None
+    proposal = run.get("proposal") or {}
+    if proposal.get("pr"):
+        return "pr-open", f"#{proposal['pr']}"
+    ending, detail = run.get("ending"), str(run.get("detail") or "")
+    if ending == "fixed":
+        return "review", detail
+    if ending == "fix-disputed":
+        question = run.get("question") or {}
+        if question.get("asked"):
+            return "reporter", "a question is waiting on the reporter"
+        if question.get("question"):
+            return "question", str(question["question"])
+        return "declined", "the agents disagreed and no question could be drafted"
+    if ending in FAULT_ENDINGS or run.get("fault"):
+        return "failed", f"{ending}: {detail}"
+    return "declined", f"{ending}: {detail}"
+
+
+def _fits(action: str, run: dict | None, *, guidance: str | None,
+          answer: dict | None) -> str | None:
+    """Why `action` does not fit the latest attempt `run`, or None when it does."""
+    if action == "solve":
+        return None
+    if not run:
+        return "there is no fix attempt to act on"
+    ending = run.get("ending")
+    question = run.get("question") or {}
+    if action == "send-back":
+        if not run.get("patch"):
+            return "the attempt holds no change to send back"
+        if not (guidance or "").strip():
+            return "sending a fix back needs your comments"
+        return None
+    if action == "answer":
+        if ending != "fix-disputed" or not question.get("options"):
+            return "the attempt asks no question"
+        labels = [o["label"] for o in question["options"]]
+        if (answer or {}).get("label") in labels or str((answer or {}).get("text") or "").strip():
+            return None
+        return f"an answer names one of {labels} or says what should happen"
+    if action == "ask-reporter":
+        if ending != "fix-disputed" or not question.get("question"):
+            return "the attempt asks no question"
+        if question.get("asked"):
+            return "the reporter was already asked"
+        return None
+    if action == "propose":
+        if ending != "fixed":
+            return f"the attempt ended {ending!r}, not 'fixed'"
+        if (run.get("proposal") or {}).get("pr"):
+            return "a pull request is already open"
+        return None
+    return f"unknown action {action!r}"
+
+
+def queue(store: IssueStore, n: int, action: str, *, by: str, source: str = "operator",
+          guidance: str | None = None, answer: dict | None = None,
+          dry_run: bool = False) -> tuple[bool, str]:
+    """Queue `action` on issue `n`'s fix attempt for the worker, recording the
+    operator's words in the thread. (ok, reason)."""
+    issue = store.load_issue(n)
+    if issue is None:
+        return False, f"issue #{n} is not in the store"
+    if (issue.raw.get("meta") or {}).get("state") != "open":
+        return False, f"issue #{n} is closed"
+    req = issue.fix_request
+    if req and req.get("status") in IN_FLIGHT:
+        return False, f"a {req.get('action')} request is already {req.get('status')}"
+    why = _fits(action, issue.fix_run, guidance=guidance, answer=answer)
+    if why:
+        return False, why
+    section: dict = {"action": action, "status": "queued", "source": source,
+                     "requested_by": by, "queued_at": storekit.now(), "dry_run": dry_run}
+    if guidance and guidance.strip():
+        section["guidance"] = guidance.strip()
+    if answer:
+        section["answer"] = answer
+    issue.record_fix_request(section)
+    given = answer or {}
+    words = (guidance or "").strip() or str(given.get("text") or "").strip()
+    if given.get("label"):
+        words = f"Answered {given['label']}" + (f": {words}" if words else "")
+    if words:
+        issue.append_fix_thread({"at": section["queued_at"], "by": by,
+                                 "kind": "answer" if action == "answer" else "comment",
+                                 "action": action, "text": words})
+    return True, f"{action} queued"
+
+
+def cancel(store: IssueStore, n: int, *, by: str) -> tuple[bool, str]:
+    """Cancel issue `n`'s queued request; a running one finishes."""
+    issue = store.load_issue(n)
+    req = issue.fix_request if issue else None
+    if not req or req.get("status") != "queued":
+        return False, "no queued request to cancel"
+    assert issue is not None
+    issue.record_fix_request({**req, "status": "cancelled", "finished_at": storekit.now(),
+                              "reason": f"cancelled by {by}"})
+    return True, "cancelled"
+
+
+def queued_issues(issues: dict[int, Issue]) -> list[int]:
+    """Issues with a queued request, oldest first."""
+    rows = [((i.fix_request or {}).get("queued_at") or "", n) for n, i in issues.items()
+            if (i.fix_request or {}).get("status") == "queued"]
+    return [n for _, n in sorted(rows)]
+
+
+def _proof(proof: dict) -> dict:
+    out: dict = {}
+    compiled = proof.get("compile")
+    if compiled:
+        out["compile"] = {k: compiled.get(k) for k in ("exit", "tree_fails", "error")
+                          if compiled.get(k) is not None}
+        if compiled.get("error_excerpt"):
+            out["compile"]["excerpt"] = str(compiled["error_excerpt"])[-1500:]
+    related = proof.get("related_tests")
+    if related:
+        out["related_tests"] = {"files": list(related.get("files") or [])[:30],
+                                "exit": (related.get("run") or {}).get("exit"),
+                                "base_fails": bool(related.get("base_fails"))}
+    suite = proof.get("suite")
+    if suite:
+        out["suite"] = {k: suite.get(k) for k in ("skipped", "confirmed", "flake", "excluded",
+                                                  "new_failures", "rebaselined")
+                        if suite.get(k) is not None}
+    return out
+
+
+def distill(record: dict, question: dict | None = None) -> dict:
+    """The `fix_run` section for a finished run's `result.json` record."""
+    res = record.get("result") or {}
+    patches = {c.get("index"): c for c in res.get("candidate_patches") or []}
+    candidates = []
+    for c in res.get("candidates") or []:
+        verdict = (patches.get(c.get("index")) or {}).get("verdict") or {}
+        candidates.append({
+            "index": c.get("index"), "model": c.get("model"), "ending": c.get("ending"),
+            "detail": c.get("detail"), "reproduces": c.get("reproduces"),
+            "passes": c.get("passes"), "fix_lines": c.get("fix_lines"),
+            "tests": c.get("tests"), "summary": verdict.get("summary"),
+            "root_cause": verdict.get("root_cause"), "changes": verdict.get("changes")})
+    patch = str(res.get("patch") or "")
+    reviews = [{"lens": r.get("lens"), "verdict": r.get("verdict"), "failed": r.get("failed"),
+                "reason": r.get("reason"), "concerns": r.get("concerns") or [],
+                "unasked": r.get("unasked") or []} for r in res.get("reviews") or []]
+    out: dict = {
+        "lane": record.get("lane"), "ending": record.get("ending"),
+        "fault": bool(record.get("fault")), "detail": record.get("detail"),
+        "host": settings.worker_id(), "base_sha": record.get("base_sha"),
+        "report_sha": record.get("report_sha"), "models": record.get("models") or [],
+        "started": record.get("started"), "finished": record.get("finished"),
+        "agent_runs": record.get("agent_runs"), "summary": res.get("summary"),
+        "root_cause": res.get("root_cause"), "changes": res.get("changes") or [],
+        "pick": res.get("pick"), "patch": patch[:PATCH_MAX],
+        "patch_truncated": len(patch) > PATCH_MAX,
+        "tests": [p for p in diffpaths.changed_paths(patch) if diffpaths.is_test_path(p)],
+        "agreement": res.get("agreement"), "readings": res.get("readings"),
+        "tier": res.get("tier"), "proof": _proof(res.get("proof") or {}),
+        "reviews": reviews, "candidates": candidates, "question": None, "proposal": None,
+    }
+    if question and "question" in question:
+        out["question"] = {**question, "labels": dispute_question.labels(
+            len(question.get("options") or []))}
+    return out

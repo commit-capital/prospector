@@ -17,14 +17,15 @@ import os
 import re
 
 from pipeline import settings
-from prospector_app.backend import env_file, fix_worker, verify_worker
+from prospector_app.backend import env_file, fix_worker, issue_fix_worker, verify_worker
 
 # The only keys this module may write: the worker lane switches and the name
 # the lanes stamp on their work — nothing here names a credential, a path, or
 # the store.
 WRITABLE = ("TRIAGE_VERIFY_WORKER", "TRIAGE_VERIFY_AUTOHUNT",
             "TRIAGE_FIX_WORKER", "TRIAGE_FIX_AUTOHUNT", "TRIAGE_FIX_HUNT_FIX",
-            "TRIAGE_FIX_HUNT_RESOLVE", "TRIAGE_FIX_AUTOPUSH", "TRIAGE_WORKER_ID")
+            "TRIAGE_FIX_HUNT_RESOLVE", "TRIAGE_FIX_AUTOPUSH", "TRIAGE_ISSUE_FIX_WORKER",
+            "TRIAGE_ISSUE_FIX_HUNT", "TRIAGE_WORKER_ID")
 
 # What a worker id may look like: one token a registry key, a log line, and an
 # issue title can all carry verbatim.
@@ -53,7 +54,7 @@ def _validated(updates: dict[str, str]) -> dict[str, str]:
         raise ValueError(f"TRIAGE_WORKER_ID is not a usable worker name: {clean['TRIAGE_WORKER_ID']!r}")
     for key in ("TRIAGE_VERIFY_WORKER", "TRIAGE_VERIFY_AUTOHUNT",
                 "TRIAGE_FIX_WORKER", "TRIAGE_FIX_AUTOHUNT", "TRIAGE_FIX_HUNT_FIX",
-                "TRIAGE_FIX_HUNT_RESOLVE"):
+                "TRIAGE_FIX_HUNT_RESOLVE", "TRIAGE_ISSUE_FIX_WORKER", "TRIAGE_ISSUE_FIX_HUNT"):
         if key in clean and clean[key] not in ("", "1"):
             raise ValueError(f"{key} is \"1\" or empty, not {clean[key]!r}")
     return clean
@@ -81,7 +82,8 @@ def apply() -> dict:
     succeeding. A stop that outruns SHUTDOWN_TIMEOUT reports `stopping`: the
     loops have been signalled and the run in flight is finishing."""
     out: dict[str, str] = {}
-    for name, mod in (("verify", verify_worker), ("fix", fix_worker)):
+    for name, mod in (("verify", verify_worker), ("fix", fix_worker),
+                      ("issue-fix", issue_fix_worker)):
         if mod.enabled():
             out[name] = "running" if mod.startup() else "refused"
         elif mod.running():

@@ -302,6 +302,21 @@ def fix_worker_enabled() -> bool:
     return os.environ.get("TRIAGE_FIX_WORKER", "") == "1"
 
 
+def issue_fix_worker_enabled() -> bool:
+    """Whether this machine drains the issue-fix review queue."""
+    return os.environ.get("TRIAGE_ISSUE_FIX_WORKER", "") == "1"
+
+
+def issue_fix_hunt() -> bool:
+    """Whether an idle issue-fix worker queues attempts on issues itself."""
+    return os.environ.get("TRIAGE_ISSUE_FIX_HUNT", "") == "1"
+
+
+def issue_fix_hunt_budget() -> int:
+    """How many attempts the issue-fix hunter queues per UTC day."""
+    return _positive_int("TRIAGE_ISSUE_FIX_HUNT_BUDGET", 5)
+
+
 def fix_autopush() -> frozenset[str]:
     """The actions that skip `awaiting-review` once their preflight is clean."""
     return parse_fix_autopush(os.environ.get("TRIAGE_FIX_AUTOPUSH"))
