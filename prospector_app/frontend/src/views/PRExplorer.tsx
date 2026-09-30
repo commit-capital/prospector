@@ -400,52 +400,54 @@ export default function PRExplorer() {
         />
       )}
 
-      <table className="grid sortable pr-table" style={loading && res === null ? { display: "none" } : undefined}>
-        <thead><tr>
-          <th><input type="checkbox" checked={pageSelected}
-            ref={(el) => { if (el) el.indeterminate = pageSomeSelected && !pageSelected; }}
-            onChange={() => allSelected ? clearSel() : setPageSelected(!pageSelected)} /></th>
-          {/* every column is server-sortable (#180) — the sort spans all pages */}
-          {visibleColumns.map((col) => {
-            const canFilter = FILTERABLE_COLS.has(col.key);
-            const filterActive = isColFilterActive(col.key, spec, reviewers);
-            return (
-              <th key={col.key}
-                className={[col.numeric ? "num" : "", "sortable-th", sortKey === col.key ? "sorted" : ""].filter(Boolean).join(" ")}
-                onClick={() => sortByCol(col.key)}
-                aria-sort={sortKey === col.key ? (dir === "asc" ? "ascending" : "descending") : "none"}
-                title={col.key === "updated" ? "When the PR last changed upstream. Click to sort by recency. Chips show how the author responded since we acted: ↩ reopened · ⬆ new commits · 💬 replied (scan from the Control tab)." : "Click to sort by this column"}>
-                <span className="th-inner">
-                  <span className="th-label">
-                    {col.term ? <Term k={col.term} cue={false}>{col.label}</Term> : col.label}
-                    {sortArrow(col.key)}
+      <div className="table-scroll" style={loading && res === null ? { display: "none" } : undefined}>
+        <table className="grid sortable pr-table">
+          <thead><tr>
+            <th><input type="checkbox" checked={pageSelected}
+              ref={(el) => { if (el) el.indeterminate = pageSomeSelected && !pageSelected; }}
+              onChange={() => allSelected ? clearSel() : setPageSelected(!pageSelected)} /></th>
+            {/* every column is server-sortable (#180) — the sort spans all pages */}
+            {visibleColumns.map((col) => {
+              const canFilter = FILTERABLE_COLS.has(col.key);
+              const filterActive = isColFilterActive(col.key, spec, reviewers);
+              return (
+                <th key={col.key}
+                  className={[col.numeric ? "num" : "", "sortable-th", sortKey === col.key ? "sorted" : ""].filter(Boolean).join(" ")}
+                  onClick={() => sortByCol(col.key)}
+                  aria-sort={sortKey === col.key ? (dir === "asc" ? "ascending" : "descending") : "none"}
+                  title={col.key === "updated" ? "When the PR last changed upstream. Click to sort by recency. Chips show how the author responded since we acted: ↩ reopened · ⬆ new commits · 💬 replied (scan from the Control tab)." : "Click to sort by this column"}>
+                  <span className="th-inner">
+                    <span className="th-label">
+                      {col.term ? <Term k={col.term} cue={false}>{col.label}</Term> : col.label}
+                      {sortArrow(col.key)}
+                    </span>
+                    {canFilter && (
+                      <button
+                        className={`col-filter-btn${filterActive ? " col-filter-active" : ""}`}
+                        title={`Filter by ${col.label}${filterActive ? " (active)" : ""}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                          setOpenFilter(openFilter?.key === col.key ? null : { key: col.key, rect });
+                        }}
+                      >
+                        ▾
+                      </button>
+                    )}
                   </span>
-                  {canFilter && (
-                    <button
-                      className={`col-filter-btn${filterActive ? " col-filter-active" : ""}`}
-                      title={`Filter by ${col.label}${filterActive ? " (active)" : ""}`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                        setOpenFilter(openFilter?.key === col.key ? null : { key: col.key, rect });
-                      }}
-                    >
-                      ▾
-                    </button>
-                  )}
-                </span>
-              </th>
-            );
-          })}
-        </tr></thead>
-        <tbody onClick={onRowClick} onAuxClick={onRowAuxClick}>
-          {rows.map((r: PRRow, i: number) => (
-            <PrRow key={r.number} r={r} visibleColumns={visibleColumns}
-              isSelected={selected.has(r.number)} isOpen={openPrs.includes(r.number)}
-              isCursor={cursor === i} cellCtx={cellCtx} onToggle={toggle} />
-          ))}
-        </tbody>
-      </table>
+                </th>
+              );
+            })}
+          </tr></thead>
+          <tbody onClick={onRowClick} onAuxClick={onRowAuxClick}>
+            {rows.map((r: PRRow, i: number) => (
+              <PrRow key={r.number} r={r} visibleColumns={visibleColumns}
+                isSelected={selected.has(r.number)} isOpen={openPrs.includes(r.number)}
+                isCursor={cursor === i} cellCtx={cellCtx} onToggle={toggle} />
+            ))}
+          </tbody>
+        </table>
+      </div>
 
       <div className="pager">
         <label className="page-size-select muted small">
