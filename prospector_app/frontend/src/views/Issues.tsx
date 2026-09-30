@@ -566,81 +566,83 @@ function AllIssuesTable({
           onClose={() => setOpenFilter(null)}
         />
       )}
-      <table className="grid sortable issues-table">
-        <thead><tr>
-          <th className="chk-col">
-            <input type="checkbox"
-              checked={rows.length > 0 && rows.every((r) => selected.has(r.number))}
-              ref={(el) => { if (el) el.indeterminate = rows.some((r) => selected.has(r.number)) && !rows.every((r) => selected.has(r.number)); }}
-              onChange={(e) => onToggleAll(rows.map((r) => r.number), e.target.checked)}
-              title="Select all issues on this page" />
-          </th>
-          <th {...thProps("number")}>#{indicator("number")}</th>
-          <th {...thProps("title")}>Title{indicator("title")}</th>
-          <th {...thProps("author")}><span className="th-inner"><span className="th-label">Author{indicator("author")}</span>{filterBtn("author")}</span></th>
-          <th {...thProps("pain")}><span className="th-inner"><span className="th-label">Pain{indicator("pain")}</span>{filterBtn("pain")}</span></th>
-          <th {...thProps("repro")}><span className="th-inner"><span className="th-label">Repro{indicator("repro")}</span>{filterBtn("repro")}</span></th>
-          <th {...thProps("disposition")}
-              title="The issue pipeline's triage verdict; sorts most-actionable first, unanalyzed last">
-            Disposition{indicator("disposition")}</th>
-          <th {...thProps("dups")}><span className="th-inner"><span className="th-label">Dups{indicator("dups")}</span>{filterBtn("dups")}</span></th>
-          <th {...thProps("prs")}
-              title="Sorts by fix evidence: merged referenced fixers first (Fixes/Closes references and PRs named in the issue text), then referenced PRs, then total linked PRs">
-            <span className="th-inner"><span className="th-label">Linked PRs{indicator("prs")}</span>{filterBtn("prs")}</span></th>
-          <th {...thProps("subsystem")}><span className="th-inner"><span className="th-label">Subsystem{indicator("subsystem")}</span>{filterBtn("subsystem")}</span></th>
-          <th {...thProps("fix")} title="The auto-fix factory's status; sorts the ones waiting on you first">
-            Auto-fix{indicator("fix")}</th>
-        </tr></thead>
-        <tbody>
-          {rows.flatMap((r) => {
-            const renderRow = (row: IssueRow, sub: boolean) => (
-              <tr key={row.number} onClick={rowClick(row.number)}
-                  className={`rowlink ${sub ? "row-sub" : ""} ${selected.has(row.number) ? "row-selected" : ""}`}>
-                <td className="chk-col" onClick={stopRowOpen}>
-                  <input type="checkbox" checked={selected.has(row.number)}
-                    onChange={() => onToggle(row.number)} title="Select this issue" />
-                </td>
-                <td className="mono">
-                  <IssueLink n={row.number} />
-                  {row.state === "closed" && (
-                    <span className="chip sm chip-muted" title="Closed on GitHub">✓ closed</span>
-                  )}
-                  {results[row.number] && (
-                    <span className={`chip chip-${results[row.number].status === "executed" ? "green"
-                      : results[row.number].status === "error" ? "red" : "muted"} sm`}
-                      title={results[row.number].detail}>{results[row.number].status}</span>
-                  )}
-                </td>
-                <td>{row.title}{row.is_dup && row.canonical != null && <span className="muted small" title={`Duplicate of #${row.canonical}`}> · dup of <IssueLink n={row.canonical} /></span>}</td>
-                <td className="muted small"><AuthorHover author={row.author} trusted={row.trusted_author} stats={row.author_stats} fallback="" /></td>
-                <td className="mono small">{row.pain != null ? row.pain.toFixed(2) : "—"}</td>
-                <td><ReproChip grade={row.repro_grade} /></td>
-                <td><DispositionChip d={row.disposition} /></td>
-                <td className="mono small">
-                  {row.duplicates.length || "—"}
-                  {!sub && (row.dup_rows?.length ?? 0) > 0 && (
-                    <button className="link-btn small row-expander"
-                      title="Duplicate issues folded under this one — click to show them"
-                      onClick={(e) => { e.stopPropagation(); toggleExpand(row.number); }}>
-                      {expanded.has(row.number) ? "▾" : "▸"} +{row.dup_rows!.length}
-                    </button>
-                  )}
-                </td>
-                <td onClick={stopRowOpen}><LinkedPRs prs={row.linked_prs} count={row.linked_pr_count} referencedCount={row.referenced_pr_count} /></td>
-                <td className="muted small">{row.subsystem ?? "—"}</td>
-                <td><FixStatusChip status={row.fix_status} reason={row.fix_reason} /></td>
-              </tr>
-            );
-            return [
-              renderRow(r, false),
-              ...(expanded.has(r.number) ? (r.dup_rows ?? []).map((d) => renderRow(d, true)) : []),
-            ];
-          })}
-          {!loading && rows.length === 0 && (
-            <tr><td colSpan={10} className="muted">No matching issues.</td></tr>
-          )}
-        </tbody>
-      </table>
+      <div className="table-scroll">
+        <table className="grid sortable issues-table">
+          <thead><tr>
+            <th className="chk-col">
+              <input type="checkbox"
+                checked={rows.length > 0 && rows.every((r) => selected.has(r.number))}
+                ref={(el) => { if (el) el.indeterminate = rows.some((r) => selected.has(r.number)) && !rows.every((r) => selected.has(r.number)); }}
+                onChange={(e) => onToggleAll(rows.map((r) => r.number), e.target.checked)}
+                title="Select all issues on this page" />
+            </th>
+            <th {...thProps("number")}>#{indicator("number")}</th>
+            <th {...thProps("title")}>Title{indicator("title")}</th>
+            <th {...thProps("author")}><span className="th-inner"><span className="th-label">Author{indicator("author")}</span>{filterBtn("author")}</span></th>
+            <th {...thProps("pain")}><span className="th-inner"><span className="th-label">Pain{indicator("pain")}</span>{filterBtn("pain")}</span></th>
+            <th {...thProps("repro")}><span className="th-inner"><span className="th-label">Repro{indicator("repro")}</span>{filterBtn("repro")}</span></th>
+            <th {...thProps("disposition")}
+                title="The issue pipeline's triage verdict; sorts most-actionable first, unanalyzed last">
+              Disposition{indicator("disposition")}</th>
+            <th {...thProps("dups")}><span className="th-inner"><span className="th-label">Dups{indicator("dups")}</span>{filterBtn("dups")}</span></th>
+            <th {...thProps("prs")}
+                title="Sorts by fix evidence: merged referenced fixers first (Fixes/Closes references and PRs named in the issue text), then referenced PRs, then total linked PRs">
+              <span className="th-inner"><span className="th-label">Linked PRs{indicator("prs")}</span>{filterBtn("prs")}</span></th>
+            <th {...thProps("subsystem")}><span className="th-inner"><span className="th-label">Subsystem{indicator("subsystem")}</span>{filterBtn("subsystem")}</span></th>
+            <th {...thProps("fix")} title="The auto-fix factory's status; sorts the ones waiting on you first">
+              Auto-fix{indicator("fix")}</th>
+          </tr></thead>
+          <tbody>
+            {rows.flatMap((r) => {
+              const renderRow = (row: IssueRow, sub: boolean) => (
+                <tr key={row.number} onClick={rowClick(row.number)}
+                    className={`rowlink ${sub ? "row-sub" : ""} ${selected.has(row.number) ? "row-selected" : ""}`}>
+                  <td className="chk-col" onClick={stopRowOpen}>
+                    <input type="checkbox" checked={selected.has(row.number)}
+                      onChange={() => onToggle(row.number)} title="Select this issue" />
+                  </td>
+                  <td className="mono">
+                    <IssueLink n={row.number} />
+                    {row.state === "closed" && (
+                      <span className="chip sm chip-muted" title="Closed on GitHub">✓ closed</span>
+                    )}
+                    {results[row.number] && (
+                      <span className={`chip chip-${results[row.number].status === "executed" ? "green"
+                        : results[row.number].status === "error" ? "red" : "muted"} sm`}
+                        title={results[row.number].detail}>{results[row.number].status}</span>
+                    )}
+                  </td>
+                  <td>{row.title}{row.is_dup && row.canonical != null && <span className="muted small" title={`Duplicate of #${row.canonical}`}> · dup of <IssueLink n={row.canonical} /></span>}</td>
+                  <td className="muted small"><AuthorHover author={row.author} trusted={row.trusted_author} stats={row.author_stats} fallback="" /></td>
+                  <td className="mono small">{row.pain != null ? row.pain.toFixed(2) : "—"}</td>
+                  <td><ReproChip grade={row.repro_grade} /></td>
+                  <td><DispositionChip d={row.disposition} /></td>
+                  <td className="mono small">
+                    {row.duplicates.length || "—"}
+                    {!sub && (row.dup_rows?.length ?? 0) > 0 && (
+                      <button className="link-btn small row-expander"
+                        title="Duplicate issues folded under this one — click to show them"
+                        onClick={(e) => { e.stopPropagation(); toggleExpand(row.number); }}>
+                        {expanded.has(row.number) ? "▾" : "▸"} +{row.dup_rows!.length}
+                      </button>
+                    )}
+                  </td>
+                  <td onClick={stopRowOpen}><LinkedPRs prs={row.linked_prs} count={row.linked_pr_count} referencedCount={row.referenced_pr_count} /></td>
+                  <td className="muted small">{row.subsystem ?? "—"}</td>
+                  <td><FixStatusChip status={row.fix_status} reason={row.fix_reason} /></td>
+                </tr>
+              );
+              return [
+                renderRow(r, false),
+                ...(expanded.has(r.number) ? (r.dup_rows ?? []).map((d) => renderRow(d, true)) : []),
+              ];
+            })}
+            {!loading && rows.length === 0 && (
+              <tr><td colSpan={10} className="muted">No matching issues.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
     </>
   );
 }
