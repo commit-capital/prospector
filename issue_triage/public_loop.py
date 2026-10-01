@@ -443,7 +443,7 @@ def read_replies(issue: Issue, after: datetime) -> list[reply_router.Reply] | No
     maintainer, oldest first; never the bot's or the push user's. None when
     GitHub does not answer."""
     rows = gh.gh_list(f"repos/{settings.repo()}/issues/{issue.number}/comments"
-                      f"?since={_stamp(after)}&per_page=100")
+                      f"?since={_stamp(after)}&per_page=100", paginate=True)
     if rows is None:
         return None
     out = []

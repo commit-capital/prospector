@@ -317,7 +317,7 @@ def replies(store, monkeypatch):
 
     state: dict = {"comments": [], "reads": 0, "route": "retry", "routed": []}
 
-    def gh_list(url):
+    def gh_list(url, paginate=False):
         state["reads"] += 1
         return state["comments"]
 
