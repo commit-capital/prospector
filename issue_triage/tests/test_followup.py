@@ -272,7 +272,7 @@ def test_a_live_poll_revises_on_a_maintainer_s_review(store, monkeypatch):
     monkeypatch.setattr(followup, "read", lambda n: pr)
     monkeypatch.setattr(reply_router, "route", lambda context, rs: "retry")
     store.edit_issue(7).record_fix_followup({"pr": 9, "state": "ready", "head_sha": HEAD,
-                                             "described_head": HEAD})
+                                             "described_head": HEAD, "feedback_seen_at": ""})
     followup.poll(store, mode="live")
     issue = store.load_issue(7)
     req = issue.fix_request
@@ -290,7 +290,7 @@ def test_a_maintainer_s_approval_is_read_once_and_changes_nothing(store, monkeyp
     monkeypatch.setattr(followup, "read", lambda n: pr)
     monkeypatch.setattr(reply_router, "route", lambda context, rs: routed.append(rs) or "none")
     store.edit_issue(7).record_fix_followup({"pr": 9, "state": "ready", "head_sha": HEAD,
-                                             "described_head": HEAD})
+                                             "described_head": HEAD, "feedback_seen_at": ""})
     followup.poll(store, mode="live")
     followup.poll(store, mode="live")
     assert len(routed) == 1 and store.load_issue(7).fix_request is None
@@ -315,3 +315,46 @@ def test_a_ready_records_the_head_and_reason_it_was_judged_at(store, monkeypatch
     followup.poll(store, mode="live")
     fu = store.load_issue(7).fix_followup
     assert fu["state"] == "ready" and fu["judged"]["head_sha"] == HEAD
+
+
+
+def test_feedback_on_a_pull_request_handed_back_for_an_older_one_is_read_once(store,
+                                                                              monkeypatch):
+    from issue_triage import reply_router
+    pr = PrState(**{**_pr().__dict__, "feedback": [_said()]})
+    routed = []
+    monkeypatch.setattr(followup, "read", lambda n: pr)
+    monkeypatch.setattr(followup, "_older_open", lambda issue, n: [5])
+    monkeypatch.setattr(reply_router, "route", lambda context, rs: routed.append(rs) or "retry")
+    store.edit_issue(7).record_fix_followup({"pr": 9, "state": "watching", "head_sha": HEAD,
+                                             "described_head": HEAD, "feedback_seen_at": ""})
+    followup.poll(store, mode="live")
+    followup.poll(store, mode="live")
+    assert len(routed) == 1
+    assert store.load_issue(7).fix_followup["state"] == "handed-back"
+
+
+def test_a_maintainer_revision_that_did_not_land_hands_the_pull_request_back(store,
+                                                                             monkeypatch):
+    monkeypatch.setattr(followup, "read", lambda n: _pr())
+    store.edit_issue(7).record_fix_followup({
+        "pr": 9, "state": "watching", "head_sha": HEAD, "described_head": HEAD,
+        "feedback_seen_at": "2026-10-01T12:00:00Z", "maintainer_pending": {"head_sha": HEAD}})
+    store.edit_issue(7).record_fix_request({
+        "action": "send-back", "status": "done", "source": "followup",
+        "reason": "The revision ended no-fix: nothing to change; #9 is unchanged"})
+    followup.poll(store, mode="live")
+    fu = store.load_issue(7).fix_followup
+    assert fu["state"] == "handed-back" and "did not land" in fu["judged"]["reason"]
+    assert "maintainer_pending" not in fu
+
+
+def test_a_follow_up_that_predates_feedback_routing_starts_from_now(store, monkeypatch):
+    from issue_triage import reply_router
+    pr = PrState(**{**_pr().__dict__, "feedback": [_said()]})
+    monkeypatch.setattr(followup, "read", lambda n: pr)
+    monkeypatch.setattr(reply_router, "route", lambda context, rs: pytest.fail("routed"))
+    store.edit_issue(7).record_fix_followup({"pr": 9, "state": "watching", "head_sha": HEAD,
+                                             "described_head": HEAD})
+    followup.poll(store, mode="live")
+    assert store.load_issue(7).fix_followup["feedback_seen_at"]

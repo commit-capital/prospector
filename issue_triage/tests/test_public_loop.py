@@ -36,6 +36,7 @@ def _save(store: IssueStore, n: int, *, association: str | None = "MEMBER",
 
 def _run(**over) -> dict:
     return {"ending": "no-fix", "detail": "opus: no-fix", "finished": FINISHED,
+            "started": "2026-10-01T10:30:00+00:00",
             "host": "studio", "question": None, "proposal": None,
             "root_cause": "the parser drops the flag", "candidates": [{"reproduces": True}],
             **over}
@@ -425,7 +426,7 @@ def test_an_edited_report_starts_another_attempt_once(store, replies):
     _bump(store, "2026-10-01T11:40:00Z", body="b, with steps")
     public_loop.answer_replies(store, mode="live", now=NOW)
     issue = store.load_issue(1)
-    assert issue.fix_request["action"] == "solve" and replies["reads"] == 0
+    assert issue.fix_request["action"] == "solve" and replies["routed"] == []
     assert "report was edited" in issue.fix_thread[-1]["text"]
     store.edit_issue(1).record_fix_request({**issue.fix_request, "status": "done"})
     public_loop.answer_replies(store, mode="live", now=NOW)
@@ -493,3 +494,51 @@ def test_a_request_a_machine_fault_ended_runs_again_after_a_rest(store, writes):
     assert (req["action"], req["status"], req["guidance"]) == ("solve", "queued", "try X")
     spent = {"queued": {f"retry:{k}:solve": "t" for k in (1, 2, 3)}}
     assert public_loop.queue_due(store.load_issue(1), NOW, spent) is None
+
+
+
+def test_an_edit_carries_the_replies_that_came_with_it(store, replies):
+    replies["comments"] = [_comment("nicky", "Added the steps above.")]
+    _bump(store, "2026-10-01T11:40:00Z", body="b, with steps")
+    public_loop.answer_replies(store, mode="live", now=NOW)
+    req = store.load_issue(1).fix_request
+    assert "the report was edited" in req["guidance"] and "> Added the steps" in req["guidance"]
+    assert replies["routed"] == []
+
+
+def test_a_reply_posted_while_the_attempt_ran_is_still_routed(store, replies):
+    replies["comments"] = [_comment("nicky", "It also needs --flag.", at="2026-10-01T10:45:00Z")]
+    public_loop.answer_replies(store, mode="live", now=NOW)
+    assert "--flag" in store.load_issue(1).fix_request["guidance"]
+
+
+def test_an_attempt_that_concluded_before_the_loop_read_it_starts_from_that_read(store,
+                                                                                 replies):
+    replies["comments"] = [_comment("nicky", "old news")]
+    public_loop.answer_replies(store, mode="live", now=NOW + timedelta(days=2))
+    issue = store.load_issue(1)
+    assert issue.fix_request is None and replies["reads"] == 0
+    assert issue.fix_public["replies_seen"] == (NOW + timedelta(days=2)).isoformat(
+        timespec="seconds")
+
+
+def test_a_refused_or_unreadable_reply_is_left_for_a_person(store, replies):
+    replies["comments"] = [_comment("nicky", "please try again")]
+    replies["route"] = "declined"
+    public_loop.answer_replies(store, mode="live", now=NOW)
+    assert "declined" in store.load_issue(1).fix_thread[-1]["text"]
+    replies["comments"] = [_comment("nicky", "and again", cid=2, at="2026-10-01T11:50:00Z")]
+    replies["route"] = None
+    for k in range(public_loop.MAX_ROUTE_MISSES):
+        _bump(store, f"2026-10-01T11:5{k + 1}:00Z")
+        public_loop.answer_replies(store, mode="live", now=NOW)
+    issue = store.load_issue(1)
+    assert issue.fix_request is None and "leaving them for a person" in issue.fix_thread[-1]["text"]
+    assert len(replies["routed"]) == 1 + public_loop.MAX_ROUTE_MISSES
+
+
+def test_the_cap_comment_does_not_hide_a_later_attempt_s_comments(store):
+    store.edit_issue(1).record_fix_run(_run(ending="fixed", proposal={"pr": 9}))
+    kinds = [d.kind for d in public_loop.comments_due(store.load_issue(1), NOW,
+                                                      {"capped_at": "t"})]
+    assert kinds == ["opened", "capped"]

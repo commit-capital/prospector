@@ -16,7 +16,13 @@ their reviews with words, their open inline comments, their comments).
   re-run and no failing job's log names a file the change touches.
 - `revise` (maintainer) — new maintainer feedback that `reply_router` reads as
   asking for a change, ahead of every bot signal; it releases a ready or
-  hand-back hold, and has its own budget of MAX_MAINTAINER_REVISIONS.
+  hand-back hold, and has its own budget of MAX_MAINTAINER_REVISIONS. A
+  maintainer revision that leaves the head where it was hands the pull request
+  back with the reason. Feedback routed to a step is handled; feedback the
+  router reads as asking nothing, that the API's safeguards refused, or that it
+  could not read MAX_ROUTE_MISSES times running is marked handled with a note.
+  A follow-up record that predates feedback routing starts from its first
+  routing pass.
 - `describe` — the head has not had its description re-rendered yet (the
   executor posts only a description that differs).
 - `rerun` — CI fails at this head and its failed jobs were not re-run here.
@@ -57,6 +63,7 @@ if TYPE_CHECKING:
 
 MAX_REVISIONS = 2
 MAX_MAINTAINER_REVISIONS = 3
+MAX_ROUTE_MISSES = 3
 _RUN_RE = re.compile(r"/actions/runs/(\d+)/job/(\d+)")
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 # The markup a review comment carries for layout and badges; code in a
@@ -260,11 +267,12 @@ def related_logs(logs: dict[str, str], patch: str) -> dict[str, str]:
 
 def decide(pr: PrState, fu: dict | None, *, older_open: list[int],
            logs: dict[str, str] | None = None, patch: str = "",
-           feedback: str | None = None) -> Step:
+           feedback: str | None = None, missed: str | None = None) -> Step:
     """The next step for `pr`, given the issue's follow-up record `fu`, the
     older open pull requests by others on the issue, — once a re-run has run at
-    this head — the failing jobs' log excerpts by job name, and the guidance
-    from new maintainer feedback that asks for a change."""
+    this head — the failing jobs' log excerpts by job name, the guidance from
+    new maintainer feedback that asks for a change, and why a maintainer
+    revision left the head where it was (`missed`)."""
     fu = fu or {}
     head = pr.head_sha
     if pr.state != "open":
@@ -274,6 +282,9 @@ def decide(pr: PrState, fu: dict | None, *, older_open: list[int],
         return Step("wait", f"{fu['state']} at this head")
     if older_open:
         return Step("hand-back", f"#{older_open[0]} was opened earlier on the same issue")
+    if missed and not feedback:
+        return Step("hand-back", f"the change a maintainer asked for did not land: {missed}",
+                    maintainer=True)
     if feedback:
         if int(fu.get("maintainer_revisions") or 0) >= MAX_MAINTAINER_REVISIONS:
             return Step("hand-back", f"{MAX_MAINTAINER_REVISIONS} revisions for maintainer "
@@ -344,9 +355,10 @@ def _older_open(issue: int, pr: int) -> list[int]:
 def _route_feedback(store: IssueStore, n: int, pr: int, fresh: list[reply_router.Reply],
                     fu: dict, *, live: bool) -> str | None:
     """The revision guidance new maintainer feedback `fresh` asks for, or None.
-    Feedback the router reads as asking nothing is marked handled in `fu`;
-    feedback it could not read waits for the next pass. A dry run routes
-    nothing and marks it handled."""
+    Feedback the router reads as asking nothing or that the safeguards refused
+    is marked handled in `fu`; feedback it could not read waits for the next
+    pass, up to MAX_ROUTE_MISSES. A dry run routes nothing and marks it
+    handled."""
     if not fresh:
         return None
     count = f"{len(fresh)} maintainer comment{'' if len(fresh) == 1 else 's'} on #{pr}"
@@ -358,10 +370,18 @@ def _route_feedback(store: IssueStore, n: int, pr: int, fresh: list[reply_router
         f"it opened pull request #{pr} with a fix for the issue and is revising it until CI "
         "and code review pass.", fresh)
     if verdict == "retry":
+        fu["feedback_misses"] = 0
         return _maintainer_guidance(pr, fresh)
-    if verdict == "none":
-        fu["feedback_seen_at"] = fresh[-1].at
-        _note(store, n, f"Read {count}: nothing to act on.")
+    if verdict is None:
+        fu["feedback_misses"] = int(fu.get("feedback_misses") or 0) + 1
+        if fu["feedback_misses"] < MAX_ROUTE_MISSES:
+            return None
+    fu["feedback_misses"] = 0
+    fu["feedback_seen_at"] = fresh[-1].at
+    _note(store, n, {"none": f"Read {count}: nothing to act on.",
+                     "declined": f"The agent declined to read {count}; a person should look."}
+          .get(str(verdict), f"Could not read {count} after {MAX_ROUTE_MISSES} tries; leaving "
+                             "them for a person."))
     return None
 
 
@@ -388,13 +408,20 @@ def poll(store: IssueStore, *, mode: str | None = None) -> int:
         record = propose.load_result(n) or {}
         patch = str((record.get("result") or {}).get("patch") or "")
         older = _older_open(n, int(pr)) if state.state == "open" else []
+        if "feedback_seen_at" not in fu:
+            fu["feedback_seen_at"] = storekit.now() if fu.get("pr") else ""
         fresh = fresh_feedback(state, fu) if state.state == "open" else []
         asked = _route_feedback(store, n, int(pr), fresh, fu, live=mode == "live")
-        step = decide(state, fu, older_open=older, patch=patch, feedback=asked)
+        missed = None
+        pending = fu.pop("maintainer_pending", None)
+        if pending and pending.get("head_sha") == state.head_sha:
+            missed = str((issue.fix_request or {}).get("reason") or "no change came of it")[:300]
+        step = decide(state, fu, older_open=older, patch=patch, feedback=asked, missed=missed)
         if step.kind == "wait" and step.jobs:
             logs = {f"job {j}": text for j in step.jobs if (text := _job_log(j))}
-            step = decide(state, fu, older_open=older, logs=logs, patch=patch, feedback=asked)
-        if step.maintainer:
+            step = decide(state, fu, older_open=older, logs=logs, patch=patch, feedback=asked,
+                          missed=missed)
+        if asked:
             fu["feedback_seen_at"] = fresh[-1].at
         moved = fu.get("head_sha") != state.head_sha
         fu.update({"pr": int(pr), "head_sha": state.head_sha, "checked_at": storekit.now(),
@@ -445,6 +472,8 @@ def poll(store: IssueStore, *, mode: str | None = None) -> int:
                            else ("revisions", MAX_REVISIONS))
             if ok:
                 fu[budget] = int(fu.get(budget) or 0) + 1
+                if step.maintainer:
+                    fu["maintainer_pending"] = {"head_sha": state.head_sha}
                 _note(store, n, f"Revision {fu[budget]} of {cap} queued: {step.reason}.")
             else:
                 _note(store, n, f"Could not queue a revision: {why}.")

@@ -306,11 +306,14 @@ def hunt(store: IssueStore) -> int | None:
 def _every_ten_minutes(store: IssueStore) -> None:
     """Follow up the open proposals, then refresh the in-scope issues, answer
     their replies, and bring GitHub in line with them; one step failing leaves
-    the others to run."""
+    the others to run, and an agent outage trips the lanes and ends the pass."""
     for step in (followup.poll, public_loop.refresh, public_loop.answer_replies,
                  public_loop.sync):
         try:
             step(store)
+        except headless_agent.AgentUnavailable as e:
+            lane_health.trip_agent_lanes(str(e))
+            return
         except Exception:
             traceback.print_exc()
 

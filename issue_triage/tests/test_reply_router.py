@@ -29,9 +29,15 @@ def test_only_a_well_formed_route_counts(monkeypatch, answer, want):
     assert "> try X" in prompt and kw["allow_gh"] is False and kw["env_allow"] == ()
 
 
-def test_an_agent_that_cannot_run_routes_nothing(monkeypatch):
+def test_an_outage_propagates_and_a_refusal_is_its_own_answer(monkeypatch):
     def down(prompt, **kw):
         raise headless_agent.AgentUnavailable("not logged in")
     monkeypatch.setattr(headless_agent, "run_agent", down)
-    assert reply_router.route("ctx", [Reply(1, "nicky", "try X", "t")]) is None
+    with pytest.raises(headless_agent.AgentUnavailable):
+        reply_router.route("ctx", [Reply(1, "nicky", "try X", "t")])
+
+    def refused(prompt, **kw):
+        raise headless_agent.AgentDeclined("refused")
+    monkeypatch.setattr(headless_agent, "run_agent", refused)
+    assert reply_router.route("ctx", [Reply(1, "nicky", "try X", "t")]) == "declined"
     assert reply_router.route("ctx", []) == "none"

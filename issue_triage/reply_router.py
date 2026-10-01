@@ -5,9 +5,12 @@ The public loop (`issue_triage.public_loop`) routes the replies on an issue the
 attempt concluded on, and the follow-up (`issue_triage.followup`) routes the
 maintainer feedback on the pull request it opened. `route` answers `retry` when
 the words carry something an attempt can act on (new reproduction detail, the
-intended behavior, a change to make, a request to try again) and `none` when
-they do not (thanks, an approval, a mention, chatter); None when the agent gave
-no usable answer, so the caller routes the same words again later.
+intended behavior, a change to make, a request to try again), `none` when they
+do not (thanks, an approval, a mention, chatter), and `declined` when the API's
+safeguards refused the text; None when the agent gave no usable answer, so the
+caller routes the same words again later. An agent outage
+(`headless_agent.AgentUnavailable`) propagates, for the caller's lane to trip
+on.
 """
 from __future__ import annotations
 
@@ -56,8 +59,8 @@ def quoted(replies: list[Reply], limit: int = QUOTED_MAX) -> str:
 
 
 def route(context: str, replies: list[Reply]) -> str | None:
-    """`retry` or `none` for `replies` after the pipeline reported `context`;
-    None when the agent gave no usable answer or could not run."""
+    """`retry`, `none` or `declined` for `replies` after the pipeline reported
+    `context`; None when the agent gave no usable answer."""
     if not replies:
         return "none"
     prompt = headless_agent.fill(PROMPT, {"__CONTEXT__": context.strip(),
@@ -67,6 +70,10 @@ def route(context: str, replies: list[Reply]) -> str | None:
             verdict, _ = headless_agent.json_reply(lambda: headless_agent.run_agent(
                 prompt, allow_gh=False, cwd=tmp, read_root=tmp, env_allow=(),
                 timeout=TIMEOUT_SECONDS))
+    except headless_agent.AgentUnavailable:
+        raise
+    except headless_agent.AgentDeclined:
+        return "declined"
     except (RuntimeError, ValueError):
         return None
     answer = verdict.get("route")

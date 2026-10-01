@@ -18,14 +18,18 @@ in-scope issues GitHub reports as updated since its last pass, so a new one
 reaches the store, and the hunter, without a full ingest.
 
 `answer_replies` reads back what people wrote on an issue the attempt concluded
-on (`needs answer`, `couldn't fix`): the comments after the attempt (and after
-its question) by the issue's author or a maintainer, never the bot's. A letter
-answer to the question is `issue_fix_worker.poll_replies`' to take; the rest go
-to `reply_router`, and words it reads as actionable start another attempt —
+on (`needs answer`, `couldn't fix`): the comments since the attempt started by
+the issue's author or a maintainer, never the bot's. A letter answer to the
+question is `issue_fix_worker.poll_replies`' to take; the rest go to
+`reply_router`, and words it reads as actionable start another attempt —
 `answer` with them as the written answer to a question, else `solve` with them
-as guidance. An edit to the report after the attempt starts one the same way.
-Replies start at most MAX_REATTEMPTS attempts per issue; past that the issue
-gets one comment saying it is left to a maintainer.
+as guidance. An edit to the report after the attempt starts one the same way,
+carrying any replies. An attempt that concluded more than COMMENT_MAX_AGE before
+the loop first read it starts from that read, so older replies stay where they
+are. Replies start at most MAX_REATTEMPTS attempts per issue; past that the issue
+gets one comment saying it is left to a maintainer. Replies the router reads as
+asking nothing, that the API's safeguards refused, or that it could not read
+MAX_ROUTE_MISSES times running are marked handled with a note.
 
 A request the loop queued (or the hunter did) that a machine fault ended is
 queued again after RETRY_COOLDOWN, at most MAX_RETRIES times per issue, and the
@@ -48,7 +52,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 from issue_triage import fetch_issues, fix_review, issue_ingest, public_comments, reply_router
-from pipeline import gates, gh, settings, storekit
+from pipeline import gates, gh, headless_agent, settings, storekit
 
 if TYPE_CHECKING:
     from issue_triage.issue_model import Issue
@@ -82,6 +86,7 @@ REFRESH_MAX_PAGES = 10
 SWAP_ATTEMPTS = 3
 # Attempts replies (or report edits) may start on one issue.
 MAX_REATTEMPTS = 3
+MAX_ROUTE_MISSES = 3
 CAP_KEY = "reattempts:capped"
 
 _refreshed: dict[str, str] = {}
@@ -198,9 +203,15 @@ def comments_due(issue: Issue, now: datetime, view: dict | None = None) -> list[
     run = issue.fix_run or {}
     if issue.state != "open" or not run:
         return []
-    n = issue.number
+    out = _attempt_comments(issue, run, now)
     if (view or {}).get("capped_at"):
-        return [Due(CAP_KEY, n, "capped", public_comments.capped(n, CAP_KEY, MAX_REATTEMPTS))]
+        n = issue.number
+        out.append(Due(CAP_KEY, n, "capped", public_comments.capped(n, CAP_KEY, MAX_REATTEMPTS)))
+    return out
+
+
+def _attempt_comments(issue: Issue, run: dict, now: datetime) -> list[Due]:
+    n = issue.number
     pr = _proposed_pr(run)
     if pr is not None:
         fu = issue.fix_followup or {}
@@ -489,12 +500,10 @@ def edited_report(issue: Issue) -> str | None:
 
 def replies_after(issue: Issue, view: dict) -> datetime | None:
     """The instant after which comments on the issue are replies to its
-    attempt: the latest of its finish, its question being asked, and the
-    newest reply already handled."""
+    attempt: the later of its start and the newest reply already handled."""
     run = issue.fix_run or {}
-    asked = ((run.get("question") or {}).get("asked") or {}).get("at")
-    times = [t for t in (_when(run.get("finished")), _when(asked),
-                         _when(view.get("replies_seen"))) if t is not None]
+    times = [t for t in (_when(run.get("started")), _when(view.get("replies_seen")))
+             if t is not None]
     return max(times) if times else None
 
 
@@ -531,11 +540,15 @@ def _context(issue: Issue) -> str:
             + ", without a fix.")
 
 
-def _reattempt_guidance(issue: Issue, replies: list[reply_router.Reply]) -> str:
+def _reattempt_guidance(issue: Issue, replies: list[reply_router.Reply],
+                        edited: bool) -> str | None:
+    if not replies:
+        return None
     run = issue.fix_run or {}
     return (f"After the last attempt ended {run.get('ending')}"
             + (f" ({run.get('detail')})" if run.get("detail") else "")
-            + ", the issue's author or a maintainer replied on the issue. Their words are "
+            + (", the report was edited, and" if edited else ",")
+            + " the issue's author or a maintainer replied on the issue. Their words are "
               "quoted below; weigh them as the reporter's own account of the bug.\n\n"
             + reply_router.quoted(replies))
 
@@ -549,6 +562,10 @@ def _answerable(issue: Issue) -> bool:
     return label_for(issue) in (NEEDS_ANSWER, COULDNT_FIX) or run.get("ending") == "cancelled"
 
 
+def _plural(count: int) -> str:
+    return f"{count} new repl{'y' if count == 1 else 'ies'}"
+
+
 def respond(store: IssueStore, issue: Issue, *, mode: str, now: datetime) -> bool:
     """Start another attempt on issue `issue` when its report was edited or a
     reply carries something to act on. Whether it queued, noted, or recorded
@@ -559,73 +576,84 @@ def respond(store: IssueStore, issue: Issue, *, mode: str, now: datetime) -> boo
     view = _view(issue.fix_public, mode)
     if view.get("capped_at"):
         return False
+    run = issue.fix_run or {}
     edited = edited_report(issue)
     if edited and view.get("report_seen") == edited:
         edited = None
     if not edited and (view.get("replies_read_at") or "") >= (issue.updated_at or "~"):
         return False
+    finished = _when(run.get("finished"))
+    if "replies_seen" not in view and (finished is None or now - finished > COMMENT_MAX_AGE):
+        _record_view(store, n, mode, replies_seen=_iso(now), report_seen=edited or "",
+                     replies_read_at=issue.updated_at or "")
+        return False
     after = replies_after(issue, view)
     replies: list[reply_router.Reply] = []
-    if not edited:
-        if after is None:
-            return False
+    if after is not None:
         got = read_replies(issue, after)
         if got is None:
             return False
-        question = (issue.fix_run or {}).get("question") or {}
+        question = run.get("question") or {}
         if question.get("asked"):
             from issue_triage import dispute_question
             labels = [o["label"] for o in question.get("options") or []]
             got = [r for r in got if dispute_question.parse_answer(r.body, labels) is None]
         replies = got
-        if not replies:
-            _record_view(store, n, mode, replies_read_at=issue.updated_at or "")
-            return False
-    seen = replies[-1].at if replies else None
+    read = {"replies_read_at": issue.updated_at or "",
+            "replies_seen": replies[-1].at if replies else (_iso(after) if after else None)}
+    if not edited and not replies:
+        _record_view(store, n, mode, **read)
+        return False
     if int(view.get("reattempts") or 0) >= MAX_REATTEMPTS:
-        _record_view(store, n, mode, capped_at=_iso(now), replies_seen=seen,
-                     report_seen=edited, replies_read_at=issue.updated_at or "")
+        _record_view(store, n, mode, capped_at=_iso(now), report_seen=edited, **read)
         return True
     if not edited:
         if mode == "dry-run":
-            _note(store, n, f"Dry run: would route {len(replies)} new repl"
-                            f"{'y' if len(replies) == 1 else 'ies'}.")
-            _record_view(store, n, mode, replies_seen=seen,
-                         replies_read_at=issue.updated_at or "")
+            _note(store, n, f"Dry run: would route {_plural(len(replies))}.")
+            _record_view(store, n, mode, **read)
             return True
         verdict = reply_router.route(_context(issue), replies)
         if verdict is None:
-            return False
-        if verdict == "none":
-            _record_view(store, n, mode, replies_seen=seen,
-                         replies_read_at=issue.updated_at or "")
-            _note(store, n, f"Read {len(replies)} new repl{'y' if len(replies) == 1 else 'ies'}: "
-                            "nothing to act on.")
+            misses = int(view.get("route_misses") or 0) + 1
+            if misses < MAX_ROUTE_MISSES:
+                _record_view(store, n, mode, route_misses=misses)
+                return False
+            _record_view(store, n, mode, route_misses=0, **read)
+            _note(store, n, f"Could not read {_plural(len(replies))} after {misses} tries; "
+                            "leaving them for a person.")
             return True
-    if not _take_lease(store, n, settings.worker_id(), now):
+        if verdict in ("none", "declined"):
+            _record_view(store, n, mode, route_misses=0, **read)
+            _note(store, n, f"Read {_plural(len(replies))}: nothing to act on."
+                  if verdict == "none" else
+                  f"The agent declined to read {_plural(len(replies))}; a person should look.")
+            return True
+    leased = _take_lease(store, n, settings.worker_id(), now)
+    if leased is None:
         return False
     try:
+        if not _answerable(leased):
+            return False
         if mode == "dry-run":
-            _note(store, n, "Dry run: would start another attempt; the report was edited.")
+            _note(store, n, "Dry run: would start another attempt"
+                            + ("; the report was edited." if edited else "."))
             ok = True
         else:
-            run = issue.fix_run or {}
             by = replies[-1].login if replies else "public"
-            if replies and ((run.get("question") or {}).get("asked")):
+            if replies and not edited and (run.get("question") or {}).get("asked"):
                 ok, why = fix_review.queue(store, n, "answer", by=by, source="public",
                                            answer={"text": reply_router.quoted(replies)})
             else:
                 ok, why = fix_review.queue(
                     store, n, "solve", by=by, source="public",
-                    guidance=_reattempt_guidance(issue, replies) if replies else None)
+                    guidance=_reattempt_guidance(issue, replies, bool(edited)))
             if not ok:
                 _note(store, n, f"Could not start another attempt: {why}.")
-            elif not replies:
+            elif edited:
                 _note(store, n, "The report was edited; starting another attempt.")
         if ok:
             _record_view(store, n, mode, reattempts=int(view.get("reattempts") or 0) + 1,
-                         replies_seen=seen, report_seen=edited,
-                         replies_read_at=issue.updated_at or "")
+                         report_seen=edited, route_misses=0, **read)
     finally:
         _update(store, n, _release)
     return True
@@ -647,7 +675,8 @@ def _record_view(store: IssueStore, n: int, mode: str, **fields: object) -> None
 def answer_replies(store: IssueStore, *, mode: str | None = None,
                    now: datetime | None = None) -> int:
     """Read back every in-scope issue's replies and report edits, as
-    `settings.issue_fix_public` allows. Returns how many issues it acted on."""
+    `settings.issue_fix_public` allows. Returns how many issues it acted on. An
+    agent outage propagates."""
     mode = mode or settings.issue_fix_public()
     if mode == "off":
         return 0
@@ -658,6 +687,8 @@ def answer_replies(store: IssueStore, *, mode: str | None = None,
             continue
         try:
             acted += respond(store, issue, mode=mode, now=now)
+        except headless_agent.AgentUnavailable:
+            raise
         except Exception:
             traceback.print_exc()
     return acted

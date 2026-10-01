@@ -180,3 +180,16 @@ def test_a_question_says_what_a_reply_in_words_does():
     assert "a maintainer will take it from there" in held
     assert "the pipeline will try again with it" in loop
     assert dispute_question.problems(loop) == []
+
+
+
+def test_a_profile_priority_author_s_letter_is_an_answer(monkeypatch):
+    from pipeline import gh, profile
+    monkeypatch.setattr(profile, "active",
+                        lambda: profile.RepoProfile(priority_authors=("eager-dev",)))
+    monkeypatch.setattr(gh, "gh_list", lambda url, **kw: [
+        {"user": {"login": "eager-dev"}, "author_association": "NONE", "body": "B",
+         "created_at": "2026-10-02T00:00:00Z", "html_url": "u"}])
+    got = dispute_question.read_answer(7, asked_at="2026-10-01T00:00:00Z", options=["A", "B"],
+                                       issue_author="someone")
+    assert got == {"label": "B", "login": "eager-dev", "url": "u"}
