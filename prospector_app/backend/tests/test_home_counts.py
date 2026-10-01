@@ -81,12 +81,12 @@ def test_counts_report_loading_while_snapshot_cold_loads(monkeypatch):
     started = threading.Event()
     release = threading.Event()
 
-    def slow_freshen(full: bool = False) -> None:
+    def slow_cold_load() -> None:
         started.set()
         release.wait(timeout=5)
 
     monkeypatch.setattr(data, "_loaded", False)
-    monkeypatch.setattr(data, "_freshen", slow_freshen)
+    monkeypatch.setattr(data, "_cold_load", slow_cold_load)
     c = TestClient(appmod.app)
     try:
         r = c.post("/api/prs/counts", json={"specs": [{}]})
@@ -109,7 +109,7 @@ def test_counts_serve_once_background_load_publishes(monkeypatch):
     """The poll converges: loading:true while the cold load runs, real counts
     right after it publishes the snapshot."""
     monkeypatch.setattr(data, "_loaded", False)
-    monkeypatch.setattr(data, "_freshen", lambda full=False: None)
+    monkeypatch.setattr(data, "_cold_load", lambda: None)
     monkeypatch.setattr(data, "prs", lambda: {1: _rec(1)})
     monkeypatch.setattr(data, "clusters", lambda: {})
     monkeypatch.setattr(data, "pr_to_clusters", lambda: {})

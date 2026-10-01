@@ -8,6 +8,7 @@ never parsed back.
 """
 from __future__ import annotations
 
+import re
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
@@ -285,6 +286,90 @@ def validate_cluster(rec: dict) -> None:
 # PR records `pr_bodies` reads per statement.
 PR_BODIES_BATCH = 200
 
+# The light PR copy (`light_pr`): every reviewer's summary and a parked
+# resolve's conflict diff cut to LIGHT_CLIP_CHARS, and each review finding's
+# body cut to its first line. Those three are most of a record's size and only
+# the detail view and the workers read them whole; every gate, digest and list
+# filter reads the rest, or a finding's first line, or whether a summary exists.
+LIGHT_CLIP_CHARS = 200
+LIGHT_SECTIONS = ("reviews", "fix_request")
+_FIRST_LINE = re.compile(r"[ \t\r\n\f\v]*[^\n]*")
+
+# `light_pr` computed server-side, so the cut text never crosses the wire. The
+# Python function re-applies the same cuts to what this returns (a no-op on
+# text already cut) and marks them.
+_PG_LIGHT_PR = r"""(
+  ((prs.data #- '{meta,body}') - 'reviews' - 'fix_request')
+  || CASE
+       WHEN jsonb_typeof(prs.data->'reviews') = 'object' THEN jsonb_build_object('reviews', (
+         SELECT coalesce(jsonb_object_agg(r.key, CASE
+           WHEN jsonb_typeof(r.value) = 'object' THEN
+             (r.value - 'summary' - 'findings')
+             || CASE
+                  WHEN jsonb_typeof(r.value->'summary') = 'string'
+                    THEN jsonb_build_object('summary', left(r.value->>'summary', LIGHT_CLIP))
+                  WHEN r.value->'summary' IS NOT NULL
+                    THEN jsonb_build_object('summary', r.value->'summary')
+                  ELSE '{}'::jsonb END
+             || CASE
+                  WHEN jsonb_typeof(r.value->'findings') = 'array'
+                    THEN jsonb_build_object('findings', (
+                      SELECT coalesce(jsonb_agg(CASE
+                        WHEN jsonb_typeof(f.value->'body') = 'string'
+                          THEN f.value || jsonb_build_object(
+                            'body', substring(f.value->>'body' from '^[ \t\r\n\f\v]*[^\n]*'))
+                        ELSE f.value END ORDER BY f.ord), '[]'::jsonb)
+                      FROM jsonb_array_elements(r.value->'findings') WITH ORDINALITY AS f(value, ord)))
+                  WHEN r.value->'findings' IS NOT NULL
+                    THEN jsonb_build_object('findings', r.value->'findings')
+                  ELSE '{}'::jsonb END
+           ELSE r.value END), '{}'::jsonb)
+         FROM jsonb_each(prs.data->'reviews') AS r))
+       WHEN prs.data->'reviews' IS NOT NULL THEN jsonb_build_object('reviews', prs.data->'reviews')
+       ELSE '{}'::jsonb END
+  || CASE
+       WHEN jsonb_typeof(prs.data #> '{fix_request,result,merge_diff}') = 'string'
+         THEN jsonb_build_object('fix_request', jsonb_set(
+           prs.data->'fix_request', '{result,merge_diff}',
+           to_jsonb(left(prs.data #>> '{fix_request,result,merge_diff}', LIGHT_CLIP))))
+       WHEN prs.data->'fix_request' IS NOT NULL
+         THEN jsonb_build_object('fix_request', prs.data->'fix_request')
+       ELSE '{}'::jsonb END
+)""".replace("LIGHT_CLIP", str(LIGHT_CLIP_CHARS))
+
+
+def _clip(text: str) -> storekit.Clipped:
+    return storekit.Clipped(text[:LIGHT_CLIP_CHARS])
+
+
+def light_pr(rec: dict) -> dict:
+    """`rec` with the long text cut as LIGHT_CLIP_CHARS describes, every cut value
+    a storekit.Clipped so the record cannot be saved. Sections it does not cut
+    are shared with `rec`, not copied."""
+    out = dict(rec)
+    reviews = rec.get("reviews")
+    if isinstance(reviews, dict):
+        light_reviews: dict = {}
+        for rid, entry in reviews.items():
+            if not isinstance(entry, dict):
+                light_reviews[rid] = entry
+                continue
+            entry = dict(entry)
+            if isinstance(entry.get("summary"), str):
+                entry["summary"] = _clip(entry["summary"])
+            if isinstance(entry.get("findings"), list):
+                entry["findings"] = [
+                    {**f, "body": storekit.Clipped(_FIRST_LINE.match(f["body"]).group(0))}  # type: ignore[union-attr]
+                    if isinstance(f, dict) and isinstance(f.get("body"), str) else f
+                    for f in entry["findings"]]
+            light_reviews[rid] = entry
+        out["reviews"] = light_reviews
+    fix = rec.get("fix_request")
+    result = fix.get("result") if isinstance(fix, dict) else None
+    if isinstance(fix, dict) and isinstance(result, dict) and isinstance(result.get("merge_diff"), str):
+        out["fix_request"] = {**fix, "result": {**result, "merge_diff": _clip(result["merge_diff"])}}
+    return out
+
 class Store:
     def __init__(self, root: Path | str | None = None):
         self.root = Path(root) if root is not None else DEFAULT_ROOT
@@ -342,6 +427,45 @@ class Store:
         the new watermark — the incremental refetch a cached reader runs to pick up
         only changed PRs. See storekit Collection.since."""
         return self._prs.since(watermark, omit_paths=[("meta", "body")])
+
+    def prs_light(self) -> tuple[dict[int, model.Pr], dict[int, str | None], str | None]:
+        """Every PR as its `light_pr` copy with `meta.body` omitted, each one's
+        saved_at, and the watermark an incremental `prs_since` continues from.
+        On Postgres the cuts happen server-side."""
+        from sqlalchemy import literal_column, type_coerce
+        data_col = schema.prs.c.data
+        if self.engine.dialect.name == "postgresql":
+            col = type_coerce(literal_column(_PG_LIGHT_PR), data_col.type)
+        else:
+            col = storekit.strip_json_paths(data_col, self.engine.dialect.name, [("meta", "body")])
+        rows, high = self._prs.stamped_rows([col])
+        prs = {r[0]: self._pr_view(light_pr(r[2])) for r in rows}
+        return prs, {r[0]: r[1] for r in rows}, high
+
+    def pr_long_text(self) -> dict[int, tuple[str | None, dict[str, object]]]:
+        """Each PR's saved_at and its LIGHT_SECTIONS whole — what restores a
+        `prs_light` copy (`unclip_pr`)."""
+        data_col = schema.prs.c.data
+        rows, _ = self._prs.stamped_rows([data_col[name] for name in LIGHT_SECTIONS])
+        return {r[0]: (r[1], {name: r[2 + i] for i, name in enumerate(LIGHT_SECTIONS)})
+                for r in rows}
+
+    def unclip_pr(self, pr: model.Pr, sections: dict[str, object]) -> model.Pr:
+        """A `prs_light` copy with its LIGHT_SECTIONS replaced by `sections`."""
+        rec = {k: v for k, v in pr.raw.items() if k not in LIGHT_SECTIONS}
+        rec.update({k: v for k, v in sections.items() if v is not None})
+        return self._pr_view(rec)
+
+    def pr_ids(self) -> set[int]:
+        return self._prs.ids()
+
+    def pr_records(self, prs: dict[int, model.Pr]) -> dict[int, dict]:
+        """The raw records behind `prs`, for a snapshot cache to serialize."""
+        return {n: pr.raw for n, pr in prs.items()}
+
+    def pr_views(self, recs: dict[int, dict]) -> dict[int, model.Pr]:
+        """Bound views over raw records a snapshot cache read back."""
+        return {n: self._pr_view(rec) for n, rec in recs.items()}
 
     def prs_matching(self, path: tuple[str, ...], values: list[str]) -> dict[int, model.Pr]:
         """The PRs whose record holds one of `values` at `path` — e.g.
@@ -503,6 +627,28 @@ class Store:
         with self.engine.connect() as conn:
             rows = conn.execute(query).all()
         return [storekit.parse_run(r[0]) for r in reversed(rows)]
+
+    def runs_after(self, rowid: int | None) -> list[tuple[int, storekit.RunRecord]]:
+        """The ledger's records past `rowid` (all when None), each with its rowid,
+        oldest first."""
+        from sqlalchemy import select
+        query = select(schema.runs.c.rowid, schema.runs.c.data).where(schema.runs.c.kind == "pr")
+        if rowid is not None:
+            query = query.where(schema.runs.c.rowid > rowid)
+        with self.engine.connect() as conn:
+            rows = conn.execute(query.order_by(schema.runs.c.rowid)).all()
+        return [(int(r[0]), storekit.parse_run(r[1])) for r in rows]
+
+    def latest_run(self, phase: str) -> storekit.RunRecord | None:
+        """The newest ledger record of `phase`, read without the rest."""
+        from sqlalchemy import select
+        query = (select(schema.runs.c.data)
+                 .where(schema.runs.c.kind == "pr")
+                 .where(schema.runs.c.data["phase"].as_string() == phase)
+                 .order_by(schema.runs.c.rowid.desc()).limit(1))
+        with self.engine.connect() as conn:
+            row = conn.execute(query).first()
+        return None if row is None else storekit.parse_run(row[0])
 
     # -- Singleton registries (threats, action_items) -----------------------
     # Durable, cross-PR data: not head-stamped. Each registry is one row in the

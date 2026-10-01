@@ -6,10 +6,10 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from issue_triage import dispute_question, fix_review, fix_review_runner, issue_links, pr_index
+from issue_triage import dispute_question, fix_review, fix_review_runner, issue_links
 from issue_triage.issue_store import IssueStore
 from pipeline import settings
-from prospector_app.backend import issue_fix_worker, lane_health
+from prospector_app.backend import data, issue_data, issue_fix_worker, lane_health
 
 QUESTION = {"question": "2 or 3?", "options": [{"label": "A", "behavior": "2"},
                                                {"label": "B", "behavior": "3"}],
@@ -89,7 +89,8 @@ def test_no_reply_waits_until_the_default_is_due(store, monkeypatch):
 
 @pytest.fixture
 def hunting(store, monkeypatch):
-    monkeypatch.setattr(pr_index, "from_store", lambda: {})
+    monkeypatch.setattr(data, "prs", lambda: {})
+    monkeypatch.setattr(issue_data, "issues", lambda: store.all_issues(omit_candidates=True))
     monkeypatch.setattr(issue_links, "linked_prs", lambda issue, links: [])
     now = datetime.now(timezone.utc)
     store.save_issue({**store.load_issue(1).raw, "meta": {

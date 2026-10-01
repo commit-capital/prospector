@@ -4,7 +4,8 @@ import { ExecProvider, useExec, type Toast } from "./ExecContext";
 import { RepoMetaProvider, useRepoMeta } from "./RepoMetaContext";
 import { FeedbackButton } from "./components/FeedbackButton";
 import { AgentPaneProvider } from "./components/AgentPane";
-import { isReachable, subscribeHealth, pingHealth } from "./health";
+import { isReachable, subscribeHealth, pingHealth, snapshotState, subscribeSnapshot } from "./health";
+import type { SnapshotState } from "./health";
 import { api, type WorkStatus, type WorkerFlags } from "./api";
 import { autonomyTooltip } from "./autonomy";
 import { useSystemHealth } from "./useSystemHealth";
@@ -501,17 +502,30 @@ function HealthStrip() {
 // the backend is back up, without a manual refresh.
 function BackendBanner() {
   const [reachable, setReachable] = useState(isReachable());
+  const [snap, setSnap] = useState<SnapshotState>(snapshotState());
   useEffect(() => {
-    const unsub = subscribeHealth(setReachable);
+    const unsubHealth = subscribeHealth(setReachable);
+    const unsubSnap = subscribeSnapshot(setSnap);
     let timer: number;
     const tick = async () => {
       await pingHealth();
-      timer = window.setTimeout(tick, isReachable() ? 15000 : 3000);
+      const busy = snapshotState().loading || snapshotState().issuesLoading;
+      timer = window.setTimeout(tick, isReachable() && !busy ? 15000 : 3000);
     };
     tick();
-    return () => { unsub(); window.clearTimeout(timer); };
+    return () => { unsubHealth(); unsubSnap(); window.clearTimeout(timer); };
   }, []);
 
+  if (reachable && (snap.loading || snap.issuesLoading)) {
+    const what = snap.loading && snap.issuesLoading ? "PRs and issues"
+      : snap.loading ? "PRs" : "issues";
+    return (
+      <div className="backend-loading" role="status">
+        Loading {what} from the shared database… Pages fill in when it finishes. The first
+        start on a machine can take a few minutes; later starts read a local copy.
+      </div>
+    );
+  }
   if (reachable) return null;
   return (
     <div className="backend-down" role="alert">

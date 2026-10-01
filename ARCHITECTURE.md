@@ -64,13 +64,31 @@ I/O — every board/list read serves from module-level dicts (`_prs`, `_clusters
   last `saved_at` watermark, via `store.prs_since` / `store.clusters_since`, and
   atomically rebinds the module globals (a GIL-protected swap — readers never see
   a half-mutated snapshot).
-- **Off the request path** (`_ensure`): one blocking cold load on first call
-  (read in pages of `storekit.BULK_PAGE_ROWS` rows, so no single statement
-  ships the whole table inside the server's statement timeout);
-  after that a background daemon thread refreshes at most once per
-  `CHECK_DEBOUNCE` (10s). A slow store can never block or wedge a request — it
-  only lets the snapshot lag by up to `CHECK_DEBOUNCE` seconds. `refresh()` (and
-  `POST /api/refresh`) force a full reload now.
+- **Off the request path** (`_ensure`): one blocking cold load on first call,
+  started at boot (`app._launch_snapshot_load`); after that a background daemon
+  thread refreshes at most once per `CHECK_DEBOUNCE` (10s). A slow store can
+  never block or wedge a request — it only lets the snapshot lag by up to
+  `CHECK_DEBOUNCE` seconds. `refresh()` (and `POST /api/refresh`) freshen now.
+  `/api/health` answers `loading` during the cold load without waiting on it,
+  and the page shows a loading banner.
+- **The cold load** (`_cold_load`) starts from this machine's disk copy
+  (`snapshot_cache`, under `~/.cache/prospector`, keyed by store, repository and
+  schema version), drops ids the store no longer has, and reads `since` the
+  copy's watermark. With no usable copy it reads every PR as its light copy
+  (`store.prs_light` / `store.light_pr`: each reviewer's summary and a parked
+  resolve's conflict diff cut to 200 characters, each review finding's body cut
+  to its first line — cut server-side on Postgres), in pages of
+  `storekit.BULK_PAGE_ROWS` rows. Every gate, digest, filter and Home
+  classification reads the same from a light copy as from the whole record. A
+  background read (`store.pr_long_text`) then restores each light record still
+  unchanged since it was read, and the copy is written once every record is
+  whole, then at most every `CACHE_EVERY` after a change. The detail view reads
+  a light PR whole from the store (`pr_whole`). Every cut string is a
+  `storekit.Clipped`, and the store refuses to save a record holding one. The
+  issue snapshot (`issue_data`) keeps a disk copy the same way.
+- **The PR run ledger** is held in memory by rowid (`data.runs`); each read
+  fetches only the rows past the last one seen, less a small overlap for an
+  insert that commits after a higher rowid's.
 - **Cluster removals ride the watermark:** a watermark sees inserts/updates but
   not hard-deletes, so `store.delete_cluster` instead **soft-deletes** — it
   tombstones the cluster (a `deleted` flag with a bumped `saved_at`). The tombstone

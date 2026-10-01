@@ -282,9 +282,10 @@ def reset_clusters(store: Store) -> dict:
         for cid in existing:
             store.delete_cluster(cid)
         cleared = 0
+        # The bulk read leaves out meta.body, so each PR is cleared on a whole read.
         for n, pr in store.all_prs().items():
             if pr.section("cluster") is not None:
-                pr.clear_cluster()
+                store.edit_pr(n).clear_cluster()
                 cleared += 1
     return {"clusters_removed": len(existing), "backrefs_cleared": cleared}
 
