@@ -493,6 +493,27 @@ def test_auto_queued_conflicted_rebase_escalates_when_opted_in(store, monkeypatc
     assert not _pushed(fake)
 
 
+def test_a_hunted_rebase_waits_for_capacity_before_an_agent_resolves(store, monkeypatch,
+                                                                      tmp_path):
+    monkeypatch.setenv("TRIAGE_FIX_HUNT_RESOLVE", "1")
+    _gate(monkeypatch, False)
+    booked: list[str] = []
+    monkeypatch.setattr(fix_worker.lane_health, "note_failure",
+                        lambda lane, **kw: booked.append(lane))
+    fix_queue.queue_pr(1, "rebase", source="auto")
+    fake = _ConflictedResubmit(tmp_path)
+    monkeypatch.setattr(fix_worker, "_resubmit", fake)
+    monkeypatch.setattr(fix_worker.resolve_conflicts, "resolve",
+                        lambda *a, **kw: pytest.fail("an agent resolved while paused"))
+
+    fix_worker.run_one(1)
+
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "failed" and "capacity" in req["error"]
+    assert ("prepare", "--merge") not in fake.calls
+    assert booked == []
+
+
 def test_agent_give_up_refuses_with_reason(store, monkeypatch, tmp_path):
     fix_queue.queue_pr(1, "rebase")
     fake = _ConflictedResubmit(tmp_path)

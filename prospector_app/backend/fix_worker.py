@@ -558,6 +558,8 @@ def _log_run(n: int, req: dict, status: str, detail: str | None = None,
         traceback.print_exc()
     if status != "failed":
         lane_health.note_success("fix")
+    elif kind == "capacity-paused":
+        pass  # a deferral until the AI capacity opens, not this machine's fault
     elif kind == "agent-unavailable":
         lane_health.trip_agent_lanes(detail or "the agent CLI could not run")
     else:
@@ -1135,6 +1137,11 @@ def _agent_resolve(n: int, claimed: dict, paused: list[str]) -> None:
         _refuse(n, claimed,
                 f"{_conflict_refusal(paused)} An agent resolution was withheld: {why}.",
                 result=evidence)
+        return
+    if claimed.get("source") in AUTO_SOURCES and not lane_health.capacity_open("fix"):
+        _fail(n, claimed, f"{_conflict_refusal(paused)} Resolving them needs an agent, and "
+                          f"this machine's AI capacity is paused; the hunter tries again later.",
+              result=evidence, kind="capacity-paused")
         return
 
     prepared = _resubmit(n, "prepare", "--merge")
