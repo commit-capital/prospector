@@ -1,6 +1,6 @@
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
-import { api, type JobSpec, type JobRec, type PipelineStatus, type Autohunt, type AutohuntResultCounts, type FilterSpec, type MachinesRoster, type VerifyBaseHealth, type VerifyBaseHost, type VerifyQueue, type FixQueue, type WorkerHealth, type WorkerHealthHost } from "../api";
+import { api, type JobSpec, type JobRuntime, type JobRec, type PipelineStatus, type Autohunt, type AutohuntResultCounts, type FilterSpec, type MachinesRoster, type VerifyBaseHealth, type VerifyBaseHost, type VerifyQueue, type FixQueue, type WorkerHealth, type WorkerHealthHost } from "../api";
 import { useRepoMeta } from "../RepoMetaContext";
 import { useExec } from "../ExecContext";
 import { PRLink } from "../components/PRLink";
@@ -8,6 +8,7 @@ import { FlyoutIssueLink } from "../components/FlyoutIssueLink";
 import { SandboxChecks } from "../components/SandboxChecks";
 import { groupNeedsAttention } from "./needsAttention";
 import { attachJobStream, type JobMeta } from "../jobStream";
+import { usePoll } from "../poll";
 
 /** The parked-and-ready chip, worded by what the action actually produced. */
 const PARKED_READY: Record<string, string> = {
@@ -406,6 +407,8 @@ export default function ControlPanel() {
   const { meta: repoMeta } = useRepoMeta();
   const { dryRun, pushToast, pushIdentity } = useExec();
   const [specs, setSpecs] = useState<JobSpec[]>([]);
+  // Each job kind's history, null until /api/jobs/runtimes answers.
+  const [runtimes, setRuntimes] = useState<Record<string, JobRuntime> | null>(null);
   const [jobs, setJobs] = useState<JobRec[]>([]);
   const [cluster, setCluster] = useState("");
   const [prNum, setPrNum] = useState("");
@@ -453,8 +456,9 @@ export default function ControlPanel() {
   const fixRunning = (fixQueue?.queue ?? []).some(
     (e) => e.status === "running" || e.status === "pushing");
 
-  const refreshFixQueue = () =>
-    api.fixQueue(fixQueueRange.days, fixQueueRange.allTime).then(setFixQueue).catch(() => {});
+  const refreshFixQueue = useCallback(
+    () => api.fixQueue(fixQueueRange.days, fixQueueRange.allTime).then(setFixQueue).catch(() => {}),
+    [fixQueueRange]);
 
   /** Approve or discard one parked change. The push itself happens on the
    *  worker's next tick, so this reloads rather than reporting a landed push.
@@ -564,6 +568,7 @@ export default function ControlPanel() {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- clear the error before reloading control data
     setErr(undefined);
     api.jobSpecs().then((d) => setSpecs(d.specs)).catch((e) => setErr(String(e)));
+    api.jobRuntimes().then((d) => setRuntimes(d.runtimes)).catch(() => {});
     api.jobsList().then((d) => {
       setJobs(d.jobs);
       // #683: reattach to the most recent job (running or already finished)
@@ -582,28 +587,19 @@ export default function ControlPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only: reattach check runs once
   }, []);
 
-  useEffect(() => {
-    const load = () => api.autohunt(huntRange.days, huntRange.allTime).then(setHunt).catch(() => {});
-    load();
-    const t = setInterval(load, 30_000);
-    return () => clearInterval(t);
-  }, [huntRange]);
+  const loadHunt = useCallback(
+    () => api.autohunt(huntRange.days, huntRange.allTime).then(setHunt).catch(() => {}),
+    [huntRange]);
+  usePoll(loadHunt, 30_000);
 
-  useEffect(() => {
-    const load = () => api.verifyQueue(verifyQueueRange.days, verifyQueueRange.allTime).then(setVerifyQueue).catch(() => {});
-    load();
-    const t = setInterval(load, 30_000);
-    return () => clearInterval(t);
-  }, [verifyQueueRange]);
+  const loadVerifyQueue = useCallback(
+    () => api.verifyQueue(verifyQueueRange.days, verifyQueueRange.allTime).then(setVerifyQueue).catch(() => {}),
+    [verifyQueueRange]);
+  usePoll(loadVerifyQueue, 30_000);
 
   // A mechanical action runs for a minute or two, so an in-flight queue is
   // polled fast enough to show it moving through its steps; an idle one is not.
-  useEffect(() => {
-    refreshFixQueue();
-    const t = setInterval(refreshFixQueue, fixRunning ? 10_000 : 30_000);
-    return () => clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- refreshFixQueue is re-made every render; the range and the in-flight state are what change the poll
-  }, [fixQueueRange, fixRunning]);
+  usePoll(refreshFixQueue, fixRunning ? 10_000 : 30_000);
 
   // Elapsed time on a running row ticks between polls, so the seconds count up
   // rather than jumping. Nothing running, nothing to tick.
@@ -793,12 +789,13 @@ export default function ControlPanel() {
         {specs.map((s) => {
           const clusterBacklog = s.kind === "analyze-clusters" && cov != null && cov.analysis.never > 0;
           const issueBacklog = s.kind === "issue-analyze" && icov != null && icov.pending_analysis > 0;
+          const runtime = runtimes?.[s.kind];
           const duration = s.kind === "threat-scan" ? estThreatScan
             : s.kind === "analyze-clusters" ? estAnalyzeClusters
             : s.kind === "issue-analyze" ? estIssueAnalyze
-            : fmtDuration(s.typical_seconds)
-              && `${fmtDuration(s.typical_seconds)}${s.typical_count != null && s.count_noun
-                ? ` for ${Math.round(s.typical_count)} ${s.count_noun}` : ""}`;
+            : fmtDuration(runtime?.typical_seconds)
+              && `${fmtDuration(runtime?.typical_seconds)}${runtime?.typical_count != null && s.count_noun
+                ? ` for ${Math.round(runtime.typical_count)} ${s.count_noun}` : ""}`;
           return (
             <Fragment key={s.kind}>
               <div className="jobspec" style={clusterBacklog || issueBacklog
@@ -810,7 +807,7 @@ export default function ControlPanel() {
                     {" "}· {s.agentic
                       ? <span title="runs AI agents — costs tokens">🤖 agentic</span>
                       : <span title="no agents — costs nothing but time">⚙️ deterministic</span>}
-                    {" "}· last run {ago(s.last_run)}
+                    {runtimes && <>{" "}· last run {ago(runtime?.last_run)}</>}
                     {duration && <> · takes {duration}</>}
                   </span>
                   {s.kind === "threat-scan" && cov && cov.threat.stale + cov.threat.never > 0 && (

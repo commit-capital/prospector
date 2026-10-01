@@ -873,13 +873,16 @@ def chat_stop(pr: int | None = None, cluster: int | None = None, issue: int | No
 # Control-panel jobs (M5). Fixed allowlisted set; read-only upstream.
 # ---------------------------------------------------------------------------
 @app.get("/api/jobs/specs")
-def job_specs():
-    runtimes = pipeline_status.job_runtimes()
-    return {"specs": [
-        {**s, **runtimes.get(s["kind"], {"last_run": None, "typical_seconds": None,
-                                          "typical_count": None})}
-        for s in jobs.list_specs()
-    ]}
+def job_specs() -> dict[str, list[jobs.JobSpecView]]:
+    return {"specs": jobs.list_specs()}
+
+
+@app.get("/api/jobs/runtimes")
+def job_runtimes() -> dict[str, dict[str, dict[str, str | float | None]]]:
+    """Per job kind, when it last ran and how long a run typically takes. These
+    read the runs ledgers, which a cold backend fetches whole over the store's
+    link, so the specs route answers without them."""
+    return {"runtimes": pipeline_status.job_runtimes()}
 
 
 @app.get("/api/jobs")

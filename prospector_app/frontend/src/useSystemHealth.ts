@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, type SystemHealth } from "./api";
+import { startPoll } from "./poll";
 
 // One shared poll of /api/system-health for every subscriber (the strip on
 // every page plus Home's stalled state), so opening more views never adds
@@ -9,7 +10,7 @@ const POLL_MS = 15_000;
 
 let current: SystemHealth | null = null;
 const listeners = new Set<(h: SystemHealth | null) => void>();
-let timer: number | undefined;
+let stop: (() => void) | undefined;
 
 async function poll(): Promise<void> {
   try {
@@ -21,12 +22,11 @@ async function poll(): Promise<void> {
 }
 
 function sync(): void {
-  if (listeners.size > 0 && timer === undefined) {
-    void poll();
-    timer = window.setInterval(() => { void poll(); }, POLL_MS);
-  } else if (listeners.size === 0 && timer !== undefined) {
-    window.clearInterval(timer);
-    timer = undefined;
+  if (listeners.size > 0 && stop === undefined) {
+    stop = startPoll(poll, POLL_MS);
+  } else if (listeners.size === 0 && stop !== undefined) {
+    stop();
+    stop = undefined;
   }
 }
 

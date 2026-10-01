@@ -1,6 +1,7 @@
 // Typed client for the app backend.
 
 import { markReachable, isProxyDown } from "./health";
+import { withReadSlot } from "./readSlots";
 
 export type Safety = "GREEN" | "YELLOW" | "RED" | null;
 export type SafetyRollup = { green: number; yellow: number; red: number; unknown?: number };
@@ -1073,7 +1074,13 @@ async function postJson<T = { ok: boolean; detail: string }>(url: string, body: 
   return (await r.json()) as T;
 }
 
-async function get<T>(url: string): Promise<T> {
+/** GET a JSON reply in one of the shared read slots (readSlots.ts). An
+ *  `urgent` read skips them: kept for the few a page cannot start without. */
+function get<T>(url: string, { urgent = false }: { urgent?: boolean } = {}): Promise<T> {
+  return urgent ? getJson<T>(url) : withReadSlot(() => getJson<T>(url));
+}
+
+async function getJson<T>(url: string): Promise<T> {
   let r: Response;
   try {
     r = await fetch(url, { cache: "no-store" });
@@ -1549,6 +1556,9 @@ export interface ProbeResult {
   agent?: ProbeFinding;
 }
 
+/** One stored turn of an agent chat thread. */
+export interface ChatTurn { role: "user" | "assistant"; text: string }
+
 /** Whether this machine can run the agent pane with the selected local CLI. */
 export interface ChatReady {
   provider: string;
@@ -1658,6 +1668,8 @@ export const api = {
     return r.json() as Promise<PushProbeResult>;
   },
   chatReady: () => get<ChatReady>("/api/chat/ready"),
+  chatHistory: (params: URLSearchParams) =>
+    get<{ messages: ChatTurn[] }>(`/api/chat/history?${params}`),
   onboardingProbe: async (body: {
     store_url?: string; repo?: string; key_file?: string; agent?: boolean;
     agent_provider?: string;
@@ -1980,8 +1992,9 @@ export const api = {
     if (!r.ok) return { diff: "", error: `HTTP ${r.status}`, note: null, file_count: 0, truncated: false, source: "" };
     return r.json();
   },
-  jobSpecs: () => get<{ specs: JobSpec[] }>("/api/jobs/specs"),
-  jobsList: () => get<{ jobs: JobRec[] }>("/api/jobs"),
+  jobSpecs: () => get<{ specs: JobSpec[] }>("/api/jobs/specs", { urgent: true }),
+  jobRuntimes: () => get<{ runtimes: Record<string, JobRuntime> }>("/api/jobs/runtimes"),
+  jobsList: () => get<{ jobs: JobRec[] }>("/api/jobs", { urgent: true }),
   stopJob: (id: number) => postJson<JobRec>(`/api/jobs/${id}/stop`, {}),
   identities: () => get<IdentitiesResult>("/api/identities"),
   trustLadder: () => get<TrustLadder>("/api/policy/trust-ladder"),
@@ -2389,6 +2402,15 @@ export interface JobSpec {
   detail: string;
   /** Whether the job runs headless agents (costs tokens); false = deterministic. */
   agentic: boolean;
+  needs_cluster: boolean;
+  needs_pr?: boolean;
+  needs_count?: boolean;
+  /** For a count job: the count offered first, and what it counts. */
+  count_default: number | null;
+  count_noun: string | null;
+}
+/** A job kind's history, from /api/jobs/runtimes — absent for a kind with none. */
+export interface JobRuntime {
   /** When the job's ledger phases last ran; null for jobs with no ledger row. */
   last_run: string | null;
   /** Typical whole-run duration — this machine's recent successful runs of the
@@ -2396,12 +2418,6 @@ export interface JobSpec {
   typical_seconds: number | null;
   /** For a count job timed from its own runs: the mean count they were given. */
   typical_count: number | null;
-  needs_cluster: boolean;
-  needs_pr?: boolean;
-  needs_count?: boolean;
-  /** For a count job: the count offered first, and what it counts. */
-  count_default: number | null;
-  count_noun: string | null;
 }
 export type JobStatus = "queued" | "running" | "done" | "failed";
 export interface JobRec { id: number; kind: string; cluster: number | null; pr?: number | null; count?: number | null; status: JobStatus; label: string; started: string; finished: string | null; returncode: number | null }

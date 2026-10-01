@@ -514,9 +514,7 @@ def _client():
     return TestClient(appmod.app)
 
 
-def test_job_routes_read_resume_and_refuse_to_stop_a_finished_job(monkeypatch):
-    from prospector_app.backend import pipeline_status
-    monkeypatch.setattr(pipeline_status, "job_runtimes", lambda: {})
+def test_job_routes_read_resume_and_refuse_to_stop_a_finished_job():
     job = jobs.start_job("selftest")
     job.update(log=["a", "b"], status="done", returncode=0)
     client = _client()
@@ -527,6 +525,27 @@ def test_job_routes_read_resume_and_refuse_to_stop_a_finished_job(monkeypatch):
     stream = client.get(f"/api/jobs/{job['id']}/stream", params={"after": 1}).text
     assert "data: b" in stream and "data: a\r\n" not in stream
     assert client.post(f"/api/jobs/{job['id']}/stop").status_code == 409
+
+
+def test_job_specs_answer_without_reading_the_runs_ledgers(monkeypatch):
+    from prospector_app.backend import pipeline_status
+
+    def ledger_read():
+        raise AssertionError("the specs route read the runs ledgers")
+    monkeypatch.setattr(pipeline_status, "job_runtimes", ledger_read)
+
+    specs = _client().get("/api/jobs/specs").json()["specs"]
+
+    assert {s["kind"] for s in specs} == set(jobs.JOB_SPECS)
+
+
+def test_job_runtimes_route_serves_the_ledger_runtimes(monkeypatch):
+    from prospector_app.backend import pipeline_status
+    runtime = {"last_run": "2026-07-05T10:03:00+00:00", "typical_seconds": 180.0,
+               "typical_count": None}
+    monkeypatch.setattr(pipeline_status, "job_runtimes", lambda: {"ingest": runtime})
+
+    assert _client().get("/api/jobs/runtimes").json() == {"runtimes": {"ingest": runtime}}
 
 
 def test_count_jobs_name_their_own_default_and_noun():
