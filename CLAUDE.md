@@ -448,7 +448,13 @@ re-solves with a written answer; `ask-reporter` and `propose` take the executor'
 bot paths. Between requests the lane reads replies to questions asked on GitHub
 every half hour, and `TRIAGE_ISSUE_FIX_HUNT=1` lets it queue one `solve` for a
 fresh, well-reproduced issue with no linked PR within
-`TRIAGE_ISSUE_FIX_HUNT_BUDGET` a UTC day. `POST /api/issues/{n}/fix` queues an
+`TRIAGE_ISSUE_FIX_HUNT_BUDGET` a UTC day. The lane beats its own heartbeat (the
+`issue_fix_worker` registry) while its drain loop runs, and on start and every
+five minutes `issue_fix_worker.recover_orphans` ends `failed` (reason
+`interrupted: …`) each `running` request this host claimed before its process
+started, or whose host's heartbeat has been silent an hour; the hunter re-queues
+a failed `solve` that carried no guidance once it has rested an hour, three
+tries an issue (`fix_request.attempts`). `POST /api/issues/{n}/fix` queues an
 action as the operator; `/fix/cancel` cancels a queued one. In the app the Issues
 explorer filters and sorts on the status (`?fix=` in the URL, `needs-you` for
 review and question), Home counts `review` and `question`, and the issue flyout's

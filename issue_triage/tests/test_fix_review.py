@@ -112,6 +112,19 @@ def test_a_claim_is_taken_once_and_only_by_the_named_host(store):
     assert store.claim_fix_request(7, host="other") is None
 
 
+def test_a_retry_of_a_failed_request_counts_its_attempt(store):
+    fix_review.queue(store, 7, "solve", by="op")
+    assert store.load_issue(7).fix_request["attempts"] == 1
+    store.claim_fix_request(7, host="studio")
+    issue = store.edit_issue(7)
+    issue.record_fix_request({**issue.fix_request, "status": "failed"})
+    fix_review.queue(store, 7, "solve", by="op")
+    assert store.load_issue(7).fix_request["attempts"] == 2
+    fix_review.cancel(store, 7, by="op")
+    fix_review.queue(store, 7, "solve", by="op")
+    assert store.load_issue(7).fix_request["attempts"] == 1
+
+
 def test_a_queued_request_can_be_cancelled_and_a_running_one_cannot(store):
     fix_review.queue(store, 7, "solve", by="op")
     assert fix_review.cancel(store, 7, by="op") == (True, "cancelled")
@@ -176,6 +189,34 @@ def test_a_send_back_follows_what_the_comments_ask(store, monkeypatch, mode, wan
     req = store.claim_fix_request(7, host="studio")
     status, outcome = fix_review_runner.run_request(store, 7, req)
     assert status == "done" and outcome.startswith(want)
+
+
+def _taken_back(store: IssueStore, req: dict) -> None:
+    store.edit_issue(7).record_fix_request(
+        {**req, "status": "failed", "reason": "interrupted: the issue-fix worker on laptop "
+                                              "went offline mid-solve"})
+
+
+def test_a_run_taken_back_still_records_its_ending(store, monkeypatch):
+    record = {"ending": "fixed", "detail": "proven", "result": {"patch": "diff --git a/x b/x\n"}}
+    monkeypatch.setattr(fix_review_runner, "solve", lambda s, n, **kw: (record, None))
+    fix_review.queue(store, 7, "solve", by="op")
+    req = store.claim_fix_request(7, host="laptop")
+    _taken_back(store, req)
+    fix_review_runner.run_request(store, 7, req)
+    assert store.load_issue(7).fix_request["status"] == "done"
+
+
+def test_a_run_taken_back_leaves_the_request_queued_since(store, monkeypatch):
+    record = {"ending": "fixed", "detail": "proven", "result": {"patch": "diff --git a/x b/x\n"}}
+    monkeypatch.setattr(fix_review_runner, "solve", lambda s, n, **kw: (record, None))
+    fix_review.queue(store, 7, "solve", by="op")
+    req = store.claim_fix_request(7, host="laptop")
+    _taken_back(store, req)
+    fix_review.queue(store, 7, "solve", by="op", guidance="try the parser")
+    fix_review_runner.run_request(store, 7, req)
+    after = store.load_issue(7).fix_request
+    assert after["status"] == "queued" and after["guidance"] == "try the parser"
 
 
 @pytest.fixture

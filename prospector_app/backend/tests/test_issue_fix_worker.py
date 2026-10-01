@@ -1,7 +1,9 @@
 """The issue-fix review lane: which requests a host takes, the replies it reads
-from GitHub, and the hunter's picks."""
+from GitHub, the hunter's picks, and the requests it recovers from a worker
+that is gone."""
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -9,6 +11,7 @@ import pytest
 from issue_triage import dispute_question, fix_review, fix_review_runner, issue_links
 from issue_triage.issue_store import IssueStore
 from pipeline import profile, settings
+from pipeline import store as S
 from prospector_app.backend import data, issue_data, issue_fix_worker, lane_health
 
 QUESTION = {"question": "2 or 3?", "options": [{"label": "A", "behavior": "2"},
@@ -136,3 +139,126 @@ def test_a_priority_author_s_queued_request_runs_first(store, monkeypatch):
     monkeypatch.setattr(profile, "active",
                         lambda: profile.RepoProfile(priority_authors=("eager-dev",)))
     assert issue_fix_worker.next_request(store.all_issues(), "studio") == 2
+
+
+def _ago(**kw: float) -> str:
+    return (datetime.now(timezone.utc) - timedelta(**kw)).isoformat(timespec="seconds")
+
+
+def _failed(store: IssueStore, n: int, *, finished: str, attempts: int = 1,
+            guidance: str | None = None) -> None:
+    req = {"action": "solve", "status": "failed", "source": "hunter", "requested_by": "hunter",
+           "queued_at": finished, "started_at": finished, "finished_at": finished,
+           "attempts": attempts, "reason": "interrupted: the issue-fix worker restarted"}
+    if guidance:
+        req["guidance"] = guidance
+    store.edit_issue(n).record_fix_request(req)
+
+
+def test_the_hunter_rests_a_failed_solve_before_retrying_it(hunting):
+    _failed(hunting, 2, finished=_ago(minutes=5))
+    assert issue_fix_worker.hunt(hunting) == 1
+
+
+def test_the_hunter_retries_a_failed_solve_once_it_has_rested(hunting):
+    _failed(hunting, 2, finished=_ago(hours=2))
+    assert issue_fix_worker.hunt(hunting) == 2
+    req = hunting.load_issue(2).fix_request
+    assert req["status"] == "queued" and req["source"] == "hunter" and req["attempts"] == 2
+
+
+def test_the_hunter_stops_retrying_after_its_attempts(hunting):
+    _failed(hunting, 2, finished=_ago(hours=2), attempts=issue_fix_worker.HUNT_MAX_ATTEMPTS)
+    assert issue_fix_worker.hunt(hunting) == 1
+
+
+def test_the_hunter_leaves_a_failed_guided_solve_to_the_operator(hunting):
+    _failed(hunting, 2, finished=_ago(hours=2), guidance="look at x")
+    assert issue_fix_worker.hunt(hunting) == 1
+
+
+@pytest.fixture
+def beats(store, tmp_path, monkeypatch):
+    """The shared store the lane's heartbeats live in."""
+    st = S.Store(tmp_path / "prs")
+    monkeypatch.setattr(data, "_store", st)
+    return st
+
+
+def _claimed(store: IssueStore, n: int, host: str, *, at: str | None = None) -> None:
+    fix_review.queue(store, n, "solve", by="op")
+    store.claim_fix_request(n, host=host)
+    if at:
+        issue = store.edit_issue(n)
+        issue.record_fix_request({**issue.fix_request, "started_at": at})
+
+
+def test_the_heartbeat_names_the_issue_in_flight_and_the_hunt(store, beats, monkeypatch):
+    monkeypatch.setitem(issue_fix_worker.state, "current", 1)
+    monkeypatch.setenv("TRIAGE_ISSUE_FIX_HUNT", "1")
+    issue_fix_worker.beat()
+    rec = beats.load_issue_fix_worker()["hosts"]["studio"]
+    assert rec["current_issue"] == 1 and rec["last_beat"] and rec["autohunt"] is True
+
+
+def test_a_lane_that_has_drained_drops_its_heartbeat(store, beats, monkeypatch):
+    issue_fix_worker.beat()
+    drained = threading.Event()
+    drained.set()
+    monkeypatch.setattr(issue_fix_worker, "_drained", drained)
+    issue_fix_worker._beat_loop()
+    assert "studio" not in beats.load_issue_fix_worker()["hosts"]
+
+
+def test_a_claim_this_host_made_before_the_process_started_ends_failed(store, beats, monkeypatch):
+    beats.save_issue_fix_worker({"host": "studio", "last_beat": _ago()})
+    _claimed(store, 1, "studio", at=_ago(minutes=5))
+    monkeypatch.setattr(issue_fix_worker, "STARTED_AT", _ago(minutes=1))
+    assert issue_fix_worker.recover_orphans(store) == [1]
+    issue = store.load_issue(1)
+    status, reason = fix_review.fix_status(issue)
+    assert status == "failed" and reason.startswith("interrupted:") and "restarted" in reason
+    assert issue.fix_request["finished_at"]
+    assert issue.fix_thread[-1]["by"] == "worker" and issue.fix_thread[-1]["text"] == reason
+    assert fix_review.queue(store, 1, "solve", by="op")[0]
+
+
+def test_a_claim_this_process_made_is_left_running(store, beats, monkeypatch):
+    monkeypatch.setattr(issue_fix_worker, "STARTED_AT", _ago(minutes=1))
+    _claimed(store, 1, "studio")
+    assert issue_fix_worker.recover_orphans(store) == []
+    assert store.load_issue(1).fix_request["status"] == "running"
+
+
+@pytest.mark.parametrize("beat,claimed,want", [
+    (_ago(hours=2), _ago(hours=3), [1]),
+    (_ago(minutes=1), _ago(hours=3), []),
+    (None, _ago(hours=2), [1]),
+    (None, _ago(minutes=5), []),
+], ids=["silent", "live", "never-beat-old-claim", "never-beat-fresh-claim"])
+def test_another_host_s_claim_ends_failed_once_its_heartbeat_is_silent(
+        store, beats, beat, claimed, want):
+    if beat:
+        beats.save_issue_fix_worker({"host": "laptop", "last_beat": beat})
+    _claimed(store, 1, "laptop", at=claimed)
+    assert issue_fix_worker.recover_orphans(store) == want
+    req = store.load_issue(1).fix_request
+    if want:
+        assert req["status"] == "failed" and "laptop went offline" in req["reason"]
+    else:
+        assert req["status"] == "running"
+
+
+def test_recovery_leaves_a_request_that_ended_since_it_was_read(store, beats, monkeypatch):
+    _claimed(store, 1, "laptop", at=_ago(hours=3))
+    real = store.issues_matching
+
+    def read_then_finish(path, values):
+        found = real(path, values)
+        issue = store.edit_issue(1)
+        issue.record_fix_request({**issue.fix_request, "status": "done"})
+        return found
+
+    monkeypatch.setattr(store, "issues_matching", read_then_finish)
+    assert issue_fix_worker.recover_orphans(store) == []
+    assert store.load_issue(1).fix_request["status"] == "done"

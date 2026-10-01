@@ -233,7 +233,13 @@ def run_request(store: IssueStore, n: int, req: dict, *,
 
 
 def _finish(store: IssueStore, n: int, req: dict, status: str, reason: str) -> None:
+    """End the claim `req` as `status` while it is still issue `n`'s request,
+    running or taken back by orphan recovery; a request queued since is left
+    for its own run."""
     issue = store.edit_issue(n)
+    held = issue.fix_request or {}
+    if (held.get("host"), held.get("started_at")) != (req.get("host"), req.get("started_at")):
+        return
     issue.record_fix_request({**req, "status": status, "finished_at": storekit.now(),
                               "reason": reason[:500]})
 
