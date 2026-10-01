@@ -325,13 +325,33 @@ def reclaim_stranded_resolves() -> list[int]:
     return cancelled
 
 
+# The sources that queue a request without an operator: the idle hunter's picks
+# and objection continuations.
+AUTO_SOURCES = ("auto", "objection")
+# The actions an agent carries out.
+AGENT_ACTIONS = ("fix", "resolve", "describe")
+
+
+def _unattended_agent(req: dict) -> bool:
+    return req.get("source") in AUTO_SOURCES and req.get("action") in AGENT_ACTIONS
+
+
 def next_queued() -> int | None:
     """The best runnable PR, or None: every `queued` request, ranked operator
     picks before auto-picks and, within each group, oldest queued_at first — so
     an operator click never waits behind an earlier auto-queued request. Reads
     the backend's incremental store snapshot, so the scan costs no store
-    round-trip."""
-    return _oldest("queued")
+    round-trip.
+
+    An agent action the automation queued waits while this machine's AI
+    capacity gate is closed (lane_health.capacity_open), asked only when such a
+    request leads; a mechanical one behind it still runs."""
+    n = _oldest("queued")
+    rec = data.prs().get(n) if n is not None else None
+    if (rec is None or not _unattended_agent(rec.fix_request or {})
+            or lane_health.capacity_open("fix")):
+        return n
+    return _oldest("queued", hold=_unattended_agent)
 
 
 def next_approved() -> int | None:
@@ -383,11 +403,13 @@ def next_reviewable() -> int | None:
     return best_n
 
 
-def _oldest(status: str, mine_only: tuple[str, ...] = ()) -> int | None:
+def _oldest(status: str, mine_only: tuple[str, ...] = (),
+            hold: Callable[[dict], bool] | None = None) -> int | None:
     """The best PR at `status`, operator picks before auto-picks and, within
     each, a maintainer's PR (gates.priority_author) first, then oldest. An action named in `mine_only` is passed over unless this
     machine recorded it (or the record names none, from before hosts were
-    stamped) — it depends on state only that machine holds."""
+    stamped) — it depends on state only that machine holds. A request `hold`
+    names is passed over."""
     me = settings.worker_id()
     best_n: int | None = None
     best_key: tuple[bool, bool, str] | None = None
@@ -397,9 +419,11 @@ def _oldest(status: str, mine_only: tuple[str, ...] = ()) -> int | None:
             continue
         if req.get("action") in mine_only and req.get("host") not in (None, me):
             continue
+        if hold is not None and hold(req):
+            continue
         if req.get("attempts") and not _rested(req, TRANSIENT_RETRY_SECONDS):
             continue
-        key = (req.get("source") in ("auto", "objection"),
+        key = (req.get("source") in AUTO_SOURCES,
                not gates.priority_author(rec.author, rec.author_association),
                str(req.get("queued_at") or ""))
         if best_key is None or key < best_key:
@@ -522,7 +546,7 @@ def _log_run(n: int, req: dict, status: str, detail: str | None = None,
     entry = {
         "phase": "fix:single", "pr": n, "started": req.get("started_at"),
         "finished": _now(),
-        "trigger": "autohunt" if req.get("source") in ("auto", "objection") else None,
+        "trigger": "autohunt" if req.get("source") in AUTO_SOURCES else None,
         "stats": {"status": status, "action": req.get("action", "fix"),
                   "detail": detail, "host": host or settings.worker_id()}}
     signature = (req.get("objection") or {}).get("signature")
@@ -1888,7 +1912,7 @@ def _auto_in_flight(action: str) -> int:
     count = 0
     for rec in data.prs().values():
         req = rec.fix_request or {}
-        if (req.get("source") in ("auto", "objection") and req.get("action") == action
+        if (req.get("source") in AUTO_SOURCES and req.get("action") == action
                 and req.get("status") in fix_queue.IN_FLIGHT):
             count += 1
     return count
@@ -2009,7 +2033,9 @@ def next_auto() -> tuple[str, int, dict | None] | None:
     the unattended spend. A `describe` has its own slots of the same size and
     comes next: one read-only agent, no sandbox. With the slots full the
     mechanical pool runs. A maintainer's PR (gates.priority_author) in any of
-    the three goes ahead of all of them."""
+    the three goes ahead of all of them. While this machine's AI capacity gate
+    is closed (lane_health.capacity_open, asked only when an agent pick leads)
+    only the mechanical pool runs."""
     limit = settings.fix_hunt_limit()
     slots = {"fix": limit - _auto_in_flight("fix"),
              "describe": limit - _auto_in_flight("describe")}
@@ -2029,6 +2055,8 @@ def next_auto() -> tuple[str, int, dict | None] | None:
             best[lane] = (key, action, n, objection)
     lanes = sorted(best, key=lambda lane: (best[lane][0][0],
                                            ("fix", "describe", "mechanical").index(lane)))
+    if lanes and lanes[0] != "mechanical" and not lane_health.capacity_open("fix"):
+        lanes = [lane for lane in lanes if lane == "mechanical"]
     if not lanes:
         return None
     _, action, n, objection = best[lanes[0]]
@@ -2090,7 +2118,9 @@ def _drain_loop() -> None:
                 run_one(n)
                 continue
             n = next_reviewable()
-            if n is not None:
+            # The auto-review's reviewers are agents the automation starts,
+            # whoever queued the resolve.
+            if n is not None and lane_health.capacity_open("fix"):
                 state["current_pr"] = n
                 beat()
                 print(f"[fix-worker] auto-reviewing parked resolve for PR #{n}",
