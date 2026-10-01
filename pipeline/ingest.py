@@ -43,7 +43,7 @@ from pipeline import model
 from pipeline import review_fetch
 from pipeline import reviewers
 from pipeline import settings
-from pipeline.gh import fetch_pr, gh_json, operator_env
+from pipeline.gh import RATE_LIMIT_BACKOFF, fetch_pr, gh_json, operator_env
 from pipeline.review_fetch import PrFeed
 from pipeline.store import Store
 from pipeline.storekit import now as _now
@@ -373,7 +373,8 @@ def _upsert_all(store: Store, prs: list[dict], issue_links: dict[int, list[dict]
                     if needs_conversation(existing_prs.get(int(gh_pr["number"])),
                                           (gh_pr.get("head") or {}).get("sha"),
                                           (facts.get(int(gh_pr["number"])) or {}).get("updated_at"))]
-    feeds = review_fetch.fetch_feeds(conv_numbers) if conv_numbers else {}
+    feeds = (review_fetch.fetch_feeds(conv_numbers, rate_limit_waits=RATE_LIMIT_BACKOFF)
+             if conv_numbers else {})
     for gh_pr in prs:
         n = int(gh_pr["number"])
         live = facts.get(n) or {}
@@ -429,7 +430,8 @@ def _targeted_ingest(store: Store, args: argparse.Namespace, started: str) -> in
     targets = _select_new_prs(gh_prs, set(existing_prs))
     issue_links = load_issue_links(prs=targets)
     print(f"open PRs: {len(gh_prs)} | targeting: {len(targets)}")
-    live, _ = live_prs.fetch([int(pr["number"]) for pr in targets])
+    live, _ = live_prs.fetch([int(pr["number"]) for pr in targets],
+                              rate_limit_waits=RATE_LIMIT_BACKOFF)
     with store.batch():
         counts = _upsert_all(store, targets, issue_links, existing_prs, live_facts=live)
     upserted, drafts = counts["upserted"], counts["drafts"]
@@ -470,7 +472,8 @@ def main(argv: list[str] | None = None) -> int:
 
     print("fetching open PRs…", flush=True)
     gh_prs = fetch_open_prs(args.max)
-    live, _ = live_prs.fetch([int(pr["number"]) for pr in gh_prs])
+    live, _ = live_prs.fetch([int(pr["number"]) for pr in gh_prs],
+                              rate_limit_waits=RATE_LIMIT_BACKOFF)
     issue_links = load_issue_links(prs=gh_prs)
     print(f"open PRs: {len(gh_prs)} | PRs with issue links: {len(issue_links)}")
 

@@ -9,6 +9,7 @@ test-presence classification, and the PR's updatedAt for the incremental feed.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 
 from pipeline import ci_signal
 from pipeline import diffpaths
@@ -60,7 +61,8 @@ def _not_found_numbers(errors: list, chunk: list[int]) -> set[int]:
     return numbers
 
 
-def fetch(prs: list[int]) -> tuple[dict[int, dict], set[int]]:
+def fetch(prs: list[int], *,
+          rate_limit_waits: Sequence[float] = ()) -> tuple[dict[int, dict], set[int]]:
     """Fetch live head-bound facts for ``prs``.
 
     Returns ``(facts, not_found)``: facts keyed by PR number, plus the requested
@@ -73,7 +75,7 @@ def fetch(prs: list[int]) -> tuple[dict[int, dict], set[int]]:
     not_found: set[int] = set()
     for i in range(0, len(prs), CHUNK_SIZE):
         chunk = prs[i:i + CHUNK_SIZE]
-        payload = gh_graphql(_query(chunk))
+        payload = gh_graphql(_query(chunk), rate_limit_waits=rate_limit_waits)
         if payload is None:
             _log.warning("live PR fetch failed for %d PRs (%d-%d)",
                          len(chunk), chunk[0], chunk[-1])

@@ -4,6 +4,7 @@ check run, fetched for a batch of PRs in one GraphQL call each and handed to
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from pipeline import ci_signal, settings
@@ -88,13 +89,15 @@ def feed_from_node(n: int, node: dict) -> PrFeed:
                   statuses=statuses, conversation=True)
 
 
-def fetch_feeds(numbers: list[int]) -> dict[int, PrFeed]:
+def fetch_feeds(numbers: list[int], *,
+                rate_limit_waits: Sequence[float] = ()) -> dict[int, PrFeed]:
     """Feeds for `numbers`, keyed by PR. A PR missing from the result failed to
     fetch (transient) and keeps its stored entry."""
     out: dict[int, PrFeed] = {}
     for i in range(0, len(numbers), CHUNK_SIZE):
         chunk = [int(n) for n in numbers[i:i + CHUNK_SIZE]]
-        payload = gh_graphql(feed_query(chunk), timeout=120)
+        payload = gh_graphql(feed_query(chunk), timeout=120,
+                             rate_limit_waits=rate_limit_waits)
         if payload is None:
             _log.warning("review feed fetch failed for PRs %s-%s", chunk[0], chunk[-1])
             continue

@@ -169,3 +169,66 @@ def test_gh_graphql_none_on_nonzero_exit_without_data(monkeypatch):
         gh.subprocess, "run",
         _fake_run('{"message": "API rate limit exceeded"}', returncode=1))
     assert gh.gh_graphql("query {}") is None
+
+
+_SECONDARY = ("gh: You have exceeded a secondary rate limit. Please wait a few "
+              "minutes before you try again. (HTTP 403)")
+
+
+def _scripted_run(responses):
+    calls = iter(responses)
+
+    def run(argv, *, capture_output=True, text=True, timeout=60, env=None):
+        returncode, stdout, stderr = next(calls)
+        return types.SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
+    return run
+
+
+def test_gh_graphql_logs_gh_error_text_on_failure(monkeypatch, caplog):
+    monkeypatch.setattr(gh.subprocess, "run", _scripted_run(
+        [(1, '{"message": "Bad credentials"}', "gh: Bad credentials (HTTP 401)")]))
+    assert gh.gh_graphql("query {}") is None
+    assert "Bad credentials (HTTP 401)" in caplog.text
+
+
+def test_gh_graphql_logs_timeout(monkeypatch, caplog):
+    def boom(*a, **k):
+        raise subprocess.TimeoutExpired(cmd="gh", timeout=60)
+    monkeypatch.setattr(gh.subprocess, "run", boom)
+    assert gh.gh_graphql("query {}") is None
+    assert "timed out after 60s" in caplog.text
+
+
+def test_gh_graphql_retries_secondary_rate_limit_after_each_wait(monkeypatch):
+    slept = []
+    monkeypatch.setattr(gh.time, "sleep", slept.append)
+    monkeypatch.setattr(gh.subprocess, "run", _scripted_run([
+        (1, '{"message": "secondary"}', _SECONDARY),
+        (1, '{"message": "secondary"}', _SECONDARY),
+        (0, '{"data": {"x": 1}}', ""),
+    ]))
+    assert gh.gh_graphql("query {}", rate_limit_waits=(5, 10, 20)) == {"data": {"x": 1}}
+    assert slept == [5, 10]
+
+
+def test_gh_graphql_gives_up_when_waits_run_out(monkeypatch):
+    slept = []
+    monkeypatch.setattr(gh.time, "sleep", slept.append)
+    monkeypatch.setattr(gh.subprocess, "run", _scripted_run(
+        [(1, '{"message": "secondary"}', _SECONDARY)] * 3))
+    assert gh.gh_graphql("query {}", rate_limit_waits=(5, 10)) is None
+    assert slept == [5, 10]
+
+
+def test_gh_graphql_fails_fast_on_secondary_rate_limit_without_waits(monkeypatch):
+    monkeypatch.setattr(gh.time, "sleep", lambda s: (_ for _ in ()).throw(AssertionError))
+    monkeypatch.setattr(gh.subprocess, "run", _scripted_run(
+        [(1, '{"message": "secondary"}', _SECONDARY)]))
+    assert gh.gh_graphql("query {}") is None
+
+
+def test_gh_graphql_does_not_retry_other_failures(monkeypatch):
+    monkeypatch.setattr(gh.time, "sleep", lambda s: (_ for _ in ()).throw(AssertionError))
+    monkeypatch.setattr(gh.subprocess, "run", _scripted_run(
+        [(1, '{"message": "Bad credentials"}', "gh: Bad credentials (HTTP 401)")]))
+    assert gh.gh_graphql("query {}", rate_limit_waits=(5,)) is None
