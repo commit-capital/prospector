@@ -7,6 +7,7 @@ monkeypatched — bulk adds no new write path, it only orchestrates, so we asser
 routing + summary, not GitHub calls."""
 import asyncio
 import json
+import time
 
 from prospector_app.backend import bulk
 from prospector_app.backend import executor
@@ -316,3 +317,42 @@ def test_cluster_route_streams(monkeypatch):
                json={"items": [{"pr": 1, "action": "close-dup", "canonical": 9}], "dry_run": True})
     assert r.status_code == 200
     assert "result" in r.text and "done" in r.text
+
+
+def _loop_ticks_while(gen) -> int:
+    """Drain `gen` while a coroutine counts 10 ms sleeps on the same loop."""
+    async def go() -> int:
+        ticks = 0
+
+        async def tick() -> None:
+            nonlocal ticks
+            while True:
+                await asyncio.sleep(0.01)
+                ticks += 1
+        ticker = asyncio.create_task(tick())
+        [ev async for ev in gen]
+        ticker.cancel()
+        return ticks
+    return asyncio.run(go())
+
+
+def test_bulk_executor_calls_leave_the_event_loop_free(monkeypatch):
+    def slow_exec(n, action, *, token, dry_run):
+        time.sleep(0.2)
+        return {"pr": n, "action": action.action, "status": "dry-run"}
+    monkeypatch.setattr(executor, "execute_pr", slow_exec)
+    monkeypatch.setattr(executor, "mint_bot_token", lambda: None)
+
+    assert _loop_ticks_while(bulk.run_bulk([1, 2], "CLOSE", dry_run=True)) >= 10
+
+
+def test_cluster_executor_calls_leave_the_event_loop_free(monkeypatch):
+    def slow_merge(n, method, *, dry_run, reason=None):
+        time.sleep(0.2)
+        return {"pr": n, "action": "MERGE", "status": "merged"}
+    monkeypatch.setattr(executor, "merge_pr", slow_merge)
+    monkeypatch.setattr(executor, "mint_bot_token", lambda: "tok")
+    monkeypatch.setattr(bulk.training, "capture", lambda *a, **k: None)
+    items = [models.ClusterItem(pr=1, action="merge"), models.ClusterItem(pr=2, action="merge")]
+
+    assert _loop_ticks_while(bulk.run_cluster(items, dry_run=False)) >= 10

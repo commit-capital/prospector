@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 
 from prospector_app.backend import chat
 from prospector_app.backend import claude_backend
@@ -278,3 +279,55 @@ def test_reground_turn_reinjects_context_and_replay_without_resume(
     assert "reanalyze 6744" in prompt                   # …including a prior turn
     assert "-r" not in cmd                              # fresh session, dead one not resumed
     assert not chat._reground_path("pr-6744").exists()  # flag consumed
+
+
+def test_turn_store_work_leaves_the_event_loop_free(temp_store, tmp_path, monkeypatch):
+    """The turn's store reads and writes run on worker threads, so a job's
+    stream and every other request keep moving while a turn starts and ends."""
+    monkeypatch.setattr(chat, "SESSION_DIR", tmp_path / "cache" / "chat")
+    monkeypatch.setattr(chat, "_op_slug", lambda: "tester")
+    monkeypatch.setattr(chat, "_bot_token", lambda: None)
+    monkeypatch.setattr(chat, "system_prompt", lambda: "SYS")
+    save = chat._save
+    load = chat.load_thread
+
+    def slow_save(*a, **k):
+        time.sleep(0.2)
+        save(*a, **k)
+
+    def slow_load(ctx_id):
+        time.sleep(0.2)
+        return load(ctx_id)
+    monkeypatch.setattr(chat, "_save", slow_save)
+    monkeypatch.setattr(chat, "load_thread", slow_load)
+
+    class FakeProc:
+        pid = 4321
+        def __init__(self):
+            self.returncode = 0
+            self.stdout = self._gen()
+        async def _gen(self):
+            yield b'{"type":"result","session_id":"sess-T"}\n'
+        async def wait(self):
+            return 0
+
+    async def fake_exec(*cmd, **kw):
+        return FakeProc()
+    monkeypatch.setattr(claude_backend.asyncio, "create_subprocess_exec", fake_exec)
+
+    async def drive() -> int:
+        ticks = 0
+
+        async def tick() -> None:
+            nonlocal ticks
+            while True:
+                await asyncio.sleep(0.01)
+                ticks += 1
+        ticker = asyncio.create_task(tick())
+        async for _ in chat.stream_chat("what changed?", pr=777):
+            pass
+        ticker.cancel()
+        return ticks
+
+    assert asyncio.run(drive()) >= 20
+    assert [m["role"] for m in load("pr-777")] == ["user", "assistant"]

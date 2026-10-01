@@ -40,6 +40,7 @@ local-machine handle — stays in gitignored cache/.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
@@ -613,44 +614,53 @@ async def stream_chat(question: str, pr: int | None = None, cluster: int | None 
     if backend is None:
         raise RuntimeError("agent support is off")
     ctx_id = _thread_key(chat_id, pr, cluster, issue, advisory, alert_source, alert)
-    thread = load_thread(ctx_id)
-    sid = _session_id(ctx_id)
-    is_first = sid is None and not thread
-    # A re-ground marker makes this turn start from persisted context and transcript.
-    needs_reground = not is_first and _consume_reground(ctx_id)
-    ground = is_first or needs_reground
 
-    anchored = f"[about {file}:{line}] " if file and line else ""
-    # Recall durable learnings at thread start so the agent doesn't start cold
-    # and re-learn the same repository-specific corrections.
-    memory = agent_memory.context_block() if is_first else ""
-    intro = f"{memory}\n\n" if memory else ""
-    # The Explorer's filtered set grounds a new or reconstructed session.
-    visible = (f"{_visible_prs_context(prs, prs_total, spec)}\n\n"
-               if (prs or spec is not None) and ground else "")
-    # The subject's facts (a PR/cluster's context) are injected at thread start and
-    # re-injected on a re-ground, since the fresh session has lost them.
-    base = (f"{_build_context(pr, cluster, issue, file, line, advisory, alert_source, alert)}\n\n"
-            if ground else "")
-    # On a re-ground the session starts cold, so replay the prior turns to continue.
-    replay = f"{_thread_digest(thread)}\n\n" if needs_reground else ""
-    if is_first:
-        prompt = f"{intro}{base}{visible}REVIEWER QUESTION: {anchored}{question}"
-    elif needs_reground:
-        prompt = f"{base}{replay}{visible}REVIEWER QUESTION: {anchored}{question}"
-    else:
-        prompt = f"{visible}{anchored}{question}"
+    def prepare() -> tuple[str, str | None, str, str | None]:
+        """The prompt, bot token, system prompt, and session to resume, with the
+        question saved to the thread."""
+        thread = load_thread(ctx_id)
+        sid = _session_id(ctx_id)
+        is_first = sid is None and not thread
+        # A re-ground marker makes this turn start from persisted context and transcript.
+        needs_reground = not is_first and _consume_reground(ctx_id)
+        ground = is_first or needs_reground
 
-    # A successful mint unlocks the agent's curated upstream helpers. The chat
-    # process uses the operator environment for reads, and each write helper
-    # mints its execution token.
-    token = _bot_token()
-    manual = system_prompt()
-    # Resume the live session on a normal turn. On a re-ground the session is
-    # unreliable, so start fresh — the context is replayed into the prompt above.
-    resumed_sid = sid if (sid and not needs_reground) else None
+        anchored = f"[about {file}:{line}] " if file and line else ""
+        # Recall durable learnings at thread start so the agent doesn't start cold
+        # and re-learn the same repository-specific corrections.
+        memory = agent_memory.context_block() if is_first else ""
+        intro = f"{memory}\n\n" if memory else ""
+        # The Explorer's filtered set grounds a new or reconstructed session.
+        visible = (f"{_visible_prs_context(prs, prs_total, spec)}\n\n"
+                   if (prs or spec is not None) and ground else "")
+        # The subject's facts (a PR/cluster's context) are injected at thread start and
+        # re-injected on a re-ground, since the fresh session has lost them.
+        base = (f"{_build_context(pr, cluster, issue, file, line, advisory, alert_source, alert)}\n\n"
+                if ground else "")
+        # On a re-ground the session starts cold, so replay the prior turns to continue.
+        replay = f"{_thread_digest(thread)}\n\n" if needs_reground else ""
+        if is_first:
+            prompt = f"{intro}{base}{visible}REVIEWER QUESTION: {anchored}{question}"
+        elif needs_reground:
+            prompt = f"{base}{replay}{visible}REVIEWER QUESTION: {anchored}{question}"
+        else:
+            prompt = f"{visible}{anchored}{question}"
 
-    _save(ctx_id, "user", anchored + question, None)
+        # A successful mint unlocks the agent's curated upstream helpers. The chat
+        # process uses the operator environment for reads, and each write helper
+        # mints its execution token.
+        token = _bot_token()
+        manual = system_prompt()
+        # Resume the live session on a normal turn. On a re-ground the session is
+        # unreliable, so start fresh — the context is replayed into the prompt above.
+        resumed_sid = sid if (sid and not needs_reground) else None
+
+        _save(ctx_id, "user", anchored + question, None)
+        return prompt, token, manual, resumed_sid
+
+    # The store reads, the token mint, and the save run on a worker thread, so
+    # the event loop keeps serving every other request and stream meanwhile.
+    prompt, token, manual, resumed_sid = await asyncio.to_thread(prepare)
 
     agent_backend.BODY_DIR.mkdir(parents=True, exist_ok=True)
     run = await backend.start(
@@ -706,21 +716,31 @@ async def stream_chat(question: str, pr: int | None = None, cluster: int | None 
             final_text = issue_receipts.attach_verified_summary(
                 "".join(parts), file_issue_receipts
             )
-        _save(ctx_id, "assistant", final_text, run.session_id)
-        _clear_partial(ctx_id)
         # A provider completion event with the resumed session id confirms that
         # the next turn can keep using the live session.
         resume_lost = bool(
             resumed_sid and run.session_id and run.session_id != resumed_sid
         )
-        if not run.completed or resume_lost:
-            _mark_reground(ctx_id)
+        # Shielded: a dropped connection cancels this await, and the thread
+        # still records the turn.
+        await asyncio.shield(asyncio.to_thread(
+            _finish_turn, ctx_id, final_text, run.session_id,
+            not run.completed or resume_lost))
         await run.close()
 
     yield {"event": "done", "data": json.dumps({
         "session_id": run.session_id,
         "stopped": stopped,
     })}
+
+
+def _finish_turn(ctx_id: str, text: str, session_id: str | None, reground: bool) -> None:
+    """Record a turn's reply, drop its partial sidecar, and mark the thread for
+    a re-ground when the next turn cannot resume this session."""
+    _save(ctx_id, "assistant", text, session_id)
+    _clear_partial(ctx_id)
+    if reground:
+        _mark_reground(ctx_id)
 
 
 def stop_chat(pr: int | None = None, cluster: int | None = None, issue: int | None = None,

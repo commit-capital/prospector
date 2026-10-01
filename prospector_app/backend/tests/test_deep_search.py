@@ -2,6 +2,7 @@
 progress. The agent subprocess (_judge_batch) is stubbed so tests are offline."""
 import asyncio
 import json
+import time
 
 from prospector_app.backend import deep_search
 from pipeline import model
@@ -148,3 +149,34 @@ def test_deep_search_route_streams_result(monkeypatch):
     r = c.post("/api/prs/deep-search", json={"query": "x", "prs": [42]})
     assert r.status_code == 200
     assert "event: result" in r.text and '"pr": 42' in r.text
+
+
+def test_stream_store_reads_leave_the_event_loop_free(monkeypatch, tmp_path):
+    def slow(value):
+        def read(*_):
+            time.sleep(0.2)
+            return value
+        return read
+    monkeypatch.setattr(deep_search, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(deep_search.data, "prs", slow(_fake_store()))
+    monkeypatch.setattr(deep_search.data, "pr_bodies", slow({}))
+    monkeypatch.setattr(deep_search.testpaths, "cached_diff_text", lambda rec, c: None)
+
+    async def fake_judge(query, records, sem):
+        return {}
+    monkeypatch.setattr(deep_search, "_judge_batch", fake_judge)
+
+    async def go() -> int:
+        ticks = 0
+
+        async def tick() -> None:
+            nonlocal ticks
+            while True:
+                await asyncio.sleep(0.01)
+                ticks += 1
+        ticker = asyncio.create_task(tick())
+        [e async for e in deep_search.stream("anything", [1, 2, 3])]
+        ticker.cancel()
+        return ticks
+
+    assert asyncio.run(go()) >= 10
