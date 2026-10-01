@@ -83,7 +83,10 @@ _JSON = JSON().with_variant(JSONB, "postgresql")
 # 26 — issues carry the issue-fix review sections (`fix_request`, `fix_run`,
 #      `fix_thread`); an older issue validator warns on them as unknown and an
 #      older reader has no accessor.
-STORE_SCHEMA_VERSION = 26
+# 27 — issues carry `fix_followup` (the follow-up on a proposed pull request)
+#      and fix requests the "followup" source; an older issue validator refuses
+#      the source.
+STORE_SCHEMA_VERSION = 27
 
 # saved_at is a microsecond-resolution ISO timestamp stamped on every save — when
 # the store row was last written (distinct from `updated_at`, which mirrors the

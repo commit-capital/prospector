@@ -1276,6 +1276,18 @@ export interface IssueDetail extends IssueRow {
   fix_request?: IssueFixRequest | null;
   fix_run?: IssueFixRun | null;
   fix_thread?: IssueFixThreadEntry[];
+  fix_followup?: IssueFixFollowup | null;
+}
+/** Where the follow-up on an issue's proposed pull request stands
+ *  (issue_triage/followup.py): the last step it took or waits on, and why. */
+export interface IssueFixFollowup {
+  pr: number;
+  state: "watching" | "ready" | "handed-back" | "done";
+  step?: string | null;
+  reason?: string | null;
+  head_sha?: string | null;
+  checked_at?: string | null;
+  revisions?: number | null;
 }
 export interface IssueExecResult { issue: number; action: string; status: string; detail: string; canonical?: number | null; forced?: boolean }
 

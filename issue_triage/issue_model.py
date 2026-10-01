@@ -204,6 +204,12 @@ class Issue:
         first."""
         return list((self.rec.get("fix_thread") or {}).get("entries") or [])
 
+    @property
+    def fix_followup(self) -> dict | None:
+        """Where the follow-up on the proposed pull request stands
+        (`issue_triage.followup`)."""
+        return self._fix_section("fix_followup")
+
     def stage_fix_request(self, section: dict) -> None:
         """Stage the fix request without persisting, for a compare-and-swap."""
         _stamp(self.rec, "fix_request", {k: v for k, v in section.items()
@@ -215,6 +221,10 @@ class Issue:
 
     def record_fix_run(self, section: dict) -> None:
         _stamp(self.rec, "fix_run", section, None)
+        self._persist()
+
+    def record_fix_followup(self, section: dict) -> None:
+        _stamp(self.rec, "fix_followup", section, None)
         self._persist()
 
     def append_fix_thread(self, entry: dict, *, keep: int = 50) -> None:

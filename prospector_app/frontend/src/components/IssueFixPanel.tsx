@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import {
-  api, type IssueDetail, type IssueFixBody, type IssueFixCandidate, type IssueFixQuestion,
+  api, type IssueDetail, type IssueFixBody, type IssueFixCandidate, type IssueFixFollowup,
+  type IssueFixQuestion,
   type IssueFixRun, type IssueFixStatus, type IssueFixThreadEntry,
 } from "../api";
 import { useExec } from "../ExecContext";
@@ -56,7 +57,7 @@ export function IssueFixPanel({ d, onChanged }: { d: IssueDetail; onChanged: () 
     <div className="issue-fix">
       <FixBanner d={d} onChanged={onChanged} />
       <FixActions d={d} onChanged={onChanged} />
-      {run && <FixRunBody run={run} />}
+      {run && <FixRunBody run={run} followup={d.fix_followup ?? null} />}
       {(d.fix_thread?.length ?? 0) > 0 && <FixThread entries={d.fix_thread ?? []} />}
     </div>
   );
@@ -222,7 +223,14 @@ function QuestionActions({ q, asked, busy, text, setText, send, dryRun }: {
   );
 }
 
-function FixRunBody({ run }: { run: IssueFixRun }) {
+const FOLLOWUP_LABEL: Record<IssueFixFollowup["state"], string> = {
+  watching: "Following up",
+  ready: "Green, ready for your review",
+  "handed-back": "Handed back to you",
+  done: "Finished",
+};
+
+function FixRunBody({ run, followup }: { run: IssueFixRun; followup: IssueFixFollowup | null }) {
   const { prUrl } = useRepoMeta();
   const review = run.reviews[0];
   const proof = run.proof;
@@ -239,6 +247,16 @@ function FixRunBody({ run }: { run: IssueFixRun }) {
           Proposed as{" "}
           <a href={run.proposal.url ?? prUrl(Number(run.proposal.pr))} target="_blank" rel="noreferrer">
             #{String(run.proposal.pr)} ↗</a>
+          {followup && (
+            <div className="small" style={{ marginTop: 4 }}>
+              <b>{FOLLOWUP_LABEL[followup.state]}</b>
+              {followup.reason && <> — {followup.reason}</>}
+              <span className="muted">
+                {" "}· revisions {followup.revisions ?? 0}
+                {followup.checked_at && <> · checked {when(followup.checked_at)}</>}
+              </span>
+            </div>
+          )}
         </div>
       )}
       {(run.summary || run.root_cause) && (

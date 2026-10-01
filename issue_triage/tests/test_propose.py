@@ -278,3 +278,116 @@ def test_the_fence_runs_before_the_push(repos, monkeypatch):
     with pytest.raises(propose.ProposeRefused, match="owned by"):
         _push(repos)
     assert not _git("--git-dir", str(repos["fork"]), "branch", "--list", REF).strip()
+
+
+# --- a revision onto an open proposal ------------------------------------------------
+
+REVISED = PATCH.replace("+export const x = 2;", "+export const x = 3;")
+
+
+def _head(repos: dict) -> str:
+    return _git("--git-dir", str(repos["fork"]), "rev-parse", f"refs/heads/{REF}").strip()
+
+
+def _revise(repos: dict, **over) -> propose.Pushed:
+    kw = {"issue": 7, "report_sha": REPORT, "base_sha": repos["base"], "patch": REVISED,
+          "message": fix_pr_body.commit_message(7, "Set x to three"),
+          "expected_head": _head(repos), "workdir": repos["workdir"], "dry_run": False, **over}
+    return propose.push_revision(**kw)
+
+
+def _advance_upstream(repos: dict, tmp_path: Path) -> str:
+    work = tmp_path / "advance"
+    upstream = propose.upstream_url()
+    _git("clone", "--quiet", upstream, str(work))
+    (work / "README.md").write_text("later\n")
+    _git("add", ".", cwd=work)
+    _git("commit", "--quiet", "-m", "later", cwd=work)
+    _git("push", "--quiet", "origin", f"HEAD:{settings.default_branch()}", cwd=work)
+    return _git("rev-parse", "HEAD", cwd=work).strip()
+
+
+def test_a_revision_lands_one_commit_on_the_open_branch(repos):
+    first = _push(repos)
+    pushed = _revise(repos)
+    fork = str(repos["fork"])
+    assert pushed.pushed and _head(repos) == pushed.head_sha
+    assert _git("--git-dir", fork, "rev-parse", f"{REF}^").strip() == first.head_sha
+    assert "x = 3" in _git("--git-dir", fork, "show", f"{REF}:src/x.ts")
+
+
+def test_a_revision_on_a_newer_base_merges_that_base_in(repos, tmp_path):
+    first = _push(repos)
+    newer = _advance_upstream(repos, tmp_path)
+    pushed = _revise(repos, base_sha=newer)
+    parents = _git("--git-dir", str(repos["fork"]), "rev-list", "--parents", "-n", "1",
+                   pushed.head_sha).split()[1:]
+    assert parents == [first.head_sha, newer]
+    assert "later" in _git("--git-dir", str(repos["fork"]), "show", f"{REF}:README.md")
+
+
+def test_a_branch_someone_else_moved_is_never_overwritten(repos):
+    first = _push(repos)
+    with pytest.raises(propose.ProposeRefused, match="someone else pushed"):
+        _revise(repos, expected_head="f" * 40)
+    assert _head(repos) == first.head_sha
+
+
+def test_an_unchanged_revision_pushes_nothing(repos):
+    first = _push(repos)
+    again = _revise(repos, patch=PATCH)
+    assert again.reused and not again.pushed and _head(repos) == first.head_sha
+
+
+def test_a_dry_run_revision_pushes_nothing(repos):
+    first = _push(repos)
+    assert not _revise(repos, dry_run=True).pushed
+    assert _head(repos) == first.head_sha
+
+
+# --- the checklist and the related-PR search ------------------------------------------
+
+TEMPLATE = """## Checklist
+
+- [ ] I have included a thinking path that traces from project context to this change
+- [ ] I have specified the model used (with version and capability details)
+- [ ] I have searched GitHub for duplicate or related PRs and linked them above
+- [ ] My branch name describes the change and contains no internal ticket id
+- [ ] I have added or updated tests where applicable
+- [ ] All CI gates are green
+"""
+# The repository's own gate for the search affirmation, ported from its script.
+DEDUP_RE = __import__("re").compile(
+    r"^\s*[-*]\s*\[\s*([ xX])\s*\][^\n]*search(?:ed)?[^\n]*(?:similar|duplicate|prior)"
+    r"[^\n]*\bprs?\b", __import__("re").IGNORECASE | __import__("re").MULTILINE)
+
+
+def _body(**over) -> str:
+    kw = {"issue": 7, "result": _result(), "tests": ["src/x.test.ts"], "base_sha": "a" * 40,
+          "report_sha": REPORT, "models": ["opus"], "test_cmd": None, **over}
+    return fix_pr_body.render(**kw)
+
+
+def test_the_checklist_ticks_only_what_the_pipeline_did():
+    body = _body(related=[], template=TEMPLATE)
+    ticked = {line[6:40] for line in body.splitlines() if line.startswith("- [x]")}
+    open_ = {line[6:40] for line in body.splitlines() if line.startswith("- [ ]")}
+    assert any(t.startswith("I have searched") for t in ticked)
+    assert any(t.startswith("My branch name") for t in open_)
+    assert any(t.startswith("All CI gates") for t in open_)
+    m = DEDUP_RE.search(body)
+    assert m and m.group(1) == "x"
+
+
+def test_without_a_search_the_search_box_stays_open():
+    m = DEDUP_RE.search(_body(related=None, template=TEMPLATE))
+    assert m and m.group(1) == " "
+
+
+def test_the_search_s_findings_are_listed_under_the_linked_issue():
+    body = _body(related=[{"number": 5, "title": "fix x", "state": "open", "author": "a"}],
+                 template=TEMPLATE)
+    assert "- #5 (open): fix x" in body
+    assert "found no other pull request" in _body(related=[], template=TEMPLATE)
+    title = fix_pr_body.title(7, "Set x to two")
+    assert fix_pr_body.problems(title, body, fix_pr_body.commit_message(7, "x"), issue=7) == []

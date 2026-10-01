@@ -29,9 +29,12 @@ REPRO_GRADES = {"A", "B", "C", "D", "F"}
 FIX_SCAN_STATES = {"fixed", "likely-fixed", "not-fixed"}
 ISSUE_FIX_ACTIONS = ("solve", "send-back", "answer", "ask-reporter", "propose")
 ISSUE_FIX_STATUSES = ("queued", "running", "done", "failed", "cancelled")
-ISSUE_FIX_SOURCES = ("operator", "hunter", "reporter")
+ISSUE_FIX_SOURCES = ("operator", "hunter", "reporter", "followup")
+# Where the follow-up on an issue's proposed pull request stands
+# (`issue_triage.followup`).
+FOLLOWUP_STATES = ("watching", "ready", "handed-back", "done")
 ISSUE_SECTIONS = ("meta", "summary", "repro", "cluster", "analysis", "links", "resolution",
-                  "fix_scan", "fix_request", "fix_run", "fix_thread")
+                  "fix_scan", "fix_request", "fix_run", "fix_thread", "fix_followup")
 
 
 def validate_issue(rec: dict) -> None:
@@ -81,6 +84,13 @@ def validate_issue(rec: dict) -> None:
     thread = rec.get("fix_thread")
     if thread and not isinstance(thread.get("entries"), list):
         raise ValidationError("fix_thread.entries: required list")
+    fu = rec.get("fix_followup")
+    if fu:
+        if not isinstance(fu.get("pr"), int):
+            raise ValidationError("fix_followup.pr: required int")
+        if fu.get("state") not in FOLLOWUP_STATES:
+            raise ValidationError(
+                f"fix_followup.state: {fu.get('state')!r} not in {list(FOLLOWUP_STATES)}")
 
 
 def validate_issue_cluster(rec: dict) -> None:

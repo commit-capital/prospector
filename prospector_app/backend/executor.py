@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
+import tempfile
 from pathlib import Path
 from collections.abc import Callable
 from typing import TYPE_CHECKING, NamedTuple
@@ -28,6 +30,7 @@ from prospector_app.backend import activity
 from prospector_app.backend import data
 from prospector_app.backend import decisions
 from prospector_app.backend import models
+from prospector_app.backend import safety_guard
 from prospector_app.backend import service
 from prospector_app.backend.safety_guard import bot_merge_run, bot_run, run
 from pipeline import settings
@@ -1107,14 +1110,15 @@ def _gh_api_error(r: subprocess.CompletedProcess) -> str:
 def propose_issue_fix(issue: int, *, token: str | None, dry_run: bool = True) -> dict:
     """Open a pull request on TRIAGE_REPO carrying issue `issue`'s last lane
     fix, for a maintainer to review. The run must pass
-    `issue_gates.propose_gate` and its rendering `fix_pr_body.problems`; the
+    `issue_gates.propose_gate`, no other open pull request may name the issue
+    (`related_prs.search`), and its rendering must pass `fix_pr_body.problems`; the
     push user pushes the lane branch to its fork (`propose.push_fix`) and the
     bot opens the pull request from it (`safety_guard.propose_bot_run`). A lane
     branch that already has a pull request is reported, never reopened. A
     dry-run does everything up to the push; with no token every run is one.
     Every outcome is logged to Activity."""
-    from issue_triage import fetch_issues, fix_lane, fix_pr_body, issue_gates, propose
-    from pipeline import diffpaths
+    from issue_triage import fetch_issues, fix_lane, fix_pr_body, issue_gates, propose, related_prs
+    from pipeline import describe_pr, diffpaths
     from pipeline.gh import gh_list
     from prospector_app.backend.safety_guard import propose_bot_run
 
@@ -1143,6 +1147,15 @@ def propose_issue_fix(issue: int, *, token: str | None, dry_run: bool = True) ->
         return done("exists", f"{ref} already has #{existing[0]['number']}", dry=dry_run,
                     url=existing[0].get("html_url"))
 
+    related = related_prs.search(issue)
+    if related is None:
+        return done("blocked", "the search for other pull requests on the issue did not "
+                               "answer", dry=dry_run)
+    others = [r for r in related if r["state"] == "open"]
+    if others:
+        return done("blocked", f"#{others[0]['number']} is already open on issue #{issue}",
+                    dry=dry_run)
+
     summary = str(result.get("summary") or "")
     title_text = fix_pr_body.title(issue, summary)
     message = fix_pr_body.commit_message(issue, summary)
@@ -1150,7 +1163,7 @@ def propose_issue_fix(issue: int, *, token: str | None, dry_run: bool = True) ->
     body = fix_pr_body.render(
         issue=issue, result=result, tests=tests, base_sha=record["base_sha"],
         report_sha=record["report_sha"], models=list(record.get("models") or []),
-        test_cmd=None)
+        test_cmd=None, related=related, template=describe_pr.fetch_template())
     problems = fix_pr_body.problems(title_text, body, message, issue=issue)
     if problems:
         return done("blocked", "rendering: " + "; ".join(problems), dry=dry_run)
@@ -1179,6 +1192,131 @@ def propose_issue_fix(issue: int, *, token: str | None, dry_run: bool = True) ->
     return done("executed", f"opened #{pr['number']} for issue #{issue}", dry=False,
                 pr=pr["number"], url=pr.get("html_url"), head_sha=pushed.head_sha,
                 reused=pushed.reused)
+
+
+def update_issue_fix_proposal(issue: int, pr: int, *, push: bool, token: str | None,
+                              dry_run: bool = True) -> dict:
+    """Bring issue `issue`'s open pull request `pr` up to its last lane run: with
+    `push`, the run's fix goes onto the lane branch as one more commit
+    (`propose.push_revision`, leased on the head the pull request shows); either
+    way the title and body are re-rendered from the run and posted as the bot
+    when they differ. The run must pass `issue_gates.propose_gate` and the pull
+    request must be open from this issue's lane branch on the push user's fork.
+    A dry-run does everything up to the writes; with no token every run is one.
+    Every outcome is logged to Activity."""
+    from issue_triage import fetch_issues, fix_lane, fix_pr_body, issue_gates, propose, related_prs
+    from pipeline import describe_pr, diffpaths
+    from pipeline.gh import gh_json
+
+    base_res = {"issue": int(issue), "pr": int(pr), "action": "UPDATE"}
+
+    def done(status: str, detail: str, *, dry: bool, **extra: object) -> dict:
+        res = {**base_res, "status": status, "detail": detail, **extra}
+        activity.record("issue-propose", identity=settings.bot_login(), dry_run=dry, **res)
+        return res
+
+    record = propose.load_result(issue)
+    if record is None:
+        return done("blocked", f"issue #{issue} has no lane result on this machine",
+                    dry=dry_run)
+    ok, why = issue_gates.propose_gate(record, fetch_issues.fetch_issue(issue),
+                                       report_sha=fix_lane.report_sha)
+    if not ok:
+        return done("blocked", f"propose gate: {why}", dry=dry_run)
+    live_pr = gh_json(f"repos/{settings.repo()}/pulls/{int(pr)}")
+    if not live_pr:
+        return done("blocked", f"#{pr} cannot be read", dry=dry_run)
+    ref = propose.branch_ref(issue, record["report_sha"])
+    head = live_pr.get("head") or {}
+    if live_pr.get("state") != "open":
+        return done("blocked", f"#{pr} is {live_pr.get('state')}", dry=dry_run)
+    if head.get("ref") != ref or ((head.get("repo") or {}).get("owner") or {}).get(
+            "login") != settings.push_login():
+        return done("blocked", f"#{pr} is not open from {settings.push_login()}:{ref}",
+                    dry=dry_run)
+
+    result = record["result"]
+    patch = str(result["patch"])
+    summary = str(result.get("summary") or "")
+    title_text = fix_pr_body.title(issue, summary)
+    message = fix_pr_body.commit_message(issue, summary)
+    tests = [p for p in diffpaths.changed_paths(patch) if diffpaths.is_test_path(p)]
+    body = fix_pr_body.render(
+        issue=issue, result=result, tests=tests, base_sha=record["base_sha"],
+        report_sha=record["report_sha"], models=list(record.get("models") or []),
+        test_cmd=None, related=related_prs.search(issue, exclude={int(pr)}),
+        template=describe_pr.fetch_template())
+    problems = fix_pr_body.problems(title_text, body, message, issue=issue)
+    if problems:
+        return done("blocked", "rendering: " + "; ".join(problems), dry=dry_run)
+
+    live = not dry_run and bool(token)
+    pushed = None
+    if push:
+        workdir = settings.verify_scratch() / "issue-fix" / f"issue-{issue}" / "propose"
+        try:
+            pushed = propose.push_revision(
+                issue=issue, report_sha=record["report_sha"], base_sha=record["base_sha"],
+                patch=patch, message=message, expected_head=str(head.get("sha") or ""),
+                workdir=workdir, dry_run=not live)
+        except RuntimeError as e:
+            return done("blocked", f"push: {e}", dry=not live)
+    edit = (title_text != live_pr.get("title")
+            or body.strip() != str(live_pr.get("body") or "").strip())
+    did = [w for w, on in (("pushed a revision", pushed is not None and not pushed.reused),
+                           ("rewrote the description", edit)) if on]
+    if not did:
+        return done("unchanged", f"#{pr} already carries this run", dry=not live)
+    if not live:
+        return done("dry-run", f"would have {' and '.join(did)} on #{pr}", dry=True,
+                    forced=not token and not dry_run,
+                    head_sha=pushed.head_sha if pushed else head.get("sha"))
+    assert token is not None
+    if edit:
+        with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as fh:
+            fh.write(body)
+            path = fh.name
+        try:
+            r = safety_guard.chat_bot_run(["gh", "pr", "edit", str(int(pr)), "--title",
+                                           title_text, "--body-file", path, "--repo",
+                                           settings.repo()], token)
+        finally:
+            os.unlink(path)
+        if r.returncode != 0:
+            detail = (r.stderr or r.stdout).strip()[:300]
+            return done("error", f"the description edit failed: {detail}", dry=False,
+                        head_sha=pushed.head_sha if pushed else head.get("sha"))
+    return done("executed", f"{' and '.join(did)} on #{pr}".capitalize(), dry=False,
+                head_sha=pushed.head_sha if pushed else head.get("sha"))
+
+
+def rerun_issue_fix_checks(issue: int, pr: int, run_ids: list[int], *, token: str | None,
+                           dry_run: bool = True) -> dict:
+    """Re-run the failed jobs of workflow runs `run_ids` on issue `issue`'s pull
+    request `pr`, as the bot. With no token every run is a dry-run. Logged to
+    Activity."""
+    base_res = {"issue": int(issue), "pr": int(pr), "action": "RERUN",
+                "runs": [int(r) for r in run_ids]}
+    live = not dry_run and bool(token)
+    if not live:
+        res = {**base_res, "status": "dry-run",
+               "detail": f"would re-run the failed jobs of {len(run_ids)} workflow run(s) "
+                         f"on #{pr}", "forced": not token and not dry_run}
+        activity.record("issue-propose", identity=settings.bot_login(), dry_run=True, **res)
+        return res
+    assert token is not None
+    failed: list[str] = []
+    for run_id in run_ids:
+        r = safety_guard.chat_bot_run(["gh", "run", "rerun", str(int(run_id)), "--failed",
+                                       "--repo", settings.repo()], token)
+        if r.returncode != 0:
+            failed.append(f"{run_id}: {(r.stderr or r.stdout).strip()[:200]}")
+    status = "error" if failed else "executed"
+    detail = ("re-run refused: " + "; ".join(failed)) if failed else (
+        f"re-ran the failed jobs of {len(run_ids)} workflow run(s) on #{pr}")
+    res = {**base_res, "status": status, "detail": detail}
+    activity.record("issue-propose", identity=settings.bot_login(), dry_run=False, **res)
+    return res
 
 
 def ask_issue_question(issue: int, *, token: str | None, dry_run: bool = True) -> dict:
