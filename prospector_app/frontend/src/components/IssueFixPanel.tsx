@@ -17,12 +17,15 @@ const STATUS_LABEL: Record<IssueFixStatus, string> = {
   running: "Working",
   reporter: "Waiting on the reporter",
   "pr-open": "PR open",
+  "pr-closed": "PR closed",
   failed: "Didn't finish",
   declined: "No fix",
+  "pr-merged": "PR merged",
 };
 const STATUS_TONE: Record<IssueFixStatus, string> = {
   review: "green", question: "yellow", running: "blue", reporter: "muted",
-  "pr-open": "purple", failed: "red", declined: "muted",
+  "pr-open": "purple", "pr-closed": "amber", failed: "red", declined: "muted",
+  "pr-merged": "green",
 };
 
 /** The issue's auto-fix status as a chip; nothing when it has no attempt. */
@@ -46,6 +49,9 @@ export function IssueFixPanel({ d, onChanged }: { d: IssueDetail; onChanged: () 
   const run = d.fix_run ?? null;
   const req = d.fix_request ?? null;
   const inFlight = req?.status === "queued" || req?.status === "running";
+  // The follow-up record counts only while it follows the run's own pull request.
+  const followup = d.fix_followup && run?.proposal?.pr != null
+    && String(d.fix_followup.pr) === String(run.proposal.pr) ? d.fix_followup : null;
 
   useEffect(() => {
     if (!inFlight) return;
@@ -57,7 +63,7 @@ export function IssueFixPanel({ d, onChanged }: { d: IssueDetail; onChanged: () 
     <div className="issue-fix">
       <FixBanner d={d} onChanged={onChanged} />
       <FixActions d={d} onChanged={onChanged} />
-      {run && <FixRunBody run={run} followup={d.fix_followup ?? null} />}
+      {run && <FixRunBody run={run} followup={followup} />}
       {(d.fix_thread?.length ?? 0) > 0 && <FixThread entries={d.fix_thread ?? []} />}
     </div>
   );
@@ -92,13 +98,15 @@ function FixBanner({ d, onChanged }: { d: IssueDetail; onChanged: () => void }) 
     );
   }
   if (!status) return null;
-  const tone = status === "review" || status === "pr-open" ? "v-green"
-    : status === "failed" ? "v-red" : status === "question" ? "v-caution" : "v-unknown";
+  const tone = status === "review" || status === "pr-open" || status === "pr-merged" ? "v-green"
+    : status === "failed" ? "v-red" : status === "question" || status === "pr-closed" ? "v-caution"
+    : "v-unknown";
   return (
     <div className={`verdict-banner ${tone}`}>
       <span className="vb-icon">
         {status === "review" ? "✅" : status === "question" ? "❓" : status === "pr-open" ? "🔗"
-          : status === "failed" ? "✗" : status === "reporter" ? "⏳" : "⛔"}
+          : status === "pr-merged" ? "🔀" : status === "failed" ? "✗" : status === "reporter" ? "⏳"
+          : "⛔"}
       </span>
       <div>
         <div className="vb-headline">{STATUS_LABEL[status]}</div>
@@ -133,7 +141,7 @@ function FixActions({ d, onChanged }: { d: IssueDetail; onChanged: () => void })
     return <QuestionActions q={run?.question ?? null} asked={status === "reporter"} busy={busy}
                             text={text} setText={setText} send={send} dryRun={dryRun} />;
   }
-  if (status === "pr-open") return null;
+  if (status === "pr-open" || status === "pr-merged") return null;
   if (status === "review") {
     return (
       <div className="fix-composer">
@@ -160,7 +168,9 @@ function FixActions({ d, onChanged }: { d: IssueDetail; onChanged: () => void })
   return (
     <div className="fix-composer">
       <textarea className="fix-goal" rows={2} value={text}
-        placeholder="Optional: anything the agents should know (where to look, what correct behavior is)."
+        placeholder={status === "pr-closed"
+          ? "Optional: why the PR was closed, or what the agents should do differently this time."
+          : "Optional: anything the agents should know (where to look, what correct behavior is)."}
         onChange={(e) => setText(e.target.value)} aria-label="Guidance for the fix" />
       <div className="row-actions">
         <button className="btn-primary sm" disabled={busy}
@@ -230,6 +240,12 @@ const FOLLOWUP_LABEL: Record<IssueFixFollowup["state"], string> = {
   done: "Finished",
 };
 
+function followupLabel(f: IssueFixFollowup): string {
+  if (f.state !== "done") return FOLLOWUP_LABEL[f.state];
+  return f.closed_as === "merged" ? "Merged" : f.closed_as === "closed" ? "Closed without merging"
+    : FOLLOWUP_LABEL.done;
+}
+
 function FixRunBody({ run, followup }: { run: IssueFixRun; followup: IssueFixFollowup | null }) {
   const { prUrl } = useRepoMeta();
   const review = run.reviews[0];
@@ -249,8 +265,8 @@ function FixRunBody({ run, followup }: { run: IssueFixRun; followup: IssueFixFol
             #{String(run.proposal.pr)} ↗</a>
           {followup && (
             <div className="small" style={{ marginTop: 4 }}>
-              <b>{FOLLOWUP_LABEL[followup.state]}</b>
-              {followup.reason && <> — {followup.reason}</>}
+              <b>{followupLabel(followup)}</b>
+              {followup.reason && !followup.closed_as && <> — {followup.reason}</>}
               <span className="muted">
                 {" "}· revisions {followup.revisions ?? 0}
                 {followup.checked_at && <> · checked {when(followup.checked_at)}</>}

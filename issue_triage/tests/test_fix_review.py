@@ -7,6 +7,7 @@ import pytest
 from issue_triage import fix_review, fix_review_runner
 from issue_triage.issue_store import IssueStore
 from pipeline import settings
+from pipeline.storekit import ValidationError
 
 QUESTION = {"question": "Should x read 2 or 3?",
             "options": [{"label": "A", "behavior": "2"}, {"label": "B", "behavior": "3"}],
@@ -91,6 +92,44 @@ def test_the_status_reads_whose_move_it_is(store, run, req, want):
     if req:
         store.edit_issue(7).record_fix_request(req)
     assert fix_review.fix_status(store.load_issue(7))[0] == want
+
+
+@pytest.mark.parametrize("fu,want", [
+    ({"pr": 14589, "state": "done", "closed_as": "closed", "reason": "#14589 is closed"},
+     ("pr-closed", "#14589 was closed without merging")),
+    ({"pr": 14589, "state": "done", "closed_as": "merged", "reason": "#14589 is merged"},
+     ("pr-merged", "#14589 merged")),
+    ({"pr": 14589, "state": "done", "reason": "#14589 is closed"},
+     ("pr-closed", "#14589 is closed")),
+    ({"pr": 14000, "state": "done", "closed_as": "closed"}, ("pr-open", "#14589")),
+])
+def test_a_proposal_s_status_reads_its_own_pull_request_s_follow_up(store, fu, want):
+    _run(store, proposal={"pr": 14589})
+    store.edit_issue(7).record_fix_followup(fu)
+    status = fix_review.fix_status(store.load_issue(7))
+    assert status == want and status[0] in fix_review.STATUSES
+
+
+def test_a_proposal_closed_without_merging_takes_a_new_attempt(store):
+    _run(store, proposal={"pr": 14589, "url": "u"})
+    store.edit_issue(7).record_fix_followup({"pr": 14589, "state": "done", "closed_as": "closed",
+                                             "reason": "#14589 is closed"})
+    ok, why = fix_review.queue(store, 7, "propose", by="op")
+    assert not ok and why == "#14589 was closed without merging; try again for a new change"
+    assert fix_review.queue(store, 7, "solve", by="op", guidance="keep the old API") == (
+        True, "solve queued")
+
+
+def test_a_merged_proposal_is_not_proposed_again(store):
+    _run(store, proposal={"pr": 14589})
+    store.edit_issue(7).record_fix_followup({"pr": 14589, "state": "done", "closed_as": "merged"})
+    ok, why = fix_review.queue(store, 7, "propose", by="op")
+    assert not ok and why == "this change already merged as #14589"
+
+
+def test_a_follow_up_names_how_its_pull_request_ended(store):
+    with pytest.raises(ValidationError, match="closed_as"):
+        store.edit_issue(7).record_fix_followup({"pr": 9, "state": "done", "closed_as": "gone"})
 
 
 def test_a_claim_is_taken_once_and_only_by_the_named_host(store):
@@ -192,6 +231,20 @@ def test_a_proposal_that_opens_records_the_pull_request(store, monkeypatch):
     assert status == "done"
     assert store.load_issue(7).fix_run["proposal"] == {"pr": 9, "url": "u"}
     assert fix_review.fix_status(store.load_issue(7))[0] == "pr-open"
+
+
+def test_a_new_proposal_after_a_closed_one_reads_open(store, monkeypatch):
+    from prospector_app.backend import executor
+    _run(store)
+    store.edit_issue(7).record_fix_followup({"pr": 14589, "state": "done", "closed_as": "closed"})
+    assert fix_review.fix_status(store.load_issue(7))[0] == "review"
+    monkeypatch.setattr(executor, "mint_bot_token", lambda: "tok")
+    monkeypatch.setattr(executor, "propose_issue_fix", lambda n, **kw: {
+        "status": "executed", "detail": "opened #15000", "pr": 15000, "url": "u"})
+    fix_review.queue(store, 7, "propose", by="op")
+    req = store.claim_fix_request(7, host="studio")
+    fix_review_runner.run_request(store, 7, req)
+    assert fix_review.fix_status(store.load_issue(7)) == ("pr-open", "#15000")
 
 
 def test_a_dry_run_proposal_opens_nothing(store, monkeypatch):

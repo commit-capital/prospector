@@ -48,6 +48,8 @@ def _decide(pr: PrState, fu: dict | None = None, **kw) -> followup.Step:
 
 def test_a_merged_or_closed_pull_request_ends_the_follow_up():
     assert _decide(_pr(state="merged")).kind == "done"
+    step = _decide(_pr(state="closed"))
+    assert step.kind == "done" and step.reason == "#9 was closed without merging"
 
 
 def test_an_older_open_pull_request_on_the_issue_hands_it_back():
@@ -204,3 +206,46 @@ def test_review_evidence_keeps_suggested_code_and_drops_badges():
     step = _decide(_pr(views=[_greptile(reviewers.FAIL, findings=[finding])]))
     assert "<Ctx.Provider value={null}>" in (step.guidance or "")
     assert "<img" not in (step.guidance or "")
+
+
+@pytest.mark.parametrize("ended,status,note", [
+    ("closed", "pr-closed", "#9 was closed without merging; follow-up finished."),
+    ("merged", "pr-merged", "#9 merged; follow-up finished."),
+])
+def test_a_poll_records_how_the_pull_request_ended_and_stops_reading_it(store, monkeypatch,
+                                                                        ended, status, note):
+    monkeypatch.setattr(followup, "read", lambda pr: _pr(state=ended))
+    store.edit_issue(7).record_fix_followup({"pr": 9, "state": "watching",
+                                             "described_head": HEAD})
+    assert followup.poll(store, mode="live") == 1
+    issue = store.load_issue(7)
+    assert issue.fix_followup["state"] == "done" and issue.fix_followup["closed_as"] == ended
+    assert issue.fix_thread[-1]["text"] == note
+    assert fix_review.fix_status(issue)[0] == status
+    monkeypatch.setattr(followup, "read", lambda pr: pytest.fail("read a finished proposal"))
+    assert followup.poll(store, mode="live") == 0
+
+
+def test_a_finished_follow_up_that_never_said_how_is_read_once_more(store, monkeypatch):
+    store.edit_issue(7).record_fix_followup({"pr": 9, "state": "done", "step": "done",
+                                             "reason": "#9 is closed"})
+    notes = len(store.load_issue(7).fix_thread)
+    reads = []
+    monkeypatch.setattr(followup, "read", lambda pr: reads.append(pr) or _pr(state="closed"))
+    followup.poll(store, mode="live")
+    followup.poll(store, mode="live")
+    issue = store.load_issue(7)
+    assert reads == [9] and issue.fix_followup["closed_as"] == "closed"
+    assert len(issue.fix_thread) == notes
+    assert fix_review.fix_status(issue) == ("pr-closed", "#9 was closed without merging")
+
+
+def test_a_new_proposal_is_followed_past_an_earlier_one_s_finished_record(store, monkeypatch):
+    store.edit_issue(7).record_fix_followup({"pr": 5, "state": "done", "closed_as": "closed",
+                                             "described_head": HEAD, "revisions": 2})
+    monkeypatch.setattr(followup, "read", lambda pr: _pr())
+    followup.poll(store, mode="dry-run")
+    fu = store.load_issue(7).fix_followup
+    assert fu["pr"] == 9 and fu["state"] == "watching" and fu["step"] == "describe"
+    assert "closed_as" not in fu and "revisions" not in fu
+    assert fix_review.fix_status(store.load_issue(7))[0] == "pr-open"

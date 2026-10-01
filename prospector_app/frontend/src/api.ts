@@ -1141,7 +1141,8 @@ export interface IssueRow {
   dup_rows?: IssueRow[];
 }
 /** fix_review.STATUSES — the operator's moves first. */
-export type IssueFixStatus = "review" | "question" | "running" | "reporter" | "pr-open" | "failed" | "declined";
+export type IssueFixStatus = "review" | "question" | "running" | "reporter" | "pr-open" | "pr-closed"
+  | "failed" | "declined" | "pr-merged";
 export type IssueFixAction = "solve" | "send-back" | "answer" | "ask-reporter" | "propose";
 export interface IssueFixRequest {
   action: IssueFixAction;
@@ -1283,6 +1284,8 @@ export interface IssueDetail extends IssueRow {
 export interface IssueFixFollowup {
   pr: number;
   state: "watching" | "ready" | "handed-back" | "done";
+  /** How the pull request ended, once `state` is "done". */
+  closed_as?: "merged" | "closed" | null;
   step?: string | null;
   reason?: string | null;
   head_sha?: string | null;
