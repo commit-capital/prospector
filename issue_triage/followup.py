@@ -19,7 +19,9 @@ from the live feed.
 - `rerun` — CI fails at this head and its failed jobs were not re-run here.
 - `revise` — CI still fails after a re-run and a failing log names a changed
   file, or an active reviewer's bar fails at this head; the guidance quotes
-  what failed. At most MAX_REVISIONS per pull request.
+  what failed. At most MAX_REVISIONS of its own per pull request; an
+  operator's send-back, which goes onto the pull request the same way, is not
+  counted.
 - `wait` — CI or a reviewer has not finished at this head.
 - `ready` — CI passes and every active reviewer's bar passes.
 

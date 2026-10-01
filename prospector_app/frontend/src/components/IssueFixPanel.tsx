@@ -142,24 +142,36 @@ function FixActions({ d, onChanged }: { d: IssueDetail; onChanged: () => void })
                             text={text} setText={setText} send={send} dryRun={dryRun} />;
   }
   if (status === "pr-open" || status === "pr-merged") return null;
-  if (status === "review") {
+  const pr = d.fix_pr ?? null;
+  if (status === "review" || (status === "failed" && pr != null)) {
     return (
       <div className="fix-composer">
-        <div className="row-actions">
-          <button className="btn-primary sm" disabled={busy}
-            title="Push the change to the bot's fork and open a pull request for maintainers"
-            onClick={() => send({ action: "propose", dry_run: dryRun },
-                                dryRun ? "Queued a dry-run proposal" : "Queued: open the PR")}>
-            {dryRun ? "Open PR (dry run)" : "Open PR"}
-          </button>
-        </div>
+        {pr == null ? (
+          <div className="row-actions">
+            <button className="btn-primary sm" disabled={busy}
+              title="Push the change to the bot's fork and open a pull request for maintainers"
+              onClick={() => send({ action: "propose", dry_run: dryRun },
+                                  dryRun ? "Queued a dry-run proposal" : "Queued: open the PR")}>
+              {dryRun ? "Open PR (dry run)" : "Open PR"}
+            </button>
+          </div>
+        ) : (
+          <div className="muted small">
+            Sending it back revises the fix and pushes the revision onto #{pr} as one more commit
+            {dryRun ? " — in dry run, the revision runs and nothing is pushed" : ""}.
+            A revision that doesn't end fixed leaves #{pr} as it is.
+          </div>
+        )}
         <textarea className="fix-goal" rows={3} value={text}
-          placeholder="Not quite? Say what to change — or that it should start over — and send it back."
+          placeholder={pr == null
+            ? "Not quite? Say what to change — or that it should start over — and send it back."
+            : `Say what to change in the fix on #${pr}.`}
           onChange={(e) => setText(e.target.value)} aria-label="Your comments on the fix" />
         <div className="row-actions">
           <button className="btn-secondary sm" disabled={busy || !text.trim()}
-            onClick={() => send({ action: "send-back", guidance: text }, "Sent back with your comments")}>
-            Send back
+            onClick={() => send({ action: "send-back", guidance: text, dry_run: dryRun },
+                                pr == null ? "Sent back with your comments" : `Sent back: the revision goes onto #${pr}`)}>
+            {pr == null ? "Send back" : `Send back to #${pr}${dryRun ? " (dry run)" : ""}`}
           </button>
         </div>
       </div>
@@ -268,7 +280,7 @@ function FixRunBody({ run, followup }: { run: IssueFixRun; followup: IssueFixFol
               <b>{followupLabel(followup)}</b>
               {followup.reason && !followup.closed_as && <> — {followup.reason}</>}
               <span className="muted">
-                {" "}· revisions {followup.revisions ?? 0}
+                {" "}· automatic revisions {followup.revisions ?? 0}
                 {followup.checked_at && <> · checked {when(followup.checked_at)}</>}
               </span>
             </div>

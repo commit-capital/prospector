@@ -81,13 +81,28 @@ for number, title in ((101, "Fix retry counter"), (102, "Blocked security fixtur
     store.save_pr(record)
 
 
+FIXTURE_PULLS = ("repos/e2e-owner/e2e-repo/pulls/101", "repos/e2e-owner/e2e-repo/pulls/102")
+
+
 def github_api(path, **kwargs):
     if path.endswith("/check-runs?per_page=100&filter=latest"):
         return {"check_runs": []}
+    if path == "user":
+        return {"login": "e2e-operator", "id": 1}
+    if path in FIXTURE_PULLS:
+        return {"number": int(path.rsplit("/", 1)[1]), "state": "open", "merged": False,
+                "head": {"sha": HEAD}, "mergeable_state": "clean",
+                "body": "Fixture description."}
+    if path in tuple(f"{pull}/files?per_page=100" for pull in FIXTURE_PULLS) and kwargs.get("paginate"):
+        return [{"filename": "src/retry.py"}]
     return forbidden({"gh_api": path})
 
 
 def github_graphql(query, **kwargs):
+    if "timelineItems" in query and re.search(r"pullRequest\(number: (101|102)\)", query):
+        return {"data": {"repository": {"pullRequest": {
+            field: {"nodes": []} for field in ("comments", "reviews", "commits", "timelineItems")
+        }}}}
     matches = re.findall(r"(p\d+): pullRequest\(number: (101|102)\)", query)
     if not matches or "statusCheckRollup" not in query:
         return forbidden({"graphql": query})
@@ -108,25 +123,7 @@ def github_read(argv, **kwargs):
         safety_guard.assert_read_only(argv)
     except safety_guard.WriteAttemptBlocked:
         return forbidden({"non_read_command": argv})
-    if argv == ["gh", "api", "user", "--jq", ".login"]:
-        output = "e2e-operator"
-    elif (argv[:4] == ["gh", "api", "graphql", "-f"] and len(argv) == 5
-          and "timelineItems" in argv[4]
-          and re.search(r"pullRequest\(number: (101|102)\)", argv[4])):
-        output = json.dumps({"data": {"repository": {"pullRequest": {
-            field: {"nodes": []} for field in ("comments", "reviews", "commits", "timelineItems")
-        }}}})
-    elif (argv[:2] == ["gh", "api"] and "--jq" in argv
-          and argv[argv.index("--jq") + 1] == ".[].filename"):
-        output = "src/retry.py\n"
-    elif (argv[:2] == ["gh", "api"] and len(argv) == 5
-          and argv[2] in ("repos/e2e-owner/e2e-repo/pulls/101", "repos/e2e-owner/e2e-repo/pulls/102")
-          and argv[4].startswith("{state:")):
-        output = json.dumps({"state": "open", "head": HEAD, "merged": False,
-                             "mergeable_state": "clean"})
-    else:
-        return forbidden({"gh_read": argv})
-    return subprocess.CompletedProcess(argv, 0, output, "")
+    return forbidden({"gh_read": argv})
 
 
 gh.gh_api = github_api

@@ -169,7 +169,7 @@ def beat() -> None:
 
 def worker_offline(host: str, registry: dict, claimed_at: str | None = None) -> bool:
     """Whether `host` has stopped beating: its heartbeat in `registry` (a
-    verify_worker or fix_worker record) is older than
+    verify_worker, fix_worker, or issue_fix_worker record) is older than
     worker_health.OFFLINE_AFTER_SECONDS. A host the registry does not know
     (never beat here, or pruned after a week of silence) is judged by its
     claim instead: `claimed_at` that old means nobody is coming back for it,
@@ -342,7 +342,7 @@ def next_queued() -> int | None:
     re-queued one — a nonzero `attempts` — only once rested since its last
     attempt), plus each `waiting-for-base` request rested since its last
     attempt, ranked operator picks before auto-picks and, within each group,
-    oldest queued_at first — so an operator click never waits behind an
+    a maintainer's PR (gates.priority_author) first, then oldest queued_at — so an operator click never waits behind an
     earlier auto-queued request. Reads the backend's incremental store
     snapshot, so the scan costs no store round-trip.
 
@@ -352,7 +352,7 @@ def next_queued() -> int | None:
     request is never gated by it, so its preflight is what records why it
     cannot proceed."""
     best_n: int | None = None
-    best_key: tuple[bool, str] | None = None
+    best_key: tuple[bool, bool, str] | None = None
     daemon: bool | None = None
     for n, rec in data.prs().items():
         req = rec.verify_request
@@ -372,6 +372,7 @@ def next_queued() -> int | None:
         else:
             continue
         key = (req.get("source") in store.AUTO_REQUEST_SOURCES,
+               not gates.priority_author(rec.author, rec.author_association),
                str(req.get("queued_at") or ""))
         if best_key is None or key < best_key:
             best_n, best_key = n, key
@@ -510,12 +511,14 @@ def next_auto(open_lanes: frozenset[str] = frozenset({"security", "verify"})
     """The idle hunt's next pick, or None: ("security", n) for the best clean
     merge candidate lacking a current security verdict, ("verify", n) for the
     best GREEN-cleared unverified candidate, or ("resweep", n) for a concluded
-    verification whose repro the harness broke. Every lane orders by highest
-    community pain, then lowest PR number.
+    verification whose repro the harness broke. Every lane orders a
+    maintainer's PR (gates.priority_author) first, then by highest community
+    pain, then lowest PR number.
 
-    Security and verify alternate while both have work — a first pick goes to
-    security — so the verify pool is served while the security backlog
-    drains; a resweep runs only when both are empty, since a PR with no
+    A maintainer's PR in either pool is picked before anything else, security
+    first. Otherwise security and verify alternate while both have work — a
+    first pick goes to security — so the verify pool is served while the
+    security backlog drains; a resweep runs only when both are empty, since a PR with no
     verification at all buys more than a second opinion on one that already
     concluded. A PR another machine holds the security claim on is that
     machine's to finish: it leaves the pool here so this hunter moves on to
@@ -525,8 +528,14 @@ def next_auto(open_lanes: frozenset[str] = frozenset({"security", "verify"})
     prs = data.prs()
     me = settings.worker_id()
 
-    def _key(item: tuple[int, Pr]) -> tuple[float, int]:
-        return (-_pain(item[1]), item[0])
+    def _key(item: tuple[int, Pr]) -> tuple[bool, float, int]:
+        pr = item[1]
+        return (not gates.priority_author(pr.author, pr.author_association),
+                -_pain(pr), item[0])
+
+    def _has_priority(pool: list[tuple[int, Pr]]) -> bool:
+        return any(gates.priority_author(pr.author, pr.author_association)
+                   for _, pr in pool)
 
     security_pool = [
         (n, pr) for n, pr in prs.items()
@@ -536,7 +545,11 @@ def next_auto(open_lanes: frozenset[str] = frozenset({"security", "verify"})
             pr.raw.get("security_run"), host=me, stale_after=SECURITY_CLAIM_SECONDS)]
     verify_pool = ([(n, pr) for n, pr in prs.items() if auto_verifiable(pr)]
                    if "verify" in open_lanes else [])
-    if security_pool and verify_pool:
+    if _has_priority(security_pool):
+        lane = "security"
+    elif _has_priority(verify_pool):
+        lane = "verify"
+    elif security_pool and verify_pool:
         lane = "verify" if _last_auto_lane == "security" else "security"
     elif security_pool:
         lane = "security"

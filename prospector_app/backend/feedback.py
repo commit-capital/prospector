@@ -16,14 +16,13 @@ import asyncio
 import json
 import os
 import ssl
-import subprocess
 import urllib.request
 from functools import lru_cache
 from typing import TypedDict
 
+from pipeline import gh
 from pipeline import settings
 from prospector_app.backend import instance
-from prospector_app.backend import safety_guard
 
 LABELS = ["app"]
 
@@ -48,16 +47,7 @@ class GenerateResult(TypedDict):
 def operator_login() -> str | None:
     """The local gh login (e.g. "octocat"), to pre-assign the new issue, or
     None if gh isn't available. Cached for the process; never raises."""
-    try:
-        r = subprocess.run(
-            ["gh", "api", "user", "--jq", ".login"],
-            capture_output=True, text=True, timeout=10,
-            env=safety_guard.operator_env(),
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    out = r.stdout.strip()
-    return out if r.returncode == 0 and out else None
+    return gh.operator_login(timeout=10)
 
 
 def target() -> FeedbackTarget:

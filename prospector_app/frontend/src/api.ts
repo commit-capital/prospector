@@ -145,11 +145,12 @@ export interface MachineLaneHealth {
   consecutive_failures: number;
   last_success_at: string | null;
 }
-/** One lane's heartbeat on a machine (verify or fix worker). */
+/** One lane's heartbeat on a machine (verify, fix, or issue-fix worker). */
 export interface MachineBeat {
   last_beat: string | null;
   online: boolean;
   current_pr: number | null;
+  current_issue: number | null;
   autohunt: boolean;
 }
 /** One worker machine the shared store knows. */
@@ -1278,6 +1279,8 @@ export interface IssueDetail extends IssueRow {
   fix_run?: IssueFixRun | null;
   fix_thread?: IssueFixThreadEntry[];
   fix_followup?: IssueFixFollowup | null;
+  /** The pull request the fix attempt is open as (fix_review.open_pr). */
+  fix_pr?: number | null;
 }
 /** Where the follow-up on an issue's proposed pull request stands
  *  (issue_triage/followup.py): the last step it took or waits on, and why. */

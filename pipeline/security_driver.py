@@ -106,20 +106,22 @@ def _tier_order(item: DiffManifestItem) -> tuple[bool, int, int]:
 
 def eligible(store: Store, today: str | None = None, max_n: int | None = None,
              prs: dict[int, Pr] | None = None) -> list[DiffManifestItem]:
-    """Security-eligible PRs lacking a current verdict, ordered riskiest-first
-    by path-based tier (0 before 3, unknown last). `max_n` truncates after
-    ordering, so a capped wave still reviews the widest-blast-radius
-    candidates first. `prs` is a caller's corpus snapshot to reuse."""
-    out = []
+    """Security-eligible PRs lacking a current verdict, maintainers' first
+    (gates.priority_author), then riskiest-first by path-based tier (0 before
+    3, unknown last). `max_n` truncates after ordering, so a capped wave still
+    reviews the maintainers' and the widest-blast-radius candidates first. `prs` is a caller's corpus snapshot to reuse."""
+    out: list[tuple[bool, DiffManifestItem]] = []
     corpus = prs if prs is not None else store.all_prs()
     for n, rec in sorted(corpus.items()):
         if not gates.security_eligible(rec, today):
             continue
         if is_current(rec, "security", max_age_days=gates.SECURITY_MAX_AGE_DAYS, today=today):
             continue  # already has a current verdict
-        out.append(DiffManifestItem.for_pr(n, rec, DIFFS))
-    out.sort(key=_tier_order)
-    return out[:max_n] if max_n else out
+        out.append((not gates.priority_author(rec.author, rec.author_association),
+                    DiffManifestItem.for_pr(n, rec, DIFFS)))
+    out.sort(key=lambda row: (row[0], *_tier_order(row[1])))
+    ordered = [item for _, item in out]
+    return ordered[:max_n] if max_n else ordered
 
 
 def wave_manifest(store: Store, max_n: int | None = None) -> dict:

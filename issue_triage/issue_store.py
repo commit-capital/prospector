@@ -214,6 +214,12 @@ class IssueStore:
         omit = [("links", "candidates")] if omit_candidates else None
         return self._issues.since(watermark, omit_paths=omit)
 
+    def issues_matching(self, path: tuple[str, ...],
+                        values: list[str]) -> dict[int, issue_model.Issue]:
+        """The issues whose record holds one of `values` at `path`, filtered
+        server-side. See storekit Collection.where_json."""
+        return self._issues.where_json(path, values)
+
     def issue_ids(self) -> set[int]:
         return self._issues.ids()
 

@@ -8,22 +8,25 @@ comment and standing request-changes review in place."""
 import json
 import types
 
+from pipeline import gh
 from prospector_app.backend import executor
 
 
-def _fake_run(monkeypatch, rows: list[dict]) -> list[list[str]]:
-    """Stub `executor.run` to return `rows` as gh's `--jq` NDJSON (one compact
-    JSON object per line — the shape a per-page `.[] | {…}` projection emits).
+def _fake_gh(monkeypatch, pages: list[list[dict]], returncode: int = 0) -> list[list[str]]:
+    """Stub the gh subprocess to answer `--paginate --slurp` with `pages`.
     Returns the captured argv list for endpoint assertions."""
     calls: list[list[str]] = []
 
-    def fake(argv, timeout=30):
+    def fake(argv, **kw):
         calls.append(argv)
-        out = "\n".join(json.dumps(r) for r in rows)
-        return types.SimpleNamespace(returncode=0, stdout=out, stderr="")
+        return types.SimpleNamespace(returncode=returncode, stdout=json.dumps(pages), stderr="")
 
-    monkeypatch.setattr(executor, "run", fake)
+    monkeypatch.setattr(gh.subprocess, "run", fake)
     return calls
+
+
+def _comment(login: str, **fields) -> dict:
+    return {"user": {"login": login}, **fields}
 
 
 # --- _is_bot_login -----------------------------------------------------------
@@ -54,34 +57,40 @@ def test_is_bot_login_tolerates_suffixed_configuration(monkeypatch):
 
 def test_has_bot_comment_matches_suffixed_rest_login(monkeypatch):
     monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triagebot")
-    calls = _fake_run(monkeypatch, [
-        {"login": "some-human", "body": "thanks!"},
-        {"login": "triagebot[bot]", "body": "Closing as duplicate of #12."},
-    ])
+    calls = _fake_gh(monkeypatch, [[
+        _comment("some-human", body="thanks!"),
+        _comment("triagebot[bot]", body="Closing as duplicate of #12."),
+    ]])
     assert executor._has_bot_comment(101) is True
-    assert any(f"issues/101/comments" in a for a in calls[0])
+    assert any("issues/101/comments" in a for a in calls[0])
+
+
+def test_has_bot_comment_reads_past_the_first_page(monkeypatch):
+    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triagebot")
+    humans = [_comment("some-human", body=f"comment {i}") for i in range(30)]
+    _fake_gh(monkeypatch, [humans, [_comment("triagebot[bot]", body="Closing as duplicate of #12.")]])
+    assert executor._has_bot_comment(101, "Closing as duplicate") is True
 
 
 def test_has_bot_comment_contains_scopes_to_bot_comments_only(monkeypatch):
     monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triagebot")
-    _fake_run(monkeypatch, [
-        {"login": "some-human", "body": "Closing as duplicate of #12."},
-        {"login": "triagebot[bot]", "body": "re-triggered review"},
-    ])
+    _fake_gh(monkeypatch, [[
+        _comment("some-human", body="Closing as duplicate of #12."),
+        _comment("triagebot[bot]", body="re-triggered review"),
+    ]])
     # the human's body matches the key, the bot's doesn't → no bot comment counts
     assert executor._has_bot_comment(101, "Closing as duplicate") is False
 
 
 def test_has_bot_comment_false_when_no_bot_comment(monkeypatch):
     monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triagebot")
-    _fake_run(monkeypatch, [{"login": "some-human", "body": "hi"}])
+    _fake_gh(monkeypatch, [[_comment("some-human", body="hi")]])
     assert executor._has_bot_comment(101) is False
 
 
 def test_has_bot_comment_false_on_garbage_output(monkeypatch):
     monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triagebot")
-    monkeypatch.setattr(executor, "run", lambda argv, timeout=30: types.SimpleNamespace(
-        returncode=1, stdout="gh: Not Found", stderr=""))
+    _fake_gh(monkeypatch, [], returncode=1)
     assert executor._has_bot_comment(101) is False
 
 
@@ -89,10 +98,9 @@ def test_has_bot_comment_false_on_garbage_output(monkeypatch):
 
 def test_bot_comment_ids_filters_by_tolerant_login(monkeypatch):
     monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triagebot")
-    calls = _fake_run(monkeypatch, [
-        {"login": "triagebot[bot]", "id": 11},
-        {"login": "greptile-apps[bot]", "id": 22},
-        {"login": "triagebot", "id": 33},
+    calls = _fake_gh(monkeypatch, [
+        [_comment("triagebot[bot]", id=11), _comment("greptile-apps[bot]", id=22)],
+        [_comment("triagebot", id=33)],
     ])
     assert executor._bot_comment_ids(101) == [11, 33]
     assert any("issues/101/comments" in a for a in calls[0])
@@ -100,8 +108,7 @@ def test_bot_comment_ids_filters_by_tolerant_login(monkeypatch):
 
 def test_bot_comment_ids_empty_on_error(monkeypatch):
     monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triagebot")
-    monkeypatch.setattr(executor, "run", lambda argv, timeout=30: types.SimpleNamespace(
-        returncode=1, stdout="", stderr="boom"))
+    _fake_gh(monkeypatch, [], returncode=1)
     assert executor._bot_comment_ids(101) == []
 
 
@@ -109,19 +116,18 @@ def test_bot_comment_ids_empty_on_error(monkeypatch):
 
 def test_bot_change_request_ids_filters_login_and_state(monkeypatch):
     monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triagebot")
-    calls = _fake_run(monkeypatch, [
-        {"login": "triagebot[bot]", "id": 1, "state": "COMMENTED"},
-        {"login": "coderabbitai[bot]", "id": 2, "state": "CHANGES_REQUESTED"},
-        {"login": "triagebot[bot]", "id": 3, "state": "CHANGES_REQUESTED"},
-    ])
+    calls = _fake_gh(monkeypatch, [[
+        _comment("triagebot[bot]", id=1, state="COMMENTED"),
+        _comment("coderabbitai[bot]", id=2, state="CHANGES_REQUESTED"),
+        _comment("triagebot[bot]", id=3, state="CHANGES_REQUESTED"),
+    ]])
     assert executor._bot_change_request_ids(101) == [3]
     assert any("pulls/101/reviews" in a for a in calls[0])
 
 
 def test_bot_change_request_ids_empty_on_error(monkeypatch):
     monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triagebot")
-    monkeypatch.setattr(executor, "run", lambda argv, timeout=30: types.SimpleNamespace(
-        returncode=1, stdout="", stderr="boom"))
+    _fake_gh(monkeypatch, [], returncode=1)
     assert executor._bot_change_request_ids(101) == []
 
 
@@ -129,15 +135,15 @@ def test_bot_change_request_ids_empty_on_error(monkeypatch):
 
 def test_latest_bot_review_url_returns_last_bot_review(monkeypatch):
     monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triagebot")
-    _fake_run(monkeypatch, [
-        {"login": "triagebot[bot]", "url": "https://gh/r/1"},
-        {"login": "greptile-apps[bot]", "url": "https://gh/r/2"},
-        {"login": "triagebot[bot]", "url": "https://gh/r/3"},
+    _fake_gh(monkeypatch, [
+        [_comment("triagebot[bot]", html_url="https://gh/r/1")] * 100,
+        [_comment("greptile-apps[bot]", html_url="https://gh/r/2"),
+         _comment("triagebot[bot]", html_url="https://gh/r/3")],
     ])
     assert executor._latest_bot_review_url(101) == "https://gh/r/3"
 
 
 def test_latest_bot_review_url_none_when_no_bot_review(monkeypatch):
     monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triagebot")
-    _fake_run(monkeypatch, [{"login": "greptile-apps[bot]", "url": "https://gh/r/2"}])
+    _fake_gh(monkeypatch, [[_comment("greptile-apps[bot]", html_url="https://gh/r/2")]])
     assert executor._latest_bot_review_url(101) is None

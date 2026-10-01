@@ -16,14 +16,13 @@ from __future__ import annotations
 
 import json
 import logging
-import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 from prospector_app.backend import activity
 from prospector_app.backend import data
-from prospector_app.backend.safety_guard import run
+from pipeline import gh
 from pipeline import settings
 
 _log = logging.getLogger(__name__)
@@ -235,49 +234,41 @@ def _fetch(prs: list[int]) -> tuple[dict[int, dict], list[int]]:
 
     ``failed`` lists every PR this sweep could not read: the whole chunk when the
     call yields nothing usable (a `gh` timeout, or a response with no
-    ``data.repository``), and — when `gh` reports errors — the PRs whose alias
-    came back empty without a NOT_FOUND to explain it. `scan` leaves those PRs'
-    prior registry entries untouched, so "couldn't check" is never recorded as
-    "no response".
+    ``data.repository``; `gh.gh_graphql` logs why), and — when the response
+    carries GraphQL errors — the PRs whose alias came back empty without a
+    NOT_FOUND to explain it. `scan` leaves those PRs' prior registry entries
+    untouched, so "couldn't check" is never recorded as "no response".
 
-    One PR deleted from the repository makes `gh` exit non-zero for its whole
-    chunk while GitHub still returns every other alias in the same body, so the
-    body is read whatever the exit status and each alias judged on its own:
-    resolved is data, and NOT_FOUND is a PR that is gone — absent from both
-    return values, the same answer as an empty alias in a clean response."""
+    One PR deleted from the repository puts an error in its whole chunk's
+    response while GitHub still returns every other alias in the same body, so
+    each alias is judged on its own: resolved is data, and NOT_FOUND is a PR
+    that is gone — absent from both return values, the same answer as an empty
+    alias in a clean response."""
     out: dict[int, dict] = {}
     failed: list[int] = []
     for i in range(0, len(prs), _CHUNK):
         chunk = prs[i:i + _CHUNK]
-        try:
-            r = run(["gh", "api", "graphql", "-f", f"query={_query(chunk)}"], timeout=90)
-        except subprocess.TimeoutExpired:
-            _log.warning("responses._fetch: gh graphql timed out; skipping %d PRs (%s)",
-                        len(chunk), _span(chunk))
-            failed.extend(chunk)
-            continue
-        try:
-            body = json.loads(r.stdout)
-            repo = (body.get("data") or {}).get("repository")
-        except (ValueError, TypeError, AttributeError):
-            body, repo = {}, None
+        body = gh.gh_graphql(_query(chunk), timeout=90) or {}
+        repo = (body.get("data") or {}).get("repository")
         # An empty `repository` is a real answer (its aliases resolved to
         # nothing); only its absence means the call yielded nothing to read.
         if not isinstance(repo, dict):
-            _log.warning("responses._fetch: gh graphql returned no data (rc=%d) for %d PRs "
-                        "(%s): %s", r.returncode, len(chunk), _span(chunk),
-                        (r.stderr or "").strip()[:300])
+            _log.warning("responses._fetch: gh graphql returned no data for %d PRs (%s)",
+                         len(chunk), _span(chunk))
             failed.extend(chunk)
             continue
+        errors = body.get("errors") or []
         gone = _not_found_aliases(body)
         unread = [n for j, n in enumerate(chunk)
-                  if not repo.get(f"p{j}") and f"p{j}" not in gone] if r.returncode != 0 else []
-        if r.returncode != 0:
-            _log.warning("responses._fetch: gh graphql reported errors (rc=%d) for %d PRs (%s); "
-                        "%d resolved, %d gone from the repo, %d unread: %s",
-                        r.returncode, len(chunk), _span(chunk),
-                        sum(1 for j in range(len(chunk)) if repo.get(f"p{j}")),
-                        len(gone), len(unread), (r.stderr or "").strip()[:200])
+                  if not repo.get(f"p{j}") and f"p{j}" not in gone] if errors else []
+        if errors:
+            messages = "; ".join(str(e.get("message") or e.get("type") or e)
+                                 for e in errors if isinstance(e, dict))
+            _log.warning("responses._fetch: gh graphql reported errors for %d PRs (%s); "
+                         "%d resolved, %d gone from the repo, %d unread: %s",
+                         len(chunk), _span(chunk),
+                         sum(1 for j in range(len(chunk)) if repo.get(f"p{j}")),
+                         len(gone), len(unread), messages[:200])
         failed.extend(unread)
         for j, n in enumerate(chunk):
             node = repo.get(f"p{j}")

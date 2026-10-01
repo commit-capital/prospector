@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from issue_triage import dispute_question
-from pipeline import diffpaths, settings, storekit
+from pipeline import diffpaths, gates, settings, storekit
 
 if TYPE_CHECKING:
     from issue_triage.issue_model import Issue
@@ -91,12 +91,22 @@ def fix_status(issue: Issue) -> tuple[str, str] | None:
     return "declined", f"{ending}: {detail}"
 
 
-def _fits(action: str, run: dict | None, *, guidance: str | None,
-          answer: dict | None, followup: dict | None = None) -> str | None:
-    """Why `action` does not fit the latest attempt `run`, whose proposal's
-    follow-up record is `followup`, or None when it does."""
-    if action == "solve":
+def open_pr(issue: Issue) -> int | None:
+    """The pull request issue's fix attempt is proposed as, until its follow-up
+    sees it merged or closed. A send-back revises the change on it, and the
+    attempt cannot be replaced while it is open."""
+    pr = ((issue.fix_run or {}).get("proposal") or {}).get("pr")
+    if not pr or followup_for(issue.fix_followup, pr).get("state") == "done":
         return None
+    return int(pr)
+
+
+def _fits(action: str, run: dict | None, *, guidance: str | None,
+          answer: dict | None, pr: int | None, followup: dict | None = None) -> str | None:
+    """Why `action` does not fit the latest attempt `run`, open as pull request
+    `pr` and followed up in `followup`, or None when it does."""
+    if action == "solve":
+        return f"#{pr} is open with this attempt's fix; send it back to change it" if pr else None
     if not run:
         return "there is no fix attempt to act on"
     ending = run.get("ending")
@@ -138,7 +148,8 @@ def queue(store: IssueStore, n: int, action: str, *, by: str, source: str = "ope
           guidance: str | None = None, answer: dict | None = None,
           dry_run: bool = False) -> tuple[bool, str]:
     """Queue `action` on issue `n`'s fix attempt for the worker, recording the
-    operator's words in the thread. (ok, reason)."""
+    operator's words in the thread. A request that retries a failed one of the
+    same action carries its attempt count on. (ok, reason)."""
     issue = store.load_issue(n)
     if issue is None:
         return False, f"issue #{n} is not in the store"
@@ -147,12 +158,14 @@ def queue(store: IssueStore, n: int, action: str, *, by: str, source: str = "ope
     req = issue.fix_request
     if req and req.get("status") in IN_FLIGHT:
         return False, f"a {req.get('action')} request is already {req.get('status')}"
-    why = _fits(action, issue.fix_run, guidance=guidance, answer=answer,
+    why = _fits(action, issue.fix_run, guidance=guidance, answer=answer, pr=open_pr(issue),
                 followup=issue.fix_followup)
     if why:
         return False, why
+    retry = bool(req and req.get("status") == "failed" and req.get("action") == action)
     section: dict = {"action": action, "status": "queued", "source": source,
-                     "requested_by": by, "queued_at": storekit.now(), "dry_run": dry_run}
+                     "requested_by": by, "queued_at": storekit.now(), "dry_run": dry_run,
+                     "attempts": int((req or {}).get("attempts") or 1) + 1 if retry else 1}
     if guidance and guidance.strip():
         section["guidance"] = guidance.strip()
     if answer:
@@ -182,10 +195,12 @@ def cancel(store: IssueStore, n: int, *, by: str) -> tuple[bool, str]:
 
 
 def queued_issues(issues: dict[int, Issue]) -> list[int]:
-    """Issues with a queued request, oldest first."""
-    rows = [((i.fix_request or {}).get("queued_at") or "", n) for n, i in issues.items()
+    """Issues with a queued request, a maintainer's (gates.priority_author)
+    first, then oldest first."""
+    rows = [(not gates.priority_author(i.author, i.author_association),
+             (i.fix_request or {}).get("queued_at") or "", n) for n, i in issues.items()
             if (i.fix_request or {}).get("status") == "queued"]
-    return [n for _, n in sorted(rows)]
+    return [n for *_, n in sorted(rows)]
 
 
 def _proof(proof: dict) -> dict:
