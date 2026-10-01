@@ -2,9 +2,11 @@
 status, the distilled run, and the runner's dispatch."""
 from __future__ import annotations
 
+import json
+
 import pytest
 
-from issue_triage import fix_review, fix_review_runner
+from issue_triage import fix_review, fix_review_runner, propose
 from issue_triage.issue_store import IssueStore
 from pipeline import settings
 
@@ -54,11 +56,20 @@ def test_one_request_at_a_time(store):
                           "question": {**QUESTION, "asked": {"at": "t"}}}, "already asked"),
     ("propose", {}, {"ending": "fix-disputed"}, "not 'fixed'"),
     ("propose", {}, {"proposal": {"pr": 9}}, "already open"),
+    ("solve", {}, {"proposal": {"pr": 9}}, "#9 is open"),
 ])
 def test_an_action_that_does_not_fit_the_attempt_is_refused(store, action, kw, run, why):
     _run(store, **run)
     ok, reason = fix_review.queue(store, 7, action, by="op", **kw)
     assert not ok and why in reason
+
+
+def test_a_proposal_the_follow_up_saw_close_no_longer_holds_the_attempt(store):
+    _run(store, proposal={"pr": 9, "url": "u"})
+    assert fix_review.open_pr(store.load_issue(7)) == 9
+    store.edit_issue(7).record_fix_followup({"pr": 9, "state": "done"})
+    assert fix_review.open_pr(store.load_issue(7)) is None
+    assert fix_review.queue(store, 7, "solve", by="op")[0]
 
 
 def test_an_answer_names_an_option_or_says_what_should_happen(store):
@@ -206,6 +217,85 @@ def test_a_run_taken_back_leaves_the_request_queued_since(store, monkeypatch):
     fix_review_runner.run_request(store, 7, req)
     after = store.load_issue(7).fix_request
     assert after["status"] == "queued" and after["guidance"] == "try the parser"
+
+
+@pytest.fixture
+def proposed(store, tmp_path, monkeypatch):
+    """Issue 7's fixed attempt open as #9, handed back, with its result on disk."""
+    _run(store, proposal={"pr": 9, "url": "u"})
+    store.edit_issue(7).record_fix_followup({"pr": 9, "state": "handed-back", "head_sha": "h" * 40,
+                                             "reason": "2 revisions spent", "revisions": 2})
+    monkeypatch.setattr(propose, "result_dir", lambda n: tmp_path / f"issue-{n}")
+    (tmp_path / "issue-7").mkdir()
+    (tmp_path / "issue-7" / "result.json").write_text(json.dumps(
+        {"ending": "fixed", "result": {"patch": "diff --git a/x b/x\n"}}))
+    monkeypatch.setattr(fix_review_runner, "route", lambda comments: "revise")
+    monkeypatch.setattr(fix_review_runner, "solve",
+                        lambda *a, **k: pytest.fail("started over on an open pull request"))
+    return tmp_path / "issue-7" / "result.json"
+
+
+def _revised(result_file, ending: str = "fixed"):
+    def revise(store_, n, **kw):
+        result_file.write_text(json.dumps({"ending": ending}))
+        return {"ending": ending, "detail": "d", "result": {"patch": "diff --git a/x b/x\n+y\n"}}
+    return revise
+
+
+def test_an_operator_send_back_on_an_open_pull_request_goes_onto_it(store, proposed, monkeypatch):
+    from prospector_app.backend import executor
+    monkeypatch.setattr(fix_review_runner, "revise", _revised(proposed))
+    monkeypatch.setattr(executor, "mint_bot_token", lambda: "t")
+    calls = []
+    monkeypatch.setattr(executor, "update_issue_fix_proposal",
+                        lambda n, pr, **kw: calls.append((n, pr, kw)) or {
+                            "status": "executed", "detail": "Pushed a revision on #9"})
+    fix_review.queue(store, 7, "send-back", by="op", guidance="handle the empty case too")
+    status, outcome = fix_review_runner.run_request(store, 7, store.claim_fix_request(7, host="s"))
+    issue = store.load_issue(7)
+    assert status == "done" and outcome.startswith("Revised #9")
+    assert calls == [(7, 9, {"push": True, "token": "t", "dry_run": False})]
+    assert issue.fix_run["proposal"] == {"pr": 9, "url": "u"}
+    assert issue.fix_run["patch"].endswith("+y\n")
+    assert issue.fix_followup["state"] == "watching" and issue.fix_followup["revisions"] == 2
+    assert fix_review.fix_status(issue)[0] == "pr-open"
+
+
+def test_a_send_back_that_asks_to_start_over_an_open_pull_request_is_refused(
+        store, proposed, monkeypatch):
+    kept = proposed.read_text()
+    monkeypatch.setattr(fix_review_runner, "route", lambda comments: "restart")
+    fix_review.queue(store, 7, "send-back", by="op", guidance="wrong approach, start over")
+    status, outcome = fix_review_runner.run_request(store, 7, store.claim_fix_request(7, host="s"))
+    issue = store.load_issue(7)
+    assert status == "failed" and "#9 is open" in outcome
+    assert issue.fix_run["proposal"] == {"pr": 9, "url": "u"}
+    assert proposed.read_text() == kept
+
+
+@pytest.mark.parametrize("ending,res,want", [
+    ("fixed", {"status": "dry-run", "detail": "would have pushed a revision on #9"}, "Dry run:"),
+    ("no-fix", None, "#9 is unchanged"),
+])
+def test_a_send_back_that_does_not_reach_the_pull_request_leaves_it_as_it_was(
+        store, proposed, monkeypatch, ending, res, want):
+    from prospector_app.backend import executor
+    kept = proposed.read_text()
+    monkeypatch.setattr(fix_review_runner, "revise", _revised(proposed, ending))
+    monkeypatch.setattr(executor, "mint_bot_token", lambda: pytest.fail("minted on a dry run"))
+    seen = {}
+    monkeypatch.setattr(executor, "update_issue_fix_proposal",
+                        lambda n, pr, **kw: seen.update(kw) or res)
+    fix_review.queue(store, 7, "send-back", by="op", guidance="g", dry_run=True)
+    status, outcome = fix_review_runner.run_request(store, 7, store.claim_fix_request(7, host="s"))
+    issue = store.load_issue(7)
+    assert status == "done" and want in outcome
+    assert seen == ({"push": True, "token": None, "dry_run": True} if res else {})
+    assert proposed.read_text() == kept
+    assert issue.fix_run["proposal"] == {"pr": 9, "url": "u"} and issue.fix_run["patch"] == (
+        "diff --git a/x b/x\n")
+    assert issue.fix_followup["state"] == "handed-back"
+    assert fix_review.fix_status(issue)[0] == "review"
 
 
 def test_a_failure_ends_the_request_failed_with_the_reason(store, monkeypatch):

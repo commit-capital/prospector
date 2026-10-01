@@ -64,11 +64,22 @@ def fix_status(issue: Issue) -> tuple[str, str] | None:
     return "declined", f"{ending}: {detail}"
 
 
-def _fits(action: str, run: dict | None, *, guidance: str | None,
-          answer: dict | None) -> str | None:
-    """Why `action` does not fit the latest attempt `run`, or None when it does."""
-    if action == "solve":
+def open_pr(issue: Issue) -> int | None:
+    """The pull request issue's fix attempt is proposed as, until the follow-up
+    sees it merged or closed. A send-back revises the change on it, and the
+    attempt cannot be replaced while it is open."""
+    pr = ((issue.fix_run or {}).get("proposal") or {}).get("pr")
+    if not pr or (issue.fix_followup or {}).get("state") == "done":
         return None
+    return int(pr)
+
+
+def _fits(action: str, run: dict | None, *, guidance: str | None,
+          answer: dict | None, pr: int | None) -> str | None:
+    """Why `action` does not fit the latest attempt `run`, open as pull request
+    `pr`, or None when it does."""
+    if action == "solve":
+        return f"#{pr} is open with this attempt's fix; send it back to change it" if pr else None
     if not run:
         return "there is no fix attempt to act on"
     ending = run.get("ending")
@@ -115,7 +126,7 @@ def queue(store: IssueStore, n: int, action: str, *, by: str, source: str = "ope
     req = issue.fix_request
     if req and req.get("status") in IN_FLIGHT:
         return False, f"a {req.get('action')} request is already {req.get('status')}"
-    why = _fits(action, issue.fix_run, guidance=guidance, answer=answer)
+    why = _fits(action, issue.fix_run, guidance=guidance, answer=answer, pr=open_pr(issue))
     if why:
         return False, why
     retry = bool(req and req.get("status") == "failed" and req.get("action") == action)
