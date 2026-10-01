@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import functools
 import json
 import os
 import platform
@@ -348,6 +349,52 @@ def daemon_available() -> bool:
     p = subprocess.run(["docker", "version", "--format", "{{.Server.Version}}"],
                        capture_output=True, env=launcher_env())
     return p.returncode == 0
+
+
+# A large phase's memory class, and what the VM keeps for everything else
+# (the small phases, the daemon, the kernel) before it fits another one.
+LARGE_PHASE_GIB = 10
+VM_RESERVE_GIB = 4
+MAX_LARGE_SLOTS = 4
+
+
+@functools.lru_cache(maxsize=1)
+def _vm_size() -> tuple[int, int] | None:
+    """(memory GiB, CPUs) of the Docker VM, or None when the daemon does not
+    answer."""
+    try:
+        p = subprocess.run(["docker", "info", "--format", "{{.MemTotal}} {{.NCPU}}"],
+                           capture_output=True, text=True, env=launcher_env(), timeout=30)
+        mem, cpus = p.stdout.split()
+        return int(mem) // 2**30, int(cpus)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+
+def large_slots() -> int:
+    """How many large phases run at once: TRIAGE_SANDBOX_LARGE_SLOTS when set,
+    else as many as the Docker VM's memory holds beside its reserve, one at
+    least."""
+    named = settings.sandbox_large_slots()
+    if named:
+        return named
+    size = _vm_size()
+    if size is None:
+        return 1
+    return max(1, min(MAX_LARGE_SLOTS, (size[0] - VM_RESERVE_GIB) // (LARGE_PHASE_GIB + 1)))
+
+
+def large_cpus() -> int:
+    """The CPUs each large phase gets: TRIAGE_SANDBOX_LARGE_CPUS when set, else
+    the VM's CPUs shared between the large slots and the rest of the work,
+    between two and six."""
+    named = settings.sandbox_large_cpus()
+    if named:
+        return named
+    size = _vm_size()
+    if size is None:
+        return 2
+    return max(2, min(6, size[1] // (large_slots() + 1)))
 
 
 def image_exists(image: str) -> bool:
@@ -995,7 +1042,7 @@ def _stop_timed_out_phase(proc: subprocess.Popen[bytes], container: str,
 # The phases the launcher runs at its large memory class (10g). More of them at
 # once than the Docker VM's memory holds and the kernel kills whichever is
 # bigger, so every large phase on this machine takes one of
-# settings.sandbox_large_slots() host locks first, whichever worker thread or
+# large_slots() host locks first, whichever worker thread or
 # orchestrator process is asking. The small phases (2g) run unserialized.
 LARGE_PHASES = frozenset({"compile", "build", "baseline", "regress"})
 _LARGE_LOCK_NAME = "sandbox-large.lock"
@@ -1021,7 +1068,7 @@ class _LargePhaseLock:
         if self.phase not in LARGE_PHASES:
             return self
         SCRATCH.mkdir(parents=True, exist_ok=True)
-        slots = settings.sandbox_large_slots()
+        slots = large_slots()
         waited = 0.0
         while self._fh is None:
             for slot in range(slots):
@@ -1174,7 +1221,7 @@ def _run_phase_locked(phase: str, image: str, *, patch: Path | None, tier: int,
     if pre_patch is not None:
         argv += ["--pre-patch", str(pre_patch)]
     if phase in LARGE_PHASES:
-        argv += ["--cpus", str(settings.sandbox_large_cpus())]
+        argv += ["--cpus", str(large_cpus())]
     if pristine:
         argv += ["--pristine"]
     if exclude_file is not None:

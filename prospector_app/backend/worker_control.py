@@ -1,31 +1,31 @@
-"""Turning this machine's worker lanes on and off.
+"""This machine's worker lanes and the automation's settings.
 
-Two operations, both local to this backend: write the worker flags to the repo
-root `.env`, and reconcile the running threads with what those flags now say.
+Two operations, both local to this backend: write settings to the repo-root
+`.env`, and reconcile the running threads with what the lane switches now say.
 The Setup view is the caller; `setup-worker-machine.sh` writes the same keys
 through the same allowlist, so the script and the app cannot disagree.
 
-The allowlist is the whole safety story. `.env` also holds TRIAGE_STORE_URL
-with its password, the bot PEM's path, and the push key's path; this module
-never reads one back to a caller and never writes a key outside WRITABLE. An
-unknown key is a hard error rather than a silent skip, so a typo can never look
-like it applied.
+The allowlist is the whole safety story: WRITABLE is the settings
+`settings_registry` marks editable — the lane switches, the worker's name, the
+automation's behavior and this machine's sandbox sizes — and nothing in it names
+a credential, a path, or the store. `.env` also holds TRIAGE_STORE_URL with its
+password, the bot PEM's path, and the push key's path; this module never reads
+one back to a caller and never writes a key outside WRITABLE. An unknown key is a
+hard error rather than a silent skip, so a typo can never look like it applied.
 """
 from __future__ import annotations
 
 import os
 import re
 
-from pipeline import settings
+from pipeline import settings, settings_registry
 from prospector_app.backend import env_file, fix_worker, issue_fix_worker, verify_worker
 
-# The only keys this module may write: the worker lane switches and the name
-# the lanes stamp on their work — nothing here names a credential, a path, or
-# the store.
-WRITABLE = ("TRIAGE_VERIFY_WORKER", "TRIAGE_VERIFY_AUTOHUNT",
-            "TRIAGE_FIX_WORKER", "TRIAGE_FIX_AUTOHUNT", "TRIAGE_FIX_HUNT_FIX",
-            "TRIAGE_FIX_HUNT_RESOLVE", "TRIAGE_FIX_AUTOPUSH", "TRIAGE_ISSUE_FIX_WORKER",
-            "TRIAGE_ISSUE_FIX_HUNT", "TRIAGE_WORKER_ID")
+# The only keys this module may write.
+WRITABLE = settings_registry.editable()
+# The lane switches the Setup page's worker section shows and `apply` reconciles.
+LANE_FLAGS = tuple(s.name for s in settings_registry.SETTINGS
+                   if s.group == "workers")
 
 # What a worker id may look like: one token a registry key, a log line, and an
 # issue title can all carry verbatim.
@@ -33,8 +33,8 @@ _WORKER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
 def flags() -> dict[str, str]:
-    """The current value of each writable flag, from the live environment."""
-    return {k: os.environ.get(k, "") for k in WRITABLE}
+    """The current value of each lane switch, from the live environment."""
+    return {k: os.environ.get(k, "") for k in LANE_FLAGS}
 
 
 def _validated(updates: dict[str, str]) -> dict[str, str]:
@@ -43,7 +43,7 @@ def _validated(updates: dict[str, str]) -> dict[str, str]:
     refusing here is what keeps the app from writing a .env that fails to load."""
     unknown = sorted(set(updates) - set(WRITABLE))
     if unknown:
-        raise ValueError(f"not a worker flag: {', '.join(unknown)}")
+        raise ValueError(f"not a setting the app may write: {', '.join(unknown)}")
     clean = {k: str(v).strip() for k, v in updates.items()}
     if "TRIAGE_FIX_AUTOPUSH" in clean:
         names = {p.strip().lower() for p in clean["TRIAGE_FIX_AUTOPUSH"].split(",") if p.strip()}
@@ -52,17 +52,15 @@ def _validated(updates: dict[str, str]) -> dict[str, str]:
             raise ValueError(f"not an autofix action: {', '.join(bad)}")
     if "TRIAGE_WORKER_ID" in clean and clean["TRIAGE_WORKER_ID"] and not _WORKER_ID.match(clean["TRIAGE_WORKER_ID"]):
         raise ValueError(f"TRIAGE_WORKER_ID is not a usable worker name: {clean['TRIAGE_WORKER_ID']!r}")
-    for key in ("TRIAGE_VERIFY_WORKER", "TRIAGE_VERIFY_AUTOHUNT",
-                "TRIAGE_FIX_WORKER", "TRIAGE_FIX_AUTOHUNT", "TRIAGE_FIX_HUNT_FIX",
-                "TRIAGE_FIX_HUNT_RESOLVE", "TRIAGE_ISSUE_FIX_WORKER", "TRIAGE_ISSUE_FIX_HUNT"):
-        if key in clean and clean[key] not in ("", "1"):
-            raise ValueError(f"{key} is \"1\" or empty, not {clean[key]!r}")
+    for key in clean:
+        if key not in ("TRIAGE_FIX_AUTOPUSH", "TRIAGE_WORKER_ID"):
+            clean[key] = settings_registry.validate(key, clean[key])
     return clean
 
 
 def set_flags(updates: dict[str, str]) -> dict[str, str]:
     """Write `updates` to `.env` and to this process's environment. Returns the
-    flags as they now stand.
+    lane switches as they now stand.
 
     The allowlist is this module's whole job; env_file owns putting the result
     on disk without disturbing the rest of the file."""

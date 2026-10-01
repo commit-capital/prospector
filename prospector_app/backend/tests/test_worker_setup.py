@@ -46,7 +46,7 @@ class TestSetFlags:
         assert "TRIAGE_FIX_AUTOHUNT=1" in env_path.read_text()
 
     def test_a_key_outside_the_allowlist_is_refused(self, env_path):
-        with pytest.raises(ValueError, match="not a worker flag"):
+        with pytest.raises(ValueError, match="not a setting the app may write"):
             worker_control.set_flags({"TRIAGE_STORE_URL": "postgresql://mine"})
         assert "sup3rsecret" in env_path.read_text()
 
@@ -70,6 +70,26 @@ class TestSetFlags:
         assert "TRIAGE_WORKER_ID=studio-1.local" in env_path.read_text()
         with pytest.raises(ValueError, match="TRIAGE_WORKER_ID"):
             worker_control.set_flags({"TRIAGE_WORKER_ID": "two words"})
+
+    def test_a_behavior_setting_is_written_validated(self, env_path, monkeypatch):
+        monkeypatch.delenv("TRIAGE_FIX_HUNT_LIMIT", raising=False)
+        worker_control.set_flags({"TRIAGE_FIX_HUNT_LIMIT": " 5 "})
+        assert "TRIAGE_FIX_HUNT_LIMIT=5\n" in env_path.read_text()
+        from pipeline import settings
+        assert settings.fix_hunt_limit() == 5
+        with pytest.raises(ValueError, match="whole number"):
+            worker_control.set_flags({"TRIAGE_FIX_HUNT_LIMIT": "many"})
+
+    @pytest.mark.parametrize("key", ["TRIAGE_REPO", "TRIAGE_BOT_KEY_FILE",
+                                     "TRIAGE_PUSH_SSH_KEY_FILE", "TRIAGE_VERIFY_SCRATCH",
+                                     "ANTHROPIC_API_KEY", "TRIAGE_STORE_ALLOW_STALE"])
+    def test_deployment_and_advanced_settings_are_not_writable(self, env_path, key):
+        with pytest.raises(ValueError, match="not a setting the app may write"):
+            worker_control.set_flags({key: "x"})
+
+    def test_teardown_clears_only_the_lane_switches(self):
+        assert "TRIAGE_FIX_HUNT_LIMIT" not in worker_control.LANE_FLAGS
+        assert "TRIAGE_FIX_WORKER" in worker_control.LANE_FLAGS
 
     def test_a_refused_write_leaves_the_file_untouched(self, env_path):
         before = env_path.read_text()
