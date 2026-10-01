@@ -111,6 +111,10 @@ class Pr:
         return self._meta().get("author")
 
     @property
+    def author_association(self) -> str | None:
+        return self._meta().get("author_association")
+
+    @property
     def title(self) -> str | None:
         return self._meta().get("title")
 

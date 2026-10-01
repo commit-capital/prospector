@@ -128,3 +128,10 @@ def test_issues_query_asks_for_the_fields_the_normalizer_reads():
     q = fetch_issues._ISSUES_QUERY
     for field in ("lastEditedAt", "assignees(", "closedByPullRequestsReferences("):
         assert field in q
+
+
+def test_both_transports_carry_the_author_association():
+    assert normalize_gql(_node(authorAssociation="MEMBER"))["author_association"] == "MEMBER"
+    rest = normalize_issue({"number": 1, "reactions": {}, "user": {"login": "o"},
+                            "author_association": "OWNER"})
+    assert rest["author_association"] == "OWNER"

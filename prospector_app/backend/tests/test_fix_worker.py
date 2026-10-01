@@ -2550,3 +2550,29 @@ class TestSecurityLaneBounds:
         store.save_pr(rec)
         data.refresh()
         assert fix_worker.next_auto() is None
+
+
+def test_a_maintainer_s_pr_goes_ahead_of_every_hunt_lane(store, fix_profile, monkeypatch):
+    monkeypatch.setenv("TRIAGE_FIX_HUNT_FIX", "1")
+    store.save_pr(_fixable_pr(2))
+    data.refresh()
+    assert fix_worker.next_auto() == ("fix", 2, None)
+    rec = store.load_pr(1).raw
+    rec["meta"].update(author="maint", author_association="MEMBER")
+    store.save_pr(rec)
+    data.refresh()
+    assert fix_worker.next_auto() == ("rebase", 1, None)
+
+
+def test_next_queued_takes_a_maintainer_s_request_ahead_of_an_older_one(store):
+    one = store.load_pr(1).raw
+    one["fix_request"] = {"status": "queued", "action": "rebase", "source": "auto",
+                          "queued_at": "2026-07-01T00:00:00+00:00"}
+    store.save_pr(one)
+    two = _fixable_pr(2)
+    two["meta"].update(author="maint", author_association="OWNER")
+    two["fix_request"] = {"status": "queued", "action": "rebase", "source": "auto",
+                          "queued_at": "2026-07-20T00:00:00+00:00"}
+    store.save_pr(two)
+    data.refresh()
+    assert fix_worker.next_queued() == 2
