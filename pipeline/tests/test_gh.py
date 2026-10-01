@@ -4,6 +4,8 @@ import json
 import subprocess
 import types
 
+import pytest
+
 from pipeline import gh
 
 
@@ -232,3 +234,49 @@ def test_gh_graphql_does_not_retry_other_failures(monkeypatch):
     monkeypatch.setattr(gh.subprocess, "run", _scripted_run(
         [(1, '{"message": "Bad credentials"}', "gh: Bad credentials (HTTP 401)")]))
     assert gh.gh_graphql("query {}", rate_limit_waits=(5,)) is None
+
+
+def test_gh_graphql_sends_variables_as_string_fields(monkeypatch):
+    # `-F` would coerce an all-digit cursor to an int against a String variable.
+    seen = {}
+
+    def run(argv, *, capture_output=True, text=True, timeout=60, env=None):
+        seen["argv"] = argv
+        return types.SimpleNamespace(returncode=0, stdout='{"data": {}}', stderr="")
+
+    monkeypatch.setattr(gh.subprocess, "run", run)
+    gh.gh_graphql("query { viewer { login } }", variables={"cursor": "123"})
+    argv = seen["argv"]
+    assert "-F" not in argv
+    assert argv[argv.index("cursor=123") - 1] == "-f"
+
+
+def test_gh_graphql_data_returns_data(monkeypatch):
+    monkeypatch.setattr(gh.subprocess, "run", _fake_run('{"data": {"x": 1}}'))
+    assert gh.gh_graphql_data("query {}") == {"x": 1}
+
+
+def test_gh_graphql_data_raises_with_gh_error_text(monkeypatch):
+    monkeypatch.setattr(gh.subprocess, "run", _scripted_run(
+        [(1, '{"message": "secondary"}', _SECONDARY)]))
+    with pytest.raises(RuntimeError, match="secondary rate limit"):
+        gh.gh_graphql_data("query {}")
+
+
+def test_gh_graphql_data_raises_on_partial_data(monkeypatch):
+    envelope = json.dumps({"data": {"repository": None},
+                           "errors": [{"message": "Something went wrong"}]})
+    monkeypatch.setattr(gh.subprocess, "run", _fake_run(envelope, returncode=1))
+    with pytest.raises(RuntimeError, match="Something went wrong"):
+        gh.gh_graphql_data("query {}")
+
+
+def test_gh_graphql_data_retries_secondary_rate_limit(monkeypatch):
+    slept = []
+    monkeypatch.setattr(gh.time, "sleep", slept.append)
+    monkeypatch.setattr(gh.subprocess, "run", _scripted_run([
+        (1, '{"message": "secondary"}', _SECONDARY),
+        (0, '{"data": {"x": 1}}', ""),
+    ]))
+    assert gh.gh_graphql_data("query {}", rate_limit_waits=(5,)) == {"x": 1}
+    assert slept == [5]
