@@ -7,7 +7,10 @@ the sandbox, and write what happened back to the issue.
 - `send-back` asks a small agent whether the comments keep the fix's approach
   (`revise`: one agent revises the current change on a clone that holds it, then
   the host's checks and the scope review) or discard it (`restart`: `solve` with
-  the comments as guidance).
+  the comments as guidance). While the attempt is open as a pull request
+  (`fix_review.open_pr`), a fixed revision goes onto it as one more commit, the
+  way the follow-up's own revisions do, and a restart is refused: the pull
+  request and its reviews belong to the approach the comments discard.
 - `answer` resumes a dispute on the chosen reading (`cross_lane.judge_reading`),
   or re-solves with the question and a written answer as guidance.
 - `ask-reporter` and `propose` take the executor's bot paths.
@@ -244,10 +247,20 @@ def _carry_out(store: IssueStore, n: int, action: str, req: dict, *,
         _write_run(store, n, record, question)
         return f"Solved: {record['ending']} — {record['detail']}"
     if action == "send-back" and req.get("source") == "followup":
-        return _follow_up(store, n, guidance or "", on_step=on_step)
+        return _revise_proposal(store, n, guidance or "", trigger="followup",
+                                live=settings.issue_fix_followup() == "live", on_step=on_step)
     if action == "send-back":
+        issue = store.load_issue(n)
+        pr = fix_review.open_pr(issue) if issue else None
         mode = route(guidance or "")
         on_step(f"the comments ask to {mode}")
+        if pr and mode == "restart":
+            raise RequestFailed(f"the comments ask to start over, but #{pr} is open with this "
+                                f"fix; a send-back revises the change on #{pr}, so say what "
+                                "to change in it")
+        if pr:
+            return _revise_proposal(store, n, guidance or "", trigger="send-back",
+                                    live=not req.get("dry_run"), on_step=on_step)
         if mode == "restart":
             record, question = solve(store, n, guidance=guidance, trigger="send-back",
                                      on_step=on_step)
@@ -265,25 +278,25 @@ def _carry_out(store: IssueStore, n: int, action: str, req: dict, *,
     raise RequestFailed(f"unknown action {action!r}")
 
 
-def _follow_up(store: IssueStore, n: int, guidance: str, *,
-               on_step: Callable[[str], None]) -> str:
-    """Revise the fix behind issue `n`'s open pull request under the follow-up's
-    `guidance` and, when the revision ends `fixed`, push it onto the same
-    branch (`executor.update_issue_fix_proposal`). A revision that ends any
-    other way leaves the pull request, the run it shows, and the result on
-    disk as they were."""
+def _revise_proposal(store: IssueStore, n: int, guidance: str, *, trigger: str, live: bool,
+                     on_step: Callable[[str], None]) -> str:
+    """Revise the fix behind issue `n`'s open pull request under `guidance`
+    and, when the revision ends `fixed`, push it onto the same branch
+    (`executor.update_issue_fix_proposal`) and set the follow-up watching the
+    new head. A revision that ends any other way, or does not reach the pull
+    request, leaves the pull request, the run it shows, and the result on disk
+    as they were. Everything but the writes when not `live`."""
     from prospector_app.backend import executor
 
     issue = store.load_issue(n)
-    run = dict((issue.fix_run if issue else None) or {})
-    proposal = run.get("proposal") or {}
-    pr = proposal.get("pr")
-    if not pr:
-        raise RequestFailed("the attempt has no open pull request to follow up")
+    pr = fix_review.open_pr(issue) if issue else None
+    if issue is None or pr is None:
+        raise RequestFailed("the attempt has no open pull request to revise")
+    proposal = (issue.fix_run or {})["proposal"]
     result_file = propose.result_dir(n) / "result.json"
     kept = result_file.read_text()
     try:
-        record = revise(store, n, comments=guidance, on_step=on_step, trigger="followup")
+        record = revise(store, n, comments=guidance, on_step=on_step, trigger=trigger)
     except BaseException:
         result_file.write_text(kept)
         raise
@@ -292,10 +305,8 @@ def _follow_up(store: IssueStore, n: int, guidance: str, *,
         return (f"The revision ended {record.get('ending')}: {record.get('detail')}; "
                 f"#{pr} is unchanged")
     on_step("pushing the revision")
-    live = settings.issue_fix_followup() == "live"
     token = executor.mint_bot_token() if live else None
-    res = executor.update_issue_fix_proposal(n, int(pr), push=True, token=token,
-                                             dry_run=not live)
+    res = executor.update_issue_fix_proposal(n, pr, push=True, token=token, dry_run=not live)
     if res.get("status") in ("blocked", "error"):
         result_file.write_text(kept)
         raise RequestFailed(f"the revision could not go onto #{pr}: {res.get('detail')}")
@@ -304,7 +315,11 @@ def _follow_up(store: IssueStore, n: int, guidance: str, *,
         return f"Dry run: {res.get('detail')}"
     distilled = fix_review.distill(record)
     distilled["proposal"] = proposal
-    store.edit_issue(n).record_fix_run(distilled)
+    edit = store.edit_issue(n)
+    edit.record_fix_run(distilled)
+    if edit.fix_followup:
+        edit.record_fix_followup({**edit.fix_followup, "state": "watching",
+                                  "reason": "revision pushed; following up the new head"})
     return f"Revised #{pr}: {res.get('detail')}"
 
 

@@ -1277,6 +1277,8 @@ export interface IssueDetail extends IssueRow {
   fix_run?: IssueFixRun | null;
   fix_thread?: IssueFixThreadEntry[];
   fix_followup?: IssueFixFollowup | null;
+  /** The pull request the fix attempt is open as (fix_review.open_pr). */
+  fix_pr?: number | null;
 }
 /** Where the follow-up on an issue's proposed pull request stands
  *  (issue_triage/followup.py): the last step it took or waits on, and why. */

@@ -890,6 +890,10 @@ def test_rows_and_detail_carry_the_fix_attempt(tmp_path, monkeypatch):
     assert rows[11]["fix_status"] is None
     detail = issues.get_issue(10)
     assert detail["fix_run"]["ending"] == "fixed" and detail["fix_thread"][0]["text"] == "hi"
+    assert detail["fix_pr"] is None
+    st.edit_issue(10).record_fix_run({"ending": "fixed", "detail": "proven", "patch": "p",
+                                      "host": "studio", "proposal": {"pr": 9, "url": "u"}})
+    assert issues.get_issue(10)["fix_pr"] == 9
 
 
 def test_the_query_filters_and_sorts_on_fix_status(tmp_path, monkeypatch):
