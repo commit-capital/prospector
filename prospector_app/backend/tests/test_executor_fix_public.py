@@ -91,3 +91,11 @@ def test_another_author_s_copy_of_the_marker_does_not_count(gh, monkeypatch):
     res = executor.post_fix_comment(7, "B <!-- m -->", marker="<!-- m -->", issue=7,
                                     comment_kind="no-fix", token="tok", dry_run=False)
     assert res["status"] == "executed"
+
+
+def test_a_marker_quoted_inside_another_bot_comment_does_not_count(gh, monkeypatch):
+    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triagebot")
+    gh["comments"].append({"login": "triagebot[bot]", "body": "<!-- m --> and then more"})
+    res = executor.post_fix_comment(7, "B\n<!-- m -->", marker="<!-- m -->", issue=7,
+                                    comment_kind="no-fix", token="tok", dry_run=False)
+    assert res["status"] == "executed"

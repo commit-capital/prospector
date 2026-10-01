@@ -1323,13 +1323,13 @@ def set_fix_label(number: int, *, add: str | None, remove: str | None, issue: in
 
 
 def _bot_commented_with(number: int, marker: str) -> bool:
-    """Whether the bot already posted a comment carrying `marker` on issue or
+    """Whether the bot already posted a comment ending in `marker` on issue or
     pull request `number`, over every page of its comments."""
     comments = gh.issue_comments(int(number))
     if comments is None:
         raise RuntimeError(f"the comments on #{number} could not be read")
     return any(_is_bot_login((c.get("user") or {}).get("login"))
-               and marker in (c.get("body") or "") for c in comments)
+               and (c.get("body") or "").rstrip().endswith(marker) for c in comments)
 
 
 def post_fix_comment(number: int, body: str, *, marker: str, issue: int, comment_kind: str,

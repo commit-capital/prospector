@@ -27,6 +27,12 @@ as guidance. An edit to the report after the attempt starts one the same way.
 Replies start at most MAX_REATTEMPTS attempts per issue; past that the issue
 gets one comment saying it is left to a maintainer.
 
+A request the loop queued (or the hunter did) that a machine fault ended is
+queued again after RETRY_COOLDOWN, at most MAX_RETRIES times per issue, and the
+issue reads `fix in progress` meanwhile. An attempt that
+finished more than QUEUE_MAX_AGE ago starts nothing on its own. An issue that
+leaves scope has the labels recorded for it taken off, and nothing more.
+
 Under `TRIAGE_ISSUE_FIX_PUBLIC=dry-run` each write is logged as a dry-run and
 noted once on the issue's thread, and the record of what it would have written
 (`fix_public.dry`) is kept apart from the live one. A pass holds a short lease
@@ -61,8 +67,12 @@ LABELS: dict[str, tuple[str, str]] = {
     READY: ("0e8a16", "An automated fix is ready for a maintainer's review"),
     COULDNT_FIX: ("bfd4f2", "The automated fix pipeline could not fix this"),
 }
-# An attempt's conclusion comment posts only this soon after it finished.
+# An attempt's conclusion comment posts only this soon after it finished, and
+# the request it starts on its own only this soon.
 COMMENT_MAX_AGE = timedelta(days=1)
+QUEUE_MAX_AGE = timedelta(days=3)
+RETRY_COOLDOWN = timedelta(hours=1)
+MAX_RETRIES = 3
 LEASE = timedelta(minutes=5)
 ERROR_BACKOFF = timedelta(minutes=30)
 REFRESH_LOOKBACK = timedelta(days=1)
@@ -75,6 +85,15 @@ MAX_REATTEMPTS = 3
 CAP_KEY = "reattempts:capped"
 
 _refreshed: dict[str, str] = {}
+
+
+@dataclass(frozen=True)
+class Queued:
+    """A request the attempt starts on its own, recorded under `key`."""
+    action: str
+    key: str
+    guidance: str | None = None
+    answer: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -136,6 +155,8 @@ def label_for(issue: Issue) -> str | None:
         return NEEDS_ANSWER
     if kind == "declined":
         return None if run.get("ending") == "cancelled" else COULDNT_FIX
+    if kind == "failed" and _retry_of(issue, issue.fix_public) is not None:
+        return IN_PROGRESS
     return None
 
 
@@ -147,6 +168,14 @@ def label_targets(issue: Issue) -> dict[int, str | None]:
     if pr is not None:
         out[pr] = out[issue.number]
     return out
+
+
+def _when(at: object) -> datetime | None:
+    try:
+        when = datetime.fromisoformat(str(at))
+    except ValueError:
+        return None
+    return when if when.tzinfo else when.replace(tzinfo=timezone.utc)
 
 
 def _recent(at: object, now: datetime) -> bool:
@@ -179,14 +208,15 @@ def comments_due(issue: Issue, now: datetime, view: dict | None = None) -> list[
             return []
         key = f"pr{pr}:opened"
         out = [Due(key, n, "opened", public_comments.opened(n, key, pr, run.get("summary")))]
-        head = str(fu.get("head_sha") or "")[:12]
+        judged = fu.get("judged") or {}
+        head = str(judged.get("head_sha") or "")[:12]
         if head and fu.get("state") == "ready":
             key = f"pr{pr}:{head}:ready"
             out.append(Due(key, pr, "ready", public_comments.ready(n, key)))
         elif head and fu.get("state") == "handed-back":
             key = f"pr{pr}:{head}:handed-back"
             out.append(Due(key, pr, "handed-back",
-                           public_comments.handed_back(n, key, fu.get("reason"))))
+                           public_comments.handed_back(n, key, judged.get("reason"))))
         return out
     if label_for(issue) != COULDNT_FIX or not _recent(run.get("finished"), now):
         return []
@@ -195,19 +225,47 @@ def comments_due(issue: Issue, now: datetime, view: dict | None = None) -> list[
     return [Due(key, n, kind, public_comments.conclusion(n, key, run))]
 
 
-def queue_due(issue: Issue) -> tuple[str, str] | None:
-    """The request the attempt starts on its own, (action, key), or None: a
-    fixed attempt with no pull request opens one; a drafted question is asked."""
+def _retry_of(issue: Issue, view: dict) -> Queued | None:
+    """The request to queue again when the last one the loop or the hunter
+    queued ended in a machine fault (the request failed, or its run faulted),
+    while the issue has retries left; its key numbers the retry."""
+    req = issue.fix_request or {}
+    run = issue.fix_run or {}
+    if req.get("source") not in ("public", "hunter"):
+        return None
+    if not (req.get("status") == "failed"
+            or (req.get("status") == "done" and run.get("fault"))):
+        return None
+    action = str(req.get("action") or "")
+    tries = sum(1 for k in (view.get("queued") or {}) if k.startswith("retry:"))
+    if tries >= MAX_RETRIES:
+        return None
+    return Queued(action, f"retry:{tries + 1}:{action}", guidance=req.get("guidance"),
+                  answer=req.get("answer"))
+
+
+def queue_due(issue: Issue, now: datetime, view: dict | None = None) -> Queued | None:
+    """The request the attempt starts on its own, or None: a fixed attempt with
+    no pull request opens one; a drafted question is asked; a request a machine
+    fault ended runs again after RETRY_COOLDOWN. Nothing for an attempt that
+    finished more than QUEUE_MAX_AGE ago."""
     if issue.state != "open":
         return None
     status = fix_review.fix_status(issue)
     run = issue.fix_run or {}
     if status is None:
         return None
+    retry = _retry_of(issue, view or {})
+    if retry is not None:
+        failed_at = _when((issue.fix_request or {}).get("finished_at"))
+        return retry if failed_at is not None and now - failed_at >= RETRY_COOLDOWN else None
+    finished = _when(run.get("finished"))
+    if finished is None or now - finished > QUEUE_MAX_AGE:
+        return None
     if status[0] == "review" and run.get("ending") == "fixed" and _proposed_pr(run) is None:
-        return "propose", f"{attempt_key(run)}:propose"
+        return Queued("propose", f"{attempt_key(run)}:propose")
     if status[0] == "question":
-        return "ask-reporter", f"{attempt_key(run)}:ask-reporter"
+        return Queued("ask-reporter", f"{attempt_key(run)}:ask-reporter")
     return None
 
 
@@ -226,25 +284,29 @@ def _edit_view(pub: dict, mode: str) -> dict:
 class _Work:
     labels: dict[int, tuple[str | None, str | None]]  # number -> (add, remove)
     comments: list[Due]
-    queue: tuple[str, str] | None
+    queue: Queued | None
 
     def __bool__(self) -> bool:
         return bool(self.labels or self.comments or self.queue)
 
 
 def work_for(issue: Issue, mode: str, now: datetime) -> _Work:
-    """What `sync` would write for `issue` in `mode`, against its record."""
+    """What `sync` would write for `issue` in `mode`, against its record. An
+    issue out of scope only has the labels recorded for it taken off."""
     view = _view(issue.fix_public, mode)
     have = {int(k): v for k, v in (view.get("labels") or {}).items()}
-    want = label_targets(issue)
+    scoped = in_scope(issue)
+    want = label_targets(issue) if scoped else {}
     for number in have:
         want.setdefault(number, None)
     labels = {number: (label, have.get(number)) for number, label in want.items()
               if have.get(number) != label}
+    if not scoped:
+        return _Work(labels=labels, comments=[], queue=None)
     posted = view.get("posted") or {}
     comments = [d for d in comments_due(issue, now, view) if d.key not in posted]
-    queue = queue_due(issue)
-    if queue and queue[1] in (view.get("queued") or {}):
+    queue = queue_due(issue, now, view)
+    if queue and queue.key in (view.get("queued") or {}):
         queue = None
     return _Work(labels=labels, comments=comments, queue=queue)
 
@@ -287,18 +349,20 @@ def _record(store: IssueStore, n: int, mode: str, field: str, key: str,
     _update(store, n, change)
 
 
-def _take_lease(store: IssueStore, n: int, host: str, now: datetime) -> bool:
+def _take_lease(store: IssueStore, n: int, host: str, now: datetime) -> Issue | None:
+    """Lease issue `n` to `host` for LEASE; the issue as the lease found it, or
+    None when another worker holds it or the swap was lost."""
     got = store.stamped_issue(n)
     if got is None:
-        return False
+        return None
     issue, stamp = got
     pub = copy.deepcopy(issue.fix_public)
     lease = pub.get("lease") or {}
     if lease.get("host") not in (None, host) and str(lease.get("until") or "") > _iso(now):
-        return False
+        return None
     pub["lease"] = {"host": host, "until": _iso(now + LEASE)}
     issue.stage_fix_public(pub)
-    return store.save_issue_if(issue, stamp)
+    return issue if store.save_issue_if(issue, stamp) else None
 
 
 def _note(store: IssueStore, n: int, text: str) -> None:
@@ -316,12 +380,13 @@ def sync_issue(store: IssueStore, issue: Issue, *, mode: str, token: str | None,
     in dry-run noted, anything."""
     from prospector_app.backend import executor
 
-    work = work_for(issue, mode, now)
-    if not work or _backing_off(issue, now):
+    if not work_for(issue, mode, now) or _backing_off(issue, now):
         return False
     n = issue.number
-    if not _take_lease(store, n, host, now):
+    leased = _take_lease(store, n, host, now)
+    if leased is None:
         return False
+    work = work_for(leased, mode, now)
     dry = mode == "dry-run"
     failed: str | None = None
     try:
@@ -354,16 +419,17 @@ def sync_issue(store: IssueStore, issue: Issue, *, mode: str, token: str | None,
                              if dry else f"Posted on #{due.number}: ")
                   + _first_line(due.body))
         if work.queue and not failed:
-            action, key = work.queue
+            q = work.queue
             if dry:
-                _note(store, n, f"Dry run: would queue {action}.")
+                _note(store, n, f"Dry run: would queue {q.action}.")
                 ok = True
             else:
-                ok, why = fix_review.queue(store, n, action, by="public", source="public")
+                ok, why = fix_review.queue(store, n, q.action, by="public", source="public",
+                                           guidance=q.guidance, answer=q.answer)
                 if not ok:
-                    _note(store, n, f"Could not queue {action}: {why}.")
+                    _note(store, n, f"Could not queue {q.action}: {why}.")
             if ok:
-                _record(store, n, mode, "queued", key, _iso(now))
+                _record(store, n, mode, "queued", q.key, _iso(now))
     finally:
         def release(pub: dict) -> None:
             pub.pop("lease", None)
@@ -395,21 +461,15 @@ def sync(store: IssueStore, *, mode: str | None = None,
     host = settings.worker_id()
     acted = 0
     for issue in store.all_issues(omit_candidates=True).values():
-        if not (issue.fix_run or issue.fix_request or issue.fix_public) or not in_scope(issue):
+        if not (issue.fix_run or issue.fix_request or issue.fix_public):
+            continue
+        if not in_scope(issue) and not any((issue.fix_public.get("labels") or {}).values()):
             continue
         try:
             acted += sync_issue(store, issue, mode=mode, token=token, host=host, now=now)
         except Exception:
             traceback.print_exc()
     return acted
-
-
-def _when(at: object) -> datetime | None:
-    try:
-        when = datetime.fromisoformat(str(at))
-    except ValueError:
-        return None
-    return when if when.tzinfo else when.replace(tzinfo=timezone.utc)
 
 
 def _is_bot(login: str) -> bool:

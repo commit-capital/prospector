@@ -8,7 +8,14 @@ import pytest
 
 from issue_triage import public_comments, public_loop
 from issue_triage.issue_store import IssueStore
-from issue_triage.public_loop import COULDNT_FIX, IN_PROGRESS, ITERATING, NEEDS_ANSWER, READY
+from issue_triage.public_loop import (
+    COULDNT_FIX,
+    IN_PROGRESS,
+    ITERATING,
+    NEEDS_ANSWER,
+    READY,
+    Queued,
+)
 from pipeline import gh, settings
 
 NOW = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
@@ -125,7 +132,8 @@ def test_an_attempt_without_a_fix_gets_its_conclusion_while_it_is_recent(store):
 def test_a_proposal_is_announced_on_the_issue_and_ready_on_the_pull_request(store):
     store.edit_issue(1).record_fix_run(_run(ending="fixed", proposal={"pr": 9},
                                             summary="Keep the flag"))
-    store.edit_issue(1).record_fix_followup({"pr": 9, "state": "ready", "head_sha": HEAD})
+    store.edit_issue(1).record_fix_followup({"pr": 9, "state": "ready", "head_sha": HEAD,
+                                             "judged": {"head_sha": HEAD, "reason": "green"}})
     opened, ready = public_loop.comments_due(store.load_issue(1), NOW)
     assert (opened.number, opened.kind, opened.key) == (1, "opened", "pr9:opened")
     assert "#9" in opened.body and "Keep the flag" in opened.body
@@ -134,10 +142,21 @@ def test_a_proposal_is_announced_on_the_issue_and_ready_on_the_pull_request(stor
 
 def test_a_fixed_attempt_opens_its_pull_request_and_a_drafted_question_is_asked(store):
     store.edit_issue(1).record_fix_run(_run(ending="fixed", patch="p"))
-    assert public_loop.queue_due(store.load_issue(1)) == ("propose", f"{FINISHED}:propose")
+    assert public_loop.queue_due(store.load_issue(1), NOW) == Queued(
+        "propose", f"{FINISHED}:propose")
     store.edit_issue(1).record_fix_run(_run(ending="fix-disputed", question=QUESTION))
-    assert public_loop.queue_due(store.load_issue(1)) == ("ask-reporter",
-                                                          f"{FINISHED}:ask-reporter")
+    assert public_loop.queue_due(store.load_issue(1), NOW) == Queued(
+        "ask-reporter", f"{FINISHED}:ask-reporter")
+    assert public_loop.queue_due(store.load_issue(1), NOW + timedelta(days=4)) is None
+
+
+def test_the_hand_back_comment_keeps_the_reason_it_was_judged_with(store):
+    store.edit_issue(1).record_fix_run(_run(ending="fixed", proposal={"pr": 9}))
+    store.edit_issue(1).record_fix_followup({
+        "pr": 9, "state": "handed-back", "head_sha": HEAD, "reason": "handed-back at this head",
+        "judged": {"head_sha": HEAD, "reason": "2 revisions spent; greptile 3/5"}})
+    _, back = public_loop.comments_due(store.load_issue(1), NOW)
+    assert back.kind == "handed-back" and "2 revisions spent" in back.body
 
 
 # --- a pass ----------------------------------------------------------------------
@@ -440,3 +459,37 @@ def test_an_open_proposal_s_replies_belong_to_the_follow_up(store, replies):
     replies["comments"] = [_comment("nicky", "change it")]
     assert public_loop.answer_replies(store, mode="live", now=NOW) == 0
     assert replies["reads"] == 0
+
+
+def test_an_issue_that_leaves_scope_has_its_labels_taken_off_and_nothing_more(store, writes):
+    store.edit_issue(1).record_fix_run(_run())
+    public_loop.sync(store, mode="live", now=NOW)
+    raw = store.load_issue(1).raw
+    store.save_issue({**raw, "meta": {**raw["meta"], "author_association": "NONE"}})
+    store.edit_issue(1).record_fix_run(_run(ending="fixed", patch="p"))
+    public_loop.sync(store, mode="live", now=NOW)
+    assert writes[-1] == ("label", 1, None, COULDNT_FIX, False)
+    assert store.load_issue(1).fix_request is None
+
+
+def test_a_pass_decides_from_the_issue_as_its_lease_found_it(store, writes, monkeypatch):
+    store.edit_issue(1).record_fix_run(_run())
+    stale = store.load_issue(1)
+    store.edit_issue(1).record_fix_run(_run(ending="cancelled"))
+    public_loop.sync_issue(store, stale, mode="live", token="t", host="studio", now=NOW)
+    assert writes == []
+
+
+def test_a_request_a_machine_fault_ended_runs_again_after_a_rest(store, writes):
+    store.edit_issue(1).record_fix_run(_run(ending="sandbox", fault=True))
+    store.edit_issue(1).record_fix_request({
+        "action": "solve", "status": "done", "source": "public", "guidance": "try X",
+        "finished_at": FINISHED})
+    issue = store.load_issue(1)
+    assert public_loop.label_for(issue) == IN_PROGRESS
+    assert public_loop.queue_due(issue, NOW - timedelta(minutes=30), {}) is None
+    public_loop.sync(store, mode="live", now=NOW + timedelta(minutes=5))
+    req = store.load_issue(1).fix_request
+    assert (req["action"], req["status"], req["guidance"]) == ("solve", "queued", "try X")
+    spent = {"queued": {f"retry:{k}:solve": "t" for k in (1, 2, 3)}}
+    assert public_loop.queue_due(store.load_issue(1), NOW, spent) is None
