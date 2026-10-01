@@ -7,10 +7,12 @@ knows this machine's worker id and runs the self-test.
 """
 from __future__ import annotations
 
+import threading
+import time
 import traceback
 from collections.abc import Callable
 
-from pipeline import settings, worker_health
+from pipeline import capacity, headless_agent, settings, worker_health
 from prospector_app.backend import data, escalation, worker_selftest
 
 def enabled_lanes() -> tuple[str, ...]:
@@ -32,7 +34,11 @@ def _update(fn: Callable[[dict], object]) -> dict:
 
 def note_failure(lane: str, *, kind: str, reason: str, pr: int | None = None) -> None:
     """One machine-fault ending on `lane`. Escalates when it trips the lane.
-    Best-effort: bookkeeping must not cost the caller its own ending."""
+    A service overload books nothing: it is neither this machine's fault nor
+    the work's. Best-effort: bookkeeping must not cost the caller its own
+    ending."""
+    if headless_agent.transient(reason):
+        return
     try:
         tripped: list[bool] = []
         _update(lambda r: tripped.append(worker_health.record_failure(
@@ -52,7 +58,13 @@ def note_success(lane: str) -> None:
 
 def trip_agent_lanes(reason: str) -> None:
     """The agent CLI cannot run: close every lane this machine runs, now, and
-    escalate the outage once."""
+    escalate the outage once. A spent usage limit trips nothing — the run that
+    hit it paused the account's unattended work until the reset, and the
+    capacity gate holds the lanes until then."""
+    if headless_agent.limit_spent(reason):
+        print(f"[capacity] usage limit reached; unattended agent work waits for the "
+              f"reset: {reason}", flush=True)
+        return
     try:
         newly: list[str] = []
 
@@ -118,3 +130,50 @@ def open_or_retest(lane: str) -> bool:
     except Exception:
         traceback.print_exc()
         return True
+
+
+# How long one capacity decision answers a worker's repeated asks.
+CAPACITY_TTL_SECONDS = 60.0
+_capacity_lock = threading.Lock()
+_capacity_cache: dict[str, tuple[float, capacity.Decision]] = {}
+_capacity_said: dict[str, bool] = {}
+_account_noted: list[str] = []
+
+
+def capacity_open(lane: str) -> bool:
+    """Whether `lane` may start unattended agent work now under this machine's
+    AI account's capacity policy. Asked only with an unattended item in hand,
+    so an idle machine never spends a probe; a decision answers for
+    CAPACITY_TTL_SECONDS, and each change of answer is logged once."""
+    now = time.monotonic()
+    with _capacity_lock:
+        cached = _capacity_cache.get(lane)
+        if cached is not None and now - cached[0] < CAPACITY_TTL_SECONDS:
+            return cached[1].allowed
+    acct = capacity.account()
+    try:
+        decision = capacity.check(data.store(), acct, probe=headless_agent.probe_reading)
+    except Exception as e:
+        decision = capacity.Decision(False, f"the capacity check failed: {e}", None)
+    with _capacity_lock:
+        _capacity_cache[lane] = (now, decision)
+        changed = _capacity_said.get(lane) != decision.allowed
+        _capacity_said[lane] = decision.allowed
+    if changed:
+        when = f" (retry ~{decision.retry_at:%H:%M} UTC)" if decision.retry_at else ""
+        state = "open" if decision.allowed else "paused"
+        print(f"[{lane}] unattended AI work {state}: {decision.reason}{when}", flush=True)
+    if acct is not None and _account_noted != [acct.key]:
+        _note_account(acct)
+    return decision.allowed
+
+
+def _note_account(acct: capacity.Account) -> None:
+    """Stamp this machine's AI account on its worker-health record, so the
+    roster shows which machines share an account."""
+    try:
+        _update(lambda r: r.__setitem__("ai_account", {
+            "key": acct.key, "label": acct.label, "billing": acct.billing}))
+        _account_noted[:] = [acct.key]
+    except Exception:
+        traceback.print_exc()
