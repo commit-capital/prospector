@@ -53,3 +53,12 @@ def test_health_status_lists_tripped_workers_first(store):
     assert [h["host"] for h in st["hosts"]] == ["a", "c", "b"]
     assert st["any_tripped"] is True
     assert st["hosts"][0]["tripped"] == ["fix"]
+
+
+def test_health_status_carries_a_remedy_for_tripped_lanes(store):
+    worker_health.update(store, "a", lambda r: worker_health.trip(
+        r, "fix", kind="agent-unavailable", reason="claude exited 1: Not logged in"))
+    worker_health.update(store, "a", lambda r: worker_health.record_success(r, "verify"))
+    lanes = escalation.health_status()["hosts"][0]["lanes"]
+    assert "/login" in lanes["fix"]["remedy"]
+    assert "remedy" not in lanes["verify"]

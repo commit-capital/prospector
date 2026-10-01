@@ -60,7 +60,8 @@ def offline_workers(now: datetime | None = None) -> list[dict]:
 
 def health_status() -> dict:
     """Every worker's lane health for the app: `{hosts: [{host, lanes}]}`,
-    tripped lanes first."""
+    tripped lanes first, each tripped lane carrying the `remedy` that clears
+    it."""
     hosts = data.store().load_worker_health().get("hosts") or {}
     out = []
     for host, rec in sorted(hosts.items()):
@@ -68,6 +69,11 @@ def health_status() -> dict:
                         ("consecutive_failures", "tripped", "retest",
                          "recent", "last_success_at")}
                  for name, entry in (rec.get("lanes") or {}).items()}
+        for entry in lanes.values():
+            tripped = entry.get("tripped")
+            if tripped:
+                entry["remedy"] = worker_health.remedy(
+                    str(tripped.get("kind") or ""), str(tripped.get("reason") or ""))
         out.append({"host": host, "lanes": lanes,
                     "tripped": sorted(n for n, e in lanes.items() if e.get("tripped"))})
     out.sort(key=lambda h: (not h["tripped"], h["host"]))

@@ -906,6 +906,8 @@ export interface WorkerLaneHealth {
   retest?: { at?: string | null; ok?: boolean | null; detail?: string | null } | null;
   recent?: WorkerLaneFailure[] | null;
   last_success_at?: string | null;
+  /** What the operator does to clear the trip, present while tripped. */
+  remedy?: string | null;
 }
 
 export interface WorkerHealthHost {

@@ -138,3 +138,11 @@ def test_status_composes_the_live_inputs(store, monkeypatch):
     assert (out["lanes_total"], out["lanes_down"]) == (1, 1)
     assert out["workers_stalled"]
     assert [i["kind"] for i in out["items"]] == ["lanes", "trip"]
+
+
+def test_trip_detail_carries_the_remedy():
+    host = _tripped_host("mac", ["fix"])
+    host["lanes"]["fix"]["remedy"] = "sign in with /login"
+    out = system_health.summarize([host], [], [("fix", "mac")], FRESH, NOW_TS)
+    trip = next(i for i in out["items"] if i["kind"] == "trip")
+    assert trip["detail"] == "claude CLI is not authenticated\nsign in with /login"
