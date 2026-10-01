@@ -55,6 +55,7 @@ def _meta(raw: dict, prev: issue_model.Issue | None) -> dict:
         "state": raw.get("state", "open"),
         "state_reason": raw.get("state_reason"),
         "author": raw.get("author", ""),
+        "author_association": raw.get("author_association"),
         "assignees": raw.get("assignees") or [],
         "labels": raw.get("labels") or [],
         "comments": raw.get("comments", 0),

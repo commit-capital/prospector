@@ -263,6 +263,21 @@ def _is_manifest(path: str) -> bool:
         for m in profile.active().dependency_manifests)
 
 
+# GitHub's author associations for the repository's owner, its organization's
+# members, and its collaborators.
+MAINTAINER_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
+
+
+def priority_author(author: str | None, association: str | None) -> bool:
+    """Whether work by this author goes ahead of everything else in every worker
+    queue: a human GitHub reports as a maintainer, or a login the profile's
+    `priority_authors` names. An App or automation bot never qualifies."""
+    active = profile.active()
+    if not author or author.endswith("[bot]") or author in active.automation_bots:
+        return False
+    return association in MAINTAINER_ASSOCIATIONS or author in active.priority_authors
+
+
 def is_dependabot_bump(author: str | None, changed_paths: list[str] | None) -> bool:
     """True iff this PR's author is one of the profile's automation bots AND
     every changed file is a dependency manifest, lockfile, or GitHub-Actions

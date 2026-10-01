@@ -32,6 +32,7 @@ VALID = {
         "owners": ["@owner-a", "@owner-b"],
     },
     "trusted_authors": ["good-dev"],
+    "priority_authors": ["eager-dev"],
     "automation_bots": ["dependabot[bot]", "robo-bump[bot]"],
     "dependency_manifests": ["package.json", "deps/*.lock"],
     "test_paths": {"dir_pattern": "(^|/)qa/", "file_pattern": "_check\\.py$"},
@@ -210,6 +211,7 @@ class TestSections:
         monkeypatch.setenv("TRIAGE_PROFILE", str(write(tmp_path, VALID)))
         p = profile.active()
         assert p.trusted_authors == ("good-dev",)
+        assert p.priority_authors == ("eager-dev",)
         assert p.automation_bots == ("dependabot[bot]", "robo-bump[bot]")
         assert p.dependency_manifests == ("package.json", "deps/*.lock")
         assert p.test_paths.dir_pattern == "(^|/)qa/"
@@ -218,6 +220,7 @@ class TestSections:
     def test_pr3_generic_defaults(self):
         g = profile.GENERIC
         assert g.trusted_authors == ()
+        assert g.priority_authors == ()
         assert g.automation_bots == ("dependabot[bot]",)
         assert "pnpm-lock.yaml" in g.dependency_manifests
         assert "pyproject.toml" in g.dependency_manifests

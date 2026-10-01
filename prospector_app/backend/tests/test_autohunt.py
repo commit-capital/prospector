@@ -950,3 +950,40 @@ class TestErroredRetry:
         monkeypatch.setenv("TRIAGE_WORKER_ID", "laptop")
         self._errored(store, 1, kind="refused-safety", host="studio")
         assert not verify_worker.auto_verifiable(data.prs()[1])
+
+
+def _maintainer(store: S.Store, n: int) -> None:
+    rec = store.load_pr(n).raw
+    rec["meta"]["author_association"] = "MEMBER"
+    store.save_pr(rec)
+
+
+def test_a_maintainer_s_pr_leads_its_lane_whatever_the_pain(store):
+    store.save_pr(_clean_merge_pr(1, pain=0.9))
+    store.save_pr(_clean_merge_pr(2, pain=0.1))
+    _maintainer(store, 2)
+    data.refresh()
+    assert verify_worker.next_auto() == ("security", 2)
+
+
+def test_a_maintainer_s_pr_takes_the_turn_from_the_alternation(store, monkeypatch):
+    monkeypatch.setattr(verify_worker, "_last_auto_lane", "verify")
+    store.save_pr(_clean_merge_pr(1))
+    store.save_pr(_clean_merge_pr(2))
+    _green(store, 2)
+    _maintainer(store, 2)
+    data.refresh()
+    assert verify_worker.next_auto() == ("verify", 2)
+    assert verify_worker.next_auto() == ("verify", 2)
+
+
+def test_next_queued_ranks_a_maintainer_ahead_of_an_older_auto_pick(store):
+    store.save_pr(_clean_merge_pr(1))
+    store.save_pr(_clean_merge_pr(2))
+    _maintainer(store, 2)
+    store.edit_pr(1).record_verify_request(
+        "queued", queued_at="2026-07-01T00:00:00+00:00", source="auto")
+    store.edit_pr(2).record_verify_request(
+        "queued", queued_at="2026-07-20T00:00:00+00:00", source="auto")
+    data.refresh()
+    assert verify_worker.next_queued() == 2

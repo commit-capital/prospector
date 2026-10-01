@@ -17,6 +17,7 @@
     "owners": ["@release-owner"]
   },
   "trusted_authors": ["maintainer-one"],
+  "priority_authors": [],
   "automation_bots": ["dependabot[bot]"],
   "dependency_manifests": ["package.json", "requirements*.txt"],
   "test_paths": {

@@ -25,6 +25,7 @@ query($owner:String!, $name:String!, $cursor:String) {
         state stateReason
         createdAt updatedAt lastEditedAt
         author { login }
+        authorAssociation
         assignees(first:10) { nodes { login } }
         labels(first:50) { nodes { name } }
         comments { totalCount }
@@ -61,6 +62,7 @@ def normalize_issue(raw: dict) -> dict:
         "reactions_total": reactions.get("total_count", 0),
         "thumbs_up": reactions.get("+1", 0),
         "author": (raw.get("user") or {}).get("login", ""),
+        "author_association": raw.get("author_association"),
         "assignees": [a["login"] for a in raw.get("assignees") or []],
         "created_at": raw.get("created_at"),
         "updated_at": raw.get("updated_at"),
@@ -104,6 +106,7 @@ def normalize_gql(node: dict) -> dict:
         "reactions_total": (node.get("reactions") or {}).get("totalCount", 0),
         "thumbs_up": _thumbs_up(node.get("reactionGroups")),
         "author": (node.get("author") or {}).get("login", ""),
+        "author_association": node.get("authorAssociation"),
         "assignees": [a["login"] for a in assignees],
         "created_at": node.get("createdAt"),
         "updated_at": node.get("updatedAt"),
