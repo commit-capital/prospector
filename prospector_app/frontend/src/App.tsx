@@ -589,10 +589,11 @@ function Content() {
 }
 
 export default function App() {
-  // Expose the topbar's (wrap-variable) height as a CSS var so page-scrolled
-  // sticky headers — like the cluster page's diff grid — sit just beneath it.
+  // Expose the sticky header's height — the topbar plus any banner above it —
+  // as a CSS var so the agent pane, the flyouts, and page-scrolled sticky
+  // headers like the cluster page's diff grid all start just beneath it.
   useEffect(() => {
-    const tb = document.querySelector<HTMLElement>(".topbar");
+    const tb = document.querySelector<HTMLElement>(".app-head");
     if (!tb || typeof ResizeObserver === "undefined") return;
     const set = () => document.documentElement.style.setProperty("--topbar-h", `${tb.offsetHeight}px`);
     set();
@@ -607,19 +608,21 @@ export default function App() {
       <ScrollToTop />
       <UnconfiguredRedirect />
       <div className="app">
-        <BackendBanner />
-        <StoreWriteBanner />
-        <header className="topbar">
-          <Brand />
-          <Nav />
-          <div className="topbar-right">
-            <WorkStatusBadge />
-            <LiveStatus />
-            <DryRunBadge />
-            <FeedbackButton />
-            <SettingsMenu />
-          </div>
-        </header>
+        <div className="app-head">
+          <BackendBanner />
+          <StoreWriteBanner />
+          <header className="topbar">
+            <Brand />
+            <Nav />
+            <div className="topbar-right">
+              <WorkStatusBadge />
+              <LiveStatus />
+              <DryRunBadge />
+              <FeedbackButton />
+              <SettingsMenu />
+            </div>
+          </header>
+        </div>
         <SubNav />
         <HealthStrip />
         <main className="content">

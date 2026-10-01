@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-// Layout invariants for the fixed left agent pane (#400). The pane starts
-// just below the topbar and `.app` reserves its width as a left gutter, so
-// nothing else may reach into that gutter, and a table wider than the page
+// Layout invariants for the fixed left agent pane (#400, #403). The pane starts
+// just below the sticky app header — the banners and the topbar together — and
+// `.app` reserves its width as a left gutter, so nothing else may reach into
+// that gutter, and a table wider than the page
 // scrolls inside its own box so the page never scrolls sideways under the pane.
 
 const stylesCss: string = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+const appSrc: string = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
 const prExplorerSrc: string = readFileSync(new URL("./views/PRExplorer.tsx", import.meta.url), "utf8");
 const issuesSrc: string = readFileSync(new URL("./views/Issues.tsx", import.meta.url), "utf8");
 
@@ -23,12 +25,25 @@ function selectorsDeclaring(css: string, pattern: RegExp): string[] {
   return out;
 }
 
-test("only the topbar, which sits above the agent pane, spans the pane's gutter", () => {
+test("only the app header, which sits above the agent pane, spans the pane's gutter", () => {
   const spanning = selectorsDeclaring(stylesCss, /margin-left:\s*calc\(\s*-1\s*\*\s*var\(--ap-w/);
-  assert.deepEqual(spanning, [".topbar"]);
+  assert.deepEqual(spanning, [".app-head"]);
 });
 
-test("the agent pane starts at the topbar's measured height", () => {
+test("the banners and the topbar share the one sticky header", () => {
+  assert.match(appSrc, /<div className="app-head">\s*<BackendBanner \/>\s*<StoreWriteBanner \/>\s*<header className="topbar">/);
+  const sticky = selectorsDeclaring(stylesCss, /position:\s*sticky/);
+  assert.ok(sticky.includes(".app-head"), ".app-head is sticky");
+  for (const part of [".topbar", ".backend-down", ".backend-loading", ".store-write-block"]) {
+    assert.ok(!sticky.includes(part), `${part} sticks only as part of .app-head`);
+  }
+});
+
+test("--topbar-h measures the whole header, banners included", () => {
+  assert.match(appSrc, /querySelector<HTMLElement>\("\.app-head"\)[\s\S]{0,200}setProperty\("--topbar-h"/);
+});
+
+test("the agent pane starts at the header's measured height", () => {
   const pane = selectorsDeclaring(stylesCss, /position:\s*fixed[\s\S]*top:\s*var\(--topbar-h/);
   assert.ok(pane.includes(".agentpane"), ".agentpane is fixed below --topbar-h");
 });

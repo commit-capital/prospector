@@ -43,7 +43,7 @@ test("feedback overlay z-index tops every other layer in styles.css", () => {
 });
 
 test("feedback modal portals to document.body, escaping the topbar stacking context", () => {
-  // The feedback button lives in the sticky topbar, whose z-index creates a
+  // The feedback button lives in the sticky app header, whose z-index creates a
   // stacking context that caps every descendant beneath the PR flyout. The
   // overlay's z-index only applies because the modal mounts under document.body.
   assert.match(

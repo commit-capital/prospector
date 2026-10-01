@@ -36,7 +36,7 @@ export function FeedbackButton() {
       >
         🐞 Feedback
       </button>
-      {/* The button sits in the sticky topbar, whose z-index creates a stacking
+      {/* The button sits in the sticky app header, whose z-index creates a stacking
           context that caps every descendant beneath the PR flyout. The portal
           mounts the overlay under document.body, where its own z-index applies. */}
       {open &&
