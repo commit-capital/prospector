@@ -696,6 +696,70 @@ class Store:
         with self.engine.begin() as conn:
             conn.execute(stmt)
 
+    # -- AI capacity (pipeline/capacity.py) ----------------------------------
+    # `ai_account:<key>` holds an account's policy, written only by the policy
+    # endpoint; `ai_capacity:<key>` holds the newest reading and any pause,
+    # written by every machine on the account. Each half of the capacity row
+    # carries its own `at` and is replaced only by a newer one, under a row
+    # lock, so machines reporting out of order never move it backwards.
+    def load_ai_account(self, key: str) -> dict | None:
+        return storekit._read_registry(self.engine, f"ai_account:{key}")
+
+    def save_ai_account(self, key: str, data: dict) -> None:
+        self._save_registry(f"ai_account:{key}", data)
+
+    def load_capacity(self, key: str) -> dict:
+        return storekit._read_registry(self.engine, f"ai_capacity:{key}") or {}
+
+    def save_capacity_reading_if_newer(self, key: str, reading: dict) -> None:
+        self._save_capacity_half_if_newer(key, "reading", reading)
+
+    def save_capacity_pause_if_newer(self, key: str, pause: dict) -> None:
+        self._save_capacity_half_if_newer(key, "pause", pause)
+
+    def _save_capacity_half_if_newer(self, key: str, half: str, value: dict) -> None:
+        from sqlalchemy import select
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+        storekit.assert_writable(self.engine)
+        name = f"ai_capacity:{key}"
+        reg = schema.registries
+        with self.engine.begin() as conn:
+            row = conn.execute(select(reg.c.data).where(reg.c.name == name)
+                               .with_for_update()).first()
+            data = dict(row[0]) if row is not None else {}
+            held = storekit.parse_ts((data.get(half) or {}).get("at"))
+            incoming = storekit.parse_ts(value.get("at"))
+            if held is not None and (incoming is None or incoming <= held):
+                return
+            data[half] = value
+            ins = pg_insert(reg) if self.engine.dialect.name == "postgresql" else sqlite_insert(reg)
+            conn.execute(ins.values(name=name, data=data).on_conflict_do_update(
+                index_elements=[reg.c.name], set_={"data": data}))
+
+    def append_agent_run(self, record: dict) -> None:
+        """Append one agent run (`phase: agent:run`) to the agent ledger, a
+        kind of its own so the PR ledger the app snapshots stays its size."""
+        from sqlalchemy import insert
+        storekit.parse_run(record)
+        storekit.assert_writable(self.engine)
+        with self.engine.begin() as conn:
+            conn.execute(insert(schema.runs).values(
+                kind="agent", data=record, ts=record.get("ts") or storekit.now()))
+
+    def agent_runs(self, since: str) -> list[dict]:
+        """The agent ledger's records inserted at or after `since`, oldest first."""
+        from sqlalchemy import select
+        query = (select(schema.runs.c.data).where(schema.runs.c.kind == "agent")
+                 .where(schema.runs.c.ts >= since).order_by(schema.runs.c.rowid))
+        with self.engine.connect() as conn:
+            return [r[0] for r in conn.execute(query).all()]
+
+    def capacity_spend(self, account: str, since: str) -> float:
+        """Reported cost of `account`'s unattended agent runs since `since`."""
+        return sum(float(r.get("cost_usd") or 0.0) for r in self.agent_runs(since)
+                   if r.get("account") == account and r.get("unattended"))
+
     def load_reviewers(self) -> dict:
         """Each automated reviewer's latest observed activity over the open
         corpus — what `review_policy` auto-detection reads."""
