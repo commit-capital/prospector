@@ -170,7 +170,9 @@ async def stream(query: str, prs: list[int]):
     candidates = list(dict.fromkeys(int(p) for p in (prs or [])))
     capped = len(candidates) > MAX_CANDIDATES
     candidates = candidates[:MAX_CANDIDATES]
-    store = data.prs()
+    # The snapshot can still be on its first load, and the bodies are a store
+    # read; both wait on a worker thread so the event loop keeps serving.
+    store = await asyncio.to_thread(data.prs)
     recs = [(n, store[n]) for n in candidates if n in store]
     total = len(recs)
 
@@ -194,7 +196,7 @@ async def stream(query: str, prs: list[int]):
 
     # The cached records carry no body (the bulk load omits it); hydrate the
     # descriptions for just the PRs we're about to judge in one store read.
-    bodies = data.pr_bodies([n for n, _ in to_judge])
+    bodies = await asyncio.to_thread(data.pr_bodies, [n for n, _ in to_judge])
     batches = [to_judge[i:i + BATCH_SIZE] for i in range(0, len(to_judge), BATCH_SIZE)]
     sem = asyncio.Semaphore(MAX_CONCURRENCY)
 

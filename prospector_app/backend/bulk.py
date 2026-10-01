@@ -4,10 +4,14 @@
 Bulk is pure orchestration: it loops the selected PR numbers through the same
 per-PR executor, queue, and allowlisted-job paths used elsewhere in the app.
 Upstream writes retain their per-PR gates and activity-log entries, and local
-verification/security work retains its normal queue and job controls.
+verification/security work retains its normal queue and job controls. Each
+blocking call (token minting, a store write, an upstream write) runs on a worker
+thread, so the event loop keeps serving every other request and stream while a
+batch works.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from typing import Any
@@ -66,7 +70,8 @@ async def run_bulk(prs: list[int], action: str, *, comment: str | None = None,
         return
 
     # Local background actions use no upstream token.
-    token = None if dry_run or action in ("QUEUE_VERIFY", "RUN_SECURITY") else executor.mint_bot_token()
+    token = (None if dry_run or action in ("QUEUE_VERIFY", "RUN_SECURITY")
+             else await asyncio.to_thread(executor.mint_bot_token))
     summary: dict[str, int] = {}
     bookkeeping_errors: list[str] = []
     for n in prs:
@@ -82,41 +87,11 @@ async def run_bulk(prs: list[int], action: str, *, comment: str | None = None,
                 except ValueError as e:
                     res = {"pr": n, "action": action, "status": "skipped",
                            "detail": str(e)}
-            elif action == "QUEUE_VERIFY":
-                # A local write to the shared verify queue; the sandbox worker
-                # picks it up. Nothing is posted upstream, so dry-run does not
-                # apply. The pre-check's operator-readable refusal (already in
-                # flight, closed, threat-flagged) reads as skipped, not error.
-                try:
-                    verify_queue.queue_pr(n)
-                    res = {"pr": n, "action": action, "status": "queued",
-                           "detail": "queued for sandbox verification"}
-                except ValueError as e:
-                    res = {"pr": n, "action": action, "status": "skipped",
-                           "detail": str(e)}
-            elif action == "MERGE":
-                res = executor.merge_pr(n, method, dry_run=dry_run, reason=reason)
-            elif action == "REVIEW_RETRIGGER":
-                # The request names a reviewer; only the registry's own id for it
-                # goes any further.
-                named = next((r for r in reviewers.REVIEWERS.values() if r.id == reviewer), None)
-                chosen = named or next(
-                    (r for r in review_policy.active_reviewers(reviewers.REVIEW)
-                     if r.retrigger_mention), None)
-                rid = chosen.id if chosen is not None else ""
-                baseline = review_refresh.capture(n, rid) if token is not None and rid else None
-                res = executor.retrigger_review(n, rid, token=token, dry_run=dry_run)
-                if res.get("status") == "executed" and baseline is not None:
-                    review_refresh.schedule(n, rid, baseline)
-            elif action in _REVIEW:
-                res = executor.submit_review(n, _REVIEW[action], pr_comment or "",
-                                             token=token, dry_run=dry_run)
-            else:  # CLOSE / CLOSE_DUP / CLOSE_FIXED / CLOSE_STALE
-                res = executor.execute_pr(n, models.CloseAction(
-                    pr=n, action=action,
-                    canonical=canonical, comment=pr_comment or None,
-                    reason=reason, tags=tags,
-                ), token=token, dry_run=dry_run)
+            else:
+                res = await asyncio.to_thread(
+                    _apply, n, action, comment=pr_comment, canonical=canonical,
+                    method=method, reason=reason, tags=tags, reviewer=reviewer,
+                    token=token, dry_run=dry_run)
         except Exception as e:  # one PR's failure never aborts the batch
             res = {"pr": n, "action": action, "status": "error", "detail": str(e)[:200]}
         status = res.get("status", "error")
@@ -127,6 +102,49 @@ async def run_bulk(prs: list[int], action: str, *, comment: str | None = None,
     done: dict[str, Any] = {"summary": summary}
     _warn_bookkeeping(done, bookkeeping_errors)
     yield {"event": "done", "data": json.dumps(done)}
+
+
+def _apply(n: int, action: str, *, comment: str | None, canonical: int | None,
+           method: str, reason: str | None, tags: list[str] | None,
+           reviewer: str | None, token: str | None, dry_run: bool) -> dict[str, Any]:
+    """Apply one PR's bulk action other than RUN_SECURITY, whose job is
+    scheduled on the event loop."""
+    if action == "QUEUE_VERIFY":
+        # A local write to the shared verify queue; the sandbox worker
+        # picks it up. Nothing is posted upstream, so dry-run does not
+        # apply. The pre-check's operator-readable refusal (already in
+        # flight, closed, threat-flagged) reads as skipped, not error.
+        try:
+            verify_queue.queue_pr(n)
+            return {"pr": n, "action": action, "status": "queued",
+                    "detail": "queued for sandbox verification"}
+        except ValueError as e:
+            return {"pr": n, "action": action, "status": "skipped",
+                    "detail": str(e)}
+    if action == "MERGE":
+        return executor.merge_pr(n, method, dry_run=dry_run, reason=reason)
+    if action == "REVIEW_RETRIGGER":
+        # The request names a reviewer; only the registry's own id for it
+        # goes any further.
+        named = next((r for r in reviewers.REVIEWERS.values() if r.id == reviewer), None)
+        chosen = named or next(
+            (r for r in review_policy.active_reviewers(reviewers.REVIEW)
+             if r.retrigger_mention), None)
+        rid = chosen.id if chosen is not None else ""
+        baseline = review_refresh.capture(n, rid) if token is not None and rid else None
+        res = executor.retrigger_review(n, rid, token=token, dry_run=dry_run)
+        if res.get("status") == "executed" and baseline is not None:
+            review_refresh.schedule(n, rid, baseline)
+        return res
+    if action in _REVIEW:
+        return executor.submit_review(n, _REVIEW[action], comment or "",
+                                      token=token, dry_run=dry_run)
+    # CLOSE / CLOSE_DUP / CLOSE_FIXED / CLOSE_STALE
+    return executor.execute_pr(n, models.CloseAction(
+        pr=n, action=action,
+        canonical=canonical, comment=comment or None,
+        reason=reason, tags=tags,
+    ), token=token, dry_run=dry_run)
 
 
 def _merge_ok(res: dict[str, Any]) -> bool:
@@ -189,7 +207,7 @@ async def run_cluster(items: list[models.ClusterItem], *, dry_run: bool = True):
         yield {"event": "error", "data": f"batch of {len(items)} exceeds cap of {CAP}"}
         return
 
-    token = None if dry_run else executor.mint_bot_token()
+    token = None if dry_run else await asyncio.to_thread(executor.mint_bot_token)
     summary: dict[str, int] = {}
     bookkeeping_errors: list[str] = []
 
@@ -206,7 +224,7 @@ async def run_cluster(items: list[models.ClusterItem], *, dry_run: bool = True):
     aborted: str | None = None
     merge_failed = False
     for item in merges:
-        res = _run_cluster_item(item, token=token, dry_run=dry_run)
+        res = await asyncio.to_thread(_run_cluster_item, item, token=token, dry_run=dry_run)
         merge_failed = merge_failed or not _merge_ok(res)
         yield tally(res)
     if merge_failed and rest:
@@ -216,7 +234,8 @@ async def run_cluster(items: list[models.ClusterItem], *, dry_run: bool = True):
                    "merge. Fix the merge, then re-run.")
     else:
         for item in rest:
-            yield tally(_run_cluster_item(item, token=token, dry_run=dry_run))
+            yield tally(await asyncio.to_thread(_run_cluster_item, item,
+                                                token=token, dry_run=dry_run))
     done: dict[str, Any] = {"summary": summary}
     if aborted:
         done["aborted"] = aborted

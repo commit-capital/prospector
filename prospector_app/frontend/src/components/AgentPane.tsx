@@ -308,9 +308,9 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
   // load this thread's history when the subject or the active session changes
   useEffect(() => {
     const p = ctxParams();
-    fetch(`/api/chat/history?${p}`).then((r) => r.json()).then((d) => {
+    api.chatHistory(p).catch(() => ({ messages: [] })).then((d) => {
       setFollowLatest(true);
-      setMsgs(d.messages || []);
+      setMsgs(d.messages);
     });
     clearAnchor();
     return () => esRef.current?.close();

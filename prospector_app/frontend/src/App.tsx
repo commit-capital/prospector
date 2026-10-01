@@ -1,4 +1,4 @@
-import { Component, lazy, Suspense, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from "react";
+import { Component, lazy, Suspense, useCallback, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate, useSearchParams } from "react-router";
 import { ExecProvider, useExec, type Toast } from "./ExecContext";
 import { RepoMetaProvider, useRepoMeta } from "./RepoMetaContext";
@@ -10,6 +10,7 @@ import { api, type WorkStatus, type WorkerFlags } from "./api";
 import { autonomyTooltip } from "./autonomy";
 import { useSystemHealth } from "./useSystemHealth";
 import { loadWithRecovery } from "./lazyLoad";
+import { usePoll } from "./poll";
 import { timeAgo } from "./timeAgo";
 import { workStatusLabel } from "./workStatusLabel";
 
@@ -204,12 +205,9 @@ const AUTONOMY_POLL_MS = 30_000;
 function DryRunBadge() {
   const { botLogin, dryRun, setDryRun, livePossible, liveError, storeWriteBlock, pushIdentity } = useExec();
   const [flags, setFlags] = useState<WorkerFlags | null>(null);
-  useEffect(() => {
-    const load = () => api.autonomy().then((d) => setFlags(d.flags)).catch(() => {});
-    load();
-    const t = setInterval(load, AUTONOMY_POLL_MS);
-    return () => clearInterval(t);
-  }, []);
+  const loadFlags = useCallback(
+    () => api.autonomy().then((d) => setFlags(d.flags)).catch(() => {}), []);
+  usePoll(loadFlags, AUTONOMY_POLL_MS);
   const dryRunTitle = storeWriteBlock
     ? storeWriteBlock
     : livePossible
@@ -349,12 +347,8 @@ function WorkStatusBadge() {
     const t = timeAgo(iso);
     return t === "just now" || t === "—" ? t : `${t} ago`;
   };
-  useEffect(() => {
-    const load = () => api.workStatus().then(setStatus).catch(() => {});
-    load();
-    const t = setInterval(load, 15_000);
-    return () => clearInterval(t);
-  }, []);
+  const loadStatus = useCallback(() => api.workStatus().then(setStatus).catch(() => {}), []);
+  usePoll(loadStatus, 15_000);
   if (!status) return null;
   const busy = status.active.length > 0 || status.jobs.running > 0;
   const stuck = status.active.some((a) => !a.worker_online);
