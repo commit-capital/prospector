@@ -31,6 +31,14 @@ VERIFY sandbox's dependency-refusal gate — narrowing it below the generic
 default weakens that protection. The real profile lives beside `.env` as the
 gitignored `profile.json` at the repo root.
 
+Every worker queue — security review, verification, autofix, and the issue-fix
+lane — takes a maintainer's PR or issue ahead of all other work. A maintainer is
+a human author GitHub reports as the repository's `OWNER`, an organization
+`MEMBER`, or a `COLLABORATOR` (`gates.priority_author`), read from each PR's and
+issue's `author_association` at ingest, so any repository works with no
+configuration. `priority_authors` names further logins to treat the same way;
+unlike `trusted_authors`, it changes queue order only.
+
 ## Backing store
 
 With `TRIAGE_STORE_URL` unset, each store component uses a local SQLite file

@@ -8,7 +8,7 @@ import pytest
 
 from issue_triage import dispute_question, fix_review, fix_review_runner, issue_links
 from issue_triage.issue_store import IssueStore
-from pipeline import settings
+from pipeline import profile, settings
 from prospector_app.backend import data, issue_data, issue_fix_worker, lane_health
 
 QUESTION = {"question": "2 or 3?", "options": [{"label": "A", "behavior": "2"},
@@ -119,3 +119,20 @@ def test_the_hunter_keeps_to_its_daily_budget(hunting, monkeypatch):
     monkeypatch.setenv("TRIAGE_ISSUE_FIX_HUNT_BUDGET", "1")
     assert issue_fix_worker.hunt(hunting) == 2
     assert issue_fix_worker.hunt(hunting) is None
+
+
+def test_the_hunter_takes_a_maintainer_s_issue_ahead_of_a_newer_one(hunting):
+    raw = hunting.load_issue(1).raw
+    hunting.save_issue({**raw, "meta": {**raw["meta"], "author_association": "MEMBER"}})
+    assert issue_fix_worker.hunt(hunting) == 1
+
+
+def test_a_priority_author_s_queued_request_runs_first(store, monkeypatch):
+    fix_review.queue(store, 1, "solve", by="op")
+    fix_review.queue(store, 2, "solve", by="op")
+    raw = store.load_issue(2).raw
+    store.save_issue({**raw, "meta": {**raw["meta"], "author": "brandonburr"}})
+    assert issue_fix_worker.next_request(store.all_issues(), "studio") == 1
+    monkeypatch.setattr(profile, "active",
+                        lambda: profile.RepoProfile(priority_authors=("brandonburr",)))
+    assert issue_fix_worker.next_request(store.all_issues(), "studio") == 2

@@ -16,7 +16,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from issue_triage import dispute_question
-from pipeline import diffpaths, settings, storekit
+from pipeline import diffpaths, gates, settings, storekit
 
 if TYPE_CHECKING:
     from issue_triage.issue_model import Issue
@@ -148,10 +148,12 @@ def cancel(store: IssueStore, n: int, *, by: str) -> tuple[bool, str]:
 
 
 def queued_issues(issues: dict[int, Issue]) -> list[int]:
-    """Issues with a queued request, oldest first."""
-    rows = [((i.fix_request or {}).get("queued_at") or "", n) for n, i in issues.items()
+    """Issues with a queued request, a maintainer's (gates.priority_author)
+    first, then oldest first."""
+    rows = [(not gates.priority_author(i.author, i.author_association),
+             (i.fix_request or {}).get("queued_at") or "", n) for n, i in issues.items()
             if (i.fix_request or {}).get("status") == "queued"]
-    return [n for _, n in sorted(rows)]
+    return [n for *_, n in sorted(rows)]
 
 
 def _proof(proof: dict) -> dict:

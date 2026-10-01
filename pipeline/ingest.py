@@ -74,6 +74,7 @@ def meta_from_gh(pr: dict) -> dict:
         "title": pr.get("title") or "(untitled)",
         "body": (pr.get("body") or "")[:20000] or None,
         "author": (pr.get("user") or {}).get("login"),
+        "author_association": pr.get("author_association"),
         "state": state,
         "draft": bool(pr.get("draft")),
         "head_sha": (pr.get("head") or {}).get("sha"),

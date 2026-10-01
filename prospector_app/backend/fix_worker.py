@@ -385,13 +385,13 @@ def next_reviewable() -> int | None:
 
 
 def _oldest(status: str, mine_only: tuple[str, ...] = ()) -> int | None:
-    """The best PR at `status`, operator picks before auto-picks and oldest
-    first within each. An action named in `mine_only` is passed over unless this
+    """The best PR at `status`, operator picks before auto-picks and, within
+    each, a maintainer's PR (gates.priority_author) first, then oldest. An action named in `mine_only` is passed over unless this
     machine recorded it (or the record names none, from before hosts were
     stamped) — it depends on state only that machine holds."""
     me = settings.worker_id()
     best_n: int | None = None
-    best_key: tuple[bool, str] | None = None
+    best_key: tuple[bool, bool, str] | None = None
     for n, rec in data.prs().items():
         req = rec.fix_request or {}
         if req.get("status") != status:
@@ -400,7 +400,9 @@ def _oldest(status: str, mine_only: tuple[str, ...] = ()) -> int | None:
             continue
         if req.get("attempts") and not _rested(req, TRANSIENT_RETRY_SECONDS):
             continue
-        key = (req.get("source") in ("auto", "objection"), str(req.get("queued_at") or ""))
+        key = (req.get("source") in ("auto", "objection"),
+               not gates.priority_author(rec.author, rec.author_association),
+               str(req.get("queued_at") or ""))
         if best_key is None or key < best_key:
             best_n, best_key = n, key
     return best_n
@@ -1991,13 +1993,14 @@ def _yellow_objection(pr: Pr) -> dict | None:
     return objections.build("security", text, origin={"findings": len(findings)})
 
 
-def _hunt_key(rec: Pr, action: str, n: int) -> tuple[int, int, float, int]:
-    """Hunt priority within an action kind (ascending). Mechanical actions
-    order by PR number. Fixes order by how little they ask of the agent — a
+def _hunt_key(rec: Pr, action: str, n: int) -> tuple[bool, int, int, float, int]:
+    """Hunt priority within an action kind (ascending), a maintainer's PR
+    (gates.priority_author) first. Mechanical actions then order by PR number. Fixes order by how little they ask of the agent — a
     nits-only review, then a Greptile score one point below the bar, then the
     rest — and by community pain (descending) within a tier."""
+    later = not gates.priority_author(rec.author, rec.author_association)
     if action != "fix":
-        return (0, 0, 0.0, n)
+        return (later, 0, 0, 0.0, n)
     read = rec.greptile_review if freshness.is_current(rec, "greptile_review") else None
     sevs = {reviewers.severity(r, rec.review_entry(r.id), read)
             for r in review_policy.active_reviewers(reviewers.REVIEW)}
@@ -2005,7 +2008,7 @@ def _hunt_key(rec: Pr, action: str, n: int) -> tuple[int, int, float, int]:
     tier = (1 if nits_only
             else 2 if rec.greptile == review_policy.greptile_threshold() - 1 else 3)
     pain = float(service.pr_pain(rec).get("score") or 0.0)
-    return (1, tier, -pain, n)
+    return (later, 1, tier, -pain, n)
 
 
 def next_auto() -> tuple[str, int, dict | None] | None:
@@ -2017,11 +2020,12 @@ def next_auto() -> tuple[str, int, dict | None] | None:
     parked fix holds its slot until someone decides on it, which is what bounds
     the unattended spend. A `describe` has its own slots of the same size and
     comes next: one read-only agent, no sandbox. With the slots full the
-    mechanical pool runs."""
+    mechanical pool runs. A maintainer's PR (gates.priority_author) in any of
+    the three goes ahead of all of them."""
     limit = settings.fix_hunt_limit()
     slots = {"fix": limit - _auto_in_flight("fix"),
              "describe": limit - _auto_in_flight("describe")}
-    best: dict[str, tuple[tuple[int, int, float, int], str, int, dict | None]] = {}
+    best: dict[str, tuple[tuple[bool, int, int, float, int], str, int, dict | None]] = {}
     budget_ok = (not settings.fix_hunt_security()
                  or _budget_used(data.store()) < settings.fix_objection_budget())
     for n, rec in data.prs().items():
@@ -2035,10 +2039,12 @@ def next_auto() -> tuple[str, int, dict | None] | None:
         key = _hunt_key(rec, action, n)
         if lane not in best or key < best[lane][0]:
             best[lane] = (key, action, n, objection)
-    for lane in ("fix", "describe", "mechanical"):
-        if lane in best:
-            return (best[lane][1], best[lane][2], best[lane][3])
-    return None
+    lanes = sorted(best, key=lambda lane: (best[lane][0][0],
+                                           ("fix", "describe", "mechanical").index(lane)))
+    if not lanes:
+        return None
+    _, action, n, objection = best[lanes[0]]
+    return (action, n, objection)
 
 
 def _beat_loop() -> None:

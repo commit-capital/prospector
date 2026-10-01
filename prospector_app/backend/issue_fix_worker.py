@@ -23,7 +23,7 @@ from datetime import datetime, timedelta, timezone
 
 from issue_triage import dispute_question, fix_review, fix_review_runner, followup
 from issue_triage.issue_store import IssueStore
-from pipeline import headless_agent, settings
+from pipeline import gates, headless_agent, settings
 from prospector_app.backend import lane_health
 
 LANE = "issue-fix"
@@ -150,7 +150,8 @@ def _hunted_today(issues: dict) -> int:
 
 def hunt(store: IssueStore) -> int | None:
     """Queue a `solve` for the newest fresh, well-reproduced issue with no
-    linked pull request and no attempt, within the day's budget. The issue
+    linked pull request and no attempt, a maintainer's
+    (gates.priority_author) ahead of any other, within the day's budget. The issue
     queued, or None. Reads the app's issue and PR snapshots; the queue write
     re-checks the issue on the store."""
     from issue_triage import issue_links, pr_index
@@ -168,9 +169,10 @@ def hunt(store: IssueStore) -> int | None:
                 or HUNT_SKIP_LABELS & set(meta.get("labels") or [])
                 or i.fix_run or i.fix_request):
             continue
-        picks.append((meta.get("created_at") or "", n))
+        picks.append((gates.priority_author(i.author, i.author_association),
+                      meta.get("created_at") or "", n))
     index = pr_index.build(data.prs().values())
-    for _, n in sorted(picks, reverse=True):
+    for *_, n in sorted(picks, reverse=True):
         if issue_links.linked_prs(issues[n], index.get(n)):
             continue
         ok, _ = fix_review.queue(store, n, "solve", by="hunter", source="hunter")

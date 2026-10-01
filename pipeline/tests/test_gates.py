@@ -585,6 +585,28 @@ def test_reconcile_disposition_none_when_empty():
     assert gates.reconcile_disposition([{"disposition": "bogus", "cluster_id": 1}]) is None
 
 
+class TestPriorityAuthor:
+    @pytest.mark.parametrize("association", ["OWNER", "MEMBER", "COLLABORATOR"])
+    def test_maintainer_associations(self, association):
+        assert gates.priority_author("maint", association) is True
+
+    @pytest.mark.parametrize("association",
+                             ["CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "NONE", None])
+    def test_everyone_else(self, association):
+        assert gates.priority_author("dev", association) is False
+
+    def test_bots_never_qualify(self):
+        assert gates.priority_author("some-app[bot]", "MEMBER") is False
+        assert gates.priority_author("dependabot[bot]", "OWNER") is False
+        assert gates.priority_author(None, "MEMBER") is False
+
+    def test_profile_priority_authors(self, monkeypatch):
+        monkeypatch.setattr(profile, "active",
+                            lambda: profile.RepoProfile(priority_authors=("brandonburr",)))
+        assert gates.priority_author("brandonburr", "NONE") is True
+        assert gates.priority_author("someone", "NONE") is False
+
+
 class TestIsDependabotBump:
     def test_lockfile_and_manifest_bump(self):
         assert gates.is_dependabot_bump(
