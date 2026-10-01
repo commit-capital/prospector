@@ -318,14 +318,15 @@ def maybe_refresh_base() -> None:
         traceback.print_exc()
 
 
-def next_queued() -> int | None:
+def next_queued(skip_auto: bool = False) -> int | None:
     """The best runnable PR, or None: every `queued` request (a transiently
     re-queued one — a nonzero `attempts` — only once rested since its last
     attempt), plus each `waiting-for-base` request rested since its last
     attempt, ranked operator picks before auto-picks and, within each group,
     a maintainer's PR (gates.priority_author) first, then oldest queued_at — so an operator click never waits behind an
-    earlier auto-queued request. Reads the backend's incremental store
-    snapshot, so the scan costs no store round-trip.
+    earlier auto-queued request. `skip_auto` leaves the hunter's requests
+    out. Reads the backend's incremental store snapshot, so the scan costs no
+    store round-trip.
 
     A parked base-waiter is held back while the Docker daemon is down, since
     its preflight reaches that same verdict. The probe costs one call per scan
@@ -338,6 +339,9 @@ def next_queued() -> int | None:
     for n, rec in data.prs().items():
         req = rec.verify_request
         if req is None:
+            continue
+        auto = req.get("source") in store.AUTO_REQUEST_SOURCES
+        if skip_auto and auto:
             continue
         status = req.get("status")
         if status == "waiting-for-base":
@@ -352,12 +356,18 @@ def next_queued() -> int | None:
                 continue
         else:
             continue
-        key = (req.get("source") in store.AUTO_REQUEST_SOURCES,
+        key = (auto,
                not gates.priority_author(rec.author, rec.author_association),
                str(req.get("queued_at") or ""))
         if best_key is None or key < best_key:
             best_n, best_key = n, key
     return best_n
+
+
+def _auto_requested(n: int) -> bool:
+    rec = data.prs().get(n)
+    req = rec.verify_request if rec is not None else None
+    return req is not None and req.get("source") in store.AUTO_REQUEST_SOURCES
 
 
 # How long a failed security auto-run keeps its PR out of the pool. Past it
@@ -753,6 +763,11 @@ def _drain_loop() -> None:
                           f"errored {marked}, re-queued {requeued}", flush=True)
             verify_open = lane_health.open_or_retest("verify")
             n = next_queued() if verify_open else None
+            # The hunter's request waits on the account's capacity; an
+            # operator's runs whatever it says.
+            if (n is not None and _auto_requested(n)
+                    and not lane_health.capacity_open("verify")):
+                n = next_queued(skip_auto=True)
             if n is not None:
                 state["current_pr"] = n
                 beat()
@@ -768,6 +783,11 @@ def _drain_loop() -> None:
                 stop.wait(POLL_SECONDS)
                 continue
             lane, n = pick
+            # Queueing a verify costs nothing, but the run it leads to spends
+            # agents, so every pick waits on the account's capacity.
+            if not lane_health.capacity_open("security" if lane == "security" else "verify"):
+                stop.wait(POLL_SECONDS)
+                continue
             if lane == "security":
                 state["current_pr"] = n
                 beat()
