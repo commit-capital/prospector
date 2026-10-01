@@ -131,8 +131,8 @@ def test_a_priority_author_s_queued_request_runs_first(store, monkeypatch):
     fix_review.queue(store, 1, "solve", by="op")
     fix_review.queue(store, 2, "solve", by="op")
     raw = store.load_issue(2).raw
-    store.save_issue({**raw, "meta": {**raw["meta"], "author": "brandonburr"}})
+    store.save_issue({**raw, "meta": {**raw["meta"], "author": "eager-dev"}})
     assert issue_fix_worker.next_request(store.all_issues(), "studio") == 1
     monkeypatch.setattr(profile, "active",
-                        lambda: profile.RepoProfile(priority_authors=("brandonburr",)))
+                        lambda: profile.RepoProfile(priority_authors=("eager-dev",)))
     assert issue_fix_worker.next_request(store.all_issues(), "studio") == 2

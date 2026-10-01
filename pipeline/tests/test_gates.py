@@ -602,8 +602,8 @@ class TestPriorityAuthor:
 
     def test_profile_priority_authors(self, monkeypatch):
         monkeypatch.setattr(profile, "active",
-                            lambda: profile.RepoProfile(priority_authors=("brandonburr",)))
-        assert gates.priority_author("brandonburr", "NONE") is True
+                            lambda: profile.RepoProfile(priority_authors=("eager-dev",)))
+        assert gates.priority_author("eager-dev", "NONE") is True
         assert gates.priority_author("someone", "NONE") is False
 
 
