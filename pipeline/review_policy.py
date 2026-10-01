@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
-from pipeline import reviewers, settings
+from pipeline import reviewers, settings, storekit
 from pipeline.reviewers import Bar, Reviewer
 
 if TYPE_CHECKING:
@@ -67,20 +67,13 @@ def _seen() -> dict:
 
 
 def _today() -> str:
-    return date.today().isoformat()
+    return storekit.utc_day()
 
 
 def _recent(stamp: str | None, days: int) -> bool:
-    if not stamp:
-        return False
-    try:
-        at = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
-    except ValueError:
-        return False
-    if at.tzinfo is None:
-        at = at.replace(tzinfo=timezone.utc)
-    today = datetime.fromisoformat(_today()).replace(tzinfo=timezone.utc)
-    return at >= today - timedelta(days=days)
+    at = storekit.parse_ts(stamp)
+    today = storekit.parse_ts(_today())
+    return at is not None and today is not None and at >= today - timedelta(days=days)
 
 
 def active_reviewers(kind: str | None = None) -> list[Reviewer]:

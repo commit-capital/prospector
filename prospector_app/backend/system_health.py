@@ -9,7 +9,7 @@ data; `status` gathers the live inputs.
 from __future__ import annotations
 
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TypedDict
 
 from pipeline import storekit
@@ -52,13 +52,7 @@ _pr_ingest_cache: tuple[float, str | None] | None = None
 
 
 def _hours_since(iso: str | None, now_ts: float) -> float | None:
-    if not iso:
-        return None
-    try:
-        then = datetime.fromisoformat(iso).timestamp()
-    except ValueError:
-        return None
-    return max(0.0, (now_ts - then) / 3600)
+    return storekit.hours_since(iso, datetime.fromtimestamp(now_ts, timezone.utc))
 
 
 def _age_label(hours: float) -> str:

@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime
 from pathlib import Path
 
 from sqlalchemy import Engine, insert, select
@@ -84,7 +83,7 @@ def capture(pr: int, decision: str, *, reason: str | None = None, tags: list | N
             public_body: str | None = None, by: str = "operator", dry_run: bool = True,
             result: dict | None = None) -> dict:
     rec = {
-        "at": datetime.now().isoformat(timespec="seconds"),
+        "at": storekit.now(),
         "pr": int(pr),
         "decision": decision,
         "reason_private": (reason or "").strip() or None,

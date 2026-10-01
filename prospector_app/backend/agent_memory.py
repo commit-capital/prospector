@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import os
 import uuid
-from datetime import datetime
 from pathlib import Path
 
 from sqlalchemy import Engine, insert, select
@@ -59,7 +58,7 @@ def add(text: str, why: str | None = None, tags: list[str] | None = None,
         raise ValueError("memory text is required")
     entry: dict[str, object] = {
         "id": uuid.uuid4().hex[:12],
-        "at": datetime.now().isoformat(timespec="seconds"),
+        "at": storekit.now(),
         "author": author,
         "text": text,
         "why": (why or "").strip() or None,
