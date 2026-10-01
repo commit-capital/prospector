@@ -52,11 +52,17 @@ def gh_api(path: str, *, timeout: int = 60) -> Any | None:
         return None
 
 
-def _graphql_once(query: str, timeout: int) -> tuple[dict | None, str]:
-    """One `gh api graphql` call: the parsed envelope, or None with the reason."""
+def _graphql_once(query: str, variables: Mapping[str, str],
+                  timeout: int) -> tuple[dict | None, str]:
+    """One `gh api graphql` call: the parsed envelope, or None with the reason.
+
+    Variables go through `-f` (raw string), never `-F` (typed): `-F` coerces an
+    all-digit cursor to an int against a query's String variable."""
+    argv = ["gh", "api", "graphql", "-f", f"query={query}"]
+    for k, v in variables.items():
+        argv += ["-f", f"{k}={v}"]
     try:
-        res = subprocess.run(["gh", "api", "graphql", "-f", f"query={query}"],
-                             capture_output=True, text=True, timeout=timeout,
+        res = subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
                              env=operator_env())
     except subprocess.TimeoutExpired:
         return None, f"timed out after {timeout}s"
@@ -74,8 +80,22 @@ def _graphql_once(query: str, timeout: int) -> tuple[dict | None, str]:
     return parsed, ""
 
 
-def gh_graphql(query: str, *, timeout: int = 60,
-               rate_limit_waits: Sequence[float] = ()) -> dict | None:
+def _graphql(query: str, variables: Mapping[str, str] | None, timeout: int,
+             rate_limit_waits: Sequence[float]) -> tuple[dict | None, str]:
+    """`_graphql_once`, retrying a GitHub secondary rate limit after each wait in
+    ``rate_limit_waits`` (seconds) in turn."""
+    parsed, reason = _graphql_once(query, variables or {}, timeout)
+    for wait in rate_limit_waits:
+        if parsed is not None or SECONDARY_RATE_LIMIT not in reason.lower():
+            break
+        _log.warning("GitHub secondary rate limit; retrying in %ds", wait)
+        time.sleep(wait)
+        parsed, reason = _graphql_once(query, variables or {}, timeout)
+    return parsed, reason
+
+
+def gh_graphql(query: str, *, variables: Mapping[str, str] | None = None,
+               timeout: int = 60, rate_limit_waits: Sequence[float] = ()) -> dict | None:
     """`gh api graphql` for `query`, parsed as a JSON object, or None when no
     usable response came back (timeout, unparseable/non-object body, or an
     error body with no `data`); a None is logged with gh's own error text.
@@ -84,19 +104,25 @@ def gh_graphql(query: str, *, timeout: int = 60,
     envelope, and errors coexist with partial data — so a body carrying a
     `data` object is returned regardless of exit code.
 
-    A GitHub secondary rate limit is retried after each wait in
-    ``rate_limit_waits`` (seconds) in turn. A caller answering an HTTP request
-    passes none and fails fast."""
-    parsed, reason = _graphql_once(query, timeout)
-    for wait in rate_limit_waits:
-        if parsed is not None or SECONDARY_RATE_LIMIT not in reason.lower():
-            break
-        _log.warning("GitHub secondary rate limit; retrying in %ds", wait)
-        time.sleep(wait)
-        parsed, reason = _graphql_once(query, timeout)
+    A caller answering an HTTP request passes no ``rate_limit_waits`` and fails
+    fast."""
+    parsed, reason = _graphql(query, variables, timeout, rate_limit_waits)
     if parsed is None:
         _log.warning("gh api graphql failed: %s", reason)
     return parsed
+
+
+def gh_graphql_data(query: str, *, variables: Mapping[str, str] | None = None,
+                    timeout: int = 60, rate_limit_waits: Sequence[float] = ()) -> dict:
+    """The `data` object of a `gh api graphql` call that returned no GraphQL
+    errors. Anything less raises RuntimeError naming gh's error text or the
+    GraphQL errors, for a caller that must not proceed on partial data."""
+    parsed, reason = _graphql(query, variables, timeout, rate_limit_waits)
+    if parsed is None:
+        raise RuntimeError(f"GraphQL query failed: {reason}")
+    if parsed.get("errors") or not isinstance(parsed.get("data"), dict):
+        raise RuntimeError(f"GraphQL query failed: {parsed.get('errors')}")
+    return parsed["data"]
 
 
 def gh_json(path: str) -> dict | None:

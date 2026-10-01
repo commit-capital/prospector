@@ -9,9 +9,8 @@ refetch reports them unknown.
 """
 from __future__ import annotations
 
-import subprocess
-
-from issue_triage.config import gh_graphql, gh_read, repo, repo_name, repo_owner
+from issue_triage.config import repo, repo_name, repo_owner
+from pipeline import gh
 
 # GraphQL issues connection: one page of 100 open issues + a cursor. Fields are
 # named to normalize onto the same shape normalize_issue produces from REST, so
@@ -132,7 +131,8 @@ def fetch_all(max_pages: int = 60, max_issues: int | None = None) -> list[dict]:
         variables = {"owner": repo_owner(), "name": repo_name()}
         if cursor:
             variables["cursor"] = cursor
-        conn = gh_graphql(_ISSUES_QUERY, variables)["repository"]["issues"]
+        conn = gh.gh_graphql_data(_ISSUES_QUERY, variables=variables,
+                                  rate_limit_waits=gh.RATE_LIMIT_BACKOFF)["repository"]["issues"]
         rows += [normalize_gql(n) for n in conn["nodes"]]
         if max_issues is not None and len(rows) >= max_issues:
             return rows[:max_issues]
@@ -151,7 +151,5 @@ def fetch_issue(n: int) -> dict | None:
     """Targeted fetch of one issue (read-only), normalized. Returns None when the
     fetch fails (deleted, transferred, or a transient API error) so the caller
     keeps its stored record untouched."""
-    try:
-        return normalize_issue(gh_read(f"repos/{repo()}/issues/{n}"))
-    except subprocess.CalledProcessError:
-        return None
+    raw = gh.gh_json(f"repos/{repo()}/issues/{n}")
+    return normalize_issue(raw) if raw is not None else None

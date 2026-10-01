@@ -91,11 +91,11 @@ def test_fetch_all_paginates_by_cursor(monkeypatch):
     pages = [_page([1], True, "c1"), _page([2], False, "c2")]
     calls: list[dict] = []
 
-    def fake(query: str, variables: dict) -> dict:
+    def fake(query: str, *, variables: dict, **kw) -> dict:
         calls.append(variables)
         return pages[len(calls) - 1]
 
-    monkeypatch.setattr(fetch_issues, "gh_graphql", fake)
+    monkeypatch.setattr(fetch_issues.gh, "gh_graphql_data", fake)
     rows = fetch_issues.fetch_all()
     assert [r["number"] for r in rows] == [1, 2]
     assert "cursor" not in calls[0]        # first page carries no cursor
@@ -104,16 +104,16 @@ def test_fetch_all_paginates_by_cursor(monkeypatch):
 
 def test_fetch_all_raises_on_backstop(monkeypatch):
     # hasNextPage never goes false → exhausts max_pages → loud failure, not truncation
-    monkeypatch.setattr(fetch_issues, "gh_graphql",
-                        lambda q, v: _page([1], True, "c"))
+    monkeypatch.setattr(fetch_issues.gh, "gh_graphql_data",
+                        lambda q, **kw: _page([1], True, "c"))
     with pytest.raises(RuntimeError, match="backstop"):
         fetch_issues.fetch_all(max_pages=3)
 
 
 def test_fetch_all_smoke_cap_stops_before_backstop(monkeypatch):
     # max_issues caps mid-page even though hasNextPage stays true — no raise
-    monkeypatch.setattr(fetch_issues, "gh_graphql",
-                        lambda q, v: _page(list(range(100)), True, "c"))
+    monkeypatch.setattr(fetch_issues.gh, "gh_graphql_data",
+                        lambda q, **kw: _page(list(range(100)), True, "c"))
     rows = fetch_issues.fetch_all(max_pages=3, max_issues=5)
     assert len(rows) == 5
 
