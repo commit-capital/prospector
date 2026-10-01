@@ -176,16 +176,20 @@ operator starts or queues (`source == "operator"` / Control-tab clicks / chat).
 
 **Two layers.**
 
-1. *Before claiming* — each worker calls `capacity.check` before it picks or
-   claims an unattended item, so nothing is claimed and then stranded.
-2. *At the agent call* — inside an unattended context, `run_agent` calls
-   `capacity.check` before spawning and raises `CapacityPaused(decision)`
-   instead of starting a new agent. Multi-agent phases therefore stop at the
-   cap between agents.
+1. *Before claiming* — each worker asks `lane_health.capacity_open(lane)`
+   (which calls `capacity.check`) once it holds an unattended item and before
+   it claims it, so nothing is claimed and then stranded, and an idle machine
+   never spends a probe. An item started under the cap runs to completion:
+   its agents are not gated one by one, so no partial work (a fix authored,
+   then refused review) is thrown away.
+2. *At the agent call* — inside an unattended *batch* context (a process
+   started with `PROSPECTOR_UNATTENDED`, which sub-project 2's pipeline lane
+   sets), `run_agent` calls `capacity.check` before spawning and raises
+   `CapacityPaused(decision)` instead of starting a new agent. Multi-agent
+   phases therefore stop at the cap between agents.
 
-Callers treat `CapacityPaused` as a deferral: release the claim, book no
-failure (no `worker_health` failure, no `fix:single` refusal), and leave the
-item for the retry time.
+A phase that meets `CapacityPaused` stops starting agents and exits as a
+deferral, booking no failure.
 
 ### 4. Limit hits and lane health
 
@@ -197,14 +201,15 @@ item for the retry time.
   existing broad handlers stay correct, and records `paused_until = resets_at`
   on `ai_capacity:<key>` with a `capacity:pause` ledger entry. Every machine on
   that account stops starting background agents; other accounts are
-  unaffected. Workers catch it before their `AgentUnavailable` handler and
-  defer the item without tripping a lane. A weekly-limit rejection pauses until
-  the weekly reset.
+  unaffected. The workers' existing `AgentUnavailable` handlers end the item
+  through their retryable path, and `lane_health.trip_agent_lanes` trips no
+  lane for a spent limit — the pause holds the lanes until the reset. A
+  weekly-limit rejection pauses until the weekly reset.
 - **Auth failure** — unchanged: `AgentUnavailable`, lanes trip, retest.
 - **Transient service errors** — a non-zero exit whose text matches
   `overloaded|529|429|rate_limit_error` without a usage-limit rejection raises
-  `AgentTransient`; unattended callers defer the item 5 minutes and book no
-  failure.
+  `AgentTransient`; `lane_health.note_failure` books no failure for it, so it
+  never counts toward a lane trip, and the item retries on its usual schedule.
 
 Operator-started multi-agent jobs (analyze-clusters, issue-analyze, the
 find-fixed passes) stop starting new agent batches after the first
