@@ -1,0 +1,303 @@
+"""The public loop: the label and comments an attempt calls for, the writes a
+pass makes against what it recorded, and the refresh that brings new issues in."""
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from issue_triage import public_comments, public_loop
+from issue_triage.issue_store import IssueStore
+from issue_triage.public_loop import COULDNT_FIX, IN_PROGRESS, ITERATING, NEEDS_ANSWER, READY
+from pipeline import gh, settings
+
+NOW = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
+FINISHED = "2026-10-01T11:00:00+00:00"
+HEAD = "a" * 40
+QUESTION = {"question": "2 or 3?", "options": [{"label": "A", "behavior": "2"},
+                                               {"label": "B", "behavior": "3"}],
+            "default": "A", "default_reason": "r"}
+
+
+def _save(store: IssueStore, n: int, *, association: str | None = "MEMBER",
+          state: str = "open") -> None:
+    store.save_issue({"issue": n, "meta": {"title": f"bug {n}", "state": state, "body": "b",
+                                           "updated_at": "2026-09-30T00:00:00Z",
+                                           "author": "nicky", "author_association": association},
+                      "links": {"candidates": [{"pr": 77, "how": "explicit"}]}})
+
+
+def _run(**over) -> dict:
+    return {"ending": "no-fix", "detail": "opus: no-fix", "finished": FINISHED,
+            "host": "studio", "question": None, "proposal": None,
+            "root_cause": "the parser drops the flag", "candidates": [{"reproduces": True}],
+            **over}
+
+
+@pytest.fixture
+def store(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "worker_id", lambda: "studio")
+    s = IssueStore(tmp_path)
+    _save(s, 1)
+    return s
+
+
+def _label(store: IssueStore) -> str | None:
+    return public_loop.label_for(store.load_issue(1))
+
+
+# --- the label -----------------------------------------------------------------
+
+def test_an_issue_with_no_attempt_carries_no_label(store):
+    assert _label(store) is None
+
+
+def test_a_running_request_or_a_result_awaiting_its_next_step_is_in_progress(store):
+    store.edit_issue(1).record_fix_request({"action": "solve", "status": "running",
+                                            "source": "hunter"})
+    assert _label(store) == IN_PROGRESS
+    store.edit_issue(1).record_fix_request({"action": "solve", "status": "done",
+                                            "source": "hunter"})
+    store.edit_issue(1).record_fix_run(_run(ending="fixed", patch="p"))
+    assert _label(store) == IN_PROGRESS
+    store.edit_issue(1).record_fix_run(_run(ending="fix-disputed", question=QUESTION))
+    assert _label(store) == IN_PROGRESS
+
+
+def test_a_question_asked_on_github_needs_an_answer(store):
+    store.edit_issue(1).record_fix_run(_run(ending="fix-disputed", question={
+        **QUESTION, "asked": {"at": FINISHED, "url": "u"}}))
+    assert _label(store) == NEEDS_ANSWER
+
+
+def test_an_open_proposal_iterates_until_the_follow_up_says_ready(store):
+    store.edit_issue(1).record_fix_run(_run(ending="fixed", proposal={"pr": "9", "url": "u"}))
+    assert _label(store) == ITERATING
+    store.edit_issue(1).record_fix_followup({"pr": 9, "state": "ready", "head_sha": HEAD})
+    assert _label(store) == READY
+    store.edit_issue(1).record_fix_followup({"pr": 9, "state": "handed-back", "head_sha": HEAD})
+    assert _label(store) == READY
+    store.edit_issue(1).record_fix_request({"action": "send-back", "status": "running",
+                                            "source": "followup"})
+    assert _label(store) == ITERATING
+    store.edit_issue(1).record_fix_followup({"pr": 9, "state": "done"})
+    assert _label(store) is None
+
+
+def test_a_failed_revision_leaves_an_open_proposal_iterating(store):
+    store.edit_issue(1).record_fix_run(_run(ending="fixed", proposal={"pr": 9}))
+    store.edit_issue(1).record_fix_followup({"pr": 9, "state": "watching"})
+    store.edit_issue(1).record_fix_request({"action": "send-back", "status": "failed",
+                                            "source": "followup", "reason": "no base"})
+    assert _label(store) == ITERATING
+
+
+def test_an_attempt_without_a_fix_could_not_fix_it_but_a_fault_or_cancel_says_nothing(store):
+    store.edit_issue(1).record_fix_run(_run())
+    assert _label(store) == COULDNT_FIX
+    store.edit_issue(1).record_fix_run(_run(ending="cancelled"))
+    assert _label(store) is None
+    store.edit_issue(1).record_fix_run(_run(ending="sandbox", fault=True))
+    assert _label(store) is None
+
+
+def test_a_closed_issue_carries_no_label(store):
+    store.edit_issue(1).record_fix_run(_run())
+    store.edit_issue(1).record_live_state("closed", "completed")
+    assert _label(store) is None
+
+
+def test_the_pull_request_carries_its_issue_s_label(store):
+    store.edit_issue(1).record_fix_run(_run(ending="fixed", proposal={"pr": 9}))
+    assert public_loop.label_targets(store.load_issue(1)) == {1: ITERATING, 9: ITERATING}
+
+
+# --- the comments and the queue ------------------------------------------------
+
+def test_an_attempt_without_a_fix_gets_its_conclusion_while_it_is_recent(store):
+    store.edit_issue(1).record_fix_run(_run(ending="not-reproduced"))
+    [due] = public_loop.comments_due(store.load_issue(1), NOW)
+    assert (due.number, due.kind) == (1, "not-reproduced")
+    assert due.key == f"{FINISHED}:not-reproduced"
+    assert public_loop.comments_due(store.load_issue(1), NOW + timedelta(days=2)) == []
+
+
+def test_a_proposal_is_announced_on_the_issue_and_ready_on_the_pull_request(store):
+    store.edit_issue(1).record_fix_run(_run(ending="fixed", proposal={"pr": 9},
+                                            summary="Keep the flag"))
+    store.edit_issue(1).record_fix_followup({"pr": 9, "state": "ready", "head_sha": HEAD})
+    opened, ready = public_loop.comments_due(store.load_issue(1), NOW)
+    assert (opened.number, opened.kind, opened.key) == (1, "opened", "pr9:opened")
+    assert "#9" in opened.body and "Keep the flag" in opened.body
+    assert (ready.number, ready.kind, ready.key) == (9, "ready", f"pr9:{HEAD[:12]}:ready")
+
+
+def test_a_fixed_attempt_opens_its_pull_request_and_a_drafted_question_is_asked(store):
+    store.edit_issue(1).record_fix_run(_run(ending="fixed", patch="p"))
+    assert public_loop.queue_due(store.load_issue(1)) == ("propose", f"{FINISHED}:propose")
+    store.edit_issue(1).record_fix_run(_run(ending="fix-disputed", question=QUESTION))
+    assert public_loop.queue_due(store.load_issue(1)) == ("ask-reporter",
+                                                          f"{FINISHED}:ask-reporter")
+
+
+# --- a pass ----------------------------------------------------------------------
+
+@pytest.fixture
+def writes(monkeypatch):
+    from prospector_app.backend import executor
+
+    calls: list[tuple] = []
+
+    def set_fix_label(number, *, add, remove, issue, token, dry_run):
+        calls.append(("label", number, add, remove, dry_run))
+        return {"status": "dry-run" if dry_run else "executed"}
+
+    def post_fix_comment(number, body, *, marker, issue, comment_kind, token, dry_run):
+        assert marker in body
+        calls.append(("comment", number, comment_kind, dry_run))
+        return {"status": "dry-run" if dry_run else "executed", "url": f"u{number}"}
+
+    monkeypatch.setattr(executor, "set_fix_label", set_fix_label)
+    monkeypatch.setattr(executor, "post_fix_comment", post_fix_comment)
+    monkeypatch.setattr(executor, "mint_bot_token", lambda: "t")
+    return calls
+
+
+def test_a_pass_labels_and_comments_once(store, writes):
+    store.edit_issue(1).record_fix_run(_run())
+    assert public_loop.sync(store, mode="live", now=NOW) == 1
+    assert writes == [("label", 1, COULDNT_FIX, None, False),
+                      ("comment", 1, "no-fix", False)]
+    pub = store.load_issue(1).fix_public
+    assert pub["labels"] == {"1": COULDNT_FIX} and "lease" not in pub
+    assert public_loop.sync(store, mode="live", now=NOW) == 0
+    assert len(writes) == 2
+
+
+def test_a_new_state_swaps_the_label(store, writes):
+    store.edit_issue(1).record_fix_run(_run())
+    public_loop.sync(store, mode="live", now=NOW)
+    store.edit_issue(1).record_fix_request({"action": "solve", "status": "running",
+                                            "source": "operator"})
+    public_loop.sync(store, mode="live", now=NOW)
+    assert writes[-1] == ("label", 1, IN_PROGRESS, COULDNT_FIX, False)
+
+
+def test_a_pass_opens_the_pull_request_for_a_fixed_attempt_once(store, writes):
+    store.edit_issue(1).record_fix_run(_run(ending="fixed", patch="p"))
+    public_loop.sync(store, mode="live", now=NOW)
+    req = store.load_issue(1).fix_request
+    assert (req["action"], req["source"], req["status"]) == ("propose", "public", "queued")
+    store.edit_issue(1).record_fix_request({**req, "status": "failed", "reason": "blocked"})
+    public_loop.sync(store, mode="live", now=NOW)
+    assert store.load_issue(1).fix_request["status"] == "failed"
+
+
+def test_a_dry_run_notes_each_write_once_and_keeps_its_record_apart(store, writes):
+    store.edit_issue(1).record_fix_run(_run())
+    public_loop.sync(store, mode="dry-run", now=NOW)
+    assert all(call[-1] is True for call in writes) and len(writes) == 2
+    issue = store.load_issue(1)
+    assert issue.fix_public["dry"]["labels"] == {"1": COULDNT_FIX}
+    assert "labels" not in {k for k, v in issue.fix_public.items() if v and k != "dry"}
+    assert [e["text"][:7] for e in issue.fix_thread] == ["Dry run", "Dry run"]
+    public_loop.sync(store, mode="dry-run", now=NOW)
+    assert len(writes) == 2
+    public_loop.sync(store, mode="live", now=NOW)
+    assert [c[-1] for c in writes[2:]] == [False, False]
+
+
+def test_an_issue_out_of_scope_is_left_alone(store, writes):
+    _save(store, 2, association="NONE")
+    store.edit_issue(2).record_fix_run(_run())
+    public_loop.sync(store, mode="live", now=NOW)
+    assert writes == []
+
+
+def test_scope_all_serves_every_issue(store, writes, monkeypatch):
+    monkeypatch.setenv("TRIAGE_ISSUE_FIX_PUBLIC_SCOPE", "all")
+    _save(store, 2, association="NONE")
+    store.edit_issue(2).record_fix_run(_run())
+    public_loop.sync(store, mode="live", now=NOW)
+    assert ("label", 2, COULDNT_FIX, None, False) in writes
+
+
+def test_another_worker_s_lease_holds_the_issue(store, writes):
+    store.edit_issue(1).record_fix_run(_run())
+    store.edit_issue(1).record_fix_public({"lease": {
+        "host": "laptop", "until": (NOW + timedelta(minutes=3)).isoformat()}})
+    assert public_loop.sync(store, mode="live", now=NOW) == 0
+    assert writes == []
+    assert public_loop.sync(store, mode="live", now=NOW + timedelta(minutes=4)) == 1
+
+
+def test_a_failed_write_backs_off_then_retries(store, writes, monkeypatch):
+    from prospector_app.backend import executor
+
+    store.edit_issue(1).record_fix_run(_run())
+    monkeypatch.setattr(executor, "set_fix_label",
+                        lambda *a, **k: {"status": "error", "detail": "HTTP 502"})
+    public_loop.sync(store, mode="live", now=NOW)
+    issue = store.load_issue(1)
+    assert issue.fix_public["error"]["detail"] == "HTTP 502"
+    assert "retrying later" in issue.fix_thread[-1]["text"]
+    assert public_loop.sync(store, mode="live", now=NOW + timedelta(minutes=10)) == 0
+    monkeypatch.undo()
+    monkeypatch.setattr(settings, "worker_id", lambda: "studio")
+    monkeypatch.setattr(executor, "set_fix_label", lambda *a, **k: {"status": "executed"})
+    monkeypatch.setattr(executor, "post_fix_comment", lambda *a, **k: {"status": "executed"})
+    monkeypatch.setattr(executor, "mint_bot_token", lambda: "t")
+    assert public_loop.sync(store, mode="live", now=NOW + timedelta(minutes=31)) == 1
+    assert "error" not in store.load_issue(1).fix_public
+
+
+def test_a_comment_that_fails_its_problems_is_recorded_and_not_posted(store, writes,
+                                                                      monkeypatch):
+    store.edit_issue(1).record_fix_run(_run())
+    monkeypatch.setattr(public_comments, "problems", lambda body: ["the comment carries a link"])
+    public_loop.sync(store, mode="live", now=NOW)
+    assert [c[0] for c in writes] == ["label"]
+    posted = store.load_issue(1).fix_public["posted"]
+    assert list(posted.values())[0]["blocked"] == ["the comment carries a link"]
+
+
+def test_live_without_a_bot_token_writes_nothing(store, writes, monkeypatch):
+    from prospector_app.backend import executor
+
+    store.edit_issue(1).record_fix_run(_run())
+    monkeypatch.setattr(executor, "mint_bot_token", lambda: None)
+    assert public_loop.sync(store, mode="live", now=NOW) == 0
+    assert writes == []
+
+
+# --- the refresh -----------------------------------------------------------------
+
+def _raw(n: int, association: str, **over) -> dict:
+    return {"number": n, "title": f"bug {n}", "body": "Steps: 1. run it", "state": "open",
+            "user": {"login": "nicky"}, "author_association": association,
+            "created_at": "2026-10-01T10:00:00Z", "updated_at": "2026-10-01T11:00:00Z",
+            "labels": [], **over}
+
+
+def test_a_refresh_ingests_the_in_scope_issues_github_reports_updated(store, monkeypatch):
+    urls: list[str] = []
+    monkeypatch.setattr(public_loop, "_refreshed", {})
+    monkeypatch.setattr(gh, "gh_list", lambda url: urls.append(url) or [
+        _raw(1, "MEMBER", title="bug 1, edited"), _raw(5, "MEMBER"), _raw(6, "NONE"),
+        _raw(7, "MEMBER", pull_request={"url": "u"})])
+    assert public_loop.refresh(store, now=NOW) == 2
+    assert "since=2026-09-30T12:00:00Z" in urls[0]
+    assert store.load_issue(5).author_association == "MEMBER"
+    assert store.load_issue(6) is None and store.load_issue(7) is None
+    edited = store.load_issue(1)
+    assert edited.title == "bug 1, edited"
+    assert edited.candidate_prs == [{"pr": 77, "how": "explicit"}]
+    public_loop.refresh(store, now=NOW + timedelta(minutes=10))
+    assert "since=2026-10-01T11:59:00Z" in urls[1]
+
+
+def test_an_unanswered_refresh_reads_the_same_window_again(store, monkeypatch):
+    monkeypatch.setattr(public_loop, "_refreshed", {"since": "2026-10-01T11:00:00Z"})
+    monkeypatch.setattr(gh, "gh_list", lambda url: None)
+    assert public_loop.refresh(store, now=NOW) == 0
+    assert public_loop._refreshed["since"] == "2026-10-01T11:00:00Z"

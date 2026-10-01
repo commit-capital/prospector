@@ -112,7 +112,8 @@ bot-authenticated chat writes and feedback issue filing do not. Executor
 enforcement lives in
 `prospector_app/backend/safety_guard.py`: an allowlist that permits only
 comment/close/reopen/review as the configured bot plus the dedicated
-`bot_merge_run` and `propose_bot_run` (an issue-fix pull request) paths, and refuses any write with an empty token or an empty
+`bot_merge_run`, `propose_bot_run` (an issue-fix pull request) and
+`label_bot_run` (one of the issue-fix status labels) paths, and refuses any write with an empty token or an empty
 `TRIAGE_BOT_LOGIN` — a deployment configured without a GitHub App is legal,
 reads normally, and writes nothing.
 
@@ -485,6 +486,34 @@ pull request shows (`propose.push_revision`; a merge of the newer base when it
 was proven on one), and the run it records keeps the proposal; any other
 ending leaves the pull request, its run and the result on disk as they were.
 The issue carries the follow-up as `fix_followup` (schema 27).
+
+**ISSUE FIX PUBLIC LOOP** (`issue_triage/public_loop.py` +
+`public_comments.py`) is the ONE policy for what GitHub shows of an issue's fix
+attempt, for the issues in scope: the ones a maintainer filed
+(`gates.priority_author`), or every attempted issue under
+`TRIAGE_ISSUE_FIX_PUBLIC_SCOPE=all`. The store stays the state machine:
+`label_for` derives one status label (`fix in progress`, `needs answer`,
+`iterating on PR`, `ready for review`, `couldn't fix`) from
+`fix_review.fix_status`, the attempt and the follow-up, carried by the issue and
+by the pull request it proposed; `comments_due` names the comments the attempt
+calls for — the conclusion of an attempt without a fix (finished within a day),
+the opened pull request on the issue, and the follow-up's ready or hand-back on
+the pull request, once per head — each rendered by the host with an agent's
+words held inert, gated by `public_comments.problems`, and marked so it posts
+once. Every ten minutes the issue-fix worker follows up its proposals, then
+`refresh` ingests the in-scope issues GitHub reports updated (REST, candidate
+links left as stored, so a new maintainer issue reaches the hunter without a
+full ingest), then `sync` compares each in-scope issue's derived label and
+comments with its `fix_public` record (schema 28) and makes only the missing
+writes as the bot — `executor.set_fix_label` through `safety_guard.label_bot_run`
+(the five names only, created on first use) and `executor.post_fix_comment` —
+Activity-logged, under a short per-issue lease, a failure retried after thirty
+minutes. It never reads a label back. `sync` also queues, once per attempt with
+source `public`, what an operator's click queues in the app: `propose` for a
+fixed attempt and `ask-reporter` for a drafted question. The hunter takes a
+maintainer's issue whatever its reproduction grade. `TRIAGE_ISSUE_FIX_PUBLIC` is
+`live` (the default), `dry-run` (each write logged as a dry-run and noted once on
+the issue, its record kept apart in `fix_public.dry`), or `off`.
 
 **WORKER HEALTH** (`pipeline/worker_health.py` + `prospector_app/backend/lane_health.py`
 + `escalation.py`) is the ONE policy for a worker that is failing rather than

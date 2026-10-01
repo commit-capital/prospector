@@ -247,6 +247,55 @@ def propose_bot_run(payload: dict, token: str, *,
                           timeout=timeout, env=bot_env(token))
 
 
+LABEL_OPS = ("add", "remove", "create")
+
+
+def assert_label_write(op: str, label: str, number: int | None) -> None:
+    """Hold a label write to the issue-fix status labels
+    (`issue_triage.public_loop.LABELS`): adding one to or removing one from an
+    issue or pull request by number, or creating one on the repository."""
+    from issue_triage.public_loop import LABELS
+
+    if op not in LABEL_OPS:
+        raise WriteAttemptBlocked(f"not a label operation: {op!r}")
+    if label not in LABELS:
+        raise WriteAttemptBlocked(f"{label!r} is not an issue-fix status label")
+    if op == "create":
+        if number is not None:
+            raise WriteAttemptBlocked("a label is created on the repository, not on a number")
+    elif not isinstance(number, int) or isinstance(number, bool) or number < 1:
+        raise WriteAttemptBlocked(f"a label {op} names an issue or pull request number")
+
+
+def label_bot_run(op: str, label: str, token: str, *, number: int | None = None,
+                  timeout: int = 60) -> subprocess.CompletedProcess:
+    """Add, remove, or create one issue-fix status label on TRIAGE_REPO as the
+    configured bot. The command is built here from the checked operation, so
+    nothing but those three calls on the issues label endpoints can run."""
+    from urllib.parse import quote
+
+    from issue_triage.public_loop import LABELS
+
+    token = _require_bot_token(token, "write a label")
+    assert_label_write(op, label, number)
+    assert_store_writes_safe()
+    repo = settings.repo()
+    payload: str | None = None
+    if op == "add":
+        argv = ["gh", "api", "--method", "POST", f"repos/{repo}/issues/{number}/labels",
+                "--input", "-"]
+        payload = json.dumps({"labels": [label]})
+    elif op == "remove":
+        argv = ["gh", "api", "--method", "DELETE",
+                f"repos/{repo}/issues/{number}/labels/{quote(label, safe='')}"]
+    else:
+        color, description = LABELS[label]
+        argv = ["gh", "api", "--method", "POST", f"repos/{repo}/labels", "--input", "-"]
+        payload = json.dumps({"name": label, "color": color, "description": description})
+    return subprocess.run(argv, input=payload, capture_output=True, text=True,
+                          timeout=timeout, env=bot_env(token))
+
+
 _MERGE_RE = re.compile(r"^gh\s+pr\s+merge\s+\d+\b")
 
 

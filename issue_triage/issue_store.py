@@ -29,12 +29,13 @@ REPRO_GRADES = {"A", "B", "C", "D", "F"}
 FIX_SCAN_STATES = {"fixed", "likely-fixed", "not-fixed"}
 ISSUE_FIX_ACTIONS = ("solve", "send-back", "answer", "ask-reporter", "propose")
 ISSUE_FIX_STATUSES = ("queued", "running", "done", "failed", "cancelled")
-ISSUE_FIX_SOURCES = ("operator", "hunter", "reporter", "followup")
+ISSUE_FIX_SOURCES = ("operator", "hunter", "reporter", "followup", "public")
 # Where the follow-up on an issue's proposed pull request stands
 # (`issue_triage.followup`).
 FOLLOWUP_STATES = ("watching", "ready", "handed-back", "done")
 ISSUE_SECTIONS = ("meta", "summary", "repro", "cluster", "analysis", "links", "resolution",
-                  "fix_scan", "fix_request", "fix_run", "fix_thread", "fix_followup")
+                  "fix_scan", "fix_request", "fix_run", "fix_thread", "fix_followup",
+                  "fix_public")
 
 
 def validate_issue(rec: dict) -> None:
@@ -91,6 +92,11 @@ def validate_issue(rec: dict) -> None:
         if fu.get("state") not in FOLLOWUP_STATES:
             raise ValidationError(
                 f"fix_followup.state: {fu.get('state')!r} not in {list(FOLLOWUP_STATES)}")
+    pub = rec.get("fix_public")
+    if pub:
+        for field in ("labels", "posted", "claims", "queued"):
+            if not isinstance(pub.get(field, {}), dict):
+                raise ValidationError(f"fix_public.{field}: must be a mapping")
 
 
 def validate_issue_cluster(rec: dict) -> None:

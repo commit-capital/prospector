@@ -86,7 +86,10 @@ _JSON = JSON().with_variant(JSONB, "postgresql")
 # 27 — issues carry `fix_followup` (the follow-up on a proposed pull request)
 #      and fix requests the "followup" source; an older issue validator refuses
 #      the source.
-STORE_SCHEMA_VERSION = 27
+# 28 — issues carry `fix_public` (what the issue-fix public loop has set and
+#      posted on GitHub) and fix requests the "public" source; an older issue
+#      validator refuses the source.
+STORE_SCHEMA_VERSION = 28
 
 # saved_at is a microsecond-resolution ISO timestamp stamped on every save — when
 # the store row was last written (distinct from `updated_at`, which mirrors the

@@ -90,7 +90,7 @@ def _facts_unchanged(iss: issue_model.Issue, meta: dict, summary: dict,
 
 
 def _swap_facts(store: IssueStore, raw: dict, summary: dict, repro: dict,
-                links: list[dict], github: list[dict] | None) -> SwapResult:
+                links: list[dict] | None, github: list[dict] | None) -> SwapResult:
     """Write `raw`'s facts over issue `raw['number']` as the store holds it now:
     re-read the record, stage the facts onto it, and swap it in while its
     write-stamp still matches, so a section another writer saved during the run
@@ -108,13 +108,15 @@ def _swap_facts(store: IssueStore, raw: dict, summary: dict, repro: dict,
     return "lost"
 
 
-def ingest_records(store: IssueStore, raws: list[dict], prs: list[dict]) -> IngestCounts:
+def ingest_records(store: IssueStore, raws: list[dict],
+                   prs: list[dict] | None) -> IngestCounts:
     """Upsert each normalized issue raw whose facts changed: meta + summary +
     repro + links. meta/summary/repro are computed for every raw (cheap) and
     compared, along with the raw's GitHub closing references, to the store; only
     issues that differ are written, and the candidate links are recomputed only
     for those — so an unchanged re-ingest skips the per-issue upsert, which is
-    the loop's dominant cost against a networked store. The comparison reads a
+    the loop's dominant cost against a networked store. With `prs` None the
+    candidate links are not computed and each issue keeps the ones it has. The comparison reads a
     corpus loaded once WITHOUT its candidate arrays (loading them all
     intermittently exceeds the store's statement timeout); each changed issue is
     then re-read in full and written over the record it read, under a
@@ -127,7 +129,7 @@ def ingest_records(store: IssueStore, raws: list[dict], prs: list[dict]) -> Inge
     if not raws:
         return IngestCounts(0, 0)
     existing = store.all_issues(omit_candidates=True)
-    refs = link_prs.parse_refs(prs)  # each PR body parsed once, not once per issue
+    refs = link_prs.parse_refs(prs) if prs is not None else None  # each body parsed once
     written = 0
     swap_lost = 0
     with store.batch():
@@ -141,7 +143,7 @@ def ingest_records(store: IssueStore, raws: list[dict], prs: list[dict]) -> Inge
             github = raw.get("github_links")
             if prev is not None and _facts_unchanged(prev, meta, summary, repro, github):
                 continue
-            links = link_prs.candidate_prs(
+            links = None if prs is None else link_prs.candidate_prs(
                 n, s["subsystem"], prs, refs, issue_text=f"{meta['title']}\n{meta['body']}")
             # The swap runs even for an issue the snapshot lacks: another machine
             # may have created and sectioned it since, and the create must not

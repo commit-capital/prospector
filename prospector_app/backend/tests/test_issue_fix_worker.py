@@ -127,6 +127,14 @@ def test_the_hunter_takes_a_maintainer_s_issue_ahead_of_a_newer_one(hunting):
     assert issue_fix_worker.hunt(hunting) == 1
 
 
+def test_the_hunter_takes_a_maintainer_s_issue_whatever_its_reproduction_grade(hunting):
+    now = datetime.now(timezone.utc).isoformat()
+    _issue(hunting, 3, created=now, grade="D")
+    raw = hunting.load_issue(3).raw
+    hunting.save_issue({**raw, "meta": {**raw["meta"], "author_association": "MEMBER"}})
+    assert issue_fix_worker.hunt(hunting) == 3
+
+
 def test_a_priority_author_s_queued_request_runs_first(store, monkeypatch):
     fix_review.queue(store, 1, "solve", by="op")
     fix_review.queue(store, 2, "solve", by="op")

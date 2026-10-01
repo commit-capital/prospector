@@ -63,6 +63,15 @@ SETTINGS: tuple[Setting, ...] = (
             "What the issue-fix worker does with a pull request it opened that is not yet "
             "green: live, dry-run (notes only), or off.", editable=True,
             choices=("live", "dry-run", "off")),
+    Setting("TRIAGE_ISSUE_FIX_PUBLIC", "behavior", "choice", "Issue fixes on GitHub", "live",
+            "For issues in scope, the issue-fix worker sets a status label, posts its "
+            "conclusions, opens fixed pull requests and asks its questions on GitHub: "
+            "live, dry-run (notes only), or off.", editable=True,
+            choices=("live", "dry-run", "off")),
+    Setting("TRIAGE_ISSUE_FIX_PUBLIC_SCOPE", "behavior", "choice",
+            "Issues fixed on GitHub", "maintainers",
+            "Which issues the GitHub loop serves: the ones maintainers filed, or all.",
+            editable=True, choices=("maintainers", "all")),
     _b("TRIAGE_ISSUE_FIX_SUITE", "behavior", "Run the full suite on issue fixes",
        "A fix that clears its other checks also runs the repository's full test suite.",
        on_by_default=True),

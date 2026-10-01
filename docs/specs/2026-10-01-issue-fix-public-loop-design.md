@@ -125,22 +125,25 @@ follow-up revision path.
 - `issue_triage/public_comments.py` — rendering and `problems` for the
   conclusion and pull-request status comments.
 - Store, schema 28: issue section `fix_public` — the labels set per number, the
-  comments posted per key (`<attempt>:<kind>`, with url and host), the
-  re-attempt count, the newest comment handled. Fix requests gain the source
+  comments posted per key (`<attempt>:<kind>`, with url), the requests it
+  queued, a short per-issue lease so two workers never write for one issue at
+  once, the last write error (retried after thirty minutes), and the dry-run
+  record kept apart. The re-attempt count and the newest comment handled join it
+  with the replies. Fix requests gain the source
   `public`, which an older validator refuses.
 - Executor: `set_fix_label` and `post_fix_comment` through `_bot_write`,
-  Activity kinds `issue-fix-label` and `issue-fix-comment`. A comment is claimed
-  in the store under a compare-and-swap before it is posted, so two workers
-  never both post it, and checked against the bot's comments for its marker.
+  Activity kinds `issue-fix-label` and `issue-fix-comment`. A pass writes for an
+  issue only under its lease, taken by compare-and-swap, and a comment is
+  checked against the bot's comments for its marker before it is posted.
 - Safety guard: `label_bot_run`, holding a label write to the five names, on
   `repos/<repo>/issues/<n>/labels` (add, remove) and `repos/<repo>/labels`
   (create).
 - Auto-queue: a fixed attempt with no pull request queues `propose`, a drafted
   question not yet asked queues `ask-reporter`, both with source `public`; the
   host whose files hold the run claims them (`issue_fix_worker.next_request`).
-- Hunter: an in-scope issue skips the reproduction-grade filter (a maintainer's
-  terse report is still a report); the labels it skips and the linked-PR check
-  stand.
+- Hunter: an issue a maintainer filed skips the reproduction-grade filter (a
+  maintainer's terse report is still a report); the labels it skips, its age
+  limit and the linked-PR check stand.
 - Fresh issues: `refresh` reads the issues updated since its last pass (a day
   back after a restart) through the REST issues endpoint, keeps the in-scope
   ones, and ingests them through `issue_ingest.ingest_records`, so a new
