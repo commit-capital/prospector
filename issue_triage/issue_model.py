@@ -247,11 +247,14 @@ class Issue:
         _stamp(self.rec, "fix_followup", section, None)
         self._persist()
 
-    def append_fix_thread(self, entry: dict, *, keep: int = 50) -> None:
-        """Add `entry` ({at, by, kind, text}) to the thread, keeping the newest
-        `keep`."""
+    def stage_fix_thread(self, entry: dict, *, keep: int = 50) -> None:
+        """Stage `entry` ({at, by, kind, text}) onto the thread without
+        persisting, keeping the newest `keep`."""
         entries = [*self.fix_thread, entry][-keep:]
         _stamp(self.rec, "fix_thread", {"entries": entries}, None)
+
+    def append_fix_thread(self, entry: dict, *, keep: int = 50) -> None:
+        self.stage_fix_thread(entry, keep=keep)
         self._persist()
 
     def _persist(self) -> None:

@@ -853,26 +853,38 @@ class Store:
     # every liveness window, so a decommissioned worker eventually leaves the map.
     _WORKER_PRUNE_SECONDS = 7 * 24 * 3600
 
-    def save_verify_worker(self, record: dict) -> None:
-        """Merge one host's heartbeat record into the verify_worker registry,
-        pruning entries stale past _WORKER_PRUNE_SECONDS. host and last_beat
-        are required: a beat that names no machine or no time tells an app
-        nothing about whether a runner is online. Two hosts' merges may race on
-        the shared row; a lost beat is rewritten by the loser's next tick."""
+    def _merge_beat(self, name: str, hosts: dict, record: dict) -> None:
+        """Merge one host's heartbeat record into registry `name`, whose current
+        `hosts` map the caller read, pruning entries stale past
+        _WORKER_PRUNE_SECONDS. host and last_beat are required: a beat that
+        names no machine or no time tells an app nothing about whether a runner
+        is online. Two hosts' merges may race on the shared row; a lost beat is
+        rewritten by the loser's next tick."""
         if not record.get("host"):
-            raise ValidationError("verify_worker.host: required")
+            raise ValidationError(f"{name}.host: required")
         if not record.get("last_beat"):
-            raise ValidationError("verify_worker.last_beat: required")
+            raise ValidationError(f"{name}.last_beat: required")
         from datetime import datetime, timedelta, timezone
         host = str(record["host"])
-        hosts = dict(self.load_verify_worker()["hosts"])
-        hosts[host] = record
+        hosts = {**hosts, host: record}
         cutoff = (datetime.now(timezone.utc)
                   - timedelta(seconds=self._WORKER_PRUNE_SECONDS)
                   ).isoformat(timespec="microseconds")
         hosts = {h: r for h, r in hosts.items()
                  if h == host or str(r.get("last_beat") or "") >= cutoff}
-        self._save_registry("verify_worker", {"hosts": hosts})
+        self._save_registry(name, {"hosts": hosts})
+
+    def _drop_beat(self, name: str, hosts: dict, host: str) -> bool:
+        """Drop `host`'s record from registry `name`, whose current `hosts` map
+        the caller read: a worker stopping on purpose leaves no record for the
+        offline watch to escalate. Whether there was one."""
+        if host not in hosts:
+            return False
+        self._save_registry(name, {"hosts": {h: r for h, r in hosts.items() if h != host}})
+        return True
+
+    def save_verify_worker(self, record: dict) -> None:
+        self._merge_beat("verify_worker", self.load_verify_worker()["hosts"], record)
 
     def claim_verify_request(self, n: int, *, host: str) -> wire.VerifyRequest | None:
         """Atomically claim PR `n`'s `queued`/`waiting-for-base` verify_request
@@ -915,25 +927,23 @@ class Store:
         return self._load_registry("fix_worker", {"hosts": {}})
 
     def save_fix_worker(self, record: dict) -> None:
-        """Merge one host's heartbeat record into the fix_worker registry,
-        pruning entries stale past _WORKER_PRUNE_SECONDS. host and last_beat are
-        required: a beat that names no machine or no time tells an app nothing
-        about whether a runner is online. Two hosts' merges may race on the
-        shared row; a lost beat is rewritten by the loser's next tick."""
-        if not record.get("host"):
-            raise ValidationError("fix_worker.host: required")
-        if not record.get("last_beat"):
-            raise ValidationError("fix_worker.last_beat: required")
-        from datetime import datetime, timedelta, timezone
-        host = str(record["host"])
-        hosts = dict(self.load_fix_worker()["hosts"])
-        hosts[host] = record
-        cutoff = (datetime.now(timezone.utc)
-                  - timedelta(seconds=self._WORKER_PRUNE_SECONDS)
-                  ).isoformat(timespec="microseconds")
-        hosts = {h: r for h, r in hosts.items()
-                 if h == host or str(r.get("last_beat") or "") >= cutoff}
-        self._save_registry("fix_worker", {"hosts": hosts})
+        self._merge_beat("fix_worker", self.load_fix_worker()["hosts"], record)
+
+    def load_issue_fix_worker(self) -> dict:
+        """Issue-fix-lane heartbeats, one record per host (`{hosts: {<hostname>:
+        {host, pid, last_beat, current_issue, autohunt}}}`) — which machines'
+        issue-fix lanes are up, when each last beat, the issue each is carrying
+        out (None when idle), and whether each one's hunter is on. Orphan
+        recovery reads it to tell a claim a live lane holds from one a dead
+        lane left; the machine roster and the offline watch read it beside the
+        verify and fix registries."""
+        return self._load_registry("issue_fix_worker", {"hosts": {}})
+
+    def save_issue_fix_worker(self, record: dict) -> None:
+        self._merge_beat("issue_fix_worker", self.load_issue_fix_worker()["hosts"], record)
+
+    def clear_issue_fix_worker(self, host: str) -> bool:
+        return self._drop_beat("issue_fix_worker", self.load_issue_fix_worker()["hosts"], host)
 
     # Each worker's health is its own registry row, so two machines' writes
     # never race on one row.
@@ -969,23 +979,10 @@ class Store:
         return bool(res.rowcount)
 
     def clear_verify_worker(self, host: str) -> bool:
-        """Drop `host`'s verification-worker heartbeat: a worker stopping on
-        purpose leaves no record for the offline watch to escalate."""
-        hosts = dict(self.load_verify_worker()["hosts"])
-        if host not in hosts:
-            return False
-        del hosts[host]
-        self._save_registry("verify_worker", {"hosts": hosts})
-        return True
+        return self._drop_beat("verify_worker", self.load_verify_worker()["hosts"], host)
 
     def clear_fix_worker(self, host: str) -> bool:
-        """Drop `host`'s autofix-worker heartbeat, as clear_verify_worker."""
-        hosts = dict(self.load_fix_worker()["hosts"])
-        if host not in hosts:
-            return False
-        del hosts[host]
-        self._save_registry("fix_worker", {"hosts": hosts})
-        return True
+        return self._drop_beat("fix_worker", self.load_fix_worker()["hosts"], host)
 
     def claim_fix_request(self, n: int, *, host: str,
                           statuses: tuple[str, ...] = ("queued",),

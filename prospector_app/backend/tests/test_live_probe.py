@@ -270,12 +270,7 @@ def test_capabilities_disable_writes_when_server_schema_is_stale(monkeypatch):
             "write_block": "stale server",
         },
     )
-    monkeypatch.setattr(
-        caps, "run",
-        lambda *a, **k: type(
-            "Result", (), {"returncode": 0, "stdout": "operator\n", "stderr": ""},
-        )(),
-    )
+    monkeypatch.setattr(caps.gh, "operator_login", lambda **k: "operator")
 
     out = caps.capabilities()
 

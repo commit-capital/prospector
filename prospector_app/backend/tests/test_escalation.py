@@ -35,6 +35,13 @@ def test_offline_workers_lists_hosts_past_the_silence_bar(store):
     assert [w["host"] for w in escalation.offline_workers(now)] == ["studio"]
 
 
+def test_offline_workers_include_a_silent_issue_fix_lane(store):
+    now = datetime.now(timezone.utc)
+    store.save_issue_fix_worker({"host": "studio", "last_beat": (now - timedelta(hours=2)).isoformat()})
+    assert [(w["host"], w["lane"]) for w in escalation.offline_workers(now)] == [
+        ("studio", "issue-fix")]
+
+
 def test_resume_reopens_and_ledgers(store):
     me = settings.worker_id()
     worker_health.update(store, me, lambda r: worker_health.trip(

@@ -4,12 +4,11 @@ GitHub via one batched GraphQL query per PR. Powers the PR-detail history
 panel so a reviewer can follow the back-and-forth without leaving the app."""
 from __future__ import annotations
 
-import json
 from typing import Any, TypedDict
 
+from pipeline import gh
 from pipeline import reviewers
 from pipeline import settings
-from prospector_app.backend.safety_guard import run
 
 SNIPPET_LEN = 200
 _TIMELINE_TYPES = "REOPENED_EVENT, CLOSED_EVENT, HEAD_REF_FORCE_PUSHED_EVENT, RENAMED_TITLE_EVENT"
@@ -50,13 +49,8 @@ def _query(n: int) -> str:
 
 
 def _fetch_node(n: int) -> dict[str, Any] | None:
-    r = run(["gh", "api", "graphql", "-f", f"query={_query(n)}"], timeout=60)
-    if r.returncode != 0:
-        return None
-    try:
-        repo = (json.loads(r.stdout).get("data") or {}).get("repository") or {}
-    except (ValueError, TypeError):
-        return None
+    body = gh.gh_graphql(_query(n), timeout=60)
+    repo = ((body or {}).get("data") or {}).get("repository") or {}
     node = repo.get("pullRequest")
     return node if isinstance(node, dict) else None
 

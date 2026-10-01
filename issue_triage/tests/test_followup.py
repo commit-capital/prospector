@@ -158,6 +158,12 @@ def test_a_live_poll_queues_a_follow_up_revision(store, monkeypatch):
     assert store.load_issue(7).fix_followup["revisions"] == 1
 
 
+def _run_follow_up(store: IssueStore) -> str:
+    fix_review.queue(store, 7, "send-back", by="followup", source="followup", guidance="g")
+    _, outcome = fix_review_runner.run_request(store, 7, store.claim_fix_request(7, host="s"))
+    return outcome
+
+
 def test_a_failed_follow_up_revision_leaves_the_proposal_as_it_was(store, monkeypatch, tmp_path):
     kept = (tmp_path / "issue-7" / "result.json").read_text()
 
@@ -166,8 +172,7 @@ def test_a_failed_follow_up_revision_leaves_the_proposal_as_it_was(store, monkey
         return {"ending": "no-fix", "detail": "nothing to change"}
 
     monkeypatch.setattr(fix_review_runner, "revise", failing_revise)
-    out = fix_review_runner._follow_up(store, 7, "g", on_step=lambda s: None)
-    assert "#9 is unchanged" in out
+    assert "#9 is unchanged" in _run_follow_up(store)
     assert (tmp_path / "issue-7" / "result.json").read_text() == kept
     assert store.load_issue(7).fix_run["proposal"] == {"pr": 9, "url": "u"}
 
@@ -182,7 +187,7 @@ def test_a_fixed_follow_up_revision_goes_onto_the_same_pull_request(store, monke
     monkeypatch.setattr(executor, "update_issue_fix_proposal",
                         lambda n, pr, **kw: calls.append((n, pr, kw)) or {
                             "status": "executed", "detail": "Pushed a revision on #9"})
-    out = fix_review_runner._follow_up(store, 7, "g", on_step=lambda s: None)
+    out = _run_follow_up(store)
     assert calls == [(7, 9, {"push": True, "token": "t", "dry_run": False})]
     assert out.startswith("Revised #9")
     assert store.load_issue(7).fix_run["proposal"] == {"pr": 9, "url": "u"}

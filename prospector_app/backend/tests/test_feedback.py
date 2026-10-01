@@ -45,7 +45,7 @@ def test_operator_login_parses_login(monkeypatch):
 
     class _R:
         returncode = 0
-        stdout = "octocat\n"
+        stdout = '{"login": "octocat", "id": 1}'
 
     monkeypatch.setattr(subprocess, "run", lambda *_a, **_k: _R())
     assert feedback.operator_login() == "octocat"

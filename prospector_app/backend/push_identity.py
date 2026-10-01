@@ -15,6 +15,7 @@ import subprocess
 from pathlib import Path
 from typing import TypedDict
 
+from pipeline import gh
 from pipeline.gh import operator_env
 from prospector_app.backend import onboarding
 
@@ -51,16 +52,10 @@ def noreply_email(user_id: int, login: str) -> str:
 
 
 def _gh_user(path: str) -> Account | None:
-    try:
-        r = subprocess.run(
-            ["gh", "api", path, "--jq", "[.login, .id] | @tsv"],
-            capture_output=True, text=True, timeout=20, env=operator_env())
-    except (OSError, subprocess.SubprocessError):
+    user = gh.gh_json(path, timeout=20) or {}
+    login, uid = user.get("login"), user.get("id")
+    if not isinstance(login, str) or not login or not isinstance(uid, int) or isinstance(uid, bool):
         return None
-    parts = r.stdout.strip().split("\t")
-    if r.returncode != 0 or len(parts) != 2 or not parts[1].isdigit():
-        return None
-    login, uid = parts[0], int(parts[1])
     return {"login": login, "id": uid, "email": noreply_email(uid, login)}
 
 
