@@ -248,13 +248,8 @@ def _retryable(req: dict | None) -> bool:
         return False
     if int(req.get("attempts") or 1) >= HUNT_MAX_ATTEMPTS:
         return False
-    try:
-        ended = datetime.fromisoformat(str(req.get("finished_at")))
-    except ValueError:
-        return True
-    if ended.tzinfo is None:
-        ended = ended.replace(tzinfo=timezone.utc)
-    return datetime.now(timezone.utc) - ended >= FAILED_RETRY_COOLDOWN
+    age = storekit.seconds_since(req.get("finished_at"))
+    return age is None or age >= FAILED_RETRY_COOLDOWN.total_seconds()
 
 
 def hunt(store: IssueStore) -> int | None:
