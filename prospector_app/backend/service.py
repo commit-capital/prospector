@@ -166,7 +166,7 @@ def _ci_checks(head_sha: str | None) -> list[dict]:
 def reviews_detail(n: int) -> dict[str, dict]:
     """Every reviewer's stored entry and digest on PR `n`, keyed by reviewer id —
     the PR page's per-reviewer blocks."""
-    rec = data.prs().get(int(n))
+    rec = data.pr_whole(int(n))
     if rec is None:
         return {}
     return {rid: {"entry": rec.review_entry(rid), "digest": d}
@@ -670,7 +670,7 @@ def cluster_detail(cid: int) -> dict | None:
 # PR detail + diff (read-only gh).
 # ---------------------------------------------------------------------------
 def pr_detail(n: int) -> dict | None:
-    rec = data.prs().get(int(n))
+    rec = data.pr_whole(int(n))
     if rec is None:
         return None
     row = pr_row(n, rec)

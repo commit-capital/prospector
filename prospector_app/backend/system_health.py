@@ -155,7 +155,8 @@ def _pr_ingest_last() -> str | None:
     now = time.monotonic()
     if _pr_ingest_cache and now - _pr_ingest_cache[0] < _PR_INGEST_TTL_SECONDS:
         return _pr_ingest_cache[1]
-    last = _latest_run(data.runs(), "ingest")
+    rec = data.latest_run("ingest")
+    last = (rec.finished or rec.started) if isinstance(rec, storekit.PhaseRun) else None
     _pr_ingest_cache = (now, last)
     return last
 

@@ -3,8 +3,15 @@
 Every board/list read is served from an in-memory snapshot of the store — the
 SQL database behind pipeline's store.py / gates.py / freshness.py — so requests
 do no per-call DB I/O. The snapshot self-freshens incrementally off the request
-path (see the module-global note below); refresh() forces a full reload.
-Read-only: upstream writes go through the executor and chat paths.
+path (see the module-global note below).
+
+The first load starts from this machine's on-disk copy (`snapshot_cache`) and
+reads only what changed since it. With no usable copy it reads every PR as its
+light copy (`store.light_pr`: the long review text and conflict diffs cut
+short), publishes that, and restores the cut text from a background read; a
+light record is replaced as soon as its whole one arrives, and `pr_whole` reads
+one from the store meanwhile. Read-only: upstream writes go through the
+executor and chat paths.
 """
 from __future__ import annotations
 
@@ -16,6 +23,7 @@ from typing import TYPE_CHECKING, TypedDict
 from pipeline import authors
 from pipeline import storekit
 from pipeline.store import Store
+from prospector_app.backend import snapshot_cache
 
 if TYPE_CHECKING:
     from pipeline.model import Cluster, Pr
@@ -34,6 +42,9 @@ _store = Store()
 # Reclustering soft-deletes clusters (tombstones with a bumped saved_at), so a
 # removal rides the same watermark and drops from the snapshot on the next check.
 CHECK_DEBOUNCE = 10.0  # seconds
+# How often a background freshen that changed the snapshot rewrites the disk copy.
+CACHE_EVERY = 600.0  # seconds
+CACHE_NAME = "prs"
 
 _prs: dict[int, Pr] = {}
 _clusters: dict[int, Cluster] = {}
@@ -44,6 +55,16 @@ _generation = 0
 _loaded = False
 _last_check = 0.0
 _check_lock = threading.Lock()  # single-flights the freshen; never held by a reader
+# PRs whose snapshot record is the light copy, each with the saved_at it was read
+# at. A freshen that delivers a PR's whole record removes it.
+_light: dict[int, str | None] = {}
+_cache_written = 0.0
+_cache_generation: int | None = None
+# The PR run ledger by rowid (see `runs`).
+RUNS_OVERLAP = 200
+_runs: dict[int, storekit.RunRecord] = {}
+_runs_store: Store | None = None
+_runs_lock = threading.Lock()
 _author_baseline: dict | None = None  # inner `authors` map, read once
 _author_table: dict[str, dict] | None = None  # combined author profiles; invalidated on freshen
 _author_issue_generation: int | None = None
@@ -94,9 +115,12 @@ def reset() -> None:
     Takes `_check_lock` for the same reason `refresh` does: the background
     freshener must not be mid-publish into the dicts this empties."""
     global _store, _pr_watermark, _clu_watermark, _loaded, _last_check, \
-        _generation, _author_baseline, _author_table, _author_issue_generation
+        _generation, _author_baseline, _author_table, _author_issue_generation, \
+        _cache_generation
     with _check_lock:
         _store = Store()
+        _light.clear()
+        _cache_generation = None
         _prs.clear()
         _clusters.clear()
         _pr_to_clusters_idx.clear()
@@ -129,23 +153,32 @@ def _freshen(full: bool = False) -> None:
     old or whole new snapshot, never a half-mutated one and never blocks. A
     freshen that finds nothing changed keeps the current dict objects, so the
     snapshot's identity (and `generation()`) only moves when its contents do."""
-    global _prs, _clusters, _pr_to_clusters_idx, _pr_watermark, _clu_watermark, \
-        _author_table, _generation
+    global _prs, _pr_watermark, _author_table, _generation
     # full starts from empty (a true replace — drops rows deleted since), so the
     # watermark resets to the fetched max; incremental merges the delta onto the
     # current snapshot and advances the watermark.
     pr_delta, pr_hi = _store.prs_since(None if full else _pr_watermark)
-    clu_delta, clu_deleted, clu_hi = _store.clusters_since(None if full else _clu_watermark)
-
     prs_changed = full or bool(pr_delta)
-    clusters_changed = full or bool(clu_delta) or bool(clu_deleted)
-
     if prs_changed:
         _prs = dict(pr_delta) if full else {**_prs, **pr_delta}
+        if full:
+            _light.clear()
+        for n in pr_delta:
+            _light.pop(n, None)
     if pr_hi:
         _pr_watermark = pr_hi if (full or _pr_watermark is None) else max(_pr_watermark, pr_hi)
+    clusters_changed = _freshen_clusters(full)
+    if prs_changed or clusters_changed:
+        _author_table = None  # PR snapshot changed → recompute the leaderboard lazily
+        _generation += 1
 
-    if clusters_changed:
+
+def _freshen_clusters(full: bool = False) -> bool:
+    """The cluster half of `_freshen`; True when the cluster snapshot changed."""
+    global _clusters, _pr_to_clusters_idx, _clu_watermark
+    clu_delta, clu_deleted, clu_hi = _store.clusters_since(None if full else _clu_watermark)
+    changed = full or bool(clu_delta) or bool(clu_deleted)
+    if changed:
         new_clusters = dict(clu_delta) if full else {**_clusters, **clu_delta}
         # A recluster soft-deletes clusters; the tombstones ride the same watermark
         # and arrive as deleted ids, so drop them — the snapshot tracks removals,
@@ -156,21 +189,106 @@ def _freshen(full: bool = False) -> None:
         _pr_to_clusters_idx = _index_pr_to_clusters(new_clusters)
     if clu_hi:
         _clu_watermark = clu_hi if (full or _clu_watermark is None) else max(_clu_watermark, clu_hi)
-    if prs_changed or clusters_changed:
-        _author_table = None  # PR snapshot changed → recompute the leaderboard lazily
+    return changed
+
+
+def _store_key() -> str:
+    return _store.engine.url.render_as_string(hide_password=True)
+
+
+def _cold_load() -> None:
+    """The first load, under `_check_lock`: the disk copy brought current, else
+    the light copy of every PR with its cut text restored in the background."""
+    global _prs, _pr_watermark, _generation
+    copy = snapshot_cache.load(CACHE_NAME, _store_key())
+    if copy is not None:
+        live = _store.pr_ids()
+        _prs = _store.pr_views({n: rec for n, rec in copy.records.items() if n in live})
+        _pr_watermark = copy.watermark
+        _light.clear()
+        _freshen_clusters(full=True)
+        _freshen()
         _generation += 1
+        return
+    prs, stamps, high = _store.prs_light()
+    _prs = prs
+    _light.clear()
+    _light.update(stamps)
+    _pr_watermark = high
+    _freshen_clusters(full=True)
+    _generation += 1
+    threading.Thread(target=_restore_light, daemon=True, name="store-restore-light").start()
+
+
+def _restore_light() -> None:
+    """Replace every light record still unchanged since it was read with its
+    whole one, then write the disk copy. A record that changed meanwhile is left
+    for the next freshen, which reads it whole."""
+    global _prs, _generation, _author_table
+    store = _store
+    try:
+        texts = store.pr_long_text()
+    except Exception:
+        return  # the light records stand; pr_whole reads a whole one per PR
+    with _check_lock:
+        if _store is not store:
+            return  # reset() pointed the snapshot at another store meanwhile
+        restored: dict[int, Pr] = {}
+        for n, stamp in list(_light.items()):
+            got = texts.get(n)
+            rec = _prs.get(n)
+            if got is None or rec is None or got[0] != stamp:
+                continue
+            restored[n] = _store.unclip_pr(rec, got[1])
+            del _light[n]
+        if restored:
+            _prs = {**_prs, **restored}
+            _author_table = None
+            _generation += 1
+    _write_cache(force=True)
+
+
+def _write_cache(*, force: bool = False) -> None:
+    """Write the disk copy when every record is whole and the snapshot moved since
+    the last copy — at most once per CACHE_EVERY unless `force`."""
+    global _cache_written, _cache_generation
+    if _light or not _loaded or _cache_generation == _generation:
+        return
+    if not force and time.monotonic() - _cache_written < CACHE_EVERY:
+        return
+    with _check_lock:
+        if _light:
+            return
+        prs, watermark, generation = _prs, _pr_watermark, _generation
+    if snapshot_cache.save(CACHE_NAME, _store_key(), watermark, _store.pr_records(prs)):
+        _cache_written = time.monotonic()
+        _cache_generation = generation
+
+
+def light_count() -> int:
+    """How many snapshot records are still light copies."""
+    return len(_light)
+
+
+def pr_whole(n: int) -> Pr | None:
+    """PR `n` with all its stored text: the snapshot record, or a fresh read
+    while the snapshot holds its light copy."""
+    rec = prs().get(int(n))
+    if rec is None or int(n) not in _light:
+        return rec
+    return _store.load_pr(int(n)) or rec
 
 
 def _ensure() -> None:
     """Make sure the snapshot is loaded and not too stale, without ever blocking a
-    reader once loaded. The first call blocks on the one cold full-load; after
+    reader once loaded. The first call blocks on the one cold load; after
     that, a stale read kicks a background freshen and returns the current snapshot
     (the freshen updates it for next time)."""
     global _loaded, _last_check
     if not _loaded:
         with _check_lock:
             if not _loaded:
-                _freshen(full=True)
+                _cold_load()
                 _loaded = True
                 _last_check = time.monotonic()
         return
@@ -187,6 +305,7 @@ def _ensure() -> None:
             pass  # keep the current snapshot; the next window retries
         finally:
             _check_lock.release()
+        _write_cache()
 
     threading.Thread(target=run, daemon=True, name="store-freshen").start()
 
@@ -204,7 +323,7 @@ def snapshot_loading() -> bool:
         def run() -> None:
             global _loaded, _last_check
             try:
-                _freshen(full=True)
+                _cold_load()
                 _loaded = True
                 _last_check = time.monotonic()
             except Exception:
@@ -282,8 +401,26 @@ def runs(limit: int | None = None, since: str | None = None) -> list[storekit.Ru
     """Run-ledger records from the store, typed (PhaseRun | StoreEdit), in
     insertion order — all of them when `limit` is omitted, else only the last
     `limit`. `since` filters to records at or after that ISO instant (the
-    ledger's indexed `ts` column) and composes with `limit`."""
-    return _store.runs(limit=limit, since=since)
+    ledger's indexed `ts` column) and composes with `limit`.
+
+    The whole ledger is held in memory and each call reads only the rows past
+    the last one seen, less RUNS_OVERLAP: the ledger is append-only, and the
+    overlap picks up a row whose insert committed after a higher rowid's."""
+    global _runs, _runs_store
+    if limit is not None or since is not None:
+        return _store.runs(limit=limit, since=since)
+    with _runs_lock:
+        if _runs_store is not _store:
+            _runs, _runs_store = {}, _store
+        after = max(_runs) - RUNS_OVERLAP if _runs else None
+        new = [(rowid, rec) for rowid, rec in _store.runs_after(after) if rowid not in _runs]
+        if new:
+            _runs = dict(sorted({**_runs, **dict(new)}.items()))
+        return list(_runs.values())
+
+
+def latest_run(phase: str) -> storekit.RunRecord | None:
+    return _store.latest_run(phase)
 
 
 def action_items() -> list[dict]:
@@ -316,16 +453,18 @@ def refresh() -> None:
     an executor action, or the live sweep changes the store, so the next read
     reflects it immediately instead of waiting for the debounced background check.
     Incremental (it picks up rows written since the watermark), so it's cheap to
-    call on an action path; a cold snapshot still loads
-    in full because the watermark starts None. Cluster removals arrive as tombstones
-    on the same watermark, so they drop here too."""
+    call on an action path; a snapshot not yet loaded runs the cold load. Cluster
+    removals arrive as tombstones on the same watermark, so they drop here too."""
     global _loaded, _last_check, _author_baseline, _author_table, _generation
     with _check_lock:
         # Re-read the baseline registry (it may have been recaptured) and drop the
         # leaderboard folded from it, even when the PR snapshot itself is unchanged.
         _author_baseline = None
         _author_table = None
-        _freshen()
+        if _loaded:
+            _freshen()
+        else:
+            _cold_load()
         # An explicit refresh means "make the next read reflect now", so bump the
         # snapshot identity even when the store rows are unchanged — the reloaded
         # author baseline (and anything else keyed on generation()) must be

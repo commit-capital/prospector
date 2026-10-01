@@ -199,6 +199,17 @@ class IssueStore:
         omit = [("links", "candidates")] if omit_candidates else None
         return self._issues.since(watermark, omit_paths=omit)
 
+    def issue_ids(self) -> set[int]:
+        return self._issues.ids()
+
+    def issue_records(self, issues: dict[int, issue_model.Issue]) -> dict[int, dict]:
+        """The raw records behind `issues`, for a snapshot cache to serialize."""
+        return {n: issue.raw for n, issue in issues.items()}
+
+    def issue_views(self, recs: dict[int, dict]) -> dict[int, issue_model.Issue]:
+        """Bound views over raw records a snapshot cache read back."""
+        return {n: self._issue_view(rec) for n, rec in recs.items()}
+
     def load_issues(self, ns: list[int]) -> dict[int, issue_model.Issue]:
         from sqlalchemy import select
         ids = [int(n) for n in ns]

@@ -41,6 +41,10 @@ a:hover { text-decoration: underline; }
   text-align: center; font-weight: 600; font-size: 14px; }
 .backend-down code { background: rgba(255, 255, 255, 0.22); color: #fff;
   padding: 1px 6px; border-radius: 4px; font-size: 13px; }
+/* snapshot first-load banner (App.tsx BackendBanner) */
+.backend-loading { position: sticky; top: 0; z-index: 1000; padding: 8px 20px;
+  background: var(--panel2); color: var(--text); font-size: 13px; text-align: center;
+  border-bottom: 1px solid var(--border); }
 .store-write-block { background: var(--red); color: #fff; padding: 10px 20px;
   text-align: center; font-weight: 700; font-size: 14px; }
 

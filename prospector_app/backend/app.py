@@ -84,6 +84,7 @@ class SurrogateSafeJSONResponse(JSONResponse):
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     """Launch background services without blocking application startup."""
+    _launch_snapshot_load()
     _launch_live_sweep()
     _launch_verify_worker()
     _launch_fix_worker()
@@ -175,6 +176,25 @@ def _launch_live_sweep():
     threading.Thread(target=run, daemon=True).start()
 
 
+def _launch_snapshot_load() -> None:
+    """Start the PR and issue snapshots' first loads at boot, so the first page
+    finds them loaded or loading. Skipped under pytest and on an unconfigured
+    checkout, which has no store to load."""
+    import sys
+    import threading
+    if "pytest" in sys.modules or not settings.configured():
+        return
+    data.snapshot_loading()
+    threading.Thread(target=_load_issue_snapshot, daemon=True, name="issue-snapshot-load").start()
+
+
+def _load_issue_snapshot() -> None:
+    try:
+        issue_data.issues()
+    except Exception:
+        pass  # the first Issues request retries the load
+
+
 def _launch_verify_worker():
     """Start the sandbox-verification worker when this backend is the runner
     (TRIAGE_VERIFY_WORKER=1 — the machine with the Docker sandbox). Every other
@@ -263,13 +283,18 @@ def machines_roster():
 
 @app.get("/api/health")
 def health():
-    """Liveness, plus what the snapshot holds. Answers without loading the
-    snapshot when there is no deployment target: the frontend polls this to
-    decide whether the backend is up, so it has to be cheap and truthful on a
-    checkout whose store is whatever a stale .env last named."""
+    """Liveness, plus what the snapshot holds. The frontend polls this to decide
+    whether the backend is up, so it never waits on a store read: with no
+    deployment target it answers without the snapshot, and while the snapshot's
+    first load runs it answers `loading` (the page shows a loading banner).
+    `light` counts PRs whose long review text is still being restored."""
     if not settings.configured():
         return {"ok": True, "configured": False, "clusters": 0, "prs": 0}
-    return {"ok": True, "configured": True,
+    if data.snapshot_loading():
+        return {"ok": True, "configured": True, "loading": True,
+                "issues_loading": issue_data.loading(), "clusters": None, "prs": None}
+    return {"ok": True, "configured": True, "loading": False,
+            "issues_loading": issue_data.loading(), "light": data.light_count(),
             "clusters": len(data.clusters()), "prs": len(data.prs())}
 
 

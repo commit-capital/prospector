@@ -5,6 +5,9 @@ and a background freshen that errors leaves the last good snapshot in place."""
 from __future__ import annotations
 
 import time
+from types import SimpleNamespace
+
+from sqlalchemy.engine import make_url
 
 from prospector_app.backend import data
 from pipeline import model
@@ -27,6 +30,17 @@ class _FakeStore:
         self.prs: dict[int, tuple[str, model.Pr]] = {}  # id -> (saved_at, rec)
         self.clusters: dict[int, tuple[str, bool]] = {}  # id -> (saved_at, deleted)
         self.prs_since_calls: list[str | None] = []
+        self.engine = SimpleNamespace(url=make_url("sqlite:///fake.db"))
+
+    def prs_light(self):
+        sel, high = self.prs_since(None)
+        return sel, {n: s for n, (s, _) in self.prs.items()}, high
+
+    def pr_long_text(self):
+        return {}
+
+    def pr_ids(self):
+        return set(self.prs)
 
     def add(self, n: int, saved_at: str, state: str = "open"):
         self.prs[n] = (saved_at, _pr(n, state))

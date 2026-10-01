@@ -555,6 +555,27 @@ class ValidationError(ValueError):
     pass
 
 
+class Clipped(str):
+    """Text a light read cut short. A record holding one is refused on save, so
+    the cut never reaches the store."""
+
+    __slots__ = ()
+
+
+class ClippedWriteError(ValueError):
+    pass
+
+
+def holds_clipped(value: object) -> bool:
+    if isinstance(value, Clipped):
+        return True
+    if isinstance(value, dict):
+        return any(holds_clipped(v) for v in value.values())
+    if isinstance(value, list):
+        return any(holds_clipped(v) for v in value)
+    return False
+
+
 def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -634,6 +655,10 @@ class Collection(Generic[T]):
         return None if row is None else self.view(row[0])
 
     def _row(self, rec: dict) -> dict:
+        if holds_clipped(rec):
+            raise ClippedWriteError(
+                f"{self.table.name} {rec.get(self.id_field)}: the record holds text a "
+                "light read cut short; load it whole before saving")
         self.validate(rec)
         return dict(self.mirror(rec), data=rec, saved_at=saved_at_now())
 
@@ -728,6 +753,22 @@ class Collection(Generic[T]):
             if len(page) < BULK_PAGE_ROWS:
                 return rows
             last = page[-1][0]
+
+    def stamped_rows(self, columns: list[ColumnElement]) -> tuple[list[Row[Any]], str | None]:
+        """Every row's (pk, saved_at, *columns) in pk order, read in pages, plus the
+        table's max saved_at taken before the first page — the watermark an
+        incremental `since` continues from, as for a full `since` load."""
+        sa = self.table.c.saved_at
+
+        def hi(conn: Connection) -> str | None:
+            return conn.execute(select(func.max(sa))).scalar_one_or_none()
+        high = self._read(hi)
+        return self._paged([sa, *columns]), high
+
+    def ids(self) -> set[int]:
+        def q(conn: Connection) -> set[int]:
+            return {int(r[0]) for r in conn.execute(select(self.pk)).all()}
+        return self._read(q)
 
     def all(self, omit_paths: list[tuple[str, ...]] | None = None) -> dict[int, T]:
         """Every record, keyed by id, read in pages. `omit_paths` drops the named

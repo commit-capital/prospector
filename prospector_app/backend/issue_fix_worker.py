@@ -147,10 +147,12 @@ def _hunted_today(issues: dict) -> int:
 def hunt(store: IssueStore) -> int | None:
     """Queue a `solve` for the newest fresh, well-reproduced issue with no
     linked pull request and no attempt, within the day's budget. The issue
-    queued, or None."""
+    queued, or None. Reads the app's issue and PR snapshots; the queue write
+    re-checks the issue on the store."""
     from issue_triage import issue_links, pr_index
+    from prospector_app.backend import data, issue_data
 
-    issues = store.all_issues(omit_candidates=True)
+    issues = issue_data.issues()
     if _hunted_today(issues) >= settings.issue_fix_hunt_budget():
         return None
     since = (datetime.now(timezone.utc) - HUNT_MAX_AGE).isoformat()
@@ -163,7 +165,7 @@ def hunt(store: IssueStore) -> int | None:
                 or i.fix_run or i.fix_request):
             continue
         picks.append((meta.get("created_at") or "", n))
-    index = pr_index.from_store()
+    index = pr_index.build(data.prs().values())
     for _, n in sorted(picks, reverse=True):
         if issue_links.linked_prs(issues[n], index.get(n)):
             continue

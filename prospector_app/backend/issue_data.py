@@ -2,16 +2,19 @@
 
 The default Issues table uses a light snapshot with candidate PR arrays omitted,
 then hydrates only the visible page with full rows. Duplicate triage can opt into
-the full issue cache lazily; nothing here runs at app startup.
+the full issue cache lazily. The first load starts from this machine's on-disk
+copy of the snapshot (`snapshot_cache`) and reads only what changed since it.
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from issue_triage.issue_store import IssueStore
 from pipeline import storekit
+from prospector_app.backend import snapshot_cache
 from prospector_app.backend.snapshot import LazySnapshot
 
 if TYPE_CHECKING:
@@ -19,6 +22,9 @@ if TYPE_CHECKING:
 
 STORE_ROOT: Path | None = None
 CHECK_DEBOUNCE = 10.0
+# How often a freshen that changed the snapshot rewrites the disk copy.
+CACHE_EVERY = 600.0
+CACHE_NAME = "issues"
 
 
 @dataclass
@@ -32,6 +38,8 @@ class _IssueSnapshotState:
     full_key: tuple[str | None, str | None] | None = None
     runs: list[storekit.RunRecord] = field(default_factory=list)
     generation: int = 0
+    cache_written: float = 0.0
+    cache_generation: int | None = None
 
     def reset(self) -> None:
         self.store = None
@@ -43,6 +51,7 @@ class _IssueSnapshotState:
         self.full_key = None
         self.runs = []
         self.generation += 1
+        self.cache_generation = None
 
     def invalidate_full(self) -> None:
         self.full_issues = None
@@ -69,8 +78,25 @@ def store() -> IssueStore:
     return _state.store
 
 
+def _store_key(st: IssueStore) -> str:
+    return st.engine.url.render_as_string(hide_password=True)
+
+
 def _freshen(full: bool = False) -> None:
     st = store()
+    if full:
+        copy = snapshot_cache.load(CACHE_NAME, _store_key(st))
+        if copy is not None:
+            live = st.issue_ids()
+            _state.issues = st.issue_views(
+                {n: rec for n, rec in copy.records.items() if n in live})
+            _state.issue_watermark = copy.watermark
+            _state.clusters = {}
+            _state.cluster_watermark = None
+            _state.invalidate_full()
+            _state.generation += 1
+            _freshen(False)
+            return
     issue_delta, issue_hi = st.issues_since(
         None if full else _state.issue_watermark, omit_candidates=True)
     cluster_delta, cluster_hi = st.issue_clusters_since(None if full else _state.cluster_watermark)
@@ -90,6 +116,25 @@ def _freshen(full: bool = False) -> None:
         _state.invalidate_full()
     if full or issue_delta or cluster_delta:
         _state.generation += 1
+    _write_cache(st, force=full)
+
+
+def _write_cache(st: IssueStore, *, force: bool) -> None:
+    """Write the disk copy when the snapshot moved since the last one, at most
+    once per CACHE_EVERY unless `force`."""
+    if _state.cache_generation == _state.generation:
+        return
+    if not force and time.monotonic() - _state.cache_written < CACHE_EVERY:
+        return
+    if snapshot_cache.save(CACHE_NAME, _store_key(st), _state.issue_watermark,
+                           st.issue_records(_state.issues)):
+        _state.cache_written = time.monotonic()
+        _state.cache_generation = _state.generation
+
+
+def loading() -> bool:
+    """True until the first load has published a snapshot."""
+    return not _snapshot.loaded
 
 
 _snapshot = LazySnapshot(_freshen, debounce=CHECK_DEBOUNCE)

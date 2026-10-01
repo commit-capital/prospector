@@ -222,6 +222,16 @@ class TestResetClusters:
         # PRs themselves survive the reset
         assert s.load_pr(1) is not None
 
+    def test_keeps_each_pr_description(self, tmp_path):
+        s = Store(tmp_path)
+        for n in (1, 2):
+            s.save_pr({"pr": n, "meta": {"title": f"t{n}", "author": "a", "state": "open",
+                                         "draft": False, "head_sha": "h1", "checked_at": NOW,
+                                         "body": f"description {n}"}})
+        cd.commit_clusters(s, [{"root_problem": "x", "prs": [1, 2]}])
+        assert cd.reset_clusters(s)["backrefs_cleared"] == 2
+        assert s.pr_bodies([1, 2]) == {1: "description 1", 2: "description 2"}
+
     def test_idempotent_on_empty(self, tmp_path):
         s = Store(tmp_path)
         assert cd.reset_clusters(s) == {"clusters_removed": 0, "backrefs_cleared": 0}
