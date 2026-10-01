@@ -18,6 +18,7 @@ from prospector_app.backend import activity
 from prospector_app.backend import data
 from prospector_app.backend.executor import CLOSE_ACTIONS
 from prospector_app.backend.safety_guard import run
+from pipeline import gh
 from pipeline import settings
 
 
@@ -79,25 +80,14 @@ def _is_bot(login: str | None) -> bool:
 
 def _last_close_event(n: int) -> dict | None:
     """PR ``n``'s latest upstream ``closed`` event as ``{actor, at}``, or None
-    when the PR has none (or the events read fails). The jq filter emits one
-    JSON object per close event across pages; the last line wins."""
-    r = run(["gh", "api", "--paginate", f"repos/{settings.repo()}/issues/{n}/events",
-             "--jq", '.[] | select(.event=="closed") | {actor: .actor.login, at: .created_at}'],
-            timeout=60)
-    if r.returncode != 0:
+    when the PR has none (or the events read fails)."""
+    events = gh.gh_list(f"repos/{settings.repo()}/issues/{int(n)}/events?per_page=100",
+                        timeout=60, paginate=True) or []
+    closes = [e for e in events if e.get("event") == "closed"]
+    if not closes:
         return None
-    last: dict | None = None
-    for line in (r.stdout or "").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            ev = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(ev, dict):
-            last = ev
-    return last
+    last = closes[-1]
+    return {"actor": (last.get("actor") or {}).get("login"), "at": last.get("created_at")}
 
 
 def missing(closes: list[dict]) -> list[dict]:

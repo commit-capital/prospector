@@ -31,8 +31,8 @@ def gh(monkeypatch):
         return subprocess.CompletedProcess(argv, 0, json.dumps({"html_url": "https://c/1"}), "")
 
     monkeypatch.setattr(executor, "bot_run", bot_run)
-    monkeypatch.setattr(executor, "run", lambda argv, timeout=60: subprocess.CompletedProcess(
-        argv, 0, "\n".join(json.dumps(c) for c in state["comments"]), ""))
+    monkeypatch.setattr("pipeline.gh.issue_comments", lambda n, timeout=60: [
+        {"user": {"login": c["login"]}, "body": c["body"]} for c in state["comments"]])
     monkeypatch.setattr(activity, "record",
                         lambda kind, **f: state["events"].append((kind, f)) or f)
     return state

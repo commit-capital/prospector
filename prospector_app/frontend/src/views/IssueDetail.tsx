@@ -3,28 +3,13 @@ import { Link } from "react-router";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api, type IssueDetail } from "../api";
-import { useIssueFlyout } from "../useIssueFlyout";
 import { useRepoMeta } from "../RepoMetaContext";
 import { TrustedAuthorName } from "../components/TrustedAuthor";
 import { DispositionChip, LinkedPRs, ReproChip } from "./Issues";
 import { IssueActionBar } from "../components/IssueActionBar";
 import { ClaimControl } from "../components/ClaimControl";
 import { FixStatusChip, IssueFixPanel } from "../components/IssueFixPanel";
-
-// An issue reference inside the flyout: a plain click swaps this panel to that
-// issue; a modifier-click follows the href to github.com.
-function FlyoutIssueLink({ n }: { n: number }) {
-  const { openIssue } = useIssueFlyout();
-  const { issueUrl } = useRepoMeta();
-  return (
-    <a href={issueUrl(n)} target="_blank" rel="noreferrer"
-       className="gh-pr-link" title="Open in this panel (⌘-click for GitHub ↗)"
-       onClick={(e) => {
-         if (e.metaKey || e.ctrlKey || e.shiftKey) return;
-         e.preventDefault(); openIssue(n);
-       }}>#{n}</a>
-  );
-}
+import { FlyoutIssueLink } from "../components/FlyoutIssueLink";
 
 /** One issue's full detail — meta, triage verdict (disposition + rationale +
  *  asks), dup-cluster context, linked PRs, the agent's plain-language summary

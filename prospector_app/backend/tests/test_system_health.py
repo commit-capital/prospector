@@ -140,6 +140,21 @@ def test_status_composes_the_live_inputs(store, monkeypatch):
     assert [i["kind"] for i in out["items"]] == ["lanes", "trip"]
 
 
+def test_status_counts_the_issue_fix_lane(store, monkeypatch):
+    from prospector_app.backend import alert_data, issues
+    monkeypatch.setattr(issues, "cached_runs", lambda: [])
+    monkeypatch.setattr(alert_data, "runs", lambda: [])
+    now = datetime.now(timezone.utc)
+    store.save_fix_worker({"host": "mac", "last_beat": now.isoformat()})
+    store.save_issue_fix_worker({"host": "mac", "last_beat": now.isoformat()})
+    worker_health.update(store, "mac", lambda r: worker_health.trip(
+        r, "fix", kind="crash", reason="crashed"))
+
+    out = system_health.status()
+    assert (out["lanes_total"], out["lanes_down"]) == (2, 1)
+    assert not out["workers_stalled"]
+
+
 def test_trip_detail_carries_the_remedy():
     host = _tripped_host("mac", ["fix"])
     host["lanes"]["fix"]["remedy"] = "sign in with /login"

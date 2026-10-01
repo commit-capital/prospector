@@ -53,6 +53,16 @@ def test_roster_composes_beats_health_and_pins(store):
     assert [m["host"] for m in out["machines"]] == ["mac-1", "mac-2"]
 
 
+def test_roster_shows_the_issue_fix_lane_and_the_issue_it_is_on(store):
+    store.save_issue_fix_worker({"host": "mac-1", "last_beat": _iso(0.1), "pid": 1,
+                                 "current_issue": 14335, "autohunt": True})
+    [m] = machines.roster()["machines"]
+    assert m["host"] == "mac-1" and m["online"] is True
+    beat = m["beats"]["issue-fix"]
+    assert beat["online"] is True and beat["current_issue"] == 14335
+    assert beat["current_pr"] is None and beat["autohunt"] is True
+
+
 def test_roster_marks_base_pinned_hosts(store):
     store.save_verify_base({"host": "mac-3", "base_sha": "a" * 40, "tier": 1,
                             "baseline_failing": [], "baseline_captured_at": _iso(60)})

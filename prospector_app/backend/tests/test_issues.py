@@ -592,17 +592,14 @@ def test_has_bot_comment_scopes_by_substring(monkeypatch):
     the given reference, so a close-fixed comment (#PR) and a close-dup comment
     (#canonical) on the same thread do not suppress each other. Matching happens in
     Python, so a body containing quotes or backslashes is searched correctly."""
-    import json
 
     monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triagebot")
 
-    class _R:
-        stdout = "\n".join(json.dumps(row) for row in [
-            {"login": "triagebot[bot]", "body": "fixed by #900"},
-            {"login": "triagebot[bot]", "body": 'closing as a dup of "#42" \\ x'},
-        ])
-
-    monkeypatch.setattr(executor, "run", lambda argv, **kw: _R())
+    comments = [
+        {"user": {"login": "triagebot[bot]"}, "body": "fixed by #900"},
+        {"user": {"login": "triagebot[bot]"}, "body": 'closing as a dup of "#42" \\ x'},
+    ]
+    monkeypatch.setattr(executor.gh, "issue_comments", lambda n, **kw: comments)
     assert executor._has_bot_comment(11, "#900")
     assert executor._has_bot_comment(11, 'dup of "#42" \\ x')   # quotes + backslash
     assert not executor._has_bot_comment(11, "#123")
@@ -610,10 +607,7 @@ def test_has_bot_comment_scopes_by_substring(monkeypatch):
 
 
 def test_has_bot_comment_false_on_unreadable_response(monkeypatch):
-    class _R:
-        stdout = ""
-
-    monkeypatch.setattr(executor, "run", lambda argv, **kw: _R())
+    monkeypatch.setattr(executor.gh, "issue_comments", lambda n, **kw: None)
     assert not executor._has_bot_comment(11, "#900")
 
 
@@ -890,6 +884,10 @@ def test_rows_and_detail_carry_the_fix_attempt(tmp_path, monkeypatch):
     assert rows[11]["fix_status"] is None
     detail = issues.get_issue(10)
     assert detail["fix_run"]["ending"] == "fixed" and detail["fix_thread"][0]["text"] == "hi"
+    assert detail["fix_pr"] is None
+    st.edit_issue(10).record_fix_run({"ending": "fixed", "detail": "proven", "patch": "p",
+                                      "host": "studio", "proposal": {"pr": 9, "url": "u"}})
+    assert issues.get_issue(10)["fix_pr"] == 9
 
 
 def test_the_query_filters_and_sorts_on_fix_status(tmp_path, monkeypatch):

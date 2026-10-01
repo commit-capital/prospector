@@ -439,12 +439,23 @@ agent's own reading, `solo_lane.GUIDANCE`) and drafts a dispute's question at
 once; `send-back` has a small agent read the comments (`route`), then either one
 agent revises the current change on a clone that holds it
 (`solo_lane.run(start_patch=…, review=True)`) or the cross lane restarts with the
-comments as guidance; `answer` resumes a dispute on the chosen reading or
+comments as guidance. While the attempt is open as a pull request
+(`fix_review.open_pr`: proposed, and the follow-up has not seen it merged or
+closed), a revision goes onto that pull request the way the follow-up's own do
+(below), honoring the request's dry run, and a restart — the routed one or a
+`solve` — is refused, since the pull request and its reviews belong to the
+approach it discards; `answer` resumes a dispute on the chosen reading or
 re-solves with a written answer; `ask-reporter` and `propose` take the executor's
 bot paths. Between requests the lane reads replies to questions asked on GitHub
 every half hour, and `TRIAGE_ISSUE_FIX_HUNT=1` lets it queue one `solve` for a
 fresh, well-reproduced issue with no linked PR within
-`TRIAGE_ISSUE_FIX_HUNT_BUDGET` a UTC day. `POST /api/issues/{n}/fix` queues an
+`TRIAGE_ISSUE_FIX_HUNT_BUDGET` a UTC day. The lane beats its own heartbeat (the
+`issue_fix_worker` registry) while its drain loop runs, and on start and every
+five minutes `issue_fix_worker.recover_orphans` ends `failed` (reason
+`interrupted: …`) each `running` request this host claimed before its process
+started, or whose host's heartbeat has been silent an hour; the hunter re-queues
+a failed `solve` that carried no guidance once it has rested an hour, three
+tries an issue (`fix_request.attempts`). `POST /api/issues/{n}/fix` queues an
 action as the operator; `/fix/cancel` cancels a queued one. In the app the Issues
 explorer filters and sorts on the status (`?fix=` in the URL, `needs-you` for
 review and question), Home counts `review` and `question`, and the issue flyout's
@@ -479,12 +490,14 @@ agent), or `off`. Live, the executor edits the description
 (`executor.update_issue_fix_proposal`) and re-runs jobs
 (`executor.rerun_issue_fix_checks`) as the bot through the chat write
 allowlist, Activity-logged, and a revision is a `send-back` with source
-`followup` that `fix_review_runner._follow_up` runs on the attempt's base, or
+`followup` that `fix_review_runner._revise_proposal` runs on the attempt's base, or
 the current pin when this machine no longer holds it. A revision that ends
 `fixed` goes onto the same branch as one more commit leased on the head the
 pull request shows (`propose.push_revision`; a merge of the newer base when it
-was proven on one), and the run it records keeps the proposal; any other
-ending leaves the pull request, its run and the result on disk as they were.
+was proven on one), the run it records keeps the proposal, and the follow-up
+watches the new head; any other ending leaves the pull request, its run and the
+result on disk as they were. An operator's send-back takes the same path and
+does not count against `MAX_REVISIONS`, which bounds the follow-up's own.
 The issue carries the follow-up as `fix_followup` (schema 27).
 
 **ISSUE FIX PUBLIC LOOP** (`issue_triage/public_loop.py` +

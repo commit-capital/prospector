@@ -32,7 +32,8 @@ from prospector_app.backend import decisions
 from prospector_app.backend import models
 from prospector_app.backend import safety_guard
 from prospector_app.backend import service
-from prospector_app.backend.safety_guard import bot_merge_run, bot_run, run
+from prospector_app.backend.safety_guard import bot_merge_run, bot_run
+from pipeline import gh
 from pipeline import settings
 from pipeline import freshness
 from pipeline import reviewers
@@ -176,14 +177,11 @@ def _effective_action(a: models.CloseAction) -> str:
 def _pr_live(n: int) -> dict | None:
     """Live {state, head, merged, mergeable_state} for a PR, or None if GitHub is
     unreachable. `mergeable_state` is "dirty" when the branch now conflicts."""
-    r = run(["gh", "api", f"repos/{settings.repo()}/pulls/{n}",
-             "--jq", "{state: .state, head: .head.sha, merged: .merged, mergeable_state: .mergeable_state}"], timeout=30)
-    if r.returncode != 0:
+    pr = gh.fetch_pr(n, timeout=30)
+    if pr is None:
         return None
-    try:
-        return json.loads(r.stdout)
-    except (ValueError, TypeError):
-        return None
+    return {"state": pr.get("state"), "head": (pr.get("head") or {}).get("sha"),
+            "merged": pr.get("merged"), "mergeable_state": pr.get("mergeable_state")}
 
 
 def _html_url(stdout: str | None) -> str | None:
@@ -311,32 +309,14 @@ def _is_bot_login(login: str | None) -> bool:
     return bool(login) and login.removesuffix("[bot]") == settings.bot_login().removesuffix("[bot]")
 
 
-def _jq_rows(stdout: str | None) -> list[dict]:
-    """Parse `gh api --jq '.[] | {…}'` output — one compact JSON object per line,
-    across every page under `--paginate`. Malformed lines are skipped."""
-    rows: list[dict] = []
-    for line in (stdout or "").splitlines():
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(row, dict):
-            rows.append(row)
-    return rows
-
-
 def _has_bot_comment(n: int, contains: str | None = None) -> bool:
     """True when the configured bot has already commented on issue/PR `n`. With
     `contains`, only comments whose body includes that substring count, scoping the
     idempotency check to comments about this specific action (a close-fixed comment
-    references its fixing PR; a close-dup comment references its canonical). Both
-    the login and the substring are matched in Python: the REST login carries the
-    `[bot]` suffix, and jq's `contains("…")` takes a quoted literal, so a body
-    holding a quote or backslash cannot be searched for through the filter."""
-    r = run(["gh", "api", f"repos/{settings.repo()}/issues/{n}/comments",
-             "--jq", '.[] | {login: .user.login, body: .body}'], timeout=30)
-    bodies = [row.get("body") for row in _jq_rows(r.stdout)
-              if _is_bot_login(row.get("login"))]
+    references its fixing PR; a close-dup comment references its canonical). Every
+    page of comments is read, so a long thread's older bot comment still counts."""
+    bodies = [c.get("body") for c in gh.issue_comments(n) or []
+              if _is_bot_login((c.get("user") or {}).get("login"))]
     if contains is None:
         return bool(bodies)
     return any(contains in (b or "") for b in bodies)
@@ -518,12 +498,8 @@ def execute_pr(n: int, action: models.CloseAction, *, token: str | None, dry_run
 
 
 def _bot_comment_ids(n: int) -> list[int]:
-    r = run(["gh", "api", f"repos/{settings.repo()}/issues/{n}/comments",
-             "--jq", '.[] | {login: .user.login, id: .id}'], timeout=30)
-    if r.returncode != 0:
-        return []
-    return [int(row["id"]) for row in _jq_rows(r.stdout)
-            if _is_bot_login(row.get("login")) and isinstance(row.get("id"), int)]
+    return [int(c["id"]) for c in gh.issue_comments(n) or []
+            if _is_bot_login((c.get("user") or {}).get("login")) and isinstance(c.get("id"), int)]
 
 
 def _bot_change_request_ids(n: int) -> list[int]:
@@ -532,13 +508,9 @@ def _bot_change_request_ids(n: int) -> list[int]:
     A request-changes is a PR *review* (pulls/{n}/reviews), not an issue
     comment, so deleting issue comments on reopen leaves its "here's what to
     fix" body visible — the cause of #70. These get dismissed on reopen."""
-    r = run(["gh", "api", "--paginate", f"repos/{settings.repo()}/pulls/{n}/reviews",
-             "--jq", '.[] | {login: .user.login, id: .id, state: .state}'], timeout=30)
-    if r.returncode != 0:
-        return []
-    return [int(row["id"]) for row in _jq_rows(r.stdout)
-            if _is_bot_login(row.get("login")) and row.get("state") == "CHANGES_REQUESTED"
-            and isinstance(row.get("id"), int)]
+    return [int(r["id"]) for r in gh.pr_reviews(n) or []
+            if _is_bot_login((r.get("user") or {}).get("login"))
+            and r.get("state") == "CHANGES_REQUESTED" and isinstance(r.get("id"), int)]
 
 
 def reopen_pr(n: int, *, token: str | None, dry_run: bool) -> dict:
@@ -635,10 +607,9 @@ def _latest_bot_review_url(n: int) -> str | None:
     """html_url of the configured bot's most recent review on a PR — the deep-link
     anchor for a review that carries a body (request-changes / comment). `gh pr
     review` prints no URL, so we read it back from the reviews API."""
-    r = run(["gh", "api", f"repos/{settings.repo()}/pulls/{n}/reviews?per_page=100",
-             "--jq", '.[] | {login: .user.login, url: .html_url}'], timeout=30)
-    urls = [row["url"] for row in _jq_rows(r.stdout)
-            if _is_bot_login(row.get("login")) and isinstance(row.get("url"), str)]
+    urls = [r["html_url"] for r in gh.pr_reviews(n) or []
+            if _is_bot_login((r.get("user") or {}).get("login"))
+            and isinstance(r.get("html_url"), str)]
     return urls[-1] if urls else None
 
 
@@ -695,8 +666,7 @@ def comment_line(n: int, file: str, line: int, body: str, *, token: str | None, 
         return refusal
 
     def attempt(token: str) -> dict[str, object]:
-        head = (run(["gh", "api", f"repos/{settings.repo()}/pulls/{n}", "--jq", ".head.sha"],
-                    timeout=30).stdout or "").strip()
+        head = ((gh.fetch_pr(n, timeout=30) or {}).get("head") or {}).get("sha") or ""
         if not head:
             return {"status": "error", "detail": "could not resolve head sha"}
         argv = ["gh", "api", "--method", "POST", f"repos/{settings.repo()}/pulls/{n}/comments",
@@ -1355,12 +1325,11 @@ def set_fix_label(number: int, *, add: str | None, remove: str | None, issue: in
 def _bot_commented_with(number: int, marker: str) -> bool:
     """Whether the bot already posted a comment carrying `marker` on issue or
     pull request `number`, over every page of its comments."""
-    r = run(["gh", "api", "--paginate", f"repos/{settings.repo()}/issues/{int(number)}/comments",
-             "--jq", ".[] | {login: .user.login, body: .body}"], timeout=60)
-    if r.returncode != 0:
-        raise RuntimeError(f"reading the comments on #{number} failed: {_gh_api_error(r)}")
-    return any(_is_bot_login(row.get("login")) and marker in (row.get("body") or "")
-               for row in _jq_rows(r.stdout))
+    comments = gh.issue_comments(int(number))
+    if comments is None:
+        raise RuntimeError(f"the comments on #{number} could not be read")
+    return any(_is_bot_login((c.get("user") or {}).get("login"))
+               and marker in (c.get("body") or "") for c in comments)
 
 
 def post_fix_comment(number: int, body: str, *, marker: str, issue: int, comment_kind: str,

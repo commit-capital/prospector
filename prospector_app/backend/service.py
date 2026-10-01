@@ -6,7 +6,6 @@ safety_guard (gh pr diff) and caches to prospector_app/cache/diffs/<sha>.diff.
 """
 from __future__ import annotations
 
-import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -145,17 +144,14 @@ def live_changed_paths(n: int) -> list[str] | None:
     CODEOWNERS check and the risk tier when no diff is cached. None when the
     fetch fails — never asserted as "no paths changed", so a caller can tell
     a failed fetch apart from a PR that genuinely touches nothing gated."""
-    r = run(["gh", "api", "--paginate", f"repos/{settings.repo()}/pulls/{n}/files",
-             "--jq", ".[].filename"], timeout=60)
-    if r.returncode != 0:
-        return None
-    return [ln.strip() for ln in r.stdout.splitlines() if ln.strip()]
+    return gh.pr_changed_paths(n, timeout=60)
 
 
 def _pr_body_live(n: int) -> str | None:
-    """Fetch a PR body from GitHub — the lazy fallback when it wasn't ingested."""
-    res = run(["gh", "api", f"repos/{settings.repo()}/pulls/{n}", "--jq", ".body"], timeout=30)
-    return res.stdout.strip() if res.returncode == 0 else None
+    """Fetch a PR body from GitHub — the lazy fallback when it wasn't ingested.
+    None when GitHub cannot be read."""
+    pr = gh.fetch_pr(n, timeout=30)
+    return None if pr is None else (pr.get("body") or "").strip()
 
 
 def _ci_checks(head_sha: str | None) -> list[dict]:
@@ -782,15 +778,9 @@ MAX_FILES_API = 100  # cap reconstructed diffs so huge PRs stay responsive
 
 def _diff_from_files_api(n: int) -> dict:
     """Fallback for PRs whose diff `gh pr diff` refuses (>300 files / HTTP 406)."""
-    res = run(["gh", "api", f"repos/{settings.repo()}/pulls/{n}/files?per_page=100", "--paginate"], timeout=120)
-    if res.returncode != 0 or not res.stdout.strip():
+    files = gh.pr_files(n)
+    if not files:
         return {"diff": "", "error": "could not fetch file list", "file_count": 0,
-                "truncated": False, "source": "files-api"}
-    raw = res.stdout.replace("][", ",")  # gh --paginate concatenates arrays
-    try:
-        files = json.loads(raw)
-    except json.JSONDecodeError:
-        return {"diff": "", "error": "could not parse file list", "file_count": 0,
                 "truncated": False, "source": "files-api"}
     total = len(files)
     parts = []
