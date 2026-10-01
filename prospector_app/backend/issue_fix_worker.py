@@ -315,6 +315,12 @@ def hunt(store: IssueStore) -> int | None:
     return None
 
 
+def _follow_up(store: IssueStore) -> None:
+    """`followup.poll`, whose reply routing runs an agent only while the lane's
+    AI capacity is open; its other steps run regardless."""
+    followup.poll(store, may_route=lambda: lane_health.capacity_open(LANE))
+
+
 def _answer_replies(store: IssueStore) -> None:
     """`public_loop.answer_replies`, whose live mode routes replies through an
     agent, only while the lane's AI capacity is open; a dry-run or switched-off
@@ -328,7 +334,7 @@ def _every_ten_minutes(store: IssueStore) -> None:
     """Follow up the open proposals, then refresh the in-scope issues, answer
     their replies, and bring GitHub in line with them; one step failing leaves
     the others to run, and an agent outage trips the lanes and ends the pass."""
-    for step in (followup.poll, public_loop.refresh, _answer_replies, public_loop.sync):
+    for step in (_follow_up, public_loop.refresh, _answer_replies, public_loop.sync):
         try:
             step(store)
         except headless_agent.AgentUnavailable as e:

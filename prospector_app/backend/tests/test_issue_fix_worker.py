@@ -354,7 +354,7 @@ def test_an_agent_outage_in_the_ten_minute_pass_trips_the_lanes(store, monkeypat
 
     tripped, ran = [], []
 
-    def down(store_):
+    def down(store_, **_):
         raise headless_agent.AgentUnavailable("not logged in")
 
     monkeypatch.setattr(followup, "poll", down)
@@ -370,7 +370,7 @@ def _ten_minute_steps(monkeypatch) -> list[str]:
     ran: list[str] = []
     for module, name in ((followup, "poll"), (public_loop, "refresh"),
                          (public_loop, "answer_replies"), (public_loop, "sync")):
-        monkeypatch.setattr(module, name, lambda store_, name=name: ran.append(name))
+        monkeypatch.setattr(module, name, lambda store_, name=name, **_: ran.append(name))
     return ran
 
 
