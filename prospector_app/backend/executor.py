@@ -1067,10 +1067,14 @@ def propose_issue_fix(issue: int, *, token: str | None, dry_run: bool = True) ->
     `issue_gates.propose_gate`, no other open pull request may name the issue
     (`related_prs.search`), and its rendering must pass `fix_pr_body.problems`; the
     push user pushes the lane branch to its fork (`propose.push_fix`) and the
-    bot opens the pull request from it (`safety_guard.propose_bot_run`). A lane
-    branch that already has a pull request is reported, never reopened. A
-    dry-run does everything up to the push; with no token every run is one.
-    Every outcome is logged to Activity."""
+    bot opens the pull request from it (`safety_guard.propose_bot_run`). The
+    report's lane branches are read in order (`propose.branch_ref`): an open
+    pull request on one is reported, a merged one refuses, and a branch whose
+    pull request was closed without merging passes the proposal on to the next
+    one, so the first branch with no pull request carries it; a closed pull
+    request is never reopened and its branch never overwritten. A dry-run does
+    everything up to the push; with no token every run is one. Every outcome
+    is logged to Activity."""
     from issue_triage import fetch_issues, fix_lane, fix_pr_body, issue_gates, propose, related_prs
     from pipeline import describe_pr, diffpaths
     from pipeline.gh import gh_list
@@ -1093,12 +1097,28 @@ def propose_issue_fix(issue: int, *, token: str | None, dry_run: bool = True) ->
 
     result = record["result"]
     patch = str(result["patch"])
-    ref = propose.branch_ref(issue, record["report_sha"])
-    head = f"{settings.push_login()}:{ref}"
-    existing = gh_list(f"repos/{settings.repo()}/pulls?head={head}&state=all") or []
-    if existing:
-        return done("exists", f"{ref} already has #{existing[0]['number']}", dry=dry_run,
-                    url=existing[0].get("html_url"))
+    closed: list[int] = []
+    for attempt in range(1, propose.MAX_ATTEMPTS + 1):
+        ref = propose.branch_ref(issue, record["report_sha"], attempt)
+        head = f"{settings.push_login()}:{ref}"
+        existing = gh_list(f"repos/{settings.repo()}/pulls?head={head}&state=all")
+        if existing is None:
+            return done("blocked", f"the pull requests from {ref} cannot be read", dry=dry_run)
+        opened = [p for p in existing if p.get("state") == "open"]
+        if opened:
+            return done("exists", f"{ref} already has #{opened[0]['number']}", dry=dry_run,
+                        pr=opened[0]["number"], url=opened[0].get("html_url"))
+        merged = [p for p in existing if p.get("merged_at")]
+        if merged:
+            return done("blocked", f"#{merged[0]['number']} from {ref} already merged",
+                        dry=dry_run)
+        if not existing:
+            break
+        closed += [int(p["number"]) for p in existing]
+    else:
+        return done("blocked", f"the report's {propose.MAX_ATTEMPTS} lane branches each had a "
+                               "pull request closed without merging: "
+                               + ", ".join(f"#{n}" for n in closed), dry=dry_run)
 
     related = related_prs.search(issue)
     if related is None:
@@ -1126,7 +1146,7 @@ def propose_issue_fix(issue: int, *, token: str | None, dry_run: bool = True) ->
     try:
         pushed = propose.push_fix(issue=issue, report_sha=record["report_sha"],
                                   base_sha=record["base_sha"], patch=patch, message=message,
-                                  workdir=workdir, dry_run=not live)
+                                  workdir=workdir, dry_run=not live, attempt=attempt)
     except RuntimeError as e:
         return done("blocked", f"push: {e}", dry=not live)
     if not live:
@@ -1154,9 +1174,9 @@ def update_issue_fix_proposal(issue: int, pr: int, *, push: bool, token: str | N
     (`propose.push_revision`, leased on the head the pull request shows); either
     way the title and body are re-rendered from the run and posted as the bot
     when they differ. The run must pass `issue_gates.propose_gate` and the pull
-    request must be open from this issue's lane branch on the push user's fork.
-    A dry-run does everything up to the writes; with no token every run is one.
-    Every outcome is logged to Activity."""
+    request must be open from one of the report's lane branches on the push
+    user's fork. A dry-run does everything up to the writes; with no token
+    every run is one. Every outcome is logged to Activity."""
     from issue_triage import fetch_issues, fix_lane, fix_pr_body, issue_gates, propose, related_prs
     from pipeline import describe_pr, diffpaths
     from pipeline.gh import gh_json
@@ -1178,13 +1198,14 @@ def update_issue_fix_proposal(issue: int, pr: int, *, push: bool, token: str | N
     live_pr = gh_json(f"repos/{settings.repo()}/pulls/{int(pr)}")
     if not live_pr:
         return done("blocked", f"#{pr} cannot be read", dry=dry_run)
-    ref = propose.branch_ref(issue, record["report_sha"])
     head = live_pr.get("head") or {}
     if live_pr.get("state") != "open":
         return done("blocked", f"#{pr} is {live_pr.get('state')}", dry=dry_run)
-    if head.get("ref") != ref or ((head.get("repo") or {}).get("owner") or {}).get(
+    attempt = propose.attempt_of(str(head.get("ref") or ""), issue, record["report_sha"])
+    if attempt is None or ((head.get("repo") or {}).get("owner") or {}).get(
             "login") != settings.push_login():
-        return done("blocked", f"#{pr} is not open from {settings.push_login()}:{ref}",
+        return done("blocked", f"#{pr} is not open from a lane branch of "
+                               f"{settings.push_login()} for issue #{issue}'s report",
                     dry=dry_run)
 
     result = record["result"]
@@ -1210,7 +1231,7 @@ def update_issue_fix_proposal(issue: int, pr: int, *, push: bool, token: str | N
             pushed = propose.push_revision(
                 issue=issue, report_sha=record["report_sha"], base_sha=record["base_sha"],
                 patch=patch, message=message, expected_head=str(head.get("sha") or ""),
-                workdir=workdir, dry_run=not live)
+                workdir=workdir, dry_run=not live, attempt=attempt)
         except RuntimeError as e:
             return done("blocked", f"push: {e}", dry=not live)
     edit = (title_text != live_pr.get("title")

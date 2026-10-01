@@ -38,6 +38,7 @@ from pipeline import gates
 from pipeline import security_review
 from pipeline import settings
 from pipeline import store
+from pipeline import storekit
 from pipeline import verify_driver
 from pipeline import wire
 from pipeline import worker_health
@@ -176,13 +177,8 @@ def worker_offline(host: str, registry: dict, claimed_at: str | None = None) -> 
     a fresh one is a worker that has not beaten yet."""
     rec = (registry.get("hosts") or {}).get(host) or {}
     stamp = rec.get("last_beat") if rec else claimed_at
-    if not isinstance(stamp, str):
-        return False
-    try:
-        at = datetime.fromisoformat(stamp)
-    except ValueError:
-        return False
-    return (datetime.now(timezone.utc) - at).total_seconds() >= worker_health.OFFLINE_AFTER_SECONDS
+    age = storekit.seconds_since(stamp)
+    return age is not None and age >= worker_health.OFFLINE_AFTER_SECONDS
 
 
 def recover_orphans() -> tuple[list[int], list[int]]:
@@ -236,14 +232,8 @@ def _rested(req: wire.VerifyRequest, seconds: float) -> bool:
     """Whether a parked request's last attempt (its checked_at write stamp) is
     at least `seconds` old. A missing or unparseable stamp reads as rested, so
     a malformed record cannot wait forever."""
-    stamp = req.get("checked_at")
-    if not isinstance(stamp, str):
-        return True
-    try:
-        at = datetime.fromisoformat(stamp)
-    except ValueError:
-        return True
-    return (datetime.now(timezone.utc) - at).total_seconds() >= seconds
+    age = storekit.seconds_since(req.get("checked_at"))
+    return age is None or age >= seconds
 
 
 def base_refresh_due(reg: wire.VerifyPin, now: datetime) -> bool:
@@ -255,20 +245,11 @@ def base_refresh_due(reg: wire.VerifyPin, now: datetime) -> bool:
     pinned_at = reg.get("pinned_at")
     if not reg.get("base_sha") or not isinstance(pinned_at, str):
         return False
-    try:
-        pinned = datetime.fromisoformat(pinned_at)
-    except ValueError:
+    age = storekit.seconds_since(pinned_at, now)
+    if age is None or age < REFRESH_AFTER_HOURS * 3600:
         return False
-    if (now - pinned).total_seconds() < REFRESH_AFTER_HOURS * 3600:
-        return False
-    attempted = reg.get("refresh_attempted_at")
-    if isinstance(attempted, str):
-        try:
-            if datetime.fromisoformat(attempted).date() == now.date():
-                return False
-        except ValueError:
-            pass
-    return True
+    attempted = storekit.parse_ts(reg.get("refresh_attempted_at"))
+    return attempted is None or storekit.utc_day(attempted) != storekit.utc_day(now)
 
 
 def _record_refresh(st: Store, ok: bool, error: str | None, failures: int) -> None:

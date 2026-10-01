@@ -8,11 +8,11 @@ trust signal the PR Explorer sorts on.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from pipeline import settings
 from pipeline import gh
+from pipeline import storekit
 
 if TYPE_CHECKING:
     from pipeline.model import Pr
@@ -89,10 +89,6 @@ def author_stats(baseline: dict, prs: dict[int, Pr]) -> dict[str, dict]:
     return out
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
 def _page_query(cursor: str | None) -> str:
     after = f'"{cursor}"' if cursor else "null"
     return (f'query {{ repository(owner: "{settings.repo_owner()}", name: "{settings.repo_name()}") {{ '
@@ -139,7 +135,7 @@ def capture_baseline(store: Store) -> dict:
         a = out.setdefault(login.lower(), {"handle": login, **_blank()})
         _add_state(a, (node.get("state") or "").lower())
         a["comments"] += (node.get("comments") or {}).get("totalCount") or 0
-    reg = {"authors": out, "materialized_at": _now()}
+    reg = {"authors": out, "materialized_at": storekit.now()}
     store.save_author_baseline(reg)
     return reg
 

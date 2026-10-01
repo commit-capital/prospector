@@ -137,7 +137,7 @@ def candidates(raw: dict) -> list[replay.Candidate]:
     screening candidates."""
     merged: dict[int, dict] = {}
     for pr in raw["prs"]:
-        opened = replay._parse_dt(pr.get("createdAt"))
+        opened = storekit.parse_ts(pr.get("createdAt"))
         sha = (pr.get("mergeCommit") or {}).get("oid")
         if opened is not None and sha:
             merged[pr["number"]] = {"sha": sha, "opened": opened,
@@ -154,10 +154,10 @@ def candidates(raw: dict) -> list[replay.Candidate]:
         closer = _closer(issue)
         if closer in merged:
             prs.add(closer)
-        created = replay._parse_dt(issue.get("createdAt"))
+        created = storekit.parse_ts(issue.get("createdAt"))
         if not prs or created is None:
             continue
-        edited = replay._parse_dt(issue.get("lastEditedAt")) or created
+        edited = storekit.parse_ts(issue.get("lastEditedAt")) or created
         out.append(replay.Candidate(
             issue=n, closed_completed=issue.get("stateReason") == "COMPLETED",
             closing_prs=[replay.ClosingPr(number=p, merged=True, merge_sha=merged[p]["sha"],

@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import hashlib
 import re
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from pipeline import settings
+from pipeline import storekit
 
 if TYPE_CHECKING:
     from pipeline.model import Pr
@@ -82,23 +83,16 @@ def spent(pr: Pr, signature: str, now: datetime | None = None) -> bool:
         return False
     if req.get("status") != "failed":
         return True
-    try:
-        ended = datetime.fromisoformat(str(req.get("finished_at")))
-    except ValueError:
-        return False
-    if ended.tzinfo is None:
-        ended = ended.replace(tzinfo=timezone.utc)
-    return ((now or datetime.now(timezone.utc)) - ended).total_seconds() < FAILED_COOLDOWN_SECONDS
+    age = storekit.seconds_since(req.get("finished_at"), now)
+    return age is not None and age < FAILED_COOLDOWN_SECONDS
 
 
 def used_today(store: Store, worker: str, now: datetime | None = None) -> int:
     """How many distinct objection continuations (one per PR and signature)
     `worker` ended since UTC midnight, read from the fix lane's ledger
     entries; a continuation that parks and later pushes counts once."""
-    now = now or datetime.now(timezone.utc)
-    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
     seen: set[tuple[object, str]] = set()
-    for run in store.runs(since=midnight.isoformat()):
+    for run in store.runs(since=storekit.utc_midnight(now).isoformat()):
         if getattr(run, "phase", None) != "fix:single":
             continue
         stats = run.raw.get("stats") or {}

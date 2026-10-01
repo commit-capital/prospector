@@ -804,17 +804,6 @@ def _legs_detail(legs: dict[str, prove.Legs]) -> str:
 _DEFAULT_CANDIDATES = 300
 
 
-def _parse_dt(value: str | None) -> datetime | None:
-    """A GitHub ISO timestamp as an aware datetime, or None when it is empty or
-    unparseable."""
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-
-
 def _gh_pr(number: int) -> dict | None:
     """A merged closing PR read live as the operator: `{merge_sha, author,
     opened_at}`, or None when the PR is unreachable, unmerged, or missing its
@@ -824,7 +813,7 @@ def _gh_pr(number: int) -> dict | None:
     if raw is None or not raw.get("merged"):
         return None
     merge_sha = raw.get("merge_commit_sha") or ""
-    opened = _parse_dt(raw.get("created_at"))
+    opened = storekit.parse_ts(raw.get("created_at"))
     if not merge_sha or opened is None:
         return None
     return {"merge_sha": merge_sha, "author": (raw.get("user") or {}).get("login") or "",
@@ -864,8 +853,8 @@ def candidates_from_store(*, limit: int | None = None) -> list[Candidate]:
                                      opened_at=detail["opened_at"]))
         if not closers:
             continue
-        created = _parse_dt(iss.created_at)
-        edited = _parse_dt(iss.last_edited_at) or created
+        created = storekit.parse_ts(iss.created_at)
+        edited = storekit.parse_ts(iss.last_edited_at) or created
         if created is None or edited is None:
             continue
         reason = iss.state_reason
@@ -1096,7 +1085,7 @@ def _recorded(pr_store: store.Store, run_id: str) -> dict[int, dict]:
 
 
 def _date_span(base_clone: Path, members: list[Instance]) -> str:
-    dates = [_parse_dt(_merge_committed(base_clone, m.merge_sha)) for m in members]
+    dates = [storekit.parse_ts(_merge_committed(base_clone, m.merge_sha)) for m in members]
     got = [d for d in dates if d is not None]
     if not got:
         return "dates unknown"
@@ -1106,7 +1095,7 @@ def _date_span(base_clone: Path, members: list[Instance]) -> str:
 def _epoch(base_clone: Path, members: list[Instance]) -> str:
     """The merge sha committed last among `members`, or "unknown"."""
     dated = [(d, m.merge_sha) for m in members
-             if (d := _parse_dt(_merge_committed(base_clone, m.merge_sha))) is not None]
+             if (d := storekit.parse_ts(_merge_committed(base_clone, m.merge_sha))) is not None]
     return max(dated)[1] if dated else "unknown"
 
 

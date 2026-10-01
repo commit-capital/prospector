@@ -26,13 +26,13 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator, Callable
-from datetime import datetime
 from pathlib import Path
 from typing import Literal, NotRequired, TypedDict
 from weakref import WeakKeyDictionary
 
 from prospector_app.backend import data
 from prospector_app.backend import subproc
+from pipeline import storekit
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 # Phases run via `uv run python` from REPO_ROOT (set as cwd in run_job), which
@@ -256,7 +256,7 @@ def start_job(kind: str, cluster: int | None = None, pr: int | None = None,
     job: Job = {
         "id": _counter["n"], "kind": kind, "cluster": cluster, "pr": pr, "count": count,
         "label": spec["label"], "status": "queued", "log": [],
-        "started": datetime.now().isoformat(), "returncode": None,
+        "started": storekit.now(), "returncode": None,
         "_argv": argv, "_wake": asyncio.Event(),
     }
     JOBS[job["id"]] = job
