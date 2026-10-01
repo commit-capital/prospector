@@ -469,9 +469,9 @@ failing after a re-run with no failing log naming a changed file), `describe`
 or CI failing after a re-run in a job whose log names a changed file — the
 findings or log lines go to the agent as quoted evidence), `wait`, or `ready`.
 A hand-back or ready holds until the head moves, and either one surfaces the
-issue as `review`. `TRIAGE_ISSUE_FIX_FOLLOWUP` is `off`, `dry-run` (the default:
-each step is noted on the issue and nothing is written upstream or spent on an
-agent), or `live`: the executor edits the description
+issue as `review`. `TRIAGE_ISSUE_FIX_FOLLOWUP` is `live` (the default), `dry-run`
+(each step is noted on the issue and nothing is written upstream or spent on an
+agent), or `off`. Live, the executor edits the description
 (`executor.update_issue_fix_proposal`) and re-runs jobs
 (`executor.rerun_issue_fix_checks`) as the bot through the chat write
 allowlist, Activity-logged, and a revision is a `send-back` with source
