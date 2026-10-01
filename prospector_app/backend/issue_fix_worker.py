@@ -102,10 +102,11 @@ def shutdown(timeout: float = SHUTDOWN_TIMEOUT) -> bool:
 
 
 def beat() -> None:
-    """Write this lane's liveness and the issue in flight to the shared store."""
+    """Write this lane's liveness, the issue in flight, and whether its hunter is
+    on to the shared store."""
     data.store().save_issue_fix_worker({
         "host": settings.worker_id(), "pid": os.getpid(), "last_beat": storekit.now(),
-        "current_issue": state["current"]})
+        "current_issue": state["current"], "autohunt": settings.issue_fix_hunt()})
 
 
 def _beat_loop() -> None:

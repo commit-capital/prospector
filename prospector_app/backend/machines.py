@@ -1,10 +1,11 @@
 """The machine roster — every worker machine the shared store knows (#323).
 
 One read composes what the store's registries already record per machine: the
-verify/fix heartbeat rows (who is online, what each is working on), the
-`worker_health:<id>` lane records (which lanes are tripped), and the verify
-base pins. The Control tab's Machines panel projects this, so a deployment
-with several worker machines shows all of them, not just the local one.
+verify, fix, and issue-fix heartbeat rows (who is online, what each is working
+on), the `worker_health:<id>` lane records (which lanes are tripped), and the
+verify base pins. The Control tab's Machines panel projects this, so a
+deployment with several worker machines shows all of them, not just the local
+one.
 """
 from __future__ import annotations
 
@@ -27,7 +28,8 @@ def roster() -> dict:
         })
 
     for lane, reg in (("verify", st.load_verify_worker()),
-                      ("fix", st.load_fix_worker())):
+                      ("fix", st.load_fix_worker()),
+                      ("issue-fix", st.load_issue_fix_worker())):
         for host, rec in (reg.get("hosts") or {}).items():
             e = entry(str(host))
             online = verify_queue.beat_online(rec.get("last_beat"))
@@ -35,6 +37,7 @@ def roster() -> dict:
                 "last_beat": rec.get("last_beat"),
                 "online": online,
                 "current_pr": rec.get("current_pr"),
+                "current_issue": rec.get("current_issue"),
                 "autohunt": bool(rec.get("autohunt")),
             }
             e["online"] = e["online"] or online

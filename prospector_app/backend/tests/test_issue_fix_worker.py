@@ -193,11 +193,12 @@ def _claimed(store: IssueStore, n: int, host: str, *, at: str | None = None) -> 
         issue.record_fix_request({**issue.fix_request, "started_at": at})
 
 
-def test_the_heartbeat_names_the_issue_in_flight(store, beats, monkeypatch):
+def test_the_heartbeat_names_the_issue_in_flight_and_the_hunt(store, beats, monkeypatch):
     monkeypatch.setitem(issue_fix_worker.state, "current", 1)
+    monkeypatch.setenv("TRIAGE_ISSUE_FIX_HUNT", "1")
     issue_fix_worker.beat()
     rec = beats.load_issue_fix_worker()["hosts"]["studio"]
-    assert rec["current_issue"] == 1 and rec["last_beat"]
+    assert rec["current_issue"] == 1 and rec["last_beat"] and rec["autohunt"] is True
 
 
 def test_a_lane_that_has_drained_drops_its_heartbeat(store, beats, monkeypatch):

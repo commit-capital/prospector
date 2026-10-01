@@ -4,6 +4,7 @@ import { api, type JobSpec, type JobRec, type PipelineStatus, type Autohunt, typ
 import { useRepoMeta } from "../RepoMetaContext";
 import { useExec } from "../ExecContext";
 import { PRLink } from "../components/PRLink";
+import { FlyoutIssueLink } from "../components/FlyoutIssueLink";
 import { SandboxChecks } from "../components/SandboxChecks";
 import { groupNeedsAttention } from "./needsAttention";
 
@@ -291,11 +292,11 @@ function MachinesSection() {
     <>
       <h3>Machines</h3>
       <p className="muted small" style={{ margin: "0 0 8px" }}>
-        Every machine on this store: worker heartbeats, lane health, and the PR each is on.
+        Every machine on this store: worker heartbeats, lane health, and the PR or issue each is on.
         A tripped lane resumes from the banner above.
       </p>
       <table className="grid compact">
-        <thead><tr><th>Machine</th><th>Lanes</th><th>Verify worker</th><th>Fix worker</th><th></th></tr></thead>
+        <thead><tr><th>Machine</th><th>Lanes</th><th>Verify worker</th><th>Fix worker</th><th>Issue-fix worker</th><th></th></tr></thead>
         <tbody>
           {roster.machines.map((m) => (
             <tr key={m.host}>
@@ -315,7 +316,7 @@ function MachinesSection() {
                 ))}
                 {Object.keys(m.lanes).length === 0 && <span className="muted small">no health recorded</span>}
               </td>
-              {(["verify", "fix"] as const).map((lane) => {
+              {(["verify", "fix", "issue-fix"] as const).map((lane) => {
                 const b = m.beats[lane];
                 return (
                   <td key={lane} className="small">
@@ -323,6 +324,7 @@ function MachinesSection() {
                       <span className={b.online ? "" : "muted"} title={fmt(b.last_beat)}>
                         {b.online ? "● online" : `○ ${ago(b.last_beat)}`}
                         {b.current_pr != null && <> · <PRLink n={b.current_pr} /></>}
+                        {b.current_issue != null && <> · <FlyoutIssueLink n={b.current_issue} /></>}
                         {b.autohunt && <span className="chip chip-muted sm">hunt</span>}
                       </span>
                     ) : <span className="muted">—</span>}

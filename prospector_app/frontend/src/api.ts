@@ -145,11 +145,12 @@ export interface MachineLaneHealth {
   consecutive_failures: number;
   last_success_at: string | null;
 }
-/** One lane's heartbeat on a machine (verify or fix worker). */
+/** One lane's heartbeat on a machine (verify, fix, or issue-fix worker). */
 export interface MachineBeat {
   last_beat: string | null;
   online: boolean;
   current_pr: number | null;
+  current_issue: number | null;
   autohunt: boolean;
 }
 /** One worker machine the shared store knows. */

@@ -37,13 +37,14 @@ def escalate_trip(lanes: list[str]) -> None:
 
 
 def offline_workers(now: datetime | None = None) -> list[dict]:
-    """Every worker whose last heartbeat, in either lane's registry, is older
+    """Every worker whose last heartbeat, in any lane's registry, is older
     than OFFLINE_AFTER_SECONDS: `{host, lane, last_beat, age_seconds}`."""
     now = now or datetime.now(timezone.utc)
     st = data.store()
     out: list[dict] = []
     for lane, reg in (("verify", st.load_verify_worker()),
-                      ("fix", st.load_fix_worker())):
+                      ("fix", st.load_fix_worker()),
+                      ("issue-fix", st.load_issue_fix_worker())):
         for host, r in (reg.get("hosts") or {}).items():
             last = r.get("last_beat")
             if verify_queue.beat_online(last):

@@ -177,6 +177,8 @@ def status() -> SystemHealth:
         host = rec.get("host")
         if host:
             worker_lanes.append(("fix", str(host)))
+    for host in st.load_issue_fix_worker().get("hosts") or {}:
+        worker_lanes.append(("issue-fix", str(host)))
     ingest_last: dict[str, str | None] = {
         "pr": _pr_ingest_last(),
         "issues": _latest_run(issues.cached_runs(), "ingest"),
