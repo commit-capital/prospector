@@ -33,13 +33,16 @@ def _payload(**over) -> dict:
             "base": sg.settings.default_branch(), "maintainer_can_modify": False, **over}
 
 
-def test_the_guard_admits_a_lane_branch_proposal():
-    sg.assert_propose_write(_payload())
+@pytest.mark.parametrize("head", [HEAD, f"{HEAD}-2", f"{HEAD}-9"])
+def test_the_guard_admits_a_lane_branch_proposal(head):
+    sg.assert_propose_write(_payload(head=head))
 
 
 @pytest.mark.parametrize("payload,why", [
     (_payload(head="someone:prospector/issue-7-01234567"), "not the push user's lane branch"),
     (_payload(head="pushbot:main"), "not the push user's lane branch"),
+    (_payload(head=f"{HEAD}-1"), "not the push user's lane branch"),
+    (_payload(head=f"{HEAD}-10"), "not the push user's lane branch"),
     (_payload(base="release"), "targets"),
     (_payload(maintainer_can_modify=True), "declines maintainer edits"),
     (_payload(draft=False), "carries exactly"),
@@ -82,7 +85,7 @@ def lane(monkeypatch):
                               "changes": [{"path": "src/x.ts", "rationale": "set x"}],
                               "proof": {}, "tier": {"tier": 2}}},
         "live": {"state": "open", "title": "t", "body": "b"},
-        "existing": [], "pushes": [], "posts": [], "events": [], "related": [],
+        "existing": {}, "pushes": [], "posts": [], "events": [], "related": [],
         "pr": {"state": "open", "title": "fix: Set x to two", "body": "old body",
                "head": {"ref": f"prospector/issue-7-{REPORT[:8]}", "sha": "b" * 40,
                         "repo": {"owner": {"login": "pushbot"}}}},
@@ -113,7 +116,13 @@ def lane(monkeypatch):
     monkeypatch.setattr(fetch_issues, "fetch_issue", lambda n: state["live"])
     from issue_triage import fix_lane
     monkeypatch.setattr(fix_lane, "report_sha", lambda t, b: REPORT)
-    monkeypatch.setattr("pipeline.gh.gh_list", lambda path: state["existing"])
+
+    def fake_list(path):
+        if state["existing"] is None:
+            return None
+        return state["existing"].get(path.split("head=", 1)[1].split("&", 1)[0], [])
+
+    monkeypatch.setattr("pipeline.gh.gh_list", fake_list)
 
     def fake_push(**kw):
         state["pushes"].append(kw)
@@ -157,10 +166,56 @@ def test_a_run_the_gate_refuses_is_blocked_before_any_push(lane):
     assert lane["pushes"] == [] and lane["events"][0][0] == "issue-propose"
 
 
-def test_a_lane_branch_with_a_pull_request_is_reported_not_reopened(lane):
-    lane["existing"] = [{"number": 41, "html_url": "u"}]
+def _closed(number: int, merged_at: str | None = None) -> dict:
+    return {"number": number, "state": "closed", "merged_at": merged_at,
+            "html_url": f"u{number}"}
+
+
+def _branch(attempt: int) -> str:
+    return HEAD if attempt == 1 else f"{HEAD}-{attempt}"
+
+
+def test_the_first_proposal_of_a_report_opens_from_its_first_branch(lane):
+    executor.propose_issue_fix(7, token="tok", dry_run=False)
+    assert lane["pushes"][0]["attempt"] == 1 and lane["posts"][0]["head"] == HEAD
+
+
+def test_a_lane_branch_with_an_open_pull_request_is_reported_not_reopened(lane):
+    lane["existing"] = {_branch(1): [_closed(41)],
+                        _branch(2): [{"number": 43, "state": "open", "merged_at": None,
+                                      "html_url": "u"}]}
     res = executor.propose_issue_fix(7, token="tok", dry_run=False)
-    assert res["status"] == "exists" and "#41" in res["detail"]
+    assert res["status"] == "exists" and "#43" in res["detail"] and res["pr"] == 43
+    assert lane["pushes"] == [] and lane["posts"] == []
+
+
+def test_a_lane_branch_whose_pull_request_merged_is_refused(lane):
+    lane["existing"] = {_branch(1): [_closed(41, merged_at="t")]}
+    res = executor.propose_issue_fix(7, token="tok", dry_run=False)
+    assert res["status"] == "blocked" and "#41" in res["detail"] and "merged" in res["detail"]
+    assert lane["pushes"] == [] and lane["posts"] == []
+
+
+def test_a_closed_proposal_passes_the_next_one_to_the_next_branch(lane):
+    lane["existing"] = {_branch(1): [_closed(41)], _branch(2): [_closed(44)]}
+    res = executor.propose_issue_fix(7, token="tok", dry_run=False)
+    assert res["status"] == "executed" and res["pr"] == 42
+    assert lane["pushes"][0]["attempt"] == 3
+    assert lane["posts"][0]["head"] == f"{HEAD}-3"
+
+
+def test_a_report_whose_every_branch_was_closed_is_proposed_no_more(lane):
+    lane["existing"] = {_branch(k): [_closed(40 + k)]
+                        for k in range(1, propose.MAX_ATTEMPTS + 1)}
+    res = executor.propose_issue_fix(7, token="tok", dry_run=False)
+    assert res["status"] == "blocked" and "#41" in res["detail"] and "#49" in res["detail"]
+    assert lane["pushes"] == [] and lane["posts"] == []
+
+
+def test_unreadable_lane_branch_pull_requests_block_a_proposal(lane):
+    lane["existing"] = None
+    res = executor.propose_issue_fix(7, token="tok", dry_run=False)
+    assert res["status"] == "blocked" and "cannot be read" in res["detail"]
     assert lane["pushes"] == [] and lane["posts"] == []
 
 
@@ -218,6 +273,12 @@ def test_an_update_pushes_the_revision_on_the_head_the_pull_request_shows(lane):
     [edit] = lane["edits"]
     assert edit[:3] == ["gh", "pr", "edit"] and "--body-file" in edit
     assert lane["events"][-1][1]["action"] == "UPDATE"
+
+
+def test_an_update_follows_the_numbered_branch_its_pull_request_is_open_from(lane):
+    lane["pr"]["head"]["ref"] = f"prospector/issue-7-{REPORT[:8]}-2"
+    res = executor.update_issue_fix_proposal(7, 9, push=True, token="tok", dry_run=False)
+    assert res["status"] == "executed" and lane["revisions"][0]["attempt"] == 2
 
 
 def test_an_update_to_a_pull_request_from_another_branch_is_refused(lane):

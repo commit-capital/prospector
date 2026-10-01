@@ -169,8 +169,19 @@ def _fork(**over) -> dict:
 REF = f"prospector/issue-7-{REPORT[:8]}"
 
 
-def test_the_fence_admits_the_push_user_s_fork_and_lane_branch(push_user):
-    propose.assert_propose_target(_fork(), propose.fork_url(), REF, 7, REPORT[:8])
+@pytest.mark.parametrize("ref", [REF, f"{REF}-2", f"{REF}-9"])
+def test_the_fence_admits_the_push_user_s_fork_and_lane_branch(push_user, ref):
+    propose.assert_propose_target(_fork(), propose.fork_url(), ref, 7, REPORT[:8])
+
+
+def test_each_proposal_of_a_report_has_its_own_numbered_branch():
+    assert propose.branch_ref(7, REPORT) == REF
+    assert propose.branch_ref(7, REPORT, 2) == f"{REF}-2"
+    assert [propose.attempt_of(r, 7, REPORT) for r in (REF, f"{REF}-2", f"{REF}-9")] == [1, 2, 9]
+    for other in (f"{REF}-1", f"{REF}-10", f"{REF}-x", "prospector/issue-7-ffffffff-2"):
+        assert propose.attempt_of(other, 7, REPORT) is None
+    with pytest.raises(ValueError):
+        propose.branch_ref(7, REPORT, propose.MAX_ATTEMPTS + 1)
 
 
 @pytest.mark.parametrize("fork,origin,ref,why", [
@@ -182,6 +193,8 @@ def test_the_fence_admits_the_push_user_s_fork_and_lane_branch(push_user):
     (_fork(archived=True), None, REF, "archived"),
     (_fork(), None, "prospector/issue-8-01234567", "not issue #7's lane branch"),
     (_fork(), None, "prospector/issue-7-01234567-x", "not issue #7's lane branch"),
+    (_fork(), None, "prospector/issue-7-01234567-1", "not issue #7's lane branch"),
+    (_fork(), None, "prospector/issue-7-01234567-10", "not issue #7's lane branch"),
     (_fork(), None, "main", "not issue #7's lane branch"),
 ])
 def test_the_fence_refuses_any_other_destination(push_user, fork, origin, ref, why):
@@ -263,6 +276,30 @@ def test_a_lane_branch_holding_other_content_is_never_overwritten(repos):
         _push(repos, patch=other)
 
 
+OTHER = PATCH.replace("+export const x = 2;", "+export const x = 4;")
+
+
+def test_a_later_proposal_lands_on_its_own_branch_and_leaves_the_earlier_one(repos):
+    first = _push(repos)
+    second = _push(repos, patch=OTHER, attempt=2)
+    fork = str(repos["fork"])
+    assert second.pushed and second.ref == f"{REF}-2"
+    assert _git("--git-dir", fork, "rev-parse", f"refs/heads/{REF}").strip() == first.head_sha
+    assert _git("--git-dir", fork, "rev-parse", f"{REF}-2^").strip() == repos["base"]
+    assert "x = 4" in _git("--git-dir", fork, "show", f"{REF}-2:src/x.ts")
+
+
+def test_the_code_an_earlier_proposal_carried_is_not_proposed_again(repos):
+    _push(repos)
+    with pytest.raises(propose.ProposeRefused, match=f"{REF} already holds this same code"):
+        _push(repos, attempt=2)
+    assert not _git("--git-dir", str(repos["fork"]), "branch", "--list", f"{REF}-2").strip()
+
+
+def test_an_earlier_branch_no_longer_on_the_fork_does_not_block_a_proposal(repos):
+    assert _push(repos, attempt=3).ref == f"{REF}-3"
+
+
 def test_a_base_the_default_branch_does_not_hold_is_refused(repos):
     with pytest.raises(propose.ProposeRefused, match="not a full commit sha|not on"):
         _push(repos, base_sha="b" * 40)
@@ -330,6 +367,16 @@ def test_a_branch_someone_else_moved_is_never_overwritten(repos):
     first = _push(repos)
     with pytest.raises(propose.ProposeRefused, match="someone else pushed"):
         _revise(repos, expected_head="f" * 40)
+    assert _head(repos) == first.head_sha
+
+
+def test_a_revision_goes_onto_the_numbered_branch_its_pull_request_is_open_from(repos):
+    first = _push(repos)
+    second = _push(repos, patch=OTHER, attempt=2)
+    pushed = _revise(repos, attempt=2, expected_head=second.head_sha)
+    fork = str(repos["fork"])
+    assert pushed.ref == f"{REF}-2"
+    assert _git("--git-dir", fork, "rev-parse", f"{REF}-2^").strip() == second.head_sha
     assert _head(repos) == first.head_sha
 
 

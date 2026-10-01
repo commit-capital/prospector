@@ -420,6 +420,8 @@ const FIX_FILTERS: { key: string; label: string }[] = [
   { key: "running", label: "Working" },
   { key: "reporter", label: "Waiting on reporter" },
   { key: "pr-open", label: "PR open" },
+  { key: "pr-closed", label: "PR closed" },
+  { key: "pr-merged", label: "PR merged" },
   { key: "failed", label: "Didn't finish" },
   { key: "declined", label: "No fix" },
   { key: "any", label: "Any attempt" },

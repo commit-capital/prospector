@@ -9,7 +9,8 @@ from the live feed.
 `decide` names the one next step from that state and the issue's
 `fix_followup` record:
 
-- `done` — the pull request merged or closed.
+- `done` — the pull request merged or closed; the record's `closed_as`
+  says which (`merged` or `closed`).
 - `hand-back` — an older open pull request by someone else names the issue;
   the revision budget is spent; a revision failed; or CI still fails after a
   re-run and no failing job's log names a file the change touches.
@@ -24,8 +25,11 @@ from the live feed.
 - `wait` — CI or a reviewer has not finished at this head.
 - `ready` — CI passes and every active reviewer's bar passes.
 
-A hand-back or ready holds until the head moves. `poll` carries the steps out
-for every issue with an open proposal, as `settings.issue_fix_followup` allows:
+A hand-back or ready holds until the head moves. The record follows one pull
+request: a proposal of another pull request starts a fresh one. `poll` carries
+the steps out for every issue whose proposal it has not seen end, and re-reads
+a `done` record that carries no `closed_as` to fill it in, as
+`settings.issue_fix_followup` allows:
 `dry-run` notes each step it would take on the issue and writes nothing
 upstream; `live` posts the description and re-runs as the bot through the
 executor, and queues a revision (a `send-back` with source `followup`) that
@@ -193,7 +197,8 @@ def decide(pr: PrState, fu: dict | None, *, older_open: list[int],
     fu = fu or {}
     head = pr.head_sha
     if pr.state != "open":
-        return Step("done", f"#{pr.number} is {pr.state}")
+        return Step("done", f"#{pr.number} merged" if pr.state == "merged"
+                    else f"#{pr.number} was closed without merging")
     if fu.get("head_sha") == head and fu.get("state") in ("handed-back", "ready"):
         return Step("wait", f"{fu['state']} at this head")
     if older_open:
@@ -271,8 +276,8 @@ def poll(store: IssueStore, *, mode: str | None = None) -> int:
     acted = 0
     for n, issue in store.all_issues(omit_candidates=True).items():
         pr = ((issue.fix_run or {}).get("proposal") or {}).get("pr")
-        fu = dict(issue.fix_followup or {})
-        if not pr or fu.get("state") == "done":
+        fu = fix_review.followup_for(issue.fix_followup, pr)
+        if not pr or (fu.get("state") == "done" and fu.get("closed_as")):
             continue
         if (issue.fix_request or {}).get("status") in fix_review.IN_FLIGHT:
             continue
@@ -286,8 +291,11 @@ def poll(store: IssueStore, *, mode: str | None = None) -> int:
         if step.kind == "wait" and step.jobs:
             logs = {f"job {j}": text for j in step.jobs if (text := _job_log(j))}
             step = decide(state, fu, older_open=older, logs=logs, patch=patch)
+        finished = fu.get("state") == "done"
         fu.update({"pr": int(pr), "head_sha": state.head_sha, "checked_at": storekit.now(),
                    "step": step.kind, "reason": step.reason[:400]})
+        if step.kind != "done" and finished:
+            fu["state"] = "watching"
         fu.setdefault("state", "watching")
         if step.kind == "wait":
             store.edit_issue(n).record_fix_followup(fu)
@@ -295,8 +303,9 @@ def poll(store: IssueStore, *, mode: str | None = None) -> int:
         acted += 1
         live = mode == "live"
         if step.kind == "done":
-            fu["state"] = "done"
-            _note(store, n, f"#{pr} {step.reason}; follow-up finished.")
+            fu["state"], fu["closed_as"] = "done", state.state
+            if not finished:
+                _note(store, n, f"{step.reason}; follow-up finished.")
         elif step.kind in ("hand-back", "ready"):
             fu["state"] = "handed-back" if step.kind == "hand-back" else "ready"
             _note(store, n, (f"Handed back to you: {step.reason}." if step.kind == "hand-back"

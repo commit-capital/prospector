@@ -391,13 +391,17 @@ unedited, patch scans clear) and its rendering `fix_pr_body.problems` (the
 profile's required sections, each filled by its heading; exactly `Fixes #N`;
 agent text held to inert plain text; a tier-0 change carries a warning); the push user commits the exact patch on
 the proven base and pushes it to its own fork of `TRIAGE_REPO`, fenced by
-`propose.assert_propose_target` to branch `prospector/issue-<n>-<report sha[:8]>`,
+`propose.assert_propose_target` to branch `prospector/issue-<n>-<report sha[:8]>`
+(suffixed `-<k>`, 2 to `propose.MAX_ATTEMPTS`, for the report's k-th proposal),
 never overwriting one (a branch already holding the same change on the same base,
-left by an opening that failed after its push, is reused); and the bot opens the pull request through
+left by an opening that failed after its push, is reused) and never re-sending
+the code an earlier proposal's branch holds; and the bot opens the pull request through
 `safety_guard.propose_bot_run`, whose payload may name only that head, the
 default branch, a title and a body, declining maintainer edits (only a fork's
-owner may grant them, and GitHub grants them by default). A branch that already has
-a pull request is reported, not reopened; with no token every run is a dry-run
+owner may grant them, and GitHub grants them by default). A branch with an open
+pull request is reported and one whose pull request merged is refused; a pull
+request closed without merging is never reopened — the report's next proposal
+opens from the next numbered branch; with no token every run is a dry-run
 that stops before the push; every outcome is an `issue-propose` Activity entry.
 A proposal never merges: it faces `merge_eligibility` like any other PR. A
 cross-lane run that ends `fix-disputed` records its readings (groups of
@@ -428,7 +432,9 @@ each candidate's own account, the agreement, the picked change, the checks, the
 reviewers, the question, the proposal — no transcripts); and `fix_thread`, the
 operator's words and the worker's notes. `fix_review.fix_status` derives on
 read whose move it is (`review`, `question`, `running`, `reporter`, `pr-open`,
-`failed`, `declined`); the Issues query filters and sorts on it. The worker
+`pr-closed`, `failed`, `declined`, `pr-merged`; a proposal's `fix_followup`
+counts only while it follows that pull request, and `pr-closed` takes a new
+`solve`); the Issues query filters and sorts on it. The worker
 lane (`TRIAGE_ISSUE_FIX_WORKER=1`, health lane `issue-fix`) claims one request at
 a time by compare-and-swap (`IssueStore.claim_fix_request`) — a `solve` on any
 issue-fix worker, every follow-up only on the host its run names, since it needs
@@ -475,7 +481,8 @@ ten minutes the idle issue-fix worker reads each open proposal live
 (`followup.read`: state, head, the repository's own CI checks with their
 workflow run and job, and every code reviewer that gates it — the policy's
 active ones plus any that reviewed this pull request) and `followup.decide`
-names one step: `done` (merged or closed), `hand-back` (an older open pull
+names one step: `done` (merged or closed, recorded as `closed_as`; a `done`
+record without one is read once more to fill it in), `hand-back` (an older open pull
 request by someone else names the issue, `MAX_REVISIONS` spent, or CI still
 failing after a re-run with no failing log naming a changed file), `describe`
 (the description re-rendered once per head and posted only when it differs),
