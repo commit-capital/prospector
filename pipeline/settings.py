@@ -314,11 +314,11 @@ def issue_fix_hunt() -> bool:
 
 def issue_fix_followup() -> str:
     """What the issue-fix worker does with a proposed pull request that is not
-    yet green (`issue_triage.followup`): `off`, `dry-run` (decide each step and
-    note it on the issue, writing nothing upstream and spending no agent), or
-    `live`. Default `dry-run`."""
-    value = os.environ.get("TRIAGE_ISSUE_FIX_FOLLOWUP", "dry-run").strip().lower()
-    return value if value in ("off", "dry-run", "live") else "dry-run"
+    yet green (`issue_triage.followup`): `live` (the default), `dry-run` (decide
+    each step and note it on the issue, writing nothing upstream and spending
+    no agent), or `off`."""
+    value = os.environ.get("TRIAGE_ISSUE_FIX_FOLLOWUP", "live").strip().lower()
+    return value if value in ("off", "dry-run", "live") else "live"
 
 
 def issue_fix_hunt_budget() -> int:
