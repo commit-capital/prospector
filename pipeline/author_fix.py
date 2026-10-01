@@ -133,6 +133,7 @@ def _check_block(enabled: bool) -> str:
         return ("The checkout has no installed dependencies and nothing here runs "
                 "the code: read and reason, and say so if the change needs a run "
                 "you cannot do.\n")
+    lint = authoring.lint_note(CHECK_TOOL)
     return (f"5. To exercise your change, run exactly `{CHECK_TOOL} typecheck` (the "
             f"project's typecheck) or `{CHECK_TOOL} test <repo-relative test file> "
             "...` (the project's test runner over those files) from the worktree. "
@@ -140,7 +141,7 @@ def _check_block(enabled: bool) -> str:
             "current default branch inside an isolated sandbox and takes several "
             "minutes, so run it once your change is complete, at most a few times. "
             "The checkout itself has no installed dependencies; nothing else runs "
-            "the code.\n")
+            "the code.\n" + (f"   {lint}" if lint else ""))
 
 
 def _checks_block(ci_failures: list[str]) -> str:

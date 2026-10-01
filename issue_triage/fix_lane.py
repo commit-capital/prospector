@@ -170,17 +170,17 @@ def _validate_reproduction(clone: Path, verdict: dict, spec: LaneSpec, label: st
 
 
 def compile_proof(spec: LaneSpec, proof_patch: Callable[..., Path], parts: tuple[Path | str, ...],
-                  compile_cmd: str, label: str) -> dict:
-    """The compile command over the lane's tree with `parts` applied. On a
-    replay's pre-fix tree a failure is compared with the unfixed tree's own
-    compile, and one that tree fails too carries `tree_fails` — the tree's, not
-    the fix's."""
+                  compile_cmd: str, label: str, *, lane: str = "compile") -> dict:
+    """The compile command — or the `lane` command `compile_cmd` names, such as
+    the lint — over the lane's tree with `parts` applied. On a replay's pre-fix
+    tree a failure is compared with the unfixed tree's own run, and one that
+    tree fails too carries `tree_fails` — the tree's, not the fix's."""
     compiled = prove.run_command(spec.base, proof_patch(*parts), compile_cmd,
-                                 phase="compile", label=label)
+                                 phase="compile", label=label, lane=lane)
     if (spec.pre_patch is not None and not compiled.get("error_kind")
             and compiled.get("exit") == gates.SENTINEL_TEST_FAIL):
         tree = prove.run_command(spec.base, proof_patch(), compile_cmd, phase="compile",
-                                 label=label)
+                                 label=label, lane=lane)
         if tree.get("exit") == gates.SENTINEL_TEST_FAIL:
             compiled["tree_fails"] = True
     return compiled
@@ -449,6 +449,12 @@ def run(spec: LaneSpec, *, workdir: Path,
             if compiled.get("error_kind") == "base-compile":
                 return finish("base-compile", str(compiled.get("error")
                                                   or "the base fails the compile command"))
+
+        lint_cmd = profile.active().verify.lint_cmd
+        if lint_cmd:
+            on_step("lint")
+            result["proof"]["lint"] = compile_proof(spec, proof_patch, (test_patch, fix_patch),
+                                                    lint_cmd, label, lane="lint")
 
         repro_paths = set(test_paths) | set(preserve_paths)
         related = [t for t in resolve_evidence.related_tests(str(fix_clone), changed_paths)

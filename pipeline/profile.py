@@ -79,7 +79,13 @@ class AutofixPolicy:
 # The files a repository keeps for its contributors, human and AI, that every
 # code-authoring agent is handed (pipeline/authoring.py). Repo-relative paths,
 # in the order the agent reads them; a file the repository lacks is skipped.
-DEFAULT_CONTRIBUTOR_DOCS: tuple[str, ...] = ("AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md")
+# The default names the agent-instruction files the common coding agents read,
+# then CONTRIBUTING.md in each place GitHub looks for it.
+DEFAULT_CONTRIBUTOR_DOCS: tuple[str, ...] = (
+    "AGENTS.md", "CLAUDE.md", "GEMINI.md", ".github/copilot-instructions.md",
+    "CONVENTIONS.md",
+    "CONTRIBUTING.md", ".github/CONTRIBUTING.md", "docs/CONTRIBUTING.md",
+)
 
 
 @dataclass(frozen=True)
@@ -108,9 +114,11 @@ class SuiteConfig:
 # whole-repo compile command the merge-time compile preflight runs (None means
 # the deployment requires no compile preflight), the optional whole-repo build
 # command (the second merge-gate lane; None means the deployment requires no
-# build lane), and the optional full-suite contract. A repository with a
-# compile_cmd must install offline at tier 1 — the command runs against
-# baked-in node_modules with no network.
+# build lane), the optional lint command — the repository's mechanical
+# convention checks, which every agent-authored change must pass and the
+# authoring agent may run itself (None means no lint) — and the optional
+# full-suite contract. A repository with a compile_cmd must install offline at
+# tier 1 — the command runs against baked-in node_modules with no network.
 @dataclass(frozen=True)
 class VerifyPolicy:
     test_runner: tuple[str, ...] = ("npx", "vitest", "run")
@@ -118,6 +126,7 @@ class VerifyPolicy:
     pnpm_version: str = "9.15.4"
     compile_cmd: str | None = None
     build_cmd: str | None = None
+    lint_cmd: str | None = None
     suite: SuiteConfig | None = None
 
 
@@ -387,7 +396,7 @@ def _parse_suite(raw: object, source: str) -> SuiteConfig:
 def _parse_verify(raw: object, source: str) -> VerifyPolicy:
     section = _require_object(raw, source, "verify", {
         "test_runner", "test_flags", "pnpm_version", "compile_cmd", "build_cmd",
-        "suite"})
+        "lint_cmd", "suite"})
     runner = (_parse_str_list(section["test_runner"], source, "verify.test_runner")
               if "test_runner" in section else VerifyPolicy.test_runner)
     if not runner:
@@ -404,6 +413,7 @@ def _parse_verify(raw: object, source: str) -> VerifyPolicy:
                         pnpm_version=pnpm,
                         compile_cmd=_parse_opt_str(section, "compile_cmd", source, "verify"),
                         build_cmd=_parse_opt_str(section, "build_cmd", source, "verify"),
+                        lint_cmd=_parse_opt_str(section, "lint_cmd", source, "verify"),
                         suite=suite)
 
 

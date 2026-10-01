@@ -195,8 +195,11 @@ def test_the_distilled_run_carries_each_candidate_s_own_account(monkeypatch):
                       "changes": [{"path": "src/x.ts", "rationale": "why"}]}}],
                   "reviews": [{"lens": "scope-safety", "verdict": "safe", "reason": "fine",
                                "unasked": ["empty input"]}],
-                  "proof": {"compile": {"exit": 0}, "suite": {"excluded": 3, "confirmed": False}}}}
+                  "proof": {"compile": {"exit": 0}, "suite": {"excluded": 3, "confirmed": False},
+                            "lint": {"exit": 20, "error": "fails on trunk itself",
+                                     "error_kind": "base-lint", "error_excerpt": "raw hex"}}}}
     run = fix_review.distill(record, QUESTION)
+    assert run["proof"]["lint"] == {"exit": 20, "base_fails": True, "excerpt": "raw hex"}
     assert run["host"] == "studio" and run["patch_truncated"]
     assert len(run["patch"]) == fix_review.PATCH_MAX
     assert run["tests"] == ["src/x.test.ts"]

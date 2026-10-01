@@ -66,7 +66,7 @@ Assert only what the code does today and the report does not ask to change; neve
 ## Checking your work
 
 You may run exactly one command: `__CHECK__ test <your test files>` (and `__CHECK__ typecheck`). It runs the project's test runner over this tree plus your files inside an isolated sandbox and prints the result. For the reproduction, a FAIL whose output shows the reported symptom is what you want; a failure from a bad import or a typo is not. The preservation tests must PASS. You have a small number of runs.
-
+__LINT__
 __RETRY__## Giving up
 
 Give up when no faithful reproduction is writable this way: the defect needs a live model-driven agent, a real browser, an external service, or credentials; the report lacks the detail to pin the behavior down; or it does not describe a defect in this code. Giving up is a normal outcome.
@@ -134,6 +134,7 @@ def author(worktree: str, *, issue: int, title: str, body: str,
         "__CHECK__": lane_check.TOOL,
         "__TEST_PATHS__": _test_paths(),
         "__RETRY__": _retry_block(retry_note),
+        "__LINT__": authoring.lint_note(lane_check.TOOL),
         "__CONTRIBUTOR_DOCS__": authoring.docs_block(contributor_docs),
     })
     verdict, text = headless_agent.json_reply(lambda: headless_agent.run_agent(

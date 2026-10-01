@@ -330,6 +330,14 @@ class TestVerifyLaneKeys:
         p = profile.parse_profile({"version": 1}, "t")
         assert p.verify.build_cmd is None
 
+    def test_lint_cmd_parses(self):
+        p = profile.parse_profile(
+            {"version": 1, "verify": {"lint_cmd": "pnpm check:module-boundaries"}}, "t")
+        assert p.verify.lint_cmd == "pnpm check:module-boundaries"
+
+    def test_lint_cmd_defaults_to_none(self):
+        assert profile.parse_profile({"version": 1}, "t").verify.lint_cmd is None
+
     def test_e2e_cmd_is_rejected(self):
         # Reserved lane: no key may promise coverage that does not exist yet.
         with pytest.raises(SystemExit, match="unknown key"):
@@ -340,7 +348,10 @@ class TestVerifyLaneKeys:
 class TestAuthoring:
     def test_contributor_docs_default_to_the_conventional_files(self):
         p = profile.parse_profile({"version": 1}, "t")
-        assert p.authoring.contributor_docs == ("AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md")
+        assert p.authoring.contributor_docs == (
+            "AGENTS.md", "CLAUDE.md", "GEMINI.md", ".github/copilot-instructions.md",
+            "CONVENTIONS.md",
+            "CONTRIBUTING.md", ".github/CONTRIBUTING.md", "docs/CONTRIBUTING.md")
 
     def test_an_empty_section_keeps_the_default(self):
         p = profile.parse_profile({"version": 1, "authoring": {}}, "t")

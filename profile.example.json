@@ -43,6 +43,7 @@
     "pnpm_version": "9.15.4",
     "compile_cmd": "pnpm -r typecheck",
     "build_cmd": "pnpm build",
+    "lint_cmd": "pnpm lint",
     "suite": {
       "wrapper": "scripts/run-vitest-stable.mjs",
       "server_project": "@your-org/server",

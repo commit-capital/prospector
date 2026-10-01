@@ -753,6 +753,11 @@ export interface FixResult {
                      concerns: string[] } | null;
   compile_preflight?: { exit?: number | null; refused?: string | null;
                         error?: string | null; error_excerpt?: string | null } | null;
+  /** The repository's lint (verify.lint_cmd) over an authored fix. A failure the
+   *  default branch (`error_kind` "base-lint") or the PR's own tree
+   *  (`tree_fails`) shares is not held against the fix. */
+  lint?: { exit?: number | null; error?: string | null; error_kind?: string | null;
+           error_excerpt?: string | null; tree_fails?: boolean | null } | null;
   /** The sandbox runs the authoring agent made (action `fix`), oldest first. */
   checks?: SandboxCheck[] | null;
   /** The unattended-push judgment stamped on a parked `resolve` when the
@@ -1195,6 +1200,7 @@ export interface IssueFixQuestion {
 }
 export interface IssueFixProof {
   compile?: { exit?: number; tree_fails?: boolean; error?: string; excerpt?: string };
+  lint?: { exit?: number; base_fails: boolean; error?: string; excerpt?: string };
   related_tests?: { files: string[]; exit?: number | null; base_fails?: boolean };
   suite?: { skipped?: string; confirmed?: boolean; flake?: boolean; excluded?: number;
             new_failures?: string[]; rebaselined?: string[] };

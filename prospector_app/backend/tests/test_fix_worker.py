@@ -10,6 +10,8 @@ since moved.
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 
 import pytest
 
@@ -2576,3 +2578,85 @@ def test_next_queued_takes_a_maintainer_s_request_ahead_of_an_older_one(store):
     store.save_pr(two)
     data.refresh()
     assert fix_worker.next_queued() == 2
+
+
+# --- the repository's lint over an authored fix -----------------------------------
+
+def _lint_profile(tmp_path, monkeypatch) -> None:
+    fixture = json.loads(Path(os.environ["TRIAGE_PROFILE"]).read_text())
+    fixture["verify"]["lint_cmd"] = "pnpm check:module-boundaries"
+    path = tmp_path / "lint-profile.json"
+    path.write_text(json.dumps(fixture))
+    monkeypatch.setenv("TRIAGE_PROFILE", str(path))
+
+
+def _linted(monkeypatch, tmp_path, with_fix: dict, pr_alone: dict | None = None) -> list[dict]:
+    """Script the lint: `with_fix` over the PR plus the authored change, and
+    `pr_alone` over the PR's own diff. Returns the runs made."""
+    monkeypatch.setenv("TRIAGE_VERIFY_SCRATCH", str(tmp_path / "scratch"))
+    runs: list[dict] = []
+
+    def fake_run(pr, head, patch, cmd, lane="compile"):
+        alone = patch.read_text() == PR_DIFF
+        runs.append({"cmd": cmd, "lane": lane, "alone": alone})
+        return dict(pr_alone if alone else with_fix, cmd=cmd)
+    monkeypatch.setattr(fix_worker.compile_preflight, "run_command_for_patch", fake_run)
+    return runs
+
+
+def _run_linted_fix(store, monkeypatch) -> dict:
+    _queue_fix()
+    probe = _fix_probe()
+    monkeypatch.setattr(fix_worker, "_resubmit", probe)
+    _authored(monkeypatch)
+    _reviewed(monkeypatch)
+    fix_worker.run_one(1)
+    assert not _pushed(probe)
+    return store.load_pr(1).fix_request
+
+
+def test_a_fix_that_brings_in_a_lint_failure_is_refused(store, monkeypatch, tmp_path):
+    _lint_profile(tmp_path, monkeypatch)
+    runs = _linted(monkeypatch, tmp_path,
+                   {"exit": 20, "error_excerpt": "ui/a.tsx imports server/b.ts"}, {"exit": 0})
+    req = _run_linted_fix(store, monkeypatch)
+    assert req["status"] == "refused"
+    assert req["refused_reason"] == ("The fix fails the repository's lint: "
+                                     "ui/a.tsx imports server/b.ts")
+    assert req["result"]["lint"]["exit"] == 20
+    assert runs == [{"cmd": "pnpm check:module-boundaries", "lane": "lint", "alone": False},
+                    {"cmd": "pnpm check:module-boundaries", "lane": "lint", "alone": True}]
+
+
+def test_a_lint_failure_the_pr_already_has_is_not_held_against_the_fix(store, monkeypatch,
+                                                                        tmp_path):
+    _lint_profile(tmp_path, monkeypatch)
+    _linted(monkeypatch, tmp_path, {"exit": 20}, {"exit": 20})
+    req = _run_linted_fix(store, monkeypatch)
+    assert req["status"] == "awaiting-review"
+    assert req["result"]["lint"]["tree_fails"] is True
+
+
+def test_a_lint_failure_the_default_branch_shares_is_not_held_against_the_fix(
+        store, monkeypatch, tmp_path):
+    _lint_profile(tmp_path, monkeypatch)
+    runs = _linted(monkeypatch, tmp_path,
+                   {"exit": 20, "error": "fails on trunk itself", "error_kind": "base-lint"})
+    req = _run_linted_fix(store, monkeypatch)
+    assert req["status"] == "awaiting-review"
+    assert len(runs) == 1
+
+
+def test_a_lint_sandbox_that_cannot_run_fails_the_request(store, monkeypatch, tmp_path):
+    _lint_profile(tmp_path, monkeypatch)
+    _linted(monkeypatch, tmp_path, {"error": "docker: daemon down"})
+    req = _run_linted_fix(store, monkeypatch)
+    assert req["status"] == "failed"
+    assert "daemon down" in req["error"]
+
+
+def test_without_a_lint_command_no_lint_runs(store, monkeypatch, tmp_path):
+    runs = _linted(monkeypatch, tmp_path, {"exit": 20})
+    req = _run_linted_fix(store, monkeypatch)
+    assert req["status"] == "awaiting-review"
+    assert "lint" not in req["result"] and runs == []

@@ -213,3 +213,12 @@ def test_the_prompt_hands_the_agent_resolved_paths_and_the_git_reader(monkeypatc
     assert calls["cwd"] == calls["edit_root"] == resolved
     assert f"worktree at {resolved}," in calls["prompt"]
     assert f"{headless_agent.GIT_READ} status" in calls["prompt"]
+
+
+def test_a_configured_lint_is_offered_beside_the_sandbox_check(monkeypatch, tmp_path):
+    path = tmp_path / "profile.json"
+    path.write_text(json.dumps({"version": 1, "verify": {"lint_cmd": "pnpm lint"}}))
+    monkeypatch.setenv("TRIAGE_PROFILE", str(path))
+    prompt = _run(monkeypatch, json.dumps({"summary": "s", "changes": []}),
+                  diff_path=str(tmp_path / "pr.patch"))["calls"]["prompt"]
+    assert f"   `{author_fix.CHECK_TOOL} lint` runs the repository's lint" in prompt

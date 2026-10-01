@@ -1,7 +1,8 @@
 """What every agent that writes code for the triaged repository is told about
-writing it the repository's way: the house-style rules (`HOUSE_STYLE`), and the
+writing it the repository's way: the house-style rules (`HOUSE_STYLE`), the
 repository's own contributor docs — the files the profile's
-`authoring.contributor_docs` names, such as AGENTS.md and CONTRIBUTING.md.
+`authoring.contributor_docs` names, such as AGENTS.md and CONTRIBUTING.md — and
+the repository's lint, when the profile names one (`lint_note`).
 
 The docs are read from a tree only the repository's maintainers change: the
 base an issue-fix lane proves on, or the default branch on GitHub for an agent
@@ -78,6 +79,16 @@ def docs_from_upstream() -> list[Doc]:
     """The contributor docs on the repository's default branch. A doc GitHub
     does not return is left out."""
     return _collect(gh.default_branch_file)
+
+
+def lint_note(tool: str) -> str:
+    """The prompt line offering the agent the repository's lint through its
+    sandbox `tool`, or "" when the profile configures none."""
+    if profile.active().verify.lint_cmd is None:
+        return ""
+    return (f"`{tool} lint` runs the repository's lint over the same tree. The host "
+            "runs it over your change too, and refuses a change that brings in a "
+            "lint failure the tree without it does not have.\n")
 
 
 def docs_block(docs: Sequence[Doc]) -> str:

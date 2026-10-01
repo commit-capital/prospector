@@ -147,7 +147,7 @@ def lane(tmp_path, monkeypatch):
         calls["green"] += 1
         return scripts.green()
 
-    def fake_run_command(base_, patch, cmd, *, phase, label):
+    def fake_run_command(base_, patch, cmd, *, phase, label, lane="compile"):
         calls["run_command"].append({"phase": phase, "cmd": cmd})
         return scripts.run_command(phase, cmd, patch)
 
@@ -809,6 +809,40 @@ def _compile_fails(lane, tree_fails_too: bool):
         return {"cmd": cmd, "exit": gates.SENTINEL_TEST_FAIL if failing else gates.SENTINEL_PASS,
                 "error_excerpt": "TS5058: tsconfig.json", "output_tail": "", "duration_s": 1.0}
     return run_command
+
+
+def _lint_profile(monkeypatch):
+    from pipeline import profile
+    configured = profile.parse_profile({"version": 1, "verify": {"lint_cmd": "pnpm lint"}}, "t")
+    monkeypatch.setattr(profile, "active", lambda: configured)
+
+
+def _lint_answers(lint: dict):
+    def run_command(phase, cmd, patch):
+        if cmd == "pnpm lint":
+            return {"cmd": cmd, "output_tail": "", "duration_s": 1.0, **lint}
+        return {"cmd": cmd, "exit": gates.SENTINEL_PASS, "output_tail": "ok", "duration_s": 1.0}
+    return run_command
+
+
+def test_a_lint_failure_the_fix_brings_in_ends_fix_unproven(lane, monkeypatch):
+    _lint_profile(monkeypatch)
+    lane.scripts.run_command = _lint_answers({"exit": gates.SENTINEL_TEST_FAIL,
+                                              "error_excerpt": "raw hex in ui/a.tsx"})
+    res = lane.run()
+    assert res.ending == "fix-unproven"
+    assert res.detail == "the fix fails the repository's lint: raw hex in ui/a.tsx"
+    assert {"phase": "compile", "cmd": "pnpm lint"} in lane.calls["run_command"]
+
+
+def test_a_lint_failure_the_base_shares_does_not_sink_the_fix(lane, monkeypatch):
+    _lint_profile(monkeypatch)
+    lane.scripts.run_command = _lint_answers({"exit": gates.SENTINEL_TEST_FAIL,
+                                              "error": "fails on trunk itself",
+                                              "error_kind": "base-lint"})
+    res = lane.run()
+    assert res.ending == "fixed"
+    assert res.result["proof"]["lint"]["error_kind"] == "base-lint"
 
 
 def test_a_compile_failure_the_pre_fix_tree_shares_does_not_sink_the_fix(lane, monkeypatch):

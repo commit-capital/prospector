@@ -79,7 +79,7 @@ __WITHHELD__
 ## Checking your work
 
 You may run exactly one command: `__CHECK__ test <test files>` (the project's test runner over this tree plus your edits) and `__CHECK__ typecheck` (the project's typecheck). Each runs inside an isolated sandbox and prints the result. You have __RUNS__ runs in all.
-
+__LINT__
 ## Giving up
 
 Give up when the report does not describe a defect in this code, when you cannot reproduce it or cannot tell what the correct behavior is, or when you cannot make a fix you are confident in. Giving up is a normal outcome.
@@ -146,6 +146,7 @@ def author(worktree: str, *, title: str, body: str, env: dict[str, str],
         "__WITHHELD__": "\n".join(gates.fix_withheld_globs()),
         "__CHECK__": lane_check.TOOL,
         "__RUNS__": MAX_RUNS,
+        "__LINT__": authoring.lint_note(lane_check.TOOL),
         "__CONTRIBUTOR_DOCS__": authoring.docs_block(contributor_docs),
         "__HOUSE_STYLE__": authoring.HOUSE_STYLE,
     })
@@ -172,9 +173,9 @@ def host_checks(spec: fix_lane.LaneSpec, *, test_patch: str, fix_patch: str,
                 own_green: bool = True) -> tuple[str, str] | None:
     """The host's checks over a fix, recorded on `proof`: its own tests green
     twice with it applied (unless `own_green` is False — a caller that already
-    proved them), the compile, the related tests, and the full suite. None when
-    it clears them all, else the (ending, reason) it stops at. `tree` is a
-    checkout of the lane's tree the related tests are picked from."""
+    proved them), the compile, the lint, the related tests, and the full suite.
+    None when it clears them all, else the (ending, reason) it stops at. `tree`
+    is a checkout of the lane's tree the related tests are picked from."""
     test_cmd = verify_driver.derive_test_command(test_paths)
     if test_cmd and own_green:
         green = prove.green_legs(spec.base, patch=proof_patch(test_patch, fix_patch),
@@ -199,6 +200,15 @@ def host_checks(spec: fix_lane.LaneSpec, *, test_patch: str, fix_patch: str,
             return "fix-unproven", ("the compile lane did not pass: "
                                     + str(not_run or compiled.get("error_excerpt")
                                           or f"exit {compiled.get('exit')}"))
+
+    lint_cmd = profile.active().verify.lint_cmd
+    if lint_cmd:
+        on_step("lint")
+        proof["lint"] = fix_lane.compile_proof(spec, proof_patch, (test_patch, fix_patch),
+                                               lint_cmd, label, lane="lint")
+        block = gates.lint_block(proof["lint"], "the fix")
+        if block:
+            return "fix-unproven", block
 
     related = [t for t in resolve_evidence.related_tests(
         str(tree), diffpaths.changed_paths(fix_patch)) if t not in test_paths]

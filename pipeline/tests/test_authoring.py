@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from pipeline import authoring, gh
+from pipeline import authoring, gh, profile
 
 
 def _profile(tmp_path, monkeypatch, docs: list[str]) -> None:
@@ -55,7 +55,7 @@ def test_upstream_docs_are_read_from_the_default_branch(monkeypatch):
 
     monkeypatch.setattr(gh, "default_branch_file", fake_file)
     assert authoring.docs_from_upstream() == [authoring.Doc("CONTRIBUTING.md", "be small")]
-    assert asked == ["AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md"]
+    assert asked == list(profile.DEFAULT_CONTRIBUTOR_DOCS)
 
 
 def test_no_docs_make_no_section():
@@ -79,3 +79,16 @@ def test_docs_past_the_budget_are_cut(monkeypatch):
     assert "y" * 2 + "\n[... the rest of this file is omitted ...]" in block
     assert "y" * 3 not in block
     assert "DESIGN.md" not in block
+
+
+def test_without_a_lint_command_there_is_no_lint_note():
+    assert authoring.lint_note("/bin/check") == ""
+
+
+def test_a_lint_command_offers_the_agent_the_lint_lane(tmp_path, monkeypatch):
+    path = tmp_path / "profile.json"
+    path.write_text(json.dumps({"version": 1, "verify": {"lint_cmd": "pnpm lint"}}))
+    monkeypatch.setenv("TRIAGE_PROFILE", str(path))
+    note = authoring.lint_note("/bin/check")
+    assert note.startswith("`/bin/check lint` runs the repository's lint")
+    assert "refuses a change" in note

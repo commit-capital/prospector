@@ -839,10 +839,10 @@ def _author_fix(n: int, claimed: dict) -> None:
 
     The agent writes inside a clone of the contributor's branch, the finished
     patch is held to the files the agent reported, re-gated on the paths it
-    really touched, refuted by a reviewer that did not write it, and compiled —
-    and only then does it park or push. Every exit writes a terminal status;
-    the worktree survives only on the parked path, because an agent's edits
-    cannot be re-derived at approval time."""
+    really touched, refuted by a reviewer that did not write it, compiled, and
+    held to the repository's lint — and only then does it park or push. Every
+    exit writes a terminal status; the worktree survives only on the parked
+    path, because an agent's edits cannot be re-derived at approval time."""
     rec = data.store().load_pr(n)
     if rec is None:
         _refuse(n, claimed, f"PR #{n} left the store")
@@ -935,9 +935,26 @@ def _author_fix(n: int, claimed: dict) -> None:
             _end_on_preflight(n, claimed, pf,
                               {**evidence, "compile_preflight": pf, "detail": pf_why})
             return
+    evidence["compile_preflight"] = pf
 
-    result = {**evidence, "compile_preflight": pf,
-              "message": verdict["summary"] or _commit_message("fix")}
+    lint_cmd = profile.active().verify.lint_cmd
+    if lint_cmd is not None:
+        _running_step(n, claimed, "lint", action="fix")
+        lint = _lint(n, pr_patch, patch, lint_cmd)
+        evidence["lint"] = lint
+        block = gates.lint_block(lint, "the fix")
+        if block:
+            _resubmit(n, "abort")
+            if lint.get("error"):
+                _fail(n, claimed, "The lint check couldn't run on the worker machine — "
+                                  "nothing was pushed. This is a problem with the worker, "
+                                  f"not with the PR: {str(lint['error'])[:400]}",
+                      result=evidence, kind=str(lint.get("error_kind") or "sandbox"))
+            else:
+                _refuse(n, claimed, block[:1].upper() + block[1:], result=evidence)
+            return
+
+    result = {**evidence, "message": verdict["summary"] or _commit_message("fix")}
     if "fix" in settings.fix_autopush():
         # The bar's last piece of evidence: the test files related to what the
         # agent touched, run over the same composed tree the preflight measured.
@@ -1361,18 +1378,39 @@ def _diff_text(r: subprocess.CompletedProcess[str]) -> str:
     return text.rstrip("\r\n") if text.strip() else ""
 
 
-def _preflight(n: int, patch: str) -> dict | None:
-    """The compile-preflight record for the authored tree, or None when the
-    profile configures no compile command. The patch is written where the
-    sandbox driver reads it from, so the change is measured before it ever
-    reaches the contributor's branch."""
-    rec = data.store().load_pr(n)
-    head = (rec.head_sha if rec else "") or ""
+def _scratch_patch(n: int, name: str, patch: str) -> Path:
+    """`patch` written where the sandbox driver reads it from, so a change is
+    measured before it ever reaches the contributor's branch."""
     scratch = settings.verify_scratch() / "autofix"
     scratch.mkdir(parents=True, exist_ok=True)
-    path = scratch / f"pr-{n}.patch"
+    path = scratch / f"pr-{n}.{name}"
     path.write_text(patch + "\n")
-    return compile_preflight.run_for_patch(n, head, path)
+    return path
+
+
+def _head_sha(n: int) -> str:
+    rec = data.store().load_pr(n)
+    return (rec.head_sha if rec else "") or ""
+
+
+def _preflight(n: int, patch: str) -> dict | None:
+    """The compile-preflight record for the authored tree, or None when the
+    profile configures no compile command."""
+    return compile_preflight.run_for_patch(n, _head_sha(n), _scratch_patch(n, "patch", patch))
+
+
+def _lint(n: int, pr_patch: Path, authored: str, cmd: str) -> dict:
+    """The lint command `cmd` over the pull request with the authored change
+    applied. A failure the pull request's own tree fails too carries
+    `tree_fails`: the contributor's, not the agent's."""
+    head = _head_sha(n)
+    lint = compile_preflight.run_command_for_patch(
+        n, head, _scratch_patch(n, "lint.patch", _over_pr(pr_patch, authored)), cmd, lane="lint")
+    if lint.get("exit") == gates.SENTINEL_TEST_FAIL and not lint.get("error"):
+        alone = compile_preflight.run_command_for_patch(n, head, pr_patch, cmd, lane="lint")
+        if alone.get("exit") == gates.SENTINEL_TEST_FAIL:
+            lint["tree_fails"] = True
+    return lint
 
 
 def _commit_message(action: str) -> str:

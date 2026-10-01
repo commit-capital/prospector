@@ -8,7 +8,8 @@ from pathlib import Path
 import pytest
 
 from issue_triage import fix_lane, review_issue_fix, solo_lane
-from pipeline import authoring, gates, headless_agent, prove, resolve_evidence, verify_driver
+from pipeline import (authoring, gates, headless_agent, profile, prove, resolve_evidence,
+                      verify_driver)
 
 
 def _legs(exit_: int, confirm: int | None) -> dict:
@@ -53,7 +54,7 @@ def solo(tmp_path, monkeypatch):
         out.write_text("".join(parts))
         return out
 
-    def fake_run_command(base_, patch, cmd, *, phase, label):
+    def fake_run_command(base_, patch, cmd, *, phase, label, lane="compile"):
         calls["commands"].append(cmd)
         exit_ = calls["related"] if calls["related"] is not None else gates.SENTINEL_PASS
         return {"cmd": cmd, "exit": exit_, "output_tail": "", "duration_s": 1.0}
@@ -143,7 +144,7 @@ def test_failing_related_tests_the_base_passes_end_fix_unproven(solo, monkeypatc
     calls = {"n": 0}
     real = prove.run_command
 
-    def related_fails_then_base_passes(base_, patch, cmd, *, phase, label):
+    def related_fails_then_base_passes(base_, patch, cmd, *, phase, label, lane="compile"):
         calls["n"] += 1
         out = real(base_, patch, cmd, phase=phase, label=label)
         if calls["n"] == 2:
@@ -261,3 +262,21 @@ def test_the_contributor_docs_and_house_style_reach_the_agent_s_prompt(monkeypat
     prompt = prompts[0]
     assert '<doc path="AGENTS.md">\nKeep contracts synchronized.\n</doc>' in prompt
     assert authoring.HOUSE_STYLE in prompt
+
+
+def test_a_lint_failure_the_fix_brings_in_ends_fix_unproven(solo, monkeypatch):
+    configured = profile.parse_profile({"version": 1, "verify": {"lint_cmd": "pnpm lint"}}, "t")
+    monkeypatch.setattr(profile, "active", lambda: configured)
+    runs: list[tuple[str, str]] = []
+
+    def run_command(base_, patch, cmd, *, phase, label, lane="compile"):
+        runs.append((cmd, lane))
+        lint = cmd == "pnpm lint"
+        return {"cmd": cmd, "exit": gates.SENTINEL_TEST_FAIL if lint else gates.SENTINEL_PASS,
+                "error_excerpt": "boundary" if lint else None, "output_tail": "",
+                "duration_s": 1.0}
+    monkeypatch.setattr(prove, "run_command", run_command)
+    res = solo["run"]()
+    assert res.ending == "fix-unproven"
+    assert res.detail == "the fix fails the repository's lint: boundary"
+    assert ("pnpm lint", "lint") in runs

@@ -211,8 +211,8 @@ def fix_proof_bar(result: dict) -> tuple[str | None, str]:
     short at — "fix-unproven" for the host's proof, "fix-rejected" for a
     reviewer — with the reason. The proof is the reproduction red on the base
     and green with the fix, the preservation tests green with the fix, the
-    compile lane, and the related tests. Only an explicit `safe` from every lens
-    in REVIEW_LENSES passes."""
+    compile lane, the lint (gates.lint_block), and the related tests. Only an
+    explicit `safe` from every lens in REVIEW_LENSES passes."""
     proof = result.get("proof") or {}
     if not _twice(proof.get("red"), gates.SENTINEL_TEST_FAIL):
         return "fix-unproven", "the reproduction is not red twice on the base"
@@ -230,6 +230,9 @@ def fix_proof_bar(result: dict) -> tuple[str | None, str]:
             return "fix-unproven", ("the compile lane did not pass: "
                                     + str(not_run or compiled.get("error_excerpt")
                                           or f"exit {compiled.get('exit')}"))
+    lint = gates.lint_block(proof.get("lint"), "the fix")
+    if lint:
+        return "fix-unproven", lint
     related = proof.get("related_tests")
     if related and not related.get("base_fails"):
         block = gates.related_tests_block(related, "the fix")

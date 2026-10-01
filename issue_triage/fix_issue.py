@@ -73,7 +73,7 @@ Succeed only if the change is one a maintainer would recognize as the obvious fi
 ## Checking your work
 
 You may run exactly one command: `__CHECK__ test <your test files>` (the project's test runner over this tree plus your edits) and `__CHECK__ typecheck` (the project's typecheck). Each runs inside an isolated sandbox and prints the result. You have a small number of runs.
-
+__LINT__
 # Output
 
 Return ONLY a JSON object, as a ```json fenced block: either
@@ -110,6 +110,7 @@ def author(worktree: str, *, issue: int, title: str, body: str,
         "__RED_TAIL__": red_tail[-RED_TAIL_MAX:],
         "__WITHHELD__": "\n".join(withheld_globs),
         "__CHECK__": lane_check.TOOL,
+        "__LINT__": authoring.lint_note(lane_check.TOOL),
         "__CONTRIBUTOR_DOCS__": authoring.docs_block(contributor_docs),
         "__HOUSE_STYLE__": authoring.HOUSE_STYLE,
     })

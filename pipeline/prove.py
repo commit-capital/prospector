@@ -160,16 +160,18 @@ def flatten(base_clone: Path, *patches: Path | str | None, label: str) -> Path:
 
 
 def run_command(base: PinnedBase, patch: Path, cmd: str, *,
-                phase: Literal["green", "compile"], label: str) -> dict:
+                phase: Literal["green", "compile"], label: str,
+                lane: str = "compile") -> dict:
     """The sandbox record for `cmd` run over `base` with `patch` applied.
     Fail-safe shape, fail-closed content: every failure — a refusal, a docker
     error, a base that cannot pass the command itself — lands in the record;
-    nothing raises into the caller."""
+    nothing raises into the caller. `lane` names a compile-phase command in a
+    base fault (`error_kind` "base-<lane>")."""
     t0 = time.monotonic()
     result: dict = {"cmd": cmd, "label": label, "base_sha": base.sha,
                     "output_tail": ""}
     try:
-        _command_over(result, base, patch, cmd, phase, label)
+        _command_over(result, base, patch, cmd, phase, label, lane)
     except Exception as e:
         logger.error("proof command failed unexpectedly",
                      exc_info=(type(e), e, e.__traceback__))
@@ -180,7 +182,8 @@ def run_command(base: PinnedBase, patch: Path, cmd: str, *,
 
 
 def _command_over(result: dict, base: PinnedBase, patch: Path, cmd: str,
-                  phase: Literal["green", "compile"], label: str) -> None:
+                  phase: Literal["green", "compile"], label: str,
+                  lane: str = "compile") -> None:
     """Run `cmd` in one `phase` container over `base` with `patch` applied,
     recording the outcome into `result`. Refusals (an empty patch, a dependency
     manifest change) land as `refused` and run nothing."""
@@ -207,7 +210,7 @@ def _command_over(result: dict, base: PinnedBase, patch: Path, cmd: str,
         # The sandbox runs a pristine base for the compile and build phases
         # only, so a failing green leg reads as the patch's own verdict.
         if phase == "compile":
-            _record_base_fault(result, base, cmd)
+            _record_base_fault(result, base, cmd, lane)
     elif exit_code == gates.SENTINEL_PATCH_CONFLICT:
         result["error_excerpt"] = excerpt
     elif exit_code == gates.SENTINEL_PATCH_UNREADABLE:
@@ -218,7 +221,7 @@ def _command_over(result: dict, base: PinnedBase, patch: Path, cmd: str,
                            f"concluded" + (f": {excerpt}" if excerpt else ""))
 
 
-def _record_base_fault(result: dict, base: PinnedBase, cmd: str) -> None:
+def _record_base_fault(result: dict, base: PinnedBase, cmd: str, lane: str) -> None:
     """Re-run `cmd` over the pristine base and, when it fails there too, record
     the failure as the lane's own fault."""
     base_failure = verify_driver.base_command_failure(
@@ -227,8 +230,8 @@ def _record_base_fault(result: dict, base: PinnedBase, cmd: str) -> None:
             base_sha=base.sha, head_sha="pristine", pristine=True))
     if base_failure is not None:
         result["error"] = gates.base_fault_text(
-            "compile", f"at {base.sha[:12]}: {base_failure}")
-        result["error_kind"] = "base-compile"
+            lane, f"at {base.sha[:12]}: {base_failure}")
+        result["error_kind"] = f"base-{lane}"
 
 
 class Legs(TypedDict):

@@ -308,13 +308,15 @@ export function FixBody({ req, runner }: { req: FixRequest | null; runner: FixRu
     );
   }
   const pf = req.result?.compile_preflight;
+  const lint = req.result?.lint;
   const review = req.result?.review_verdict;
   const showPatch = req.result?.patch
     && (req.status === "awaiting-review" || req.status === "approved");
   // Raw command output, build errors and stack traces are for whoever is
   // debugging the worker. They go behind a disclosure so the plain explanation
   // above stays the thing an operator reads.
-  const raw = [pf?.error_excerpt, pf?.error, req.result?.detail, req.result?.output]
+  const raw = [pf?.error_excerpt, pf?.error, lint?.error_excerpt, req.result?.detail,
+               req.result?.output]
     .filter(Boolean).join("\n\n");
   return (
     <>
@@ -357,6 +359,17 @@ export function FixBody({ req, runner }: { req: FixRequest | null; runner: FixRu
               {review.concerns.map((c) => <li key={c}>{c}</li>)}
             </ul>
           )}
+        </div>
+      )}
+      {lint && (
+        <div className="small" style={{ marginTop: 8 }}>
+          <span className="muted">The repository's lint: </span>
+          {lint.exit === 0 ? "passes with this change applied"
+            : lint.error_kind === "base-lint"
+              ? "fails on the default branch itself, so it was not held against this change"
+              : lint.tree_fails
+                ? "fails on the pull request without this change too, so it was not held against this change"
+                : "did not pass"}
         </div>
       )}
       {showPatch && (

@@ -12,7 +12,7 @@ from pipeline import profile, prove
 from prospector_app.backend import issue_sandbox_check, sandbox_check
 
 TYPECHECK = profile.parse_profile(
-    {"version": 1, "verify": {"compile_cmd": "pnpm -r typecheck"}}, "t")
+    {"version": 1, "verify": {"compile_cmd": "pnpm -r typecheck", "lint_cmd": "pnpm lint"}}, "t")
 
 
 def _under_lane(monkeypatch, tmp_path, *, test_patch: str | None = None,
@@ -61,7 +61,7 @@ def test_a_pre_patch_composes_the_tree_the_agent_s_clone_holds(monkeypatch, tmp_
     monkeypatch.setattr(prove, "compose",
                         lambda *a, **k: pytest.fail("compose cannot carry a pre-patch"))
     monkeypatch.setattr(prove, "run_command",
-                        lambda base, patch, cmd, *, phase, label: {
+                        lambda base, patch, cmd, *, phase, label, lane="compile": {
                             "cmd": cmd, "exit": 0, "patch": str(patch)})
 
     assert issue_sandbox_check.main(["typecheck"]) == 0
@@ -85,13 +85,15 @@ def test_typecheck_runs_the_compile_phase_and_test_runs_green(monkeypatch, tmp_p
     _stub_compose(monkeypatch, tmp_path)
     seen: dict = {}
 
-    def fake_run(base, patch, cmd, *, phase, label):
-        seen.update(phase=phase, cmd=cmd)
+    def fake_run(base, patch, cmd, *, phase, label, lane="compile"):
+        seen.update(phase=phase, cmd=cmd, lane=lane)
         return {"cmd": cmd, "exit": 0, "output_tail": "PASS"}
     monkeypatch.setattr(prove, "run_command", fake_run)
 
     assert issue_sandbox_check.main(["typecheck"]) == 0
-    assert seen["phase"] == "compile" and seen["cmd"] == "pnpm -r typecheck"
+    assert seen == {"phase": "compile", "cmd": "pnpm -r typecheck", "lane": "compile"}
+    assert issue_sandbox_check.main(["lint"]) == 0
+    assert seen == {"phase": "compile", "cmd": "pnpm lint", "lane": "lint"}
     assert issue_sandbox_check.main(["test", "a.test.ts"]) == 0
     assert seen["phase"] == "green"
     assert seen["cmd"].startswith("npx vitest run a.test.ts")
