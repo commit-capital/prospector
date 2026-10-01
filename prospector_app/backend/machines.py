@@ -16,15 +16,16 @@ from prospector_app.backend import verify_queue
 
 
 def roster() -> dict:
-    """Every known machine with its lane health and heartbeats, online first:
-    ``{machines: [{host, lanes, beats, online, base_pinned}], local}``."""
+    """Every known machine with its lane health, heartbeats and AI account,
+    online first: ``{machines: [{host, lanes, beats, online, base_pinned,
+    ai_account}], local}``."""
     st = data.store()
     machines: dict[str, dict] = {}
 
     def entry(host: str) -> dict:
         return machines.setdefault(host, {
             "host": host, "lanes": {}, "beats": {},
-            "online": False, "base_pinned": False,
+            "online": False, "base_pinned": False, "ai_account": None,
         })
 
     for lane, reg in (("verify", st.load_verify_worker()),
@@ -44,6 +45,9 @@ def roster() -> dict:
 
     for host, rec in (st.load_worker_health().get("hosts") or {}).items():
         e = entry(str(host))
+        stamp = rec.get("ai_account")
+        if isinstance(stamp, dict):
+            e["ai_account"] = {"key": stamp.get("key"), "label": stamp.get("label")}
         for lane in worker_health.LANES:
             ln = (rec.get("lanes") or {}).get(lane)
             if ln is None:

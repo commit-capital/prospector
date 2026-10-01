@@ -335,7 +335,8 @@ def pacing_line(seven_day: Window, now: datetime) -> float:
     return elapsed + WEEKLY_SLACK
 
 
-def _local_midnights(p: Policy, now: datetime) -> tuple[datetime, datetime]:
+def local_midnights(p: Policy, now: datetime) -> tuple[datetime, datetime]:
+    """The start of `now`'s day in the policy's zone and the start of the next (UTC)."""
     zone = ZoneInfo(p.timezone)
     today: date = now.astimezone(zone).date()
     start = datetime.combine(today, time(0), tzinfo=zone)
@@ -362,7 +363,7 @@ def check(store: Store, acct: Account | None, now: datetime | None = None,
     if acct.billing == "api":
         if p.daily_budget_usd is None:
             return Decision(False, "no daily budget is set for this API key", None)
-        start, tomorrow = _local_midnights(p, now)
+        start, tomorrow = local_midnights(p, now)
         spent = store.capacity_spend(acct.key, _iso(start))
         if spent >= p.daily_budget_usd:
             return Decision(False, f"today's budget of ${p.daily_budget_usd:.2f} is spent "
