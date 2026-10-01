@@ -40,7 +40,10 @@ def gh_api(path: str, *, timeout: int = 60, paginate: bool = False) -> Any | Non
     timeout, unparseable body).
 
     ``paginate`` follows every page (`--paginate --slurp`) and, when each page
-    is an array, returns their items as one flat list."""
+    is an array, returns their items as one flat list. A path gh would parse
+    as a flag is refused."""
+    if path.startswith("-"):
+        return None
     argv = ["gh", "api", path]
     if paginate:
         argv += ["--paginate", "--slurp"]

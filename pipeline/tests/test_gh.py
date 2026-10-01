@@ -364,3 +364,10 @@ def test_operator_login(monkeypatch):
 def test_operator_login_none_when_gh_fails(monkeypatch):
     monkeypatch.setattr(gh.subprocess, "run", _fake_run("", returncode=1))
     assert gh.operator_login() is None
+
+
+def test_gh_api_refuses_a_flag_shaped_path(monkeypatch):
+    def run(*a, **k):
+        raise AssertionError("gh must not run")
+    monkeypatch.setattr(gh.subprocess, "run", run)
+    assert gh.gh_api("--method=DELETE") is None
