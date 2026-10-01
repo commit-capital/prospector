@@ -29,10 +29,16 @@ import signal
 import subprocess
 import tempfile
 import threading
+from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING
 
+from pipeline import capacity
 from pipeline import settings
 from pipeline.gh import operator_env
 from pipeline.settings import REPO_ROOT
+
+if TYPE_CHECKING:
+    from pipeline.store import Store
 
 CLAUDE_BIN = shutil.which("claude") or "claude"
 
@@ -72,6 +78,34 @@ def _failure_text(text: str, raw_lines: list[str], results: list[dict]) -> str:
 
 _LIMIT_SPENT = re.compile(r"hit your \w+ limit|usage limit reached", re.I)
 _NOT_INSTALLED = re.compile(r"not installed or not on PATH", re.I)
+# A service-side hiccup, consulted only once a failure is neither a spent limit
+# nor an auth failure: the same request may well succeed minutes later.
+_TRANSIENT = re.compile(r"overloaded|\b529\b|\b429\b|rate_limit_error", re.I)
+
+
+class CapacityExhausted(AgentUnavailable):
+    """The account's usage limit refused the run. The account's unattended work
+    is paused until `resets_at` (when the CLI said), so callers defer the work
+    rather than trip a lane."""
+
+    def __init__(self, message: str, resets_at: datetime | None = None,
+                 window: str | None = None) -> None:
+        super().__init__(message)
+        self.resets_at = resets_at
+        self.window = window
+
+
+class AgentTransient(RuntimeError):
+    """The service was overloaded or rate-limited the request without a spent
+    usage limit. Retryable after a short wait; never a fault of the machine."""
+
+
+def limit_spent(reason: str) -> bool:
+    return bool(_LIMIT_SPENT.search(reason))
+
+
+def transient(reason: str) -> bool:
+    return bool(_TRANSIENT.search(reason)) and not limit_spent(reason)
 
 
 def unavailable_remedy(reason: str) -> str:
@@ -280,13 +314,14 @@ def workdir(prefix: str) -> Iterator[str]:
         yield os.path.realpath(tmp)
 
 
-def parse_stream(lines, on_event=None, on_result=None, on_raw=None) -> str:
+def parse_stream(lines, on_event=None, on_result=None, on_raw=None, on_rate_limit=None) -> str:
     """Consume claude stream-json lines; return the concatenated assistant text.
     Calls on_event((kind, name, input)) for tool uses so callers can show
     progress: ("tool", tool_name, tool_input_dict), on_result(event) with
     the CLI's terminal result event, which carries the run's permission
-    denials, and on_raw(line) with every non-JSON line — the CLI's own
-    complaints, which arrive outside the stream."""
+    denials and usage, on_rate_limit(event) with each `rate_limit_event` (the
+    account's window utilization), and on_raw(line) with every non-JSON line
+    — the CLI's own complaints, which arrive outside the stream."""
     parts: list[str] = []
     saw_delta = False
     for raw in lines:
@@ -313,6 +348,9 @@ def parse_stream(lines, on_event=None, on_result=None, on_raw=None) -> str:
                     on_event(("tool", c.get("name", "?"), c.get("input") or {}))
                 if c.get("type") == "text" and c.get("text") and not saw_delta:
                     parts.append(c["text"])
+        elif t == "rate_limit_event":
+            if on_rate_limit:
+                on_rate_limit(e)
         elif t == "result":
             if on_result:
                 on_result(e)
@@ -444,7 +482,19 @@ def run_agent(prompt: str, *, allow_gh: bool, cwd: str, system_prompt: str | Non
     and EditsBlockedError when an Edit/Write inside `edit_root` was
     permission-denied — the grant not working, so the run's outcome is the
     machine's, not the agent's. Raises AgentDeclined when the API's safeguards
-    refused the prompt, and AgentUnavailable when the CLI could serve none."""
+    refused the prompt, and AgentUnavailable when the CLI could serve none —
+    CapacityExhausted when that was the account's usage limit, which also
+    pauses the account's unattended work until the limit resets. Raises
+    AgentTransient when the service was overloaded. Inside unattended work
+    (capacity.current_lane()) a closed capacity gate raises
+    capacity.CapacityPaused before any agent starts. Every run's capacity
+    reading and usage are recorded for its account."""
+    lane = capacity.current_lane()
+    if lane is not None:
+        decision = capacity.check(_store(), capacity.account(), probe=probe_reading)
+        if not decision.allowed:
+            raise capacity.CapacityPaused(decision)
+    started = datetime.now(timezone.utc)
     cmd = [CLAUDE_BIN, "-p", *_flags(allow_gh, edit_root, allow, read_root, git_root),
            "--output-format", "stream-json", "--verbose", "--include-partial-messages"]
     model = model or settings.agent_model()
@@ -480,8 +530,9 @@ def run_agent(prompt: str, *, allow_gh: bool, cwd: str, system_prompt: str | Non
     feeder.start()
     results: list[dict] = []
     raw_lines: list[str] = []
+    rate_events: list[dict] = []
     text = parse_stream(proc.stdout, on_event=on_event, on_result=results.append,
-                        on_raw=raw_lines.append)
+                        on_raw=raw_lines.append, on_rate_limit=rate_events.append)
     feeder.join(timeout=60)
     try:
         proc.wait(timeout=timeout)
@@ -491,15 +542,25 @@ def run_agent(prompt: str, *, allow_gh: bool, cwd: str, system_prompt: str | Non
         except (ProcessLookupError, PermissionError):
             proc.kill()
         raise RuntimeError(f"claude did not exit within {timeout}s")
+    _book(rate_events, results[0] if results else None, lane, model, started)
     if proc.returncode != 0:
         tail = text[-500:] if text else "(no output)"
         failure = _failure_text(text, raw_lines, results)
+        refusal = next((r for r in map(capacity.rejection, reversed(rate_events)) if r), None)
+        if refusal is not None or limit_spent(failure):
+            resets_at, window = refusal or (None, None)
+            _pause(resets_at, window)
+            raise CapacityExhausted(f"claude exited {proc.returncode}: the account's usage "
+                                    f"limit is spent", resets_at, window)
         why = unavailable_reason(failure)
         if why:
             raise AgentUnavailable(f"claude exited {proc.returncode}: {why}")
         declined = declined_reason(failure)
         if declined:
             raise AgentDeclined(declined)
+        if transient(failure):
+            raise AgentTransient(f"claude exited {proc.returncode}: the service was "
+                                 f"overloaded; last output: {tail}")
         raise RuntimeError(f"claude exited {proc.returncode}; last output: {tail}")
     if edit_root:
         blocked = _blocked_edits(results[0] if results else None, edit_root)
@@ -509,6 +570,65 @@ def run_agent(prompt: str, *, allow_gh: bool, cwd: str, system_prompt: str | Non
                 f"Edit/Write call(s) inside {edit_root} were permission-denied "
                 f"(first: {blocked[0]})")
     return text
+
+
+def _store() -> Store:
+    from pipeline import store
+    return store.Store()
+
+
+def _book(rate_events: list[dict], result: dict | None, lane: str | None,
+          model: str | None, started: datetime) -> None:
+    """Record a finished run's capacity reading and its usage for this machine's
+    account. Bookkeeping never fails the run it describes."""
+    usage = (result or {}).get("usage")
+    if not rate_events and not isinstance(usage, dict):
+        return
+    try:
+        acct = capacity.account()
+        if acct is None:
+            return
+        store = _store()
+        finished = datetime.now(timezone.utc)
+        if rate_events:
+            reading = capacity.parse_rate_limit(rate_events[-1], settings.worker_id(), finished)
+            if reading is not None:
+                capacity.record_reading(store, acct, reading)
+        if isinstance(usage, dict) and result is not None:
+            models = result.get("modelUsage")
+            ran = model or (next(iter(models)) if isinstance(models, dict) and models else None)
+            store.append_agent_run({
+                "phase": "agent:run", "lane": lane or "operator", "account": acct.key,
+                "unattended": lane is not None, "model": ran,
+                "host": settings.worker_id(),
+                "input_tokens": usage.get("input_tokens"),
+                "output_tokens": usage.get("output_tokens"),
+                "cache_read_input_tokens": usage.get("cache_read_input_tokens"),
+                "cache_creation_input_tokens": usage.get("cache_creation_input_tokens"),
+                "cost_usd": result.get("total_cost_usd"),
+                "started": started.isoformat(timespec="seconds"),
+                "finished": finished.isoformat(timespec="seconds"),
+                "ts": finished.isoformat(timespec="seconds")})
+    except Exception:
+        return
+
+
+# A limit hit whose reset the CLI did not say pauses unattended work this long.
+_UNKNOWN_RESET_PAUSE = timedelta(hours=1)
+
+
+def _pause(resets_at: datetime | None, window: str | None) -> None:
+    """Pause this machine's account's unattended work until the spent limit
+    resets. Bookkeeping never fails the run it describes."""
+    try:
+        acct = capacity.account()
+        if acct is None:
+            return
+        until = resets_at or datetime.now(timezone.utc) + _UNKNOWN_RESET_PAUSE
+        label = (window or "usage").replace("_", "-")
+        capacity.record_pause(_store(), acct, until, f"the {label} limit was reached")
+    except Exception:
+        return
 
 
 def run_on_bundle(bundle: object, prompt: Callable[[str], str], *, prefix: str,
@@ -533,6 +653,24 @@ def with_resolved_diffs(entries: Sequence[dict]) -> tuple[list[dict], list[str]]
     out = [{**e, "diff_path": os.path.realpath(e["diff_path"])} if e.get("diff_path") else e
            for e in entries]
     return out, [e["diff_path"] for e in out if e.get("diff_path")]
+
+
+def probe_reading(timeout: int = 180) -> capacity.Reading | None:
+    """A fresh capacity reading for this machine's account: one trivial
+    headless run on the cheapest model, which records the reading it gets.
+    None when the run could not report one."""
+    asked = datetime.now(timezone.utc)
+    try:
+        with capacity.attended(), workdir("capacity-probe-") as tmp:
+            run_agent("Reply with the single word ok.", allow_gh=False, cwd=tmp,
+                      read_root=tmp, env_allow=(), model="haiku", timeout=timeout)
+    except RuntimeError:
+        return None
+    acct = capacity.account()
+    if acct is None:
+        return None
+    reading = capacity.reading_from_dict(_store().load_capacity(acct.key).get("reading") or {})
+    return reading if reading is not None and reading.at >= asked else None
 
 
 def probe(timeout: int = 180) -> str | None:

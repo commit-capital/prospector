@@ -394,6 +394,7 @@ def check(store: Store, acct: Account | None, now: datetime | None = None,
 
 # --- the unattended mark ----------------------------------------------------
 
+# None defers to UNATTENDED_ENV; "" marks a block attended whatever the env says.
 _LANE: ContextVar[str | None] = ContextVar("capacity_lane", default=None)
 
 
@@ -407,5 +408,19 @@ def unattended(lane: str) -> Iterator[None]:
         _LANE.reset(token)
 
 
+@contextmanager
+def attended() -> Iterator[None]:
+    """Mark the agent work run inside this block as not gated — the probe that
+    refreshes a reading runs this way."""
+    token = _LANE.set("")
+    try:
+        yield
+    finally:
+        _LANE.reset(token)
+
+
 def current_lane() -> str | None:
-    return _LANE.get() or os.environ.get(UNATTENDED_ENV) or None
+    lane = _LANE.get()
+    if lane is not None:
+        return lane or None
+    return os.environ.get(UNATTENDED_ENV) or None

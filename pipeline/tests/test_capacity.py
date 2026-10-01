@@ -259,3 +259,10 @@ def test_the_unattended_mark_is_scoped(monkeypatch):
     assert capacity.current_lane() is None
     monkeypatch.setenv(capacity.UNATTENDED_ENV, "pipeline")
     assert capacity.current_lane() == "pipeline"
+
+
+def test_an_attended_block_overrides_the_environment(monkeypatch):
+    monkeypatch.setenv(capacity.UNATTENDED_ENV, "pipeline")
+    with capacity.attended():
+        assert capacity.current_lane() is None
+    assert capacity.current_lane() == "pipeline"
