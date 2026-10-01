@@ -469,22 +469,30 @@ function Toasts() {
 }
 
 // The thin systemwide health strip on every page: worker lanes down on any
-// machine sharing this store (tripped, or the worker offline), and stale
-// ingests. Amber for a partial problem, red for a full outage; hidden while
-// everything is healthy. The whole strip opens Pipeline → Health & queues,
-// which holds the Resume banner and the ingest buttons that fix what it names.
+// machine sharing this store (tripped, or the worker offline), stale ingests,
+// and AI accounts whose background work is paused at its capacity cap. Amber
+// for a partial problem, red for a full outage; hidden while everything is
+// healthy. A capacity pause is a hold, not a fault: it carries a pause mark
+// and its detail inline. The whole strip opens Pipeline → Health & queues,
+// which holds the Resume banner, the ingest buttons, and the AI capacity panel.
 function HealthStrip() {
   const health = useSystemHealth();
   if (!health || health.severity === "ok") return null;
+  const pausedOnly = health.items.every((it) => it.kind === "capacity");
   return (
     <Link to="/pipeline/control" className={`health-strip health-strip-${health.severity}`} role="alert"
-      title="Open Pipeline → Health & queues to resume lanes or re-run ingest">
-      <span aria-hidden="true">⚠</span>
+      title={pausedOnly
+        ? "Open Pipeline → Health & queues to see each AI account's capacity"
+        : "Open Pipeline → Health & queues to resume lanes or re-run ingest"}>
+      <span aria-hidden="true">{pausedOnly ? "⏸" : "⚠"}</span>
       {health.items.map((it, i) => (
-        <span key={`${it.kind}-${it.host ?? i}`} className="health-strip-item"
+        <span key={`${it.kind}-${it.host ?? i}`}
+          className={`health-strip-item${it.kind === "capacity" ? " health-strip-capacity" : ""}`}
           title={it.detail ?? undefined}>
           {i > 0 && <span className="health-strip-sep" aria-hidden="true">·</span>}
+          {it.kind === "capacity" && !pausedOnly && <span aria-hidden="true">⏸</span>}
           {it.label}
+          {it.kind === "capacity" && it.detail && <span className="health-strip-detail">· {it.detail}</span>}
         </span>
       ))}
     </Link>
