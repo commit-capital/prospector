@@ -117,8 +117,11 @@ comment/close/reopen/review as the configured bot plus the dedicated
 reads normally, and writes nothing.
 
 **Two writers touch `.env`, each with its own allowlist.**
-`worker_control.set_flags` writes the seven worker lane switches plus
-`TRIAGE_WORKER_ID` and nothing else. `prospector_app/backend/onboarding.py` writes deployment configuration
+`worker_control.set_flags` writes the settings `pipeline/settings_registry.py`
+marks editable — the worker lane switches, `TRIAGE_WORKER_ID`, the automation's
+behavior (agent model, budgets, limits, caps, follow-up mode) and this machine's
+sandbox sizes — each validated as the code reads it, and nothing else: no
+editable setting names a credential, a path, or the store. `prospector_app/backend/onboarding.py` writes deployment configuration
 for the setup wizard, allowlisted per step: `connect` (`TRIAGE_REPO`,
 `TRIAGE_STORE_URL`, the profile path, and presentation/review config, plus
 `profile.json` itself), `join` (a pasted bundle: the `connect` keys plus the bot
@@ -583,6 +586,13 @@ Cluster **outcome / state**: `merge-ready | awaiting-authors | needs-first-party
 - The store is SQL (`TRIAGE_STORE_URL` — a shared SQL database — or a local SQLite default under `pipeline/store/`), not committed files. `pipeline/cache/` (diffs, raw gh) is gitignored. Bulk or destructive record edits go through `pipeline/store_edit.py` (dry-run default, automatic pre-image snapshot, runs-ledger entry) — never ad-hoc scripts against `TRIAGE_STORE_URL`.
 - **`schema.STORE_SCHEMA_VERSION` guards stale writers.** Any PR that changes store record shape in a way older code mishandles must bump it. The store stamps the version on first write; a checkout whose constant is behind the store's stamp can read but not write (`storekit.assert_writable`, escape hatch `TRIAGE_STORE_ALLOW_STALE=1`).
 - **Dev-env config lives in three parallel files — keep them in sync.** `.conductor/settings.toml` (Conductor), `.superset/config.json` (Superset), and `.claude/launch.example.json` (Claude Code desktop run configurations) all wire up the same dev entry points — `setup.sh` and `uv run prospector serve --dev` (the launch config runs the backend and the Vite dev server as two separate configurations, resolving the frontend toolchain via `frontend-toolchain.sh`). A change to any one's setup/run commands must be mirrored in the others. Edit the **example**: a launch configuration names the port its preview opens on, which is per-checkout, so `setup.sh` generates the gitignored `.claude/launch.json` from that template with this checkout's ports (`dev-ports.sh`), and a regenerate overwrites hand edits to it. `dev-ports.sh` also owns the port claim itself — a worktree's `.env` arrives as a copy of the checkout it was made from, so it starts out naming ports that already belong to another one.
+- **Every environment variable the code reads is registered** in
+  `pipeline/settings_registry.py` — an operator setting in `SETTINGS` (label,
+  default, help, whether the Setup page may edit it) or a plumbing variable in
+  `INTERNAL`. `test_settings_registry.py` scans the tree and fails on any read
+  of an unregistered name. The Setup page's Settings card shows every setting
+  with its value in effect and where it came from; prefer a sensible default or
+  a Setup-page control over a variable an operator has to know about.
 - **Keep `pyproject.toml` dependency lists sorted** — `[project].dependencies` and every `[dependency-groups]` list stay alphabetical (case-insensitive). When you add a dep, insert it in order rather than appending, so the lists never drift.
 - Tests: `uv run pytest` from the repo root runs all four suites (`pipeline/tests`, `issue_triage/tests`, `alert_triage/tests`, and `prospector_app/backend/tests`). The environment is uv-locked to Python 3.14.6 (`.python-version` + `uv.lock`); `uv run <cmd>` auto-syncs it — no manual venv activation. `source ./activate` is optional convenience.
 - **Ruff is a CI gate (`uv run ruff check .`) and the tree is clean — keep it clean** (unlike the frontend's baseline, the bar here is **zero** findings). Config is in `pyproject.toml` `[tool.ruff]`: pyflakes (F), pycodestyle (E/W), pyupgrade (UP), and `N999` — the invalid-module-name rule that keeps every package directory importable (a hyphenated name is not). Several UP rules enforce conventions pyright can't (no quoted annotations, `X | None` over `Optional`). `uv run ruff check --fix` auto-fixes most; naming rules beyond N999 are intentionally off.

@@ -162,7 +162,7 @@ def _launch_live_sweep():
     import threading
     if "pytest" in sys.modules or os.environ.get("PROSPECTOR_NO_LAUNCH_SWEEP"):
         return
-    ttl = float(os.environ.get("PROSPECTOR_LIVE_TTL_MIN", "60"))
+    ttl = float(settings.positive_int("PROSPECTOR_LIVE_TTL_MIN", 60))
     if not freshness_live.stale(ttl):
         return  # a recent sweep is on record — reuse it, no GitHub calls this launch
 
@@ -612,12 +612,20 @@ def setup_readiness():
     }
 
 
+@app.get("/api/setup/settings")
+def setup_settings():
+    """Every setting the code reads, as this machine runs it (settings_panel)."""
+    from prospector_app.backend import settings_panel
+    return settings_panel.report()
+
+
 @app.post("/api/setup/flags")
 def setup_flags(body: models.WorkerFlags):
-    """Write this machine's worker lane switches to .env and reconcile the
-    running threads with them. Only the five lane switches are writable; any
-    other key is refused rather than skipped, so nothing here can reach the
-    store password or either credential path."""
+    """Write settings to this machine's .env and reconcile the running worker
+    threads with the lane switches. Only the settings the registry marks
+    editable are writable (worker_control.WRITABLE); any other key is refused
+    rather than skipped, so nothing here can reach the store password or either
+    credential path."""
     try:
         worker_control.set_flags(body.flags)
     except ValueError as e:

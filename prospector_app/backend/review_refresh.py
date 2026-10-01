@@ -8,20 +8,19 @@ verdict without waiting for the next scheduled ingest."""
 from __future__ import annotations
 
 import logging
-import os
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from pipeline import ingest, review_fetch, reviewers
+from pipeline import ingest, review_fetch, reviewers, settings
 from prospector_app.backend import data
 
 _log = logging.getLogger(__name__)
 
-POLL_SECONDS = float(os.environ.get("PROSPECTOR_REVIEW_REFRESH_POLL_SECONDS", "10"))
-POLL_ATTEMPTS = int(os.environ.get("PROSPECTOR_REVIEW_REFRESH_ATTEMPTS", "30"))
+POLL_SECONDS = float(settings.positive_int("PROSPECTOR_REVIEW_REFRESH_POLL_SECONDS", 10))
+POLL_ATTEMPTS = settings.positive_int("PROSPECTOR_REVIEW_REFRESH_ATTEMPTS", 30)
 
 
 @dataclass(frozen=True)

@@ -214,14 +214,14 @@ def review_provider() -> tuple[str, tuple[str, ...]]:
 def reviewer_active_days() -> int:
     """How recently a reviewer must have posted on an open PR to count as active
     in auto mode."""
-    raw = os.environ.get("TRIAGE_REVIEWER_ACTIVE_DAYS")
-    return int(raw) if raw else 14
+    return positive_int("TRIAGE_REVIEWER_ACTIVE_DAYS", 14)
 
 
 def review_threshold() -> int | None:
-    """Override of Greptile's pass score. None → 5."""
-    raw = os.environ.get("TRIAGE_REVIEW_THRESHOLD")
-    return int(raw) if raw else None
+    """Override of Greptile's pass score. None → 5, and so does a value that is
+    not a positive integer."""
+    n = positive_int("TRIAGE_REVIEW_THRESHOLD", 0)
+    return n or None
 
 # The autofix actions a fix request may carry. `update` merges the base branch
 # into the PR head, `rebase` rebases onto current base behind a pinned lease,
@@ -323,7 +323,7 @@ def issue_fix_followup() -> str:
 
 def issue_fix_hunt_budget() -> int:
     """How many attempts the issue-fix hunter queues per UTC day."""
-    return _positive_int("TRIAGE_ISSUE_FIX_HUNT_BUDGET", 5)
+    return positive_int("TRIAGE_ISSUE_FIX_HUNT_BUDGET", 5)
 
 
 def fix_autopush() -> frozenset[str]:
@@ -351,7 +351,7 @@ def fix_hunt_resolve() -> bool:
     return os.environ.get("TRIAGE_FIX_HUNT_RESOLVE", "") == "1"
 
 
-def _positive_int(name: str, default: int) -> int:
+def positive_int(name: str, default: int) -> int:
     """The environment's positive integer for `name`; an unparseable or
     non-positive value reads as `default`."""
     try:
@@ -365,12 +365,12 @@ def fix_hunt_limit() -> int:
     """The most auto-queued `fix` requests allowed in flight at once. Each fix
     spends two agents plus a compile preflight, so the hunter feeds them in
     small batches."""
-    return _positive_int("TRIAGE_FIX_HUNT_LIMIT", 3)
+    return positive_int("TRIAGE_FIX_HUNT_LIMIT", 3)
 
 
 def fix_objection_budget() -> int:
     """Continuations an objection may start per worker per UTC day."""
-    return _positive_int("TRIAGE_FIX_OBJECTION_BUDGET", 20)
+    return positive_int("TRIAGE_FIX_OBJECTION_BUDGET", 20)
 
 
 def fix_hunt_rereview() -> bool:
@@ -381,7 +381,7 @@ def fix_hunt_rereview() -> bool:
 
 def rereview_budget() -> int:
     """Re-review requests one worker may post per UTC day."""
-    return _positive_int("TRIAGE_REREVIEW_BUDGET", 40)
+    return positive_int("TRIAGE_REREVIEW_BUDGET", 40)
 
 
 def fix_hunt_security() -> bool:
@@ -392,30 +392,32 @@ def fix_hunt_security() -> bool:
 
 def fix_autopush_min_tier() -> int:
     """The lowest risk tier a fix may touch and still push unattended."""
-    return _positive_int("TRIAGE_FIX_AUTOPUSH_MIN_TIER", 2)
+    return positive_int("TRIAGE_FIX_AUTOPUSH_MIN_TIER", 2)
 
 
 def fix_autopush_max_lines() -> int:
     """The most changed lines a fix may carry and still push unattended."""
-    return _positive_int("TRIAGE_FIX_AUTOPUSH_MAX_LINES", 300)
+    return positive_int("TRIAGE_FIX_AUTOPUSH_MAX_LINES", 300)
 
 
 def issue_fix_max_lines() -> int:
     """The most changed lines an issue-fix lane's agent-authored fix may carry."""
-    return _positive_int("TRIAGE_ISSUE_FIX_MAX_LINES", 300)
+    return positive_int("TRIAGE_ISSUE_FIX_MAX_LINES", 300)
 
 
-def sandbox_large_slots() -> int:
-    """How many large-class sandbox phases (10g each) this machine runs at once:
-    size it to the Docker VM's memory. One unless TRIAGE_SANDBOX_LARGE_SLOTS
-    says more."""
-    return _positive_int("TRIAGE_SANDBOX_LARGE_SLOTS", 1)
+def sandbox_large_slots() -> int | None:
+    """How many large-class sandbox phases (10g each) this machine runs at once,
+    as TRIAGE_SANDBOX_LARGE_SLOTS names it; None sizes it from the Docker VM
+    (`verify_driver.large_slots`)."""
+    n = positive_int("TRIAGE_SANDBOX_LARGE_SLOTS", 0)
+    return n or None
 
 
-def sandbox_large_cpus() -> int:
-    """The CPUs each large-class sandbox phase gets. Two unless
-    TRIAGE_SANDBOX_LARGE_CPUS says more."""
-    return _positive_int("TRIAGE_SANDBOX_LARGE_CPUS", 2)
+def sandbox_large_cpus() -> int | None:
+    """The CPUs each large-class sandbox phase gets, as TRIAGE_SANDBOX_LARGE_CPUS
+    names it; None sizes it from the Docker VM (`verify_driver.large_cpus`)."""
+    n = positive_int("TRIAGE_SANDBOX_LARGE_CPUS", 0)
+    return n or None
 
 
 def issue_fix_models() -> tuple[str, ...]:

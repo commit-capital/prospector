@@ -1,8 +1,10 @@
 """Configuring this checkout from the app.
 
-The ONE config write path. `worker_control` writes five lane switches and must
-stay that narrow; onboarding needs the deployment target, the bot identity, and
-the push identity, so it carries its own allowlist scoped by step.
+The ONE config write path for the deployment. `worker_control` writes only the
+settings `settings_registry` marks editable — lane switches and the automation's
+behavior, never a credential, a path, or the store — and must stay that narrow;
+onboarding needs the deployment target, the bot identity, and the push
+identity, so it carries its own allowlist scoped by step.
 
 The connect and join steps name the repository and the store. They are writable
 only while `settings.configured()` is false, which is what stops a configured

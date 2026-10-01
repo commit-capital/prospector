@@ -1490,6 +1490,27 @@ export interface BotPermissionReadiness {
 
 /** The six worker lane switches, the only .env keys the lane writer may touch. */
 export type WorkerFlags = Record<string, string>;
+/** One setting the code reads (pipeline/settings_registry.py) as this machine
+ *  runs it. A secret's value is only ever "set" or empty. */
+export interface SettingRow {
+  name: string;
+  label: string;
+  group: string;
+  kind: "bool" | "int" | "choice" | "list" | "text" | "path" | "secret";
+  value: string;
+  default: string;
+  help: string;
+  editable: boolean;
+  choices: string[];
+  minimum: number;
+  maximum: number | null;
+  source: ".env" | "environment" | "default";
+  effective?: string;
+}
+export interface SettingsReport {
+  groups: { id: string; label: string }[];
+  settings: SettingRow[];
+}
 
 /** Where this checkout stands on the setup ladder. */
 export interface OnboardingState {
@@ -1653,6 +1674,8 @@ export const api = {
     }
     return r.json() as Promise<OnboardingState>;
   },
+  /** Every setting the code reads, as this machine runs it. */
+  setupSettings: () => get<SettingsReport>("/api/setup/settings"),
   setSetupFlags: async (flags: WorkerFlags) => {
     const r = await fetch("/api/setup/flags", {
       method: "POST", headers: { "Content-Type": "application/json" },

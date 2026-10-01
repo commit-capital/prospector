@@ -11,6 +11,7 @@ import {
 } from "../api";
 import type { AgentPick } from "../agentProvider";
 import { AgentProviderChooser } from "../components/AgentProviderChooser";
+import { SettingsPanel } from "../components/SettingsPanel";
 import { useRepoMeta } from "../RepoMetaContext";
 
 /** How often the readiness rows re-check while the page is open. Fast enough
@@ -206,6 +207,8 @@ export default function Setup() {
         ? <WorkerSection readiness={readiness} flags={flags} busy={busy} onToggle={toggle}
             onChanged={() => void load()} />
         : <ProvisionBanner onStart={() => setExpanded(true)} />}
+
+      <SettingsPanel refresh={flags} />
 
       <ShareSection />
 

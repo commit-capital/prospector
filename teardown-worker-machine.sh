@@ -66,8 +66,8 @@ say "worker lane switches"
 if [ -f "$ROOT/.env" ]; then
   uv run python -c "
 from prospector_app.backend import worker_control
-worker_control.set_flags({k: '' for k in worker_control.WRITABLE})
-print('off: ' + ', '.join(worker_control.WRITABLE))
+worker_control.set_flags({k: '' for k in worker_control.LANE_FLAGS})
+print('off: ' + ', '.join(worker_control.LANE_FLAGS))
 "
 else
   warn "no .env at the repo root — nothing to switch off."

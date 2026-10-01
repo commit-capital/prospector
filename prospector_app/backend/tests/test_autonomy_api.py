@@ -17,7 +17,7 @@ def test_autonomy_returns_every_lane_switch(monkeypatch):
     r = TestClient(appmod.app).get("/api/autonomy")
     assert r.status_code == 200
     flags = r.json()["flags"]
-    assert set(flags) == set(worker_control.WRITABLE)
+    assert set(flags) == set(worker_control.LANE_FLAGS)
     assert flags["TRIAGE_FIX_AUTOPUSH"] == "update,rebase"
     assert flags["TRIAGE_VERIFY_AUTOHUNT"] == ""
 

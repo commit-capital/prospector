@@ -38,6 +38,13 @@ SUITE_PROFILE = profile.RepoProfile(verify=profile.VerifyPolicy(
 _PEM_BODY_LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj"
 
 
+@pytest.fixture(autouse=True)
+def _fixed_vm(monkeypatch):
+    """A Docker VM of known size, so a test's faked subprocess never meets
+    the sizing probe."""
+    monkeypatch.setattr(vd, "_vm_size", lambda: (16, 8))
+
+
 class TestLauncherEnv:
     """CRITICAL: DEPLOYMENT_PRIVATE_KEY is a GitHub App private key with org admin on
     the upstream repo, and it is exported in the operator's shell profile — so it
