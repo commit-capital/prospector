@@ -247,6 +247,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="re-judge every open advisory, replacing current verdicts")
     args = ap.parse_args(argv)
     store = AdvisoryStore(args.store) if args.store else AdvisoryStore()
+    started = storekit.now()
     tier0 = deterministic_duplicates(store)
     if tier0:
         try:
@@ -262,6 +263,7 @@ def main(argv: list[str] | None = None) -> int:
          f"in batches of {args.batch}, up to {conc} at a time…")
     if not todo:
         _say("✓ nothing to scan — every open advisory has a current fix-scan.")
+        _record_pass(store, started, len(cands), 0, 0, 0)
         return 0
     entries = bundle(store, only=todo)
     roster_rows = roster(store)
@@ -289,7 +291,18 @@ def main(argv: list[str] | None = None) -> int:
     remaining = len(candidates(store))
     _say(f"✓ applied {applied} verdicts across {len(batches) - failed}/{len(batches)} "
          f"batches; {remaining} advisories still unscanned.")
+    _record_pass(store, started, len(cands), len(todo), applied, failed)
     return 0 if applied else 1
+
+
+def _record_pass(store: AdvisoryStore, started: str, candidates: int, scanned: int,
+                 applied: int, failed_batches: int) -> None:
+    """The whole pass's ledger entry, which times it; `apply_verdicts` also
+    records each batch it applies."""
+    store.append_run({"phase": "advisory-find-fixed", "started": started,
+                      "finished": storekit.now(),
+                      "stats": {"candidates": candidates, "scanned": scanned,
+                                "applied": applied, "failed_batches": failed_batches}})
 
 
 if __name__ == "__main__":

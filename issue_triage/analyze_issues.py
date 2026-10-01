@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from issue_triage import pr_index
 from issue_triage.issue_store import IssueStore
 from pipeline import settings
 from pipeline import headless_agent
+from pipeline import progress
 from pipeline import storekit
 
 _print_lock = threading.Lock()
@@ -99,7 +101,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="issue store root (default: the shared store)")
     args = ap.parse_args(argv)
     started = storekit.now()
+    clock = time.monotonic()
     store = IssueStore(args.store) if args.store else IssueStore()
+    _say("loading issues to find the open ones whose analysis is missing or stale…")
     pend = issue_analyze_driver.pending(store)
     todo = pend[:args.limit]
     conc = max(1, args.concurrency)
@@ -109,9 +113,15 @@ def main(argv: list[str] | None = None) -> int:
         _say("✓ nothing pending — analysis is current.")
         return 0
     # One store read up front; the workers see only their pre-built slice.
-    entries = issue_analyze_driver.bundle(
-        store, only=todo, pr_states=issue_analyze_driver.load_pr_states(),
-        pr_links=pr_index.from_store())
+    step = time.monotonic()
+    _say(f"② bundling evidence for {len(todo)} issues: loading PR states and the PR "
+         "link index…")
+    pr_states = issue_analyze_driver.load_pr_states()
+    pr_links = pr_index.from_store()
+    _say("  loading issues and their clusters…")
+    entries = issue_analyze_driver.bundle(store, only=todo, pr_states=pr_states,
+                                          pr_links=pr_links)
+    _say(f"  bundled {len(entries)} issues in {progress.duration(time.monotonic() - step)}")
     pending_batches = [entries[i:i + args.batch] for i in range(0, len(entries), args.batch)]
     total = len(pending_batches)
     applied = 0
@@ -120,6 +130,8 @@ def main(argv: list[str] | None = None) -> int:
             break
         if attempt:
             _say(f"↻ retrying {len(pending_batches)} failed batch(es)…")
+        else:
+            _say(f"③ running {len(pending_batches)} agent batch(es), up to {conc} at a time…")
         failed: list[list[dict]] = []
         done = 0
         with ThreadPoolExecutor(max_workers=conc) as pool:
@@ -127,23 +139,27 @@ def main(argv: list[str] | None = None) -> int:
             for fut in as_completed(futures):
                 label = _label(futures[fut])
                 done += 1
+                took = progress.duration(time.monotonic() - clock)
                 try:
                     good = fut.result()
                 except Exception as e:
                     failed.append(futures[fut])
-                    _say(f"    ! {label} failed: {e}  ({done}/{len(pending_batches)})")
+                    _say(f"    ! {label} failed: {e}  ({done}/{len(pending_batches)} · {took})")
                     continue
                 # Serial on the main thread — the store is never touched concurrently.
                 n = issue_analyze_driver.apply_verdicts(store, good)
                 applied += n
-                _say(f"    ✓ {label}: {n} verdicts applied  ({done}/{len(pending_batches)})")
+                _say(f"    ✓ {label}: {n} verdicts applied  "
+                     f"({done}/{len(pending_batches)} · {took})")
         pending_batches = failed
     # Named from the store, so it covers every way an issue can be left behind:
     # an unrecovered batch, and a verdict the agent or the driver dropped.
+    _say("re-reading issues to count what is still pending analysis…")
     missed = sorted(set(todo) & set(issue_analyze_driver.pending(store)))
     remaining = len(issue_analyze_driver.pending(store))
     _say(f"✓ applied {applied} verdicts across {total - len(pending_batches)}/"
-         f"{total} batches; {remaining} issues still pending analysis.")
+         f"{total} batches; {remaining} issues still pending analysis. "
+         f"Took {progress.duration(time.monotonic() - clock)}.")
     if missed:
         _say(f"    ! {len(missed)} of this run's issues have no current analysis: "
              + " ".join(f"#{n}" for n in missed[:20])

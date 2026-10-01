@@ -1,18 +1,42 @@
+import type { JobStatus } from "./api";
+
 export interface JobCompletion {
   returncode: number | null;
   status: "done" | "failed";
+  finished: string | null;
+}
+
+/** The `job` event a job stream opens with: the job's record, plus when its
+ *  output last changed. */
+export interface JobMeta {
+  id: number;
+  kind: string;
+  label: string;
+  status: JobStatus;
+  started: string;
+  finished: string | null;
+  returncode: number | null;
+  last_output: string | null;
+  /** Lines the job had already logged when this stream opened. */
+  lines: number;
 }
 
 interface JobStreamHandlers {
-  onLog: (line: string) => void;
+  /** `live` is false for a line the job logged before this stream opened. */
+  onLog: (line: string, live: boolean) => void;
   onDone: (completion: JobCompletion) => void;
-  onError?: () => void;
+  onJob?: (meta: JobMeta) => void;
+  /** The connection dropped mid-job; the stream is retrying. */
+  onReconnecting?: () => void;
+  /** The stream ended without a `done` event. `named` is false when it never
+   *  named a job: the server refused to start one, or could not be reached. */
+  onError?: (named: boolean) => void;
 }
 
 export interface JobGroupUpdate {
   id: number;
   returncode: number | null;
-  status: "queued" | "running" | "done" | "failed";
+  status: JobStatus;
 }
 
 interface JobGroupStreamHandlers {
@@ -21,20 +45,61 @@ interface JobGroupStreamHandlers {
   onError?: () => void;
 }
 
-/** Attach to a start-or-reattach job stream and return a close function. */
+// A dropped job stream retries this often, this many times — long enough to
+// ride out the backend restarting under a dev-server reload.
+const RECONNECT_MS = 2000;
+const RECONNECT_ATTEMPTS = 45;
+
+/** Attach to a start-or-reattach job stream and return a close function. Once
+ *  the stream has named its job, a dropped connection reconnects to that job
+ *  and resumes after the last line received, so the backend restarting
+ *  mid-job neither ends nor repeats the output. */
 export function attachJobStream(url: string, handlers: JobStreamHandlers): () => void {
-  const es = new EventSource(url);
-  const close = (): void => es.close();
-  es.addEventListener("log", (e: MessageEvent) => handlers.onLog(e.data));
-  es.addEventListener("done", (e: MessageEvent) => {
-    const completion = JSON.parse(e.data) as JobCompletion;
-    close();
-    handlers.onDone(completion);
-  });
-  es.onerror = (): void => {
-    close();
-    handlers.onError?.();
+  let es: EventSource | null = null;
+  let jobId: number | null = null;
+  let received = 0;
+  let replayed = 0;
+  let attempts = 0;
+  let closed = false;
+  let retry: number | undefined;
+  const close = (): void => {
+    closed = true;
+    window.clearTimeout(retry);
+    es?.close();
   };
+  const connect = (target: string): void => {
+    const source = new EventSource(target);
+    es = source;
+    source.addEventListener("job", (e: MessageEvent) => {
+      const meta = JSON.parse(e.data) as JobMeta;
+      jobId = meta.id;
+      replayed = meta.lines;
+      attempts = 0;
+      handlers.onJob?.(meta);
+    });
+    source.addEventListener("log", (e: MessageEvent) => {
+      received += 1;
+      handlers.onLog(e.data, received > replayed);
+    });
+    source.addEventListener("done", (e: MessageEvent) => {
+      close();
+      handlers.onDone(JSON.parse(e.data) as JobCompletion);
+    });
+    source.onerror = (): void => {
+      source.close();
+      if (closed) return;
+      if (jobId === null || attempts >= RECONNECT_ATTEMPTS) {
+        closed = true;
+        handlers.onError?.(jobId !== null);
+        return;
+      }
+      attempts += 1;
+      if (attempts === 1) handlers.onReconnecting?.();
+      retry = window.setTimeout(
+        () => connect(`/api/jobs/${jobId}/stream?after=${received}`), RECONNECT_MS);
+    };
+  };
+  connect(url);
   return close;
 }
 

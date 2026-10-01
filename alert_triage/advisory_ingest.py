@@ -2,7 +2,8 @@
 normalize, and upsert the changed ones with recomputed candidate PR links,
 leaving out any that was only ever a draft.
 `ingest_records` is pure and unit-tested; `main` adds the token mint, the live
-fetch, and the PR-corpus join. Mirrors alert_triage/alert_ingest.py.
+fetch, and the PR-corpus join — read only when an open advisory is new or
+changed, since only those are linked. Mirrors alert_triage/alert_ingest.py.
 """
 from __future__ import annotations
 
@@ -70,6 +71,20 @@ def only_ever_a_draft(meta: dict) -> bool:
     return meta.get("state") == "closed" and not meta.get("published_at")
 
 
+def _changed(existing: dict[int, advisory_model.Advisory], metas: list[dict]) -> list[dict]:
+    """The fetched advisories a write would change: kept ones whose meta moved,
+    and stored ones that have since closed as only-ever-a-draft."""
+    out: list[dict] = []
+    for meta in metas:
+        prev = existing.get(advisory_id(meta["ghsa_id"]))
+        if only_ever_a_draft(meta):
+            if prev is not None:
+                out.append(meta)
+        elif prev is None or not _meta_unchanged(prev, meta):
+            out.append(meta)
+    return out
+
+
 def ingest_records(store: AdvisoryStore, metas: list[dict], prs: list[dict],
                    diffs: dict[str, str]) -> int:
     """Upsert each advisory whose meta changed, recomputing candidate links for
@@ -78,22 +93,19 @@ def ingest_records(store: AdvisoryStore, metas: list[dict], prs: list[dict],
     sections ride along. Returns the count written."""
     if not metas:
         return 0
-    existing = store.all_advisories()
+    known = store.all_advisories()
+    changed = _changed(known, metas)
     written = 0
     gone: list[int] = []
     with store.batch():
-        for meta in metas:
+        for meta in changed:
             i = advisory_id(meta["ghsa_id"])
-            prev = existing.get(i)
             if only_ever_a_draft(meta):
-                if prev is not None:
-                    gone.append(i)
-                continue
-            if prev is not None and _meta_unchanged(prev, meta):
+                gone.append(i)
                 continue
             links = (link_prs.candidates_for(meta, prs, diffs)
                      if meta.get("state") in OPEN_STATES else None)
-            adv = prev or advisory_model.Advisory(store, {"id": i})
+            adv = known.get(i) or advisory_model.Advisory(store, {"id": i})
             adv.apply_facts(meta, links=links)
             written += 1
         if gone:
@@ -111,8 +123,7 @@ def main(argv: list[str] | None = None) -> int:
     if token is None:
         raise SystemExit("advisory ingest needs a bot token; minting failed "
                          "(check TRIAGE_BOT_APP_ID / TRIAGE_BOT_KEY_FILE)")
-    prs, diffs = link_prs.pr_corpus()
-    print(f"PR corpus: {len(prs)} | fetching advisories…", flush=True)
+    print("fetching advisories as the bot…", flush=True)
     try:
         metas = fetch(token)
     except config.SourceUnavailable as e:
@@ -121,13 +132,20 @@ def main(argv: list[str] | None = None) -> int:
                           "stats": {"fetched": {}, "unavailable": [SOURCE], "upserted": 0}})
         print(f"  advisories: unavailable ({e.detail})", flush=True)
         return 0
+    existing = store.all_advisories()
+    changed = _changed(existing, metas)
+    linking = [m for m in changed
+               if not only_ever_a_draft(m) and m.get("state") in OPEN_STATES]
+    print(f"{len(metas)} advisories fetched: {len(changed)} new or changed, "
+          f"{len(linking)} of them open", flush=True)
+    prs, diffs = link_prs.corpus_for(len(linking), "open advisories")
     n = ingest_records(store, metas, prs, diffs)
     store.append_run({"phase": "advisory-ingest", "started": started, "finished": _now(),
                       "stats": {"fetched": {SOURCE: len(metas)}, "unavailable": [],
                                 "upserted": n}})
     kept = sum(1 for m in metas if not only_ever_a_draft(m))
     print(f"ingested {kept} advisories ({n} changed, written; "
-          f"{len(metas) - kept} only-ever-draft left out)")
+          f"{len(metas) - kept} only-ever-draft left out)", flush=True)
     return 0
 
 

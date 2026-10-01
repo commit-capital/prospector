@@ -32,6 +32,7 @@ import dataclasses
 import json
 import os
 import sys
+import time
 import traceback
 from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
@@ -41,6 +42,7 @@ from typing import TYPE_CHECKING, TypeVar, cast
 from pipeline import diff_cache
 from pipeline import gates
 from pipeline import headless_agent
+from pipeline import progress
 from pipeline import settings
 from pipeline import verify_driver
 from pipeline import wire
@@ -111,9 +113,14 @@ def _harness_problems(image: str, base: str, tier: int) -> list[str]:
     boot per pinned base; a failure is not, so a fault that clears (a mount
     that caught up, a daemon restarted) is seen on the next pickup."""
     if image not in _canary_cache:
+        _say(f"⓪ Self-testing the sandbox harness with 3 canary containers (each up "
+             f"to {progress.duration(verify_driver.PHASE_TIMEOUT_SECONDS)}) before "
+             f"trusting this PR's run…")
+        started = time.monotonic()
         problems = verify_driver.run_canaries(image, base, tier)
         if problems:
             return problems
+        _say(f"  harness self-test passed in {progress.duration(time.monotonic() - started)}")
         _canary_cache[image] = problems
     return _canary_cache[image]
 
@@ -498,6 +505,8 @@ def _run_inner(store: Store, rec: Pr, req: _Request) -> int:
     # image. All five come from one prepare-base run here; missing any of them is
     # a no-base. Each verification machine carries its own pin, so what another
     # machine has prepared says nothing about what this one can boot.
+    _say("  checking this machine's pinned base, its clone, the Docker daemon and "
+         "the base image…")
     try:
         base = verify_driver.pinned_base(store)
         tier = verify_driver.pinned_tier(store)
@@ -527,6 +536,7 @@ def _run_inner(store: Store, rec: Pr, req: _Request) -> int:
             return _fail(req, "sandbox-error", str(e))
     else:
         suite_config = None
+    _say(f"  pinned base {base[:7]} (tier {tier}) is ready")
 
     # Harness self-test (canary): before trusting THIS PR's red→green, prove the
     # harness reproduces a known bug, confirms its fix, and rejects a non-fix
@@ -609,8 +619,10 @@ def _run_inner(store: Store, rec: Pr, req: _Request) -> int:
 
     # Signal 2 — the sandbox phases, host-observed. A live-agent-only bug
     # spends no sandbox time: the blind verdict settles its outcome.
-    _say("③ Sandbox run (apply → red → green → regress)…")
+    _say(f"③ Sandbox run (apply → red → green → regress; one container per phase, "
+         f"each up to {progress.duration(verify_driver.PHASE_TIMEOUT_SECONDS)})…")
     req.running("sandbox")
+    sandbox_started = time.monotonic()
     try:
         if blind.get("requires_live_agent"):
             _say("  requires a live agent — no sandbox time spent")
@@ -633,7 +645,8 @@ def _run_inner(store: Store, rec: Pr, req: _Request) -> int:
     assert ev is not None, f"pr {n} has a committed blind verdict, so verify_pr returns evidence"
     rg = ev["red_green"]
     _say(f"  exits: apply={rg.get('apply_exit')} red={rg.get('red_exit')} "
-         f"green={rg.get('green_exit')}")
+         f"green={rg.get('green_exit')}  (sandbox run took "
+         f"{progress.duration(time.monotonic() - sandbox_started)})")
     contaminated = gates.contained_green_failures(rg)
     if contaminated:
         _say("  dirty green accepted as contamination (failed red too): "

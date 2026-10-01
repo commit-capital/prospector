@@ -40,6 +40,7 @@ from pipeline import ci_signal
 from pipeline import diffpaths
 from pipeline import live_prs
 from pipeline import model
+from pipeline import progress
 from pipeline import review_fetch
 from pipeline import reviewers
 from pipeline import settings
@@ -374,8 +375,12 @@ def _upsert_all(store: Store, prs: list[dict], issue_links: dict[int, list[dict]
                     if needs_conversation(existing_prs.get(int(gh_pr["number"])),
                                           (gh_pr.get("head") or {}).get("sha"),
                                           (facts.get(int(gh_pr["number"])) or {}).get("updated_at"))]
+    if prs:
+        progress.say(f"{len(conv_numbers):,} of {len(prs):,} PRs are new or updated since "
+                     "their reviews and comments were last read")
     feeds = (review_fetch.fetch_feeds(conv_numbers, rate_limit_waits=RATE_LIMIT_BACKOFF)
              if conv_numbers else {})
+    staging = progress.Progress("staging", len(prs), "PRs", one="PR")
     for gh_pr in prs:
         n = int(gh_pr["number"])
         live = facts.get(n) or {}
@@ -399,9 +404,16 @@ def _upsert_all(store: Store, prs: list[dict], issue_links: dict[int, list[dict]
         open_ids.add(n)
         if rec.draft:
             drafts += 1
+        staging.advance()
+    staging.finish(f"{drafts:,} drafts")
 
+    saving = progress.Progress("saving", len(staged), "PRs to the store",
+                               one="PR to the store")
     for start in range(0, len(staged), batch_size):
-        store.save_prs_many(staged[start:start + batch_size])
+        chunk = staged[start:start + batch_size]
+        store.save_prs_many(chunk)
+        saving.advance(len(chunk))
+    saving.finish()
 
     return {"upserted": len(staged), "drafts": drafts, "open_ids": open_ids, "staged": staged}
 
@@ -412,6 +424,7 @@ def _targeted_ingest(store: Store, args: argparse.Namespace, started: str) -> in
     if args.prs:
         requested = sorted(_parse_pr_ids(args.prs))
         if args.new:
+            print("loading every stored PR to skip the ones already stored…", flush=True)
             existing_ids = set(store.all_prs())
             requested = [n for n in requested if n not in existing_ids]
         print(f"refreshing {len(requested)} requested PRs…", flush=True)
@@ -427,8 +440,10 @@ def _targeted_ingest(store: Store, args: argparse.Namespace, started: str) -> in
 
     print("fetching open PRs…", flush=True)
     gh_prs = fetch_open_prs(args.max)
+    print("loading every stored PR to find the new arrivals…", flush=True)
     existing_prs = store.all_prs()
     targets = _select_new_prs(gh_prs, set(existing_prs))
+    print("loading issue links from the issue store…", flush=True)
     issue_links = load_issue_links(prs=targets)
     print(f"open PRs: {len(gh_prs)} | targeting: {len(targets)}")
     live, _ = live_prs.fetch([int(pr["number"]) for pr in targets],
@@ -475,28 +490,37 @@ def main(argv: list[str] | None = None) -> int:
     gh_prs = fetch_open_prs(args.max)
     live, _ = live_prs.fetch([int(pr["number"]) for pr in gh_prs],
                               rate_limit_waits=RATE_LIMIT_BACKOFF)
+    print("loading issue links from the issue store…", flush=True)
     issue_links = load_issue_links(prs=gh_prs)
     print(f"open PRs: {len(gh_prs)} | PRs with issue links: {len(issue_links)}")
 
     transitions = 0
     with store.batch():
+        print("loading every stored PR to reconcile against the fetch…", flush=True)
         existing_prs = store.all_prs()
         counts = _upsert_all(store, gh_prs, issue_links, existing_prs, live_facts=live)
         upserted, drafts, open_now = counts["upserted"], counts["drafts"], counts["open_ids"]
         staged_ids = {p.number for p in counts["staged"]}
         corpus = counts["staged"] + [p for n, p in existing_prs.items() if n not in staged_ids]
+        print("recording each automated reviewer's latest activity…", flush=True)
         store.save_reviewers(reviewers.seen_summary(corpus))
 
         # PRs in the store that are no longer in the open list → closed or merged;
         # refresh their meta so state transitions are recorded. The pre-upsert
         # snapshot is also the closure-candidate corpus.
-        for n, rec in existing_prs.items():
-            if n in open_now or rec.state != "open":
-                continue
+        departed = [(n, rec) for n, rec in existing_prs.items()
+                    if n not in open_now and rec.state == "open"]
+        sweep = progress.Progress("checking", len(departed), "stored PRs that left the open list",
+                                  one="stored PR that left the open list")
+        for n, rec in departed:
             gh_pr = fetch_pr(n)
             if gh_pr is not None:
                 rec.set_meta(meta_from_gh(gh_pr))
                 transitions += 1
+            sweep.advance()
+        unreachable = len(departed) - transitions
+        sweep.finish(f"{transitions:,} refreshed"
+                     + (f", {unreachable:,} unreachable" if unreachable else ""))
 
     stats = {"open_fetched": len(gh_prs), "upserted": upserted,
              "drafts": drafts, "state_transitions": transitions,

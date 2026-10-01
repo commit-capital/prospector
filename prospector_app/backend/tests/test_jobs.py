@@ -1,6 +1,8 @@
 import asyncio
 import json
+import subprocess
 import sys
+import time
 
 import pytest
 from prospector_app.backend import jobs
@@ -154,53 +156,244 @@ def _bare_job(**over) -> dict:
     return job
 
 
+def _job(argv: list[str]) -> dict:
+    job = jobs.start_job("selftest")
+    job["_argv"] = argv
+    return job
+
+
 async def _collect(gen) -> list[dict]:
     return [ev async for ev in gen]
 
 
-def test_run_job_completes_with_zero_listeners(monkeypatch):
-    """The core regression: previously spawning+draining only happened inside
-    the generator an SSE client was actively consuming, so a job with no
-    attached reader never advanced past "running". `run_job` must finish a
-    real subprocess and land its status/returncode on its own."""
+def _logged(events: list[dict]) -> list[str]:
+    return [e["data"] for e in events if e["event"] == "log"]
+
+
+@pytest.fixture
+def no_refresh(monkeypatch):
     monkeypatch.setattr(jobs.data, "refresh", lambda: None)
-    job = _bare_job(_argv=[sys.executable, "-u", "-c", "print('hello')"])
+
+
+def test_run_job_completes_with_zero_listeners(no_refresh):
+    job = _job([sys.executable, "-u", "-c", "print('hello')"])
     asyncio.run(jobs.run_job(job))
     assert job["status"] == "done"
     assert job["returncode"] == 0
     assert "hello" in job["log"]
+    assert job["finished"] is not None
 
 
-def test_run_job_records_failure_without_a_listener(monkeypatch):
-    monkeypatch.setattr(jobs.data, "refresh", lambda: None)
-    job = _bare_job(_argv=[sys.executable, "-u", "-c", "import sys; sys.exit(3)"])
+def test_run_job_records_failure_without_a_listener(no_refresh):
+    job = _job([sys.executable, "-u", "-c", "import sys; sys.exit(3)"])
     asyncio.run(jobs.run_job(job))
     assert job["status"] == "failed"
     assert job["returncode"] == 3
 
 
-def test_run_job_survives_a_spawn_error(monkeypatch):
-    """A child that can't even start (bad argv) fails the job instead of
-    raising out of the background task — an unawaited exception there would
-    otherwise be silently dropped or crash the event loop."""
-    monkeypatch.setattr(jobs.data, "refresh", lambda: None)
-    job = _bare_job(_argv=["/no/such/executable-698234"])
+def test_run_job_fails_a_command_that_cannot_start(no_refresh):
+    job = _job(["/no/such/executable-698234"])
     asyncio.run(jobs.run_job(job))
     assert job["status"] == "failed"
-    assert job["returncode"] == -1
+    assert job["returncode"] not in (0, None)
+
+
+def test_run_job_keeps_output_and_ending_on_disk(no_refresh):
+    job = _job([sys.executable, "-u", "-c", "print('hello')"])
+    asyncio.run(jobs.run_job(job))
+    record = json.loads((jobs.JOBS_DIR / f"{job['id']}.json").read_text())
+    assert record["status"] == "done" and record["returncode"] == 0
+    assert "hello" in (jobs.JOBS_DIR / f"{job['id']}.log").read_text()
+
+
+def test_job_ids_keep_rising_across_a_restart():
+    first = jobs.start_job("selftest")
+    jobs.JOBS.clear()
+    assert jobs.start_job("selftest")["id"] == first["id"] + 1
+
+
+def test_a_job_outlives_its_backend_and_is_followed_after_restart(no_refresh):
+    """The dev server's reload kills the task following a job; the child keeps
+    running, and the restarted backend picks it up from its log and exit files."""
+    script = ("import time; print('one', flush=True); time.sleep(0.8); "
+              "print('two', flush=True)")
+
+    async def first_backend() -> int:
+        job = _job([sys.executable, "-u", "-c", script])
+        task = asyncio.create_task(jobs.run_job(job))
+        while "one" not in job["log"]:
+            await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert job["status"] == "running"
+        return job["id"]
+
+    job_id = asyncio.run(first_backend())
+    jobs.JOBS.clear()
+
+    async def second_backend():
+        jobs.restore()
+        job = jobs.JOBS[job_id]
+        assert job["status"] == "running"
+        return job, await _collect(jobs.attach_job(job))
+
+    job, events = asyncio.run(second_backend())
+    assert job["status"] == "done" and job["returncode"] == 0
+    assert {"one", "two"} <= set(_logged(events))
+
+
+def _record_running(job: dict, pid: int) -> None:
+    job["status"] = "running"
+    job["pid"] = pid
+    jobs._save(job)
+    jobs.JOBS.clear()
+
+
+def _dead_pid() -> int:
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    return proc.pid
+
+
+def test_restore_fails_a_job_whose_process_vanished(no_refresh):
+    job = jobs.start_job("selftest")
+    _record_running(job, _dead_pid())
+    asyncio.run(_restore())
+    restored = jobs.JOBS[job["id"]]
+    assert restored["status"] == "failed" and restored["returncode"] is None
+    assert any("lost" in line for line in restored["log"])
+
+
+def test_restore_settles_a_job_whose_exit_was_recorded(no_refresh):
+    job = jobs.start_job("selftest")
+    (jobs.JOBS_DIR / f"{job['id']}.exit").write_text("0\n")
+    _record_running(job, _dead_pid())
+    asyncio.run(_restore())
+    assert jobs.JOBS[job["id"]]["status"] == "done"
+
+
+def test_restore_schedules_a_job_that_never_started(monkeypatch):
+    scheduled = []
+    monkeypatch.setattr(jobs, "schedule_job", lambda job: scheduled.append(job["id"]))
+    job = jobs.start_job("selftest")
+    jobs.JOBS.clear()
+    asyncio.run(_restore())
+    assert scheduled == [job["id"]]
+
+
+async def _restore() -> None:
+    jobs.restore()
+
+
+def test_attach_job_announces_the_job_then_resumes_after_a_line_count():
+    job = jobs.start_job("selftest")
+    job.update(log=["line1", "line2", "line3"], status="done", returncode=0)
+    events = asyncio.run(_collect(jobs.attach_job(job, after=2)))
+    assert events[0]["event"] == "job"
+    assert json.loads(events[0]["data"])["id"] == job["id"]
+    assert _logged(events) == ["line3"]
+
+
+def test_stop_job_ends_a_running_job(no_refresh):
+    async def run():
+        job = _job([sys.executable, "-u", "-c",
+                    "import time; print('up', flush=True); time.sleep(30)"])
+        task = asyncio.create_task(jobs.run_job(job))
+        while "up" not in job["log"]:
+            await asyncio.sleep(0.01)
+        await jobs.stop_job(job["id"])
+        await asyncio.wait_for(task, 10)
+        return job
+
+    job = asyncio.run(run())
+    assert job["status"] == "failed"
+    assert any("stopped by the operator" in line for line in job["log"])
+
+
+def test_stop_job_reaches_a_child_in_a_session_of_its_own(no_refresh, tmp_path):
+    """A job's agents and sandbox launchers start their own sessions, out of
+    reach of the job's own process group."""
+    pid_file = tmp_path / "child.pid"
+    script = (
+        "import subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'],"
+        " start_new_session=True)\n"
+        f"open({str(pid_file)!r}, 'w').write(str(child.pid))\n"
+        "print('up', flush=True)\n"
+        "time.sleep(60)\n")
+
+    async def run() -> int:
+        job = _job([sys.executable, "-u", "-c", script])
+        task = asyncio.create_task(jobs.run_job(job))
+        while "up" not in job["log"]:
+            await asyncio.sleep(0.01)
+        await jobs.stop_job(job["id"])
+        await asyncio.wait_for(task, 10)
+        return int(pid_file.read_text())
+
+    child = asyncio.run(run())
+    for _ in range(200):
+        if not jobs._alive(child):
+            break
+        time.sleep(0.02)
+    assert not jobs._alive(child)
+
+
+def test_stop_job_cancels_a_queued_job_before_it_starts(no_refresh):
+    job = jobs.start_job("selftest")
+    asyncio.run(jobs.stop_job(job["id"]))
+    asyncio.run(jobs.run_job(job))
+    assert job["status"] == "failed" and job["pid"] is None
+
+
+def test_a_line_longer_than_one_read_is_taken_whole():
+    job = jobs.start_job("selftest")
+    (jobs.JOBS_DIR / f"{job['id']}.log").write_bytes(b"x" * (jobs.CATCH_UP_BYTES + 10) + b"\nnext\n")
+    jobs._catch_up(job)
+    jobs._catch_up(job)
+    jobs._catch_up(job)
+    assert [len(line) for line in job["log"]] == [jobs.CATCH_UP_BYTES, 10, 4]
+
+
+def test_finished_jobs_beyond_the_keep_count_are_pruned(monkeypatch):
+    monkeypatch.setattr(jobs, "KEEP_FINISHED", 2)
+    old = [jobs.start_job("selftest") for _ in range(3)]
+    for job in old:
+        job["status"] = "done"
+    newest = jobs.start_job("selftest")
+    assert sorted(jobs.JOBS) == [old[1]["id"], old[2]["id"], newest["id"]]
+    assert not (jobs.JOBS_DIR / f"{old[0]['id']}.json").exists()
+
+
+def test_runner_lines_land_on_their_own_line_after_partial_output():
+    job = jobs.start_job("selftest")
+    (jobs.JOBS_DIR / f"{job['id']}.log").write_bytes(b"half a line")
+    jobs._append(job, "! note")
+    jobs._catch_up(job, final=True)
+    assert job["log"] == ["half a line", "! note"]
+
+
+def test_carriage_returns_keep_the_last_rewrite_of_a_line():
+    job = jobs.start_job("selftest")
+    (jobs.JOBS_DIR / f"{job['id']}.log").write_bytes(b"10%\r50%\r100%\r\n")
+    jobs._catch_up(job)
+    assert job["log"] == ["100%"]
 
 
 def test_attach_job_replays_full_log_to_a_late_attacher():
-    job = _bare_job(log=["line1", "line2"], status="done", returncode=0)
+    job = jobs.start_job("selftest")
+    job.update(log=["line1", "line2"], status="done", returncode=0)
     events = asyncio.run(_collect(jobs.attach_job(job)))
-    assert [e["data"] for e in events if e["event"] == "log"] == ["line1", "line2"]
+    assert _logged(events) == ["line1", "line2"]
     done = json.loads(next(e["data"] for e in events if e["event"] == "done"))
-    assert done == {"returncode": 0, "status": "done"}
+    assert done == {"returncode": 0, "status": "done", "finished": None}
 
 
 def test_attach_job_follows_live_output_until_done():
     async def run():
-        job = _bare_job()
+        job = jobs.start_job("selftest")
+        job["status"] = "running"
         events = []
 
         async def consume():
@@ -209,18 +402,20 @@ def test_attach_job_follows_live_output_until_done():
 
         consumer = asyncio.create_task(consume())
         await asyncio.sleep(0)  # let the consumer reach its first wait
-        jobs._emit(job, "line1")
+        jobs._append(job, "line1")
+        jobs._catch_up(job)
         await asyncio.sleep(0)
-        jobs._emit(job, "line2")
+        jobs._append(job, "line2")
+        jobs._catch_up(job)
         await asyncio.sleep(0)
         job["status"] = "done"
         job["returncode"] = 0
-        job["_wake"].set()
+        jobs._notify(job)
         await consumer
         return events
 
     events = asyncio.run(run())
-    assert [e["data"] for e in events if e["event"] == "log"] == ["line1", "line2"]
+    assert _logged(events) == ["line1", "line2"]
 
 
 def test_reattach_after_abandoning_stream_sees_full_history():
@@ -229,23 +424,24 @@ def test_reattach_after_abandoning_stream_sees_full_history():
     reattached stream must show everything, not just lines emitted after it
     connected."""
     async def run():
-        job = _bare_job()
-        jobs._emit(job, "line1")
+        job = jobs.start_job("selftest")
+        job["status"] = "running"
+        jobs._append(job, "line1")
 
         gen1 = jobs.attach_job(job)
-        first = await gen1.__anext__()
-        assert first == {"event": "log", "data": "line1"}
+        assert (await gen1.__anext__())["event"] == "job"
+        assert await gen1.__anext__() == {"event": "log", "data": "line1"}
         await gen1.aclose()  # the abandoned reader — must not affect the job
 
-        jobs._emit(job, "line2")
+        jobs._append(job, "line2")
         job["status"] = "done"
         job["returncode"] = 0
-        job["_wake"].set()
+        jobs._notify(job)
 
         return await _collect(jobs.attach_job(job))
 
     events = asyncio.run(run())
-    assert [e["data"] for e in events if e["event"] == "log"] == ["line1", "line2"]
+    assert _logged(events) == ["line1", "line2"]
 
 
 def test_attach_job_group_replays_and_follows_statuses():
@@ -261,7 +457,7 @@ def test_attach_job_group_replays_and_follows_statuses():
         consumer = asyncio.create_task(consume())
         await asyncio.sleep(0)
         queued["status"] = "running"
-        jobs._emit(queued, "$ review")
+        jobs._notify(queued)
         while len(events) < 3:
             await asyncio.sleep(0)
         queued["status"] = "done"
@@ -310,3 +506,33 @@ def test_security_sweep_replaces_the_alert_jobs():
     argv = spec["argv_fn"](7)
     assert argv[-3:] == [str(jobs.REPO_ROOT / "alert_triage" / "security_sweep.py"),
                          "--limit", "7"]
+
+
+def _client():
+    from fastapi.testclient import TestClient
+    from prospector_app.backend import app as appmod
+    return TestClient(appmod.app)
+
+
+def test_job_routes_read_resume_and_refuse_to_stop_a_finished_job(monkeypatch):
+    from prospector_app.backend import pipeline_status
+    monkeypatch.setattr(pipeline_status, "job_runtimes", lambda: {})
+    job = jobs.start_job("selftest")
+    job.update(log=["a", "b"], status="done", returncode=0)
+    client = _client()
+
+    assert client.get("/api/jobs/specs").status_code == 200
+    assert client.get(f"/api/jobs/{job['id']}").json()["status"] == "done"
+    assert client.get("/api/jobs/999").status_code == 404
+    stream = client.get(f"/api/jobs/{job['id']}/stream", params={"after": 1}).text
+    assert "data: b" in stream and "data: a\r\n" not in stream
+    assert client.post(f"/api/jobs/{job['id']}/stop").status_code == 409
+
+
+def test_count_jobs_name_their_own_default_and_noun():
+    specs = {s["kind"]: s for s in jobs.list_specs()}
+    assert (specs["security-sweep"]["count_default"], specs["security-sweep"]["count_noun"]) == (12, "records")
+    assert specs["issue-find-fixed"]["count_default"] == 12
+    assert specs["issue-analyze"]["count_default"] == 200
+    assert specs["analyze-clusters"]["count_default"] == 20
+    assert all(s["count_default"] is not None for s in specs.values() if s["needs_count"])

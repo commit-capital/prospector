@@ -105,3 +105,39 @@ def test_triage_agent_failure_returns_error_cleanly(tmp_path, monkeypatch):
     monkeypatch.setattr(tc.headless_agent, "run_agent", boom)
     assert tc.run(store, 1) != 0
     assert store.load_cluster(1).outcome == "close-out"  # untouched
+
+
+def test_threat_rescan_relays_the_scanner_output_as_it_prints(tmp_path, monkeypatch, capsys):
+    store = Store(str(tmp_path))
+    _seed_cluster(store)
+    monkeypatch.setattr(tc.ingest, "refresh_prs",
+                        lambda s, nums, **k: [{"pr": 100, "moved": True,
+                                               "old_sha": "sha0", "new_sha": "sha1"}])
+    monkeypatch.setattr(tc.diff_cache, "fetch_diff", lambda *a, **k: True)
+    analysis = {"cluster_id": 1, "outcome": "merge-ready", "rationale": "winner is clean",
+                "prs": [{"pr": 100, "head_sha": "sha1", "disposition": "merge",
+                         "rationale": "best"}]}
+    monkeypatch.setattr(tc.headless_agent, "run_agent",
+                        lambda *a, **k: json.dumps(analysis))
+    monkeypatch.setattr(tc.reformat_rationales, "reformat_one",
+                        lambda source: {"tier": "raw", "summary": None, "body": source})
+    launched: list[tuple[list[str], dict]] = []
+
+    class FakeScan:
+        def __init__(self, argv, **kw):
+            launched.append((argv, kw))
+            self.stdout = iter(["fetch: {}\n", "\n", "done: {'scanned': 1}\n"])
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return None
+
+    monkeypatch.setattr(tc.subprocess, "Popen", FakeScan)
+
+    assert tc.run(store, 1) == 0
+    argv, kw = launched[0]
+    assert argv[-2:] == ["--only", "100"]
+    assert kw["stderr"] is tc.subprocess.STDOUT
+    assert "    fetch: {}\n    done: {'scanned': 1}\n" in capsys.readouterr().out

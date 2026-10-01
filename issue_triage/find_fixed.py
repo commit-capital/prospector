@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -25,6 +26,8 @@ from issue_triage import pr_index
 from issue_triage.issue_store import IssueStore
 from pipeline import settings
 from pipeline import headless_agent
+from pipeline import progress
+from pipeline import storekit
 
 _print_lock = threading.Lock()
 
@@ -95,6 +98,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="issue store root (default: the shared store)")
     args = ap.parse_args(argv)
     store = IssueStore(args.store) if args.store else IssueStore()
+    started = storekit.now()
+    clock = time.monotonic()
+    _say("loading issues and their clusters to pick the open ones without a current "
+         "fix-scan, highest pain first…")
     cands = issue_fixed_driver.candidates(store)
     todo = cands[:args.limit]
     conc = max(1, args.concurrency)
@@ -102,8 +109,14 @@ def main(argv: list[str] | None = None) -> int:
          f"in batches of {args.batch}, up to {conc} at a time…")
     if not todo:
         _say("✓ nothing to scan — every open issue has a current fix-scan.")
+        _record_pass(store, started, len(cands), 0, 0, 0)
         return 0
-    entries = issue_fixed_driver.bundle(store, only=todo, pr_links=pr_index.from_store())
+    step = time.monotonic()
+    _say(f"② bundling symptom evidence for {len(todo)} issues: loading the PR link index…")
+    pr_links = pr_index.from_store()
+    _say("  loading issues and their clusters…")
+    entries = issue_fixed_driver.bundle(store, only=todo, pr_links=pr_links)
+    _say(f"  bundled {len(entries)} issues in {progress.duration(time.monotonic() - step)}")
     pending_batches = [entries[i:i + args.batch] for i in range(0, len(entries), args.batch)]
     total = len(pending_batches)
     applied = 0
@@ -112,6 +125,8 @@ def main(argv: list[str] | None = None) -> int:
             break
         if attempt:
             _say(f"↻ retrying {len(pending_batches)} failed batch(es)…")
+        else:
+            _say(f"③ running {len(pending_batches)} agent batch(es), up to {conc} at a time…")
         failed: list[list[dict]] = []
         done = 0
         with ThreadPoolExecutor(max_workers=conc) as pool:
@@ -119,27 +134,42 @@ def main(argv: list[str] | None = None) -> int:
             for fut in as_completed(futures):
                 label = _label(futures[fut])
                 done += 1
+                took = progress.duration(time.monotonic() - clock)
                 try:
                     good = fut.result()
                 except Exception as e:
                     failed.append(futures[fut])
-                    _say(f"    ! {label} failed: {e}  ({done}/{len(pending_batches)})")
+                    _say(f"    ! {label} failed: {e}  ({done}/{len(pending_batches)} · {took})")
                     continue
                 n = issue_fixed_driver.apply_verdicts(store, good)
                 applied += n
-                _say(f"    ✓ {label}: {n} verdicts applied  ({done}/{len(pending_batches)})")
+                _say(f"    ✓ {label}: {n} verdicts applied  "
+                     f"({done}/{len(pending_batches)} · {took})")
         pending_batches = failed
     # Named from the store, so it covers every way an issue can be left behind:
     # an unrecovered batch, and a verdict the agent or the driver dropped.
+    _say("re-reading issues to count what is still unscanned…")
     missed = sorted(set(todo) & set(issue_fixed_driver.candidates(store)))
     remaining = len(issue_fixed_driver.candidates(store))
     _say(f"✓ applied {applied} verdicts across {total - len(pending_batches)}/"
-         f"{total} batches; {remaining} issues still unscanned.")
+         f"{total} batches; {remaining} issues still unscanned. "
+         f"Took {progress.duration(time.monotonic() - clock)}.")
     if missed:
         _say(f"    ! {len(missed)} of this run's issues have no current fix-scan: "
              + " ".join(f"#{n}" for n in missed[:20])
              + (" …" if len(missed) > 20 else ""))
+    _record_pass(store, started, len(cands), len(todo), applied, len(pending_batches))
     return 0 if applied else 1
+
+
+def _record_pass(store: IssueStore, started: str, candidates: int, scanned: int,
+                 applied: int, failed_batches: int) -> None:
+    """The whole pass's ledger entry, which times it; `apply_verdicts` also
+    records each batch it applies."""
+    store.append_run({"phase": "find-fixed", "started": started,
+                      "finished": storekit.now(),
+                      "stats": {"candidates": candidates, "scanned": scanned,
+                                "applied": applied, "failed_batches": failed_batches}})
 
 
 if __name__ == "__main__":

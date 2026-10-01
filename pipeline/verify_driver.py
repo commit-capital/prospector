@@ -37,6 +37,7 @@ from pipeline import diffpaths
 from pipeline import gates
 from pipeline import gh
 from pipeline import profile
+from pipeline import progress
 from pipeline import settings
 from pipeline import verify_gc
 from pipeline import wire
@@ -1508,10 +1509,13 @@ def run_canaries(image: str, base: str, tier: int) -> list[str]:
     fix worked, not that the harness always passes."""
     fix = _canary_patch(_CANARY_FIX_MARKER)
     nonfix = _canary_patch(_CANARY_NONFIX_MARKER)
+    progress.say("  canary 1 of 3: the known bug, which must fail…")
     red_rc, red_tail = run_phase("red", image, tier=tier, base_sha=base,
                                  test_cmd=CANARY_TEST_CMD)
+    progress.say("  canary 2 of 3: its fix, which must pass…")
     green_rc, green_tail = run_phase("green", image, tier=tier, base_sha=base,
                                      test_cmd=CANARY_TEST_CMD, patch=fix)
+    progress.say("  canary 3 of 3: a non-fix patch, which must still fail…")
     mutant_rc, mutant_tail = run_phase("green", image, tier=tier, base_sha=base,
                                        test_cmd=CANARY_TEST_CMD, patch=nonfix)
     problems = canary_checks(bug_reproduces=red_rc, fix_resolves=green_rc,
@@ -1581,14 +1585,24 @@ def verify_pr(rec: Pr, image: str, base: str, tier: int,
     test_cmd = blind.get("test_cmd")
     authored = rec.verify_signals.get("authored_test") or {}
     if not test_cmd and not authored.get("test_cmd"):
+        progress.say("  no test command to run — no sandbox time spent")
         return ev   # unverifiable-no-test; no sandbox time spent
+
+    # Each step prints one line as it starts, stamped with the run's elapsed time.
+    clock = time.monotonic()
+
+    def note(what: str) -> None:
+        progress.say(f"  [{progress.duration(time.monotonic() - clock)}] {what}…")
 
     def phase(name: str, *, test_cmd: str, patch: Path | None = None,
               exclude_file: Path | None = None,
               suite_config: Path | None = None,
               timeout: int = PHASE_TIMEOUT_SECONDS,
               pristine: bool = False,
-              tail_bytes: int = OUTPUT_TAIL_BYTES) -> tuple[int, str]:
+              tail_bytes: int = OUTPUT_TAIL_BYTES,
+              what: str | None = None) -> tuple[int, str]:
+        note(what or (f"{name} lane again over the pristine base: does the base fail it too"
+                      if pristine else f"{name} lane over the patched tree"))
         rc, tail = run_phase(name, image, tier=tier, base_sha=base, head_sha=head,
                              test_cmd=test_cmd, patch=patch,
                              exclude_file=exclude_file, suite_config=suite_config,
@@ -1599,9 +1613,11 @@ def verify_pr(rec: Pr, image: str, base: str, tier: int,
                 "aborting the batch; no PR code runs on an unproven sandbox")
         return rc, tail
 
+    note("fetching the PR's patch")
     patch = fetch_patch(rec.n, head)
 
-    apply_rc, _ = phase("apply-check", patch=patch, test_cmd="true")
+    apply_rc, _ = phase("apply-check", patch=patch, test_cmd="true",
+                        what="apply-check: does the patch apply onto the pinned base")
     ev["red_green"]["apply_exit"] = apply_rc
     if apply_rc != gates.SENTINEL_PASS:
         return ev   # needs-rebase (or an error) — never spend test time on it
@@ -1622,7 +1638,9 @@ def verify_pr(rec: Pr, image: str, base: str, tier: int,
             # code carries no signal — flag it and spend no sandbox time.
             ev["independent_repro"]["skipped_reason"] = "repro-targets-pr-test"
         else:
-            rc, tail = phase("repro", test_cmd=repro_cmd)
+            rc, tail = phase("repro", test_cmd=repro_cmd,
+                             what="repro: the blind agent's repro command on the base "
+                                  "without the PR")
             ev["independent_repro"].update(ran=True, exit_code=rc, output_tail=tail)
 
     if test_cmd:
@@ -1634,10 +1652,12 @@ def verify_pr(rec: Pr, image: str, base: str, tier: int,
         # legitimate red to produce.
         red_patch = test_only_patch(head, patch)
         if red_patch is None:
+            progress.say("  the diff carries no test hunks — no red to run")
             ev["red_green"]["no_test_hunks"] = True
             return ev
         green_patch = patch
         record = red_green
+        tests = "the PR's tests"
     else:
         # The authored lane: red runs the agent-authored test alone on the
         # base; green runs it with the PR's fix applied (one concatenated
@@ -1654,11 +1674,14 @@ def verify_pr(rec: Pr, image: str, base: str, tier: int,
             "red_output_tail": "", "green_output_tail": ""}
         ev["authored_test"] = {**authored, **record}
         record = ev["authored_test"]
+        tests = "the agent-authored test"
 
-    red_rc, red_tail = phase("red", test_cmd=test_cmd, patch=red_patch)
+    red_rc, red_tail = phase("red", test_cmd=test_cmd, patch=red_patch,
+                             what=f"red: {tests} on the base without the fix, expected to fail")
     record.update(red_exit=red_rc, red_output_tail=red_tail)
 
-    green_rc, green_tail = phase("green", patch=green_patch, test_cmd=test_cmd)
+    green_rc, green_tail = phase("green", patch=green_patch, test_cmd=test_cmd,
+                                 what=f"green: {tests} with the fix applied, expected to pass")
     record.update(green_exit=green_rc, green_output_tail=green_tail)
 
     # Both legs failing is the dirty-green contamination candidate (#3718,
@@ -1682,8 +1705,10 @@ def verify_pr(rec: Pr, image: str, base: str, tier: int,
 
     # Confirm the accepted red->green is not a flake: re-run both in fresh
     # containers. The regress leg runs only once the confirm agrees.
-    red2_rc, _ = phase("red", test_cmd=test_cmd, patch=red_patch)
-    green2_rc, green2_tail = phase("green", patch=green_patch, test_cmd=test_cmd)
+    red2_rc, _ = phase("red", test_cmd=test_cmd, patch=red_patch,
+                       what="confirm: red again in a fresh container")
+    green2_rc, green2_tail = phase("green", patch=green_patch, test_cmd=test_cmd,
+                                   what="confirm: green again in a fresh container")
     record.update(red_exit_confirm=red2_rc, green_exit_confirm=green2_rc)
     green_failing = red_green.get("green_failing")
     if (record is red_green and green2_rc == gates.SENTINEL_TEST_FAIL
@@ -1711,7 +1736,11 @@ def verify_pr(rec: Pr, image: str, base: str, tier: int,
         excl = write_exclude_file(base, baseline)
         r1, t1 = phase("regress", patch=patch, test_cmd="true",
                        exclude_file=excl, suite_config=suite_config,
-                       timeout=SUITE_TIMEOUT_SECONDS, tail_bytes=SUITE_TAIL_BYTES)
+                       timeout=SUITE_TIMEOUT_SECONDS, tail_bytes=SUITE_TAIL_BYTES,
+                       what="regress: the full suite over the patched tree"
+                            + (f", less the base's {len(baseline)} known failure(s)"
+                               if baseline else "")
+                            + f" (up to {progress.duration(SUITE_TIMEOUT_SECONDS)})")
         regress: wire.VerifyRegressSignal = {
             "ran": True, "exit_first": r1, "exit_confirm": None,
             "confirmed": False, "flake": False,
@@ -1720,7 +1749,9 @@ def verify_pr(rec: Pr, image: str, base: str, tier: int,
             regress["new_failures"] = _advisory_failures(t1)
             r2, t2 = phase("regress", patch=patch, test_cmd="true",
                            exclude_file=excl, suite_config=suite_config,
-                           timeout=SUITE_TIMEOUT_SECONDS, tail_bytes=SUITE_TAIL_BYTES)
+                           timeout=SUITE_TIMEOUT_SECONDS, tail_bytes=SUITE_TAIL_BYTES,
+                           what=f"regress: confirming the suite failure in a fresh "
+                                f"container (up to {progress.duration(SUITE_TIMEOUT_SECONDS)})")
             regress["exit_confirm"] = r2
             regress["confirmed"] = r2 == gates.SENTINEL_TEST_FAIL
             regress["flake"] = r2 == gates.SENTINEL_PASS

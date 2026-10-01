@@ -59,3 +59,45 @@ def test_fix_scan_survives_meta_rewrite(tmp_path):
     alert_ingest.ingest_records(store, [_meta(updated_at="2026-08-10T00:00:00Z")], PRS, {})
     a = store.load_alert(alert_id("dependabot", 1))
     assert a is not None and a.verdict == "not-fixed"
+
+
+def _fake_fetch(monkeypatch, by_source: dict[str, list[dict]]) -> None:
+    monkeypatch.setattr(alert_ingest.config, "mint_token", lambda: "token")
+    monkeypatch.setattr(alert_ingest.fetch_alerts, "fetch_source",
+                        lambda source, token: by_source.get(source, []))
+
+
+def test_main_skips_the_pr_corpus_when_no_open_alert_changed(tmp_path, monkeypatch, capsys):
+    alert_ingest.ingest_records(AlertStore(tmp_path), [_meta()], PRS, {})
+    _fake_fetch(monkeypatch, {"dependabot": [_meta()]})
+
+    def corpus(*_, **__):
+        raise AssertionError("the PR corpus was read")
+    monkeypatch.setattr(alert_ingest.link_prs, "pr_corpus", corpus)
+    alert_ingest.main(["--store", str(tmp_path)])
+    assert "1 alerts fetched: 0 new or changed, 0 of them open" in capsys.readouterr().out
+
+
+def test_main_asks_only_for_the_diffs_of_alerted_files(tmp_path, monkeypatch):
+    scanning = _meta("code-scanning", 2, path="src/x.py", package=None)
+    _fake_fetch(monkeypatch, {"dependabot": [_meta()], "code-scanning": [scanning]})
+    asked: list[set[str]] = []
+    monkeypatch.setattr(alert_ingest.link_prs, "pr_corpus",
+                        lambda store=None, paths=(): asked.append(set(paths)) or (PRS, {}))
+    alert_ingest.main(["--store", str(tmp_path)])
+    assert asked == [{"src/x.py"}]
+    assert AlertStore(tmp_path).all_alerts()[alert_id("dependabot", 1)].rec["links"]
+
+
+def test_pr_corpus_reads_the_pr_store_once_per_process(tmp_path, monkeypatch):
+    from alert_triage import link_prs
+    from pipeline.store import Store
+
+    store = Store(tmp_path / "prs")
+    reads: list[int] = []
+    real = store.link_rows
+    monkeypatch.setattr(store, "link_rows", lambda: reads.append(1) or real())
+    monkeypatch.setattr(link_prs, "_ROWS", {})
+    link_prs.pr_corpus(store)
+    link_prs.pr_corpus(store, paths={"a.py"})
+    assert reads == [1]

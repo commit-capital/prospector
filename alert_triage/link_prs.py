@@ -11,6 +11,7 @@ LINK_CAP, resolved PRs first (a merged mention is the durable fix evidence).
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -95,19 +96,40 @@ def candidates_for(meta: dict, prs: list[dict], diffs: dict[str, str]) -> list[d
     return direct + text[:max(0, LINK_CAP - len(direct))]
 
 
-def pr_corpus(store: Store | None = None) -> tuple[list[dict], dict[str, str]]:
-    """The PR corpus the alert linker matches against — every open or merged PR
-    in the SQL PR store with its body rehydrated — plus the cached diffs for
-    the open ones (diff-overlap only means anything for a PR that could still
-    land, and merged-PR diffs are matched by the fixed-pass agent instead)."""
+# The link rows read per store URL, so a sweep's alert and advisory ingests
+# share one read of the PR store.
+_ROWS: dict[str, list[dict]] = {}
+
+
+def pr_corpus(store: Store | None = None,
+              paths: Iterable[str] = ()) -> tuple[list[dict], dict[str, str]]:
+    """The PR corpus the linkers match against — every open or merged PR's
+    number, title, description, state and head — plus the cached diffs of the
+    open PRs whose diff touches one of `paths`, the only diffs a diff-overlap
+    link can use (merged-PR diffs are matched by the fixed-pass agent). The rows
+    are read once per process per store."""
     from pipeline.store import Store as PrStore
     st = store or PrStore()
-    keep = {n: pr for n, pr in st.all_prs().items() if pr.state in ("open", "merged")}
-    bodies = st.pr_bodies(list(keep))
-    rows = [{"number": n, "title": pr.title or "", "body": bodies.get(n) or "",
-             "state": pr.state, "head_sha": pr.head_sha}
-            for n, pr in keep.items()]
-    open_heads = [pr.head_sha for pr in keep.values()
-                  if pr.state == "open" and pr.head_sha]
-    diffs = st.load_diffs(open_heads) if open_heads else {}
+    key = str(st.engine.url)
+    rows = _ROWS.get(key)
+    if rows is None:
+        rows = _ROWS[key] = st.link_rows()
+    needles = sorted({f"+++ b/{p}" for p in paths} | {f"--- a/{p}" for p in paths})
+    open_heads = [r["head_sha"] for r in rows if r["state"] == "open" and r["head_sha"]]
+    diffs = st.load_diffs(open_heads, containing=needles) if needles and open_heads else {}
     return rows, diffs
+
+
+def corpus_for(records: int, noun: str,
+               paths: set[str] | None = None) -> tuple[list[dict], dict[str, str]]:
+    """`pr_corpus` for linking `records` new or changed records, announced on
+    stdout; empty when there is nothing to link."""
+    if not records:
+        return [], {}
+    print(f"loading open and merged PRs to link {records} {noun} against…", flush=True)
+    prs, diffs = pr_corpus(paths=paths or set())
+    touched = (f"; {len(diffs)} open-PR diff{'s' if len(diffs) != 1 else ''} touch "
+               f"the {len(paths)} alerted file{'s' if len(paths) != 1 else ''}"
+               if paths else "")
+    print(f"  {len(prs):,} PRs{touched}", flush=True)
+    return prs, diffs

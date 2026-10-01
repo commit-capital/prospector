@@ -1982,6 +1982,7 @@ export const api = {
   },
   jobSpecs: () => get<{ specs: JobSpec[] }>("/api/jobs/specs"),
   jobsList: () => get<{ jobs: JobRec[] }>("/api/jobs"),
+  stopJob: (id: number) => postJson<JobRec>(`/api/jobs/${id}/stop`, {}),
   identities: () => get<IdentitiesResult>("/api/identities"),
   trustLadder: () => get<TrustLadder>("/api/policy/trust-ladder"),
   // "Retry live mode" — re-probes whether this machine can mint a bot
@@ -2390,10 +2391,17 @@ export interface JobSpec {
   agentic: boolean;
   /** When the job's ledger phases last ran; null for jobs with no ledger row. */
   last_run: string | null;
-  /** Typical whole-run duration from recent ledger history, or null. */
+  /** Typical whole-run duration — this machine's recent successful runs of the
+   *  job, else its ledger phases' history — or null. */
   typical_seconds: number | null;
+  /** For a count job timed from its own runs: the mean count they were given. */
+  typical_count: number | null;
   needs_cluster: boolean;
   needs_pr?: boolean;
   needs_count?: boolean;
+  /** For a count job: the count offered first, and what it counts. */
+  count_default: number | null;
+  count_noun: string | null;
 }
-export interface JobRec { id: number; kind: string; cluster: number | null; pr?: number | null; count?: number | null; status: "queued" | "running" | "done" | "failed"; label: string; started: string; returncode: number | null }
+export type JobStatus = "queued" | "running" | "done" | "failed";
+export interface JobRec { id: number; kind: string; cluster: number | null; pr?: number | null; count?: number | null; status: JobStatus; label: string; started: string; finished: string | null; returncode: number | null }

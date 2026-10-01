@@ -264,16 +264,67 @@ def test_job_runtimes_reads_each_jobs_ledger_phases(monkeypatch, tmp_path):
     runtimes = pipeline_status.job_runtimes()
 
     assert runtimes["ingest"] == {"last_run": "2026-07-02T10:00:06+00:00",
-                                  "typical_seconds": 5.0}
+                                  "typical_seconds": 5.0, "typical_count": None}
     assert runtimes["verify-pr"] == {"last_run": "2026-07-03T10:02:00+00:00",
-                                     "typical_seconds": 120.0}
-    # A multi-phase ledger reads as the latest of any of its phases.
+                                     "typical_seconds": 120.0, "typical_count": None}
+    # A multi-phase ledger reads as the latest of any of its phases, and has no
+    # typical duration while any of its phases has never recorded one.
     assert runtimes["security-sweep"]["last_run"] == "2026-07-05T10:01:00+00:00"
+    assert runtimes["security-sweep"]["typical_seconds"] is None
     # Never run → no stamp and no duration.
-    assert runtimes["threat-scan"] == {"last_run": None, "typical_seconds": None}
+    assert runtimes["threat-scan"] == {"last_run": None, "typical_seconds": None,
+                                       "typical_count": None}
     # No ledger mapping → not reported at all.
     assert "selftest" not in runtimes
     assert "triage-cluster" not in runtimes
+
+
+def _sweep_ledger(monkeypatch, tmp_path):
+    from prospector_app.backend import alert_data, data, issues
+    monkeypatch.setattr(issues, "STORE_ROOT", tmp_path)
+    monkeypatch.setattr(data, "runs", lambda: [])
+    monkeypatch.setattr(alert_data, "runs", lambda: [storekit.parse_run(d) for d in [
+        {"phase": phase, "started": "2026-07-04T10:00:00+00:00",
+         "finished": f"2026-07-04T10:{minutes:02d}:00+00:00"}
+        for phase, minutes in (("alert-ingest", 1), ("alert-find-fixed", 4),
+                               ("advisory-ingest", 1), ("advisory-find-fixed", 2))
+    ]])
+
+
+def test_a_multi_phase_job_takes_the_sum_of_its_phases(monkeypatch, tmp_path):
+    _sweep_ledger(monkeypatch, tmp_path)
+    assert pipeline_status.job_runtimes()["security-sweep"]["typical_seconds"] == 480.0
+
+
+def test_the_jobs_own_recent_runs_override_the_ledger(monkeypatch, tmp_path):
+    from prospector_app.backend import jobs
+    _sweep_ledger(monkeypatch, tmp_path)
+    for minutes, count in ((6, 12), (10, 20)):
+        job = jobs.start_job("security-sweep", count=count)
+        job.update(status="done", started="2026-07-05T10:00:00",
+                   finished=f"2026-07-05T10:{minutes:02d}:00")
+    failed = jobs.start_job("security-sweep", count=12)
+    failed.update(status="failed", started="2026-07-05T10:00:00",
+                  finished="2026-07-05T11:00:00")
+    sweep = pipeline_status.job_runtimes()["security-sweep"]
+    assert (sweep["typical_seconds"], sweep["typical_count"]) == (480.0, 16.0)
+
+
+def test_a_job_without_a_ledger_reads_its_own_runs(monkeypatch, tmp_path):
+    from prospector_app.backend import jobs
+    _sweep_ledger(monkeypatch, tmp_path)
+    assert "triage-cluster" not in pipeline_status.job_runtimes()
+    job = jobs.start_job("triage-cluster", cluster=7)
+    job.update(status="done", started="2026-07-05T10:00:00+00:00",
+               finished="2026-07-05T10:03:00+00:00")
+    assert pipeline_status.job_runtimes()["triage-cluster"] == {
+        "last_run": "2026-07-05T10:03:00+00:00", "typical_seconds": 180.0,
+        "typical_count": None}
+
+
+def test_elapsed_reads_a_stamp_without_an_offset_as_utc():
+    assert pipeline_status._elapsed_seconds("2026-07-05T10:00:00",
+                                            "2026-07-05T10:01:00+00:00") == 60.0
 
 
 def test_clustering_freshness_reads_the_latest_of_commit_and_assign(monkeypatch, tmp_path):

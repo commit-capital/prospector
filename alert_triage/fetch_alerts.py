@@ -9,6 +9,7 @@ it is dropped here and never reaches the store.
 from __future__ import annotations
 
 from alert_triage import config
+from pipeline import progress
 
 # Rule severity → normalized severity, for code-scanning alerts without a
 # security_severity_level (pure quality findings).
@@ -158,5 +159,6 @@ def fetch_source(source: str, token: str) -> list[dict]:
         return [normalize_dependabot(r) for r in raws]
     if source == "secret-scanning":
         return [normalize_secret_scanning(r, _secret_locations(r["number"], token))
-                for r in raws]
+                for r in progress.track(raws, "fetching locations of", "secret-scanning alerts",
+                                        indent="    ")]
     raise ValueError(f"unknown alert source {source!r}")
