@@ -10,8 +10,9 @@ The host writes the comment around it (`render`), holding the agent's text to
 inert plain text, and `problems` gates the rendering before the bot posts it.
 
 An answer is a reply after the question from the issue's author or a
-maintainer (OWNER, MEMBER or COLLABORATOR) whose first line names an option's
-letter (`parse_answer`, `read_answer`); anything else is left for a person.
+maintainer (`gates.priority_author`) whose first line names an option's letter
+(`parse_answer`, `read_answer`); anything else is left for a person, or, on an
+issue the public loop serves, for `public_loop.answer_replies`.
 Without an answer the default stands once `ANSWER_WAIT` has passed since the
 question was asked.
 """
@@ -22,7 +23,7 @@ import re
 from datetime import datetime, timedelta, timezone
 
 from issue_triage import fix_pr_body, reproduce_issue
-from pipeline import gh, headless_agent, settings
+from pipeline import gates, gh, headless_agent, settings
 
 AGENT_TIMEOUT_SECONDS = 600
 ANSWER_WAIT = timedelta(days=7)
@@ -30,7 +31,6 @@ QUESTION_MAX = 400
 OPTION_MAX = 300
 READING_PATCH_MAX = 12_000
 MARKER = "<!-- prospector:issue-question v1 issue={issue} report={report} options={labels} -->"
-MAINTAINERS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 _ANSWER_RE = re.compile(r"^\W*(?:option\s+)?([A-Z])(?![A-Za-z])", re.IGNORECASE)
 
 PROMPT = """\
@@ -119,10 +119,13 @@ def draft(title: str, body: str, result: dict) -> dict:
             "default": default, "default_reason": str(verdict.get("default_reason") or "")}
 
 
-def render(issue: int, question: dict, *, report_sha: str, default_after: datetime) -> str:
+def render(issue: int, question: dict, *, report_sha: str, default_after: datetime,
+           retry_on_reply: bool = False) -> str:
     """The comment the bot posts: the host's framing around the agent's
     question, options and default, each held to inert plain text, and the
-    marker that names what it came from."""
+    marker that names what it came from. With `retry_on_reply` (an issue the
+    public loop serves) a reply in words starts another attempt; without it, a
+    maintainer takes such a reply."""
     opts = [f"- **{o['label']}**: {fix_pr_body.inert(o['behavior'], OPTION_MAX)}"
             for o in question["options"]]
     lines = [
@@ -135,7 +138,9 @@ def render(issue: int, question: dict, *, report_sha: str, default_after: dateti
         *opts,
         "",
         "Reply with the letter of the right option, for example `A`. If none is right, "
-        "describe the intended behavior in a reply and a maintainer will take it from there.",
+        "describe the intended behavior in a reply and "
+        + ("the pipeline will try again with it." if retry_on_reply
+           else "a maintainer will take it from there."),
         "",
         f"Without an answer the pipeline goes with **{question['default']}** after "
         f"{default_after:%Y-%m-%d}: {fix_pr_body.inert(question['default_reason'], OPTION_MAX)}",
@@ -185,7 +190,8 @@ def read_answer(issue: int, *, asked_at: str, options: list[str], issue_author: 
         login = (c.get("user") or {}).get("login") or ""
         if (c.get("created_at") or "") <= asked_at or login == settings.bot_login():
             continue
-        if login != issue_author and c.get("author_association") not in MAINTAINERS:
+        if login != issue_author and not gates.priority_author(login,
+                                                               c.get("author_association")):
             continue
         label = parse_answer(c.get("body") or "", options)
         if label:

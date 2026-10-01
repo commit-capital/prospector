@@ -21,9 +21,9 @@ class PrFeed:
     pr: int
     head_sha: str | None
     updated_at: str | None
-    reviews: list[dict] = field(default_factory=list)     # {id, login, state, commit, body, at, url}
-    threads: list[dict] = field(default_factory=list)     # {id, login, path, line, body, commit, original_commit, resolved, outdated, at, url}
-    comments: list[dict] = field(default_factory=list)    # {id, login, body, at, updated_at, url}
+    reviews: list[dict] = field(default_factory=list)     # {id, login, association, state, commit, body, at, url}
+    threads: list[dict] = field(default_factory=list)     # {id, login, association, path, line, body, commit, original_commit, resolved, outdated, at, url}
+    comments: list[dict] = field(default_factory=list)    # {id, login, association, body, at, updated_at, url}
     check_runs: list[dict] = field(default_factory=list)  # {app, name, status, conclusion, title, summary, url}
     statuses: list[dict] = field(default_factory=list)    # {context, state}
     conversation: bool = True
@@ -33,13 +33,13 @@ CHUNK_SIZE = 10
 
 _FIELDS = (
     "number headRefOid updatedAt "
-    "reviews(last: 40) { nodes { databaseId author { login __typename } state commit { oid } "
-    "body submittedAt url } } "
+    "reviews(last: 40) { nodes { databaseId author { login __typename } authorAssociation "
+    "state commit { oid } body submittedAt url } } "
     "reviewThreads(last: 100) { nodes { isResolved isOutdated comments(first: 1) { nodes { "
-    "databaseId author { login } body path line originalLine commit { oid } "
+    "databaseId author { login } authorAssociation body path line originalLine commit { oid } "
     "originalCommit { oid } createdAt updatedAt url } } } } "
-    "comments(last: 40) { nodes { databaseId author { login __typename } body createdAt "
-    "updatedAt url } } "
+    "comments(last: 40) { nodes { databaseId author { login __typename } authorAssociation "
+    "body createdAt updatedAt url } } "
     "commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes { "
     "__typename ... on CheckRun { name status conclusion title summary detailsUrl url "
     "checkSuite { app { slug } } } ... on StatusContext { context state } } } } } } }")
@@ -58,7 +58,8 @@ def _login(node: dict | None) -> str | None:
 
 def feed_from_node(n: int, node: dict) -> PrFeed:
     """One PR's GraphQL node → its feed."""
-    reviews = [{"id": r.get("databaseId"), "login": _login(r), "state": r.get("state"),
+    reviews = [{"id": r.get("databaseId"), "login": _login(r),
+                "association": r.get("authorAssociation"), "state": r.get("state"),
                 "commit": (r.get("commit") or {}).get("oid"), "body": r.get("body"),
                 "at": r.get("submittedAt"), "url": r.get("url")}
                for r in ((node.get("reviews") or {}).get("nodes") or []) if isinstance(r, dict)]
@@ -71,6 +72,7 @@ def feed_from_node(n: int, node: dict) -> PrFeed:
         if not isinstance(first, dict):
             continue
         threads.append({"id": first.get("databaseId"), "login": _login(first),
+                        "association": first.get("authorAssociation"),
                         "path": first.get("path"),
                         "line": first.get("line") or first.get("originalLine"),
                         "body": first.get("body"),
@@ -78,7 +80,8 @@ def feed_from_node(n: int, node: dict) -> PrFeed:
                         "original_commit": (first.get("originalCommit") or {}).get("oid"),
                         "resolved": bool(t.get("isResolved")), "outdated": bool(t.get("isOutdated")),
                         "at": first.get("createdAt"), "url": first.get("url")})
-    comments = [{"id": c.get("databaseId"), "login": _login(c), "body": c.get("body"),
+    comments = [{"id": c.get("databaseId"), "login": _login(c),
+                 "association": c.get("authorAssociation"), "body": c.get("body"),
                  "at": c.get("createdAt"), "updated_at": c.get("updatedAt"), "url": c.get("url")}
                 for c in ((node.get("comments") or {}).get("nodes") or []) if isinstance(c, dict)]
     commits = ((node.get("commits") or {}).get("nodes")) or [{}]

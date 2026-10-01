@@ -490,9 +490,19 @@ failing after a re-run with no failing log naming a changed file), `describe`
 `rerun` (failed jobs re-run once per head), `revise` (a reviewer below its bar,
 or CI failing after a re-run in a job whose log names a changed file — the
 findings or log lines go to the agent as quoted evidence), `wait`, or `ready`.
-A hand-back or ready holds until the head moves, and either one surfaces the
-issue as `review`; it is recorded with the head and reason it was judged at
-(`judged`), and any other step at a new head reads `watching`. `TRIAGE_ISSUE_FIX_FOLLOWUP` is `live` (the default), `dry-run`
+Ahead of every bot signal, new maintainer feedback on the pull request (their
+reviews with words, unresolved inline comments and comments, read from the
+same feed with `authorAssociation`) that `issue_triage/reply_router.py` — one
+locked-down agent with no tools — reads as asking for a change is a `revise`
+carrying their words, on its own budget of `MAX_MAINTAINER_REVISIONS` (3); one
+that leaves the head where it was hands the pull request back with the reason.
+Feedback routed to a step, read as asking nothing, refused by the safeguards,
+or unreadable three times running is marked handled; a record that predates
+feedback routing starts from its first routing pass.
+A hand-back or ready holds until the head moves or a maintainer asks for a
+change, and either one surfaces the issue as `review`; it is recorded with the
+head and reason it was judged at (`judged`), and any other step at a new head
+reads `watching`. `TRIAGE_ISSUE_FIX_FOLLOWUP` is `live` (the default), `dry-run`
 (each step is noted on the issue and nothing is written upstream or spent on an
 agent), or `off`. Live, the executor edits the description
 (`executor.update_issue_fix_proposal`) and re-runs jobs
@@ -538,8 +548,18 @@ times per issue, reading `fix in progress` meanwhile. Each pass decides from the
 issue as its lease found it, and an issue that leaves scope only has its
 recorded labels taken off. Agent words in a comment lose HTML comment markers
 and their issue references are defused. The ready and hand-back comments name
-the head and reason the follow-up judged them at (`fix_followup.judged`). The
-hunter takes a maintainer's issue whatever its reproduction grade. `TRIAGE_ISSUE_FIX_PUBLIC` is
+the head and reason the follow-up judged them at (`fix_followup.judged`). Before
+it, `answer_replies` reads back an issue the attempt concluded on (`needs
+answer`, `couldn't fix`) when its `updated_at` moved: the comments since the
+attempt started by the issue's author or a maintainer, never the bot's — a
+letter answer stays `poll_replies`' — go to `reply_router`, and words it reads
+as actionable queue `answer` (a written answer to the question) or `solve` with
+them as guidance; an edit to the report queues `solve` too, carrying any
+replies. An attempt that concluded over a day before the loop first read it
+starts from that read. Replies start at most `MAX_REATTEMPTS` (3) attempts per
+issue, then one comment leaves it to a maintainer. An agent outage in the pass
+trips the worker's agent lanes. The hunter takes a maintainer's issue whatever its reproduction
+grade. `TRIAGE_ISSUE_FIX_PUBLIC` is
 `live` (the default), `dry-run` (each write logged as a dry-run and noted once on
 the issue, its record kept apart in `fix_public.dry`), or `off`.
 

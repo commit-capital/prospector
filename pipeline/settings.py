@@ -324,9 +324,9 @@ def issue_fix_followup() -> str:
 def issue_fix_public() -> str:
     """What the issue-fix worker writes on GitHub for an issue in the public
     loop's scope (`issue_triage.public_loop`): `live` (the default) sets its
-    status label and posts its comments, opens its pull request and asks its
-    question; `dry-run` notes each write on the issue and makes none; `off`
-    leaves GitHub alone."""
+    status label and posts its comments, opens its pull request, asks its
+    question, and starts another attempt on an actionable reply; `dry-run`
+    notes each write on the issue and makes none; `off` leaves GitHub alone."""
     value = os.environ.get("TRIAGE_ISSUE_FIX_PUBLIC", "live").strip().lower()
     return value if value in ("off", "dry-run", "live") else "live"
 

@@ -270,3 +270,20 @@ def test_recovery_leaves_a_request_that_ended_since_it_was_read(store, beats, mo
     monkeypatch.setattr(store, "issues_matching", read_then_finish)
     assert issue_fix_worker.recover_orphans(store) == []
     assert store.load_issue(1).fix_request["status"] == "done"
+
+
+
+def test_an_agent_outage_in_the_ten_minute_pass_trips_the_lanes(store, monkeypatch):
+    from issue_triage import followup, public_loop
+    from pipeline import headless_agent
+
+    tripped, ran = [], []
+
+    def down(store_):
+        raise headless_agent.AgentUnavailable("not logged in")
+
+    monkeypatch.setattr(followup, "poll", down)
+    monkeypatch.setattr(public_loop, "refresh", lambda store_: ran.append("refresh"))
+    monkeypatch.setattr(lane_health, "trip_agent_lanes", lambda reason: tripped.append(reason))
+    issue_fix_worker._every_ten_minutes(store)
+    assert tripped == ["not logged in"] and ran == []

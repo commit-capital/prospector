@@ -213,6 +213,91 @@ def test_review_evidence_keeps_suggested_code_and_drops_badges():
     assert "<img" not in (step.guidance or "")
 
 
+# --- maintainer feedback ------------------------------------------------------------
+
+def _said(body: str = "Please keep the old flag working.", at: str = "2026-10-01T12:00:00Z"):
+    from issue_triage import reply_router
+    return reply_router.Reply(id=1, login="nicky", body=body, at=at)
+
+
+def test_maintainer_feedback_comes_before_every_bot_signal():
+    pr = _pr([_check("chat", "failure", run_id=4)], views=[_greptile(reviewers.FAIL)])
+    step = _decide(pr, feedback="keep the flag")
+    assert (step.kind, step.maintainer, step.guidance) == ("revise", True, "keep the flag")
+
+
+def test_maintainer_feedback_releases_a_ready_hold():
+    held = {**DESCRIBED, "state": "ready", "head_sha": HEAD}
+    assert _decide(_pr(), held).kind == "wait"
+    assert _decide(_pr(), held, feedback="rename it").kind == "revise"
+
+
+def test_maintainer_revisions_have_their_own_budget():
+    spent = {**DESCRIBED, "maintainer_revisions": followup.MAX_MAINTAINER_REVISIONS,
+             "revisions": 0}
+    step = _decide(_pr(), spent, feedback="again")
+    assert step.kind == "hand-back" and step.maintainer
+    assert _decide(_pr(views=[_greptile(reviewers.FAIL)]),
+                   {**DESCRIBED, "revisions": followup.MAX_REVISIONS},
+                   feedback="again").kind == "revise"
+
+
+def test_the_feed_s_maintainer_words_are_the_feedback(monkeypatch):
+    from pipeline import review_fetch
+    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triagebot")
+    feed = review_fetch.PrFeed(pr=9, head_sha=HEAD, updated_at=None, reviews=[
+        {"id": 1, "login": "nicky", "association": "MEMBER", "state": "APPROVED", "body": "",
+         "at": "2026-10-01T12:00:00Z"},
+        {"id": 2, "login": "nicky", "association": "MEMBER", "state": "CHANGES_REQUESTED",
+         "body": "", "at": "2026-10-01T12:01:00Z"},
+        {"id": 3, "login": "passerby", "association": "NONE", "state": "COMMENTED",
+         "body": "nit", "at": "2026-10-01T12:02:00Z"}],
+        threads=[{"id": 4, "login": "nicky", "association": "MEMBER", "path": "a.ts", "line": 3,
+                  "body": "rename this", "resolved": False, "at": "2026-10-01T12:03:00Z"},
+                 {"id": 5, "login": "nicky", "association": "MEMBER", "path": "a.ts", "line": 9,
+                  "body": "done", "resolved": True, "at": "2026-10-01T12:04:00Z"}],
+        comments=[{"id": 6, "login": "triagebot", "association": "NONE", "body": "ready",
+                   "at": "2026-10-01T12:05:00Z"},
+                  {"id": 7, "login": "greptile-apps[bot]", "association": "NONE", "body": "5/5",
+                   "at": "2026-10-01T12:06:00Z"}])
+    said = followup._feedback(feed)
+    assert [(r.body, r.where) for r in said] == [("(requested changes)", None),
+                                                 ("rename this", "a.ts:3")]
+    pr = _pr()
+    pr = PrState(**{**pr.__dict__, "feedback": said})
+    assert followup.fresh_feedback(pr, {"feedback_seen_at": "2026-10-01T12:01:00Z"}) == said[1:]
+
+
+def test_a_live_poll_revises_on_a_maintainer_s_review(store, monkeypatch):
+    from issue_triage import reply_router
+    pr = PrState(**{**_pr().__dict__, "feedback": [_said()]})
+    monkeypatch.setattr(followup, "read", lambda n: pr)
+    monkeypatch.setattr(reply_router, "route", lambda context, rs: "retry")
+    store.edit_issue(7).record_fix_followup({"pr": 9, "state": "ready", "head_sha": HEAD,
+                                             "described_head": HEAD, "feedback_seen_at": ""})
+    followup.poll(store, mode="live")
+    issue = store.load_issue(7)
+    req = issue.fix_request
+    assert (req["action"], req["source"], req["requested_by"]) == ("send-back", "followup",
+                                                                   "nicky")
+    assert "> Please keep the old flag working." in req["guidance"]
+    assert issue.fix_followup["maintainer_revisions"] == 1
+    assert issue.fix_followup["feedback_seen_at"] == "2026-10-01T12:00:00Z"
+
+
+def test_a_maintainer_s_approval_is_read_once_and_changes_nothing(store, monkeypatch):
+    from issue_triage import reply_router
+    pr = PrState(**{**_pr().__dict__, "feedback": [_said("LGTM, merging after the release")]})
+    routed = []
+    monkeypatch.setattr(followup, "read", lambda n: pr)
+    monkeypatch.setattr(reply_router, "route", lambda context, rs: routed.append(rs) or "none")
+    store.edit_issue(7).record_fix_followup({"pr": 9, "state": "ready", "head_sha": HEAD,
+                                             "described_head": HEAD, "feedback_seen_at": ""})
+    followup.poll(store, mode="live")
+    followup.poll(store, mode="live")
+    assert len(routed) == 1 and store.load_issue(7).fix_request is None
+
+
 def test_a_new_head_after_a_ready_reads_as_watching_until_judged_again(store, monkeypatch):
     moved = PrState(**{**_pr([_check(status="in_progress", conclusion=None)]).__dict__,
                        "head_sha": "b" * 40})
@@ -232,6 +317,49 @@ def test_a_ready_records_the_head_and_reason_it_was_judged_at(store, monkeypatch
     followup.poll(store, mode="live")
     fu = store.load_issue(7).fix_followup
     assert fu["state"] == "ready" and fu["judged"]["head_sha"] == HEAD
+
+
+
+def test_feedback_on_a_pull_request_handed_back_for_an_older_one_is_read_once(store,
+                                                                              monkeypatch):
+    from issue_triage import reply_router
+    pr = PrState(**{**_pr().__dict__, "feedback": [_said()]})
+    routed = []
+    monkeypatch.setattr(followup, "read", lambda n: pr)
+    monkeypatch.setattr(followup, "_older_open", lambda issue, n: [5])
+    monkeypatch.setattr(reply_router, "route", lambda context, rs: routed.append(rs) or "retry")
+    store.edit_issue(7).record_fix_followup({"pr": 9, "state": "watching", "head_sha": HEAD,
+                                             "described_head": HEAD, "feedback_seen_at": ""})
+    followup.poll(store, mode="live")
+    followup.poll(store, mode="live")
+    assert len(routed) == 1
+    assert store.load_issue(7).fix_followup["state"] == "handed-back"
+
+
+def test_a_maintainer_revision_that_did_not_land_hands_the_pull_request_back(store,
+                                                                             monkeypatch):
+    monkeypatch.setattr(followup, "read", lambda n: _pr())
+    store.edit_issue(7).record_fix_followup({
+        "pr": 9, "state": "watching", "head_sha": HEAD, "described_head": HEAD,
+        "feedback_seen_at": "2026-10-01T12:00:00Z", "maintainer_pending": {"head_sha": HEAD}})
+    store.edit_issue(7).record_fix_request({
+        "action": "send-back", "status": "done", "source": "followup",
+        "reason": "The revision ended no-fix: nothing to change; #9 is unchanged"})
+    followup.poll(store, mode="live")
+    fu = store.load_issue(7).fix_followup
+    assert fu["state"] == "handed-back" and "did not land" in fu["judged"]["reason"]
+    assert "maintainer_pending" not in fu
+
+
+def test_a_follow_up_that_predates_feedback_routing_starts_from_now(store, monkeypatch):
+    from issue_triage import reply_router
+    pr = PrState(**{**_pr().__dict__, "feedback": [_said()]})
+    monkeypatch.setattr(followup, "read", lambda n: pr)
+    monkeypatch.setattr(reply_router, "route", lambda context, rs: pytest.fail("routed"))
+    store.edit_issue(7).record_fix_followup({"pr": 9, "state": "watching", "head_sha": HEAD,
+                                             "described_head": HEAD})
+    followup.poll(store, mode="live")
+    assert store.load_issue(7).fix_followup["feedback_seen_at"]
 
 
 @pytest.mark.parametrize("ended,status,note", [

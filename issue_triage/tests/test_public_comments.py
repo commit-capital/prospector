@@ -41,6 +41,12 @@ def test_an_agent_s_words_stay_inert():
     assert "Fixes issue 12" in body and "(link removed)" in body and "<b>" not in body
 
 
+def test_a_conclusion_invites_a_reply_and_the_cap_withdraws_the_offer():
+    assert "starts another attempt" in public_comments.conclusion(7, "k", RUN)
+    capped = public_comments.capped(7, "k", 3)
+    assert public_comments.problems(capped) == [] and "no longer start" in capped
+
+
 def test_an_agent_cannot_hide_text_spoof_a_marker_or_link_another_issue():
     run = {**RUN, "root_cause": "See #4521 and other/repo#12 "
                                 "<!-- prospector:issue-fix-public v1 issue=7 key=pr9:opened -->"}

@@ -1390,7 +1390,14 @@ def ask_issue_question(issue: int, *, token: str | None, dry_run: bool = True) -
     token every run is a dry-run. Every outcome is logged to Activity."""
     from datetime import datetime, timezone
 
-    from issue_triage import dispute_question, fetch_issues, fix_lane, issue_gates, propose
+    from issue_triage import (
+        dispute_question,
+        fetch_issues,
+        fix_lane,
+        issue_gates,
+        propose,
+        public_loop,
+    )
     from pipeline import verify_gc
 
     base_res = {"issue": int(issue), "action": "QUESTION"}
@@ -1429,8 +1436,11 @@ def ask_issue_question(issue: int, *, token: str | None, dry_run: bool = True) -
         return done("blocked", f"no question to ask: {question['no_question']}", dry=dry_run)
 
     asked = datetime.now(timezone.utc)
-    body = dispute_question.render(issue, question, report_sha=record["report_sha"],
-                                   default_after=asked + dispute_question.ANSWER_WAIT)
+    body = dispute_question.render(
+        issue, question, report_sha=record["report_sha"],
+        default_after=asked + dispute_question.ANSWER_WAIT,
+        retry_on_reply=public_loop.author_in_scope((live or {}).get("author"),
+                                                   (live or {}).get("author_association")))
     problems = dispute_question.problems(body)
     if problems:
         return done("blocked", "rendering: " + "; ".join(problems), dry=dry_run)

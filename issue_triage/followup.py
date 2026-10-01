@@ -4,16 +4,26 @@ until it is green or a person has to decide.
 `read` takes the pull request's state from GitHub as the operator: open or not,
 its head, the repository's own CI checks at that head (each with the workflow
 run and job it belongs to; the reviewers' checks are left out, as `ci_signal`
-does), and the verdict of every code reviewer that gates it (`_gating`) parsed
-from the live feed.
+does), the verdict of every code reviewer that gates it (`_gating`) parsed
+from the live feed, and the maintainers' feedback in that feed (`_feedback`:
+their reviews with words, their open inline comments, their comments).
 `decide` names the one next step from that state and the issue's
 `fix_followup` record:
 
 - `done` — the pull request merged or closed; the record's `closed_as`
   says which (`merged` or `closed`).
 - `hand-back` — an older open pull request by someone else names the issue;
-  the revision budget is spent; a revision failed; or CI still fails after a
+  a revision budget is spent; a revision failed; or CI still fails after a
   re-run and no failing job's log names a file the change touches.
+- `revise` (maintainer) — new maintainer feedback that `reply_router` reads as
+  asking for a change, ahead of every bot signal; it releases a ready or
+  hand-back hold, and has its own budget of MAX_MAINTAINER_REVISIONS. A
+  maintainer revision that leaves the head where it was hands the pull request
+  back with the reason. Feedback routed to a step is handled; feedback the
+  router reads as asking nothing, that the API's safeguards refused, or that it
+  could not read MAX_ROUTE_MISSES times running is marked handled with a note.
+  A follow-up record that predates feedback routing starts from its first
+  routing pass.
 - `describe` — the head has not had its description re-rendered yet (the
   executor posts only a description that differs).
 - `rerun` — CI fails at this head and its failed jobs were not re-run here.
@@ -25,17 +35,19 @@ from the live feed.
 - `wait` — CI or a reviewer has not finished at this head.
 - `ready` — CI passes and every active reviewer's bar passes.
 
-A hand-back or ready holds until the head moves, and is recorded with the head
-and reason it was judged at (`judged`); any other step at a new head leaves it
-`watching`. The record follows one pull request: a proposal of another pull
-request starts a fresh one. `poll` carries the steps out for every issue whose
-proposal it has not seen end, and re-reads a `done` record that carries no
-`closed_as` to fill it in, as `settings.issue_fix_followup` allows:
+A hand-back or ready holds until the head moves or a maintainer asks for a
+change, and is recorded with the head and reason it was judged at (`judged`);
+any other step at a new head leaves it `watching`. The record follows one pull
+request: a proposal of another pull request starts a fresh one. `poll` carries
+the steps out for every issue whose proposal it has not seen end, and re-reads
+a `done` record that carries no `closed_as` to fill it in, as
+`settings.issue_fix_followup` allows:
 `dry-run` notes each step it would take on the issue and writes nothing
 upstream; `live` posts the description and re-runs as the bot through the
 executor, and queues a revision (a `send-back` with source `followup`) that
 the worker runs and pushes onto the same branch. Reviewer text and CI logs
-reach the revising agent as quoted evidence, never as instructions.
+reach the revising agent as quoted evidence, never as instructions; a
+maintainer's words reach it as the change they ask for.
 """
 from __future__ import annotations
 
@@ -44,13 +56,18 @@ import subprocess
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from pipeline import ci_signal, diffpaths, gh, review_fetch, review_policy, reviewers, settings
-from pipeline import storekit
+from datetime import datetime, timezone
+
+from issue_triage import reply_router
+from pipeline import ci_signal, diffpaths, gates, gh, review_fetch, review_policy, reviewers
+from pipeline import settings, storekit
 
 if TYPE_CHECKING:
     from issue_triage.issue_store import IssueStore
 
 MAX_REVISIONS = 2
+MAX_MAINTAINER_REVISIONS = 3
+MAX_ROUTE_MISSES = 3
 _RUN_RE = re.compile(r"/actions/runs/(\d+)/job/(\d+)")
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 # The markup a review comment carries for layout and badges; code in a
@@ -87,6 +104,7 @@ class PrState:
     head_sha: str
     checks: list[Check]
     reviewers: list[ReviewerView]
+    feedback: list[reply_router.Reply] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -96,6 +114,7 @@ class Step:
     run_ids: list[int] = field(default_factory=list)
     guidance: str | None = None
     jobs: list[int] = field(default_factory=list)
+    maintainer: bool = False
 
 
 def read(pr: int) -> PrState | None:
@@ -119,6 +138,8 @@ def read(pr: int) -> PrState | None:
                             run_id=int(m.group(1)) if m else None,
                             job_id=int(m.group(2)) if m else None))
     feed = review_fetch.fetch_feeds([int(pr)]).get(int(pr))
+    if feed is None:
+        return None
     views = []
     for r in _gating(feed, head):
         entry = reviewers.parse(r, feed, head, None) if feed else None
@@ -126,7 +147,65 @@ def read(pr: int) -> PrState | None:
         views.append(ReviewerView(id=r.id, label=r.label, status=b.status, reason=b.reason,
                                   findings=reviewers.open_findings(entry),
                                   summary=(entry or {}).get("summary")))
-    return PrState(number=int(pr), state=state, head_sha=head, checks=checks, reviewers=views)
+    return PrState(number=int(pr), state=state, head_sha=head, checks=checks, reviewers=views,
+                   feedback=_feedback(feed))
+
+
+def _maintainer(row: dict) -> bool:
+    login = str(row.get("login") or "")
+    bot = settings.bot_login().removesuffix("[bot]")
+    if not login or login == settings.push_login() or (bot and login.removesuffix("[bot]") == bot):
+        return False
+    return gates.priority_author(login, row.get("association"))
+
+
+def _feedback(feed: review_fetch.PrFeed) -> list[reply_router.Reply]:
+    """The maintainers' words on the pull request, oldest first: their reviews
+    that say something (a bare approval or a review that only holds inline
+    comments says nothing of its own), their unresolved inline comments, and
+    their comments."""
+    out: list[reply_router.Reply] = []
+    for r in feed.reviews:
+        body = str(r.get("body") or "").strip()
+        if not body and r.get("state") == "CHANGES_REQUESTED":
+            body = "(requested changes)"
+        if body and _maintainer(r):
+            out.append(reply_router.Reply(id=r.get("id"), login=str(r["login"]), body=body,
+                                          at=str(r.get("at") or "")))
+    for t in feed.threads:
+        if not t.get("resolved") and _maintainer(t):
+            where = f"{t.get('path')}:{t.get('line')}" if t.get("path") else None
+            out.append(reply_router.Reply(id=t.get("id"), login=str(t["login"]),
+                                          body=str(t.get("body") or ""),
+                                          at=str(t.get("at") or ""), where=where))
+    for c in feed.comments:
+        if _maintainer(c):
+            out.append(reply_router.Reply(id=c.get("id"), login=str(c["login"]),
+                                          body=str(c.get("body") or ""), at=str(c.get("at") or "")))
+    return sorted(out, key=lambda r: r.at)
+
+
+def _when(at: object) -> datetime | None:
+    try:
+        when = datetime.fromisoformat(str(at))
+    except ValueError:
+        return None
+    return when if when.tzinfo else when.replace(tzinfo=timezone.utc)
+
+
+def fresh_feedback(pr: PrState, fu: dict) -> list[reply_router.Reply]:
+    """The maintainer feedback newer than the feedback the follow-up last
+    handled."""
+    seen = _when(fu.get("feedback_seen_at"))
+    return [f for f in pr.feedback
+            if seen is None or ((when := _when(f.at)) is not None and when > seen)]
+
+
+def _maintainer_guidance(pr: int, feedback: list[reply_router.Reply]) -> str:
+    return (f"Follow-up on pull request #{pr}. A maintainer of the repository reviewed the "
+            "change and asked for more. Their words are quoted below; they say what the "
+            "change should do. Make the change they ask for, and say in your summary how "
+            "you addressed each point.\n\n" + reply_router.quoted(feedback))[:GUIDANCE_MAX]
 
 
 def _gating(feed: review_fetch.PrFeed | None, head: str) -> list[reviewers.Reviewer]:
@@ -191,19 +270,32 @@ def related_logs(logs: dict[str, str], patch: str) -> dict[str, str]:
 
 
 def decide(pr: PrState, fu: dict | None, *, older_open: list[int],
-           logs: dict[str, str] | None = None, patch: str = "") -> Step:
+           logs: dict[str, str] | None = None, patch: str = "",
+           feedback: str | None = None, missed: str | None = None) -> Step:
     """The next step for `pr`, given the issue's follow-up record `fu`, the
-    older open pull requests by others on the issue, and — once a re-run has
-    run at this head — the failing jobs' log excerpts by job name."""
+    older open pull requests by others on the issue, — once a re-run has run at
+    this head — the failing jobs' log excerpts by job name, the guidance from
+    new maintainer feedback that asks for a change, and why a maintainer
+    revision left the head where it was (`missed`)."""
     fu = fu or {}
     head = pr.head_sha
     if pr.state != "open":
         return Step("done", f"#{pr.number} merged" if pr.state == "merged"
                     else f"#{pr.number} was closed without merging")
-    if fu.get("head_sha") == head and fu.get("state") in ("handed-back", "ready"):
+    if (fu.get("head_sha") == head and fu.get("state") in ("handed-back", "ready")
+            and not feedback):
         return Step("wait", f"{fu['state']} at this head")
     if older_open:
         return Step("hand-back", f"#{older_open[0]} was opened earlier on the same issue")
+    if missed and not feedback:
+        return Step("hand-back", f"the change a maintainer asked for did not land: {missed}",
+                    maintainer=True)
+    if feedback:
+        if int(fu.get("maintainer_revisions") or 0) >= MAX_MAINTAINER_REVISIONS:
+            return Step("hand-back", f"{MAX_MAINTAINER_REVISIONS} revisions for maintainer "
+                                     "reviews spent", maintainer=True)
+        return Step("revise", "a maintainer asked for a change", guidance=feedback,
+                    maintainer=True)
     if fu.get("described_head") != head:
         return Step("describe", "the description is re-rendered once per head")
     failing = _failing(pr.checks)
@@ -265,6 +357,39 @@ def _older_open(issue: int, pr: int) -> list[int]:
     return sorted(r["number"] for r in found if r["state"] == "open" and r["number"] < pr)
 
 
+def _route_feedback(store: IssueStore, n: int, pr: int, fresh: list[reply_router.Reply],
+                    fu: dict, *, live: bool) -> str | None:
+    """The revision guidance new maintainer feedback `fresh` asks for, or None.
+    Feedback the router reads as asking nothing or that the safeguards refused
+    is marked handled in `fu`; feedback it could not read waits for the next
+    pass, up to MAX_ROUTE_MISSES. A dry run routes nothing and marks it
+    handled."""
+    if not fresh:
+        return None
+    count = f"{len(fresh)} maintainer comment{'' if len(fresh) == 1 else 's'} on #{pr}"
+    if not live:
+        fu["feedback_seen_at"] = fresh[-1].at
+        _note(store, n, f"Dry run: would route {count}.")
+        return None
+    verdict = reply_router.route(
+        f"it opened pull request #{pr} with a fix for the issue and is revising it until CI "
+        "and code review pass.", fresh)
+    if verdict == "retry":
+        fu["feedback_misses"] = 0
+        return _maintainer_guidance(pr, fresh)
+    if verdict is None:
+        fu["feedback_misses"] = int(fu.get("feedback_misses") or 0) + 1
+        if fu["feedback_misses"] < MAX_ROUTE_MISSES:
+            return None
+    fu["feedback_misses"] = 0
+    fu["feedback_seen_at"] = fresh[-1].at
+    _note(store, n, {"none": f"Read {count}: nothing to act on.",
+                     "declined": f"The agent declined to read {count}; a person should look."}
+          .get(str(verdict), f"Could not read {count} after {MAX_ROUTE_MISSES} tries; leaving "
+                             "them for a person."))
+    return None
+
+
 def poll(store: IssueStore, *, mode: str | None = None) -> int:
     """Take one follow-up step on every issue whose proposal is open. Returns
     how many issues took a step other than waiting."""
@@ -288,10 +413,21 @@ def poll(store: IssueStore, *, mode: str | None = None) -> int:
         record = propose.load_result(n) or {}
         patch = str((record.get("result") or {}).get("patch") or "")
         older = _older_open(n, int(pr)) if state.state == "open" else []
-        step = decide(state, fu, older_open=older, patch=patch)
+        if "feedback_seen_at" not in fu:
+            fu["feedback_seen_at"] = storekit.now() if fu.get("pr") else ""
+        fresh = fresh_feedback(state, fu) if state.state == "open" else []
+        asked = _route_feedback(store, n, int(pr), fresh, fu, live=mode == "live")
+        missed = None
+        pending = fu.pop("maintainer_pending", None)
+        if pending and pending.get("head_sha") == state.head_sha:
+            missed = str((issue.fix_request or {}).get("reason") or "no change came of it")[:300]
+        step = decide(state, fu, older_open=older, patch=patch, feedback=asked, missed=missed)
         if step.kind == "wait" and step.jobs:
             logs = {f"job {j}": text for j in step.jobs if (text := _job_log(j))}
-            step = decide(state, fu, older_open=older, logs=logs, patch=patch)
+            step = decide(state, fu, older_open=older, logs=logs, patch=patch, feedback=asked,
+                          missed=missed)
+        if asked:
+            fu["feedback_seen_at"] = fresh[-1].at
         moved = fu.get("head_sha") != state.head_sha
         finished = fu.get("state") == "done"
         fu.update({"pr": int(pr), "head_sha": state.head_sha, "checked_at": storekit.now(),
@@ -338,12 +474,16 @@ def poll(store: IssueStore, *, mode: str | None = None) -> int:
             fu.setdefault("reruns", {})[state.head_sha] = step.run_ids
             _note(store, n, f"Re-run: {res.get('detail')} ({step.reason}).")
         elif step.kind == "revise":
-            ok, why = fix_review.queue(store, n, "send-back", by="followup", source="followup",
+            by = fresh[-1].login if step.maintainer else "followup"
+            ok, why = fix_review.queue(store, n, "send-back", by=by, source="followup",
                                        guidance=step.guidance)
+            budget, cap = (("maintainer_revisions", MAX_MAINTAINER_REVISIONS) if step.maintainer
+                           else ("revisions", MAX_REVISIONS))
             if ok:
-                fu["revisions"] = int(fu.get("revisions") or 0) + 1
-                _note(store, n, f"Revision {fu['revisions']} of {MAX_REVISIONS} queued: "
-                                f"{step.reason}.")
+                fu[budget] = int(fu.get(budget) or 0) + 1
+                if step.maintainer:
+                    fu["maintainer_pending"] = {"head_sha": state.head_sha}
+                _note(store, n, f"Revision {fu[budget]} of {cap} queued: {step.reason}.")
             else:
                 _note(store, n, f"Could not queue a revision: {why}.")
         store.edit_issue(n).record_fix_followup(fu)
