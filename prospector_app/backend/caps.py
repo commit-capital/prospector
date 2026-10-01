@@ -8,8 +8,8 @@ store's schema. The local login is reported only for display (reads run as it).
 """
 from __future__ import annotations
 
-from prospector_app.backend.safety_guard import run
 from prospector_app.backend.safety_guard import store_schema_status
+from pipeline import gh
 from pipeline import settings
 from pipeline import review_policy
 
@@ -21,8 +21,7 @@ def capabilities() -> dict:
     if _cache is None:
         # deferred: executor imports caps, so import it lazily to avoid a cycle
         from prospector_app.backend import executor
-        lr = run(["gh", "api", "user", "--jq", ".login"], timeout=20)
-        login = lr.stdout.strip() if lr.returncode == 0 else None
+        login = gh.operator_login()
         live = executor.live_possible()
         store_schema = store_schema_status()
         write_ready = store_schema["write_block"] is None

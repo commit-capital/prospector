@@ -287,7 +287,7 @@ class TestFetchResilience:
                                          stdout=json.dumps({"data": {"repository": {"p0": node}}}),
                                          stderr="")
 
-        monkeypatch.setattr(responses, "run", fake_run)
+        monkeypatch.setattr(responses.gh.subprocess, "run", fake_run)
         with caplog.at_level(logging.WARNING, logger="prospector_app.backend.responses"):
             nodes, failed = responses._fetch([10, 11, 12])
         assert failed == [11]
@@ -296,7 +296,7 @@ class TestFetchResilience:
 
     def test_nonzero_returncode_with_no_body_marks_chunk_failed_and_logs(self, monkeypatch, caplog):
         monkeypatch.setattr(responses, "_CHUNK", 1)
-        monkeypatch.setattr(responses, "run", lambda argv, *, timeout=90, **kw:
+        monkeypatch.setattr(responses.gh.subprocess, "run", lambda argv, *, timeout=90, **kw:
                             types.SimpleNamespace(returncode=1, stdout="", stderr="rate limited"))
         with caplog.at_level(logging.WARNING, logger="prospector_app.backend.responses"):
             nodes, failed = responses._fetch([5])
@@ -317,7 +317,7 @@ class TestFetchResilience:
             "errors": [{"type": "NOT_FOUND", "path": ["repository", "p0"],
                         "message": "Could not resolve to a PullRequest with the number of 6418."}],
         }
-        monkeypatch.setattr(responses, "run", lambda argv, *, timeout=90, **kw:
+        monkeypatch.setattr(responses.gh.subprocess, "run", lambda argv, *, timeout=90, **kw:
                             types.SimpleNamespace(returncode=1, stdout=json.dumps(body),
                                                   stderr="gh: Could not resolve to a PullRequest "
                                                          "with the number of 6418."))
@@ -336,7 +336,7 @@ class TestFetchResilience:
                 "commits": {"nodes": []}}
         body = {"data": {"repository": {"p0": None, "p1": node}},
                 "errors": [{"type": "RATE_LIMITED", "path": ["repository", "p0"]}]}
-        monkeypatch.setattr(responses, "run", lambda argv, *, timeout=90, **kw:
+        monkeypatch.setattr(responses.gh.subprocess, "run", lambda argv, *, timeout=90, **kw:
                             types.SimpleNamespace(returncode=1, stdout=json.dumps(body), stderr=""))
         nodes, failed = responses._fetch([400, 401])
         assert set(nodes) == {401}
@@ -344,7 +344,7 @@ class TestFetchResilience:
 
     def test_unparseable_response_marks_chunk_failed(self, monkeypatch):
         monkeypatch.setattr(responses, "_CHUNK", 1)
-        monkeypatch.setattr(responses, "run", lambda argv, *, timeout=90, **kw:
+        monkeypatch.setattr(responses.gh.subprocess, "run", lambda argv, *, timeout=90, **kw:
                             types.SimpleNamespace(returncode=0, stdout="not json", stderr=""))
         nodes, failed = responses._fetch([7])
         assert nodes == {}
@@ -355,7 +355,7 @@ class TestFetchResilience:
         # is a legitimate "no data" — not a fetch failure that should preserve
         # stale prior data forever.
         monkeypatch.setattr(responses, "_CHUNK", 1)
-        monkeypatch.setattr(responses, "run", lambda argv, *, timeout=90, **kw:
+        monkeypatch.setattr(responses.gh.subprocess, "run", lambda argv, *, timeout=90, **kw:
                             types.SimpleNamespace(returncode=0,
                                                   stdout=json.dumps({"data": {"repository": {}}}),
                                                   stderr=""))

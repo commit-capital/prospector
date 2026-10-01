@@ -35,21 +35,29 @@ def operator_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
     return env
 
 
-def gh_api(path: str, *, timeout: int = 60) -> Any | None:
+def gh_api(path: str, *, timeout: int = 60, paginate: bool = False) -> Any | None:
     """`gh api <path>` parsed as JSON, or None on any failure (non-zero exit,
-    timeout, unparseable body)."""
+    timeout, unparseable body).
+
+    ``paginate`` follows every page (`--paginate --slurp`) and, when each page
+    is an array, returns their items as one flat list."""
+    argv = ["gh", "api", path]
+    if paginate:
+        argv += ["--paginate", "--slurp"]
     try:
-        res = subprocess.run(["gh", "api", path],
-                             capture_output=True, text=True, timeout=timeout,
+        res = subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
                              env=operator_env())
     except (subprocess.SubprocessError, OSError):
         return None
     if res.returncode != 0:
         return None
     try:
-        return json.loads(res.stdout)
+        parsed = json.loads(res.stdout)
     except json.JSONDecodeError:
         return None
+    if paginate and isinstance(parsed, list) and all(isinstance(p, list) for p in parsed):
+        return [item for page in parsed for item in page]
+    return parsed
 
 
 def _graphql_once(query: str, variables: Mapping[str, str],
@@ -125,23 +133,60 @@ def gh_graphql_data(query: str, *, variables: Mapping[str, str] | None = None,
     return parsed["data"]
 
 
-def gh_json(path: str) -> dict | None:
+def gh_json(path: str, *, timeout: int = 60) -> dict | None:
     """`gh api <path>` parsed as a JSON object, or None on any failure or a
     non-object body."""
-    parsed = gh_api(path)
+    parsed = gh_api(path, timeout=timeout)
     return parsed if isinstance(parsed, dict) else None
 
 
-def gh_list(path: str) -> list[dict] | None:
+def gh_list(path: str, *, timeout: int = 60, paginate: bool = False) -> list[dict] | None:
     """`gh api <path>` parsed as a JSON array, or None on any failure or a
-    non-array body."""
-    parsed = gh_api(path)
+    non-array body. ``paginate`` reads every page into the one list."""
+    parsed = gh_api(path, timeout=timeout, paginate=paginate)
     return parsed if isinstance(parsed, list) else None
 
 
-def fetch_pr(n: int) -> dict | None:
+def fetch_pr(n: int, *, timeout: int = 60) -> dict | None:
     """One PR's raw gh object (`repos/<repo>/pulls/{n}`), or None if unreachable."""
-    return gh_json(f"repos/{settings.repo()}/pulls/{int(n)}")
+    return gh_json(f"repos/{settings.repo()}/pulls/{int(n)}", timeout=timeout)
+
+
+def issue_comments(n: int, *, timeout: int = 60) -> list[dict] | None:
+    """Every comment on issue or PR `n`, across all pages, or None when the
+    listing is unavailable."""
+    return gh_list(f"repos/{settings.repo()}/issues/{int(n)}/comments?per_page=100",
+                   timeout=timeout, paginate=True)
+
+
+def pr_reviews(n: int, *, timeout: int = 60) -> list[dict] | None:
+    """Every review on PR `n`, oldest first across all pages, or None when the
+    listing is unavailable."""
+    return gh_list(f"repos/{settings.repo()}/pulls/{int(n)}/reviews?per_page=100",
+                   timeout=timeout, paginate=True)
+
+
+def pr_files(n: int, *, timeout: int = 120) -> list[dict] | None:
+    """PR `n`'s per-file listing (filename, status, counts, patch), across all
+    pages, or None when the listing is unavailable."""
+    return gh_list(f"repos/{settings.repo()}/pulls/{int(n)}/files?per_page=100",
+                   timeout=timeout, paginate=True)
+
+
+def pr_changed_paths(n: int, *, timeout: int = 120) -> list[str] | None:
+    """Every path PR `n` changes, from its per-file listing, or None when the
+    listing is unavailable."""
+    files = pr_files(n, timeout=timeout)
+    if files is None:
+        return None
+    return [f["filename"] for f in files if isinstance(f.get("filename"), str)]
+
+
+def operator_login(*, timeout: int = 20) -> str | None:
+    """The login the local `gh` reads as, or None when gh is absent, signed out,
+    or unreachable."""
+    login = (gh_json("user", timeout=timeout) or {}).get("login")
+    return login if isinstance(login, str) and login else None
 
 
 def check_runs(sha: str) -> list[dict]:

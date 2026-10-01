@@ -13,8 +13,6 @@ upstream write (executor.close_issue).
 """
 from __future__ import annotations
 
-import json
-import subprocess
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -22,6 +20,7 @@ from typing import TYPE_CHECKING
 from issue_triage import fix_review
 from issue_triage import issue_links
 from issue_triage import pr_index
+from pipeline import gh
 from pipeline import settings
 from pipeline import profile
 from pipeline import storekit
@@ -29,7 +28,6 @@ from prospector_app.backend import claims
 from prospector_app.backend import data
 from prospector_app.backend import issue_data
 from prospector_app.backend.filters import num_cmp
-from prospector_app.backend.safety_guard import run
 
 if TYPE_CHECKING:
     from issue_triage.issue_model import Issue, IssueCluster
@@ -116,18 +114,13 @@ def _live_pr_states(numbers: list[int]) -> dict[int, str]:
     now = time.time()
     want = sorted({n for n in numbers
                    if n not in _pr_state_cache or now - _pr_state_cache[n][0] >= _STATE_TTL})
-    owner, name = settings.repo().split("/")
     for i in range(0, len(want), _STATE_BATCH):
         batch = want[i:i + _STATE_BATCH]
         fields = " ".join(f"p{n}: pullRequest(number: {n}) {{ state }}" for n in batch)
-        query = f'query {{ repository(owner: "{owner}", name: "{name}") {{ {fields} }} }}'
-        repo: dict = {}
-        try:
-            res = run(["gh", "api", "graphql", "-f", f"query={query}"], timeout=20)
-            if res.returncode == 0:
-                repo = (json.loads(res.stdout).get("data") or {}).get("repository") or {}
-        except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
-            repo = {}
+        query = (f'query {{ repository(owner: "{settings.repo_owner()}", '
+                 f'name: "{settings.repo_name()}") {{ {fields} }} }}')
+        body = gh.gh_graphql(query, timeout=20) or {}
+        repo = (body.get("data") or {}).get("repository") or {}
         for n in batch:
             node = repo.get(f"p{n}")
             if node and node.get("state"):
@@ -608,10 +601,8 @@ def already_fixed() -> dict[str, list[dict]]:
 def _live_state(n: int) -> str | None:
     """Issue `n`'s current upstream state ("open"/"closed") fetched live from
     GitHub, or None when the fetch fails."""
-    r = run(["gh", "api", f"repos/{settings.repo()}/issues/{n}", "--jq", ".state"], timeout=30)
-    if r.returncode != 0:
-        return None
-    return r.stdout.strip() or None
+    state = (gh.gh_json(f"repos/{settings.repo()}/issues/{int(n)}", timeout=30) or {}).get("state")
+    return state if isinstance(state, str) and state else None
 
 
 def close_fixed_gate(n: int, fixed_by: int) -> tuple[bool, str]:

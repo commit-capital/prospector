@@ -280,3 +280,87 @@ def test_gh_graphql_data_retries_secondary_rate_limit(monkeypatch):
     ]))
     assert gh.gh_graphql_data("query {}", rate_limit_waits=(5,)) == {"x": 1}
     assert slept == [5]
+
+
+def _capturing_run(stdout, returncode=0):
+    seen: list[list[str]] = []
+
+    def run(argv, *, capture_output=True, text=True, timeout=60, env=None):
+        seen.append(argv)
+        return types.SimpleNamespace(returncode=returncode, stdout=stdout, stderr="")
+    return run, seen
+
+
+def test_gh_api_paginate_flattens_slurped_pages(monkeypatch):
+    run, seen = _capturing_run(json.dumps([[{"id": 1}, {"id": 2}], [{"id": 3}]]))
+    monkeypatch.setattr(gh.subprocess, "run", run)
+    assert gh.gh_api("x", paginate=True) == [{"id": 1}, {"id": 2}, {"id": 3}]
+    assert seen[0][:3] == ["gh", "api", "x"]
+    assert "--paginate" in seen[0] and "--slurp" in seen[0]
+
+
+def test_gh_api_paginate_keeps_object_pages_as_a_list(monkeypatch):
+    run, _ = _capturing_run(json.dumps([{"total": 1}, {"total": 2}]))
+    monkeypatch.setattr(gh.subprocess, "run", run)
+    assert gh.gh_api("x", paginate=True) == [{"total": 1}, {"total": 2}]
+
+
+def test_gh_api_without_paginate_reads_one_page(monkeypatch):
+    run, seen = _capturing_run('[{"id": 1}]')
+    monkeypatch.setattr(gh.subprocess, "run", run)
+    assert gh.gh_api("x") == [{"id": 1}]
+    assert "--paginate" not in seen[0]
+
+
+def test_gh_list_paginate_none_on_failure(monkeypatch):
+    monkeypatch.setattr(gh.subprocess, "run", _fake_run("", returncode=1))
+    assert gh.gh_list("x", paginate=True) is None
+
+
+def test_gh_json_passes_timeout(monkeypatch):
+    seen = {}
+
+    def run(argv, *, capture_output=True, text=True, timeout=60, env=None):
+        seen["timeout"] = timeout
+        return types.SimpleNamespace(returncode=0, stdout="{}", stderr="")
+    monkeypatch.setattr(gh.subprocess, "run", run)
+    gh.gh_json("x", timeout=7)
+    assert seen["timeout"] == 7
+
+
+def test_issue_comments_reads_every_page(monkeypatch):
+    page1 = [{"id": i} for i in range(30)]
+    run, seen = _capturing_run(json.dumps([page1, [{"id": 30}]]))
+    monkeypatch.setattr(gh.subprocess, "run", run)
+    comments = gh.issue_comments(5)
+    assert comments is not None and [c["id"] for c in comments] == list(range(31))
+    assert "/issues/5/comments" in seen[0][2]
+
+
+def test_pr_reviews_none_on_failure(monkeypatch):
+    monkeypatch.setattr(gh.subprocess, "run", _fake_run("", returncode=1))
+    assert gh.pr_reviews(5) is None
+
+
+def test_pr_changed_paths_across_pages(monkeypatch):
+    run, seen = _capturing_run(json.dumps([[{"filename": "a.py"}], [{"filename": "b/c.ts"}]]))
+    monkeypatch.setattr(gh.subprocess, "run", run)
+    assert gh.pr_changed_paths(9) == ["a.py", "b/c.ts"]
+    assert "/pulls/9/files" in seen[0][2]
+
+
+def test_pr_changed_paths_none_on_failure(monkeypatch):
+    monkeypatch.setattr(gh.subprocess, "run", _fake_run("", returncode=1))
+    assert gh.pr_changed_paths(9) is None
+
+
+def test_operator_login(monkeypatch):
+    run, seen = _capturing_run('{"login": "octocat", "id": 1}')
+    monkeypatch.setattr(gh.subprocess, "run", run)
+    assert gh.operator_login() == "octocat"
+    assert seen[0][2] == "user"
+
+
+def test_operator_login_none_when_gh_fails(monkeypatch):
+    monkeypatch.setattr(gh.subprocess, "run", _fake_run("", returncode=1))
+    assert gh.operator_login() is None
