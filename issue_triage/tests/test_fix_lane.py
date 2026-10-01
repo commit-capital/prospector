@@ -19,7 +19,7 @@ from issue_triage import (
     reproduce_issue,
     review_issue_fix,
 )
-from pipeline import gates, headless_agent, prove, verify_driver
+from pipeline import authoring, gates, headless_agent, prove, verify_driver
 
 
 def _keep(worktree: str) -> list[dict]:
@@ -109,9 +109,9 @@ def lane(tmp_path, monkeypatch):
                    "fix_status": []}
 
     def fake_reproduce(worktree, *, issue, title, body, env, retry_note=None,
-                       on_event=None):
+                       contributor_docs=(), on_event=None):
         calls["reproduce"].append({"worktree": worktree, "retry_note": retry_note,
-                                   "env": env})
+                                   "env": env, "contributor_docs": list(contributor_docs)})
         return scripts.reproduce(worktree)
 
     def fake_judge(worktree, *, title, body, files, claimed_symptom,
@@ -120,13 +120,14 @@ def lane(tmp_path, monkeypatch):
         return scripts.judge(worktree)
 
     def fake_fix(worktree, *, issue, title, body, test_paths, preserve_paths, red_tail,
-                 withheld_globs, env, on_event=None):
+                 withheld_globs, env, contributor_docs=(), on_event=None):
         status = subprocess.run(["git", "-C", worktree, "status", "--porcelain"],
                                 capture_output=True, text=True).stdout
         calls["fix_status"].append(status)
         calls["fix"].append({"worktree": worktree, "test_paths": test_paths,
                              "preserve_paths": preserve_paths,
-                             "withheld_globs": withheld_globs, "env": env})
+                             "withheld_globs": withheld_globs, "env": env,
+                             "contributor_docs": list(contributor_docs)})
         return scripts.fix(worktree)
 
     def fake_review(worktree, patch, *, lens, title, body, root_cause, test_paths,
@@ -330,6 +331,14 @@ def test_the_fix_clone_carries_the_frozen_test_committed(lane):
     # reproduction test, so it opens on a clean working tree.
     assert lane.calls["fix_status"] == [""]
     assert lane.calls["fix"][0]["test_paths"] == ["src/repro.test.ts"]
+
+
+def test_both_agents_are_handed_the_base_s_contributor_docs(lane):
+    (lane.base.clone / "CONTRIBUTING.md").write_text("Tests live beside their module.\n")
+    lane.run()
+    docs = [authoring.Doc("CONTRIBUTING.md", "Tests live beside their module.")]
+    assert lane.calls["reproduce"][0]["contributor_docs"] == docs
+    assert lane.calls["fix"][0]["contributor_docs"] == docs
 
 
 def test_fix_giving_up_ends_no_fix(lane):

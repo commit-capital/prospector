@@ -3,8 +3,9 @@
 A profile carries the policy knowledge that differs per triaged repository;
 this version owns the subsystem taxonomy, the path→risk-tier glob map, the
 CODEOWNERS gating policy, trusted/automation authors, dependency manifests,
-the test/artifact path rules, and the VERIFY sandbox policy (test runner,
-pnpm pin, full-suite contract). TRIAGE_PROFILE selects a JSON file;
+the test/artifact path rules, the VERIFY sandbox policy (test runner,
+pnpm pin, full-suite contract), and the contributor docs every code-authoring
+agent is handed. TRIAGE_PROFILE selects a JSON file;
 unset selects the built-in generic default, whose empty taxonomy classifies
 every PR as "other". Validation is strict: a missing file, unknown key, wrong
 type, or invalid pattern is a hard error, never a silent default.
@@ -73,6 +74,17 @@ AUTOFIX_GATES: tuple[str, ...] = ("ci", "review", "objection")
 class AutofixPolicy:
     deny_globs: tuple[str, ...] = ()
     fixable_gates: tuple[str, ...] = ()
+
+
+# The files a repository keeps for its contributors, human and AI, that every
+# code-authoring agent is handed (pipeline/authoring.py). Repo-relative paths,
+# in the order the agent reads them; a file the repository lacks is skipped.
+DEFAULT_CONTRIBUTOR_DOCS: tuple[str, ...] = ("AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md")
+
+
+@dataclass(frozen=True)
+class AuthoringPolicy:
+    contributor_docs: tuple[str, ...] = DEFAULT_CONTRIBUTOR_DOCS
 
 
 # The full-suite regression lane's repository contract: the stabilized-wrapper
@@ -183,6 +195,7 @@ class RepoProfile:
     harness: HarnessPolicy = HarnessPolicy()
     verify: VerifyPolicy = VerifyPolicy()
     autofix: AutofixPolicy = AutofixPolicy()
+    authoring: AuthoringPolicy = AuthoringPolicy()
 
     def subsystem_names(self) -> list[str]:
         """Accepted subsystem values, ending with the catch-all "other"."""
@@ -288,6 +301,18 @@ def _parse_autofix(raw: object, source: str) -> AutofixPolicy:
         deny_globs=_parse_str_list(section.get("deny_globs", []), source, "autofix.deny_globs"),
         fixable_gates=gates,
     )
+
+
+def _parse_authoring(raw: object, source: str) -> AuthoringPolicy:
+    section = _require_object(raw, source, "authoring", {"contributor_docs"})
+    if "contributor_docs" not in section:
+        return AuthoringPolicy()
+    where = "authoring.contributor_docs"
+    docs = _parse_str_list(section["contributor_docs"], source, where)
+    for doc in docs:
+        if doc.startswith("/") or "\\" in doc or ".." in doc.split("/"):
+            raise _fail(source, where, f"{doc!r} must be a repo-relative path inside the repository")
+    return AuthoringPolicy(contributor_docs=docs)
 
 
 def _parse_test_paths(raw: object, source: str) -> TestPaths:
@@ -405,7 +430,7 @@ def _parse_artifact_rules(raw: object, source: str) -> tuple[ArtifactRule, ...]:
 _SECTIONS: tuple[str, ...] = (
     "subsystems", "risk_tiers", "codeowners", "trusted_authors",
     "priority_authors", "automation_bots", "dependency_manifests", "test_paths", "artifact_rules",
-    "harness", "verify", "autofix")
+    "harness", "verify", "autofix", "authoring")
 
 
 def parse_profile(payload: object, source: str) -> RepoProfile:
@@ -442,6 +467,8 @@ def parse_profile(payload: object, source: str) -> RepoProfile:
         if "verify" in doc else VerifyPolicy(),
         autofix=_parse_autofix(doc["autofix"], source)
         if "autofix" in doc else AutofixPolicy(),
+        authoring=_parse_authoring(doc["authoring"], source)
+        if "authoring" in doc else AuthoringPolicy(),
     )
 
 

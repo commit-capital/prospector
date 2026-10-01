@@ -3,6 +3,7 @@ failure so callers degrade gracefully. Domain logic (CI verdicts, reviewer
 parsing) lives in the callers; this module only fetches and parses."""
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -10,6 +11,7 @@ import subprocess
 import time
 from collections.abc import Mapping, Sequence
 from typing import Any
+from urllib.parse import quote
 from pipeline import settings
 
 _log = logging.getLogger(__name__)
@@ -148,6 +150,19 @@ def gh_list(path: str, *, timeout: int = 60, paginate: bool = False) -> list[dic
     non-array body. ``paginate`` reads every page into the one list."""
     parsed = gh_api(path, timeout=timeout, paginate=paginate)
     return parsed if isinstance(parsed, list) else None
+
+
+def default_branch_file(path: str, *, timeout: int = 60) -> str | None:
+    """The text of the file at repo-relative `path` on the repository's default
+    branch, or None when it has none or GitHub did not answer."""
+    doc = gh_json(f"repos/{settings.repo()}/contents/{quote(path)}", timeout=timeout)
+    raw = (doc or {}).get("content")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        return base64.b64decode(raw).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return None
 
 
 def fetch_pr(n: int, *, timeout: int = 60) -> dict | None:

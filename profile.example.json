@@ -54,5 +54,8 @@
   "autofix": {
     "deny_globs": [".github/workflows/**", "scripts/release/**"],
     "fixable_gates": ["ci", "review", "objection"]
+  },
+  "authoring": {
+    "contributor_docs": ["AGENTS.md", "CONTRIBUTING.md", "docs/STYLE.md"]
   }
 }

@@ -37,6 +37,7 @@ from issue_triage import (
 )
 from issue_triage.issue_store import IssueStore
 from pipeline import (
+    authoring,
     check_records,
     diffpaths,
     gates,
@@ -264,6 +265,7 @@ def run(spec: LaneSpec, *, workdir: Path,
     label = f"issue-{spec.issue}"
     repro_dir = workdir / "repro"
     fix_dir = workdir / "fix"
+    contributor_docs = authoring.docs_from_tree(spec.base.clone)
     pre_patch_file: Path | None = None
     if spec.pre_patch is not None:
         workdir.mkdir(parents=True, exist_ok=True)
@@ -302,7 +304,7 @@ def run(spec: LaneSpec, *, workdir: Path,
                     issue=spec.issue, base=spec.base, worktree=clone,
                     records=lane_check.records_path(workdir, "repro"), test_patch=None,
                     pre_patch=pre_patch_file),
-                retry_note=retry_note)
+                retry_note=retry_note, contributor_docs=contributor_docs)
             if "give_up" in verdict:
                 gave_up = str(verdict["give_up"])
                 break
@@ -400,7 +402,8 @@ def run(spec: LaneSpec, *, workdir: Path,
             env=lane_check.check_env(
                 issue=spec.issue, base=spec.base, worktree=fix_clone,
                 records=lane_check.records_path(workdir, "fix"), test_patch=test_patch,
-                pre_patch=pre_patch_file))
+                pre_patch=pre_patch_file),
+            contributor_docs=contributor_docs)
         fix_checks = check_records.collect(
             lane_check.records_path(workdir, "fix"), CHECKS_LIMIT)
         if "give_up" in fix_verdict:

@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from issue_triage import fix_lane, review_issue_fix, solo_lane
-from pipeline import gates, prove, resolve_evidence, verify_driver
+from pipeline import authoring, gates, headless_agent, prove, resolve_evidence, verify_driver
 
 
 def _legs(exit_: int, confirm: int | None) -> dict:
@@ -40,9 +40,11 @@ def solo(tmp_path, monkeypatch):
     calls: dict = {"agent": _writes_test_and_fix, "red": RED, "green": GREEN,
                    "related": None, "env": None, "commands": []}
 
-    def fake_author(worktree, *, title, body, env, guidance=None, attempt=None, on_event=None):
+    def fake_author(worktree, *, title, body, env, guidance=None, attempt=None,
+                    contributor_docs=(), on_event=None):
         calls["env"] = env
         calls["guidance"], calls["attempt"] = guidance, attempt
+        calls["contributor_docs"] = list(contributor_docs)
         return calls["agent"](worktree)
 
     def fake_compose(label, *parts):
@@ -69,6 +71,7 @@ def solo(tmp_path, monkeypatch):
 
     calls["run"] = run
     calls["workdir"] = tmp_path / "work"
+    calls["base_dir"] = base_dir
     return calls
 
 
@@ -87,6 +90,12 @@ def test_the_agent_gets_the_whole_job_s_run_budget(solo):
     assert solo["env"]["PROSPECTOR_ISSUE_CHECK_MAX_RUNS"] == str(solo_lane.MAX_RUNS)
     assert solo["env"]["PROSPECTOR_ISSUE_CHECK_RECORDS"] == str(
         solo["workdir"] / "solo.checks.jsonl")
+
+
+def test_the_agent_is_handed_the_base_s_contributor_docs(solo):
+    (solo["base_dir"] / "AGENTS.md").write_text("Use the shared validators.\n")
+    solo["run"]()
+    assert solo["contributor_docs"] == [authoring.Doc("AGENTS.md", "Use the shared validators.")]
 
 
 @pytest.mark.parametrize("kind,ending", [("not-a-defect", "not-a-defect"),
@@ -241,3 +250,14 @@ def test_a_revision_the_reviewer_judges_unsafe_ends_fix_rejected(solo, revise):
 def test_without_review_the_one_agent_lane_asks_no_reviewer(solo, revise):
     res = solo["run"]()
     assert res.ending == "fixed" and revise["reviewed"] == []
+
+
+def test_the_contributor_docs_and_house_style_reach_the_agent_s_prompt(monkeypatch):
+    prompts: list[str] = []
+    monkeypatch.setattr(headless_agent, "run_agent",
+                        lambda prompt, **kw: prompts.append(prompt) or '{"give_up": "no"}')
+    solo_lane.author("/wt", title="t", body="b", env={},
+                     contributor_docs=[authoring.Doc("AGENTS.md", "Keep contracts synchronized.")])
+    prompt = prompts[0]
+    assert '<doc path="AGENTS.md">\nKeep contracts synchronized.\n</doc>' in prompt
+    assert authoring.HOUSE_STYLE in prompt

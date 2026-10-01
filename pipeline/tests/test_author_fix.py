@@ -7,11 +7,16 @@ import json
 
 import pytest
 
-from pipeline import author_fix, headless_agent
+from pipeline import author_fix, authoring, headless_agent
 
 FINDINGS = [{"headline": "retry loop never exits", "class": "substantive",
              "why": "still outstanding in the current diff"},
             {"headline": "stray whitespace", "class": "nitpick", "why": "still there"}]
+
+
+@pytest.fixture(autouse=True)
+def _no_upstream_docs(monkeypatch):
+    monkeypatch.setattr(authoring, "docs_from_upstream", lambda: [])
 
 
 def _run(monkeypatch, reply: str, **over) -> dict:
@@ -137,6 +142,20 @@ def test_withheld_globs_reach_the_prompt_as_a_do_not_edit_rule(monkeypatch):
 def test_no_withheld_globs_adds_no_rule(monkeypatch):
     r = _run(monkeypatch, json.dumps({"summary": "s", "changes": []}))
     assert "may not edit" not in r["calls"]["prompt"].lower()
+
+
+def test_the_default_branch_s_contributor_docs_reach_the_prompt(monkeypatch):
+    monkeypatch.setattr(authoring, "docs_from_upstream",
+                        lambda: [authoring.Doc("AGENTS.md", "Keep contracts synchronized.")])
+    prompt = _run(monkeypatch, json.dumps({"summary": "s", "changes": []}))["calls"]["prompt"]
+    assert '<doc path="AGENTS.md">\nKeep contracts synchronized.\n</doc>' in prompt
+    assert prompt.index("UNTRUSTED DATA") < prompt.index("contributor docs")
+
+
+def test_without_contributor_docs_the_prompt_has_no_docs_section(monkeypatch):
+    prompt = _run(monkeypatch, json.dumps({"summary": "s", "changes": []}))["calls"]["prompt"]
+    assert "contributor docs" not in prompt
+    assert authoring.HOUSE_STYLE in prompt
 
 
 # --- the disclosure check ------------------------------------------------------

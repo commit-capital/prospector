@@ -35,6 +35,7 @@ from pathlib import Path
 
 from issue_triage import fix_lane, issue_gates, lane_check, lane_tree, review_issue_fix, solo_lane
 from pipeline import (
+    authoring,
     check_records,
     diffpaths,
     gates,
@@ -87,7 +88,8 @@ def _author(spec: fix_lane.LaneSpec, workdir: Path, cand: Candidate,
                                    records=records, test_patch=None, pre_patch=pre_patch_file)
         env["PROSPECTOR_ISSUE_CHECK_MAX_RUNS"] = str(solo_lane.MAX_RUNS)
         verdict = solo_lane.author(str(clone), title=spec.title, body=spec.body, env=env,
-                                   model=cand.model, guidance=spec.guidance)
+                                   model=cand.model, guidance=spec.guidance,
+                                   contributor_docs=authoring.docs_from_tree(spec.base.clone))
         cand.checks = check_records.collect(records, solo_lane.MAX_RUNS)
         if "give_up" in verdict:
             cand.ending = "not-a-defect" if verdict["kind"] == "not-a-defect" else "no-fix"
