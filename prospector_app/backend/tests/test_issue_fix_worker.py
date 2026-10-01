@@ -29,7 +29,20 @@ def _issue(store: IssueStore, n: int, *, created: str = "2026-09-20T00:00:00Z",
 
 
 @pytest.fixture
-def store(tmp_path, monkeypatch):
+def capacity(monkeypatch):
+    """Whether this machine's AI capacity is open, and the lanes asked about it."""
+    held: dict = {"open": True, "asked": []}
+
+    def capacity_open(lane: str) -> bool:
+        held["asked"].append(lane)
+        return held["open"]
+
+    monkeypatch.setattr(lane_health, "capacity_open", capacity_open)
+    return held
+
+
+@pytest.fixture
+def store(tmp_path, monkeypatch, capacity):
     monkeypatch.setattr(settings, "worker_id", lambda: "studio")
     monkeypatch.setattr(lane_health, "note_success", lambda lane: None)
     monkeypatch.setattr(lane_health, "note_failure", lambda lane, **kw: None)
@@ -63,6 +76,55 @@ def test_run_once_claims_carries_out_and_books_the_ending(store, monkeypatch):
     assert issue_fix_worker.run_once(store)
     assert seen["req"]["status"] == "running" and seen["req"]["host"] == "studio"
     assert not issue_fix_worker.run_once(store)
+
+
+def _carried_out(monkeypatch) -> list[tuple[int, str]]:
+    ran: list[tuple[int, str]] = []
+
+    def run_request(s, n, req, *, on_step):
+        ran.append((n, req["source"]))
+        return "done", "Solved: fixed"
+
+    monkeypatch.setattr(fix_review_runner, "run_request", run_request)
+    return ran
+
+
+def test_paused_capacity_holds_automation_s_request_and_runs_an_operator_s(
+        store, capacity, monkeypatch):
+    ran = _carried_out(monkeypatch)
+    capacity["open"] = False
+    fix_review.queue(store, 1, "solve", by="hunter", source="hunter")
+    fix_review.queue(store, 2, "solve", by="op")
+    assert issue_fix_worker.run_once(store)
+    assert ran == [(2, "operator")] and capacity["asked"] == ["issue-fix"]
+    assert store.load_issue(1).fix_request["status"] == "queued"
+    assert not issue_fix_worker.run_once(store)
+
+
+@pytest.mark.parametrize("source", ["hunter", "public", "reporter", "followup"])
+def test_open_capacity_claims_automation_s_request(store, capacity, monkeypatch, source):
+    ran = _carried_out(monkeypatch)
+    store.edit_issue(1).record_fix_request({
+        "action": "solve", "status": "queued", "source": source, "requested_by": source,
+        "queued_at": _ago(minutes=1), "attempts": 1})
+    assert issue_fix_worker.run_once(store)
+    assert ran == [(1, source)] and capacity["asked"] == ["issue-fix"]
+
+
+def test_an_operator_s_request_never_asks_the_capacity(store, capacity, monkeypatch):
+    _carried_out(monkeypatch)
+    capacity["open"] = False
+    fix_review.queue(store, 2, "solve", by="op")
+    assert issue_fix_worker.run_once(store)
+    assert capacity["asked"] == []
+
+
+def test_paused_capacity_still_takes_automation_s_proposal(store, capacity):
+    store.edit_issue(1).record_fix_run({"ending": "fixed", "patch": "p", "host": "studio"})
+    fix_review.queue(store, 1, "propose", by="public", source="public")
+    capacity["open"] = False
+    assert issue_fix_worker.next_request(store.all_issues(), "studio") == 1
+    assert capacity["asked"] == []
 
 
 def _asked(store: IssueStore, at: str) -> None:
@@ -122,6 +184,19 @@ def test_the_hunter_keeps_to_its_daily_budget(hunting, monkeypatch):
     monkeypatch.setenv("TRIAGE_ISSUE_FIX_HUNT_BUDGET", "1")
     assert issue_fix_worker.hunt(hunting) == 2
     assert issue_fix_worker.hunt(hunting) is None
+
+
+def test_the_hunter_queues_nothing_while_capacity_is_paused(hunting, capacity):
+    capacity["open"] = False
+    assert issue_fix_worker.hunt(hunting) is None
+    assert capacity["asked"] == ["issue-fix"]
+    assert all(i.fix_request is None for i in hunting.all_issues().values())
+
+
+def test_the_hunter_with_no_pick_never_asks_the_capacity(hunting, capacity, monkeypatch):
+    monkeypatch.setattr(issue_links, "linked_prs", lambda issue, links: [{"pr": 5}])
+    assert issue_fix_worker.hunt(hunting) is None
+    assert capacity["asked"] == []
 
 
 def test_the_hunter_takes_a_maintainer_s_issue_ahead_of_a_newer_one(hunting):
@@ -287,3 +362,35 @@ def test_an_agent_outage_in_the_ten_minute_pass_trips_the_lanes(store, monkeypat
     monkeypatch.setattr(lane_health, "trip_agent_lanes", lambda reason: tripped.append(reason))
     issue_fix_worker._every_ten_minutes(store)
     assert tripped == ["not logged in"] and ran == []
+
+
+def _ten_minute_steps(monkeypatch) -> list[str]:
+    from issue_triage import followup, public_loop
+
+    ran: list[str] = []
+    for module, name in ((followup, "poll"), (public_loop, "refresh"),
+                         (public_loop, "answer_replies"), (public_loop, "sync")):
+        monkeypatch.setattr(module, name, lambda store_, name=name: ran.append(name))
+    return ran
+
+
+@pytest.mark.parametrize("open_,want", [
+    (False, ["poll", "refresh", "sync"]),
+    (True, ["poll", "refresh", "answer_replies", "sync"]),
+], ids=["paused", "open"])
+def test_replies_are_routed_only_while_capacity_is_open(store, capacity, monkeypatch,
+                                                        open_, want):
+    monkeypatch.setenv("TRIAGE_ISSUE_FIX_PUBLIC", "live")
+    ran = _ten_minute_steps(monkeypatch)
+    capacity["open"] = open_
+    issue_fix_worker._every_ten_minutes(store)
+    assert ran == want and capacity["asked"] == ["issue-fix"]
+
+
+def test_a_dry_run_public_loop_reads_replies_without_asking_the_capacity(
+        store, capacity, monkeypatch):
+    monkeypatch.setenv("TRIAGE_ISSUE_FIX_PUBLIC", "dry-run")
+    ran = _ten_minute_steps(monkeypatch)
+    capacity["open"] = False
+    issue_fix_worker._every_ten_minutes(store)
+    assert "answer_replies" in ran and capacity["asked"] == []
