@@ -30,8 +30,8 @@ GH_PR = {
 @pytest.fixture(autouse=True)
 def _no_live_network(monkeypatch):
     """Unit tests opt into live facts explicitly; ordinary ingest tests stay offline."""
-    monkeypatch.setattr(ingest.live_prs, "fetch", lambda prs: ({}, set()))
-    monkeypatch.setattr(ingest.review_fetch, "fetch_feeds", lambda numbers: {})
+    monkeypatch.setattr(ingest.live_prs, "fetch", lambda prs, **kw: ({}, set()))
+    monkeypatch.setattr(ingest.review_fetch, "fetch_feeds", lambda numbers, **kw: {})
 
 
 def _greptile_feed(n: int, sha: str, score: int = 5) -> PrFeed:
@@ -328,7 +328,7 @@ class TestUpsertAll:
             st, "load_pr", lambda n: pytest.fail("bulk ingest must not load per PR"))
         monkeypatch.setattr(
             st, "save_prs_many",
-            lambda prs: (batches.append([pr.number for pr in prs]), save_many(prs))[1])
+            lambda prs, **kw: (batches.append([pr.number for pr in prs]), save_many(prs))[1])
 
         with st.batch():
             ingest._upsert_all(
@@ -403,7 +403,7 @@ class TestTargetedIngest:
         monkeypatch.setattr(ingest, "load_issue_links", lambda **_: {})
         monkeypatch.setattr(
             ingest.live_prs, "fetch",
-            lambda prs: ({6002: {"head": "newsha", "ci": "passing",
+            lambda prs, **kw: ({6002: {"head": "newsha", "ci": "passing",
                                  "mergeable": "MERGEABLE",
                                  "diffstat": {"additions": 8, "deletions": 2,
                                               "changed_files": 3},
@@ -424,7 +424,7 @@ class TestTargetedIngest:
                             lambda n: fetched.append(n) or b)
         monkeypatch.setattr(ingest, "load_issue_links", lambda **_: {})
         monkeypatch.setattr(ingest.review_fetch, "fetch_feeds",
-                            lambda numbers: {7002: _greptile_feed(7002, "s2")})
+                            lambda numbers, **kw: {7002: _greptile_feed(7002, "s2")})
         rc = ingest.main(["--prs", "7002", "--store", str(tmp_path)])
         assert rc == 0
         assert fetched == [7002]
@@ -443,7 +443,7 @@ class TestTargetedIngest:
         monkeypatch.setattr(ingest, "fetch_pr", lambda n: b)
         monkeypatch.setattr(ingest, "load_issue_links", lambda **_: {})
         monkeypatch.setattr(ingest.review_fetch, "fetch_feeds",
-                            lambda numbers: {7003: _greptile_feed(7003, "s3", 4)})
+                            lambda numbers, **kw: {7003: _greptile_feed(7003, "s3", 4)})
         out = ingest.refresh_prs(store, [7003])
         assert out[0]["pr"] == 7003
         rec = store.load_pr(7003)
@@ -494,7 +494,7 @@ class TestTargetedIngest:
         monkeypatch.setattr(ingest, "fetch_open_prs", lambda mx=None: [GH_PR])
         monkeypatch.setattr(ingest, "load_issue_links", lambda **_: {})
         monkeypatch.setattr(ingest.review_fetch, "fetch_feeds",
-                            lambda numbers: {5001: _greptile_feed(5001, "deadbeef")})
+                            lambda numbers, **kw: {5001: _greptile_feed(5001, "deadbeef")})
         assert ingest.main(["--store", str(tmp_path), "--skip-issues"]) == 0
         seen = store.load_reviewers()["seen"]
         assert seen["greptile"]["prs"] == 1 and seen["greptile"]["last_observed_at"]
@@ -506,7 +506,7 @@ class TestTargetedIngest:
         existing = st.all_prs()
         asked: list[list[int]] = []
         monkeypatch.setattr(ingest.review_fetch, "fetch_feeds",
-                            lambda numbers: asked.append(list(numbers)) or {})
+                            lambda numbers, **kw: asked.append(list(numbers)) or {})
         facts = {5001: {"head": "deadbeef", "updated_at": "2026-06-09T00:00:00Z", "ci": "passing",
                         "mergeable": "MERGEABLE", "check_runs": [], "statuses": [],
                         "diffstat": {"additions": 1, "deletions": 0, "changed_files": 1},
@@ -566,7 +566,7 @@ class TestRefreshPrs:
 
         monkeypatch.setattr(ingest, "load_issue_links", lambda **_: {})
         monkeypatch.setattr(ingest.review_fetch, "fetch_feeds",
-                            lambda numbers: {5001: _greptile_feed(5001, "deadbeef", 4)})
+                            lambda numbers, **kw: {5001: _greptile_feed(5001, "deadbeef", 4)})
         monkeypatch.setattr(ingest.subprocess, "run",
                             lambda *a, **k: SimpleNamespace(returncode=0, stdout=_json.dumps(GH_PR)))
 

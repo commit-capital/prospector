@@ -4,12 +4,20 @@ parsing) lives in the callers; this module only fetches and parses."""
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
-from collections.abc import Mapping
+import time
+from collections.abc import Mapping, Sequence
 from typing import Any
 from pipeline import settings
 
+_log = logging.getLogger(__name__)
+
+SECONDARY_RATE_LIMIT = "secondary rate limit"
+# GitHub's guidance when a secondary limit names no retry-after: wait at least
+# a minute, longer on each repeat.
+RATE_LIMIT_BACKOFF: tuple[float, ...] = (60, 120, 240)
 
 
 def operator_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
@@ -44,28 +52,50 @@ def gh_api(path: str, *, timeout: int = 60) -> Any | None:
         return None
 
 
-def gh_graphql(query: str, *, timeout: int = 60) -> dict | None:
-    """`gh api graphql` for `query`, parsed as a JSON object, or None when no
-    usable response came back (timeout, unparseable/non-object body, or an
-    error body with no `data`).
-
-    gh exits non-zero on any GraphQL error while still printing the full
-    envelope, and errors coexist with partial data — so a body carrying a
-    `data` object is returned regardless of exit code."""
+def _graphql_once(query: str, timeout: int) -> tuple[dict | None, str]:
+    """One `gh api graphql` call: the parsed envelope, or None with the reason."""
     try:
         res = subprocess.run(["gh", "api", "graphql", "-f", f"query={query}"],
                              capture_output=True, text=True, timeout=timeout,
                              env=operator_env())
-    except (subprocess.SubprocessError, OSError):
-        return None
+    except subprocess.TimeoutExpired:
+        return None, f"timed out after {timeout}s"
+    except (subprocess.SubprocessError, OSError) as exc:
+        return None, f"gh did not run: {exc}"
+    reason = (res.stderr or "").strip().removeprefix("gh: ")[:500] or f"exit {res.returncode}"
     try:
         parsed = json.loads(res.stdout)
     except json.JSONDecodeError:
-        return None
+        return None, reason
     if not isinstance(parsed, dict):
-        return None
+        return None, reason
     if res.returncode != 0 and not isinstance(parsed.get("data"), dict):
-        return None
+        return None, reason
+    return parsed, ""
+
+
+def gh_graphql(query: str, *, timeout: int = 60,
+               rate_limit_waits: Sequence[float] = ()) -> dict | None:
+    """`gh api graphql` for `query`, parsed as a JSON object, or None when no
+    usable response came back (timeout, unparseable/non-object body, or an
+    error body with no `data`); a None is logged with gh's own error text.
+
+    gh exits non-zero on any GraphQL error while still printing the full
+    envelope, and errors coexist with partial data — so a body carrying a
+    `data` object is returned regardless of exit code.
+
+    A GitHub secondary rate limit is retried after each wait in
+    ``rate_limit_waits`` (seconds) in turn. A caller answering an HTTP request
+    passes none and fails fast."""
+    parsed, reason = _graphql_once(query, timeout)
+    for wait in rate_limit_waits:
+        if parsed is not None or SECONDARY_RATE_LIMIT not in reason.lower():
+            break
+        _log.warning("GitHub secondary rate limit; retrying in %ds", wait)
+        time.sleep(wait)
+        parsed, reason = _graphql_once(query, timeout)
+    if parsed is None:
+        _log.warning("gh api graphql failed: %s", reason)
     return parsed
 
 

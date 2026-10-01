@@ -147,7 +147,7 @@ def test_live_states_parses_diffstat_and_has_tests(monkeypatch):
                  "conclusion": "FAILURE", "title": "Confidence 3/5",
                  "checkSuite": {"app": {"slug": "greptile-apps"}}}]}}}}]}}
     monkeypatch.setattr(freshness_live.live_prs, "gh_graphql",
-                        lambda query: {"data": {"repository": {"p0": node}}})
+                        lambda query, **kw: {"data": {"repository": {"p0": node}}})
     out, _ = freshness_live.live_states([1])
     assert out[1]["diffstat"] == {"additions": 40, "deletions": 6, "changed_files": 2}
     assert out[1]["has_tests"] is True
@@ -167,7 +167,7 @@ def test_live_states_has_tests_false_without_test_files(monkeypatch):
                  "conclusion": "FAILURE", "title": "Confidence 3/5",
                  "checkSuite": {"app": {"slug": "greptile-apps"}}}]}}}}]}}
     monkeypatch.setattr(freshness_live.live_prs, "gh_graphql",
-                        lambda query: {"data": {"repository": {"p0": node}}})
+                        lambda query, **kw: {"data": {"repository": {"p0": node}}})
     assert freshness_live.live_states([2])[0][2]["has_tests"] is False
 
 
@@ -176,13 +176,13 @@ def test_live_states_omits_incomplete_diffstat(monkeypatch):
             "mergeable": "MERGEABLE", "additions": None, "deletions": 1,
             "changedFiles": 1, "files": {"nodes": []}, "commits": {"nodes": []}}
     monkeypatch.setattr(freshness_live.live_prs, "gh_graphql",
-                        lambda query: {"data": {"repository": {"p0": node}}})
+                        lambda query, **kw: {"data": {"repository": {"p0": node}}})
     assert freshness_live.live_states([2]) == ({}, set())
 
 
 def test_live_states_skips_failed_chunk(monkeypatch, caplog):
     """A failed gh request drops its chunk and logs the missing coverage."""
-    monkeypatch.setattr(freshness_live.live_prs, "gh_graphql", lambda query: None)
+    monkeypatch.setattr(freshness_live.live_prs, "gh_graphql", lambda query, **kw: None)
     with caplog.at_level(logging.WARNING, logger="pipeline.live_prs"):
         out = freshness_live.live_states([1, 2, 3])
     assert out == ({}, set())
@@ -204,7 +204,7 @@ def test_live_states_keeps_resolved_aliases_when_one_errors(monkeypatch, caplog)
     envelope = {"data": {"repository": {"p0": node, "p1": None}},
                 "errors": [{"type": "NOT_FOUND", "path": ["repository", "p1"],
                             "message": "Could not resolve to a PullRequest with the number of 10241."}]}
-    monkeypatch.setattr(freshness_live.live_prs, "gh_graphql", lambda query: envelope)
+    monkeypatch.setattr(freshness_live.live_prs, "gh_graphql", lambda query, **kw: envelope)
     with caplog.at_level(logging.WARNING, logger="pipeline.live_prs"):
         out, not_found = freshness_live.live_states([1, 10241])
     assert 1 in out and out[1]["state"] == "open"
@@ -222,7 +222,7 @@ def test_live_states_not_found_requires_the_not_found_type(monkeypatch):
                             "message": "Could not resolve to a PullRequest with the number of 4818."},
                            {"type": "RATE_LIMITED", "path": ["repository", "p1"],
                             "message": "API rate limit exceeded"}]}
-    monkeypatch.setattr(freshness_live.live_prs, "gh_graphql", lambda query: envelope)
+    monkeypatch.setattr(freshness_live.live_prs, "gh_graphql", lambda query, **kw: envelope)
     facts, not_found = freshness_live.live_states([4818, 5000])
     assert facts == {}
     assert not_found == {4818}
@@ -234,7 +234,7 @@ def test_live_states_not_found_ignores_a_repository_level_error(monkeypatch):
     envelope = {"data": {"repository": None},
                 "errors": [{"type": "NOT_FOUND", "path": ["repository"],
                             "message": "Could not resolve to a Repository."}]}
-    monkeypatch.setattr(freshness_live.live_prs, "gh_graphql", lambda query: envelope)
+    monkeypatch.setattr(freshness_live.live_prs, "gh_graphql", lambda query, **kw: envelope)
     facts, not_found = freshness_live.live_states([1, 2])
     assert facts == {}
     assert not_found == set()
