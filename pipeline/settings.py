@@ -321,6 +321,23 @@ def issue_fix_followup() -> str:
     return value if value in ("off", "dry-run", "live") else "live"
 
 
+def issue_fix_public() -> str:
+    """What the issue-fix worker writes on GitHub for an issue in the public
+    loop's scope (`issue_triage.public_loop`): `live` (the default) sets its
+    status label and posts its comments, opens its pull request and asks its
+    question; `dry-run` notes each write on the issue and makes none; `off`
+    leaves GitHub alone."""
+    value = os.environ.get("TRIAGE_ISSUE_FIX_PUBLIC", "live").strip().lower()
+    return value if value in ("off", "dry-run", "live") else "live"
+
+
+def issue_fix_public_scope() -> str:
+    """Which issues the public loop serves: `maintainers` (the default), the
+    issues a maintainer filed (`gates.priority_author`), or `all`."""
+    value = os.environ.get("TRIAGE_ISSUE_FIX_PUBLIC_SCOPE", "maintainers").strip().lower()
+    return value if value in ("maintainers", "all") else "maintainers"
+
+
 def issue_fix_hunt_budget() -> int:
     """How many attempts the issue-fix hunter queues per UTC day."""
     return positive_int("TRIAGE_ISSUE_FIX_HUNT_BUDGET", 5)

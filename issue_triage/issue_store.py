@@ -29,14 +29,15 @@ REPRO_GRADES = {"A", "B", "C", "D", "F"}
 FIX_SCAN_STATES = {"fixed", "likely-fixed", "not-fixed"}
 ISSUE_FIX_ACTIONS = ("solve", "send-back", "answer", "ask-reporter", "propose")
 ISSUE_FIX_STATUSES = ("queued", "running", "done", "failed", "cancelled")
-ISSUE_FIX_SOURCES = ("operator", "hunter", "reporter", "followup")
+ISSUE_FIX_SOURCES = ("operator", "hunter", "reporter", "followup", "public")
 # Where the follow-up on an issue's proposed pull request stands
 # (`issue_triage.followup`).
 FOLLOWUP_STATES = ("watching", "ready", "handed-back", "done")
 # How a `done` follow-up's pull request ended.
 FOLLOWUP_CLOSED_AS = ("merged", "closed")
 ISSUE_SECTIONS = ("meta", "summary", "repro", "cluster", "analysis", "links", "resolution",
-                  "fix_scan", "fix_request", "fix_run", "fix_thread", "fix_followup")
+                  "fix_scan", "fix_request", "fix_run", "fix_thread", "fix_followup",
+                  "fix_public")
 
 
 def validate_issue(rec: dict) -> None:
@@ -96,6 +97,11 @@ def validate_issue(rec: dict) -> None:
         if fu.get("closed_as") is not None and fu["closed_as"] not in FOLLOWUP_CLOSED_AS:
             raise ValidationError(f"fix_followup.closed_as: {fu['closed_as']!r} not in "
                                   f"{list(FOLLOWUP_CLOSED_AS)}")
+    pub = rec.get("fix_public")
+    if pub:
+        for field in ("labels", "posted", "queued"):
+            if not isinstance(pub.get(field, {}), dict):
+                raise ValidationError(f"fix_public.{field}: must be a mapping")
 
 
 def validate_issue_cluster(rec: dict) -> None:

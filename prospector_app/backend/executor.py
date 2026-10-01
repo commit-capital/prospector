@@ -1288,6 +1288,98 @@ def rerun_issue_fix_checks(issue: int, pr: int, run_ids: list[int], *, token: st
         attempt=attempt, failure="workflow re-run failed unexpectedly")
 
 
+_FIX_LABELS_MADE: set[str] = set()
+
+
+def _ensure_fix_label(label: str, token: str) -> str | None:
+    """Create issue-fix status label `label` on TRIAGE_REPO when it is missing.
+    Why it could not be, or None once it exists."""
+    from urllib.parse import quote
+
+    from pipeline.gh import gh_json
+
+    if label in _FIX_LABELS_MADE:
+        return None
+    if gh_json(f"repos/{settings.repo()}/labels/{quote(label, safe='')}") is None:
+        r = safety_guard.label_bot_run("create", label, token)
+        if r.returncode != 0 and "already_exists" not in (r.stdout or "") + (r.stderr or ""):
+            return f"creating the label {label!r} failed: {_gh_api_error(r)}"
+    _FIX_LABELS_MADE.add(label)
+    return None
+
+
+def set_fix_label(number: int, *, add: str | None, remove: str | None, issue: int,
+                  token: str | None, dry_run: bool = True) -> dict:
+    """Swap issue or pull request `number`'s issue-fix status label from
+    `remove` to `add` (either may be None) for issue `issue`'s public loop, as
+    the bot through `safety_guard.label_bot_run`; a label created the first
+    time it is used. A label already gone counts as removed. With no token
+    every run is a dry-run. Logged to Activity."""
+    base: dict = {"issue": int(issue), "action": "FIX_LABEL", "number": int(number),
+                  "label": add, "removed": remove}
+    if int(number) != int(issue):
+        base["pr"] = int(number)
+
+    def attempt(token: str) -> dict[str, object]:
+        if remove and remove != add:
+            r = safety_guard.label_bot_run("remove", remove, token, number=int(number))
+            if r.returncode != 0 and "HTTP 404" not in (r.stderr or ""):
+                return {"status": "error",
+                        "detail": f"removing {remove!r} from #{number} failed: {_gh_api_error(r)}"}
+        if add:
+            missing = _ensure_fix_label(add, token)
+            if missing:
+                return {"status": "error", "detail": missing}
+            r = safety_guard.label_bot_run("add", add, token, number=int(number))
+            if r.returncode != 0:
+                return {"status": "error",
+                        "detail": f"labelling #{number} {add!r} failed: {_gh_api_error(r)}"}
+        what = f"labelled #{number} {add!r}" if add else f"took {remove!r} off #{number}"
+        return {"status": "executed", "detail": what}
+
+    preview = (f"would label #{number} {add!r}" if add
+               else f"would take {remove!r} off #{number}")
+    return _bot_write("issue-fix-label", base, token=token, dry_run=dry_run, preview=preview,
+                      attempt=attempt, failure="setting the status label failed unexpectedly")
+
+
+def _bot_commented_with(number: int, marker: str) -> bool:
+    """Whether the bot already posted a comment ending in `marker` on issue or
+    pull request `number`, over every page of its comments."""
+    comments = gh.issue_comments(int(number))
+    if comments is None:
+        raise RuntimeError(f"the comments on #{number} could not be read")
+    return any(_is_bot_login((c.get("user") or {}).get("login"))
+               and (c.get("body") or "").rstrip().endswith(marker) for c in comments)
+
+
+def post_fix_comment(number: int, body: str, *, marker: str, issue: int, comment_kind: str,
+                     token: str | None, dry_run: bool = True) -> dict:
+    """Post issue `issue`'s public-loop comment `body` (kind `comment_kind`) on
+    issue or pull request `number`, as the bot, unless a bot comment carrying
+    `marker` is already there. With no token every run is a dry-run. Logged to
+    Activity."""
+    base: dict = {"issue": int(issue), "action": "FIX_COMMENT", "number": int(number),
+                  "comment": comment_kind}
+    if int(number) != int(issue):
+        base["pr"] = int(number)
+
+    def attempt(token: str) -> dict[str, object]:
+        if _bot_commented_with(number, marker):
+            return {"status": "exists", "detail": f"the {comment_kind} comment is on #{number}"}
+        r = bot_run(["gh", "api", f"repos/{settings.repo()}/issues/{int(number)}/comments",
+                     "-f", f"body={body}"], token)
+        if r.returncode != 0:
+            return {"status": "error", "detail": _gh_api_error(r) or f"gh exited {r.returncode}"}
+        url = (json.loads(r.stdout or "{}") or {}).get("html_url")
+        return {"status": "executed",
+                "detail": f"posted the {comment_kind} comment on #{number}", "url": url}
+
+    return _bot_write("issue-fix-comment", base, token=token, dry_run=dry_run,
+                      preview=f"would post the {comment_kind} comment on #{number}",
+                      attempt=attempt, failure="posting the comment failed unexpectedly")
+
+
 def ask_issue_question(issue: int, *, token: str | None, dry_run: bool = True) -> dict:
     """Ask issue `issue` the question its last lane run's dispute raised, as a
     bot comment. The run must pass `issue_gates.question_gate` and the rendered

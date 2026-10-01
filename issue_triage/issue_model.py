@@ -214,6 +214,22 @@ class Issue:
         (`issue_triage.followup`)."""
         return self._fix_section("fix_followup")
 
+    @property
+    def fix_public(self) -> dict:
+        """What the public loop has set and posted on GitHub for this issue
+        (`issue_triage.public_loop`); empty when it has done nothing."""
+        return self._fix_section("fix_public") or {}
+
+    def stage_fix_public(self, section: dict) -> None:
+        """Stage the public-loop record without persisting, for a
+        compare-and-swap."""
+        _stamp(self.rec, "fix_public", {k: v for k, v in section.items()
+                                        if k != "checked_at"}, None)
+
+    def record_fix_public(self, section: dict) -> None:
+        self.stage_fix_public(section)
+        self._persist()
+
     def stage_fix_request(self, section: dict) -> None:
         """Stage the fix request without persisting, for a compare-and-swap."""
         _stamp(self.rec, "fix_request", {k: v for k, v in section.items()

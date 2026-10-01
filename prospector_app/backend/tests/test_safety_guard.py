@@ -209,3 +209,55 @@ def test_merge_still_blocked_on_the_ordinary_paths():
         sg.assert_read_only(["gh", "pr", "merge", "5"])
     with pytest.raises(sg.WriteAttemptBlocked):
         sg.assert_bot_write(["gh", "pr", "merge", "5"])
+
+
+# --- the issue-fix status labels -----------------------------------------------
+
+def _label_runs(monkeypatch) -> list[tuple[list[str], str | None]]:
+    from types import SimpleNamespace
+    seen: list[tuple[list[str], str | None]] = []
+
+    def fake_run(argv, **kw):
+        seen.append((argv, kw.get("input")))
+        return SimpleNamespace(returncode=0, stdout="{}", stderr="")
+
+    monkeypatch.setattr(sg.subprocess, "run", fake_run)
+    monkeypatch.setattr(sg, "assert_store_writes_safe", lambda: None)
+    return seen
+
+
+def test_a_status_label_is_added_removed_or_created_and_nothing_else(monkeypatch):
+    import json
+    seen = _label_runs(monkeypatch)
+    repo = sg.settings.repo()
+    sg.label_bot_run("add", "needs answer", "tok", number=12)
+    sg.label_bot_run("remove", "couldn't fix", "tok", number=12)
+    sg.label_bot_run("create", "fix in progress", "tok")
+    (add, payload), (remove, _), (create, made) = seen
+    assert add == ["gh", "api", "--method", "POST", f"repos/{repo}/issues/12/labels",
+                   "--input", "-"]
+    assert json.loads(payload or "") == {"labels": ["needs answer"]}
+    assert remove == ["gh", "api", "--method", "DELETE",
+                      f"repos/{repo}/issues/12/labels/couldn%27t%20fix"]
+    assert create[-3:] == [f"repos/{repo}/labels", "--input", "-"]
+    assert json.loads(made or "")["name"] == "fix in progress"
+
+
+@pytest.mark.parametrize(("op", "label", "number"), [
+    ("add", "bug", 12),
+    ("add", "needs answer", None),
+    ("add", "needs answer", 0),
+    ("remove", "wontfix", 12),
+    ("create", "needs answer", 12),
+    ("rename", "needs answer", 12),
+])
+def test_any_other_label_write_is_refused(monkeypatch, op, label, number):
+    seen = _label_runs(monkeypatch)
+    with pytest.raises(sg.WriteAttemptBlocked):
+        sg.label_bot_run(op, label, "tok", number=number)
+    assert seen == []
+
+
+def test_a_label_write_needs_a_bot_token():
+    with pytest.raises(sg.WriteAttemptBlocked):
+        sg.label_bot_run("add", "needs answer", "", number=12)

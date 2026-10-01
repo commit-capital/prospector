@@ -6,11 +6,13 @@ issue-fix worker; every other action needs the files and held base of the run it
 acts on, so only the host that run names takes it. A claim is a compare-and-swap
 (`IssueStore.claim_fix_request`), so two machines never both take one.
 `fix_review_runner.run_request` carries it out. Between requests the lane reads
-the replies to questions asked on GitHub every half hour (`poll_replies`),
-follows up its open pull requests every ten minutes (`issue_triage.followup`,
-as `TRIAGE_ISSUE_FIX_FOLLOWUP` allows), and,
-with `TRIAGE_ISSUE_FIX_HUNT=1`, queues one `solve` for a fresh issue (`hunt`)
-within `settings.issue_fix_hunt_budget()` a UTC day. The lane books every ending
+the replies to questions asked on GitHub every half hour (`poll_replies`); every
+ten minutes it follows up its open pull requests (`issue_triage.followup`, as
+`TRIAGE_ISSUE_FIX_FOLLOWUP` allows), then ingests the in-scope issues updated
+since and brings GitHub in line with their attempts (`issue_triage.public_loop`,
+as `TRIAGE_ISSUE_FIX_PUBLIC` allows); and, with `TRIAGE_ISSUE_FIX_HUNT=1`, it
+queues one `solve` for a fresh issue (`hunt`) within
+`settings.issue_fix_hunt_budget()` a UTC day. The lane books every ending
 on the machine's `issue-fix` health and picks nothing while that lane is
 tripped.
 
@@ -28,7 +30,13 @@ import time
 import traceback
 from datetime import datetime, timedelta, timezone
 
-from issue_triage import dispute_question, fix_review, fix_review_runner, followup
+from issue_triage import (
+    dispute_question,
+    fix_review,
+    fix_review_runner,
+    followup,
+    public_loop,
+)
 from issue_triage.issue_store import IssueStore
 from pipeline import gates, headless_agent, settings, storekit
 from prospector_app.backend import data, lane_health, verify_worker
@@ -36,10 +44,12 @@ from prospector_app.backend import data, lane_health, verify_worker
 LANE = "issue-fix"
 POLL_SECONDS = 20.0
 REPLY_POLL_SECONDS = 30 * 60
-# How often an idle worker follows up the pull requests it proposed.
+# How often an idle worker follows up the pull requests it proposed and syncs
+# the public loop.
 FOLLOWUP_POLL_SECONDS = 10 * 60
 SHUTDOWN_TIMEOUT = 10.0
-# How recent an issue the hunter picks, and the reproduction grades it trusts.
+# How recent an issue the hunter picks, and the reproduction grades it trusts in
+# an issue a maintainer did not file.
 HUNT_MAX_AGE = timedelta(days=30)
 HUNT_GRADES = frozenset({"A", "B"})
 HUNT_SKIP_LABELS = frozenset({"enhancement", "documentation", "question"})
@@ -253,11 +263,13 @@ def _retryable(req: dict | None) -> bool:
 
 
 def hunt(store: IssueStore) -> int | None:
-    """Queue a `solve` for the newest fresh, well-reproduced issue with no
-    linked pull request and no attempt, or whose last `solve` failed and may be
-    retried, a maintainer's (gates.priority_author) ahead of any other, within
-    the day's budget. The issue queued, or None. Reads the app's issue and PR
-    snapshots; the queue write re-checks the issue on the store."""
+    """Queue a `solve` for the newest fresh issue with no linked pull request
+    and no attempt, or whose last `solve` failed and may be retried, a
+    maintainer's (gates.priority_author) ahead of any other, within the day's
+    budget. Another author's issue must be well reproduced (HUNT_GRADES); a
+    maintainer's is taken as reported. The issue queued, or None. Reads the
+    app's issue and PR snapshots; the queue write re-checks the issue on the
+    store."""
     from issue_triage import issue_links, pr_index
     from prospector_app.backend import issue_data
 
@@ -268,13 +280,14 @@ def hunt(store: IssueStore) -> int | None:
     picks = []
     for n, i in issues.items():
         meta = i.raw.get("meta") or {}
+        maintainer = gates.priority_author(i.author, i.author_association)
         if (meta.get("state") != "open" or (meta.get("created_at") or "") < since
-                or (i.raw.get("repro") or {}).get("grade") not in HUNT_GRADES
+                or (not maintainer
+                    and (i.raw.get("repro") or {}).get("grade") not in HUNT_GRADES)
                 or HUNT_SKIP_LABELS & set(meta.get("labels") or [])
                 or i.fix_run or not _retryable(i.fix_request)):
             continue
-        picks.append((gates.priority_author(i.author, i.author_association),
-                      meta.get("created_at") or "", n))
+        picks.append((maintainer, meta.get("created_at") or "", n))
     index = pr_index.build(data.prs().values())
     for *_, n in sorted(picks, reverse=True):
         if issue_links.linked_prs(issues[n], index.get(n)):
@@ -283,6 +296,16 @@ def hunt(store: IssueStore) -> int | None:
         if ok:
             return n
     return None
+
+
+def _every_ten_minutes(store: IssueStore) -> None:
+    """Follow up the open proposals, then refresh the in-scope issues and bring
+    GitHub in line with them; one step failing leaves the others to run."""
+    for step in (followup.poll, public_loop.refresh, public_loop.sync):
+        try:
+            step(store)
+        except Exception:
+            traceback.print_exc()
 
 
 def _reclaim(store: IssueStore) -> None:
@@ -321,7 +344,7 @@ def _drain() -> None:
                         poll_replies(store)
                         last_replies = time.monotonic()
                     if time.monotonic() - last_followup > FOLLOWUP_POLL_SECONDS:
-                        followup.poll(store)
+                        _every_ten_minutes(store)
                         last_followup = time.monotonic()
                     if settings.issue_fix_hunt():
                         hunt(store)

@@ -213,6 +213,27 @@ def test_review_evidence_keeps_suggested_code_and_drops_badges():
     assert "<img" not in (step.guidance or "")
 
 
+def test_a_new_head_after_a_ready_reads_as_watching_until_judged_again(store, monkeypatch):
+    moved = PrState(**{**_pr([_check(status="in_progress", conclusion=None)]).__dict__,
+                       "head_sha": "b" * 40})
+    monkeypatch.setattr(followup, "read", lambda pr: moved)
+    store.edit_issue(7).record_fix_followup({
+        "pr": 9, "state": "ready", "head_sha": HEAD, "described_head": "b" * 40,
+        "judged": {"head_sha": HEAD, "reason": "green"}})
+    followup.poll(store, mode="live")
+    fu = store.load_issue(7).fix_followup
+    assert fu["state"] == "watching" and fu["head_sha"] == "b" * 40
+
+
+def test_a_ready_records_the_head_and_reason_it_was_judged_at(store, monkeypatch):
+    monkeypatch.setattr(followup, "read", lambda pr: _pr())
+    store.edit_issue(7).record_fix_followup({"pr": 9, "state": "watching",
+                                             "described_head": HEAD})
+    followup.poll(store, mode="live")
+    fu = store.load_issue(7).fix_followup
+    assert fu["state"] == "ready" and fu["judged"]["head_sha"] == HEAD
+
+
 @pytest.mark.parametrize("ended,status,note", [
     ("closed", "pr-closed", "#9 was closed without merging; follow-up finished."),
     ("merged", "pr-merged", "#9 merged; follow-up finished."),
