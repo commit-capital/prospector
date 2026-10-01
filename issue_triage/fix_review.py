@@ -105,7 +105,8 @@ def queue(store: IssueStore, n: int, action: str, *, by: str, source: str = "ope
           guidance: str | None = None, answer: dict | None = None,
           dry_run: bool = False) -> tuple[bool, str]:
     """Queue `action` on issue `n`'s fix attempt for the worker, recording the
-    operator's words in the thread. (ok, reason)."""
+    operator's words in the thread. A request that retries a failed one of the
+    same action carries its attempt count on. (ok, reason)."""
     issue = store.load_issue(n)
     if issue is None:
         return False, f"issue #{n} is not in the store"
@@ -117,8 +118,10 @@ def queue(store: IssueStore, n: int, action: str, *, by: str, source: str = "ope
     why = _fits(action, issue.fix_run, guidance=guidance, answer=answer)
     if why:
         return False, why
+    retry = bool(req and req.get("status") == "failed" and req.get("action") == action)
     section: dict = {"action": action, "status": "queued", "source": source,
-                     "requested_by": by, "queued_at": storekit.now(), "dry_run": dry_run}
+                     "requested_by": by, "queued_at": storekit.now(), "dry_run": dry_run,
+                     "attempts": int((req or {}).get("attempts") or 1) + 1 if retry else 1}
     if guidance and guidance.strip():
         section["guidance"] = guidance.strip()
     if answer:

@@ -169,7 +169,7 @@ def beat() -> None:
 
 def worker_offline(host: str, registry: dict, claimed_at: str | None = None) -> bool:
     """Whether `host` has stopped beating: its heartbeat in `registry` (a
-    verify_worker or fix_worker record) is older than
+    verify_worker, fix_worker, or issue_fix_worker record) is older than
     worker_health.OFFLINE_AFTER_SECONDS. A host the registry does not know
     (never beat here, or pruned after a week of silence) is judged by its
     claim instead: `claimed_at` that old means nobody is coming back for it,
