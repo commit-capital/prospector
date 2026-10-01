@@ -7,7 +7,7 @@ import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
-from pipeline import ci_signal, settings
+from pipeline import ci_signal, progress, settings
 from pipeline.gh import gh_graphql
 
 _log = logging.getLogger(__name__)
@@ -97,10 +97,16 @@ def fetch_feeds(numbers: list[int], *,
     """Feeds for `numbers`, keyed by PR. A PR missing from the result failed to
     fetch (transient) and keeps its stored entry."""
     out: dict[int, PrFeed] = {}
+    # Reported only in a job, and only across several requests: the app server
+    # makes this fetch for its own reads.
+    report = (progress.Progress("fetching reviews and comments for", len(numbers), "PRs")
+              if progress.enabled() and len(numbers) > CHUNK_SIZE else None)
     for i in range(0, len(numbers), CHUNK_SIZE):
         chunk = [int(n) for n in numbers[i:i + CHUNK_SIZE]]
         payload = gh_graphql(feed_query(chunk), timeout=120,
                              rate_limit_waits=rate_limit_waits)
+        if report is not None:
+            report.advance(len(chunk))
         if payload is None:
             _log.warning("review feed fetch failed for PRs %s-%s", chunk[0], chunk[-1])
             continue
@@ -109,4 +115,7 @@ def fetch_feeds(numbers: list[int], *,
             node = repo.get(f"p{j}")
             if isinstance(node, dict):
                 out[n] = feed_from_node(n, node)
+    if report is not None:
+        missing = len(numbers) - len(out)
+        report.finish(f"{len(out):,} read" + (f", {missing:,} missing" if missing else ""))
     return out

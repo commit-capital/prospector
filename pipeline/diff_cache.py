@@ -30,6 +30,7 @@ from pipeline import settings
 from pipeline import diffpaths
 from pipeline import gh
 from pipeline import profile
+from pipeline import progress
 from pipeline.gh import operator_env
 
 if TYPE_CHECKING:
@@ -197,17 +198,30 @@ def fetch_diffs(manifest: list[DiffManifestItem], workers: int = 8,
         wanted = [m.head_sha for m in manifest
                   if m.head_sha and not (d / f"{m.head_sha}.diff").exists()]
         d.mkdir(parents=True, exist_ok=True)
+        lookup = progress.Progress("looking up", len(wanted), "diffs in the shared store",
+                                   one="diff in the shared store")
+        found = 0
         for i in range(0, len(wanted), _STORE_CHUNK):
+            batch = wanted[i:i + _STORE_CHUNK]
             try:
-                pulled = store.load_diffs(wanted[i:i + _STORE_CHUNK])
+                pulled = store.load_diffs(batch)
             except Exception as e:
                 _log.warning("diff store bulk read failed: %s", e)
                 break
             for sha, body in pulled.items():
                 (d / f"{sha}.diff").write_text(body)
+            found += len(pulled)
+            lookup.advance(len(batch))
+        lookup.finish(f"{found:,} found")
+    remote = {i for i, m in enumerate(manifest) if not (d / f"{m.head_sha}.diff").exists()}
+    fetching = progress.Progress("fetching", len(remote), "diffs from GitHub",
+                                 one="diff from GitHub")
     ok = bad = 0
     with ThreadPoolExecutor(max_workers=workers) as ex:
-        for good in ex.map(lambda m: fetch_diff(m.pr, m.head_sha, diffs_dir, store),
-                           manifest):
+        results = ex.map(lambda m: fetch_diff(m.pr, m.head_sha, diffs_dir, store), manifest)
+        for i, good in enumerate(results):
             ok, bad = (ok + 1, bad) if good else (ok, bad + 1)
+            if i in remote:
+                fetching.advance()
+    fetching.finish(f"{bad:,} failed" if bad else None)
     return ok, bad

@@ -22,3 +22,13 @@ def test_the_batch_agent_reads_only_its_private_bundle_directory(monkeypatch):
     assert seen["bundle"] == entries
     assert seen["read_root"] == [seen["cwd"]] and seen["allow_gh"] is True
     assert list(seen["env_allow"]) == [] and not os.path.exists(seen["cwd"])
+
+
+def test_a_pass_with_nothing_to_scan_is_timed_in_the_ledger(tmp_path, monkeypatch):
+    from alert_triage.alert_store import AlertStore
+    from pipeline import storekit
+    monkeypatch.setattr(find_fixed.config, "mint_token", lambda: None)
+    assert find_fixed.main(["--store", str(tmp_path)]) == 0
+    passes = [r for r in AlertStore(tmp_path).runs()
+              if isinstance(r, storekit.PhaseRun) and r.phase == "alert-find-fixed"]
+    assert len(passes) == 1 and passes[0].started and passes[0].finished

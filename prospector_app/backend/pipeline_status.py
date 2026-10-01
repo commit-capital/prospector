@@ -7,7 +7,6 @@ need its on-demand fetch), and the issue store for the issue-analysis backlog.
 """
 from __future__ import annotations
 
-from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -72,13 +71,10 @@ def _last_issue_runs(issue_runs: list[storekit.RunRecord]) -> dict[str, str]:
 
 
 def _elapsed_seconds(started: str | None, finished: str | None) -> float | None:
-    if not started or not finished:
+    start, end = storekit.parse_ts(started), storekit.parse_ts(finished)
+    if start is None or end is None:
         return None
-    try:
-        delta = datetime.fromisoformat(finished) - datetime.fromisoformat(started)
-    except ValueError:
-        return None
-    seconds = delta.total_seconds()
+    seconds = (end - start).total_seconds()
     return seconds if seconds > 0 else None
 
 
@@ -132,24 +128,53 @@ def _ledger_records(name: str) -> list[storekit.RunRecord]:
     return alert_data.runs()
 
 
+def _job_history(kind: str) -> tuple[float, float | None, str] | None:
+    """The mean duration of this machine's most recent successful runs of job
+    `kind`, the mean count they were given (None for a job without one), and
+    when the newest of them finished; None when it has none."""
+    from prospector_app.backend import jobs
+    samples: list[tuple[float, int | None, str]] = []
+    for job in sorted(jobs.JOBS.values(), key=lambda j: j["id"], reverse=True):
+        if job["kind"] != kind or job["status"] != "done" or job["finished"] is None:
+            continue
+        seconds = _elapsed_seconds(job["started"], job["finished"])
+        if seconds is not None:
+            samples.append((seconds, job["count"], job["finished"]))
+        if len(samples) == _ESTIMATE_SAMPLES:
+            break
+    if not samples:
+        return None
+    counts = [c for _, c, _ in samples if c is not None]
+    return (sum(s for s, _, _ in samples) / len(samples),
+            sum(counts) / len(counts) if counts else None,
+            samples[0][2])
+
+
 def job_runtimes() -> dict[str, dict[str, str | float | None]]:
-    """Per Control-tab job kind with a ledger mapping: when its phases last ran
-    and the typical whole-run duration, averaged over recent runs of all its
-    phases. `typical_seconds` is None until a run has recorded a real elapsed
-    duration."""
+    """Per Control-tab job kind: when it last ran and how long a whole run
+    typically takes. The duration is the mean of this machine's recent
+    successful runs of the job, with `typical_count` the mean count they were
+    given; without any, a job with a ledger mapping reads it from the ledger —
+    each phase's mean over its recent timed records, summed over the job's
+    phases — and it is None while any phase has no timed record. A job with
+    neither is left out."""
     from prospector_app.backend import jobs
     ledgers: dict[str, list[storekit.RunRecord]] = {}
     out: dict[str, dict[str, str | float | None]] = {}
     for kind, spec in jobs.JOB_SPECS.items():
+        history = _job_history(kind)
         ledger = spec.get("ledger")
         if ledger is None:
+            if history is not None:
+                out[kind] = {"last_run": history[2], "typical_seconds": history[0],
+                             "typical_count": history[1]}
             continue
         name, phases = ledger
         if name not in ledgers:
             ledgers[name] = _ledger_records(name)
         records = ledgers[name]
         last: str | None = None
-        durations: list[float] = []
+        durations: dict[str, list[float]] = {phase: [] for phase in phases}
         for rec in reversed(records):
             if not isinstance(rec, storekit.PhaseRun) or rec.phase not in phases:
                 continue
@@ -157,12 +182,15 @@ def job_runtimes() -> dict[str, dict[str, str | float | None]]:
             if finished and (last is None or finished > last):
                 last = finished
             seconds = _elapsed_seconds(rec.started, rec.finished)
-            if seconds is not None and len(durations) < _ESTIMATE_SAMPLES:
-                durations.append(seconds)
-        out[kind] = {
-            "last_run": last,
-            "typical_seconds": sum(durations) / len(durations) if durations else None,
-        }
+            if seconds is not None and len(durations[rec.phase]) < _ESTIMATE_SAMPLES:
+                durations[rec.phase].append(seconds)
+        if history is not None:
+            typical, count = history[0], history[1]
+        else:
+            typical = (sum(sum(d) / len(d) for d in durations.values())
+                       if all(durations.values()) else None)
+            count = None
+        out[kind] = {"last_run": last, "typical_seconds": typical, "typical_count": count}
     return out
 
 

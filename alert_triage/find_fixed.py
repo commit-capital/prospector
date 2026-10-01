@@ -27,6 +27,7 @@ from alert_triage import config
 from alert_triage.alert_store import AlertStore
 from pipeline import settings
 from pipeline import headless_agent
+from pipeline import storekit
 
 _print_lock = threading.Lock()
 
@@ -101,6 +102,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="alert store root (default: the shared store)")
     args = ap.parse_args(argv)
     store = AlertStore(args.store) if args.store else AlertStore()
+    started = storekit.now()
     token = config.mint_token()
     tier0 = alert_fixed_driver.deterministic_fixed(
         store, path_exists=_path_prober(token) if token else None)
@@ -114,6 +116,7 @@ def main(argv: list[str] | None = None) -> int:
          f"in batches of {args.batch}, up to {conc} at a time…")
     if not todo:
         _say("✓ nothing to scan — every open alert has a current fix-scan.")
+        _record_pass(store, started, len(cands), 0, len(tier0), 0)
         return 0
     entries = alert_fixed_driver.bundle(store, only=todo)
     batches = [entries[i:i + args.batch] for i in range(0, len(entries), args.batch)]
@@ -137,7 +140,18 @@ def main(argv: list[str] | None = None) -> int:
     remaining = len(alert_fixed_driver.candidates(store))
     _say(f"✓ applied {applied} verdicts across {len(batches) - failed_batches}/"
          f"{len(batches)} batches; {remaining} alerts still unscanned.")
+    _record_pass(store, started, len(cands), len(todo), len(tier0) + applied, failed_batches)
     return 0 if applied else 1
+
+
+def _record_pass(store: AlertStore, started: str, candidates: int, scanned: int,
+                 applied: int, failed_batches: int) -> None:
+    """The whole pass's ledger entry, which times it; `apply_verdicts` also
+    records each batch it applies."""
+    store.append_run({"phase": "alert-find-fixed", "started": started,
+                      "finished": storekit.now(),
+                      "stats": {"candidates": candidates, "scanned": scanned,
+                                "applied": applied, "failed_batches": failed_batches}})
 
 
 if __name__ == "__main__":

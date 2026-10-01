@@ -7,6 +7,7 @@ import { PRLink } from "../components/PRLink";
 import { FlyoutIssueLink } from "../components/FlyoutIssueLink";
 import { SandboxChecks } from "../components/SandboxChecks";
 import { groupNeedsAttention } from "./needsAttention";
+import { attachJobStream, type JobMeta } from "../jobStream";
 
 /** The parked-and-ready chip, worded by what the action actually produced. */
 const PARKED_READY: Record<string, string> = {
@@ -51,6 +52,66 @@ function fmtDuration(seconds: number | null | undefined): string | null {
   if (minutes < 60) return `~${minutes < 10 ? minutes.toFixed(1) : Math.round(minutes)}m`;
   const hours = minutes / 60;
   return `~${hours < 10 ? hours.toFixed(1) : Math.round(hours)}h`;
+}
+
+/** An exact elapsed time — "42s", "4m 05s", "1h 03m" — for a running job. */
+function fmtElapsed(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
+  return `${Math.floor(s / 3600)}h ${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}m`;
+}
+
+/** The line above a job's console: queued or running and for how long, how
+ *  long since it last printed, a Stop button, or how it ended. Ticks each
+ *  second while the job runs. */
+function JobConsoleStatus({ meta, running, reconnecting, lastOutputAt, onStop }: {
+  meta: JobMeta;
+  running: boolean;
+  reconnecting: boolean;
+  lastOutputAt: number | null;
+  onStop: () => void;
+}) {
+  const [now, setNow] = useState<number>(() => Date.now());
+  useEffect(() => {
+    if (!running) return;
+    const t = setInterval(() => setNow(Date.now()), 1_000);
+    return () => clearInterval(t);
+  }, [running]);
+  const started = new Date(meta.started).getTime();
+  if (reconnecting) {
+    return (
+      <div className="jobstatus jobstatus-warn">
+        ↻ Lost the connection to the server (it may be restarting). Reconnecting — the job keeps running.
+      </div>
+    );
+  }
+  if (running) {
+    const quiet = lastOutputAt != null ? (now - lastOutputAt) / 1000 : null;
+    return (
+      <div className="jobstatus">
+        <span className="jobstatus-dot" />
+        {meta.status === "queued"
+          ? <>Job #{meta.id} queued — waiting for another run of this job to finish</>
+          : <>Running job #{meta.id} · {fmtElapsed((now - started) / 1000)} elapsed
+            {quiet != null && quiet >= 10 && <> · no output for {fmtElapsed(quiet)}</>}</>}
+        <button className="btn-secondary sm" onClick={onStop}
+          title="Stop this job: every process it started, its agents included, gets SIGTERM, then SIGKILL 10s later; a verify job's sandbox containers are removed.">■ Stop</button>
+      </div>
+    );
+  }
+  const took = meta.finished ? fmtElapsed((new Date(meta.finished).getTime() - started) / 1000) : null;
+  if (meta.status === "done") {
+    return <div className="jobstatus jobstatus-ok">✓ Job #{meta.id} finished{took && ` in ${took}`}</div>;
+  }
+  if (meta.status === "failed") {
+    return (
+      <div className="jobstatus jobstatus-bad">
+        ✗ Job #{meta.id} failed{meta.returncode != null && ` (exit ${meta.returncode})`}{took && ` after ${took}`}
+      </div>
+    );
+  }
+  return null;
 }
 
 function agoColor(iso: string | null | undefined): string {
@@ -348,14 +409,19 @@ export default function ControlPanel() {
   const [jobs, setJobs] = useState<JobRec[]>([]);
   const [cluster, setCluster] = useState("");
   const [prNum, setPrNum] = useState("");
-  const [analyzeCount, setAnalyzeCount] = useState("200"); // issues per issue-analyze run
-  const [clusterAnalyzeCount, setClusterAnalyzeCount] = useState("20"); // clusters per analyze-clusters run
+  // The count typed into each count job's box, by kind; a kind not typed into
+  // reads its spec's default.
+  const [counts, setCounts] = useState<Record<string, string>>({});
   const [log, setLog] = useState<string[]>([]);
   const [running, setRunning] = useState<string | null>(null); // kind of running job
   // Which job kind the log pane belongs to — it keeps pointing at the last
   // attached job after it finishes, so the output stays under its row.
   const [logKind, setLogKind] = useState<string | null>(null);
-  const esRef = useRef<EventSource | null>(null);
+  // The attached job, for the status line above its console.
+  const [jobMeta, setJobMeta] = useState<JobMeta | null>(null);
+  const [lastOutputAt, setLastOutputAt] = useState<number | null>(null);
+  const [reconnecting, setReconnecting] = useState(false);
+  const closeStreamRef = useRef<(() => void) | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
 
   const [pipeline, setPipeline] = useState<PipelineStatus | null>(null);
@@ -439,19 +505,59 @@ export default function ControlPanel() {
   // it and drive the shared `log`/`running` state from whichever job kind
   // it is. Safe to abandon: closing this connection (tab close, navigating
   // away) never touches the job itself, only this page's view of it.
+  //
+  // A job that ends while this page follows it raises a toast, which shows
+  // even when the console is scrolled out of view.
   const attachStream = (url: string, kind: string) => {
-    esRef.current?.close();
+    closeStreamRef.current?.();
     setRunning(kind);
     setLogKind(kind);
-    const es = new EventSource(url);
-    esRef.current = es;
-    es.addEventListener("log", (e: MessageEvent) => setLog((l) => [...l, e.data]));
-    es.addEventListener("done", (e: MessageEvent) => {
-      const { status } = JSON.parse(e.data);
-      setLog((l) => [...l, `■ job ${status}`]);
-      es.close(); setRunning(null); refreshJobs(); refreshPipelineStatus();
+    setJobMeta(null);
+    setLastOutputAt(null);
+    setReconnecting(false);
+    let watched: JobMeta | null = null;
+    const settle = () => {
+      setRunning(null); setReconnecting(false); refreshJobs(); refreshPipelineStatus();
+    };
+    closeStreamRef.current = attachJobStream(url, {
+      onJob: (meta) => {
+        setJobMeta(meta);
+        setReconnecting(false);
+        if (meta.last_output) setLastOutputAt(new Date(meta.last_output).getTime());
+        if (meta.status === "queued" || meta.status === "running") watched = meta;
+      },
+      onLog: (line, live) => {
+        setLog((l) => [...l, line]);
+        if (live) {
+          setLastOutputAt(Date.now());
+          setJobMeta((m) => (m && m.status === "queued" ? { ...m, status: "running" } : m));
+        }
+      },
+      onReconnecting: () => setReconnecting(true),
+      onDone: (c) => {
+        setLog((l) => [...l, `■ job ${c.status}`]);
+        setJobMeta((m) => m && { ...m, status: c.status, finished: c.finished, returncode: c.returncode });
+        settle();
+        if (watched) {
+          const took = c.finished
+            ? ` in ${fmtElapsed((new Date(c.finished).getTime() - new Date(watched.started).getTime()) / 1000)}`
+            : "";
+          if (c.status === "done") pushToast(`${watched.label} finished${took}`, "green");
+          else pushToast(`${watched.label} failed${c.returncode != null ? ` (exit ${c.returncode})` : ""}${took}`, "red",
+            { detail: "Its output is in the Control tab's console." });
+        }
+      },
+      onError: (named) => {
+        setLog((l) => [...l, named
+          ? "⚠ lost the job's output stream — reload this page to reattach"
+          : "⚠ the job didn't start: the server refused it (one may already be running, or the count is invalid) or couldn't be reached"]);
+        settle();
+      },
     });
-    es.onerror = () => { es.close(); setRunning(null); refreshJobs(); refreshPipelineStatus(); };
+  };
+
+  const stopJob = (id: number) => {
+    api.stopJob(id).catch((e) => setLog((l) => [...l, `⚠ couldn't stop job #${id}: ${String(e)}`]));
   };
 
   useEffect(() => {
@@ -472,7 +578,7 @@ export default function ControlPanel() {
     }).catch((e) => setErr(String(e)));
     refreshPipelineStatus();
     api.trainingStats().then(setLearn).catch(() => {});
-    return () => esRef.current?.close();
+    return () => closeStreamRef.current?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only: reattach check runs once
   }, []);
 
@@ -519,9 +625,8 @@ export default function ControlPanel() {
 
   useEffect(() => { logRef.current?.scrollTo(0, logRef.current.scrollHeight); }, [log]);
 
-  // needs_count is shared by more than one job kind (issues vs. clusters), each
-  // with its own backlog size and default — pick the field that matches.
-  const countFor = (kind: string) => (kind === "analyze-clusters" ? clusterAnalyzeCount : analyzeCount);
+  const countFor = (kind: string): string =>
+    counts[kind] ?? String(specs.find((s) => s.kind === kind)?.count_default ?? "");
 
   const run = (spec: JobSpec) => {
     if (running) return;
@@ -551,12 +656,12 @@ export default function ControlPanel() {
   // `estimates`. Every other row shows its ledger-typical whole-run duration.
   const estThreatScan = cov && est?.threat_scan_seconds_per_pr != null
     ? fmtDuration(est.threat_scan_seconds_per_pr * cov.total) : null;
-  const clusterCountNum = Number(clusterAnalyzeCount);
+  const clusterCountNum = Number(countFor("analyze-clusters"));
   const estAnalyzeClusters = cov && est?.analyze_clusters_seconds_per_cluster != null
       && Number.isFinite(clusterCountNum) && clusterCountNum > 0
     ? fmtDuration(est.analyze_clusters_seconds_per_cluster * Math.min(clusterCountNum, cov.analysis.never))
     : null;
-  const issueCountNum = Number(analyzeCount);
+  const issueCountNum = Number(countFor("issue-analyze"));
   const estIssueAnalyze = icov && est?.issue_analyze_seconds_per_issue != null
       && Number.isFinite(issueCountNum) && issueCountNum > 0
     ? fmtDuration(est.issue_analyze_seconds_per_issue * Math.min(issueCountNum, icov.pending_analysis))
@@ -691,7 +796,9 @@ export default function ControlPanel() {
           const duration = s.kind === "threat-scan" ? estThreatScan
             : s.kind === "analyze-clusters" ? estAnalyzeClusters
             : s.kind === "issue-analyze" ? estIssueAnalyze
-            : fmtDuration(s.typical_seconds);
+            : fmtDuration(s.typical_seconds)
+              && `${fmtDuration(s.typical_seconds)}${s.typical_count != null && s.count_noun
+                ? ` for ${Math.round(s.typical_count)} ${s.count_noun}` : ""}`;
           return (
             <Fragment key={s.kind}>
               <div className="jobspec" style={clusterBacklog || issueBacklog
@@ -740,18 +847,27 @@ export default function ControlPanel() {
                 )}
                 {s.needs_count && (
                   <input className="search sm" type="number" min={1} style={{ width: 72 }}
-                    placeholder={s.kind === "analyze-clusters" ? "# clusters" : "# issues"}
+                    placeholder={`# ${s.count_noun ?? "items"}`}
+                    title={s.count_noun ? `How many ${s.count_noun} this run takes on` : undefined}
                     value={countFor(s.kind)}
-                    onChange={(e) => (s.kind === "analyze-clusters" ? setClusterAnalyzeCount : setAnalyzeCount)(e.target.value)} />
+                    onChange={(e) => setCounts((c) => ({ ...c, [s.kind]: e.target.value }))} />
                 )}
                 <button className="btn-secondary sm" disabled={running !== null} onClick={() => run(s)}>
                   {running === s.kind ? "Running…" : "▶ Run"}
                 </button>
               </div>
               {logKind === s.kind && (
-                <div className="joblog" ref={logRef}>
-                  {log.map((l, i) => <div key={i} className="logline">{l}</div>)}
-                </div>
+                <>
+                  {jobMeta && (
+                    <JobConsoleStatus meta={jobMeta}
+                      running={running === s.kind && (jobMeta.status === "queued" || jobMeta.status === "running")}
+                      reconnecting={reconnecting} lastOutputAt={lastOutputAt}
+                      onStop={() => stopJob(jobMeta.id)} />
+                  )}
+                  <div className="joblog" ref={logRef}>
+                    {log.map((l, i) => <div key={i} className="logline">{l}</div>)}
+                  </div>
+                </>
               )}
             </Fragment>
           );

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from pipeline import gates
+from pipeline import progress
 from pipeline import reviewers
 from pipeline import schema
 from pipeline import settings
@@ -285,6 +286,8 @@ def validate_cluster(rec: dict) -> None:
 
 # PR records `pr_bodies` reads per statement.
 PR_BODIES_BATCH = 200
+# Diff bodies run to hundreds of KB each, so a diff read ships this many per query.
+LOAD_DIFFS_BATCH = 100
 
 # The light PR copy (`light_pr`): every reviewer's summary and a parked
 # resolve's conflict diff cut to LIGHT_CLIP_CHARS, and each review finding's
@@ -501,24 +504,41 @@ class Store:
             return conn.execute(select(schema.prs.c.pr, schema.prs.c.state)).all()
         return {r[0]: r[1] for r in storekit.read_retrying(self.engine, q) if r[1]}
 
+    def link_rows(self) -> list[dict]:
+        """Number, title, description, state and head of every open or merged PR
+        — what the alert and advisory linkers match on — projected server-side
+        and read in pages."""
+        c = schema.prs.c
+        rows = self._prs.rows(
+            [c.state, c.head_sha, c.data[("meta", "title")].as_string(),
+             c.data[("meta", "body")].as_string()],
+            where=c.state.in_(("open", "merged")))
+        return [{"number": r[0], "state": r[1], "head_sha": r[2],
+                 "title": r[3] or "", "body": r[4] or ""} for r in rows]
+
     def pr_bodies(self, ns: list[int]) -> dict[int, str | None]:
         """The stored `meta.body` for each of `ns` — the field `all_prs` omits.
-        Reads the records PR_BODIES_BATCH at a time and projects the body in
-        Python, so it stays dialect-agnostic and no one statement reads enough
-        whole records to reach a shared database's statement timeout (issue
-        ingest asks for every linking PR at once)."""
+        Projects the body server-side and reads PR_BODIES_BATCH PRs at a time, so
+        no one statement ships enough to reach a shared database's statement
+        timeout (issue ingest asks for every linking PR at once). Reported batch
+        by batch where `progress` reports store reads."""
         from sqlalchemy import select
         ids = [int(n) for n in ns]
+        body = schema.prs.c.data[("meta", "body")].as_string()
+        report = progress.store_read("prs", lambda: len(ids), verb="downloading descriptions of")
         out: dict[int, str | None] = {}
         for start in range(0, len(ids), PR_BODIES_BATCH):
             batch = ids[start:start + PR_BODIES_BATCH]
 
             def q(conn, batch: list[int] = batch) -> list:
                 return conn.execute(
-                    select(schema.prs.c.pr, schema.prs.c.data)
+                    select(schema.prs.c.pr, body)
                     .where(schema.prs.c.pr.in_(batch))).all()
-            out.update({r[0]: (r[1].get("meta") or {}).get("body")
-                        for r in storekit.read_retrying(self.engine, q)})
+            out.update({r[0]: r[1] for r in storekit.read_retrying(self.engine, q)})
+            if report is not None:
+                report.advance(len(batch))
+        if report is not None:
+            report.finish()
         return out
 
     def edit_pr(self, n: int) -> model.Pr:
@@ -751,17 +771,34 @@ class Store:
         row = storekit.read_retrying(self.engine, q)
         return None if row is None else row[0]
 
-    def load_diffs(self, head_shas: list[str]) -> dict[str, str]:
-        """The cached diff bodies present for `head_shas`, in one query —
-        absent heads are simply missing from the result."""
-        from sqlalchemy import select
-        if not head_shas:
-            return {}
-        def q(conn) -> list:
-            return conn.execute(
-                select(schema.diffs.c.head_sha, schema.diffs.c.body)
-                .where(schema.diffs.c.head_sha.in_(head_shas))).all()
-        return {r[0]: r[1] for r in storekit.read_retrying(self.engine, q)}
+    def load_diffs(self, head_shas: list[str],
+                   containing: list[str] | None = None) -> dict[str, str]:
+        """The cached diff bodies present for `head_shas`, LOAD_DIFFS_BATCH heads
+        per query — absent heads are simply missing from the result. With
+        `containing`, only the diffs whose text includes one of those strings,
+        matched server-side so no other diff ships. Reported batch by batch where
+        `progress` reports store reads."""
+        from sqlalchemy import or_, select
+        heads = list(dict.fromkeys(head_shas))
+        report = progress.store_read("diffs", lambda: len(heads),
+                                     verb="searching" if containing else "downloading")
+        out: dict[str, str] = {}
+        for start in range(0, len(heads), LOAD_DIFFS_BATCH):
+            batch = heads[start:start + LOAD_DIFFS_BATCH]
+
+            def q(conn, batch: list[str] = batch) -> list:
+                stmt = (select(schema.diffs.c.head_sha, schema.diffs.c.body)
+                        .where(schema.diffs.c.head_sha.in_(batch)))
+                if containing:
+                    stmt = stmt.where(or_(*(schema.diffs.c.body.contains(text, autoescape=True)
+                                            for text in containing)))
+                return conn.execute(stmt).all()
+            out.update({r[0]: r[1] for r in storekit.read_retrying(self.engine, q)})
+            if report is not None:
+                report.advance(len(batch))
+        if report is not None:
+            report.finish()
+        return out
 
     def save_diffs_many(self, rows: list[tuple[str, int | None, str]]) -> None:
         """Insert `(head_sha, pr, body)` rows for heads absent from the table;

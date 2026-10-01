@@ -13,6 +13,7 @@ from collections.abc import Sequence
 
 from pipeline import ci_signal
 from pipeline import diffpaths
+from pipeline import progress
 from pipeline import settings
 from pipeline.gh import gh_graphql
 
@@ -73,9 +74,15 @@ def fetch(prs: list[int], *,
     """
     out: dict[int, dict] = {}
     not_found: set[int] = set()
+    # Reported only in a job, and only across several requests: the app server
+    # makes this fetch for its own reads.
+    report = (progress.Progress("fetching live CI and mergeability for", len(prs), "PRs")
+              if progress.enabled() and len(prs) > CHUNK_SIZE else None)
     for i in range(0, len(prs), CHUNK_SIZE):
         chunk = prs[i:i + CHUNK_SIZE]
         payload = gh_graphql(_query(chunk), rate_limit_waits=rate_limit_waits)
+        if report is not None:
+            report.advance(len(chunk))
         if payload is None:
             _log.warning("live PR fetch failed for %d PRs (%d-%d)",
                          len(chunk), chunk[0], chunk[-1])
@@ -116,4 +123,7 @@ def fetch(prs: list[int], *,
                 "diffstat": diffstat,
                 "has_tests": diffpaths.has_tests(paths),
             }
+    if report is not None:
+        missing = len(prs) - len(out)
+        report.finish(f"{len(out):,} read" + (f", {missing:,} missing" if missing else ""))
     return out, not_found

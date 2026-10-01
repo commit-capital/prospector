@@ -9,8 +9,11 @@ refetch reports them unknown.
 """
 from __future__ import annotations
 
+import time
+
 from issue_triage.config import repo, repo_name, repo_owner
 from pipeline import gh
+from pipeline import progress
 
 # GraphQL issues connection: one page of 100 open issues + a cursor. Fields are
 # named to normalize onto the same shape normalize_issue produces from REST, so
@@ -127,16 +130,23 @@ def fetch_all(max_pages: int = 60, max_issues: int | None = None) -> list[dict]:
     truncated set, because a partial open-fetch makes the missing tail look closed
     to reconcile_closures. Smoke runs (max_issues) stop before the backstop, so it
     can't fire there.
+
+    Where `progress` reports, prints a line per page fetched.
     """
     rows: list[dict] = []
     cursor: str | None = None
-    for _ in range(max_pages):
+    report = progress.enabled()
+    started = time.monotonic()
+    for page_no in range(1, max_pages + 1):
         variables = {"owner": repo_owner(), "name": repo_name()}
         if cursor:
             variables["cursor"] = cursor
         conn = gh.gh_graphql_data(_ISSUES_QUERY, variables=variables,
                                   rate_limit_waits=gh.RATE_LIMIT_BACKOFF)["repository"]["issues"]
         rows += [normalize_gql(n) for n in conn["nodes"]]
+        if report:
+            progress.say(f"  page {page_no}: {len(rows):,} open issues so far · "
+                         f"{progress.duration(time.monotonic() - started)}")
         if max_issues is not None and len(rows) >= max_issues:
             return rows[:max_issues]
         page = conn["pageInfo"]

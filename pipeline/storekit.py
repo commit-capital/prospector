@@ -33,6 +33,8 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.pool import NullPool
 from sqlalchemy.sql.elements import ColumnElement
 
+from pipeline import progress
+
 T = TypeVar("T")
 R = TypeVar("R")
 
@@ -781,20 +783,40 @@ class Collection(Generic[T]):
         self._write(lambda conn: conn.execute(
             sa_delete(self.table).where(self.pk.in_(vals))))
 
-    def _paged(self, columns: list[ColumnElement]) -> list[Row[Any]]:
+    def count(self, where: ColumnElement[bool] | None = None) -> int:
+        stmt = select(func.count()).select_from(self.table)
+        if where is not None:
+            stmt = stmt.where(where)
+        return self._read(lambda conn: int(conn.execute(stmt).scalar_one()))
+
+    def rows(self, columns: list[ColumnElement],
+             where: ColumnElement[bool] | None = None) -> list[Row[Any]]:
+        """(pk, *columns) of every row `where` matches, in pk order, read in pages."""
+        return self._paged(columns, where)
+
+    def _paged(self, columns: list[ColumnElement],
+               where: ColumnElement[bool] | None = None) -> list[Row[Any]]:
         """Every row's (pk, *columns), in pk order, read as a series of
-        BULK_PAGE_ROWS-row statements keyed past the last pk seen."""
+        BULK_PAGE_ROWS-row statements keyed past the last pk seen. Reported page
+        by page where `progress` reports store reads."""
+        report = progress.store_read(self.table.name, lambda: self.count(where))
         rows: list[Row[Any]] = []
         last: int | None = None
         while True:
             def q(conn: Connection, after: int | None = last) -> list[Row[Any]]:
                 stmt = select(self.pk, *columns).order_by(self.pk).limit(BULK_PAGE_ROWS)
+                if where is not None:
+                    stmt = stmt.where(where)
                 if after is not None:
                     stmt = stmt.where(self.pk > after)
                 return list(conn.execute(stmt).all())
             page = self._read(q)
             rows.extend(page)
+            if report is not None:
+                report.advance(len(page))
             if len(page) < BULK_PAGE_ROWS:
+                if report is not None:
+                    report.finish()
                 return rows
             last = page[-1][0]
 

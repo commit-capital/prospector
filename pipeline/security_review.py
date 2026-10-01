@@ -28,11 +28,13 @@ import json
 import os
 import sys
 import threading
+import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, cast
 
 from pipeline import diff_cache
 from pipeline import headless_agent
+from pipeline import progress
 from pipeline import security_driver
 from pipeline import reviewers
 from pipeline.security_driver import (
@@ -159,8 +161,12 @@ def _verify(pr: int, diff_path: str, flagged: list[Finding]) -> tuple[list[Findi
     indexed = [{"index": i, **f} for i, f in enumerate(flagged)]
     confirmed: list[Finding] = []
     complete = True
+    chunks = -(-len(indexed) // VERIFY_CHUNK_SIZE)
     for start in range(0, len(indexed), VERIFY_CHUNK_SIZE):
         chunk = indexed[start:start + VERIFY_CHUNK_SIZE]
+        if chunks > 1:
+            _say(f"  verifier {start // VERIFY_CHUNK_SIZE + 1} of {chunks}: findings "
+                 f"{start + 1}–{start + len(chunk)}…")
         prompt = headless_agent.fill(VERIFY_PROMPT, {
             "__N__": len(chunk), "__PR__": pr, "__DIFF_PATH__": diff_path,
             "__CHUNK__": json.dumps(chunk)}) + VERIFY_FENCED_TAIL
@@ -198,7 +204,7 @@ def review_pr(pr: int, title: str, head: str,
     gates. WHICH PRs get reviewed is a wave-selection concern
     (security_driver.eligible); the engine reviews whatever it's handed."""
     # Ensure the diff for the current head is cached (review + verify Read it).
-    _say("① Caching diff…")
+    _say("① Caching diff (fetched from GitHub unless this head's diff is already cached)…")
     # Resolved, because an agent's read rule names the resolved path and the
     # prompt must name the same one.
     diff_path = os.path.realpath(diff_cache.DIFFS / f"{head}.diff")
@@ -212,6 +218,10 @@ def review_pr(pr: int, title: str, head: str,
     # the byte sequence matches a serial run. GREEN is only trustworthy if every
     # lens ran.
     _say(f"② Reviewing via {len(LENSES)} lenses…")
+    _say(f"  the {len(LENSES)} lens agents run in parallel, each for up to several "
+         f"minutes; the {LENSES[0]['key']} lens prints live, and each other lens's "
+         f"lines print once every lens before it has finished")
+    lenses_started = time.monotonic()
     prog = _LensProgress([f"  · {lens['key']} lens" for lens in LENSES])
     results: list[dict | None] = [None] * len(LENSES)
 
@@ -240,7 +250,9 @@ def review_pr(pr: int, title: str, head: str,
     lenses_ok = sum(1 for r in lens_results if r["ok"])
     coverage_ok = lenses_ok == len(LENSES)
     flagged: list[Finding] = [f for r in lens_results for f in r["findings"]]
-    _say(f"  lenses ran: {lenses_ok}/{len(LENSES)}; non-green findings: {len(flagged)}")
+    _say(f"  lenses ran: {lenses_ok}/{len(LENSES)} in "
+         f"{progress.duration(time.monotonic() - lenses_started)}; "
+         f"non-green findings: {len(flagged)}")
 
     # Refute the flagged findings; only confirmed ones survive.
     if flagged:
@@ -293,6 +305,7 @@ def run(store: Store, pr: int, *, trigger: str | None = None) -> int:
     item, lenses_ok = reviewed
 
     disp_before = rec.disposition
+    _say("④ Committing the review to the store…")
     _, held, errs = security_driver.commit_verdicts(store, [item])
     if errs:
         _say("✗ commit failed:")

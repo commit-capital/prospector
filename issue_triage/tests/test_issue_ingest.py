@@ -3,6 +3,7 @@ from issue_triage import issue_freshness
 from issue_triage import issue_ingest
 from issue_triage import issue_model
 from issue_triage import issue_store
+from pipeline import progress
 
 RAW = {"number": 5, "title": "Login crashes", "body": "Steps:\n1. open\nexpected x actual y",
        "labels": ["bug"], "comments": 2, "reactions_total": 4, "thumbs_up": 2,
@@ -373,3 +374,30 @@ def test_ingest_keeps_a_section_of_an_issue_created_after_its_snapshot(tmp_path,
     iss = st.load_issue(RAW["number"])
     assert iss.title == "Login crashes"
     assert (iss.fix_scan or {}).get("status") == "not-fixed"
+
+
+def test_ingest_counts_its_writes_only_where_progress_reports(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv(progress.ENV, raising=False)
+    st = issue_store.IssueStore(tmp_path)
+    issue_ingest.ingest_records(st, [RAW], prs=[])
+    assert capsys.readouterr().out == ""
+    monkeypatch.setenv(progress.ENV, "1")
+    issue_ingest.ingest_records(st, [RAW, dict(RAW, number=6)], prs=[])
+    out = capsys.readouterr().out
+    assert "  1 of 2 issues new or changed" in out
+    assert "  linking and saving 1 new or changed issue…" in out
+    assert "linking and saving new or changed issues: done, 1 in" in out
+    assert out.rstrip().endswith("— 1 written, 0 contended")
+
+
+def test_reconcile_closures_counts_its_refetches_where_progress_reports(tmp_path, monkeypatch,
+                                                                       capsys):
+    st = issue_store.IssueStore(tmp_path)
+    issue_ingest.ingest_records(st, [RAW, dict(RAW, number=6)], prs=[])
+    monkeypatch.setenv(progress.ENV, "1")
+    closed = {**RAW, "state": "closed"}
+    issue_ingest.reconcile_closures(st, open_now=set(), prs=[],
+                                    fetch_one=lambda n: closed if n == 5 else None)
+    out = capsys.readouterr().out
+    assert "  refetching 2 stored-open issues missing from the open fetch…" in out
+    assert "— 1 changed state, 1 could not be fetched" in out

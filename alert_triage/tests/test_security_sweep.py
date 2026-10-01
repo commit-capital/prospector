@@ -45,3 +45,16 @@ def test_sweep_counts_a_nonzero_step_return_as_failure(monkeypatch, capsys):
     ])
     assert security_sweep.main([]) == 1
     assert "alert-find-fixed exited 1" in capsys.readouterr().out
+
+
+def test_sweep_numbers_its_steps_and_closes_with_a_summary(monkeypatch, capsys):
+    def ok(argv: list[str] | None = None) -> int:
+        return 0
+
+    monkeypatch.setattr(security_sweep, "STEPS", [("alert-ingest", ok, False),
+                                                  ("advisory-ingest", ok, False)])
+    assert security_sweep.main([]) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out[0] == "▶ alert-ingest (step 1 of 2)"
+    assert out[1].startswith("  ✓ alert-ingest done in ")
+    assert out[-1].startswith("■ sweep finished in ") and out[-1].endswith("all 2 steps succeeded")

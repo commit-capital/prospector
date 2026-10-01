@@ -47,6 +47,16 @@ def _cold_data_snapshot(monkeypatch):
         time.sleep(0.02)
 
 
+@pytest.fixture(autouse=True)
+def _jobs_dir(monkeypatch, tmp_path):
+    """Keep every test's job records, logs and exit files in its own directory,
+    with an empty registry, so no test writes the checkout's job cache."""
+    from prospector_app.backend import jobs
+    monkeypatch.setattr(jobs, "JOBS_DIR", tmp_path / "jobs")
+    monkeypatch.setattr(jobs, "JOBS", {})
+    monkeypatch.setattr(jobs, "POLL_SECONDS", 0.01)
+
+
 @pytest.fixture
 def temp_store(monkeypatch):
     """Point the shared store engine at a throwaway SQLite DB so activity/chat

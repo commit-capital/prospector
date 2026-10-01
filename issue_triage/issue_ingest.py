@@ -6,6 +6,7 @@ candidate-PR join. Mirrors pipeline/ingest.py.
 from __future__ import annotations
 
 import argparse
+import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Literal, NamedTuple
 
@@ -17,6 +18,7 @@ from issue_triage import pr_index
 from issue_triage import repro_grade
 from issue_triage import summarize_issues
 from issue_triage.issue_store import IssueStore
+from pipeline import progress
 from pipeline.storekit import now as _now
 
 if TYPE_CHECKING:
@@ -125,37 +127,54 @@ def ingest_records(store: IssueStore, raws: list[dict],
     skipped and counted in `swap_lost`, leaving the rest of the batch to land —
     the write is idempotent, so the next run recomputes it. Every read and write
     shares one reused connection (store.batch). A moved updated_at (or edited
-    body) re-stamps the facts so freshness flips."""
+    body) re-stamps the facts so freshness flips. Where `progress` reports, the
+    comparison and the writes are reported on stdout."""
     if not raws:
         return IngestCounts(0, 0)
+    report = progress.enabled()
+    if report:
+        progress.say(f"  loading stored issues to compare the {len(raws):,} fetched ones against…")
     existing = store.all_issues(omit_candidates=True)
     refs = link_prs.parse_refs(prs) if prs is not None else None  # each body parsed once
+    # (raw, meta, summary, repro) for each raw whose facts differ from the store's.
+    changed: list[tuple[dict, dict, dict, dict]] = []
+    for raw in raws:
+        n = raw["number"]
+        prev = existing.get(n)
+        meta = _meta(raw, prev)
+        s = summarize_issues.summarize({"number": n, "title": meta["title"], "body": meta["body"]})
+        summary = {"subsystem": s["subsystem"], "identifiers": s["identifiers"]}
+        repro = repro_grade.grade_repro(meta["body"])
+        if prev is None or not _facts_unchanged(prev, meta, summary, repro,
+                                                raw.get("github_links")):
+            changed.append((raw, meta, summary, repro))
+    if report:
+        progress.say(f"  {len(changed):,} of {len(raws):,} issues new or changed")
+    saving = (progress.Progress("linking and saving", len(changed), "new or changed issues",
+                                one="new or changed issue") if report else None)
     written = 0
     swap_lost = 0
     with store.batch():
-        for raw in raws:
+        for raw, meta, summary, repro in changed:
             n = raw["number"]
-            prev = existing.get(n)
-            meta = _meta(raw, prev)
-            s = summarize_issues.summarize({"number": n, "title": meta["title"], "body": meta["body"]})
-            summary = {"subsystem": s["subsystem"], "identifiers": s["identifiers"]}
-            repro = repro_grade.grade_repro(meta["body"])
             github = raw.get("github_links")
-            if prev is not None and _facts_unchanged(prev, meta, summary, repro, github):
-                continue
             links = None if prs is None else link_prs.candidate_prs(
-                n, s["subsystem"], prs, refs, issue_text=f"{meta['title']}\n{meta['body']}")
+                n, summary["subsystem"], prs, refs, issue_text=f"{meta['title']}\n{meta['body']}")
             # The swap runs even for an issue the snapshot lacks: another machine
             # may have created and sectioned it since, and the create must not
             # overwrite that record whole.
             swapped = _swap_facts(store, raw, summary, repro, links, github)
-            if swapped == "lost":
-                swap_lost += 1
-                continue
             if swapped == "absent":
                 issue_model.Issue(store, {"issue": int(n)}).apply_facts(
                     meta, summary=summary, repro=repro, links=links, github=github)
-            written += 1
+            if swapped == "lost":
+                swap_lost += 1
+            else:
+                written += 1
+            if saving is not None:
+                saving.advance()
+    if saving is not None:
+        saving.finish(f"{written:,} written, {swap_lost:,} contended")
     return IngestCounts(written, swap_lost)
 
 
@@ -167,18 +186,33 @@ def reconcile_closures(store: IssueStore, open_now: set[int], prs: list[dict],
     and upsert it through ingest_records, so its meta AND derived facts (summary,
     repro, candidate links) match the refetched content. The refetch is a partial
     view, and the facts it cannot see keep their stored values. An unfetchable
-    issue is left untouched. Returns how many issues changed state."""
+    issue is left untouched. Returns how many issues changed state. Where
+    `progress` reports, the refetches are counted on stdout."""
+    report = progress.enabled()
+    if report:
+        progress.say("  loading stored issues to find open ones the fetch did not return…")
+    missing = [(n, iss) for n, iss in store.all_issues(omit_candidates=True).items()
+               if n not in open_now and iss.state == "open"]
+    if report and not missing:
+        progress.say("  every issue the store holds open was in the open fetch")
+    refetching = (progress.Progress("refetching", len(missing),
+                                    "stored-open issues missing from the open fetch",
+                                    one="stored-open issue missing from the open fetch")
+                  if report else None)
     refetched: list[dict] = []
     transitions = 0
-    for n, iss in store.all_issues(omit_candidates=True).items():
-        if n in open_now or iss.state != "open":
-            continue
+    for n, iss in missing:
         raw = fetch_one(n)
+        if refetching is not None:
+            refetching.advance()
         if raw is None:
             continue
         if raw.get("state", "open") != iss.state:
             transitions += 1
         refetched.append(raw)
+    if refetching is not None:
+        refetching.finish(f"{transitions:,} changed state, "
+                          f"{len(missing) - len(refetched):,} could not be fetched")
     ingest_records(store, refetched, prs)
     return transitions
 
@@ -187,20 +221,15 @@ def _load_prs(pr_store: Store | None = None) -> list[dict]:
     """The PR corpus the issue<->PR linker matches against: every open or merged
     PR in the SQL PR store (a merged fixer stays linked — the durable evidence an
     issue is likely fixed), each carrying its `state` and tagged with the shared
-    subsystem taxonomy (so subsystem-match candidates work). Bodies are rehydrated
-    in one batch — all_prs omits meta.body — because the explicit `Fixes #N`
-    parse reads them."""
+    subsystem taxonomy (so subsystem-match candidates work). Read as the store's
+    projected link rows — number, title, description and state — because the
+    explicit `Fixes #N` parse reads the description and nothing else is needed."""
     from pipeline.store import Store
     store = pr_store or Store()
-    keep = {n: pr for n, pr in store.all_prs().items()
-            if pr.state in pr_index.LINKING_STATES}
-    bodies = store.pr_bodies(list(keep))
-    out: list[dict] = []
-    for n, pr in keep.items():
-        title, body = pr.title or "", bodies.get(n) or ""
-        out.append({"number": n, "title": title, "body": body, "state": pr.state,
-                    "subsystem": summarize_issues.classify_subsystem(title, body)})
-    return out
+    return [{"number": r["number"], "title": r["title"], "body": r["body"],
+             "state": r["state"],
+             "subsystem": summarize_issues.classify_subsystem(r["title"], r["body"])}
+            for r in store.link_rows() if r["state"] in pr_index.LINKING_STATES]
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -213,10 +242,18 @@ def main(argv: list[str] | None = None) -> None:
     args = ap.parse_args(argv)
     store = IssueStore(args.store) if args.store else IssueStore()
     started = _now()
+    clock = time.monotonic()
     print("fetching open issues…", flush=True)
     raws = fetch_issues.fetch_all(max_issues=args.max)
+    print(f"  {len(raws):,} open issues fetched in "
+          f"{progress.duration(time.monotonic() - clock)}", flush=True)
+    print("loading open and merged PRs to link issues against…", flush=True)
+    step = time.monotonic()
     prs = _load_prs()
-    print(f"open issues: {len(raws)} | PR corpus: {len(prs)} | upserting…", flush=True)
+    print(f"  {len(prs):,} PRs loaded in {progress.duration(time.monotonic() - step)}",
+          flush=True)
+    print(f"comparing {len(raws):,} open issues with the store; saving the new and "
+          f"changed ones, linked against {len(prs):,} PRs…", flush=True)
     counts = ingest_records(store, raws, prs)
     transitions = 0
     if args.max is None:
@@ -231,7 +268,8 @@ def main(argv: list[str] | None = None) -> None:
                       "stats": stats})
     dest = store.engine.url.host or store.root  # networked store: host; SQLite: local root
     print(f"ingested {len(raws)} open issues ({counts.written} changed, written, "
-          f"{counts.swap_lost} contended), {transitions} state transitions -> {dest}")
+          f"{counts.swap_lost} contended), {transitions} state transitions -> {dest} "
+          f"in {progress.duration(time.monotonic() - clock)}", flush=True)
 
 
 if __name__ == "__main__":

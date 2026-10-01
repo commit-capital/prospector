@@ -25,6 +25,7 @@ from pathlib import Path
 
 from pipeline import analyze_driver
 from pipeline import headless_agent
+from pipeline import progress
 from pipeline import redundancy
 from pipeline.store import Store
 from pipeline.storekit import now as _now
@@ -62,28 +63,37 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     started = _now()
     store = Store(args.store) if args.store else Store()
+    _say("① Finding the clusters that need analysis (reads every PR and cluster "
+         "from the store)…")
     pend = analyze_driver.pending(store)
     todo = pend[:args.limit]
     conc = max(1, args.concurrency)
-    _say(f"① {len(pend)} clusters to analyze; taking {len(todo)} this run, "
-         f"up to {conc} at a time…")
+    _say(f"  {len(pend)} clusters to analyze; taking {len(todo)} this run, "
+         f"up to {conc} at a time.")
     if not todo:
         _say("✓ nothing pending — analysis is current.")
         return 0
 
     # One store read + shared redundancy-tree cache up front; workers see only
     # their own pre-built bundle.
+    _say("② Building each cluster's evidence bundle (reads every PR from the store, "
+         "then each changed file on the default branch from GitHub)…")
     prs = store.all_prs()
     master = redundancy.MasterTree()
     bundles: dict[int, dict] = {}
+    building = progress.Progress("bundling", len(todo), "clusters", one="cluster")
     for c in todo:
         b = analyze_driver.bundle(store, c.id, prs, master=master)
         if b is not None:
             bundles[c.id] = b
+        building.advance()
+    building.finish()
 
     committed = 0
     failed = 0
     done = 0
+    _say(f"③ Running {len(bundles)} analyze agent(s), up to {conc} at a time "
+         f"(each can take several minutes)…")
     with ThreadPoolExecutor(max_workers=conc) as pool:
         futures = {pool.submit(run_cluster_agent, cid, b): cid for cid, b in bundles.items()}
         for fut in as_completed(futures):
@@ -106,8 +116,12 @@ def main(argv: list[str] | None = None) -> int:
                 committed += 1
                 _say(f"    ✓ cluster {cid} committed  ({done}/{len(todo)})")
 
+    _say("④ Wrapping up — each step reads every PR from the store:")
+    _say("  dispositioning standalone PRs…")
     orphans = analyze_driver.disposition_orphans(store)
+    _say("  refreshing salvage-fix action items…")
     salvage = analyze_driver.backfill_salvage_items(store, today=_now()[:10])
+    _say("  counting the clusters still pending (reads the clusters too)…")
     remaining = len(analyze_driver.pending(store))
     _say(f"✓ committed {committed}/{len(todo)} clusters ({failed} failed); "
          f"{orphans} standalone PR(s) dispositioned; {salvage} salvage-fix item(s); "

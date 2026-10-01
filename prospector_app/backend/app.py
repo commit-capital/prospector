@@ -84,6 +84,7 @@ class SurrogateSafeJSONResponse(JSONResponse):
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     """Launch background services without blocking application startup."""
+    _restore_jobs()
     _launch_snapshot_load()
     _launch_live_sweep()
     _launch_verify_worker()
@@ -193,6 +194,15 @@ def _load_issue_snapshot() -> None:
         issue_data.issues()
     except Exception:
         pass  # the first Issues request retries the load
+
+
+def _restore_jobs() -> None:
+    """Take back the Control-tab jobs a previous backend on this checkout started
+    — a reload or restart leaves them running. Skipped under pytest."""
+    import sys
+    if "pytest" in sys.modules:
+        return
+    jobs.restore()
 
 
 def _launch_verify_worker():
@@ -866,7 +876,8 @@ def chat_stop(pr: int | None = None, cluster: int | None = None, issue: int | No
 def job_specs():
     runtimes = pipeline_status.job_runtimes()
     return {"specs": [
-        {**s, **runtimes.get(s["kind"], {"last_run": None, "typical_seconds": None})}
+        {**s, **runtimes.get(s["kind"], {"last_run": None, "typical_seconds": None,
+                                          "typical_count": None})}
         for s in jobs.list_specs()
     ]}
 
@@ -889,14 +900,33 @@ async def jobs_run(kind: str, cluster: int | None = None, pr: int | None = None,
     return EventSourceResponse(jobs.attach_job(job))
 
 
-@app.get("/api/jobs/{job_id}/stream")
-async def jobs_stream(job_id: int):
-    """Reattach to a job already running (or finished) server-side — the full
-    log replays immediately, then the connection follows it live (#683)."""
+@app.get("/api/jobs/{job_id:int}")
+def jobs_get(job_id: int) -> jobs.JobView:
     job = jobs.JOBS.get(job_id)
     if not job:
         raise HTTPException(404, f"no such job: {job_id}")
-    return EventSourceResponse(jobs.attach_job(job))
+    return jobs.view(job)
+
+
+@app.get("/api/jobs/{job_id:int}/stream")
+async def jobs_stream(job_id: int, after: int = 0):
+    """Reattach to a job already running (or finished) server-side — its log
+    replays from line `after` (0 for all of it), then the connection follows it
+    live (#683)."""
+    job = jobs.JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404, f"no such job: {job_id}")
+    return EventSourceResponse(jobs.attach_job(job, after))
+
+
+@app.post("/api/jobs/{job_id:int}/stop")
+async def jobs_stop(job_id: int) -> jobs.JobView:
+    try:
+        return jobs.view(await jobs.stop_job(job_id))
+    except KeyError:
+        raise HTTPException(404, f"no such job: {job_id}")
+    except ValueError as e:
+        raise HTTPException(409, str(e))
 
 
 @app.get("/api/jobs/stream/group")

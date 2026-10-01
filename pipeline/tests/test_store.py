@@ -72,6 +72,33 @@ class TestPRRoundTrip:
         assert store.pr_bodies([1, 2, 3]) == {1: "one", 2: "two", 3: "three"}
         assert len(reads) == 3
 
+    def test_link_rows_project_open_and_merged_prs(self, store):
+        store.save_pr(_pr(1, meta=dict(_pr(1)["meta"], body="fixes CVE-2026-1")))
+        store.save_pr(_pr(2, meta=dict(_pr(2)["meta"], state="merged", head_sha="def456")))
+        store.save_pr(_pr(3, meta=dict(_pr(3)["meta"], state="closed")))
+        assert store.link_rows() == [
+            {"number": 1, "state": "open", "head_sha": "abc123",
+             "title": "fix: a bug", "body": "fixes CVE-2026-1"},
+            {"number": 2, "state": "merged", "head_sha": "def456",
+             "title": "fix: a bug", "body": ""},
+        ]
+
+    def test_load_diffs_reads_in_batches(self, store, monkeypatch):
+        from pipeline import store as store_mod
+        monkeypatch.setattr(store_mod, "LOAD_DIFFS_BATCH", 2)
+        store.save_diffs_many([(f"h{i}", i, f"diff {i}") for i in range(5)])
+        assert store.load_diffs([f"h{i}" for i in range(5)] + ["absent"]) == {
+            f"h{i}": f"diff {i}" for i in range(5)}
+
+    def test_load_diffs_containing_ships_only_matching_diffs(self, store):
+        store.save_diffs_many([
+            ("h1", 1, "--- a/src/app_main.py\n+++ b/src/app_main.py\n"),
+            ("h2", 2, "--- a/src/appXmain.py\n+++ b/src/appXmain.py\n"),
+            ("h3", 3, "--- a/docs/readme.md\n+++ b/docs/readme.md\n"),
+        ])
+        found = store.load_diffs(["h1", "h2", "h3"], containing=["+++ b/src/app_main.py"])
+        assert set(found) == {"h1"}
+
     def test_pr_states_maps_every_pr_to_its_state(self, store):
         store.save_pr(_pr(1))
         store.save_pr(_pr(2, meta=dict(_pr(2)["meta"], state="merged")))

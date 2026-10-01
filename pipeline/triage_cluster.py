@@ -63,38 +63,47 @@ def _run(store: Store, cid: int, cluster: Cluster) -> int:
     _say(f"  members: {members}")
 
     # 1. Refresh member facts (moved heads auto-stale summary/analysis/security).
-    _say("① Refreshing member PRs from GitHub…")
-    refreshed = ingest.refresh_prs(store, members)
-    moved = [r["pr"] for r in refreshed if r["moved"]]
-    for r in refreshed:
+    # One member per call, so each member's line prints as its refresh lands.
+    _say(f"① Refreshing {len(members)} member PR(s) from GitHub (the PR, its CI, "
+         f"its reviewer feeds and its diff — a few seconds each)…")
+    refreshed: list[dict] = []
+    for i, n in enumerate(members, 1):
+        r = ingest.refresh_prs(store, [n])[0]
+        refreshed.append(r)
         _say(f"    PR #{r['pr']}: "
              + (f"head {r['old_sha'][:7]}→{r['new_sha'][:7]} (changed)"
-                if r["moved"] else "unchanged"))
+                if r["moved"] else "unchanged")
+             + f"  ({i}/{len(members)})")
+    moved = [r["pr"] for r in refreshed if r["moved"]]
 
     # 2. Cache diffs for moved heads (summarize + analyze read diff_path).
     if moved:
-        _say("② Caching diffs for moved heads…")
+        _say(f"② Caching diffs for {len(moved)} moved head(s)…")
         for n in moved:
             rec = store.load_pr(n)
             if rec is not None:
-                diff_cache.fetch_diff(n, rec.head_sha or "", store=store)
+                cached = diff_cache.fetch_diff(n, rec.head_sha or "", store=store)
+                _say(f"    PR #{n}: " + ("diff cached" if cached else "diff could not be fetched"))
 
     # 3. Threat re-scan moved heads (deterministic backstop; sticky on malicious).
+    # The scanner's output is relayed line by line as it prints.
     if moved:
         _say("③ Threat-rescanning moved heads…")
-        res = subprocess.run(
-            [sys.executable, str(REPO_ROOT / "pipeline" / "threat_scan.py"),
-             "--only", ",".join(str(n) for n in moved)],
-            cwd=str(REPO_ROOT), capture_output=True, text=True)
-        for line in (res.stdout + res.stderr).splitlines():
-            if line.strip():
-                _say(f"    {line}")
+        with subprocess.Popen(
+                [sys.executable, "-u", str(REPO_ROOT / "pipeline" / "threat_scan.py"),
+                 "--only", ",".join(str(n) for n in moved)],
+                cwd=str(REPO_ROOT), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True) as scan:
+            assert scan.stdout is not None
+            for line in scan.stdout:
+                if line.strip():
+                    _say("    " + line.rstrip("\r\n"))
 
     # 4. Re-summarize members whose summary went stale.
     stale = [n for n in members
              if (r := store.load_pr(n)) and not is_current(r, "summary")]
     if stale:
-        _say(f"④ Re-summarizing {len(stale)} stale member(s)…")
+        _say(f"④ Re-summarizing {len(stale)} stale member(s) with an agent…")
         batch = []
         for n in stale:
             pr = store.load_pr(n)
@@ -114,10 +123,13 @@ def _run(store: Store, cid: int, cluster: Cluster) -> int:
 
     # 5. Force re-analyze (bypass the staleness-gated pending(); always re-run).
     _say("⑤ Re-classifying the cluster…")
+    _say("    building the evidence bundle (reads each changed file on the default "
+         "branch from GitHub)…")
     bundle = analyze_driver.bundle(store, cid, master=redundancy.MasterTree())
     if bundle is None:
         _say(f"✗ cluster {cid} is not in the store")
         return 1
+    _say("    running the analyze agent (can take several minutes)…")
     text = analyze_driver.run_analyze_agent(bundle, _agent_progress)
     payload = headless_agent.extract_json(text)
     errs = analyze_driver.commit_analysis(store, payload)
@@ -137,6 +149,8 @@ def _run(store: Store, cid: int, cluster: Cluster) -> int:
         if not source:
             _say("    ! no rationale was committed — keeping raw display")
         else:
+            _say("    reformatting the rationale with the model (up to 3 model calls; "
+                 "can take several minutes)…")
             formatted = reformat_rationales.reformat_one(source)
             store.edit_cluster(cid).record_reformat(
                 formatted["body"], formatted["summary"])

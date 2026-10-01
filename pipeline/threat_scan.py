@@ -46,6 +46,7 @@ from pipeline import actions
 from pipeline import diff_cache
 from pipeline import gates
 from pipeline import profile
+from pipeline import progress
 from pipeline import storekit
 from pipeline import threats
 from pipeline.store import Store
@@ -69,15 +70,25 @@ def fetch_missing_diffs(prs: dict[int, Pr], diffs_dir: Path, workers: int = 8,
     bots = profile.active().automation_bots
     manifest: list[DiffManifestItem] = []
     exempt: set[int] = set()
-    for n, rec in sorted(prs.items()):
-        head = rec.head_sha
-        if rec.state != "open" or not head or (diffs_dir / f"{head}.diff").exists():
-            continue
-        if rec.author in bots and gates.is_dependabot_bump(
-                rec.author, diff_cache.changed_paths(n, head, diffs_dir)):
-            exempt.add(n)
-            continue
+    uncached = [(n, rec) for n, rec in sorted(prs.items())
+                if rec.state == "open" and rec.head_sha
+                and not (diffs_dir / f"{rec.head_sha}.diff").exists()]
+    if uncached:
+        progress.say(f"fetching diffs for {len(uncached):,} {'PR' if len(uncached) == 1 else 'PRs'} "
+                     "with none cached at the head…")
+    listing = progress.Progress("listing the files of",
+                                sum(1 for _, rec in uncached if rec.author in bots),
+                                "automation PRs", one="automation PR")
+    for n, rec in uncached:
+        if rec.author in bots:
+            bump = gates.is_dependabot_bump(
+                rec.author, diff_cache.changed_paths(n, rec.head_sha, diffs_dir))
+            listing.advance()
+            if bump:
+                exempt.add(n)
+                continue
         manifest.append(DiffManifestItem.for_pr(n, rec, diffs_dir))
+    listing.finish(f"{len(exempt):,} dependency-only bumps, left unfetched")
     fetched, failed = diff_cache.fetch_diffs(manifest, workers=workers, store=store,
                                              diffs_dir=diffs_dir)
     return {"fetched": fetched, "fetch_failed": failed, "bump_exempt": len(exempt)}, exempt
@@ -149,11 +160,13 @@ def main(argv: list[str] | None = None) -> int:
 
     store = Store(args.store) if args.store else Store()
     diffs_dir = Path(args.diffs) if args.diffs else diff_cache.DIFFS
+    print("loading the threat registry and action items…", flush=True)
     registry = store.load_threats()
     action_items = store.load_action_items()
     today = storekit.utc_day()
     started = storekit.now()
 
+    print("loading every stored PR to select the ones to scan…", flush=True)
     prs = store.all_prs()
     if args.only:
         want = {int(x) for x in args.only.split(",")}
@@ -171,11 +184,13 @@ def main(argv: list[str] | None = None) -> int:
     suspicious: list[int] = []
     uncached = 0
     restamped = 0
+    scanning = progress.Progress("scanning", len(prs), "PRs", one="PR")
     # one bound connection for the whole loop: each per-PR read or write is a
     # single round-trip on it, with no per-statement connect handshake
     with store.batch():
         for n, rec in sorted(prs.items()):
             result = scan_record(rec, registry, diffs_dir=diffs_dir)
+            scanning.advance()
             if result is None:
                 head = rec.head_sha
                 if n not in exempt and not (diffs_dir / f"{head}.diff").exists():
@@ -215,7 +230,10 @@ def main(argv: list[str] | None = None) -> int:
                            "upstream — closing/merging the PR does not invalidate an "
                            "already-pushed secret. Dismiss if it's a false positive "
                            "(e.g. a public record id, not a credential)."))
+    scanning.finish(f"{restamped:,} restamped, {len(malicious):,} malicious, "
+                    f"{len(suspicious):,} suspicious, {uncached:,} without a diff")
 
+    print("saving the threat registry and action items…", flush=True)
     store.save_threats(registry)
     store.save_action_items(action_items)
     secret_leaks = sum(1 for it in action_items["items"] if it["kind"] == "rotate-secret")

@@ -5,6 +5,7 @@ import pytest
 
 from issue_triage import fetch_issues
 from issue_triage.fetch_issues import is_pull_request, normalize_gql, normalize_issue
+from pipeline import progress
 
 FIX = Path(__file__).parent / "fixtures" / "raw_issue.json"
 
@@ -100,6 +101,16 @@ def test_fetch_all_paginates_by_cursor(monkeypatch):
     assert [r["number"] for r in rows] == [1, 2]
     assert "cursor" not in calls[0]        # first page carries no cursor
     assert calls[1]["cursor"] == "c1"      # second page threads the prior endCursor
+
+
+def test_fetch_all_reports_each_page_where_progress_reports(monkeypatch, capsys):
+    pages = [_page(list(range(100)), True, "c1"), _page([100], False, "c2")]
+    monkeypatch.setattr(fetch_issues.gh, "gh_graphql_data", lambda q, **kw: pages.pop(0))
+    monkeypatch.setenv(progress.ENV, "1")
+    fetch_issues.fetch_all()
+    lines = capsys.readouterr().out.splitlines()
+    assert [line.split(" · ")[0] for line in lines] == [
+        "  page 1: 100 open issues so far", "  page 2: 101 open issues so far"]
 
 
 def test_fetch_all_raises_on_backstop(monkeypatch):

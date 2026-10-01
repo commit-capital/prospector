@@ -4,6 +4,7 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { rehypeLinkifyPrs } from "../rehypeLinkifyPrs";
 import { api, type ClusterDetail as CD, type Disposition, type PRRow, type ExecResult, type Suggestion, type AuthorStats, type IssueLink } from "../api";
+import { attachJobStream } from "../jobStream";
 import { SafetyChip, HumanMergeChip, ConflictChip, DraftChip } from "../components/Chips";
 import { ChecksChip } from "../components/ChecksChip";
 import { InfoTip } from "../components/InfoTip";
@@ -183,37 +184,34 @@ export default function ClusterDetail() {
 
   const [rerunLog, setRerunLog] = useState<string[]>([]);
   const [rerunning, setRerunning] = useState(false);
-  const rerunEs = useRef<EventSource | null>(null);
+  const closeRerun = useRef<(() => void) | null>(null);
 
   // Per-PR security re-run (#56): one at a time, streamed like the cluster re-run.
   const [secRun, setSecRun] = useState<{ pr: number; log: string[]; running: boolean } | null>(null);
-  const secEs = useRef<EventSource | null>(null);
-  useEffect(() => () => { rerunEs.current?.close(); secEs.current?.close(); }, []);
+  const closeSec = useRef<(() => void) | null>(null);
+  useEffect(() => () => { closeRerun.current?.(); closeSec.current?.(); }, []);
 
   // Attaches (start or reattach, #683) an SSE stream for the per-PR
   // security-review job to `secRun`. The job runs to completion server-side
   // regardless of this page's lifetime — closing this connection only drops
   // this view of it.
   const attachSecurityJob = (url: string, pr: number, initialLine: string) => {
-    secEs.current?.close();
+    closeSec.current?.();
     setSecRun({ pr, log: [initialLine], running: true });
-    const es = new EventSource(url);
-    secEs.current = es;
-    es.addEventListener("log", (e: MessageEvent) =>
-      setSecRun((s) => (s ? { ...s, log: [...s.log, e.data] } : s)));
-    es.addEventListener("done", (e: MessageEvent) => {
-      const { status } = JSON.parse(e.data);
-      setSecRun((s) => (s ? { ...s, log: [...s.log, `■ ${status}`], running: false } : s));
-      es.close();
-      pushToast(`#${pr} · Security review ${status}`, status === "done" ? "green" : "red",
-        { detail: status === "done" ? "verdict reloaded below" : "the phase exited non-zero — see the log" });
-      reloadCd();  // reload with fresh verdict
+    closeSec.current = attachJobStream(url, {
+      onLog: (line) => setSecRun((s) => (s ? { ...s, log: [...s.log, line] } : s)),
+      onReconnecting: () => setSecRun((s) => (s ? { ...s, log: [...s.log, "↻ lost the connection — reconnecting…"] } : s)),
+      onDone: ({ status }) => {
+        setSecRun((s) => (s ? { ...s, log: [...s.log, `■ ${status}`], running: false } : s));
+        pushToast(`#${pr} · Security review ${status}`, status === "done" ? "green" : "red",
+          { detail: status === "done" ? "verdict reloaded below" : "the phase exited non-zero — see the log" });
+        reloadCd();  // reload with fresh verdict
+      },
+      onError: () => {
+        setSecRun((s) => (s ? { ...s, running: false } : s));
+        pushToast(`#${pr} · Security review — connection lost`, "red");
+      },
     });
-    es.onerror = () => {
-      es.close();
-      setSecRun((s) => (s ? { ...s, running: false } : s));
-      pushToast(`#${pr} · Security review — connection lost`, "red");
-    };
   };
 
   const runSecurity = (pr: number) => {
@@ -224,26 +222,24 @@ export default function ClusterDetail() {
 
   // Same start-or-reattach pattern for the cluster-scoped re-run.
   const attachRerun = (url: string, initialLine: string) => {
-    rerunEs.current?.close();
+    closeRerun.current?.();
     setRerunLog([initialLine]);
     setRerunning(true);
-    const es = new EventSource(url);
-    rerunEs.current = es;
-    es.addEventListener("log", (e: MessageEvent) => setRerunLog((l) => [...l, e.data]));
-    es.addEventListener("done", (e: MessageEvent) => {
-      const { status } = JSON.parse(e.data);
-      setRerunLog((l) => [...l, `■ ${status}`]);
-      es.close();
-      setRerunning(false);
-      pushToast(`cluster ${id} · re-run ${status}`, status === "done" ? "green" : "red",
-        { detail: status === "done" ? "analysis reloaded below" : "the phase exited non-zero — see the log" });
-      reloadCd();  // reload with fresh analysis
+    closeRerun.current = attachJobStream(url, {
+      onLog: (line) => setRerunLog((l) => [...l, line]),
+      onReconnecting: () => setRerunLog((l) => [...l, "↻ lost the connection — reconnecting…"]),
+      onDone: ({ status }) => {
+        setRerunLog((l) => [...l, `■ ${status}`]);
+        setRerunning(false);
+        pushToast(`cluster ${id} · re-run ${status}`, status === "done" ? "green" : "red",
+          { detail: status === "done" ? "analysis reloaded below" : "the phase exited non-zero — see the log" });
+        reloadCd();  // reload with fresh analysis
+      },
+      onError: () => {
+        setRerunning(false);
+        pushToast(`cluster ${id} · re-run — connection lost`, "red");
+      },
     });
-    es.onerror = () => {
-      es.close();
-      setRerunning(false);
-      pushToast(`cluster ${id} · re-run — connection lost`, "red");
-    };
   };
 
   const rerun = () => {
