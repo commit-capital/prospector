@@ -54,7 +54,7 @@ from typing import TYPE_CHECKING, NamedTuple
 from pipeline import (author_fix, ci_signal, compile_preflight, describe_pr, diffpaths, freshness,
                       gates, gh, headless_agent, objections, profile, resolve_conflicts,
                       resolve_evidence, review_fix, review_policy, review_resolve,
-                      reviewers, risktier, settings, verify_driver)
+                      reviewers, risktier, settings, storekit, verify_driver)
 from pipeline.storekit import now as _now
 from prospector_app.backend import (activity, data, executor, fix_queue, lane_health,
                                     review_refresh, safety_guard, sandbox_check, service,
@@ -308,9 +308,8 @@ def reclaim_stranded_resolves() -> list[int]:
         if not host or host == me:
             continue
         beat = ((registry.get("hosts") or {}).get(host) or {}).get("last_beat")
-        try:
-            since = (now - datetime.fromisoformat(str(beat))).total_seconds()
-        except ValueError:
+        since = storekit.seconds_since(beat, now)
+        if since is None:
             since = float("inf")
         if since < RESOLVE_STRANDED_SECONDS:
             continue
@@ -485,14 +484,8 @@ def _rested(req: dict, seconds: float) -> bool:
     """Whether a re-queued request's last attempt (its checked_at write stamp) is
     at least `seconds` old. A missing or unparseable stamp reads as rested, so a
     malformed record cannot wait forever."""
-    stamp = req.get("checked_at")
-    if not isinstance(stamp, str):
-        return True
-    try:
-        at = datetime.fromisoformat(stamp)
-    except ValueError:
-        return True
-    return (datetime.now(timezone.utc) - at).total_seconds() >= seconds
+    age = storekit.seconds_since(req.get("checked_at"))
+    return age is None or age >= seconds
 
 
 def _settle(n: int, req: dict, rc: int, output: str) -> None:
@@ -1858,13 +1851,8 @@ FAILED_RETRY_COOLDOWN_SECONDS = 3600
 def _cooled_down(finished_at: str | None) -> bool:
     """Whether a failed ending stamped `finished_at` is old enough to retry. An
     absent or unreadable stamp reads as cooled."""
-    try:
-        ended = datetime.fromisoformat(str(finished_at).replace("Z", "+00:00"))
-    except ValueError:
-        return True
-    if ended.tzinfo is None:
-        ended = ended.replace(tzinfo=timezone.utc)
-    return (datetime.now(timezone.utc) - ended).total_seconds() >= FAILED_RETRY_COOLDOWN_SECONDS
+    age = storekit.seconds_since(finished_at)
+    return age is None or age >= FAILED_RETRY_COOLDOWN_SECONDS
 
 
 def _hunt_attempted(pr: Pr, action: str) -> bool:

@@ -32,6 +32,7 @@ from pipeline import freshness
 from pipeline import gates
 from pipeline import profile
 from pipeline import risktier
+from pipeline import storekit
 
 CACHE_DIR = Path(__file__).resolve().parents[1] / "cache"
 DIFF_CACHE = CACHE_DIR / "diffs"
@@ -193,14 +194,8 @@ def suggestion_for(n: int, disposition: str | None = None) -> dict | None:
 
 
 def _age_days(pr: Pr) -> int | None:
-    ts = pr.updated_at or pr.created_at
-    if not ts:
-        return None
-    try:
-        d = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
-        return (datetime.now(timezone.utc) - d).days
-    except (ValueError, TypeError):
-        return None
+    at = storekit.parse_ts(pr.updated_at or pr.created_at)
+    return None if at is None else (datetime.now(timezone.utc) - at).days
 
 
 def _fact_freshness(rec: Pr) -> list[dict]:
@@ -432,7 +427,7 @@ _ROW_CACHE_KEY: tuple[int, int, str] | None = None
 
 def _row_cache(snap: dict[int, Pr]) -> dict[int, dict]:
     global _ROW_CACHE, _ROW_CACHE_KEY
-    key = (data.generation(), id(snap), datetime.now(timezone.utc).date().isoformat())
+    key = (data.generation(), id(snap), storekit.utc_day())
     if _ROW_CACHE_KEY != key:
         # Rebind rather than clear: a query that started under the old key keeps
         # filling (and reading) the dict it already holds, coherently.

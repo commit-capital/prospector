@@ -299,7 +299,7 @@ def _seed_closed_issues(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     monkeypatch.setattr(pr_index, "from_store", lambda: {})
     monkeypatch.setattr(replay, "_gh_pr", lambda number: {
         "merge_sha": "a" * 40, "author": "carol",
-        "opened_at": replay._parse_dt("2024-02-01T00:00:00Z")})
+        "opened_at": storekit.parse_ts("2024-02-01T00:00:00Z")})
 
 
 def test_candidate_updated_at_is_the_last_edit_not_the_close_bump(tmp_path, monkeypatch) -> None:
@@ -313,8 +313,8 @@ def test_candidate_updated_at_is_the_last_edit_not_the_close_bump(tmp_path, monk
     assert cand.closed_completed is True
     assert cand.reporter == "bob"
     # updated_at is the issue's last-edit time, unaffected by its close.
-    assert cand.updated_at == replay._parse_dt("2024-01-05T00:00:00Z")
-    assert cand.created_at == replay._parse_dt("2024-01-01T00:00:00Z")
+    assert cand.updated_at == storekit.parse_ts("2024-01-05T00:00:00Z")
+    assert cand.created_at == storekit.parse_ts("2024-01-01T00:00:00Z")
     assert [(p.number, p.author, p.merged) for p in cand.closing_prs] == [(42, "carol", True)]
 
 
@@ -325,7 +325,7 @@ def test_candidate_updated_at_falls_back_to_creation_when_never_edited(tmp_path,
     cand = replay.candidates_from_store()[0]
 
     assert cand.closed_completed is False  # not_planned is not a completed close
-    assert cand.updated_at == replay._parse_dt("2024-01-01T00:00:00Z")
+    assert cand.updated_at == storekit.parse_ts("2024-01-01T00:00:00Z")
 
 
 def test_candidates_limit_takes_the_newest_issues_first(tmp_path, monkeypatch) -> None:

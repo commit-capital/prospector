@@ -11,12 +11,12 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pipeline import freshness
 from pipeline import review_policy
+from pipeline import storekit
 from pipeline.diff_cache import DIFFS  # canonical diffs dir
 from pipeline.store import Store
 
@@ -49,18 +49,6 @@ Return items:[{pr, head_sha, severity, findings:[{headline, class, why}], summar
 `why` must state whether it is still outstanding in the current diff."""
 
 
-def _parse_iso(ts: str | None) -> datetime | None:
-    """Parse an ISO-8601 stamp to an aware datetime (naive is read as UTC). None
-    on absent or unparseable input, so comparisons degrade to "not before"."""
-    if not ts:
-        return None
-    try:
-        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
-
-
 def candidates(store: Store, reread_before: str | None = None) -> list[int]:
     """Open PRs scored below Greptile's bar whose greptile_review is absent or
     stale. When `reread_before` (an ISO-8601 timestamp) is given, also re-select
@@ -72,7 +60,7 @@ def candidates(store: Store, reread_before: str | None = None) -> list[int]:
     if not review_policy.is_active("greptile"):
         return []
     threshold = review_policy.greptile_threshold()
-    cutoff = _parse_iso(reread_before)
+    cutoff = storekit.parse_ts(reread_before)
     out = []
     for n, pr in store.all_prs().items():
         if pr.state != "open" or pr.greptile is None or pr.greptile >= threshold:
@@ -81,7 +69,7 @@ def candidates(store: Store, reread_before: str | None = None) -> list[int]:
         if gr is None or not freshness.is_current(pr, "greptile_review"):
             out.append(n)
         elif cutoff is not None:
-            stamped = _parse_iso(gr.get("checked_at"))
+            stamped = storekit.parse_ts(gr.get("checked_at"))
             if stamped is not None and stamped < cutoff:
                 out.append(n)
     return sorted(out)

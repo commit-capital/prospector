@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import sys
 from collections import Counter
-from datetime import datetime, timezone
 from pathlib import Path
 
 from pipeline import gates, storekit
@@ -23,7 +22,7 @@ def status_md(store: Store) -> str:
     lines = [
         "# Pipeline status",
         "",
-        f"_Generated {datetime.now(timezone.utc).isoformat(timespec='seconds')} — do not edit; "
+        f"_Generated {storekit.now()} — do not edit; "
         f"regenerate with `pipeline/views.py`._",
         "",
         f"- Open PRs in store: **{len(open_prs)}** ({draft_count} draft)",

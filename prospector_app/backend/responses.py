@@ -17,13 +17,14 @@ from __future__ import annotations
 import json
 import logging
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 
 from prospector_app.backend import activity
 from prospector_app.backend import data
 from pipeline import gh
 from pipeline import settings
+from pipeline.storekit import now as _now
+from pipeline.storekit import parse_ts as _dt
 
 _log = logging.getLogger(__name__)
 
@@ -34,20 +35,6 @@ SNIPPET_LEN = 160
 # Logins that are us, never a community response. Other automation is recognised
 # from the actor's type rather than listed here (`_is_human`).
 BOTS = {settings.bot_login()}
-
-
-def _dt(ts: str | None) -> datetime | None:
-    """Parse an ISO timestamp to an aware UTC datetime. Activity-log times are
-    UTC-aware ('+00:00') and GitHub times are UTC 'Z', while legacy activity rows
-    may be naive local. Normalizing all to UTC is the only correct way to compare
-    'did this happen after we acted'."""
-    if not ts:
-        return None
-    try:
-        d = datetime.fromisoformat(ts)
-    except ValueError:
-        return None
-    return d.astimezone(timezone.utc) if d.tzinfo else d.astimezone(timezone.utc)
 
 
 def _actor(event: dict, field: str) -> dict:
@@ -303,7 +290,7 @@ def scan(prs: list[int] | None = None) -> dict:
     nodes, failed = _fetch(targets)
     failed_set = set(failed)
     prior = load()
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    now = _now()
     reg: dict[int, dict] = {}
     for n in targets:
         if n in failed_set:
@@ -402,7 +389,7 @@ def ack(pr: int, *, at: str | None = None, by: str | None = None) -> dict[str, s
     """Record that `by` (the current operator by default) has seen PR `pr`'s
     responses as of `at` (now by default). Returns the record stored."""
     global _acks_cache
-    rec = {"at": at or datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    rec = {"at": at or _now(),
            "by": by or activity.operator()["name"]}
     store = data.store()
     reg = store.load_response_acks()
