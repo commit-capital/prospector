@@ -121,6 +121,14 @@ def test_a_proposal_s_status_reads_its_own_pull_request_s_follow_up(store, fu, w
     assert status == want and status[0] in fix_review.STATUSES
 
 
+def test_a_new_proposal_is_open_past_an_earlier_one_s_finished_follow_up(store):
+    _run(store, proposal={"pr": 15000})
+    store.edit_issue(7).record_fix_followup({"pr": 14589, "state": "done", "closed_as": "closed"})
+    assert fix_review.open_pr(store.load_issue(7)) == 15000
+    store.edit_issue(7).record_fix_followup({"pr": 15000, "state": "done", "closed_as": "closed"})
+    assert fix_review.open_pr(store.load_issue(7)) is None
+
+
 def test_a_proposal_closed_without_merging_takes_a_new_attempt(store):
     _run(store, proposal={"pr": 14589, "url": "u"})
     store.edit_issue(7).record_fix_followup({"pr": 14589, "state": "done", "closed_as": "closed",
