@@ -39,3 +39,9 @@ def test_an_agent_s_words_stay_inert():
     body = public_comments.conclusion(7, "k", run)
     assert public_comments.problems(body) == []
     assert "Fixes issue 12" in body and "(link removed)" in body and "<b>" not in body
+
+
+def test_a_conclusion_invites_a_reply_and_the_cap_withdraws_the_offer():
+    assert "starts another attempt" in public_comments.conclusion(7, "k", RUN)
+    capped = public_comments.capped(7, "k", 3)
+    assert public_comments.problems(capped) == [] and "no longer start" in capped

@@ -73,15 +73,16 @@ def conclusion(issue: int, key: str, run: dict) -> str:
         if detail:
             lines += ["", f"What happened: {detail}."]
         lines += ["", "Exact steps to reproduce, the version in use, or the full error "
-                      "would give the next attempt what it is missing."]
+                      "would give it what it is missing: a reply here with them starts "
+                      "another attempt."]
         return _finish(issue, key, lines)
     if kind == "not-a-defect":
         lines = ["Prospector's automated fix pipeline looked into this issue and read the "
                  "reported behavior as intended rather than a defect."]
         if root or detail:
             lines += ["", f"Its reasoning: {root or detail}."]
-        lines += ["", "If the behavior should be different, describing the expected "
-                      "behavior would settle it."]
+        lines += ["", "If the behavior should be different, a reply here describing the "
+                      "expected behavior starts another attempt."]
         return _finish(issue, key, lines)
     lines = ["Prospector's automated fix pipeline tried to fix this issue, but it could not "
              "land a fix that passed every check."]
@@ -91,8 +92,18 @@ def conclusion(issue: int, key: str, run: dict) -> str:
     if root:
         lines += ["", f"Its reading of the cause: {root}."]
     short = _SHORT_OF.get(ending, "the attempt did not finish with a fix")
-    lines += ["", f"Where it fell short: {short}" + (f" ({detail})." if detail else ".")]
+    lines += ["", f"Where it fell short: {short}" + (f" ({detail})." if detail else "."),
+              "", "A reply here with more detail, the intended behavior, or a pointer to the "
+                  "cause starts another attempt."]
     return _finish(issue, key, lines)
+
+
+def capped(issue: int, key: str, attempts: int) -> str:
+    """The comment once replies have started as many attempts as they may."""
+    return _finish(issue, key, [
+        f"Prospector's automated fix pipeline has made {int(attempts)} more attempts on this "
+        "issue after replies here, and leaves it to a maintainer from now on. Replies no "
+        "longer start another attempt."])
 
 
 def opened(issue: int, key: str, pr: int, summary: object) -> str:

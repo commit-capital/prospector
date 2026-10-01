@@ -301,3 +301,142 @@ def test_an_unanswered_refresh_reads_the_same_window_again(store, monkeypatch):
     monkeypatch.setattr(gh, "gh_list", lambda url: None)
     assert public_loop.refresh(store, now=NOW) == 0
     assert public_loop._refreshed["since"] == "2026-10-01T11:00:00Z"
+
+
+# --- replies -----------------------------------------------------------------------
+
+def _comment(login: str, body: str, *, at: str = "2026-10-01T11:30:00Z",
+             association: str = "NONE", cid: int = 1) -> dict:
+    return {"id": cid, "user": {"login": login}, "author_association": association,
+            "body": body, "created_at": at}
+
+
+@pytest.fixture
+def replies(store, monkeypatch):
+    from issue_triage import reply_router
+
+    state: dict = {"comments": [], "reads": 0, "route": "retry", "routed": []}
+
+    def gh_list(url):
+        state["reads"] += 1
+        return state["comments"]
+
+    def route(context, rs):
+        state["routed"].append((context, rs))
+        return state["route"]
+
+    monkeypatch.setattr(gh, "gh_list", gh_list)
+    monkeypatch.setattr(reply_router, "route", route)
+    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triagebot")
+    store.edit_issue(1).record_fix_run(_run(report_sha=_sha("bug 1", "b")))
+    _bump(store, "2026-10-01T11:31:00Z")
+    return state
+
+
+def _sha(title: str, body: str) -> str:
+    from issue_triage import fix_lane
+    return fix_lane.report_sha(title, body)
+
+
+def _bump(store: IssueStore, updated: str, **meta) -> None:
+    raw = store.load_issue(1).raw
+    store.save_issue({**raw, "meta": {**raw["meta"], "updated_at": updated, **meta}})
+
+
+def test_the_author_s_reply_with_detail_starts_another_attempt(store, replies):
+    replies["comments"] = [_comment("nicky", "It only fails with --flag set.")]
+    assert public_loop.answer_replies(store, mode="live", now=NOW) == 1
+    issue = store.load_issue(1)
+    req = issue.fix_request
+    assert (req["action"], req["source"], req["requested_by"]) == ("solve", "public", "nicky")
+    assert "> It only fails with --flag set." in req["guidance"]
+    assert issue.fix_thread[-1]["by"] == "nicky"
+    assert issue.fix_public["reattempts"] == 1
+    assert public_loop.label_for(issue) == IN_PROGRESS
+
+
+def test_chatter_is_read_once_and_starts_nothing(store, replies):
+    replies["comments"] = [_comment("nicky", "thanks!")]
+    replies["route"] = "none"
+    public_loop.answer_replies(store, mode="live", now=NOW)
+    issue = store.load_issue(1)
+    assert issue.fix_request is None and "nothing to act on" in issue.fix_thread[-1]["text"]
+    reads = replies["reads"]
+    public_loop.answer_replies(store, mode="live", now=NOW)
+    assert replies["reads"] == reads
+
+
+def test_an_unreadable_route_waits_for_the_next_pass(store, replies):
+    replies["comments"] = [_comment("nicky", "try the other parser")]
+    replies["route"] = None
+    public_loop.answer_replies(store, mode="live", now=NOW)
+    assert store.load_issue(1).fix_request is None
+    replies["route"] = "retry"
+    public_loop.answer_replies(store, mode="live", now=NOW)
+    assert store.load_issue(1).fix_request["action"] == "solve"
+
+
+def test_only_the_author_and_maintainers_count_and_never_the_bot(store, replies):
+    replies["comments"] = [_comment("passerby", "+1 me too"),
+                           _comment("triagebot[bot]", "Prospector's pipeline …"),
+                           _comment("nicky", "old", at="2026-10-01T10:00:00Z")]
+    public_loop.answer_replies(store, mode="live", now=NOW)
+    assert replies["routed"] == [] and store.load_issue(1).fix_request is None
+    replies["comments"] = [_comment("dotta", "Look at the parser", association="MEMBER")]
+    _bump(store, "2026-10-01T11:45:00Z")
+    public_loop.answer_replies(store, mode="live", now=NOW)
+    assert store.load_issue(1).fix_request["requested_by"] == "dotta"
+
+
+def test_a_letter_answer_is_left_to_the_question_poll_and_words_answer_it(store, replies):
+    store.edit_issue(1).record_fix_run(_run(
+        ending="fix-disputed", report_sha=_sha("bug 1", "b"),
+        question={**QUESTION, "asked": {"at": "2026-10-01T11:10:00+00:00", "url": "u"}}))
+    replies["comments"] = [_comment("nicky", "A")]
+    public_loop.answer_replies(store, mode="live", now=NOW)
+    assert replies["routed"] == [] and store.load_issue(1).fix_request is None
+    replies["comments"] = [_comment("nicky", "Neither: it should read 4.", cid=2)]
+    _bump(store, "2026-10-01T11:50:00Z")
+    public_loop.answer_replies(store, mode="live", now=NOW)
+    req = store.load_issue(1).fix_request
+    assert req["action"] == "answer" and "it should read 4" in req["answer"]["text"]
+
+
+def test_an_edited_report_starts_another_attempt_once(store, replies):
+    _bump(store, "2026-10-01T11:40:00Z", body="b, with steps")
+    public_loop.answer_replies(store, mode="live", now=NOW)
+    issue = store.load_issue(1)
+    assert issue.fix_request["action"] == "solve" and replies["reads"] == 0
+    assert "report was edited" in issue.fix_thread[-1]["text"]
+    store.edit_issue(1).record_fix_request({**issue.fix_request, "status": "done"})
+    public_loop.answer_replies(store, mode="live", now=NOW)
+    assert store.load_issue(1).fix_public["reattempts"] == 1
+
+
+def test_replies_start_at_most_three_attempts_then_a_cap_comment(store, replies, writes):
+    store.edit_issue(1).record_fix_public({"reattempts": public_loop.MAX_REATTEMPTS})
+    replies["comments"] = [_comment("nicky", "try again please")]
+    public_loop.answer_replies(store, mode="live", now=NOW)
+    issue = store.load_issue(1)
+    assert issue.fix_request is None and issue.fix_public["capped_at"]
+    public_loop.sync(store, mode="live", now=NOW)
+    assert ("comment", 1, "capped", False) in writes
+    _bump(store, "2026-10-01T11:55:00Z")
+    replies["comments"] = [_comment("nicky", "and again", cid=3, at="2026-10-01T11:54:00Z")]
+    assert public_loop.answer_replies(store, mode="live", now=NOW) == 0
+
+
+def test_a_dry_run_routes_nothing_and_queues_nothing(store, replies):
+    replies["comments"] = [_comment("nicky", "It only fails with --flag set.")]
+    public_loop.answer_replies(store, mode="dry-run", now=NOW)
+    issue = store.load_issue(1)
+    assert replies["routed"] == [] and issue.fix_request is None
+    assert issue.fix_thread[-1]["text"].startswith("Dry run: would route 1 new reply")
+
+
+def test_an_open_proposal_s_replies_belong_to_the_follow_up(store, replies):
+    store.edit_issue(1).record_fix_run(_run(ending="fixed", proposal={"pr": 9},
+                                            report_sha=_sha("bug 1", "b")))
+    replies["comments"] = [_comment("nicky", "change it")]
+    assert public_loop.answer_replies(store, mode="live", now=NOW) == 0
+    assert replies["reads"] == 0

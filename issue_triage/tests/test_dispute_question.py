@@ -167,3 +167,16 @@ def test_after_the_wait_the_default_answers(disputed, monkeypatch):
     assert question.resume(7) == 0
     assert disputed["judged"] == [(1, [0, 2])]
     assert disputed["ledger"][0]["stats"]["answer_default"] is True
+
+
+def test_a_question_says_what_a_reply_in_words_does():
+    from datetime import datetime, timezone
+    q = {"question": "2 or 3?", "options": [{"label": "A", "behavior": "2"},
+                                            {"label": "B", "behavior": "3"}],
+         "default": "A", "default_reason": "r"}
+    when = datetime(2026, 10, 8, tzinfo=timezone.utc)
+    held = dispute_question.render(7, q, report_sha="s", default_after=when)
+    loop = dispute_question.render(7, q, report_sha="s", default_after=when, retry_on_reply=True)
+    assert "a maintainer will take it from there" in held
+    assert "the pipeline will try again with it" in loop
+    assert dispute_question.problems(loop) == []

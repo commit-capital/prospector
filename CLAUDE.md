@@ -472,8 +472,14 @@ failing after a re-run with no failing log naming a changed file), `describe`
 `rerun` (failed jobs re-run once per head), `revise` (a reviewer below its bar,
 or CI failing after a re-run in a job whose log names a changed file — the
 findings or log lines go to the agent as quoted evidence), `wait`, or `ready`.
-A hand-back or ready holds until the head moves, and either one surfaces the
-issue as `review`. `TRIAGE_ISSUE_FIX_FOLLOWUP` is `live` (the default), `dry-run`
+Ahead of every bot signal, new maintainer feedback on the pull request (their
+reviews with words, unresolved inline comments and comments, read from the
+same feed with `authorAssociation`) that `issue_triage/reply_router.py` — one
+locked-down agent with no tools — reads as asking for a change is a `revise`
+carrying their words, on its own budget of `MAX_MAINTAINER_REVISIONS` (3);
+feedback it reads as asking nothing is marked handled.
+A hand-back or ready holds until the head moves or a maintainer asks for a
+change, and either one surfaces the issue as `review`. `TRIAGE_ISSUE_FIX_FOLLOWUP` is `live` (the default), `dry-run`
 (each step is noted on the issue and nothing is written upstream or spent on an
 agent), or `off`. Live, the executor edits the description
 (`executor.update_issue_fix_proposal`) and re-runs jobs
@@ -510,8 +516,15 @@ writes as the bot — `executor.set_fix_label` through `safety_guard.label_bot_r
 Activity-logged, under a short per-issue lease, a failure retried after thirty
 minutes. It never reads a label back. `sync` also queues, once per attempt with
 source `public`, what an operator's click queues in the app: `propose` for a
-fixed attempt and `ask-reporter` for a drafted question. The hunter takes a
-maintainer's issue whatever its reproduction grade. `TRIAGE_ISSUE_FIX_PUBLIC` is
+fixed attempt and `ask-reporter` for a drafted question. Before it,
+`answer_replies` reads back an issue the attempt concluded on (`needs answer`,
+`couldn't fix`) when its `updated_at` moved: the comments after the attempt by
+the issue's author or a maintainer, never the bot's — a letter answer stays
+`poll_replies`' — go to `reply_router`, and words it reads as actionable queue
+`answer` (a written answer to the question) or `solve` with them as guidance; an
+edit to the report queues `solve` too. Replies start at most `MAX_REATTEMPTS`
+(3) attempts per issue, then one comment leaves it to a maintainer. The hunter
+takes a maintainer's issue whatever its reproduction grade. `TRIAGE_ISSUE_FIX_PUBLIC` is
 `live` (the default), `dry-run` (each write logged as a dry-run and noted once on
 the issue, its record kept apart in `fix_public.dry`), or `off`.
 

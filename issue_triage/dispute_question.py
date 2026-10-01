@@ -119,10 +119,13 @@ def draft(title: str, body: str, result: dict) -> dict:
             "default": default, "default_reason": str(verdict.get("default_reason") or "")}
 
 
-def render(issue: int, question: dict, *, report_sha: str, default_after: datetime) -> str:
+def render(issue: int, question: dict, *, report_sha: str, default_after: datetime,
+           retry_on_reply: bool = False) -> str:
     """The comment the bot posts: the host's framing around the agent's
     question, options and default, each held to inert plain text, and the
-    marker that names what it came from."""
+    marker that names what it came from. With `retry_on_reply` (an issue the
+    public loop serves) a reply in words starts another attempt; without it, a
+    maintainer takes such a reply."""
     opts = [f"- **{o['label']}**: {fix_pr_body.inert(o['behavior'], OPTION_MAX)}"
             for o in question["options"]]
     lines = [
@@ -135,7 +138,9 @@ def render(issue: int, question: dict, *, report_sha: str, default_after: dateti
         *opts,
         "",
         "Reply with the letter of the right option, for example `A`. If none is right, "
-        "describe the intended behavior in a reply and a maintainer will take it from there.",
+        "describe the intended behavior in a reply and "
+        + ("the pipeline will try again with it." if retry_on_reply
+           else "a maintainer will take it from there."),
         "",
         f"Without an answer the pipeline goes with **{question['default']}** after "
         f"{default_after:%Y-%m-%d}: {fix_pr_body.inert(question['default_reason'], OPTION_MAX)}",
