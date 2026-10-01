@@ -280,9 +280,8 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
     const startX = e.clientX, startW = paneW;
     let latest = startW;
     // Freeze the width/padding transitions during the drag so the pane and the
-    // topbar's compensating margin track the cursor in lockstep — otherwise the
-    // transitioned .app padding lags the instant topbar margin and the header
-    // jitters (#190). Lock the cursor so it doesn't flicker off the handle.
+    // header's compensating margin track the cursor in lockstep (#190). Lock
+    // the cursor so it doesn't flicker off the handle.
     document.documentElement.classList.add("ap-resizing");
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";

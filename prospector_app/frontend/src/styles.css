@@ -34,15 +34,14 @@ a:hover { text-decoration: underline; }
 .pad-sm { padding: 6px 0; }
 .error { padding: 24px; color: var(--red); }
 
-/* backend-unreachable banner (App.tsx BackendBanner) — sits above everything,
-   sticky so it stays visible while scrolling. */
-.backend-down { position: sticky; top: 0; z-index: 1000;
-  background: var(--red); color: #fff; padding: 10px 20px;
+/* backend-unreachable banner (App.tsx BackendBanner), in the sticky .app-head
+   so it stays visible while scrolling. */
+.backend-down { background: var(--red); color: #fff; padding: 10px 20px;
   text-align: center; font-weight: 600; font-size: 14px; }
 .backend-down code { background: rgba(255, 255, 255, 0.22); color: #fff;
   padding: 1px 6px; border-radius: 4px; font-size: 13px; }
 /* snapshot first-load banner (App.tsx BackendBanner) */
-.backend-loading { position: sticky; top: 0; z-index: 1000; padding: 8px 20px;
+.backend-loading { padding: 8px 20px;
   background: var(--panel2); color: var(--text); font-size: 13px; text-align: center;
   border-bottom: 1px solid var(--border); }
 .store-write-block { background: var(--red); color: #fff; padding: 10px 20px;
@@ -62,10 +61,13 @@ a:hover { text-decoration: underline; }
 .health-strip-sep { opacity: .6; }
 
 /* layout */
-.topbar { display: flex; align-items: center; gap: 24px; padding: 10px 20px;
-  background: var(--panel); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 10;
-  /* span full width above the left agent pane, ignoring the .app left gutter */
+/* The app banners and the topbar stick together as one header that spans the
+   left agent pane's gutter; App.tsx publishes its height as --topbar-h, which
+   is where the pane and the flyouts start. */
+.app-head { position: sticky; top: 0; z-index: 10;
   width: calc(100% + var(--ap-w, 0)); margin-left: calc(-1 * var(--ap-w, 0)); }
+.topbar { display: flex; align-items: center; gap: 24px; padding: 10px 20px;
+  background: var(--panel); border-bottom: 1px solid var(--border); }
 .brand { font-weight: 700; }
 .instance-bar {
   display: flex;
@@ -738,9 +740,7 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 /* ===== global agent pane — full-height left sidebar, width-resizable ===== */
 .app { padding-left: var(--ap-w, 0); transition: padding-left .16s ease; }
 /* While dragging the agent pane, freeze the open/collapse transitions so the
-   pane width and the topbar's compensating margin move together — otherwise the
-   transitioned .app padding lags the instant topbar margin and the header
-   jumps during the drag (#190). */
+   pane width and the header's compensating margin move together (#190). */
 html.ap-resizing .app,
 html.ap-resizing .agentpane { transition: none; }
 .agentpane { position: fixed; left: 0; top: var(--topbar-h, 52px); bottom: 0; width: var(--ap-w, 0); z-index: 50;
