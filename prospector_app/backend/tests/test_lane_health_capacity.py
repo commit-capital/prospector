@@ -63,5 +63,9 @@ def test_the_gate_answers_from_the_accounts_reading(store, monkeypatch):
     assert rec["ai_account"] == {"key": "k", "label": "x · Max", "billing": "subscription"}
 
 
-def test_an_unknown_account_closes_the_gate(store):
+def test_an_unknown_account_closes_the_gate(store, monkeypatch):
+    from pipeline import headless_agent
+    monkeypatch.setattr(capacity, "account", lambda refresh=False: None)
+    monkeypatch.setattr(headless_agent, "probe_reading",
+                        lambda timeout=180: pytest.fail("probed with no account"))
     assert lane_health.capacity_open("fix") is False

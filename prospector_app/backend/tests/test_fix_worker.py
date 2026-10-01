@@ -2670,6 +2670,7 @@ def test_an_open_gate_runs_the_automations_fix(store, monkeypatch):
 
 def test_a_closed_gate_skips_the_resolve_auto_review(store, monkeypatch):
     asked = _gate(monkeypatch, False)
+    monkeypatch.setattr(fix_worker, "_review_backoff", {})
     monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", "resolve")
     _parked_resolve(store)
     assert _drain_once(monkeypatch)["review"] == []
@@ -2678,6 +2679,7 @@ def test_a_closed_gate_skips_the_resolve_auto_review(store, monkeypatch):
 
 def test_an_open_gate_runs_the_resolve_auto_review(store, monkeypatch):
     _gate(monkeypatch, True)
+    monkeypatch.setattr(fix_worker, "_review_backoff", {})
     monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", "resolve")
     _parked_resolve(store)
     assert _drain_once(monkeypatch)["review"] == [1]
