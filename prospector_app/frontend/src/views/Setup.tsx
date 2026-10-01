@@ -63,6 +63,10 @@ const SWITCHES: { key: string; id?: string; label: string; hint: string;
     label: "Push agent-resolved conflicts without asking",
     hint: "an AI conflict resolution is pushed only after two independent AI reviewers both fail to find anything wrong with it, the tests related to the conflicted files pass in the sandbox, and the files are not high-risk — anything less waits here for you, with the reviewers' reasons",
     needs: ["push_identity"] },
+  { key: "TRIAGE_ISSUE_FIX_WORKER", label: "Fix reported issues",
+    hint: "when someone queues an issue fix in the app, reproduce it here in a sealed-off container and have the AI draft a fix: the fix must turn the reproduction green while leaving the surrounding tests passing. Every result waits here for a person's approval before anything is opened upstream" },
+  { key: "TRIAGE_ISSUE_FIX_HUNT", label: "Fix reported issues on its own",
+    hint: "when nothing is queued, pick a fresh, well-reproduced issue with no pull request yet and have the AI draft a fix without being asked. A daily budget caps how many it starts, and each draft waits for approval" },
 ];
 
 const switchId = (s: { key: string; id?: string }): string => s.id ?? s.key;
