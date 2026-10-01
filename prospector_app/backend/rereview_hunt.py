@@ -37,13 +37,6 @@ _thread: threading.Thread | None = None
 _stop = threading.Event()
 
 
-def _parse(stamp: object) -> datetime | None:
-    try:
-        return datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
-    except (TypeError, ValueError):
-        return None
-
-
 def candidates(now: datetime | None = None) -> list[tuple[int, Reviewer]]:
     """(PR, reviewer) pairs whose verdict is missing at the current head: open,
     mergeable, CI passing, signals current, head at least HEAD_AGE_SECONDS old,
@@ -58,7 +51,7 @@ def candidates(now: datetime | None = None) -> list[tuple[int, Reviewer]]:
             continue
         if not is_current(pr, "signals"):
             continue
-        updated = _parse(pr.updated_at)
+        updated = storekit.parse_ts(pr.updated_at)
         if updated is None or (now - updated).total_seconds() < HEAD_AGE_SECONDS:
             continue
         for r in askable:
@@ -79,9 +72,9 @@ def requested(bookings: list[dict], n: int, head_sha: str | None) -> bool:
 
 
 def used_today(bookings: list[dict], now: datetime | None = None) -> int:
-    now = now or datetime.now(timezone.utc)
-    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-    return sum(1 for b in bookings if str(b.get("finished") or "") >= midnight)
+    midnight = storekit.utc_midnight(now)
+    return sum(1 for b in bookings
+               if (at := storekit.parse_ts(b.get("finished"))) is not None and at >= midnight)
 
 
 def request_rereviews(limit: int = PER_PASS) -> list[int]:

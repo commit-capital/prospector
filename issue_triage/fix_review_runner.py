@@ -323,8 +323,9 @@ def _revise_proposal(store: IssueStore, n: int, guidance: str, *, trigger: str, 
     distilled["proposal"] = proposal
     edit = store.edit_issue(n)
     edit.record_fix_run(distilled)
-    if edit.fix_followup:
-        edit.record_fix_followup({**edit.fix_followup, "state": "watching",
+    fu = fix_review.followup_for(edit.fix_followup, pr)
+    if fu:
+        edit.record_fix_followup({**fu, "state": "watching",
                                   "reason": "revision pushed; following up the new head"})
     return f"Revised #{pr}: {res.get('detail')}"
 

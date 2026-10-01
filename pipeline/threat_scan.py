@@ -39,7 +39,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -47,16 +46,13 @@ from pipeline import actions
 from pipeline import diff_cache
 from pipeline import gates
 from pipeline import profile
+from pipeline import storekit
 from pipeline import threats
 from pipeline.store import Store
 from pipeline.wire import DiffManifestItem
 
 if TYPE_CHECKING:
     from pipeline.model import Pr
-
-
-def _today() -> str:
-    return datetime.now(timezone.utc).date().isoformat()
 
 
 def fetch_missing_diffs(prs: dict[int, Pr], diffs_dir: Path, workers: int = 8,
@@ -155,8 +151,8 @@ def main(argv: list[str] | None = None) -> int:
     diffs_dir = Path(args.diffs) if args.diffs else diff_cache.DIFFS
     registry = store.load_threats()
     action_items = store.load_action_items()
-    today = _today()
-    started = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    today = storekit.utc_day()
+    started = storekit.now()
 
     prs = store.all_prs()
     if args.only:
@@ -229,7 +225,7 @@ def main(argv: list[str] | None = None) -> int:
              "blocked_actors": len(registry.get("actors", {})),
              "rotate_secret_items": secret_leaks}
     store.append_run({"phase": "threat-scan", "started": started,
-                      "finished": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                      "finished": storekit.now(),
                       "stats": stats, "malicious_prs": sorted(malicious)})
     print(f"done: {stats}")
     if malicious:

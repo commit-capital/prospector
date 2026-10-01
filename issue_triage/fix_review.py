@@ -6,10 +6,11 @@ An issue holds at most one pending request (`fix_request`, actions
 `issue_store.ISSUE_FIX_ACTIONS`), which `queue` admits only when it fits the
 latest attempt (`fix_run`) and no other request is in flight; the words an
 operator gives with it land in the thread (`fix_thread`). `fix_status` derives,
-on read, whose move the attempt waits on. `distill` turns a finished run's
-`result.json` record into the `fix_run` the app renders: each candidate's own
-account, the agreement, the picked change, the checks, the reviewers, and the
-question — never an agent's transcript.
+on read, whose move the attempt waits on; a proposal's follow-up record
+(`fix_followup`) counts only while it follows the run's own pull request.
+`distill` turns a finished run's `result.json` record into the `fix_run` the app
+renders: each candidate's own account, the agreement, the picked change, the
+checks, the reviewers, and the question — never an agent's transcript.
 """
 from __future__ import annotations
 
@@ -27,7 +28,30 @@ FAULT_ENDINGS = ("agent-unavailable", "run-failed", "sandbox", "base-compile")
 # The largest picked change `fix_run` carries; a longer one is cut and flagged.
 PATCH_MAX = 60_000
 # The status of an issue's fix attempt, in the order the explorer groups them.
-STATUSES = ("review", "question", "running", "reporter", "pr-open", "failed", "declined")
+STATUSES = ("review", "question", "running", "reporter", "pr-open", "pr-closed", "failed",
+            "declined", "pr-merged")
+
+
+def followup_for(fu: dict | None, pr: object) -> dict:
+    """A copy of the follow-up record `fu` when it follows pull request `pr`,
+    else an empty one."""
+    if not fu or pr is None or str(fu.get("pr")) != str(pr):
+        return {}
+    return dict(fu)
+
+
+def _ended(proposal: dict, fu: dict) -> tuple[str, str] | None:
+    """(status, reason) for a proposal whose follow-up saw it end, or None
+    while it is open. Only `closed_as: merged` reads as merged; a record
+    without `closed_as` reads as closed, in the follow-up's own words."""
+    if fu.get("state") != "done":
+        return None
+    pr = proposal["pr"]
+    if fu.get("closed_as") == "merged":
+        return "pr-merged", f"#{pr} merged"
+    if fu.get("closed_as") == "closed":
+        return "pr-closed", f"#{pr} was closed without merging"
+    return "pr-closed", str(fu.get("reason") or f"#{pr} is no longer open")
 
 
 def fix_status(issue: Issue) -> tuple[str, str] | None:
@@ -41,7 +65,10 @@ def fix_status(issue: Issue) -> tuple[str, str] | None:
         return None
     proposal = run.get("proposal") or {}
     if proposal.get("pr"):
-        fu = issue.fix_followup or {}
+        fu = followup_for(issue.fix_followup, proposal["pr"])
+        ended = _ended(proposal, fu)
+        if ended:
+            return ended
         if fu.get("state") == "ready":
             return "review", f"#{proposal['pr']} is green — ready for your review"
         if fu.get("state") == "handed-back":
@@ -65,19 +92,19 @@ def fix_status(issue: Issue) -> tuple[str, str] | None:
 
 
 def open_pr(issue: Issue) -> int | None:
-    """The pull request issue's fix attempt is proposed as, until the follow-up
+    """The pull request issue's fix attempt is proposed as, until its follow-up
     sees it merged or closed. A send-back revises the change on it, and the
     attempt cannot be replaced while it is open."""
     pr = ((issue.fix_run or {}).get("proposal") or {}).get("pr")
-    if not pr or (issue.fix_followup or {}).get("state") == "done":
+    if not pr or followup_for(issue.fix_followup, pr).get("state") == "done":
         return None
     return int(pr)
 
 
 def _fits(action: str, run: dict | None, *, guidance: str | None,
-          answer: dict | None, pr: int | None) -> str | None:
+          answer: dict | None, pr: int | None, followup: dict | None = None) -> str | None:
     """Why `action` does not fit the latest attempt `run`, open as pull request
-    `pr`, or None when it does."""
+    `pr` and followed up in `followup`, or None when it does."""
     if action == "solve":
         return f"#{pr} is open with this attempt's fix; send it back to change it" if pr else None
     if not run:
@@ -106,7 +133,12 @@ def _fits(action: str, run: dict | None, *, guidance: str | None,
     if action == "propose":
         if ending != "fixed":
             return f"the attempt ended {ending!r}, not 'fixed'"
-        if (run.get("proposal") or {}).get("pr"):
+        proposal = run.get("proposal") or {}
+        if proposal.get("pr"):
+            ended = _ended(proposal, followup_for(followup, proposal["pr"]))
+            if ended:
+                return (f"this change already merged as #{proposal['pr']}"
+                        if ended[0] == "pr-merged" else f"{ended[1]}; try again for a new change")
             return "a pull request is already open"
         return None
     return f"unknown action {action!r}"
@@ -126,7 +158,8 @@ def queue(store: IssueStore, n: int, action: str, *, by: str, source: str = "ope
     req = issue.fix_request
     if req and req.get("status") in IN_FLIGHT:
         return False, f"a {req.get('action')} request is already {req.get('status')}"
-    why = _fits(action, issue.fix_run, guidance=guidance, answer=answer, pr=open_pr(issue))
+    why = _fits(action, issue.fix_run, guidance=guidance, answer=answer, pr=open_pr(issue),
+                followup=issue.fix_followup)
     if why:
         return False, why
     retry = bool(req and req.get("status") == "failed" and req.get("action") == action)

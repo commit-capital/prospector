@@ -241,10 +241,11 @@ def poll_replies(store: IssueStore) -> int:
 
 
 def _hunted_today(issues: dict) -> int:
-    today = datetime.now(timezone.utc).date().isoformat()
+    midnight = storekit.utc_midnight()
     return sum(1 for i in issues.values()
                if (i.fix_request or {}).get("source") == "hunter"
-               and str((i.fix_request or {}).get("queued_at") or "").startswith(today))
+               and (at := storekit.parse_ts((i.fix_request or {}).get("queued_at"))) is not None
+               and at >= midnight)
 
 
 def _retryable(req: dict | None) -> bool:
@@ -257,13 +258,8 @@ def _retryable(req: dict | None) -> bool:
         return False
     if int(req.get("attempts") or 1) >= HUNT_MAX_ATTEMPTS:
         return False
-    try:
-        ended = datetime.fromisoformat(str(req.get("finished_at")))
-    except ValueError:
-        return True
-    if ended.tzinfo is None:
-        ended = ended.replace(tzinfo=timezone.utc)
-    return datetime.now(timezone.utc) - ended >= FAILED_RETRY_COOLDOWN
+    age = storekit.seconds_since(req.get("finished_at"))
+    return age is None or age >= FAILED_RETRY_COOLDOWN.total_seconds()
 
 
 def hunt(store: IssueStore) -> int | None:

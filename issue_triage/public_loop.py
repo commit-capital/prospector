@@ -121,8 +121,8 @@ def label_for(issue: Issue) -> str | None:
         return None
     run = issue.fix_run or {}
     kind = status[0]
-    if _proposed_pr(run) is not None:
-        state = (issue.fix_followup or {}).get("state")
+    if (pr := _proposed_pr(run)) is not None:
+        state = fix_review.followup_for(issue.fix_followup, pr).get("state")
         if state == "done":
             return None
         if kind != "running" and state in ("ready", "handed-back"):
@@ -180,7 +180,7 @@ def comments_due(issue: Issue, now: datetime) -> list[Due]:
     n = issue.number
     pr = _proposed_pr(run)
     if pr is not None:
-        fu = issue.fix_followup or {}
+        fu = fix_review.followup_for(issue.fix_followup, pr)
         if fu.get("state") == "done":
             return []
         key = f"pr{pr}:opened"

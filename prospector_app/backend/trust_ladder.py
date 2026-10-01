@@ -25,6 +25,7 @@ autopush and hunt switches remain the enforcement.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 from pipeline import storekit
 
@@ -106,10 +107,11 @@ def upstream_rates(rows: list[dict]) -> dict[str, tuple[Rate, Rate]]:
     confirmed. Reversal pairs each live close with any later live REOPEN of
     the same PR. Dry-run captures are previews and carry no evidence."""
     live = [r for r in rows if not r.get("dry_run")]
-    reopens: dict[int, list[str]] = {}
+    reopens: dict[int, list[datetime]] = {}
     for r in live:
         if r.get("decision") == "REOPEN" and isinstance(r.get("pr"), int):
-            reopens.setdefault(r["pr"], []).append(str(r.get("at") or ""))
+            if (re_at := storekit.parse_ts(r.get("at"))) is not None:
+                reopens.setdefault(r["pr"], []).append(re_at)
     agree: dict[str, list[bool]] = {t: [] for t in _DECISION_FOR}
     reverse: dict[str, list[bool]] = {t: [] for t in _DECISION_FOR}
     for r in live:
@@ -119,8 +121,8 @@ def upstream_rates(rows: list[dict]) -> dict[str, tuple[Rate, Rate]]:
             agree[suggested].append(decision == _DECISION_FOR[suggested])
         close_type = _CLOSE_TYPE.get(decision or "")
         if close_type and isinstance(r.get("pr"), int):
-            at = str(r.get("at") or "")
-            undone = any(re_at > at for re_at in reopens.get(r["pr"], []))
+            at = storekit.parse_ts(r.get("at"))
+            undone = any(at is None or re_at > at for re_at in reopens.get(r["pr"], []))
             reverse[close_type].append(undone)
     return {t: (_windowed(agree[t]), _windowed(reverse[t]) if t in _CLOSE_TYPE.values()
                 else NO_EVIDENCE)

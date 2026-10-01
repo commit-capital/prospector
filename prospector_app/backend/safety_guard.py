@@ -215,7 +215,8 @@ def assert_alert_bot_write(argv: list[str]) -> None:
 
 
 PROPOSE_KEYS = frozenset({"title", "body", "head", "base", "maintainer_can_modify"})
-_PROPOSE_HEAD_RE = re.compile(r"^([A-Za-z0-9-]+):prospector/issue-[1-9][0-9]{0,8}-[0-9a-f]{8}$")
+_PROPOSE_HEAD_RE = re.compile(
+    r"^([A-Za-z0-9-]+):prospector/issue-[1-9][0-9]{0,8}-[0-9a-f]{8}(?:-[2-9])?$")
 
 
 def assert_propose_write(payload: dict) -> None:

@@ -14,32 +14,18 @@ writes, and only to our own store (never upstream).
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from prospector_app.backend import data
 from pipeline import live_prs
 from pipeline import review_policy
 from pipeline import reviewers
+from pipeline import storekit
 
 if TYPE_CHECKING:
     from pipeline.model import Pr
 
 _LIVE_MERGEABLE = {"MERGEABLE": True, "CONFLICTING": False}
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
-def _dt(ts: str | None) -> datetime | None:
-    if not ts:
-        return None
-    try:
-        d = datetime.fromisoformat(ts)
-    except ValueError:
-        return None
-    return d if d.tzinfo else d.astimezone(timezone.utc)
 
 
 def _live_state(lv: dict) -> str | None:
@@ -230,7 +216,7 @@ def sweep(prs: list[int] | None = None) -> dict:
     # compares against it to stay idempotent, and the app serves the observed
     # heads instead of waiting for the debounced background check.
     data.refresh()
-    swept_at = _now()
+    swept_at = storekit.now()
     complete = not missing
     if full_sweep and complete:
         data.store().save_live_sweep({"swept_at": swept_at})
@@ -250,7 +236,5 @@ def stale(ttl_min: float) -> bool:
     ttl_min — i.e. worth a sweep. Lets the launch hook reuse a recent sweep (shared
     across operators) instead of re-querying GitHub on every relaunch (~70 GraphQL
     calls)."""
-    at = _dt(last_swept_at())
-    if at is None:
-        return True
-    return (datetime.now(timezone.utc) - at).total_seconds() / 60 >= ttl_min
+    seconds = storekit.seconds_since(last_swept_at())
+    return seconds is None or seconds / 60 >= ttl_min

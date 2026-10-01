@@ -580,6 +580,50 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def parse_ts(s: str | None) -> datetime | None:
+    """An ISO-8601 stamp as an aware UTC datetime. A trailing 'Z' is accepted
+    and a stamp with no offset is read as UTC. None when absent or
+    unparseable."""
+    if not s or not isinstance(s, str):
+        return None
+    try:
+        at = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if at.tzinfo is None:
+        return at.replace(tzinfo=timezone.utc)
+    return at.astimezone(timezone.utc)
+
+
+def seconds_since(s: str | None, now: datetime | None = None) -> float | None:
+    """Seconds from stamp `s` to `now` (the current instant by default);
+    negative for a stamp ahead of `now`. None when `s` does not parse."""
+    at = parse_ts(s)
+    if at is None:
+        return None
+    return ((now or datetime.now(timezone.utc)) - at).total_seconds()
+
+
+def hours_since(s: str | None, now: datetime | None = None) -> float | None:
+    """Hours from stamp `s` to `now`, never negative: a stamp ahead of the
+    clock reads as zero. None when `s` does not parse."""
+    seconds = seconds_since(s, now)
+    return None if seconds is None else max(0.0, seconds / 3600)
+
+
+def utc_midnight(now: datetime | None = None) -> datetime:
+    """The UTC midnight that opens `now`'s UTC day (today's by default). Daily
+    budgets reset here; a naive `now` is read as UTC."""
+    at = now or datetime.now(timezone.utc)
+    at = at.replace(tzinfo=timezone.utc) if at.tzinfo is None else at.astimezone(timezone.utc)
+    return at.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def utc_day(now: datetime | None = None) -> str:
+    """`now`'s UTC calendar date (today's by default), as YYYY-MM-DD."""
+    return utc_midnight(now).date().isoformat()
+
+
 def atomic_write(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
@@ -850,12 +894,11 @@ def _age_days(checked_at: str, today: str | None) -> int | None:
     instants alone."""
     if not checked_at:
         return None
-    ref = date.fromisoformat(today) if today else datetime.now(timezone.utc).date()
-    try:
-        checked = datetime.fromisoformat(checked_at).date()
-    except ValueError:
+    ref = date.fromisoformat(today) if today else utc_midnight().date()
+    checked = parse_ts(checked_at)
+    if checked is None:
         return None
-    return (ref - checked).days
+    return (ref - checked.date()).days
 
 
 def currency_failure_core(section: dict | None, token_field: str | None,

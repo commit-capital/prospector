@@ -211,7 +211,7 @@ def record(kind: str, **fields) -> dict:
     # machines sharing one log, attribution needs the host beside the person.
     fields.setdefault("machine", settings.worker_id())
     # Timezone-aware UTC, never naive local: the merged feed orders by this instant.
-    entry = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "kind": kind, **fields}
+    entry = {"at": storekit.now(), "kind": kind, **fields}
     entry = normalize(entry)  # store the semantic kind, not the mechanical one
     eng = _engine()
     storekit.assert_repo(eng)
@@ -226,14 +226,7 @@ def _instant(e: dict) -> datetime:
     actually happened, not by each machine's wall-clock string. A naive legacy
     stamp (written before we recorded offsets) is read as UTC — deterministic and
     reader-independent; a missing or unparseable stamp sorts oldest."""
-    ts = e.get("at")
-    if not isinstance(ts, str):
-        return datetime.min.replace(tzinfo=timezone.utc)
-    try:
-        d = datetime.fromisoformat(ts)
-    except ValueError:
-        return datetime.min.replace(tzinfo=timezone.utc)
-    return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+    return storekit.parse_ts(e.get("at")) or datetime.min.replace(tzinfo=timezone.utc)
 
 
 def _read(stmt) -> list[dict]:

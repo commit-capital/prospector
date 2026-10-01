@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime, timezone
 
 from pipeline import settings
+from pipeline import storekit
 from prospector_app.backend import activity
 from prospector_app.backend import data
 
@@ -62,7 +62,7 @@ def claim(kind: str, n: int) -> dict:
     """Mark the item as being worked by this operator on this machine.
     Returns the record stored."""
     global _cache
-    rec = {**me(), "at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+    rec = {**me(), "at": storekit.now()}
     st = data.store()
     reg = st.load_claims()
     reg.setdefault("items", {})[key(kind, n)] = rec
