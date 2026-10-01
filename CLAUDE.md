@@ -484,7 +484,8 @@ failing after a re-run with no failing log naming a changed file), `describe`
 or CI failing after a re-run in a job whose log names a changed file — the
 findings or log lines go to the agent as quoted evidence), `wait`, or `ready`.
 A hand-back or ready holds until the head moves, and either one surfaces the
-issue as `review`. `TRIAGE_ISSUE_FIX_FOLLOWUP` is `live` (the default), `dry-run`
+issue as `review`; it is recorded with the head and reason it was judged at
+(`judged`), and any other step at a new head reads `watching`. `TRIAGE_ISSUE_FIX_FOLLOWUP` is `live` (the default), `dry-run`
 (each step is noted on the issue and nothing is written upstream or spent on an
 agent), or `off`. Live, the executor edits the description
 (`executor.update_issue_fix_proposal`) and re-runs jobs
@@ -523,8 +524,15 @@ writes as the bot — `executor.set_fix_label` through `safety_guard.label_bot_r
 Activity-logged, under a short per-issue lease, a failure retried after thirty
 minutes. It never reads a label back. `sync` also queues, once per attempt with
 source `public`, what an operator's click queues in the app: `propose` for a
-fixed attempt and `ask-reporter` for a drafted question. The hunter takes a
-maintainer's issue whatever its reproduction grade. `TRIAGE_ISSUE_FIX_PUBLIC` is
+fixed attempt and `ask-reporter` for a drafted question, for an attempt that
+finished within `QUEUE_MAX_AGE` (3 days); a request it or the hunter queued that
+a machine fault ended is queued again after an hour, at most `MAX_RETRIES` (3)
+times per issue, reading `fix in progress` meanwhile. Each pass decides from the
+issue as its lease found it, and an issue that leaves scope only has its
+recorded labels taken off. Agent words in a comment lose HTML comment markers
+and their issue references are defused. The ready and hand-back comments name
+the head and reason the follow-up judged them at (`fix_followup.judged`). The
+hunter takes a maintainer's issue whatever its reproduction grade. `TRIAGE_ISSUE_FIX_PUBLIC` is
 `live` (the default), `dry-run` (each write logged as a dry-run and noted once on
 the issue, its record kept apart in `fix_public.dry`), or `off`.
 

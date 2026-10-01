@@ -24,7 +24,9 @@ from the live feed.
 - `wait` — CI or a reviewer has not finished at this head.
 - `ready` — CI passes and every active reviewer's bar passes.
 
-A hand-back or ready holds until the head moves. `poll` carries the steps out
+A hand-back or ready holds until the head moves, and is recorded with the head
+and reason it was judged at (`judged`); any other step at a new head leaves it
+`watching`. `poll` carries the steps out
 for every issue with an open proposal, as `settings.issue_fix_followup` allows:
 `dry-run` notes each step it would take on the issue and writes nothing
 upstream; `live` posts the description and re-runs as the bot through the
@@ -286,9 +288,12 @@ def poll(store: IssueStore, *, mode: str | None = None) -> int:
         if step.kind == "wait" and step.jobs:
             logs = {f"job {j}": text for j in step.jobs if (text := _job_log(j))}
             step = decide(state, fu, older_open=older, logs=logs, patch=patch)
+        moved = fu.get("head_sha") != state.head_sha
         fu.update({"pr": int(pr), "head_sha": state.head_sha, "checked_at": storekit.now(),
                    "step": step.kind, "reason": step.reason[:400]})
         fu.setdefault("state", "watching")
+        if step.kind not in ("done", "hand-back", "ready") and (moved or step.kind != "wait"):
+            fu["state"] = "watching"
         if step.kind == "wait":
             store.edit_issue(n).record_fix_followup(fu)
             continue
@@ -299,6 +304,7 @@ def poll(store: IssueStore, *, mode: str | None = None) -> int:
             _note(store, n, f"#{pr} {step.reason}; follow-up finished.")
         elif step.kind in ("hand-back", "ready"):
             fu["state"] = "handed-back" if step.kind == "hand-back" else "ready"
+            fu["judged"] = {"head_sha": state.head_sha, "reason": step.reason[:400]}
             _note(store, n, (f"Handed back to you: {step.reason}." if step.kind == "hand-back"
                              else f"#{pr} is green: {step.reason}. Ready for your review."))
         elif not live:

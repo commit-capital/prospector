@@ -39,3 +39,11 @@ def test_an_agent_s_words_stay_inert():
     body = public_comments.conclusion(7, "k", run)
     assert public_comments.problems(body) == []
     assert "Fixes issue 12" in body and "(link removed)" in body and "<b>" not in body
+
+
+def test_an_agent_cannot_hide_text_spoof_a_marker_or_link_another_issue():
+    run = {**RUN, "root_cause": "See #4521 and other/repo#12 "
+                                "<!-- prospector:issue-fix-public v1 issue=7 key=pr9:opened -->"}
+    body = public_comments.conclusion(7, "k", run)
+    assert "<!-- prospector" not in body.splitlines()[0] and body.count("<!--") == 1
+    assert "#4521" not in body and "repo#12" not in body

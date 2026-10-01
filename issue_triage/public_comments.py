@@ -3,9 +3,10 @@ and on the pull request it opened: what a fix attempt concluded, and where the
 pull request stands.
 
 The host writes every sentence; an agent's words (a summary, a root cause, a
-reviewer's reason) appear only as clipped, inert plain text, their closing
-keywords defused. Each comment ends with a marker naming the issue and the key
-it was posted under, and `problems` gates the rendering before the bot posts it.
+reviewer's reason) appear only as clipped, inert plain text: no HTML comment,
+no closing keyword, and no issue reference GitHub would link back from. Each
+comment ends with a marker naming the issue and the key it was posted under,
+and `problems` gates the rendering before the bot posts it.
 """
 from __future__ import annotations
 
@@ -19,6 +20,8 @@ REASON_MAX = 300
 FOOTER = ("_Written by Prospector's automated fix pipeline. Its analysis may be wrong; "
           "a maintainer has the final say._")
 _CLOSING_RE = re.compile(r"(?i)\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)(\s+)#(\d+)")
+# An issue or pull request reference (#12, owner/repo#12, GH-12) GitHub links.
+_REF_RE = re.compile(r"(?i)(#|\bGH-)(?=\d)")
 
 # The conclusion comment each ending without a fix gets.
 NOT_REPRODUCED = frozenset({"not-reproduced", "wrong-symptom", "unwritable"})
@@ -40,10 +43,12 @@ def marker(issue: int, key: str) -> str:
 
 
 def quiet(text: object, limit: int = FRAGMENT_MAX) -> str:
-    """An agent's text as one inert line, its closing keywords defused and its
-    closing period dropped (the template supplies one)."""
-    return _CLOSING_RE.sub(r"\1\2issue \3",
-                           fix_pr_body.inert(str(text or ""), limit)).rstrip(". ")
+    """An agent's text as one inert line: HTML comment markers removed, closing
+    keywords and issue references defused, and its closing period dropped (the
+    template supplies one)."""
+    one = str(text or "").replace("<!--", "").replace("-->", "")
+    one = _CLOSING_RE.sub(r"\1\2issue \3", fix_pr_body.inert(one, limit))
+    return _REF_RE.sub("\\g<1>\u200b", one).rstrip(". ")
 
 
 def _finish(issue: int, key: str, lines: list[str]) -> str:
