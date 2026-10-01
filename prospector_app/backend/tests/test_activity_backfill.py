@@ -47,12 +47,18 @@ def test_bot_closes_filters_to_the_bot_actor(monkeypatch):
         {"number": 15, "closed_at": "2026-07-27T17:00:00Z",  # outside the window
          "merged_at": None, "updated_at": "2026-07-27T18:40:00Z"},  # predates it → stop
     ])
-    monkeypatch.setattr(ab, "run", _gh({
-        "page=1": page1,
-        "/issues/11/events": json.dumps({"actor": f"{settings.bot_login()}[bot]", "at": "2026-07-27T18:59:26Z"}) + "\n",
-        "/issues/12/events": json.dumps({"actor": "some-human", "at": "2026-07-27T19:00:00Z"}) + "\n",
-        "/issues/13/events": json.dumps({"actor": settings.bot_login(), "at": "2026-07-27T19:01:00Z"}) + "\n",
-    }))
+    monkeypatch.setattr(ab, "run", _gh({"page=1": page1}))
+
+    def _closed(login: str, at: str) -> dict:
+        return {"event": "closed", "actor": {"login": login}, "created_at": at}
+
+    events = {
+        11: [_closed("some-human", "2026-07-27T18:00:00Z"), {"event": "reopened"},
+             _closed(f"{settings.bot_login()}[bot]", "2026-07-27T18:59:26Z")],
+        12: [_closed("some-human", "2026-07-27T19:00:00Z")],
+        13: [_closed(settings.bot_login(), "2026-07-27T19:01:00Z")],
+    }
+    monkeypatch.setattr(ab.gh, "gh_list", lambda path, **kw: events[int(path.split("/")[-2])])
     assert ab.bot_closes("2026-07-27T18:50:00Z", "2026-07-27T19:10:00Z") == [
         {"pr": 11, "closed_at": "2026-07-27T18:59:26Z"},
         {"pr": 13, "closed_at": "2026-07-27T19:01:00Z"},

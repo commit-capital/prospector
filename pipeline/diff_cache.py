@@ -19,7 +19,6 @@ caches); None means the canonical DIFFS directory.
 """
 from __future__ import annotations
 
-import json
 import logging
 import re
 import subprocess
@@ -29,6 +28,7 @@ from typing import TYPE_CHECKING
 
 from pipeline import settings
 from pipeline import diffpaths
+from pipeline import gh
 from pipeline import profile
 from pipeline.gh import operator_env
 
@@ -108,13 +108,7 @@ def _store_save(store: Store, rows: list[tuple[str, int | None, str]]) -> None:
 def _fetch_changed_paths(pr: int) -> list[str] | None:
     """Every changed path from GitHub's paginated per-file listing, or None
     when the listing is unavailable."""
-    res = subprocess.run(["gh", "api", f"repos/{settings.repo()}/pulls/{pr}/files",
-                          "--paginate", "--jq", ".[].filename"],
-                         capture_output=True, text=True, timeout=120,
-                         env=operator_env())
-    if res.returncode != 0:
-        return None
-    return [ln.strip() for ln in res.stdout.splitlines() if ln.strip()]
+    return gh.pr_changed_paths(pr)
 
 
 def changed_paths(pr: int, head_sha: str | None,
@@ -136,20 +130,11 @@ def _synthesize_diff(pr: int) -> str | None:
     """GitHub refuses .diff for PRs over 20k lines (HTTP 406). Rebuild one from
     the per-file listing; files past GitHub's per-file patch limit appear as
     headers with +/- counts only."""
-    res = subprocess.run(["gh", "api", f"repos/{settings.repo()}/pulls/{pr}/files",
-                          "--paginate", "--jq", ".[]"],
-                         capture_output=True, text=True, timeout=120,
-                         env=operator_env())
-    if res.returncode != 0:
+    files = gh.pr_files(pr)
+    if files is None:
         return None
     parts = []
-    for line in res.stdout.splitlines():
-        if not line.strip():
-            continue
-        try:
-            f = json.loads(line)
-        except json.JSONDecodeError:
-            return None
+    for f in files:
         parts.append(f"diff --git a/{f['filename']} b/{f['filename']}")
         parts.append(f"# {f.get('status', '?')}: +{f.get('additions', 0)} -{f.get('deletions', 0)}")
         if f.get("patch"):
