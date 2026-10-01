@@ -20,7 +20,7 @@ import os
 import subprocess
 import tempfile
 from pathlib import Path
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, NamedTuple
 
 if TYPE_CHECKING:
@@ -362,6 +362,53 @@ def _note_bookkeeping_failure(res: dict, what: str, e: Exception) -> None:
     res["detail"] = f"{detail}; {note}" if detail else note
 
 
+def _log(kind: str, res: dict, *, dry_run: bool, **fields: object) -> dict:
+    """Append `res` to the activity log as `kind`, with `fields` beside it, and
+    return it. A failed append is carried on the result as `bookkeeping_error`
+    and never raises, so it cannot mask the write the entry reports."""
+    try:
+        activity.record(kind, identity=settings.bot_login(), dry_run=dry_run, **fields, **res)
+    except Exception as e:
+        _note_bookkeeping_failure(res, "activity log write failed", e)
+    return res
+
+
+def _dry_run(kind: str, base: Mapping[str, object], detail: str, *, token: str | None,
+             dry_run: bool, **fields: object) -> dict:
+    """The logged dry-run result of a write. `forced` marks a dry-run the
+    missing token imposed on a caller that asked for a live one."""
+    res = {**base, "status": "dry-run", "detail": detail, "forced": not token and not dry_run}
+    return _log(kind, res, dry_run=True, **fields)
+
+
+def _bot_write(kind: str, base: Mapping[str, object], *, token: str | None, dry_run: bool,
+               preview: str, attempt: Callable[[str], dict[str, object]], failure: str,
+               on_success: Callable[[dict], None] | None = None,
+               **fields: object) -> dict:
+    """Run one upstream write and log its outcome as activity `kind`.
+
+    Without a token, or on `dry_run`, the result is a dry-run whose detail is
+    `preview`. Otherwise `attempt(token)` makes the write through its own
+    runner and returns the result's `status` and `detail` (and any extra
+    fields); an exception it raises becomes an error result whose detail names
+    `failure`. After a non-error attempt `on_success` (store bookkeeping) runs
+    on the result. Every exit is logged, with `fields` on the entry; once the
+    write has landed, a failure in the bookkeeping or the log append is carried
+    on the result as `bookkeeping_error` and the status stands."""
+    if dry_run or not token:
+        return _dry_run(kind, base, preview, token=token, dry_run=dry_run, **fields)
+    try:
+        res = {**base, **attempt(token)}
+    except Exception as e:  # WriteAttemptBlocked or subprocess error
+        res = {**base, "status": "error", "detail": _public_exception_detail(failure, e)}
+    if res["status"] != "error" and on_success is not None:
+        try:
+            on_success(res)
+        except Exception as e:
+            _note_bookkeeping_failure(res, "post-write bookkeeping failed", e)
+    return _log(kind, res, dry_run=False, **fields)
+
+
 def _comment_then_close(n: int, *, base: dict, idempotency_key: str | None,
                         comment_argv: list[str], close_argv: list[str], token: str,
                         log_verb: str, capture_event_url: bool = False,
@@ -377,13 +424,8 @@ def _comment_then_close(n: int, *, base: dict, idempotency_key: str | None,
     (store bookkeeping) and the activity append are each best-effort, and a
     failure in either is carried on the result as `bookkeeping_error`."""
     def _fail(detail: str) -> dict:
-        res = {**base, "status": "error", "detail": detail}
-        try:
-            activity.record(log_verb, identity=settings.bot_login(), dry_run=False,
-                            stale_override=stale_override, **res)
-        except Exception as e:  # the log write never masks the upstream failure
-            _note_bookkeeping_failure(res, "activity log write failed", e)
-        return res
+        return _log(log_verb, {**base, "status": "error", "detail": detail},
+                    dry_run=False, stale_override=stale_override)
 
     steps: list[str] = []
     event_url = None  # deep-link to the comment, when we post one
@@ -412,12 +454,7 @@ def _comment_then_close(n: int, *, base: dict, idempotency_key: str | None,
             on_success()
         except Exception as e:
             _note_bookkeeping_failure(res, "post-close bookkeeping failed", e)
-    try:
-        activity.record(log_verb, identity=settings.bot_login(), dry_run=False,
-                        stale_override=stale_override, **res)
-    except Exception as e:
-        _note_bookkeeping_failure(res, "activity log write failed", e)
-    return res
+    return _log(log_verb, res, dry_run=False, stale_override=stale_override)
 
 
 def _backfill_dup_refs(n: int, action: models.CloseAction) -> models.CloseAction:
@@ -468,10 +505,8 @@ def execute_pr(n: int, action: models.CloseAction, *, token: str | None, dry_run
 
     # forced dry-run when no token
     if dry_run or not token:
-        res = {**base, "status": "dry-run", "detail": "; ".join(plan), "forced": not token and not dry_run}
-        activity.record("execute", identity=settings.bot_login(), dry_run=True,
-                        stale_override=overridden, **res)
-        return res
+        return _dry_run("execute", base, "; ".join(plan), token=token, dry_run=dry_run,
+                        stale_override=overridden)
 
     return _comment_then_close(
         n, base=base, idempotency_key=_comment_marker(comment),
@@ -510,17 +545,10 @@ def reopen_pr(n: int, *, token: str | None, dry_run: bool) -> dict:
     """Undo: reopen a PR, delete the configured bot's closing comment(s), and
     dismiss any standing bot request-changes review so the PR doesn't
     reopen still showing the bot's "things to fix" block (#70)."""
-    base = {"pr": int(n), "cluster_id": _cluster_id(n), "action": "REOPEN"}
-    if dry_run or not token:
-        return {**base, "status": "dry-run",
-                "detail": "would reopen + remove bot comment(s) + dismiss any request-changes review",
-                "forced": not token and not dry_run}
-    try:
+    def attempt(token: str) -> dict[str, object]:
         rr = bot_run(["gh", "pr", "reopen", str(n), "--repo", settings.repo()], token)
         if rr.returncode != 0:
-            res = {**base, "status": "error", "detail": f"reopen failed: {rr.stderr.strip()[:160]}"}
-            activity.record("reopen", identity=settings.bot_login(), dry_run=False, **res)
-            return res
+            return {"status": "error", "detail": f"reopen failed: {rr.stderr.strip()[:160]}"}
         removed = 0
         for cid in _bot_comment_ids(n):
             dr = bot_run(["gh", "api", "--method", "DELETE", f"repos/{settings.repo()}/issues/comments/{cid}"], token)
@@ -535,18 +563,17 @@ def reopen_pr(n: int, *, token: str | None, dry_run: bool) -> dict:
                           "-f", "event=DISMISS"], token)
             if dn.returncode == 0:
                 dismissed += 1
-    except Exception as e:
-        res = {**base, "status": "error",
-               "detail": _public_exception_detail("reopen failed unexpectedly", e)}
-        activity.record("reopen", identity=settings.bot_login(), dry_run=False, **res)
-        return res
-    detail = f"reopened + removed {removed} bot comment(s)"
-    if dismissed:
-        detail += f" + dismissed {dismissed} request-changes review(s)"
-    res = {**base, "status": "reopened", "detail": detail}
-    _reflect_state(n, state="open")
-    activity.record("reopen", identity=settings.bot_login(), dry_run=False, **res)
-    return res
+        detail = f"reopened + removed {removed} bot comment(s)"
+        if dismissed:
+            detail += f" + dismissed {dismissed} request-changes review(s)"
+        return {"status": "reopened", "detail": detail}
+
+    return _bot_write(
+        "reopen", {"pr": int(n), "cluster_id": _cluster_id(n), "action": "REOPEN"},
+        token=token, dry_run=dry_run,
+        preview="would reopen + remove bot comment(s) + dismiss any request-changes review",
+        attempt=attempt, failure="reopen failed unexpectedly",
+        on_success=lambda _: _reflect_state(n, state="open"))
 
 
 def reopen_issue(n: int, *, token: str | None, dry_run: bool) -> dict:
@@ -556,30 +583,23 @@ def reopen_issue(n: int, *, token: str | None, dry_run: bool) -> dict:
     write-back the close paths do (#192). Records as the disjoint ``issue-reopen``
     kind, so it never counts toward PR-reopen velocity."""
     from prospector_app.backend import issues as issues_mod
-    base = {"issue": int(n), "action": "REOPEN_ISSUE"}
-    if dry_run or not token:
-        return {**base, "status": "dry-run", "detail": "would reopen + remove bot comment(s)",
-                "forced": not token and not dry_run}
-    try:
+
+    def attempt(token: str) -> dict[str, object]:
         rr = bot_run(["gh", "issue", "reopen", str(n), "--repo", settings.repo()], token)
         if rr.returncode != 0:
-            res = {**base, "status": "error", "detail": f"reopen failed: {rr.stderr.strip()[:160]}"}
-            activity.record("issue-reopen", identity=settings.bot_login(), dry_run=False, **res)
-            return res
+            return {"status": "error", "detail": f"reopen failed: {rr.stderr.strip()[:160]}"}
         removed = 0
         for cid in _bot_comment_ids(n):
             dr = bot_run(["gh", "api", "--method", "DELETE", f"repos/{settings.repo()}/issues/comments/{cid}"], token)
             if dr.returncode == 0:
                 removed += 1
-    except Exception as e:
-        res = {**base, "status": "error",
-               "detail": _public_exception_detail("issue reopen failed unexpectedly", e)}
-        activity.record("issue-reopen", identity=settings.bot_login(), dry_run=False, **res)
-        return res
-    res = {**base, "status": "reopened", "detail": f"reopened + removed {removed} bot comment(s)"}
-    issues_mod.reflect_issue_state(n, "open")
-    activity.record("issue-reopen", identity=settings.bot_login(), dry_run=False, **res)
-    return res
+        return {"status": "reopened", "detail": f"reopened + removed {removed} bot comment(s)"}
+
+    return _bot_write(
+        "issue-reopen", {"issue": int(n), "action": "REOPEN_ISSUE"},
+        token=token, dry_run=dry_run, preview="would reopen + remove bot comment(s)",
+        attempt=attempt, failure="issue reopen failed unexpectedly",
+        on_success=lambda _: issues_mod.reflect_issue_state(n, "open"))
 
 
 def comment_issue(n: int, action: models.IssueCommentBody, *, token: str | None, dry_run: bool) -> dict:
@@ -589,27 +609,18 @@ def comment_issue(n: int, action: models.IssueCommentBody, *, token: str | None,
     base = {"issue": int(n), "action": "COMMENT_ISSUE"}
     comment = (action.comment or "").strip()
     if not comment:
-        res = {**base, "status": "error", "detail": "comment is empty"}
-        activity.record("issue-comment", identity=settings.bot_login(), dry_run=dry_run, **res)
-        return res
-    if dry_run or not token:
-        res = {**base, "status": "dry-run", "detail": f'comment: "{comment[:80]}…"',
-               "forced": not token and not dry_run}
-        activity.record("issue-comment", identity=settings.bot_login(), dry_run=True, **res)
-        return res
-    try:
+        return _log("issue-comment", {**base, "status": "error", "detail": "comment is empty"},
+                    dry_run=dry_run)
+
+    def attempt(token: str) -> dict[str, object]:
         r = bot_run(["gh", "issue", "comment", str(n), "--repo", settings.repo(), "--body", comment], token)
-    except Exception as e:
-        res = {**base, "status": "error",
-               "detail": _public_exception_detail("issue comment failed unexpectedly", e)}
-        activity.record("issue-comment", identity=settings.bot_login(), dry_run=False, **res)
-        return res
-    if r.returncode != 0:
-        res = {**base, "status": "error", "detail": f"comment failed: {r.stderr.strip()[:160]}"}
-    else:
-        res = {**base, "status": "executed", "detail": "comment posted"}
-    activity.record("issue-comment", identity=settings.bot_login(), dry_run=False, **res)
-    return res
+        if r.returncode != 0:
+            return {"status": "error", "detail": f"comment failed: {r.stderr.strip()[:160]}"}
+        return {"status": "executed", "detail": "comment posted"}
+
+    return _bot_write("issue-comment", base, token=token, dry_run=dry_run,
+                      preview=f'comment: "{comment[:80]}…"', attempt=attempt,
+                      failure="issue comment failed unexpectedly")
 
 
 _REVIEW_FLAG = {"approve": "--approve", "request-changes": "--request-changes", "comment": "--comment"}
@@ -646,33 +657,28 @@ def submit_review(n: int, event: str, body: str, *, token: str | None, dry_run: 
     refusal, overridden = _stale_gate(n, base, override=override_stale)
     if refusal is not None:
         return refusal
-    if dry_run or not token:
-        effect = _REVIEW_EFFECT.get(event, f"a {event} review")
-        detail = (f"would submit {effect} on #{n} as {settings.bot_login()} — PR stays open, "
-                  f"nothing written to the store" + (f"; comment: “{body[:50]}…”" if body.strip() else ""))
-        res = {**base, "status": "dry-run", "detail": detail, "forced": not token and not dry_run}
-        activity.record("review", identity=settings.bot_login(), dry_run=True, event=event,
-                        stale_override=overridden, **res)
-        return res
+    effect = _REVIEW_EFFECT.get(event, f"a {event} review")
+    preview = (f"would submit {effect} on #{n} as {settings.bot_login()} — PR stays open, "
+               f"nothing written to the store" + (f"; comment: “{body[:50]}…”" if body.strip() else ""))
     argv = ["gh", "pr", "review", str(n), "--repo", settings.repo(), flag]
     if body.strip():
         argv += ["--body", body]
-    try:
+
+    def attempt(token: str) -> dict[str, object]:
         r = bot_run(argv, token)
         if r.returncode != 0:
-            res = {**base, "status": "error", "detail": r.stderr.strip()[:160]}
-        else:
-            res = {**base, "status": "executed", "detail": f"submitted {_REVIEW_EFFECT.get(event, event)} — PR stays open"}
-            if body.strip():  # a review with a body is a content anchor worth deep-linking
-                url = _latest_bot_review_url(n)
-                if url:
-                    res["event_url"] = url
-    except Exception as e:
-        res = {**base, "status": "error",
-               "detail": _public_exception_detail("review failed unexpectedly", e)}
-    activity.record("review", identity=settings.bot_login(), dry_run=False, event=event,
-                    stale_override=overridden, **res)
-    return res
+            return {"status": "error", "detail": r.stderr.strip()[:160]}
+        res: dict[str, object] = {
+            "status": "executed", "detail": f"submitted {_REVIEW_EFFECT.get(event, event)} — PR stays open"}
+        if body.strip():  # a review with a body is a content anchor worth deep-linking
+            url = _latest_bot_review_url(n)
+            if url:
+                res["event_url"] = url
+        return res
+
+    return _bot_write("review", base, token=token, dry_run=dry_run, preview=preview,
+                      attempt=attempt, failure="review failed unexpectedly",
+                      event=event, stale_override=overridden)
 
 
 def comment_line(n: int, file: str, line: int, body: str, *, token: str | None, dry_run: bool,
@@ -687,33 +693,28 @@ def comment_line(n: int, file: str, line: int, body: str, *, token: str | None, 
     refusal, overridden = _stale_gate(n, base, override=override_stale)
     if refusal is not None:
         return refusal
-    if dry_run or not token:
-        res = {**base, "status": "dry-run", "detail": f"would comment on {file}:{line}: “{body[:50]}…”",
-               "forced": not token and not dry_run}
-        activity.record("line_comment", identity=settings.bot_login(), dry_run=True,
-                        stale_override=overridden, **res)
-        return res
-    head = (run(["gh", "api", f"repos/{settings.repo()}/pulls/{n}", "--jq", ".head.sha"], timeout=30).stdout or "").strip()
-    if not head:
-        return {**base, "status": "error", "detail": "could not resolve head sha"}
-    argv = ["gh", "api", "--method", "POST", f"repos/{settings.repo()}/pulls/{n}/comments",
-            "-f", f"body={body}", "-f", f"commit_id={head}", "-f", f"path={file}",
-            "-F", f"line={int(line)}", "-f", "side=RIGHT"]
-    try:
+
+    def attempt(token: str) -> dict[str, object]:
+        head = (run(["gh", "api", f"repos/{settings.repo()}/pulls/{n}", "--jq", ".head.sha"],
+                    timeout=30).stdout or "").strip()
+        if not head:
+            return {"status": "error", "detail": "could not resolve head sha"}
+        argv = ["gh", "api", "--method", "POST", f"repos/{settings.repo()}/pulls/{n}/comments",
+                "-f", f"body={body}", "-f", f"commit_id={head}", "-f", f"path={file}",
+                "-F", f"line={int(line)}", "-f", "side=RIGHT"]
         r = bot_run(argv, token)
         if r.returncode != 0:
-            res = {**base, "status": "error", "detail": r.stderr.strip()[:160]}
-        else:
-            res = {**base, "status": "executed", "detail": f"commented on {file}:{line}"}
-            url = _html_url(r.stdout)  # deep-link to the inline comment
-            if url:
-                res["event_url"] = url
-    except Exception as e:
-        res = {**base, "status": "error",
-               "detail": _public_exception_detail("line comment failed unexpectedly", e)}
-    activity.record("line_comment", identity=settings.bot_login(), dry_run=False,
-                    stale_override=overridden, **res)
-    return res
+            return {"status": "error", "detail": r.stderr.strip()[:160]}
+        res: dict[str, object] = {"status": "executed", "detail": f"commented on {file}:{line}"}
+        url = _html_url(r.stdout)  # deep-link to the inline comment
+        if url:
+            res["event_url"] = url
+        return res
+
+    return _bot_write("line_comment", base, token=token, dry_run=dry_run,
+                      preview=f"would comment on {file}:{line}: “{body[:50]}…”",
+                      attempt=attempt, failure="line comment failed unexpectedly",
+                      stale_override=overridden)
 
 
 def retrigger_review(n: int, reviewer_id: str, *, token: str | None, dry_run: bool,
@@ -738,27 +739,23 @@ def retrigger_review(n: int, reviewer_id: str, *, token: str | None, dry_run: bo
     pf = _preflight(n, None, check_head=False)
     if not pf.ok:
         return {**base, "status": "skipped", "detail": f"pre-flight: {pf.message}"}
-    if dry_run or not token:
-        res = {**base, "status": "dry-run",
-               "detail": f"would comment “{mention}” on #{n} as {settings.bot_login()} to re-trigger the review",
-               "forced": not token and not dry_run}
-        activity.record("review_retrigger", identity=settings.bot_login(), dry_run=True, **res)
-        return res
-    try:
+
+    def attempt(token: str) -> dict[str, object]:
         r = bot_run(["gh", "pr", "comment", str(n), "--repo", settings.repo(), "--body", mention], token)
         if r.returncode != 0:
-            res = {**base, "status": "error", "detail": r.stderr.strip()[:160]}
-        else:
-            res = {**base, "status": "executed",
-                   "detail": f"posted “{mention}” — {reviewer.label if reviewer else reviewer_id} will re-review"}
-            url = (r.stdout or "").strip() or None  # gh prints the new comment's URL
-            if url:
-                res["event_url"] = url
-    except Exception as e:
-        res = {**base, "status": "error",
-               "detail": _public_exception_detail("review retrigger failed unexpectedly", e)}
-    activity.record("review_retrigger", identity=settings.bot_login(), dry_run=False, **res)
-    return res
+            return {"status": "error", "detail": r.stderr.strip()[:160]}
+        res: dict[str, object] = {
+            "status": "executed",
+            "detail": f"posted “{mention}” — {reviewer.label if reviewer else reviewer_id} will re-review"}
+        url = (r.stdout or "").strip() or None  # gh prints the new comment's URL
+        if url:
+            res["event_url"] = url
+        return res
+
+    return _bot_write(
+        "review_retrigger", base, token=token, dry_run=dry_run,
+        preview=f"would comment “{mention}” on #{n} as {settings.bot_login()} to re-trigger the review",
+        attempt=attempt, failure="review retrigger failed unexpectedly")
 
 
 def merge_pr(n: int, method: str = "squash", *, dry_run: bool, reason: str | None = None) -> dict:
@@ -928,16 +925,13 @@ def close_issue(n: int, action: models.IssueCloseDupBody, *, token: str | None, 
     # with any resolution; that does not change the duplicate relationship.
     ok, reason = issues_mod.close_dup_gate(int(n))
     if not ok:
-        res = {**base, "status": "blocked", "detail": f"close-dup gate: {reason}"}
-        activity.record("issue-close", identity=settings.bot_login(), dry_run=dry_run, **res)
-        return res
+        return _log("issue-close", {**base, "status": "blocked", "detail": f"close-dup gate: {reason}"},
+                    dry_run=dry_run)
     comment = action.comment or issues_mod.dup_issue_comment(canonical)
     plan = [f'comment: "{comment[:80]}…"', f"close issue #{n}"]
 
     if dry_run or not token:
-        res = {**base, "status": "dry-run", "detail": "; ".join(plan), "forced": not token and not dry_run}
-        activity.record("issue-close", identity=settings.bot_login(), dry_run=True, **res)
-        return res
+        return _dry_run("issue-close", base, "; ".join(plan), token=token, dry_run=dry_run)
 
     # issues and PRs share the issues/comments endpoint
     return _comment_then_close(
@@ -958,16 +952,13 @@ def close_issue_fixed(n: int, action: models.IssueCloseFixedBody, *, token: str 
     base = {"issue": int(n), "action": "CLOSE_ISSUE_FIXED", "fixed_by": fixed_by}
     ok, reason = issues_mod.close_fixed_gate(int(n), fixed_by)
     if not ok:
-        res = {**base, "status": "blocked", "detail": f"close-fixed gate: {reason}"}
-        activity.record("issue-close", identity=settings.bot_login(), dry_run=dry_run, **res)
-        return res
+        return _log("issue-close", {**base, "status": "blocked", "detail": f"close-fixed gate: {reason}"},
+                    dry_run=dry_run)
     comment = action.comment or issues_mod.fixed_issue_comment(fixed_by)
     plan = [f'comment: "{comment[:80]}…"', f"close issue #{n} as fixed by #{fixed_by}"]
 
     if dry_run or not token:
-        res = {**base, "status": "dry-run", "detail": "; ".join(plan), "forced": not token and not dry_run}
-        activity.record("issue-close", identity=settings.bot_login(), dry_run=True, **res)
-        return res
+        return _dry_run("issue-close", base, "; ".join(plan), token=token, dry_run=dry_run)
 
     # issues and PRs share the issues/comments endpoint
     return _comment_then_close(
@@ -1008,9 +999,8 @@ def close_issue_with_comment(n: int, action: models.IssueCloseBody, *, token: st
         base["canonical"] = action.canonical
     ok, why = issues_mod.close_gate(int(n), disp, action.comment, action.fixed_by, action.canonical)
     if not ok:
-        res = {**base, "status": "blocked", "detail": f"close gate: {why}"}
-        activity.record("issue-close", identity=settings.bot_login(), dry_run=dry_run, **res)
-        return res
+        return _log("issue-close", {**base, "status": "blocked", "detail": f"close gate: {why}"},
+                    dry_run=dry_run)
     comment = (action.comment or "").strip()
     if not comment and disp == "fixed" and action.fixed_by is not None:
         comment = issues_mod.fixed_issue_comment(int(action.fixed_by))
@@ -1019,9 +1009,7 @@ def close_issue_with_comment(n: int, action: models.IssueCloseBody, *, token: st
     plan = [f'comment: "{comment[:80]}…"', f"close issue #{n} ({reason})"]
 
     if dry_run or not token:
-        res = {**base, "status": "dry-run", "detail": "; ".join(plan), "forced": not token and not dry_run}
-        activity.record("issue-close", identity=settings.bot_login(), dry_run=True, **res)
-        return res
+        return _dry_run("issue-close", base, "; ".join(plan), token=token, dry_run=dry_run)
 
     return _comment_then_close(
         n, base=base, idempotency_key=_comment_marker(comment),
@@ -1056,9 +1044,8 @@ def dismiss_alert(source: str, number: int, reason: str, comment: str, *,
         return {**base, "status": "blocked", "detail": f"alert {source}#{number} not in store"}
     ok, why = alert_gates.dismiss_eligibility(alert, reason, comment)
     if not ok:
-        res = {**base, "status": "blocked", "detail": f"dismiss gate: {why}"}
-        activity.record("alert-dismiss", identity=settings.bot_login(), dry_run=dry_run, **res)
-        return res
+        return _log("alert-dismiss", {**base, "status": "blocked", "detail": f"dismiss gate: {why}"},
+                    dry_run=dry_run)
 
     if source == "secret-scanning":
         fields = ["-f", "state=resolved", "-f", f"resolution={reason}"]
@@ -1073,24 +1060,21 @@ def dismiss_alert(source: str, number: int, reason: str, comment: str, *,
     argv = ["gh", "api", "-X", "PATCH",
             f"repos/{settings.repo()}/{source}/alerts/{int(number)}", *fields]
 
-    if dry_run or not token:
-        res = {**base, "status": "dry-run",
-               "detail": f"would dismiss {source}#{number} ({reason})",
-               "forced": not token and not dry_run}
-        activity.record("alert-dismiss", identity=settings.bot_login(), dry_run=True, **res)
-        return res
+    def attempt(token: str) -> dict[str, object]:
+        r = alert_bot_run(argv, token)
+        if r.returncode != 0:
+            return {"status": "error",
+                    "detail": (r.stderr or "").strip()[-300:] or f"gh exited {r.returncode}"}
+        return {"status": "executed", "detail": f"dismissed {source}#{number} ({reason})"}
 
-    r = alert_bot_run(argv, token)
-    if r.returncode != 0:
-        detail = (r.stderr or "").strip()[-300:] or f"gh exited {r.returncode}"
-        res = {**base, "status": "error", "detail": detail}
-        activity.record("alert-dismiss", identity=settings.bot_login(), dry_run=False, **res)
-        return res
-    alert_data.store().edit_alert(i).record_live_state(new_state, raw_state=new_raw)
-    alert_data.refresh()
-    res = {**base, "status": "executed", "detail": f"dismissed {source}#{number} ({reason})"}
-    activity.record("alert-dismiss", identity=settings.bot_login(), dry_run=False, **res)
-    return res
+    def reflect(_: dict) -> None:
+        alert_data.store().edit_alert(i).record_live_state(new_state, raw_state=new_raw)
+        alert_data.refresh()
+
+    return _bot_write("alert-dismiss", base, token=token, dry_run=dry_run,
+                      preview=f"would dismiss {source}#{number} ({reason})",
+                      attempt=attempt, failure="alert dismiss failed unexpectedly",
+                      on_success=reflect)
 
 
 def _gh_api_error(r: subprocess.CompletedProcess) -> str:
@@ -1125,9 +1109,8 @@ def propose_issue_fix(issue: int, *, token: str | None, dry_run: bool = True) ->
     base_res = {"issue": int(issue), "action": "PROPOSE"}
 
     def done(status: str, detail: str, *, dry: bool, **extra: object) -> dict:
-        res = {**base_res, "status": status, "detail": detail, **extra}
-        activity.record("issue-propose", identity=settings.bot_login(), dry_run=dry, **res)
-        return res
+        return _log("issue-propose", {**base_res, "status": status, "detail": detail, **extra},
+                    dry_run=dry)
 
     record = propose.load_result(issue)
     if record is None:
@@ -1211,9 +1194,8 @@ def update_issue_fix_proposal(issue: int, pr: int, *, push: bool, token: str | N
     base_res = {"issue": int(issue), "pr": int(pr), "action": "UPDATE"}
 
     def done(status: str, detail: str, *, dry: bool, **extra: object) -> dict:
-        res = {**base_res, "status": status, "detail": detail, **extra}
-        activity.record("issue-propose", identity=settings.bot_login(), dry_run=dry, **res)
-        return res
+        return _log("issue-propose", {**base_res, "status": status, "detail": detail, **extra},
+                    dry_run=dry)
 
     record = propose.load_result(issue)
     if record is None:
@@ -1295,28 +1277,24 @@ def rerun_issue_fix_checks(issue: int, pr: int, run_ids: list[int], *, token: st
     """Re-run the failed jobs of workflow runs `run_ids` on issue `issue`'s pull
     request `pr`, as the bot. With no token every run is a dry-run. Logged to
     Activity."""
-    base_res = {"issue": int(issue), "pr": int(pr), "action": "RERUN",
-                "runs": [int(r) for r in run_ids]}
-    live = not dry_run and bool(token)
-    if not live:
-        res = {**base_res, "status": "dry-run",
-               "detail": f"would re-run the failed jobs of {len(run_ids)} workflow run(s) "
-                         f"on #{pr}", "forced": not token and not dry_run}
-        activity.record("issue-propose", identity=settings.bot_login(), dry_run=True, **res)
-        return res
-    assert token is not None
-    failed: list[str] = []
-    for run_id in run_ids:
-        r = safety_guard.chat_bot_run(["gh", "run", "rerun", str(int(run_id)), "--failed",
-                                       "--repo", settings.repo()], token)
-        if r.returncode != 0:
-            failed.append(f"{run_id}: {(r.stderr or r.stdout).strip()[:200]}")
-    status = "error" if failed else "executed"
-    detail = ("re-run refused: " + "; ".join(failed)) if failed else (
-        f"re-ran the failed jobs of {len(run_ids)} workflow run(s) on #{pr}")
-    res = {**base_res, "status": status, "detail": detail}
-    activity.record("issue-propose", identity=settings.bot_login(), dry_run=False, **res)
-    return res
+    def attempt(token: str) -> dict[str, object]:
+        failed: list[str] = []
+        for run_id in run_ids:
+            r = safety_guard.chat_bot_run(["gh", "run", "rerun", str(int(run_id)), "--failed",
+                                           "--repo", settings.repo()], token)
+            if r.returncode != 0:
+                failed.append(f"{run_id}: {(r.stderr or r.stdout).strip()[:200]}")
+        if failed:
+            return {"status": "error", "detail": "re-run refused: " + "; ".join(failed)}
+        return {"status": "executed",
+                "detail": f"re-ran the failed jobs of {len(run_ids)} workflow run(s) on #{pr}"}
+
+    return _bot_write(
+        "issue-propose",
+        {"issue": int(issue), "pr": int(pr), "action": "RERUN", "runs": [int(r) for r in run_ids]},
+        token=token, dry_run=dry_run,
+        preview=f"would re-run the failed jobs of {len(run_ids)} workflow run(s) on #{pr}",
+        attempt=attempt, failure="workflow re-run failed unexpectedly")
 
 
 def ask_issue_question(issue: int, *, token: str | None, dry_run: bool = True) -> dict:
@@ -1335,9 +1313,8 @@ def ask_issue_question(issue: int, *, token: str | None, dry_run: bool = True) -
     base_res = {"issue": int(issue), "action": "QUESTION"}
 
     def done(status: str, detail: str, *, dry: bool, **extra: object) -> dict:
-        res = {**base_res, "status": status, "detail": detail, **extra}
-        activity.record("issue-question", identity=settings.bot_login(), dry_run=dry, **res)
-        return res
+        return _log("issue-question", {**base_res, "status": status, "detail": detail, **extra},
+                    dry_run=dry)
 
     record = propose.load_result(issue)
     if record is None:
@@ -1374,18 +1351,26 @@ def ask_issue_question(issue: int, *, token: str | None, dry_run: bool = True) -
     problems = dispute_question.problems(body)
     if problems:
         return done("blocked", "rendering: " + "; ".join(problems), dry=dry_run)
+    preview = f"would ask: {question['question'][:200]}"
     if dry_run or not token:
-        return done("dry-run", f"would ask: {question['question'][:200]}", dry=True,
-                    forced=not token and not dry_run, body=body)
+        return _dry_run("issue-question", {**base_res, "body": body}, preview,
+                        token=token, dry_run=dry_run)
 
-    r = bot_run(["gh", "issue", "comment", str(issue), "--repo", settings.repo(),
-                 "--body", body], token)
-    if r.returncode != 0:
-        detail = (r.stderr or "").strip()[-300:] or f"gh exited {r.returncode}"
-        return done("error", detail, dry=False)
-    url = (r.stdout or "").strip().splitlines()[-1] if (r.stdout or "").strip() else None
-    saved["posted"] = {"url": url, "asked_at": asked.isoformat(timespec="seconds")}
-    path.write_text(dispute_question.dumps(saved))
-    verify_gc.hold(record["base_sha"])
-    return done("executed", f"asked issue #{issue}: {question['question'][:200]}", dry=False,
-                url=url)
+    def attempt(token: str) -> dict[str, object]:
+        r = bot_run(["gh", "issue", "comment", str(issue), "--repo", settings.repo(),
+                     "--body", body], token)
+        if r.returncode != 0:
+            return {"status": "error",
+                    "detail": (r.stderr or "").strip()[-300:] or f"gh exited {r.returncode}"}
+        url = (r.stdout or "").strip().splitlines()[-1] if (r.stdout or "").strip() else None
+        return {"status": "executed",
+                "detail": f"asked issue #{issue}: {question['question'][:200]}", "url": url}
+
+    def remember(res: dict) -> None:
+        saved["posted"] = {"url": res["url"], "asked_at": asked.isoformat(timespec="seconds")}
+        path.write_text(dispute_question.dumps(saved))
+        verify_gc.hold(record["base_sha"])
+
+    return _bot_write("issue-question", base_res, token=token, dry_run=dry_run, preview=preview,
+                      attempt=attempt, failure="asking the question failed unexpectedly",
+                      on_success=remember)
