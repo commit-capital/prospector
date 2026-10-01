@@ -124,12 +124,14 @@ def summarize(health_hosts: list[dict], offline: list[dict],
                 continue
             rec = next(h for h in health_hosts if str(h["host"]) == host)
             names = tripped_by_host[host]
-            first = ((rec.get("lanes") or {}).get(names[0]) or {}).get("tripped") or {}
+            entry = (rec.get("lanes") or {}).get(names[0]) or {}
+            first = entry.get("tripped") or {}
+            detail = "\n".join(str(part) for part in (first.get("reason"), entry.get("remedy")) if part)
             items.append({
                 "kind": "trip", "severity": severity, "host": host,
                 "label": f"{host}: {', '.join(names)} paused · "
                          f"{first.get('kind') or 'unknown'}",
-                "detail": str(first.get("reason") or "") or None})
+                "detail": detail or None})
 
     for key, label in INGEST_LABELS.items():
         item = _ingest_item(label, ingest_last.get(key), now_ts)

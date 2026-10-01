@@ -70,6 +70,25 @@ def _failure_text(text: str, raw_lines: list[str], results: list[dict]) -> str:
     return "\n".join(parts)
 
 
+_LIMIT_SPENT = re.compile(r"hit your \w+ limit|usage limit reached", re.I)
+_NOT_INSTALLED = re.compile(r"not installed or not on PATH", re.I)
+
+
+def unavailable_remedy(reason: str) -> str:
+    """What an operator does on the worker machine so the CLI can serve
+    prompts again, for an AgentUnavailable `reason`."""
+    if _NOT_INSTALLED.search(reason):
+        return ("Install the Claude Code CLI on this machine and make sure `claude` "
+                "is on the PATH of the user the worker runs as, then restart the worker.")
+    if _LIMIT_SPENT.search(reason):
+        return ("The Claude account's usage limit is spent. Wait for it to reset, or "
+                "sign in to an account with headroom: run `claude` in a terminal on "
+                "this machine and use /login.")
+    return ("Claude Code on this machine is not signed in. Open a terminal on it as "
+            "the user the worker runs as, run `claude`, and sign in with /login "
+            "(or set a valid ANTHROPIC_API_KEY for the worker).")
+
+
 def unavailable_reason(text: str) -> str | None:
     """The line of `text` that says the CLI cannot serve prompts, or None."""
     for line in text.splitlines():

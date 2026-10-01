@@ -204,7 +204,7 @@ function BaseHealth({ base }: { base: VerifyBaseHealth }) {
 
 /** A worker whose lane tripped: it has stopped picking work because the
  *  machine, not the PRs, kept failing. One banner per tripped lane, with the
- *  reason, the last self-test, and a Resume override. */
+ *  reason, what to do about it, the last self-test, and a Resume override. */
 function TrippedLane({ host, lane, onResume }: { host: WorkerHealthHost; lane: string; onResume: () => void }) {
   const h = host.lanes[lane] ?? {};
   const t = h.tripped ?? {};
@@ -225,6 +225,7 @@ function TrippedLane({ host, lane, onResume }: { host: WorkerHealthHost; lane: s
         <button className="btn-sm" disabled={busy} onClick={resume}>{busy ? "Resuming…" : "Resume"}</button>
       </div>
       <div className="small" style={{ marginTop: 4 }}>{t.reason}</div>
+      {h.remedy && <div className="small" style={{ marginTop: 4 }}><b>To fix:</b> {h.remedy}</div>}
       {h.retest && !h.retest.ok && (
         <div className="muted small" style={{ marginTop: 2 }}>last self-test {ago(h.retest.at)}: {h.retest.detail}</div>
       )}

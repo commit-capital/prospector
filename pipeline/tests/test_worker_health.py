@@ -88,3 +88,28 @@ def test_update_round_trips_through_the_store(tmp_path):
     wh.update(st, "w2", lambda r: wh.record_success(r, "verify"))
     assert wh.is_tripped(wh.load(st, "w1"), "fix")
     assert set(st.load_worker_health()["hosts"]) == {"w1", "w2"}
+
+
+class TestRemedy:
+    def test_not_logged_in_says_how_to_sign_in(self):
+        hint = wh.remedy("agent-unavailable", "claude exited 1: Not logged in · Please run /login")
+        assert "/login" in hint and "run `claude`" in hint
+        assert "retests itself every 15 minutes" in hint
+
+    def test_spent_usage_limit_says_to_wait(self):
+        hint = wh.remedy("agent-unavailable", "claude exited 1: You've hit your weekly limit")
+        assert "usage limit is spent" in hint
+
+    def test_missing_cli_says_to_install(self):
+        hint = wh.remedy("agent-unavailable", "claude is not installed or not on PATH")
+        assert "Install the Claude Code CLI" in hint
+
+    def test_sandbox_trip_points_at_docker(self):
+        assert "Docker is running" in wh.remedy("sandbox", "the Docker daemon is not answering")
+
+    def test_pin_trip_points_at_the_base(self):
+        assert "pinned verify base" in wh.remedy("pin-refresh", "build failed")
+
+    def test_untested_trip_says_resume(self):
+        hint = wh.remedy("security-run", "exit 1")
+        assert "click Resume" in hint and "6 hours" in hint

@@ -24,6 +24,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from pipeline import headless_agent
 from pipeline.storekit import now as _now
 
 if TYPE_CHECKING:
@@ -102,6 +103,32 @@ def trip(rec: dict, name: str, *, kind: str, reason: str,
         return False
     entry["tripped"] = {"at": now, "kind": kind, "reason": reason[:600]}
     return True
+
+
+_AGENT_KINDS = frozenset({"agent-unavailable"})
+_DAEMON_KINDS = frozenset({"sandbox", "sandbox-error"})
+_BASE_KINDS = frozenset({"no-base", "pin-refresh"})
+_SELF_TESTED = (f" The lane retests itself every {RETEST_SECONDS // 60} minutes and "
+                "reopens once that passes; Resume reopens it at once.")
+
+
+def remedy(kind: str, reason: str) -> str:
+    """What the operator does to clear a trip of `kind`, said for the banner
+    beside the trip's raw `reason`."""
+    if kind in _AGENT_KINDS:
+        return headless_agent.unavailable_remedy(reason) + _SELF_TESTED
+    if kind in _DAEMON_KINDS:
+        return ("Make sure Docker is running on this machine (on macOS, start Colima "
+                "or Docker Desktop) and that the worker's user can reach it."
+                + _SELF_TESTED)
+    if kind in _BASE_KINDS:
+        return ("This machine's pinned verify base is missing or failed to build; "
+                "the reason holds the build output. Fix what it names (often disk "
+                "space or Docker), and the worker rebuilds the pin on its next refresh."
+                + _SELF_TESTED)
+    return ("Fix what the reason names on this machine, then click Resume. Left "
+            f"alone, the lane opens once on its own {COOL_DOWN_SECONDS // 3600} hours "
+            "after the trip.")
 
 
 def reopen(rec: dict, name: str, *, by: str, now: str | None = None) -> None:
