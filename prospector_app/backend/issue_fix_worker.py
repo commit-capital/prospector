@@ -6,7 +6,9 @@ issue-fix worker; every other action needs the files and held base of the run it
 acts on, so only the host that run names takes it. A claim is a compare-and-swap
 (`IssueStore.claim_fix_request`), so two machines never both take one.
 `fix_review_runner.run_request` carries it out. Between requests the lane reads
-the replies to questions asked on GitHub every half hour (`poll_replies`) and,
+the replies to questions asked on GitHub every half hour (`poll_replies`),
+follows up its open pull requests every ten minutes (`issue_triage.followup`,
+as `TRIAGE_ISSUE_FIX_FOLLOWUP` allows), and,
 with `TRIAGE_ISSUE_FIX_HUNT=1`, queues one `solve` for a fresh issue (`hunt`)
 within `settings.issue_fix_hunt_budget()` a UTC day. The lane books every ending
 on the machine's `issue-fix` health and picks nothing while that lane is
@@ -19,7 +21,7 @@ import time
 import traceback
 from datetime import datetime, timedelta, timezone
 
-from issue_triage import dispute_question, fix_review, fix_review_runner
+from issue_triage import dispute_question, fix_review, fix_review_runner, followup
 from issue_triage.issue_store import IssueStore
 from pipeline import headless_agent, settings
 from prospector_app.backend import lane_health
@@ -27,6 +29,8 @@ from prospector_app.backend import lane_health
 LANE = "issue-fix"
 POLL_SECONDS = 20.0
 REPLY_POLL_SECONDS = 30 * 60
+# How often an idle worker follows up the pull requests it proposed.
+FOLLOWUP_POLL_SECONDS = 10 * 60
 SHUTDOWN_TIMEOUT = 10.0
 # How recent an issue the hunter picks, and the reproduction grades it trusts.
 HUNT_MAX_AGE = timedelta(days=30)
@@ -178,6 +182,7 @@ def hunt(store: IssueStore) -> int | None:
 def _drain_loop() -> None:
     store = IssueStore()
     last_replies = 0.0
+    last_followup = 0.0
     while not stop.is_set():
         ran = False
         try:
@@ -187,6 +192,9 @@ def _drain_loop() -> None:
                     if time.monotonic() - last_replies > REPLY_POLL_SECONDS:
                         poll_replies(store)
                         last_replies = time.monotonic()
+                    if time.monotonic() - last_followup > FOLLOWUP_POLL_SECONDS:
+                        followup.poll(store)
+                        last_followup = time.monotonic()
                     if settings.issue_fix_hunt():
                         hunt(store)
         except Exception:

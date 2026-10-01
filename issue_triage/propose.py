@@ -19,7 +19,9 @@ push, `assert_propose_target` holds the destination to the fence:
   change on this same base (a proposal whose opening failed after its push is
   reused); a proposal never overwrites a branch.
 
-The fork is never created here; the push user's account holds it. The command
+`push_revision` puts a revised fix on a lane branch whose pull request is
+open: one commit on the branch's current head, leased on it, under the same
+fence. The fork is never created here; the push user's account holds it. The command
 `python -m issue_triage.propose --issue N [--live]` proposes the issue's last
 lane result through `executor.propose_issue_fix`.
 """
@@ -159,6 +161,72 @@ def push_fix(*, issue: int, report_sha: str, base_sha: str, patch: str, message:
         if not dry_run:
             _git(workdir, "push", "--quiet", f"--force-with-lease=refs/heads/{ref}:", "origin",
                  f"HEAD:refs/heads/{ref}", env=env)
+        return Pushed(ref=ref, head_sha=head, tree_sha=tree, pushed=not dry_run)
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+def push_revision(*, issue: int, report_sha: str, base_sha: str, patch: str, message: str,
+                  expected_head: str, workdir: Path, dry_run: bool) -> Pushed:
+    """Push a revised `patch`, proven on `base_sha`, to the issue's lane branch
+    as one commit on top of `expected_head` — the head its open pull request
+    shows. The commit's tree is exactly `base_sha` plus `patch`; its parents are
+    `expected_head`, and `base_sha` too when the branch does not contain it (a
+    revision proven on a newer base). The push is a fast-forward leased on
+    `expected_head`, so a branch that moved is refused, never overwritten. An
+    unchanged tree pushes nothing. Everything but the push when `dry_run`."""
+    from prospector_app.backend import resubmit_identity
+
+    for name, sha in (("base", base_sha), ("expected head", expected_head)):
+        if not _SHA_RE.fullmatch(sha):
+            raise ProposeRefused(f"the {name} {sha!r} is not a full commit sha")
+    ref = branch_ref(issue, report_sha)
+    env = resubmit_identity.push_env()
+    if workdir.exists():
+        shutil.rmtree(workdir)
+    workdir.parent.mkdir(parents=True, exist_ok=True)
+    done = subprocess.run(["git", "clone", "--quiet", "--no-checkout", upstream_url(),
+                           str(workdir)],
+                          capture_output=True, text=True, env=env, timeout=900)
+    if done.returncode != 0:
+        raise ProposeRefused(f"cloning {settings.repo()} failed: {done.stderr.strip()[-400:]}")
+    try:
+        _git(workdir, "remote", "rename", "origin", "upstream")
+        _git(workdir, "remote", "set-url", "--push", "upstream", "DISABLED")
+        _git(workdir, "remote", "add", "origin", fork_url())
+        default = settings.default_branch()
+        _git(workdir, "fetch", "--quiet", "upstream", default, env=env)
+        try:
+            _git(workdir, "merge-base", "--is-ancestor", base_sha, "FETCH_HEAD")
+        except ProposeRefused as e:
+            raise ProposeRefused(f"the proven base {base_sha[:12]} is not on "
+                                 f"{settings.repo()}'s {default}") from e
+        origin_url = _git(workdir, "config", "--get", "remote.origin.url").strip()
+        assert_propose_target(fork_state(), origin_url, ref, issue, report_sha[:8])
+        _git(workdir, "fetch", "--quiet", "origin", f"refs/heads/{ref}", env=env)
+        current = _git(workdir, "rev-parse", "FETCH_HEAD").strip()
+        if current != expected_head:
+            raise ProposeRefused(f"{ref} is at {current[:12]}, not {expected_head[:12]}; "
+                                 "someone else pushed to it")
+        _git(workdir, "checkout", "--quiet", "--detach", base_sha)
+        try:
+            _git(workdir, "apply", "--index", "--whitespace=nowarn", "-", input=patch)
+        except ProposeRefused as e:
+            raise ProposeRefused(f"the patch does not apply to {base_sha[:12]}: {e}") from e
+        tree = _git(workdir, "write-tree").strip()
+        if tree == _git(workdir, "rev-parse", f"{expected_head}^{{tree}}").strip():
+            return Pushed(ref=ref, head_sha=expected_head, tree_sha=tree, pushed=False,
+                          reused=True)
+        parents = ["-p", expected_head]
+        try:
+            _git(workdir, "merge-base", "--is-ancestor", base_sha, expected_head)
+        except ProposeRefused:
+            parents += ["-p", base_sha]
+        head = _git(workdir, "commit-tree", tree, *parents, "-m", message, env=env).strip()
+        if not dry_run:
+            _git(workdir, "push", "--quiet",
+                 f"--force-with-lease=refs/heads/{ref}:{expected_head}", "origin",
+                 f"{head}:refs/heads/{ref}", env=env)
         return Pushed(ref=ref, head_sha=head, tree_sha=tree, pushed=not dry_run)
     finally:
         shutil.rmtree(workdir, ignore_errors=True)

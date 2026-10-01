@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 
 from issue_triage import link_prs
+from issue_triage.related_prs import RelatedPr
 from pipeline import describe_pr, settings
 
 TITLE_MAX = 120
@@ -96,12 +97,57 @@ def _role(heading: str) -> str | None:
     return next((role for word, role in _SECTION_ROLES if word in low), None)
 
 
+def _related(issue: int, related: list[RelatedPr] | None) -> list[str]:
+    if related is None:
+        return []
+    if not related:
+        return ["", f"A search of {settings.repo()}'s open and closed pull requests found no "
+                    f"other pull request that names #{issue}."]
+    return ["", f"Other pull requests that name #{issue}:",
+            *[f"- #{r['number']} ({r['state']}): {inert(r['title'], 160)}" for r in related]]
+
+
+_BOX_RE = re.compile(r"^\s*[-*]\s*\[[ xX]\]\s*(.+?)\s*$", re.MULTILINE)
+# A template checklist line the pipeline can answer, by the words in it, and
+# the fact that ticks it; the first match wins, a None fact keeps the line open,
+# and so does any line nothing matches. The lane branch is named for the issue,
+# not the change, so a branch-name line stays open.
+_BOX_FACTS = ((("branch",), None), (("thinking path",), "always"), (("model",), "always"),
+              (("search", "pr"), "searched"), (("internal",), "always"),
+              (("linked", "issue"), "always"), (("risk",), "always"),
+              (("added", "test"), "tests"), (("updated", "test"), "tests"),
+              (("run", "test"), "ran"), (("ran", "test"), "ran"))
+
+
+def _checklist(template: str | None, *, searched: bool, tests: list[str],
+               result: dict) -> list[str]:
+    """The template's checklist with each box ticked only for what the pipeline
+    did: the sections it writes, the related-PR search when it ran, and the
+    tests it added and ran in the sandbox. A box a person must judge stays
+    open. Without a template, only the search is affirmed, when it ran."""
+    proof = result.get("proof") or {}
+    facts = {"always": True, "searched": searched, "tests": bool(tests),
+             "ran": bool(tests) or bool(proof.get("related_tests")) or bool(proof.get("suite"))}
+    labels = [m.group(1) for m in _BOX_RE.finditer(template or "")]
+    if not labels:
+        return ["- [x] I searched GitHub for duplicate or related PRs and listed them above"
+                ] if searched else []
+    out = []
+    for label in labels:
+        low = label.lower()
+        fact = next((f for words, f in _BOX_FACTS if all(w in low for w in words)), None)
+        out.append(f"- [{'x' if fact and facts[fact] else ' '}] {inert(label, 300)}")
+    return out
+
+
 def render(*, issue: int, result: dict, tests: list[str], base_sha: str, report_sha: str,
-           models: list[str], test_cmd: str | None) -> str:
+           models: list[str], test_cmd: str | None,
+           related: list[RelatedPr] | None = None, template: str | None = None) -> str:
     """The pull request body: a disclosure, the repository's required sections
     (`describe_pr.required_sections`) each filled from `result` by its heading,
-    any content block no required section carries under its own heading, and
-    the marker that names what it came from."""
+    any content block no required section carries under its own heading, the
+    template's checklist, and the marker that names what it came from.
+    `related` is the related-PR search's answer, None when it did not run."""
     changes = [f"- `{inert(c.get('path', ''), 200)}`: {inert(c.get('rationale', ''))}"
                for c in (result.get("changes") or [])]
     model_list = ", ".join(sorted(set(models))) or "unrecorded"
@@ -112,7 +158,7 @@ def render(*, issue: int, result: dict, tests: list[str], base_sha: str, report_
             f"- Root cause, as the fixing agent read it: {inert(result.get('root_cause', ''))}",
             f"- This pull request: {inert(result.get('summary', ''))}",
         ],
-        "issue": [f"Fixes #{issue}"],
+        "issue": [f"Fixes #{issue}", *_related(issue, related)],
         "changes": changes or ["- (no change recorded)"],
         "verification": _verification(result, tests, test_cmd),
         "risks": [
@@ -149,6 +195,9 @@ def render(*, issue: int, result: dict, tests: list[str], base_sha: str, report_
           if tier == 0 else []),
         "",
     ]
+    boxes = _checklist(template, searched=related is not None, tests=tests, result=result)
+    if boxes:
+        sections.append(("Checklist", boxes))
     for heading, lines in sections:
         parts += [f"## {heading}", "", *lines, ""]
     parts.append(MARKER.format(issue=issue, base=base_sha[:12], report=report_sha))

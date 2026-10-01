@@ -81,6 +81,18 @@ def _held_base(record: dict) -> prove.PinnedBase:
         raise RequestFailed(f"the base this attempt was proven on is gone: {e}") from e
 
 
+def _revision_base(record: dict) -> prove.PinnedBase:
+    """The base a revision is proven on: the attempt's own when this machine
+    still holds it, else the current pin."""
+    try:
+        return prove.held(record["base_sha"], int(record.get("base_tier") or 0))
+    except prove.NoBase:
+        try:
+            return prove.pinned(Store())
+        except prove.NoBase as e:
+            raise RequestFailed(f"no base to prove a revision on: {e}") from e
+
+
 def _last_record(n: int) -> dict:
     record = propose.load_result(n)
     if record is None:
@@ -130,13 +142,15 @@ def solve(store: IssueStore, n: int, *, guidance: str | None, trigger: str,
 
 
 def revise(store: IssueStore, n: int, *, comments: str,
-           on_step: Callable[[str], None]) -> dict:
-    """One agent revises the last attempt's change under `comments`."""
+           on_step: Callable[[str], None], trigger: str = "send-back") -> dict:
+    """One agent revises the last attempt's change under `comments`, proven on
+    the attempt's base or, when this machine no longer holds it, the current
+    pin."""
     previous = _last_record(n)
     res_prev = previous.get("result") or {}
     if not res_prev.get("patch"):
         raise RequestFailed("the last attempt holds no change to revise")
-    base = _held_base(previous)
+    base = _revision_base(previous)
     spec, report = _spec(store, n, base, comments)
     reviews = res_prev.get("reviews") or []
     review = "; ".join(filter(None, [str(r.get("reason") or "") for r in reviews]
@@ -151,7 +165,7 @@ def revise(store: IssueStore, n: int, *, comments: str,
     return fix_lane.record_result(
         store, workdir, issue=n, report=report, base=base, action="fix", lane="revise",
         models=[settings.agent_model() or "default"], res=res, started=started,
-        finished=storekit.now(), trigger="send-back", extra={"guidance": comments})
+        finished=storekit.now(), trigger=trigger, extra={"guidance": comments})
 
 
 def answer(store: IssueStore, n: int, answer_: dict, *,
@@ -229,6 +243,8 @@ def _carry_out(store: IssueStore, n: int, action: str, req: dict, *,
         record, question = solve(store, n, guidance=guidance, trigger=trigger, on_step=on_step)
         _write_run(store, n, record, question)
         return f"Solved: {record['ending']} — {record['detail']}"
+    if action == "send-back" and req.get("source") == "followup":
+        return _follow_up(store, n, guidance or "", on_step=on_step)
     if action == "send-back":
         mode = route(guidance or "")
         on_step(f"the comments ask to {mode}")
@@ -247,6 +263,49 @@ def _carry_out(store: IssueStore, n: int, action: str, req: dict, *,
     if action in ("ask-reporter", "propose"):
         return _bot_action(store, n, action, dry_run=bool(req.get("dry_run")))
     raise RequestFailed(f"unknown action {action!r}")
+
+
+def _follow_up(store: IssueStore, n: int, guidance: str, *,
+               on_step: Callable[[str], None]) -> str:
+    """Revise the fix behind issue `n`'s open pull request under the follow-up's
+    `guidance` and, when the revision ends `fixed`, push it onto the same
+    branch (`executor.update_issue_fix_proposal`). A revision that ends any
+    other way leaves the pull request, the run it shows, and the result on
+    disk as they were."""
+    from prospector_app.backend import executor
+
+    issue = store.load_issue(n)
+    run = dict((issue.fix_run if issue else None) or {})
+    proposal = run.get("proposal") or {}
+    pr = proposal.get("pr")
+    if not pr:
+        raise RequestFailed("the attempt has no open pull request to follow up")
+    result_file = propose.result_dir(n) / "result.json"
+    kept = result_file.read_text()
+    try:
+        record = revise(store, n, comments=guidance, on_step=on_step, trigger="followup")
+    except BaseException:
+        result_file.write_text(kept)
+        raise
+    if record.get("ending") != "fixed":
+        result_file.write_text(kept)
+        return (f"The revision ended {record.get('ending')}: {record.get('detail')}; "
+                f"#{pr} is unchanged")
+    on_step("pushing the revision")
+    live = settings.issue_fix_followup() == "live"
+    token = executor.mint_bot_token() if live else None
+    res = executor.update_issue_fix_proposal(n, int(pr), push=True, token=token,
+                                             dry_run=not live)
+    if res.get("status") in ("blocked", "error"):
+        result_file.write_text(kept)
+        raise RequestFailed(f"the revision could not go onto #{pr}: {res.get('detail')}")
+    if res.get("status") == "dry-run":
+        result_file.write_text(kept)
+        return f"Dry run: {res.get('detail')}"
+    distilled = fix_review.distill(record)
+    distilled["proposal"] = proposal
+    store.edit_issue(n).record_fix_run(distilled)
+    return f"Revised #{pr}: {res.get('detail')}"
 
 
 def _bot_action(store: IssueStore, n: int, action: str, *, dry_run: bool) -> str:

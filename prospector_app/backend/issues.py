@@ -326,6 +326,7 @@ def get_issue(n: int) -> dict | None:
     row["fix_request"] = i.fix_request
     row["fix_run"] = i.fix_run
     row["fix_thread"] = i.fix_thread
+    row["fix_followup"] = i.fix_followup
     return row
 
 

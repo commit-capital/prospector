@@ -41,6 +41,13 @@ def fix_status(issue: Issue) -> tuple[str, str] | None:
         return None
     proposal = run.get("proposal") or {}
     if proposal.get("pr"):
+        fu = issue.fix_followup or {}
+        if fu.get("state") == "ready":
+            return "review", f"#{proposal['pr']} is green — ready for your review"
+        if fu.get("state") == "handed-back":
+            return "review", f"#{proposal['pr']} handed back: {fu.get('reason') or ''}"
+        if fu.get("state") == "watching" and fu.get("reason"):
+            return "pr-open", f"#{proposal['pr']}: {fu['reason']}"
         return "pr-open", f"#{proposal['pr']}"
     ending, detail = run.get("ending"), str(run.get("detail") or "")
     if ending == "fixed":

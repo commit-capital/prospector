@@ -451,6 +451,38 @@ it, dry-run aware. The detail endpoint reads the one issue's row, so it is curre
 after a click. `python -m issue_triage.fix_review_backfill [--draft-questions]
 [--live]` records the results a machine already holds on their issues.
 
+**ISSUE FIX FOLLOW-UP** (`issue_triage/followup.py`) is the ONE policy for a
+pull request the factory proposed, from opening until it is green or a person
+must decide. A proposal is refused while another open pull request names the
+issue (`issue_triage/related_prs.py`, GitHub search as the operator), and its
+body lists what the search found and answers the repository template's
+checklist, ticking only what the pipeline did (`fix_pr_body._checklist`). Every
+ten minutes the idle issue-fix worker reads each open proposal live
+(`followup.read`: state, head, the repository's own CI checks with their
+workflow run and job, and every code reviewer that gates it — the policy's
+active ones plus any that reviewed this pull request) and `followup.decide`
+names one step: `done` (merged or closed), `hand-back` (an older open pull
+request by someone else names the issue, `MAX_REVISIONS` spent, or CI still
+failing after a re-run with no failing log naming a changed file), `describe`
+(the description re-rendered once per head and posted only when it differs),
+`rerun` (failed jobs re-run once per head), `revise` (a reviewer below its bar,
+or CI failing after a re-run in a job whose log names a changed file — the
+findings or log lines go to the agent as quoted evidence), `wait`, or `ready`.
+A hand-back or ready holds until the head moves, and either one surfaces the
+issue as `review`. `TRIAGE_ISSUE_FIX_FOLLOWUP` is `off`, `dry-run` (the default:
+each step is noted on the issue and nothing is written upstream or spent on an
+agent), or `live`: the executor edits the description
+(`executor.update_issue_fix_proposal`) and re-runs jobs
+(`executor.rerun_issue_fix_checks`) as the bot through the chat write
+allowlist, Activity-logged, and a revision is a `send-back` with source
+`followup` that `fix_review_runner._follow_up` runs on the attempt's base, or
+the current pin when this machine no longer holds it. A revision that ends
+`fixed` goes onto the same branch as one more commit leased on the head the
+pull request shows (`propose.push_revision`; a merge of the newer base when it
+was proven on one), and the run it records keeps the proposal; any other
+ending leaves the pull request, its run and the result on disk as they were.
+The issue carries the follow-up as `fix_followup` (schema 27).
+
 **WORKER HEALTH** (`pipeline/worker_health.py` + `prospector_app/backend/lane_health.py`
 + `escalation.py`) is the ONE policy for a worker that is failing rather than
 the PRs. Every ending a worker writes is booked per lane (`security`, `verify`,
