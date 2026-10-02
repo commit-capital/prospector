@@ -13,7 +13,7 @@ import traceback
 
 from pipeline import ingest, settings
 from pipeline.freshness import is_current
-from prospector_app.backend import data
+from prospector_app.backend import data, threat_refresh
 
 REFRESH_SECONDS = 30 * 60
 # PRs refreshed per pass; each costs a handful of GitHub reads.
@@ -36,12 +36,14 @@ def stale_merge_candidates() -> list[int]:
 
 
 def refresh_stale(limit: int = BATCH) -> list[int]:
-    """Refresh up to `limit` stale merge candidates. Returns the PRs refreshed."""
+    """Refresh up to `limit` stale merge candidates, then wake the threat scan
+    for the heads the refresh recorded. Returns the PRs refreshed."""
     numbers = stale_merge_candidates()[:limit]
     if not numbers:
         return []
     ingest.refresh_prs(data.store(), numbers)
     data.refresh()
+    threat_refresh.wake()
     print(f"[stale-refresh] re-ingested {len(numbers)} stale merge candidate(s): "
           f"{numbers[:12]}{' …' if len(numbers) > 12 else ''}", flush=True)
     return numbers

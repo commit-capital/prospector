@@ -154,6 +154,9 @@ SETTINGS: tuple[Setting, ...] = (
             "The CLI behind the in-app agent pane.", choices=("claude", "codex", "none")),
     Setting("PROSPECTOR_FEEDBACK_REPO", "deployment", "text", "Feedback repository", "(none)",
             "Where the feedback button files issues."),
+    Setting("PROSPECTOR_FEEDBACK_TOKEN", "deployment", "secret", "Feedback token",
+            "(gh's stored login)",
+            "The token the in-app agent files feedback-repository issues with."),
     # --- advanced: development, emergencies, plumbing --------------------------------
     Setting("TRIAGE_VERIFY_SCRATCH", "advanced", "path", "Verify scratch directory",
             "~/.pr-triage-verify/<owner>-<name>", "Clones, patches and logs for the workers."),

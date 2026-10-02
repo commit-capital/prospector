@@ -77,14 +77,12 @@ def pr_suggestions(status: dict, now_ts: float) -> list[Suggestion]:
     threat = cov.get("threat") or {}
     uncovered = threat.get("stale", 0) + threat.get("never", 0)
     if uncovered > 0:
-        per_pr = est.get("threat_scan_seconds_per_pr")
-        total = cov.get("total", 0)
         out.append({
             "kind": "threat-scan", "title": "Run threat scan",
             "reason": f"{uncovered} PR{'s' if uncovered != 1 else ''} lack a scan "
                       "of their latest push",
             "last_run": last_runs.get("threat-scan"), "count": None,
-            "estimate_seconds": per_pr * total if per_pr is not None else None,
+            "estimate_seconds": est.get("threat_scan_seconds"),
         })
 
     never_analyzed = (cov.get("analysis") or {}).get("never", 0)

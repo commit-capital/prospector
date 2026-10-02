@@ -1,6 +1,10 @@
 """pipeline_status: last-run reduction logic and PR coverage splits."""
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
 from pipeline import storekit
 from pipeline.model import Pr
 from prospector_app.backend import pipeline_status
@@ -94,8 +98,8 @@ def _cov_pr(n: int, head: str, state: str = "open", **sections) -> Pr:
 def test_pr_coverage_splits_current_stale_never(tmp_path):
     """Coverage distinguishes facts computed against the PR's present head
     (current) from stamps an intervening push outdated (stale) and PRs no run
-    has reached (never); the threat split also reports how many uncovered PRs
-    already have a locally cached diff vs. need the scan's on-demand fetch."""
+    has reached (never); the threat split also counts the open PRs, scanned or
+    not, whose current-head diff a scan run here has to fetch."""
     stamp = {"checked_at": "2026-07-01T00:00:00+00:00"}
     prs = {
         1: _cov_pr(1, "h1",
@@ -116,6 +120,7 @@ def test_pr_coverage_splits_current_stale_never(tmp_path):
     }
     (tmp_path / "h2.diff").write_text("diff --git a/x b/x\n")
     (tmp_path / "h3.diff").write_text("diff --git a/x b/x\n")
+    (tmp_path / "h5.diff").write_text("diff --git a/x b/x\n")
 
     cov = pipeline_status._pr_coverage(prs, tmp_path)
 
@@ -124,8 +129,9 @@ def test_pr_coverage_splits_current_stale_never(tmp_path):
     assert cov["clustered"] == 1 and cov["not_clustered"] == 3
     assert cov["analysis"] == {"current": 1, "stale": 1, "never": 2}
     assert cov["security"] == {"current": 1, "stale": 0, "never": 3}
+    # h1 is scanned at its head yet uncached here; the scan fetches it too.
     assert cov["threat"] == {"current": 1, "stale": 1, "never": 2,
-                             "diff_cached_here": 2, "diff_uncached_here": 1}
+                             "diff_uncached_here": 2}
 
 
 def test_issue_coverage_serves_from_cached_snapshot(tmp_path, monkeypatch):
@@ -229,11 +235,86 @@ def test_seconds_per_run_averages_whole_run_durations():
     assert pipeline_status._seconds_per_run(records, "ingest") == 5.0
 
 
+def _scan(seconds: int, *, scanned: int, fetched: int | None = None, failed: int = 0,
+          day: int = 1) -> dict:
+    start = datetime(2026, 7, day, 10, tzinfo=timezone.utc)
+    stats: dict[str, int] = {"scanned": scanned}
+    if fetched is not None:
+        stats.update(fetched=fetched, fetch_failed=failed)
+    return {"phase": "threat-scan", "started": start.isoformat(),
+            "finished": (start + timedelta(seconds=seconds)).isoformat(), "stats": stats}
+
+
+def _scan_seconds(runs: list[dict], open_prs: int, to_fetch: int) -> float | None:
+    return pipeline_status._threat_scan_seconds(
+        [storekit.parse_run(d) for d in runs], open_prs, to_fetch)
+
+
+def test_one_pr_rescans_do_not_price_a_threat_scan_sweep():
+    """A reingest's one-PR rescan is mostly startup: eight of them beside one
+    sweep leave the projection at the sweep's own time."""
+    runs = [_scan(60, scanned=3000, fetched=0),
+            *[_scan(20, scanned=1, fetched=0) for _ in range(7)],
+            _scan(274, scanned=1, fetched=0)]
+
+    assert _scan_seconds(runs, 3000, 0) == pytest.approx(60.0)
+
+
+def test_a_threat_scan_sweep_is_priced_per_pr_plus_per_fetched_diff():
+    runs = [_scan(50, scanned=1000, fetched=0),
+            _scan(850, scanned=1000, fetched=390, failed=10)]
+
+    # 0.05s a PR; the fetching sweep's other 800s over its 400 attempts is 2s a diff.
+    assert _scan_seconds(runs, 1200, 300) == pytest.approx(0.05 * 1200 + 2.0 * 300)
+    assert _scan_seconds(runs, 1200, 0) == pytest.approx(0.05 * 1200)
+
+
+def test_a_sweep_without_fetch_counters_fetched_nothing():
+    assert _scan_seconds([_scan(40, scanned=1000)], 1000, 0) == pytest.approx(40.0)
+
+
+def test_one_slow_sweep_does_not_set_the_threat_scan_rate():
+    runs = [_scan(60, scanned=1000), _scan(4000, scanned=1000), _scan(70, scanned=1000)]
+
+    assert _scan_seconds(runs, 1000, 0) == pytest.approx(70.0)
+
+
+def test_with_no_fetch_free_sweep_a_fetching_sweeps_time_is_its_fetches():
+    runs = [_scan(500, scanned=1000, fetched=250)]
+
+    assert _scan_seconds(runs, 1000, 100) == pytest.approx(200.0)
+
+
+def test_a_threat_scan_estimate_is_none_until_history_prices_the_workload():
+    plain = [_scan(60, scanned=1000, fetched=0)]
+    fetching = [_scan(500, scanned=1000, fetched=250)]
+
+    assert _scan_seconds([], 1000, 0) is None
+    assert _scan_seconds([_scan(20, scanned=1)], 1000, 0) is None
+    assert _scan_seconds(plain, 1000, 5) is None
+    assert _scan_seconds(fetching, 1000, 0) is None
+
+
+def test_the_threat_scan_job_reads_its_sweeps_alone(monkeypatch, tmp_path):
+    from prospector_app.backend import data, issues
+    monkeypatch.setattr(issues, "STORE_ROOT", tmp_path)
+    monkeypatch.setattr(data, "prs", lambda: {n: _cov_pr(n, f"h{n}") for n in range(1, 9)})
+    monkeypatch.setattr(data, "runs", lambda: [storekit.parse_run(d) for d in [
+        _scan(60, scanned=8, fetched=0, day=1),
+        _scan(20, scanned=1, fetched=0, day=2),
+    ]])
+
+    assert pipeline_status.job_runtimes()["threat-scan"] == {
+        "last_run": "2026-07-01T10:01:00+00:00", "typical_seconds": 60.0,
+        "typical_count": None}
+
+
 def test_job_runtimes_reads_each_jobs_ledger_phases(monkeypatch, tmp_path):
     """Each job kind with a ledger mapping reports its phases' latest run and
     the typical whole-run duration averaged over recent runs."""
     from prospector_app.backend import alert_data, data, issues
     monkeypatch.setattr(issues, "STORE_ROOT", tmp_path)
+    monkeypatch.setattr(data, "prs", lambda: {})
     monkeypatch.setattr(data, "runs", lambda: [storekit.parse_run(d) for d in [
         {"phase": "ingest", "started": "2026-07-01T10:00:00+00:00",
          "finished": "2026-07-01T10:00:04+00:00"},
@@ -271,6 +352,7 @@ def _sweep_ledger(monkeypatch, tmp_path):
     from prospector_app.backend import alert_data, data, issues
     monkeypatch.setattr(issues, "STORE_ROOT", tmp_path)
     monkeypatch.setattr(data, "runs", lambda: [])
+    monkeypatch.setattr(data, "prs", lambda: {})
     monkeypatch.setattr(alert_data, "runs", lambda: [storekit.parse_run(d) for d in [
         {"phase": phase, "started": "2026-07-04T10:00:00+00:00",
          "finished": f"2026-07-04T10:{minutes:02d}:00+00:00"}
@@ -333,17 +415,22 @@ def test_clustering_freshness_reads_the_latest_of_commit_and_assign(monkeypatch,
 
 
 def test_status_includes_estimates(monkeypatch, tmp_path):
+    from pipeline import diff_cache
     from prospector_app.backend import data, issues
     monkeypatch.setattr(issues, "STORE_ROOT", tmp_path)
     monkeypatch.setattr(data, "runs", lambda: [storekit.parse_run(d) for d in [
-        {"phase": "threat-scan", "started": "2026-07-01T10:00:00+00:00",
-         "finished": "2026-07-01T10:00:10+00:00", "stats": {"scanned": 10}},
+        _scan(10, scanned=10),
+        _scan(30, scanned=10, fetched=5),
     ]])
-    monkeypatch.setattr(data, "prs", lambda: {})
+    monkeypatch.setattr(data, "prs", lambda: {n: _cov_pr(n, f"h{n}") for n in range(1, 11)})
+    monkeypatch.setattr(diff_cache, "DIFFS", tmp_path)
+    for n in range(1, 8):
+        (tmp_path / f"h{n}.diff").write_text("diff --git a/x b/x\n")
 
     result = pipeline_status.status()
 
-    assert result["estimates"]["threat_scan_seconds_per_pr"] == 1.0
+    # 1s a PR over ten open PRs, plus 4s a diff for the three uncached here.
+    assert result["estimates"]["threat_scan_seconds"] == 10.0 + 4.0 * 3
     assert result["estimates"]["ingest_seconds"] is None
     assert result["estimates"]["analyze_clusters_seconds_per_cluster"] is None
     assert result["estimates"]["issue_analyze_seconds_per_issue"] is None

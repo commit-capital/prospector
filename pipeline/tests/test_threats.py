@@ -1,5 +1,7 @@
 """threats.py — the ONE threat-detection policy: signatures, actor blocklist,
 the scan driver, and the gate's fail-closed consumption of a malicious flag."""
+import pytest
+
 from pipeline import diff_cache
 from pipeline import gates
 from pipeline import storekit
@@ -861,3 +863,106 @@ class TestWholeDiffScan:
 
         assert store.load_pr(7).section("threat")["verdict"] == "malicious"
         assert self._stats(store)["complete_fetched"] == 0
+
+
+class TestUnscanned:
+    """`unscanned` names the open PRs whose current head has no verdict the scan
+    would keep: the selection the worker's new-head pass runs `scan` over."""
+
+    def _seed(self, store, n, *, author="alice", head="h1", state="open",
+              stamped=None, verdict="clear"):
+        rec = {"pr": n,
+               "meta": {"title": "t", "author": author, "state": state, "draft": False,
+                        "head_sha": head, "checked_at": "2026-09-28T00:00:00+00:00"}}
+        if stamped is not None:
+            rec["threat"] = {"verdict": verdict, "signatures": [], "detail": {},
+                             "checked_at": "2026-09-28T00:00:00+00:00",
+                             "against_head_sha": stamped}
+        store.save_pr(rec)
+
+    def test_a_moved_head_and_a_new_arrival_are_named(self, tmp_path):
+        store = Store(tmp_path)
+        self._seed(store, 1, head="h1", stamped="h1")      # scanned at its head
+        self._seed(store, 2, head="h2b", stamped="h2a")    # force-pushed since its scan
+        self._seed(store, 3, head="h3")                     # never scanned
+        self._seed(store, 4, head="h4b", stamped="h4a", state="closed")
+        assert threat_scan.unscanned(store.all_prs(), threats.empty_registry()) == [2, 3]
+
+    def test_a_blocked_authors_pr_still_reading_clear_is_named(self, tmp_path, monkeypatch):
+        from pipeline import profile
+        monkeypatch.setattr(profile, "active",
+                            lambda: profile.RepoProfile(trusted_authors=("mira",)))
+        store = Store(tmp_path)
+        self._seed(store, 1, author="mallory", head="h1", stamped="h1")
+        self._seed(store, 2, author="mallory", head="h2", stamped="h2", verdict="malicious")
+        self._seed(store, 3, author="mira", head="h3", stamped="h3")
+        reg = threats.empty_registry()
+        threats.block_actor(reg, "mallory", "prior attack", added="2026-09-28")
+        threats.block_actor(reg, "mira", "stale entry", added="2026-09-28")
+        assert threat_scan.unscanned(store.all_prs(), reg) == [1]
+
+
+class TestScanRun:
+    """`scan` is the run the CLI and the worker pass share."""
+
+    def _seed(self, store, n, author, head, diff_text, diffs_dir):
+        TestScanDriver._seed(self, store, n, author, head, diff_text, diffs_dir)
+
+    def test_a_head_that_moves_mid_run_is_left_for_the_next_run(self, tmp_path):
+        store = Store(tmp_path)
+        diffs = tmp_path / "diffs"; diffs.mkdir()
+        self._seed(store, 1, "mallory", "h1", PAYLOAD_DIFF, diffs)
+        snapshot = store.all_prs()
+        pr = store.edit_pr(1)                                # INGEST records a newer head
+        pr.set_meta({**pr.section("meta"), "head_sha": "h1b"})
+
+        result = threat_scan.scan(store, snapshot, diffs, fetch=False)
+
+        assert store.load_pr(1).section("threat") is None    # no verdict pinned to h1b
+        assert result.unstamped == [1] and result.stats["moved"] == 1
+        assert result.malicious == [1]                       # what h1 held is still an incident
+        reg = store.load_threats()
+        assert "mallory" in reg["actors"]
+        assert [i["head_sha"] for i in reg["incidents"]] == ["h1"]
+
+    def test_registry_edits_made_while_the_run_scans_are_kept(self, tmp_path, monkeypatch):
+        from pipeline import actions
+        store = Store(tmp_path)
+        diffs = tmp_path / "diffs"; diffs.mkdir()
+        self._seed(store, 1, "mallory", "h1", PAYLOAD_DIFF, diffs)
+        self._seed(store, 2, "bob", "h2", LEAKED_KEY_DIFF, diffs)
+        items = store.load_action_items()
+        actions.upsert(items, actions.make_item(
+            "rotate-secret", pr=2, created="2026-09-27", summary="s", evidence="e",
+            detail="d"))
+        store.save_action_items(items)
+        real_scan = threat_scan.scan_record
+
+        def scan_beside_an_operator(rec, registry, diffs_dir, diff=None):
+            # mid-run, an operator dismisses the item and another run blocks an actor
+            other = Store(tmp_path)
+            reg = other.load_action_items()
+            actions.set_status(reg, "rotate-secret:2", "dismissed")
+            other.save_action_items(reg)
+            threats_reg = other.load_threats()
+            threats.block_actor(threats_reg, "eve", "elsewhere", added="2026-09-28")
+            other.save_threats(threats_reg)
+            return real_scan(rec, registry, diffs_dir=diffs_dir, diff=diff)
+
+        monkeypatch.setattr(threat_scan, "scan_record", scan_beside_an_operator)
+        threat_scan.scan(store, store.all_prs(), diffs, fetch=False)
+
+        status = {i["id"]: i["status"] for i in store.load_action_items()["items"]}
+        assert status["rotate-secret:2"] == "dismissed"
+        assert set(store.load_threats()["actors"]) == {"eve", "mallory"}
+
+    def test_a_run_that_finds_nothing_writes_no_registry(self, tmp_path, monkeypatch):
+        store = Store(tmp_path)
+        diffs = tmp_path / "diffs"; diffs.mkdir()
+        self._seed(store, 1, "alice", "h1", CLEAN_DIFF, diffs)
+        monkeypatch.setattr(store, "save_threats", lambda reg: pytest.fail("threats saved"))
+        monkeypatch.setattr(store, "save_action_items",
+                            lambda reg: pytest.fail("action items saved"))
+        result = threat_scan.scan(store, store.all_prs(), diffs, fetch=False)
+        assert store.load_pr(1).threat_verdict == "clear"
+        assert result.unstamped == [] and result.malicious == []

@@ -6,7 +6,12 @@ enhancement requests go. It is outside the bot's GitHub App installation, so the
 bot token cannot even resolve it — a plain `gh issue create --repo <meta>` fails
 with "Could not resolve to a Repository" whenever the chat-agent subprocess is
 authenticated as the bot. This script is the sanctioned path: it drops the bot
-token so `gh` falls back to the operator's own login, and files there as them.
+token and files with `PROSPECTOR_FEEDBACK_TOKEN`, the operator's own credential
+for the meta-repo, or with `gh`'s stored login when none is set. A fine-grained
+token has one resource owner, so the login `gh` holds for the triaged repo's
+organization cannot file on a meta-repo another organization owns. The chat
+agent's environment withholds the token; this script reads it from the
+repo-root .env, which `pipeline.settings` loads on import.
 
 The repo is fixed to the configured meta-repo — the operator-identity write is
 scoped to filing a ticket on their own tooling repo, and nothing else. Filing
@@ -37,14 +42,32 @@ sys.path.insert(0, str(REPO_ROOT))
 from pipeline import settings  # noqa: E402
 
 
-def operator_env() -> dict[str, str]:
+def operator_env(token: str | None) -> dict[str, str]:
     """Env that authenticates `gh` as the OPERATOR, not the bot: drop the injected
-    bot GH_TOKEN (and GITHUB_TOKEN) so `gh` falls back to the operator's default
-    login. Everything else (PATH, HOME) is inherited so their credentials resolve."""
+    bot GH_TOKEN (and GITHUB_TOKEN), then set GH_TOKEN to `token` when there is
+    one, else leave `gh` its stored login. Everything else (PATH, HOME) is
+    inherited so the operator's credentials resolve."""
     env = dict(os.environ)
     env.pop("GH_TOKEN", None)
     env.pop("GITHUB_TOKEN", None)
+    env.pop("PROSPECTOR_FEEDBACK_TOKEN", None)
+    if token:
+        env["GH_TOKEN"] = token
     return env
+
+
+def refusal_hint(repo: str, token: str | None) -> str:
+    """What the credential `gh` filed with needs, naming it but never its value."""
+    if token:
+        who = "PROSPECTOR_FEEDBACK_TOKEN"
+    else:
+        who = ("gh's stored login (PROSPECTOR_FEEDBACK_TOKEN is unset; set it in "
+               ".env to file with a token of its own)")
+    hint = f"file-issue: filing on {repo} as {who} needs Issues: Read and write on {repo}"
+    if token is None or token.startswith("github_pat_"):
+        owner = repo.split("/", 1)[0]
+        hint += f"; a fine-grained token also needs {owner} as its resource owner"
+    return hint + "."
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -77,9 +100,12 @@ def main(argv: list[str] | None = None) -> int:
     for label in args.label:
         cmd += ["--label", label]
 
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=operator_env())
+    token = settings.feedback_token()
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=60,
+                       env=operator_env(token))
     if r.returncode != 0:
         print(f"file-issue: {r.stderr.strip() or r.stdout.strip()}", file=sys.stderr)
+        print(refusal_hint(settings.feedback_repo(), token), file=sys.stderr)
         return 1
     # A receipt requires gh's canonical URL for the configured repository.
     url = r.stdout.strip()
