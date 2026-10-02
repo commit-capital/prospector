@@ -25,6 +25,10 @@ from pipeline import wire
 from pipeline.storekit import Collection, ValidationError
 
 if TYPE_CHECKING:
+    from typing import Any
+
+    from sqlalchemy import Select
+    from sqlalchemy.engine import Row
     from sqlalchemy.sql.elements import ColumnElement
 
     from pipeline import model
@@ -387,6 +391,22 @@ class WorkerRegistries(TypedDict):
     issue_fix_worker: dict
     worker_health: dict
     verify_base: dict[str, wire.VerifyPin]
+
+
+_EVIDENCE_META = ("id", "pr", "head_sha", "author", "captured_at", "complete", "data")
+
+
+def _evidence_select() -> Select[Any]:
+    """A threat_evidence read of every column but the diff blobs."""
+    from sqlalchemy import select
+    t = schema.threat_evidence
+    return select(*(t.c[name] for name in _EVIDENCE_META))
+
+
+def _evidence_record(row: Row[Any]) -> storekit.EvidenceRecord:
+    return storekit.EvidenceRecord(id=int(row[0]), pr=int(row[1]), head_sha=row[2],
+                                   author=row[3], captured_at=row[4],
+                                   complete=bool(row[5]), data=row[6])
 
 
 class Store:
@@ -905,6 +925,58 @@ class Store:
             index_elements=[schema.diffs.c.head_sha])
         with self.engine.begin() as conn:
             conn.execute(stmt)
+
+    # -- Threat evidence -----------------------------------------------------
+    # One row per capture of a head the threat scan flagged malicious
+    # (`threat_evidence` table; pipeline/threat_evidence.py is the writer). Rows
+    # are insert-only: there is no update or delete accessor.
+    def append_threat_evidence(self, *, pr: int, head_sha: str, author: str | None,
+                               captured_at: str, complete: bool, data: dict,
+                               diff_gz: bytes | None, prior_gz: bytes | None) -> int:
+        """Insert one capture and return its id. Validated."""
+        from sqlalchemy import insert
+        if not isinstance(pr, int) or isinstance(pr, bool):
+            raise ValidationError("threat_evidence.pr: required int")
+        if not head_sha or not isinstance(head_sha, str):
+            raise ValidationError("threat_evidence.head_sha: required str")
+        if not captured_at or not isinstance(captured_at, str):
+            raise ValidationError("threat_evidence.captured_at: required str")
+        if not isinstance(data, dict):
+            raise ValidationError("threat_evidence.data: required dict")
+        for name, blob in (("diff_gz", diff_gz), ("prior_gz", prior_gz)):
+            if blob is not None and not isinstance(blob, bytes):
+                raise ValidationError(f"threat_evidence.{name}: bytes or None")
+        storekit.assert_writable(self.engine)
+        with self.engine.begin() as conn:
+            return int(conn.execute(insert(schema.threat_evidence).values(
+                pr=pr, head_sha=head_sha, author=author, captured_at=captured_at,
+                complete=bool(complete), data=data, diff_gz=diff_gz, prior_gz=prior_gz,
+            ).returning(schema.threat_evidence.c.id)).scalar_one())
+
+    def threat_evidence(self, *, pr: int | None = None,
+                        author: str | None = None) -> list[storekit.EvidenceRecord]:
+        """Captures, newest first, without their blobs; `pr` and `author` filter."""
+        stmt = _evidence_select()
+        t = schema.threat_evidence
+        if pr is not None:
+            stmt = stmt.where(t.c.pr == pr)
+        if author is not None:
+            stmt = stmt.where(t.c.author == author)
+        stmt = stmt.order_by(t.c.captured_at.desc(), t.c.id.desc())
+        rows = storekit.read_retrying(self.engine, lambda conn: conn.execute(stmt).all())
+        return [_evidence_record(r) for r in rows]
+
+    def threat_evidence_record(self, capture_id: int) -> storekit.EvidenceRecord | None:
+        stmt = _evidence_select().where(schema.threat_evidence.c.id == capture_id)
+        row = storekit.read_retrying(self.engine, lambda conn: conn.execute(stmt).first())
+        return None if row is None else _evidence_record(row)
+
+    def threat_evidence_blobs(self, capture_id: int) -> storekit.EvidenceBlobs | None:
+        from sqlalchemy import select
+        t = schema.threat_evidence
+        stmt = select(t.c.diff_gz, t.c.prior_gz).where(t.c.id == capture_id)
+        row = storekit.read_retrying(self.engine, lambda conn: conn.execute(stmt).first())
+        return None if row is None else storekit.EvidenceBlobs(diff_gz=row[0], prior_gz=row[1])
 
     def load_author_baseline(self) -> dict:
         """Per-author PR counts for PRs closed/merged before our first ingest —

@@ -6,7 +6,8 @@ be queried without parsing JSON. Keep mirror columns in sync with the record:
 each is read from the record on every save."""
 from __future__ import annotations
 
-from sqlalchemy import JSON, BigInteger, Boolean, Column, Integer, MetaData, String, Table
+from sqlalchemy import (JSON, BigInteger, Boolean, Column, Integer, LargeBinary, MetaData,
+                        String, Table)
 from sqlalchemy.dialects.postgresql import JSONB
 
 METADATA = MetaData()
@@ -89,7 +90,10 @@ _JSON = JSON().with_variant(JSONB, "postgresql")
 # 28 — issues carry `fix_public` (what the issue-fix public loop has set and
 #      posted on GitHub) and fix requests the "public" source; an older issue
 #      validator refuses the source.
-STORE_SCHEMA_VERSION = 28
+# 29 — the threat_evidence table (an append-only capture of each PR the threat
+#      scan flags malicious); an older threat scan flags a malicious PR without
+#      preserving its evidence.
+STORE_SCHEMA_VERSION = 29
 
 # saved_at is a microsecond-resolution ISO timestamp stamped on every save — when
 # the store row was last written (distinct from `updated_at`, which mirrors the
@@ -216,6 +220,24 @@ diffs = Table(
     Column("pr", Integer, index=True),
     Column("body", String, nullable=False),
     Column("fetched_at", String),
+)
+
+# Evidence of each PR the threat scan flagged malicious, one row per capture of a
+# flagged head (pipeline/threat_evidence.py is the writer). Rows are insert-only.
+# The diffs live gzip-compressed in the binary columns; `data` is the capture's
+# record and holds no diff text, so nothing reading the table as text sees a
+# payload.
+threat_evidence = Table(
+    "threat_evidence", METADATA,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("pr", Integer, index=True),
+    Column("head_sha", String, index=True),
+    Column("author", String, index=True),
+    Column("captured_at", String, index=True),
+    Column("complete", Boolean),
+    Column("data", _JSON, nullable=False),
+    Column("diff_gz", LargeBinary),
+    Column("prior_gz", LargeBinary),
 )
 
 agent_memory = Table(

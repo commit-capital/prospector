@@ -120,3 +120,21 @@ def test_tables_routes_smoke(temp_store):
 
     assert client.get("/api/tables/nope").status_code == 404
     assert client.get("/api/tables/prs", params={"order": "bogus"}).status_code == 400
+
+
+def test_binary_columns_render_as_sizes(temp_store):
+    import json
+    from pipeline import schema, storekit
+    eng = storekit.get_engine(temp_store)
+    with eng.begin() as conn:
+        conn.execute(schema.threat_evidence.insert().values(
+            pr=1, head_sha="h", author="a", captured_at="2026-10-02T00:00:00+00:00",
+            complete=True, data={"pr": 1}, diff_gz=b"\x1f\x8b" + b"\xff" * 98, prior_gz=None))
+    ov = next(s for s in tables.overview() if s["name"] == "threat_evidence")
+    assert ov["preview"][0]["diff_gz"] == "100 bytes (binary, not shown)"
+    assert ov["preview"][0]["prior_gz"] is None
+    assert ov["description"]
+    page = tables.rows("threat_evidence")
+    assert page["rows"][0]["diff_gz"] == "100 bytes (binary, not shown)"
+    json.dumps(ov)
+    json.dumps(page)
