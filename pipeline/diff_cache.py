@@ -205,6 +205,13 @@ def fetch_complete(pr: int) -> CompleteDiff | None:
         text = None
     if text is not None:
         return CompleteDiff(text, ())
+    return fetch_listing(pr)
+
+
+def fetch_listing(pr: int) -> CompleteDiff | None:
+    """PR `pr`'s diff rebuilt from GitHub's per-file listing at its current
+    head, naming in `unread` what the listing withheld. None when GitHub does
+    not answer."""
     files = gh.pr_files(pr)
     if files is None:
         return None

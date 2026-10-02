@@ -151,22 +151,11 @@ class LiveGitHub:
 
     def listing_diff(self, n: int) -> tuple[bytes, bool] | None:
         """The PR's current diff rebuilt from its per-file listing, and whether
-        every changed file came with its patch."""
-        files = gh.pr_files(n)
-        if files is None:
+        GitHub withheld nothing from it."""
+        listing = diff_cache.fetch_listing(n)
+        if listing is None:
             return None
-        parts: list[str] = []
-        whole = True
-        for f in files:
-            name = f.get("filename", "?")
-            parts.append(f"diff --git a/{name} b/{name}\n")
-            if f.get("patch"):
-                parts.append(f"--- a/{name}\n+++ b/{name}\n{f['patch']}\n")
-            elif f.get("changes"):
-                whole = False
-                parts.append(f"# no patch from GitHub: {f.get('status', '?')} "
-                             f"+{f.get('additions', 0)} -{f.get('deletions', 0)}\n")
-        return "".join(parts).encode(), whole
+        return listing.text.encode(), not listing.unread
 
     def force_pushes(self, n: int) -> list[ForcePush] | None:
         owner, _, name = settings.repo().partition("/")
@@ -251,9 +240,12 @@ def _flagged_diff(reads: GitHubReads, flag: Flag, base: str, head_now: str | Non
     errors.append(f"diff {base[:12]}...{flag.head_sha[:12]}: GitHub did not answer")
     if head_now == flag.head_sha:
         listing = reads.listing_diff(flag.pr)
-        if listing is not None:
+        if listing is None:
+            errors.append("per-file listing: GitHub did not answer")
+        elif ((reads.pull(flag.pr) or {}).get("head") or {}).get("sha") != flag.head_sha:
+            errors.append("per-file listing: the PR's head moved during the read")
+        else:
             return _Diff(listing[0], "per-file-listing", listing[1])
-        errors.append("per-file listing: GitHub did not answer")
     cached = diffs_dir / f"{flag.head_sha}.diff"
     if cached.exists():
         return _Diff(cached.read_bytes(), "scan-cache", False)

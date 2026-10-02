@@ -8,6 +8,7 @@ import json
 
 from pipeline import threat_evidence as te
 from pipeline.store import Store
+from pipeline.threat_evidence import LiveGitHub  # the real reads; conftest stubs te.LiveGitHub
 from pipeline.storekit import EvidenceBlobs, EvidenceRecord
 
 PAYLOAD = "global['!']='9-0008-2';var _$_1e42=(function(l,e){var x=String.fromCharCode(127);})"
@@ -470,3 +471,43 @@ def test_uncaptured_names_flagged_heads_without_a_complete_capture(tmp_path):
     te.capture(store, te.uncaptured(store, prs)[0], github=FakeGitHub(), diffs_dir=tmp_path)
     assert te.uncaptured(store, prs) == []
     assert store.threat_evidence_heads() == {(11987, HEAD)}
+
+
+def _listing(monkeypatch, files: list[dict]) -> None:
+    from pipeline import gh
+    monkeypatch.setattr(gh, "pr_files", lambda n, **k: files)
+
+
+def test_listing_with_a_truncated_patch_is_not_whole(monkeypatch):
+    _listing(monkeypatch, [{"filename": "a.ts", "status": "modified", "additions": 5,
+                            "deletions": 0, "patch": "@@ -0,0 +1,1 @@\n+one"}])
+    listing = LiveGitHub().listing_diff(1)
+    assert listing is not None and listing[1] is False
+
+
+def test_listing_at_githubs_file_cap_is_not_whole(monkeypatch):
+    from pipeline import diff_cache
+    _listing(monkeypatch, [{"filename": f"f{i}.ts", "status": "added", "additions": 1,
+                            "deletions": 0, "patch": "@@ -0,0 +1,1 @@\n+x"}
+                           for i in range(diff_cache.LISTING_MAX_FILES)])
+    listing = LiveGitHub().listing_diff(1)
+    assert listing is not None and listing[1] is False
+
+
+def test_whole_listing_is_whole(monkeypatch):
+    _listing(monkeypatch, [{"filename": "a.ts", "status": "modified", "additions": 1,
+                            "deletions": 0, "patch": "@@ -0,0 +1,1 @@\n+one"}])
+    listing = LiveGitHub().listing_diff(1)
+    assert listing is not None and listing[1] is True and b"+one" in listing[0]
+
+
+def test_listing_is_refused_when_the_head_moves_during_the_read(tmp_path):
+    store = Store(tmp_path)
+    gh = FakeGitHub(compare_ok=False, listing=(b"diff --git a/z b/z\n+x\n", True))
+    heads = iter([HEAD, "f" * 40])
+    real_pull = gh.pull
+    gh.pull = lambda n: {**(real_pull(n) or {}), "head": {"sha": next(heads)}}  # type: ignore[method-assign]
+    assert te.capture(store, FLAG, github=gh, diffs_dir=tmp_path) == "partial"
+    rec, _ = _only(store)
+    assert rec.data["artifacts"]["diff"] is None
+    assert any("moved" in e for e in rec.data["errors"])
