@@ -9,6 +9,7 @@ from __future__ import annotations
 import time
 from datetime import datetime, timezone
 from typing import TypedDict
+from zoneinfo import ZoneInfo
 
 from pipeline import capacity
 from prospector_app.backend import data
@@ -18,6 +19,14 @@ class DecisionView(TypedDict):
     allowed: bool
     reason: str
     retry_at: str | None
+
+
+class CapacityHealthItem(TypedDict):
+    kind: str
+    severity: str
+    label: str
+    detail: str | None
+    host: str | None
 
 
 class AccountView(TypedDict):
@@ -111,25 +120,25 @@ def this_account() -> capacity.Account | None:
 
 # The health strip polls from every open page; the capacity lines are held this long.
 _HEALTH_TTL_SECONDS = 30.0
-_health_cache: tuple[float, list[dict]] | None = None
+_health_cache: tuple[float, list[CapacityHealthItem]] | None = None
 
 
-def health_items() -> list[dict]:
+def health_items() -> list[CapacityHealthItem]:
     """One amber strip line per account whose unattended work is paused and
     that some worker machine runs under."""
     global _health_cache
     now_ts = time.monotonic()
     if _health_cache is not None and now_ts - _health_cache[0] < _HEALTH_TTL_SECONDS:
         return _health_cache[1]
-    items: list[dict] = []
+    items: list[CapacityHealthItem] = []
     for v in accounts():
         if not v["machines"] or v["decision"]["allowed"]:
             continue
         retry = v["decision"]["retry_at"]
         resumes = ""
         if retry:
-            local = datetime.fromisoformat(retry).astimezone()
-            resumes = f" · resumes ~{local:%-I:%M %p}"
+            local = datetime.fromisoformat(retry).astimezone(ZoneInfo(v["policy"]["timezone"]))
+            resumes = f" · resumes ~{local:%I:%M %p}".replace("~0", "~")
         items.append({"kind": "capacity", "severity": "amber",
                       "label": f"Background AI paused · {v['label']}",
                       "detail": f"{v['decision']['reason']}{resumes}", "host": None})

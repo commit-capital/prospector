@@ -27,6 +27,7 @@ then retries.
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
 import time
@@ -41,7 +42,7 @@ from issue_triage import (
     public_loop,
 )
 from issue_triage.issue_store import IssueStore
-from pipeline import gates, headless_agent, settings, storekit
+from pipeline import capacity, gates, headless_agent, settings, storekit
 from prospector_app.backend import data, lane_health, verify_worker
 
 LANE = "issue-fix"
@@ -210,9 +211,11 @@ def run_once(store: IssueStore) -> bool:
         return False
     state["current"] = n
     print(f"[issue-fix] #{n}: {claimed['action']}", flush=True)
+    metering = capacity.metered(LANE) if _unattended(claimed) else contextlib.nullcontext()
     try:
-        status, outcome = fix_review_runner.run_request(
-            store, n, claimed, on_step=lambda s: print(f"[issue-fix] #{n}: {s}", flush=True))
+        with metering:
+            status, outcome = fix_review_runner.run_request(
+                store, n, claimed, on_step=lambda s: print(f"[issue-fix] #{n}: {s}", flush=True))
     except headless_agent.AgentUnavailable as e:
         lane_health.trip_agent_lanes(str(e))
         return True
@@ -318,16 +321,16 @@ def hunt(store: IssueStore) -> int | None:
 def _follow_up(store: IssueStore) -> None:
     """`followup.poll`, whose reply routing runs an agent only while the lane's
     AI capacity is open; its other steps run regardless."""
-    followup.poll(store, may_route=lambda: lane_health.capacity_open(LANE))
+    with capacity.metered(LANE):
+        followup.poll(store, may_route=lambda: lane_health.capacity_open(LANE))
 
 
 def _answer_replies(store: IssueStore) -> None:
-    """`public_loop.answer_replies`, whose live mode routes replies through an
-    agent, only while the lane's AI capacity is open; a dry-run or switched-off
-    loop runs no agent and asks nothing."""
-    if settings.issue_fix_public() == "live" and not lane_health.capacity_open(LANE):
-        return
-    public_loop.answer_replies(store)
+    """`public_loop.answer_replies`, whose reply routing runs an agent only while
+    the lane's AI capacity is open; reading replies and report edits runs
+    regardless."""
+    with capacity.metered(LANE):
+        public_loop.answer_replies(store, may_route=lambda: lane_health.capacity_open(LANE))
 
 
 def _every_ten_minutes(store: IssueStore) -> None:

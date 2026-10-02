@@ -108,9 +108,15 @@ class _LensProgress:
 # worker reads it as this machine's outage, not as the PR's failed review.
 EXIT_AGENT_UNAVAILABLE = 3
 
+# The exit `run` uses when the review could not finish because the service was
+# overloaded: the worker rests the PR and books no failure on the machine.
+EXIT_TRANSIENT = 4
+
 # Each agent-outage reason seen this process, so `run` can end on the outage
 # instead of holding a verdict that no lens could have produced.
 _outages: list[str] = []
+# Each service-overload reason seen this process.
+_transients: list[str] = []
 
 
 def _call_agent_json(prompt: str, step: str, diff_path: str,
@@ -129,6 +135,10 @@ def _call_agent_json(prompt: str, step: str, diff_path: str,
     except headless_agent.AgentUnavailable as e:
         _say(f"    ! {step} could not run: {e}")
         _outages.append(str(e))
+        return None
+    except headless_agent.AgentTransient as e:
+        _say(f"    ! {step} failed: {e}")
+        _transients.append(str(e))
         return None
     except (RuntimeError, ValueError) as e:
         _say(f"    ! {step} failed: {e}")
@@ -318,7 +328,7 @@ def run(store: Store, pr: int, *, trigger: str | None = None) -> int:
                  else "verify pass failed with flagged findings unverified")
         _say(f"⚠ verdict HELD ({cause}) — "
              f"no GREEN trusted; PR stays eligible and will re-run.")
-        return 0
+        return EXIT_TRANSIENT if _transients else 0
     verdict, findings = item.verdict, item.findings
     reds = sum(1 for f in findings if f["severity"] == "red")
     _say(f"✓ verdict: {verdict} ({reds} red / {len(findings) - reds} yellow confirmed)")

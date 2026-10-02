@@ -80,13 +80,13 @@ _LIMIT_SPENT = re.compile(r"hit your \w+ limit|usage limit reached", re.I)
 _NOT_INSTALLED = re.compile(r"not installed or not on PATH", re.I)
 # A service-side hiccup, consulted only once a failure is neither a spent limit
 # nor an auth failure: the same request may well succeed minutes later.
-_TRANSIENT = re.compile(r"overloaded|\b529\b|\b429\b|rate_limit_error", re.I)
+_TRANSIENT = re.compile(r"overloaded|API Error:? \(?(?:429|529)\b|rate_limit_error", re.I)
 
 
 class CapacityExhausted(AgentUnavailable):
     """The account's usage limit refused the run. The account's unattended work
-    is paused until `resets_at` (when the CLI said), so callers defer the work
-    rather than trip a lane."""
+    is paused until `resets_at` (when the CLI said); the message names the
+    spent limit, which lane health reads as a pause, never a fault."""
 
     def __init__(self, message: str, resets_at: datetime | None = None,
                  window: str | None = None) -> None:
@@ -489,11 +489,11 @@ def run_agent(prompt: str, *, allow_gh: bool, cwd: str, system_prompt: str | Non
     (capacity.current_lane()) a closed capacity gate raises
     capacity.CapacityPaused before any agent starts. Every run's capacity
     reading and usage are recorded for its account."""
-    lane = capacity.current_lane()
-    if lane is not None:
+    if capacity.current_lane() is not None:
         decision = capacity.check(_store(), capacity.account(), probe=probe_reading)
         if not decision.allowed:
             raise capacity.CapacityPaused(decision)
+    lane = capacity.meter_lane()
     started = datetime.now(timezone.utc)
     cmd = [CLAUDE_BIN, "-p", *_flags(allow_gh, edit_root, allow, read_root, git_root),
            "--output-format", "stream-json", "--verbose", "--include-partial-messages"]
@@ -541,6 +541,7 @@ def run_agent(prompt: str, *, allow_gh: bool, cwd: str, system_prompt: str | Non
             os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
         except (ProcessLookupError, PermissionError):
             proc.kill()
+        _book(rate_events, results[0] if results else None, lane, model, started)
         raise RuntimeError(f"claude did not exit within {timeout}s")
     _book(rate_events, results[0] if results else None, lane, model, started)
     if proc.returncode != 0:
@@ -550,8 +551,10 @@ def run_agent(prompt: str, *, allow_gh: bool, cwd: str, system_prompt: str | Non
         if refusal is not None or limit_spent(failure):
             resets_at, window = refusal or (None, None)
             _pause(resets_at, window)
-            raise CapacityExhausted(f"claude exited {proc.returncode}: the account's usage "
-                                    f"limit is spent", resets_at, window)
+            when = resets_at.isoformat(timespec="minutes") if resets_at else "later"
+            raise CapacityExhausted(f"claude exited {proc.returncode}: usage limit reached "
+                                    f"({window or 'usage'} limit; resets {when})",
+                                    resets_at, window)
         why = unavailable_reason(failure)
         if why:
             raise AgentUnavailable(f"claude exited {proc.returncode}: {why}")
@@ -661,7 +664,7 @@ def probe_reading(timeout: int = 180) -> capacity.Reading | None:
     None when the run could not report one."""
     asked = datetime.now(timezone.utc)
     try:
-        with capacity.attended(), workdir("capacity-probe-") as tmp:
+        with capacity.attended(), capacity.metered("probe"), workdir("capacity-probe-") as tmp:
             run_agent("Reply with the single word ok.", allow_gh=False, cwd=tmp,
                       read_root=tmp, env_allow=(), model="haiku", timeout=timeout)
     except RuntimeError:

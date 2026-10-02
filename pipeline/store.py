@@ -9,6 +9,7 @@ never parsed back.
 from __future__ import annotations
 
 import re
+import threading
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
@@ -283,6 +284,9 @@ def validate_cluster(rec: dict) -> None:
                 raise ValidationError(
                     f"proposals[].disposition: {p.get('disposition')!r} not in {sorted(DISPOSITIONS)}")
 
+
+# Serializes this process's capacity-row writes (Store._save_capacity_half_if_newer).
+_CAPACITY_LOCK = threading.Lock()
 
 # PR records `pr_bodies` reads per statement.
 PR_BODIES_BATCH = 200
@@ -718,24 +722,28 @@ class Store:
         self._save_capacity_half_if_newer(key, "pause", pause)
 
     def _save_capacity_half_if_newer(self, key: str, half: str, value: dict) -> None:
-        from sqlalchemy import select
+        from sqlalchemy import select, update
         from sqlalchemy.dialects.postgresql import insert as pg_insert
         from sqlalchemy.dialects.sqlite import insert as sqlite_insert
         storekit.assert_writable(self.engine)
         name = f"ai_capacity:{key}"
         reg = schema.registries
-        with self.engine.begin() as conn:
+        ins = pg_insert(reg) if self.engine.dialect.name == "postgresql" else sqlite_insert(reg)
+        # The row exists before it is locked, so two machines writing an
+        # account's first reading serialize on it; the process lock does the
+        # same for threads on a local SQLite store, whose transactions lock late.
+        with _CAPACITY_LOCK, self.engine.begin() as conn:
+            conn.execute(ins.values(name=name, data={}).on_conflict_do_nothing(
+                index_elements=[reg.c.name]))
             row = conn.execute(select(reg.c.data).where(reg.c.name == name)
                                .with_for_update()).first()
-            data = dict(row[0]) if row is not None else {}
+            data = dict(row[0]) if row is not None and row[0] else {}
             held = storekit.parse_ts((data.get(half) or {}).get("at"))
             incoming = storekit.parse_ts(value.get("at"))
             if held is not None and (incoming is None or incoming <= held):
                 return
             data[half] = value
-            ins = pg_insert(reg) if self.engine.dialect.name == "postgresql" else sqlite_insert(reg)
-            conn.execute(ins.values(name=name, data=data).on_conflict_do_update(
-                index_elements=[reg.c.name], set_={"data": data}))
+            conn.execute(update(reg).where(reg.c.name == name).values(data=data))
 
     def append_agent_run(self, record: dict) -> None:
         """Append one agent run (`phase: agent:run`) to the agent ledger, a

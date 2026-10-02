@@ -20,6 +20,7 @@ import os
 import shutil
 import subprocess
 import threading
+import time as clock
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -40,9 +41,17 @@ READING_MAX_AGE = timedelta(minutes=10)
 WEEKLY_SLACK = 0.05
 # How soon a decision without a reading is retried.
 RETRY_UNKNOWN = timedelta(minutes=10)
-# The variable that marks a process's agent work unattended, naming its lane.
+# The variable that marks a process's agent work an unattended batch, naming
+# its lane: every agent call in it waits on the gate.
 UNATTENDED_ENV = "PROSPECTOR_UNATTENDED"
+# The variable that names the lane a process's agent runs are metered under,
+# for a worker's subprocess that runs an unattended item.
+METER_ENV = "PROSPECTOR_AGENT_LANE"
 WEEK = timedelta(days=7)
+FIVE_HOURS = timedelta(hours=5)
+# How long a found account, and a failure to find one, are kept.
+ACCOUNT_TTL_SECONDS = 3600.0
+NO_ACCOUNT_TTL_SECONDS = 300.0
 
 Billing = Literal["subscription", "api"]
 
@@ -101,8 +110,11 @@ class CapacityPaused(RuntimeError):
 # --- accounts ---------------------------------------------------------------
 
 def _mask(email: str) -> str:
+    """The email with all but the first characters of its name hidden — at
+    most two, and never the whole name."""
     name, _, domain = email.partition("@")
-    return f"{name[:2]}…@{domain}" if domain else f"{name[:2]}…"
+    shown = name[:min(2, max(0, len(name) - 2))]
+    return f"{shown}…@{domain}" if domain else f"{shown}…"
 
 
 def account_from_status(status: dict, worker_id: str) -> Account | None:
@@ -123,27 +135,35 @@ def account_from_status(status: dict, worker_id: str) -> Account | None:
 
 
 _account_lock = threading.Lock()
-_account_cached: Account | None = None
+_account_state: tuple[float, Account | None] | None = None
+_monotonic: Callable[[], float] = clock.monotonic
+
+
+def _read_account() -> Account | None:
+    try:
+        out = subprocess.run([shutil.which("claude") or "claude", "auth", "status", "--json"],
+                             capture_output=True, text=True, timeout=15).stdout
+        status = json.loads(out)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    return account_from_status(status, settings.worker_id()) if isinstance(status, dict) else None
 
 
 def account(refresh: bool = False) -> Account | None:
-    """This machine's AI account, read once per process and kept; None while
-    the CLI is missing, not logged in or not answering, so a later call
-    tries again."""
-    global _account_cached
+    """This machine's AI account, kept ACCOUNT_TTL_SECONDS so a new /login is
+    noticed within the hour; None while the CLI is missing, not logged in or
+    not answering, kept NO_ACCOUNT_TTL_SECONDS before asking again."""
+    global _account_state
     with _account_lock:
-        if _account_cached is not None and not refresh:
-            return _account_cached
-        try:
-            out = subprocess.run([shutil.which("claude") or "claude", "auth", "status", "--json"],
-                                 capture_output=True, text=True, timeout=15).stdout
-            status = json.loads(out)
-        except (OSError, subprocess.SubprocessError, ValueError):
-            return None
-        found = account_from_status(status, settings.worker_id()) if isinstance(status, dict) else None
-        if found is not None:
-            _account_cached = found
-        return found
+        state = _account_state
+    if state is not None and not refresh:
+        at, found = state
+        if _monotonic() - at < (ACCOUNT_TTL_SECONDS if found else NO_ACCOUNT_TTL_SECONDS):
+            return found
+    found = _read_account()
+    with _account_lock:
+        _account_state = (_monotonic(), found)
+    return found
 
 
 # --- readings ---------------------------------------------------------------
@@ -214,11 +234,24 @@ def record_reading(store: Store, acct: Account, reading: Reading) -> None:
     store.save_capacity_reading_if_newer(acct.key, reading_to_dict(reading))
 
 
+_pause_generation = [0]
+
+
+def pause_generation() -> int:
+    """How many pauses this process has recorded — a cached decision taken
+    before the latest is out of date."""
+    return _pause_generation[0]
+
+
 def record_pause(store: Store, acct: Account, until: datetime, reason: str,
                  now: datetime | None = None) -> None:
     """Pause the account's unattended agent work until `until`, and note the
-    pause in the agent ledger."""
+    pause in the agent ledger. A pause still running past `until` stands."""
     at = now or datetime.now(timezone.utc)
+    _pause_generation[0] += 1
+    held = storekit.parse_ts((store.load_capacity(acct.key).get("pause") or {}).get("until"))
+    if held is not None and held > max(until, at):
+        return
     store.save_capacity_pause_if_newer(acct.key, {"at": _iso(at), "until": _iso(until),
                                                   "reason": reason})
     store.append_agent_run({"phase": "capacity:pause", "account": acct.key, "until": _iso(until),
@@ -271,13 +304,16 @@ def _fraction(raw: object, field: str) -> float:
 
 
 def validate_policy(raw: dict, billing: Billing) -> Policy:
-    """A saved policy from operator input; ValueError names the first bad field."""
+    """A saved policy from operator input; ValueError names the first bad field.
+    An API key's policy may leave the caps out, which no decision reads."""
     zone = raw.get("timezone")
     if not isinstance(zone, str) or not _known_zone(zone):
         raise ValueError("timezone must be an IANA zone such as America/Los_Angeles")
     start, end = _parse_time(raw.get("day_start"), "day_start"), _parse_time(raw.get("day_end"), "day_end")
     if start == end:
         raise ValueError("day_start and day_end must differ")
+    if billing == "api":
+        raw = {"day_cap": 0.5, "night_cap": 0.9, **raw}
     budget = raw.get("daily_budget_usd")
     if budget is not None and (isinstance(budget, bool) or not isinstance(budget, (int, float))
                                or budget < 0):
@@ -343,6 +379,20 @@ def local_midnights(p: Policy, now: datetime) -> tuple[datetime, datetime]:
     return start.astimezone(timezone.utc), (start + timedelta(days=1)).astimezone(timezone.utc)
 
 
+def _current(window: Window | None, now: datetime, period: timedelta) -> Window | None:
+    """`window` as of `now`: a window whose reset has passed has started over,
+    empty, and resets one period later."""
+    if window is None or window.resets_at > now:
+        return window
+    periods = (now - window.resets_at) // period + 1
+    return Window(0.0, window.resets_at + period * periods)
+
+
+# When a probe last came back without a reading, per account; the next probe
+# waits RETRY_UNKNOWN after it.
+_probe_failed: dict[str, datetime] = {}
+
+
 def check(store: Store, acct: Account | None, now: datetime | None = None,
           probe: Callable[[], Reading | None] | None = None,
           stale_ok: bool = False) -> Decision:
@@ -372,24 +422,30 @@ def check(store: Store, acct: Account | None, now: datetime | None = None,
     reading = reading_from_dict(row.get("reading") or {})
     if reading is not None and not stale_ok and now - reading.at > READING_MAX_AGE:
         reading = None
-    if reading is None and probe is not None:
+    failed = _probe_failed.get(acct.key)
+    if reading is None and probe is not None and (failed is None or now - failed >= RETRY_UNKNOWN):
         reading = probe()
-    if reading is None or reading.five_hour is None:
+        if reading is None:
+            _probe_failed[acct.key] = now
+        else:
+            _probe_failed.pop(acct.key, None)
+    five = _current(reading.five_hour, now, FIVE_HOURS) if reading is not None else None
+    if reading is None or five is None:
         return Decision(False, "no capacity reading from the Claude CLI", now + RETRY_UNKNOWN)
     cap, boundary = cap_now(p, now)
-    used = reading.five_hour.utilization
+    used = five.utilization
     if used >= cap:
-        reset = reading.five_hour.resets_at
-        return Decision(False, f"5-hour window at {used:.0%} (cap now {cap:.0%})",
-                        min(reset, boundary) if reset > now else boundary)
-    if p.weekly_pacing and reading.seven_day is not None:
-        line = pacing_line(reading.seven_day, now)
-        weekly = reading.seven_day.utilization
-        if weekly > line:
-            start = reading.seven_day.resets_at - WEEK
-            return Decision(False, f"weekly use {weekly:.0%} is ahead of pace "
+        later = cap_now(p, boundary + timedelta(seconds=1))[0]
+        retry = min(five.resets_at, boundary) if used < later else five.resets_at
+        return Decision(False, f"5-hour window at {used:.0%} (cap now {cap:.0%})", retry)
+    week = _current(reading.seven_day, now, WEEK)
+    if p.weekly_pacing and week is not None:
+        line = pacing_line(week, now)
+        if week.utilization > line:
+            start = week.resets_at - WEEK
+            return Decision(False, f"weekly use {week.utilization:.0%} is ahead of pace "
                                    f"({line:.0%} by now)",
-                            start + WEEK * (weekly - WEEKLY_SLACK))
+                            start + WEEK * (week.utilization - WEEKLY_SLACK))
     return Decision(True, f"5-hour window at {used:.0%} (cap now {cap:.0%})", None)
 
 
@@ -421,7 +477,32 @@ def attended() -> Iterator[None]:
 
 
 def current_lane() -> str | None:
+    """The unattended batch lane this agent call is gated under, or None."""
     lane = _LANE.get()
     if lane is not None:
         return lane or None
     return os.environ.get(UNATTENDED_ENV) or None
+
+
+_METER: ContextVar[str | None] = ContextVar("capacity_meter", default=None)
+
+
+@contextmanager
+def metered(lane: str) -> Iterator[None]:
+    """Book the agent runs inside this block as `lane`'s unattended spend,
+    without gating each of them."""
+    token = _METER.set(lane)
+    try:
+        yield
+    finally:
+        _METER.reset(token)
+
+
+def meter_lane() -> str | None:
+    """The lane an agent run's spend is booked under: the unattended batch lane,
+    else the metering mark (this context, then METER_ENV); None for work an
+    operator started."""
+    lane = current_lane()
+    if lane is not None:
+        return lane
+    return _METER.get() or os.environ.get(METER_ENV) or None

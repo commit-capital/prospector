@@ -1134,3 +1134,28 @@ class TestCapacityGate:
         verify_worker._drain_loop()
         assert loop.asked == []
         assert loop.stop.waits == [verify_worker.POLL_SECONDS]
+
+
+def test_a_security_review_held_by_an_overload_books_no_failure(store, monkeypatch):
+    from pipeline import capacity, security_review
+    store.save_pr(_clean_merge_pr(1))
+    data.refresh()
+    envs: list[dict | None] = []
+    booked: list[str] = []
+
+    class FakeProc:
+        stdout = iter(["    ! security lens failed: the service was overloaded\n"])
+
+        def wait(self):
+            return security_review.EXIT_TRANSIENT
+
+    def fake_popen(argv, **kw):
+        envs.append(kw.get("env"))
+        return FakeProc()
+
+    monkeypatch.setattr(verify_worker.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(verify_worker.lane_health, "note_failure",
+                        lambda lane, **kw: booked.append(lane))
+    assert verify_worker.run_security(1) == security_review.EXIT_TRANSIENT
+    assert booked == [] and 1 in verify_worker.security_failed
+    assert (envs[0] or {}).get(capacity.METER_ENV) == "security"

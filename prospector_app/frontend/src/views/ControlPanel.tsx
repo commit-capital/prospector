@@ -509,7 +509,7 @@ function CapacityAccountCard({ account: a }: { account: CapacityAccount }) {
       )}
       <div className="small">
         {a.decision.allowed
-          ? <span className="capacity-ok">● Unattended AI work running</span>
+          ? <span className="capacity-ok">● Unattended AI work may start</span>
           : (
             <span className="capacity-paused">
               Paused — {a.decision.reason}

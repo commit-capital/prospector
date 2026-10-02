@@ -2749,3 +2749,19 @@ def test_nothing_unattended_and_agentic_asks_the_gate(store, monkeypatch):
     # Nothing queued and no parked resolve: the hunter's one pick is PR 1's rebase.
     assert _drain_once(monkeypatch)["queued"] == [1]
     assert asked == []
+
+
+def test_automation_s_request_runs_metered_under_the_fix_lane(store, monkeypatch):
+    from pipeline import capacity as policy
+    _gate(monkeypatch, True)
+    store.save_pr(_fixable_pr(2))
+    _queue(store, 2, "rebase", "auto")
+    lanes: list[str | None] = []
+    monkeypatch.setattr(fix_worker, "stop", _OneTick())
+    monkeypatch.setattr(fix_worker.verify_driver, "stop_orphaned_sandboxes", lambda: [])
+    monkeypatch.setattr(fix_worker, "recover_orphans", lambda: [])
+    monkeypatch.setattr(fix_worker, "beat", lambda: None)
+    monkeypatch.setattr(fix_worker.lane_health, "open_or_retest", lambda lane: True)
+    monkeypatch.setattr(fix_worker, "run_one", lambda n: lanes.append(policy.meter_lane()))
+    fix_worker._drain_loop()
+    assert lanes == ["fix"]

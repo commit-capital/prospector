@@ -59,6 +59,7 @@ def test_the_gate_answers_from_the_accounts_reading(store, monkeypatch):
         five_hour=capacity.Window(0.7, now + timedelta(hours=2)), seven_day=None,
         status="allowed", at=now, by="t"))
     assert lane_health.capacity_open("security") is False
+    lane_health.note_account()
     rec = worker_health.load(store, settings.worker_id())
     assert rec["ai_account"] == {"key": "k", "label": "x · Max", "billing": "subscription"}
 
@@ -68,4 +69,45 @@ def test_an_unknown_account_closes_the_gate(store, monkeypatch):
     monkeypatch.setattr(capacity, "account", lambda refresh=False: None)
     monkeypatch.setattr(headless_agent, "probe_reading",
                         lambda timeout=180: pytest.fail("probed with no account"))
+    assert lane_health.capacity_open("fix") is False
+
+
+
+def test_a_real_limit_hit_trips_nothing(store):
+    from pipeline import headless_agent
+    hit = headless_agent.CapacityExhausted(
+        "claude exited 1: usage limit reached (five_hour limit; resets 2026-10-02T04:00+00:00)")
+    lane_health.trip_agent_lanes(str(hit))
+    for _ in range(worker_health.TRIP_AFTER + 1):
+        lane_health.note_failure("issue-fix", kind="agent-unavailable", reason=str(hit))
+    assert not _tripped(store, "security") and not _tripped(store, "issue-fix")
+
+
+def test_an_active_pause_holds_off_any_trip(store, monkeypatch):
+    monkeypatch.setattr(capacity, "account", lambda refresh=False: ACCT)
+    capacity.record_pause(store, ACCT, until=datetime.now(timezone.utc) + timedelta(hours=1),
+                          reason="limit")
+    lane_health.trip_agent_lanes("the agent CLI could not run")
+    assert not _tripped(store, "security")
+
+
+def test_one_decision_answers_every_lane(store, monkeypatch):
+    monkeypatch.setattr(capacity, "account", lambda refresh=False: ACCT)
+    checks: list[int] = []
+    real = capacity.check
+    monkeypatch.setattr(capacity, "check", lambda *a, **kw: checks.append(1) or real(*a, **kw))
+    for lane in ("security", "verify", "fix", "issue-fix"):
+        lane_health.capacity_open(lane)
+    assert checks == [1]
+
+
+def test_a_recorded_pause_invalidates_the_cached_decision(store, monkeypatch):
+    monkeypatch.setattr(capacity, "account", lambda refresh=False: ACCT)
+    now = datetime.now(timezone.utc)
+    capacity.record_reading(store, ACCT, capacity.Reading(
+        five_hour=capacity.Window(0.01, now + timedelta(hours=2)), seven_day=None,
+        status="allowed", at=now, by="t"))
+    monkeypatch.setattr(capacity, "cap_now", lambda p, n: (0.9, n + timedelta(hours=1)))
+    assert lane_health.capacity_open("fix") is True
+    capacity.record_pause(store, ACCT, until=now + timedelta(hours=1), reason="limit")
     assert lane_health.capacity_open("fix") is False

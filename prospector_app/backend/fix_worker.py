@@ -46,12 +46,13 @@ import tempfile
 import threading
 import time
 import traceback
+from contextlib import AbstractContextManager, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from collections.abc import Callable
 from typing import TYPE_CHECKING, NamedTuple
 
-from pipeline import (author_fix, ci_signal, compile_preflight, describe_pr, diffpaths, freshness,
+from pipeline import (author_fix, capacity, ci_signal, compile_preflight, describe_pr, diffpaths, freshness,
                       gates, gh, headless_agent, objections, profile, resolve_conflicts,
                       resolve_evidence, review_fix, review_policy, review_resolve,
                       reviewers, risktier, settings, storekit, verify_driver)
@@ -334,6 +335,14 @@ AGENT_ACTIONS = ("fix", "resolve", "describe")
 
 def _unattended_agent(req: dict) -> bool:
     return req.get("source") in AUTO_SOURCES and req.get("action") in AGENT_ACTIONS
+
+
+def _metering(n: int) -> AbstractContextManager[None]:
+    """Book PR `n`'s request's agent spend as the fix lane's unattended work
+    when the automation queued it."""
+    rec = data.prs().get(n)
+    req = (rec.fix_request or {}) if rec is not None else {}
+    return capacity.metered("fix") if req.get("source") in AUTO_SOURCES else nullcontext()
 
 
 def next_queued() -> int | None:
@@ -2122,7 +2131,8 @@ def _drain_loop() -> None:
                 state["current_pr"] = n
                 beat()
                 print(f"[fix-worker] picking up PR #{n}", flush=True)
-                run_one(n)
+                with _metering(n):
+                    run_one(n)
                 continue
             n = next_reviewable()
             # The auto-review's reviewers are agents the automation starts,
@@ -2132,7 +2142,8 @@ def _drain_loop() -> None:
                 beat()
                 print(f"[fix-worker] auto-reviewing parked resolve for PR #{n}",
                       flush=True)
-                review_parked_resolve(n)
+                with capacity.metered("fix"):
+                    review_parked_resolve(n)
                 continue
             pick = next_auto() if enabled_autohunt() else None
             if pick is None:

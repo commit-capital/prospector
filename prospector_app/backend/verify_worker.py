@@ -34,6 +34,7 @@ import traceback
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from pipeline import capacity
 from pipeline import gates
 from pipeline import security_review
 from pipeline import settings
@@ -601,7 +602,8 @@ def _run_security_claimed(n: int) -> int:
     argv = [*PIPELINE_PY, "-u", str(REPO_ROOT / "pipeline" / "security_review.py"),
             "--pr", str(n), "--trigger", "autohunt"]
     proc = subprocess.Popen(argv, cwd=str(REPO_ROOT), stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True)
+                            stderr=subprocess.STDOUT, text=True,
+                            env={**os.environ, capacity.METER_ENV: "security"})
     assert proc.stdout is not None
     lines: list[str] = []
     for line in proc.stdout:
@@ -614,6 +616,9 @@ def _run_security_claimed(n: int) -> int:
     data.refresh()
     if rc == security_review.EXIT_AGENT_UNAVAILABLE:
         lane_health.trip_agent_lanes(last or "the agent CLI could not run")
+        return rc
+    if rc == security_review.EXIT_TRANSIENT:
+        security_failed.add(n, f"the service was overloaded: {last}"[:300])
         return rc
     rec2 = data.store().load_pr(n)
     if rc == 0 and rec2 is not None and not gates.blocked_on_security(rec2):
@@ -667,8 +672,9 @@ def run_one(n: int) -> int:
     the orchestrator's death left non-terminal."""
     argv = [*PIPELINE_PY, "-u", str(REPO_ROOT / "pipeline" / "verify_pr.py"),
             "--pr", str(n), "--from-queue"]
+    env = {**os.environ, capacity.METER_ENV: "verify"} if _auto_requested(n) else None
     proc = subprocess.Popen(argv, cwd=str(REPO_ROOT), stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True)
+                            stderr=subprocess.STDOUT, text=True, env=env)
     assert proc.stdout is not None
     lines: list[str] = []
     for line in proc.stdout:

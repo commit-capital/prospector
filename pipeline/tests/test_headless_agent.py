@@ -754,3 +754,27 @@ def test_the_failure_classifiers():
     assert not ha.limit_spent("Not logged in")
     assert ha.transient("API Error: 529 overloaded")
     assert not ha.transient("claude exited 1; last output: boom")
+
+
+
+def test_a_limit_hit_reads_as_a_spent_limit_to_lane_health(monkeypatch, capacity_store):
+    monkeypatch.setattr(ha.subprocess, "Popen", lambda cmd, **kw: _stream_proc(
+        cmd, [_limit_event(status="rejected", five=1.0)], returncode=1))
+    with pytest.raises(ha.CapacityExhausted) as caught:
+        ha.run_agent("hi", allow_gh=False, cwd="/tmp")
+    assert ha.limit_spent(str(caught.value))
+
+
+def test_a_metered_run_is_booked_as_unattended_spend(monkeypatch, capacity_store):
+    monkeypatch.setattr(ha.subprocess, "Popen", lambda cmd, **kw: _stream_proc(cmd, [
+        {"type": "result", "total_cost_usd": 0.5, "usage": {"input_tokens": 1}}]))
+    with capacity.metered("fix"):
+        ha.run_agent("hi", allow_gh=False, cwd="/tmp")
+    (run,) = capacity_store.agent_runs("2000-01-01T00:00:00+00:00")
+    assert (run["lane"], run["unattended"]) == ("fix", True)
+    assert capacity_store.capacity_spend("k", "2000-01-01T00:00:00+00:00") == 0.5
+
+
+def test_a_reason_naming_a_pull_request_is_not_transient():
+    assert not ha.transient("PR #529 failed its checks")
+    assert ha.transient("API Error: 529 Overloaded")

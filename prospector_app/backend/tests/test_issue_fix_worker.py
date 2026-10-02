@@ -374,17 +374,22 @@ def _ten_minute_steps(monkeypatch) -> list[str]:
     return ran
 
 
-@pytest.mark.parametrize("open_,want", [
-    (False, ["poll", "refresh", "sync"]),
-    (True, ["poll", "refresh", "answer_replies", "sync"]),
-], ids=["paused", "open"])
-def test_replies_are_routed_only_while_capacity_is_open(store, capacity, monkeypatch,
-                                                        open_, want):
+def test_reply_routing_asks_the_capacity_only_when_a_reply_needs_it(store, capacity,
+                                                                     monkeypatch):
+    from issue_triage import followup, public_loop
+    handed: dict = {}
+    monkeypatch.setattr(followup, "poll",
+                        lambda store_, **kw: handed.setdefault("poll", kw["may_route"]))
+    monkeypatch.setattr(public_loop, "refresh", lambda store_, **kw: None)
+    monkeypatch.setattr(public_loop, "answer_replies",
+                        lambda store_, **kw: handed.setdefault("answer", kw["may_route"]))
+    monkeypatch.setattr(public_loop, "sync", lambda store_, **kw: None)
     monkeypatch.setenv("TRIAGE_ISSUE_FIX_PUBLIC", "live")
-    ran = _ten_minute_steps(monkeypatch)
-    capacity["open"] = open_
+    capacity["open"] = False
     issue_fix_worker._every_ten_minutes(store)
-    assert ran == want and capacity["asked"] == ["issue-fix"]
+    assert capacity["asked"] == []
+    assert handed["answer"]() is False and handed["poll"]() is False
+    assert capacity["asked"] == ["issue-fix", "issue-fix"]
 
 
 def test_a_dry_run_public_loop_reads_replies_without_asking_the_capacity(
@@ -394,3 +399,20 @@ def test_a_dry_run_public_loop_reads_replies_without_asking_the_capacity(
     capacity["open"] = False
     issue_fix_worker._every_ten_minutes(store)
     assert "answer_replies" in ran and capacity["asked"] == []
+
+
+def test_automation_s_request_is_metered_and_an_operator_s_is_not(store, capacity, monkeypatch):
+    from pipeline import capacity as policy
+    lanes: list[tuple[str, str | None]] = []
+
+    def run_request(s, n, req, *, on_step):
+        lanes.append((req["source"], policy.meter_lane()))
+        return "done", "Solved: fixed"
+    monkeypatch.setattr(fix_review_runner, "run_request", run_request)
+    fix_review.queue(store, 1, "solve", by="op")
+    issue_fix_worker.run_once(store)
+    store.edit_issue(2).record_fix_request({
+        "action": "solve", "status": "queued", "source": "hunter", "requested_by": "hunter",
+        "queued_at": _ago(minutes=1), "attempts": 1})
+    issue_fix_worker.run_once(store)
+    assert lanes == [("operator", None), ("hunter", "issue-fix")]

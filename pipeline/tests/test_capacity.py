@@ -12,12 +12,19 @@ from pipeline.store import Store
 UTC = timezone.utc
 LA = "America/Los_Angeles"
 MAX = capacity.Account(key="k", billing="subscription", plan="max", label="br…@gmail.com · Max")
+# The real account lookup, held before the suite-wide stub replaces it.
+_REAL_ACCOUNT = capacity.account
 API = capacity.Account(key="a", billing="api", plan=None, label="API key")
 
 
 @pytest.fixture
 def store(tmp_path):
     return Store(tmp_path)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_probe_memory(monkeypatch):
+    monkeypatch.setattr(capacity, "_probe_failed", {})
 
 
 def _event(five: float, seven: float, *, status: str = "allowed",
@@ -266,3 +273,78 @@ def test_an_attended_block_overrides_the_environment(monkeypatch):
     with capacity.attended():
         assert capacity.current_lane() is None
     assert capacity.current_lane() == "pipeline"
+
+
+# --- review fixes -----------------------------------------------------------
+
+def test_a_short_email_name_is_never_shown_whole():
+    acct = capacity.account_from_status(
+        {"loggedIn": True, "authMethod": "claude.ai", "email": "jo@acme.com"}, "m")
+    assert acct is not None and acct.label == "…@acme.com"
+
+
+def test_a_window_past_its_reset_has_started_over(store):
+    capacity.record_reading(store, MAX, _reading(0.95, 0.2, _la(12), five_reset=_la(12, 30)))
+    assert capacity.check(store, MAX, now=_la(12, 31), stale_ok=True).allowed
+
+
+def test_a_week_past_its_reset_has_started_over(store):
+    week_start = _la(12) - timedelta(days=7, hours=1)
+    capacity.record_reading(store, MAX, _reading(0.1, 0.9, _la(12), week_start=week_start))
+    assert capacity.check(store, MAX, now=_la(12, 1)).allowed
+
+
+def test_a_failed_probe_is_not_retried_for_a_while(store):
+    calls: list[int] = []
+
+    def probe() -> None:
+        calls.append(1)
+    capacity.check(store, MAX, now=_la(12), probe=probe)
+    capacity.check(store, MAX, now=_la(12, 5), probe=probe)
+    assert calls == [1]
+    capacity.check(store, MAX, now=_la(12, 11), probe=probe)
+    assert calls == [1, 1]
+
+
+def test_over_the_next_cap_too_the_retry_is_the_reset(store):
+    capacity.record_reading(store, MAX, _reading(0.95, 0.2, _la(22), five_reset=_la(23, 30)))
+    d = capacity.check(store, MAX, now=_la(22, 1))
+    assert not d.allowed and d.retry_at == _la(23, 30)
+
+
+def test_a_shorter_pause_never_cuts_a_longer_one(store):
+    capacity.record_pause(store, MAX, until=_la(20), reason="weekly", now=_la(12))
+    capacity.record_pause(store, MAX, until=_la(13), reason="five-hour", now=_la(12, 1))
+    assert store.load_capacity("k")["pause"]["reason"] == "weekly"
+
+
+def test_an_api_policy_may_leave_out_the_caps():
+    p = capacity.validate_policy({"timezone": LA, "day_start": "08:00", "day_end": "23:00",
+                                  "daily_budget_usd": 5}, "api")
+    assert p.daily_budget_usd == 5.0
+
+
+def test_the_metering_lane_follows_the_batch_lane_then_the_mark(monkeypatch):
+    monkeypatch.delenv(capacity.UNATTENDED_ENV, raising=False)
+    monkeypatch.delenv(capacity.METER_ENV, raising=False)
+    assert capacity.meter_lane() is None
+    with capacity.metered("fix"):
+        assert capacity.meter_lane() == "fix" and capacity.current_lane() is None
+    monkeypatch.setenv(capacity.METER_ENV, "security")
+    assert capacity.meter_lane() == "security"
+    with capacity.unattended("pipeline"):
+        assert capacity.meter_lane() == "pipeline"
+
+
+def test_the_account_is_kept_and_a_missing_one_is_retried_later(monkeypatch):
+    reads: list[int] = []
+    answers = iter([None, MAX])
+    monkeypatch.setattr(capacity, "_read_account", lambda: reads.append(1) or next(answers))
+    monkeypatch.setattr(capacity, "_account_state", None)
+    now = [1000.0]
+    monkeypatch.setattr(capacity, "_monotonic", lambda: now[0])
+    assert _REAL_ACCOUNT() is None and _REAL_ACCOUNT() is None and reads == [1]
+    now[0] += capacity.NO_ACCOUNT_TTL_SECONDS
+    assert _REAL_ACCOUNT() == MAX and reads == [1, 1]
+    now[0] += 60
+    assert _REAL_ACCOUNT() == MAX and reads == [1, 1]
