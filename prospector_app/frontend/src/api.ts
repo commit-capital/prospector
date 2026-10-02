@@ -2451,17 +2451,18 @@ export interface MergeProgress {
 
 export interface ExecResult { pr: number; action: string; status: string; detail: string; forced?: boolean; stale?: StaleBlock }
 
-/** One real action taken on a PR (close/merge/reopen/comment/review), from the
- *  activity log — the bot `identity` that posted it + the human `operator`. */
-/** One threat-evidence capture of a head the threat scan flagged malicious
- *  (`threat_evidence.summary`): no diff bytes, no payload text. */
+/** One stored diff of a threat-evidence capture. */
 export interface ThreatEvidenceArtifact {
   bytes: number; sha256: string; source?: string | null;
   complete?: boolean; truncated?: boolean; before_sha?: string | null;
+  /** For the prior diff: how its head was found. */
+  found_by?: "force-push" | "diff-cache";
 }
 export interface ThreatEvidenceForcePush {
   at: string | null; actor: string | null; before: string | null; after: string | null;
 }
+/** One threat-evidence capture of a head the threat scan flagged malicious
+ *  (`threat_evidence.summary`): no diff bytes, no payload text. */
 export interface ThreatEvidence {
   id: number; pr: number; head_sha: string; author: string | null;
   captured_at: string; complete: boolean; captured_by: string | null; machine: string | null;
@@ -2470,6 +2471,8 @@ export interface ThreatEvidence {
   signatures: string[]; errors: string[];
 }
 
+/** One real action taken on a PR (close/merge/reopen/comment/review), from the
+ *  activity log — the bot `identity` that posted it + the human `operator`. */
 export interface PRAction {
   kind: string; action?: string | null; status: string;
   identity?: string | null; operator?: string | null;

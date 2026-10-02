@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { evidenceLine } from "./threatEvidence.ts";
+import { evidenceLine, needsRetry } from "./threatEvidence.ts";
 import type { ThreatEvidence } from "./api.ts";
 
 const HEAD = "e".repeat(40);
@@ -37,4 +37,20 @@ test("a force-push to some other head is not reported", () => {
     force_pushes: [{ at: "2026-08-23T21:29:24Z", actor: "x", before: BEFORE, after: "f".repeat(40) }],
   }));
   assert.equal(line.replaced, null);
+});
+
+test("a prior head found in the diff cache is reported without a push time", () => {
+  const line = evidenceLine(capture({
+    artifacts: {
+      diff: { bytes: 10, sha256: "a".repeat(64), source: "compare" },
+      prior: { bytes: 5, sha256: "b".repeat(64), source: "compare", before_sha: BEFORE, found_by: "diff-cache" },
+    },
+  }));
+  assert.deepEqual(line.replaced, { at: null, before: "ddddddd" });
+});
+
+test("only captures that are all partial offer a retry", () => {
+  assert.equal(needsRetry([capture({ complete: false }), capture({ complete: true })]), false);
+  assert.equal(needsRetry([capture({ complete: false })]), true);
+  assert.equal(needsRetry([]), true);
 });
