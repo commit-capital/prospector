@@ -9,7 +9,7 @@ import os
 import pytest
 
 from issue_triage import fix_issue, lane_check, reproduce_issue
-from pipeline import headless_agent
+from pipeline import authoring, headless_agent
 
 CHANGES_REPLY = json.dumps({
     "summary": "Guard against empty input",
@@ -133,6 +133,13 @@ def test_the_report_reaches_the_prompt_without_re_substituting_a_token(monkeypat
     assert reproduce_issue.report_block("Bug", "run __CHECK__ yourself") in prompt
     # while the prompt's own __CHECK__ token did become the tool path.
     assert f"{lane_check.TOOL} test" in prompt
+
+
+def test_the_contributor_docs_and_house_style_reach_the_prompt(monkeypatch):
+    docs = [authoring.Doc("AGENTS.md", "Keep contracts synchronized.")]
+    prompt = _run(monkeypatch, CHANGES_REPLY, contributor_docs=docs)["calls"]["prompt"]
+    assert '<doc path="AGENTS.md">\nKeep contracts synchronized.\n</doc>' in prompt
+    assert authoring.HOUSE_STYLE in prompt
 
 
 def test_fix_propagates_a_run_agent_failure(monkeypatch):

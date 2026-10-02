@@ -1,5 +1,5 @@
 """The one command the fix-authoring agent may run to exercise its change: the
-project's typecheck, or its test runner over named test files, inside the
+project's typecheck, its lint, or its test runner over named test files, inside the
 verify sandbox over current default-branch HEAD with the pull request's diff
 and the agent's current worktree edits applied. The host runs nothing of the
 contributor's; the agent chooses only the lane and the test files.
@@ -26,7 +26,7 @@ from pathlib import Path
 from pipeline import check_records, compile_preflight, diffpaths, gates, profile, settings
 from pipeline.check_records import CheckRecord
 
-USAGE = ("usage: sandbox-check typecheck | "
+USAGE = ("usage: sandbox-check typecheck | sandbox-check lint | "
          "sandbox-check test <repo-relative test file>...")
 
 # How much of a run's error text and excerpt a record keeps.
@@ -40,12 +40,17 @@ MAX_CHECKS = 20
 def lane_command(argv: list[str]) -> tuple[str | None, str | None]:
     """The sandbox command for the agent's argv, or (None, why) when the argv
     names no lane this tool runs. `typecheck` is the profile's compile command;
-    `test` is the profile's fixed runner over the named files, each of which
-    must be a repo-relative test path."""
+    `lint` is its lint command; `test` is the profile's fixed runner over the
+    named files, each of which must be a repo-relative test path."""
     if argv == ["typecheck"]:
         cmd = profile.active().verify.compile_cmd
         if cmd is None:
             return None, "this deployment configures no typecheck command"
+        return cmd, None
+    if argv == ["lint"]:
+        cmd = profile.active().verify.lint_cmd
+        if cmd is None:
+            return None, "this deployment configures no lint command"
         return cmd, None
     if len(argv) > 1 and argv[0] == "test":
         files = argv[1:]
@@ -172,7 +177,8 @@ def main(argv: list[str]) -> int:
         print(f"sandbox-check: reading the worktree's edits failed: {e}", file=sys.stderr)
         return 2
     patch = combined_patch(pr, pr_patch, authored)
-    rec = compile_preflight.run_command_for_patch(pr, head, patch, cmd)
+    rec = compile_preflight.run_command_for_patch(
+        pr, head, patch, cmd, lane="lint" if argv == ["lint"] else "compile")
     record_check(pr, check_record(argv, rec))
     print(render(rec))
     return 0 if rec.get("exit") == gates.SENTINEL_PASS else 1

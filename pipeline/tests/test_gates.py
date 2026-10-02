@@ -2833,3 +2833,30 @@ class TestFixAutopushBar:
         assert "could not run" in gates.fix_autopush_bar(
             with_run({"error": "no daemon"}), ["a"])[1]
         assert gates.fix_autopush_bar({**self._result(), "tests": None}, ["a"])[0]
+
+
+class TestLintBlock:
+    @pytest.mark.parametrize("lint", [
+        None,
+        {"exit": 0},
+        {"exit": 20, "error": "the base fails it too", "error_kind": "base-lint"},
+        {"exit": 20, "tree_fails": True},
+    ])
+    def test_clears(self, lint):
+        assert gates.lint_block(lint, "the fix") is None
+
+    def test_a_failure_the_change_brings_in_blocks_with_the_excerpt(self):
+        why = gates.lint_block({"exit": 20, "error_excerpt": "ui/a.tsx: raw hex #fff"}, "the fix")
+        assert why == "the fix fails the repository's lint: ui/a.tsx: raw hex #fff"
+
+    def test_a_run_that_could_not_start_blocks(self):
+        assert "could not run: docker down" in gates.lint_block({"error": "docker down"}, "the fix")
+        assert "could not run: deps" in gates.lint_block({"refused": "deps"}, "the fix")
+
+    def test_a_patch_that_no_longer_applies_blocks(self):
+        why = gates.lint_block({"exit": gates.SENTINEL_PATCH_CONFLICT}, "the fix")
+        assert why == "the fix no longer applies onto the current default branch"
+
+    def test_a_base_compile_fault_is_not_a_lint_base_fault(self):
+        assert gates.lint_block({"exit": 20, "error": "x", "error_kind": "base-compile"},
+                                "the fix") is not None

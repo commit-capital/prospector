@@ -211,6 +211,14 @@ def _proof(proof: dict) -> dict:
                           if compiled.get(k) is not None}
         if compiled.get("error_excerpt"):
             out["compile"]["excerpt"] = str(compiled["error_excerpt"])[-1500:]
+    lint = proof.get("lint")
+    if lint:
+        base_fails = bool(lint.get("tree_fails") or lint.get("error_kind") == "base-lint")
+        out["lint"] = {"exit": lint.get("exit"), "base_fails": base_fails}
+        if lint.get("error") and not base_fails:
+            out["lint"]["error"] = str(lint["error"])[-1500:]
+        if lint.get("error_excerpt"):
+            out["lint"]["excerpt"] = str(lint["error_excerpt"])[-1500:]
     related = proof.get("related_tests")
     if related:
         out["related_tests"] = {"files": list(related.get("files") or [])[:30],

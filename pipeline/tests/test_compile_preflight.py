@@ -307,6 +307,12 @@ class TestBaseCompile:
         assert "cargo: not found" in rec["error"]
         assert calls[1].get("pristine") is True and "patch" not in calls[1]
 
+    def test_a_base_fault_is_named_by_its_lane(self, configured, monkeypatch, tmp_path):
+        cp, patch, calls = self._setup(monkeypatch, tmp_path, [20, 20])
+        rec = cp.run_command_for_patch(1, "a" * 40, patch, "pnpm lint", lane="lint")
+        assert rec["error_kind"] == "base-lint"
+        assert "lint command fails on" in rec["error"]
+
     def test_a_base_that_passes_leaves_the_prs_failure_a_verdict(self, configured, monkeypatch, tmp_path):
         cp, patch, calls = self._setup(monkeypatch, tmp_path, [20, 0])
         rec = cp.run_for_patch(1, "a" * 40, patch)

@@ -37,6 +37,7 @@ from issue_triage import (
 )
 from issue_triage.issue_store import IssueStore
 from pipeline import (
+    authoring,
     check_records,
     diffpaths,
     gates,
@@ -169,17 +170,17 @@ def _validate_reproduction(clone: Path, verdict: dict, spec: LaneSpec, label: st
 
 
 def compile_proof(spec: LaneSpec, proof_patch: Callable[..., Path], parts: tuple[Path | str, ...],
-                  compile_cmd: str, label: str) -> dict:
-    """The compile command over the lane's tree with `parts` applied. On a
-    replay's pre-fix tree a failure is compared with the unfixed tree's own
-    compile, and one that tree fails too carries `tree_fails` — the tree's, not
-    the fix's."""
+                  compile_cmd: str, label: str, *, lane: str = "compile") -> dict:
+    """The compile command — or the `lane` command `compile_cmd` names, such as
+    the lint — over the lane's tree with `parts` applied. On a replay's pre-fix
+    tree a failure is compared with the unfixed tree's own run, and one that
+    tree fails too carries `tree_fails` — the tree's, not the fix's."""
     compiled = prove.run_command(spec.base, proof_patch(*parts), compile_cmd,
-                                 phase="compile", label=label)
+                                 phase="compile", label=label, lane=lane)
     if (spec.pre_patch is not None and not compiled.get("error_kind")
             and compiled.get("exit") == gates.SENTINEL_TEST_FAIL):
         tree = prove.run_command(spec.base, proof_patch(), compile_cmd, phase="compile",
-                                 label=label)
+                                 label=label, lane=lane)
         if tree.get("exit") == gates.SENTINEL_TEST_FAIL:
             compiled["tree_fails"] = True
     return compiled
@@ -264,6 +265,7 @@ def run(spec: LaneSpec, *, workdir: Path,
     label = f"issue-{spec.issue}"
     repro_dir = workdir / "repro"
     fix_dir = workdir / "fix"
+    contributor_docs = authoring.docs_from_tree(spec.base.clone)
     pre_patch_file: Path | None = None
     if spec.pre_patch is not None:
         workdir.mkdir(parents=True, exist_ok=True)
@@ -302,7 +304,7 @@ def run(spec: LaneSpec, *, workdir: Path,
                     issue=spec.issue, base=spec.base, worktree=clone,
                     records=lane_check.records_path(workdir, "repro"), test_patch=None,
                     pre_patch=pre_patch_file),
-                retry_note=retry_note)
+                retry_note=retry_note, contributor_docs=contributor_docs)
             if "give_up" in verdict:
                 gave_up = str(verdict["give_up"])
                 break
@@ -400,7 +402,8 @@ def run(spec: LaneSpec, *, workdir: Path,
             env=lane_check.check_env(
                 issue=spec.issue, base=spec.base, worktree=fix_clone,
                 records=lane_check.records_path(workdir, "fix"), test_patch=test_patch,
-                pre_patch=pre_patch_file))
+                pre_patch=pre_patch_file),
+            contributor_docs=contributor_docs)
         fix_checks = check_records.collect(
             lane_check.records_path(workdir, "fix"), CHECKS_LIMIT)
         if "give_up" in fix_verdict:
@@ -446,6 +449,12 @@ def run(spec: LaneSpec, *, workdir: Path,
             if compiled.get("error_kind") == "base-compile":
                 return finish("base-compile", str(compiled.get("error")
                                                   or "the base fails the compile command"))
+
+        lint_cmd = profile.active().verify.lint_cmd
+        if lint_cmd:
+            on_step("lint")
+            result["proof"]["lint"] = compile_proof(spec, proof_patch, (test_patch, fix_patch),
+                                                    lint_cmd, label, lane="lint")
 
         repro_paths = set(test_paths) | set(preserve_paths)
         related = [t for t in resolve_evidence.related_tests(str(fix_clone), changed_paths)
