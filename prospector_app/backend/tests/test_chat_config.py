@@ -553,6 +553,13 @@ def test_agent_env_drops_the_feedback_token(monkeypatch):
     assert "PROSPECTOR_FEEDBACK_TOKEN" not in safety_guard.agent_env()
 
 
+def test_agent_env_drops_the_slack_webhook(monkeypatch):
+    # Whoever holds the URL can post to the team's channel; text in a PR could
+    # have the agent print it.
+    monkeypatch.setenv("TRIAGE_SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/T/B/x")
+    assert "TRIAGE_SLACK_WEBHOOK_URL" not in safety_guard.agent_env()
+
+
 def test_agent_env_drops_variables_the_agent_has_no_use_for(monkeypatch):
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "unrelated-operator-secret")
     monkeypatch.setenv("OPENAI_API_KEY", "unrelated-operator-secret")

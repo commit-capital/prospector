@@ -587,6 +587,23 @@ grade. `TRIAGE_ISSUE_FIX_PUBLIC` is
 `live` (the default), `dry-run` (each write logged as a dry-run and noted once on
 the issue, its record kept apart in `fix_public.dry`), or `off`.
 
+**SLACK ALERTS** (`pipeline/notify.py`) is the ONE path by which a threat-scan
+finding reaches the team outside the app. At the end of every
+`threat_scan.scan` (the worker's pass, the Control-tab job, the CLI, the
+pre-merge rescan) `notify.send_due` posts, through the incoming webhook
+`TRIAGE_SLACK_WEBHOOK_URL` names, an alert for each open PR flagged malicious
+and for each open, non-fixture rotate-secret item on an open PR a maintainer
+wrote (`gates.priority_author` — a contributor's leak of their own deployment's
+secrets stays in Action items), each first seen within `WINDOW_DAYS` (2).
+Each alert is claimed once in the shared store before it is posted
+(`Store.claim_notification`, registry row `notify:<key>`), so two machines
+post one message and a failed post is retried by later passes, `MAX_TRIES` (3)
+in all; a post never fails the scan. Outside-written text is mrkdwn-escaped and
+a credential alert names the file, never the value. Worker outages and lane
+trips are not posted. The chat agent's environment drops the URL. With no URL
+set nothing is read or posted; `uv run python -m pipeline.notify --test` posts a
+test message.
+
 **WORKER HEALTH** (`pipeline/worker_health.py` + `prospector_app/backend/lane_health.py`
 + `escalation.py`) is the ONE policy for a worker that is failing rather than
 the PRs. Every ending a worker writes is booked per lane (`security`, `verify`,
