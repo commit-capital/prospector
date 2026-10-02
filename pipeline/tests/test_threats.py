@@ -637,3 +637,24 @@ class TestScanWriteEconomy:
         monkeypatch.setattr(threat_scan, "scan_record", scan_noting_binding)
         threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs), "--no-fetch"])
         assert seen == [True]
+
+
+class TestLocate:
+    def test_locate_reports_file_and_1_based_diff_line(self):
+        hits = threats.locate(PAYLOAD_DIFF)
+        lines = PAYLOAD_DIFF.split("\n")
+        assert {h.signature for h in hits} == {
+            "obfuscated-self-decoder", "capability-smuggle", "build-config-require-injection"}
+        for h in hits:
+            assert h.file == "cli/esbuild.config.mjs"
+            assert lines[h.diff_line - 1].startswith("+")
+
+    def test_locate_agrees_with_scan_diff_on_line_signatures(self):
+        for diff in [PAYLOAD_DIFF, CLEAN_DIFF, LEAKED_KEY_DIFF, *FP_DIFFS.values(),
+                     *REAL_LEAK_DIFFS.values()]:
+            line_sigs = set(threats.scan_diff(diff)["signatures"]) - {"eol-churn-camouflage"}
+            assert {h.signature for h in threats.locate(diff)} == line_sigs
+
+    def test_locate_honours_limit(self):
+        many = PAYLOAD_DIFF + PAYLOAD_DIFF.replace("cli/", "web/")
+        assert len(threats.locate(many, limit=2)) == 2
