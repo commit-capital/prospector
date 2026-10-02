@@ -310,6 +310,10 @@ def is_dependabot_bump(author: str | None, changed_paths: list[str] | None) -> b
                for p in paths)
 
 
+# The pr_clean reason for a head the threat scan has not judged.
+THREAT_SCAN_STALE = "threat scan stale or missing"
+
+
 def unscannable_reason(pr: Pr) -> str | None:
     """Why the threat scan could not judge every added line of the PR (the
     `unscannable-diff` signature, with the files it names), or None."""
@@ -327,7 +331,8 @@ def pr_clean(pr: Pr, today: str | None = None) -> tuple[bool, list[str]]:
     # cleared. Detection lives in threats.py; this is just the gate consuming it.
     # A malicious verdict blocks outright; a committed credential (secret-leak)
     # and a diff the scan could not read in full (unscannable-diff), both MEDIUM
-    # signals, are never merged as-is regardless of the overall verdict.
+    # signals, are never merged as-is regardless of the overall verdict; and a
+    # clear verdict counts only at the head it was computed against.
     sigs = pr.threat_signatures
     if pr.threat_verdict == "malicious":
         reasons.append(f"malicious: {', '.join(sigs) or 'flagged'}")
@@ -335,6 +340,8 @@ def pr_clean(pr: Pr, today: str | None = None) -> tuple[bool, list[str]]:
         reasons.append("secret-leak: a live-looking credential is committed in the diff")
     if unscannable := unscannable_reason(pr):
         reasons.append(unscannable)
+    if not is_current(pr, "threat"):
+        reasons.append(THREAT_SCAN_STALE)
     if pr.state != "open":
         reasons.append(f"not open ({pr.state})")
     if pr.draft:
@@ -516,11 +523,12 @@ def merge_eligibility(pr: Pr, today: str | None = None,
     """Human-initiated merge gate — the app action bar.
 
     More permissive than merge_allowed: an operator may merge any PR that passed
-    every check we actually RAN on it — Greptile 5/5, CI, mergeable, fresh, no
-    threat/secret — even one ANALYZE never reached, SECURITY never reviewed, or
-    VERIFY never run. A current unverifiable outcome is also non-blocking: it
-    records that the sandbox found nothing faithful to run, not evidence against
-    the PR. No reason is required for those human merges.
+    every check we actually RAN on it — Greptile 5/5, CI, mergeable, fresh, a
+    threat scan of this head with no threat/secret — even one ANALYZE never
+    reached, SECURITY never reviewed, or VERIFY never run. A current
+    unverifiable outcome is also non-blocking: it records that the sandbox
+    found nothing faithful to run, not evidence against the PR. No reason is
+    required for those human merges.
     ANALYZE disposition is irrelevant here. Security blocks only when a review
     ran for this head and is not GREEN; a never-run review never blocks (we don't
     run the deep review on non-merge-candidate / Easy-Lane PRs). A CODEOWNERS path
@@ -1742,7 +1750,7 @@ def bar_asks(reasons: list[str], pr: Pr | None = None) -> list[str]:
 # merge gates (merge_allowed / merge_eligibility via pr_clean) refuse stale facts
 # on their own.
 _STALE_BAR_REASONS = frozenset({"signals stale or missing", "reviews stale or missing",
-                                "drift stale or missing"})
+                                "drift stale or missing", THREAT_SCAN_STALE})
 
 
 def merge_demotion(pr: Pr) -> tuple[str, str | None, list[str]] | None:

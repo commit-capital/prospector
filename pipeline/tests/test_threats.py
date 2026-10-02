@@ -501,7 +501,8 @@ class TestFetchMissingDiffs:
         assert stats["uncached"] == 1
         assert "fetched" not in stats
 
-    def test_dependabot_bump_diff_is_never_fetched(self, tmp_path, monkeypatch):
+    def test_dependabot_bump_diff_is_never_fetched_and_its_head_stamped_exempt(
+            self, tmp_path, monkeypatch):
         store = Store(tmp_path)
         diffs = tmp_path / "diffs"; diffs.mkdir()
         self._seed(store, 8, author="dependabot[bot]", head="h8")
@@ -509,7 +510,9 @@ class TestFetchMissingDiffs:
                             lambda pr, head, diffs_dir=None: ["pnpm-lock.yaml"])
         monkeypatch.setattr(diff_cache, "fetch_diff", _must_not_fetch)
         threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs)])
-        assert store.load_pr(8).section("threat") is None
+        stamp = store.load_pr(8).section("threat")
+        assert stamp["verdict"] == "clear" and stamp["against_head_sha"] == "h8"
+        assert stamp["detail"] == {"exempt": "dependency-bump"}
         stats = self._stats(store)
         assert stats["bump_exempt"] == 1
         assert stats["fetched"] == 0

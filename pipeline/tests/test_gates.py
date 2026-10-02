@@ -6,6 +6,7 @@ import pytest
 from pipeline import gates, profile, review_policy
 from pipeline.model import Cluster, Pr
 from pipeline.store import Store
+from pipeline.testsupport import threat_section
 
 
 HEAD = "abc123"
@@ -21,6 +22,7 @@ def _pr(**over) -> Pr:
                     "checked_at": NOW, "against_head_sha": HEAD},
         "reviews": _reviews(),
         "drift": {"state": "applicable", "checked_at": NOW, "against_head_sha": HEAD},
+        "threat": threat_section(HEAD, NOW),
     }
     rec.update(over)
     return Pr(None, rec)
@@ -80,6 +82,45 @@ class TestSecurityDisposition:
 
     def test_missing_verdict_is_none(self):
         assert gates.security_disposition(_pr()) is None
+
+
+class TestThreatScanAtHead:
+    """A clear threat verdict counts only at the head it judged: the merge gates
+    refuse a head the scan has not reached, and a malicious verdict blocks at
+    any head."""
+
+    def test_a_pr_never_scanned_is_not_clean(self):
+        rec = _pr()
+        del rec.raw["threat"]
+        ok, reasons = gates.pr_clean(rec, today="2026-06-10")
+        assert not ok and reasons == [gates.THREAT_SCAN_STALE]
+
+    def test_a_clear_verdict_from_before_a_force_push_is_not_clean(self):
+        rec = _pr(threat=threat_section("OLD", NOW))
+        ok, reasons = gates.pr_clean(rec, today="2026-06-10")
+        assert not ok and reasons == [gates.THREAT_SCAN_STALE]
+
+    def test_a_push_the_live_sweep_saw_stales_the_verdict(self):
+        rec = _pr()
+        rec.raw["meta"]["live_head_sha"] = "NEW"
+        _, reasons = gates.pr_clean(rec, today="2026-06-10")
+        assert gates.THREAT_SCAN_STALE in reasons
+
+    def test_a_malicious_verdict_blocks_at_any_head(self):
+        rec = _pr(threat={**threat_section("OLD", NOW), "verdict": "malicious",
+                          "signatures": ["obfuscated-self-decoder"]})
+        _, reasons = gates.pr_clean(rec, today="2026-06-10")
+        assert "malicious: obfuscated-self-decoder" in reasons
+
+    def test_the_human_merge_gate_refuses_an_unscanned_head(self):
+        rec = _pr(threat=threat_section("OLD", NOW), security=_green())
+        ok, why = gates.merge_eligibility(rec, today="2026-06-10", changed_paths=["src/a.ts"])
+        assert not ok and why == f"not clean: {gates.THREAT_SCAN_STALE}"
+
+    def test_an_unscanned_head_never_demotes_a_merge_pick(self):
+        rec = _pr(threat=threat_section("OLD", NOW), analysis=_merge_analysis())
+        assert gates.merge_demotion(rec) is None
+        assert rec.disposition == "merge"
 
 
 class TestPRClean:
@@ -1941,6 +1982,7 @@ class TestClusterStateAfterSelfDemotion:
                         "checked_at": NOW, "against_head_sha": HEAD},
             "reviews": _reviews(),
             "drift": {"state": "applicable", "checked_at": NOW, "against_head_sha": HEAD},
+            "threat": threat_section(HEAD, NOW),
         })
         store.save_cluster({"id": 1, "root_problem": "x", "prs": [1],
                             "outcome": "merge-ready",

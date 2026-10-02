@@ -132,7 +132,10 @@ durable actor blocklist in the store's `threats` registry. A `malicious` verdict
 PR's `threat` section and, on first detection, blocks the author and logs the
 incident. `gates.pr_clean` then refuses the PR forever (fail-closed, no
 staleness exemption), so a flagged PR can never reach security review or merge —
-even if Greptile scores it 5/5 and CI is green. A blocked author's *future* PRs
+even if Greptile scores it 5/5 and CI is green. A clear verdict counts only at
+the head it judged: `pr_clean` refuses a head the scan has not reached, so a
+force-push waits on the next scan before it can merge. A genuine dependency
+bump is stamped clear as exempt without its diff being fetched. A blocked author's *future* PRs
 are flagged on sight, before any diff is fetched. Repository maintainers (the
 profile's `trusted_authors`) are never flagged: their PRs always stamp `clear`,
 though a leaked credential still raises a rotate-secret action item.
