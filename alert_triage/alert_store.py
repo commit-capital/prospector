@@ -9,7 +9,7 @@ shared storekit core.
 """
 from __future__ import annotations
 
-from collections.abc import Generator
+from collections.abc import Generator, Iterable
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -147,3 +147,9 @@ class AlertStore:
                 .where(schema.runs.c.kind == "alert")
                 .order_by(schema.runs.c.rowid)).all()
         return [storekit.parse_run(r[0]) for r in rows]
+
+    def runs_after(self, rowid: int | None,
+                   held: Iterable[int] = ()) -> list[storekit.LedgerRow]:
+        """The alert ledger's rows past `rowid` (all when None), oldest first,
+        without the rowids in `held` (storekit.ledger_after)."""
+        return storekit.ledger_after(self.engine, "alert", rowid, held)

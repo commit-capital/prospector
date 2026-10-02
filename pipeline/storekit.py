@@ -18,8 +18,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Generic, TypeVar
-from collections.abc import Callable, Generator
+from typing import Any, Generic, NamedTuple, TypeVar
+from collections.abc import Callable, Generator, Iterable
 
 from sqlalchemy import (
     ARRAY, Connection, Engine, Table, Text, cast, create_engine,
@@ -254,6 +254,31 @@ def parse_run(record: dict) -> RunRecord:
                          raw=record)
     raise ValueError(
         f"runs-ledger record is neither a phase run nor a store-edit: keys={sorted(record)}")
+
+
+class LedgerRow(NamedTuple):
+    """One runs-ledger row: its rowid, its indexed `ts` column, and its record."""
+    rowid: int
+    ts: str | None
+    record: RunRecord
+
+
+def ledger_after(engine: Engine, kind: str, rowid: int | None,
+                 held: Iterable[int] = ()) -> list[LedgerRow]:
+    """The `kind` ledger's rows past `rowid` (all when None), oldest first,
+    leaving out the rowids in `held` — the rows a caller already has, so only
+    the others cross the link."""
+    from pipeline import schema
+    runs = schema.runs
+    query = select(runs.c.rowid, runs.c.ts, runs.c.data).where(runs.c.kind == kind)
+    if rowid is not None:
+        query = query.where(runs.c.rowid > rowid)
+    have = sorted(held)
+    if have:
+        query = query.where(runs.c.rowid.not_in(have))
+    with engine.connect() as conn:
+        rows = conn.execute(query.order_by(runs.c.rowid)).all()
+    return [LedgerRow(int(r[0]), r[1], parse_run(r[2])) for r in rows]
 
 
 def ensure_columns(engine: Engine, table: Table) -> None:

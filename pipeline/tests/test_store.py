@@ -349,6 +349,29 @@ class TestRunsLedger:
                               "deleted": [], "backup": "/b", "ts": "t0"})
         assert store.runs() == []
 
+    def test_rows_after_carry_their_rowid_and_ts(self, store):
+        store.append_run({"phase": "ingest", "ts": "2026-06-01T00:00:00+00:00", "stats": {}})
+        store.append_run({"phase": "cluster", "stats": {}})
+        first, second = store.runs_after(None)
+        assert (first.rowid, first.ts, first.record.phase) == (
+            1, "2026-06-01T00:00:00+00:00", "ingest")
+        assert second.rowid == 2 and second.ts and second.record.phase == "cluster"
+        assert [r.rowid for r in store.runs_after(1)] == [2]
+
+    def test_rows_after_leave_out_the_held_rowids(self, store):
+        for phase in ("a", "b", "c", "d"):
+            store.append_run({"phase": phase, "stats": {}})
+        assert [r.record.phase for r in store.runs_after(1, held=[2, 4])] == ["c"]
+        assert store.runs_after(None, held=[1, 2, 3, 4]) == []
+
+    def test_rows_after_read_only_this_stores_ledger(self, store):
+        from issue_triage.issue_store import IssueStore
+        store.append_run({"phase": "ingest", "stats": {}})
+        IssueStore(store.root).append_run({"phase": "ingest", "stats": {}})
+        store.append_run({"phase": "cluster", "stats": {}})
+        assert [r.rowid for r in store.runs_after(None)] == [1, 3]
+        assert [r.rowid for r in IssueStore(store.root).runs_after(None)] == [2]
+
 
 class TestLiveSweep:
     def test_default_is_never_swept(self, store):
@@ -677,3 +700,50 @@ def test_prs_matching_returns_the_full_records_whose_path_holds_a_value(store):
     hits = store.prs_matching(("security_run", "host"), ["box-a"])
     assert list(hits) == [1]
     assert hits[1].title == "a"
+
+
+class TestWorkerRegistries:
+    def _individually(self, s: Store) -> dict:
+        return {"verify_worker": s.load_verify_worker(), "fix_worker": s.load_fix_worker(),
+                "issue_fix_worker": s.load_issue_fix_worker(),
+                "worker_health": s.load_worker_health(),
+                "verify_base": s.load_verify_base_hosts()}
+
+    def test_an_empty_store_reads_as_each_loader_does(self, store):
+        assert store.load_worker_registries() == self._individually(store)
+
+    def test_one_read_returns_what_each_loader_does(self, store):
+        from sqlalchemy import event
+        beat = {"last_beat": "2026-07-15T00:00:00+00:00"}
+        store.save_verify_worker({"host": "mac", **beat})
+        store.save_fix_worker({"host": "linux", **beat})
+        store.save_issue_fix_worker({"host": "mac", **beat})
+        store.save_worker_health({"host": "mac", "lanes": {}})
+        store.save_worker_health({"host": "linux", "lanes": {}})
+        store.save_verify_base({"host": "mac", "base_sha": "a" * 12, "tier": 1,
+                                "pinned_at": None, "baseline_failing": [],
+                                "baseline_captured_at": "2026-07-15"})
+        statements: list[str] = []
+
+        def count(conn, cursor, statement, *rest) -> None:
+            statements.append(statement)
+
+        event.listen(store.engine, "before_cursor_execute", count)
+        try:
+            got = store.load_worker_registries()
+        finally:
+            event.remove(store.engine, "before_cursor_execute", count)
+        assert len(statements) == 1
+        assert got == self._individually(store)
+        assert sorted(got["worker_health"]["hosts"]) == ["linux", "mac"]
+
+    def test_flat_records_read_as_each_loader_does(self, store):
+        store._save_registry("verify_worker", {"host": "mac", "last_beat": "t"})
+        store._save_registry("verify_base",
+                             {"base_sha": "deadbeef", "tier": 1, "pinned_at": None,
+                              "baseline_failing": [], "baseline_captured_at": "2026-07-15",
+                              "prepared_on": "mac"})
+        got = store.load_worker_registries()
+        assert got == self._individually(store)
+        assert list(got["verify_worker"]["hosts"]) == ["mac"]
+        assert list(got["verify_base"]) == ["mac"]

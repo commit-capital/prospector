@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 from issue_triage.issue_store import IssueStore
 from pipeline import storekit
+from prospector_app.backend import run_ledger
 from prospector_app.backend import snapshot_cache
 from prospector_app.backend.snapshot import LazySnapshot
 
@@ -37,6 +38,7 @@ class _IssueSnapshotState:
     full_issues: dict[int, Issue] | None = None
     full_key: tuple[str | None, str | None] | None = None
     runs: list[storekit.RunRecord] = field(default_factory=list)
+    runs_ledger: run_ledger.RunLedger | None = None
     generation: int = 0
     cache_written: float = 0.0
     cache_generation: int | None = None
@@ -50,6 +52,7 @@ class _IssueSnapshotState:
         self.full_issues = None
         self.full_key = None
         self.runs = []
+        self.runs_ledger = None
         self.generation += 1
         self.cache_generation = None
 
@@ -141,9 +144,12 @@ _snapshot = LazySnapshot(_freshen, debounce=CHECK_DEBOUNCE)
 
 
 def _freshen_runs(full: bool) -> None:
-    """Re-read the whole issue runs ledger (it has no watermark API, so every
-    freshen is a full read and `full` is irrelevant)."""
-    _state.runs = store().runs()
+    """Bring the issue runs ledger current, reading only the rows the
+    in-memory copy lacks (`run_ledger.RunLedger`); `full` is irrelevant."""
+    st = store()
+    if _state.runs_ledger is None or _state.runs_ledger.source is not st:
+        _state.runs_ledger = run_ledger.RunLedger(st)
+    _state.runs = [r.record for r in _state.runs_ledger.rows()]
 
 
 _runs_snapshot = LazySnapshot(_freshen_runs, debounce=CHECK_DEBOUNCE)

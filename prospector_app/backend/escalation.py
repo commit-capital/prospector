@@ -11,10 +11,14 @@ from __future__ import annotations
 import json
 import traceback
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 from pipeline import settings, worker_health
 from pipeline.storekit import now as _now
 from prospector_app.backend import data, verify_queue
+
+if TYPE_CHECKING:
+    from pipeline.store import WorkerRegistries
 
 
 def escalate_trip(lanes: list[str]) -> None:
@@ -36,15 +40,18 @@ def escalate_trip(lanes: list[str]) -> None:
     print(f"[escalation] {', '.join(lanes)} tripped on {host}: {reason[:200]}", flush=True)
 
 
-def offline_workers(now: datetime | None = None) -> list[dict]:
+def offline_workers(now: datetime | None = None,
+                    registries: WorkerRegistries | None = None) -> list[dict]:
     """Every worker whose last heartbeat, in any lane's registry, is older
-    than OFFLINE_AFTER_SECONDS: `{host, lane, last_beat, age_seconds}`."""
+    than OFFLINE_AFTER_SECONDS: `{host, lane, last_beat, age_seconds}`.
+    `registries` is the store's worker registries when the caller has read
+    them."""
     now = now or datetime.now(timezone.utc)
-    st = data.store()
+    regs = registries if registries is not None else data.store().load_worker_registries()
     out: list[dict] = []
-    for lane, reg in (("verify", st.load_verify_worker()),
-                      ("fix", st.load_fix_worker()),
-                      ("issue-fix", st.load_issue_fix_worker())):
+    for lane, reg in (("verify", regs["verify_worker"]),
+                      ("fix", regs["fix_worker"]),
+                      ("issue-fix", regs["issue_fix_worker"])):
         for host, r in (reg.get("hosts") or {}).items():
             last = r.get("last_beat")
             if verify_queue.beat_online(last):
@@ -59,11 +66,14 @@ def offline_workers(now: datetime | None = None) -> list[dict]:
     return out
 
 
-def health_status() -> dict:
+def health_status(registries: WorkerRegistries | None = None) -> dict:
     """Every worker's lane health for the app: `{hosts: [{host, lanes}]}`,
     tripped lanes first, each tripped lane carrying the `remedy` that clears
-    it."""
-    hosts = data.store().load_worker_health().get("hosts") or {}
+    it. `registries` is the store's worker registries when the caller has
+    read them."""
+    health = (registries["worker_health"] if registries is not None
+              else data.store().load_worker_health())
+    hosts = health.get("hosts") or {}
     out = []
     for host, rec in sorted(hosts.items()):
         lanes = {name: {k: entry.get(k) for k in

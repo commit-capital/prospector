@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from alert_triage.alert_store import AlertStore
 from pipeline import storekit
+from prospector_app.backend import run_ledger
 from prospector_app.backend.snapshot import LazySnapshot
 
 if TYPE_CHECKING:
@@ -26,12 +27,14 @@ class _AlertSnapshotState:
     alerts: dict[int, Alert] = field(default_factory=dict)
     watermark: str | None = None
     runs: list[storekit.RunRecord] = field(default_factory=list)
+    runs_ledger: run_ledger.RunLedger | None = None
 
     def reset(self) -> None:
         self.store = None
         self.alerts = {}
         self.watermark = None
         self.runs = []
+        self.runs_ledger = None
 
 
 _state = _AlertSnapshotState()
@@ -66,9 +69,12 @@ _snapshot = LazySnapshot(_freshen, debounce=CHECK_DEBOUNCE)
 
 
 def _freshen_runs(full: bool) -> None:
-    """Re-read the whole alert runs ledger (it has no watermark API, so every
-    freshen is a full read and `full` is irrelevant)."""
-    _state.runs = store().runs()
+    """Bring the alert runs ledger current, reading only the rows the
+    in-memory copy lacks (`run_ledger.RunLedger`); `full` is irrelevant."""
+    st = store()
+    if _state.runs_ledger is None or _state.runs_ledger.source is not st:
+        _state.runs_ledger = run_ledger.RunLedger(st)
+    _state.runs = [r.record for r in _state.runs_ledger.rows()]
 
 
 _runs_snapshot = LazySnapshot(_freshen_runs, debounce=CHECK_DEBOUNCE)
