@@ -138,6 +138,15 @@ def test_run_command_reads_a_base_that_fails_the_compile_as_the_lanes_fault(phas
     assert "patch" not in calls[1] and calls[1]["tier"] == BASE.tier
 
 
+def test_run_command_names_a_base_fault_by_its_lane(phases):
+    calls, exits = phases
+    exits[:] = [gates.SENTINEL_TEST_FAIL, gates.SENTINEL_TEST_FAIL]
+    rec = prove.run_command(BASE, prove.compose("i", FIX), "pnpm lint",
+                            phase="compile", label="l", lane="lint")
+    assert rec["error_kind"] == "base-lint"
+    assert "lint command fails on" in rec["error"]
+
+
 def test_run_command_leaves_a_compile_failure_the_patchs_own_when_the_base_passes(phases):
     calls, exits = phases
     exits[:] = [gates.SENTINEL_TEST_FAIL, gates.SENTINEL_PASS]

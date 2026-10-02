@@ -284,6 +284,14 @@ def test_a_compile_failure_the_tree_shares_does_not_count_against_the_fix():
     assert issue_gates.fix_proof_bar(_result(proof__compile=compiled))[0] is None
 
 
+@pytest.mark.parametrize("lint", [
+    {"exit": 20, "tree_fails": True},
+    {"exit": 20, "error": "fails on trunk itself", "error_kind": "base-lint"},
+])
+def test_a_lint_failure_the_base_shares_does_not_count_against_the_fix(lint):
+    assert issue_gates.fix_proof_bar(_result(proof__lint=lint))[0] is None
+
+
 def test_a_suite_flake_does_not_count_against_the_fix():
     suite = {"confirmed": False, "flake": True, "new_failures": []}
     assert issue_gates.fix_proof_bar(_result(proof__suite=suite))[0] is None
@@ -304,6 +312,8 @@ def test_related_tests_the_base_fails_too_do_not_count_against_the_fix():
     ({"proof__compile": {"exit": 20, "error_excerpt": "TS2304"}}, "fix-unproven"),
     ({"proof__compile": {"refused": "empty"}}, "fix-unproven"),
     ({"proof__related_tests": {"files": ["a.test.ts"], "run": {"exit": 20}}}, "fix-unproven"),
+    ({"proof__lint": {"exit": 20, "error_excerpt": "boundary"}}, "fix-unproven"),
+    ({"proof__lint": {"error": "docker down"}}, "fix-unproven"),
     ({"reviews": PROVEN["reviews"][:1]}, "fix-rejected"),
     ({"reviews": [PROVEN["reviews"][0],
                   {"lens": "scope-safety", "verdict": "unsafe", "reason": "widens auth",

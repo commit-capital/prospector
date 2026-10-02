@@ -306,7 +306,7 @@ function FixRunBody({ run, followup }: { run: IssueFixRun; followup: IssueFixFol
           {run.patch_truncated && <div className="muted small">… the change is longer than shown.</div>}
         </>
       )}
-      {(proof.compile || proof.related_tests || proof.suite) && (
+      {(proof.compile || proof.lint || proof.related_tests || proof.suite) && (
         <>
           <h4>Checks</h4>
           <ul style={{ margin: "0 0 0 18px" }}>
@@ -314,6 +314,11 @@ function FixRunBody({ run, followup }: { run: IssueFixRun; followup: IssueFixFol
               <li>Compile: {proof.compile.exit === 0 ? "passes"
                 : proof.compile.tree_fails ? "fails on the base too (not this change's)"
                 : `fails${proof.compile.error ? ` — ${proof.compile.error}` : ""}`}</li>
+            )}
+            {proof.lint && (
+              <li>Lint: {proof.lint.exit === 0 ? "passes"
+                : proof.lint.base_fails ? "fails on the base too (not this change's)"
+                : `fails${proof.lint.error ? ` — ${proof.lint.error}` : ""}`}</li>
             )}
             {proof.related_tests && (
               <li>Related tests ({proof.related_tests.files.length}):{" "}

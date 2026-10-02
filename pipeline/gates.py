@@ -743,6 +743,29 @@ def related_tests_block(tests: dict | None, change: str) -> str | None:
     return None
 
 
+def lint_block(lint: dict | None, change: str) -> str | None:
+    """Why the repository's lint (verify.lint_cmd), run over an agent-authored
+    change, holds the change back, or None when it clears. No record (no lint
+    configured) clears. So does a failure the tree without the change shares —
+    the pristine base failing the command (`error_kind` "base-lint") or the
+    unchanged tree failing it (`tree_fails`) — since that failure is the
+    repository's, never the change's. A run that could not start and one that
+    exited failing each block with the reason. `change` names the change in
+    the reason ("the fix")."""
+    if not lint or lint.get("error_kind") == "base-lint" or lint.get("tree_fails"):
+        return None
+    not_run = lint.get("error") or lint.get("refused")
+    if not_run:
+        return f"the lint sandbox could not run: {not_run}"
+    if lint.get("exit") == SENTINEL_PATCH_CONFLICT:
+        return f"{change} no longer applies onto the current default branch"
+    if lint.get("exit") != SENTINEL_PASS:
+        excerpt = str(lint.get("error_excerpt") or "").strip()
+        why = f"{change} fails the repository's lint"
+        return f"{why}: {excerpt}" if excerpt else why
+    return None
+
+
 def fix_autopush_bar(result: dict, changed_paths: list[str]) -> tuple[bool, str]:
     """May an authored `fix` be pushed unattended? The ONE policy over the
     request's recorded evidence, judged only when TRIAGE_FIX_AUTOPUSH names

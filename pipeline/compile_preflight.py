@@ -50,16 +50,19 @@ def run_for_patch(pr: int, head_sha: str, patch: Path) -> dict | None:
     return run_command_for_patch(pr, head_sha, patch, cmd)
 
 
-def run_command_for_patch(pr: int, head_sha: str, patch: Path, cmd: str) -> dict:
+def run_command_for_patch(pr: int, head_sha: str, patch: Path, cmd: str, *,
+                          lane: str = "compile") -> dict:
     """The sandbox record for `cmd` run over current default-branch HEAD with
     `patch` applied — the compile preflight's mechanics under a caller-chosen
     command, which is how the fix author's sandbox check runs the profile's
-    test runner over named test files. Fail-safe shape, fail-closed content:
-    every failure lands in the record; nothing raises into the caller."""
+    test runner over named test files and the fix worker runs its lint. `lane`
+    names the command in a base fault (`error_kind` "base-<lane>"). Fail-safe
+    shape, fail-closed content: every failure lands in the record; nothing
+    raises into the caller."""
     t0 = time.monotonic()
     result: dict = {"cmd": cmd, "pr": pr, "head_sha": head_sha}
     try:
-        _compile_over(result, patch, cmd, head_sha)
+        _compile_over(result, patch, cmd, head_sha, lane)
     except Exception as e:
         _record_unexpected_error(result, e)
     finally:
@@ -92,7 +95,8 @@ def run_for_merge(pr: int, head_sha: str) -> dict | None:
     return result
 
 
-def _compile_over(result: dict, patch: Path, cmd: str, head_sha: str) -> None:
+def _compile_over(result: dict, patch: Path, cmd: str, head_sha: str,
+                  lane: str = "compile") -> None:
     """Build the tier-1 base image for current default-branch HEAD and run `cmd`
     over it with `patch` applied, recording the outcome into `result`. Refusals
     (an empty diff, a dependency-manifest change) land as `refused` and run
@@ -128,8 +132,8 @@ def _compile_over(result: dict, patch: Path, cmd: str, head_sha: str) -> None:
                 "compile", tag, tier=1, test_cmd=cmd, base_sha=sha,
                 head_sha="pristine", pristine=True))
         if base_failure is not None:
-            result["error"] = gates.base_fault_text("compile", f"at {sha[:12]}: {base_failure}")
-            result["error_kind"] = "base-compile"
+            result["error"] = gates.base_fault_text(lane, f"at {sha[:12]}: {base_failure}")
+            result["error_kind"] = f"base-{lane}"
     elif exit_code == gates.SENTINEL_PATCH_CONFLICT:
         result["error_excerpt"] = excerpt
     elif exit_code == gates.SENTINEL_PATCH_UNREADABLE:
