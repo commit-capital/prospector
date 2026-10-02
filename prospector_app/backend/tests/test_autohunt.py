@@ -811,6 +811,7 @@ class TestSecurityClaimedElsewhere:
         monkeypatch.setattr(verify_worker, "maybe_refresh_base", lambda: None)
         monkeypatch.setattr(verify_worker, "next_queued", lambda: None)
         monkeypatch.setattr(verify_worker.verify_driver, "stop_orphaned_sandboxes", lambda: [])
+        monkeypatch.setattr(verify_worker.lane_health, "capacity_open", lambda lane: True)
         attempts: list[int] = []
         real_run_security = verify_worker.run_security
 
@@ -987,3 +988,174 @@ def test_next_queued_ranks_a_maintainer_ahead_of_an_older_auto_pick(store):
         "queued", queued_at="2026-07-20T00:00:00+00:00", source="auto")
     data.refresh()
     assert verify_worker.next_queued() == 2
+
+
+class _OneTick:
+    """A stop event that lets the drain loop run a single tick."""
+
+    def __init__(self) -> None:
+        self.ticks = 0
+        self.waits: list[float] = []
+
+    def is_set(self) -> bool:
+        self.ticks += 1
+        return self.ticks > 1
+
+    def wait(self, seconds: float) -> bool:
+        self.waits.append(seconds)
+        return False
+
+
+class _Loop:
+    """The drain loop's outside world: the account's capacity answer, the
+    hunter's pick, and a record of what the loop asked for and started."""
+
+    def __init__(self) -> None:
+        self.capacity = False
+        self.pick: tuple[str, int] | None = None
+        self.asked: list[str] = []
+        self.ran: list[int] = []
+        self.reviewed: list[int] = []
+        self.queued: list[tuple[int, str]] = []
+        self.stop = _OneTick()
+
+    def capacity_open(self, lane: str) -> bool:
+        self.asked.append(lane)
+        return self.capacity
+
+    def next_auto(self, open_lanes: frozenset[str] = frozenset()) -> tuple[str, int] | None:
+        return self.pick
+
+
+class TestCapacityGate:
+    """Unattended work waits on the machine's AI account: a hunter-queued
+    request and the hunter's own picks hold while the account's capacity is
+    paused, and an operator's request runs whatever it says."""
+
+    @pytest.fixture
+    def loop(self, store, monkeypatch) -> _Loop:
+        lp = _Loop()
+        monkeypatch.setenv("TRIAGE_WORKER_ID", "mac")
+        monkeypatch.setenv("TRIAGE_VERIFY_AUTOHUNT", "1")
+        monkeypatch.setattr(verify_worker.verify_driver, "stop_orphaned_sandboxes", lambda: [])
+        monkeypatch.setattr(verify_worker, "release_stale_claims", lambda: [])
+        monkeypatch.setattr(verify_worker, "recover_orphans", lambda: ([], []))
+        monkeypatch.setattr(verify_worker, "maybe_refresh_base", lambda: None)
+        monkeypatch.setattr(verify_worker, "beat", lambda: None)
+        monkeypatch.setattr(verify_worker.lane_health, "open_or_retest", lambda lane: True)
+        monkeypatch.setattr(verify_worker.lane_health, "capacity_open", lp.capacity_open)
+        monkeypatch.setattr(verify_worker, "next_auto", lp.next_auto)
+        monkeypatch.setattr(verify_worker, "run_one", lambda n: lp.ran.append(n) or 0)
+        monkeypatch.setattr(verify_worker, "_note_verify_ending", lambda n: None)
+        monkeypatch.setattr(verify_worker, "run_security",
+                            lambda n: lp.reviewed.append(n) or 0)
+        monkeypatch.setattr(verify_worker, "auto_queue_verify",
+                            lambda n, source="auto": lp.queued.append((n, source)))
+        monkeypatch.setattr(verify_worker, "stop", lp.stop)
+        return lp
+
+    def _queue(self, store: S.Store, n: int, source: str | None, queued_at: str) -> None:
+        store.save_pr(_clean_merge_pr(n))
+        store.edit_pr(n).record_verify_request("queued", queued_at=queued_at, source=source)
+
+    def test_next_queued_can_leave_out_the_hunters_requests(self, store):
+        self._queue(store, 1, "auto", "2026-07-01T00:00:00+00:00")
+        self._queue(store, 2, verify_worker.RESWEEP_SOURCE, "2026-07-02T00:00:00+00:00")
+        data.refresh()
+        assert verify_worker.next_queued() == 1
+        assert verify_worker.next_queued(skip_auto=True) is None
+        self._queue(store, 3, None, "2026-07-03T00:00:00+00:00")
+        data.refresh()
+        assert verify_worker.next_queued(skip_auto=True) == 3
+
+    def test_a_paused_account_holds_a_hunter_queued_request(self, store, loop):
+        self._queue(store, 1, "auto", "2026-07-01T00:00:00+00:00")
+        data.refresh()
+        verify_worker._drain_loop()
+        assert loop.asked == ["verify"]
+        assert loop.ran == []
+        assert loop.stop.waits == [verify_worker.POLL_SECONDS]
+
+    def test_an_open_account_runs_a_hunter_queued_request(self, store, loop):
+        loop.capacity = True
+        self._queue(store, 1, "auto", "2026-07-01T00:00:00+00:00")
+        data.refresh()
+        verify_worker._drain_loop()
+        assert loop.asked == ["verify"]
+        assert loop.ran == [1]
+
+    def test_a_paused_account_still_runs_an_operators_request(self, store, loop):
+        self._queue(store, 1, "auto", "2026-07-01T00:00:00+00:00")
+        self._queue(store, 2, None, "2026-07-20T00:00:00+00:00")
+        data.refresh()
+        verify_worker._drain_loop()
+        assert loop.asked == []
+        assert loop.ran == [2]
+
+    def test_a_held_auto_request_gives_way_to_an_operators(self, store, loop, monkeypatch):
+        """An operator's request the first pick's snapshot had not seen yet
+        runs in the held auto request's place."""
+        self._queue(store, 1, "auto", "2026-07-01T00:00:00+00:00")
+        data.refresh()
+        picks: list[bool] = []
+
+        def next_queued(skip_auto: bool = False) -> int | None:
+            picks.append(skip_auto)
+            return 2 if skip_auto else 1
+        monkeypatch.setattr(verify_worker, "next_queued", next_queued)
+        verify_worker._drain_loop()
+        assert picks == [False, True]
+        assert loop.asked == ["verify"]
+        assert loop.ran == [2]
+
+    @pytest.mark.parametrize("lane, gate", [("security", "security"),
+                                            ("verify", "verify"),
+                                            ("resweep", "verify")])
+    def test_a_paused_account_holds_the_hunters_pick(self, loop, lane, gate):
+        loop.pick = (lane, 1)
+        verify_worker._drain_loop()
+        assert loop.asked == [gate]
+        assert loop.reviewed == [] and loop.queued == []
+        assert loop.stop.waits == [verify_worker.POLL_SECONDS]
+
+    @pytest.mark.parametrize("lane, reviewed, queued", [
+        ("security", [1], []),
+        ("verify", [], [(1, "auto")]),
+        ("resweep", [], [(1, verify_worker.RESWEEP_SOURCE)]),
+    ])
+    def test_an_open_account_takes_the_hunters_pick(self, loop, lane, reviewed, queued):
+        loop.capacity = True
+        loop.pick = (lane, 1)
+        verify_worker._drain_loop()
+        assert loop.reviewed == reviewed
+        assert loop.queued == queued
+
+    def test_an_idle_hunter_never_asks_the_account(self, loop):
+        verify_worker._drain_loop()
+        assert loop.asked == []
+        assert loop.stop.waits == [verify_worker.POLL_SECONDS]
+
+
+def test_a_security_review_held_by_an_overload_books_no_failure(store, monkeypatch):
+    from pipeline import capacity, security_review
+    store.save_pr(_clean_merge_pr(1))
+    data.refresh()
+    envs: list[dict | None] = []
+    booked: list[str] = []
+
+    class FakeProc:
+        stdout = iter(["    ! security lens failed: the service was overloaded\n"])
+
+        def wait(self):
+            return security_review.EXIT_TRANSIENT
+
+    def fake_popen(argv, **kw):
+        envs.append(kw.get("env"))
+        return FakeProc()
+
+    monkeypatch.setattr(verify_worker.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(verify_worker.lane_health, "note_failure",
+                        lambda lane, **kw: booked.append(lane))
+    assert verify_worker.run_security(1) == security_review.EXIT_TRANSIENT
+    assert booked == [] and 1 in verify_worker.security_failed
+    assert (envs[0] or {}).get(capacity.METER_ENV) == "security"

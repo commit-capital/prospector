@@ -25,6 +25,7 @@ from pathlib import Path
 from alert_triage import alert_fixed_driver
 from alert_triage import config
 from alert_triage.alert_store import AlertStore
+from pipeline import agent_wave
 from pipeline import settings
 from pipeline import headless_agent
 from pipeline import storekit
@@ -123,16 +124,23 @@ def main(argv: list[str] | None = None) -> int:
     applied = 0
     failed_batches = 0
     done = 0
+    stop: agent_wave.Stop | None = None
+    wave = agent_wave.Wave()
     with ThreadPoolExecutor(max_workers=conc) as pool:
-        futures = {pool.submit(run_batch_agent, b): b for b in batches}
+        futures = {wave.submit(pool, run_batch_agent, b): b for b in batches}
         for fut in as_completed(futures):
             label = _label(futures[fut])
             done += 1
             try:
                 good = fut.result()
+            except agent_wave.NotStarted:
+                failed_batches += 1
+                continue
             except Exception as e:
                 failed_batches += 1
                 _say(f"    ! {label} failed, continuing: {e}  ({done}/{len(batches)})")
+                if stop is None and (stop := agent_wave.stop_reason(e, wave.not_started())):
+                    _say(stop.line)
                 continue
             n = alert_fixed_driver.apply_verdicts(store, good)
             applied += n
@@ -141,6 +149,8 @@ def main(argv: list[str] | None = None) -> int:
     _say(f"✓ applied {applied} verdicts across {len(batches) - failed_batches}/"
          f"{len(batches)} batches; {remaining} alerts still unscanned.")
     _record_pass(store, started, len(cands), len(todo), len(tier0) + applied, failed_batches)
+    if stop:
+        return stop.exit_code
     return 0 if applied else 1
 
 

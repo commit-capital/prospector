@@ -396,6 +396,16 @@ def test_an_unreadable_route_waits_for_the_next_pass(store, replies):
     assert store.load_issue(1).fix_request["action"] == "solve"
 
 
+def test_replies_wait_unread_while_the_ai_capacity_is_paused(store, replies):
+    replies["comments"] = [_comment("nicky", "It only fails with --flag set.")]
+    for _ in range(4):
+        assert public_loop.answer_replies(store, mode="live", now=NOW,
+                                          may_route=lambda: False) == 0
+    assert replies["routed"] == [] and store.load_issue(1).fix_request is None
+    assert public_loop.answer_replies(store, mode="live", now=NOW) == 1
+    assert store.load_issue(1).fix_request["action"] == "solve"
+
+
 def test_only_the_author_and_maintainers_count_and_never_the_bot(store, replies):
     replies["comments"] = [_comment("passerby", "+1 me too"),
                            _comment("triagebot[bot]", "Prospector's pipeline …"),

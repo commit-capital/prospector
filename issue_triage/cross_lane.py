@@ -26,6 +26,7 @@ other lanes; `agent_runs` counts every candidate and the reviewer.
 """
 from __future__ import annotations
 
+import contextvars
 import itertools
 import shutil
 from collections.abc import Callable
@@ -305,10 +306,13 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
     try:
         on_step(f"{len(models)} agents reproducing and fixing")
         agent_runs = len(models)
+        # Each candidate runs in a copy of this context, so the lane its spend is
+        # metered under reaches the pool's threads.
         with ThreadPoolExecutor(max_workers=len(models)) as pool:
             cands = list(pool.map(
-                lambda im: _author(spec, workdir, Candidate(index=im[0], model=im[1]),
-                                   pre_patch_file), enumerate(models)))
+                lambda im: contextvars.copy_context().run(
+                    _author, spec, workdir, Candidate(index=im[0], model=im[1]), pre_patch_file),
+                enumerate(models)))
         result = {"candidates": [c.summary() for c in cands], "proof": {}, "reviews": [],
                   "patch": "",
                   "candidate_patches": [{"index": c.index, "test_patch": c.test_patch,

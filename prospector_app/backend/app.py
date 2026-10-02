@@ -932,6 +932,38 @@ async def jobs_stop(job_id: int) -> jobs.JobView:
         raise HTTPException(409, str(e))
 
 
+@app.get("/api/capacity")
+def capacity_get() -> dict:
+    """Each AI account's capacity: policy, newest reading, the cap in effect,
+    whether unattended agent work may start, and today's background spend."""
+    from prospector_app.backend import capacity_view
+    mine = capacity_view.this_account()
+    return {"accounts": capacity_view.accounts(),
+            "this_account": mine.key if mine is not None else None}
+
+
+@app.put("/api/capacity/policy")
+def capacity_policy_put(body: dict = Body(...)) -> dict:
+    """Save the capacity policy of this machine's own AI account. No other
+    account's policy is writable here."""
+    from pipeline import capacity
+    from prospector_app.backend import capacity_view
+    acct = capacity_view.this_account()
+    if acct is None:
+        raise HTTPException(409, "this machine's Claude CLI is not signed in, so its AI "
+                                 "account is unknown")
+    try:
+        p = capacity.validate_policy(body, acct.billing)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    data.store().save_ai_account(acct.key, {"label": acct.label, "billing": acct.billing,
+                                            "plan": acct.plan,
+                                            "policy": capacity.policy_to_dict(p)})
+    capacity_view.forget_health()
+    machines = next((v["machines"] for v in capacity_view.accounts() if v["key"] == acct.key), [])
+    return dict(capacity_view.view(acct, machines, True))
+
+
 @app.get("/api/jobs/stream/group")
 async def jobs_group_stream(job_id: list[int] = Query(...)) -> EventSourceResponse:
     """Follow several background jobs through one browser connection."""

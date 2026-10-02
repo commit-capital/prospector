@@ -2,9 +2,11 @@
 store commits, with the agent stubbed — no claude subprocess, no GitHub."""
 import json
 import threading
+from datetime import datetime, timezone
 
 from pipeline import analyze_clusters
 from pipeline import analyze_driver as ad
+from pipeline import headless_agent
 from pipeline.store import Store
 from pipeline.testsupport import reviews_section
 
@@ -123,6 +125,25 @@ def test_main_runs_clusters_concurrently(tmp_path, monkeypatch):
     assert rc == 0
     st = Store(tmp_path)
     assert all(st.load_pr(n).disposition == "merge" for n in range(1, 4))
+
+
+def test_main_stops_at_the_first_usage_limit_hit(tmp_path, monkeypatch, capsys):
+    _seed(tmp_path, 3)
+    reset = datetime(2026, 10, 1, 22, 0, tzinfo=timezone.utc)
+    calls: list[int] = []
+
+    def fake_agent(cid, bundle):
+        calls.append(cid)
+        raise headless_agent.CapacityExhausted("usage limit reached", resets_at=reset)
+
+    monkeypatch.setattr(analyze_clusters, "run_cluster_agent", fake_agent)
+    rc = analyze_clusters.main(["--concurrency", "1", "--store", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert len(calls) == 1
+    assert (f"AI usage limit reached — resets at {reset.astimezone():%H:%M} "
+            "(2 batch(es) not started); stopping.") in out
+    assert [r.phase for r in Store(tmp_path).runs()].count("analyze:commit") == 1
 
 
 def test_main_nothing_pending(tmp_path, monkeypatch, capsys):

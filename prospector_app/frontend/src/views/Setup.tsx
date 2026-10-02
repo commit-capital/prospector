@@ -1,8 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router";
 import {
   api,
   type BotPermissionReadiness,
+  type CapacityAccount,
+  type CapacityPolicy,
+  type CapacityState,
   type PushAccount,
   type PushKeyInfo,
   type SetupCheck,
@@ -453,6 +456,8 @@ function WorkerSection(
         );
       })}
 
+      <CapacityCard host={readiness.host} />
+
       {(optedIn || provisioned) && (
         <UnprovisionSection
           anyOn={SWITCHES.some((s) => isOn(flags, s))}
@@ -535,6 +540,194 @@ function UnprovisionSection(
           </p>
         </div>
       )}
+    </section>
+  );
+}
+
+/** The capacity policy as the form holds it: caps in whole percents, and a
+ *  blank budget for none set. */
+type CapacityFields = {
+  timezone: string;
+  dayStart: string;
+  dayEnd: string;
+  dayCap: string;
+  nightCap: string;
+  weeklyPacing: boolean;
+  budget: string;
+};
+
+function capacityFields(p: CapacityPolicy): CapacityFields {
+  return {
+    timezone: p.timezone, dayStart: p.day_start, dayEnd: p.day_end,
+    dayCap: String(Math.round(p.day_cap * 100)), nightCap: String(Math.round(p.night_cap * 100)),
+    weeklyPacing: p.weekly_pacing,
+    budget: p.daily_budget_usd == null ? "" : String(p.daily_budget_usd),
+  };
+}
+
+/** The policy the fields describe, or what is wrong with the first one that
+ *  does not parse. */
+function capacityPolicy(f: CapacityFields): { policy: CapacityPolicy } | { problem: string } {
+  const percent = (raw: string): number | null => {
+    const n = Number(raw);
+    return raw.trim() !== "" && Number.isInteger(n) && n >= 1 && n <= 100 ? n / 100 : null;
+  };
+  const dayCap = percent(f.dayCap);
+  if (dayCap == null) return { problem: "The daytime cap must be a whole percent from 1 to 100." };
+  const nightCap = percent(f.nightCap);
+  if (nightCap == null) return { problem: "The overnight cap must be a whole percent from 1 to 100." };
+  const budget = f.budget.trim() === "" ? null : Number(f.budget);
+  if (budget != null && !(Number.isFinite(budget) && budget >= 0)) {
+    return { problem: "The daily budget must be a dollar amount of 0 or more, or blank." };
+  }
+  return {
+    policy: {
+      timezone: f.timezone, day_start: f.dayStart, day_end: f.dayEnd,
+      day_cap: dayCap, night_cap: nightCap, weekly_pacing: f.weeklyPacing, daily_budget_usd: budget,
+    },
+  };
+}
+
+/** This machine's AI account and when unattended agent work may start on it.
+ *  The policy belongs to the account, so every machine signed in to it shares
+ *  what is saved here. */
+function CapacityCard({ host }: { host: string }) {
+  const [state, setState] = useState<CapacityState | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    api.capacity().then((s) => { if (live) setState(s); })
+      .catch((e: unknown) => { if (live) setProblem(e instanceof Error ? e.message : String(e)); });
+    return () => { live = false; };
+  }, []);
+
+  if (state == null) {
+    if (problem == null) return null;
+    return (
+      <section className="setup-card">
+        <h3>🧮 AI capacity</h3>
+        <p className="chip chip-red sm">{problem}</p>
+      </section>
+    );
+  }
+  const mine = state.this_account == null ? undefined : state.accounts.find((a) => a.this_machine);
+  if (mine == null) {
+    return (
+      <section className="setup-card">
+        <h3>🧮 AI capacity</h3>
+        <p className="muted small">This machine's Claude CLI isn't signed in, so its AI capacity can't be set.</p>
+      </section>
+    );
+  }
+  return <CapacityForm key={mine.key} initial={mine} host={host} />;
+}
+
+function CapacityForm({ initial, host }: { initial: CapacityAccount; host: string }) {
+  const [account, setAccount] = useState<CapacityAccount>(initial);
+  const [fields, setFields] = useState<CapacityFields>(() => capacityFields(initial.policy));
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  // The browser's zone list, led by the saved zone when the browser does not
+  // list it.
+  const zones = useMemo<string[]>(() => {
+    const listed = Intl.supportedValuesOf("timeZone");
+    return listed.includes(account.policy.timezone) ? listed : [account.policy.timezone, ...listed];
+  }, [account.policy.timezone]);
+
+  const set = (patch: Partial<CapacityFields>) => setFields((f) => ({ ...f, ...patch }));
+  const others = account.machines.filter((m) => m !== host);
+  const subscription = account.billing === "subscription";
+  const dirty = !account.policy_saved
+    || JSON.stringify(fields) !== JSON.stringify(capacityFields(account.policy));
+  const weeklyReset = account.weekly_resets_at == null ? null
+    : new Date(account.weekly_resets_at).toLocaleString([], { weekday: "long", hour: "numeric", minute: "2-digit" });
+
+  const save = async () => {
+    const parsed = capacityPolicy(fields);
+    if ("problem" in parsed) { setProblem(parsed.problem); return; }
+    setBusy(true); setProblem(null);
+    try {
+      const saved = await api.saveCapacityPolicy(parsed.policy);
+      setAccount(saved);
+      setFields(capacityFields(saved.policy));
+    } catch (e) {
+      setProblem(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="setup-card">
+      <h3>🧮 AI capacity</h3>
+      <p className="small">
+        <strong>{account.label}</strong>
+        {others.length > 0 && <span className="muted"> · shared with {others.join(", ")}</span>}
+      </p>
+      {!account.policy_saved && <p className="muted small">Using the defaults — review and save.</p>}
+      <p className="muted small">
+        {subscription
+          ? "Work the automation starts on its own — hunted reviews, tests, and fixes — begins only while this account's 5-hour usage is under the cap in effect and, with weekly pacing on, its weekly usage is on pace. Work you start yourself is never held. Every machine signed in to this account shares these settings."
+          : "Work the automation starts on its own stops for the day once its spend on this account reaches the daily budget. Work you start yourself is never held. Every machine signed in to this account shares these settings."}
+      </p>
+      <div className="capacity-form">
+        <label htmlFor="cap-zone">Time zone</label>
+        <select id="cap-zone" value={fields.timezone} disabled={busy}
+          onChange={(e) => set({ timezone: e.target.value })}>
+          {zones.map((z) => <option key={z} value={z}>{z}</option>)}
+        </select>
+        {subscription ? (
+          <>
+            <label htmlFor="cap-day-start">Daytime</label>
+            <span>
+              <input id="cap-day-start" type="time" value={fields.dayStart} disabled={busy}
+                onChange={(e) => set({ dayStart: e.target.value })} />
+              {" to "}
+              <input type="time" aria-label="Daytime ends" value={fields.dayEnd} disabled={busy}
+                onChange={(e) => set({ dayEnd: e.target.value })} />
+            </span>
+            <label htmlFor="cap-day">Daytime cap</label>
+            <span>
+              <input id="cap-day" type="number" min={1} max={100} step={1} value={fields.dayCap}
+                disabled={busy} onChange={(e) => set({ dayCap: e.target.value })} />
+              {" % "}<span className="muted small">of the 5-hour window</span>
+            </span>
+            <label htmlFor="cap-night">Overnight cap</label>
+            <span>
+              <input id="cap-night" type="number" min={1} max={100} step={1} value={fields.nightCap}
+                disabled={busy} onChange={(e) => set({ nightCap: e.target.value })} />
+              {" % "}<span className="muted small">of the 5-hour window</span>
+            </span>
+            <label htmlFor="cap-pacing">Weekly pacing</label>
+            <span>
+              <label>
+                <input id="cap-pacing" type="checkbox" checked={fields.weeklyPacing} disabled={busy}
+                  onChange={(e) => set({ weeklyPacing: e.target.checked })} />
+                {" "}hold weekly usage to the share of the week gone by
+              </label>
+              {weeklyReset && <div className="muted small">Weekly window resets {weeklyReset}</div>}
+            </span>
+          </>
+        ) : (
+          <>
+            <label htmlFor="cap-budget">Daily budget (USD)</label>
+            <span>
+              <input id="cap-budget" type="number" min={0} step={0.01} placeholder="none set"
+                value={fields.budget} disabled={busy} onChange={(e) => set({ budget: e.target.value })} />
+              {fields.budget.trim() === "" && (
+                <div className="muted small">Unattended agent work stays off on this account until a budget is set.</div>
+              )}
+            </span>
+          </>
+        )}
+      </div>
+      {problem && <p className="chip chip-red sm">{problem}</p>}
+      <div className="welcome-actions">
+        <button className="btn-primary" disabled={busy || !dirty} onClick={() => void save()}>
+          {busy ? "saving…" : dirty ? "save capacity policy" : "saved"}
+        </button>
+      </div>
     </section>
   );
 }

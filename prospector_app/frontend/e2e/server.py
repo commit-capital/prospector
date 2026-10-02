@@ -133,6 +133,12 @@ safety_guard.run = github_read
 # They get the same strict fixture transport; Popen remains blocked by the audit.
 subprocess.run = github_read
 
+from pipeline import capacity  # noqa: E402
+
+# The machine's AI account is read from the Claude CLI; the fixture machine has
+# none signed in, which drives the real unknown-account paths.
+capacity._read_account = lambda: None
+
 from prospector_app.backend import app as appmod  # noqa: E402
 from prospector_app.backend import executor, instance, service  # noqa: E402
 

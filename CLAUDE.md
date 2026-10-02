@@ -595,6 +595,39 @@ is mirrored to `<verify scratch>/logs/worker-<id>.log` (`worker_log.py`).
 The security lane's skip set carries a reason per PR
 and expires after six hours.
 
+**AI CAPACITY** (`pipeline/capacity.py` + `prospector_app/backend/capacity_view.py`) is
+the ONE policy for how much of each AI account unattended agent work may
+spend. A machine's account is what `claude auth status --json` reports (kept an
+hour; keyed by a hash of org and email, so machines on one account share it;
+the label masks the email). Every headless run (`headless_agent.run_agent`)
+parses the CLI's `rate_limit_event` — the account's 5-hour and 7-day window
+utilization — and records the newest reading in the store's `ai_capacity:<key>`
+row (each half replaced only by a newer one), and its usage and cost as an
+`agent:run` record in the `agent` ledger kind. The policy lives in
+`ai_account:<key>`, set on the Setup tab's AI capacity card for this machine's
+own account (`PUT /api/capacity/policy`): for a subscription, a time zone,
+daytime hours, a daytime and an overnight cap (defaults 08:00–23:00, 50% /
+90%) and weekly pacing (weekly use may run at most 5 points ahead of the
+elapsed share of the account's own week); for an API key, a daily budget,
+without which no unattended agent work runs. `capacity.check` answers whether
+unattended work may start an agent now; a window past its reset reads as
+started over, a reading older than ten minutes is refreshed by one Haiku probe
+(`headless_agent.probe_reading`), and a failed probe waits ten minutes. Workers
+ask `lane_health.capacity_open(lane)` — one cached decision per machine — only
+with an unattended item in hand and before claiming it (the hunters' picks,
+automation-sourced requests, the parked-resolve auto-review, reply routing);
+an item started under the cap runs to completion, and an operator's work is
+never gated. Their unattended items run under `capacity.metered(lane)` (or
+`PROSPECTOR_AGENT_LANE` for a subprocess), which books their spend; a process
+started with `PROSPECTOR_UNATTENDED` is a batch whose every agent call is
+gated (`capacity.CapacityPaused`), and `pipeline/agent_wave.py` stops a
+multi-agent job at the first such refusal or usage-limit hit. A usage-limit
+refusal raises `headless_agent.CapacityExhausted` and pauses the account's
+unattended work until the reset; lane health trips no lane for it, and books no
+failure for a service overload (`AgentTransient`). The Control tab's AI
+capacity panel and the health strip show each account's windows, the cap in
+effect, whether unattended work may start, and today's background spend.
+
 **HOME** (`prospector_app/backend/automation.py` + `prospector_app/frontend/src/views/homeCards.ts`)
 shows every open PR by whose move it is. `automation.classify` is the ONE
 derivation, computed on read into each PR row as `automation`

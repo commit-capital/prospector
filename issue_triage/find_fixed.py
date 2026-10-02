@@ -24,6 +24,7 @@ from pathlib import Path
 from issue_triage import issue_fixed_driver
 from issue_triage import pr_index
 from issue_triage.issue_store import IssueStore
+from pipeline import agent_wave
 from pipeline import settings
 from pipeline import headless_agent
 from pipeline import progress
@@ -120,6 +121,7 @@ def main(argv: list[str] | None = None) -> int:
     pending_batches = [entries[i:i + args.batch] for i in range(0, len(entries), args.batch)]
     total = len(pending_batches)
     applied = 0
+    stop: agent_wave.Stop | None = None
     for attempt in range(max(0, args.retries) + 1):
         if not pending_batches:
             break
@@ -129,23 +131,31 @@ def main(argv: list[str] | None = None) -> int:
             _say(f"③ running {len(pending_batches)} agent batch(es), up to {conc} at a time…")
         failed: list[list[dict]] = []
         done = 0
+        wave = agent_wave.Wave()
         with ThreadPoolExecutor(max_workers=conc) as pool:
-            futures = {pool.submit(run_batch_agent, b): b for b in pending_batches}
+            futures = {wave.submit(pool, run_batch_agent, b): b for b in pending_batches}
             for fut in as_completed(futures):
                 label = _label(futures[fut])
                 done += 1
                 took = progress.duration(time.monotonic() - clock)
                 try:
                     good = fut.result()
+                except agent_wave.NotStarted:
+                    failed.append(futures[fut])
+                    continue
                 except Exception as e:
                     failed.append(futures[fut])
                     _say(f"    ! {label} failed: {e}  ({done}/{len(pending_batches)} · {took})")
+                    if stop is None and (stop := agent_wave.stop_reason(e, wave.not_started())):
+                        _say(stop.line)
                     continue
                 n = issue_fixed_driver.apply_verdicts(store, good)
                 applied += n
                 _say(f"    ✓ {label}: {n} verdicts applied  "
                      f"({done}/{len(pending_batches)} · {took})")
         pending_batches = failed
+        if stop:
+            break
     # Named from the store, so it covers every way an issue can be left behind:
     # an unrecovered batch, and a verdict the agent or the driver dropped.
     _say("re-reading issues to count what is still unscanned…")
@@ -159,6 +169,8 @@ def main(argv: list[str] | None = None) -> int:
              + " ".join(f"#{n}" for n in missed[:20])
              + (" …" if len(missed) > 20 else ""))
     _record_pass(store, started, len(cands), len(todo), applied, len(pending_batches))
+    if stop:
+        return stop.exit_code
     return 0 if applied else 1
 
 

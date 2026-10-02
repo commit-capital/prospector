@@ -179,5 +179,17 @@ def status() -> SystemHealth:
         "alerts": _latest_run(alert_data.runs(), "alert-ingest"),
     }
     health = escalation.health_status()
-    return summarize(health["hosts"], escalation.offline_workers(),
-                     worker_lanes, ingest_last)
+    summary = summarize(health["hosts"], escalation.offline_workers(),
+                        worker_lanes, ingest_last)
+    from prospector_app.backend import capacity_view
+    try:
+        paused = capacity_view.health_items()
+    except Exception:
+        paused = []
+    for item in paused:
+        summary["items"].append(HealthItem(kind=item["kind"], severity=item["severity"],
+                                           label=item["label"], detail=item["detail"],
+                                           host=item["host"]))
+        if _SEVERITY_RANK[item["severity"]] > _SEVERITY_RANK[summary["severity"]]:
+            summary["severity"] = item["severity"]
+    return summary

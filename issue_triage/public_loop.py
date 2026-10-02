@@ -566,7 +566,8 @@ def _plural(count: int) -> str:
     return f"{count} new repl{'y' if count == 1 else 'ies'}"
 
 
-def respond(store: IssueStore, issue: Issue, *, mode: str, now: datetime) -> bool:
+def respond(store: IssueStore, issue: Issue, *, mode: str, now: datetime,
+            may_route: Callable[[], bool] = lambda: True) -> bool:
     """Start another attempt on issue `issue` when its report was edited or a
     reply carries something to act on. Whether it queued, noted, or recorded
     anything."""
@@ -612,6 +613,8 @@ def respond(store: IssueStore, issue: Issue, *, mode: str, now: datetime) -> boo
             _note(store, n, f"Dry run: would route {_plural(len(replies))}.")
             _record_view(store, n, mode, **read)
             return True
+        if not may_route():
+            return False
         verdict = reply_router.route(_context(issue), replies)
         if verdict is None:
             misses = int(view.get("route_misses") or 0) + 1
@@ -673,10 +676,12 @@ def _record_view(store: IssueStore, n: int, mode: str, **fields: object) -> None
 
 
 def answer_replies(store: IssueStore, *, mode: str | None = None,
-                   now: datetime | None = None) -> int:
+                   now: datetime | None = None,
+                   may_route: Callable[[], bool] = lambda: True) -> int:
     """Read back every in-scope issue's replies and report edits, as
     `settings.issue_fix_public` allows. Returns how many issues it acted on. An
-    agent outage propagates."""
+    agent outage propagates. While `may_route` says no — the AI capacity is
+    paused — replies that need the routing agent wait unread."""
     mode = mode or settings.issue_fix_public()
     if mode == "off":
         return 0
@@ -686,7 +691,7 @@ def answer_replies(store: IssueStore, *, mode: str | None = None,
         if not issue.fix_run or not in_scope(issue):
             continue
         try:
-            acted += respond(store, issue, mode=mode, now=now)
+            acted += respond(store, issue, mode=mode, now=now, may_route=may_route)
         except headless_agent.AgentUnavailable:
             raise
         except Exception:
