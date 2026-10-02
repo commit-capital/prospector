@@ -1,7 +1,8 @@
 """Cached read-side access for the Alerts tab.
 
 One light snapshot over the alert store — alerts are a small corpus, so there
-is no omit/hydrate split. Nothing here runs at app startup.
+is no omit/hydrate split. The runs ledger starts from this machine's on-disk
+copy (`snapshot_cache.LedgerFile`). Nothing here runs at app startup.
 """
 from __future__ import annotations
 
@@ -12,6 +13,7 @@ from typing import TYPE_CHECKING
 from alert_triage.alert_store import AlertStore
 from pipeline import storekit
 from prospector_app.backend import run_ledger
+from prospector_app.backend import snapshot_cache
 from prospector_app.backend.snapshot import LazySnapshot
 
 if TYPE_CHECKING:
@@ -19,6 +21,7 @@ if TYPE_CHECKING:
 
 STORE_ROOT: Path | None = None
 CHECK_DEBOUNCE = 10.0
+LEDGER_CACHE_NAME = "alert-runs"
 
 
 @dataclass
@@ -57,6 +60,10 @@ def store() -> AlertStore:
     return _state.store
 
 
+def _store_key(st: AlertStore) -> str:
+    return st.engine.url.render_as_string(hide_password=True)
+
+
 def _freshen(full: bool = False) -> None:
     delta, hi = store().alerts_since(None if full else _state.watermark)
     _state.alerts = dict(delta) if full else {**_state.alerts, **delta}
@@ -70,10 +77,12 @@ _snapshot = LazySnapshot(_freshen, debounce=CHECK_DEBOUNCE)
 
 def _freshen_runs(full: bool) -> None:
     """Bring the alert runs ledger current, reading only the rows the
-    in-memory copy lacks (`run_ledger.RunLedger`); `full` is irrelevant."""
+    in-memory copy lacks (`run_ledger.RunLedger`, started from its disk copy);
+    `full` is irrelevant."""
     st = store()
     if _state.runs_ledger is None or _state.runs_ledger.source is not st:
-        _state.runs_ledger = run_ledger.RunLedger(st)
+        _state.runs_ledger = run_ledger.RunLedger(
+            st, snapshot_cache.LedgerFile(LEDGER_CACHE_NAME, _store_key(st)))
     _state.runs = [r.record for r in _state.runs_ledger.rows()]
 
 

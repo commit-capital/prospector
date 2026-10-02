@@ -88,7 +88,16 @@ I/O — every board/list read serves from module-level dicts (`_prs`, `_clusters
   issue snapshot (`issue_data`) keeps a disk copy the same way.
 - **The PR run ledger** is held in memory by rowid (`data.runs`); each read
   fetches only the rows past the last one seen, less a small overlap for an
-  insert that commits after a higher rowid's.
+  insert that commits after a higher rowid's. It keeps a disk copy beside the
+  snapshot's (`snapshot_cache.LedgerFile`: each row's rowid, `ts` and record),
+  so a restarted process's first read starts from the copy and fetches only the
+  rows past it. That read also asks for the copy's newest row and takes the copy
+  only when the store still has it with the same `ts`, so a store wiped and
+  reseeded at the same address is read whole. The copy is rewritten on a
+  background thread when the ledger has grown, at most every
+  `run_ledger.COPY_EVERY`. The issue and alert run ledgers (`issue_data.runs`,
+  `alert_data.runs`) are held and copied the same way, each copy under its own
+  name, since all three ledgers live in the one store.
 - **Cluster removals ride the watermark:** a watermark sees inserts/updates but
   not hard-deletes, so `store.delete_cluster` instead **soft-deletes** — it
   tombstones the cluster (a `deleted` flag with a bumped `saved_at`). The tombstone

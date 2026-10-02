@@ -183,3 +183,129 @@ def test_the_newest_run_of_a_phase_is_read_alone(store):
                       ("cluster", "2026-06-04T00:00:00+00:00")):
         store.append_run(_run(phase, at))
     assert store.latest_run("ingest").finished == "2026-06-03T00:00:00+00:00"
+
+
+def _ledger_copy() -> snapshot_cache.LedgerFile:
+    return snapshot_cache.LedgerFile(data.LEDGER_CACHE_NAME, data._store_key())
+
+
+def _join_copier(ledger: run_ledger.RunLedger | None) -> None:
+    writer = ledger._copier if ledger is not None else None
+    if writer is not None:
+        writer.join(5)
+
+
+def _restart_ledger(monkeypatch) -> None:
+    _join_copier(data._runs)
+    monkeypatch.setattr(data, "_runs", None)
+
+
+def test_a_restart_seeds_the_ledger_from_its_disk_copy_and_reads_the_rest(store, tmp_path,
+                                                                         monkeypatch):
+    store.append_run({**_run("ingest", "2026-06-01T00:00:00+00:00"),
+                      "ts": "2026-06-01T00:00:00+00:00"})
+    store.append_run({**_run("cluster", "2026-06-02T00:00:00+00:00"),
+                      "ts": "2026-06-02T00:00:00+00:00"})
+    data.runs()
+    _restart_ledger(monkeypatch)
+    held = _ledger_copy().load()
+    assert [(r.rowid, r.ts) for r in held] == [(1, "2026-06-01T00:00:00+00:00"),
+                                               (2, "2026-06-02T00:00:00+00:00")]
+    (path,) = (tmp_path / "cache").glob(f"{data.LEDGER_CACHE_NAME}-*.json")
+    assert path.stat().st_mode & 0o777 == 0o600
+
+    store.append_run({**_run("analyze", "2026-06-03T00:00:00+00:00"),
+                      "ts": "2026-06-03T00:00:00+00:00"})
+    asked: list[tuple[int | None, list[int]]] = []
+    real = store.runs_after
+    monkeypatch.setattr(store, "runs_after", lambda rowid, held=(): asked.append(
+        (rowid, sorted(held))) or real(rowid, held))
+    assert [r.phase for r in data.runs()] == ["ingest", "cluster", "analyze"]
+    assert asked == [(2 - run_ledger.OVERLAP, [1])]
+    assert ([r.phase for r in data.runs(since="2026-06-02T00:00:00+00:00")]
+            == [r.phase for r in store.runs(since="2026-06-02T00:00:00+00:00")]
+            == ["cluster", "analyze"])
+
+
+def test_a_copy_from_a_store_reseeded_at_the_same_address_is_discarded(store, tmp_path,
+                                                                       monkeypatch):
+    for phase in ("ingest", "cluster", "analyze"):
+        store.append_run(_run(phase, "2026-06-01T00:00:00+00:00"))
+    data.runs()
+    _restart_ledger(monkeypatch)
+    assert len(_ledger_copy().load()) == 3
+
+    with store.engine.begin() as conn:
+        conn.exec_driver_sql("DELETE FROM runs")
+    for phase, ts in (("security", "2026-07-01T00:00:00+00:00"),
+                      ("verify", "2026-07-02T00:00:00+00:00"),
+                      ("security", "2026-07-03T00:00:00+00:00")):
+        store.append_run({**_run(phase, ts), "ts": ts})
+    assert [r.rowid for r in store.runs_after(None)] == [1, 2, 3]
+
+    assert [r.phase for r in data.runs()] == ["security", "verify", "security"]
+    _restart_ledger(monkeypatch)
+    assert [r.record.phase for r in _ledger_copy().load()] == ["security", "verify", "security"]
+
+
+def test_an_unreadable_ledger_copy_is_a_miss(store, tmp_path, monkeypatch):
+    store.append_run(_run("ingest", "2026-06-01T00:00:00+00:00"))
+    data.runs()
+    _restart_ledger(monkeypatch)
+    (path,) = (tmp_path / "cache").glob(f"{data.LEDGER_CACHE_NAME}-*.json")
+    for broken in ("{not json", '{"rows": [[2, null, {"phase": "b"}], [1, null, {"phase": "a"}]]}',
+                   '{"rows": [[1, 5, {"phase": "a"}]]}', '{"rows": [[1, null, {}]]}', "[]"):
+        path.write_text(broken)
+        assert _ledger_copy().load() is None
+    asked: list[int | None] = []
+    real = store.runs_after
+    monkeypatch.setattr(store, "runs_after", lambda rowid, held=(): asked.append(rowid)
+                        or real(rowid, held))
+    assert [r.phase for r in data.runs()] == ["ingest"]
+    assert asked == [None]
+
+
+def test_no_ledger_copy_under_pytest_without_a_cache_dir(tmp_path, monkeypatch):
+    monkeypatch.delenv("PROSPECTOR_CACHE_DIR", raising=False)
+    copy = snapshot_cache.LedgerFile(data.LEDGER_CACHE_NAME, "sqlite://")
+    assert copy.load() is None
+    assert copy.save([storekit.LedgerRow(1, None, storekit.parse_run(_run("ingest", NOW)))]) is False
+
+
+@pytest.mark.parametrize("family", ["issue", "alert"])
+def test_the_issue_and_alert_ledgers_restart_from_their_disk_copies(family, tmp_path,
+                                                                    monkeypatch):
+    from alert_triage.alert_store import AlertStore
+    from prospector_app.backend import alert_data
+    module, cls = ((issue_data, issue_store.IssueStore) if family == "issue"
+                   else (alert_data, AlertStore))
+    monkeypatch.setenv("PROSPECTOR_CACHE_DIR", str(tmp_path / "cache"))
+    module.set_store_root(tmp_path / family)
+    try:
+        module.store().append_run(_run("ingest", "2026-06-01T00:00:00+00:00"))
+        module.store().append_run(_run("analyze", "2026-06-02T00:00:00+00:00"))
+        assert [r.phase for r in module.runs()] == ["ingest", "analyze"]
+        _join_copier(module._state.runs_ledger)
+        (path,) = (tmp_path / "cache").glob(f"{module.LEDGER_CACHE_NAME}-*.json")
+        assert path.stat().st_mode & 0o777 == 0o600
+
+        module._state.reset()
+        module._runs_snapshot.invalidate()
+        module.store().append_run(_run("ingest", "2026-06-03T00:00:00+00:00"))
+        asked: list[tuple[int | None, list[int]]] = []
+        real = cls.runs_after
+        monkeypatch.setattr(cls, "runs_after", lambda self, rowid, held=(): asked.append(
+            (rowid, sorted(held))) or real(self, rowid, held))
+        assert [r.phase for r in module.runs()] == ["ingest", "analyze", "ingest"]
+        assert asked == [(2 - run_ledger.OVERLAP, [1])]
+    finally:
+        module.set_store_root(None)
+
+
+def test_each_ledger_copies_under_its_own_name():
+    """The three ledgers share one store URL in a deployment, so the name is
+    what keeps their copies apart."""
+    from prospector_app.backend import alert_data
+    names = {data.LEDGER_CACHE_NAME, issue_data.LEDGER_CACHE_NAME, alert_data.LEDGER_CACHE_NAME}
+    assert len(names) == 3
+    assert data.CACHE_NAME not in names and issue_data.CACHE_NAME not in names

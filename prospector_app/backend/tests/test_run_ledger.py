@@ -1,5 +1,6 @@
 """The in-memory runs ledger: whole on its first read, then only the rows it
-does not hold; concurrent callers share a read; `data.runs` answers windowed
+does not hold; concurrent callers share a read; a disk copy seeds the first
+read when the store still has its newest row; `data.runs` answers windowed
 reads from it once it is held."""
 from __future__ import annotations
 
@@ -111,6 +112,92 @@ def test_a_failed_read_raises_and_the_next_caller_reads_again():
     src.fail = False
     assert _phases(ledger.rows()) == ["ingest"]
     assert src.asked == [(None, []), (None, [])]
+
+
+class FakeCopy:
+    def __init__(self, *rows: storekit.LedgerRow) -> None:
+        self.rows: list[storekit.LedgerRow] | None = list(rows) or None
+        self.saved: list[list[storekit.LedgerRow]] = []
+
+    def load(self) -> list[storekit.LedgerRow] | None:
+        return self.rows
+
+    def save(self, rows: list[storekit.LedgerRow]) -> bool:
+        self.saved.append(rows)
+        return True
+
+
+def _settle(ledger: run_ledger.RunLedger) -> None:
+    writer = ledger._copier
+    if writer is not None:
+        writer.join(5)
+
+
+def test_a_copy_seeds_the_first_read_which_reads_only_past_it(monkeypatch):
+    monkeypatch.setattr(run_ledger, "OVERLAP", 2)
+    src = FakeSource(*(_row(n, f"p{n}") for n in range(1, 7)))
+    copy = FakeCopy(*(_row(n, f"p{n}") for n in range(1, 6)))
+    ledger = run_ledger.RunLedger(src, copy)
+    assert _phases(ledger.rows()) == ["p1", "p2", "p3", "p4", "p5", "p6"]
+    assert ledger.loaded
+    assert src.asked == [(3, [4])]
+    ledger.rows()
+    assert src.asked[1] == (4, [5, 6])
+
+
+def test_the_copy_is_taken_only_after_the_store_answers(monkeypatch):
+    src = FakeSource(_row(1, "ingest"))
+    ledger = run_ledger.RunLedger(src, FakeCopy(_row(1, "ingest")))
+    src.fail = True
+    with pytest.raises(ConnectionError):
+        ledger.rows()
+    assert not ledger.loaded
+    src.fail = False
+    assert _phases(ledger.rows()) == ["ingest"]
+
+
+@pytest.mark.parametrize("store_rows", [
+    [_row(1, "a"), _row(2, "b")],
+    [_row(1, "a"), _row(2, "b"), _row(3, "c", ts="2026-09-01T00:00:00+00:00")],
+], ids=["newest-row-gone", "newest-row-other-ts"])
+def test_a_copy_the_store_does_not_vouch_for_is_discarded(store_rows):
+    src = FakeSource(*store_rows)
+    copy = FakeCopy(_row(1, "x"), _row(2, "y"), _row(3, "z"))
+    ledger = run_ledger.RunLedger(src, copy)
+    assert _phases(ledger.rows()) == [r.record.phase for r in store_rows]
+    assert src.asked[-1] == (None, [])
+    _settle(ledger)
+    assert [_phases(rows) for rows in copy.saved] == [[r.record.phase for r in store_rows]]
+
+
+def test_no_usable_copy_reads_the_whole_ledger_and_writes_one():
+    src = FakeSource(_row(1, "ingest"), _row(2, "cluster"))
+    copy = FakeCopy()
+    ledger = run_ledger.RunLedger(src, copy)
+    assert _phases(ledger.rows()) == ["ingest", "cluster"]
+    assert src.asked == [(None, [])]
+    _settle(ledger)
+    assert [_phases(rows) for rows in copy.saved] == [["ingest", "cluster"]]
+    assert [r.ts for r in copy.saved[0]] == [r.ts for r in src.rows]
+
+
+def test_the_copy_is_rewritten_only_when_the_ledger_grew_and_not_too_often(monkeypatch):
+    src = FakeSource(_row(1, "a"))
+    copy = FakeCopy(_row(1, "a"))
+    ledger = run_ledger.RunLedger(src, copy)
+    monkeypatch.setattr(run_ledger, "COPY_EVERY", 0.0)
+    ledger.rows()
+    _settle(ledger)
+    assert copy.saved == []
+    src.rows.append(_row(2, "b"))
+    monkeypatch.setattr(run_ledger, "COPY_EVERY", 3600.0)
+    ledger.rows()
+    _settle(ledger)
+    assert copy.saved == []
+    monkeypatch.setattr(run_ledger, "COPY_EVERY", 0.0)
+    ledger.rows()
+    _settle(ledger)
+    assert [_phases(rows) for rows in copy.saved] == [["a", "b"]]
 
 
 @pytest.fixture
