@@ -52,8 +52,8 @@ class FakeGitHub:
         self.calls.append(f"compare {base[:1]}...{head[:1]}")
         return {"total_commits": 1, "commits": [{
             "sha": head, "commit": {
-                "author": {"name": "Paperclip", "email": "noreply@x", "date": "2026-08-22T22:26:46Z"},
-                "committer": {"name": "Paperclip", "email": "noreply@x", "date": "2026-08-22T22:26:46Z"},
+                "author": {"name": "Project Bot", "email": "noreply@x", "date": "2026-08-22T22:26:46Z"},
+                "committer": {"name": "Project Bot", "email": "noreply@x", "date": "2026-08-22T22:26:46Z"},
                 "verification": {"verified": False, "reason": "unsigned"}}}]}
 
     def compare_diff(self, base: str, head: str) -> bytes | None:

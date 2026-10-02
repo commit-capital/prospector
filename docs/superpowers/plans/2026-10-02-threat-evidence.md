@@ -548,8 +548,8 @@ class FakeGitHub:
         self.calls.append(f"compare {base[:1]}...{head[:1]}")
         return {"total_commits": 1, "commits": [{
             "sha": head, "commit": {
-                "author": {"name": "Paperclip", "email": "noreply@x", "date": "2026-08-22T22:26:46Z"},
-                "committer": {"name": "Paperclip", "email": "noreply@x", "date": "2026-08-22T22:26:46Z"},
+                "author": {"name": "Project Bot", "email": "noreply@x", "date": "2026-08-22T22:26:46Z"},
+                "committer": {"name": "Project Bot", "email": "noreply@x", "date": "2026-08-22T22:26:46Z"},
                 "verification": {"verified": False, "reason": "unsigned"}}}]}
 
     def compare_diff(self, base: str, head: str) -> bytes | None:
@@ -1340,5 +1340,5 @@ export function ThreatEvidencePanel({ prNum, onCapture }: { prNum: number; onCap
 
 - [ ] **Step 1: Docs.** In `CLAUDE.md`'s Threats bullet add: "**Evidence** (`threat_evidence.py`): every head the scan flags malicious gets an append-only capture in the `threat_evidence` table — the diff pinned to the flagged SHA and the diff before the force-push that produced it (gzip, SHA-256), PR/commit/actor/force-push metadata, and match locations, never payload text — from read-only GitHub reads after the verdict is stamped. Export (`python -m pipeline.threat_evidence export`) and the PR page's download write inert files with `SHA256SUMS`, re-hashing first; captures and downloads land in the runs ledger. No agent and no `store-read` subcommand reads the table." In the workflows README add the CLI commands beside the threat scan's.
 - [ ] **Step 2: Gates.** `uv run pytest -q`, `uv run pyright pipeline issue_triage alert_triage prospector_app/backend review-new-pr/harness`, `uv run ruff check .`, frontend build + lint. All must pass.
-- [ ] **Step 3: End-to-end against real GitHub, scratch store.** With `TRIAGE_STORE_URL=sqlite:///<scratchpad>/e2e.db` and `TRIAGE_REPO=paperclipai/paperclip`, seed PR 11987's record and its registry incident from `~/Downloads/paperclip-malware-evidence-2026-10-02/prospector-store-records.json`, run `capture --backfill`, `export --pr 11987 --out <scratchpad>/e2e-export`, and check: `git patch-id --stable < force-push-changes.diff` → `5e56c29534cf5663948fc228b87f8f47d92d02b5`; the PR diff → `15de2acc7b5d9f9d3c5748656f0dad8534f5cf1b`; `shasum -a 256 -c SHA256SUMS` passes. Never point this run at the live store: this branch's schema 29 would lock out every v28 writer.
+- [ ] **Step 3: End-to-end against real GitHub, scratch store.** With `TRIAGE_STORE_URL=sqlite:///<scratchpad>/e2e.db` and `TRIAGE_REPO` set to the triaged repository, seed PR 11987's record and its registry incident from the hand capture's `prospector-store-records.json`, run `capture --backfill`, `export --pr 11987 --out <scratchpad>/e2e-export`, and check: `git patch-id --stable < force-push-changes.diff` → `5e56c29534cf5663948fc228b87f8f47d92d02b5`; the PR diff → `15de2acc7b5d9f9d3c5748656f0dad8534f5cf1b`; `shasum -a 256 -c SHA256SUMS` passes. Never point this run at the live store: this branch's schema bump would lock out every writer on the version before it.
 - [ ] **Step 4: Commit** `git commit -m "Document threat evidence"`

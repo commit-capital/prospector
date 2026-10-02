@@ -2,11 +2,11 @@
 
 ## Why
 
-On 2026-10-02 the threat scan flagged five paperclipai/paperclip PRs (11987,
+On 2026-10-02 the threat scan flagged five PRs on the triaged repository (11987,
 11988, 12035, 12041, 12063) by `zach-hermes`. They were opened in August with
 honest content. On 2026-09-28 the author force-pushed all five with backdated
 commits (new SHAs, the original author *and* committer timestamps, most of them
-committed as the project's own `Paperclip <noreply@paperclip.ing>` identity).
+committed as the project's own bot identity).
 Each push added the same 50 files' worth of payload: a `createRequire` smuggle
 plus an obfuscated line hidden after thousands of spaces.
 
@@ -21,7 +21,7 @@ them. Prospector recorded little that survives that:
   signature names.
 
 The evidence for this incident was captured by hand
-(`~/Downloads/paperclip-malware-evidence-2026-10-02/`). This feature makes that
+(into a local evidence folder outside any repository). This feature makes that
 capture automatic, durable in the shared store, and safe to keep.
 
 ## Goals
