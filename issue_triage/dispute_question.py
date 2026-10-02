@@ -3,9 +3,10 @@ that resumes it.
 
 A run ends `fix-disputed` when its candidates' reproductions pin different
 behavior: each reading of the report is a group of candidates whose fixes pass
-each other's tests (`cross_lane.readings`). One locked-down agent, handed the
-report and each reading's tests and fix summary as text, turns them into a
-single question with one lettered option per reading and a default (`draft`).
+every test in the group, their own included (`cross_lane.readings`). One
+locked-down agent, handed the report and each reading's tests and fix summary
+as text, turns them into a single question with one lettered option per
+reading and a default (`draft`).
 The host writes the comment around it (`render`), holding the agent's text to
 inert plain text, and `problems` gates the rendering before the bot posts it.
 
