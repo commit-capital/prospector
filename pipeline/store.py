@@ -976,6 +976,14 @@ class Store:
         rows = storekit.read_retrying(self.engine, lambda conn: conn.execute(stmt).all())
         return [_evidence_record(r) for r in rows]
 
+    def threat_evidence_heads(self) -> set[tuple[int, str]]:
+        """The (pr, head_sha) pairs that have a complete capture."""
+        from sqlalchemy import select
+        t = schema.threat_evidence
+        stmt = select(t.c.pr, t.c.head_sha).where(t.c.complete.is_(True))
+        rows = storekit.read_retrying(self.engine, lambda conn: conn.execute(stmt).all())
+        return {(int(r[0]), r[1]) for r in rows}
+
     def threat_evidence_record(self, capture_id: int) -> storekit.EvidenceRecord | None:
         stmt = _evidence_select().where(schema.threat_evidence.c.id == capture_id)
         row = storekit.read_retrying(self.engine, lambda conn: conn.execute(stmt).first())

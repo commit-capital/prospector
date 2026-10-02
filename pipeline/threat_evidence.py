@@ -46,7 +46,7 @@ import zipfile
 import zlib
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Literal, Protocol, TypedDict
+from typing import TYPE_CHECKING, Literal, Protocol, TypedDict
 
 from pipeline import diff_cache
 from pipeline import diffpaths
@@ -56,6 +56,9 @@ from pipeline import settings
 from pipeline import storekit
 from pipeline import threats
 from pipeline.store import Store
+
+if TYPE_CHECKING:
+    from pipeline.model import Pr
 
 MAX_DIFF_BYTES = 25_000_000
 MAX_MATCHES = 500
@@ -83,6 +86,28 @@ class ForcePush:
     actor: str | None
     before: str | None
     after: str | None
+
+
+def flag_for(rec: Pr) -> Flag | None:
+    """The flag on a PR record the threat scan stamped malicious: the head the
+    stamp judged (a malicious verdict stays on the record whatever head INGEST
+    has recorded since), its signatures and when it was stamped. None when the
+    record does not read malicious."""
+    threat = rec.section("threat") or {}
+    head = threat.get("against_head_sha") or rec.head_sha
+    if rec.threat_verdict != "malicious" or not head:
+        return None
+    return Flag(pr=rec.number, head_sha=head, author=rec.author,
+                signatures=list(threat.get("signatures") or []),
+                scanned_at=threat.get("checked_at"))
+
+
+def uncaptured(store: Store, prs: dict[int, Pr]) -> list[Flag]:
+    """The flags on the open PRs in `prs` whose flagged head has no complete
+    capture."""
+    done = store.threat_evidence_heads()
+    flags = [flag_for(rec) for _, rec in sorted(prs.items()) if rec.state == "open"]
+    return [f for f in flags if f is not None and (f.pr, f.head_sha) not in done]
 
 
 class GitHubReads(Protocol):
@@ -651,14 +676,11 @@ def log_export(store: Store, record: storekit.EvidenceRecord, *, via: str,
 # ---------------------------------------------------------------------------
 def _capture_one(store: Store, n: int) -> int:
     rec = store.load_pr(n)
-    if rec is None or rec.threat_verdict != "malicious" or not rec.head_sha:
+    flag = None if rec is None else flag_for(rec)
+    if flag is None:
         print(f"#{n} is not flagged malicious in the store; nothing to capture")
         return 1
-    threat = rec.section("threat") or {}
-    flag = Flag(pr=n, head_sha=rec.head_sha, author=rec.author,
-                signatures=list(threat.get("signatures") or []),
-                scanned_at=threat.get("checked_at"))
-    print(f"#{n} {rec.head_sha[:12]}: {capture(store, flag)}")
+    print(f"#{n} {flag.head_sha[:12]}: {capture(store, flag)}")
     return 0
 
 

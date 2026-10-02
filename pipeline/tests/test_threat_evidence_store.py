@@ -56,7 +56,8 @@ def test_append_validates(tmp_path):
 def test_store_has_no_update_or_delete_for_evidence():
     names = [n for n in dir(Store) if "evidence" in n and not n.startswith("_")]
     assert sorted(names) == ["append_threat_evidence", "threat_evidence",
-                             "threat_evidence_blobs", "threat_evidence_record"]
+                             "threat_evidence_blobs", "threat_evidence_heads",
+                             "threat_evidence_record"]
 
 
 def test_schema_version_is_30():

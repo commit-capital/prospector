@@ -441,3 +441,32 @@ def test_cli_export_with_no_capture_fails(tmp_path, capsys):
     assert te.main(["export", "--pr", "1", "--out", str(tmp_path / "o"),
                     "--store", str(tmp_path)]) == 1
     assert "no evidence" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# Review fixes
+# ---------------------------------------------------------------------------
+def test_cli_capture_takes_the_flagged_head_when_the_stored_head_moved(tmp_path, monkeypatch):
+    store = Store(tmp_path)
+    _seed_flagged(store)
+    rec = store.load_pr(11987)
+    assert rec is not None
+    raw = rec.raw
+    raw["meta"]["head_sha"] = "a" * 40      # INGEST recorded a newer head since the flag
+    store.save_pr(raw)
+    monkeypatch.setattr(te, "LiveGitHub", FakeGitHub)
+    assert te.main(["capture", "--pr", "11987", "--store", str(tmp_path)]) == 0
+    assert [r.head_sha for r in store.threat_evidence(pr=11987)] == [HEAD]
+
+
+def test_uncaptured_names_flagged_heads_without_a_complete_capture(tmp_path):
+    store = Store(tmp_path)
+    _seed_flagged(store)
+    store.save_pr({"pr": 2, "meta": {"title": "t", "author": "a", "state": "open",
+                                     "draft": False, "head_sha": "c" * 40,
+                                     "checked_at": "2026-10-02T00:00:00+00:00"}})
+    prs = store.all_prs()
+    assert [(f.pr, f.head_sha) for f in te.uncaptured(store, prs)] == [(11987, HEAD)]
+    te.capture(store, te.uncaptured(store, prs)[0], github=FakeGitHub(), diffs_dir=tmp_path)
+    assert te.uncaptured(store, prs) == []
+    assert store.threat_evidence_heads() == {(11987, HEAD)}
