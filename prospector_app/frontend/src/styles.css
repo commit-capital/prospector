@@ -47,6 +47,19 @@ a:hover { text-decoration: underline; }
 .store-write-block { background: var(--red); color: #fff; padding: 10px 20px;
   text-align: center; font-weight: 700; font-size: 14px; }
 
+/* threat banner (App.tsx ThreatBanner) — open PRs flagged malicious and leaked
+   credentials to rotate, solid red inside the sticky header on every page. */
+.threat-banner { display: flex; align-items: center; justify-content: center;
+  flex-wrap: wrap; gap: 8px; padding: 10px 20px; background: var(--red); color: #fff;
+  font-weight: 700; font-size: 14px; text-decoration: none; }
+.threat-banner:hover .threat-banner-item { text-decoration: underline; }
+.threat-banner-item { display: inline-flex; align-items: center; gap: 8px; }
+.threat-banner-sep { opacity: .7; }
+
+/* Home's malicious card (homeCards.ts `alert`): red edge and title. */
+.home-card-alert { border-color: var(--red); box-shadow: inset 4px 0 0 var(--red); }
+.home-card-alert .act-card-l, .home-card-alert .act-card-n { color: var(--red); }
+
 /* systemwide health strip (App.tsx HealthStrip) — worker lanes down on any
    machine + stale ingests, on every page just under the topbar. */
 .health-strip { display: flex; align-items: center; flex-wrap: wrap; gap: 6px;

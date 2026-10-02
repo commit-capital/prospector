@@ -99,6 +99,7 @@ export const TERMS: Record<string, GlossaryEntry> = {
   "col.loc": { title: "Size", meaning: "Lines and files the PR changes, as one cell: '+239 · 8f' is 239 effective lines — the lines a human wrote, stripping generated noise (migration snapshots, locale bundles, lockfiles, vendored/built files) — across 8 files. 'effective/raw' means most of the diff is generated. Falls back to the raw additions+deletions until the diff is analyzed. Hover for the per-category breakdown." },
   "col.files": { title: "Files", meaning: "How many files the PR touches." },
   "col.conflicts": { title: "Merge conflicts", meaning: "Whether the branch still merges cleanly onto the default branch. ⚠ means it doesn't — the author must rebase before it can merge." },
+  "col.threat": { title: "Threat", meaning: "The deterministic threat scan's word on the diff: malicious (a supply-chain attack pattern or a blocked author — never mergeable), suspicious, clear at this head, or unscanned." },
   "col.safety": { title: "Safety", meaning: "The security-review verdict — GREEN, YELLOW, RED, or — when the PR hasn't been reviewed." },
   "col.cluster": { title: "Cluster", meaning: "The dedup group this PR belongs to — PRs fixing the same root issue. Click to open it." },
   "col.updated": { title: "Updated", meaning: "When the PR last changed upstream. Click to sort by recency. Chips show how the author responded since we acted: ↩ reopened · ⬆ new commits · 💬 replied. Click ✓ seen to acknowledge a response — it stops showing until a newer one arrives." },
@@ -140,7 +141,8 @@ export const TERMS: Record<string, GlossaryEntry> = {
   // threat scan
   "threat.malicious": { title: "Threat: malicious", meaning: "The threat scan matched a supply-chain attack pattern. A sticky hard block — it can never merge.", note: "Fails closed: no staleness exemption." },
   "threat.suspicious": { title: "Threat: suspicious", meaning: "The threat scan saw something worth a human look, short of malicious." },
-  "threat.clear": { title: "Threat: clear", meaning: "No attack signatures matched in the diff." },
+  "threat.clear": { title: "Threat: clear", meaning: "No attack signatures matched in the diff at the PR's current head." },
+  "threat.unscanned": { title: "Threat: unscanned", meaning: "The threat scan has not read the PR's current head — never scanned, or pushed to since. Not mergeable until a scan reads it; a worker scans new and pushed-to PRs within minutes." },
 
   // cluster outcomes (stored on the cluster, distinct from the derived state above)
   "outcome.merge-ready": { title: "Outcome: merge-ready", meaning: "At least one PR in this cluster is clean enough to merge." },
