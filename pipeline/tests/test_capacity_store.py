@@ -12,7 +12,7 @@ def store(tmp_path):
 
 def test_an_account_policy_round_trips(store):
     assert store.load_ai_account("k") is None
-    store.save_ai_account("k", {"label": "br…@gmail.com · Max", "policy": {"day_cap": 0.5}})
+    store.save_ai_account("k", {"label": "pa…@example.com · Max", "policy": {"day_cap": 0.5}})
     assert store.load_ai_account("k")["policy"]["day_cap"] == 0.5
 
 

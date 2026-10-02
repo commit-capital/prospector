@@ -11,7 +11,7 @@ from pipeline.store import Store
 
 UTC = timezone.utc
 LA = "America/Los_Angeles"
-MAX = capacity.Account(key="k", billing="subscription", plan="max", label="br…@gmail.com · Max")
+MAX = capacity.Account(key="k", billing="subscription", plan="max", label="pa…@example.com · Max")
 # The real account lookup, held before the suite-wide stub replaces it.
 _REAL_ACCOUNT = capacity.account
 API = capacity.Account(key="a", billing="api", plan=None, label="API key")
@@ -25,6 +25,12 @@ def store(tmp_path):
 @pytest.fixture(autouse=True)
 def _fresh_probe_memory(monkeypatch):
     monkeypatch.setattr(capacity, "_probe_failed", {})
+
+
+@pytest.fixture(autouse=True)
+def _machine_in_los_angeles(monkeypatch):
+    """The default policy's zone is the machine's; these tests read times in LA."""
+    monkeypatch.setattr(capacity, "_local_zone", lambda: LA)
 
 
 def _event(five: float, seven: float, *, status: str = "allowed",
@@ -65,11 +71,11 @@ def _la(hour: int, minute: int = 0, day: int = 1) -> datetime:
 
 def test_a_max_login_is_a_subscription_with_a_masked_label():
     acct = capacity.account_from_status(
-        {"loggedIn": True, "authMethod": "claude.ai", "email": "brandonburr@gmail.com",
-         "orgId": "7b8a", "subscriptionType": "max"}, "B-Macbook")
+        {"loggedIn": True, "authMethod": "claude.ai", "email": "pat.tester@example.com",
+         "orgId": "7b8a", "subscriptionType": "max"}, "Pat-Laptop")
     assert acct is not None
-    assert (acct.billing, acct.plan, acct.label) == ("subscription", "max", "br…@gmail.com · Max")
-    assert "brandonburr" not in acct.key
+    assert (acct.billing, acct.plan, acct.label) == ("subscription", "max", "pa…@example.com · Max")
+    assert "pat.tester" not in acct.key
 
 
 def test_two_machines_on_one_account_share_a_key():

@@ -11,7 +11,7 @@ from pipeline import capacity, worker_health
 from prospector_app.backend import app as appmod
 from prospector_app.backend import capacity_view, data
 
-MINE = capacity.Account(key="mine", billing="subscription", plan="max", label="br…@gmail.com · Max")
+MINE = capacity.Account(key="mine", billing="subscription", plan="max", label="pa…@example.com · Max")
 
 
 @pytest.fixture
@@ -109,7 +109,7 @@ def test_a_paused_account_with_a_worker_raises_a_health_line(store):
     _reading(store, MINE, 0.95)
     (item,) = capacity_view.health_items()
     assert item["kind"] == "capacity" and item["severity"] == "amber"
-    assert item["label"].startswith("Background AI paused · br…@gmail.com · Max")
+    assert item["label"].startswith("Background AI paused · pa…@example.com · Max")
 
 
 def test_an_open_account_raises_no_health_line(store):
