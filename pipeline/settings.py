@@ -320,6 +320,19 @@ def issue_fix_worker_enabled() -> bool:
     return os.environ.get("TRIAGE_ISSUE_FIX_WORKER", "") == "1"
 
 
+def cluster_worker_enabled() -> bool:
+    """Whether this machine runs the clustering lane."""
+    return os.environ.get("TRIAGE_CLUSTER_WORKER", "") == "1"
+
+
+def cluster_daily_prs() -> int:
+    return positive_int("TRIAGE_CLUSTER_DAILY_PRS", 150)
+
+
+def cluster_daily_clusters() -> int:
+    return positive_int("TRIAGE_CLUSTER_DAILY_CLUSTERS", 30)
+
+
 def issue_fix_hunt() -> bool:
     """Whether an idle issue-fix worker queues attempts on issues itself."""
     return os.environ.get("TRIAGE_ISSUE_FIX_HUNT", "") == "1"

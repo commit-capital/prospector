@@ -21,6 +21,7 @@ import argparse
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 
 from pipeline import agent_wave
@@ -53,27 +54,33 @@ def run_cluster_agent(cid: int, bundle: dict) -> dict:
     return headless_agent.extract_json(analyze_driver.run_analyze_agent(bundle, on_event))
 
 
-def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--limit", type=int, default=20,
-                    help="max clusters to analyze this run (default 20)")
-    ap.add_argument("--concurrency", type=int, default=4,
-                    help="agent calls to run at once (default 4)")
-    ap.add_argument("--store", type=Path, default=None,
-                    help="store root (default: the shared store)")
-    args = ap.parse_args(argv)
+@dataclass(frozen=True)
+class AnalyzeRun:
+    attempted: int
+    committed: int
+    failed: int
+    # Agents that started and raised: a count equal to `attempted` is a run
+    # whose every agent failed.
+    errored: int
+    stop: agent_wave.Stop | None
+
+
+def run(store: Store, *, limit: int, concurrency: int,
+        trigger: str | None = None) -> AnalyzeRun:
+    """Analyze up to `limit` pending clusters, `concurrency` agents at a time,
+    committing each verdict as it returns, and book the run in the ledger
+    (stamped with `trigger` when one is given)."""
     started = _now()
-    store = Store(args.store) if args.store else Store()
     _say("① Finding the clusters that need analysis (reads every PR and cluster "
          "from the store)…")
     pend = analyze_driver.pending(store)
-    todo = pend[:args.limit]
-    conc = max(1, args.concurrency)
+    todo = pend[:limit]
+    conc = max(1, concurrency)
     _say(f"  {len(pend)} clusters to analyze; taking {len(todo)} this run, "
          f"up to {conc} at a time.")
     if not todo:
         _say("✓ nothing pending — analysis is current.")
-        return 0
+        return AnalyzeRun(0, 0, 0, 0, None)
 
     # One store read + shared redundancy-tree cache up front; workers see only
     # their own pre-built bundle.
@@ -92,6 +99,7 @@ def main(argv: list[str] | None = None) -> int:
 
     committed = 0
     failed = 0
+    errored = 0
     done = 0
     stop: agent_wave.Stop | None = None
     _say(f"③ Running {len(bundles)} analyze agent(s), up to {conc} at a time "
@@ -110,6 +118,7 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             except Exception as e:
                 failed += 1
+                errored += 1
                 _say(f"    ! cluster {cid} failed, continuing: {e}  ({done}/{len(todo)})")
                 if stop is None and (stop := agent_wave.stop_reason(e, wave.not_started())):
                     _say(stop.line)
@@ -135,13 +144,30 @@ def main(argv: list[str] | None = None) -> int:
     _say(f"✓ committed {committed}/{len(todo)} clusters ({failed} failed); "
          f"{orphans} standalone PR(s) dispositioned; {salvage} salvage-fix item(s); "
          f"{remaining} clusters still pending analysis.")
-    store.append_run({"phase": "analyze:commit", "started": started, "finished": _now(),
-                      "stats": {"committed": committed, "failed": failed,
-                                "orphans": orphans, "salvage_items": salvage,
-                                "attempted": len(todo)}})
-    if stop:
-        return stop.exit_code
-    return 0 if committed else 1
+    record: dict = {"phase": "analyze:commit", "started": started, "finished": _now(),
+                    "stats": {"committed": committed, "failed": failed,
+                              "orphans": orphans, "salvage_items": salvage,
+                              "attempted": len(todo)}}
+    if trigger:
+        record["trigger"] = trigger
+    store.append_run(record)
+    return AnalyzeRun(len(todo), committed, failed, errored, stop)
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--limit", type=int, default=20,
+                    help="max clusters to analyze this run (default 20)")
+    ap.add_argument("--concurrency", type=int, default=4,
+                    help="agent calls to run at once (default 4)")
+    ap.add_argument("--store", type=Path, default=None,
+                    help="store root (default: the shared store)")
+    args = ap.parse_args(argv)
+    store = Store(args.store) if args.store else Store()
+    result = run(store, limit=args.limit, concurrency=args.concurrency)
+    if result.stop:
+        return result.stop.exit_code
+    return 0 if result.committed or not result.attempted else 1
 
 
 if __name__ == "__main__":
