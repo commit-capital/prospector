@@ -11,6 +11,11 @@ one: a complete capture is final, and an incomplete one is written only when
 the head has none, so something survives if GitHub removes the PR before a
 complete read succeeds.
 
+`export` writes a capture back out as inert text files (the diffs, the
+record, a README, `SHA256SUMS`); `bundle_zip` builds the same files as a zip
+in memory. Both re-hash every stored artifact first, and `export` refuses a
+destination inside a git work tree.
+
 Safety. Capture makes read-only GitHub API calls and never writes a diff to
 disk. Diff bytes live only gzip-compressed in the row's binary columns; the
 JSON record carries where each signature matched, never the matched text.
@@ -21,12 +26,17 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import io
+import json
 import subprocess
+import zipfile
+import zlib
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol, TypedDict
 
 from pipeline import diff_cache
+from pipeline import diffpaths
 from pipeline import gh
 from pipeline import schema
 from pipeline import settings
@@ -333,3 +343,249 @@ def capture(store: Store, flag: Flag, *, github: GitHubReads | None = None,
     status: Status = "captured" if complete else "partial"
     _ledger(store, flag, started, status, capture_id, errors)
     return status
+
+
+# ---------------------------------------------------------------------------
+# Export: the capture as inert text files with a hash manifest
+# ---------------------------------------------------------------------------
+class IntegrityError(Exception):
+    """A stored artifact's bytes no longer hash to the value taken at capture."""
+
+
+class ExportRefused(Exception):
+    """The export destination is inside a git work tree."""
+
+
+class EvidenceSummary(TypedDict):
+    """A capture as the app lists it: no diff bytes, no payload text."""
+    id: int
+    pr: int
+    head_sha: str
+    author: str | None
+    captured_at: str
+    complete: bool
+    captured_by: str | None
+    machine: str | None
+    artifacts: dict
+    force_pushes: list[dict]
+    signatures: list[str]
+    errors: list[str]
+
+
+def _blocks(raw: bytes) -> list[tuple[str, bytes]]:
+    text = raw.decode("utf-8", "surrogateescape")
+    return [(path, block.encode("utf-8", "surrogateescape"))
+            for path, block in diffpaths.diff_blocks(text)]
+
+
+def force_push_changes(diff: bytes, prior: bytes) -> tuple[bytes, list[str]]:
+    """The file blocks of `diff` that differ from `prior`'s, each a valid patch
+    against the base (what the force-push changed), and the paths `prior`
+    changed that `diff` no longer does."""
+    before = dict(_blocks(prior))
+    after = _blocks(diff)
+    changed = b"".join(block for path, block in after if before.get(path) != block)
+    removed = sorted(set(before) - {path for path, _ in after})
+    return changed, removed
+
+
+def _artifact(blob: bytes | None, meta: dict | None, name: str) -> bytes | None:
+    """The stored artifact's bytes, checked against the hash taken at capture."""
+    if (blob is None) != (meta is None):
+        raise IntegrityError(f"{name}: the record and the stored bytes disagree")
+    if blob is None or meta is None:
+        return None
+    try:
+        body = gzip.decompress(blob)
+    except (OSError, EOFError, zlib.error) as exc:
+        raise IntegrityError(f"{name}: stored bytes do not decompress ({exc})") from exc
+    if _sha256(body) != meta.get("sha256"):
+        raise IntegrityError(f"{name}: SHA-256 {_sha256(body)} does not match the "
+                             f"{meta.get('sha256')} taken at capture")
+    return body
+
+
+def bundle_name(record: storekit.EvidenceRecord) -> str:
+    return f"pr-{record.pr}-{record.head_sha[:7]}-evidence"
+
+
+def _one_line(text: object) -> str:
+    return " ".join(str(text or "").split())
+
+
+def _readme(record: storekit.EvidenceRecord, names: dict[str, str],
+            removed: list[str]) -> str:
+    d = record.data
+    prov = d.get("provenance") or {}
+    actor = d.get("actor") or {}
+    det = d.get("detection") or {}
+    art = d.get("artifacts") or {}
+    diff_meta = art.get("diff") or {}
+    repo = d.get("repo") or settings.repo()
+    commit = (prov.get("prospector_commit") or "")[:7] or "unknown"
+    out = [
+        f"# Evidence: PR #{record.pr} on {repo}",
+        "",
+        f"Captured {record.captured_at} by {prov.get('captured_by') or 'unknown'} on "
+        f"{prov.get('machine') or 'unknown'} (Prospector {commit}), capture id {record.id}.",
+        "The flagged diff was read " + (
+            "whole." if record.complete else
+            f"incompletely (source: {diff_meta.get('source') or 'none'}"
+            f"{', truncated' if diff_meta.get('truncated') else ''}).")
+        if diff_meta else "The flagged diff could not be read.",
+        "",
+        "**Do not** install, build, check out or run anything from this PR. Every file "
+        "here is plain text. A payload can sit far to the right on a long line, so read "
+        "the diffs in a viewer that wraps lines.",
+        "",
+        "## The PR",
+        "",
+        f"- URL: {d.get('url') or 'unknown'}",
+        f"- Title: {_one_line(d.get('title'))}",
+        f"- Author: {actor.get('login') or 'unknown'} (user id {actor.get('id')}, "
+        f"account created {actor.get('created_at')})",
+        f"- Fork: {(d.get('head_repo') or {}).get('full_name')} "
+        f"(repo id {(d.get('head_repo') or {}).get('id')}), branch {d.get('head_ref')}",
+        f"- Flagged head: {record.head_sha}",
+        f"- Base: {d.get('base_sha')}",
+        f"- Signatures that flagged it: {', '.join(det.get('signatures') or []) or 'none'}",
+        f"- Signatures in the full diff: "
+        f"{', '.join(det.get('full_diff_signatures') or []) or 'none'}",
+        "",
+        "## Force-pushes",
+        "",
+    ]
+    pushes = d.get("force_pushes") or []
+    out += [f"- {p.get('at')} by {p.get('actor')}: {p.get('before') or '?'} → "
+            f"{p.get('after') or '?'}" for p in pushes] or ["- none recorded"]
+    if removed:
+        out += ["", "Files the latest force-push removed from the PR: "
+                + ", ".join(removed)]
+    out += ["", "## Commits", ""]
+    for c in d.get("commits") or []:
+        a, cm = c.get("author") or {}, c.get("committer") or {}
+        out.append(f"- {c.get('sha')}: authored {a.get('date')} by {a.get('name')} "
+                   f"<{a.get('email')}>; committed {cm.get('date')} by {cm.get('name')} "
+                   f"<{cm.get('email')}>; signed: "
+                   f"{'yes' if c.get('verified') else 'no'} ({c.get('verification_reason')})")
+    if d.get("commits_truncated"):
+        out.append("- (GitHub listed only the first commits)")
+    matches = det.get("matches") or []
+    out += ["", f"## Where the signatures matched ({names.get('diff', 'the diff')})", ""]
+    out += [f"- {m.get('signature')}: {m.get('file')}, line {m.get('diff_line')}"
+            for m in matches[:20]] or ["- no line matches"]
+    if len(matches) > 20:
+        out.append(f"- and {len(matches) - 20} more (record.json)")
+    out += ["", "## Files", "", "- record.json: the capture's full record",
+            "- SHA256SUMS: verify with `shasum -a 256 -c SHA256SUMS`"]
+    if "diff" in names:
+        out.append(f"- {names['diff']}: the PR's diff at the flagged head")
+    if "prior" in names:
+        out.append(f"- {names['prior']}: the PR's diff at the head the force-push replaced")
+        out.append("- force-push-changes.diff: the files whose diff the force-push changed")
+    shas = [record.head_sha] + [p.get("before") for p in pushes
+                                if p.get("after") == record.head_sha and p.get("before")]
+    out += ["", "## Fetch the git objects", "",
+            "While GitHub still serves them. A bare repository has no work tree, so "
+            "nothing is checked out.", "", "```", "git init --bare evidence.git"]
+    out += [f"git -C evidence.git fetch --depth=6 https://github.com/{repo}.git "
+            f"{sha}:refs/evidence/{sha[:12]}" for sha in shas]
+    out.append("```")
+    if d.get("errors"):
+        out += ["", "## Reads that failed at capture", ""]
+        out += [f"- {e}" for e in d["errors"]]
+    return "\n".join(out) + "\n"
+
+
+def bundle_files(record: storekit.EvidenceRecord,
+                 blobs: storekit.EvidenceBlobs) -> list[tuple[str, bytes]]:
+    """The export's files as (name, bytes), every stored artifact re-hashed
+    first: README.md, record.json, the diffs, force-push-changes.diff when the
+    capture holds a prior diff, and SHA256SUMS over the rest."""
+    art = record.data.get("artifacts") or {}
+    diff = _artifact(blobs.diff_gz, art.get("diff"), "diff")
+    prior = _artifact(blobs.prior_gz, art.get("prior"), "prior diff")
+    names: dict[str, str] = {}
+    files: list[tuple[str, bytes]] = []
+    removed: list[str] = []
+    if diff is not None:
+        names["diff"] = f"pr-{record.pr}-{record.head_sha[:7]}.diff"
+        files.append((names["diff"], diff))
+    if prior is not None:
+        before = (art.get("prior") or {}).get("before_sha") or "unknown"
+        names["prior"] = f"pr-{record.pr}-{before[:7]}.prior.diff"
+        files.append((names["prior"], prior))
+        if diff is not None:
+            changed, removed = force_push_changes(diff, prior)
+            files.append(("force-push-changes.diff", changed))
+    rec = {"capture_id": record.id, "complete": record.complete, **record.data}
+    files = [("README.md", _readme(record, names, removed).encode()),
+             ("record.json", (json.dumps(rec, indent=2, sort_keys=True) + "\n").encode()),
+             *files]
+    sums = "".join(f"{_sha256(body)}  {name}\n" for name, body in sorted(files))
+    return [*files, ("SHA256SUMS", sums.encode())]
+
+
+def bundle_zip(record: storekit.EvidenceRecord, blobs: storekit.EvidenceBlobs) -> bytes:
+    """The export's files as one zip, under a `bundle_name` directory, each
+    marked read-only."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, body in bundle_files(record, blobs):
+            info = zipfile.ZipInfo(f"{bundle_name(record)}/{name}", date_time=(2026, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = 0o100444 << 16
+            z.writestr(info, body)
+    return buf.getvalue()
+
+
+def _inside_work_tree(path: Path) -> bool:
+    probe = path
+    while not probe.exists():
+        probe = probe.parent
+    res = subprocess.run(["git", "-C", str(probe), "rev-parse", "--is-inside-work-tree"],
+                         capture_output=True, text=True)
+    return res.returncode == 0 and res.stdout.strip() == "true"
+
+
+def export(record: storekit.EvidenceRecord, blobs: storekit.EvidenceBlobs,
+           out_dir: Path) -> list[Path]:
+    """Write the bundle's files into `out_dir`, each read-only. Refuses a
+    destination inside a git work tree, where the files could be committed, and
+    an artifact whose hash moved."""
+    if _inside_work_tree(out_dir):
+        raise ExportRefused(f"{out_dir} is inside a git work tree; "
+                            "export evidence outside any repository")
+    files = bundle_files(record, blobs)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+    for name, body in files:
+        path = out_dir / name
+        path.write_bytes(body)
+        path.chmod(0o444)
+        written.append(path)
+    return written
+
+
+def summary(record: storekit.EvidenceRecord) -> EvidenceSummary:
+    d = record.data
+    prov = d.get("provenance") or {}
+    return {
+        "id": record.id, "pr": record.pr, "head_sha": record.head_sha,
+        "author": record.author, "captured_at": record.captured_at,
+        "complete": record.complete,
+        "captured_by": prov.get("captured_by"), "machine": prov.get("machine"),
+        "artifacts": d.get("artifacts") or {"diff": None, "prior": None},
+        "force_pushes": d.get("force_pushes") or [],
+        "signatures": (d.get("detection") or {}).get("signatures") or [],
+        "errors": d.get("errors") or [],
+    }
+
+
+def log_export(store: Store, record: storekit.EvidenceRecord, *, via: str,
+               operator: str | None) -> None:
+    """Record one export of `record` in the runs ledger."""
+    at = storekit.now()
+    store.append_run({"phase": "threat-evidence:export", "started": at, "finished": at,
+                      "pr": record.pr, "capture_id": record.id, "head_sha": record.head_sha,
+                      "via": via, "operator": operator, "machine": settings.worker_id()})

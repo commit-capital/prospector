@@ -221,3 +221,101 @@ def test_written_captures_append_a_ledger_run(tmp_path):
     te.capture(store, FLAG, github=FakeGitHub(), diffs_dir=tmp_path)  # already: no run
     runs = [r for r in store.runs() if r.phase == "threat-evidence:capture"]
     assert len(runs) == 1 and runs[0].raw["status"] == "captured" and runs[0].raw["pr"] == 11987
+
+
+# ---------------------------------------------------------------------------
+# Export, the zip bundle, and verification
+# ---------------------------------------------------------------------------
+def _captured(tmp_path) -> tuple[Store, EvidenceRecord, EvidenceBlobs]:
+    store = Store(tmp_path)
+    te.capture(store, FLAG, github=FakeGitHub(), diffs_dir=tmp_path)
+    rec, blobs = _only(store)
+    return store, rec, blobs
+
+
+def test_force_push_changes_keeps_only_changed_blocks():
+    changed, removed = te.force_push_changes(FLAGGED_DIFF, PRIOR_DIFF)
+    assert changed == INJECTED.encode() and removed == []
+    changed, removed = te.force_push_changes(HONEST.encode(), (HONEST + INJECTED).encode())
+    assert changed == b"" and removed == ["cli/esbuild.config.mjs"]
+
+
+def test_force_push_changes_keeps_non_utf8_bytes_exact():
+    raw = INJECTED.encode() + b"+\xff\xfe\n"
+    changed, _ = te.force_push_changes(HONEST.encode() + raw, PRIOR_DIFF)
+    assert changed == raw
+
+
+def test_bundle_files_and_sha256sums(tmp_path):
+    _, rec, blobs = _captured(tmp_path)
+    files = dict(te.bundle_files(rec, blobs))
+    head7 = HEAD[:7]
+    assert files[f"pr-11987-{head7}.diff"] == FLAGGED_DIFF
+    assert files[f"pr-11987-{PRIOR[:7]}.prior.diff"] == PRIOR_DIFF
+    assert files["force-push-changes.diff"] == INJECTED.encode()
+    assert json.loads(files["record.json"])["head_sha"] == HEAD
+    sums = files["SHA256SUMS"].decode().splitlines()
+    assert f"{hashlib.sha256(FLAGGED_DIFF).hexdigest()}  pr-11987-{head7}.diff" in sums
+    assert len(sums) == len(files) - 1
+    readme = files["README.md"].decode()
+    assert "git fetch" in readme and HEAD in readme and "Do not" in readme
+    assert "fromCharCode" not in readme
+
+
+def test_bundle_refuses_a_hash_mismatch(tmp_path):
+    import pytest
+    _, rec, blobs = _captured(tmp_path)
+    bad = EvidenceBlobs(diff_gz=gzip.compress(b"tampered"), prior_gz=blobs.prior_gz)
+    with pytest.raises(te.IntegrityError):
+        te.bundle_files(rec, bad)
+
+
+def test_export_writes_read_only_files_outside_git(tmp_path):
+    _, rec, blobs = _captured(tmp_path / "s")
+    out = tmp_path / "out"
+    paths = te.export(rec, blobs, out)
+    assert {p.name for p in paths} >= {"README.md", "record.json", "SHA256SUMS"}
+    for p in paths:
+        assert not p.stat().st_mode & 0o222
+
+
+def test_export_refuses_inside_a_git_work_tree(tmp_path):
+    import subprocess
+
+    import pytest
+    _, rec, blobs = _captured(tmp_path / "s")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    with pytest.raises(te.ExportRefused):
+        te.export(rec, blobs, repo / "evidence" / "pr")
+    assert not (repo / "evidence").exists()
+
+
+def test_bundle_zip_holds_the_same_files(tmp_path):
+    import io
+    import zipfile
+    _, rec, blobs = _captured(tmp_path)
+    z = zipfile.ZipFile(io.BytesIO(te.bundle_zip(rec, blobs)))
+    root = te.bundle_name(rec)
+    files = te.bundle_files(rec, blobs)
+    assert sorted(z.namelist()) == sorted(f"{root}/{n}" for n, _ in files)
+    assert z.read(f"{root}/SHA256SUMS") == dict(files)["SHA256SUMS"]
+
+
+def test_summary_has_no_payload_and_no_blobs(tmp_path):
+    _, rec, _ = _captured(tmp_path)
+    s = te.summary(rec)
+    assert s["id"] == rec.id and s["complete"] is True and s["captured_by"] == "operator"
+    dumped = json.dumps(s)
+    assert "diff_gz" not in dumped and "fromCharCode" not in dumped
+    assert s["force_pushes"][0]["before"] == PRIOR
+    assert s["signatures"] == ["obfuscated-self-decoder"]
+
+
+def test_log_export_appends_a_ledger_run(tmp_path):
+    store, rec, _ = _captured(tmp_path)
+    te.log_export(store, rec, via="app", operator="Alex Example")
+    [run] = [r for r in store.runs() if r.phase == "threat-evidence:export"]
+    assert run.raw["capture_id"] == rec.id and run.raw["operator"] == "Alex Example"
+    assert run.raw["via"] == "app"
