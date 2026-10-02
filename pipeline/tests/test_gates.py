@@ -267,14 +267,28 @@ class TestMergeEligibility:
     """The app's human-initiated merge gate: mergeable iff every check we
     actually ran passed. ANALYZE/SECURITY absence does not block."""
 
-    def test_clean_unanalyzed_pr_is_eligible(self):
-        # No analysis, no security review — a clean Easy-Lane PR still merges.
+    def test_a_clean_unreviewed_pr_waits_on_a_security_review(self):
         ok, reason = gates.merge_eligibility(_pr(), today="2026-06-10")
+        assert not ok and "no security review" in reason
+
+    def test_a_reason_merges_a_clean_unreviewed_pr(self):
+        ok, reason = gates.merge_eligibility(_pr(), today="2026-06-10",
+                                             override_reason="one-line typo fix")
+        assert ok, reason
+
+    def test_a_blank_reason_does_not_merge_an_unreviewed_pr(self):
+        ok, _ = gates.merge_eligibility(_pr(), today="2026-06-10", override_reason="  ")
+        assert not ok
+
+    def test_clean_unanalyzed_reviewed_pr_is_eligible(self):
+        # No analysis — a clean, GREEN-reviewed PR still merges.
+        ok, reason = gates.merge_eligibility(_pr(security=_green()), today="2026-06-10")
         assert ok, reason
 
     def test_clean_unanalyzed_in_cluster_is_eligible(self):
         # Cluster membership is irrelevant for a clean PR (operator's choice).
-        ok, _ = gates.merge_eligibility(_pr(cluster={"cluster_id": 7}), today="2026-06-10")
+        ok, _ = gates.merge_eligibility(_pr(cluster={"cluster_id": 7}, security=_green()),
+                                        today="2026-06-10")
         assert ok
 
     def test_green_security_is_eligible(self):
@@ -355,7 +369,7 @@ class TestMergeEligibility:
         assert not ok and "code owner" in reason
 
     def test_non_codeowners_path_is_eligible(self):
-        ok, _ = gates.merge_eligibility(_pr(), today="2026-06-10",
+        ok, _ = gates.merge_eligibility(_pr(security=_green()), today="2026-06-10",
                                         changed_paths=["src/app.ts"])
         assert ok
 
@@ -434,14 +448,20 @@ class TestBlockedOnSecurity:
         rec.raw["reviews"]["greptile"]["score"] = 4
         assert not gates.blocked_on_security(rec, today="2026-06-10")
 
-    def test_non_merge_disposition_is_not_blocked_on_security(self):
-        rec = _pr(analysis=_merge_analysis(disposition="request-changes"))
-        assert not gates.blocked_on_security(rec, today="2026-06-10")
+    def test_a_close_disposition_is_not_blocked_on_security(self):
+        for disposition in ("close-dup", "close-fixed", "close-stale"):
+            rec = _pr(analysis=_merge_analysis(disposition=disposition))
+            assert not gates.blocked_on_security(rec, today="2026-06-10"), disposition
 
-    def test_stale_analysis_is_not_blocked_on_security(self):
-        # The blocker is a stale ANALYZE, routed to re-cluster — not SECURITY.
-        rec = _pr(analysis=_merge_analysis(against_head_sha="OLD"))
-        assert not gates.blocked_on_security(rec, today="2026-06-10")
+    def test_a_clean_pr_of_any_other_route_is_blocked_on_security(self):
+        for analysis in (None, _merge_analysis(disposition="request-changes"),
+                         _merge_analysis(disposition="needs-human")):
+            rec = _pr(analysis=analysis) if analysis else _pr()
+            assert gates.blocked_on_security(rec, today="2026-06-10")
+
+    def test_a_stale_close_route_does_not_keep_a_pr_out(self):
+        rec = _pr(analysis=_merge_analysis(disposition="close-dup", against_head_sha="OLD"))
+        assert gates.blocked_on_security(rec, today="2026-06-10")
 
 
 class TestClusterState:
@@ -1771,20 +1791,20 @@ class TestVerifyMergeBar:
         assert ok is False and "VERIFY" in why
 
     def test_merge_eligibility_never_run_verify_does_not_block(self):
-        ok, _ = gates.merge_eligibility(_pr(), today="2026-06-10")
+        ok, _ = gates.merge_eligibility(_pr(security=_green()), today="2026-06-10")
         assert ok is True
 
     def test_merge_eligibility_blocks_a_verify_that_ran_and_failed(self):
-        pr = _pr(verify=_verified(outcome="not-verified"))
+        pr = _pr(security=_green(), verify=_verified(outcome="not-verified"))
         ok, why = gates.merge_eligibility(pr, today="2026-06-10")
         assert ok is False and "not-verified" in why
 
     def test_merge_eligibility_passes_verified_fix(self):
-        ok, _ = gates.merge_eligibility(_pr(verify=_verified()), today="2026-06-10")
+        ok, _ = gates.merge_eligibility(_pr(security=_green(), verify=_verified()), today="2026-06-10")
         assert ok is True
 
     def test_agent_verified_is_eligible_with_provenance_reason(self):
-        pr = _pr(verify=_verified(outcome="agent-verified"))
+        pr = _pr(security=_green(), verify=_verified(outcome="agent-verified"))
         ok, reason = gates.merge_eligibility(pr, today="2026-06-10")
         assert ok is True
         assert "agent-authored" in reason
@@ -1796,7 +1816,7 @@ class TestVerifyMergeBar:
         assert ok is False and "agent-verified" in why
 
     def test_escalate_blocks_without_an_override(self):
-        pr = _pr(verify=_verified(outcome="escalate"))
+        pr = _pr(security=_green(), verify=_verified(outcome="escalate"))
         ok, why = gates.merge_eligibility(pr, today="2026-06-10")
         assert ok is False and "escalate" in why
 
@@ -1810,12 +1830,12 @@ class TestVerifyMergeBar:
 
     def test_unverifiable_outcomes_allow_a_reasonless_human_merge(self):
         for outcome in ("unverifiable-no-test", "unverifiable-needs-live-agent"):
-            pr = _pr(verify=_verified(outcome=outcome))
+            pr = _pr(security=_green(), verify=_verified(outcome=outcome))
             ok, why = gates.merge_eligibility(pr, today="2026-06-10")
             assert ok is True and outcome in why and "inconclusive" in why
 
     def test_a_logged_verify_override_clears_escalate(self):
-        pr = _pr(verify=_verified(outcome="escalate",
+        pr = _pr(security=_green(), verify=_verified(outcome="escalate",
                                   override={"reason": "checked by hand", "by": "op"}))
         ok, _ = gates.merge_eligibility(pr, today="2026-06-10")
         assert ok is True
@@ -1823,7 +1843,7 @@ class TestVerifyMergeBar:
     def test_a_passing_verify_past_the_window_counts_as_not_run(self, monkeypatch):
         monkeypatch.setenv("TRIAGE_VERIFY_MAX_AGE_DAYS", "7")
         for outcome in ("verified-fix", "agent-verified", "unverifiable-no-test"):
-            pr = _pr(verify=_verified(outcome=outcome,
+            pr = _pr(security=_green(), verify=_verified(outcome=outcome,
                                       checked_at="2026-05-30T00:00:00+00:00"))
             ok, why = gates.merge_eligibility(pr, today="2026-06-10")
             assert ok is True and "older than 7d and not counted" in why, outcome
@@ -1832,13 +1852,13 @@ class TestVerifyMergeBar:
         monkeypatch.setenv("TRIAGE_VERIFY_MAX_AGE_DAYS", "7")
         for outcome in ("not-verified", "regressed", "needs-rebase", "deps-touched",
                         "escalate"):
-            pr = _pr(verify=_verified(outcome=outcome,
+            pr = _pr(security=_green(), verify=_verified(outcome=outcome,
                                       checked_at="2026-01-02T00:00:00+00:00"))
             ok, why = gates.merge_eligibility(pr, today="2026-06-10")
             assert ok is False and outcome in why, outcome
 
     def test_a_failing_verify_at_an_earlier_head_does_not_block(self):
-        pr = _pr(verify=_verified(outcome="regressed", against_head_sha="OLD"))
+        pr = _pr(security=_green(), verify=_verified(outcome="regressed", against_head_sha="OLD"))
         ok, why = gates.merge_eligibility(pr, today="2026-06-10")
         assert ok is True, why
 
@@ -1894,7 +1914,7 @@ class TestVerifyMergeBar:
     def test_merge_eligibility_ignores_a_blind_only_verify(self):
         # Between commit-blind and commit-dir the section is current but carries no
         # verdict. No verification has concluded, so nothing blocks the operator.
-        ok, why = gates.merge_eligibility(_pr(verify=_verified(outcome=None)),
+        ok, why = gates.merge_eligibility(_pr(security=_green(), verify=_verified(outcome=None)),
                                           today="2026-06-10")
         assert ok is True
         assert "None" not in why
@@ -1902,14 +1922,14 @@ class TestVerifyMergeBar:
     def test_merge_eligibility_ignores_a_held_verify(self):
         # The run errored, so no outcome was ever committed. Same rule: a
         # verification that reached no verdict is a verification that did not run.
-        pr = _pr(verify=_verified(outcome=None, signals={
+        pr = _pr(security=_green(), verify=_verified(outcome=None, signals={
             "blind_adequacy": {"test_cmd": "pnpm -s test"},
             "red_green": {"apply_exit": 0, "red_exit": 137, "green_exit": None}}))
         ok, _ = gates.merge_eligibility(pr, today="2026-06-10")
         assert ok is True
 
     def test_merge_eligibility_ignores_a_stale_verify_that_did_not_confirm(self):
-        pr = _pr(verify=_verified(outcome="not-verified", against_head_sha="OLD"))
+        pr = _pr(security=_green(), verify=_verified(outcome="not-verified", against_head_sha="OLD"))
         ok, _ = gates.merge_eligibility(pr, today="2026-06-10")
         assert ok is True
 
@@ -1928,7 +1948,7 @@ class TestVerifyMergeBar:
         assert ok is False and "regressed" in why
 
     def test_merge_eligibility_blocks_regressed(self):
-        pr = _pr(verify=_verified(outcome="regressed"))
+        pr = _pr(security=_green(), verify=_verified(outcome="regressed"))
         ok, why = gates.merge_eligibility(pr, today="2026-06-10")
         assert ok is False and "regressed" in why
 
@@ -2177,7 +2197,7 @@ class TestVerifySignalsIncomplete:
         assert ok is True, why
 
     def test_merge_eligibility_stays_open_but_names_the_gap(self):
-        pr = _pr(verify=_verified(signals=_repro_signals(ran=False)))
+        pr = _pr(security=_green(), verify=_verified(signals=_repro_signals(ran=False)))
         ok, why = gates.merge_eligibility(pr, today="2026-06-10")
         assert ok is True
         assert "incomplete" in why
@@ -2400,7 +2420,7 @@ class TestAgentVerifiedLanesIncomplete:
         p = profile.parse_profile(
             {"version": 1, "verify": {"compile_cmd": "c", "build_cmd": "b"}}, "t")
         monkeypatch.setattr(profile, "active", lambda: p)
-        pr = _pr(verify=_verified(outcome="agent-verified",
+        pr = _pr(security=_green(), verify=_verified(outcome="agent-verified",
                                   signals={"blind_adequacy": {}}))
         ok, why = gates.merge_eligibility(pr, today="2026-06-10")
         assert ok is True
@@ -2411,7 +2431,7 @@ class TestAgentVerifiedLanesIncomplete:
         p = profile.parse_profile(
             {"version": 1, "verify": {"compile_cmd": "c"}}, "t")
         monkeypatch.setattr(profile, "active", lambda: p)
-        pr = _pr(verify=_verified(
+        pr = _pr(security=_green(), verify=_verified(
             outcome="agent-verified",
             signals={"lanes": {"compile": {"exit": 0, "ok": True}},
                      **_repro_signals(rating={"matches": True, "applicable": True,

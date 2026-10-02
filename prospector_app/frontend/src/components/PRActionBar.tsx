@@ -100,12 +100,14 @@ export function PRActionBar({ pr, runState, onActed }:
   const isEdited = edited != null && edited !== defComment;
   const needsCanon = action === "CLOSE_DUP" && !canonical;
   const needsBody = action === "REQUEST_CHANGES" && !commentText.trim();
-  // An overridable gate — a YELLOW security verdict or an escalate verify
-  // outcome — opens once the operator types a reason (🔒 box below); the backend
-  // logs it to the right section (override_kind) before merging.
+  // An overridable gate — a YELLOW security verdict, no security review at all,
+  // or an escalate verify outcome — opens once the operator types a reason (🔒
+  // box below); the backend logs it for the block it cleared (override_kind)
+  // before merging.
   const mergeOverride = action === "MERGE" && !mergeGate?.ok && !!mergeGate?.overridable && !!reason.trim();
-  const overrideNoun = mergeGate?.override_kind === "verify"
-    ? "verify-escalate override" : "security-YELLOW override";
+  const overrideNoun = mergeGate?.override_kind === "verify" ? "verify-escalate override"
+    : mergeGate?.override_kind === "unreviewed" ? "reason to merge without a security review"
+    : "security-YELLOW override";
   const mergeBlocked = action === "MERGE" && (!canMergeUpstream || !(mergeGate?.ok || mergeOverride));
   const alreadyDone = !dryRun && !!runState?.done;
   const blocked = needsCanon || needsBody || mergeBlocked;
@@ -244,7 +246,9 @@ export function PRActionBar({ pr, runState, onActed }:
         {action === "MERGE" && !mergeGate?.ok && mergeGate?.reason && (
           <div className="sug-verify" title="gates.merge_eligibility — this PR hasn't passed every check we ran on it.">
             {mergeOverride
-              ? <>⚠ {mergeGate.override_kind === "verify" ? "verify escalated" : "security YELLOW"} — merging logs your reason as the override</>
+              ? <>⚠ {mergeGate.override_kind === "verify" ? "verify escalated"
+                  : mergeGate.override_kind === "unreviewed" ? "no security review"
+                  : "security YELLOW"} — merging logs your reason as the override</>
               : <>⛔ Merge blocked — {mergeGate.reason}{mergeGate.overridable ? " — type an override reason below (🔒 reason + note) to merge anyway" : ""}</>}
           </div>
         )}

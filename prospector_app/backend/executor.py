@@ -731,11 +731,13 @@ def retrigger_review(n: int, reviewer_id: str, *, token: str | None, dry_run: bo
 
 def merge_pr(n: int, method: str = "squash", *, dry_run: bool, reason: str | None = None) -> dict:
     """Merge a PR upstream as the configured bot — ONLY when the human-merge
-    gate passes (gates.merge_eligibility: gate-clean, security GREEN-or-never-run,
-    not CODEOWNERS-gated). A current YELLOW verdict blocks unless the operator
-    supplies `reason`; the reason is logged durably to the store as the verdict's
-    override (Pr.log_security_override) before the merge executes, so the pass is
-    auditable. RED always blocks. With no configured bot key this is forced to
+    gate passes (gates.merge_eligibility: gate-clean, security GREEN, not
+    CODEOWNERS-gated). A current YELLOW verdict, or no security review at all,
+    blocks unless the operator supplies `reason`: for a YELLOW the reason is
+    logged durably to the store as the verdict's override
+    (Pr.log_security_override) before the merge executes, and for a PR never
+    reviewed it rides the merge's activity entry as `security_waiver`, so the
+    pass is auditable either way. RED always blocks. With no configured bot key this is forced to
     dry-run (no token to mint), so the app cannot merge.
 
     A live merge additionally passes the deterministic compile preflight:
@@ -813,6 +815,8 @@ def _merge_pr(n: int, method: str, *, dry_run: bool, reason: str | None) -> dict
                         and gates.security_overridable(rec, changed_paths=paths))
     verify_override_pending = (reason is not None and rec is not None
                                and gates.verify_overridable(rec, changed_paths=paths))
+    if reason is not None and rec is not None and gates.security_waivable(rec, changed_paths=paths):
+        base["security_waiver"] = reason
     if override_pending:
         base["security_override"] = reason
     if verify_override_pending:
@@ -834,6 +838,8 @@ def _merge_pr(n: int, method: str, *, dry_run: bool, reason: str | None) -> dict
         detail = f"would merge #{n} (--{method}) as {settings.bot_login()}"
         if override_pending:
             detail += " after logging the security-YELLOW override"
+        if "security_waiver" in base:
+            detail += " without a security review, logging your reason"
         if verify_override_pending:
             detail += " after logging the verify-escalate override"
         res = {**base, "status": "dry-run", "detail": detail,

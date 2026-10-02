@@ -79,10 +79,12 @@ def classify(pr: Pr) -> dict | None:
         return _r("handed", "needs-human", pr.rationale or "flagged needs-human")
     if pr.security_verdict == "RED" and freshness.is_current(pr, "security"):
         return _r("handed", "security-red", "the security review returned RED")
-    if (pr.disposition == "merge" and pr.section("security")
-            and pr.security_verdict != "GREEN" and gates.blocked_on_security(pr)):
-        return _r("auto", "waiting", f"the security review was {pr.security_verdict} at an "
-                                     "earlier head; the security hunter reviews this one")
+    if pr.disposition == "merge" and gates.blocked_on_security(pr):
+        if pr.section("security") and pr.security_verdict != "GREEN":
+            return _r("auto", "waiting", f"the security review was {pr.security_verdict} at "
+                                         "an earlier head; the security hunter reviews this one")
+        return _r("auto", "waiting", "the deep security review has not run on this head; "
+                                     "the security hunter picks it up")
     unscannable = gates.unscannable_reason(pr)
     if unscannable and pr.threat_verdict != "malicious":
         return _r("handed", "other", unscannable)

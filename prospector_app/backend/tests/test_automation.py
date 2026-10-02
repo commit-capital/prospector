@@ -248,3 +248,11 @@ def test_an_old_red_at_the_current_head_is_handed_to_you(store):
                        "against_head_sha": HEAD, "findings": [{"title": "drops an auth check"}]}
     out = _classify(store, rec)
     assert out["column"] == "handed" and out["owner"] == "you"
+
+
+def test_a_merge_pick_no_review_reached_waits_on_the_security_hunter(store):
+    rec = _merge_pick(_rec())
+    del rec["security"]
+    out = _classify(store, rec)
+    assert (out["column"], out["bucket"]) == ("auto", "waiting")
+    assert "security review has not run" in out["reason"]

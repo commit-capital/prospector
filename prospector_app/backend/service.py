@@ -224,13 +224,18 @@ def _merge_gate_fields(rec: Pr) -> dict:
     """The merge gate for the app: ok/reason from gates.merge_eligibility,
     plus `overridable` (a reason at merge time clears the block) and
     `override_kind` naming which block ("security" for a YELLOW verdict,
-    "verify" for an escalate outcome) so the UI logs and labels the override to
-    the right section. The two are mutually exclusive by construction."""
+    "unreviewed" for a PR no security review has reached, "verify" for an
+    escalate outcome) so the UI labels the override and the executor logs it to
+    the right place."""
     ok, reason = gates.merge_eligibility(rec)
+    if ok:
+        return {"ok": ok, "reason": reason, "overridable": False, "override_kind": None}
     sec = gates.security_overridable(rec)
+    waive = not sec and gates.security_waivable(rec)
     ver = gates.verify_overridable(rec)
-    return {"ok": ok, "reason": reason, "overridable": sec or ver,
-            "override_kind": "security" if sec else "verify" if ver else None}
+    kind = "security" if sec else "unreviewed" if waive else "verify" if ver else None
+    return {"ok": ok, "reason": reason, "overridable": kind is not None,
+            "override_kind": kind}
 
 
 def _row_merge_gate(rec: Pr) -> dict:

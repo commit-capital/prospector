@@ -27,7 +27,8 @@ class _Store:
         return _EditPr(self._events)
 
 
-def _setup(monkeypatch, events: list, *, verdict="YELLOW", overridable=True):
+def _setup(monkeypatch, events: list, *, verdict="YELLOW", overridable=True,
+           waivable=False):
     rec = SimpleNamespace(head_sha="h", security_verdict=verdict, linked_issues=[])
     monkeypatch.setattr(data, "prs", lambda: {5: rec})
     monkeypatch.setattr(data, "pr_to_clusters", lambda: {})
@@ -42,6 +43,8 @@ def _setup(monkeypatch, events: list, *, verdict="YELLOW", overridable=True):
             else (False, f"security {verdict}"))
     monkeypatch.setattr(gates, "security_overridable",
                         lambda rec, today=None, changed_paths=None: overridable)
+    monkeypatch.setattr(gates, "security_waivable",
+                        lambda rec, today=None, changed_paths=None: waivable)
     # this PR's block is security, not verify — no verify override is pending
     monkeypatch.setattr(gates, "verify_overridable",
                         lambda rec, today=None, changed_paths=None: False)
@@ -96,3 +99,23 @@ def test_reason_on_a_passing_gate_writes_nothing(monkeypatch):
     assert res["status"] == "merged"
     assert "security_override" not in res
     assert [e[0] for e in events] == ["merge"]  # no override write
+
+
+def test_a_reason_merges_an_unreviewed_pr_and_rides_the_activity_entry(monkeypatch):
+    events: list = []
+    _setup(monkeypatch, events, verdict=None, overridable=False, waivable=True)
+    recorded: list[dict] = []
+    monkeypatch.setattr(executor.activity, "record", lambda *a, **k: recorded.append(k))
+    res = executor.merge_pr(5, dry_run=False, reason="one-line docs typo")
+    assert res["status"] == "merged"
+    assert res["security_waiver"] == "one-line docs typo"
+    assert "security_override" not in res
+    assert [e[0] for e in events] == ["merge"]  # no verdict to annotate
+    assert recorded[-1]["security_waiver"] == "one-line docs typo"
+
+
+def test_a_dry_run_names_the_unreviewed_merge(monkeypatch):
+    events: list = []
+    _setup(monkeypatch, events, verdict=None, overridable=False, waivable=True)
+    res = executor.merge_pr(5, dry_run=True, reason="one-line docs typo")
+    assert res["status"] == "dry-run" and "without a security review" in res["detail"]

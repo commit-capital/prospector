@@ -500,12 +500,12 @@ _last_auto_lane: str | None = None
 
 def next_auto(open_lanes: frozenset[str] = frozenset({"security", "verify"})
               ) -> tuple[str, int] | None:
-    """The idle hunt's next pick, or None: ("security", n) for the best clean
-    merge candidate lacking a current security verdict, ("verify", n) for the
+    """The idle hunt's next pick, or None: ("security", n) for the best clean PR
+    lacking a current security verdict (gates.blocked_on_security), ("verify", n) for the
     best GREEN-cleared unverified candidate, or ("resweep", n) for a concluded
     verification whose repro the harness broke. Every lane orders a
-    maintainer's PR (gates.priority_author) first, then by highest community
-    pain, then lowest PR number.
+    maintainer's PR (gates.priority_author) first, then an analyzed merge pick,
+    then by highest community pain, then lowest PR number.
 
     A maintainer's PR in either pool is picked before anything else, security
     first. Otherwise security and verify alternate while both have work — a
@@ -520,10 +520,10 @@ def next_auto(open_lanes: frozenset[str] = frozenset({"security", "verify"})
     prs = data.prs()
     me = settings.worker_id()
 
-    def _key(item: tuple[int, Pr]) -> tuple[bool, float, int]:
+    def _key(item: tuple[int, Pr]) -> tuple[bool, bool, float, int]:
         pr = item[1]
         return (not gates.priority_author(pr.author, pr.author_association),
-                -_pain(pr), item[0])
+                pr.disposition != "merge", -_pain(pr), item[0])
 
     def _has_priority(pool: list[tuple[int, Pr]]) -> bool:
         return any(gates.priority_author(pr.author, pr.author_association)

@@ -457,17 +457,14 @@ def merge_allowed(pr: Pr, today: str | None = None,
 
 
 def blocked_on_security(pr: Pr, today: str | None = None) -> bool:
-    """True iff a clean merge-disposition PR is blocked solely because its security
-    review is missing or was taken at an earlier head — so re-running SECURITY is
-    exactly what would unblock merge.
+    """True iff a clean PR has no security verdict taken at its current head —
+    so running SECURITY is what its merge waits on — and no current analysis
+    routes it to a close.
 
-    The single source of truth for 'security is the merge blocker', so the app
-    surfaces its re-run button without re-deriving the policy client-side.
-    Mirrors the security-currency branch of merge_allowed: fresh analysis, merge
-    disposition, pr_clean, and a non-current security section."""
-    if not is_current(pr, "analysis"):
-        return False
-    if not _analyzed_merge(pr):
+    The single source of truth for 'security is the merge blocker': the app
+    surfaces its run button from it, and it is the security hunter's pool, so
+    every PR a human could merge gets a review before the merge needs one."""
+    if is_current(pr, "analysis") and str(pr.disposition or "").startswith("close-"):
         return False
     ok, _ = pr_clean(pr, today)
     if not ok:
@@ -529,12 +526,19 @@ def repro_harness_defect(pr: Pr) -> str | None:
 def security_merge_block(pr: Pr, override_reason: str | None = None) -> str | None:
     """Why the PR's security record blocks a human merge, or None when it does not.
 
-    No review, or a latest review that is GREEN, does not block. A RED or YELLOW
-    verdict blocks until a later review replaces it: a push does not clear it,
-    so a verdict taken at an earlier head blocks too, and only a GREEN review of
-    the current head lifts it. At the current head a logged override, or a
-    non-blank `override_reason` for a YELLOW, clears the block."""
-    if not pr.section("security") or pr.security_verdict == "GREEN":
+    A latest review that is GREEN does not block. No review at all blocks until
+    one runs, or until the operator gives a non-blank `override_reason` to merge
+    without one. A RED or YELLOW verdict blocks until a later review replaces
+    it: a push does not clear it, so a verdict taken at an earlier head blocks
+    too, and only a GREEN review of the current head lifts it. At the current
+    head a logged override, or a non-blank `override_reason` for a YELLOW,
+    clears the block."""
+    if not pr.section("security"):
+        if (override_reason or "").strip():
+            return None
+        return ("no security review — run SECURITY, or give a reason to merge "
+                "without one")
+    if pr.security_verdict == "GREEN":
         return None
     verdict = pr.security_verdict
     if not is_current(pr, "security"):
@@ -560,9 +564,9 @@ def merge_eligibility(pr: Pr, today: str | None = None,
     found nothing faithful to run, not evidence against the PR. No reason is
     required for those human merges.
     ANALYZE disposition is irrelevant here. A PR no security review has reached
-    never blocks (the deep review runs on merge candidates only, not the Easy
-    Lane). A recorded verdict that is not GREEN blocks until a later review
-    replaces it, at any age and at any head: a push after a RED or YELLOW does
+    blocks until one runs, or until the operator gives a reason to merge
+    without one. A recorded verdict that is not GREEN blocks until a later
+    review replaces it, at any age and at any head: a push after a RED or YELLOW does
     not clear it, only a GREEN review of the new head does. A negative
     verification outcome blocks while the head it judged is the PR's head,
     however old; a positive or inconclusive one older than
@@ -570,11 +574,12 @@ def merge_eligibility(pr: Pr, today: str | None = None,
     hard block — GitHub's ruleset enforces a human merge server-side.
 
     `override_reason` is the operator's stated reason to merge past a YELLOW
-    verdict taken at the current head; a non-blank reason clears that block.
-    The executor logs it durably as the verdict's override
-    (Pr.log_security_override) before any live merge — passing it here without
-    logging it is only for previewing the gate. RED is never overridable this
-    way, and neither is a verdict taken at an earlier head."""
+    verdict taken at the current head, or without any security review; a
+    non-blank reason clears either block. The executor logs it durably before
+    any live merge — as the verdict's override (Pr.log_security_override) for a
+    YELLOW, on the merge's activity entry for a PR never reviewed — so passing
+    it here without logging it is only for previewing the gate. RED is never
+    overridable this way, and neither is a verdict taken at an earlier head."""
     if changed_paths is not None:
         hm = codeowners.human_merge(changed_paths)
         if hm:
@@ -935,6 +940,21 @@ def fix_huntable(pr: Pr, action: str,
     elif review_blockers or scanner_blockers:
         return False, (review_blockers + scanner_blockers)[0].bar.reason or "review bar not met"
     return fix_eligibility(pr, action, changed_paths, objection=bool(objection))
+
+
+def security_waivable(pr: Pr, today: str | None = None,
+                      changed_paths: list[str] | None = None) -> bool:
+    """True iff the block a reason would clear is the missing security review:
+    the PR has none, and a reason opens the human merge gate. The executor
+    records the reason on the merge's activity entry, since there is no verdict
+    to annotate."""
+    if pr.section("security"):
+        return False
+    ok_with, _ = merge_eligibility(pr, today, changed_paths, override_reason="operator override")
+    if not ok_with:
+        return False
+    ok, _ = merge_eligibility(pr, today, changed_paths)
+    return not ok
 
 
 def security_overridable(pr: Pr, today: str | None = None,
