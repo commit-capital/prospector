@@ -79,13 +79,13 @@ PATCH_CHARS = 200_000
 TAIL_CHARS = 4000
 
 # resubmit exits that describe a world that moved rather than a decision:
-# a git/network failure (4), refs that shifted under the pin (6), and a push
-# the remote rejected (7). Retrying re-reads the live PR and re-pins, which is
-# exactly the remedy. Every other exit resubmit returns is a judgment — the PR
-# is closed, the merge conflicts, the fence refused the ref — and repeating it
-# changes nothing. An exception resubmit does not catch is this machine's
-# fault: the interpreter prints a traceback and exits 1, and `_settle` fails
-# the request.
+# a git/network failure or a git/gh call that timed out (4), refs that shifted
+# under the pin (6), and a push the remote rejected (7). Retrying re-reads the
+# live PR and re-pins, which is exactly the remedy. Every other exit resubmit
+# returns is a judgment — the PR is closed, the merge conflicts, the fence
+# refused the ref — and repeating it changes nothing. An exception resubmit
+# does not catch is this machine's fault: the interpreter prints a traceback
+# and exits 1, and `_settle` fails the request.
 TRANSIENT_EXITS = {4, 6, 7}
 
 # The line Python prints above an uncaught exception's traceback.
