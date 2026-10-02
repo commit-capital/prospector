@@ -2,9 +2,13 @@
 malicious.
 
 `capture` reads, from GitHub, the flagged head's diff pinned by SHA
-(`compare/<base>...<head>`), the diff the PR had before the force-push that
-produced that head, and the PR, commit, actor and force-push metadata, then
-appends one row to the store's `threat_evidence` table. Each row's `complete`
+(`compare/<base>...<head>`), the PR's diff at the head before it, and the PR,
+commit, actor and force-push metadata, then appends one row to the store's
+`threat_evidence` table. The head before it is the one the force-push that
+produced the flagged head replaced; when GitHub shows no such force-push (it
+hides a blocked actor's), it is the newest earlier head of the PR in
+Prospector's shared diff cache, whose copy also stands in when GitHub no
+longer serves that head's diff. Each row's `complete`
 says whether the flagged diff was read whole; a read that failed is listed in
 the record's `errors`. A head gets at most one incomplete row and one complete
 one: a complete capture is final, and an incomplete one is written only when
@@ -166,6 +170,52 @@ class _Diff:
     whole: bool
 
 
+@dataclass(frozen=True)
+class _Prior:
+    """The PR's diff at the head before the flagged one. `found_by` says how
+    that head was learned: the GitHub force-push that replaced it, or the
+    newest earlier head of the PR in Prospector's shared diff cache. `source`
+    says where its diff came from."""
+    body: bytes
+    before_sha: str
+    source: Literal["compare", "diff-cache"]
+    found_by: Literal["force-push", "diff-cache"]
+    complete: bool
+
+
+def _earlier_cached_head(store: Store, flag: Flag) -> str | None:
+    """The newest head of `flag`'s PR the shared diff cache fetched before the
+    flagged one, or None."""
+    heads = store.diff_heads(flag.pr)
+    flagged_at = next((at for sha, at in heads if sha == flag.head_sha), None)
+    for sha, at in heads:
+        if sha != flag.head_sha and (flagged_at is None or (at or "") < flagged_at):
+            return sha
+    return None
+
+
+def _prior(store: Store, reads: GitHubReads, flag: Flag, base: str,
+           latest: ForcePush | None, errors: list[str]) -> _Prior | None:
+    """The diff at the head the flagged one replaced: named by the latest
+    GitHub force-push that produced the flagged head, else found in the diff
+    cache; read by SHA from GitHub, else from the diff cache's copy."""
+    found_by: Literal["force-push", "diff-cache"] = "force-push"
+    before = latest.before if latest is not None else None
+    if not before:
+        found_by, before = "diff-cache", _earlier_cached_head(store, flag)
+    if not before:
+        return None
+    body = reads.compare_diff(base, before)
+    if body is not None:
+        return _Prior(body[:MAX_DIFF_BYTES], before, "compare", found_by,
+                      len(body) <= MAX_DIFF_BYTES)
+    errors.append(f"diff at the prior head ({before[:12]}): GitHub did not answer")
+    cached = store.load_diff(before)
+    if cached is None:
+        return None
+    return _Prior(cached.encode(), before, "diff-cache", found_by, diff_cache.is_complete(cached))
+
+
 def _flagged_diff(reads: GitHubReads, flag: Flag, base: str, head_now: str | None,
                   diffs_dir: Path, errors: list[str]) -> _Diff:
     """The flagged head's diff: the SHA-pinned compare; else, while GitHub's head
@@ -223,8 +273,7 @@ def _commits(cmp: dict | None) -> tuple[list[dict], bool]:
 
 def _record(flag: Flag, pull: dict | None, cmp: dict | None, actor: dict | None,
             login: str | None, pushes: list[ForcePush], diff: _Diff, truncated: bool,
-            prior: bytes | None, latest: ForcePush | None, errors: list[str],
-            captured_by: str | None) -> dict:
+            prior: _Prior | None, errors: list[str], captured_by: str | None) -> dict:
     """The capture's `data` record. It names where signatures matched in the
     stored diff and carries no diff text."""
     pull = pull or {}
@@ -266,9 +315,10 @@ def _record(flag: Flag, pull: dict | None, cmp: dict | None, actor: dict | None,
             "diff": None if diff.body is None else {
                 "bytes": len(diff.body), "sha256": _sha256(diff.body), "source": diff.source,
                 "complete": diff.whole and not truncated, "truncated": truncated},
-            "prior": None if prior is None or latest is None else {
-                "bytes": len(prior), "sha256": _sha256(prior), "source": "compare",
-                "before_sha": latest.before},
+            "prior": None if prior is None else {
+                "bytes": len(prior.body), "sha256": _sha256(prior.body),
+                "source": prior.source, "found_by": prior.found_by,
+                "complete": prior.complete, "before_sha": prior.before_sha},
         },
         "provenance": {
             "captured_at": storekit.now(),
@@ -318,14 +368,7 @@ def capture(store: Store, flag: Flag, *, github: GitHubReads | None = None,
     if pushes is None:
         errors.append("force-push history: GitHub did not answer")
     latest = next((p for p in reversed(pushes or []) if p.after == flag.head_sha), None)
-    prior: bytes | None = None
-    if latest is not None and latest.before:
-        prior = reads.compare_diff(base, latest.before)
-        if prior is None:
-            errors.append(f"diff before the force-push ({latest.before[:12]}): "
-                          "GitHub did not answer")
-        elif len(prior) > MAX_DIFF_BYTES:
-            prior = prior[:MAX_DIFF_BYTES]
+    prior = _prior(store, reads, flag, base, latest, errors)
 
     cmp = reads.compare(base, flag.head_sha)
     if cmp is None:
@@ -341,12 +384,12 @@ def capture(store: Store, flag: Flag, *, github: GitHubReads | None = None,
         return "failed"
 
     data = _record(flag, pull, cmp, actor, login, pushes or [], diff, truncated, prior,
-                   latest, errors, reads.login())
+                   errors, reads.login())
     capture_id = store.append_threat_evidence(
         pr=flag.pr, head_sha=flag.head_sha, author=login,
         captured_at=data["provenance"]["captured_at"], complete=complete, data=data,
         diff_gz=None if diff.body is None else gzip.compress(diff.body),
-        prior_gz=None if prior is None else gzip.compress(prior))
+        prior_gz=None if prior is None else gzip.compress(prior.body))
     status: Status = "captured" if complete else "partial"
     _ledger(store, flag, started, status, capture_id, errors)
     return status
@@ -487,11 +530,16 @@ def _readme(record: storekit.EvidenceRecord, names: dict[str, str],
             "- SHA256SUMS: verify with `shasum -a 256 -c SHA256SUMS`"]
     if "diff" in names:
         out.append(f"- {names['diff']}: the PR's diff at the flagged head")
+    prior_meta = art.get("prior") or {}
     if "prior" in names:
-        out.append(f"- {names['prior']}: the PR's diff at the head the force-push replaced")
-        out.append("- force-push-changes.diff: the files whose diff the force-push changed")
-    shas = [record.head_sha] + [p.get("before") for p in pushes
-                                if p.get("after") == record.head_sha and p.get("before")]
+        how = ("the head the force-push replaced" if prior_meta.get("found_by") == "force-push"
+               else "the newest earlier head Prospector fetched (GitHub showed no force-push "
+                    "producing the flagged head)")
+        out.append(f"- {names['prior']}: the PR's diff at {how}")
+        out.append("- force-push-changes.diff: the files whose diff changed between that "
+                   "head and the flagged one")
+    shas = [record.head_sha] + ([prior_meta["before_sha"]] if prior_meta.get("before_sha")
+                                else [])
     out += ["", "## Fetch the git objects", "",
             "While GitHub still serves them. A bare repository has no work tree, so "
             "nothing is checked out.", "", "```", "git init --bare evidence.git"]

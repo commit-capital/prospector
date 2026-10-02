@@ -899,6 +899,16 @@ class Store:
             report.finish()
         return out
 
+    def diff_heads(self, pr: int) -> list[tuple[str, str | None]]:
+        """The heads of PR `pr` the shared diff cache holds, as (head_sha,
+        fetched_at), newest fetch first."""
+        from sqlalchemy import select
+        t = schema.diffs
+        stmt = (select(t.c.head_sha, t.c.fetched_at).where(t.c.pr == pr)
+                .order_by(t.c.fetched_at.desc()))
+        rows = storekit.read_retrying(self.engine, lambda conn: conn.execute(stmt).all())
+        return [(r[0], r[1]) for r in rows]
+
     def save_diffs_many(self, rows: list[tuple[str, int | None, str]]) -> None:
         """Insert `(head_sha, pr, body)` rows for heads absent from the table;
         an existing head is left untouched. Validated; one statement per call."""

@@ -205,6 +205,62 @@ def test_no_force_push_means_no_prior(tmp_path):
     assert rec.data["artifacts"]["prior"] is None and blobs.prior_gz is None
 
 
+def _cache_heads(store: Store, *rows: tuple[str, str, str]) -> None:
+    """Shared diff-cache rows for PR 11987: (head, fetched_at, body)."""
+    from pipeline import schema
+    with store.engine.begin() as conn:
+        for head, at, body in rows:
+            conn.execute(schema.diffs.insert().values(head_sha=head, pr=FLAG.pr, body=body,
+                                                      fetched_at=at))
+
+
+def test_prior_found_in_the_diff_cache_when_github_shows_no_force_push(tmp_path):
+    store = Store(tmp_path)
+    _cache_heads(store, (PRIOR, "2026-08-27T20:21:54+00:00", HONEST),
+                 (HEAD, "2026-10-02T16:11:35+00:00", HONEST + INJECTED))
+    assert te.capture(store, FLAG, github=FakeGitHub(pushes=False), diffs_dir=tmp_path) == "captured"
+    rec, blobs = _only(store)
+    prior = rec.data["artifacts"]["prior"]
+    assert prior["before_sha"] == PRIOR and prior["found_by"] == "diff-cache"
+    assert prior["source"] == "compare" and prior["complete"] is True
+    assert _gunzip(blobs.prior_gz) == PRIOR_DIFF
+    readme = dict(te.bundle_files(rec, blobs))["README.md"].decode()
+    assert "newest earlier head Prospector fetched" in readme
+    assert f"{PRIOR}:refs/evidence/" in readme
+
+
+def test_prior_falls_back_to_the_cached_body_when_github_refuses_it(tmp_path):
+    store = Store(tmp_path)
+    _cache_heads(store, (PRIOR, "2026-08-27T20:21:54+00:00", HONEST),
+                 (HEAD, "2026-10-02T16:11:35+00:00", HONEST + INJECTED))
+    gh = FakeGitHub(pushes=False)
+    gh.compare_diff = lambda base, head: FLAGGED_DIFF if head == HEAD else None  # type: ignore[method-assign]
+    te.capture(store, FLAG, github=gh, diffs_dir=tmp_path)
+    rec, blobs = _only(store)
+    prior = rec.data["artifacts"]["prior"]
+    assert prior["source"] == "diff-cache" and prior["before_sha"] == PRIOR
+    assert _gunzip(blobs.prior_gz) == HONEST.encode()
+    assert any(PRIOR[:12] in e for e in rec.data["errors"])
+
+
+def test_a_head_cached_after_the_flagged_one_is_not_its_prior(tmp_path):
+    store = Store(tmp_path)
+    _cache_heads(store, (HEAD, "2026-10-02T16:11:35+00:00", HONEST + INJECTED),
+                 ("f" * 40, "2026-10-03T00:00:00+00:00", HONEST))
+    te.capture(store, FLAG, github=FakeGitHub(pushes=False), diffs_dir=tmp_path)
+    rec, _ = _only(store)
+    assert rec.data["artifacts"]["prior"] is None
+
+
+def test_github_force_push_wins_over_the_diff_cache(tmp_path):
+    store = Store(tmp_path)
+    _cache_heads(store, ("c" * 40, "2026-08-01T00:00:00+00:00", HONEST))
+    te.capture(store, FLAG, github=FakeGitHub(), diffs_dir=tmp_path)
+    rec, _ = _only(store)
+    assert rec.data["artifacts"]["prior"]["before_sha"] == PRIOR
+    assert rec.data["artifacts"]["prior"]["found_by"] == "force-push"
+
+
 def test_non_utf8_diff_round_trips(tmp_path):
     store = Store(tmp_path)
     gh = FakeGitHub(pushes=False)

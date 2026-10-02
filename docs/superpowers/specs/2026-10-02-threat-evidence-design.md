@@ -149,8 +149,14 @@ login, about six per PR:
 3. `pulls/{n}/commits`.
 4. GraphQL `HeadRefForcePushedEvent` timeline items (before/after SHAs, actor,
    time).
-5. When the latest force-push's `after` is the flagged head: the PR diff at its
-   `before`, `compare/{base_sha}...{before}`. (A two-dot compare 404s and a
+5. The PR diff at the head before the flagged one, `compare/{base_sha}...{before}`.
+   `before` is the latest force-push's `before` when its `after` is the flagged
+   head; when GitHub shows no such force-push, the newest earlier head of the
+   PR in the shared `diffs` cache. (GitHub hides a blocked actor's force-push
+   events: by 17:01 UTC on 2026-10-02 the five PRs' timelines no longer listed
+   them, while the `diffs` cache still held every PR's 2026-08-27 head.) When
+   GitHub does not serve that diff, the cache's copy stands in
+   (`source: diff-cache`, complete only when uncapped). (A two-dot compare 404s and a
    three-dot `before...after` returns the whole PR, because the force-push
    rewrote the commit onto the same parent.)
 6. `users/{login}`.
