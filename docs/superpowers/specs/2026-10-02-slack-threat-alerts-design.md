@@ -13,10 +13,10 @@ deployment secrets happen too often to be worth a message.
 | Alert | When | Key |
 |---|---|---|
 | Malicious PR | an incident in the `threats` registry for a PR that is open, first noticed within `WINDOW_DAYS` (2) | `malicious:<pr>` |
-| Paperclip credential | an open `rotate-secret` action item that does not read as a test fixture, created within `WINDOW_DAYS`, on an open PR whose author is a maintainer (`gates.priority_author`) | `secret:<pr>` |
+| Project credential | an open `rotate-secret` action item that does not read as a test fixture, created within `WINDOW_DAYS`, on an open PR whose author is a maintainer (`gates.priority_author`) | `secret:<pr>` |
 
-A contributor working from a fork never holds Paperclip's own secrets, so a
-Paperclip credential realistically leaks through a maintainer's PR; a
+A contributor working from a fork never holds the project's own secrets, so a
+project credential realistically leaks through a maintainer's PR; a
 contributor's leak of their own instance secret stays in the app's Action
 items. The window and the open-PR rule keep a first deploy from announcing
 history.

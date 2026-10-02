@@ -368,10 +368,13 @@ function SlackAlertsCard() {
         live-looking credential in a PR a maintainer wrote. Nothing else posts. Every
         computer that runs scans needs the webhook; a teammate&apos;s copied setup carries it.
       </p>
-      <p className="muted small">
-        In Slack, add the <a href="https://api.slack.com/messaging/webhooks" target="_blank"
-        rel="noreferrer">Incoming Webhooks</a> app to the channel and paste its Webhook URL here.
-      </p>
+      <ol className="muted small">
+        <li>At <a href="https://api.slack.com/apps" target="_blank" rel="noreferrer">api.slack.com/apps</a>,
+          choose <b>Create New App → From scratch</b>, name it (say “Prospector”) and pick your workspace.</li>
+        <li>Open <b>Incoming Webhooks</b>, switch it on, then <b>Add New Webhook</b> and pick the channel.
+          A workspace that limits apps asks an admin to approve this.</li>
+        <li>Copy the Webhook URL it shows and paste it here.</li>
+      </ol>
       <input type="password" autoComplete="off" spellCheck={false} value={url}
         placeholder={on ? "a webhook is set — paste a new one to replace it"
                         : "https://hooks.slack.com/services/…"}

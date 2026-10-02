@@ -98,6 +98,12 @@ class TestDueAlerts:
         assert "server/src/config.ts" in text and "dotta" in text
         assert "q8Zr2LmXv0Pd7KsT4wYc9Hn1Bf6Ug3Ja" not in text and "API_KEY" not in text
 
+    def test_a_credential_alert_names_the_deployment(self, monkeypatch):
+        monkeypatch.setenv("TRIAGE_DISPLAY_NAME", "Acme")
+        prs = {8939: _pr(8939, author="dotta", association="MEMBER")}
+        text = notify.due_alerts([], [_secret(8939)], prs, TODAY)[0].text
+        assert "Possible Acme credential leaked" in text
+
     @pytest.mark.parametrize("pr, item", [
         (_pr(5, association="CONTRIBUTOR"), _secret(5)),                       # not a maintainer
         (_pr(5, association="MEMBER"), _secret(5, fixture=True)),               # a fixture

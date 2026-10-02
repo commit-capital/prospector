@@ -2,7 +2,7 @@
 
 Two findings post, each once: an open PR the scan flagged malicious, and a
 live-looking credential committed in an open PR a maintainer wrote — a
-contributor working from a fork never holds Paperclip's own secrets, so their
+contributor working from a fork never holds the project's own secrets, so their
 leaks of their own deployment's secrets stay in the app's Action items. Each
 finding must be at most WINDOW_DAYS old, so turning this on never announces
 history. Messages go to the incoming webhook TRIAGE_SLACK_WEBHOOK_URL names;
@@ -109,7 +109,8 @@ def due_alerts(incidents: list[dict], items: list[dict], prs: Mapping[int, Pr],
         path = _evidence_path(str(item.get("evidence") or ""))
         where = f" in {_code(path)}" if path else ""
         out.append(Alert(f"secret:{n}", (
-            f"🔑 *Possible Paperclip credential leaked:* {_pr_link(n, pr)} by maintainer"
+            f"🔑 *Possible {_esc(settings.display_name() or 'project')} credential leaked:*"
+            f" {_pr_link(n, pr)} by maintainer"
             f" {_code(pr.author or '?')}{where} · Rotate it at the provider if real —"
             " closing the PR does not revoke a pushed secret.")))
     return out
