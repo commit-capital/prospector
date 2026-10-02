@@ -74,7 +74,7 @@ def _diffed_pr(n, head, path, monkeypatch):
     rec = _pr(n, analysis=_analysis(), security=_green())
     raw = rec.raw
     raw["meta"]["head_sha"] = head
-    for sec in ("signals", "drift", "analysis", "security"):
+    for sec in ("signals", "drift", "threat", "analysis", "security"):
         raw[sec]["against_head_sha"] = head
     _DIFFS[head] = (f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n"
                     "@@ -1 +1,2 @@\n+const x = 1\n")

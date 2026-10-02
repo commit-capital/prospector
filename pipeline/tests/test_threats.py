@@ -163,6 +163,12 @@ class TestRegistry:
         assert reg["actors"]["mallory"]["added"] == "2026-06-12"  # first-seen preserved
         assert reg["actors"]["mallory"]["reason"] == "worse"      # reason refreshed
 
+    def test_record_incident_keeps_the_first_noticed_date(self):
+        reg = threats.empty_registry()
+        threats.record_incident(reg, 5174, "mallory", "sha", ["x"], noticed="2026-06-12")
+        threats.record_incident(reg, 5174, "mallory", "sha", ["x"], noticed="2026-06-13")
+        assert reg["incidents"][0]["noticed"] == "2026-06-12"
+
     def test_record_incident_idempotent(self):
         reg = threats.empty_registry()
         threats.record_incident(reg, 5174, "mallory", "sha", ["x"], noticed="2026-06-12")
