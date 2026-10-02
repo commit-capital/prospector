@@ -541,3 +541,29 @@ def test_flagged_diff_falls_back_to_the_shared_diff_cache(tmp_path):
     rec, blobs = _only(store)
     assert rec.data["artifacts"]["diff"]["source"] == "diff-cache"
     assert _gunzip(blobs.diff_gz) == b"diff --git a/c b/c\n# omitted\n"
+
+
+def test_force_push_changes_ignores_a_header_hidden_after_a_form_feed():
+    gone = ("diff --git a/src/b.ts b/src/b.ts\nindex 5..6 100644\n--- a/src/b.ts\n"
+            "+++ b/src/b.ts\n@@ -1 +1 @@\n-b\n+bb\n")
+    smuggled = INJECTED.replace(" " * 300, "\x0cdiff --git a/src/b.ts b/src/b.ts\x0c")
+    changed, removed = te.force_push_changes((HONEST + smuggled).encode(),
+                                             (HONEST + gone).encode())
+    assert changed == smuggled.encode()
+    assert removed == ["src/b.ts"]      # the push dropped b.ts; the hidden header is no file
+
+
+def test_readme_renders_attacker_text_inert(tmp_path):
+    store = Store(tmp_path)
+    gh = FakeGitHub()
+    real_pull = gh.pull
+    title = "fix ![x](https://attacker.example/x.png) <img src=//a.example/y> `tick`"
+    gh.pull = lambda n: {**(real_pull(n) or {}), "title": title}  # type: ignore[method-assign]
+    te.capture(store, FLAG, github=gh, diffs_dir=tmp_path)
+    rec, blobs = _only(store)
+    readme = dict(te.bundle_files(rec, blobs))["README.md"].decode()
+    line = next(ln for ln in readme.splitlines() if ln.startswith("- Title:"))
+    assert line == "- Title: `` " + title + " ``"
+    import re
+    outside_code = re.sub(r"(`+).*?\1", "", readme)
+    assert "attacker.example" not in outside_code and "<img" not in outside_code

@@ -40,6 +40,7 @@ import gzip
 import hashlib
 import io
 import json
+import re
 import subprocess
 import sys
 import zipfile
@@ -478,12 +479,25 @@ def _artifact(blob: bytes | None, meta: dict | None, name: str) -> bytes | None:
     return body
 
 
+def _who(person: dict) -> str:
+    """A commit author or committer, as written in the commit, as a code span."""
+    return _code(f"{person.get('name')} <{person.get('email')}>")
+
+
 def bundle_name(record: storekit.EvidenceRecord) -> str:
     return f"pr-{record.pr}-{record.head_sha[:7]}-evidence"
 
 
 def _one_line(text: object) -> str:
     return " ".join(str(text or "").split())
+
+
+def _code(value: object) -> str:
+    """`value` on one line as a Markdown code span, so a previewer shows
+    attacker-written text as text: no link, image or HTML in it renders."""
+    text = _one_line(value)
+    fence = "`" * (max((len(run) for run in re.findall(r"`+", text)), default=0) + 1)
+    return f"{fence} {text} {fence}"
 
 
 def _readme(record: storekit.EvidenceRecord, names: dict[str, str],
@@ -514,11 +528,12 @@ def _readme(record: storekit.EvidenceRecord, names: dict[str, str],
         "## The PR",
         "",
         f"- URL: {d.get('url') or 'unknown'}",
-        f"- Title: {_one_line(d.get('title'))}",
-        f"- Author: {actor.get('login') or 'unknown'} (user id {actor.get('id')}, "
+        f"- Title: {_code(d.get('title'))}",
+        f"- Author: {_code(actor.get('login') or 'unknown')} (user id {actor.get('id')}, "
         f"account created {actor.get('created_at')})",
-        f"- Fork: {(d.get('head_repo') or {}).get('full_name')} "
-        f"(repo id {(d.get('head_repo') or {}).get('id')}), branch {d.get('head_ref')}",
+        f"- Fork: {_code((d.get('head_repo') or {}).get('full_name'))} "
+        f"(repo id {(d.get('head_repo') or {}).get('id')}), "
+        f"branch {_code(d.get('head_ref'))}",
         f"- Flagged head: {record.head_sha}",
         f"- Base: {d.get('base_sha')}",
         f"- Signatures that flagged it: {', '.join(det.get('signatures') or []) or 'none'}",
@@ -529,23 +544,22 @@ def _readme(record: storekit.EvidenceRecord, names: dict[str, str],
         "",
     ]
     pushes = d.get("force_pushes") or []
-    out += [f"- {p.get('at')} by {p.get('actor')}: {p.get('before') or '?'} → "
+    out += [f"- {p.get('at')} by {_code(p.get('actor'))}: {p.get('before') or '?'} → "
             f"{p.get('after') or '?'}" for p in pushes] or ["- none recorded"]
     if removed:
-        out += ["", "Files the latest force-push removed from the PR: "
-                + ", ".join(removed)]
+        out += ["", "Files the PR no longer changes since the prior head: "
+                + ", ".join(_code(r) for r in removed)]
     out += ["", "## Commits", ""]
     for c in d.get("commits") or []:
         a, cm = c.get("author") or {}, c.get("committer") or {}
-        out.append(f"- {c.get('sha')}: authored {a.get('date')} by {a.get('name')} "
-                   f"<{a.get('email')}>; committed {cm.get('date')} by {cm.get('name')} "
-                   f"<{cm.get('email')}>; signed: "
+        out.append(f"- {c.get('sha')}: authored {a.get('date')} by {_who(a)}; "
+                   f"committed {cm.get('date')} by {_who(cm)}; signed: "
                    f"{'yes' if c.get('verified') else 'no'} ({c.get('verification_reason')})")
     if d.get("commits_truncated"):
         out.append("- (GitHub listed only the first commits)")
     matches = det.get("matches") or []
     out += ["", f"## Where the signatures matched ({names.get('diff', 'the diff')})", ""]
-    out += [f"- {m.get('signature')}: {m.get('file')}, line {m.get('diff_line')}"
+    out += [f"- {m.get('signature')}: {_code(m.get('file'))}, line {m.get('diff_line')}"
             for m in matches[:20]] or ["- no line matches"]
     if len(matches) > 20:
         out.append(f"- and {len(matches) - 20} more (record.json)")
