@@ -60,6 +60,17 @@ def test_an_exempt_dependency_bump_says_so():
     assert chk and chk["status"] == "pass" and "dependency bump" in chk["detail"]
 
 
+def test_suspicious_threat_warns_with_its_signatures():
+    chk = _check(_pr(threat={"verdict": "suspicious", "signatures": ["eol-churn-camouflage"]}))
+    assert chk and chk["status"] == "warn" and "eol-churn-camouflage" in chk["detail"]
+
+
+def test_unscannable_diff_shows_failing_check():
+    chk = _check(_pr(threat={"verdict": "suspicious", "signatures": ["unscannable-diff"],
+                             "detail": {"unscannable-diff": "not read: dist/huge.js"}}))
+    assert chk and chk["status"] == "fail" and "dist/huge.js" in chk["detail"]
+
+
 def test_checks_carry_stable_keys():
     # #578: the per-check filter matches on this key, not the display name
     # (which varies with the configured review provider / default branch).

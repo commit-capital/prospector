@@ -132,7 +132,7 @@ JOB_SPECS: dict[str, JobSpec] = {
     },
     "threat-scan": {
         "label": "Threat scan",
-        "detail": "deterministic attack-pattern scan over PR diffs + author blocklist check. Fetches any uncached diffs from GitHub first (read-only), so coverage doesn't wait on a Clustering run.",
+        "detail": "deterministic attack-pattern scan over each PR's whole diff + author blocklist check. Fetches any uncached diffs from GitHub first (read-only), so coverage doesn't wait on a Clustering run, and reads the whole diff of any PR whose cached copy is capped.",
         "agentic": False,
         "ledger": ("pr", ("threat-scan",)),
         "argv": [*PIPELINE_PY, "-u", str(REPO_ROOT / "pipeline" / "threat_scan.py")],

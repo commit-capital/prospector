@@ -22,6 +22,7 @@ which Greptile scored 5/5. Only merge conflicts kept them out of the gate.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator, Sequence
 
 # Build-config files where a require/global smuggle is never legitimate.
 _BUILD_CONFIG = re.compile(
@@ -76,6 +77,13 @@ SIGNATURES: list[tuple[str, str, str, list[re.Pattern]]] = [
         "Whole-file line-ending churn inflating the diff to bury a real change "
         "(additions ≈ deletions, both large).",
         [],  # computed from diffstat, not a line pattern; see scan_diff
+    ),
+    (
+        "unscannable-diff", MEDIUM,
+        "GitHub returned no whole patch for a file this PR adds lines to, or "
+        "listed only the first 3,000 of its files, so the scan could not read "
+        "every added line.",
+        [],  # computed from the files the read could not carry; see scan_diff
     ),
     (
         "secret-leak", MEDIUM,
@@ -161,49 +169,83 @@ def _secret_evidence(fname: str | None, body: str) -> bool:
 _CRITICAL_OR_HIGH = {name for name, sev, _, _ in SIGNATURES if sev in (CRITICAL, HIGH)}
 
 
-def _added_lines_by_file(diff_text: str):
-    """Yield (filename, added_line_body) for every '+' line in a unified diff,
-    tracking the current target file from '+++ b/…' headers. Skips the '+++'
-    header lines themselves."""
-    current = None
-    for line in diff_text.splitlines():
-        if line.startswith("+++ "):
-            current = line[4:].strip()
-            if current.startswith("b/"):
-                current = current[2:]
-            continue
-        if line.startswith("+") and not line.startswith("+++"):
-            yield current, line[1:]
+_HUNK = re.compile(r"@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@")
+_GIT_HEADER = re.compile(r"diff --git a/.* b/(.*)")
+
+
+def _changed_lines(diff_text: str) -> Iterator[tuple[str | None, str, str]]:
+    """Yield (filename, sign, body) for every added ('+') and removed ('-')
+    line of a unified diff. A hunk is read by the line counts in its `@@`
+    header, so a content line is never taken for a file header whatever it
+    holds; the file is tracked from each `diff --git` header and its `+++`
+    line. Lines split on newline alone, so a carriage return or a Unicode line
+    separator inside an added line stays part of that line. A '+' or '-' line
+    outside any hunk is still yielded."""
+    current: str | None = None
+    old = new = 0
+    for line in diff_text.split("\n"):
+        if old > 0 or new > 0:
+            sign = line[:1]
+            if sign == "+":
+                new -= 1
+                yield current, "+", line[1:]
+                continue
+            if sign == "-":
+                old -= 1
+                yield current, "-", line[1:]
+                continue
+            if sign == " " or not line:
+                old -= 1
+                new -= 1
+                continue
+            if sign == "\\":  # "\ No newline at end of file"
+                continue
+            old = new = 0
+        if hunk := _HUNK.match(line):
+            old = int(hunk.group(1) or 1)
+            new = int(hunk.group(2) or 1)
+        elif header := _GIT_HEADER.match(line):
+            current = header.group(1)
+        elif line.startswith("+++ "):
+            path = line[4:].strip()
+            current = path[2:] if path.startswith("b/") else path
+        elif line.startswith("+"):
+            yield current, "+", line[1:]
+        elif line.startswith("-") and not line.startswith("--- "):
+            yield current, "-", line[1:]
 
 
 def _diff_line_counts(diff_text: str) -> tuple[int, int]:
-    """(additions, deletions) counted from a unified diff's content lines — '+'/'-'
-    prefixed lines, excluding the '+++'/'---' file headers. Lets the
-    churn-camouflage check run off the diff itself when no exact diffstat is
+    """(additions, deletions) counted from a unified diff's content lines. Lets
+    the churn-camouflage check run off the diff itself when no exact diffstat is
     supplied, so it doesn't depend on a signals field written by a later phase."""
     add = dele = 0
-    for line in (diff_text or "").splitlines():
-        if line.startswith("+") and not line.startswith("+++"):
+    for _, sign, _ in _changed_lines(diff_text or ""):
+        if sign == "+":
             add += 1
-        elif line.startswith("-") and not line.startswith("---"):
+        else:
             dele += 1
     return add, dele
 
 
 def scan_diff(diff_text: str, *, additions: int | None = None,
-              deletions: int | None = None) -> dict:
+              deletions: int | None = None, unread: Sequence[str] = ()) -> dict:
     """Scan a unified diff for attack signatures. Pure; no I/O.
 
     Returns {verdict, signatures, detail} where verdict is one of
     'malicious' (a CRITICAL/HIGH signature fired), 'suspicious' (only MEDIUM),
     or 'clear'. `detail` maps each fired signature to a short evidence string.
     Pass exact diffstat additions/deletions to override the churn-camouflage check;
-    when omitted they are counted from the diff text.
+    when omitted they are counted from the diff text. `unread` names what of the
+    PR's diff `diff_text` does not carry (the files GitHub returned no whole
+    patch for); any entry fires `unscannable-diff`.
     """
     fired: dict[str, str] = {}
     pats = {name: patterns for name, _, _, patterns in SIGNATURES}
 
-    for fname, body in _added_lines_by_file(diff_text):
+    for fname, sign, body in _changed_lines(diff_text):
+        if sign != "+":
+            continue
         for name in ("obfuscated-self-decoder", "capability-smuggle"):
             if name not in fired:
                 for p in pats[name]:
@@ -225,6 +267,10 @@ def scan_diff(diff_text: str, *, additions: int | None = None,
     if additions and deletions and additions > 3000 and deletions > 3000 \
             and abs(additions - deletions) < 0.05 * max(additions, deletions):
         fired["eol-churn-camouflage"] = f"+{additions}/-{deletions}"
+
+    if unread:
+        more = f" (+{len(unread) - 3:,} more)" if len(unread) > 3 else ""
+        fired["unscannable-diff"] = f"not read: {', '.join(unread[:3])}{more}"
 
     if _CRITICAL_OR_HIGH & fired.keys():
         verdict = "malicious"

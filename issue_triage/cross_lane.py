@@ -9,15 +9,20 @@ work in their own clones with the one-agent lane's prompt
 tests are a reproduction only when they fail twice on the unfixed tree. Then
 every candidate's fix runs against every reproduction — its own and the
 others' — and a fix is agreed when it passes each of them and at least
-AGREEMENT of them. Two readings of the report that pin different behavior
-cannot both be passed, so a disagreement ends the run `fix-disputed`: the
-report leaves the correct behavior open. The smallest agreed fix then goes
-through the host's checks (`solo_lane.host_checks`: compile, related tests,
-the full suite) together with the tests of every reproduction it passed
-(`shipped_reproductions`). Agreement proves the fix does what the report asks,
-never that it does nothing more, so a fix that clears the checks then faces the
-scope-safety reviewer (`review_issue_fix`), and ends `fixed` only on its
-explicit `safe`. The reviewer's inventory of unasked changes to inputs that
+AGREEMENT of them. A reading of the report is a group of candidates whose fixes
+pass every reproduction in the group, their own included (`readings`). Two
+readings pin different behavior no single fix passes, so a run with two ends
+`fix-disputed`: the report leaves the correct behavior open. A cross-test run
+that fails only existing tests names them (`pinned_failures`), and fixes that
+would be agreed but for such tests end the run `fix-pinned`: the lane never
+rewrites a repository's tests, so whether they still hold is a maintainer's
+call. Any other run without an agreed fix ends `fix-unproven`. The smallest
+agreed fix then goes through the host's checks (`solo_lane.host_checks`:
+compile, related tests, the full suite) together with the tests of every
+reproduction it passed (`shipped_reproductions`). Agreement proves the fix does
+what the report asks, never that it does nothing more, so a fix that clears the
+checks then faces the scope-safety reviewer (`review_issue_fix`), and ends
+`fixed` only on its explicit `safe`. The reviewer's inventory of unasked changes to inputs that
 worked vetoes a `safe` only on tier-0 paths; elsewhere it is recorded beside the
 verdict for the maintainer who reviews the proposal.
 
@@ -66,13 +71,18 @@ class Candidate:
     reproduces: bool = False
     red: prove.Legs | None = None
     passes: dict[int, bool] = field(default_factory=dict)
+    # The unfixed tree's copy of each existing test file its tests extend.
+    base_tests: dict[str, str] = field(default_factory=dict)
+    # By reproduction, the existing tests its fix fails there when they are all it fails.
+    pinned: dict[int, list[str]] = field(default_factory=dict)
 
     def summary(self) -> dict:
         return {"index": self.index, "model": self.model, "ending": self.ending,
                 "detail": self.detail[:300], "tests": self.test_paths,
                 "fix_lines": issue_gates.changed_line_count(self.fix_patch),
                 "reproduces": self.reproduces,
-                "passes": {str(k): v for k, v in self.passes.items()}}
+                "passes": {str(k): v for k, v in self.passes.items()},
+                "pinned": {str(k): v for k, v in self.pinned.items()}}
 
 
 def _author(spec: fix_lane.LaneSpec, workdir: Path, cand: Candidate,
@@ -101,6 +111,7 @@ def _author(spec: fix_lane.LaneSpec, workdir: Path, cand: Candidate,
         cand.fix_patch = diffpaths.filter_diff(patch, lambda p: not diffpaths.is_test_path(p))
         cand.test_patch = diffpaths.filter_diff(patch, diffpaths.is_test_path)
         cand.test_paths = diffpaths.changed_paths(cand.test_patch)
+        cand.base_tests = lane_tree.committed_texts(clone, cand.test_paths)
         _, other = lane_tree.new_files(clone)
         rewritten = sorted(set(p for p in other if diffpaths.is_test_path(p))
                            - set(lane_tree.additive_test_edits(clone, other)))
@@ -126,24 +137,44 @@ def _twice(legs: prove.Legs, want: int) -> bool:
     return legs.get("exit") == want and legs.get("exit_confirm") == want
 
 
-def agreed_candidates(live: list[Candidate]) -> list[Candidate]:
+def pinned_failures(green: prove.Legs, red: prove.Legs | None, test_patch: str,
+                    base_tests: dict[str, str]) -> list[str]:
+    """The tests a fix's run of a reproduction fails, when every one is an
+    existing test: not failing on the unfixed tree, titled on no line the
+    reproduction adds, and titled in the unfixed copy of a file it extends.
+    [] when the run fails anything else, or its report or the reproduction's
+    red one does not parse. The reports are the tests' own output, read only to
+    name why a fix is not agreed."""
+    if green.get("exit") != gates.SENTINEL_TEST_FAIL or red is None:
+        return []
+    failing = verify_driver.parse_failed_tests(green["output_tail"])
+    red_failing = verify_driver.parse_failed_tests(red["output_tail"])
+    if not failing or red_failing is None or set(failing) & set(red_failing):
+        return []
+    added = "\n".join(line[1:] for line in test_patch.splitlines()
+                      if line.startswith("+") and not line.startswith("+++"))
+    for name in failing:
+        title = name.rsplit(" > ", 1)[-1].strip()
+        if not title or title in added or not any(title in t for t in base_tests.values()):
+            return []
+    return failing
+
+
+def agreed_candidates(live: list[Candidate], *,
+                      apart_from_pinned: bool = False) -> list[Candidate]:
     """The candidates whose fix passes every reproduction it was run against,
-    and at least AGREEMENT of them."""
-    return [c for c in live
-            if len(c.passes) >= AGREEMENT and all(c.passes.values())]
-
-
-def _agree(a: Candidate, b: Candidate) -> bool:
-    """Each fix passes the other's reproduction, where the other has one."""
-    return ((not b.reproduces or a.passes.get(b.index, False))
-            and (not a.reproduces or b.passes.get(a.index, False)))
+    and at least AGREEMENT of them. With `apart_from_pinned`, a run that fails
+    only existing tests (`Candidate.pinned`) counts as a pass."""
+    return [c for c in live if len(c.passes) >= AGREEMENT
+            and all(ok or (apart_from_pinned and bool(c.pinned.get(r)))
+                    for r, ok in c.passes.items())]
 
 
 def readings(live: list[Candidate]) -> list[list[Candidate]]:
     """The live candidates grouped by the behavior they pin: each group's fixes
-    pass every reproduction in the group, and it holds at least one
-    reproduction. The largest groups come first; a candidate belongs to the
-    first group that holds it."""
+    pass every reproduction in the group, their own included, and it holds at
+    least one reproduction. The largest groups come first; a candidate belongs
+    to the first group that holds it."""
     groups: list[list[Candidate]] = []
     for k in range(len(live), 0, -1):
         for combo in itertools.combinations(live, k):
@@ -151,7 +182,7 @@ def readings(live: list[Candidate]) -> list[list[Candidate]]:
                 continue
             if any(set(c.index for c in combo) <= set(c.index for c in g) for g in groups):
                 continue
-            if all(_agree(a, b) for a, b in itertools.combinations(combo, 2)):
+            if all(c.passes.get(r.index, False) for c in combo for r in combo if r.reproduces):
                 groups.append(list(combo))
     out: list[list[Candidate]] = []
     taken: set[int] = set()
@@ -279,6 +310,34 @@ _LANE_ERRORS = (prove.NoBase, prove.SuiteFault, verify_driver.ProbeFailure,
                 headless_agent.EditsBlockedError, RuntimeError, ValueError)
 
 
+def _unagreed(live: list[Candidate], repros: list[Candidate], result: dict) -> tuple[str, str]:
+    """The ending and reason of a run whose cross-test agreed no fix,
+    recording on `result` a dispute's readings or the existing tests that hold
+    the fixes back."""
+    groups = readings(live)
+    if len(groups) >= 2:
+        result["readings"] = [[c.index for c in g] for g in groups]
+        return "fix-disputed", ("no fix passes every reproduction: the candidates read the "
+                                "report's correct behavior differently")
+    held = agreed_candidates(live, apart_from_pinned=True)
+    if held:
+        tests = sorted({t for c in held for names in c.pinned.values() for t in names})
+        result["agreement"]["pinned"] = {"agreed": [c.index for c in held], "tests": tests}
+        return "fix-pinned", (f"{len(held)} fix(es) pass all {len(repros)} reproductions but "
+                              f"fail existing tests the lane may not rewrite: {'; '.join(tests)}")
+    if len(repros) < AGREEMENT:
+        why = f"{len(repros)} independent reproduction(s); an agreed fix needs {AGREEMENT}"
+    elif not groups:
+        why = "no candidate's fix passes its own reproduction"
+    else:
+        why = (f"only one reading of the report has a fix that passes its reproductions, "
+               f"and no fix passes all {len(repros)}")
+    seen = sorted({t for c in live for t in c.pinned.get(c.index, [])})
+    if seen:
+        why += f"; existing tests the fixes fail: {'; '.join(seen)}"
+    return "fix-unproven", why
+
+
 def run(spec: fix_lane.LaneSpec, *, workdir: Path,
         on_step: Callable[[str], None] = lambda step: None) -> fix_lane.LaneResult:
     """Several agents reproduce and fix `spec`'s issue; cross-testing their
@@ -346,17 +405,16 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
                 legs = prove.green_legs(spec.base, patch=proof_patch(r.test_patch, c.fix_patch),
                                         test_cmd=cmd, label=label)
                 c.passes[r.index] = _twice(legs, gates.SENTINEL_PASS)
+                pinned = [] if c.passes[r.index] else pinned_failures(
+                    legs, r.red, r.test_patch, r.base_tests)
+                if pinned:
+                    c.pinned[r.index] = pinned
         agreed = agreed_candidates(live)
         result["candidates"] = [c.summary() for c in cands]
         result["agreement"] = {"reproductions": [r.index for r in repros],
                                "agreed": [c.index for c in agreed]}
         if not agreed:
-            if len(repros) < AGREEMENT:
-                return finish("fix-unproven", f"{len(repros)} independent reproduction(s); "
-                                              f"an agreed fix needs {AGREEMENT}")
-            result["readings"] = [[c.index for c in g] for g in readings(live)]
-            return finish("fix-disputed", "no fix passes every reproduction: the candidates "
-                                          "read the report's correct behavior differently")
+            return finish(*_unagreed(live, repros, result))
 
         pick = min(agreed, key=lambda c: (issue_gates.changed_line_count(c.fix_patch), c.index))
         ending, detail, reproduction, spent = _judge_pick(
@@ -384,7 +442,8 @@ def _restore(result: dict) -> list[Candidate]:
             test_patch=p.get("test_patch") or "", fix_patch=p.get("fix_patch") or "",
             test_paths=list(p.get("test_paths") or []), checks=list(p.get("checks") or []),
             reproduces=bool(s.get("reproduces")),
-            passes={int(k): bool(v) for k, v in (s.get("passes") or {}).items()}))
+            passes={int(k): bool(v) for k, v in (s.get("passes") or {}).items()},
+            pinned={int(k): list(v) for k, v in (s.get("pinned") or {}).items()}))
     return out
 
 
