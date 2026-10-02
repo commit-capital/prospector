@@ -3,7 +3,8 @@
 The default Issues table uses a light snapshot with candidate PR arrays omitted,
 then hydrates only the visible page with full rows. Duplicate triage can opt into
 the full issue cache lazily. The first load starts from this machine's on-disk
-copy of the snapshot (`snapshot_cache`) and reads only what changed since it.
+copy of the snapshot (`snapshot_cache`) and reads only what changed since it;
+the runs ledger starts from its own copy the same way.
 """
 from __future__ import annotations
 
@@ -26,6 +27,7 @@ CHECK_DEBOUNCE = 10.0
 # How often a freshen that changed the snapshot rewrites the disk copy.
 CACHE_EVERY = 600.0
 CACHE_NAME = "issues"
+LEDGER_CACHE_NAME = "issue-runs"
 
 
 @dataclass
@@ -145,10 +147,12 @@ _snapshot = LazySnapshot(_freshen, debounce=CHECK_DEBOUNCE)
 
 def _freshen_runs(full: bool) -> None:
     """Bring the issue runs ledger current, reading only the rows the
-    in-memory copy lacks (`run_ledger.RunLedger`); `full` is irrelevant."""
+    in-memory copy lacks (`run_ledger.RunLedger`, started from its disk copy);
+    `full` is irrelevant."""
     st = store()
     if _state.runs_ledger is None or _state.runs_ledger.source is not st:
-        _state.runs_ledger = run_ledger.RunLedger(st)
+        _state.runs_ledger = run_ledger.RunLedger(
+            st, snapshot_cache.LedgerFile(LEDGER_CACHE_NAME, _store_key(st)))
     _state.runs = [r.record for r in _state.runs_ledger.rows()]
 
 

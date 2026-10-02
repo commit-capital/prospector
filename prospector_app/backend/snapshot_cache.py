@@ -5,6 +5,7 @@ A copy is keyed by the store it came from, the repository, the store schema
 version and FORMAT, so a copy from another deployment or an older record shape
 is never read. It holds the records and the watermark they are current to;
 the caller reads `since` that watermark and drops ids the store no longer has.
+A runs ledger's copy (`LedgerFile`) holds each row's rowid, `ts` and record.
 Files live owner-only under PROSPECTOR_CACHE_DIR (default ~/.cache/prospector).
 Every failure to read or write a copy is a miss: the caller loads from the
 store as it would with no copy.
@@ -21,6 +22,7 @@ from typing import NamedTuple
 
 from pipeline import schema
 from pipeline import settings
+from pipeline import storekit
 
 FORMAT = 1
 
@@ -50,22 +52,18 @@ def _path(name: str, store_url: str) -> Path | None:
     return root / f"{name}-{hashlib.sha256(key.encode('utf-8')).hexdigest()[:16]}.json"
 
 
-def load(name: str, store_url: str) -> Copy | None:
+def _read(name: str, store_url: str) -> dict | None:
     path = _path(name, store_url)
     if path is None:
         return None
     try:
         doc = json.loads(path.read_text(encoding="utf-8"))
-        records = {int(n): rec for n, rec in doc["records"].items()}
-        watermark = doc["watermark"]
-    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+    except (OSError, ValueError):
         return None
-    if watermark is not None and not isinstance(watermark, str):
-        return None
-    return Copy(watermark, records)
+    return doc if isinstance(doc, dict) else None
 
 
-def save(name: str, store_url: str, watermark: str | None, records: dict[int, dict]) -> bool:
+def _write(name: str, store_url: str, doc: dict) -> bool:
     """Replace the copy whole from a temporary sibling; False when it could not."""
     path = _path(name, store_url)
     if path is None:
@@ -75,9 +73,7 @@ def save(name: str, store_url: str, watermark: str | None, records: dict[int, di
         fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{name}-", suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                json.dump({"watermark": watermark,
-                           "records": {str(n): rec for n, rec in records.items()}},
-                          fh, ensure_ascii=False, separators=(",", ":"))
+                json.dump(doc, fh, ensure_ascii=False, separators=(",", ":"))
             os.replace(tmp, path)
         except BaseException:
             Path(tmp).unlink(missing_ok=True)
@@ -85,3 +81,55 @@ def save(name: str, store_url: str, watermark: str | None, records: dict[int, di
     except (OSError, TypeError, ValueError):
         return False
     return True
+
+
+def load(name: str, store_url: str) -> Copy | None:
+    doc = _read(name, store_url)
+    if doc is None:
+        return None
+    try:
+        records = {int(n): rec for n, rec in doc["records"].items()}
+        watermark = doc["watermark"]
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return None
+    if watermark is not None and not isinstance(watermark, str):
+        return None
+    return Copy(watermark, records)
+
+
+def save(name: str, store_url: str, watermark: str | None, records: dict[int, dict]) -> bool:
+    return _write(name, store_url, {"watermark": watermark,
+                                    "records": {str(n): rec for n, rec in records.items()}})
+
+
+class LedgerFile:
+    """The disk copy of one runs ledger (`run_ledger.LedgerCopy`): its rows in
+    rowid order."""
+
+    def __init__(self, name: str, store_url: str) -> None:
+        self.name = name
+        self.store_url = store_url
+
+    def load(self) -> list[storekit.LedgerRow] | None:
+        """The copy's rows, oldest first; None for a copy that is absent,
+        unreadable, or not in strictly ascending rowid order."""
+        doc = _read(self.name, self.store_url)
+        if doc is None:
+            return None
+        try:
+            rows = [storekit.LedgerRow(rowid, ts, storekit.parse_run(rec))
+                    for rowid, ts, rec in doc["rows"]]
+        except (ValueError, KeyError, TypeError, AttributeError):
+            return None
+        last: int | None = None
+        for row in rows:
+            if (not isinstance(row.rowid, int)
+                    or (row.ts is not None and not isinstance(row.ts, str))
+                    or (last is not None and row.rowid <= last)):
+                return None
+            last = row.rowid
+        return rows
+
+    def save(self, rows: list[storekit.LedgerRow]) -> bool:
+        return _write(self.name, self.store_url,
+                      {"rows": [[r.rowid, r.ts, r.record.raw] for r in rows]})
