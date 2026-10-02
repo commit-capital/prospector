@@ -77,8 +77,17 @@ Then classify it:
   Never weaken a test, skip a check, or add an ignore to get green.
 - **Flake or infrastructure** (runner lost, network timeout, a test that passes
   locally and touches nothing in the diff) — rerun once:
-  `gh run rerun <run-id> --failed`, back to step 1. A second failure of the same
-  check is treated as real.
+  `gh run rerun <run-id> --failed`, back to step 1. A token without Actions
+  write on this repository is refused ("Resource not accessible by personal
+  access token"); then retrigger CI with an empty commit, which reruns every
+  check and drops out in the squash merge:
+
+  ```bash
+  git commit --allow-empty -m "Retrigger CI"
+  ```
+
+  Push it as below and go back to step 1. Either route is the one rerun: a
+  second failure of the same check is treated as real.
 - **Pre-existing failure on `main`** (the same check is red on main's latest
   run: `gh run list --branch main --limit 3`) — do not fix unrelated breakage
   inside this PR. Report it and stop.
