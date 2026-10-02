@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timezone
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 from pipeline import storekit
-from prospector_app.backend import data, escalation, fix_queue, verify_queue
+from prospector_app.backend import data, escalation, fix_queue, threat_view, verify_queue
 
 
 class HealthItem(TypedDict):
@@ -30,6 +30,9 @@ class SystemHealth(TypedDict):
     lanes_total: int
     lanes_down: int
     workers_stalled: bool
+    # The open PRs flagged malicious and the credentials to rotate, for the
+    # threat banner every page shows beside the strip.
+    threats: NotRequired[threat_view.ThreatSummary]
 
 
 # How stale an ingest is before the strip colors it.
@@ -192,4 +195,8 @@ def status() -> SystemHealth:
                                            host=item["host"]))
         if _SEVERITY_RANK[item["severity"]] > _SEVERITY_RANK[summary["severity"]]:
             summary["severity"] = item["severity"]
+    try:
+        summary["threats"] = threat_view.summary()
+    except Exception:
+        pass  # the strip still answers; the banner waits for the next poll
     return summary

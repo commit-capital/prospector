@@ -244,6 +244,15 @@ def _row_merge_gate(rec: Pr) -> dict:
     return gate
 
 
+def _threat_state(rec: Pr) -> str:
+    """malicious | suspicious (a verdict at any head) | clear (scanned clear at
+    this head) | unscanned (no scan, or a clear one of an earlier head)."""
+    verdict = rec.threat_verdict
+    if verdict in ("malicious", "suspicious"):
+        return verdict
+    return "clear" if freshness.is_current(rec, "threat") else "unscanned"
+
+
 def pr_row(n: int, rec: Pr | None = None) -> dict | None:
     rec = rec or data.prs().get(int(n))
     if rec is None:
@@ -286,7 +295,7 @@ def pr_row(n: int, rec: Pr | None = None) -> dict | None:
             for f in rec.findings
         ],
         "drift_state": rec.drift_state,
-        "threat": rec.threat_verdict,
+        "threat": _threat_state(rec),
         "clean": clean,
         "clean_reasons": clean_reasons,
         "age_days": _age_days(rec),

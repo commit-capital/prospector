@@ -194,7 +194,7 @@ def matches(row: dict, spec: dict) -> bool:
         return False
     if "clean" in spec and bool(row.get("clean")) != bool(spec["clean"]):
         return False
-    if spec.get("threat") and (row.get("threat") or "clear") != spec["threat"]:
+    if spec.get("threat") and (row.get("threat") or "unscanned") != spec["threat"]:
         return False
     if "greptile" in spec:
         # A PR Greptile hasn't reviewed yet has greptile=None (shown "—" in the

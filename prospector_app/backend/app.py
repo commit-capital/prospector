@@ -58,6 +58,7 @@ from prospector_app.backend import responses as responses_mod
 from prospector_app.backend import service
 from prospector_app.backend import suggested_actions
 from prospector_app.backend import system_health
+from prospector_app.backend import threat_view
 from prospector_app.backend import tables
 from prospector_app.backend import training
 from prospector_app.backend import trust_ladder
@@ -1530,6 +1531,13 @@ def activity_people():
         result.append({"display": login, "login": login, "is_operator": False, "pr_count": count})
 
     return {"people": result}
+
+
+@app.get("/api/threats")
+def threats_get() -> threat_view.ThreatDetail:
+    """The Threats view: open flagged PRs, the incident log, the actor
+    blocklist, and the credentials still to rotate."""
+    return threat_view.current_detail()
 
 
 @app.get("/api/action-items")
