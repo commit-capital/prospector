@@ -113,7 +113,11 @@ interrupted Workflow run.
 ## Phase 0.5 — THREAT SCAN (deterministic, no agents)
 
 Runs after INGEST and after diffs are fetched (the CLUSTER `fetch-diffs` step).
-Cheap and idempotent — no Workflow, no metered tokens.
+Cheap and idempotent — no Workflow, no metered tokens. A worker machine (verify
+or fix lane on) also runs the same scan every ten minutes over each open PR
+whose current head has no verdict, so a head that INGEST records is scanned
+without an operator starting this run (`prospector_app/backend/threat_refresh.py`,
+ledger phase `threat-scan:heads`).
 
 ```
 uv run python pipeline/threat_scan.py            # scan every open PR with a cached diff
@@ -121,23 +125,37 @@ uv run python pipeline/threat_scan.py --only 5174,5270   # rescan specific PRs
 uv run python pipeline/views.py
 ```
 
-It scans each PR's cached diff against the signatures in `threats.py` (the ONE
+It scans each PR's whole diff against the signatures in `threats.py` (the ONE
 threat policy: obfuscated self-decoders, capability smuggles, build-config
 require-injection, EOL-churn camouflage) and checks the author against the
 durable actor blocklist in the store's `threats` registry. A `malicious` verdict stamps the
 PR's `threat` section and, on first detection, blocks the author and logs the
 incident. `gates.pr_clean` then refuses the PR forever (fail-closed, no
 staleness exemption), so a flagged PR can never reach security review or merge —
-even if Greptile scores it 5/5 and CI is green. A blocked author's *future* PRs
+even if Greptile scores it 5/5 and CI is green. A clear verdict counts only at
+the head it judged: `pr_clean` refuses a head the scan has not reached, so a
+force-push waits on the next scan before it can merge. A genuine dependency
+bump is stamped clear as exempt without its diff being fetched. A blocked author's *future* PRs
 are flagged on sight, before any diff is fetched. Repository maintainers (the
 profile's `trusted_authors`) are never flagged: their PRs always stamp `clear`,
 though a leaked credential still raises a rotate-secret action item.
+
+The diff cache holds each diff capped at 200 KB, with every file past the cap
+and every artifact-category file (a built `dist/*.js`, say) reduced to a
+one-line stub. A cached copy that is not whole is therefore never the scan's
+input: the scan reads the whole diff from GitHub for that scan alone (it is not
+cached), and a file GitHub itself returns no whole patch for — past the 20k-line
+`.diff` limit, the per-file listing omits large patches and lists at most 3,000
+files — reads as `unscannable-diff` (suspicious, never clear). With `--no-fetch`,
+or GitHub unreachable, a capped copy decides only a malicious verdict; anything
+else leaves the PR unjudged and counted `incomplete` in the run ledger.
 
 Each malicious head then has its evidence preserved in the store's
 `threat_evidence` table (`pipeline/threat_evidence.py`): the SHA-pinned diff,
 the diff before the force-push that produced the head, and the PR, commit,
 actor and force-push metadata, all from read-only GitHub reads. `--no-fetch`
-skips the capture with every other GitHub read.
+skips the capture with every other GitHub read; the worker's ten-minute
+pass captures too.
 
 ```
 uv run python -m pipeline.threat_evidence capture --backfill   # every registry incident without a complete capture

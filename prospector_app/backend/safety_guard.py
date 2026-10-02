@@ -42,13 +42,15 @@ _AGENT_ENV_KEEP = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG",
 _AGENT_ENV_PREFIXES = ("LC_", "ANTHROPIC_", "CLAUDE_", "CODEX_",
                        "TRIAGE_", "PROSPECTOR_")
 
-# The deployment value the agent's environment withholds. `jq` is an
+# The deployment values the agent's environment withholds. `jq` is an
 # allowlisted text filter and `jq -n env` prints the environment, so the store
-# URL's password would be one command from any text an outsider wrote. Helpers
-# that need the store read it from the repo-root .env, which pipeline.settings
+# URL's password and the feedback token would be one command from any text an
+# outsider wrote, and `file-issue` could post either to a public issue. Helpers
+# that need them read them from the repo-root .env, which pipeline.settings
 # loads on import; a deployment configured by process environment alone, with
-# no .env on disk, loses `store-read` in chat.
-_AGENT_ENV_DROP = ("TRIAGE_STORE_URL",)
+# no .env on disk, loses `store-read` in chat and files feedback with gh's
+# stored login.
+_AGENT_ENV_DROP = ("TRIAGE_STORE_URL", "PROSPECTOR_FEEDBACK_TOKEN")
 
 
 def agent_env() -> dict[str, str]:

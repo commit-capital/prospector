@@ -3,7 +3,7 @@ import type { FactFreshness } from "./api";
 export const FACT_LABEL: Record<string, string> = {
   signals: "Signals", reviews: "Reviewer feedback", drift: "Drift", summary: "Summary",
   cluster: "Cluster", analysis: "Analysis", security: "Security review",
-  greptile_review: "Greptile read", verify: "Verification",
+  greptile_review: "Greptile read", verify: "Verification", threat: "Threat scan",
 };
 
 /** Human-readable age of an ISO stamp: "2h ago", "3d ago". */

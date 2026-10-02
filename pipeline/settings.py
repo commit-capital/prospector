@@ -103,6 +103,12 @@ def feedback_repo() -> str:
     return os.environ.get("PROSPECTOR_FEEDBACK_REPO", "")
 
 
+def feedback_token() -> str | None:
+    """The token `file-issue` files on the feedback repo with, or None to use
+    gh's stored login. A blank value reads as None."""
+    return os.environ.get("PROSPECTOR_FEEDBACK_TOKEN", "").strip() or None
+
+
 @lru_cache(maxsize=1)
 def default_branch() -> str:
     """The upstream repository's default branch. TRIAGE_DEFAULT_BRANCH wins when

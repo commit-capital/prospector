@@ -102,6 +102,17 @@ def new_files(worktree: Path) -> tuple[list[str], list[str]]:
     return sorted(added), sorted(other)
 
 
+def committed_texts(worktree: Path, paths: Sequence[str]) -> dict[str, str]:
+    """The one commit's copy of each of `paths` it holds as text, by path."""
+    out: dict[str, str] = {}
+    for path in paths:
+        try:
+            out[path] = _git(worktree, "show", f"HEAD:{path}")
+        except (subprocess.CalledProcessError, UnicodeDecodeError):
+            continue
+    return out
+
+
 def read_files(worktree: Path, paths: Sequence[str]
                ) -> tuple[list[VerifyAuthoredFile], str | None]:
     """The named files' contents, or ([], why) at the first one that is not a

@@ -1221,7 +1221,7 @@ export interface IssueRow {
 }
 /** fix_review.STATUSES — the operator's moves first. */
 export type IssueFixStatus = "review" | "question" | "running" | "reporter" | "pr-open" | "pr-closed"
-  | "failed" | "declined" | "pr-merged";
+  | "failed" | "superseded" | "declined" | "pr-merged";
 export type IssueFixAction = "solve" | "send-back" | "answer" | "ask-reporter" | "propose";
 export interface IssueFixRequest {
   action: IssueFixAction;
@@ -1305,6 +1305,8 @@ export interface IssueFixRun {
   candidates: IssueFixCandidate[];
   question: IssueFixQuestion | null;
   proposal: { pr: number | string | null; url: string | null } | null;
+  /** Someone else's open pull request that took the issue up (issue_triage/superseded.py). */
+  superseded?: { pr: number; author: string | null; title: string; at: string } | null;
 }
 export interface IssueFixThreadEntry {
   at: string;
@@ -2276,12 +2278,10 @@ interface SectionCoverage {
   never: number;
 }
 
-/** Threat-scan coverage: the freshness split plus, over the uncovered PRs
- * (stale + never), whether this machine's diff cache already holds the current
- * head's diff (diff_cached_here) or the scan fetches it on demand as it runs
- * (diff_uncached_here) — a fetch-workload hint, not a coverage boundary. */
+/** Threat-scan coverage: the freshness split plus how many open PRs, scanned
+ * or not, have no current-head diff in this machine's cache — the diffs a scan
+ * run here fetches first. A fetch-workload hint, not a coverage boundary. */
 interface ThreatCoverage extends SectionCoverage {
-  diff_cached_here: number;
   diff_uncached_here: number;
 }
 
@@ -2305,11 +2305,13 @@ interface IssueCoverage {
   pending_analysis: number;
 }
 
-/** Rough per-unit durations (seconds) averaged from recent runs-ledger history;
- *  null where no run has yet recorded a real, count-tagged duration to sample. */
+/** Rough durations (seconds) from recent runs-ledger history: whole runs for
+ *  ingest and the threat scan (projected onto this machine's open PRs and the
+ *  diffs it fetches), per unit for the rest; null where the history holds
+ *  nothing to project from. */
 interface PipelineEstimates {
   ingest_seconds: number | null;
-  threat_scan_seconds_per_pr: number | null;
+  threat_scan_seconds: number | null;
   analyze_clusters_seconds_per_cluster: number | null;
   issue_analyze_seconds_per_issue: number | null;
 }

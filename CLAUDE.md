@@ -71,8 +71,9 @@ own branches while still being unable to reach the triage repository.
   create/close/reopen/comment/edit, and workflow reruns against `TRIAGE_REPO`
   as `TRIAGE_BOT_LOGIN`. Without a token those upstream writes are withheld;
   they never fall back to the operator's login. A separate helper may always
-  file an issue only on `PROSPECTOR_FEEDBACK_REPO` as the operator. The agent's
-  resubmit helper uses the confirming operator's identity for interactive
+  file an issue only on `PROSPECTOR_FEEDBACK_REPO` as the operator, with
+  `PROSPECTOR_FEEDBACK_TOKEN` when `.env` sets one, else their stored `gh`
+  login. The agent's resubmit helper uses the confirming operator's identity for interactive
   contributor-branch pushes and is advertised in every interactive session,
   with or without a mintable bot token. On Claude that session's Edit and Write
   tools reach the clones `resubmit prepare` makes and the `--body-file`
@@ -93,11 +94,12 @@ own branches while still being unable to reach the triage repository.
   directory whatever the allow rules say and a deny rule is what reaches the
   Read and Grep tools and an allowlisted text filter's file argument alike. The
   turn's environment is `safety_guard.agent_env` — the operator's, held to what
-  the CLI and the curated helpers need, with `TRIAGE_STORE_URL` withheld because
-  `jq` is an allowlisted filter and `jq -n env` prints the environment; helpers
-  re-read the store URL from the repo-root `.env` that `pipeline.settings` loads
-  on import, so a deployment configured by process environment alone, with no
-  `.env` on disk, has no `store-read` in chat. These
+  the CLI and the curated helpers need, with `TRIAGE_STORE_URL` and
+  `PROSPECTOR_FEEDBACK_TOKEN` withheld because `jq` is an allowlisted filter and
+  `jq -n env` prints the environment; helpers re-read them from the repo-root
+  `.env` that `pipeline.settings` loads on import, so a deployment configured by
+  process environment alone, with no `.env` on disk, has no `store-read` in chat
+  and files feedback with the stored `gh` login. These
   paths do not use the per-PR merge gate. Chat PR close, reopen, and review
   operations, plus issue closes, call their corresponding executor paths; other
   upstream chat writes use `prospector_app/agent/gh-write`, which validates the
@@ -163,9 +165,9 @@ One canonical store, seven phases plus a deterministic threat-scan backstop. **T
 - **Store** (`store.py` over `storekit.py`): a SQL database — one row per PR (its sections `meta / signals / reviews / drift / summary / cluster / analysis / security / issues / threat / greptile_review / verify / verify_request / fix_request` carried in a JSON `data` column, alongside mirror columns and a `saved_at` write-stamp), one row per cluster, a `runs` ledger table, and singleton `registries` rows (the durable threat registry, action items, the `reviewers` activity registry). The backend is `TRIAGE_STORE_URL` (a shared SQL database) or a local SQLite default under `pipeline/store/`. **Validated on write; `storekit`/`store.py` is the ONLY accessor** — never hand-write rows.
 - **Freshness** (`freshness.py`): every fact section is stamped `against_head_sha`. When a PR head moves, its analysis/security/signals go stale **automatically** — `is_current()` is the single check. No manual invalidation.
 - **Reviewers** (`reviewers.py` + `review_fetch.py` + `review_policy.py`): the ONE registry of automated PR reviewers — code reviewers (Greptile, CodeRabbit) and security scanners (Superagent, Socket). Ingest fetches each PR's bot feed (reviews, review threads with resolution, comments, the head's check runs) in one GraphQL call per ten PRs, re-reading a PR's conversation only when GitHub's `updatedAt` or the head moved, and stores every reviewer's normalized entry under the PR's `reviews` section; each adapter's `bar` judges its entry `pass | fail | stale | pending | na`. `review_policy` decides which reviewers gate: `TRIAGE_REVIEW_PROVIDER=auto` (default) reads the `reviewers` registry ingest recomputes and gates on every reviewer seen within `TRIAGE_REVIEWER_ACTIVE_DAYS`; `none` or an explicit id list override. `ci_signal.py` derives CI from check runs minus the reviewers' own, so a reviewer's verdict reads under its name and CI reflects the repository's workflows.
-- **Gates** (`gates.py`): the ONE policy module. `pr_clean` (not-malicious ∧ every active reviewer's and scanner's bar ∧ CI passing ∧ mergeable ∧ fresh), `security_eligible`, `verify_eligible`, `merge_allowed` (pipeline auto-recommend — requires a current `verified-fix` alongside GREEN security), `merge_eligibility` (human-initiated app merge — drops the disposition requirement; treats never-run, stale, pending, and unverifiable verification as non-blocking; requires no reason for those merges; blocks actual negative verification evidence; and permits an explicit `escalate` only with a logged reason), the derived `cluster_state` (computed on read, never stored), and `merge_demotion` — the ONE merge-pick consequence (security verdict + verify outcome + quality-gate bar), derived at read time by `Pr.disposition`/`rationale`/`asks` over a stored-verbatim ANALYZE verdict, so nothing derived is ever stored and a cleared fact heals the read in place. **Every active reviewer's bar is a hard merge requirement** — which reviewers gate is detected from the repository (or pinned by `TRIAGE_REVIEW_PROVIDER`; `pipeline/review_policy.py`). A merge pick any active reviewer or scanner blocks reads as `request-changes`, with that reviewer's own ask. A deployment with `TRIAGE_REVIEW_PROVIDER=none` requires no external review. A `threat` verdict of `malicious` is a sticky hard block (fails closed, no staleness exemption). A PR may belong to several clusters (straddlers, #196); each cluster proposes a disposition for its members and `reconcile_disposition` picks the PR's single disposition by severity precedence (`needs-human > close-dup > close-fixed > close-stale > request-changes > merge` — most-blocking wins).
-- **Threats** (`threats.py`): the ONE threat-detection policy — attack-pattern signatures (obfuscated self-decoders, capability smuggles, build-config require-injection, EOL-churn camouflage) scanned over a PR's diff, plus the durable actor blocklist + incident log in the store's `threats` registry. `threat_scan.py` is the deterministic driver (Phase 0.5). Code reviewers/CI are quality signals, **not** a security verdict — this is the supply-chain backstop; scanner findings (Superagent, Socket) reach the SECURITY agents as evidence to confirm or refute, never as a verdict.
-- **Threat evidence** (`threat_evidence.py`): every head the threat scan flags `malicious` gets an append-only capture in the store's `threat_evidence` table (schema 29), taken after the verdict is stamped and from read-only GitHub reads alone — the diff pinned to the flagged SHA (`compare/<base>...<head>`), the PR's diff at the head the force-push that produced it replaced, the PR, commit (author/committer dates, signatures), actor (stable user id) and force-push metadata, and where each signature matched. The diffs are gzip-compressed in binary columns with their SHA-256; the JSON record holds match locations, never payload text. A head gets at most one incomplete capture and one complete one, and the store has no update or delete for them. `export` and the PR page's download (`/api/prs/{n}/evidence/{id}/bundle.zip`) write inert files with `SHA256SUMS`, re-hashing first; `export` refuses a destination inside a git work tree. Captures and exports are runs-ledger phases (`threat-evidence:capture`, `threat-evidence:export`). No agent prompt and no `store-read` subcommand carries the evidence, and the Tables tab shows a binary column as its byte count.
+- **Gates** (`gates.py`): the ONE policy module. `pr_clean` (not-malicious ∧ threat-scanned at the current head ∧ every active reviewer's and scanner's bar ∧ CI passing ∧ mergeable ∧ fresh), `security_eligible`, `verify_eligible`, `merge_allowed` (pipeline auto-recommend — requires a current `verified-fix` alongside GREEN security), `merge_eligibility` (human-initiated app merge — drops the disposition requirement; treats never-run, stale, pending, and unverifiable verification as non-blocking; requires no reason for those merges; blocks actual negative verification evidence; and permits an explicit `escalate` only with a logged reason), the derived `cluster_state` (computed on read, never stored), and `merge_demotion` — the ONE merge-pick consequence (security verdict + verify outcome + quality-gate bar), derived at read time by `Pr.disposition`/`rationale`/`asks` over a stored-verbatim ANALYZE verdict, so nothing derived is ever stored and a cleared fact heals the read in place. **Every active reviewer's bar is a hard merge requirement** — which reviewers gate is detected from the repository (or pinned by `TRIAGE_REVIEW_PROVIDER`; `pipeline/review_policy.py`). A merge pick any active reviewer or scanner blocks reads as `request-changes`, with that reviewer's own ask. A deployment with `TRIAGE_REVIEW_PROVIDER=none` requires no external review. A `threat` verdict of `malicious` is a sticky hard block (fails closed, no staleness exemption). A PR may belong to several clusters (straddlers, #196); each cluster proposes a disposition for its members and `reconcile_disposition` picks the PR's single disposition by severity precedence (`needs-human > close-dup > close-fixed > close-stale > request-changes > merge` — most-blocking wins).
+- **Threats** (`threats.py`): the ONE threat-detection policy — attack-pattern signatures (obfuscated self-decoders, capability smuggles, build-config require-injection, EOL-churn camouflage) scanned over a PR's whole diff — the capped cache copy (`diff_cache.is_complete`) is never the input; a capped PR's whole diff is read from GitHub for the scan alone (`diff_cache.fetch_complete`), and a file GitHub returns no whole patch for reads `unscannable-diff` (suspicious) — plus the durable actor blocklist + incident log in the store's `threats` registry. `threat_scan.py` is the deterministic driver (Phase 0.5). Code reviewers/CI are quality signals, **not** a security verdict — this is the supply-chain backstop; scanner findings (Superagent, Socket) reach the SECURITY agents as evidence to confirm or refute, never as a verdict.
+- **Threat evidence** (`threat_evidence.py`): every head the threat scan flags `malicious` gets an append-only capture in the store's `threat_evidence` table (schema 30), taken after the verdict is stamped and from read-only GitHub reads alone — the diff pinned to the flagged SHA (`compare/<base>...<head>`), the PR's diff at the head the force-push that produced it replaced, the PR, commit (author/committer dates, signatures), actor (stable user id) and force-push metadata, and where each signature matched. The diffs are gzip-compressed in binary columns with their SHA-256; the JSON record holds match locations, never payload text. A head gets at most one incomplete capture and one complete one, and the store has no update or delete for them. `export` and the PR page's download (`/api/prs/{n}/evidence/{id}/bundle.zip`) write inert files with `SHA256SUMS`, re-hashing first; `export` refuses a destination inside a git work tree. Captures and exports are runs-ledger phases (`threat-evidence:capture`, `threat-evidence:export`). No agent prompt and no `store-read` subcommand carries the evidence, and the Tables tab shows a binary column as its byte count.
 - **Profile** (`profile.py`): the ONE repository-policy profile — repository-specific vocabulary as validated JSON data (`TRIAGE_PROFILE` path; strict parse, hard error on unknown/malformed fields). Owns the subsystem taxonomy, the path→risk-tier glob map, the CODEOWNERS gating policy (gated globs + owners), trusted/automation authors, dependency manifests, the test/artifact path rules, the contributor docs code-authoring agents are handed (`authoring.contributor_docs`, default the agent-instruction files the common coding agents read — `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.github/copilot-instructions.md`, `CONVENTIONS.md` — then `CONTRIBUTING.md` in each place GitHub looks for it), and the review-harness PR-template policy (`review-new-pr/harness` reads the same JSON standalone via stdlib `json`, never importing `pipeline`).
 - **Authoring** (`authoring.py`): the ONE account of how an agent that writes a change bound for `TRIAGE_REPO` fits it to the repository — the house-style rules (`HOUSE_STYLE`: reuse an existing helper before adding one, put the change in the layer that owns the behavior, match the neighbouring code and tests, refactor nothing the change does not need) and the repository's own contributor docs, read from a tree only its maintainers change: the lane's base for the issue-fix agents (`docs_from_tree`), the default branch on GitHub for the PR autofix agent, whose checkout is the contributor's (`docs_from_upstream`). The prompt ranks the docs below its own rules and tells the agent their workflow instructions are not its job. PR autofix (`author_fix`) and the issue-fix reproduction, fix, and solo/cross agents all take them; the reproduction agent, which writes tests alone, takes the docs without `HOUSE_STYLE`. When the profile names `verify.lint_cmd` — the repository's mechanical convention checks — every one of those agents is offered it as a `lint` lane of its sandbox check (`lint_note`), and the host holds every agent-authored change to it (`gates.lint_block`): the lint runs in the sandbox over the tree the change produces, and a failure the tree without the change shares (the default branch, `error_kind` `base-lint`; the PR's own diff or a replay's pre-fix tree, `tree_fails`) is the repository's and does not count against the change. A fix that brings in a lint failure is refused (autofix) or ends `fix-unproven` (issue fix); a lint sandbox that cannot run is the machine's failure. Human-authored PRs and their merges are not held to it.
 - **Taxonomy** (`taxonomy.py`): the ONE subsystem-classification accessor; the vocabulary itself is repository policy in the active profile (`profile.py`, selected by `TRIAGE_PROFILE`, generic default = everything `other`); `issue_triage` imports it.
@@ -173,7 +175,7 @@ One canonical store, seven phases plus a deterministic threat-scan backstop. **T
 
 Phases (each idempotent; drivers own the deterministic half, Workflow scripts the agentic half):
 - **0 INGEST** (`ingest.py`) — fetch open non-draft PRs + issue links into the store. Cheap, re-runnable.
-- **0.5 THREAT SCAN** (`threat_scan.py` + `threats.py`) — scan cached diffs for attack signatures + check authors against the blocklist; stamp `threat`, block actors, log incidents, then preserve each malicious head's evidence (`threat_evidence.py`; `--no-fetch` skips it with every other GitHub read). Deterministic, no agents. A `malicious` flag removes the PR from the gate permanently.
+- **0.5 THREAT SCAN** (`threat_scan.py` + `threats.py`) — scan each PR's whole diff for attack signatures + check authors against the blocklist; stamp `threat`, block actors, log incidents, then preserve each malicious head's evidence (`threat_evidence.py`; a run that makes no GitHub read captures nothing). Deterministic, no agents. A `malicious` flag removes the PR from the gate permanently. An operator starts the full run (the Control-tab `threat-scan` job or the CLI); a worker machine also runs the same `threat_scan.scan` every ten minutes over the open PRs `threat_scan.unscanned` names — a head INGEST or `refresh_prs` recorded without a verdict, a new arrival, or a blocked author's PR still reading clear — so a force-pushed payload is flagged soon after its head is ingested (`prospector_app/backend/threat_refresh.py`, ledger phase `threat-scan:heads`, woken early by the stale merge-candidate refresh). `threat` is head-bound (`freshness.SHA_BOUND`): `gates.pr_clean` — and with it both merge gates and the security and verify hunters' eligibility — refuses a head without a verdict of its own (`gates.THREAT_SCAN_STALE`, never a demotion; Home reads such a merge pick as waiting on the worker), while a malicious verdict blocks at any head. A genuine dependency bump is never fetched or signature-scanned but has its head stamped `clear` with `threat_scan.EXEMPT`'s detail, so it passes that requirement. A head the pass cannot judge (no diff, or a capped copy whose whole diff it could not read) waits six hours before another try; a verdict is stamped only while the stored head is still the one scanned, and the run's blocks, incidents and action items land on a fresh read of their registry.
 - **1 CLUSTER** (`cluster_driver.py` + `workflows/summarize.js`) — diff-grounded summaries → semantic clusters with stable IDs. Identical heads get identical memberships, and open PRs with direct (`explicit` / lower-confidence `body-ref`) links to the same issue are deterministically given a common cluster even when semantic summaries diverge. A PR's `cluster` backref is a list (`cluster.ids`); a straddler can belong to more than one cluster, and each cluster retains its per-member proposed dispositions in `cluster.proposals`.
 - **2 ANALYZE** (`analyze_driver.py` + the analyze workflow) — per-cluster dispositions + outcome, stored verbatim; a merge pick's blockers (below-bar review, a security verdict, a verify outcome) derive its effective disposition at read time (`gates.merge_demotion` via `Pr.disposition`), so a re-run or signal refresh that clears the blocker heals the read with nothing re-stored.
 - **3 GATE** (`gates.py`) — which merge candidates are clean enough for security review.
@@ -319,7 +321,8 @@ gets one unattended attempt per head SHA — a verdict ending (`pushed`,
 `refused`, `cancelled`) rests the PR until the author pushes, and only an
 operator's re-queue retries the same head; a `failed` ending is the machine's
 (a diff GitHub did not answer, a restart mid-run, an agent that never
-finished, a sandbox that could not run) and rests the PR only for
+finished, a sandbox that could not run, a `resubmit` that crashed — its
+traceback names the exception) and rests the PR only for
 `fix_worker.FAILED_RETRY_COOLDOWN_SECONDS`, so a recovered machine picks it
 back up unprompted. `TRIAGE_FIX_HUNT_FIX=1`
 additionally lets the hunter queue unguided `fix` actions, on the inverse
@@ -369,7 +372,10 @@ several such agents at once (`TRIAGE_ISSUE_FIX_MODELS`, one candidate per
 model), proves each candidate's tests red on the unfixed tree, runs every fix
 against every reproduction, and judges only a fix that passes each of them and
 at least two, shipping it with the tests of every reproduction it passed:
-candidates whose reproductions pin different behavior end `fix-disputed`.
+candidates whose reproductions pin different behavior, each with a fix that
+passes its own, end `fix-disputed`; fixes that would agree but for existing
+tests they all fail end `fix-pinned`, naming those tests, since the lane never
+rewrites a repository's tests.
 Agreement proves a fix does what the report asks, never that it does nothing
 more, so a cross-lane fix that clears the host's checks faces the scope-safety
 reviewer too and ends `fixed` only on its explicit `safe`; its inventory of
@@ -409,7 +415,8 @@ opens from the next numbered branch; with no token every run is a dry-run
 that stops before the push; every outcome is an `issue-propose` Activity entry.
 A proposal never merges: it faces `merge_eligibility` like any other PR. A
 cross-lane run that ends `fix-disputed` records its readings (groups of
-candidates whose fixes pass each other's reproductions, `cross_lane.readings`)
+candidates whose fixes pass every reproduction in the group, their own
+included, `cross_lane.readings`)
 and every candidate's patches and verdict. `python -m issue_triage.question
 --issue N --ask [--live]` asks the issue one question through
 `executor.ask_issue_question`: `issue_gates.question_gate` (disputed, open,
@@ -436,9 +443,9 @@ each candidate's own account, the agreement, the picked change, the checks, the
 reviewers, the question, the proposal — no transcripts); and `fix_thread`, the
 operator's words and the worker's notes. `fix_review.fix_status` derives on
 read whose move it is (`review`, `question`, `running`, `reporter`, `pr-open`,
-`pr-closed`, `failed`, `declined`, `pr-merged`; a proposal's `fix_followup`
-counts only while it follows that pull request, and `pr-closed` takes a new
-`solve`); the Issues query filters and sorts on it. The worker
+`pr-closed`, `failed`, `superseded`, `declined`, `pr-merged`; a proposal's
+`fix_followup` counts only while it follows that pull request, and `pr-closed`
+takes a new `solve`); the Issues query filters and sorts on it. The worker
 lane (`TRIAGE_ISSUE_FIX_WORKER=1`, health lane `issue-fix`) claims one request at
 a time by compare-and-swap (`IssueStore.claim_fix_request`) — a `solve` on any
 issue-fix worker, every follow-up only on the host its run names, since it needs
@@ -458,7 +465,14 @@ re-solves with a written answer; `ask-reporter` and `propose` take the executor'
 bot paths. Between requests the lane reads replies to questions asked on GitHub
 every half hour, and `TRIAGE_ISSUE_FIX_HUNT=1` lets it queue one `solve` for a
 fresh, well-reproduced issue with no linked PR within
-`TRIAGE_ISSUE_FIX_HUNT_BUDGET` a UTC day. The lane beats its own heartbeat (the
+`TRIAGE_ISSUE_FIX_HUNT_BUDGET` a UTC day. Until an attempt has a pull request of
+its own open, an open pull request by anyone else whose title or body names the
+issue (`issue_triage/superseded.py`, the propose step's search) supersedes it:
+the runner checks before and after every request, so a request on such an issue
+ends `cancelled` without running, and every ten minutes the lane sweeps the
+attempts waiting on their next step. The attempt's `fix_run.superseded` (schema
+29) reads `superseded`, carries no label, queues nothing, and waits for no
+answer; an operator's request after the rival closed clears it and runs. The lane beats its own heartbeat (the
 `issue_fix_worker` registry) while its drain loop runs, and on start and every
 five minutes `issue_fix_worker.recover_orphans` ends `failed` (reason
 `interrupted: …`) each `running` request this host claimed before its process
@@ -529,10 +543,12 @@ attempt, for the issues in scope: the ones a maintainer filed
 `label_for` derives one status label (`fix in progress`, `needs answer`,
 `iterating on PR`, `ready for review`, `couldn't fix`) from
 `fix_review.fix_status`, the attempt and the follow-up, carried by the issue and
-by the pull request it proposed; `comments_due` names the comments the attempt
-calls for — the conclusion of an attempt without a fix (finished within a day),
-the opened pull request on the issue, and the follow-up's ready or hand-back on
-the pull request, once per head — each rendered by the host with an agent's
+by the pull request it proposed, and none for a `superseded` attempt;
+`comments_due` names the comments the attempt calls for — the conclusion of an
+attempt without a fix (finished within a day), the opened pull request on the
+issue, the follow-up's ready or hand-back on the pull request, once per head,
+and, for a superseded attempt that had asked a question on the issue, that it
+stepped back (within a day of the mark) — each rendered by the host with an agent's
 words held inert, gated by `public_comments.problems`, and marked so it posts
 once. Every ten minutes the issue-fix worker follows up its proposals, then
 `refresh` ingests the in-scope issues GitHub reports updated (REST, candidate

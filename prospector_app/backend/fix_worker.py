@@ -79,11 +79,17 @@ PATCH_CHARS = 200_000
 TAIL_CHARS = 4000
 
 # resubmit exits that describe a world that moved rather than a decision:
-# a git/network failure (4), refs that shifted under the pin (6), and a push
-# the remote rejected (7). Retrying re-reads the live PR and re-pins, which is
-# exactly the remedy. Every other exit is a judgment — the PR is closed, the
-# merge conflicts, the fence refused the ref — and repeating it changes nothing.
+# a git/network failure or a git/gh call that timed out (4), refs that shifted
+# under the pin (6), and a push the remote rejected (7). Retrying re-reads the
+# live PR and re-pins, which is exactly the remedy. Every other exit resubmit
+# returns is a judgment — the PR is closed, the merge conflicts, the fence
+# refused the ref — and repeating it changes nothing. An exception resubmit
+# does not catch is this machine's fault: the interpreter prints a traceback
+# and exits 1, and `_fail_if_crashed` fails the request.
 TRANSIENT_EXITS = {4, 6, 7}
+
+# The line Python prints above an uncaught exception's traceback.
+TRACEBACK_HEADER = "Traceback (most recent call last):"
 
 # How many times a transient failure is re-queued before it is left for a human.
 MAX_ATTEMPTS = 3
@@ -473,11 +479,28 @@ _PLAIN_EXITS: dict[int, str] = {
 }
 
 
+def crash_line(output: str) -> str | None:
+    """The exception a crashed Python process ended on, read off the traceback
+    in its output, or None when the output carries no traceback. A chained
+    traceback ends on the exception that propagated, so the last header is the
+    one read; its frames are indented, and the exception is the first line
+    after them back at the margin."""
+    lines = output.splitlines()
+    headers = [i for i, ln in enumerate(lines) if ln.strip() == TRACEBACK_HEADER]
+    if not headers:
+        return None
+    return next((ln.strip() for ln in lines[headers[-1] + 1:]
+                 if ln.strip() and not ln[0].isspace()), "an uncaught exception")
+
+
 def plain_reason(rc: int, output: str) -> str:
     """A one-line explanation of a failed run for the operator, with the raw
-    output kept out of it. An unmapped exit falls back to the first line of what
-    the command actually said, which is at least a sentence rather than a
-    traceback."""
+    output kept out of it. A crash names the exception it ended on; an unmapped
+    exit falls back to the first line of what the command actually said."""
+    crash = crash_line(output)
+    if crash is not None:
+        return ("The resubmit helper crashed on the worker machine. This is a "
+                f"problem with the worker, not with the PR: {crash[:400]}")
     mapped = _PLAIN_EXITS.get(rc)
     first = next((ln.strip() for ln in output.splitlines() if ln.strip()), "")
     if rc == 9 and first.startswith("resubmit: "):
@@ -523,7 +546,8 @@ def _rested(req: dict, seconds: float) -> bool:
 
 def _settle(n: int, req: dict, rc: int, output: str) -> None:
     """Record a failed resubmit run: re-queue it when the exit says the world
-    moved and attempts remain, otherwise refuse it for a human to look at."""
+    moved and attempts remain, fail it when the helper crashed, otherwise
+    refuse it for a human to look at."""
     attempts = int(req.get("attempts") or 0) + 1
     if rc in TRANSIENT_EXITS and attempts < MAX_ATTEMPTS:
         data.store().edit_pr(n).record_fix_request(
@@ -535,10 +559,24 @@ def _settle(n: int, req: dict, rc: int, output: str) -> None:
         print(f"[fix-worker] PR #{n} exited {rc}; re-queued (attempt {attempts}"
               f"/{MAX_ATTEMPTS})", flush=True)
         return
+    if _fail_if_crashed(n, req, rc, output):
+        return
     reason = plain_reason(rc, output)
     if rc in TRANSIENT_EXITS:
         reason = f"{reason} Gave up after {attempts} attempts."
     _refuse(n, req, reason, result={"output": output[-TAIL_CHARS:]})
+
+
+def _fail_if_crashed(n: int, req: dict, rc: int, output: str,
+                     result: dict | None = None) -> bool:
+    """End the request `failed` when a resubmit run's `output` carries a
+    traceback, with the raw output tail kept beside `result`. Returns whether
+    it did."""
+    if crash_line(output) is None:
+        return False
+    _fail(n, req, plain_reason(rc, output),
+          result={**(result or {}), "output": output[-TAIL_CHARS:]})
+    return True
 
 
 def _log_run(n: int, req: dict, status: str, detail: str | None = None,
@@ -1221,9 +1259,12 @@ def _agent_resolve(n: int, claimed: dict, paused: list[str]) -> None:
     cont = _resubmit(n, "continue")
     if cont.returncode != 0:
         _resubmit(n, "abort")
+        output = (cont.stderr or cont.stdout).strip()
+        if _fail_if_crashed(n, claimed, cont.returncode, output, evidence):
+            return
         _refuse(n, claimed,
                 f"{_conflict_refusal(paused)} The agent's resolution did not pass the "
-                f"merge checks: {(cont.stderr or cont.stdout).strip()[:500]}",
+                f"merge checks: {output[:500]}",
                 result=evidence)
         return
     diff = _resubmit(n, "diff")
@@ -1842,11 +1883,13 @@ def _rebuild_fix(n: int, claimed: dict, result: dict) -> bool:
     applied = _resubmit(n, "apply", stdin=patch)
     if applied.returncode != 0:
         _resubmit(n, "abort")
+        output = (applied.stderr or applied.stdout).strip()
+        if _fail_if_crashed(n, claimed, applied.returncode, output, result):
+            return False
         _refuse(n, claimed,
                 f"The reviewed change no longer applies to PR #{n}'s head. "
                 f"Nothing was pushed — re-queue the fix to author it again.",
-                result={**result, "output": (applied.stderr
-                                             or applied.stdout).strip()[-TAIL_CHARS:]})
+                result={**result, "output": output[-TAIL_CHARS:]})
         return False
     return True
 
@@ -1921,8 +1964,9 @@ _VERDICT_ENDINGS = ("pushed", "refused", "cancelled")
 
 # A `failed` ending is the machine's, not the PR's — a diff GitHub did not
 # answer, a worker restart mid-run, an agent that never finished, a sandbox
-# that could not run. The hunter may try that head again once the failure is
-# this old, so a machine that recovers picks the PR back up on its own.
+# that could not run, a resubmit that crashed. The hunter may try that head
+# again once the failure is this old, so a machine that recovers picks the PR
+# back up on its own.
 FAILED_RETRY_COOLDOWN_SECONDS = 3600
 
 

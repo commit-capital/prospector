@@ -58,7 +58,7 @@ def classify(pr: Pr) -> dict | None:
         return None
     from prospector_app.backend import fix_queue, fix_worker, service
     req = pr.fix_request or {}
-    ok, _why = gates.merge_eligibility(pr)
+    ok, why = gates.merge_eligibility(pr)
     if ok and pr.disposition == "merge":
         gap = _unclear_check(pr)
         if gap is None:
@@ -67,11 +67,17 @@ def classify(pr: Pr) -> dict | None:
     if req.get("status") == "awaiting-review":
         return _r("act", "approve-parked",
                   f"a parked {req.get('action')} awaits your approval")
+    if pr.disposition == "merge" and why == f"not clean: {gates.THREAT_SCAN_STALE}":
+        return _r("auto", "waiting", "the threat scan has not judged this head yet; "
+                                     "a worker scans new heads every ten minutes")
     if pr.disposition == "needs-human":
         return _r("handed", "needs-human", pr.rationale or "flagged needs-human")
     if pr.security_verdict == "RED" and freshness.is_current(
             pr, "security", max_age_days=gates.SECURITY_MAX_AGE_DAYS):
         return _r("handed", "security-red", "the security review returned RED")
+    unscannable = gates.unscannable_reason(pr)
+    if unscannable and pr.threat_verdict != "malicious":
+        return _r("handed", "other", unscannable)
     if req.get("status") in fix_queue.IN_FLIGHT:
         return _r("auto", "queued", f"in the fix queue ({req.get('status')})")
     vr = pr.section("verify_request") or {}

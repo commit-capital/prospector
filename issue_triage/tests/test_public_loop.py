@@ -160,6 +160,40 @@ def test_the_hand_back_comment_keeps_the_reason_it_was_judged_with(store):
     assert back.kind == "handed-back" and "2 revisions spent" in back.body
 
 
+RIVAL = {"pr": 14918, "author": "contrib", "title": "fix x", "at": FINISHED}
+
+
+def test_a_superseded_attempt_carries_no_label_and_starts_nothing(store):
+    store.edit_issue(1).record_fix_run(_run(ending="fixed", patch="p", superseded=RIVAL))
+    issue = store.load_issue(1)
+    assert public_loop.label_for(issue) is None
+    assert public_loop.queue_due(issue, NOW) is None
+    store.edit_issue(1).record_fix_run(_run(ending="sandbox", fault=True, superseded=RIVAL))
+    store.edit_issue(1).record_fix_request({"action": "solve", "status": "done",
+                                            "source": "public", "finished_at": FINISHED})
+    issue = store.load_issue(1)
+    assert public_loop.label_for(issue) is None
+    assert public_loop.queue_due(issue, NOW + timedelta(hours=2), {}) is None
+
+
+def test_stepping_aside_from_a_question_asked_says_so_once(store):
+    asked = {**QUESTION, "asked": {"url": "u", "at": FINISHED}}
+    store.edit_issue(1).record_fix_run(_run(ending="fix-disputed", question=asked,
+                                            superseded=RIVAL))
+    [due] = public_loop.comments_due(store.load_issue(1), NOW)
+    assert (due.number, due.kind, due.key) == (1, "superseded", f"{FINISHED}:superseded")
+    assert "#14918" in due.body
+    assert public_loop.comments_due(store.load_issue(1), NOW + timedelta(days=2)) == []
+
+
+def test_stepping_aside_with_nothing_asked_says_nothing(store):
+    store.edit_issue(1).record_fix_run(_run(superseded=RIVAL))
+    assert public_loop.comments_due(store.load_issue(1), NOW) == []
+    store.edit_issue(1).record_fix_run(_run(ending="fix-disputed", question=QUESTION,
+                                            superseded=RIVAL))
+    assert public_loop.comments_due(store.load_issue(1), NOW) == []
+
+
 # --- a pass ----------------------------------------------------------------------
 
 @pytest.fixture
@@ -373,6 +407,26 @@ def test_the_author_s_reply_with_detail_starts_another_attempt(store, replies):
     assert issue.fix_thread[-1]["by"] == "nicky"
     assert issue.fix_public["reattempts"] == 1
     assert public_loop.label_for(issue) == IN_PROGRESS
+
+
+def test_replies_on_a_superseded_attempt_start_nothing(store, replies):
+    store.edit_issue(1).record_fix_run(_run(report_sha=_sha("bug 1", "b"), superseded=RIVAL))
+    replies["comments"] = [_comment("nicky", "It only fails with --flag set.")]
+    assert public_loop.answer_replies(store, mode="live", now=NOW) == 0
+    assert store.load_issue(1).fix_request is None and replies["routed"] == []
+
+
+def test_a_pass_takes_the_label_off_an_attempt_someone_else_took_up(store, writes):
+    asked = {**QUESTION, "asked": {"url": "u", "at": FINISHED}}
+    store.edit_issue(1).record_fix_run(_run(ending="fix-disputed", question=asked))
+    public_loop.sync(store, mode="live", now=NOW)
+    assert writes == [("label", 1, NEEDS_ANSWER, None, False)]
+    store.edit_issue(1).record_fix_run(_run(ending="fix-disputed", question=asked,
+                                            superseded=RIVAL))
+    public_loop.sync(store, mode="live", now=NOW)
+    public_loop.sync(store, mode="live", now=NOW)
+    assert writes[1:] == [("label", 1, None, NEEDS_ANSWER, False),
+                          ("comment", 1, "superseded", False)]
 
 
 def test_chatter_is_read_once_and_starts_nothing(store, replies):

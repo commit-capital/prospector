@@ -1287,6 +1287,10 @@ def main(argv: list[str] | None = None) -> int:
     except RuntimeError as e:
         print(f"resubmit: {e}", file=sys.stderr)
         return 4
+    except subprocess.TimeoutExpired as e:
+        cmd = " ".join(e.cmd) if isinstance(e.cmd, list) else e.cmd
+        print(f"resubmit: {cmd} timed out after {e.timeout:g}s", file=sys.stderr)
+        return 4
     return 2
 
 

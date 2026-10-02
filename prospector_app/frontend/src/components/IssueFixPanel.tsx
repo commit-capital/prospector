@@ -19,13 +19,14 @@ const STATUS_LABEL: Record<IssueFixStatus, string> = {
   "pr-open": "PR open",
   "pr-closed": "PR closed",
   failed: "Didn't finish",
+  superseded: "Someone else's PR",
   declined: "No fix",
   "pr-merged": "PR merged",
 };
 const STATUS_TONE: Record<IssueFixStatus, string> = {
   review: "green", question: "yellow", running: "blue", reporter: "muted",
-  "pr-open": "purple", "pr-closed": "amber", failed: "red", declined: "muted",
-  "pr-merged": "green",
+  "pr-open": "purple", "pr-closed": "amber", failed: "red", superseded: "muted",
+  declined: "muted", "pr-merged": "green",
 };
 
 /** The issue's auto-fix status as a chip; nothing when it has no attempt. */
@@ -71,6 +72,7 @@ export function IssueFixPanel({ d, onChanged }: { d: IssueDetail; onChanged: () 
 
 function FixBanner({ d, onChanged }: { d: IssueDetail; onChanged: () => void }) {
   const { pushToast } = useExec();
+  const { prUrl } = useRepoMeta();
   const req = d.fix_request;
   const status = d.fix_status;
   if (req && (req.status === "queued" || req.status === "running")) {
@@ -106,12 +108,19 @@ function FixBanner({ d, onChanged }: { d: IssueDetail; onChanged: () => void }) 
       <span className="vb-icon">
         {status === "review" ? "✅" : status === "question" ? "❓" : status === "pr-open" ? "🔗"
           : status === "pr-merged" ? "🔀" : status === "failed" ? "✗" : status === "reporter" ? "⏳"
-          : "⛔"}
+          : status === "superseded" ? "↪" : "⛔"}
       </span>
       <div>
         <div className="vb-headline">{STATUS_LABEL[status]}</div>
         {status === "question"
           ? <div className="vb-detail">The agents read the report differently — the question is below.</div>
+          : status === "superseded" && d.fix_run?.superseded
+          ? <div className="vb-detail">
+              <a href={prUrl(d.fix_run.superseded.pr)} target="_blank" rel="noreferrer">
+                #{d.fix_run.superseded.pr} ↗</a>
+              {d.fix_run.superseded.author ? ` by ${d.fix_run.superseded.author}` : ""} is open for
+              this issue, so the automation stepped aside.
+            </div>
           : d.fix_reason && <div className="vb-detail">{d.fix_reason}</div>}
       </div>
     </div>
@@ -182,6 +191,8 @@ function FixActions({ d, onChanged }: { d: IssueDetail; onChanged: () => void })
       <textarea className="fix-goal" rows={2} value={text}
         placeholder={status === "pr-closed"
           ? "Optional: why the PR was closed, or what the agents should do differently this time."
+          : status === "superseded"
+          ? "The agents stepped aside for that PR; trying again runs only once it is no longer open."
           : "Optional: anything the agents should know (where to look, what correct behavior is)."}
         onChange={(e) => setText(e.target.value)} aria-label="Guidance for the fix" />
       <div className="row-actions">

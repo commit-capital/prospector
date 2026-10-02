@@ -3,7 +3,7 @@ shape of its command — settle whether the repro corroborates, ahead of the
 judge's rating of an output tail the exit no longer explains."""
 from pipeline import gates
 from pipeline.model import Pr
-from pipeline.testsupport import reviews_section
+from pipeline.testsupport import reviews_section, threat_section
 
 
 HEAD = "abc123"
@@ -25,6 +25,7 @@ def _pr(**over) -> Pr:
         "reviews": reviews_section(HEAD, NOW),
         "drift": {"state": "applicable", "checked_at": NOW,
                   "against_head_sha": HEAD},
+        "threat": threat_section(HEAD, NOW),
     }
     rec.update(over)
     return Pr(None, rec)

@@ -1,6 +1,6 @@
 """The comments the public loop (`issue_triage.public_loop`) posts on an issue
-and on the pull request it opened: what a fix attempt concluded, and where the
-pull request stands.
+and on the pull request it opened: what a fix attempt concluded, where the pull
+request stands, and that it stepped back for someone else's.
 
 The host writes every sentence; an agent's words (a summary, a root cause, a
 reviewer's reason) appear only as clipped, inert plain text: no HTML comment,
@@ -17,6 +17,8 @@ from issue_triage import dispute_question, fix_pr_body
 MARKER = "<!-- prospector:issue-fix-public v1 issue={issue} key={key} -->"
 FRAGMENT_MAX = 600
 REASON_MAX = 300
+# The existing tests a `fix-pinned` conclusion lists.
+PINNED_MAX = 5
 FOOTER = ("_Written by Prospector's automated fix pipeline. Its analysis may be wrong; "
           "a maintainer has the final say._")
 _CLOSING_RE = re.compile(r"(?i)\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)(\s+)#(\d+)")
@@ -89,6 +91,18 @@ def conclusion(issue: int, key: str, run: dict) -> str:
         lines += ["", "If the behavior should be different, a reply here describing the "
                       "expected behavior starts another attempt."]
         return _finish(issue, key, lines)
+    if ending == "fix-pinned":
+        tests = ((run.get("agreement") or {}).get("pinned") or {}).get("tests") or []
+        lines = ["Prospector's automated fix pipeline reproduced this issue, and its "
+                 "independent attempts agreed on a fix, but every such fix fails existing "
+                 "tests that pass today:", ""]
+        lines += [f"- {quiet(t, REASON_MAX)}" for t in tests[:PINNED_MAX]]
+        lines += ["", "Either those tests pin the behavior this issue asks to change, or the "
+                      "fix breaks something they guard. The pipeline never changes a "
+                      "repository's own tests, so updating them is a maintainer's call: if the "
+                      "requested behavior is wanted, a reply here once that change has landed "
+                      "starts another attempt."]
+        return _finish(issue, key, lines)
     lines = ["Prospector's automated fix pipeline tried to fix this issue, but it could not "
              "land a fix that passed every check."]
     reproduced = any(c.get("reproduces") for c in run.get("candidates") or [])
@@ -120,6 +134,15 @@ def opened(issue: int, key: str, pr: int, summary: object) -> str:
     if what:
         lines += ["", f"The change: {what}."]
     return _finish(issue, key, lines)
+
+
+def superseded(issue: int, key: str, pr: int) -> str:
+    """The comment on issue `issue` when pull request `pr`, someone else's, is
+    open on an issue the attempt had asked a question on."""
+    return _finish(issue, key, [
+        f"Pull request #{int(pr)} is open for this issue, so Prospector's automated fix "
+        "pipeline is stepping back from it and will not act on an answer to the question "
+        "above."])
 
 
 def ready(issue: int, key: str) -> str:

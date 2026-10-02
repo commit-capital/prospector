@@ -242,7 +242,7 @@ serves is reported as failed, and the next backfill tries it again.
 
 ## Schema version
 
-Bump `STORE_SCHEMA_VERSION` 28 → 29 ("the threat_evidence table; an older
+Bump `STORE_SCHEMA_VERSION` 29 → 30 ("the threat_evidence table; an older
 threat scan flags a malicious PR without preserving its evidence"). This follows
 the bumps for new tables (11 alerts, 18 advisories, 25 claims). It also means an
 older checkout cannot write to the store until it updates, so a stale machine
