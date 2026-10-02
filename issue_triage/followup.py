@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -358,18 +359,22 @@ def _older_open(issue: int, pr: int) -> list[int]:
 
 
 def _route_feedback(store: IssueStore, n: int, pr: int, fresh: list[reply_router.Reply],
-                    fu: dict, *, live: bool) -> str | None:
+                    fu: dict, *, live: bool,
+                    may_route: Callable[[], bool] = lambda: True) -> str | None:
     """The revision guidance new maintainer feedback `fresh` asks for, or None.
     Feedback the router reads as asking nothing or that the safeguards refused
     is marked handled in `fu`; feedback it could not read waits for the next
     pass, up to MAX_ROUTE_MISSES. A dry run routes nothing and marks it
-    handled."""
+    handled. While `may_route` says no — the AI capacity is paused — the
+    feedback waits for the next pass and counts as no miss."""
     if not fresh:
         return None
     count = f"{len(fresh)} maintainer comment{'' if len(fresh) == 1 else 's'} on #{pr}"
     if not live:
         fu["feedback_seen_at"] = fresh[-1].at
         _note(store, n, f"Dry run: would route {count}.")
+        return None
+    if not may_route():
         return None
     verdict = reply_router.route(
         f"it opened pull request #{pr} with a fix for the issue and is revising it until CI "
@@ -390,9 +395,11 @@ def _route_feedback(store: IssueStore, n: int, pr: int, fresh: list[reply_router
     return None
 
 
-def poll(store: IssueStore, *, mode: str | None = None) -> int:
+def poll(store: IssueStore, *, mode: str | None = None,
+         may_route: Callable[[], bool] = lambda: True) -> int:
     """Take one follow-up step on every issue whose proposal is open. Returns
-    how many issues took a step other than waiting."""
+    how many issues took a step other than waiting. `may_route` says whether
+    the reply-routing agent may run now."""
     from issue_triage import fix_review, propose
     from prospector_app.backend import executor
 
@@ -416,7 +423,8 @@ def poll(store: IssueStore, *, mode: str | None = None) -> int:
         if "feedback_seen_at" not in fu:
             fu["feedback_seen_at"] = storekit.now() if fu.get("pr") else ""
         fresh = fresh_feedback(state, fu) if state.state == "open" else []
-        asked = _route_feedback(store, n, int(pr), fresh, fu, live=mode == "live")
+        asked = _route_feedback(store, n, int(pr), fresh, fu, live=mode == "live",
+                                may_route=may_route)
         missed = None
         pending = fu.pop("maintainer_pending", None)
         if pending and pending.get("head_sha") == state.head_sha:

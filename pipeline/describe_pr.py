@@ -12,14 +12,13 @@ itself is the curated bot `pr edit`, run by the fix worker.
 """
 from __future__ import annotations
 
-import base64
 import json
 import os
 import re
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from pipeline import gh, headless_agent, profile, review_policy, reviewers, settings
+from pipeline import gh, headless_agent, profile, review_policy, reviewers
 
 if TYPE_CHECKING:
     from pipeline.model import Pr
@@ -122,14 +121,7 @@ def missing_sections(body: str, required: tuple[str, ...] | list[str]) -> list[s
 def fetch_template() -> str | None:
     """The repository's PR template text from its default branch, or None when
     it has none or GitHub did not answer."""
-    doc = gh.gh_json(f"repos/{settings.repo()}/contents/{TEMPLATE_PATH}")
-    raw = (doc or {}).get("content")
-    if not isinstance(raw, str) or not raw.strip():
-        return None
-    try:
-        return base64.b64decode(raw).decode("utf-8")
-    except (ValueError, UnicodeDecodeError):
-        return None
+    return gh.default_branch_file(TEMPLATE_PATH)
 
 
 def _prompt(pr: int, title: str, required: tuple[str, ...] | list[str]) -> str:

@@ -2,10 +2,13 @@
 the agent stubbed — no claude subprocess, no GitHub."""
 import json
 import threading
+from datetime import datetime, timezone
 
 from issue_triage import analyze_issues
 from issue_triage import issue_analyze_driver
 from issue_triage import issue_store
+from pipeline import capacity
+from pipeline import headless_agent
 
 META = {"title": "t", "body": "b", "state": "open", "updated_at": "T1"}
 
@@ -125,6 +128,49 @@ def test_main_retries_a_failed_batch(tmp_path, monkeypatch, capsys):
     st = issue_store.IssueStore(tmp_path)
     assert st.load_issue(1).disposition == "needs-human"
     assert issue_analyze_driver.pending(st) == []
+
+
+def test_main_stops_at_the_first_usage_limit_hit(tmp_path, monkeypatch, capsys):
+    _seed(tmp_path, 6)
+    reset = datetime(2026, 10, 1, 22, 0, tzinfo=timezone.utc)
+    calls: list[list[int]] = []
+
+    def fake_batch(entries):
+        calls.append([e["number"] for e in entries])
+        raise headless_agent.CapacityExhausted("usage limit reached", resets_at=reset)
+
+    monkeypatch.setattr(analyze_issues, "run_batch_agent", fake_batch)
+    rc = analyze_issues.main(["--batch", "2", "--concurrency", "1", "--retries", "2",
+                              "--store", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert calls == [[1, 2]]
+    assert (f"AI usage limit reached — resets at {reset.astimezone():%H:%M} "
+            "(2 batch(es) not started); stopping.") in out
+    assert "retrying" not in out
+    assert "across 0/3 batches" in out
+    st = issue_store.IssueStore(tmp_path)
+    summaries = [r for r in st.runs()
+                 if r.phase == "analyze" and r.raw.get("stats", {}).get("attempted")]
+    assert summaries[0].raw["stats"]["failed_batches"] == 3
+
+
+def test_main_defers_when_the_capacity_gate_is_closed(tmp_path, monkeypatch, capsys):
+    _seed(tmp_path, 4)
+    retry = datetime(2026, 10, 1, 23, 0, tzinfo=timezone.utc)
+    calls: list[list[int]] = []
+
+    def fake_batch(entries):
+        calls.append([e["number"] for e in entries])
+        raise capacity.CapacityPaused(capacity.Decision(False, "day cap 50% reached", retry))
+
+    monkeypatch.setattr(analyze_issues, "run_batch_agent", fake_batch)
+    rc = analyze_issues.main(["--batch", "2", "--concurrency", "1", "--store", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert len(calls) == 1
+    assert (f"AI capacity paused: day cap 50% reached — retry ~{retry.astimezone():%H:%M}; "
+            "stopping.") in out
 
 
 def test_main_names_issues_left_without_analysis(tmp_path, monkeypatch, capsys):

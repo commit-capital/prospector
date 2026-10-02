@@ -23,6 +23,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+from pipeline import agent_wave
 from pipeline import analyze_driver
 from pipeline import headless_agent
 from pipeline import progress
@@ -92,18 +93,26 @@ def main(argv: list[str] | None = None) -> int:
     committed = 0
     failed = 0
     done = 0
+    stop: agent_wave.Stop | None = None
     _say(f"③ Running {len(bundles)} analyze agent(s), up to {conc} at a time "
          f"(each can take several minutes)…")
+    wave = agent_wave.Wave()
     with ThreadPoolExecutor(max_workers=conc) as pool:
-        futures = {pool.submit(run_cluster_agent, cid, b): cid for cid, b in bundles.items()}
+        futures = {wave.submit(pool, run_cluster_agent, cid, b): cid
+                   for cid, b in bundles.items()}
         for fut in as_completed(futures):
             cid = futures[fut]
             done += 1
             try:
                 payload = fut.result()
+            except agent_wave.NotStarted:
+                failed += 1
+                continue
             except Exception as e:
                 failed += 1
                 _say(f"    ! cluster {cid} failed, continuing: {e}  ({done}/{len(todo)})")
+                if stop is None and (stop := agent_wave.stop_reason(e, wave.not_started())):
+                    _say(stop.line)
                 continue
             # Serial on the main thread — the store is never touched concurrently.
             errs = analyze_driver.commit_analysis(store, payload)
@@ -130,6 +139,8 @@ def main(argv: list[str] | None = None) -> int:
                       "stats": {"committed": committed, "failed": failed,
                                 "orphans": orphans, "salvage_items": salvage,
                                 "attempted": len(todo)}})
+    if stop:
+        return stop.exit_code
     return 0 if committed else 1
 
 

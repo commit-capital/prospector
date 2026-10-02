@@ -9,7 +9,7 @@ import os
 import pytest
 
 from issue_triage import lane_check, reproduce_issue
-from pipeline import headless_agent
+from pipeline import authoring, headless_agent
 
 FILES_REPLY = json.dumps({
     "files": [{"path": "src/__tests__/repro.test.ts", "purpose": "reproduces the crash"}],
@@ -116,6 +116,12 @@ def test_the_check_tool_and_test_conventions_reach_the_prompt(monkeypatch):
     prompt = _run(monkeypatch, FILES_REPLY)["calls"]["prompt"]
     assert f"{lane_check.TOOL} test <your test files>" in prompt
     assert "test conventions" in prompt
+
+
+def test_the_contributor_docs_reach_the_prompt(monkeypatch):
+    docs = [authoring.Doc("AGENTS.md", "Keep contracts synchronized.")]
+    prompt = _run(monkeypatch, FILES_REPLY, contributor_docs=docs)["calls"]["prompt"]
+    assert '<doc path="AGENTS.md">\nKeep contracts synchronized.\n</doc>' in prompt
 
 
 def test_the_prompt_marks_the_report_untrusted(monkeypatch):

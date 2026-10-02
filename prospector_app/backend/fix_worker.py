@@ -46,12 +46,13 @@ import tempfile
 import threading
 import time
 import traceback
+from contextlib import AbstractContextManager, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from collections.abc import Callable
 from typing import TYPE_CHECKING, NamedTuple
 
-from pipeline import (author_fix, ci_signal, compile_preflight, describe_pr, diffpaths, freshness,
+from pipeline import (author_fix, capacity, ci_signal, compile_preflight, describe_pr, diffpaths, freshness,
                       gates, gh, headless_agent, objections, profile, resolve_conflicts,
                       resolve_evidence, review_fix, review_policy, review_resolve,
                       reviewers, risktier, settings, storekit, verify_driver)
@@ -325,13 +326,41 @@ def reclaim_stranded_resolves() -> list[int]:
     return cancelled
 
 
+# The sources that queue a request without an operator: the idle hunter's picks
+# and objection continuations.
+AUTO_SOURCES = ("auto", "objection")
+# The actions an agent carries out.
+AGENT_ACTIONS = ("fix", "resolve", "describe")
+
+
+def _unattended_agent(req: dict) -> bool:
+    return req.get("source") in AUTO_SOURCES and req.get("action") in AGENT_ACTIONS
+
+
+def _metering(n: int) -> AbstractContextManager[None]:
+    """Book PR `n`'s request's agent spend as the fix lane's unattended work
+    when the automation queued it."""
+    rec = data.prs().get(n)
+    req = (rec.fix_request or {}) if rec is not None else {}
+    return capacity.metered("fix") if req.get("source") in AUTO_SOURCES else nullcontext()
+
+
 def next_queued() -> int | None:
     """The best runnable PR, or None: every `queued` request, ranked operator
     picks before auto-picks and, within each group, oldest queued_at first — so
     an operator click never waits behind an earlier auto-queued request. Reads
     the backend's incremental store snapshot, so the scan costs no store
-    round-trip."""
-    return _oldest("queued")
+    round-trip.
+
+    An agent action the automation queued waits while this machine's AI
+    capacity gate is closed (lane_health.capacity_open), asked only when such a
+    request leads; a mechanical one behind it still runs."""
+    n = _oldest("queued")
+    rec = data.prs().get(n) if n is not None else None
+    if (rec is None or not _unattended_agent(rec.fix_request or {})
+            or lane_health.capacity_open("fix")):
+        return n
+    return _oldest("queued", hold=_unattended_agent)
 
 
 def next_approved() -> int | None:
@@ -383,11 +412,13 @@ def next_reviewable() -> int | None:
     return best_n
 
 
-def _oldest(status: str, mine_only: tuple[str, ...] = ()) -> int | None:
+def _oldest(status: str, mine_only: tuple[str, ...] = (),
+            hold: Callable[[dict], bool] | None = None) -> int | None:
     """The best PR at `status`, operator picks before auto-picks and, within
     each, a maintainer's PR (gates.priority_author) first, then oldest. An action named in `mine_only` is passed over unless this
     machine recorded it (or the record names none, from before hosts were
-    stamped) — it depends on state only that machine holds."""
+    stamped) — it depends on state only that machine holds. A request `hold`
+    names is passed over."""
     me = settings.worker_id()
     best_n: int | None = None
     best_key: tuple[bool, bool, str] | None = None
@@ -397,9 +428,11 @@ def _oldest(status: str, mine_only: tuple[str, ...] = ()) -> int | None:
             continue
         if req.get("action") in mine_only and req.get("host") not in (None, me):
             continue
+        if hold is not None and hold(req):
+            continue
         if req.get("attempts") and not _rested(req, TRANSIENT_RETRY_SECONDS):
             continue
-        key = (req.get("source") in ("auto", "objection"),
+        key = (req.get("source") in AUTO_SOURCES,
                not gates.priority_author(rec.author, rec.author_association),
                str(req.get("queued_at") or ""))
         if best_key is None or key < best_key:
@@ -522,7 +555,7 @@ def _log_run(n: int, req: dict, status: str, detail: str | None = None,
     entry = {
         "phase": "fix:single", "pr": n, "started": req.get("started_at"),
         "finished": _now(),
-        "trigger": "autohunt" if req.get("source") in ("auto", "objection") else None,
+        "trigger": "autohunt" if req.get("source") in AUTO_SOURCES else None,
         "stats": {"status": status, "action": req.get("action", "fix"),
                   "detail": detail, "host": host or settings.worker_id()}}
     signature = (req.get("objection") or {}).get("signature")
@@ -534,6 +567,8 @@ def _log_run(n: int, req: dict, status: str, detail: str | None = None,
         traceback.print_exc()
     if status != "failed":
         lane_health.note_success("fix")
+    elif kind == "capacity-paused":
+        pass  # a deferral until the AI capacity opens, not this machine's fault
     elif kind == "agent-unavailable":
         lane_health.trip_agent_lanes(detail or "the agent CLI could not run")
     else:
@@ -839,10 +874,10 @@ def _author_fix(n: int, claimed: dict) -> None:
 
     The agent writes inside a clone of the contributor's branch, the finished
     patch is held to the files the agent reported, re-gated on the paths it
-    really touched, refuted by a reviewer that did not write it, and compiled —
-    and only then does it park or push. Every exit writes a terminal status;
-    the worktree survives only on the parked path, because an agent's edits
-    cannot be re-derived at approval time."""
+    really touched, refuted by a reviewer that did not write it, compiled, and
+    held to the repository's lint — and only then does it park or push. Every
+    exit writes a terminal status; the worktree survives only on the parked
+    path, because an agent's edits cannot be re-derived at approval time."""
     rec = data.store().load_pr(n)
     if rec is None:
         _refuse(n, claimed, f"PR #{n} left the store")
@@ -935,9 +970,26 @@ def _author_fix(n: int, claimed: dict) -> None:
             _end_on_preflight(n, claimed, pf,
                               {**evidence, "compile_preflight": pf, "detail": pf_why})
             return
+    evidence["compile_preflight"] = pf
 
-    result = {**evidence, "compile_preflight": pf,
-              "message": verdict["summary"] or _commit_message("fix")}
+    lint_cmd = profile.active().verify.lint_cmd
+    if lint_cmd is not None:
+        _running_step(n, claimed, "lint", action="fix")
+        lint = _lint(n, pr_patch, patch, lint_cmd)
+        evidence["lint"] = lint
+        block = gates.lint_block(lint, "the fix")
+        if block:
+            _resubmit(n, "abort")
+            if lint.get("error"):
+                _fail(n, claimed, "The lint check couldn't run on the worker machine — "
+                                  "nothing was pushed. This is a problem with the worker, "
+                                  f"not with the PR: {str(lint['error'])[:400]}",
+                      result=evidence, kind=str(lint.get("error_kind") or "sandbox"))
+            else:
+                _refuse(n, claimed, block[:1].upper() + block[1:], result=evidence)
+            return
+
+    result = {**evidence, "message": verdict["summary"] or _commit_message("fix")}
     if "fix" in settings.fix_autopush():
         # The bar's last piece of evidence: the test files related to what the
         # agent touched, run over the same composed tree the preflight measured.
@@ -1111,6 +1163,11 @@ def _agent_resolve(n: int, claimed: dict, paused: list[str]) -> None:
         _refuse(n, claimed,
                 f"{_conflict_refusal(paused)} An agent resolution was withheld: {why}.",
                 result=evidence)
+        return
+    if claimed.get("source") in AUTO_SOURCES and not lane_health.capacity_open("fix"):
+        _fail(n, claimed, f"{_conflict_refusal(paused)} Resolving them needs an agent, and "
+                          f"this machine's AI capacity is paused; the hunter tries again later.",
+              result=evidence, kind="capacity-paused")
         return
 
     prepared = _resubmit(n, "prepare", "--merge")
@@ -1361,18 +1418,39 @@ def _diff_text(r: subprocess.CompletedProcess[str]) -> str:
     return text.rstrip("\r\n") if text.strip() else ""
 
 
-def _preflight(n: int, patch: str) -> dict | None:
-    """The compile-preflight record for the authored tree, or None when the
-    profile configures no compile command. The patch is written where the
-    sandbox driver reads it from, so the change is measured before it ever
-    reaches the contributor's branch."""
-    rec = data.store().load_pr(n)
-    head = (rec.head_sha if rec else "") or ""
+def _scratch_patch(n: int, name: str, patch: str) -> Path:
+    """`patch` written where the sandbox driver reads it from, so a change is
+    measured before it ever reaches the contributor's branch."""
     scratch = settings.verify_scratch() / "autofix"
     scratch.mkdir(parents=True, exist_ok=True)
-    path = scratch / f"pr-{n}.patch"
+    path = scratch / f"pr-{n}.{name}"
     path.write_text(patch + "\n")
-    return compile_preflight.run_for_patch(n, head, path)
+    return path
+
+
+def _head_sha(n: int) -> str:
+    rec = data.store().load_pr(n)
+    return (rec.head_sha if rec else "") or ""
+
+
+def _preflight(n: int, patch: str) -> dict | None:
+    """The compile-preflight record for the authored tree, or None when the
+    profile configures no compile command."""
+    return compile_preflight.run_for_patch(n, _head_sha(n), _scratch_patch(n, "patch", patch))
+
+
+def _lint(n: int, pr_patch: Path, authored: str, cmd: str) -> dict:
+    """The lint command `cmd` over the pull request with the authored change
+    applied. A failure the pull request's own tree fails too carries
+    `tree_fails`: the contributor's, not the agent's."""
+    head = _head_sha(n)
+    lint = compile_preflight.run_command_for_patch(
+        n, head, _scratch_patch(n, "lint.patch", _over_pr(pr_patch, authored)), cmd, lane="lint")
+    if lint.get("exit") == gates.SENTINEL_TEST_FAIL and not lint.get("error"):
+        alone = compile_preflight.run_command_for_patch(n, head, pr_patch, cmd, lane="lint")
+        if alone.get("exit") == gates.SENTINEL_TEST_FAIL:
+            lint["tree_fails"] = True
+    return lint
 
 
 def _commit_message(action: str) -> str:
@@ -1888,7 +1966,7 @@ def _auto_in_flight(action: str) -> int:
     count = 0
     for rec in data.prs().values():
         req = rec.fix_request or {}
-        if (req.get("source") in ("auto", "objection") and req.get("action") == action
+        if (req.get("source") in AUTO_SOURCES and req.get("action") == action
                 and req.get("status") in fix_queue.IN_FLIGHT):
             count += 1
     return count
@@ -2009,7 +2087,9 @@ def next_auto() -> tuple[str, int, dict | None] | None:
     the unattended spend. A `describe` has its own slots of the same size and
     comes next: one read-only agent, no sandbox. With the slots full the
     mechanical pool runs. A maintainer's PR (gates.priority_author) in any of
-    the three goes ahead of all of them."""
+    the three goes ahead of all of them. While this machine's AI capacity gate
+    is closed (lane_health.capacity_open, asked only when an agent pick leads)
+    only the mechanical pool runs."""
     limit = settings.fix_hunt_limit()
     slots = {"fix": limit - _auto_in_flight("fix"),
              "describe": limit - _auto_in_flight("describe")}
@@ -2029,6 +2109,8 @@ def next_auto() -> tuple[str, int, dict | None] | None:
             best[lane] = (key, action, n, objection)
     lanes = sorted(best, key=lambda lane: (best[lane][0][0],
                                            ("fix", "describe", "mechanical").index(lane)))
+    if lanes and lanes[0] != "mechanical" and not lane_health.capacity_open("fix"):
+        lanes = [lane for lane in lanes if lane == "mechanical"]
     if not lanes:
         return None
     _, action, n, objection = best[lanes[0]]
@@ -2087,15 +2169,19 @@ def _drain_loop() -> None:
                 state["current_pr"] = n
                 beat()
                 print(f"[fix-worker] picking up PR #{n}", flush=True)
-                run_one(n)
+                with _metering(n):
+                    run_one(n)
                 continue
             n = next_reviewable()
-            if n is not None:
+            # The auto-review's reviewers are agents the automation starts,
+            # whoever queued the resolve.
+            if n is not None and lane_health.capacity_open("fix"):
                 state["current_pr"] = n
                 beat()
                 print(f"[fix-worker] auto-reviewing parked resolve for PR #{n}",
                       flush=True)
-                review_parked_resolve(n)
+                with capacity.metered("fix"):
+                    review_parked_resolve(n)
                 continue
             pick = next_auto() if enabled_autohunt() else None
             if pick is None:

@@ -1,9 +1,12 @@
 import itertools
 import json
 import os
+from datetime import datetime, timezone
 
 import pytest
+from pipeline import capacity
 from pipeline import headless_agent as ha
+from pipeline.store import Store
 
 
 def test_parse_stream_accumulates_assistant_text_and_emits_events():
@@ -643,3 +646,135 @@ def test_every_agent_run_in_the_source_names_its_read_roots_and_environment():
                         and not {"read_root", "env_allow"} <= {k.arg for k in node.keywords}):
                     unscoped.append(f"{path.relative_to(root)}:{node.lineno}")
     assert unscoped == []
+
+
+# --- capacity: readings, usage, limit hits, the unattended gate --------------
+
+_ACCT = capacity.Account(key="k", billing="subscription", plan="max", label="x · Max")
+
+
+def _stream_proc(cmd, lines: list[dict], returncode: int = 0, raw: list[str] = ()):
+    proc = _FakeProc(cmd)
+    proc.returncode = returncode
+    proc.stdout = iter([*(json.dumps(line) for line in lines), *raw])
+    return proc
+
+
+def _limit_event(status: str = "allowed", five: float = 0.4) -> dict:
+    return {"type": "rate_limit_event", "rate_limit_info": {
+        "status": status, "resetsAt": 1790895600, "rateLimitType": "five_hour",
+        "unifiedWindows": {"five_hour": {"utilization": five, "resetsAt": 1790895600},
+                           "seven_day": {"utilization": 0.2, "resetsAt": 1791439200}}}}
+
+
+@pytest.fixture
+def capacity_store(monkeypatch, tmp_path):
+    store = Store(tmp_path)
+    monkeypatch.setattr(ha, "_store", lambda: store)
+    monkeypatch.setattr(capacity, "account", lambda refresh=False: _ACCT)
+    monkeypatch.delenv(capacity.UNATTENDED_ENV, raising=False)
+    return store
+
+
+def test_a_run_records_its_reading_and_usage(monkeypatch, capacity_store):
+    monkeypatch.setattr(ha.subprocess, "Popen", lambda cmd, **kw: _stream_proc(cmd, [
+        _limit_event(five=0.42),
+        {"type": "result", "total_cost_usd": 0.25, "modelUsage": {"claude-opus-x": {}},
+         "usage": {"input_tokens": 10, "output_tokens": 5,
+                   "cache_read_input_tokens": 100, "cache_creation_input_tokens": 7}}]))
+    ha.run_agent("hi", allow_gh=False, cwd="/tmp")
+    reading = capacity.reading_from_dict(capacity_store.load_capacity("k")["reading"])
+    assert reading is not None and reading.five_hour is not None
+    assert reading.five_hour.utilization == 0.42
+    (run,) = capacity_store.agent_runs("2000-01-01T00:00:00+00:00")
+    assert run["phase"] == "agent:run" and run["account"] == "k"
+    assert run["cost_usd"] == 0.25 and run["unattended"] is False and run["lane"] == "operator"
+    assert run["output_tokens"] == 5
+
+
+def test_a_run_with_neither_reading_nor_usage_books_nothing(monkeypatch, capacity_store):
+    monkeypatch.setattr(ha.subprocess, "Popen", lambda cmd, **kw: _FakeProc(cmd))
+    ha.run_agent("hi", allow_gh=False, cwd="/tmp")
+    assert capacity_store.load_capacity("k") == {}
+    assert capacity_store.agent_runs("2000-01-01T00:00:00+00:00") == []
+
+
+def test_a_rejected_run_pauses_the_account_until_its_reset(monkeypatch, capacity_store):
+    monkeypatch.setattr(ha.subprocess, "Popen", lambda cmd, **kw: _stream_proc(
+        cmd, [_limit_event(status="rejected", five=1.0),
+              {"type": "result", "is_error": True, "result": "You've hit your session limit"}],
+        returncode=1))
+    with pytest.raises(ha.CapacityExhausted) as caught:
+        ha.run_agent("hi", allow_gh=False, cwd="/tmp")
+    assert caught.value.resets_at == datetime.fromtimestamp(1790895600, timezone.utc)
+    assert isinstance(caught.value, ha.AgentUnavailable)
+    pause = capacity_store.load_capacity("k")["pause"]
+    assert pause["until"] == "2026-10-01T23:00:00+00:00"
+
+
+def test_limit_text_alone_is_a_limit_hit(monkeypatch, capacity_store):
+    monkeypatch.setattr(ha.subprocess, "Popen", lambda cmd, **kw: _stream_proc(
+        cmd, [], returncode=1, raw=["Claude AI usage limit reached|1790895600"]))
+    with pytest.raises(ha.CapacityExhausted):
+        ha.run_agent("hi", allow_gh=False, cwd="/tmp")
+    assert "pause" in capacity_store.load_capacity("k")
+
+
+def test_not_logged_in_stays_an_outage(monkeypatch, capacity_store):
+    monkeypatch.setattr(ha.subprocess, "Popen", lambda cmd, **kw: _stream_proc(
+        cmd, [], returncode=1, raw=["Not logged in · Please run /login"]))
+    with pytest.raises(ha.AgentUnavailable) as caught:
+        ha.run_agent("hi", allow_gh=False, cwd="/tmp")
+    assert not isinstance(caught.value, ha.CapacityExhausted)
+
+
+def test_an_overloaded_service_is_transient(monkeypatch, capacity_store):
+    monkeypatch.setattr(ha.subprocess, "Popen", lambda cmd, **kw: _stream_proc(
+        cmd, [], returncode=1, raw=['API Error: 529 {"type":"overloaded_error"}']))
+    with pytest.raises(ha.AgentTransient):
+        ha.run_agent("hi", allow_gh=False, cwd="/tmp")
+
+
+def test_unattended_work_never_starts_an_agent_past_the_gate(monkeypatch, capacity_store):
+    spawned: list[object] = []
+    monkeypatch.setattr(ha.subprocess, "Popen", lambda cmd, **kw: spawned.append(cmd))
+    monkeypatch.setattr(ha, "probe_reading", lambda timeout=180: None)
+    with capacity.unattended("pipeline"), pytest.raises(capacity.CapacityPaused):
+        ha.run_agent("hi", allow_gh=False, cwd="/tmp")
+    assert spawned == []
+
+
+def test_attended_work_is_never_gated(monkeypatch, capacity_store):
+    monkeypatch.setattr(ha.subprocess, "Popen", lambda cmd, **kw: _FakeProc(cmd))
+    assert ha.run_agent("hi", allow_gh=False, cwd="/tmp") == "ok"
+
+
+def test_the_failure_classifiers():
+    assert ha.limit_spent("You've hit your session limit")
+    assert not ha.limit_spent("Not logged in")
+    assert ha.transient("API Error: 529 overloaded")
+    assert not ha.transient("claude exited 1; last output: boom")
+
+
+
+def test_a_limit_hit_reads_as_a_spent_limit_to_lane_health(monkeypatch, capacity_store):
+    monkeypatch.setattr(ha.subprocess, "Popen", lambda cmd, **kw: _stream_proc(
+        cmd, [_limit_event(status="rejected", five=1.0)], returncode=1))
+    with pytest.raises(ha.CapacityExhausted) as caught:
+        ha.run_agent("hi", allow_gh=False, cwd="/tmp")
+    assert ha.limit_spent(str(caught.value))
+
+
+def test_a_metered_run_is_booked_as_unattended_spend(monkeypatch, capacity_store):
+    monkeypatch.setattr(ha.subprocess, "Popen", lambda cmd, **kw: _stream_proc(cmd, [
+        {"type": "result", "total_cost_usd": 0.5, "usage": {"input_tokens": 1}}]))
+    with capacity.metered("fix"):
+        ha.run_agent("hi", allow_gh=False, cwd="/tmp")
+    (run,) = capacity_store.agent_runs("2000-01-01T00:00:00+00:00")
+    assert (run["lane"], run["unattended"]) == ("fix", True)
+    assert capacity_store.capacity_spend("k", "2000-01-01T00:00:00+00:00") == 0.5
+
+
+def test_a_reason_naming_a_pull_request_is_not_transient():
+    assert not ha.transient("PR #529 failed its checks")
+    assert ha.transient("API Error: 529 Overloaded")

@@ -161,10 +161,67 @@ export interface MachineRow {
   beats: Record<string, MachineBeat>;
   online: boolean;
   base_pinned: boolean;
+  /** The AI account the machine's Claude CLI is signed in to, when it has reported one. */
+  ai_account: { key: string; label: string } | null;
 }
 export interface MachinesRoster {
   machines: MachineRow[];
   local: string;
+}
+
+/** One usage window of an AI account: the share used (0–1) and when it resets. */
+export interface CapacityWindow {
+  utilization: number;
+  resets_at: string;
+}
+/** The newest observation of an AI account's usage windows, from any machine on it. */
+export interface CapacityReading {
+  five_hour: CapacityWindow | null;
+  seven_day: CapacityWindow | null;
+  status: string;
+  at: string;
+  by: string;
+}
+/** An AI account's capacity policy. The caps are 0–1 fractions of the 5-hour
+ *  window; `day_start`/`day_end` are "HH:MM" read in `timezone`. */
+export interface CapacityPolicy {
+  timezone: string;
+  day_start: string;
+  day_end: string;
+  day_cap: number;
+  night_cap: number;
+  weekly_pacing: boolean;
+  daily_budget_usd: number | null;
+}
+/** Whether unattended agent work may start on an account now, and when it is looked at again. */
+export interface CapacityDecision {
+  allowed: boolean;
+  reason: string;
+  retry_at: string | null;
+}
+/** One AI account as `/api/capacity` serves it. `cap_now`, `next_boundary` and
+ *  `pacing_line` are null on an API-key account. */
+export interface CapacityAccount {
+  key: string;
+  label: string;
+  billing: "subscription" | "api";
+  machines: string[];
+  this_machine: boolean;
+  policy: CapacityPolicy;
+  policy_saved: boolean;
+  reading: CapacityReading | null;
+  reading_age_seconds: number | null;
+  cap_now: number | null;
+  next_boundary: string | null;
+  pacing_line: number | null;
+  weekly_resets_at: string | null;
+  decision: CapacityDecision;
+  spend_today_by_lane: Record<string, number>;
+}
+/** Every known AI account, this machine's first, and this machine's account key. */
+export interface CapacityState {
+  accounts: CapacityAccount[];
+  this_account: string | null;
 }
 
 /** How the community responded to our triage since we acted (replied / reopened /
@@ -754,6 +811,11 @@ export interface FixResult {
                      concerns: string[] } | null;
   compile_preflight?: { exit?: number | null; refused?: string | null;
                         error?: string | null; error_excerpt?: string | null } | null;
+  /** The repository's lint (verify.lint_cmd) over an authored fix. A failure the
+   *  default branch (`error_kind` "base-lint") or the PR's own tree
+   *  (`tree_fails`) shares is not held against the fix. */
+  lint?: { exit?: number | null; error?: string | null; error_kind?: string | null;
+           error_excerpt?: string | null; tree_fails?: boolean | null } | null;
   /** The sandbox runs the authoring agent made (action `fix`), oldest first. */
   checks?: SandboxCheck[] | null;
   /** The unattended-push judgment stamped on a parked `resolve` when the
@@ -999,9 +1061,10 @@ export interface WorkStatus {
 export interface VerifyQueue { queue: VerifyQueueEntry[]; history: AutohuntRun[]; }
 
 /** One problem the health strip names: a lane count, a tripped or offline
- *  worker, or a stale ingest. `detail` is the hover tooltip. */
+ *  worker, a stale ingest, or an AI account whose background work is paused.
+ *  `detail` is the hover tooltip, shown inline on a capacity line. */
 export interface SystemHealthItem {
-  kind: "lanes" | "trip" | "offline" | "ingest";
+  kind: "lanes" | "trip" | "offline" | "ingest" | "capacity";
   severity: "amber" | "red";
   label: string;
   detail?: string | null;
@@ -1060,11 +1123,11 @@ export interface DiffResult {
   source: string;
 }
 
-/** POST a JSON body; resolves to the JSON reply, and rejects with the
+/** Send a JSON body; resolves to the JSON reply, and rejects with the
  *  server's `detail` (or the status line) when the reply is not ok. */
-async function postJson<T = { ok: boolean; detail: string }>(url: string, body: unknown): Promise<T> {
+async function sendJson<T>(method: "POST" | "PUT", url: string, body: unknown): Promise<T> {
   const r = await fetch(url, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
   });
   if (!r.ok) {
     let detail = `${r.status} ${r.statusText}`;
@@ -1072,6 +1135,14 @@ async function postJson<T = { ok: boolean; detail: string }>(url: string, body: 
     throw new Error(detail);
   }
   return (await r.json()) as T;
+}
+
+function postJson<T = { ok: boolean; detail: string }>(url: string, body: unknown): Promise<T> {
+  return sendJson<T>("POST", url, body);
+}
+
+function putJson<T>(url: string, body: unknown): Promise<T> {
+  return sendJson<T>("PUT", url, body);
 }
 
 /** GET a JSON reply in one of the shared read slots (readSlots.ts). An
@@ -1202,6 +1273,7 @@ export interface IssueFixQuestion {
 }
 export interface IssueFixProof {
   compile?: { exit?: number; tree_fails?: boolean; error?: string; excerpt?: string };
+  lint?: { exit?: number; base_fails: boolean; error?: string; excerpt?: string };
   related_tests?: { files: string[]; exit?: number | null; base_fails?: boolean };
   suite?: { skipped?: string; confirmed?: boolean; flake?: boolean; excluded?: number;
             new_failures?: string[]; rebaselined?: string[] };
@@ -2050,6 +2122,10 @@ export const api = {
     return r.json() as Promise<ClaimSet>;
   },
   machines: () => get<MachinesRoster>("/api/machines"),
+  capacity: () => get<CapacityState>("/api/capacity"),
+  /** Save this machine's own AI account's policy; resolves to that account. */
+  saveCapacityPolicy: (policy: CapacityPolicy) =>
+    putJson<CapacityAccount>("/api/capacity/policy", policy),
   prAuthors: () => get<{ authors: Array<{ login: string; pr_count: number }> }>("/api/activity/pr-authors"),
   activityPeople: () => get<{ people: ActivityPerson[] }>("/api/activity/people"),
   activitySummary: (p: { group_by?: string; since?: string; until?: string; identity?: string; operator?: string; pr_author?: string; include_dry_run?: boolean } = {}) => {
@@ -2072,6 +2148,7 @@ export const api = {
     const r = await fetch(`/api/merge/pr/${n}?dry_run=${dryRun}&method=${method}${q}`, { method: "POST" });
     return r.json() as Promise<ExecResult>;
   },
+  mergeProgress: (n: number) => get<MergeProgress>(`/api/merge/pr/${n}/progress`),
   commentLine: async (n: number, file: string, line: number, body: string, dryRun: boolean,
                       overrideStale?: boolean) => {
     const r = await fetch(`/api/comment/pr/${n}?dry_run=${dryRun}`, {
@@ -2362,6 +2439,12 @@ export interface TrustLadder {
 }
 // `status: "stale"` is a refusal the operator can confirm past: the write quotes
 // facts the author has moved beyond, and `stale` names the drift.
+/** A live merge this app process is running and the step it has reached. */
+export interface MergeProgress {
+  running: boolean; pr?: number; head_sha?: string | null;
+  started_at?: string; step?: string; step_at?: string;
+}
+
 export interface ExecResult { pr: number; action: string; status: string; detail: string; forced?: boolean; stale?: StaleBlock }
 
 /** One real action taken on a PR (close/merge/reopen/comment/review), from the

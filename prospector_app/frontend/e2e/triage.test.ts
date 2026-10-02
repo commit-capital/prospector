@@ -71,5 +71,8 @@ test("a malicious PR shows its merge block and the API enforces it", { timeout: 
   assert.equal(result.status, "blocked");
   assert.match(result.detail, /malicious/i);
   assert.equal((await api("/api/prs/102")).github_state, "open");
-  assert.deepEqual((await api("/api/activity")).items, [], "no successful action receipt");
+  // The refusal is recorded so it outlives the result chip; nothing landed.
+  const receipts = (await api("/api/activity")).items as { kind: string; pr: number; status: string; detail: string }[];
+  assert.deepEqual(receipts.map(e => [e.kind, e.pr, e.status]), [["merge", 102, "blocked"]], "only the refusal receipt");
+  assert.match(receipts[0].detail, /^merge gate: .*malicious/i);
 });

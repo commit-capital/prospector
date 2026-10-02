@@ -13,6 +13,8 @@ from prospector_app.backend import sandbox_check
 TYPECHECK = profile.parse_profile(
     {"version": 1, "verify": {"compile_cmd": "pnpm -r typecheck"}}, "t")
 BARE = profile.parse_profile({"version": 1}, "t")
+LINT = profile.parse_profile(
+    {"version": 1, "verify": {"lint_cmd": "pnpm check:module-boundaries"}}, "t")
 
 
 @pytest.fixture
@@ -22,6 +24,17 @@ def typecheck_profile(monkeypatch):
 
 def test_typecheck_is_the_profiles_compile_command(typecheck_profile):
     assert sandbox_check.lane_command(["typecheck"]) == ("pnpm -r typecheck", None)
+
+
+def test_lint_is_the_profiles_lint_command(monkeypatch):
+    monkeypatch.setattr(profile, "active", lambda: LINT)
+    assert sandbox_check.lane_command(["lint"]) == ("pnpm check:module-boundaries", None)
+
+
+def test_lint_without_a_configured_command_is_refused(monkeypatch):
+    monkeypatch.setattr(profile, "active", lambda: BARE)
+    cmd, why = sandbox_check.lane_command(["lint"])
+    assert cmd is None and "no lint command" in why
 
 
 def test_typecheck_without_a_configured_command_is_refused(monkeypatch):
@@ -90,12 +103,13 @@ def test_main_runs_the_lane_over_pr_plus_edits(tmp_path, monkeypatch, typecheck_
                         lambda wt: "diff --git a/edit.ts b/edit.ts\n+e\n")
     seen: dict = {}
 
-    def fake_run(pr, head, patch, cmd):
-        seen.update(pr=pr, head=head, text=patch.read_text(), cmd=cmd)
+    def fake_run(pr, head, patch, cmd, lane="compile"):
+        seen.update(pr=pr, head=head, text=patch.read_text(), cmd=cmd, lane=lane)
         return {"cmd": cmd, "exit": 0, "duration_s": 2.0}
     monkeypatch.setattr(compile_preflight, "run_command_for_patch", fake_run)
 
     assert sandbox_check.main(["typecheck"]) == 0
+    assert seen["lane"] == "compile"
     assert seen["pr"] == 7 and seen["head"] == "a" * 40
     assert seen["cmd"] == "pnpm -r typecheck"
     assert seen["text"] == "diff --git a/pr.ts b/pr.ts\n+pr\ndiff --git a/edit.ts b/edit.ts\n+e\n"
@@ -113,7 +127,7 @@ def test_a_failing_lane_exits_nonzero_with_the_excerpt(tmp_path, monkeypatch,
     monkeypatch.setenv("PROSPECTOR_CHECK_PR_PATCH", str(pr_patch))
     monkeypatch.setattr(sandbox_check, "authored_patch", lambda wt: "")
     monkeypatch.setattr(compile_preflight, "run_command_for_patch",
-                        lambda pr, head, patch, cmd: {"cmd": cmd, "exit": 20,
+                        lambda pr, head, patch, cmd, lane="compile": {"cmd": cmd, "exit": 20,
                                                       "duration_s": 2.0,
                                                       "error_excerpt": "TS2345 nope"})
     assert sandbox_check.main(["typecheck"]) == 1
@@ -161,7 +175,7 @@ def test_every_run_is_recorded_for_the_worker_to_collect(tmp_path, monkeypatch,
          "error": "TimeoutError: the sandbox lock was held for 600s"},
     ])
     monkeypatch.setattr(compile_preflight, "run_command_for_patch",
-                        lambda pr, head, patch, cmd: next(runs))
+                        lambda pr, head, patch, cmd, lane="compile": next(runs))
 
     assert sandbox_check.main(["typecheck"]) == 0
     assert sandbox_check.main(["test", "src/a.test.ts"]) == 1
@@ -188,7 +202,7 @@ def test_a_refused_run_records_the_refusal_as_its_error(tmp_path, monkeypatch,
                                                         typecheck_profile, capsys):
     _under_author(monkeypatch, tmp_path)
     monkeypatch.setattr(compile_preflight, "run_command_for_patch",
-                        lambda pr, head, patch, cmd: {"cmd": cmd, "duration_s": 0.0,
+                        lambda pr, head, patch, cmd, lane="compile": {"cmd": cmd, "duration_s": 0.0,
                                                       "refused": "deps touched"})
     assert sandbox_check.main(["typecheck"]) == 1
     capsys.readouterr()
@@ -200,7 +214,7 @@ def test_the_preflights_own_error_kind_is_kept(tmp_path, monkeypatch, typecheck_
                                               capsys):
     _under_author(monkeypatch, tmp_path)
     monkeypatch.setattr(compile_preflight, "run_command_for_patch",
-                        lambda pr, head, patch, cmd: {"cmd": cmd, "exit": 20, "duration_s": 1.0,
+                        lambda pr, head, patch, cmd, lane="compile": {"cmd": cmd, "exit": 20, "duration_s": 1.0,
                                                       "error": "the base fails it too",
                                                       "error_kind": "base-compile"})
     sandbox_check.main(["typecheck"])
@@ -212,7 +226,7 @@ def test_the_preflights_own_error_kind_is_kept(tmp_path, monkeypatch, typecheck_
 def test_the_record_is_bounded(tmp_path, monkeypatch, typecheck_profile, capsys):
     _under_author(monkeypatch, tmp_path)
     monkeypatch.setattr(compile_preflight, "run_command_for_patch",
-                        lambda pr, head, patch, cmd: {"cmd": cmd, "exit": 20, "duration_s": 1.0,
+                        lambda pr, head, patch, cmd, lane="compile": {"cmd": cmd, "exit": 20, "duration_s": 1.0,
                                                       "error_excerpt": "x" * 10_000,
                                                       "error": "y" * 10_000})
     sandbox_check.main(["typecheck"])

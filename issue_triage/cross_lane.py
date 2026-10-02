@@ -26,6 +26,7 @@ other lanes; `agent_runs` counts every candidate and the reviewer.
 """
 from __future__ import annotations
 
+import contextvars
 import itertools
 import shutil
 from collections.abc import Callable
@@ -35,6 +36,7 @@ from pathlib import Path
 
 from issue_triage import fix_lane, issue_gates, lane_check, lane_tree, review_issue_fix, solo_lane
 from pipeline import (
+    authoring,
     check_records,
     diffpaths,
     gates,
@@ -87,7 +89,8 @@ def _author(spec: fix_lane.LaneSpec, workdir: Path, cand: Candidate,
                                    records=records, test_patch=None, pre_patch=pre_patch_file)
         env["PROSPECTOR_ISSUE_CHECK_MAX_RUNS"] = str(solo_lane.MAX_RUNS)
         verdict = solo_lane.author(str(clone), title=spec.title, body=spec.body, env=env,
-                                   model=cand.model, guidance=spec.guidance)
+                                   model=cand.model, guidance=spec.guidance,
+                                   contributor_docs=authoring.docs_from_tree(spec.base.clone))
         cand.checks = check_records.collect(records, solo_lane.MAX_RUNS)
         if "give_up" in verdict:
             cand.ending = "not-a-defect" if verdict["kind"] == "not-a-defect" else "no-fix"
@@ -303,10 +306,13 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
     try:
         on_step(f"{len(models)} agents reproducing and fixing")
         agent_runs = len(models)
+        # Each candidate runs in a copy of this context, so the lane its spend is
+        # metered under reaches the pool's threads.
         with ThreadPoolExecutor(max_workers=len(models)) as pool:
             cands = list(pool.map(
-                lambda im: _author(spec, workdir, Candidate(index=im[0], model=im[1]),
-                                   pre_patch_file), enumerate(models)))
+                lambda im: contextvars.copy_context().run(
+                    _author, spec, workdir, Candidate(index=im[0], model=im[1]), pre_patch_file),
+                enumerate(models)))
         result = {"candidates": [c.summary() for c in cands], "proof": {}, "reviews": [],
                   "patch": "",
                   "candidate_patches": [{"index": c.index, "test_patch": c.test_patch,

@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from issue_triage import cross_lane, fix_lane, review_issue_fix, solo_lane
-from pipeline import gates, headless_agent, prove, resolve_evidence, verify_driver
+from pipeline import authoring, gates, headless_agent, prove, resolve_evidence, verify_driver
 
 
 def _legs(exit_: int, confirm: int | None) -> dict:
@@ -46,12 +46,13 @@ def cross(tmp_path, monkeypatch):
     monkeypatch.setenv("TRIAGE_ISSUE_FIX_MODELS", "opus,sonnet,opus")
     state: dict = {"agents": [_writes("a.test.ts", 2), _writes("b.test.ts", 2),
                               _writes("c.test.ts", 2, extra_lines=3)],
-                   "models": [], "green_runs": 0}
+                   "models": [], "docs": [], "green_runs": 0}
 
     def fake_author(worktree, *, title, body, env, model=None, guidance=None, attempt=None,
-                    on_event=None):
+                    contributor_docs=(), on_event=None):
         index = int(Path(worktree).parent.name.split("-")[1])
         state["models"].append((index, model))
+        state["docs"].append(list(contributor_docs))
         return state["agents"][index](worktree)
 
     n = {"i": 0}
@@ -106,6 +107,7 @@ def cross(tmp_path, monkeypatch):
 
     state["run"] = run
     state["workdir"] = tmp_path / "work"
+    state["base_dir"] = base_dir
     return state
 
 
@@ -143,6 +145,12 @@ def test_every_candidate_s_patches_are_kept_even_when_disputed(cross):
 def test_each_candidate_runs_on_its_own_model(cross):
     cross["run"]()
     assert sorted(cross["models"]) == [(0, "opus"), (1, "sonnet"), (2, "opus")]
+
+
+def test_each_candidate_is_handed_the_base_s_contributor_docs(cross):
+    (cross["base_dir"] / "AGENTS.md").write_text("Reuse the helpers in src/util.\n")
+    cross["run"]()
+    assert cross["docs"] == [[authoring.Doc("AGENTS.md", "Reuse the helpers in src/util.")]] * 3
 
 
 def test_readings_that_pin_different_behavior_end_fix_disputed(cross):

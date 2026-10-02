@@ -21,6 +21,7 @@ from alert_triage import advisory_dups
 from alert_triage.advisory_store import (ADVISORY_VERDICTS, GHSA_ALPHABET, GHSA_PATTERN,
                                          OPEN_STATES, AdvisoryStore)
 from alert_triage.alert_freshness import FIX_SCAN_MAX_AGE_DAYS, is_current
+from pipeline import agent_wave
 from pipeline import headless_agent
 from pipeline import settings
 from pipeline import storekit
@@ -269,16 +270,23 @@ def main(argv: list[str] | None = None) -> int:
     roster_rows = roster(store)
     batches = [entries[i:i + args.batch] for i in range(0, len(entries), args.batch)]
     applied = failed = done = 0
+    stop: agent_wave.Stop | None = None
+    wave = agent_wave.Wave()
     with ThreadPoolExecutor(max_workers=conc) as pool:
-        futures = {pool.submit(run_batch_agent, b, roster_rows): b for b in batches}
+        futures = {wave.submit(pool, run_batch_agent, b, roster_rows): b for b in batches}
         for fut in as_completed(futures):
             label = _label(futures[fut])
             done += 1
             try:
                 good = fut.result()
+            except agent_wave.NotStarted:
+                failed += 1
+                continue
             except Exception as e:
                 failed += 1
                 _say(f"    ! {label} failed, continuing: {e}  ({done}/{len(batches)})")
+                if stop is None and (stop := agent_wave.stop_reason(e, wave.not_started())):
+                    _say(stop.line)
                 continue
             try:
                 n = apply_verdicts(store, good)
@@ -292,6 +300,8 @@ def main(argv: list[str] | None = None) -> int:
     _say(f"✓ applied {applied} verdicts across {len(batches) - failed}/{len(batches)} "
          f"batches; {remaining} advisories still unscanned.")
     _record_pass(store, started, len(cands), len(todo), applied, failed)
+    if stop:
+        return stop.exit_code
     return 0 if applied else 1
 
 

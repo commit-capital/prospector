@@ -1,5 +1,5 @@
-"""The one host command an issue-fix lane agent may run: the project's typecheck
-or its test runner over named files, inside the verify sandbox over the machine's
+"""The one host command an issue-fix lane agent may run: the project's typecheck,
+its lint, or its test runner over named files, inside the verify sandbox over the machine's
 pinned base plus the stage's frozen reproduction tests plus the agent's
 uncommitted edits. The base, the frozen tests, the records file and the run cap
 arrive in PROSPECTOR_ISSUE_CHECK_* set by the worker, never on argv, so the agent
@@ -77,7 +77,8 @@ def main(argv: list[str]) -> int:
         patch = (prove.flatten(base.clone, Path(pre_patch).read_text(), *parts, label=label)
                  if pre_patch else prove.compose(label, *parts))
         rec = prove.run_command(base, patch, cmd, label=label,
-                                phase="compile" if argv == ["typecheck"] else "green")
+                                lane="lint" if argv == ["lint"] else "compile",
+                                phase="green" if argv[0] == "test" else "compile")
     except (ValueError, subprocess.SubprocessError, OSError) as e:
         rec = {"cmd": cmd, "refused": str(e)}
     check_records.append(records, sandbox_check.check_record(argv, rec),

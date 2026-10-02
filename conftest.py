@@ -43,3 +43,16 @@ os.environ.setdefault("PROSPECTOR_FEEDBACK_REPO", "test-owner/test-meta-repo")
 os.environ.setdefault("TRIAGE_PROFILE", os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     "pipeline", "tests", "fixtures", "profile.json"))
+# Unattended agent work is marked by this variable; a developer's shell must
+# never make a test's agent calls gated.
+os.environ.pop("PROSPECTOR_UNATTENDED", None)
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _no_real_ai_account(monkeypatch):
+    """`capacity.account()` asks the machine's real Claude CLI who is signed
+    in; no test reaches it. A test that needs an account sets one."""
+    from pipeline import capacity
+    monkeypatch.setattr(capacity, "account", lambda refresh=False: None)

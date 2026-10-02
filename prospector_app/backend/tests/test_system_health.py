@@ -166,9 +166,10 @@ def test_trip_detail_carries_the_remedy():
 def test_status_reads_every_worker_registry_in_one_statement(store, monkeypatch):
     from sqlalchemy import event
 
-    from prospector_app.backend import alert_data, issues
+    from prospector_app.backend import alert_data, capacity_view, issues
     monkeypatch.setattr(issues, "cached_runs", lambda: [])
     monkeypatch.setattr(alert_data, "runs", lambda: [])
+    monkeypatch.setattr(capacity_view, "health_items", lambda: [])
     now = datetime.now(timezone.utc)
     store.save_fix_worker({"host": "mac", "last_beat": now.isoformat()})
     store.save_verify_worker({"host": "linux", "last_beat": (now - timedelta(hours=3)).isoformat()})

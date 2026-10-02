@@ -1,8 +1,10 @@
 """Headless find-fixed runner: batching, verdict filtering, store commits — the
 agent stubbed, no claude subprocess, no GitHub."""
 import json
+from datetime import datetime, timezone
 
 from issue_triage import find_fixed, issue_fixed_driver, issue_store
+from pipeline import headless_agent
 
 META = {"title": "t", "body": "b", "state": "open", "updated_at": "T1"}
 CAUSAL_EVIDENCE = {
@@ -85,6 +87,28 @@ def test_main_retries_a_failed_batch(tmp_path, monkeypatch, capsys):
     assert "retrying 1 failed batch" in out
     assert st.load_issue(5).fix_scan["status"] == "not-fixed"
     assert issue_fixed_driver.candidates(st) == []
+
+
+def test_main_stops_at_the_first_usage_limit_hit(tmp_path, monkeypatch, capsys):
+    _seed(tmp_path, 4)
+    reset = datetime(2026, 10, 1, 22, 0, tzinfo=timezone.utc)
+    calls: list[list[int]] = []
+
+    def fake_batch(entries):
+        calls.append([e["number"] for e in entries])
+        raise headless_agent.CapacityExhausted("usage limit reached", resets_at=reset)
+
+    monkeypatch.setattr(find_fixed, "run_batch_agent", fake_batch)
+    rc = find_fixed.main(["--batch", "1", "--concurrency", "1", "--store", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert len(calls) == 1
+    assert (f"AI usage limit reached — resets at {reset.astimezone():%H:%M} "
+            "(3 batch(es) not started); stopping.") in out
+    assert "retrying" not in out
+    passes = [r for r in issue_store.IssueStore(tmp_path).runs()
+              if r.phase == "find-fixed" and r.raw.get("stats")]
+    assert passes[0].raw["stats"]["failed_batches"] == 4
 
 
 def test_main_names_issues_left_unscanned(tmp_path, monkeypatch, capsys):

@@ -165,7 +165,8 @@ One canonical store, seven phases plus a deterministic threat-scan backstop. **T
 - **Reviewers** (`reviewers.py` + `review_fetch.py` + `review_policy.py`): the ONE registry of automated PR reviewers — code reviewers (Greptile, CodeRabbit) and security scanners (Superagent, Socket). Ingest fetches each PR's bot feed (reviews, review threads with resolution, comments, the head's check runs) in one GraphQL call per ten PRs, re-reading a PR's conversation only when GitHub's `updatedAt` or the head moved, and stores every reviewer's normalized entry under the PR's `reviews` section; each adapter's `bar` judges its entry `pass | fail | stale | pending | na`. `review_policy` decides which reviewers gate: `TRIAGE_REVIEW_PROVIDER=auto` (default) reads the `reviewers` registry ingest recomputes and gates on every reviewer seen within `TRIAGE_REVIEWER_ACTIVE_DAYS`; `none` or an explicit id list override. `ci_signal.py` derives CI from check runs minus the reviewers' own, so a reviewer's verdict reads under its name and CI reflects the repository's workflows.
 - **Gates** (`gates.py`): the ONE policy module. `pr_clean` (not-malicious ∧ every active reviewer's and scanner's bar ∧ CI passing ∧ mergeable ∧ fresh), `security_eligible`, `verify_eligible`, `merge_allowed` (pipeline auto-recommend — requires a current `verified-fix` alongside GREEN security), `merge_eligibility` (human-initiated app merge — drops the disposition requirement; treats never-run, stale, pending, and unverifiable verification as non-blocking; requires no reason for those merges; blocks actual negative verification evidence; and permits an explicit `escalate` only with a logged reason), the derived `cluster_state` (computed on read, never stored), and `merge_demotion` — the ONE merge-pick consequence (security verdict + verify outcome + quality-gate bar), derived at read time by `Pr.disposition`/`rationale`/`asks` over a stored-verbatim ANALYZE verdict, so nothing derived is ever stored and a cleared fact heals the read in place. **Every active reviewer's bar is a hard merge requirement** — which reviewers gate is detected from the repository (or pinned by `TRIAGE_REVIEW_PROVIDER`; `pipeline/review_policy.py`). A merge pick any active reviewer or scanner blocks reads as `request-changes`, with that reviewer's own ask. A deployment with `TRIAGE_REVIEW_PROVIDER=none` requires no external review. A `threat` verdict of `malicious` is a sticky hard block (fails closed, no staleness exemption). A PR may belong to several clusters (straddlers, #196); each cluster proposes a disposition for its members and `reconcile_disposition` picks the PR's single disposition by severity precedence (`needs-human > close-dup > close-fixed > close-stale > request-changes > merge` — most-blocking wins).
 - **Threats** (`threats.py`): the ONE threat-detection policy — attack-pattern signatures (obfuscated self-decoders, capability smuggles, build-config require-injection, EOL-churn camouflage) scanned over a PR's diff, plus the durable actor blocklist + incident log in the store's `threats` registry. `threat_scan.py` is the deterministic driver (Phase 0.5). Code reviewers/CI are quality signals, **not** a security verdict — this is the supply-chain backstop; scanner findings (Superagent, Socket) reach the SECURITY agents as evidence to confirm or refute, never as a verdict.
-- **Profile** (`profile.py`): the ONE repository-policy profile — repository-specific vocabulary as validated JSON data (`TRIAGE_PROFILE` path; strict parse, hard error on unknown/malformed fields). Owns the subsystem taxonomy, the path→risk-tier glob map, the CODEOWNERS gating policy (gated globs + owners), trusted/automation authors, dependency manifests, the test/artifact path rules, and the review-harness PR-template policy (`review-new-pr/harness` reads the same JSON standalone via stdlib `json`, never importing `pipeline`).
+- **Profile** (`profile.py`): the ONE repository-policy profile — repository-specific vocabulary as validated JSON data (`TRIAGE_PROFILE` path; strict parse, hard error on unknown/malformed fields). Owns the subsystem taxonomy, the path→risk-tier glob map, the CODEOWNERS gating policy (gated globs + owners), trusted/automation authors, dependency manifests, the test/artifact path rules, the contributor docs code-authoring agents are handed (`authoring.contributor_docs`, default the agent-instruction files the common coding agents read — `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.github/copilot-instructions.md`, `CONVENTIONS.md` — then `CONTRIBUTING.md` in each place GitHub looks for it), and the review-harness PR-template policy (`review-new-pr/harness` reads the same JSON standalone via stdlib `json`, never importing `pipeline`).
+- **Authoring** (`authoring.py`): the ONE account of how an agent that writes a change bound for `TRIAGE_REPO` fits it to the repository — the house-style rules (`HOUSE_STYLE`: reuse an existing helper before adding one, put the change in the layer that owns the behavior, match the neighbouring code and tests, refactor nothing the change does not need) and the repository's own contributor docs, read from a tree only its maintainers change: the lane's base for the issue-fix agents (`docs_from_tree`), the default branch on GitHub for the PR autofix agent, whose checkout is the contributor's (`docs_from_upstream`). The prompt ranks the docs below its own rules and tells the agent their workflow instructions are not its job. PR autofix (`author_fix`) and the issue-fix reproduction, fix, and solo/cross agents all take them; the reproduction agent, which writes tests alone, takes the docs without `HOUSE_STYLE`. When the profile names `verify.lint_cmd` — the repository's mechanical convention checks — every one of those agents is offered it as a `lint` lane of its sandbox check (`lint_note`), and the host holds every agent-authored change to it (`gates.lint_block`): the lint runs in the sandbox over the tree the change produces, and a failure the tree without the change shares (the default branch, `error_kind` `base-lint`; the PR's own diff or a replay's pre-fix tree, `tree_fails`) is the repository's and does not count against the change. A fix that brings in a lint failure is refused (autofix) or ends `fix-unproven` (issue fix); a lint sandbox that cannot run is the machine's failure. Human-authored PRs and their merges are not held to it.
 - **Taxonomy** (`taxonomy.py`): the ONE subsystem-classification accessor; the vocabulary itself is repository policy in the active profile (`profile.py`, selected by `TRIAGE_PROFILE`, generic default = everything `other`); `issue_triage` imports it.
 - **Issue links** (`issue_triage/issue_links.py`): an issue's linked PRs are read through `linked_prs` — the ONE accessor merging the issue's stored links with GitHub's own closing references and an index of the PR store's `issues.linked` sections (`issue_triage/pr_index.py`), so the Issues tab, the ANALYZE and FIND-FIXED bundles, and the close-as-fixed gate all see a PR opened after the issue's last ingest.
 
@@ -233,8 +234,8 @@ on (`gates.fix_withheld_paths`: the CODEOWNERS-gated globs plus
 rule, while the re-gate over the finished patch stays the guarantee. The
 clone is the head commit alone, so the agent is handed the PR's diff against its
 base as a host file, and it may run exactly one host command,
-`prospector_app/agent/sandbox-check` (`typecheck` or `test <test files>`), which
-runs the profile's compile command or test runner inside the verify sandbox over
+`prospector_app/agent/sandbox-check` (`typecheck`, `lint`, or `test <test files>`), which
+runs the profile's compile command, lint command, or test runner inside the verify sandbox over
 current default-branch HEAD + the PR diff + the agent's current edits
 (`prospector_app/backend/sandbox_check.py`, pins read from `PROSPECTOR_CHECK_*`
 set by `author_fix`, never argv); the host runs none of the contributor's code,
@@ -252,8 +253,9 @@ record (the lane, the files, the exit, and why it could not run when it did
 not) in `<verify scratch>/autofix/pr-<n>.checks.jsonl`, which the worker
 collects after the agent returns and stores as `fix_request.result.checks` on
 every ending; the queue row and the PR's fix panel show it, and the autopush
-bar does not consult it. The compile preflight on the finished patch
-measures that same composed tree. Only an explicit
+bar does not consult it. The compile preflight and the lint
+(`fix_worker._lint`, `gates.lint_block`) on the finished patch measure that
+same composed tree. Only an explicit
 `safe` passes; a malformed, timed-out, or crashed reviewer reads as unsafe. In
 between, the patch is held to the files the agent reported
 (`author_fix.assert_disclosed`) and re-gated on the paths it really touched, so
@@ -340,7 +342,7 @@ integrator: each locked-down agent (`allow_gh=False`, its own clone as
 `issue_gates` name the ending — a reproduction outcome from
 `issue_gates.reproduction_outcome` over the two red legs `prove` observed, a
 fix's fate from `issue_gates.fix_proof_bar` over the green legs, the compile
-preflight, the related-tests run, and two refuting reviews (root-cause,
+preflight, the lint, the related-tests run, and two refuting reviews (root-cause,
 scope-safety). The reproduction agent's authored tests are held to the host's
 rules: the reproduction must prove red on the base, and the preservation tests
 it writes beside it — the neighbouring behavior a fix must keep — must prove
@@ -592,6 +594,39 @@ worker's health is its own `worker_health:<id>` registry row. Worker stdout
 is mirrored to `<verify scratch>/logs/worker-<id>.log` (`worker_log.py`).
 The security lane's skip set carries a reason per PR
 and expires after six hours.
+
+**AI CAPACITY** (`pipeline/capacity.py` + `prospector_app/backend/capacity_view.py`) is
+the ONE policy for how much of each AI account unattended agent work may
+spend. A machine's account is what `claude auth status --json` reports (kept an
+hour; keyed by a hash of org and email, so machines on one account share it;
+the label masks the email). Every headless run (`headless_agent.run_agent`)
+parses the CLI's `rate_limit_event` — the account's 5-hour and 7-day window
+utilization — and records the newest reading in the store's `ai_capacity:<key>`
+row (each half replaced only by a newer one), and its usage and cost as an
+`agent:run` record in the `agent` ledger kind. The policy lives in
+`ai_account:<key>`, set on the Setup tab's AI capacity card for this machine's
+own account (`PUT /api/capacity/policy`): for a subscription, a time zone,
+daytime hours, a daytime and an overnight cap (defaults 08:00–23:00, 50% /
+90%) and weekly pacing (weekly use may run at most 5 points ahead of the
+elapsed share of the account's own week); for an API key, a daily budget,
+without which no unattended agent work runs. `capacity.check` answers whether
+unattended work may start an agent now; a window past its reset reads as
+started over, a reading older than ten minutes is refreshed by one Haiku probe
+(`headless_agent.probe_reading`), and a failed probe waits ten minutes. Workers
+ask `lane_health.capacity_open(lane)` — one cached decision per machine — only
+with an unattended item in hand and before claiming it (the hunters' picks,
+automation-sourced requests, the parked-resolve auto-review, reply routing);
+an item started under the cap runs to completion, and an operator's work is
+never gated. Their unattended items run under `capacity.metered(lane)` (or
+`PROSPECTOR_AGENT_LANE` for a subprocess), which books their spend; a process
+started with `PROSPECTOR_UNATTENDED` is a batch whose every agent call is
+gated (`capacity.CapacityPaused`), and `pipeline/agent_wave.py` stops a
+multi-agent job at the first such refusal or usage-limit hit. A usage-limit
+refusal raises `headless_agent.CapacityExhausted` and pauses the account's
+unattended work until the reset; lane health trips no lane for it, and books no
+failure for a service overload (`AgentTransient`). The Control tab's AI
+capacity panel and the health strip show each account's windows, the cap in
+effect, whether unattended work may start, and today's background spend.
 
 **HOME** (`prospector_app/backend/automation.py` + `prospector_app/frontend/src/views/homeCards.ts`)
 shows every open PR by whose move it is. `automation.classify` is the ONE

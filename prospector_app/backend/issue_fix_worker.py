@@ -15,7 +15,9 @@ and brings GitHub in line with their attempts (`issue_triage.public_loop`, as
 queues one `solve` for a fresh issue (`hunt`) within
 `settings.issue_fix_hunt_budget()` a UTC day. The lane books every ending
 on the machine's `issue-fix` health and picks nothing while that lane is
-tripped.
+tripped. Agent work no operator asked for — a request automation queued, the
+hunter's pick, the routing of replies — waits while the machine's AI capacity
+is paused (`lane_health.capacity_open`); an operator's request runs regardless.
 
 A beat thread writes the lane's heartbeat to the shared store for as long as
 the drain loop runs. A request does not survive the process carrying it out, so
@@ -25,6 +27,7 @@ then retries.
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
 import time
@@ -39,7 +42,7 @@ from issue_triage import (
     public_loop,
 )
 from issue_triage.issue_store import IssueStore
-from pipeline import gates, headless_agent, settings, storekit
+from pipeline import capacity, gates, headless_agent, settings, storekit
 from prospector_app.backend import data, lane_health, verify_worker
 
 LANE = "issue-fix"
@@ -62,6 +65,9 @@ FAILED_RETRY_COOLDOWN = timedelta(hours=1)
 HUNT_MAX_ATTEMPTS = 3
 # How often the drain loop looks for requests a worker that is gone left running.
 RECLAIM_SECONDS = 300.0
+# The request actions that run no agent: a `propose` pushes a proven patch and
+# opens its pull request.
+MECHANICAL_ACTIONS = frozenset({"propose"})
 
 # This process's start. A `running` claim this host stamped before it was made by
 # a process that is gone.
@@ -173,12 +179,21 @@ def recover_orphans(store: IssueStore) -> list[int]:
     return marked
 
 
+def _unattended(req: dict) -> bool:
+    """Whether request `req` is agent work no operator queued."""
+    return req.get("source") != "operator" and req.get("action") not in MECHANICAL_ACTIONS
+
+
 def next_request(issues: dict, host: str) -> int | None:
-    """The oldest queued request this host may take."""
+    """The oldest queued request this host may take; one that is unattended
+    agent work only while the lane's AI capacity is open."""
     for n in fix_review.queued_issues(issues):
         req = issues[n].fix_request or {}
-        if req.get("action") == "solve" or (issues[n].fix_run or {}).get("host") == host:
-            return n
+        if req.get("action") != "solve" and (issues[n].fix_run or {}).get("host") != host:
+            continue
+        if _unattended(req) and not lane_health.capacity_open(LANE):
+            continue
+        return n
     return None
 
 
@@ -196,9 +211,11 @@ def run_once(store: IssueStore) -> bool:
         return False
     state["current"] = n
     print(f"[issue-fix] #{n}: {claimed['action']}", flush=True)
+    metering = capacity.metered(LANE) if _unattended(claimed) else contextlib.nullcontext()
     try:
-        status, outcome = fix_review_runner.run_request(
-            store, n, claimed, on_step=lambda s: print(f"[issue-fix] #{n}: {s}", flush=True))
+        with metering:
+            status, outcome = fix_review_runner.run_request(
+                store, n, claimed, on_step=lambda s: print(f"[issue-fix] #{n}: {s}", flush=True))
     except headless_agent.AgentUnavailable as e:
         lane_health.trip_agent_lanes(str(e))
         return True
@@ -267,10 +284,10 @@ def hunt(store: IssueStore) -> int | None:
     """Queue a `solve` for the newest fresh issue with no linked pull request
     and no attempt, or whose last `solve` failed and may be retried, a
     maintainer's (gates.priority_author) ahead of any other, within the day's
-    budget. Another author's issue must be well reproduced (HUNT_GRADES); a
-    maintainer's is taken as reported. The issue queued, or None. Reads the
-    app's issue and PR snapshots; the queue write re-checks the issue on the
-    store."""
+    budget and while the lane's AI capacity is open. Another author's issue
+    must be well reproduced (HUNT_GRADES); a maintainer's is taken as
+    reported. The issue queued, or None. Reads the app's issue and PR
+    snapshots; the queue write re-checks the issue on the store."""
     from issue_triage import issue_links, pr_index
     from prospector_app.backend import issue_data
 
@@ -293,18 +310,34 @@ def hunt(store: IssueStore) -> int | None:
     for *_, n in sorted(picks, reverse=True):
         if issue_links.linked_prs(issues[n], index.get(n)):
             continue
+        if not lane_health.capacity_open(LANE):
+            return None
         ok, _ = fix_review.queue(store, n, "solve", by="hunter", source="hunter")
         if ok:
             return n
     return None
 
 
+def _follow_up(store: IssueStore) -> None:
+    """`followup.poll`, whose reply routing runs an agent only while the lane's
+    AI capacity is open; its other steps run regardless."""
+    with capacity.metered(LANE):
+        followup.poll(store, may_route=lambda: lane_health.capacity_open(LANE))
+
+
+def _answer_replies(store: IssueStore) -> None:
+    """`public_loop.answer_replies`, whose reply routing runs an agent only while
+    the lane's AI capacity is open; reading replies and report edits runs
+    regardless."""
+    with capacity.metered(LANE):
+        public_loop.answer_replies(store, may_route=lambda: lane_health.capacity_open(LANE))
+
+
 def _every_ten_minutes(store: IssueStore) -> None:
     """Follow up the open proposals, then refresh the in-scope issues, answer
     their replies, and bring GitHub in line with them; one step failing leaves
     the others to run, and an agent outage trips the lanes and ends the pass."""
-    for step in (followup.poll, public_loop.refresh, public_loop.answer_replies,
-                 public_loop.sync):
+    for step in (_follow_up, public_loop.refresh, _answer_replies, public_loop.sync):
         try:
             step(store)
         except headless_agent.AgentUnavailable as e:

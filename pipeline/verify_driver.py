@@ -439,14 +439,26 @@ class BuildFailure(RuntimeError):
 
 # How much of a failed build step's output the failure carries.
 BUILD_TAIL_CHARS = 1500
+# The longest one base-image build step may run before it is killed and the
+# build fails naming it: a clone, a dependency prefetch, or the image build.
+BUILD_STEP_TIMEOUT_SECONDS = 2400
 
 
-def _run_build_step(what: str, argv: list[str], *, env: dict[str, str]) -> None:
+def _run_build_step(what: str, argv: list[str], *, env: dict[str, str],
+                    timeout: int = BUILD_STEP_TIMEOUT_SECONDS) -> None:
     """Run one build step with its output captured, echo the output, and raise
-    BuildFailure with the tail when it exits non-zero."""
+    BuildFailure with the tail when it exits non-zero or runs past `timeout`
+    seconds."""
     print(f"{what}…", flush=True)
-    proc = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                          text=True, env=env)
+    progress.step(what)
+    try:
+        proc = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                              text=True, env=env, timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        partial = e.output.decode(errors="replace") if isinstance(e.output, bytes) else (e.output or "")
+        tail = _ANSI_RE.sub("", partial).strip()[-BUILD_TAIL_CHARS:]
+        raise BuildFailure(f"{what} timed out after {timeout // 60} min: "
+                           f"{tail or '(no output)'}") from e
     out = proc.stdout or ""
     if out.strip():
         print(out.rstrip(), flush=True)

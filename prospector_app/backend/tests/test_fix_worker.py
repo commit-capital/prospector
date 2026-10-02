@@ -10,6 +10,8 @@ since moved.
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 
 import pytest
 
@@ -44,6 +46,12 @@ def store(tmp_path, monkeypatch):
     monkeypatch.setattr(fix_worker.verify_driver, "fetch_patch", lambda pr, head: pr_patch)
     data.refresh()
     return st
+
+
+@pytest.fixture(autouse=True)
+def _capacity_open(monkeypatch):
+    """The AI capacity gate open, so no test reads this machine's account."""
+    monkeypatch.setattr(fix_worker.lane_health, "capacity_open", lambda lane: True)
 
 
 class _Probe:
@@ -485,6 +493,27 @@ def test_auto_queued_conflicted_rebase_escalates_when_opted_in(store, monkeypatc
     assert req["action"] == "resolve"
     assert req["source"] == "auto"
     assert not _pushed(fake)
+
+
+def test_a_hunted_rebase_waits_for_capacity_before_an_agent_resolves(store, monkeypatch,
+                                                                      tmp_path):
+    monkeypatch.setenv("TRIAGE_FIX_HUNT_RESOLVE", "1")
+    _gate(monkeypatch, False)
+    booked: list[str] = []
+    monkeypatch.setattr(fix_worker.lane_health, "note_failure",
+                        lambda lane, **kw: booked.append(lane))
+    fix_queue.queue_pr(1, "rebase", source="auto")
+    fake = _ConflictedResubmit(tmp_path)
+    monkeypatch.setattr(fix_worker, "_resubmit", fake)
+    monkeypatch.setattr(fix_worker.resolve_conflicts, "resolve",
+                        lambda *a, **kw: pytest.fail("an agent resolved while paused"))
+
+    fix_worker.run_one(1)
+
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "failed" and "capacity" in req["error"]
+    assert ("prepare", "--merge") not in fake.calls
+    assert booked == []
 
 
 def test_agent_give_up_refuses_with_reason(store, monkeypatch, tmp_path):
@@ -2576,3 +2605,247 @@ def test_next_queued_takes_a_maintainer_s_request_ahead_of_an_older_one(store):
     store.save_pr(two)
     data.refresh()
     assert fix_worker.next_queued() == 2
+
+
+# --- the AI capacity gate -------------------------------------------------------
+
+def _gate(monkeypatch, is_open: bool) -> list[str]:
+    """Pin the capacity gate to `is_open`; returns the lanes it was asked for."""
+    asked: list[str] = []
+
+    def capacity_open(lane: str) -> bool:
+        asked.append(lane)
+        return is_open
+    monkeypatch.setattr(fix_worker.lane_health, "capacity_open", capacity_open)
+    return asked
+
+
+def _queue(store, n: int, action: str, source: str | None, queued_at: str = NOW) -> None:
+    store.load_pr(n).record_fix_request("queued", action, queued_at=queued_at,
+                                        source=source, head_sha=HEAD)
+    data.refresh()
+
+
+class _OneTick:
+    """A stop event that lets the drain loop make one pass and then ends it."""
+
+    def __init__(self) -> None:
+        self.ticks = 0
+
+    def is_set(self) -> bool:
+        self.ticks += 1
+        return self.ticks > 1
+
+    def wait(self, seconds: float) -> bool:
+        return True
+
+
+def _drain_once(monkeypatch) -> dict[str, list[int]]:
+    """Run one pass of the drain loop with its actions recorded, not run."""
+    did: dict[str, list[int]] = {"run": [], "review": [], "queued": []}
+    monkeypatch.setattr(fix_worker, "stop", _OneTick())
+    monkeypatch.setattr(fix_worker.verify_driver, "stop_orphaned_sandboxes", lambda: [])
+    monkeypatch.setattr(fix_worker, "recover_orphans", lambda: [])
+    monkeypatch.setattr(fix_worker, "beat", lambda: None)
+    monkeypatch.setattr(fix_worker.lane_health, "open_or_retest", lambda lane: True)
+    monkeypatch.setattr(fix_worker, "run_one", lambda n: did["run"].append(n))
+    monkeypatch.setattr(fix_worker, "review_parked_resolve",
+                        lambda n: did["review"].append(n))
+    monkeypatch.setattr(fix_worker.fix_queue, "queue_pr",
+                        lambda n, action, **kw: did["queued"].append(n))
+    fix_worker._drain_loop()
+    return did
+
+
+def test_a_closed_gate_holds_the_automations_fix_but_not_the_operators(store, monkeypatch):
+    asked = _gate(monkeypatch, False)
+    store.save_pr(_fixable_pr(2))
+    _queue(store, 2, "fix", "auto", queued_at="2026-06-09T00:00:00+00:00")
+    _queue(store, 1, "fix", None)
+    assert fix_worker.next_queued() == 1
+    store.load_pr(1).record_fix_request("pushed", "fix", head_sha=HEAD)
+    data.refresh()
+    assert fix_worker.next_queued() is None
+    assert asked == ["fix"]
+
+
+def test_a_closed_gate_holds_an_objection_continuation(store, monkeypatch):
+    _gate(monkeypatch, False)
+    _queue(store, 1, "fix", "objection")
+    assert fix_worker.next_queued() is None
+
+
+def test_a_closed_gate_still_runs_the_automations_rebase(store, monkeypatch):
+    _gate(monkeypatch, False)
+    store.save_pr(_fixable_pr(2))
+    _queue(store, 2, "fix", "auto", queued_at="2026-06-09T00:00:00+00:00")
+    _queue(store, 1, "rebase", "auto")
+    assert _drain_once(monkeypatch)["run"] == [1]
+
+
+def test_an_open_gate_runs_the_automations_fix(store, monkeypatch):
+    asked = _gate(monkeypatch, True)
+    store.save_pr(_fixable_pr(2))
+    _queue(store, 2, "fix", "auto")
+    assert _drain_once(monkeypatch)["run"] == [2]
+    assert asked == ["fix"]
+
+
+def test_a_closed_gate_skips_the_resolve_auto_review(store, monkeypatch):
+    asked = _gate(monkeypatch, False)
+    monkeypatch.setattr(fix_worker, "_review_backoff", {})
+    monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", "resolve")
+    _parked_resolve(store)
+    assert _drain_once(monkeypatch)["review"] == []
+    assert asked == ["fix"]
+
+
+def test_an_open_gate_runs_the_resolve_auto_review(store, monkeypatch):
+    _gate(monkeypatch, True)
+    monkeypatch.setattr(fix_worker, "_review_backoff", {})
+    monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", "resolve")
+    _parked_resolve(store)
+    assert _drain_once(monkeypatch)["review"] == [1]
+
+
+def test_a_closed_gate_holds_the_hunters_agent_picks_not_its_mechanical_pool(
+        store, fix_profile, monkeypatch):
+    monkeypatch.setenv("TRIAGE_FIX_HUNT_FIX", "1")
+    store.save_pr(_fixable_pr(2))
+    data.refresh()
+    asked = _gate(monkeypatch, True)
+    assert fix_worker.next_auto() == ("fix", 2, None)
+    _gate(monkeypatch, False)
+    assert fix_worker.next_auto() == ("rebase", 1, None)
+    assert asked == ["fix"]
+
+
+def test_a_closed_gate_holds_the_hunters_describe(store, fix_profile, monkeypatch):
+    monkeypatch.setenv("TRIAGE_FIX_HUNT_FIX", "1")
+    store.save_pr(_describable_pr())
+    # PR 1's rebase is out of the hunt while an operator's request is in flight.
+    _queue(store, 1, "update", None)
+    assert fix_worker.next_auto() == ("describe", 5, None)
+    _gate(monkeypatch, False)
+    assert fix_worker.next_auto() is None
+
+
+def _clear(store, n: int) -> None:
+    rec = store.load_pr(n).raw
+    rec.pop("fix_request", None)
+    store.save_pr(rec)
+    data.refresh()
+
+
+def test_nothing_unattended_and_agentic_asks_the_gate(store, monkeypatch):
+    asked = _gate(monkeypatch, False)
+    monkeypatch.setenv("TRIAGE_FIX_AUTOHUNT", "1")
+    monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", "resolve")
+    store.save_pr(_fixable_pr(2))
+    _queue(store, 2, "fix", None)
+    assert _drain_once(monkeypatch)["run"] == [2]
+    _clear(store, 2)
+    _queue(store, 1, "rebase", "auto")
+    assert _drain_once(monkeypatch)["run"] == [1]
+    _clear(store, 1)
+    # Nothing queued and no parked resolve: the hunter's one pick is PR 1's rebase.
+    assert _drain_once(monkeypatch)["queued"] == [1]
+    assert asked == []
+
+
+def test_automation_s_request_runs_metered_under_the_fix_lane(store, monkeypatch):
+    from pipeline import capacity as policy
+    _gate(monkeypatch, True)
+    store.save_pr(_fixable_pr(2))
+    _queue(store, 2, "rebase", "auto")
+    lanes: list[str | None] = []
+    monkeypatch.setattr(fix_worker, "stop", _OneTick())
+    monkeypatch.setattr(fix_worker.verify_driver, "stop_orphaned_sandboxes", lambda: [])
+    monkeypatch.setattr(fix_worker, "recover_orphans", lambda: [])
+    monkeypatch.setattr(fix_worker, "beat", lambda: None)
+    monkeypatch.setattr(fix_worker.lane_health, "open_or_retest", lambda lane: True)
+    monkeypatch.setattr(fix_worker, "run_one", lambda n: lanes.append(policy.meter_lane()))
+    fix_worker._drain_loop()
+    assert lanes == ["fix"]
+
+
+# --- the repository's lint over an authored fix -----------------------------------
+
+def _lint_profile(tmp_path, monkeypatch) -> None:
+    fixture = json.loads(Path(os.environ["TRIAGE_PROFILE"]).read_text())
+    fixture["verify"]["lint_cmd"] = "pnpm check:module-boundaries"
+    path = tmp_path / "lint-profile.json"
+    path.write_text(json.dumps(fixture))
+    monkeypatch.setenv("TRIAGE_PROFILE", str(path))
+
+
+def _linted(monkeypatch, tmp_path, with_fix: dict, pr_alone: dict | None = None) -> list[dict]:
+    """Script the lint: `with_fix` over the PR plus the authored change, and
+    `pr_alone` over the PR's own diff. Returns the runs made."""
+    monkeypatch.setenv("TRIAGE_VERIFY_SCRATCH", str(tmp_path / "scratch"))
+    runs: list[dict] = []
+
+    def fake_run(pr, head, patch, cmd, lane="compile"):
+        alone = patch.read_text() == PR_DIFF
+        runs.append({"cmd": cmd, "lane": lane, "alone": alone})
+        return dict(pr_alone if alone else with_fix, cmd=cmd)
+    monkeypatch.setattr(fix_worker.compile_preflight, "run_command_for_patch", fake_run)
+    return runs
+
+
+def _run_linted_fix(store, monkeypatch) -> dict:
+    _queue_fix()
+    probe = _fix_probe()
+    monkeypatch.setattr(fix_worker, "_resubmit", probe)
+    _authored(monkeypatch)
+    _reviewed(monkeypatch)
+    fix_worker.run_one(1)
+    assert not _pushed(probe)
+    return store.load_pr(1).fix_request
+
+
+def test_a_fix_that_brings_in_a_lint_failure_is_refused(store, monkeypatch, tmp_path):
+    _lint_profile(tmp_path, monkeypatch)
+    runs = _linted(monkeypatch, tmp_path,
+                   {"exit": 20, "error_excerpt": "ui/a.tsx imports server/b.ts"}, {"exit": 0})
+    req = _run_linted_fix(store, monkeypatch)
+    assert req["status"] == "refused"
+    assert req["refused_reason"] == ("The fix fails the repository's lint: "
+                                     "ui/a.tsx imports server/b.ts")
+    assert req["result"]["lint"]["exit"] == 20
+    assert runs == [{"cmd": "pnpm check:module-boundaries", "lane": "lint", "alone": False},
+                    {"cmd": "pnpm check:module-boundaries", "lane": "lint", "alone": True}]
+
+
+def test_a_lint_failure_the_pr_already_has_is_not_held_against_the_fix(store, monkeypatch,
+                                                                        tmp_path):
+    _lint_profile(tmp_path, monkeypatch)
+    _linted(monkeypatch, tmp_path, {"exit": 20}, {"exit": 20})
+    req = _run_linted_fix(store, monkeypatch)
+    assert req["status"] == "awaiting-review"
+    assert req["result"]["lint"]["tree_fails"] is True
+
+
+def test_a_lint_failure_the_default_branch_shares_is_not_held_against_the_fix(
+        store, monkeypatch, tmp_path):
+    _lint_profile(tmp_path, monkeypatch)
+    runs = _linted(monkeypatch, tmp_path,
+                   {"exit": 20, "error": "fails on trunk itself", "error_kind": "base-lint"})
+    req = _run_linted_fix(store, monkeypatch)
+    assert req["status"] == "awaiting-review"
+    assert len(runs) == 1
+
+
+def test_a_lint_sandbox_that_cannot_run_fails_the_request(store, monkeypatch, tmp_path):
+    _lint_profile(tmp_path, monkeypatch)
+    _linted(monkeypatch, tmp_path, {"error": "docker: daemon down"})
+    req = _run_linted_fix(store, monkeypatch)
+    assert req["status"] == "failed"
+    assert "daemon down" in req["error"]
+
+
+def test_without_a_lint_command_no_lint_runs(store, monkeypatch, tmp_path):
+    runs = _linted(monkeypatch, tmp_path, {"exit": 20})
+    req = _run_linted_fix(store, monkeypatch)
+    assert req["status"] == "awaiting-review"
+    assert "lint" not in req["result"] and runs == []

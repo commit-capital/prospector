@@ -1,5 +1,6 @@
 """gh transport helpers: run gh api and parse, degrading to None on failure.
 subprocess.run is monkeypatched — no real network."""
+import base64
 import json
 import subprocess
 import types
@@ -85,6 +86,27 @@ def test_fetch_pr_uses_pulls_path(monkeypatch):
     monkeypatch.setattr(gh.subprocess, "run", run)
     assert gh.fetch_pr(7) == {"number": 7}
     assert seen["path"].endswith("/pulls/7")
+
+
+def test_default_branch_file_decodes_the_contents(monkeypatch):
+    seen = {}
+    body = json.dumps({"content": base64.b64encode(b"# Agents\n").decode()})
+    def run(argv, *, capture_output=True, text=True, timeout=60, env=None):
+        seen["path"] = argv[2]
+        return types.SimpleNamespace(returncode=0, stdout=body, stderr="")
+    monkeypatch.setattr(gh.subprocess, "run", run)
+    assert gh.default_branch_file("docs/My Style.md") == "# Agents\n"
+    assert seen["path"].endswith("/contents/docs/My%20Style.md")
+
+
+@pytest.mark.parametrize("stdout, returncode", [
+    ('{"message": "Not Found"}', 1),
+    ('{"type": "dir"}', 0),
+    ('{"content": "%%%not base64"}', 0),
+])
+def test_default_branch_file_none_without_text(monkeypatch, stdout, returncode):
+    monkeypatch.setattr(gh.subprocess, "run", _fake_run(stdout, returncode))
+    assert gh.default_branch_file("AGENTS.md") is None
 
 
 def test_check_runs_projects_and_dedupes(monkeypatch):

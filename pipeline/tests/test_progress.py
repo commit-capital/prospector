@@ -76,3 +76,20 @@ def test_a_step_of_no_items_prints_nothing(capsys, clock):
 def test_a_single_item_reads_in_the_singular(capsys, clock):
     progress.Progress("saving", 1, "changed alerts", one="changed alert")
     assert capsys.readouterr().out == "  saving 1 changed alert…\n"
+
+
+def test_steps_reach_the_reporter_only_inside_its_block() -> None:
+    seen: list[str] = []
+    progress.step("before")
+    with progress.reporting_steps(seen.append):
+        progress.step("cloning")
+        progress.step("building")
+    progress.step("after")
+    assert seen == ["cloning", "building"]
+
+
+def test_a_failing_reporter_never_fails_the_step() -> None:
+    def boom(what: str) -> None:
+        raise RuntimeError(what)
+    with progress.reporting_steps(boom):
+        progress.step("cloning")

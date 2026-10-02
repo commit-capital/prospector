@@ -330,8 +330,50 @@ class TestVerifyLaneKeys:
         p = profile.parse_profile({"version": 1}, "t")
         assert p.verify.build_cmd is None
 
+    def test_lint_cmd_parses(self):
+        p = profile.parse_profile(
+            {"version": 1, "verify": {"lint_cmd": "pnpm check:module-boundaries"}}, "t")
+        assert p.verify.lint_cmd == "pnpm check:module-boundaries"
+
+    def test_lint_cmd_defaults_to_none(self):
+        assert profile.parse_profile({"version": 1}, "t").verify.lint_cmd is None
+
     def test_e2e_cmd_is_rejected(self):
         # Reserved lane: no key may promise coverage that does not exist yet.
         with pytest.raises(SystemExit, match="unknown key"):
             profile.parse_profile(
                 {"version": 1, "verify": {"e2e_cmd": "pnpm test:e2e"}}, "t")
+
+
+class TestAuthoring:
+    def test_contributor_docs_default_to_the_conventional_files(self):
+        p = profile.parse_profile({"version": 1}, "t")
+        assert p.authoring.contributor_docs == (
+            "AGENTS.md", "CLAUDE.md", "GEMINI.md", ".github/copilot-instructions.md",
+            "CONVENTIONS.md",
+            "CONTRIBUTING.md", ".github/CONTRIBUTING.md", "docs/CONTRIBUTING.md")
+
+    def test_an_empty_section_keeps_the_default(self):
+        p = profile.parse_profile({"version": 1, "authoring": {}}, "t")
+        assert p.authoring == profile.AuthoringPolicy()
+
+    def test_contributor_docs_parse_in_order(self):
+        p = profile.parse_profile({"version": 1, "authoring": {
+            "contributor_docs": ["DESIGN.md", "docs/style/README.md"]}}, "t")
+        assert p.authoring.contributor_docs == ("DESIGN.md", "docs/style/README.md")
+
+    def test_an_empty_list_hands_no_docs(self):
+        p = profile.parse_profile({"version": 1, "authoring": {"contributor_docs": []}}, "t")
+        assert p.authoring.contributor_docs == ()
+
+    @pytest.mark.parametrize("payload, match", [
+        ({"authoring": {"nope": 1}}, "unknown key"),
+        ({"authoring": {"contributor_docs": "AGENTS.md"}}, "list of strings"),
+        ({"authoring": {"contributor_docs": ["/etc/passwd"]}}, "repo-relative"),
+        ({"authoring": {"contributor_docs": ["../secrets.md"]}}, "repo-relative"),
+        ({"authoring": {"contributor_docs": ["docs/../../x.md"]}}, "repo-relative"),
+        ({"authoring": {"contributor_docs": ["docs\\x.md"]}}, "repo-relative"),
+    ])
+    def test_malformed_authoring_is_a_hard_error(self, payload, match):
+        with pytest.raises(SystemExit, match=match):
+            profile.parse_profile({"version": 1, **payload}, "t")

@@ -298,6 +298,22 @@ def test_a_maintainer_s_approval_is_read_once_and_changes_nothing(store, monkeyp
     assert len(routed) == 1 and store.load_issue(7).fix_request is None
 
 
+def test_feedback_waits_unread_while_the_ai_capacity_is_paused(store, monkeypatch):
+    from issue_triage import reply_router
+    pr = PrState(**{**_pr().__dict__, "feedback": [_said("LGTM, merging after the release")]})
+    routed = []
+    monkeypatch.setattr(followup, "read", lambda n: pr)
+    monkeypatch.setattr(reply_router, "route", lambda context, rs: routed.append(rs) or "none")
+    store.edit_issue(7).record_fix_followup({"pr": 9, "state": "ready", "head_sha": HEAD,
+                                             "described_head": HEAD, "feedback_seen_at": ""})
+    for _ in range(followup.MAX_ROUTE_MISSES + 1):
+        followup.poll(store, mode="live", may_route=lambda: False)
+    fu = store.load_issue(7).fix_followup
+    assert routed == [] and not fu.get("feedback_misses") and fu["feedback_seen_at"] == ""
+    followup.poll(store, mode="live", may_route=lambda: True)
+    assert len(routed) == 1
+
+
 def test_a_new_head_after_a_ready_reads_as_watching_until_judged_again(store, monkeypatch):
     moved = PrState(**{**_pr([_check(status="in_progress", conclusion=None)]).__dict__,
                        "head_sha": "b" * 40})

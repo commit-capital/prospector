@@ -3,8 +3,9 @@
 A profile carries the policy knowledge that differs per triaged repository;
 this version owns the subsystem taxonomy, the path→risk-tier glob map, the
 CODEOWNERS gating policy, trusted/automation authors, dependency manifests,
-the test/artifact path rules, and the VERIFY sandbox policy (test runner,
-pnpm pin, full-suite contract). TRIAGE_PROFILE selects a JSON file;
+the test/artifact path rules, the VERIFY sandbox policy (test runner,
+pnpm pin, full-suite contract), and the contributor docs every code-authoring
+agent is handed. TRIAGE_PROFILE selects a JSON file;
 unset selects the built-in generic default, whose empty taxonomy classifies
 every PR as "other". Validation is strict: a missing file, unknown key, wrong
 type, or invalid pattern is a hard error, never a silent default.
@@ -75,6 +76,23 @@ class AutofixPolicy:
     fixable_gates: tuple[str, ...] = ()
 
 
+# The files a repository keeps for its contributors, human and AI, that every
+# code-authoring agent is handed (pipeline/authoring.py). Repo-relative paths,
+# in the order the agent reads them; a file the repository lacks is skipped.
+# The default names the agent-instruction files the common coding agents read,
+# then CONTRIBUTING.md in each place GitHub looks for it.
+DEFAULT_CONTRIBUTOR_DOCS: tuple[str, ...] = (
+    "AGENTS.md", "CLAUDE.md", "GEMINI.md", ".github/copilot-instructions.md",
+    "CONVENTIONS.md",
+    "CONTRIBUTING.md", ".github/CONTRIBUTING.md", "docs/CONTRIBUTING.md",
+)
+
+
+@dataclass(frozen=True)
+class AuthoringPolicy:
+    contributor_docs: tuple[str, ...] = DEFAULT_CONTRIBUTOR_DOCS
+
+
 # The full-suite regression lane's repository contract: the stabilized-wrapper
 # script the plan derives from, the vitest project its serialized/general-server
 # suites run under, an optional preflight npm script, and the names of the
@@ -96,9 +114,11 @@ class SuiteConfig:
 # whole-repo compile command the merge-time compile preflight runs (None means
 # the deployment requires no compile preflight), the optional whole-repo build
 # command (the second merge-gate lane; None means the deployment requires no
-# build lane), and the optional full-suite contract. A repository with a
-# compile_cmd must install offline at tier 1 — the command runs against
-# baked-in node_modules with no network.
+# build lane), the optional lint command — the repository's mechanical
+# convention checks, which every agent-authored change must pass and the
+# authoring agent may run itself (None means no lint) — and the optional
+# full-suite contract. A repository with a compile_cmd must install offline at
+# tier 1 — the command runs against baked-in node_modules with no network.
 @dataclass(frozen=True)
 class VerifyPolicy:
     test_runner: tuple[str, ...] = ("npx", "vitest", "run")
@@ -106,6 +126,7 @@ class VerifyPolicy:
     pnpm_version: str = "9.15.4"
     compile_cmd: str | None = None
     build_cmd: str | None = None
+    lint_cmd: str | None = None
     suite: SuiteConfig | None = None
 
 
@@ -183,6 +204,7 @@ class RepoProfile:
     harness: HarnessPolicy = HarnessPolicy()
     verify: VerifyPolicy = VerifyPolicy()
     autofix: AutofixPolicy = AutofixPolicy()
+    authoring: AuthoringPolicy = AuthoringPolicy()
 
     def subsystem_names(self) -> list[str]:
         """Accepted subsystem values, ending with the catch-all "other"."""
@@ -290,6 +312,18 @@ def _parse_autofix(raw: object, source: str) -> AutofixPolicy:
     )
 
 
+def _parse_authoring(raw: object, source: str) -> AuthoringPolicy:
+    section = _require_object(raw, source, "authoring", {"contributor_docs"})
+    if "contributor_docs" not in section:
+        return AuthoringPolicy()
+    where = "authoring.contributor_docs"
+    docs = _parse_str_list(section["contributor_docs"], source, where)
+    for doc in docs:
+        if doc.startswith("/") or "\\" in doc or ".." in doc.split("/"):
+            raise _fail(source, where, f"{doc!r} must be a repo-relative path inside the repository")
+    return AuthoringPolicy(contributor_docs=docs)
+
+
 def _parse_test_paths(raw: object, source: str) -> TestPaths:
     """Parse the test_paths section. An omitted field keeps the generic pattern
     (the TestPaths dataclass default) — an empty test-path regex is never
@@ -362,7 +396,7 @@ def _parse_suite(raw: object, source: str) -> SuiteConfig:
 def _parse_verify(raw: object, source: str) -> VerifyPolicy:
     section = _require_object(raw, source, "verify", {
         "test_runner", "test_flags", "pnpm_version", "compile_cmd", "build_cmd",
-        "suite"})
+        "lint_cmd", "suite"})
     runner = (_parse_str_list(section["test_runner"], source, "verify.test_runner")
               if "test_runner" in section else VerifyPolicy.test_runner)
     if not runner:
@@ -379,6 +413,7 @@ def _parse_verify(raw: object, source: str) -> VerifyPolicy:
                         pnpm_version=pnpm,
                         compile_cmd=_parse_opt_str(section, "compile_cmd", source, "verify"),
                         build_cmd=_parse_opt_str(section, "build_cmd", source, "verify"),
+                        lint_cmd=_parse_opt_str(section, "lint_cmd", source, "verify"),
                         suite=suite)
 
 
@@ -405,7 +440,7 @@ def _parse_artifact_rules(raw: object, source: str) -> tuple[ArtifactRule, ...]:
 _SECTIONS: tuple[str, ...] = (
     "subsystems", "risk_tiers", "codeowners", "trusted_authors",
     "priority_authors", "automation_bots", "dependency_manifests", "test_paths", "artifact_rules",
-    "harness", "verify", "autofix")
+    "harness", "verify", "autofix", "authoring")
 
 
 def parse_profile(payload: object, source: str) -> RepoProfile:
@@ -442,6 +477,8 @@ def parse_profile(payload: object, source: str) -> RepoProfile:
         if "verify" in doc else VerifyPolicy(),
         autofix=_parse_autofix(doc["autofix"], source)
         if "autofix" in doc else AutofixPolicy(),
+        authoring=_parse_authoring(doc["authoring"], source)
+        if "authoring" in doc else AuthoringPolicy(),
     )
 
 
