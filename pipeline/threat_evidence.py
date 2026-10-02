@@ -21,19 +21,28 @@ disk. Diff bytes live only gzip-compressed in the row's binary columns; the
 JSON record carries where each signature matched, never the matched text.
 Nothing here hands evidence to an agent, and the store has no update or delete
 for these rows.
+
+Usage:
+  uv run python -m pipeline.threat_evidence capture --pr N       # one flagged PR, now
+  uv run python -m pipeline.threat_evidence capture --backfill   # every registry incident
+  uv run python -m pipeline.threat_evidence list [--pr N] [--author LOGIN]
+  uv run python -m pipeline.threat_evidence export --pr N [--id ID] --out DIR
+  uv run python -m pipeline.threat_evidence verify [--pr N]
 """
 from __future__ import annotations
 
+import argparse
 import gzip
 import hashlib
 import io
 import json
 import subprocess
+import sys
 import zipfile
 import zlib
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol, TypedDict
+from typing import Literal, Protocol, TypedDict
 
 from pipeline import diff_cache
 from pipeline import diffpaths
@@ -42,9 +51,7 @@ from pipeline import schema
 from pipeline import settings
 from pipeline import storekit
 from pipeline import threats
-
-if TYPE_CHECKING:
-    from pipeline.store import Store
+from pipeline.store import Store
 
 MAX_DIFF_BYTES = 25_000_000
 MAX_MATCHES = 500
@@ -589,3 +596,105 @@ def log_export(store: Store, record: storekit.EvidenceRecord, *, via: str,
     store.append_run({"phase": "threat-evidence:export", "started": at, "finished": at,
                       "pr": record.pr, "capture_id": record.id, "head_sha": record.head_sha,
                       "via": via, "operator": operator, "machine": settings.worker_id()})
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+def _capture_one(store: Store, n: int) -> int:
+    rec = store.load_pr(n)
+    if rec is None or rec.threat_verdict != "malicious" or not rec.head_sha:
+        print(f"#{n} is not flagged malicious in the store; nothing to capture")
+        return 1
+    threat = rec.section("threat") or {}
+    flag = Flag(pr=n, head_sha=rec.head_sha, author=rec.author,
+                signatures=list(threat.get("signatures") or []),
+                scanned_at=threat.get("checked_at"))
+    print(f"#{n} {rec.head_sha[:12]}: {capture(store, flag)}")
+    return 0
+
+
+def _backfill(store: Store) -> int:
+    for inc in store.load_threats().get("incidents") or []:
+        head = inc.get("head_sha")
+        if not head:
+            print(f"#{inc.get('pr')}: no flagged head recorded; skipped")
+            continue
+        flag = Flag(pr=int(inc["pr"]), head_sha=head, author=inc.get("author"),
+                    signatures=list(inc.get("signatures") or []),
+                    scanned_at=inc.get("noticed"))
+        print(f"#{flag.pr} {head[:12]}: {capture(store, flag)}", flush=True)
+    return 0
+
+
+def _pick(store: Store, pr: int, capture_id: int | None) -> storekit.EvidenceRecord | None:
+    if capture_id is not None:
+        rec = store.threat_evidence_record(capture_id)
+        return rec if rec is not None and rec.pr == pr else None
+    captures = store.threat_evidence(pr=pr)
+    return next((r for r in captures if r.complete), captures[0] if captures else None)
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="Preserve, list, export and verify the "
+                                             "evidence of PRs the threat scan flagged malicious.")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--store", default=None, help="store root override (tests)")
+    cap = sub.add_parser("capture", parents=[common], help="capture evidence now")
+    which = cap.add_mutually_exclusive_group(required=True)
+    which.add_argument("--pr", type=int, help="one PR the store has flagged malicious")
+    which.add_argument("--backfill", action="store_true",
+                       help="every threat-registry incident without a complete capture")
+    lst = sub.add_parser("list", parents=[common], help="list captures")
+    lst.add_argument("--pr", type=int)
+    lst.add_argument("--author")
+    exp = sub.add_parser("export", parents=[common], help="write a capture's files")
+    exp.add_argument("--pr", type=int, required=True)
+    exp.add_argument("--id", type=int, default=None,
+                     help="capture id (default: the newest complete capture)")
+    exp.add_argument("--out", required=True, help="a directory outside any git checkout")
+    ver = sub.add_parser("verify", parents=[common], help="re-hash every stored artifact")
+    ver.add_argument("--pr", type=int)
+    args = ap.parse_args(argv)
+    store = Store(args.store) if args.store else Store()
+
+    if args.cmd == "capture":
+        return _backfill(store) if args.backfill else _capture_one(store, args.pr)
+    if args.cmd == "list":
+        for r in store.threat_evidence(pr=args.pr, author=args.author):
+            print(f"{r.id:>5}  #{r.pr}  {r.head_sha[:12]}  {r.captured_at}  "
+                  f"{'complete' if r.complete else 'partial '}  {r.author or '?'}")
+        return 0
+    if args.cmd == "export":
+        record = _pick(store, args.pr, args.id)
+        blobs = None if record is None else store.threat_evidence_blobs(record.id)
+        if record is None or blobs is None:
+            print(f"no evidence capture for #{args.pr}")
+            return 1
+        try:
+            paths = export(record, blobs, Path(args.out).expanduser().resolve())
+        except (IntegrityError, ExportRefused) as exc:
+            print(f"refused: {exc}")
+            return 1
+        log_export(store, record, via="cli", operator=gh.operator_login())
+        for p in paths:
+            print(p)
+        return 0
+    ok = bad = 0
+    for r in store.threat_evidence(pr=args.pr):
+        blobs = store.threat_evidence_blobs(r.id)
+        try:
+            if blobs is None:
+                raise IntegrityError("row vanished")
+            bundle_files(r, blobs)
+            ok += 1
+        except IntegrityError as exc:
+            bad += 1
+            print(f"capture {r.id} (#{r.pr}): {exc}")
+    print(f"{ok} ok, {bad} mismatched")
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

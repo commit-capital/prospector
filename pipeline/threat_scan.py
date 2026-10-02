@@ -26,6 +26,13 @@ exempt: their diffs are deliberately never fetched or scanned
 what is already cached. Either way, PRs left without a diff are reported as
 `uncached` in the run ledger and left unscanned.
 
+Each PR the scan finds malicious then has its evidence preserved
+(threat_evidence.capture) at the head it was scanned at: the SHA-pinned diff,
+the diff before the force-push that produced that head, and the PR, commit,
+actor and force-push metadata, appended to the store's `threat_evidence`
+table. Capture runs after every verdict is stamped and the registry saved,
+one PR at a time, and its failure never stops the scan.
+
 The scan is idempotent: re-running re-derives the same verdicts and the
 registry merges rather than duplicates. The scan loop runs on one bound store
 connection, and a PR whose stored stamp already carries the derived verdict at
@@ -34,6 +41,9 @@ only the records whose verdict or head changed.
 
 Usage:
   uv run python threat_scan.py [--store DIR] [--only N[,N...]] [--no-fetch]
+
+--no-fetch makes no GitHub read at all: it fetches no diff and captures no
+evidence.
 """
 from __future__ import annotations
 
@@ -48,6 +58,7 @@ from pipeline import gates
 from pipeline import profile
 from pipeline import progress
 from pipeline import storekit
+from pipeline import threat_evidence
 from pipeline import threats
 from pipeline.store import Store
 from pipeline.wire import DiffManifestItem
@@ -149,13 +160,38 @@ def scan_record(rec: Pr, registry: dict, diffs_dir: Path = diff_cache.DIFFS) -> 
     return result
 
 
+def capture_evidence(store: Store, prs: dict[int, Pr], malicious: list[int],
+                     results: dict[int, dict], diffs_dir: Path) -> dict[str, int]:
+    """Preserve each malicious PR's evidence at its scanned head
+    (threat_evidence.capture), one PR at a time. A capture that raises counts as
+    failed and the next PR is captured. Returns the counts by status, keyed
+    `evidence_<status>`."""
+    counts = {f"evidence_{s}": 0 for s in ("captured", "partial", "failed", "already")}
+    scanned_at = storekit.now()
+    for n in malicious:
+        rec = prs[n]
+        if not rec.head_sha:
+            continue
+        flag = threat_evidence.Flag(pr=n, head_sha=rec.head_sha, author=rec.author,
+                                    signatures=list(results[n]["signatures"]),
+                                    scanned_at=scanned_at)
+        try:
+            status = threat_evidence.capture(store, flag, diffs_dir=diffs_dir)
+        except Exception as exc:  # evidence is best-effort: the verdict already stands
+            print(f"  evidence for #{n} failed: {exc}", flush=True)
+            status = "failed"
+        counts[f"evidence_{status}"] += 1
+    print(f"evidence: {counts}", flush=True)
+    return counts
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--store", default=None, help="store root override (tests)")
     ap.add_argument("--only", default=None, help="comma-separated PR numbers")
     ap.add_argument("--diffs", default=None, help="diff cache dir override (tests)")
     ap.add_argument("--no-fetch", action="store_true",
-                    help="scan only already-cached diffs (no gh reads)")
+                    help="scan only already-cached diffs and capture no evidence (no gh reads)")
     args = ap.parse_args(argv)
 
     store = Store(args.store) if args.store else Store()
@@ -182,6 +218,7 @@ def main(argv: list[str] | None = None) -> int:
 
     malicious: list[int] = []
     suspicious: list[int] = []
+    results: dict[int, dict] = {}
     uncached = 0
     restamped = 0
     scanning = progress.Progress("scanning", len(prs), "PRs", one="PR")
@@ -203,6 +240,7 @@ def main(argv: list[str] | None = None) -> int:
                 restamped += 1
             if result["verdict"] == "malicious":
                 malicious.append(n)
+                results[n] = result
                 author = rec.author
                 if author:
                     threats.block_actor(
@@ -236,12 +274,16 @@ def main(argv: list[str] | None = None) -> int:
     print("saving the threat registry and action items…", flush=True)
     store.save_threats(registry)
     store.save_action_items(action_items)
+    evidence_counts: dict[str, int] = {}
+    if malicious and not args.no_fetch:
+        evidence_counts = capture_evidence(store, prs, malicious, results, diffs_dir)
     secret_leaks = sum(1 for it in action_items["items"] if it["kind"] == "rotate-secret")
     stats = {"scanned": len(prs), "restamped": restamped, "malicious": len(malicious),
              "suspicious": len(suspicious), "uncached": uncached,
              **fetch_stats,
              "blocked_actors": len(registry.get("actors", {})),
-             "rotate_secret_items": secret_leaks}
+             "rotate_secret_items": secret_leaks,
+             **evidence_counts}
     store.append_run({"phase": "threat-scan", "started": started,
                       "finished": storekit.now(),
                       "stats": stats, "malicious_prs": sorted(malicious)})

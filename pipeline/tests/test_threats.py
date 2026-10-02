@@ -242,6 +242,42 @@ class TestScanDriver:
         assert (after.section("cluster") or {}).get("ids") == []   # the concurrent write survived
 
 
+    def test_no_fetch_scan_never_captures(self, tmp_path, monkeypatch):
+        import pytest
+
+        from pipeline import threat_evidence
+        monkeypatch.setattr(threat_evidence, "capture", lambda *a, **k: pytest.fail("captured"))
+        store = Store(tmp_path)
+        diffs = tmp_path / "diffs"; diffs.mkdir()
+        self._seed(store, 5174, "mallory", "sha1", PAYLOAD_DIFF, diffs)
+        threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs), "--no-fetch"])
+        rec = store.load_pr(5174)
+        assert rec is not None and rec.threat_verdict == "malicious"
+
+    def test_scan_captures_after_stamping_and_survives_a_capture_crash(self, tmp_path, monkeypatch):
+        from pipeline import threat_evidence
+        seen: list[tuple[int, str, str | None]] = []
+
+        def fake_capture(store, flag, *, github=None, diffs_dir=None):
+            rec = store.load_pr(flag.pr)
+            seen.append((flag.pr, flag.head_sha, rec.threat_verdict))
+            raise RuntimeError("network down")
+
+        monkeypatch.setattr(threat_evidence, "capture", fake_capture)
+        monkeypatch.setattr(threat_scan, "fetch_missing_diffs", lambda *a, **k: ({}, set()))
+        store = Store(tmp_path)
+        diffs = tmp_path / "diffs"; diffs.mkdir()
+        self._seed(store, 5174, "mallory", "sha1", PAYLOAD_DIFF, diffs)
+        self._seed(store, 6, "alice", "sha6", CLEAN_DIFF, diffs)
+        assert threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs)]) == 0
+        assert seen == [(5174, "sha1", "malicious")]            # stamped before capture
+        assert "mallory" in store.load_threats()["actors"]       # registry saved
+        run = store.latest_run("threat-scan")
+        assert run is not None
+        assert run.raw["stats"]["evidence_failed"] == 1
+        assert run.raw["stats"]["evidence_captured"] == 0
+
+
 class TestTrustedAuthorExemption:
     """A repository maintainer (profile trusted_authors) is never threat-flagged:
     attack signatures and the actor blocklist do not apply to their PRs. A leaked

@@ -319,3 +319,69 @@ def test_log_export_appends_a_ledger_run(tmp_path):
     [run] = [r for r in store.runs() if r.phase == "threat-evidence:export"]
     assert run.raw["capture_id"] == rec.id and run.raw["operator"] == "Alex Example"
     assert run.raw["via"] == "app"
+
+
+# ---------------------------------------------------------------------------
+# The CLI
+# ---------------------------------------------------------------------------
+def _seed_flagged(store: Store, verdict: str = "malicious") -> None:
+    store.save_pr({"pr": 11987, "meta": {"title": "t", "author": "mallory", "state": "open",
+                   "draft": False, "head_sha": HEAD, "checked_at": "2026-10-02T00:00:00+00:00"}})
+    store.edit_pr(11987).set_threat({"verdict": verdict, "signatures": ["obfuscated-self-decoder"],
+                                     "detail": {}})
+
+
+def test_cli_capture_refuses_a_pr_not_flagged(tmp_path, monkeypatch, capsys):
+    import pytest
+    store = Store(tmp_path)
+    _seed_flagged(store, "clear")
+    monkeypatch.setattr(te, "LiveGitHub", lambda: pytest.fail("no GitHub read"))
+    assert te.main(["capture", "--pr", "11987", "--store", str(tmp_path)]) == 1
+    assert "not flagged malicious" in capsys.readouterr().out
+
+
+def test_cli_capture_one_flagged_pr(tmp_path, monkeypatch):
+    store = Store(tmp_path)
+    _seed_flagged(store)
+    monkeypatch.setattr(te, "LiveGitHub", FakeGitHub)
+    assert te.main(["capture", "--pr", "11987", "--store", str(tmp_path)]) == 0
+    [rec] = store.threat_evidence(pr=11987)
+    assert rec.head_sha == HEAD and rec.data["detection"]["signatures"] == ["obfuscated-self-decoder"]
+
+
+def test_cli_backfill_captures_registry_incidents_at_their_head(tmp_path, monkeypatch):
+    from pipeline import threats
+    store = Store(tmp_path)
+    reg = store.load_threats()
+    threats.record_incident(reg, 11987, "mallory", HEAD, ["obfuscated-self-decoder"],
+                            noticed="2026-10-02")
+    threats.record_incident(reg, 5, "mallory", None, ["blocked-actor"], noticed="2026-10-02")
+    store.save_threats(reg)
+    monkeypatch.setattr(te, "LiveGitHub", FakeGitHub)
+    assert te.main(["capture", "--backfill", "--store", str(tmp_path)]) == 0
+    assert [r.head_sha for r in store.threat_evidence(pr=11987)] == [HEAD]
+    assert store.threat_evidence(pr=5) == []
+
+
+def test_cli_list_export_and_verify(tmp_path, monkeypatch, capsys):
+    store = Store(tmp_path / "s")
+    te.capture(store, FLAG, github=FakeGitHub(), diffs_dir=tmp_path)
+    monkeypatch.setattr(te.gh, "operator_login", lambda **k: "tester")
+    assert te.main(["list", "--store", str(tmp_path / "s")]) == 0
+    assert "#11987" in capsys.readouterr().out
+    out = tmp_path / "out"
+    assert te.main(["export", "--pr", "11987", "--out", str(out),
+                    "--store", str(tmp_path / "s")]) == 0
+    assert (out / "SHA256SUMS").exists()
+    [run] = [r for r in store.runs() if r.phase == "threat-evidence:export"]
+    assert run.raw["via"] == "cli" and run.raw["operator"] == "tester"
+    capsys.readouterr()
+    assert te.main(["verify", "--store", str(tmp_path / "s")]) == 0
+    assert "1 ok, 0 mismatched" in capsys.readouterr().out
+
+
+def test_cli_export_with_no_capture_fails(tmp_path, capsys):
+    Store(tmp_path)
+    assert te.main(["export", "--pr", "1", "--out", str(tmp_path / "o"),
+                    "--store", str(tmp_path)]) == 1
+    assert "no evidence" in capsys.readouterr().out
