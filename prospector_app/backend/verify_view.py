@@ -1,8 +1,8 @@
 """Operator-facing view of a PR's VERIFY record (the dynamic-verification phase).
 
 Renders the stored `verify` section for the app: per-outcome headline copy,
-a display tone, freshness (gates.VERIFY_MAX_AGE_DAYS — the merge-recency
-window), and the signals passed through with ANSI escape sequences stripped
+a display tone, freshness (settings.verify_max_age_days() — the window a
+passing or inconclusive outcome counts for merge), and the signals passed through with ANSI escape sequences stripped
 from the captured output tails — including `authored_test`, the agent-authored
 test lane that runs when the PR ships none of its own. Read-only and
 policy-free: the outcome and its freshness come verbatim from the store and
@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, TypedDict
 
 from pipeline import freshness
 from pipeline import gates
+from pipeline import settings
 from pipeline import wire
 
 if TYPE_CHECKING:
@@ -812,10 +813,14 @@ def verify_detail(rec: Pr) -> VerifyDetail | None:
     outcome = rec.verify_outcome
     level, headline, detail = (_OUTCOME_COPY.get(outcome) if outcome else None) or _PENDING_COPY
     stale = freshness.currency_failure(rec, "verify",
-                                       max_age_days=gates.VERIFY_MAX_AGE_DAYS)
+                                       max_age_days=settings.verify_max_age_days())
     if stale and outcome is not None:
-        detail = (f"{detail} This verdict is {stale} — it no longer counts for "
-                  "merge; re-queue it to re-verify.")
+        if outcome in gates.VERIFY_AGES_OUT or not freshness.is_current(rec, "verify"):
+            detail = (f"{detail} This verdict is {stale} — it no longer counts for "
+                      "merge; re-queue it to re-verify.")
+        else:
+            detail = (f"{detail} This verdict is {stale}, and it still blocks merge "
+                      "until a re-verify replaces it.")
     incomplete = gates.verify_signals_incomplete(rec)
     if incomplete is not None and outcome in ("verified-fix", "agent-verified"):
         # Partial evidence never wears the full-confidence banner: the level

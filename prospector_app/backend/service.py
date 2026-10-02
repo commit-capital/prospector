@@ -209,7 +209,7 @@ def _fact_freshness(rec: Pr) -> list[dict]:
         sec = rec.section(section)
         if not sec:
             continue
-        max_age = gates.SECURITY_MAX_AGE_DAYS if section == "security" else None
+        max_age = settings.verify_max_age_days() if section == "verify" else None
         out.append({
             "section": section,
             "checked_at": sec.get("checked_at"),
@@ -287,8 +287,7 @@ def pr_row(n: int, rec: Pr | None = None) -> dict | None:
             "fresh": freshness.is_current(rec, "analysis"),
         },
         "safety": rec.security_verdict,
-        "safety_fresh": freshness.is_current(rec, "security",
-                                             max_age_days=gates.SECURITY_MAX_AGE_DAYS),
+        "safety_fresh": freshness.is_current(rec, "security"),
         "safety_findings": len(rec.findings),
         "safety_titles": [
             {"severity": f.get("severity"), "title": f.get("title"), "location": f.get("location")}
@@ -595,11 +594,8 @@ def cluster_summaries() -> list[dict]:
                     "pr": r.number,
                     "verdict": v or "UNKNOWN",
                     # None when no verdict exists (staleness doesn't apply);
-                    # False = verdict exists but the merge gate treats it as
-                    # not run (head moved, or older than SECURITY_MAX_AGE_DAYS)
-                    "fresh": freshness.is_current(
-                        r, "security",
-                        max_age_days=gates.SECURITY_MAX_AGE_DAYS) if v else None,
+                    # False = the verdict was taken at an earlier head
+                    "fresh": freshness.is_current(r, "security") if v else None,
                     "title": r.title,
                     "gating": True,  # merge-routed → its verdict gates the cluster
                     "findings": [{"severity": f.get("severity"), "title": f.get("title")}
@@ -745,16 +741,16 @@ def pr_detail(n: int) -> dict | None:
 
 
 def _safety_summary(rec: Pr) -> dict:
-    """Operator-facing security banner. A verdict outside the merge-recency window
-    (gates.SECURITY_MAX_AGE_DAYS) still renders, but says why it no longer counts
-    for merge — so the banner never contradicts the merge gate below it."""
+    """Operator-facing security banner. A verdict taken at an earlier head still
+    renders and says what it means for merge — a GREEN no longer counts, a RED or
+    YELLOW still blocks — so the banner never contradicts the merge gate below
+    it."""
     sec = rec.section("security")
     if not sec:
         return {"verdict": None, "level": "unknown",
                 "headline": "Not yet security-reviewed",
                 "detail": "Deep security review runs on clean merge candidates (GATE → SECURITY)."}
-    why_stale = freshness.currency_failure(rec, "security",
-                                           max_age_days=gates.SECURITY_MAX_AGE_DAYS)
+    why_stale = freshness.currency_failure(rec, "security")
     v, n = sec.get("verdict"), len(sec.get("findings", []))
     if v == "GREEN":
         if why_stale:
@@ -765,7 +761,8 @@ def _safety_summary(rec: Pr) -> dict:
                                "Re-run SECURITY for a current verdict.")}
         return {"verdict": v, "level": "safe", "headline": "Likely safe — no concerns flagged",
                 "detail": "The multi-agent security review found nothing concerning."}
-    note = f" (The review is {why_stale} — re-run SECURITY for a current verdict.)" if why_stale else ""
+    note = (f" (The review is {why_stale}, and it still blocks merge until a GREEN "
+            "review of this head — re-run SECURITY.)") if why_stale else ""
     if v == "YELLOW":
         return {"verdict": v, "level": "caution",
                 "headline": f"Proceed with care — {n} concern{'s' if n != 1 else ''} flagged",

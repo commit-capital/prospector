@@ -447,7 +447,7 @@ def auto_verifiable(pr: Pr) -> bool:
         return False
     if not gates.security_cleared(pr):
         return False
-    if is_current(pr, "verify", max_age_days=gates.VERIFY_MAX_AGE_DAYS):
+    if is_current(pr, "verify", max_age_days=settings.verify_max_age_days()):
         return False
     return gates.verify_eligible(pr, _changed_paths(pr))
 
@@ -485,7 +485,7 @@ def auto_resweepable(pr: Pr) -> bool:
         return False
     if not gates.security_cleared(pr):
         return False
-    if not is_current(pr, "verify", max_age_days=gates.VERIFY_MAX_AGE_DAYS):
+    if not is_current(pr, "verify", max_age_days=settings.verify_max_age_days()):
         return False
     if gates.repro_harness_defect(pr) is None:
         return False
