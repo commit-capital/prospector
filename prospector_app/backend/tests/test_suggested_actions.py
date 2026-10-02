@@ -60,14 +60,13 @@ def test_never_run_ingest_reads_never():
 def test_backlogs_suggest_scan_and_analysis_with_counts():
     status = make_status(
         threat_uncovered=7, analysis_never=45,
-        estimates={"threat_scan_seconds_per_pr": 0.5,
+        estimates={"threat_scan_seconds": 75.0,
                    "analyze_clusters_seconds_per_cluster": 60.0})
     out = sa.pr_suggestions(status, NOW)
     kinds = {s["kind"]: s for s in out}
     assert set(kinds) == {"threat-scan", "analyze-clusters"}
     assert "7 PRs lack a scan" in kinds["threat-scan"]["reason"]
-    # the scan covers the whole tracked set, so the estimate scales by total
-    assert kinds["threat-scan"]["estimate_seconds"] == 0.5 * 100
+    assert kinds["threat-scan"]["estimate_seconds"] == 75.0
     assert kinds["analyze-clusters"]["count"] == sa.CLUSTER_BATCH
     assert kinds["analyze-clusters"]["estimate_seconds"] == 60.0 * sa.CLUSTER_BATCH
 
