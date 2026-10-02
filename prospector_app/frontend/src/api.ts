@@ -1933,6 +1933,10 @@ export const api = {
   cluster: (id: number) => get<ClusterDetail>(`/api/clusters/${id}`),
   pr: (n: number) => get<PRDetail>(`/api/prs/${n}`),
   prActions: (n: number) => get<{ items: PRAction[] }>(`/api/prs/${n}/actions`),
+  /** The PR's preserved threat evidence, newest first (metadata only). */
+  prEvidence: (n: number) => get<{ items: ThreatEvidence[] }>(`/api/prs/${n}/evidence`),
+  /** Where one capture downloads as a zip of inert text files. */
+  prEvidenceBundleUrl: (n: number, id: number): string => `/api/prs/${n}/evidence/${id}/bundle.zip`,
   prHistory: (n: number) => get<{ items: PRHistoryItem[] }>(`/api/prs/${n}/history`),
   prReviews: (n: number) => get<{ reviews: ReviewsDetail }>(`/api/prs/${n}/reviews`),
   suggestForAction: (n: number, disposition: string) =>
@@ -2503,6 +2507,26 @@ export interface MergeProgress {
 }
 
 export interface ExecResult { pr: number; action: string; status: string; detail: string; forced?: boolean; stale?: StaleBlock }
+
+/** One stored diff of a threat-evidence capture. */
+export interface ThreatEvidenceArtifact {
+  bytes: number; sha256: string; source?: string | null;
+  complete?: boolean; truncated?: boolean; before_sha?: string | null;
+  /** For the prior diff: how its head was found. */
+  found_by?: "force-push" | "diff-cache";
+}
+export interface ThreatEvidenceForcePush {
+  at: string | null; actor: string | null; before: string | null; after: string | null;
+}
+/** One threat-evidence capture of a head the threat scan flagged malicious
+ *  (`threat_evidence.summary`): no diff bytes, no payload text. */
+export interface ThreatEvidence {
+  id: number; pr: number; head_sha: string; author: string | null;
+  captured_at: string; complete: boolean; captured_by: string | null; machine: string | null;
+  artifacts: { diff: ThreatEvidenceArtifact | null; prior: ThreatEvidenceArtifact | null };
+  force_pushes: ThreatEvidenceForcePush[];
+  signatures: string[]; errors: string[];
+}
 
 /** One real action taken on a PR (close/merge/reopen/comment/review), from the
  *  activity log — the bot `identity` that posted it + the human `operator`. */

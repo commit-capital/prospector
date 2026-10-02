@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any, TypedDict
 
-from sqlalchemy import Boolean, Column, Integer, String, Table, func, select
+from sqlalchemy import Boolean, Column, Integer, LargeBinary, String, Table, func, select
 from sqlalchemy.sql import ColumnElement
 
 from pipeline import schema
@@ -51,6 +51,9 @@ DESCRIPTIONS: dict[str, str] = {
     "diffs": "Shared PR-diff cache — one immutable row per fetched PR head, "
              "holding the capped diff text every machine's local file cache "
              "reads through.",
+    "threat_evidence": "Append-only evidence of each PR the threat scan flagged "
+                       "malicious: the capture's record in `data`, its diffs "
+                       "gzip-compressed in binary columns (shown as sizes only).",
 }
 
 PREVIEW_ROWS = 5
@@ -98,6 +101,21 @@ def _table(name: str) -> Table:
     return tbl
 
 
+def _selectable(tbl: Table) -> list[ColumnElement[Any]]:
+    """The table's columns for a read, each binary column read as its byte
+    length so no blob leaves the database."""
+    return [func.length(c).label(c.name) if isinstance(c.type, LargeBinary) else c
+            for c in tbl.columns]
+
+
+def _binary_sizes(tbl: Table, row: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    """`row` with each binary column's byte length rendered as a size label."""
+    for c in tbl.columns:
+        if isinstance(c.type, LargeBinary) and row.get(c.name) is not None:
+            row[c.name] = f"{int(row[c.name]):,} bytes (binary, not shown)"
+    return row
+
+
 def _expand(row: dict[str, JsonValue]) -> dict[str, JsonValue]:
     """Splice the JSON `data` blob's top-level keys in as `data.<key>` entries
     and drop the raw `data` column; every other column passes through unchanged."""
@@ -139,8 +157,8 @@ def overview() -> list[TableSummary]:
     with eng.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
         for name, tbl in schema.METADATA.tables.items():
             count = conn.execute(select(func.count()).select_from(tbl)).scalar() or 0
-            raw = conn.execute(select(tbl).limit(PREVIEW_ROWS)).mappings().all()
-            rows = [dict(r) for r in raw]
+            raw = conn.execute(select(*_selectable(tbl)).limit(PREVIEW_ROWS)).mappings().all()
+            rows = [_binary_sizes(tbl, dict(r)) for r in raw]
             out.append({
                 "name": name,
                 "description": DESCRIPTIONS.get(name, ""),
@@ -199,7 +217,7 @@ def rows(name: str, *, limit: int = 50, offset: int = 0,
     (else UnknownColumn); the raw `data` blob is expanded like overview()."""
     tbl = _table(name)
     conds = _where(tbl, filters or {})
-    page_stmt = select(tbl)
+    page_stmt = select(*_selectable(tbl))
     count_stmt = select(func.count()).select_from(tbl)
     for cond in conds:
         page_stmt = page_stmt.where(cond)
@@ -214,7 +232,7 @@ def rows(name: str, *, limit: int = 50, offset: int = 0,
     with eng.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
         total = conn.execute(count_stmt).scalar() or 0
         raw = conn.execute(page_stmt).mappings().all()
-    page = [dict(r) for r in raw]
+    page = [_binary_sizes(tbl, dict(r)) for r in raw]
     return {
         "name": name,
         "columns": _columns(tbl, page),

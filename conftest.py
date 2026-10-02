@@ -64,3 +64,24 @@ def _no_related_pr_search(monkeypatch):
     issue; no test reaches it. A test that needs pull requests found sets them."""
     from issue_triage import related_prs
     monkeypatch.setattr(related_prs, "search", lambda issue, exclude=None: [])
+
+
+class _OfflineGitHub:
+    """threat_evidence.GitHubReads that answers nothing."""
+
+    def pull(self, n): return None
+    def compare(self, base, head): return None
+    def compare_diff(self, base, head): return None
+    def listing_diff(self, n): return None
+    def force_pushes(self, n): return None
+    def user(self, login): return None
+    def login(self): return None
+
+
+@pytest.fixture(autouse=True)
+def _no_evidence_github_reads(monkeypatch):
+    """A scan that flags a PR captures its evidence through
+    `threat_evidence.LiveGitHub`; no test reaches GitHub through it. A test
+    that needs answers passes its own reads or sets LiveGitHub."""
+    from pipeline import threat_evidence
+    monkeypatch.setattr(threat_evidence, "LiveGitHub", _OfflineGitHub)

@@ -393,3 +393,25 @@ def test_gh_api_refuses_a_flag_shaped_path(monkeypatch):
         raise AssertionError("gh must not run")
     monkeypatch.setattr(gh.subprocess, "run", run)
     assert gh.gh_api("--method=DELETE") is None
+
+
+def test_gh_bytes_returns_raw_body_with_accept_header(monkeypatch):
+    seen: list[list[str]] = []
+
+    def fake_run(argv, **kw):
+        seen.append(argv)
+        assert "text" not in kw  # bytes, undecoded
+        return subprocess.CompletedProcess(argv, 0, stdout=b"diff --git a/x b/x\n\xff", stderr=b"")
+
+    monkeypatch.setattr(gh.subprocess, "run", fake_run)
+    body = gh.gh_bytes("repos/o/r/compare/a...b", accept="application/vnd.github.diff")
+    assert body == b"diff --git a/x b/x\n\xff"
+    assert seen[0] == ["gh", "api", "-H", "Accept: application/vnd.github.diff",
+                       "repos/o/r/compare/a...b"]
+
+
+def test_gh_bytes_is_none_on_failure_or_flag_path(monkeypatch):
+    monkeypatch.setattr(gh.subprocess, "run", lambda argv, **kw:
+                        subprocess.CompletedProcess(argv, 1, stdout=b"", stderr=b"404"))
+    assert gh.gh_bytes("repos/o/r/compare/a...b", accept="x") is None
+    assert gh.gh_bytes("--paginate", accept="x") is None

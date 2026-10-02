@@ -10,6 +10,11 @@ verdict, blocks a malicious author and logs the incident. A pass that scans
 anything is booked in the runs ledger under PHASE. The scan is deterministic
 and runs no agent, so no capacity gate applies. `wake` starts a pass early,
 for a caller in this process that has just recorded new heads.
+
+Each pass first retries the evidence capture (threat_evidence.capture) of
+every open PR flagged malicious whose flagged head has no complete capture,
+each head at most once per EVIDENCE_RETRY_SECONDS: a capture that GitHub
+failed when the head was flagged is taken again while GitHub still serves it.
 """
 from __future__ import annotations
 
@@ -17,7 +22,7 @@ import threading
 import time
 import traceback
 
-from pipeline import settings, storekit, threat_scan
+from pipeline import settings, storekit, threat_evidence, threat_scan
 from prospector_app.backend import data
 
 REFRESH_SECONDS = 10 * 60
@@ -28,11 +33,16 @@ BATCH = 200
 # it again.
 RETRY_SECONDS = 6 * 3600
 PHASE = "threat-scan:heads"
+# How long a flagged head whose evidence capture a pass tried waits before the
+# next try.
+EVIDENCE_RETRY_SECONDS = 30 * 60
 
 _thread: threading.Thread | None = None
 _wake = threading.Event()
 # (PR, head) → when a pass left that head without a verdict, by time.monotonic().
 _left: dict[tuple[int, str], float] = {}
+# (PR, flagged head) → when a pass last tried its evidence capture.
+_evidence_tried: dict[tuple[int, str], float] = {}
 
 
 def candidates(now: float | None = None) -> list[int]:
@@ -73,6 +83,30 @@ def scan_new_heads(limit: int = BATCH) -> list[int]:
     return picks
 
 
+def retry_evidence(now: float | None = None) -> list[int]:
+    """Capture the evidence of each open PR flagged malicious whose flagged
+    head has no complete capture and was not tried within
+    EVIDENCE_RETRY_SECONDS. A capture that raises is reported and the next is
+    taken. Returns the PRs tried."""
+    now = time.monotonic() if now is None else now
+    for key, at in list(_evidence_tried.items()):
+        if now - at >= EVIDENCE_RETRY_SECONDS:
+            del _evidence_tried[key]
+    store = data.store()
+    flags = [f for f in threat_evidence.uncaptured(store, data.prs())
+             if (f.pr, f.head_sha) not in _evidence_tried]
+    for flag in flags:
+        _evidence_tried[(flag.pr, flag.head_sha)] = now
+        try:
+            status = threat_evidence.capture(store, flag)
+        except Exception:
+            traceback.print_exc()
+            status = "failed"
+        print(f"[threat-refresh] evidence for #{flag.pr} {flag.head_sha[:12]}: {status}",
+              flush=True)
+    return [f.pr for f in flags]
+
+
 def wake() -> None:
     _wake.set()
 
@@ -80,6 +114,10 @@ def wake() -> None:
 def _loop() -> None:
     while True:
         _wake.clear()
+        try:
+            retry_evidence()
+        except Exception:
+            traceback.print_exc()
         try:
             scan_new_heads()
         except Exception:
