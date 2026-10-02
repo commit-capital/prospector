@@ -320,7 +320,8 @@ gets one unattended attempt per head SHA — a verdict ending (`pushed`,
 `refused`, `cancelled`) rests the PR until the author pushes, and only an
 operator's re-queue retries the same head; a `failed` ending is the machine's
 (a diff GitHub did not answer, a restart mid-run, an agent that never
-finished, a sandbox that could not run) and rests the PR only for
+finished, a sandbox that could not run, a `resubmit` that crashed — its
+traceback names the exception) and rests the PR only for
 `fix_worker.FAILED_RETRY_COOLDOWN_SECONDS`, so a recovered machine picks it
 back up unprompted. `TRIAGE_FIX_HUNT_FIX=1`
 additionally lets the hunter queue unguided `fix` actions, on the inverse
