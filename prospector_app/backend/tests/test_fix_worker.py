@@ -443,6 +443,34 @@ def test_an_approved_fix_without_its_patch_refuses(store, monkeypatch):
     assert not _pushed(probe)
 
 
+@pytest.mark.parametrize("rc, stderr, status, field, named", [
+    (1, RESUBMIT_CRASH, "failed", "error", "KeyError: 'x'"),
+    (9, "resubmit: the patch does not apply to PR #1's head: error: patch failed: a.ts:1",
+     "refused", "refused_reason", "no longer applies"),
+], ids=["crash", "refusal"])
+def test_an_approved_fix_whose_apply_stops_fails_a_crash_and_refuses_a_verdict(
+        store, monkeypatch, rc, stderr, status, field, named):
+    monkeypatch.setattr(
+        profile, "active",
+        lambda: profile.RepoProfile(autofix=profile.AutofixPolicy(fixable_gates=("ci",))))
+    booked: list[str] = []
+    monkeypatch.setattr(fix_worker.lane_health, "note_failure",
+                        lambda lane, **kw: booked.append(lane))
+    _parked(store, "fix", patch=PATCH)
+    probe = _Probe(stderr=stderr, overrides={"apply": (rc, "")})
+    monkeypatch.setattr(fix_worker, "_resubmit", probe)
+
+    fix_worker.push_approved(1)
+
+    req = store.load_pr(1).fix_request
+    assert req["status"] == status
+    assert named in req[field]
+    assert req["result"]["output"] == stderr.strip()
+    assert req["result"]["patch"] == PATCH
+    assert booked == (["fix"] if status == "failed" else [])
+    assert ("abort",) in probe.calls and not _pushed(probe)
+
+
 # --- a conflicted rebase escalates to an agent-authored merge resolution --------
 
 class _ConflictedResubmit:
@@ -603,6 +631,38 @@ def test_resolve_preflight_failure_refuses_and_aborts(store, monkeypatch, tmp_pa
     assert req["status"] == "refused"
     after_merge = fake.calls[fake.calls.index(("prepare", "--merge")):]
     assert ("abort",) in after_merge
+
+
+@pytest.mark.parametrize("rc, stderr, status, field, named", [
+    (1, RESUBMIT_CRASH, "failed", "error", "KeyError: 'x'"),
+    (10, "resubmit: conflict markers or whitespace errors remain; nothing was staged:\n"
+         "one.txt:3: leftover conflict marker",
+     "refused", "refused_reason", "did not pass the merge checks: resubmit: conflict markers"),
+], ids=["crash", "refusal"])
+def test_a_resolution_whose_continue_stops_fails_a_crash_and_refuses_a_verdict(
+        store, monkeypatch, tmp_path, rc, stderr, status, field, named):
+    booked: list[str] = []
+    monkeypatch.setattr(fix_worker.lane_health, "note_failure",
+                        lambda lane, **kw: booked.append(lane))
+    fix_queue.queue_pr(1, "rebase")
+    paused = json.dumps({"phase": "conflicted", "conflicts": ["one.txt"],
+                         "worktree": str(tmp_path / "wt"), "base_branch": "master"})
+    probe = _Probe(stderr=stderr, overrides={"state": (0, paused), "continue": (rc, "")})
+    monkeypatch.setattr(fix_worker, "_resubmit", probe)
+    monkeypatch.setattr(fix_worker.resolve_conflicts, "resolve",
+                        lambda wt, paths, **kw: {"resolutions": [
+                            {"path": "one.txt", "rationale": "kept both"}]})
+
+    fix_worker.run_one(1)
+
+    req = store.load_pr(1).fix_request
+    assert req["status"] == status
+    assert named in req[field]
+    assert req["result"]["conflict_paths"] == ["one.txt"]
+    assert booked == (["fix"] if status == "failed" else [])
+    assert probe.calls[-1] == ("abort",) and not _pushed(probe)
+    if status == "failed":
+        assert req["result"]["output"] == stderr.strip()
 
 
 def test_approved_resolve_pushes_the_kept_tree_without_rederiving(store, monkeypatch):
