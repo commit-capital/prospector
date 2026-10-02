@@ -66,7 +66,7 @@ DIFF_MEDIA = "application/vnd.github.diff"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 Status = Literal["captured", "partial", "failed", "already"]
-DiffSource = Literal["compare", "per-file-listing", "scan-cache"]
+DiffSource = Literal["compare", "per-file-listing", "scan-cache", "diff-cache"]
 
 
 @dataclass(frozen=True)
@@ -199,13 +199,13 @@ class _Prior:
 
 def _earlier_cached_head(store: Store, flag: Flag) -> str | None:
     """The newest head of `flag`'s PR the shared diff cache fetched before the
-    flagged one, or None."""
+    flagged one (before the flag itself when the flagged head is not cached),
+    or None."""
     heads = store.diff_heads(flag.pr)
-    flagged_at = next((at for sha, at in heads if sha == flag.head_sha), None)
-    for sha, at in heads:
-        if sha != flag.head_sha and (flagged_at is None or (at or "") < flagged_at):
-            return sha
-    return None
+    bound = next((at for sha, at in heads if sha == flag.head_sha), None) or flag.scanned_at
+    if not bound:
+        return None
+    return next((sha for sha, at in heads if sha != flag.head_sha and (at or "") < bound), None)
 
 
 def _prior(store: Store, reads: GitHubReads, flag: Flag, base: str,
@@ -230,10 +230,12 @@ def _prior(store: Store, reads: GitHubReads, flag: Flag, base: str,
     return _Prior(cached.encode(), before, "diff-cache", found_by, diff_cache.is_complete(cached))
 
 
-def _flagged_diff(reads: GitHubReads, flag: Flag, base: str, head_now: str | None,
-                  diffs_dir: Path, errors: list[str]) -> _Diff:
+def _flagged_diff(store: Store, reads: GitHubReads, flag: Flag, base: str,
+                  head_now: str | None, diffs_dir: Path, errors: list[str]) -> _Diff:
     """The flagged head's diff: the SHA-pinned compare; else, while GitHub's head
-    is still the flagged one, the per-file listing; else the copy the scan read."""
+    is still the flagged one, the per-file listing; else the copy the scan read,
+    on this machine or in the shared diff cache. A cached copy is never whole:
+    it was read as text and may be capped."""
     body = reads.compare_diff(base, flag.head_sha)
     if body is not None:
         return _Diff(body, "compare", True)
@@ -249,6 +251,9 @@ def _flagged_diff(reads: GitHubReads, flag: Flag, base: str, head_now: str | Non
     cached = diffs_dir / f"{flag.head_sha}.diff"
     if cached.exists():
         return _Diff(cached.read_bytes(), "scan-cache", False)
+    shared = store.load_diff(flag.head_sha)
+    if shared is not None:
+        return _Diff(shared.encode(), "diff-cache", False)
     return _Diff(None, None, False)
 
 
@@ -375,7 +380,8 @@ def capture(store: Store, flag: Flag, *, github: GitHubReads | None = None,
     base = ((pull or {}).get("base") or {}).get("sha") or settings.default_branch()
     head_now = ((pull or {}).get("head") or {}).get("sha")
 
-    diff = _flagged_diff(reads, flag, base, head_now, diffs_dir or diff_cache.DIFFS, errors)
+    diff = _flagged_diff(store, reads, flag, base, head_now, diffs_dir or diff_cache.DIFFS,
+                         errors)
     truncated = diff.body is not None and len(diff.body) > MAX_DIFF_BYTES
     if diff.body is not None and truncated:
         diff = _Diff(diff.body[:MAX_DIFF_BYTES], diff.source, diff.whole)

@@ -511,3 +511,33 @@ def test_listing_is_refused_when_the_head_moves_during_the_read(tmp_path):
     rec, _ = _only(store)
     assert rec.data["artifacts"]["diff"] is None
     assert any("moved" in e for e in rec.data["errors"])
+
+
+def test_prior_is_never_a_head_cached_after_the_flag_when_the_flagged_head_is_uncached(tmp_path):
+    store = Store(tmp_path)
+    flag = te.Flag(pr=FLAG.pr, head_sha=HEAD, author="mallory", signatures=[],
+                   scanned_at="2026-10-02T16:03:50+00:00")
+    _cache_heads(store, ("f" * 40, "2026-10-03T00:00:00+00:00", HONEST))   # after the flag
+    te.capture(store, flag, github=FakeGitHub(pushes=False), diffs_dir=tmp_path)
+    rec, _ = _only(store)
+    assert rec.data["artifacts"]["prior"] is None
+
+
+def test_prior_before_the_flag_is_found_when_the_flagged_head_is_uncached(tmp_path):
+    store = Store(tmp_path)
+    flag = te.Flag(pr=FLAG.pr, head_sha=HEAD, author="mallory", signatures=[],
+                   scanned_at="2026-10-02T16:03:50+00:00")
+    _cache_heads(store, (PRIOR, "2026-08-27T20:21:54+00:00", HONEST))
+    te.capture(store, flag, github=FakeGitHub(pushes=False), diffs_dir=tmp_path)
+    rec, _ = _only(store)
+    assert rec.data["artifacts"]["prior"]["before_sha"] == PRIOR
+
+
+def test_flagged_diff_falls_back_to_the_shared_diff_cache(tmp_path):
+    store = Store(tmp_path)
+    _cache_heads(store, (HEAD, "2026-10-02T16:11:35+00:00", "diff --git a/c b/c\n# omitted\n"))
+    gh = FakeGitHub(head_now="f" * 40, compare_ok=False, pushes=False)
+    assert te.capture(store, FLAG, github=gh, diffs_dir=tmp_path / "empty") == "partial"
+    rec, blobs = _only(store)
+    assert rec.data["artifacts"]["diff"]["source"] == "diff-cache"
+    assert _gunzip(blobs.diff_gz) == b"diff --git a/c b/c\n# omitted\n"
