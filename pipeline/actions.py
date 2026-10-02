@@ -47,6 +47,14 @@ def likely_fixture(evidence: str) -> bool:
     return bool(_FIXTURE_PATH.search(path.strip()) or _FIXTURE_TEXT.search(excerpt))
 
 
+def is_fixture(item: dict) -> bool:
+    """Whether a rotate-secret item reads as a test fixture; an item stored
+    before fixture marking existed is judged from its evidence."""
+    if "fixture" in item:
+        return bool(item["fixture"])
+    return likely_fixture(item.get("evidence") or "")
+
+
 def make_item(kind: str, *, pr: int, summary: str, created: str,
               evidence: str = "", detail: str = "",
               fixture: bool | None = None) -> dict:

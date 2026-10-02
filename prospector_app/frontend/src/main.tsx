@@ -65,6 +65,7 @@ const router = createBrowserRouter([
       { path: "prs/compare", lazy: lazyView(() => import("./views/PRDiffer")) },
       { path: "issues", lazy: lazyView(() => import("./views/Issues")) },
       { path: "security", lazy: lazyView(() => import("./views/Alerts")) },
+      { path: "security/threats", lazy: lazyView(() => import("./views/Threats")) },
       { path: "security/actions", lazy: lazyView(() => import("./views/ActionItems")) },
       { path: "pipeline", element: <Navigate to="/pipeline/control" replace /> },
       { path: "pipeline/control", lazy: lazyView(() => import("./views/ControlPanel")) },

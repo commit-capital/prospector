@@ -194,6 +194,12 @@ def test_threat_filter_matches_row_verdict():
     assert not filters.matches(_row(threat=None), {"threat": "malicious"})
 
 
+def test_an_unscanned_row_is_unscanned_never_clear():
+    assert filters.matches(_row(threat="unscanned"), {"threat": "unscanned"})
+    assert not filters.matches(_row(threat="unscanned"), {"threat": "clear"})
+    assert not filters.matches(_row(threat=None), {"threat": "clear"})
+
+
 # --- loc (lines-of-code) filter -------------------------------------------
 # Effective = human-written lines (source + test, artifacts stripped): a PR with
 # 90/10 source + 10/10 test lines = 100/20 effective, plus a 130-line lockfile.
@@ -448,3 +454,9 @@ def test_acked_response_does_not_match_any():
 
 def test_acked_response_does_not_match_a_specific_signal():
     assert filters.matches(_row(responses=_resp(_ACK)), {"responses": "replied"}) is False
+
+
+def test_threat_filter_takes_a_list_of_states():
+    spec = {"threat": ["malicious", "suspicious"]}
+    assert filters.matches(_row(threat="suspicious"), spec)
+    assert not filters.matches(_row(threat="clear"), spec)

@@ -19,12 +19,20 @@ test("card keys are unique", () => {
 test("cards run your move, then in motion, then handed back", () => {
   assert.deepEqual(
     HOME_CARDS.map((c) => c.key),
-    ["ready", "approve", "queued", "hunt", "waiting", "author", "your-call"],
+    ["malicious", "ready", "approve", "queued", "hunt", "waiting", "author", "your-call"],
   );
   assert.deepEqual(
     HOME_CARDS.map((c) => c.column),
-    ["act", "act", "auto", "auto", "auto", "handed", "handed"],
+    ["act", "act", "act", "auto", "auto", "auto", "handed", "handed"],
   );
+});
+
+test("the malicious card leads Home as an alert and shows only while it has PRs", () => {
+  const card = HOME_CARDS[0];
+  assert.equal(card.key, "malicious");
+  assert.deepEqual(card.spec, { automation_bucket: "malicious" });
+  assert.equal(card.alert, true);
+  assert.equal(card.hideWhenEmpty, true);
 });
 
 test("every card filters on the automation standing alone", () => {

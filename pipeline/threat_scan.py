@@ -47,6 +47,14 @@ for the next run. The blocks, incidents, and action items a run produces are
 applied to a fresh read of their registry when the run ends, so a registry
 edit made while the run scanned is kept.
 
+Each PR a run finds malicious then has its evidence preserved
+(threat_evidence.capture) at the head it was scanned at: the SHA-pinned diff,
+the diff before the force-push that produced that head, and the PR, commit,
+actor and force-push metadata, appended to the store's `threat_evidence`
+table. Capture runs after every verdict is stamped and the registry saved,
+one PR at a time, and its failure never stops the scan. A run with fetch off
+captures nothing, as it makes no GitHub read.
+
 `scan` is the run itself. This CLI runs it over every open PR (or `--only`'s);
 a worker machine runs it on a cadence over the PRs `unscanned` names, so a
 head INGEST records is scanned within minutes
@@ -62,6 +70,7 @@ import copy
 import functools
 import json
 import sys
+import traceback
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -71,9 +80,11 @@ from typing import TYPE_CHECKING, Literal
 from pipeline import actions
 from pipeline import diff_cache
 from pipeline import gates
+from pipeline import notify
 from pipeline import profile
 from pipeline import progress
 from pipeline import storekit
+from pipeline import threat_evidence
 from pipeline import threats
 from pipeline.store import Store
 from pipeline.wire import DiffManifestItem
@@ -309,6 +320,7 @@ def scan(store: Store, prs: dict[int, Pr], diffs_dir: Path | None = None, *,
     incomplete = 0
     restamped = 0
     moved = 0
+    flagged: dict[int, list[str]] = {}
     stamping = progress.Progress("stamping", len(prs), "PRs", one="PR")
     # one bound connection for the whole loop: each per-PR read or write is a
     # single round-trip on it, with no per-statement connect handshake
@@ -340,6 +352,7 @@ def scan(store: Store, prs: dict[int, Pr], diffs_dir: Path | None = None, *,
                     out.unstamped.append(n)
             if result["verdict"] == "malicious":
                 out.malicious.append(n)
+                flagged[n] = list(result["signatures"])
                 author = rec.author
                 ops: list[Callable[[dict], dict]] = []
                 if author:
@@ -380,14 +393,48 @@ def scan(store: Store, prs: dict[int, Pr], diffs_dir: Path | None = None, *,
     registry = _commit(store.load_threats, store.save_threats, threat_ops)
     action_items = _commit(store.load_action_items, store.save_action_items, item_ops)
     secret_leaks = sum(1 for it in action_items["items"] if it["kind"] == "rotate-secret")
+    evidence_counts: dict[str, int] = {}
+    if fetch and flagged:
+        evidence_counts = capture_evidence(store, prs, flagged, diffs_dir)
+    try:
+        posted = notify.send_due(store, registry, action_items["items"])
+    except Exception:
+        traceback.print_exc()  # an alert is best-effort; the verdicts are stored
+        posted = []
     out.stats = {"scanned": len(prs), "restamped": restamped, "malicious": len(out.malicious),
                  "suspicious": len(out.suspicious), "uncached": uncached, "moved": moved,
                  "incomplete": incomplete,
                  "complete_fetched": sum(1 for d in judged.values() if d.source == "fetched"),
                  **fetch_stats,
                  "blocked_actors": len(registry.get("actors", {})),
-                 "rotate_secret_items": secret_leaks}
+                 "rotate_secret_items": secret_leaks,
+                 "slack_posted": len(posted),
+                 **evidence_counts}
     return out
+
+
+def capture_evidence(store: Store, prs: dict[int, Pr], flagged: dict[int, list[str]],
+                     diffs_dir: Path) -> dict[str, int]:
+    """Preserve each flagged PR's evidence at its scanned head
+    (threat_evidence.capture), one PR at a time; `flagged` maps each malicious
+    PR to its signatures. A capture that raises counts as failed and the next PR
+    is captured. Returns the counts by status, keyed `evidence_<status>`."""
+    counts = {f"evidence_{s}": 0 for s in ("captured", "partial", "failed", "already")}
+    scanned_at = storekit.now()
+    for n, signatures in sorted(flagged.items()):
+        rec = prs[n]
+        if not rec.head_sha:
+            continue
+        flag = threat_evidence.Flag(pr=n, head_sha=rec.head_sha, author=rec.author,
+                                    signatures=signatures, scanned_at=scanned_at)
+        try:
+            status = threat_evidence.capture(store, flag, diffs_dir=diffs_dir)
+        except Exception as exc:  # evidence is best-effort: the verdict already stands
+            progress.say(f"  evidence for #{n} failed: {exc}")
+            status = "failed"
+        counts[f"evidence_{status}"] += 1
+    progress.say(f"evidence: {counts}")
+    return counts
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -396,7 +443,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--only", default=None, help="comma-separated PR numbers")
     ap.add_argument("--diffs", default=None, help="diff cache dir override (tests)")
     ap.add_argument("--no-fetch", action="store_true",
-                    help="scan only already-cached diffs (no gh reads)")
+                    help="scan only already-cached diffs and capture no evidence (no gh reads)")
     args = ap.parse_args(argv)
 
     store = Store(args.store) if args.store else Store()

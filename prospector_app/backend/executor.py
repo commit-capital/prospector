@@ -764,6 +764,27 @@ def merge_pr(n: int, method: str = "squash", *, dry_run: bool, reason: str | Non
         merge_progress.finish(int(n))
 
 
+def _threat_rescan(n: int) -> str | None:
+    """Scan PR `n` again at its stored head — the head the merge pins — against
+    the current signatures and actor blocklist. Returns why it must not merge
+    (gates.threat_blocks on the fresh stamp, so a head the scan could not stamp
+    fails closed), or None."""
+    from pipeline import diff_cache, gates, threat_scan
+    store = data.store()
+    rec = store.load_pr(n)
+    if rec is None:
+        return "PR not in store"
+    try:
+        threat_scan.scan(store, {n: rec}, diff_cache.DIFFS)
+    except Exception as e:
+        return _public_exception_detail("the scan failed", e)
+    after = store.load_pr(n)
+    if after is None:
+        return "PR not in store"
+    blocks = gates.threat_blocks(after)
+    return "; ".join(blocks) if blocks else None
+
+
 def _merge_pr(n: int, method: str, *, dry_run: bool, reason: str | None) -> dict:
     base = {"pr": int(n), "cluster_id": _cluster_id(n), "action": "MERGE"}
     from pipeline import gates  # pipeline policy (path set up by data import)
@@ -776,6 +797,11 @@ def _merge_pr(n: int, method: str, *, dry_run: bool, reason: str | None) -> dict
                if rec else (False, "PR not in store"))
     if not ok:
         res = {**base, "status": "blocked", "detail": f"merge gate: {why}"}
+        activity.record("merge", identity=settings.bot_login(), dry_run=dry_run, **res)
+        return res
+    threat_block = _threat_rescan(int(n))
+    if threat_block is not None:
+        res = {**base, "status": "blocked", "detail": f"threat rescan: {threat_block}"}
         activity.record("merge", identity=settings.bot_login(), dry_run=dry_run, **res)
         return res
     # Whether the gate passed on the strength of the operator's reason — that

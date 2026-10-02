@@ -189,6 +189,27 @@ def saved_at_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
+# -- Threat evidence rows -----------------------------------------------------
+
+@dataclass(frozen=True)
+class EvidenceRecord:
+    """One threat_evidence row without its diff blobs."""
+    id: int
+    pr: int
+    head_sha: str
+    author: str | None
+    captured_at: str
+    complete: bool
+    data: dict
+
+
+@dataclass(frozen=True)
+class EvidenceBlobs:
+    """A threat_evidence row's gzip-compressed diffs."""
+    diff_gz: bytes | None
+    prior_gz: bytes | None
+
+
 # -- Runs ledger records ------------------------------------------------------
 # The `runs` table holds exactly two record shapes, discriminated on read by
 # parse_run and enforced on write (both stores' append_run parse before

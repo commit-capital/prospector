@@ -26,6 +26,10 @@ export interface HomeCard {
   sort?: string;
   dir?: "asc" | "desc";
   lead?: boolean;
+  // Styled as an alarm (red), for PRs that are a threat rather than work.
+  alert?: boolean;
+  // Rendered only while its count is above zero.
+  hideWhenEmpty?: boolean;
   rowAction?: HomeRowAction;
   // Sub-buckets shown as counted links under the blurb, each its own spec.
   breakdown?: HomeBreakdown[];
@@ -95,6 +99,15 @@ function bucket(...buckets: string[]): FilterSpec {
 }
 
 export const HOME_CARDS: HomeCard[] = [
+  {
+    key: "malicious",
+    title: "⛔ Flagged malicious",
+    blurb: "The threat scan matched a supply-chain attack pattern or a blocked author. These can never merge — close each one on GitHub and check the author's other work.",
+    column: "act",
+    spec: bucket("malicious"),
+    alert: true,
+    hideWhenEmpty: true,
+  },
   {
     key: "ready",
     title: "Ready to merge",

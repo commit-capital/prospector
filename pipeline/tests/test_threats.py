@@ -8,6 +8,7 @@ import pytest
 
 from pipeline import diff_cache
 from pipeline import gates
+from pipeline import notify
 from pipeline import storekit
 from pipeline import threats
 from pipeline import threat_scan
@@ -42,6 +43,9 @@ diff --git a/cli/esbuild.config.mjs b/cli/esbuild.config.mjs
 +  target: "node20",
  };
 """
+
+# Every character str.splitlines breaks a line on besides "\n".
+LINE_BREAKS = ["\r", "\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"]
 
 
 class TestScanDiff:
@@ -126,11 +130,47 @@ class TestScanDiff:
                 "@@ -1 +1,2 @@\n x\n+++ i; global['!']='9-0008-2';\n")
         assert threats.scan_diff(diff)["verdict"] == "malicious"
 
-    def test_line_separator_inside_an_added_line_is_scanned(self):
-        for sep in (" ", "\r", "\x0c"):
-            diff = ("diff --git a/src/a.js b/src/a.js\n--- a/src/a.js\n+++ b/src/a.js\n"
-                    f"@@ -1 +1,2 @@\n x\n+// note{sep}global['!']='9-0008-2';\n")
-            assert threats.scan_diff(diff)["verdict"] == "malicious", repr(sep)
+    @pytest.mark.parametrize("sep", LINE_BREAKS)
+    def test_payload_after_a_line_break_character_is_scanned(self, sep):
+        # a form feed is whitespace in JavaScript and U+2028 a line terminator,
+        # so "void main();<sep>global['!']=…" runs the payload
+        diff = ("diff --git a/src/x.js b/src/x.js\n--- a/src/x.js\n+++ b/src/x.js\n@@ -1 +1 @@\n"
+                f"-void main();\n+void main();{sep}global['!']='9-0008-2';var _$_1e42=1;\n")
+        assert threats.scan_diff(diff)["verdict"] == "malicious"
+
+    @pytest.mark.parametrize("sep", LINE_BREAKS)
+    def test_line_break_character_does_not_count_a_second_line(self, sep):
+        churn = "diff --git a/f.txt b/f.txt\n"
+        churn += "".join(f"+line {i}{sep}+tail\n-line {i}\n" for i in range(3100))
+        assert "eol-churn-camouflage" in threats.scan_diff(churn)["signatures"]
+
+    @pytest.mark.parametrize("sep", LINE_BREAKS)
+    def test_code_after_a_line_break_character_is_suspicious(self, sep):
+        diff = ("diff --git a/src/a.js b/src/a.js\n--- a/src/a.js\n+++ b/src/a.js\n"
+                f"@@ -1 +1,2 @@\n x\n+// note{sep}console.log(1);\n")
+        r = threats.scan_diff(diff)
+        assert r["verdict"] == "suspicious"
+        assert r["signatures"] == ["embedded-line-break"]
+
+    def test_crlf_line_ending_is_not_an_embedded_line_break(self):
+        diff = ("diff --git a/src/a.js b/src/a.js\n--- a/src/a.js\n+++ b/src/a.js\n"
+                "@@ -1 +1,2 @@\n x\r\n+console.log(1);\r\n")
+        assert threats.scan_diff(diff)["verdict"] == "clear"
+
+    def test_form_feed_page_break_line_is_not_an_embedded_line_break(self):
+        diff = ("diff --git a/src/a.py b/src/a.py\n--- a/src/a.py\n+++ b/src/a.py\n"
+                "@@ -1 +1,3 @@\n x\n+\x0c\n+def f(): pass\n")
+        assert threats.scan_diff(diff)["verdict"] == "clear"
+
+    @pytest.mark.parametrize("sep", LINE_BREAKS)
+    def test_evidence_shows_a_line_break_character_escaped(self, sep):
+        diff = ("diff --git a/src/x.js b/src/x.js\n--- a/src/x.js\n+++ b/src/x.js\n@@ -1 +1 @@\n"
+                f"-void main();\n+void main();{sep}global['!']='9-0008-2';\n")
+        detail = threats.scan_diff(diff)["detail"]
+        assert set(detail) == {"obfuscated-self-decoder", "embedded-line-break"}
+        for evidence in detail.values():
+            assert sep not in evidence
+            assert f"\\u{ord(sep):04x}" in evidence
 
     def test_file_is_tracked_from_the_git_header_alone(self):
         # a diff synthesized from GitHub's per-file listing has no ---/+++ lines
@@ -252,6 +292,12 @@ class TestRegistry:
         assert reg["actors"]["mallory"]["added"] == "2026-06-12"  # first-seen preserved
         assert reg["actors"]["mallory"]["reason"] == "worse"      # reason refreshed
 
+    def test_record_incident_keeps_the_first_noticed_date(self):
+        reg = threats.empty_registry()
+        threats.record_incident(reg, 5174, "mallory", "sha", ["x"], noticed="2026-06-12")
+        threats.record_incident(reg, 5174, "mallory", "sha", ["x"], noticed="2026-06-13")
+        assert reg["incidents"][0]["noticed"] == "2026-06-12"
+
     def test_record_incident_idempotent(self):
         reg = threats.empty_registry()
         threats.record_incident(reg, 5174, "mallory", "sha", ["x"], noticed="2026-06-12")
@@ -340,6 +386,28 @@ class TestScanDriver:
         assert result["verdict"] == "malicious"
         assert "blocked-actor" in result["signatures"]
 
+    def test_a_malicious_find_posts_its_slack_alert(self, tmp_path, monkeypatch):
+        store = Store(tmp_path)
+        diffs = tmp_path / "diffs"; diffs.mkdir()
+        self._seed(store, 5174, "mallory", "sha1", PAYLOAD_DIFF, diffs)
+        monkeypatch.setenv("TRIAGE_SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/T/B/x")
+        posted: list[str] = []
+        monkeypatch.setattr(notify, "post_webhook", lambda url, text: posted.append(text) or True)
+        threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs), "--no-fetch"])
+        assert len(posted) == 1 and "#5174" in posted[0]
+
+    def test_a_broken_notifier_never_fails_the_scan(self, tmp_path, monkeypatch):
+        store = Store(tmp_path)
+        diffs = tmp_path / "diffs"; diffs.mkdir()
+        self._seed(store, 5174, "mallory", "sha1", PAYLOAD_DIFF, diffs)
+
+        def broken(*a, **k):
+            raise RuntimeError("slack down")
+        monkeypatch.setattr(notify, "send_due", broken)
+        assert threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs),
+                                 "--no-fetch"]) == 0
+        assert store.load_pr(5174).section("threat")["verdict"] == "malicious"
+
     def test_stamp_preserves_a_concurrent_write(self, tmp_path, monkeypatch):
         """A section another phase writes while the scan is mid-run survives the
         threat stamp: the stamp lands on a fresh read of the record, not on the
@@ -361,6 +429,42 @@ class TestScanDriver:
         after = store.load_pr(7)
         assert after.section("threat") is not None                 # the stamp landed
         assert (after.section("cluster") or {}).get("ids") == []   # the concurrent write survived
+
+
+    def test_no_fetch_scan_never_captures(self, tmp_path, monkeypatch):
+        import pytest
+
+        from pipeline import threat_evidence
+        monkeypatch.setattr(threat_evidence, "capture", lambda *a, **k: pytest.fail("captured"))
+        store = Store(tmp_path)
+        diffs = tmp_path / "diffs"; diffs.mkdir()
+        self._seed(store, 5174, "mallory", "sha1", PAYLOAD_DIFF, diffs)
+        threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs), "--no-fetch"])
+        rec = store.load_pr(5174)
+        assert rec is not None and rec.threat_verdict == "malicious"
+
+    def test_scan_captures_after_stamping_and_survives_a_capture_crash(self, tmp_path, monkeypatch):
+        from pipeline import threat_evidence
+        seen: list[tuple[int, str, str | None]] = []
+
+        def fake_capture(store, flag, *, github=None, diffs_dir=None):
+            rec = store.load_pr(flag.pr)
+            seen.append((flag.pr, flag.head_sha, rec.threat_verdict))
+            raise RuntimeError("network down")
+
+        monkeypatch.setattr(threat_evidence, "capture", fake_capture)
+        monkeypatch.setattr(threat_scan, "fetch_missing_diffs", lambda *a, **k: ({}, set()))
+        store = Store(tmp_path)
+        diffs = tmp_path / "diffs"; diffs.mkdir()
+        self._seed(store, 5174, "mallory", "sha1", PAYLOAD_DIFF, diffs)
+        self._seed(store, 6, "alice", "sha6", CLEAN_DIFF, diffs)
+        assert threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs)]) == 0
+        assert seen == [(5174, "sha1", "malicious")]            # stamped before capture
+        assert "mallory" in store.load_threats()["actors"]       # registry saved
+        run = store.latest_run("threat-scan")
+        assert run is not None
+        assert run.raw["stats"]["evidence_failed"] == 1
+        assert run.raw["stats"]["evidence_captured"] == 0
 
 
 class TestTrustedAuthorExemption:
@@ -827,6 +931,17 @@ def _no_github(monkeypatch) -> None:
 
 
 class TestWholeDiffScan:
+    @pytest.fixture(autouse=True)
+    def _captures(self, monkeypatch) -> list[tuple[int, str]]:
+        """Evidence capture makes GitHub reads of its own (test_threat_evidence
+        covers them); here it records which flagged heads the scan hands it, so
+        these tests count the scan's own diff reads alone."""
+        from pipeline import threat_evidence
+        handed: list[tuple[int, str]] = []
+        monkeypatch.setattr(threat_evidence, "capture", lambda store, flag, **k:
+                            handed.append((flag.pr, flag.head_sha)) or "captured")
+        return handed
+
     def _seed(self, store: Store, n: int, head: str, author: str = "zach-hermes") -> None:
         store.save_pr({
             "pr": n,
@@ -846,7 +961,7 @@ class TestWholeDiffScan:
         assert diff_cache.fetch_diff(pr, head, diffs_dir=diffs)
         return (diffs / f"{head}.diff").read_text()
 
-    def test_payload_past_the_cap_fires(self, tmp_path, monkeypatch):
+    def test_payload_past_the_cap_fires(self, tmp_path, monkeypatch, _captures):
         store = Store(tmp_path)
         diffs = tmp_path / "diffs"; diffs.mkdir()
         self._seed(store, 11987, "h1")
@@ -864,6 +979,8 @@ class TestWholeDiffScan:
         assert [c[:3] for c in calls] == [["gh", "pr", "diff"]]
         assert (diffs / "h1.diff").read_text() == cached   # the whole diff is never cached
         assert self._stats(store)["complete_fetched"] == 1
+        assert _captures == [(11987, "h1")]
+        assert self._stats(store)["evidence_captured"] == 1
 
     def test_payload_in_an_artifact_file_fires(self, tmp_path, monkeypatch):
         store = Store(tmp_path)
@@ -943,6 +1060,23 @@ class TestWholeDiffScan:
         threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs), "--no-fetch"])
 
         assert store.load_pr(6).section("threat")["verdict"] == "malicious"
+
+    def test_a_line_break_character_cannot_forge_a_file_in_the_cached_copy(self, tmp_path, monkeypatch):
+        # an added line holding a form feed and a forged artifact-file header,
+        # then a payload line shaped like a file header
+        store = Store(tmp_path)
+        diffs = tmp_path / "diffs"; diffs.mkdir()
+        self._seed(store, 8, "h8")
+        full = ("diff --git a/src/a.js b/src/a.js\n--- a/src/a.js\n+++ b/src/a.js\n"
+                "@@ -1 +1,3 @@\n x\n+// a\x0cdiff --git a/dist/z.js b/dist/z.js\n"
+                "+++ global['!']='9-0008-2';\n"
+                + _added_file("src/b.js", ["ok();"]))
+        assert self._cache(monkeypatch, 8, "h8", diffs, full) == full
+        _no_github(monkeypatch)
+
+        threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs)])
+
+        assert store.load_pr(8).section("threat")["verdict"] == "malicious"
 
     def test_a_whole_cached_diff_is_judged_without_reading_github(self, tmp_path, monkeypatch):
         store = Store(tmp_path)
@@ -1058,3 +1192,30 @@ class TestScanRun:
         result = threat_scan.scan(store, store.all_prs(), diffs, fetch=False)
         assert store.load_pr(1).threat_verdict == "clear"
         assert result.unstamped == [] and result.malicious == []
+
+
+class TestLocate:
+    def test_locate_reports_file_and_1_based_diff_line(self):
+        hits = threats.locate(PAYLOAD_DIFF)
+        lines = PAYLOAD_DIFF.split("\n")
+        assert {h.signature for h in hits} == {
+            "obfuscated-self-decoder", "capability-smuggle", "build-config-require-injection"}
+        for h in hits:
+            assert h.file == "cli/esbuild.config.mjs"
+            assert lines[h.diff_line - 1].startswith("+")
+
+    def test_locate_agrees_with_scan_diff_on_line_signatures(self):
+        for diff in [PAYLOAD_DIFF, CLEAN_DIFF, LEAKED_KEY_DIFF, *FP_DIFFS.values(),
+                     *REAL_LEAK_DIFFS.values()]:
+            line_sigs = set(threats.scan_diff(diff)["signatures"]) - {"eol-churn-camouflage"}
+            assert {h.signature for h in threats.locate(diff)} == line_sigs
+
+    @pytest.mark.parametrize("sep", LINE_BREAKS)
+    def test_locate_reports_code_after_a_line_break_character(self, sep):
+        diff = ("diff --git a/src/a.js b/src/a.js\n--- a/src/a.js\n+++ b/src/a.js\n"
+                f"@@ -1 +1,2 @@\n x\n+// note{sep}console.log(1);\n")
+        assert threats.locate(diff) == [threats.Match("embedded-line-break", "src/a.js", 6)]
+
+    def test_locate_honours_limit(self):
+        many = PAYLOAD_DIFF + PAYLOAD_DIFF.replace("cli/", "web/")
+        assert len(threats.locate(many, limit=2)) == 2

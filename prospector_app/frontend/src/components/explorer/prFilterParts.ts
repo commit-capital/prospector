@@ -64,7 +64,10 @@ export function buildPrFilterParts(spec: FilterSpec, onChange: (next: FilterSpec
       },
     });
   }
-  if (spec.threat) push("threat", `threat: ${spec.threat}`, "threat");
+  if (spec.threat) {
+    const states = Array.isArray(spec.threat) ? spec.threat.join(" or ") : spec.threat;
+    push("threat", `threat: ${states}`, "threat");
+  }
   if (spec.cluster !== undefined) push("cluster", `cluster #${spec.cluster}`, "cluster");
   if (spec.cluster_none) push("cluster_none", "no cluster", "cluster_none");
   if (spec.author) push("author", `author starts with "${spec.author}"`, "author");

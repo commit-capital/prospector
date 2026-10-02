@@ -51,12 +51,16 @@ def matches_glob(path: str, pattern: str) -> bool:
     return fnmatch.fnmatch(path, pattern)
 
 
+_FILE_HEADER = re.compile(r"^diff --git ", re.M)
+
+
 def changed_paths(text: str) -> list[str]:
     """The list of changed file paths in a unified diff (new path; for deletes,
-    the old path)."""
+    the old path). Lines split on newline alone, so a header after a carriage
+    return or form feed inside a line names no path."""
     out: list[str] = []
     seen: set[str] = set()
-    for line in (text or "").splitlines():
+    for line in (text or "").split("\n"):
         if line.startswith("diff --git "):
             tok = line.split(" ")[-1]
             p = tok[2:] if tok.startswith("b/") else tok
@@ -77,21 +81,15 @@ def diff_blocks(text: str) -> list[tuple[str, str]]:
     """A unified diff split into (path, block_text) pairs, one per changed file, in
     order. `path` is the file's `diff --git` new path; `block_text` spans from that
     line up to (not including) the next `diff --git` line, so each block is itself
-    a valid patch on its own."""
+    a valid patch on its own. Lines split on newline alone, so a header after a
+    carriage return or form feed inside a line starts no block."""
+    text = text or ""
+    starts = [m.start() for m in _FILE_HEADER.finditer(text)]
     blocks: list[tuple[str, str]] = []
-    path: str | None = None
-    lines: list[str] = []
-    for line in (text or "").splitlines(keepends=True):
-        if line.startswith("diff --git "):
-            if path is not None:
-                blocks.append((path, "".join(lines)))
-            tok = line.rstrip("\n").split(" ")[-1]
-            path = tok[2:] if tok.startswith("b/") else tok
-            lines = [line]
-        elif path is not None:
-            lines.append(line)
-    if path is not None:
-        blocks.append((path, "".join(lines)))
+    for start, end in zip(starts, [*starts[1:], len(text)]):
+        block = text[start:end]
+        tok = block.partition("\n")[0].split(" ")[-1]
+        blocks.append((tok[2:] if tok.startswith("b/") else tok, block))
     return blocks
 
 

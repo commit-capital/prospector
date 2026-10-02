@@ -6,7 +6,7 @@ import pytest
 
 from pipeline import store as S
 from pipeline import worker_health
-from prospector_app.backend import data, system_health
+from prospector_app.backend import data, system_health, threat_view
 
 
 NOW = datetime(2026, 9, 22, 12, 0, tzinfo=timezone.utc)
@@ -119,7 +119,28 @@ def store(tmp_path, monkeypatch):
     monkeypatch.setattr(data, "_store", st)
     data.refresh()
     monkeypatch.setattr(system_health, "_pr_ingest_cache", None)
+    monkeypatch.setattr(threat_view, "_registry_cache", None)
     return st
+
+
+def test_status_carries_the_open_malicious_prs_and_secrets_to_rotate(store, monkeypatch):
+    from pipeline import actions
+    from prospector_app.backend import alert_data, issues
+    monkeypatch.setattr(issues, "cached_runs", lambda: [])
+    monkeypatch.setattr(alert_data, "runs", lambda: [])
+    store.save_pr({"pr": 11987,
+                   "meta": {"title": "t", "author": "mallory", "state": "open",
+                            "head_sha": "h" * 40},
+                   "threat": {"verdict": "malicious", "signatures": ["obfuscated-payload"],
+                              "detail": {}, "checked_at": _iso(1), "against_head_sha": "h" * 40}})
+    reg = actions.empty_registry()
+    actions.upsert(reg, actions.make_item("rotate-secret", pr=11987, summary="leak",
+                                          created="2026-10-01", fixture=False))
+    store.save_action_items(reg)
+    data.refresh()
+    out = system_health.status()
+    assert [m["pr"] for m in out["threats"]["malicious"]] == [11987]
+    assert out["threats"]["secrets"] == 1
 
 
 def test_status_composes_the_live_inputs(store, monkeypatch):
@@ -170,6 +191,8 @@ def test_status_reads_every_worker_registry_in_one_statement(store, monkeypatch)
     monkeypatch.setattr(issues, "cached_runs", lambda: [])
     monkeypatch.setattr(alert_data, "runs", lambda: [])
     monkeypatch.setattr(capacity_view, "health_items", lambda: [])
+    monkeypatch.setattr(threat_view, "summary",
+                        lambda: {"malicious": [], "suspicious": 0, "secrets": 0})
     now = datetime.now(timezone.utc)
     store.save_fix_worker({"host": "mac", "last_beat": now.isoformat()})
     store.save_verify_worker({"host": "linux", "last_beat": (now - timedelta(hours=3)).isoformat()})

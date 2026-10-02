@@ -16,7 +16,7 @@ from pathlib import Path
 
 from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 
@@ -57,7 +57,9 @@ from prospector_app.backend import review_refresh
 from prospector_app.backend import responses as responses_mod
 from prospector_app.backend import service
 from prospector_app.backend import suggested_actions
+from prospector_app.backend import pr_watch
 from prospector_app.backend import system_health
+from prospector_app.backend import threat_view
 from prospector_app.backend import tables
 from prospector_app.backend import training
 from prospector_app.backend import trust_ladder
@@ -70,6 +72,7 @@ from prospector_app.backend import work_status
 from pipeline import actions as pipeline_actions
 from pipeline import reviewers
 from pipeline import settings
+from pipeline import threat_evidence
 
 class SurrogateSafeJSONResponse(JSONResponse):
     """JSON render that survives unpaired UTF-16 surrogates. GitHub text (review
@@ -240,14 +243,15 @@ def _launch_fix_worker():
 
 def _launch_worker_cadences():
     """Start a worker machine's cadences: the stale merge-candidate refresh,
-    the re-review hunter, and the threat scan of new heads. Skipped under
-    pytest."""
+    the re-review hunter, the threat scan of new heads, and the watch that
+    records new and pushed-to PRs from GitHub. Skipped under pytest."""
     import sys
     if "pytest" in sys.modules:
         return
     stale_refresh.start()
     rereview_hunt.start()
     threat_refresh.start()
+    pr_watch.start()
 
 
 @app.post("/api/worker/health/resume")
@@ -539,6 +543,17 @@ def onboarding_apply(body: models.OnboardingApply):
         raise HTTPException(500, f"could not write configuration: {e}")
 
 
+@app.post("/api/onboarding/notify/test")
+def onboarding_notify_test():
+    """Post a test message to this machine's Slack webhook; `ok` says whether
+    Slack took it."""
+    from pipeline import notify
+    url = settings.slack_webhook_url()
+    if not url:
+        raise HTTPException(400, "no Slack webhook is set on this machine")
+    return {"ok": notify.post_webhook(url, notify.test_text())}
+
+
 @app.get("/api/onboarding/push-identity/account")
 def push_identity_account(login: str | None = None):
     """A GitHub user's login, id, and no-reply email: the operator's own `gh`
@@ -703,6 +718,36 @@ def pr_actions(n: int):
     """Every real action the configured bot has taken on this PR (with the human
     operator who initiated each), newest-first — shown in the PR-detail panel."""
     return {"items": activity.for_pr(n)}
+
+
+@app.get("/api/prs/{n}/evidence")
+def pr_evidence(n: int):
+    """The PR's threat-evidence captures (threat_evidence.summary), newest
+    first: when and by whom, completeness, hashes, force-push history. No diff
+    bytes."""
+    return {"items": [threat_evidence.summary(r) for r in data.store().threat_evidence(pr=n)]}
+
+
+@app.get("/api/prs/{n}/evidence/{capture_id}/bundle.zip")
+def pr_evidence_bundle(n: int, capture_id: int):
+    """One capture as a zip of inert text files with SHA256SUMS, served as a
+    download. Every artifact is re-hashed first; each download is recorded in
+    the runs ledger."""
+    store = data.store()
+    record = store.threat_evidence_record(capture_id)
+    blobs = store.threat_evidence_blobs(capture_id)
+    if record is None or blobs is None or record.pr != n:
+        raise HTTPException(404, f"no evidence capture {capture_id} for PR {n}")
+    try:
+        payload = threat_evidence.bundle_zip(record, blobs)
+    except threat_evidence.IntegrityError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    threat_evidence.log_export(store, record, via="app", operator=activity.operator()["name"])
+    return Response(payload, media_type="application/zip", headers={
+        "Content-Disposition": f'attachment; filename="{threat_evidence.bundle_name(record)}.zip"',
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "no-store",
+    })
 
 
 @app.get("/api/prs/{n}/history")
@@ -1530,6 +1575,13 @@ def activity_people():
         result.append({"display": login, "login": login, "is_operator": False, "pr_count": count})
 
     return {"people": result}
+
+
+@app.get("/api/threats")
+def threats_get() -> threat_view.ThreatDetail:
+    """The Threats view: open flagged PRs, the incident log, the actor
+    blocklist, and the credentials still to rotate."""
+    return threat_view.current_detail()
 
 
 @app.get("/api/action-items")

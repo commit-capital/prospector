@@ -12,6 +12,7 @@ import re
 import threading
 from collections.abc import Generator, Iterable
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict, cast
 
@@ -25,6 +26,10 @@ from pipeline import wire
 from pipeline.storekit import Collection, ValidationError
 
 if TYPE_CHECKING:
+    from typing import Any
+
+    from sqlalchemy import Select
+    from sqlalchemy.engine import Row
     from sqlalchemy.sql.elements import ColumnElement
 
     from pipeline import model
@@ -289,6 +294,8 @@ def validate_cluster(rec: dict) -> None:
 
 # Serializes this process's capacity-row writes (Store._save_capacity_half_if_newer).
 _CAPACITY_LOCK = threading.Lock()
+# The same serialization for a Slack alert's claim on a local SQLite store.
+_NOTIFY_LOCK = threading.Lock()
 
 # PR records `pr_bodies` reads per statement.
 PR_BODIES_BATCH = 200
@@ -387,6 +394,22 @@ class WorkerRegistries(TypedDict):
     issue_fix_worker: dict
     worker_health: dict
     verify_base: dict[str, wire.VerifyPin]
+
+
+_EVIDENCE_META = ("id", "pr", "head_sha", "author", "captured_at", "complete", "data")
+
+
+def _evidence_select() -> Select[Any]:
+    """A threat_evidence read of every column but the diff blobs."""
+    from sqlalchemy import select
+    t = schema.threat_evidence
+    return select(*(t.c[name] for name in _EVIDENCE_META))
+
+
+def _evidence_record(row: Row[Any]) -> storekit.EvidenceRecord:
+    return storekit.EvidenceRecord(id=int(row[0]), pr=int(row[1]), head_sha=row[2],
+                                   author=row[3], captured_at=row[4],
+                                   complete=bool(row[5]), data=row[6])
 
 
 class Store:
@@ -752,6 +775,49 @@ class Store:
             data[half] = value
             conn.execute(update(reg).where(reg.c.name == name).values(data=data))
 
+    # -- Slack alerts (pipeline/notify.py) -----------------------------------
+    # `notify:<key>` records one alert's delivery: `sending` while a machine
+    # holds the claim, then `sent` or `failed`, with the tries spent. The row
+    # exists before it is locked, so two machines claiming one alert serialize
+    # on it and exactly one posts.
+    def claim_notification(self, key: str, *, host: str, max_tries: int,
+                           stale_after: float, now: datetime | None = None) -> bool:
+        """Claim alert `key` for `host`: True for a new alert, one that failed
+        fewer than `max_tries` times, or one left `sending` longer than
+        `stale_after` seconds; False for one sent or held by a live claim."""
+        from sqlalchemy import select, update
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+        storekit.assert_writable(self.engine)
+        now = now or datetime.now(timezone.utc)
+        name = f"notify:{key}"
+        reg = schema.registries
+        ins = pg_insert(reg) if self.engine.dialect.name == "postgresql" else sqlite_insert(reg)
+        with _NOTIFY_LOCK, self.engine.begin() as conn:
+            conn.execute(ins.values(name=name, data={}).on_conflict_do_nothing(
+                index_elements=[reg.c.name]))
+            row = conn.execute(select(reg.c.data).where(reg.c.name == name)
+                               .with_for_update()).first()
+            data = dict(row[0]) if row is not None and row[0] else {}
+            status = data.get("status")
+            tries = int(data.get("tries") or 0)
+            if status == "sent" or tries >= max_tries:
+                return False
+            if status == "sending":
+                age = storekit.seconds_since(data.get("at"), now)
+                if age is not None and age < stale_after:
+                    return False
+            claimed = {"status": "sending", "host": host, "tries": tries + 1,
+                       "at": now.isoformat()}
+            conn.execute(update(reg).where(reg.c.name == name).values(data=claimed))
+        return True
+
+    def finish_notification(self, key: str, *, sent: bool) -> None:
+        """Record how a claimed alert's post went."""
+        data = dict(self._load_registry(f"notify:{key}", {}))
+        data["status"] = "sent" if sent else "failed"
+        self._save_registry(f"notify:{key}", data)
+
     def append_agent_run(self, record: dict) -> None:
         """Append one agent run (`phase: agent:run`) to the agent ledger, a
         kind of its own so the PR ledger the app snapshots stays its size."""
@@ -879,6 +945,16 @@ class Store:
             report.finish()
         return out
 
+    def diff_heads(self, pr: int) -> list[tuple[str, str | None]]:
+        """The heads of PR `pr` the shared diff cache holds, as (head_sha,
+        fetched_at), newest fetch first."""
+        from sqlalchemy import select
+        t = schema.diffs
+        stmt = (select(t.c.head_sha, t.c.fetched_at).where(t.c.pr == pr)
+                .order_by(t.c.fetched_at.desc()))
+        rows = storekit.read_retrying(self.engine, lambda conn: conn.execute(stmt).all())
+        return [(r[0], r[1]) for r in rows]
+
     def save_diffs_many(self, rows: list[tuple[str, int | None, str]]) -> None:
         """Insert `(head_sha, pr, body)` rows for heads absent from the table;
         an existing head is left untouched. Validated; one statement per call."""
@@ -905,6 +981,66 @@ class Store:
             index_elements=[schema.diffs.c.head_sha])
         with self.engine.begin() as conn:
             conn.execute(stmt)
+
+    # -- Threat evidence -----------------------------------------------------
+    # One row per capture of a head the threat scan flagged malicious
+    # (`threat_evidence` table; pipeline/threat_evidence.py is the writer). Rows
+    # are insert-only: there is no update or delete accessor.
+    def append_threat_evidence(self, *, pr: int, head_sha: str, author: str | None,
+                               captured_at: str, complete: bool, data: dict,
+                               diff_gz: bytes | None, prior_gz: bytes | None) -> int:
+        """Insert one capture and return its id. Validated."""
+        from sqlalchemy import insert
+        if not isinstance(pr, int) or isinstance(pr, bool):
+            raise ValidationError("threat_evidence.pr: required int")
+        if not head_sha or not isinstance(head_sha, str):
+            raise ValidationError("threat_evidence.head_sha: required str")
+        if not captured_at or not isinstance(captured_at, str):
+            raise ValidationError("threat_evidence.captured_at: required str")
+        if not isinstance(data, dict):
+            raise ValidationError("threat_evidence.data: required dict")
+        for name, blob in (("diff_gz", diff_gz), ("prior_gz", prior_gz)):
+            if blob is not None and not isinstance(blob, bytes):
+                raise ValidationError(f"threat_evidence.{name}: bytes or None")
+        storekit.assert_writable(self.engine)
+        with self.engine.begin() as conn:
+            return int(conn.execute(insert(schema.threat_evidence).values(
+                pr=pr, head_sha=head_sha, author=author, captured_at=captured_at,
+                complete=bool(complete), data=data, diff_gz=diff_gz, prior_gz=prior_gz,
+            ).returning(schema.threat_evidence.c.id)).scalar_one())
+
+    def threat_evidence(self, *, pr: int | None = None,
+                        author: str | None = None) -> list[storekit.EvidenceRecord]:
+        """Captures, newest first, without their blobs; `pr` and `author` filter."""
+        stmt = _evidence_select()
+        t = schema.threat_evidence
+        if pr is not None:
+            stmt = stmt.where(t.c.pr == pr)
+        if author is not None:
+            stmt = stmt.where(t.c.author == author)
+        stmt = stmt.order_by(t.c.captured_at.desc(), t.c.id.desc())
+        rows = storekit.read_retrying(self.engine, lambda conn: conn.execute(stmt).all())
+        return [_evidence_record(r) for r in rows]
+
+    def threat_evidence_heads(self) -> set[tuple[int, str]]:
+        """The (pr, head_sha) pairs that have a complete capture."""
+        from sqlalchemy import select
+        t = schema.threat_evidence
+        stmt = select(t.c.pr, t.c.head_sha).where(t.c.complete.is_(True))
+        rows = storekit.read_retrying(self.engine, lambda conn: conn.execute(stmt).all())
+        return {(int(r[0]), r[1]) for r in rows}
+
+    def threat_evidence_record(self, capture_id: int) -> storekit.EvidenceRecord | None:
+        stmt = _evidence_select().where(schema.threat_evidence.c.id == capture_id)
+        row = storekit.read_retrying(self.engine, lambda conn: conn.execute(stmt).first())
+        return None if row is None else _evidence_record(row)
+
+    def threat_evidence_blobs(self, capture_id: int) -> storekit.EvidenceBlobs | None:
+        from sqlalchemy import select
+        t = schema.threat_evidence
+        stmt = select(t.c.diff_gz, t.c.prior_gz).where(t.c.id == capture_id)
+        row = storekit.read_retrying(self.engine, lambda conn: conn.execute(stmt).first())
+        return None if row is None else storekit.EvidenceBlobs(diff_gz=row[0], prior_gz=row[1])
 
     def load_author_baseline(self) -> dict:
         """Per-author PR counts for PRs closed/merged before our first ingest —

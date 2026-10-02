@@ -693,3 +693,80 @@ class TestWorkerStep:
         with pytest.raises(ValueError, match="all three"):
             onboarding.apply("worker", {"TRIAGE_PUSH_LOGIN": "me"}, None)
         assert "TRIAGE_PUSH_LOGIN" not in files[0].read_text()
+
+
+HOOK = "https://hooks.slack.com/services/T000/B000/abc123"
+
+
+class TestNotifyStep:
+    def test_writes_the_webhook_while_configured(self, files, monkeypatch):
+        monkeypatch.setenv("TRIAGE_REPO", "acme/widgets")
+        env, _ = files
+        onboarding.apply("notify", {"TRIAGE_SLACK_WEBHOOK_URL": HOOK}, None)
+        assert f"TRIAGE_SLACK_WEBHOOK_URL={HOOK}" in env.read_text()
+
+    def test_an_empty_value_turns_the_alerts_off(self, files, monkeypatch):
+        monkeypatch.setenv("TRIAGE_REPO", "acme/widgets")
+        env, _ = files
+        onboarding.apply("notify", {"TRIAGE_SLACK_WEBHOOK_URL": ""}, None)
+        assert "TRIAGE_SLACK_WEBHOOK_URL=\n" in env.read_text()
+
+    @pytest.mark.parametrize("url", ["http://hooks.slack.com/services/x",
+                                     "https://evil.example/hooks.slack.com/services/x",
+                                     "https://hooks.slack.com.evil.example/services/x"])
+    def test_a_url_that_is_not_a_slack_webhook_is_refused(self, files, url):
+        with pytest.raises(ValueError, match="hooks.slack.com"):
+            onboarding.apply("notify", {"TRIAGE_SLACK_WEBHOOK_URL": url}, None)
+
+    def test_writes_nothing_else(self, files):
+        with pytest.raises(ValueError, match="not writable in step notify"):
+            onboarding.apply("notify", {"TRIAGE_REPO": "evil/repo"}, None)
+
+    def test_state_says_whether_alerts_are_on_and_never_the_url(self, monkeypatch):
+        monkeypatch.delenv("TRIAGE_REPO", raising=False)
+        monkeypatch.setenv("TRIAGE_SLACK_WEBHOOK_URL", HOOK)
+        out = onboarding.state()
+        assert out["slack_alerts"] is True
+        assert HOOK not in json.dumps(out)
+
+    def test_the_webhook_travels_in_a_bundle_and_lands_on_join(self, files, monkeypatch):
+        monkeypatch.setenv("TRIAGE_REPO", "acme/widgets")
+        monkeypatch.setenv("TRIAGE_SLACK_WEBHOOK_URL", HOOK)
+        bundle = onboarding.parse_bundle(json.dumps(onboarding.build_bundle()))
+        assert bundle.env["TRIAGE_SLACK_WEBHOOK_URL"] == HOOK
+        monkeypatch.delenv("TRIAGE_REPO")
+        env, _ = files
+        onboarding.apply("join", bundle.env, None)
+        assert f"TRIAGE_SLACK_WEBHOOK_URL={HOOK}" in env.read_text()
+
+
+class TestNotifyTestRoute:
+    def _client(self):
+        from fastapi.testclient import TestClient
+        from prospector_app.backend import app as app_mod
+        return TestClient(app_mod.app, raise_server_exceptions=False)
+
+    def test_posts_a_test_message_to_the_configured_webhook(self, monkeypatch):
+        from pipeline import notify
+        monkeypatch.setenv("TRIAGE_REPO", "acme/widgets")
+        monkeypatch.setenv("TRIAGE_SLACK_WEBHOOK_URL", HOOK)
+        posted: list[tuple[str, str]] = []
+        monkeypatch.setattr(notify, "post_webhook",
+                            lambda url, text: posted.append((url, text)) or True)
+        r = self._client().post("/api/onboarding/notify/test")
+        assert r.status_code == 200 and r.json() == {"ok": True}
+        assert posted and posted[0][0] == HOOK
+        assert HOOK not in r.text
+
+    def test_with_no_webhook_it_is_a_400(self, monkeypatch):
+        monkeypatch.setenv("TRIAGE_REPO", "acme/widgets")
+        monkeypatch.delenv("TRIAGE_SLACK_WEBHOOK_URL", raising=False)
+        assert self._client().post("/api/onboarding/notify/test").status_code == 400
+
+    def test_the_card_s_save_turns_the_alerts_on_over_http(self, adopting, monkeypatch):
+        monkeypatch.setenv("TRIAGE_REPO", "acme/widgets")
+        monkeypatch.delenv("TRIAGE_SLACK_WEBHOOK_URL", raising=False)
+        r = self._client().post("/api/onboarding/apply", json={
+            "step": "notify", "env": {"TRIAGE_SLACK_WEBHOOK_URL": HOOK}})
+        assert r.status_code == 200 and r.json()["slack_alerts"] is True
+        assert HOOK not in r.text

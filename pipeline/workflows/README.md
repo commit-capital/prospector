@@ -117,7 +117,10 @@ Cheap and idempotent — no Workflow, no metered tokens. A worker machine (verif
 or fix lane on) also runs the same scan every ten minutes over each open PR
 whose current head has no verdict, so a head that INGEST records is scanned
 without an operator starting this run (`prospector_app/backend/threat_refresh.py`,
-ledger phase `threat-scan:heads`).
+ledger phase `threat-scan:heads`). The same machine records new and pushed-to
+PRs from GitHub every fifteen minutes (`prospector_app/backend/pr_watch.py`,
+ledger phase `ingest:watch`), so a fresh head reaches that scan without an
+operator's INGEST.
 
 ```
 uv run python pipeline/threat_scan.py            # scan every open PR with a cached diff
@@ -127,7 +130,9 @@ uv run python pipeline/views.py
 
 It scans each PR's whole diff against the signatures in `threats.py` (the ONE
 threat policy: obfuscated self-decoders, capability smuggles, build-config
-require-injection, EOL-churn camouflage) and checks the author against the
+require-injection, EOL-churn camouflage, and code after a form feed, U+2028 or
+another line-breaking character inside an added line, which reads as
+`embedded-line-break`, suspicious) and checks the author against the
 durable actor blocklist in the store's `threats` registry. A `malicious` verdict stamps the
 PR's `threat` section and, on first detection, blocks the author and logs the
 incident. `gates.pr_clean` then refuses the PR forever (fail-closed, no
@@ -148,7 +153,24 @@ cached), and a file GitHub itself returns no whole patch for — past the 20k-li
 `.diff` limit, the per-file listing omits large patches and lists at most 3,000
 files — reads as `unscannable-diff` (suspicious, never clear). With `--no-fetch`,
 or GitHub unreachable, a capped copy decides only a malicious verdict; anything
-else leaves the PR unjudged and counted `incomplete` in the run ledger.
+else leaves the PR unjudged and counted `incomplete` in the run ledger. The
+scan and the cache both split a diff into lines on newline alone, so a header-
+or payload-shaped run of text after a carriage return or form feed stays part
+of the added line it sits in.
+
+Each malicious head then has its evidence preserved in the store's
+`threat_evidence` table (`pipeline/threat_evidence.py`): the SHA-pinned diff,
+the diff before the force-push that produced the head, and the PR, commit,
+actor and force-push metadata, all from read-only GitHub reads. `--no-fetch`
+skips the capture with every other GitHub read; the worker's ten-minute
+pass captures too.
+
+```
+uv run python -m pipeline.threat_evidence capture --backfill   # every registry incident without a complete capture
+uv run python -m pipeline.threat_evidence list --author LOGIN
+uv run python -m pipeline.threat_evidence export --pr 11987 --out ~/Downloads/pr-11987-evidence
+uv run python -m pipeline.threat_evidence verify               # re-hash every stored artifact
+```
 
 ### GREPTILE READ
 
