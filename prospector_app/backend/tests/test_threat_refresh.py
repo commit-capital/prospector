@@ -107,6 +107,21 @@ def test_a_new_head_is_tried_at_once_whatever_its_predecessor_waits_on(store, mo
     assert store.load_pr(1).threat_verdict == "malicious"
 
 
+def test_a_dependency_bump_is_stamped_exempt_once(store, monkeypatch):
+    store.save_pr(_pr(1, "bump", author="dependabot[bot]"))
+    data.refresh()
+    fetched = _github(monkeypatch, {})
+    monkeypatch.setattr(diff_cache, "changed_paths",
+                        lambda pr, head, diffs_dir=None: ["pnpm-lock.yaml"])
+    assert threat_refresh.scan_new_heads() == [1]
+    assert threat_refresh.scan_new_heads() == []
+    assert fetched == []
+    stamp = store.load_pr(1).section("threat")
+    assert stamp["against_head_sha"] == "bump"
+    assert stamp["detail"] == {"exempt": "dependency-bump"}
+    assert threat_refresh._left == {}
+
+
 def test_each_pass_is_bounded_most_recently_updated_first(store, monkeypatch):
     for n in range(1, 5):
         store.save_pr(_pr(n, f"h{n}", updated=f"2026-09-2{n}T00:00:00+00:00"))

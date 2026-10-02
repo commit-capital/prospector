@@ -11,7 +11,7 @@ from prospector_app.backend import models
 from prospector_app.backend import pr_checks
 from prospector_app.backend import service
 from prospector_app.backend import suggest
-from pipeline.testsupport import reviews_section
+from pipeline.testsupport import reviews_section, threat_section
 
 HEAD = "abc123"
 # Anchored to the real "now" so the security freshness window (≤7 days) never
@@ -31,6 +31,7 @@ def _pr(n=1, **over):
                     "checked_at": NOW, "against_head_sha": HEAD},
         "reviews": reviews_section(HEAD, NOW),
         "drift": {"state": "applicable", "checked_at": NOW, "against_head_sha": HEAD},
+        "threat": threat_section(HEAD, NOW),
     }
     rec.update(over)
     return model.Pr(None, rec)

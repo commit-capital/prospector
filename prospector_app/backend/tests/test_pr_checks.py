@@ -39,8 +39,25 @@ def test_malicious_shows_failing_check():
 
 
 def test_clear_threat_passes_check():
-    chk = _check(_pr(threat={"verdict": "clear", "signatures": []}))
+    chk = _check(_pr(threat={"verdict": "clear", "signatures": [], "against_head_sha": HEAD}))
     assert chk and chk["status"] == "pass"
+
+
+def test_a_clear_verdict_from_an_earlier_head_warns_stale():
+    chk = _check(_pr(threat={"verdict": "clear", "signatures": [], "against_head_sha": "old"}))
+    assert chk and chk["status"] == "warn" and "STALE" in chk["detail"]
+
+
+def test_a_malicious_verdict_from_an_earlier_head_still_fails():
+    chk = _check(_pr(threat={"verdict": "malicious", "signatures": ["blocked-actor"],
+                             "against_head_sha": "old"}))
+    assert chk and chk["status"] == "fail"
+
+
+def test_an_exempt_dependency_bump_says_so():
+    chk = _check(_pr(threat={"verdict": "clear", "signatures": [],
+                             "detail": {"exempt": "dependency-bump"}, "against_head_sha": HEAD}))
+    assert chk and chk["status"] == "pass" and "dependency bump" in chk["detail"]
 
 
 def test_checks_carry_stable_keys():

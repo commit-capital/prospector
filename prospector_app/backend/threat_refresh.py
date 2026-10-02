@@ -23,8 +23,8 @@ from prospector_app.backend import data
 REFRESH_SECONDS = 10 * 60
 # PRs scanned per pass, most recently updated first; the rest wait a pass.
 BATCH = 200
-# How long a head a pass left without a verdict (no diff GitHub would give, a
-# dependency bump the scan exempts) waits before a pass tries it again.
+# How long a head a pass left without a verdict (no diff GitHub would give)
+# waits before a pass tries it again.
 RETRY_SECONDS = 6 * 3600
 PHASE = "threat-scan:heads"
 

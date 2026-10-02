@@ -21,10 +21,12 @@ run fetches the current-head diff of every open PR that has none cached
 (diff_cache.fetch_diff: bounded, read-only gh reads), so scan coverage never
 depends on a CLUSTER run having populated this machine's cache. Genuine
 dependency bumps from the profile's automation authors are
-exempt: their diffs are deliberately never fetched or scanned
-(gates.is_dependabot_bump). --no-fetch skips the fetch step and scans only
-what is already cached. Either way, PRs left without a diff are reported as
-`uncached` in the run ledger and left unscanned.
+exempt: their diffs are deliberately never fetched or signature-scanned
+(gates.is_dependabot_bump), and the run stamps their head `clear` with
+EXEMPT's `detail`, so they meet the merge gate's demand for a verdict at the
+current head (gates.pr_clean). --no-fetch skips the fetch step and scans
+only what is already cached. Either way, PRs left without a diff are reported
+as `uncached` in the run ledger and left unscanned.
 
 The scan is idempotent: re-running re-derives the same verdicts and the
 registry merges rather than duplicates. The scan loop runs on one bound store
@@ -47,6 +49,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import copy
 import functools
 import json
 import sys
@@ -67,6 +70,10 @@ from pipeline.wire import DiffManifestItem
 
 if TYPE_CHECKING:
     from pipeline.model import Pr
+
+
+# The verdict stamped on a dependency bump the scan exempts.
+EXEMPT = {"verdict": "clear", "signatures": [], "detail": {"exempt": "dependency-bump"}}
 
 
 def fetch_missing_diffs(prs: dict[int, Pr], diffs_dir: Path, workers: int = 8,
@@ -193,7 +200,7 @@ def scan_record(rec: Pr, registry: dict, diffs_dir: Path = diff_cache.DIFFS) -> 
 class Scan:
     """One scan run: its ledger stats and its PRs by outcome. `unstamped` names
     the PRs it left without a verdict at their head — no diff and nothing on
-    file, a dependency bump it exempts, or a head that moved mid-run."""
+    file, or a head that moved mid-run."""
     stats: dict[str, int]
     malicious: list[int] = field(default_factory=list)
     suspicious: list[int] = field(default_factory=list)
@@ -243,6 +250,8 @@ def scan(store: Store, prs: dict[int, Pr], diffs_dir: Path | None = None, *,
         for n, rec in sorted(prs.items()):
             result = scan_record(rec, registry, diffs_dir=diffs_dir)
             scanning.advance()
+            if result is None and n in exempt:
+                result = copy.deepcopy(EXEMPT)
             if result is None:
                 head = rec.head_sha
                 if n not in exempt and not (diffs_dir / f"{head}.diff").exists():

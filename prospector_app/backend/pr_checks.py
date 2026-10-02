@@ -101,19 +101,26 @@ def checks_for_record(rec: Pr, today: str | None = None) -> dict:
         by_key["drift"] = _c("drift", f"Still applies to {settings.default_branch()}", "na", "not checked yet", None)
 
     # The threat gate (gates.pr_clean): a committed credential or a malicious
-    # verdict is a hard merge block. Surface it as a check so the refusal is
-    # visible, not just buried in the API's clean_reasons.
+    # verdict is a hard merge block at any head, and a clear verdict counts only
+    # at the head it judged. Surface it as a check so the refusal is visible,
+    # not just buried in the API's clean_reasons.
     threat = rec.section("threat")
     if threat:
         sigs = rec.threat_signatures
         verdict = rec.threat_verdict
         threat_at = threat.get("checked_at")
+        clear = ("dependency bump, exempt from the signature scan"
+                 if (threat.get("detail") or {}).get("exempt") else "threat scan clear")
         if verdict == "malicious":
             by_key["secrets"] = _c("secrets", "No committed secrets", "fail", "malicious: " + (", ".join(sigs) or "flagged"), threat_at)
         elif "secret-leak" in sigs:
             by_key["secrets"] = _c("secrets", "No committed secrets", "fail", "a live-looking credential is committed in the diff", threat_at)
+        elif not freshness.is_current(rec, "threat"):
+            reason = freshness.currency_failure(rec, "threat") or "stale"
+            tail = "earlier head" if reason.startswith("stale") else reason
+            by_key["secrets"] = _c("secrets", "No committed secrets", "warn", f"{clear} · STALE — {tail}", threat_at)
         else:
-            by_key["secrets"] = _c("secrets", "No committed secrets", "pass", "threat scan clear", threat_at)
+            by_key["secrets"] = _c("secrets", "No committed secrets", "pass", clear, threat_at)
     else:
         by_key["secrets"] = _c("secrets", "No committed secrets", "na", "not scanned yet", None)
 
