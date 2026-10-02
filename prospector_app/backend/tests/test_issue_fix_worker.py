@@ -127,6 +127,28 @@ def test_paused_capacity_still_takes_automation_s_proposal(store, capacity):
     assert capacity["asked"] == []
 
 
+def _ask_reporter(store: IssueStore, n: int, question: dict | None) -> None:
+    store.edit_issue(n).record_fix_run({"ending": "fix-disputed", "host": "studio",
+                                        "question": question})
+    store.edit_issue(n).record_fix_request({
+        "action": "ask-reporter", "status": "queued", "source": "public",
+        "requested_by": "public", "queued_at": _ago(minutes=1), "attempts": 1})
+
+
+def test_paused_capacity_still_takes_automation_s_drafted_question(store, capacity):
+    _ask_reporter(store, 1, QUESTION)
+    capacity["open"] = False
+    assert issue_fix_worker.next_request(store.all_issues(), "studio") == 1
+    assert capacity["asked"] == []
+
+
+def test_paused_capacity_holds_automation_s_undrafted_question(store, capacity):
+    _ask_reporter(store, 1, None)
+    capacity["open"] = False
+    assert issue_fix_worker.next_request(store.all_issues(), "studio") is None
+    assert capacity["asked"] == ["issue-fix"]
+
+
 def _asked(store: IssueStore, at: str) -> None:
     store.edit_issue(1).record_fix_run({
         "ending": "fix-disputed", "host": "studio",
@@ -416,3 +438,17 @@ def test_automation_s_request_is_metered_and_an_operator_s_is_not(store, capacit
         "queued_at": _ago(minutes=1), "attempts": 1})
     issue_fix_worker.run_once(store)
     assert lanes == [("operator", None), ("hunter", "issue-fix")]
+
+
+@pytest.mark.parametrize("question, lane", [(QUESTION, None), (None, "issue-fix")])
+def test_only_an_undrafted_question_is_metered(store, monkeypatch, question, lane):
+    from pipeline import capacity as policy
+    lanes: list[str | None] = []
+
+    def run_request(s, n, req, *, on_step):
+        lanes.append(policy.meter_lane())
+        return "done", "Asked"
+    monkeypatch.setattr(fix_review_runner, "run_request", run_request)
+    _ask_reporter(store, 1, question)
+    assert issue_fix_worker.run_once(store)
+    assert lanes == [lane]
