@@ -18,6 +18,7 @@ RUN = {"ending": "fix-unproven", "detail": "1 independent reproduction(s); an ag
     public_comments.opened(7, "k", 9, "Keep the flag"),
     public_comments.ready(7, "k"),
     public_comments.handed_back(7, "k", "2 revisions spent; greptile 3/5"),
+    public_comments.superseded(7, "k", 14918),
 ])
 def test_every_comment_passes_its_problems_and_carries_its_marker(body):
     assert public_comments.problems(body) == []

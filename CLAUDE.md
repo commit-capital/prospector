@@ -435,9 +435,9 @@ each candidate's own account, the agreement, the picked change, the checks, the
 reviewers, the question, the proposal — no transcripts); and `fix_thread`, the
 operator's words and the worker's notes. `fix_review.fix_status` derives on
 read whose move it is (`review`, `question`, `running`, `reporter`, `pr-open`,
-`pr-closed`, `failed`, `declined`, `pr-merged`; a proposal's `fix_followup`
-counts only while it follows that pull request, and `pr-closed` takes a new
-`solve`); the Issues query filters and sorts on it. The worker
+`pr-closed`, `failed`, `superseded`, `declined`, `pr-merged`; a proposal's
+`fix_followup` counts only while it follows that pull request, and `pr-closed`
+takes a new `solve`); the Issues query filters and sorts on it. The worker
 lane (`TRIAGE_ISSUE_FIX_WORKER=1`, health lane `issue-fix`) claims one request at
 a time by compare-and-swap (`IssueStore.claim_fix_request`) — a `solve` on any
 issue-fix worker, every follow-up only on the host its run names, since it needs
@@ -457,7 +457,14 @@ re-solves with a written answer; `ask-reporter` and `propose` take the executor'
 bot paths. Between requests the lane reads replies to questions asked on GitHub
 every half hour, and `TRIAGE_ISSUE_FIX_HUNT=1` lets it queue one `solve` for a
 fresh, well-reproduced issue with no linked PR within
-`TRIAGE_ISSUE_FIX_HUNT_BUDGET` a UTC day. The lane beats its own heartbeat (the
+`TRIAGE_ISSUE_FIX_HUNT_BUDGET` a UTC day. Until an attempt has a pull request of
+its own open, an open pull request by anyone else whose title or body names the
+issue (`issue_triage/superseded.py`, the propose step's search) supersedes it:
+the runner checks before and after every request, so a request on such an issue
+ends `cancelled` without running, and every ten minutes the lane sweeps the
+attempts waiting on their next step. The attempt's `fix_run.superseded` (schema
+29) reads `superseded`, carries no label, queues nothing, and waits for no
+answer; an operator's request after the rival closed clears it and runs. The lane beats its own heartbeat (the
 `issue_fix_worker` registry) while its drain loop runs, and on start and every
 five minutes `issue_fix_worker.recover_orphans` ends `failed` (reason
 `interrupted: …`) each `running` request this host claimed before its process
@@ -528,10 +535,12 @@ attempt, for the issues in scope: the ones a maintainer filed
 `label_for` derives one status label (`fix in progress`, `needs answer`,
 `iterating on PR`, `ready for review`, `couldn't fix`) from
 `fix_review.fix_status`, the attempt and the follow-up, carried by the issue and
-by the pull request it proposed; `comments_due` names the comments the attempt
-calls for — the conclusion of an attempt without a fix (finished within a day),
-the opened pull request on the issue, and the follow-up's ready or hand-back on
-the pull request, once per head — each rendered by the host with an agent's
+by the pull request it proposed, and none for a `superseded` attempt;
+`comments_due` names the comments the attempt calls for — the conclusion of an
+attempt without a fix (finished within a day), the opened pull request on the
+issue, the follow-up's ready or hand-back on the pull request, once per head,
+and, for a superseded attempt that had asked a question on the issue, that it
+stepped back (within a day of the mark) — each rendered by the host with an agent's
 words held inert, gated by `public_comments.problems`, and marked so it posts
 once. Every ten minutes the issue-fix worker follows up its proposals, then
 `refresh` ingests the in-scope issues GitHub reports updated (REST, candidate

@@ -17,7 +17,10 @@ the sandbox, and write what happened back to the issue.
 
 Each run writes `result.json` and its ledger row (`fix_lane.record_result`),
 then the distilled `fix_run`; the request ends `done` with the outcome, or
-`failed` with the reason, and the worker's note joins the thread.
+`failed` with the reason, and the worker's note joins the thread. Before and
+after every request the runner checks whether someone else's pull request took
+the issue up (`superseded.check`): before, a request on such an issue ends
+`cancelled` without running; after, the attempt it recorded is marked.
 """
 from __future__ import annotations
 
@@ -32,6 +35,7 @@ from issue_triage import (
     fix_review,
     propose,
     solo_lane,
+    superseded,
 )
 from issue_triage.issue_store import IssueStore
 from pipeline import headless_agent, prove, settings, storekit
@@ -215,10 +219,16 @@ def _note(store: IssueStore, n: int, text: str) -> None:
 def run_request(store: IssueStore, n: int, req: dict, *,
                 on_step: Callable[[str], None] = lambda step: None) -> tuple[str, str]:
     """Carry out issue `n`'s claimed request `req`, recording the outcome on the
-    issue. Returns the request's ending status (`done`, `failed`) and the
-    one-line outcome. An agent outage propagates, after the request is marked
-    failed."""
+    issue. Returns the request's ending status (`done`, `failed`, or `cancelled`
+    for an attempt someone else's pull request superseded) and the one-line
+    outcome. An agent outage propagates, after the request is marked failed."""
     action = req["action"]
+    mark = superseded.check(store, n)
+    if mark is not None:
+        outcome = f"Stepped aside: {fix_review.rival_open(mark)}"
+        _finish(store, n, req, "cancelled", outcome)
+        _note(store, n, outcome)
+        return "cancelled", outcome
     try:
         outcome = _carry_out(store, n, action, req, on_step=on_step)
         status = "done"
@@ -229,6 +239,9 @@ def run_request(store: IssueStore, n: int, req: dict, *,
         outcome, status = f"{action} failed: {e}", "failed"
     _finish(store, n, req, status, outcome)
     _note(store, n, outcome)
+    mark = superseded.check(store, n)
+    if mark is not None:
+        _note(store, n, f"Stepped aside: {fix_review.rival_open(mark)}")
     return status, outcome
 
 

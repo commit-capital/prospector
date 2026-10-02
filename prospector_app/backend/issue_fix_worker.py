@@ -9,9 +9,10 @@ acts on, so only the host that run names takes it. A claim is a compare-and-swap
 the replies to questions asked on GitHub every half hour (`poll_replies`); every
 ten minutes it follows up its open pull requests (`issue_triage.followup`, as
 `TRIAGE_ISSUE_FIX_FOLLOWUP` allows), then ingests the in-scope issues updated
-since, starts another attempt where a reply or an edited report calls for one,
-and brings GitHub in line with their attempts (`issue_triage.public_loop`, as
-`TRIAGE_ISSUE_FIX_PUBLIC` allows); and, with `TRIAGE_ISSUE_FIX_HUNT=1`, it
+since, steps aside from the attempts someone else's pull request took up
+(`issue_triage.superseded`), starts another attempt where a reply or an edited
+report calls for one, and brings GitHub in line with their attempts
+(`issue_triage.public_loop`, as `TRIAGE_ISSUE_FIX_PUBLIC` allows); and, with `TRIAGE_ISSUE_FIX_HUNT=1`, it
 queues one `solve` for a fresh issue (`hunt`) within
 `settings.issue_fix_hunt_budget()` a UTC day. The lane books every ending
 on the machine's `issue-fix` health and picks nothing while that lane is
@@ -40,6 +41,7 @@ from issue_triage import (
     fix_review_runner,
     followup,
     public_loop,
+    superseded,
 )
 from issue_triage.issue_store import IssueStore
 from pipeline import capacity, gates, headless_agent, settings, storekit
@@ -234,13 +236,14 @@ def run_once(store: IssueStore) -> bool:
 
 def poll_replies(store: IssueStore) -> int:
     """Queue an `answer` for each question asked on GitHub that got one, or
-    whose default is due. Returns how many were queued."""
+    whose default is due, on an attempt nobody else's pull request took up.
+    Returns how many were queued."""
     queued = 0
     for n, issue in store.all_issues(omit_candidates=True).items():
         run = issue.fix_run or {}
         question = run.get("question") or {}
         asked = question.get("asked") or {}
-        if not asked.get("at") or question.get("answered"):
+        if not asked.get("at") or question.get("answered") or run.get("superseded"):
             continue
         if (issue.fix_request or {}).get("status") in fix_review.IN_FLIGHT:
             continue
@@ -334,10 +337,12 @@ def _answer_replies(store: IssueStore) -> None:
 
 
 def _every_ten_minutes(store: IssueStore) -> None:
-    """Follow up the open proposals, then refresh the in-scope issues, answer
-    their replies, and bring GitHub in line with them; one step failing leaves
-    the others to run, and an agent outage trips the lanes and ends the pass."""
-    for step in (_follow_up, public_loop.refresh, _answer_replies, public_loop.sync):
+    """Follow up the open proposals, then refresh the in-scope issues, step the
+    attempts someone else's pull request took up aside, answer the replies, and
+    bring GitHub in line with them; one step failing leaves the others to run,
+    and an agent outage trips the lanes and ends the pass."""
+    for step in (_follow_up, public_loop.refresh, superseded.sweep, _answer_replies,
+                 public_loop.sync):
         try:
             step(store)
         except headless_agent.AgentUnavailable as e:

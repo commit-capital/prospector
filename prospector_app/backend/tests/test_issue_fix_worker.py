@@ -152,6 +152,17 @@ def test_no_reply_waits_until_the_default_is_due(store, monkeypatch):
     assert store.load_issue(1).fix_request["answer"] == {"label": "A"}
 
 
+def test_a_question_on_a_superseded_attempt_waits_for_no_answer(store, monkeypatch):
+    monkeypatch.setattr(dispute_question, "read_answer",
+                        lambda n, **kw: pytest.fail("read replies to a superseded attempt"))
+    _asked(store, (datetime.now(timezone.utc) - timedelta(days=8)).isoformat())
+    run = store.load_issue(1).fix_run
+    store.edit_issue(1).record_fix_run({**run, "superseded": {
+        "pr": 14918, "author": "contrib", "title": "t", "at": "t"}})
+    assert issue_fix_worker.poll_replies(store) == 0
+    assert store.load_issue(1).fix_request is None
+
+
 @pytest.fixture
 def hunting(store, monkeypatch):
     monkeypatch.setattr(data, "prs", lambda: {})
@@ -365,13 +376,20 @@ def test_an_agent_outage_in_the_ten_minute_pass_trips_the_lanes(store, monkeypat
 
 
 def _ten_minute_steps(monkeypatch) -> list[str]:
-    from issue_triage import followup, public_loop
+    from issue_triage import followup, public_loop, superseded
 
     ran: list[str] = []
-    for module, name in ((followup, "poll"), (public_loop, "refresh"),
+    for module, name in ((followup, "poll"), (public_loop, "refresh"), (superseded, "sweep"),
                          (public_loop, "answer_replies"), (public_loop, "sync")):
         monkeypatch.setattr(module, name, lambda store_, name=name, **_: ran.append(name))
     return ran
+
+
+def test_the_ten_minute_pass_steps_aside_before_it_reads_replies_or_writes(store,
+                                                                          monkeypatch):
+    ran = _ten_minute_steps(monkeypatch)
+    issue_fix_worker._every_ten_minutes(store)
+    assert ran == ["poll", "refresh", "sweep", "answer_replies", "sync"]
 
 
 def test_reply_routing_asks_the_capacity_only_when_a_reply_needs_it(store, capacity,
