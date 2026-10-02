@@ -477,18 +477,24 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
         </div>
       )}
 
-      {/* Threat gate (gates.pr_clean): a committed credential or malicious flag
-          is a hard merge block — surface it loudly, like the CODEOWNERS one. */}
+      {/* Threat gate (gates.pr_clean): a committed credential, a diff the scan
+          could not read in full, or a malicious flag is a hard merge block —
+          surface it loudly, like the CODEOWNERS one. */}
       {(() => {
-        const blocks = (pr.clean_reasons || []).filter((r) => r.startsWith("secret-leak") || r.startsWith("malicious"));
+        const blocks = (pr.clean_reasons || []).filter((r) => r.startsWith("secret-leak") || r.startsWith("unscannable-diff") || r.startsWith("malicious"));
         if (!blocks.length) return null;
         const malicious = blocks.some((r) => r.startsWith("malicious"));
+        const secret = blocks.some((r) => r.startsWith("secret-leak"));
+        const headline: string = malicious ? "⛔ Merge blocked — flagged malicious"
+          : secret ? "🔑 Merge blocked — committed secret"
+          : "⛔ Merge blocked — the threat scan could not read the whole diff";
         return (
-          <div className="gate-block-callout" title="gates.pr_clean refuses to merge a PR with a committed credential or a malicious flag.">
-            <div className="co-headline">{malicious ? "⛔ Merge blocked — flagged malicious" : "🔑 Merge blocked — committed secret"}</div>
+          <div className="gate-block-callout" title="gates.pr_clean refuses to merge a PR with a committed credential, a diff the threat scan could not read in full, or a malicious flag.">
+            <div className="co-headline">{headline}</div>
             <div className="co-detail">
               {blocks.join("; ")}.{" "}
-              {!malicious && <>Remove it, rotate the key, and bounce the PR via <b>Disposition → request changes</b>.</>}
+              {!malicious && secret && <>Remove it, rotate the key, and bounce the PR via <b>Disposition → request changes</b>.</>}
+              {!malicious && !secret && <>Ask the author to split the PR or drop the files GitHub returns no patch for, via <b>Disposition → request changes</b>.</>}
             </div>
           </div>
         );

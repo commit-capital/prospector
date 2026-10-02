@@ -14,8 +14,13 @@ machine's fetch spares every other machine the download. A head's diff never
 changes, so a store row is fresh by construction. Store failures degrade to
 the direct GitHub fetch (it is a cache, not a gate), logged as warnings.
 
-Every function takes an optional `diffs_dir` override (tests, alternate
-caches); None means the canonical DIFFS directory.
+A reader that must see every added line — the threat scan — checks
+`is_complete` and, for a copy that is not, reads the whole diff with
+`fetch_complete`, which never touches the cache or the store and names the
+files GitHub itself withheld.
+
+Every function that touches the cache takes an optional `diffs_dir` override
+(tests, alternate caches); None means the canonical DIFFS directory.
 """
 from __future__ import annotations
 
@@ -23,6 +28,7 @@ import logging
 import re
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -127,6 +133,18 @@ def changed_paths(pr: int, head_sha: str | None,
     return _fetch_changed_paths(pr) or []
 
 
+def _listing_diff(files: list[dict]) -> str:
+    """A diff rebuilt from GitHub's per-file listing: each file's header, a
+    `# <status>: +<adds> -<dels>` line, and its patch when GitHub returned one."""
+    parts = []
+    for f in files:
+        parts.append(f"diff --git a/{f['filename']} b/{f['filename']}")
+        parts.append(f"# {f.get('status', '?')}: +{f.get('additions', 0)} -{f.get('deletions', 0)}")
+        if f.get("patch"):
+            parts.append(f["patch"])
+    return "\n".join(parts)
+
+
 def _synthesize_diff(pr: int) -> str | None:
     """GitHub refuses .diff for PRs over 20k lines (HTTP 406). Rebuild one from
     the per-file listing; files past GitHub's per-file patch limit appear as
@@ -134,13 +152,66 @@ def _synthesize_diff(pr: int) -> str | None:
     files = gh.pr_files(pr)
     if files is None:
         return None
-    parts = []
-    for f in files:
-        parts.append(f"diff --git a/{f['filename']} b/{f['filename']}")
-        parts.append(f"# {f.get('status', '?')}: +{f.get('additions', 0)} -{f.get('deletions', 0)}")
-        if f.get("patch"):
-            parts.append(f["patch"])
-    return "\n".join(parts) if parts else None
+    return _listing_diff(files) or None
+
+
+def _gh_pr_diff(pr: int) -> str | None:
+    """PR `pr`'s unified diff from `gh pr diff`, or None when GitHub refuses it."""
+    res = subprocess.run(["gh", "pr", "diff", str(pr), "--repo", settings.repo()],
+                         capture_output=True, text=True, timeout=120,
+                         env=operator_env())
+    return res.stdout if res.returncode == 0 else None
+
+
+# GitHub's per-file listing returns at most this many files.
+LISTING_MAX_FILES = 3000
+
+# A line directly under a file's `diff --git` header that starts "# " is a
+# `bound` stub or a `_listing_diff` entry; a diff GitHub returns never has one.
+_PARTIAL_FILE = re.compile(r"^diff --git [^\n]*\n# ", re.M)
+
+
+def is_complete(text: str) -> bool:
+    """Whether a diff carries every file's patch as `gh pr diff` returned it:
+    no file reduced to a `bound` stub and none rebuilt from the per-file
+    listing. A copy at or past the cap is not trusted to be whole: a whole
+    diff that long reads the same as one cut there."""
+    return len(text) < MAX_DIFF_BYTES and not _PARTIAL_FILE.search(text)
+
+
+@dataclass(frozen=True)
+class CompleteDiff:
+    """A PR's whole diff as GitHub returns it. `unread` names what GitHub
+    withheld: each file it returned no whole patch for though the file adds
+    lines, and the files past the listing's limit when it was reached."""
+    text: str
+    unread: tuple[str, ...]
+
+
+def _patch_withheld(f: dict) -> bool:
+    """Whether a per-file listing entry adds lines its patch does not carry."""
+    patch = f.get("patch") or ""
+    carried = sum(1 for line in patch.split("\n") if line.startswith("+"))
+    return int(f.get("additions") or 0) > carried
+
+
+def fetch_complete(pr: int) -> CompleteDiff | None:
+    """PR `pr`'s whole diff, read from GitHub for one reader and never cached:
+    `gh pr diff`, else the per-file listing. None when GitHub answers
+    neither."""
+    try:
+        text = _gh_pr_diff(pr)
+    except subprocess.TimeoutExpired:
+        text = None
+    if text is not None:
+        return CompleteDiff(text, ())
+    files = gh.pr_files(pr)
+    if files is None:
+        return None
+    unread = [f["filename"] for f in files if _patch_withheld(f)]
+    if len(files) >= LISTING_MAX_FILES:
+        unread.append(f"every file past GitHub's {LISTING_MAX_FILES:,}-file listing")
+    return CompleteDiff(_listing_diff(files), tuple(unread))
 
 
 def fetch_diff_paths(pr: int, head_sha: str, diffs_dir: Path | None = None,
@@ -168,10 +239,9 @@ def fetch_diff_paths(pr: int, head_sha: str, diffs_dir: Path | None = None,
             if len(body) < MAX_DIFF_BYTES:
                 return diffpaths.changed_paths(body)
             return _fetch_changed_paths(pr)
-    res = subprocess.run(["gh", "pr", "diff", str(pr), "--repo", settings.repo()],
-                         capture_output=True, text=True, timeout=120,
-                         env=operator_env())
-    text = res.stdout if res.returncode == 0 else _synthesize_diff(pr)
+    text = _gh_pr_diff(pr)
+    if text is None:
+        text = _synthesize_diff(pr)
     if text is None:
         return None
     paths = diffpaths.changed_paths(text)

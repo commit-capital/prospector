@@ -165,6 +165,16 @@ def test_ready_means_every_check_is_clear(store, monkeypatch):
     assert (out["column"], out["bucket"]) == ("act", "merge-ready")
 
 
+def test_a_diff_the_threat_scan_could_not_read_is_your_call(store):
+    rec = _merge_pick(_rec())
+    rec["threat"] = {"verdict": "suspicious", "signatures": ["unscannable-diff"],
+                     "detail": {"unscannable-diff": "not read: dist/huge.js"},
+                     "checked_at": _now(), "against_head_sha": HEAD}
+    out = _classify(store, rec)
+    assert (out["column"], out["bucket"], out["owner"]) == ("handed", "other", "you")
+    assert "dist/huge.js" in out["reason"]
+
+
 def test_partial_verification_is_your_judgment_not_ready(store):
     rec = _merge_pick(_rec(), verify={"outcome": "verified-fix", "checked_at": _now(),
                                       "against_head_sha": HEAD, "against_base_sha": "b" * 40,

@@ -141,6 +141,28 @@ class TestPRClean:
         ok, reasons = gates.pr_clean(rec, today="2026-06-10")
         assert not ok and any("secret-leak" in r for r in reasons)
 
+    def test_unscannable_diff_not_clean(self):
+        # a diff the threat scan could not read in full never merges as-is
+        rec = _pr(threat={"verdict": "suspicious", "signatures": ["unscannable-diff"],
+                          "detail": {"unscannable-diff": "not read: dist/huge.js"}})
+        ok, reasons = gates.pr_clean(rec, today="2026-06-10")
+        assert not ok
+        assert [r for r in reasons if r.startswith("unscannable-diff")] == [
+            "unscannable-diff: the threat scan could not read every added line "
+            "(not read: dist/huge.js)"]
+
+    def test_unscannable_diff_blocks_regardless_of_freshness(self):
+        rec = _pr(threat={"verdict": "suspicious", "signatures": ["unscannable-diff"],
+                          "against_head_sha": "OLD"})
+        ok, reasons = gates.pr_clean(rec, today="2026-06-10")
+        assert not ok and any(r.startswith("unscannable-diff") for r in reasons)
+
+    def test_unscannable_diff_asks_the_author_for_a_readable_diff(self):
+        rec = _pr(threat={"verdict": "suspicious", "signatures": ["unscannable-diff"]})
+        _, reasons = gates.pr_clean(rec, today="2026-06-10")
+        asks = gates.bar_asks(reasons, rec)
+        assert len(asks) == 1 and "Split" in asks[0]
+
 
 class TestSecurityEligible:
     def test_clean_merge_candidate_is_eligible(self):
@@ -2312,6 +2334,14 @@ class TestFixEligibility:
         ok, why = gates.fix_eligibility(pr, "update")
         assert ok is False
         assert "malicious" in why
+
+    def test_unscannable_diff_refused(self):
+        pr = _pr(threat={"verdict": "suspicious", "signatures": ["unscannable-diff"],
+                         "checked_at": NOW})
+        for action in ("update", "rebase", "fix", "describe"):
+            ok, why = gates.fix_eligibility(pr, action, changed_paths=["src/a.ts"])
+            assert ok is False, action
+            assert "unscannable-diff" in why
 
     def test_red_security_refused_even_when_stale(self):
         # A stale RED may be a finding the author already fixed, but the bot

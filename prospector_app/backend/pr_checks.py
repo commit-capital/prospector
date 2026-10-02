@@ -112,6 +112,10 @@ def checks_for_record(rec: Pr, today: str | None = None) -> dict:
             by_key["secrets"] = _c("secrets", "No committed secrets", "fail", "malicious: " + (", ".join(sigs) or "flagged"), threat_at)
         elif "secret-leak" in sigs:
             by_key["secrets"] = _c("secrets", "No committed secrets", "fail", "a live-looking credential is committed in the diff", threat_at)
+        elif unscannable := gates.unscannable_reason(rec):
+            by_key["secrets"] = _c("secrets", "No committed secrets", "fail", unscannable, threat_at)
+        elif verdict == "suspicious":
+            by_key["secrets"] = _c("secrets", "No committed secrets", "warn", "suspicious: " + ", ".join(sigs), threat_at)
         else:
             by_key["secrets"] = _c("secrets", "No committed secrets", "pass", "threat scan clear", threat_at)
     else:
