@@ -4,6 +4,7 @@ import pytest
 
 from pipeline import diff_cache
 from pipeline import gates
+from pipeline import notify
 from pipeline import storekit
 from pipeline import threats
 from pipeline import threat_scan
@@ -295,6 +296,28 @@ class TestScanDriver:
         result = threat_scan.scan_record(rec, reg, diffs_dir=diffs)
         assert result["verdict"] == "malicious"
         assert "blocked-actor" in result["signatures"]
+
+    def test_a_malicious_find_posts_its_slack_alert(self, tmp_path, monkeypatch):
+        store = Store(tmp_path)
+        diffs = tmp_path / "diffs"; diffs.mkdir()
+        self._seed(store, 5174, "mallory", "sha1", PAYLOAD_DIFF, diffs)
+        monkeypatch.setenv("TRIAGE_SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/T/B/x")
+        posted: list[str] = []
+        monkeypatch.setattr(notify, "post_webhook", lambda url, text: posted.append(text) or True)
+        threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs), "--no-fetch"])
+        assert len(posted) == 1 and "#5174" in posted[0]
+
+    def test_a_broken_notifier_never_fails_the_scan(self, tmp_path, monkeypatch):
+        store = Store(tmp_path)
+        diffs = tmp_path / "diffs"; diffs.mkdir()
+        self._seed(store, 5174, "mallory", "sha1", PAYLOAD_DIFF, diffs)
+
+        def broken(*a, **k):
+            raise RuntimeError("slack down")
+        monkeypatch.setattr(notify, "send_due", broken)
+        assert threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs),
+                                 "--no-fetch"]) == 0
+        assert store.load_pr(5174).section("threat")["verdict"] == "malicious"
 
     def test_stamp_preserves_a_concurrent_write(self, tmp_path, monkeypatch):
         """A section another phase writes while the scan is mid-run survives the

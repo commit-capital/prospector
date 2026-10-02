@@ -543,6 +543,17 @@ def onboarding_apply(body: models.OnboardingApply):
         raise HTTPException(500, f"could not write configuration: {e}")
 
 
+@app.post("/api/onboarding/notify/test")
+def onboarding_notify_test():
+    """Post a test message to this machine's Slack webhook; `ok` says whether
+    Slack took it."""
+    from pipeline import notify
+    url = settings.slack_webhook_url()
+    if not url:
+        raise HTTPException(400, "no Slack webhook is set on this machine")
+    return {"ok": notify.post_webhook(url, notify.test_text())}
+
+
 @app.get("/api/onboarding/push-identity/account")
 def push_identity_account(login: str | None = None):
     """A GitHub user's login, id, and no-reply email: the operator's own `gh`

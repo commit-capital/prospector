@@ -396,6 +396,12 @@ def fix_objection_budget() -> int:
     return positive_int("TRIAGE_FIX_OBJECTION_BUDGET", 20)
 
 
+def slack_webhook_url() -> str | None:
+    """The Slack incoming-webhook URL the threat scan's alerts post to, or None
+    when this machine posts none."""
+    return os.environ.get("TRIAGE_SLACK_WEBHOOK_URL", "").strip() or None
+
+
 def pr_watch() -> bool:
     """Whether a worker machine records new PRs and pushed heads from GitHub on
     a cadence (TRIAGE_PR_WATCH, default on)."""

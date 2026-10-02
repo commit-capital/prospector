@@ -133,7 +133,7 @@ editable setting names a credential, a path, or the store. `prospector_app/backe
 for the setup wizard, allowlisted per step: `connect` (`TRIAGE_REPO`,
 `TRIAGE_STORE_URL`, the profile path, and presentation/review config, plus
 `profile.json` itself), `join` (a pasted bundle: the `connect` keys plus the bot
-identity, and, when the sharer opted in, the bot's private key — which the app
+identity and the Slack alerts webhook, and, when the sharer opted in, the bot's private key — which the app
 files owner-only at `~/.config/prospector/<login>/private-key.pem` and names in
 `TRIAGE_BOT_KEY_FILE` itself — and the contributor-push identity with its SSH
 private key, filed the same way at `~/.config/prospector/<login>/push-key`; the
@@ -145,12 +145,16 @@ policy; the bundle's env is never taken there), and `profile` (a pasted
 bundle's profile alone — no env key is writable in it — so a configured
 machine whose push identity is already in place can still refresh its policy),
 and `agent` (`TRIAGE_AGENT_PROVIDER`, the machine-local Claude/Codex/none
-choice, which never travels in a bundle). **`connect` and `join` are refused once
+choice, which never travels in a bundle), and `notify`
+(`TRIAGE_SLACK_WEBHOOK_URL`, the Setup tab's Slack alerts card: a
+`https://hooks.slack.com/` URL, or empty to turn the alerts off; the onboarding
+state reports only whether one is set, and `/api/onboarding/notify/test` posts a
+test message). **`connect` and `join` are refused once
 `settings.configured()` is true**, so a working deployment cannot be pointed at
 another repository or another database through the HTTP surface; `writes` and
 `worker` stay open because the wizard reaches them after `connect` has already
-configured the app, and `agent` stays open so an existing install can switch
-its local provider. Both writers share `env_file.py`, which replaces the file
+configured the app, and `agent` and `notify` stay open so an existing install
+can switch its local provider and set its Slack webhook. Both writers share `env_file.py`, which replaces the file
 whole from a temporary sibling. `settings` reads every deployment value from
 the environment on the call, so `onboarding.reconfigure` — the ONE adoption
 path — makes a write take effect in the running process by updating the
@@ -586,6 +590,25 @@ trips the worker's agent lanes. The hunter takes a maintainer's issue whatever i
 grade. `TRIAGE_ISSUE_FIX_PUBLIC` is
 `live` (the default), `dry-run` (each write logged as a dry-run and noted once on
 the issue, its record kept apart in `fix_public.dry`), or `off`.
+
+**SLACK ALERTS** (`pipeline/notify.py`) is the ONE path by which a threat-scan
+finding reaches the team outside the app. At the end of every
+`threat_scan.scan` (the worker's pass, the Control-tab job, the CLI, the
+pre-merge rescan) `notify.send_due` posts, through the incoming webhook
+`TRIAGE_SLACK_WEBHOOK_URL` names, an alert for each open PR flagged malicious
+and for each open, non-fixture rotate-secret item on an open PR a maintainer
+wrote (`gates.priority_author` — a contributor's leak of their own deployment's
+secrets stays in Action items), each first seen within `WINDOW_DAYS` (2).
+Each alert is claimed once in the shared store before it is posted
+(`Store.claim_notification`, registry row `notify:<key>`), so two machines
+post one message and a failed post is retried by later passes, `MAX_TRIES` (3)
+in all; a post never fails the scan. Outside-written text is mrkdwn-escaped and
+a credential alert names the file, never the value. Worker outages and lane
+trips are not posted. The chat agent's environment drops the URL. With no URL
+set nothing is read or posted. The Setup tab's Slack alerts card saves, clears
+and tests the webhook (onboarding step `notify`), and a teammate's copied setup
+bundle carries it; `uv run python -m pipeline.notify --test` posts a test
+message from the CLI.
 
 **WORKER HEALTH** (`pipeline/worker_health.py` + `prospector_app/backend/lane_health.py`
 + `escalation.py`) is the ONE policy for a worker that is failing rather than

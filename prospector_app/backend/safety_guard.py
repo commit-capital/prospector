@@ -44,13 +44,14 @@ _AGENT_ENV_PREFIXES = ("LC_", "ANTHROPIC_", "CLAUDE_", "CODEX_",
 
 # The deployment values the agent's environment withholds. `jq` is an
 # allowlisted text filter and `jq -n env` prints the environment, so the store
-# URL's password and the feedback token would be one command from any text an
-# outsider wrote, and `file-issue` could post either to a public issue. Helpers
+# URL's password, the feedback token and the Slack webhook (which posts to the
+# team's channel) would be one command from any text an outsider wrote, and
+# `file-issue` could post any of them to a public issue. Helpers
 # that need them read them from the repo-root .env, which pipeline.settings
 # loads on import; a deployment configured by process environment alone, with
 # no .env on disk, loses `store-read` in chat and files feedback with gh's
 # stored login.
-_AGENT_ENV_DROP = ("TRIAGE_STORE_URL", "PROSPECTOR_FEEDBACK_TOKEN")
+_AGENT_ENV_DROP = ("TRIAGE_STORE_URL", "PROSPECTOR_FEEDBACK_TOKEN", "TRIAGE_SLACK_WEBHOOK_URL")
 
 
 def agent_env() -> dict[str, str]:

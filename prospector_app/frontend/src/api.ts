@@ -1668,6 +1668,8 @@ export interface OnboardingState {
   worker_ready: boolean;
   /** The raw choice: null until the operator picks a provider. */
   agent_provider: string | null;
+  /** Whether this machine has a Slack alerts webhook set; never the URL. */
+  slack_alerts: boolean;
   counts: { prs?: number; clusters?: number };
 }
 
@@ -1740,7 +1742,7 @@ export interface HomeProgress {
 
 /** One step of setup. `bundle` supplies `env` and `profile` in their place. */
 export interface OnboardingApplyBody {
-  step: "connect" | "join" | "writes" | "worker" | "profile" | "agent";
+  step: "connect" | "join" | "writes" | "worker" | "profile" | "agent" | "notify";
   env?: Record<string, string>;
   profile?: Record<string, unknown> | null;
   bundle?: string;
@@ -1810,6 +1812,15 @@ export const api = {
     });
     if (!r.ok) throw new Error(`/api/onboarding/probe → ${r.status}`);
     return r.json() as Promise<ProbeResult>;
+  },
+  /** Posts a test message to this machine's Slack webhook; `ok` says whether Slack took it. */
+  notifyTest: async (): Promise<{ ok: boolean }> => {
+    const r = await fetch("/api/onboarding/notify/test", { method: "POST" });
+    if (!r.ok) {
+      const problem = await r.json().catch(() => ({ detail: `${r.status}` }));
+      throw new Error(problem.detail ?? `${r.status}`);
+    }
+    return r.json() as Promise<{ ok: boolean }>;
   },
   onboardingApply: async (body: OnboardingApplyBody) => {
     const r = await fetch("/api/onboarding/apply", {

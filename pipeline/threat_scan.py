@@ -70,6 +70,7 @@ import copy
 import functools
 import json
 import sys
+import traceback
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -79,6 +80,7 @@ from typing import TYPE_CHECKING, Literal
 from pipeline import actions
 from pipeline import diff_cache
 from pipeline import gates
+from pipeline import notify
 from pipeline import profile
 from pipeline import progress
 from pipeline import storekit
@@ -394,6 +396,11 @@ def scan(store: Store, prs: dict[int, Pr], diffs_dir: Path | None = None, *,
     evidence_counts: dict[str, int] = {}
     if fetch and flagged:
         evidence_counts = capture_evidence(store, prs, flagged, diffs_dir)
+    try:
+        posted = notify.send_due(store, registry, action_items["items"])
+    except Exception:
+        traceback.print_exc()  # an alert is best-effort; the verdicts are stored
+        posted = []
     out.stats = {"scanned": len(prs), "restamped": restamped, "malicious": len(out.malicious),
                  "suspicious": len(out.suspicious), "uncached": uncached, "moved": moved,
                  "incomplete": incomplete,
@@ -401,6 +408,7 @@ def scan(store: Store, prs: dict[int, Pr], diffs_dir: Path | None = None, *,
                  **fetch_stats,
                  "blocked_actors": len(registry.get("actors", {})),
                  "rotate_secret_items": secret_leaks,
+                 "slack_posted": len(posted),
                  **evidence_counts}
     return out
 

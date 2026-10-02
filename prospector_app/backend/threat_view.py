@@ -79,14 +79,6 @@ def _noticed(incidents: list[dict]) -> dict[int, str]:
             if i.get("pr") is not None and i.get("noticed")}
 
 
-def _fixture(item: dict) -> bool:
-    """Whether a rotate-secret item reads as a test fixture; an item stored
-    before fixture marking existed is judged from its evidence."""
-    if "fixture" in item:
-        return bool(item["fixture"])
-    return actions.likely_fixture(item.get("evidence") or "")
-
-
 def _open_secrets(items: list[dict]) -> list[dict]:
     return [it for it in items if it.get("kind") == "rotate-secret"
             and it.get("status") == "open"]
@@ -107,7 +99,7 @@ def summarize(prs: Iterable[Pr], incidents: list[dict], items: list[dict]) -> Th
         elif pr.threat_verdict == "suspicious":
             suspicious += 1
     malicious.sort(key=lambda f: f["pr"])
-    secrets = sum(1 for it in _open_secrets(items) if not _fixture(it))
+    secrets = sum(1 for it in _open_secrets(items) if not actions.is_fixture(it))
     return {"malicious": malicious, "suspicious": suspicious, "secrets": secrets}
 
 
@@ -144,7 +136,7 @@ def detail(prs: Iterable[Pr], registry: dict, items: list[dict]) -> ThreatDetail
          "incidents": list(entry.get("incidents") or []),
          "open_prs": sorted(open_by_author.get(login, []))}
         for login, entry in sorted((registry.get("actors") or {}).items())]
-    secrets = [{**it, "fixture": _fixture(it)} for it in _open_secrets(items)]
+    secrets = [{**it, "fixture": actions.is_fixture(it)} for it in _open_secrets(items)]
     secrets.sort(key=lambda it: it["fixture"])
     return {"loading": False, "flagged": flagged, "incidents": incidents, "actors": actors,
             "secrets": secrets}
