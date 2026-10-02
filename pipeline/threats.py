@@ -31,6 +31,13 @@ _BUILD_CONFIG = re.compile(
     re.IGNORECASE,
 )
 
+# Every character str.splitlines breaks a line on besides "\n", each of them
+# whitespace. The diff keeps the code after one on its line; an editor,
+# terminal, or review tool that breaks there shows that code as a line of its
+# own, or hides it.
+_LINE_BREAKS = "\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029"
+_SHOW_LINE_BREAKS = {ord(c): f"\\u{ord(c):04x}" for c in _LINE_BREAKS}
+
 # Severity ladder. CRITICAL or HIGH ⇒ verdict "malicious" (hard block).
 # MEDIUM ⇒ "suspicious" (surfaced for a human, never auto-cleared, never a
 # block on its own — these patterns can have rare benign causes).
@@ -85,6 +92,15 @@ SIGNATURES: list[tuple[str, str, str, list[re.Pattern]]] = [
         "listed only the first 3,000 of its files, so the scan could not read "
         "every added line.",
         [],  # computed from the files the read could not carry; see scan_diff
+    ),
+    (
+        "embedded-line-break", MEDIUM,
+        "Code after a carriage return, form feed, vertical tab, U+2028 or "
+        "another line-breaking character inside one added line — an editor, "
+        "terminal or review tool that breaks the line there shows that code as "
+        "a line of its own, or hides it. A CRLF ending and a line holding only "
+        "a page break do not fire.",
+        [],  # computed by _embedded_line_break; see scan_diff
     ),
     (
         "secret-leak", MEDIUM,
@@ -167,19 +183,30 @@ def _secret_evidence(fname: str | None, body: str) -> bool:
     m = _SECRET_ASSIGN.search(body)
     return bool(m and _looks_secret(m.group("val")))
 
+
+def _embedded_line_break(body: str) -> bool:
+    """Whether code follows a line-breaking character in `body`, in time linear
+    in the line's length."""
+    breaks = [i for c in _LINE_BREAKS if (i := body.find(c)) >= 0]
+    return bool(breaks) and not body[min(breaks):].isspace()
+
+
 _CRITICAL_OR_HIGH = {name for name, sev, _, _ in SIGNATURES if sev in (CRITICAL, HIGH)}
 _PATTERNS = {name: patterns for name, _, _, patterns in SIGNATURES}
 
 
 def _line_signatures(fname: str | None, body: str) -> list[str]:
-    """The line-pattern signatures one added line fires: the decoder and smuggle
-    patterns anywhere, the require injection only in a build-config file, and a
-    secret leak outside the excluded files."""
+    """The line signatures one added line fires: the decoder and smuggle
+    patterns anywhere, the require injection only in a build-config file, code
+    after a line-breaking character, and a secret leak outside the excluded
+    files."""
     fired = [name for name in ("obfuscated-self-decoder", "capability-smuggle")
              if any(p.search(body) for p in _PATTERNS[name])]
     if fname and _BUILD_CONFIG.search(fname) and any(
             p.search(body) for p in _PATTERNS["build-config-require-injection"]):
         fired.append("build-config-require-injection")
+    if _embedded_line_break(body):
+        fired.append("embedded-line-break")
     provider_hit = any(p.search(body) for p in _PATTERNS["secret-leak"])
     if (provider_hit and not (fname and _SECRET_EXCLUDE_FILE.search(fname))) \
             or _secret_evidence(fname, body):
@@ -197,7 +224,7 @@ class Match:
 
 
 def locate(diff_text: str, *, limit: int | None = None) -> list[Match]:
-    """Every (signature, file, line) the line-pattern signatures fire on over the
+    """Every (signature, file, line) the line signatures fire on over the
     added lines of `diff_text`, read exactly as scan_diff reads them, in diff
     order, at most `limit` of them. The churn-camouflage and unscannable-diff
     signatures describe the whole diff and have no location."""
@@ -299,7 +326,7 @@ def scan_diff(diff_text: str, *, additions: int | None = None,
         for name in _line_signatures(fname, body):
             if name in fired:
                 continue
-            if name in ("build-config-require-injection", "secret-leak"):
+            if name in ("build-config-require-injection", "embedded-line-break", "secret-leak"):
                 fired[name] = f"{fname or '?'}: {_evidence(body)}"
             else:
                 fired[name] = _evidence(body)
@@ -325,7 +352,9 @@ def scan_diff(diff_text: str, *, additions: int | None = None,
 
 
 def _evidence(body: str) -> str:
-    s = body.strip()
+    """The start of an added line as display text, each line-breaking
+    character shown as its \\uXXXX escape."""
+    s = body.strip().translate(_SHOW_LINE_BREAKS)
     return s[:120] + ("…" if len(s) > 120 else "")
 
 

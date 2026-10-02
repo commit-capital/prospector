@@ -130,7 +130,9 @@ uv run python pipeline/views.py
 
 It scans each PR's whole diff against the signatures in `threats.py` (the ONE
 threat policy: obfuscated self-decoders, capability smuggles, build-config
-require-injection, EOL-churn camouflage) and checks the author against the
+require-injection, EOL-churn camouflage, and code after a form feed, U+2028 or
+another line-breaking character inside an added line, which reads as
+`embedded-line-break`, suspicious) and checks the author against the
 durable actor blocklist in the store's `threats` registry. A `malicious` verdict stamps the
 PR's `threat` section and, on first detection, blocks the author and logs the
 incident. `gates.pr_clean` then refuses the PR forever (fail-closed, no
@@ -151,7 +153,10 @@ cached), and a file GitHub itself returns no whole patch for — past the 20k-li
 `.diff` limit, the per-file listing omits large patches and lists at most 3,000
 files — reads as `unscannable-diff` (suspicious, never clear). With `--no-fetch`,
 or GitHub unreachable, a capped copy decides only a malicious verdict; anything
-else leaves the PR unjudged and counted `incomplete` in the run ledger.
+else leaves the PR unjudged and counted `incomplete` in the run ledger. The
+scan and the cache both split a diff into lines on newline alone, so a header-
+or payload-shaped run of text after a carriage return or form feed stays part
+of the added line it sits in.
 
 Each malicious head then has its evidence preserved in the store's
 `threat_evidence` table (`pipeline/threat_evidence.py`): the SHA-pinned diff,
