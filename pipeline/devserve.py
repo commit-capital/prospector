@@ -31,6 +31,11 @@ FRONTEND_CMD = (
 # its in-flight sandbox run.
 SOURCE_DIRS = ("pipeline", "issue_triage", "prospector_app/backend")
 
+# How long a stopping backend waits for in-flight requests before cancelling
+# them. The reloader starts the new server only once the old one exits, and
+# no server answers the API until then.
+SHUTDOWN_GRACE_SECONDS = 5
+
 
 def reload_dirs(root: Path) -> list[str]:
     """The `--reload-dir` arguments: each source package, absolute. uvicorn
@@ -38,6 +43,16 @@ def reload_dirs(root: Path) -> list[str]:
     them; a directory it cannot resolve is dropped, and an empty set falls
     back to the whole working directory."""
     return [str(root / rel) for rel in SOURCE_DIRS]
+
+
+def backend_command(root: Path, port: int) -> list[str]:
+    return [
+        sys.executable, "-m", "uvicorn", "prospector_app.backend.app:app",
+        "--port", str(port),
+        "--reload",
+        *[arg for d in reload_dirs(root) for arg in ("--reload-dir", d)],
+        "--timeout-graceful-shutdown", str(SHUTDOWN_GRACE_SECONDS),
+    ]
 
 
 def is_port_open(port: int) -> bool:
@@ -105,12 +120,7 @@ def run() -> int:
     try:
         print(f"→ backend  http://localhost:{api_port}  (API)")
         backend = subprocess.Popen(
-            [
-                sys.executable, "-m", "uvicorn", "prospector_app.backend.app:app",
-                "--port", str(api_port),
-                "--reload",
-                *[arg for d in reload_dirs(root) for arg in ("--reload-dir", d)],
-            ],
+            backend_command(root, api_port),
             cwd=root,
             start_new_session=True,
         )
