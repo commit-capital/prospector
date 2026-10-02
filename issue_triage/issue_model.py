@@ -85,6 +85,10 @@ class Issue:
         return self._meta().get("last_edited_at")
 
     @property
+    def content_updated_at(self) -> str | None:
+        return self._meta().get("content_updated_at")
+
+    @property
     def created_at(self) -> str | None:
         return self._meta().get("created_at")
 

@@ -333,14 +333,35 @@ def _raw(n: int, association: str, **over) -> dict:
             "labels": [], **over}
 
 
+def _node(n: int, **over) -> dict:
+    """The GraphQL read of issue `n` the refresh makes after the REST listing."""
+    return {"number": n, "title": f"bug {n}", "body": "Steps: 1. run it", "state": "OPEN",
+            "author": {"login": "nicky"}, "authorAssociation": "MEMBER",
+            "createdAt": "2026-10-01T10:00:00Z", "updatedAt": "2026-10-01T11:00:00Z",
+            "comments": {"totalCount": 0, "nodes": []}, **over}
+
+
+def _graphql(nodes: dict[int, dict], asked: list[str]):
+    def read(query: str, **kw) -> dict:
+        asked.append(query)
+        return {"data": {"repository": {
+            f"i{n}": node for n, node in nodes.items() if f"i{n}:" in query}}}
+    return read
+
+
 def test_a_refresh_ingests_the_in_scope_issues_github_reports_updated(store, monkeypatch):
     urls: list[str] = []
+    asked: list[str] = []
     monkeypatch.setattr(public_loop, "_refreshed", {})
     monkeypatch.setattr(gh, "gh_list", lambda url: urls.append(url) or [
         _raw(1, "MEMBER", title="bug 1, edited"), _raw(5, "MEMBER"), _raw(6, "NONE"),
         _raw(7, "MEMBER", pull_request={"url": "u"})])
+    monkeypatch.setattr(gh, "gh_graphql", _graphql(
+        {1: _node(1, title="bug 1, edited"), 5: _node(5)}, asked))
     assert public_loop.refresh(store, now=NOW) == 2
     assert "since=2026-09-30T12:00:00Z" in urls[0]
+    assert "i1:" in asked[0] and "i5:" in asked[0]
+    assert "i6:" not in asked[0] and "i7:" not in asked[0]
     assert store.load_issue(5).author_association == "MEMBER"
     assert store.load_issue(6) is None and store.load_issue(7) is None
     edited = store.load_issue(1)
@@ -355,6 +376,38 @@ def test_an_unanswered_refresh_reads_the_same_window_again(store, monkeypatch):
     monkeypatch.setattr(gh, "gh_list", lambda url: None)
     assert public_loop.refresh(store, now=NOW) == 0
     assert public_loop._refreshed["since"] == "2026-10-01T11:00:00Z"
+
+
+def test_an_unanswered_issue_read_reads_the_same_window_again(store, monkeypatch):
+    monkeypatch.setattr(public_loop, "_refreshed", {"since": "2026-10-01T11:00:00Z"})
+    monkeypatch.setattr(gh, "gh_list", lambda url: [_raw(5, "MEMBER")])
+    monkeypatch.setattr(gh, "gh_graphql", lambda query, **kw: None)
+    assert public_loop.refresh(store, now=NOW) == 0
+    assert store.load_issue(5) is None
+    assert public_loop._refreshed["since"] == "2026-10-01T11:00:00Z"
+
+
+def test_the_bot_s_label_and_comment_leave_a_refreshed_issue_s_analysis_current(
+        store, monkeypatch):
+    from issue_triage import issue_freshness
+    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triagebot[bot]")
+    monkeypatch.setattr(public_loop, "_refreshed", {})
+    asked: list[str] = []
+    monkeypatch.setattr(gh, "gh_graphql", _graphql({1: _node(1)}, asked))
+    monkeypatch.setattr(gh, "gh_list", lambda url: [_raw(1, "MEMBER")])
+    public_loop.refresh(store, now=NOW)
+    store.edit_issue(1).route_to("needs-human", "r")
+    bot = {"createdAt": "2026-10-01T11:30:00Z", "lastEditedAt": None,
+           "author": {"login": "triagebot", "__typename": "Bot"}}
+    monkeypatch.setattr(gh, "gh_graphql", _graphql({1: _node(
+        1, updatedAt="2026-10-01T11:31:00Z", labels={"nodes": [{"name": READY}]},
+        comments={"totalCount": 1, "nodes": [bot]})}, asked))
+    monkeypatch.setattr(gh, "gh_list", lambda url: [
+        _raw(1, "MEMBER", updated_at="2026-10-01T11:31:00Z")])
+    public_loop.refresh(store, now=NOW + timedelta(minutes=10))
+    iss = store.load_issue(1)
+    assert iss.updated_at == "2026-10-01T11:31:00Z" and iss.labels == [READY]
+    assert issue_freshness.is_current(iss, "analysis")
 
 
 # --- replies -----------------------------------------------------------------------

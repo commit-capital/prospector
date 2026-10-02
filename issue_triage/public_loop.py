@@ -18,7 +18,9 @@ else's pull request took up (`superseded`) carries no label and starts
 nothing; when it had asked a question on the issue, one comment says it is
 stepping back. `refresh` ingests the
 in-scope issues GitHub reports as updated since its last pass, so a new one
-reaches the store, and the hunter, without a full ingest.
+reaches the store, and the hunter, without a full ingest; it reads them through
+the full ingest's GraphQL selection, so the bot's own labels and comments leave
+their facts current.
 
 `answer_replies` reads back what people wrote on an issue the attempt concluded
 on (`needs answer`, `couldn't fix`): the comments since the attempt started by
@@ -721,9 +723,11 @@ def _stamp(when: datetime) -> str:
 
 def refresh(store: IssueStore, *, now: datetime | None = None) -> int:
     """Ingest the in-scope issues GitHub reports as updated since the last pass
-    (REFRESH_LOOKBACK back on the first), leaving their stored candidate links
-    as they are. Returns how many it wrote; an unanswered read writes nothing
-    and the next pass reads the same window again."""
+    (REFRESH_LOOKBACK back on the first), each re-read through
+    fetch_issues.fetch_numbers so its content time tells the bot's comments from
+    a person's. Their stored candidate links stay as they are. Returns how many
+    it wrote; an unanswered read writes nothing and the next pass reads the same
+    window again."""
     if settings.issue_fix_public() == "off":
         return 0
     now = now or datetime.now(timezone.utc)
@@ -737,8 +741,11 @@ def refresh(store: IssueStore, *, now: datetime | None = None) -> int:
         raws += batch
         if len(batch) < REFRESH_PAGE:
             break
-    keep = [fetch_issues.normalize_issue(r) for r in raws
-            if not fetch_issues.is_pull_request(r) and _raw_in_scope(r)]
+    numbers = [int(r["number"]) for r in raws
+               if not fetch_issues.is_pull_request(r) and _raw_in_scope(r)]
+    keep = fetch_issues.fetch_numbers(numbers)
+    if keep is None:
+        return 0
     written = issue_ingest.ingest_records(store, keep, None).written if keep else 0
     _refreshed["since"] = _stamp(now - REFRESH_OVERLAP)
     return written

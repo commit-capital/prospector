@@ -141,6 +141,100 @@ def test_issues_query_asks_for_the_fields_the_normalizer_reads():
         assert field in q
 
 
+def test_issues_query_reads_what_the_content_time_needs():
+    q = fetch_issues._ISSUES_QUERY
+    assert f"comments(last:{fetch_issues.COMMENTS_READ})" in q
+    assert "author { login __typename }" in q
+    assert "itemTypes:[RENAMED_TITLE_EVENT, REOPENED_EVENT]" in q
+
+
+def _comment(at: str, login: str | None, kind: str = "User", edited: str | None = None) -> dict:
+    return {"createdAt": at, "lastEditedAt": edited,
+            "author": None if login is None else {"login": login, "__typename": kind}}
+
+
+def _content_time(*comments: dict, total: int | None = None, **over: object) -> str | None:
+    node = _node(updatedAt="2026-01-09T00:00:00Z",
+                 comments={"totalCount": len(comments) if total is None else total,
+                           "nodes": list(comments)}, **over)
+    return normalize_gql(node)["content_updated_at"]
+
+
+def test_the_content_time_is_the_creation_of_an_untouched_issue():
+    assert _content_time() == "2026-01-01T00:00:00Z"
+
+
+def test_the_content_time_ignores_the_bot_and_every_github_app(monkeypatch):
+    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triagebot[bot]")
+    person = _comment("2026-01-03T00:00:00Z", "carol")
+    assert _content_time(person, _comment("2026-01-05T00:00:00Z", "triagebot", "Bot")) \
+        == "2026-01-03T00:00:00Z"
+    assert _content_time(person, _comment("2026-01-05T00:00:00Z", "triagebot")) \
+        == "2026-01-03T00:00:00Z"
+    assert _content_time(person, _comment("2026-01-05T00:00:00Z", "coderabbitai", "Bot")) \
+        == "2026-01-03T00:00:00Z"
+    assert _content_time(person, _comment("2026-01-05T00:00:00Z", "stale[bot]")) \
+        == "2026-01-03T00:00:00Z"
+
+
+def test_the_content_time_follows_a_person_s_comment_and_its_edit():
+    assert _content_time(_comment("2026-01-04T00:00:00Z", "carol")) == "2026-01-04T00:00:00Z"
+    assert _content_time(_comment("2026-01-04T00:00:00Z", "carol",
+                                  edited="2026-01-06T00:00:00Z")) == "2026-01-06T00:00:00Z"
+    # A deleted account is not known to be automation.
+    assert _content_time(_comment("2026-01-04T00:00:00Z", None)) == "2026-01-04T00:00:00Z"
+
+
+def test_the_content_time_follows_a_body_edit_a_rename_and_a_reopen():
+    assert _content_time(lastEditedAt="2026-01-02T00:00:00Z") == "2026-01-02T00:00:00Z"
+    assert _content_time(timelineItems={"nodes": [{"createdAt": "2026-01-07T00:00:00Z"}]}) \
+        == "2026-01-07T00:00:00Z"
+
+
+def test_the_content_time_is_never_later_than_updated_at():
+    assert _content_time(_comment("2026-01-04T00:00:00Z", "carol",
+                                  edited="2026-01-20T00:00:00Z")) == "2026-01-09T00:00:00Z"
+
+
+def test_unread_comments_behind_a_page_of_automation_bound_the_content_time():
+    bots = [_comment(f"2026-01-0{d}T00:00:00Z", "renovate[bot]") for d in (5, 6)]
+    assert _content_time(*bots, total=2) == "2026-01-01T00:00:00Z"
+    assert _content_time(*bots, total=30) == "2026-01-05T00:00:00Z"
+
+
+def test_the_rest_refetch_reports_the_content_time_unknown():
+    assert normalize_issue({"number": 5})["content_updated_at"] is None
+
+
+def test_fetch_numbers_reads_each_issue_by_alias_and_leaves_out_the_unresolved(monkeypatch):
+    queries: list[str] = []
+
+    def fake(query: str, **kw) -> dict:
+        queries.append(query)
+        return {"data": {"repository": {"i3": _node(number=3), "i4": None}},
+                "errors": [{"type": "NOT_FOUND", "path": ["repository", "i4"]}]}
+
+    monkeypatch.setattr(fetch_issues.gh, "gh_graphql", fake)
+    rows = fetch_issues.fetch_numbers([3, 4])
+    assert [r["number"] for r in rows] == [3]
+    assert "i3: issue(number:3)" in queries[0] and "i4: issue(number:4)" in queries[0]
+    assert "mutation" not in queries[0].lower()
+
+
+def test_fetch_numbers_reads_in_chunks(monkeypatch):
+    queries: list[str] = []
+    monkeypatch.setattr(fetch_issues.gh, "gh_graphql",
+                        lambda q, **kw: queries.append(q) or {"data": {"repository": {}}})
+    numbers = list(range(1, fetch_issues._NUMBERS_PER_QUERY + 2))
+    assert fetch_issues.fetch_numbers(numbers) == []
+    assert len(queries) == 2
+
+
+def test_fetch_numbers_reports_an_unanswered_read(monkeypatch):
+    monkeypatch.setattr(fetch_issues.gh, "gh_graphql", lambda q, **kw: None)
+    assert fetch_issues.fetch_numbers([3]) is None
+
+
 def test_both_transports_carry_the_author_association():
     assert normalize_gql(_node(authorAssociation="MEMBER"))["author_association"] == "MEMBER"
     rest = normalize_issue({"number": 1, "reactions": {}, "user": {"login": "o"},

@@ -40,21 +40,31 @@ class IngestCounts(NamedTuple):
 
 def _partial(raw: dict) -> bool:
     """True for a raw fetched by a transport that cannot see every fact — the REST
-    single-issue refetch, which reports neither the closing references nor the
-    body's edit time."""
+    single-issue refetch, which reports neither the closing references, the
+    body's edit time, nor its comments' authors."""
     return raw.get("github_links") is None
 
 
 def _meta(raw: dict, prev: issue_model.Issue | None) -> dict:
-    """The meta section to write for `raw`. A partial raw carries no edit time, so
-    an issue already in the store keeps the one it has."""
+    """The meta section to write for `raw`. A partial raw carries no edit time and
+    no content time, so an issue already in the store keeps the ones it has,
+    except that a title or body differing from the stored one, or a reopen, moves
+    the content time to the raw's updated_at."""
+    title = raw.get("title", "")
+    body = raw.get("body") or ""
+    state = raw.get("state", "open")
     last_edited_at = raw.get("last_edited_at")
+    content_updated_at = raw.get("content_updated_at")
     if prev is not None and _partial(raw):
         last_edited_at = prev.last_edited_at
+        content_updated_at = prev.content_updated_at
+        if ((title, body) != (prev.title, prev.body or "")
+                or (prev.state == "closed" and state == "open")):
+            content_updated_at = raw.get("updated_at")
     return {
-        "title": raw.get("title", ""),
-        "body": raw.get("body") or "",
-        "state": raw.get("state", "open"),
+        "title": title,
+        "body": body,
+        "state": state,
         "state_reason": raw.get("state_reason"),
         "author": raw.get("author", ""),
         "author_association": raw.get("author_association"),
@@ -66,6 +76,7 @@ def _meta(raw: dict, prev: issue_model.Issue | None) -> dict:
         "created_at": raw.get("created_at"),
         "updated_at": raw.get("updated_at"),
         "last_edited_at": last_edited_at,
+        "content_updated_at": content_updated_at,
         "url": f"https://github.com/{config.repo()}/issues/{raw['number']}",
     }
 
@@ -126,8 +137,9 @@ def ingest_records(store: IssueStore, raws: list[dict],
     saved mid-run survives. An issue that loses every one of its swap attempts is
     skipped and counted in `swap_lost`, leaving the rest of the batch to land —
     the write is idempotent, so the next run recomputes it. Every read and write
-    shares one reused connection (store.batch). A moved updated_at (or edited
-    body) re-stamps the facts so freshness flips. Where `progress` reports, the
+    shares one reused connection (store.batch). A rewritten issue's summary and
+    repro are re-stamped against its updated_at, and its meta carries the content
+    time issue_freshness reads the other facts against. Where `progress` reports, the
     comparison and the writes are reported on stdout."""
     if not raws:
         return IngestCounts(0, 0)

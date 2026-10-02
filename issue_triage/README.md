@@ -20,10 +20,14 @@ gated and logged.**
   under `issue_triage/store/`. **Validated on write; the ONLY accessor** — never
   hand-write rows. Built on the shared `pipeline/storekit.py` core.
 - **Freshness** (`issue_freshness.py`): every fact section is stamped
-  `against_updated_at`. When an issue's `meta.updated_at` moves (GitHub bumps it on
-  edit/comment/label/state change — the analog of a PR's `head_sha`), its
-  summary/repro/analysis go stale **automatically**; `is_current()` is the single
-  check.
+  `against_updated_at` with the issue's `meta.updated_at`. Ingest records the
+  issue's last material change as `meta.content_updated_at` — its creation, an
+  edit to its title or body, a reopen, or a comment by someone other than the bot
+  or another GitHub App — and a fact stamped before it goes stale
+  **automatically** (the analog of a PR's `head_sha` moving); labels,
+  assignments, reactions and automation's comments leave facts current.
+  `is_current()` is the single check. An issue whose meta carries no content time
+  is held to the exact rule: the stamp must equal `meta.updated_at`.
 - **Links** (`issue_links.py` + `pr_index.py`): the ONE accessor for an issue's
   linked PRs. `linked_prs` merges the issue's stored candidates, GitHub's own
   closing references, and an index of the PR store's `issues.linked` sections
