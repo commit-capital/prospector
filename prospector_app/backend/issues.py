@@ -13,6 +13,7 @@ upstream write (executor.close_issue).
 """
 from __future__ import annotations
 
+import logging
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -31,6 +32,8 @@ from prospector_app.backend.filters import num_cmp
 
 if TYPE_CHECKING:
     from issue_triage.issue_model import Issue, IssueCluster
+
+_log = logging.getLogger(__name__)
 
 # The issue store root. None resolves the shared store (TRIAGE_STORE_URL), the
 # same source the rest of the app reads; tests override it with a seeded tmp
@@ -374,6 +377,22 @@ def _collapse_dup_members(rows: list[dict]) -> list[dict]:
     return kept
 
 
+def _hydrate(light: dict, iss: Issue | None, clusters: dict[int, IssueCluster],
+             store_states: dict[int, str], snapshot_loading: bool) -> dict:
+    """The page row for `light` built from its full record `iss`. The light row
+    stands when there is no full record or building one raises, and the failure
+    is logged under the issue's number, so one malformed record leaves the rest
+    of the page intact."""
+    if iss is None:
+        return light
+    try:
+        return _row(iss, clusters, store_states, link_limit=6, snapshot_loading=snapshot_loading)
+    except Exception:
+        _log.exception("issue #%s: building its full row failed; serving the light row",
+                       light["number"])
+        return light
+
+
 def query_issues(q: str = "", sort: str | None = None, direction: str | None = None,
                  disposition: str | None = None, state: str | None = None,
                  author: str | None = None, pain: dict | None = None,
@@ -457,9 +476,7 @@ def query_issues(q: str = "", sort: str | None = None, direction: str | None = N
     full = issue_data.load_full_issues([r["number"] for r in page])
     hydrated = []
     for r in page:
-        iss = full.get(r["number"])
-        row = (_row(iss, clusters, store_states, link_limit=6,
-                    snapshot_loading=pr_states_loading) if iss else r)
+        row = _hydrate(r, full.get(r["number"]), clusters, store_states, pr_states_loading)
         if collapse_dups and row is not r:
             row["dup_rows"] = r["dup_rows"]
         hydrated.append(row)

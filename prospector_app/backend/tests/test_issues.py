@@ -900,3 +900,15 @@ def test_the_query_filters_and_sorts_on_fix_status(tmp_path, monkeypatch):
     assert issues.query_issues(fix_status=["any"], state="all")["total"] == 1
     sorted_rows = issues.query_issues(sort="fix", direction="asc", state="all")["items"]
     assert sorted_rows[0]["number"] == 10
+
+
+def test_a_row_whose_full_record_fails_to_build_serves_its_light_row(tmp_path, monkeypatch, caplog):
+    st = _seed(tmp_path, monkeypatch)
+    st.edit_issue(10).record_fix_run({"ending": "fixed", "detail": "proven", "host": "s"})
+    st.edit_issue(10).set_links([{"pr": "not-a-number", "title": "x", "how": "explicit"}])
+    got = issues.query_issues(sort="fix", direction="asc", state="all", collapse_dups=True)
+    assert [r["number"] for r in got["items"]] == [10]
+    row = got["items"][0]
+    assert row["fix_status"] == "review" and row["linked_prs"] == []
+    assert [d["number"] for d in row["dup_rows"]] == [11]
+    assert "issue #10" in caplog.text
