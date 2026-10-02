@@ -1,5 +1,9 @@
 """threats.py — the ONE threat-detection policy: signatures, actor blocklist,
 the scan driver, and the gate's fail-closed consumption of a malicious flag."""
+import random
+import re
+import signal
+
 import pytest
 
 from pipeline import diff_cache
@@ -145,6 +149,91 @@ class TestScanDiff:
         r = threats.scan_diff(PAYLOAD_DIFF, unread=["dist/huge.js"])
         assert r["verdict"] == "malicious"
         assert "unscannable-diff" in r["signatures"]
+
+
+# Each shape threats.py reads with a linear scanner, stated as the one regex it
+# matches exactly. These regexes backtrack quadratically, so they are only ever
+# fed short lines.
+SMUGGLE_REGEXES = [re.compile(r"global\s*\[.+\]\s*=\s*require\b"),
+                   re.compile(r"global\s*\[.+\]\s*=\s*module\b")]
+INLINE_CREATE_REQUIRE_REGEX = re.compile(r"createRequire\s*\([^)]*\)\s*\(")
+SECRET_ASSIGN_REGEX = re.compile(
+    r"""(?ix)
+    \b[A-Za-z0-9_]*(?:SECRET|PASSWORD|PASSWD|API[_-]?KEY|ACCESS[_-]?KEY|
+                      AUTH[_-]?TOKEN|ACCESS[_-]?TOKEN|PRIVATE[_-]?KEY|
+                      [A-Z0-9]+_KEY|[A-Z0-9]+_TOKEN)\b
+    \s*[:=]\s*
+    ['"]?(?P<val>[A-Za-z0-9+/=_\-]{24,})['"]?\s*[,;]?\s*$
+    """,
+)
+
+
+def _lines(slots: list[list[str]], count: int, seed: int) -> list[str]:
+    """Random lines built slot by slot, each slot giving up to two of its tokens."""
+    rng = random.Random(seed)
+    return ["".join(t for slot in slots for t in rng.choices(slot, k=rng.choice((0, 1, 1, 1, 2))))
+            for _ in range(count)]
+
+
+def _scan_within_a_second(diff: str) -> None:
+    """scan_diff over `diff`, failed at the one-second mark rather than left to run."""
+    def overrun(signum: int, frame: object) -> None:
+        raise AssertionError("scan_diff ran past a second")
+
+    previous = signal.signal(signal.SIGALRM, overrun)
+    signal.setitimer(signal.ITIMER_REAL, 1.0)
+    try:
+        threats.scan_diff(diff)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+class TestLinearScan:
+    """A diff costs time linear in its size to scan, so no added line or file
+    path can stall the threat scan."""
+
+    @pytest.mark.parametrize("line", [
+        "global[" * 150_000,
+        "createRequire(" * 75_000,
+        "a" * 1_000_000,
+        "a_key=" * 170_000 + "!",
+    ], ids=["global-index", "createRequire-call", "secret-name", "secret-value"])
+    def test_a_megabyte_line_scans_within_a_second(self, line: str) -> None:
+        # a build config that is not secret-exempt, so every line matcher reads it
+        _scan_within_a_second(_added_file("cli/esbuild.config.mjs", [line]))
+
+    def test_a_deep_path_adding_many_lines_scans_within_a_second(self) -> None:
+        _scan_within_a_second(_added_file("a/" * 2000 + "x.js", ["x"] * 20_000))
+
+    def test_capability_smuggle_matches_its_regex(self) -> None:
+        slots = [["x", " ", "global", "("], ["global", "global ", "globalThis"],
+                 ["[", " [", "\t["], ["k", "'!'", "_$_1e42[0]", "]", "["], ["]", "] ", "]\t"],
+                 ["=", " = ", "==", "=>"], ["require", "module", "requires", " module", "require_"],
+                 [";", "x", "(", "]", "global["]]
+        for line in _lines(slots, 4000, seed=1):
+            expected = any(p.search(line) for p in SMUGGLE_REGEXES)
+            assert threats._capability_smuggle(line) == expected, repr(line)
+
+    def test_inline_create_require_matches_its_regex(self) -> None:
+        slots = [["x", " ", "createRequire", ")"], ["createRequire", "createRequire ", "createrequire"],
+                 ["(", "\t(", ")"], ["import.meta.url", "x", "(", "createRequire("],
+                 [")", ") ", "),"], ["(", " (", "\t(", "x"], ["'node:fs'", ")", "x(", ";"]]
+        for line in _lines(slots, 4000, seed=2):
+            expected = bool(INLINE_CREATE_REQUIRE_REGEX.search(line))
+            assert threats._inline_create_require(line) == expected, repr(line)
+
+    def test_secret_value_matches_its_regex(self) -> None:
+        slots = [["x = ", "const ", " ", "a_key=", "é", "!", "'", "-"],
+                 ["API_KEY", "a_token", "Secret", "api-key", "PRIVATE-KEY", "passwd", "x_Key",
+                  "_KEY", "TOKEN", "queryKey", "KEY", "B_KEY=", "AuthToken"],
+                 ["=", ":", " = ", ": '", '="', "==", " :", "-", "\t"],
+                 ["0f9e8d7c6b5a4321", "Zq9/+", "B_KEY=", "=", "-", "x", "a_token:"],
+                 ["0f9e8d7c6b5a4321", "AbC123xyz/+_-=", "zz"],
+                 ["", "'", '",', ";", " ", "!", ", x", " ;", "é"]]
+        for line in _lines(slots, 4000, seed=3):
+            m = SECRET_ASSIGN_REGEX.search(line)
+            assert threats._secret_value(line) == (m and m.group("val")), repr(line)
 
 
 class TestRegistry:
