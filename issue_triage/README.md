@@ -112,7 +112,8 @@ exist, forked by the push user.
 
 **Endings.** A verdict exits 0: `reproduced`, `fixed`, `not-reproduced`,
 `wrong-symptom`, `not-a-defect`, `unwritable`, `no-fix`, `fix-untrusted`,
-`fix-unproven`, `fix-rejected`, `declined`, `cancelled`. A fault — a machine
+`fix-unproven`, `fix-rejected`, `fix-disputed`, `fix-pinned`, `declined`,
+`cancelled`. A fault — a machine
 condition, never a verdict — exits 1: `agent-unavailable`, `run-failed`,
 `sandbox`, `base-compile`. Exit 2 is no held base or an unknown issue, and
 writes no result file or ledger row.

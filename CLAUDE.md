@@ -368,7 +368,10 @@ several such agents at once (`TRIAGE_ISSUE_FIX_MODELS`, one candidate per
 model), proves each candidate's tests red on the unfixed tree, runs every fix
 against every reproduction, and judges only a fix that passes each of them and
 at least two, shipping it with the tests of every reproduction it passed:
-candidates whose reproductions pin different behavior end `fix-disputed`.
+candidates whose reproductions pin different behavior, each with a fix that
+passes its own, end `fix-disputed`; fixes that would agree but for existing
+tests they all fail end `fix-pinned`, naming those tests, since the lane never
+rewrites a repository's tests.
 Agreement proves a fix does what the report asks, never that it does nothing
 more, so a cross-lane fix that clears the host's checks faces the scope-safety
 reviewer too and ends `fixed` only on its explicit `safe`; its inventory of
@@ -408,7 +411,8 @@ opens from the next numbered branch; with no token every run is a dry-run
 that stops before the push; every outcome is an `issue-propose` Activity entry.
 A proposal never merges: it faces `merge_eligibility` like any other PR. A
 cross-lane run that ends `fix-disputed` records its readings (groups of
-candidates whose fixes pass each other's reproductions, `cross_lane.readings`)
+candidates whose fixes pass every reproduction in the group, their own
+included, `cross_lane.readings`)
 and every candidate's patches and verdict. `python -m issue_triage.question
 --issue N --ask [--live]` asks the issue one question through
 `executor.ask_issue_question`: `issue_gates.question_gate` (disputed, open,

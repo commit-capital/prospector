@@ -17,6 +17,8 @@ from issue_triage import dispute_question, fix_pr_body
 MARKER = "<!-- prospector:issue-fix-public v1 issue={issue} key={key} -->"
 FRAGMENT_MAX = 600
 REASON_MAX = 300
+# The existing tests a `fix-pinned` conclusion lists.
+PINNED_MAX = 5
 FOOTER = ("_Written by Prospector's automated fix pipeline. Its analysis may be wrong; "
           "a maintainer has the final say._")
 _CLOSING_RE = re.compile(r"(?i)\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)(\s+)#(\d+)")
@@ -88,6 +90,18 @@ def conclusion(issue: int, key: str, run: dict) -> str:
             lines += ["", f"Its reasoning: {root or detail}."]
         lines += ["", "If the behavior should be different, a reply here describing the "
                       "expected behavior starts another attempt."]
+        return _finish(issue, key, lines)
+    if ending == "fix-pinned":
+        tests = ((run.get("agreement") or {}).get("pinned") or {}).get("tests") or []
+        lines = ["Prospector's automated fix pipeline reproduced this issue, and its "
+                 "independent attempts agreed on a fix, but every such fix fails existing "
+                 "tests that pass today:", ""]
+        lines += [f"- {quiet(t, REASON_MAX)}" for t in tests[:PINNED_MAX]]
+        lines += ["", "Either those tests pin the behavior this issue asks to change, or the "
+                      "fix breaks something they guard. The pipeline never changes a "
+                      "repository's own tests, so updating them is a maintainer's call: if the "
+                      "requested behavior is wanted, a reply here once that change has landed "
+                      "starts another attempt."]
         return _finish(issue, key, lines)
     lines = ["Prospector's automated fix pipeline tried to fix this issue, but it could not "
              "land a fix that passed every check."]
