@@ -220,6 +220,11 @@ export const COLUMNS: ColumnDef[] = [
     cell: (r, ctx) => (
       <span className="title-cell">
         <DraftChip draft={r.draft} />
+        {r.threat === "malicious" && (
+          <InfoTip entry={term("threat.malicious")} cue={false} focusable={false}>
+            <span className="chip chip-red sm">⛔ malicious</span>
+          </InfoTip>
+        )}
         <span className="title-text">{r.title}</span>
         {ctx.deepReasons.has(r.number) && (
           <InfoTip cue={false} focusable={false}
@@ -293,6 +298,16 @@ export const COLUMNS: ColumnDef[] = [
       return (
         <InfoTip entry={term(`drift.${st}`)} cue={false} focusable={false}>
           <span className="chip chip-muted sm">{st}</span>
+        </InfoTip>
+      );
+    } },
+  { key: "threat", label: "Threat", defaultOn: false, term: "col.threat",
+    cell: (r) => {
+      const st = r.threat ?? "unscanned";
+      const chip = { malicious: "chip-red", suspicious: "chip-yellow", clear: "chip-green", unscanned: "chip-muted" }[st];
+      return (
+        <InfoTip entry={term(`threat.${st}`)} cue={false} focusable={false}>
+          <span className={`chip ${chip} sm`}>{st}</span>
         </InfoTip>
       );
     } },

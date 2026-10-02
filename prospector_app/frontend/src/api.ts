@@ -60,7 +60,7 @@ export interface FilterSpec {
   disposition?: Disposition | Disposition[];
   ci?: CiFilter | CiFilter[];
   checks?: CheckClause[];   // per-check passed/failed/never-ran, one clause per check key
-  threat?: "malicious" | "suspicious" | "clear";
+  threat?: ThreatState | ThreatState[];
   conflicts?: boolean;
   has_tests?: boolean;
   draft?: boolean;
@@ -367,10 +367,15 @@ interface SignalSummary {
 
 export interface IssueLink { issue: number; pain: number | null; how: string }
 
+// The threat scan's word on a PR: a verdict at any head, `clear` only for a
+// clear scan of the current head, `unscanned` when the head has none.
+export type ThreatState = "malicious" | "suspicious" | "clear" | "unscanned";
+
 export interface PRRow {
   number: number;
   title: string | null;
   author: string | null;
+  threat?: ThreatState;
   head_sha?: string;
   url?: string;
   created_at?: string;
@@ -1080,6 +1085,57 @@ export interface SystemHealth {
   lanes_total: number;
   lanes_down: number;
   workers_stalled: boolean;
+  // Open PRs flagged malicious and credentials to rotate, for the threat banner.
+  threats?: ThreatSummary;
+}
+
+/** An open PR the threat scan flagged, with the day its incident was first noticed. */
+export interface FlaggedPr {
+  pr: number;
+  title: string | null;
+  author: string | null;
+  url: string | null;
+  verdict: "malicious" | "suspicious";
+  signatures: string[];
+  noticed: string | null;
+}
+
+/** What the threat banner on every page says. `secrets` counts open
+ *  rotate-secret items that do not read as a test fixture. */
+export interface ThreatSummary {
+  malicious: FlaggedPr[];
+  suspicious: number;
+  secrets: number;
+}
+
+/** One entry of the durable incident log, with the PR's state now. */
+export interface ThreatIncident {
+  pr: number;
+  author: string | null;
+  head_sha: string | null;
+  signatures: string[];
+  noticed: string | null;
+  state: string | null;
+  title: string | null;
+}
+
+/** An author on the threat scan's blocklist, with their PRs still open. */
+export interface BlockedActor {
+  login: string;
+  reason: string | null;
+  added: string | null;
+  incidents: number[];
+  open_prs: number[];
+}
+
+/** The Security tab's Threats view (GET /api/threats). */
+export interface ThreatDetail {
+  // True while the backend's PR snapshot is still on its first load.
+  loading: boolean;
+  flagged: FlaggedPr[];
+  incidents: ThreatIncident[];
+  actors: BlockedActor[];
+  secrets: ActionItem[];
 }
 
 /** One close-dup coverage-map entry: a substantive change in the PR and where
@@ -1877,6 +1933,10 @@ export const api = {
   cluster: (id: number) => get<ClusterDetail>(`/api/clusters/${id}`),
   pr: (n: number) => get<PRDetail>(`/api/prs/${n}`),
   prActions: (n: number) => get<{ items: PRAction[] }>(`/api/prs/${n}/actions`),
+  /** The PR's preserved threat evidence, newest first (metadata only). */
+  prEvidence: (n: number) => get<{ items: ThreatEvidence[] }>(`/api/prs/${n}/evidence`),
+  /** Where one capture downloads as a zip of inert text files. */
+  prEvidenceBundleUrl: (n: number, id: number): string => `/api/prs/${n}/evidence/${id}/bundle.zip`,
   prHistory: (n: number) => get<{ items: PRHistoryItem[] }>(`/api/prs/${n}/history`),
   prReviews: (n: number) => get<{ reviews: ReviewsDetail }>(`/api/prs/${n}/reviews`),
   suggestForAction: (n: number, disposition: string) =>
@@ -2205,6 +2265,7 @@ export const api = {
   workStatus: () => get<WorkStatus>("/api/status/now"),
 
   systemHealth: () => get<SystemHealth>("/api/system-health"),
+  threats: () => get<ThreatDetail>("/api/threats"),
   /** Reopen a tripped worker lane by the operator's say-so. */
   workerHealthResume: async (host: string, lane: string): Promise<void> => {
     const r = await fetch("/api/worker/health/resume", {
@@ -2446,6 +2507,26 @@ export interface MergeProgress {
 }
 
 export interface ExecResult { pr: number; action: string; status: string; detail: string; forced?: boolean; stale?: StaleBlock }
+
+/** One stored diff of a threat-evidence capture. */
+export interface ThreatEvidenceArtifact {
+  bytes: number; sha256: string; source?: string | null;
+  complete?: boolean; truncated?: boolean; before_sha?: string | null;
+  /** For the prior diff: how its head was found. */
+  found_by?: "force-push" | "diff-cache";
+}
+export interface ThreatEvidenceForcePush {
+  at: string | null; actor: string | null; before: string | null; after: string | null;
+}
+/** One threat-evidence capture of a head the threat scan flagged malicious
+ *  (`threat_evidence.summary`): no diff bytes, no payload text. */
+export interface ThreatEvidence {
+  id: number; pr: number; head_sha: string; author: string | null;
+  captured_at: string; complete: boolean; captured_by: string | null; machine: string | null;
+  artifacts: { diff: ThreatEvidenceArtifact | null; prior: ThreatEvidenceArtifact | null };
+  force_pushes: ThreatEvidenceForcePush[];
+  signatures: string[]; errors: string[];
+}
 
 /** One real action taken on a PR (close/merge/reopen/comment/review), from the
  *  activity log — the bot `identity` that posted it + the human `operator`. */

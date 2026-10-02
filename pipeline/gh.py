@@ -152,6 +152,21 @@ def gh_list(path: str, *, timeout: int = 60, paginate: bool = False) -> list[dic
     return parsed if isinstance(parsed, list) else None
 
 
+def gh_bytes(path: str, *, accept: str, timeout: int = 120) -> bytes | None:
+    """`gh api <path>` sent with `Accept: <accept>`, returning the response body
+    undecoded, or None on any failure (non-zero exit, timeout). For media types
+    that are not JSON, such as a diff. A path gh would parse as a flag is
+    refused."""
+    if path.startswith("-"):
+        return None
+    try:
+        res = subprocess.run(["gh", "api", "-H", f"Accept: {accept}", path],
+                             capture_output=True, timeout=timeout, env=operator_env())
+    except (subprocess.SubprocessError, OSError):
+        return None
+    return res.stdout if res.returncode == 0 else None
+
+
 def default_branch_file(path: str, *, timeout: int = 60) -> str | None:
     """The text of the file at repo-relative `path` on the repository's default
     branch, or None when it has none or GitHub did not answer."""

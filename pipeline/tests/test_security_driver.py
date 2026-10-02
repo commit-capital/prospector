@@ -4,7 +4,7 @@ import json
 from pipeline import security_driver as sd
 from pipeline.store import Store
 from pipeline.wire import VerdictItem
-from pipeline.testsupport import greptile_entry, reviews_section
+from pipeline.testsupport import greptile_entry, reviews_section, threat_section
 
 NOW = "2026-06-10T00:00:00+00:00"
 
@@ -17,6 +17,7 @@ def _pr(store, n, head="h1", disposition="merge", greptile=5, security=None, clu
                        "checked_at": NOW, "against_head_sha": head},
            "reviews": reviews_section(head, NOW, greptile=greptile_entry(greptile, head)),
            "drift": {"state": "applicable", "checked_at": NOW, "against_head_sha": head},
+           "threat": threat_section(head, NOW),
            "analysis": {"disposition": disposition, "rationale": "r",
                         "checked_at": NOW, "against_head_sha": head}}
     if disposition == "close-dup":

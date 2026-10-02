@@ -575,3 +575,67 @@ class TestRefreshPrs:
         # Greptile's failing threshold check is the reviewer's verdict, not CI.
         assert rec.ci == "passing"
         assert rec.greptile == 4 and rec.greptile_reviewed_sha == "deadbeef"
+
+
+class TestWatchHelpers:
+    """What a watch pass takes from GitHub's recently-updated listing."""
+
+    def _stored(self, tmp_path) -> Store:
+        store = Store(tmp_path)
+        ingest.upsert_pr(store, GH_PR)                                    # 5001 open @ deadbeef
+        ingest.upsert_pr(store, dict(GH_PR, number=5002, head={"sha": "s2"}))
+        ingest.upsert_pr(store, dict(GH_PR, number=5003, state="closed", head={"sha": "s3"}))
+        return store
+
+    def test_select_changed_takes_new_moved_and_reopened_open_prs(self, tmp_path):
+        store = self._stored(tmp_path)
+        listed = [dict(GH_PR, number=6001, head={"sha": "n1"}),          # new
+                  dict(GH_PR, number=5002, head={"sha": "pushed"}),      # moved head
+                  dict(GH_PR, number=5003, head={"sha": "s3"}),          # reopened
+                  GH_PR]                                                 # unchanged
+        changed = ingest.select_changed(listed, store.all_prs())
+        assert [p["number"] for p in changed.upsert] == [6001, 5002, 5003]
+        assert changed.closed == []
+
+    def test_select_changed_names_stored_open_prs_github_closed(self, tmp_path):
+        store = self._stored(tmp_path)
+        listed = [dict(GH_PR, state="closed", merged_at="2026-06-10T00:00:00Z"),
+                  dict(GH_PR, number=5003, state="closed", head={"sha": "s3"}),
+                  dict(GH_PR, number=7001, state="closed", head={"sha": "x"})]
+        changed = ingest.select_changed(listed, store.all_prs())
+        assert changed.upsert == []
+        assert [p["number"] for p in changed.closed] == [5001]
+
+    def test_upsert_listed_records_each_listed_pr(self, tmp_path, monkeypatch):
+        store = self._stored(tmp_path)
+        monkeypatch.setattr(ingest, "load_issue_links", lambda **_: {})
+        stats = ingest.upsert_listed(store, [dict(GH_PR, number=6001, head={"sha": "n1"}),
+                                             dict(GH_PR, number=5002, head={"sha": "pushed"})])
+        assert stats["upserted"] == 2
+        assert store.load_pr(6001).head_sha == "n1"
+        assert store.load_pr(5002).head_sha == "pushed"
+
+    def test_record_closed_sets_each_pr_s_state(self, tmp_path):
+        store = self._stored(tmp_path)
+        n = ingest.record_closed(store, [dict(GH_PR, state="closed",
+                                              merged_at="2026-06-10T00:00:00Z")])
+        assert n == 1
+        assert store.load_pr(5001).state == "merged"
+
+    def test_fetch_updated_prs_reads_pages_until_one_reaches_past_since(self, monkeypatch):
+        pages = {1: [dict(GH_PR, number=n, updated_at=f"2026-06-10T00:{59 - i:02d}:00Z")
+                     for i, n in enumerate(range(100))],
+                 2: [dict(GH_PR, number=200, updated_at="2026-06-09T23:59:00Z")]
+                    + [dict(GH_PR, number=201 + i, updated_at="2026-06-08T00:00:00Z")
+                       for i in range(99)],
+                 3: [dict(GH_PR, number=300, updated_at="2026-06-01T00:00:00Z")]}
+        asked: list[int] = []
+
+        def fake_list(path: str, **_):
+            page = int(path.rsplit("page=", 1)[1])
+            asked.append(page)
+            return pages[page]
+        monkeypatch.setattr(ingest, "gh_list", fake_list)
+        out = ingest.fetch_updated_prs("2026-06-09T00:00:00Z")
+        assert asked == [1, 2]
+        assert [p["number"] for p in out][-1] == 200 and len(out) == 101

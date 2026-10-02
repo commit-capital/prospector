@@ -38,3 +38,9 @@ def reviews_section(head: str, at: str | None = None, **entries: dict) -> dict:
     section["checked_at"] = at or _now()
     section["against_head_sha"] = head
     return section
+
+
+def threat_section(head: str, at: str | None = None) -> dict:
+    """A clear `threat` stamp at `head`: the scan's verdict a clean PR carries."""
+    return {"verdict": "clear", "signatures": [], "detail": {},
+            "checked_at": at or _now(), "against_head_sha": head}

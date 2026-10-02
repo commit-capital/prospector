@@ -79,13 +79,13 @@ PATCH_CHARS = 200_000
 TAIL_CHARS = 4000
 
 # resubmit exits that describe a world that moved rather than a decision:
-# a git/network failure (4), refs that shifted under the pin (6), and a push
-# the remote rejected (7). Retrying re-reads the live PR and re-pins, which is
-# exactly the remedy. Every other exit resubmit returns is a judgment — the PR
-# is closed, the merge conflicts, the fence refused the ref — and repeating it
-# changes nothing. An exception resubmit does not catch is this machine's
-# fault: the interpreter prints a traceback and exits 1, and `_settle` fails
-# the request.
+# a git/network failure or a git/gh call that timed out (4), refs that shifted
+# under the pin (6), and a push the remote rejected (7). Retrying re-reads the
+# live PR and re-pins, which is exactly the remedy. Every other exit resubmit
+# returns is a judgment — the PR is closed, the merge conflicts, the fence
+# refused the ref — and repeating it changes nothing. An exception resubmit
+# does not catch is this machine's fault: the interpreter prints a traceback
+# and exits 1, and `_fail_if_crashed` fails the request.
 TRANSIENT_EXITS = {4, 6, 7}
 
 # The line Python prints above an uncaught exception's traceback.
@@ -559,13 +559,24 @@ def _settle(n: int, req: dict, rc: int, output: str) -> None:
         print(f"[fix-worker] PR #{n} exited {rc}; re-queued (attempt {attempts}"
               f"/{MAX_ATTEMPTS})", flush=True)
         return
-    reason = plain_reason(rc, output)
-    if crash_line(output) is not None:
-        _fail(n, req, reason, result={"output": output[-TAIL_CHARS:]})
+    if _fail_if_crashed(n, req, rc, output):
         return
+    reason = plain_reason(rc, output)
     if rc in TRANSIENT_EXITS:
         reason = f"{reason} Gave up after {attempts} attempts."
     _refuse(n, req, reason, result={"output": output[-TAIL_CHARS:]})
+
+
+def _fail_if_crashed(n: int, req: dict, rc: int, output: str,
+                     result: dict | None = None) -> bool:
+    """End the request `failed` when a resubmit run's `output` carries a
+    traceback, with the raw output tail kept beside `result`. Returns whether
+    it did."""
+    if crash_line(output) is None:
+        return False
+    _fail(n, req, plain_reason(rc, output),
+          result={**(result or {}), "output": output[-TAIL_CHARS:]})
+    return True
 
 
 def _log_run(n: int, req: dict, status: str, detail: str | None = None,
@@ -1248,9 +1259,12 @@ def _agent_resolve(n: int, claimed: dict, paused: list[str]) -> None:
     cont = _resubmit(n, "continue")
     if cont.returncode != 0:
         _resubmit(n, "abort")
+        output = (cont.stderr or cont.stdout).strip()
+        if _fail_if_crashed(n, claimed, cont.returncode, output, evidence):
+            return
         _refuse(n, claimed,
                 f"{_conflict_refusal(paused)} The agent's resolution did not pass the "
-                f"merge checks: {(cont.stderr or cont.stdout).strip()[:500]}",
+                f"merge checks: {output[:500]}",
                 result=evidence)
         return
     diff = _resubmit(n, "diff")
@@ -1869,11 +1883,13 @@ def _rebuild_fix(n: int, claimed: dict, result: dict) -> bool:
     applied = _resubmit(n, "apply", stdin=patch)
     if applied.returncode != 0:
         _resubmit(n, "abort")
+        output = (applied.stderr or applied.stdout).strip()
+        if _fail_if_crashed(n, claimed, applied.returncode, output, result):
+            return False
         _refuse(n, claimed,
                 f"The reviewed change no longer applies to PR #{n}'s head. "
                 f"Nothing was pushed — re-queue the fix to author it again.",
-                result={**result, "output": (applied.stderr
-                                             or applied.stdout).strip()[-TAIL_CHARS:]})
+                result={**result, "output": output[-TAIL_CHARS:]})
         return False
     return True
 

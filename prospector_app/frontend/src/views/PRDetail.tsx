@@ -14,6 +14,7 @@ import { ClaimControl } from "../components/ClaimControl";
 import { VerifyAction, VerifyBody } from "../components/VerifyPanel";
 import { FixAction, FixBody } from "../components/FixPanel";
 import { PRActionLog } from "../components/PRActionLog";
+import { ThreatEvidencePanel } from "../components/ThreatEvidencePanel";
 import { PRLink } from "../components/PRLink";
 import { coverageLabel, coverageTone } from "../dupCoverage";
 import { PRHistory } from "../components/PRHistory";
@@ -204,7 +205,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
     secJob.start(`/api/jobs/run/security-review?pr=${prNum}`);
   };
 
-  // Run the THREAT SCAN phase from the "No committed secrets" check row,
+  // Run the THREAT SCAN phase from the "Threat scan" check row,
   // scoped to just this PR (`threat_scan.py --only`) — same start-or-reattach
   // job pattern as the security re-run above; reattaches to one already
   // running if this page reloads (#683).
@@ -377,6 +378,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
           </div>
         </div>
       ) : resolved ? (
+        <>
         <div className={`verdict-banner ${pr.github_state === "merged" ? "v-safe" : ""}`}>
           <span className="vb-icon">{pr.github_state === "merged" ? "✅" : "🚫"}</span>
           <div>
@@ -386,6 +388,15 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
             </div>
           </div>
         </div>
+        {/* A malicious PR's evidence outlives the PR: closing it upstream is
+            when GitHub may stop serving it. */}
+        {pr.threat === "malicious" && (
+          <div className="gate-block-callout">
+            <div className="co-headline">⛔ Flagged malicious</div>
+            <ThreatEvidencePanel prNum={prNum} refresh={pr} onCapture={runSecretScan} />
+          </div>
+        )}
+        </>
       ) : (
        <>
       {/* the one action surface — comment / approve / request-changes / merge /
@@ -496,6 +507,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
               {!malicious && secret && <>Remove it, rotate the key, and bounce the PR via <b>Disposition → request changes</b>.</>}
               {!malicious && !secret && <>Ask the author to split the PR or drop the files GitHub returns no patch for, via <b>Disposition → request changes</b>.</>}
             </div>
+            {malicious && <ThreatEvidencePanel prNum={prNum} refresh={pr} onCapture={runSecretScan} />}
           </div>
         );
       })()}

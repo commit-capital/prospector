@@ -202,6 +202,12 @@ class TestRegistry:
         assert reg["actors"]["mallory"]["added"] == "2026-06-12"  # first-seen preserved
         assert reg["actors"]["mallory"]["reason"] == "worse"      # reason refreshed
 
+    def test_record_incident_keeps_the_first_noticed_date(self):
+        reg = threats.empty_registry()
+        threats.record_incident(reg, 5174, "mallory", "sha", ["x"], noticed="2026-06-12")
+        threats.record_incident(reg, 5174, "mallory", "sha", ["x"], noticed="2026-06-13")
+        assert reg["incidents"][0]["noticed"] == "2026-06-12"
+
     def test_record_incident_idempotent(self):
         reg = threats.empty_registry()
         threats.record_incident(reg, 5174, "mallory", "sha", ["x"], noticed="2026-06-12")
@@ -311,6 +317,42 @@ class TestScanDriver:
         after = store.load_pr(7)
         assert after.section("threat") is not None                 # the stamp landed
         assert (after.section("cluster") or {}).get("ids") == []   # the concurrent write survived
+
+
+    def test_no_fetch_scan_never_captures(self, tmp_path, monkeypatch):
+        import pytest
+
+        from pipeline import threat_evidence
+        monkeypatch.setattr(threat_evidence, "capture", lambda *a, **k: pytest.fail("captured"))
+        store = Store(tmp_path)
+        diffs = tmp_path / "diffs"; diffs.mkdir()
+        self._seed(store, 5174, "mallory", "sha1", PAYLOAD_DIFF, diffs)
+        threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs), "--no-fetch"])
+        rec = store.load_pr(5174)
+        assert rec is not None and rec.threat_verdict == "malicious"
+
+    def test_scan_captures_after_stamping_and_survives_a_capture_crash(self, tmp_path, monkeypatch):
+        from pipeline import threat_evidence
+        seen: list[tuple[int, str, str | None]] = []
+
+        def fake_capture(store, flag, *, github=None, diffs_dir=None):
+            rec = store.load_pr(flag.pr)
+            seen.append((flag.pr, flag.head_sha, rec.threat_verdict))
+            raise RuntimeError("network down")
+
+        monkeypatch.setattr(threat_evidence, "capture", fake_capture)
+        monkeypatch.setattr(threat_scan, "fetch_missing_diffs", lambda *a, **k: ({}, set()))
+        store = Store(tmp_path)
+        diffs = tmp_path / "diffs"; diffs.mkdir()
+        self._seed(store, 5174, "mallory", "sha1", PAYLOAD_DIFF, diffs)
+        self._seed(store, 6, "alice", "sha6", CLEAN_DIFF, diffs)
+        assert threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs)]) == 0
+        assert seen == [(5174, "sha1", "malicious")]            # stamped before capture
+        assert "mallory" in store.load_threats()["actors"]       # registry saved
+        run = store.latest_run("threat-scan")
+        assert run is not None
+        assert run.raw["stats"]["evidence_failed"] == 1
+        assert run.raw["stats"]["evidence_captured"] == 0
 
 
 class TestTrustedAuthorExemption:
@@ -540,7 +582,8 @@ class TestFetchMissingDiffs:
         assert stats["uncached"] == 1
         assert "fetched" not in stats
 
-    def test_dependabot_bump_diff_is_never_fetched(self, tmp_path, monkeypatch):
+    def test_dependabot_bump_diff_is_never_fetched_and_its_head_stamped_exempt(
+            self, tmp_path, monkeypatch):
         store = Store(tmp_path)
         diffs = tmp_path / "diffs"; diffs.mkdir()
         self._seed(store, 8, author="dependabot[bot]", head="h8")
@@ -548,7 +591,9 @@ class TestFetchMissingDiffs:
                             lambda pr, head, diffs_dir=None: ["pnpm-lock.yaml"])
         monkeypatch.setattr(diff_cache, "fetch_diff", _must_not_fetch)
         threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs)])
-        assert store.load_pr(8).section("threat") is None
+        stamp = store.load_pr(8).section("threat")
+        assert stamp["verdict"] == "clear" and stamp["against_head_sha"] == "h8"
+        assert stamp["detail"] == {"exempt": "dependency-bump"}
         stats = self._stats(store)
         assert stats["bump_exempt"] == 1
         assert stats["fetched"] == 0
@@ -774,6 +819,17 @@ def _no_github(monkeypatch) -> None:
 
 
 class TestWholeDiffScan:
+    @pytest.fixture(autouse=True)
+    def _captures(self, monkeypatch) -> list[tuple[int, str]]:
+        """Evidence capture makes GitHub reads of its own (test_threat_evidence
+        covers them); here it records which flagged heads the scan hands it, so
+        these tests count the scan's own diff reads alone."""
+        from pipeline import threat_evidence
+        handed: list[tuple[int, str]] = []
+        monkeypatch.setattr(threat_evidence, "capture", lambda store, flag, **k:
+                            handed.append((flag.pr, flag.head_sha)) or "captured")
+        return handed
+
     def _seed(self, store: Store, n: int, head: str, author: str = "zach-hermes") -> None:
         store.save_pr({
             "pr": n,
@@ -793,7 +849,7 @@ class TestWholeDiffScan:
         assert diff_cache.fetch_diff(pr, head, diffs_dir=diffs)
         return (diffs / f"{head}.diff").read_text()
 
-    def test_payload_past_the_cap_fires(self, tmp_path, monkeypatch):
+    def test_payload_past_the_cap_fires(self, tmp_path, monkeypatch, _captures):
         store = Store(tmp_path)
         diffs = tmp_path / "diffs"; diffs.mkdir()
         self._seed(store, 11987, "h1")
@@ -811,6 +867,8 @@ class TestWholeDiffScan:
         assert [c[:3] for c in calls] == [["gh", "pr", "diff"]]
         assert (diffs / "h1.diff").read_text() == cached   # the whole diff is never cached
         assert self._stats(store)["complete_fetched"] == 1
+        assert _captures == [(11987, "h1")]
+        assert self._stats(store)["evidence_captured"] == 1
 
     def test_payload_in_an_artifact_file_fires(self, tmp_path, monkeypatch):
         store = Store(tmp_path)
@@ -1022,3 +1080,30 @@ class TestScanRun:
         result = threat_scan.scan(store, store.all_prs(), diffs, fetch=False)
         assert store.load_pr(1).threat_verdict == "clear"
         assert result.unstamped == [] and result.malicious == []
+
+
+class TestLocate:
+    def test_locate_reports_file_and_1_based_diff_line(self):
+        hits = threats.locate(PAYLOAD_DIFF)
+        lines = PAYLOAD_DIFF.split("\n")
+        assert {h.signature for h in hits} == {
+            "obfuscated-self-decoder", "capability-smuggle", "build-config-require-injection"}
+        for h in hits:
+            assert h.file == "cli/esbuild.config.mjs"
+            assert lines[h.diff_line - 1].startswith("+")
+
+    def test_locate_agrees_with_scan_diff_on_line_signatures(self):
+        for diff in [PAYLOAD_DIFF, CLEAN_DIFF, LEAKED_KEY_DIFF, *FP_DIFFS.values(),
+                     *REAL_LEAK_DIFFS.values()]:
+            line_sigs = set(threats.scan_diff(diff)["signatures"]) - {"eol-churn-camouflage"}
+            assert {h.signature for h in threats.locate(diff)} == line_sigs
+
+    @pytest.mark.parametrize("sep", LINE_BREAKS)
+    def test_locate_reports_code_after_a_line_break_character(self, sep):
+        diff = ("diff --git a/src/a.js b/src/a.js\n--- a/src/a.js\n+++ b/src/a.js\n"
+                f"@@ -1 +1,2 @@\n x\n+// note{sep}console.log(1);\n")
+        assert threats.locate(diff) == [threats.Match("embedded-line-break", "src/a.js", 6)]
+
+    def test_locate_honours_limit(self):
+        many = PAYLOAD_DIFF + PAYLOAD_DIFF.replace("cli/", "web/")
+        assert len(threats.locate(many, limit=2)) == 2

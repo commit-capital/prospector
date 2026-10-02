@@ -117,7 +117,10 @@ Cheap and idempotent — no Workflow, no metered tokens. A worker machine (verif
 or fix lane on) also runs the same scan every ten minutes over each open PR
 whose current head has no verdict, so a head that INGEST records is scanned
 without an operator starting this run (`prospector_app/backend/threat_refresh.py`,
-ledger phase `threat-scan:heads`).
+ledger phase `threat-scan:heads`). The same machine records new and pushed-to
+PRs from GitHub every fifteen minutes (`prospector_app/backend/pr_watch.py`,
+ledger phase `ingest:watch`), so a fresh head reaches that scan without an
+operator's INGEST.
 
 ```
 uv run python pipeline/threat_scan.py            # scan every open PR with a cached diff
@@ -134,7 +137,10 @@ durable actor blocklist in the store's `threats` registry. A `malicious` verdict
 PR's `threat` section and, on first detection, blocks the author and logs the
 incident. `gates.pr_clean` then refuses the PR forever (fail-closed, no
 staleness exemption), so a flagged PR can never reach security review or merge —
-even if Greptile scores it 5/5 and CI is green. A blocked author's *future* PRs
+even if Greptile scores it 5/5 and CI is green. A clear verdict counts only at
+the head it judged: `pr_clean` refuses a head the scan has not reached, so a
+force-push waits on the next scan before it can merge. A genuine dependency
+bump is stamped clear as exempt without its diff being fetched. A blocked author's *future* PRs
 are flagged on sight, before any diff is fetched. Repository maintainers (the
 profile's `trusted_authors`) are never flagged: their PRs always stamp `clear`,
 though a leaked credential still raises a rotate-secret action item.
@@ -151,6 +157,20 @@ else leaves the PR unjudged and counted `incomplete` in the run ledger. The
 scan and the cache both split a diff into lines on newline alone, so a header-
 or payload-shaped run of text after a carriage return or form feed stays part
 of the added line it sits in.
+
+Each malicious head then has its evidence preserved in the store's
+`threat_evidence` table (`pipeline/threat_evidence.py`): the SHA-pinned diff,
+the diff before the force-push that produced the head, and the PR, commit,
+actor and force-push metadata, all from read-only GitHub reads. `--no-fetch`
+skips the capture with every other GitHub read; the worker's ten-minute
+pass captures too.
+
+```
+uv run python -m pipeline.threat_evidence capture --backfill   # every registry incident without a complete capture
+uv run python -m pipeline.threat_evidence list --author LOGIN
+uv run python -m pipeline.threat_evidence export --pr 11987 --out ~/Downloads/pr-11987-evidence
+uv run python -m pipeline.threat_evidence verify               # re-hash every stored artifact
+```
 
 ### GREPTILE READ
 

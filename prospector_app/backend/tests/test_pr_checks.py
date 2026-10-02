@@ -25,7 +25,7 @@ def _pr(**over):
 
 def _check(rec):
     c = pr_checks.checks_for_record(rec)
-    return next((x for x in c["checks"] if x["name"] == "No committed secrets"), None)
+    return next((x for x in c["checks"] if x["key"] == "secrets"), None)
 
 
 def test_secret_leak_shows_failing_check():
@@ -39,8 +39,25 @@ def test_malicious_shows_failing_check():
 
 
 def test_clear_threat_passes_check():
-    chk = _check(_pr(threat={"verdict": "clear", "signatures": []}))
-    assert chk and chk["status"] == "pass"
+    chk = _check(_pr(threat={"verdict": "clear", "signatures": [], "against_head_sha": HEAD}))
+    assert chk and chk["name"] == "Threat scan" and chk["status"] == "pass"
+
+
+def test_a_clear_verdict_from_an_earlier_head_warns_stale():
+    chk = _check(_pr(threat={"verdict": "clear", "signatures": [], "against_head_sha": "old"}))
+    assert chk and chk["status"] == "warn" and "STALE" in chk["detail"]
+
+
+def test_a_malicious_verdict_from_an_earlier_head_still_fails():
+    chk = _check(_pr(threat={"verdict": "malicious", "signatures": ["blocked-actor"],
+                             "against_head_sha": "old"}))
+    assert chk and chk["status"] == "fail"
+
+
+def test_an_exempt_dependency_bump_says_so():
+    chk = _check(_pr(threat={"verdict": "clear", "signatures": [],
+                             "detail": {"exempt": "dependency-bump"}, "against_head_sha": HEAD}))
+    assert chk and chk["status"] == "pass" and "dependency bump" in chk["detail"]
 
 
 def test_suspicious_threat_warns_with_its_signatures():
@@ -67,7 +84,7 @@ def test_checks_carry_stable_keys():
         "review": "Code review", "ci": "CI", "scans": "Security scans",
         "mergeable": "No merge conflicts",
         "tests": "Includes tests", "drift": "Still applies to trunk",
-        "secrets": "No committed secrets", "security": "Deep security review",
+        "secrets": "Threat scan", "security": "Deep security review",
         "verify": "Dynamic verification",
     }
 

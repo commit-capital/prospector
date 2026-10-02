@@ -24,7 +24,7 @@ COLUMNS = ("act", "auto", "handed")
 # bucket -> owner. `you` is the operator, `author` the contributor, `worker`
 # the automation itself.
 OWNERS: dict[str, str] = {
-    "merge-ready": "you", "approve-parked": "you",
+    "malicious": "you", "merge-ready": "you", "approve-parked": "you",
     "queued": "worker", "hunt": "worker", "waiting": "worker", "retry": "worker",
     "budgeted": "worker",
     "author-conflicts": "author", "author-ci": "author", "author-declined": "author",
@@ -56,9 +56,14 @@ def classify(pr: Pr) -> dict | None:
     open."""
     if pr.state != "open":
         return None
+    if pr.threat_verdict == "malicious":
+        return _r("act", "malicious",
+                  "the threat scan flagged it malicious ("
+                  + (", ".join(pr.threat_signatures) or "flagged")
+                  + "); it can never merge — close it")
     from prospector_app.backend import fix_queue, fix_worker, service
     req = pr.fix_request or {}
-    ok, _why = gates.merge_eligibility(pr)
+    ok, why = gates.merge_eligibility(pr)
     if ok and pr.disposition == "merge":
         gap = _unclear_check(pr)
         if gap is None:
@@ -67,6 +72,9 @@ def classify(pr: Pr) -> dict | None:
     if req.get("status") == "awaiting-review":
         return _r("act", "approve-parked",
                   f"a parked {req.get('action')} awaits your approval")
+    if pr.disposition == "merge" and why == f"not clean: {gates.THREAT_SCAN_STALE}":
+        return _r("auto", "waiting", "the threat scan has not judged this head yet; "
+                                     "a worker scans new heads every ten minutes")
     if pr.disposition == "needs-human":
         return _r("handed", "needs-human", pr.rationale or "flagged needs-human")
     if pr.security_verdict == "RED" and freshness.is_current(
@@ -194,7 +202,7 @@ def _blocked(pr: Pr, action: str, why: str) -> dict:
         return _r("handed", "author-ci", "CI fails at the author's head")
     if "codeowners" in low or "withholds" in low:
         return _r("handed", "gated", why)
-    if "malicious" in low or "threat" in low or "returned red" in low:
+    if "returned red" in low:
         return _r("handed", "security-red", why)
     if "no gate a fix could clear" in low:
         dem = gates.merge_demotion(pr)

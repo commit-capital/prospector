@@ -107,6 +107,21 @@ def test_a_new_head_is_tried_at_once_whatever_its_predecessor_waits_on(store, mo
     assert store.load_pr(1).threat_verdict == "malicious"
 
 
+def test_a_dependency_bump_is_stamped_exempt_once(store, monkeypatch):
+    store.save_pr(_pr(1, "bump", author="dependabot[bot]"))
+    data.refresh()
+    fetched = _github(monkeypatch, {})
+    monkeypatch.setattr(diff_cache, "changed_paths",
+                        lambda pr, head, diffs_dir=None: ["pnpm-lock.yaml"])
+    assert threat_refresh.scan_new_heads() == [1]
+    assert threat_refresh.scan_new_heads() == []
+    assert fetched == []
+    stamp = store.load_pr(1).section("threat")
+    assert stamp["against_head_sha"] == "bump"
+    assert stamp["detail"] == {"exempt": "dependency-bump"}
+    assert threat_refresh._left == {}
+
+
 def test_each_pass_is_bounded_most_recently_updated_first(store, monkeypatch):
     for n in range(1, 5):
         store.save_pr(_pr(n, f"h{n}", updated=f"2026-09-2{n}T00:00:00+00:00"))
@@ -142,3 +157,62 @@ def test_start_only_on_a_worker_machine(monkeypatch):
     monkeypatch.delenv("TRIAGE_VERIFY_WORKER", raising=False)
     monkeypatch.delenv("TRIAGE_FIX_WORKER", raising=False)
     assert threat_refresh.start() is False
+
+
+def _flagged(n: int, head: str) -> dict:
+    rec = _pr(n, head, author="zach")
+    rec["threat"] = {"verdict": "malicious", "signatures": ["obfuscated-self-decoder"],
+                     "detail": {}, "checked_at": "2026-10-02T16:03:50+00:00",
+                     "against_head_sha": head}
+    return rec
+
+
+def test_a_flagged_head_without_complete_evidence_is_captured_again(store, monkeypatch):
+    from pipeline import threat_evidence
+    store.save_pr(_flagged(11987, "evil"))
+    store.save_pr(_pr(11988, "fine", stamped="fine"))
+    data.refresh()
+    tried: list[tuple[int, str]] = []
+
+    def capture(st, flag, **kw):
+        tried.append((flag.pr, flag.head_sha))
+        return "failed"
+
+    monkeypatch.setattr(threat_evidence, "capture", capture)
+    monkeypatch.setattr(threat_refresh, "_evidence_tried", {})
+    assert threat_refresh.retry_evidence(now=1000.0) == [11987]
+    assert tried == [(11987, "evil")]
+    # within the cool-down the pass leaves it be; after it, the pass tries again
+    assert threat_refresh.retry_evidence(now=1000.0 + 60) == []
+    assert threat_refresh.retry_evidence(
+        now=1000.0 + threat_refresh.EVIDENCE_RETRY_SECONDS) == [11987]
+
+
+def test_a_complete_capture_is_not_retried(store, monkeypatch):
+    from pipeline import threat_evidence
+    store.save_pr(_flagged(11987, "evil"))
+    store.append_threat_evidence(pr=11987, head_sha="evil", author="zach",
+                                 captured_at="2026-10-02T17:00:00+00:00", complete=True,
+                                 data={}, diff_gz=b"x", prior_gz=None)
+    data.refresh()
+    monkeypatch.setattr(threat_evidence, "capture",
+                        lambda *a, **k: pytest.fail("captured again"))
+    monkeypatch.setattr(threat_refresh, "_evidence_tried", {})
+    assert threat_refresh.retry_evidence(now=1000.0) == []
+
+
+def test_a_capture_that_raises_does_not_stop_the_retries(store, monkeypatch):
+    from pipeline import threat_evidence
+    store.save_pr(_flagged(1, "a"))
+    store.save_pr(_flagged(2, "b"))
+    data.refresh()
+    tried: list[int] = []
+
+    def capture(st, flag, **kw):
+        tried.append(flag.pr)
+        raise RuntimeError("GitHub down")
+
+    monkeypatch.setattr(threat_evidence, "capture", capture)
+    monkeypatch.setattr(threat_refresh, "_evidence_tried", {})
+    assert threat_refresh.retry_evidence(now=1000.0) == [1, 2]
+    assert tried == [1, 2]

@@ -34,7 +34,7 @@ import argparse
 import json
 import subprocess
 import sys
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, NamedTuple, TypedDict
 
 from pipeline import ci_signal
 from pipeline import diffpaths
@@ -44,7 +44,7 @@ from pipeline import progress
 from pipeline import review_fetch
 from pipeline import reviewers
 from pipeline import settings
-from pipeline.gh import RATE_LIMIT_BACKOFF, fetch_pr, gh_json, operator_env
+from pipeline.gh import RATE_LIMIT_BACKOFF, fetch_pr, gh_json, gh_list, operator_env
 from pipeline.review_fetch import PrFeed
 from pipeline.store import Store
 from pipeline.storekit import now as _now
@@ -343,6 +343,69 @@ def load_issue_links(iss_store: IssueStore | None = None,
         else:
             out.pop(n, None)
     return out
+
+
+def fetch_updated_prs(since: str) -> list[dict]:
+    """Every PR, open or not, GitHub reports updated at or after `since` (ISO),
+    newest first: the REST listing sorted by update time, read a page at a
+    time until a page reaches back past `since`."""
+    out: list[dict] = []
+    page = 1
+    while True:
+        batch = gh_list(f"repos/{settings.repo()}/pulls?state=all&sort=updated"
+                        f"&direction=desc&per_page=100&page={page}")
+        if batch is None:
+            raise RuntimeError(f"gh api pulls (page {page}) failed")
+        out.extend(pr for pr in batch if str(pr.get("updated_at") or "") >= since)
+        if len(batch) < 100 or str(batch[-1].get("updated_at") or "") < since:
+            return out
+        page += 1
+
+
+class Changed(NamedTuple):
+    upsert: list[dict]
+    closed: list[dict]
+
+
+def select_changed(listed: list[dict], stored: dict[int, Pr]) -> Changed:
+    """Split a GitHub listing against the store, in listing order: an open PR
+    the store lacks, holds at another head, or holds as not open goes to
+    `upsert`; a closed or merged PR the store holds open goes to `closed`."""
+    upsert: list[dict] = []
+    closed: list[dict] = []
+    for gh_pr in listed:
+        rec = stored.get(int(gh_pr["number"]))
+        if gh_pr.get("state") == "open":
+            head = (gh_pr.get("head") or {}).get("sha")
+            if rec is None or rec.head_sha != head or rec.state != "open":
+                upsert.append(gh_pr)
+        elif rec is not None and rec.state == "open":
+            closed.append(gh_pr)
+    return Changed(upsert, closed)
+
+
+def upsert_listed(store: Store, gh_prs: list[dict]) -> _UpsertStats:
+    """Upsert these open PRs from a listing, with their issue links, live CI
+    and reviewer facts — what `--new` does for its new arrivals."""
+    issue_links = load_issue_links(prs=gh_prs)
+    live, _ = live_prs.fetch([int(pr["number"]) for pr in gh_prs],
+                             rate_limit_waits=RATE_LIMIT_BACKOFF)
+    existing = {int(pr["number"]): rec for pr in gh_prs
+                if (rec := store.load_pr(int(pr["number"]))) is not None}
+    with store.batch():
+        return _upsert_all(store, gh_prs, issue_links, existing, live_facts=live)
+
+
+def record_closed(store: Store, gh_prs: list[dict]) -> int:
+    """Record each listed PR's closed or merged state on its stored record.
+    Returns how many were recorded."""
+    recorded = 0
+    for gh_pr in gh_prs:
+        rec = store.load_pr(int(gh_pr["number"]))
+        if rec is not None:
+            rec.set_meta(meta_from_gh(gh_pr))
+            recorded += 1
+    return recorded
 
 
 def _parse_pr_ids(spec: str) -> set[int]:

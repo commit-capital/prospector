@@ -165,6 +165,19 @@ def test_ready_means_every_check_is_clear(store, monkeypatch):
     assert (out["column"], out["bucket"]) == ("act", "merge-ready")
 
 
+def test_a_ready_pick_whose_head_the_threat_scan_has_not_judged_waits_on_it(
+        store, monkeypatch):
+    from pipeline import gates
+    monkeypatch.setattr(gates, "verify_signals_incomplete", lambda pr: None)
+    rec = _merge_pick(_rec(), verify={"outcome": "verified-fix", "checked_at": _now(),
+                                      "against_head_sha": HEAD, "against_base_sha": "b" * 40,
+                                      "signals": {}})
+    rec["threat"]["against_head_sha"] = "0" * 40
+    out = _classify(store, rec)
+    assert (out["column"], out["bucket"], out["owner"]) == ("auto", "waiting", "worker")
+    assert "threat scan" in out["reason"]
+
+
 def test_a_diff_the_threat_scan_could_not_read_is_your_call(store):
     rec = _merge_pick(_rec())
     rec["threat"] = {"verdict": "suspicious", "signatures": ["unscannable-diff"],
@@ -199,3 +212,22 @@ def test_a_merge_pick_whose_verification_hit_a_machine_fault_is_in_motion(store)
     assert out["column"] != "act"
     assert out["bucket"] in ("waiting", "other")
     assert "verification" in out["reason"]
+
+
+@pytest.mark.parametrize("over", [{}, {"mergeable": False}, {"ci": "failing"},
+                                  {"reviewed_sha": "0" * 40}])
+def test_a_malicious_pr_is_your_move_whatever_else_holds(store, over):
+    rec = _rec(**over)
+    rec["threat"] = {"verdict": "malicious", "signatures": ["obfuscated-payload"],
+                     "checked_at": _now(), "against_head_sha": HEAD}
+    out = _classify(store, rec)
+    assert (out["column"], out["bucket"], out["owner"]) == ("act", "malicious", "you")
+    assert "obfuscated-payload" in out["reason"]
+
+
+def test_a_merge_pick_whose_head_is_unscanned_waits_on_the_threat_scan(store):
+    rec = _merge_pick(_rec())
+    del rec["threat"]
+    out = _classify(store, rec)
+    assert (out["column"], out["bucket"]) == ("auto", "waiting")
+    assert "threat scan" in out["reason"]

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
 
 # Build-config files where a require/global smuggle is never legitimate.
 _BUILD_CONFIG = re.compile(
@@ -191,6 +192,51 @@ def _embedded_line_break(body: str) -> bool:
 
 
 _CRITICAL_OR_HIGH = {name for name, sev, _, _ in SIGNATURES if sev in (CRITICAL, HIGH)}
+_PATTERNS = {name: patterns for name, _, _, patterns in SIGNATURES}
+
+
+def _line_signatures(fname: str | None, body: str) -> list[str]:
+    """The line signatures one added line fires: the decoder and smuggle
+    patterns anywhere, the require injection only in a build-config file, code
+    after a line-breaking character, and a secret leak outside the excluded
+    files."""
+    fired = [name for name in ("obfuscated-self-decoder", "capability-smuggle")
+             if any(p.search(body) for p in _PATTERNS[name])]
+    if fname and _BUILD_CONFIG.search(fname) and any(
+            p.search(body) for p in _PATTERNS["build-config-require-injection"]):
+        fired.append("build-config-require-injection")
+    if _embedded_line_break(body):
+        fired.append("embedded-line-break")
+    provider_hit = any(p.search(body) for p in _PATTERNS["secret-leak"])
+    if (provider_hit and not (fname and _SECRET_EXCLUDE_FILE.search(fname))) \
+            or _secret_evidence(fname, body):
+        fired.append("secret-leak")
+    return fired
+
+
+@dataclass(frozen=True)
+class Match:
+    """Where one signature fired: the diff's target file and the 1-based line of
+    the added line within the diff text (lines split on newline)."""
+    signature: str
+    file: str | None
+    diff_line: int
+
+
+def locate(diff_text: str, *, limit: int | None = None) -> list[Match]:
+    """Every (signature, file, line) the line signatures fire on over the
+    added lines of `diff_text`, read exactly as scan_diff reads them, in diff
+    order, at most `limit` of them. The churn-camouflage and unscannable-diff
+    signatures describe the whole diff and have no location."""
+    out: list[Match] = []
+    for lineno, fname, sign, body in _numbered_changed_lines(diff_text or ""):
+        if sign != "+":
+            continue
+        for name in _line_signatures(fname, body):
+            out.append(Match(name, fname, lineno))
+            if limit is not None and len(out) >= limit:
+                return out
+    return out
 
 
 _HUNK = re.compile(r"@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@")
@@ -198,8 +244,16 @@ _GIT_HEADER = re.compile(r"diff --git a/.* b/(.*)")
 
 
 def _changed_lines(diff_text: str) -> Iterator[tuple[str | None, str, str]]:
-    """Yield (filename, sign, body) for every added ('+') and removed ('-')
-    line of a unified diff. A hunk is read by the line counts in its `@@`
+    """(filename, sign, body) for every changed line, as _numbered_changed_lines
+    reads them."""
+    for _, fname, sign, body in _numbered_changed_lines(diff_text):
+        yield fname, sign, body
+
+
+def _numbered_changed_lines(diff_text: str) -> Iterator[tuple[int, str | None, str, str]]:
+    """Yield (line number, filename, sign, body) for every added ('+') and
+    removed ('-') line of a unified diff, the line number 1-based within
+    `diff_text`. A hunk is read by the line counts in its `@@`
     header, so a content line is never taken for a file header whatever it
     holds; the file is tracked from each `diff --git` header and its `+++`
     line. Lines split on newline alone, so a carriage return or a Unicode line
@@ -207,16 +261,16 @@ def _changed_lines(diff_text: str) -> Iterator[tuple[str | None, str, str]]:
     outside any hunk is still yielded."""
     current: str | None = None
     old = new = 0
-    for line in diff_text.split("\n"):
+    for lineno, line in enumerate(diff_text.split("\n"), start=1):
         if old > 0 or new > 0:
             sign = line[:1]
             if sign == "+":
                 new -= 1
-                yield current, "+", line[1:]
+                yield lineno, current, "+", line[1:]
                 continue
             if sign == "-":
                 old -= 1
-                yield current, "-", line[1:]
+                yield lineno, current, "-", line[1:]
                 continue
             if sign == " " or not line:
                 old -= 1
@@ -234,9 +288,9 @@ def _changed_lines(diff_text: str) -> Iterator[tuple[str | None, str, str]]:
             path = line[4:].strip()
             current = path[2:] if path.startswith("b/") else path
         elif line.startswith("+"):
-            yield current, "+", line[1:]
+            yield lineno, current, "+", line[1:]
         elif line.startswith("-") and not line.startswith("--- "):
-            yield current, "-", line[1:]
+            yield lineno, current, "-", line[1:]
 
 
 def _diff_line_counts(diff_text: str) -> tuple[int, int]:
@@ -265,27 +319,17 @@ def scan_diff(diff_text: str, *, additions: int | None = None,
     patch for); any entry fires `unscannable-diff`.
     """
     fired: dict[str, str] = {}
-    pats = {name: patterns for name, _, _, patterns in SIGNATURES}
 
     for fname, sign, body in _changed_lines(diff_text):
         if sign != "+":
             continue
-        for name in ("obfuscated-self-decoder", "capability-smuggle"):
-            if name not in fired:
-                for p in pats[name]:
-                    if p.search(body):
-                        fired[name] = _evidence(body)
-                        break
-        if "build-config-require-injection" not in fired and fname and _BUILD_CONFIG.search(fname):
-            if any(p.search(body) for p in pats["build-config-require-injection"]):
-                fired["build-config-require-injection"] = f"{fname}: {_evidence(body)}"
-        if "embedded-line-break" not in fired and _embedded_line_break(body):
-            fired["embedded-line-break"] = f"{fname or '?'}: {_evidence(body)}"
-        if "secret-leak" not in fired:
-            provider_hit = any(p.search(body) for p in pats["secret-leak"])
-            if (provider_hit and not (fname and _SECRET_EXCLUDE_FILE.search(fname))) \
-                    or _secret_evidence(fname, body):
-                fired["secret-leak"] = f"{fname or '?'}: {_evidence(body)}"
+        for name in _line_signatures(fname, body):
+            if name in fired:
+                continue
+            if name in ("build-config-require-injection", "embedded-line-break", "secret-leak"):
+                fired[name] = f"{fname or '?'}: {_evidence(body)}"
+            else:
+                fired[name] = _evidence(body)
 
     if additions is None and deletions is None:
         additions, deletions = _diff_line_counts(diff_text)
@@ -340,12 +384,14 @@ def block_actor(registry: dict, author: str, reason: str, *,
 
 def record_incident(registry: dict, pr: int, author: str | None,
                     head_sha: str | None, signatures: list[str], *, noticed: str) -> dict:
-    """Append a confirmed malicious PR to the incident log (idempotent on pr)."""
+    """Append a confirmed malicious PR to the incident log (idempotent on pr,
+    keeping the date it was first noticed)."""
     incidents = registry.setdefault("incidents", [])
+    first = next((i.get("noticed") for i in incidents if i.get("pr") == pr), None)
     incidents[:] = [i for i in incidents if i.get("pr") != pr]
     incidents.append({
         "pr": pr, "author": author, "head_sha": head_sha,
-        "signatures": signatures, "noticed": noticed,
+        "signatures": signatures, "noticed": first or noticed,
     })
     incidents.sort(key=lambda i: i["pr"])
     return registry
