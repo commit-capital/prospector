@@ -1,7 +1,7 @@
 """Port-wait helper: bound port detected, closed port times out, a dead
 backend process short-circuits the wait; the reload-dir arguments are ones
 uvicorn accepts and honours, and they cover the backend's own source without
-reaching the rest of the repo root."""
+reaching the rest of the repo root; the backend's graceful shutdown is bounded."""
 from __future__ import annotations
 
 import socket
@@ -11,6 +11,7 @@ import threading
 from pathlib import Path
 
 from uvicorn.config import resolve_reload_patterns
+from uvicorn.main import main as uvicorn_main
 
 from pipeline import devserve
 from pipeline import settings
@@ -133,6 +134,16 @@ def test_neither_the_venv_nor_the_frontend_reloads(tmp_path: Path, monkeypatch):
     for rel in (".venv/lib/python3.14/site-packages/anyio/abc.py",
                 "prospector_app/frontend/node_modules/flatted/python/flatted.py"):
         assert not _reloads_on(tmp_path, tmp_path / rel), rel
+
+
+def test_the_backend_bounds_its_graceful_shutdown():
+    """A request still running when a reload stops the old server is
+    cancelled after the grace period, so the reloader can start the new one."""
+    cmd = devserve.backend_command(settings.REPO_ROOT, 8787)
+    assert cmd[1:3] == ["-m", "uvicorn"]
+    params = uvicorn_main.make_context("uvicorn", cmd[3:]).params
+    assert params["reload"] is True
+    assert params["timeout_graceful_shutdown"] == devserve.SHUTDOWN_GRACE_SECONDS
 
 
 def test_the_repo_has_every_reload_dir():
