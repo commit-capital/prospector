@@ -355,12 +355,14 @@ def block_actor(registry: dict, author: str, reason: str, *,
 
 def record_incident(registry: dict, pr: int, author: str | None,
                     head_sha: str | None, signatures: list[str], *, noticed: str) -> dict:
-    """Append a confirmed malicious PR to the incident log (idempotent on pr)."""
+    """Append a confirmed malicious PR to the incident log (idempotent on pr,
+    keeping the date it was first noticed)."""
     incidents = registry.setdefault("incidents", [])
+    first = next((i.get("noticed") for i in incidents if i.get("pr") == pr), None)
     incidents[:] = [i for i in incidents if i.get("pr") != pr]
     incidents.append({
         "pr": pr, "author": author, "head_sha": head_sha,
-        "signatures": signatures, "noticed": noticed,
+        "signatures": signatures, "noticed": first or noticed,
     })
     incidents.sort(key=lambda i: i["pr"])
     return registry

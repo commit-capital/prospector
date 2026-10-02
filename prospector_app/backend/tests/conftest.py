@@ -48,6 +48,15 @@ def _cold_data_snapshot(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_merge_threat_rescan(monkeypatch):
+    """Merge tests fake the store and the gate; the pre-merge threat rescan
+    reads the real store, so it reads clean unless a test restores it
+    (test_executor_threat_rescan.py)."""
+    from prospector_app.backend import executor
+    monkeypatch.setattr(executor, "_threat_rescan", lambda n: None)
+
+
+@pytest.fixture(autouse=True)
 def _jobs_dir(monkeypatch, tmp_path):
     """Keep every test's job records, logs and exit files in its own directory,
     with an empty registry, so no test writes the checkout's job cache."""

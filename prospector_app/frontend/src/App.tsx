@@ -9,6 +9,7 @@ import type { SnapshotState } from "./health";
 import { api, type WorkStatus, type WorkerFlags } from "./api";
 import { autonomyTooltip } from "./autonomy";
 import { useSystemHealth } from "./useSystemHealth";
+import { threatBannerParts } from "./threatBanner";
 import { loadWithRecovery } from "./lazyLoad";
 import { usePoll } from "./poll";
 import { timeAgo } from "./timeAgo";
@@ -90,6 +91,7 @@ const VIEW_NAMES: [string, string][] = [
   ["/prs", "PRs"],
   ["/issues", "Issues"],
   ["/security/actions", "Action Items"],
+  ["/security/threats", "Threats"],
   ["/security", "Security"],
   ["/pipeline/activity", "Activity"],
   ["/pipeline/policy", "Policy"],
@@ -116,6 +118,7 @@ const SUB_NAVS: { prefix: string; tabs: { to: string; label: string; end?: boole
   ] },
   { prefix: "/security", tabs: [
     { to: "/security", label: "Advisories & alerts", end: true },
+    { to: "/security/threats", label: "Threats" },
     { to: "/security/actions", label: "Action items" },
   ] },
   { prefix: "/pipeline", tabs: [
@@ -499,6 +502,27 @@ function HealthStrip() {
   );
 }
 
+// The red threat banner on every page, inside the sticky header: the open PRs
+// the threat scan flagged malicious and the leaked credentials still to
+// rotate. It rides the system-health poll and clears itself once those PRs
+// close and those items are rotated or dismissed. Opens Security → Threats.
+function ThreatBanner() {
+  const parts = threatBannerParts(useSystemHealth()?.threats);
+  if (!parts) return null;
+  return (
+    <Link to="/security/threats" className="threat-banner" role="alert"
+      title="Open Security → Threats: every flagged PR, the incident log, blocked authors, and credentials to rotate">
+      <span aria-hidden="true">⛔</span>
+      {parts.map((part, i) => (
+        <span key={part} className="threat-banner-item">
+          {i > 0 && <span className="threat-banner-sep" aria-hidden="true">·</span>}
+          {part}
+        </span>
+      ))}
+    </Link>
+  );
+}
+
 // Loud, dismissable-by-recovery banner shown whenever the backend API can't be
 // reached. Polls /api/health (faster while down) so the page heals itself once
 // the backend is back up, without a manual refresh.
@@ -613,6 +637,7 @@ export default function App() {
         <div className="app-head">
           <BackendBanner />
           <StoreWriteBanner />
+          <ThreatBanner />
           <header className="topbar">
             <Brand />
             <Nav />

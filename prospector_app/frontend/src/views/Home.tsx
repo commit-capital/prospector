@@ -102,7 +102,8 @@ function HomeCardRow({ card, count, sample, breakdown, onActionDone }: {
   const href = exploreHref(card);
   const total = sample ? sample.total : count;
   return (
-    <div className={"act-card home-card" + (card.lead ? " act-card-lead" : "")}>
+    <div className={"act-card home-card" + (card.lead ? " act-card-lead" : "")
+      + (card.alert ? " home-card-alert" : "")}>
       <Link to={href} className="home-card-head act-card-clickable" title="Open these PRs in the PR Explorer">
         <div className={"act-card-n" + (total === null ? " home-count-loading" : "")}>
           {total ?? "…"}
@@ -541,6 +542,7 @@ export default function Home() {
   // each column looks a card's data up by its position there.
   const renderCard = (card: HomeCard) => {
     const i = HOME_CARDS.indexOf(card);
+    if (card.hideWhenEmpty && !(counts && counts[i] > 0)) return null;
     const breakdown = HOME_BREAKDOWN_ENTRIES
       .map((e, j) => ({ ...e, j }))
       .filter((e) => e.cardKey === card.key)

@@ -74,7 +74,7 @@ def _diffed_pr(n, head, path, monkeypatch):
     rec = _pr(n, analysis=_analysis(), security=_green())
     raw = rec.raw
     raw["meta"]["head_sha"] = head
-    for sec in ("signals", "drift", "analysis", "security"):
+    for sec in ("signals", "drift", "threat", "analysis", "security"):
         raw[sec]["against_head_sha"] = head
     _DIFFS[head] = (f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n"
                     "@@ -1 +1,2 @@\n+const x = 1\n")
@@ -593,6 +593,23 @@ class TestDecisionComments:
         assert "#6008" in body
         assert "f3db7b88ea38a89546719ef2e0e2101127e55480" not in body
         assert "2026-06-10" in body
+
+
+class TestThreatRowField:
+    def test_a_head_scanned_clear_reads_clear(self):
+        assert service.pr_row(1, _pr())["threat"] == "clear"
+
+    def test_a_head_never_scanned_reads_unscanned(self):
+        rec = _pr()
+        del rec.raw["threat"]
+        assert service.pr_row(1, rec)["threat"] == "unscanned"
+
+    def test_a_clear_scan_of_an_earlier_head_reads_unscanned(self):
+        assert service.pr_row(1, _pr(threat=threat_section("older", NOW)))["threat"] == "unscanned"
+
+    def test_a_malicious_verdict_reads_malicious_at_any_head(self):
+        rec = _pr(threat={**threat_section("older", NOW), "verdict": "malicious"})
+        assert service.pr_row(1, rec)["threat"] == "malicious"
 
 
 class TestBoard:
