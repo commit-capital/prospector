@@ -57,7 +57,8 @@ Return ONLY a JSON object (no prose) with exactly: verdicts (array of the per-is
 
 
 def pending(store: IssueStore) -> list[int]:
-    """Open issues whose analysis is missing or stale (updated_at moved)."""
+    """Open issues whose analysis is missing or stale (a material change since
+    it was stamped)."""
     return sorted(n for n, i in store.all_issues().items()
                   if i.state == "open" and not is_current(i, "analysis"))
 

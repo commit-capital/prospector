@@ -50,8 +50,11 @@ back**.
   (`storekit.get_engine`).
 - **Freshness** (`pipeline/freshness.py`): every fact section is stamped with the
   `against_head_sha` (PRs) / `against_updated_at` (issues) it was computed
-  against, so it goes stale **automatically** when the PR head / issue moves —
-  `is_current()` is the single check, no manual invalidation. The row's `saved_at`
+  against, so it goes stale **automatically** when the PR head moves, or when an
+  issue changes materially (`meta.content_updated_at` passes the stamp: an edit
+  to the title or body, a reopen, or a comment by someone other than automation;
+  `issue_triage/issue_freshness.py`) — `is_current()` is the single check, no
+  manual invalidation. The row's `saved_at`
   column is a separate write-stamp that drives the watermark sync below.
 
 ## 2. The app reads from an in-memory snapshot

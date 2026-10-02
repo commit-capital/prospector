@@ -1,6 +1,6 @@
 """Run the deterministic issue phases in order against the store:
-INGEST -> CLUSTER. Each phase stamps freshness; re-running only recomputes what an
-issue's moved updated_at has staled.
+INGEST -> CLUSTER. Each phase stamps freshness; re-running only recomputes what a
+material change to an issue has staled.
 
 The agentic ANALYZE phase is not run here — it runs in parallel batches via
 `analyze_issues.py` (the app's issue-analyze job or the CLI). This

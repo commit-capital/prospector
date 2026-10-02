@@ -264,6 +264,60 @@ def test_a_full_fetch_clears_a_stored_edit_time(tmp_path):
     assert st.load_issue(5).last_edited_at is None
 
 
+FULL = dict(RAW, github_links=[], content_updated_at="2026-06-01T00:00:00Z")
+
+
+def test_ingest_writes_the_content_time(tmp_path):
+    st = issue_store.IssueStore(tmp_path)
+    issue_ingest.ingest_records(st, [FULL], prs=[])
+    assert st.load_issue(5).content_updated_at == "2026-06-01T00:00:00Z"
+
+
+def test_a_reingest_that_moves_only_updated_at_keeps_the_analysis_current(tmp_path):
+    st = issue_store.IssueStore(tmp_path)
+    issue_ingest.ingest_records(st, [FULL], prs=[])
+    st.edit_issue(5).route_to("needs-human", "r")
+    labelled = dict(FULL, updated_at="2026-06-09T00:00:00Z", labels=["bug", "triaged"])
+    assert issue_ingest.ingest_records(st, [labelled], prs=[]).written == 1
+    iss = st.load_issue(5)
+    assert iss.labels == ["bug", "triaged"]
+    assert issue_freshness.is_current(iss, "analysis")
+    commented = dict(labelled, updated_at="2026-06-10T00:00:00Z",
+                     content_updated_at="2026-06-10T00:00:00Z")
+    issue_ingest.ingest_records(st, [commented], prs=[])
+    assert not issue_freshness.is_current(st.load_issue(5), "analysis")
+
+
+def test_a_partial_refetch_keeps_the_stored_content_time(tmp_path):
+    st = issue_store.IssueStore(tmp_path)
+    issue_ingest.ingest_records(st, [FULL], prs=[])
+    st.edit_issue(5).route_to("needs-human", "r")
+    partial = dict(RAW, updated_at="2026-06-09T00:00:00Z", state="closed",
+                   content_updated_at=None, github_links=None)
+    issue_ingest.ingest_records(st, [partial], prs=[])
+    iss = st.load_issue(5)
+    assert iss.content_updated_at == "2026-06-01T00:00:00Z"
+    assert issue_freshness.is_current(iss, "analysis")
+
+
+def test_a_partial_refetch_showing_an_edit_or_a_reopen_moves_the_content_time(tmp_path):
+    st = issue_store.IssueStore(tmp_path)
+    issue_ingest.ingest_records(st, [FULL], prs=[])
+    st.edit_issue(5).route_to("needs-human", "r")
+    edited = dict(RAW, body="Steps: it still crashes", updated_at="2026-06-09T00:00:00Z",
+                  content_updated_at=None, github_links=None)
+    issue_ingest.ingest_records(st, [edited], prs=[])
+    iss = st.load_issue(5)
+    assert iss.content_updated_at == "2026-06-09T00:00:00Z"
+    assert not issue_freshness.is_current(iss, "analysis")
+    closed = dict(edited, state="closed", updated_at="2026-06-10T00:00:00Z")
+    issue_ingest.ingest_records(st, [closed], prs=[])
+    assert st.load_issue(5).content_updated_at == "2026-06-09T00:00:00Z"
+    reopened = dict(closed, state="open", updated_at="2026-06-11T00:00:00Z")
+    issue_ingest.ingest_records(st, [reopened], prs=[])
+    assert st.load_issue(5).content_updated_at == "2026-06-11T00:00:00Z"
+
+
 def test_record_fixed_preserves_github_links(tmp_path):
     st = issue_store.IssueStore(tmp_path)
     issue_ingest.ingest_records(

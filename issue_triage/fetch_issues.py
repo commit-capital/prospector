@@ -1,10 +1,12 @@
 """Read-only fetch of issues from the configured repo.
 
 The bulk fetch pages the GraphQL issues connection (issues only — no PRs to
-filter, no shared PR-interleave pagination budget). Single-issue refetch uses the
-REST issues endpoint. Both capture the engagement signals the pain score needs
+filter, no shared PR-interleave pagination budget), and `fetch_numbers` reads
+named issues through the same GraphQL selection. Single-issue refetch uses the
+REST issues endpoint. All capture the engagement signals the pain score needs
 (reactions, comments, author) plus the issue's state, so closures can be written
-back to the store. Only the bulk fetch sees GitHub's own closing references; the
+back to the store. Only the GraphQL reads see GitHub's own closing references,
+the body's edit time, and the content time (`content_updated_at`); the REST
 refetch reports them unknown.
 """
 from __future__ import annotations
@@ -14,34 +16,56 @@ import time
 from issue_triage.config import repo, repo_name, repo_owner
 from pipeline import gh
 from pipeline import progress
+from pipeline import settings
+from pipeline import storekit
 
-# GraphQL issues connection: one page of 100 open issues + a cursor. Fields are
-# named to normalize onto the same shape normalize_issue produces from REST, so
-# ingest is agnostic to which transport fetched a row.
-_ISSUES_QUERY = """
-query($owner:String!, $name:String!, $cursor:String) {
-  repository(owner:$owner, name:$name) {
-    issues(states:OPEN, first:100, after:$cursor) {
-      pageInfo { hasNextPage endCursor }
-      nodes {
+# How many of an issue's newest comments a GraphQL read carries, for the
+# content time.
+COMMENTS_READ = 20
+
+# The fields every GraphQL issue read selects, named to normalize onto the same
+# shape normalize_issue produces from REST, so ingest is agnostic to which
+# transport fetched a row. The newest comments carry their authors' types and
+# the timeline its newest title rename or reopen, for the content time.
+_ISSUE_FIELDS = f"""
         number title body
         state stateReason
         createdAt updatedAt lastEditedAt
-        author { login }
+        author {{ login }}
         authorAssociation
-        assignees(first:10) { nodes { login } }
-        labels(first:50) { nodes { name } }
-        comments { totalCount }
-        reactions { totalCount }
-        reactionGroups { content reactors { totalCount } }
-        closedByPullRequestsReferences(first:10, includeClosedPrs:true) {
-          nodes { number state isDraft }
-        }
-      }
-    }
-  }
-}
+        assignees(first:10) {{ nodes {{ login }} }}
+        labels(first:50) {{ nodes {{ name }} }}
+        comments(last:{COMMENTS_READ}) {{
+          totalCount
+          nodes {{ createdAt lastEditedAt author {{ login __typename }} }}
+        }}
+        reactions {{ totalCount }}
+        reactionGroups {{ content reactors {{ totalCount }} }}
+        closedByPullRequestsReferences(first:10, includeClosedPrs:true) {{
+          nodes {{ number state isDraft }}
+        }}
+        timelineItems(last:1, itemTypes:[RENAMED_TITLE_EVENT, REOPENED_EVENT]) {{
+          nodes {{
+            ... on RenamedTitleEvent {{ createdAt }}
+            ... on ReopenedEvent {{ createdAt }}
+          }}
+        }}
 """
+
+# GraphQL issues connection: one page of 100 open issues + a cursor.
+_ISSUES_QUERY = f"""
+query($owner:String!, $name:String!, $cursor:String) {{
+  repository(owner:$owner, name:$name) {{
+    issues(states:OPEN, first:100, after:$cursor) {{
+      pageInfo {{ hasNextPage endCursor }}
+      nodes {{{_ISSUE_FIELDS}      }}
+    }}
+  }}
+}}
+"""
+
+# How many issues one `fetch_numbers` query reads.
+_NUMBERS_PER_QUERY = 50
 
 
 def is_pull_request(raw: dict) -> bool:
@@ -51,9 +75,11 @@ def is_pull_request(raw: dict) -> bool:
 def normalize_issue(raw: dict) -> dict:
     """Normalize a REST issues-endpoint payload (the single-issue refetch path).
 
-    The payload carries neither the body's edit time nor GitHub's closing
-    references, so both read None. That None marks the row a partial view, and
-    ingest keeps the stored value of every fact it leaves out."""
+    The payload carries neither the body's edit time, its comments' authors, nor
+    GitHub's closing references, so the edit time, the content time and the
+    closing references read None. The None closing references mark the row a
+    partial view, and ingest keeps the stored value of every fact it leaves
+    out."""
     reactions = raw.get("reactions") or {}
     return {
         "number": raw["number"],
@@ -70,6 +96,7 @@ def normalize_issue(raw: dict) -> dict:
         "created_at": raw.get("created_at"),
         "updated_at": raw.get("updated_at"),
         "last_edited_at": None,
+        "content_updated_at": None,
         "state_reason": raw.get("state_reason"),
         "github_links": None,
     }
@@ -93,6 +120,48 @@ def _closing_refs(node: dict) -> list[dict]:
              "draft": bool(ref.get("isDraft"))} for ref in refs]
 
 
+def _automated(author: dict | None) -> bool:
+    """Whether a comment's author is a GitHub App or the configured bot. GraphQL
+    types an App's account `Bot` with a bare login; the `[bot]` suffix names one
+    where the type is absent. A comment whose author GitHub no longer reports
+    (a deleted account) is not automated."""
+    if not author:
+        return False
+    login = author.get("login") or ""
+    bot = settings.bot_login().removesuffix("[bot]")
+    return (author.get("__typename") == "Bot" or login.endswith("[bot]")
+            or (bool(bot) and login.removesuffix("[bot]") == bot))
+
+
+def _content_updated_at(node: dict) -> str | None:
+    """When the issue last changed in a way its facts depend on: the latest of
+    its creation, the body's last edit, its newest title rename or reopen, and
+    the creation or last edit of each comment not written by automation, never
+    later than updatedAt. Labels, assignments, milestones, reactions and
+    automation's comments leave it where it is. When every comment read is
+    automation's and the thread holds more than were read, the oldest read
+    comment's creation stands for the unread ones, the latest any of them can
+    have been posted."""
+    comments = node.get("comments") or {}
+    read = comments.get("nodes") or []
+    people = [c for c in read if not _automated(c.get("author"))]
+    times: list[str | None] = [node.get("createdAt"), node.get("lastEditedAt")]
+    times += [e.get("createdAt") for e in (node.get("timelineItems") or {}).get("nodes") or []]
+    for c in people:
+        times += [c.get("createdAt"), c.get("lastEditedAt")]
+    if read and not people and (comments.get("totalCount") or 0) > len(read):
+        times.append(read[0].get("createdAt"))
+    stamped = [(at, t) for t in times if t and (at := storekit.parse_ts(t)) is not None]
+    if not stamped:
+        return None
+    latest_at, latest = max(stamped)
+    updated = node.get("updatedAt")
+    updated_at = storekit.parse_ts(updated)
+    if updated_at is not None and latest_at > updated_at:
+        return updated
+    return latest
+
+
 def normalize_gql(node: dict) -> dict:
     """Map a GraphQL issue node onto the exact dict normalize_issue produces from
     REST. State enums are lowercased to match REST ('OPEN'→'open')."""
@@ -114,6 +183,7 @@ def normalize_gql(node: dict) -> dict:
         "created_at": node.get("createdAt"),
         "updated_at": node.get("updatedAt"),
         "last_edited_at": node.get("lastEditedAt"),
+        "content_updated_at": _content_updated_at(node),
         "state_reason": reason.lower() if reason else None,
         "github_links": _closing_refs(node),
     }
@@ -158,6 +228,27 @@ def fetch_all(max_pages: int = 60, max_issues: int | None = None) -> list[dict]:
         f"pages remaining ({len(rows)} issues fetched). Raise fetch_all's "
         f"max_pages — refusing a truncated fetch, since reconcile_closures would "
         f"mark the un-fetched tail as closed.")
+
+
+def fetch_numbers(numbers: list[int]) -> list[dict] | None:
+    """Issues `numbers`, each read through the GraphQL selection the bulk fetch
+    uses and normalized (read-only). An issue GitHub does not resolve (deleted,
+    transferred, or a pull request) is left out. None when a query went
+    unanswered."""
+    rows: list[dict] = []
+    variables = {"owner": repo_owner(), "name": repo_name()}
+    for start in range(0, len(numbers), _NUMBERS_PER_QUERY):
+        chunk = [int(n) for n in numbers[start:start + _NUMBERS_PER_QUERY]]
+        reads = " ".join(f"i{n}: issue(number:{n}) {{{_ISSUE_FIELDS}}}" for n in chunk)
+        query = ("query($owner:String!, $name:String!) { "
+                 f"repository(owner:$owner, name:$name) {{ {reads} }} }}")
+        data = (gh.gh_graphql(query, variables=variables) or {}).get("data")
+        repository = data.get("repository") if isinstance(data, dict) else None
+        if not isinstance(repository, dict):
+            return None
+        rows += [normalize_gql(node) for n in chunk
+                 if isinstance(node := repository.get(f"i{n}"), dict)]
+    return rows
 
 
 def fetch_issue(n: int) -> dict | None:
