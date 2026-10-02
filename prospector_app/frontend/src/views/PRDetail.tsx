@@ -14,6 +14,7 @@ import { ClaimControl } from "../components/ClaimControl";
 import { VerifyAction, VerifyBody } from "../components/VerifyPanel";
 import { FixAction, FixBody } from "../components/FixPanel";
 import { PRActionLog } from "../components/PRActionLog";
+import { ThreatEvidencePanel } from "../components/ThreatEvidencePanel";
 import { PRLink } from "../components/PRLink";
 import { coverageLabel, coverageTone } from "../dupCoverage";
 import { PRHistory } from "../components/PRHistory";
@@ -490,6 +491,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
               {blocks.join("; ")}.{" "}
               {!malicious && <>Remove it, rotate the key, and bounce the PR via <b>Disposition → request changes</b>.</>}
             </div>
+            {malicious && <ThreatEvidencePanel prNum={prNum} refresh={pr} onCapture={runSecretScan} />}
           </div>
         );
       })()}
