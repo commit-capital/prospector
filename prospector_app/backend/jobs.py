@@ -149,6 +149,18 @@ JOB_SPECS: dict[str, JobSpec] = {
                               str(REPO_ROOT / "pipeline" / "analyze_clusters.py"),
                               "--limit", str(n)],
     },
+    "cluster-new": {
+        "label": "Cluster new PRs",
+        "detail": "summarize PRs lacking a current summary, place new PRs into the existing clusters (or new ones) without re-partitioning them, then analyze the pending clusters. Store writes only, nothing upstream.",
+        "agentic": True,
+        "ledger": ("pr", ("cluster:summaries", "cluster:assign")),
+        "needs_count": True,
+        "count_default": 50,
+        "count_noun": "PRs",
+        "argv_fn": lambda n: [*PIPELINE_PY, "-u",
+                              str(REPO_ROOT / "pipeline" / "cluster_pass.py"),
+                              "--limit", str(n), "--trigger", "control"],
+    },
     "issue-ingest": {
         "label": "Issue ingest",
         "detail": "refresh issues + reconcile closures. Read-only.",

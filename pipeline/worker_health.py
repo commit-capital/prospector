@@ -30,7 +30,7 @@ from pipeline.storekit import now as _now
 if TYPE_CHECKING:
     from pipeline.store import Store
 
-LANES = ("security", "verify", "fix", "issue-fix")
+LANES = ("security", "verify", "fix", "issue-fix", "cluster")
 
 # Consecutive machine-fault endings that trip a lane.
 TRIP_AFTER = 3
