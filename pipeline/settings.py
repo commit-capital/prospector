@@ -396,6 +396,12 @@ def fix_objection_budget() -> int:
     return positive_int("TRIAGE_FIX_OBJECTION_BUDGET", 20)
 
 
+def pr_watch() -> bool:
+    """Whether a worker machine records new PRs and pushed heads from GitHub on
+    a cadence (TRIAGE_PR_WATCH, default on)."""
+    return os.environ.get("TRIAGE_PR_WATCH", "1") == "1"
+
+
 def fix_hunt_rereview() -> bool:
     """Whether an idle fix worker asks an active reviewer for the verdict a PR's
     current head never got (TRIAGE_FIX_HUNT_REREVIEW, default on)."""

@@ -57,6 +57,7 @@ from prospector_app.backend import review_refresh
 from prospector_app.backend import responses as responses_mod
 from prospector_app.backend import service
 from prospector_app.backend import suggested_actions
+from prospector_app.backend import pr_watch
 from prospector_app.backend import system_health
 from prospector_app.backend import threat_view
 from prospector_app.backend import tables
@@ -241,14 +242,15 @@ def _launch_fix_worker():
 
 def _launch_worker_cadences():
     """Start a worker machine's cadences: the stale merge-candidate refresh,
-    the re-review hunter, and the threat scan of new heads. Skipped under
-    pytest."""
+    the re-review hunter, the threat scan of new heads, and the watch that
+    records new and pushed-to PRs from GitHub. Skipped under pytest."""
     import sys
     if "pytest" in sys.modules:
         return
     stale_refresh.start()
     rereview_hunt.start()
     threat_refresh.start()
+    pr_watch.start()
 
 
 @app.post("/api/worker/health/resume")
