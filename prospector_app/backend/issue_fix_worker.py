@@ -179,9 +179,14 @@ def recover_orphans(store: IssueStore) -> list[int]:
     return marked
 
 
-def _unattended(req: dict) -> bool:
-    """Whether request `req` is agent work no operator queued."""
-    return req.get("source") != "operator" and req.get("action") not in MECHANICAL_ACTIONS
+def _unattended(req: dict, run: dict | None) -> bool:
+    """Whether request `req` on the attempt `run` is agent work no operator
+    queued. An `ask-reporter` runs an agent only to draft a question `run` does
+    not already hold (`executor.ask_issue_question`)."""
+    if req.get("source") == "operator" or req.get("action") in MECHANICAL_ACTIONS:
+        return False
+    return not (req.get("action") == "ask-reporter"
+                and ((run or {}).get("question") or {}).get("question"))
 
 
 def next_request(issues: dict, host: str) -> int | None:
@@ -191,7 +196,7 @@ def next_request(issues: dict, host: str) -> int | None:
         req = issues[n].fix_request or {}
         if req.get("action") != "solve" and (issues[n].fix_run or {}).get("host") != host:
             continue
-        if _unattended(req) and not lane_health.capacity_open(LANE):
+        if _unattended(req, issues[n].fix_run) and not lane_health.capacity_open(LANE):
             continue
         return n
     return None
@@ -211,7 +216,8 @@ def run_once(store: IssueStore) -> bool:
         return False
     state["current"] = n
     print(f"[issue-fix] #{n}: {claimed['action']}", flush=True)
-    metering = capacity.metered(LANE) if _unattended(claimed) else contextlib.nullcontext()
+    metering = (capacity.metered(LANE) if _unattended(claimed, issues[n].fix_run)
+                else contextlib.nullcontext())
     try:
         with metering:
             status, outcome = fix_review_runner.run_request(
