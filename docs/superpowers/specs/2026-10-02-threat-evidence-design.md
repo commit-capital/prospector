@@ -76,10 +76,16 @@ Rows are insert-only. `Store` gets `append_threat_evidence`,
 accessor, and `store_edit.py` has no handler for the table.
 
 A capture is attempted for a `(pr, head_sha)` pair until a complete row exists.
-A partial capture (the full diff, or any metadata read, failed) is still
-written with whatever it got, so something survives if GitHub removes the PR
-before the next attempt; a later complete capture is a new row beside it. A
-capture that got nothing at all writes no row.
+`complete` means the flagged diff was read whole (from the compare, or from a
+per-file listing in which every file carried its patch, and not truncated);
+other reads that fail are listed in `errors` without making the capture
+incomplete, since some, such as a deleted actor's account, can never succeed.
+An incomplete capture is written with whatever it got only when the head has
+no row yet, so something survives if GitHub removes the PR before a complete
+read succeeds, and repeated failing scans add no rows; a later complete
+capture is a new row beside it. A capture that got nothing at all writes no
+row. Each written capture appends a `threat-evidence:capture` run to the
+runs ledger.
 
 ### The `data` record
 
@@ -92,7 +98,7 @@ commits      [{sha, author {name, email, date}, committer {name, email, date},
 force_pushes [{at, actor, before, after}]          # GraphQL HeadRefForcePushedEvent
 detection    {verdict, signatures, scanned_at,
               matches [{signature, file, diff_line}],      # into diff_gz, 1-based
-              full_diff_signatures}                        # scan of diff_gz itself
+              full_diff_signatures}                        # scan_diff ∪ locate over diff_gz
 artifacts    {diff:  {bytes, sha256, source, complete, truncated},
               prior: {bytes, sha256, source, before_sha} | null}
 provenance   {captured_at, captured_by (gh login), machine (settings.worker_id()),
@@ -115,9 +121,10 @@ and file rules as `scan_diff`, so the two cannot disagree about what fires.
 `threat_scan.main` stamps every verdict and saves the registry exactly as it
 does now. Then, for each PR whose verdict is `malicious` and whose
 `(pr, head_sha)` has no complete capture, it calls
-`threat_evidence.capture(store, rec, result)`, one PR at a time. A capture
-failure is logged and counted, never raised. The run's ledger entry gains
-`evidence: {captured, partial, failed, already}`.
+`threat_evidence.capture(store, flag)` (a `Flag`: PR, flagged head, author, signatures), one PR at a time. A capture
+failure is logged and counted, never raised. The run's ledger stats gain
+`evidence_captured`, `evidence_partial`, `evidence_failed` and
+`evidence_already`.
 
 The call sits next to `block_actor` and `record_incident`, the one place a
 malicious verdict is acted on, so any path that records an incident also
@@ -199,8 +206,9 @@ The zip the app serves holds the same files, built in memory by the same code.
   `out_dir` inside a git work tree.
 - **Downloads.** The app serves `application/zip`,
   `Content-Disposition: attachment`, `X-Content-Type-Options: nosniff`. Each
-  download appends an Activity entry (`threat-evidence-export`: operator,
-  machine, PR, capture id) for chain of custody.
+  download appends a `threat-evidence:export` run to the runs ledger
+  (operator, machine, PR, capture id, `via`) for chain of custody. The Activity
+  log is for actions on GitHub, and reads an unknown kind as a comment.
 
 ## Surfaces
 
@@ -224,7 +232,7 @@ serves is reported as failed, and the next backfill tries it again.
   `id, head_sha, captured_at, captured_by, complete, artifacts, force_pushes,
   detection.signatures`.
 - `GET /api/prs/{n}/evidence/{id}/bundle.zip`: the export as a zip, hash-checked
-  and Activity-logged.
+  and recorded in the runs ledger.
 - PR page: inside the existing "⛔ Merge blocked — flagged malicious" callout,
   one line per capture, e.g.
   `Evidence preserved 2026-10-02 17:10 UTC · complete · force-pushed 2026-09-28 (was 86c1869)`,
@@ -265,7 +273,8 @@ Unit (`pipeline/tests/test_threat_evidence.py`), with GitHub reads faked at the
   capture exception leaves the stamp, the registry and the ledger entry intact.
 
 App (`prospector_app/backend/tests`): the metadata endpoint has no blob fields;
-the zip has the expected names, headers and an Activity entry.
+the zip has the expected names, headers and a `threat-evidence:export` ledger
+run.
 
 Frontend: `pnpm run build` and lint the touched files.
 

@@ -133,6 +133,19 @@ are flagged on sight, before any diff is fetched. Repository maintainers (the
 profile's `trusted_authors`) are never flagged: their PRs always stamp `clear`,
 though a leaked credential still raises a rotate-secret action item.
 
+Each malicious head then has its evidence preserved in the store's
+`threat_evidence` table (`pipeline/threat_evidence.py`): the SHA-pinned diff,
+the diff before the force-push that produced the head, and the PR, commit,
+actor and force-push metadata, all from read-only GitHub reads. `--no-fetch`
+skips the capture with every other GitHub read.
+
+```
+uv run python -m pipeline.threat_evidence capture --backfill   # every registry incident without a complete capture
+uv run python -m pipeline.threat_evidence list --author LOGIN
+uv run python -m pipeline.threat_evidence export --pr 11987 --out ~/Downloads/pr-11987-evidence
+uv run python -m pipeline.threat_evidence verify               # re-hash every stored artifact
+```
+
 ### GREPTILE READ
 
 Reads the Greptile entry the ingest stored for each below-bar PR (its summary
