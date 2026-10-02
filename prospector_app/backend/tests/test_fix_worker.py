@@ -58,8 +58,8 @@ class _Probe:
     """Replays a scripted resubmit run, recording every subcommand invoked."""
 
     def __init__(self, rc: int = 0, stdout: str = "diff --git a/a.ts b/a.ts\n+x",
-                 overrides: dict | None = None):
-        self.rc, self.stdout, self.calls = rc, stdout, []
+                 overrides: dict | None = None, stderr: str = "boom"):
+        self.rc, self.stdout, self.stderr, self.calls = rc, stdout, stderr, []
         self.overrides = overrides or {}
         self.applied: list[str] = []
         # The `unattended` flag of each pushing subcommand, so tests can assert
@@ -73,7 +73,7 @@ class _Probe:
         if args[0] == "apply" and stdin is not None:
             self.applied.append(stdin)
         rc, out = self.overrides.get(args[0], (self.rc, self.stdout))
-        return type("R", (), {"returncode": rc, "stdout": out, "stderr": "boom"})()
+        return type("R", (), {"returncode": rc, "stdout": out, "stderr": self.stderr})()
 
 
 def _pushed(probe: _Probe) -> bool:
@@ -139,6 +139,40 @@ def test_a_conflicted_probe_refuses_rather_than_parking(store, monkeypatch):
 
     assert store.load_pr(1).fix_request["status"] == "refused"
     assert not _pushed(probe)
+
+
+# What an uncaught exception in resubmit leaves on stderr as the interpreter
+# exits 1.
+RESUBMIT_CRASH = (
+    "Traceback (most recent call last):\n"
+    '  File "prospector_app/agent/resubmit", line 1294, in <module>\n'
+    "    raise SystemExit(main())\n"
+    "                     ~~~~^^\n"
+    '  File "prospector_app/agent/resubmit", line 333, in cmd_prepare\n'
+    '    branch = info["x"]\n'
+    "KeyError: 'x'\n")
+
+
+def test_a_crashed_resubmit_fails_rather_than_refusing(store, monkeypatch):
+    # A traceback is the helper breaking on this machine, not a verdict on the
+    # PR: the request ends `failed`, which the hunter retries once it cools and
+    # lane health books, and its reason names the exception.
+    booked: list[str] = []
+    monkeypatch.setattr(fix_worker.lane_health, "note_failure",
+                        lambda lane, **kw: booked.append(lane))
+    fix_queue.queue_pr(1, "rebase", source="auto")
+    probe = _Probe(rc=1, stderr=RESUBMIT_CRASH)
+    monkeypatch.setattr(fix_worker, "_resubmit", probe)
+
+    fix_worker.run_one(1)
+
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "failed"
+    assert "KeyError: 'x'" in req["error"]
+    assert "Traceback (most recent call last):" not in req["error"]
+    assert req["result"]["output"] == RESUBMIT_CRASH.strip()
+    assert booked == ["fix"]
+    assert ("prepare", "--rebase") in probe.calls and not _pushed(probe)
 
 
 def test_a_parked_request_records_the_base_it_was_proven_against(store, monkeypatch):
@@ -1299,6 +1333,26 @@ def test_plain_reason_names_why_a_rebase_stopped():
         "The rebase couldn't be completed automatically. PR #7 contains merge commits; "
         "automatic rebasing refuses to flatten that history.")
     assert fix_worker.plain_reason(9, "") == "The rebase couldn't be completed automatically."
+
+
+def test_plain_reason_names_the_exception_a_crash_ended_on():
+    why = fix_worker.plain_reason(1, RESUBMIT_CRASH)
+    assert why.endswith("KeyError: 'x'")
+    assert "Traceback" not in why and "File " not in why
+    # Chained tracebacks end on the exception that propagated; frames that
+    # wrap across lines stay indented, so the exception is the first line
+    # back at the margin.
+    chained = ("warning: a line on stderr before the crash\n" + RESUBMIT_CRASH
+               + "\nDuring handling of the above exception, another exception occurred:\n\n"
+               "Traceback (most recent call last):\n"
+               '  File "subprocess.py", line 1268, in _check_timeout\n'
+               "    raise TimeoutExpired(\n"
+               "    ...<2 lines>...\n"
+               "            stderr=b''.join(stderr_seq) if stderr_seq else None)\n"
+               "subprocess.TimeoutExpired: Command '['git', 'clone']' timed out after "
+               "300 seconds\n")
+    assert fix_worker.plain_reason(1, chained).endswith(
+        "subprocess.TimeoutExpired: Command '['git', 'clone']' timed out after 300 seconds")
 
 
 def test_fix_hunt_respects_the_in_flight_cap(store, fix_profile, monkeypatch):
