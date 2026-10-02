@@ -39,10 +39,10 @@ PHASE_LEDGER: dict[str, tuple[str, ...]] = {
 _ESTIMATE_SAMPLES = 8
 
 
-def _last_runs() -> dict[str, str]:
-    """Return {phase: finished_at} for the most recent run of each phase."""
+def _last_runs(records: list[storekit.RunRecord]) -> dict[str, str]:
+    """{phase: finished_at} for the most recent run of each phase in `records`."""
     latest: dict[str, str] = {}
-    for rec in data.runs():
+    for rec in records:
         if not isinstance(rec, storekit.PhaseRun):
             continue
         finished = rec.finished or rec.started
@@ -56,18 +56,6 @@ def _issue_runs() -> list[storekit.RunRecord]:
     store's, oldest first, served from the app's cached snapshot."""
     from prospector_app.backend import issues
     return issues.cached_runs()
-
-
-def _last_issue_runs(issue_runs: list[storekit.RunRecord]) -> dict[str, str]:
-    """{phase: finished_at} for the most recent run of each issue-pipeline phase."""
-    latest: dict[str, str] = {}
-    for rec in issue_runs:
-        if not isinstance(rec, storekit.PhaseRun):
-            continue
-        finished = rec.finished or rec.started
-        if finished and (rec.phase not in latest or finished > latest[rec.phase]):
-            latest[rec.phase] = finished
-    return latest
 
 
 def _elapsed_seconds(started: str | None, finished: str | None) -> float | None:
@@ -261,7 +249,7 @@ def _pr_coverage(all_prs: dict[int, Pr], diffs_dir: Path) -> dict:
 def status() -> dict:
     """Return pipeline phase timing + PR and issue coverage stats."""
     pr_runs = data.runs()
-    last_runs = _last_runs()
+    last_runs = _last_runs(pr_runs)
 
     phases = []
     for phase_key, label in PHASE_LABELS.items():
@@ -272,7 +260,7 @@ def status() -> dict:
             "last_run": max((last_runs[k] for k in ledger if k in last_runs), default=None),
         })
     issue_runs = _issue_runs()
-    last_issue_runs = _last_issue_runs(issue_runs)
+    last_issue_runs = _last_runs(issue_runs)
     phases.append({
         "phase": "issue-ingest",
         "label": "Issue ingest",

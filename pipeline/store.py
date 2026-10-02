@@ -9,10 +9,10 @@ never parsed back.
 from __future__ import annotations
 
 import re
-from collections.abc import Generator
+from collections.abc import Generator, Iterable
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, TypedDict, cast
 
 from pipeline import gates
 from pipeline import progress
@@ -24,6 +24,8 @@ from pipeline import wire
 from pipeline.storekit import Collection, ValidationError
 
 if TYPE_CHECKING:
+    from sqlalchemy.sql.elements import ColumnElement
+
     from pipeline import model
 
 DEFAULT_ROOT = Path(__file__).resolve().parent / "store"
@@ -373,6 +375,16 @@ def light_pr(rec: dict) -> dict:
         out["fix_request"] = {**fix, "result": {**result, "merge_diff": _clip(result["merge_diff"])}}
     return out
 
+
+class WorkerRegistries(TypedDict):
+    """`Store.load_worker_registries`: each value as its own loader returns it."""
+    verify_worker: dict
+    fix_worker: dict
+    issue_fix_worker: dict
+    worker_health: dict
+    verify_base: dict[str, wire.VerifyPin]
+
+
 class Store:
     def __init__(self, root: Path | str | None = None):
         self.root = Path(root) if root is not None else DEFAULT_ROOT
@@ -648,16 +660,11 @@ class Store:
             rows = conn.execute(query).all()
         return [storekit.parse_run(r[0]) for r in reversed(rows)]
 
-    def runs_after(self, rowid: int | None) -> list[tuple[int, storekit.RunRecord]]:
-        """The ledger's records past `rowid` (all when None), each with its rowid,
-        oldest first."""
-        from sqlalchemy import select
-        query = select(schema.runs.c.rowid, schema.runs.c.data).where(schema.runs.c.kind == "pr")
-        if rowid is not None:
-            query = query.where(schema.runs.c.rowid > rowid)
-        with self.engine.connect() as conn:
-            rows = conn.execute(query.order_by(schema.runs.c.rowid)).all()
-        return [(int(r[0]), storekit.parse_run(r[1])) for r in rows]
+    def runs_after(self, rowid: int | None,
+                   held: Iterable[int] = ()) -> list[storekit.LedgerRow]:
+        """The ledger's rows past `rowid` (all when None), oldest first, without
+        the rowids in `held` (storekit.ledger_after)."""
+        return storekit.ledger_after(self.engine, "pr", rowid, held)
 
     def latest_run(self, phase: str) -> storekit.RunRecord | None:
         """The newest ledger record of `phase`, read without the rest."""
@@ -856,7 +863,10 @@ class Store:
         A record written flat (one machine's pin with no `hosts` key) reads as a
         single-entry map under the host that prepared it; that host name becomes
         the key and is dropped from the record."""
-        reg = self._load_registry("verify_base", {"hosts": {}})
+        return self._pins_by_host(self._load_registry("verify_base", {"hosts": {}}))
+
+    @staticmethod
+    def _pins_by_host(reg: dict) -> dict[str, wire.VerifyPin]:
         if "hosts" in reg:
             return cast(dict[str, wire.VerifyPin], reg["hosts"])
         host = reg.pop("prepared_on", None)
@@ -880,7 +890,10 @@ class Store:
         means no worker has ever run against this store. A record written flat
         (a single host's heartbeat with no `hosts` key) reads as a
         single-entry map."""
-        reg = self._load_registry("verify_worker", {"hosts": {}})
+        return self._beats_by_host(self._load_registry("verify_worker", {"hosts": {}}))
+
+    @staticmethod
+    def _beats_by_host(reg: dict) -> dict:
         if "hosts" in reg:
             return reg
         host = reg.get("host")
@@ -995,8 +1008,37 @@ class Store:
         with self.engine.connect() as conn:
             rows = conn.execute(
                 select(schema.registries.c.name, schema.registries.c.data)
-                .where(schema.registries.c.name.like(f"{self._HEALTH_PREFIX}%"))).all()
+                .where(self._is_health_row())).all()
+        return self._health_by_host((name, rec) for name, rec in rows)
+
+    def _is_health_row(self) -> ColumnElement[bool]:
+        return schema.registries.c.name.like(f"{self._HEALTH_PREFIX}%")
+
+    def _health_by_host(self, rows: Iterable[tuple[str, dict]]) -> dict:
         return {"hosts": {name[len(self._HEALTH_PREFIX):]: rec for name, rec in rows}}
+
+    _WORKER_REGISTRIES = ("verify_worker", "fix_worker", "issue_fix_worker", "verify_base")
+
+    def load_worker_registries(self) -> WorkerRegistries:
+        """What `load_verify_worker`, `load_fix_worker`, `load_issue_fix_worker`,
+        `load_worker_health` and `load_verify_base_hosts` return, read in one
+        statement over one connection."""
+        from sqlalchemy import or_, select
+        reg = schema.registries
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(reg.c.name, reg.c.data)
+                .where(or_(reg.c.name.in_(self._WORKER_REGISTRIES), self._is_health_row()))
+            ).all()
+        named = {name: rec for name, rec in rows if name in self._WORKER_REGISTRIES}
+        return {
+            "verify_worker": self._beats_by_host(named.get("verify_worker", {"hosts": {}})),
+            "fix_worker": named.get("fix_worker", {"hosts": {}}),
+            "issue_fix_worker": named.get("issue_fix_worker", {"hosts": {}}),
+            "worker_health": self._health_by_host(
+                (name, rec) for name, rec in rows if name not in self._WORKER_REGISTRIES),
+            "verify_base": self._pins_by_host(named.get("verify_base", {"hosts": {}})),
+        }
 
     def save_worker_health(self, record: dict) -> None:
         """Write one worker's health record to its own row, keyed by `host`."""

@@ -350,6 +350,29 @@ def test_status_counts_pools_and_reads_registry(store):
     assert s["runner"]["host"] == "studio"
 
 
+def test_status_reads_every_worker_registry_in_one_statement(store):
+    from sqlalchemy import event
+
+    from prospector_app.backend import autohunt_view
+    store.save_verify_worker({"host": "mac", "last_beat": _now(), "autohunt": True})
+    store.save_verify_base({"host": "mac", "base_sha": "a" * 40, "tier": 1,
+                            "pinned_at": _now(), "baseline_failing": [],
+                            "baseline_captured_at": _now()})
+    statements: list[str] = []
+
+    def count(conn, cursor, statement, *rest) -> None:
+        statements.append(statement)
+
+    event.listen(store.engine, "before_cursor_execute", count)
+    try:
+        st = autohunt_view.status()
+    finally:
+        event.remove(store.engine, "before_cursor_execute", count)
+    assert sum("FROM registries" in s for s in statements) == 1
+    assert st["enabled"] and st["runner"]["host"] == "mac"
+    assert [h["host"] for h in st["base"]["hosts"]] == ["mac"]
+
+
 def test_status_defaults_when_registry_empty(store):
     from prospector_app.backend import autohunt_view
     data.refresh()
@@ -559,6 +582,25 @@ def test_summary_dedupes_pr_ids_across_repeated_runs(store):
     s = autohunt_view.summary(days=None)
     assert s["security"]["by_result"]["GREEN"] == 2
     assert s["security"]["pr_ids_by_result"]["GREEN"] == [5]
+
+
+def test_the_autohunt_route_reads_its_window_once(store, monkeypatch):
+    from prospector_app.backend import app as app_mod
+    from prospector_app.backend import autohunt_view
+    recent = _now()
+    store.append_run({"phase": "security:review-one", "pr": 1, "ts": recent,
+                      "stats": {"verdict": "GREEN"}})
+    store.append_run({"phase": "verify:single", "pr": 2, "ts": recent,
+                      "stats": {"outcome": "verified-fix"}})
+    expected = (autohunt_view.summary(7),
+                autohunt_view.history_window(7, lanes=autohunt_view.HUNT_LANES))
+    reads: list[str | None] = []
+    real = data.runs
+    monkeypatch.setattr(data, "runs", lambda limit=None, since=None: reads.append(
+        since) or real(limit=limit, since=since))
+    body = app_mod.autohunt(days=7, all_time=False, limit=100)
+    assert len(reads) == 1
+    assert (body["summary"], body["history"]) == expected
 
 
 def test_summary_ignores_non_hunt_phases(store):

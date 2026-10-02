@@ -161,3 +161,29 @@ def test_trip_detail_carries_the_remedy():
     out = system_health.summarize([host], [], [("fix", "mac")], FRESH, NOW_TS)
     trip = next(i for i in out["items"] if i["kind"] == "trip")
     assert trip["detail"] == "claude CLI is not authenticated\nsign in with /login"
+
+
+def test_status_reads_every_worker_registry_in_one_statement(store, monkeypatch):
+    from sqlalchemy import event
+
+    from prospector_app.backend import alert_data, issues
+    monkeypatch.setattr(issues, "cached_runs", lambda: [])
+    monkeypatch.setattr(alert_data, "runs", lambda: [])
+    now = datetime.now(timezone.utc)
+    store.save_fix_worker({"host": "mac", "last_beat": now.isoformat()})
+    store.save_verify_worker({"host": "linux", "last_beat": (now - timedelta(hours=3)).isoformat()})
+    worker_health.update(store, "mac", lambda r: worker_health.trip(
+        r, "fix", kind="crash", reason="crashed"))
+    statements: list[str] = []
+
+    def count(conn, cursor, statement, *rest) -> None:
+        statements.append(statement)
+
+    event.listen(store.engine, "before_cursor_execute", count)
+    try:
+        out = system_health.status()
+    finally:
+        event.remove(store.engine, "before_cursor_execute", count)
+    assert sum("FROM registries" in s for s in statements) == 1
+    assert (out["lanes_total"], out["lanes_down"]) == (3, 3)
+    assert [i["kind"] for i in out["items"]] == ["lanes", "offline", "trip"]

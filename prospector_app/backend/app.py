@@ -670,11 +670,13 @@ def autohunt(days: int = Query(7, ge=1, le=400), all_time: bool = False,
     ever-growing table. Pass `all_time=true` to span the whole ledger
     regardless of `days`."""
     window = None if all_time else days
+    records = autohunt_view.window_runs(window)
     return {
         "status": autohunt_view.status(),
-        "summary": autohunt_view.summary(window),
+        "summary": autohunt_view.summary(window, records),
         "history": autohunt_view.history_window(window, limit=limit,
-                                                lanes=autohunt_view.HUNT_LANES),
+                                                lanes=autohunt_view.HUNT_LANES,
+                                                records=records),
     }
 
 

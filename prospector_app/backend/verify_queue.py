@@ -126,14 +126,15 @@ def worker_records(reg: dict) -> list[dict]:
                   key=lambda r: str(r.get("last_beat") or ""), reverse=True)
 
 
-def runner_status() -> dict:
+def runner_status(reg: dict | None = None) -> dict:
     """Whether a verification worker is alive against this store: `configured`
     says this backend runs one, `online` says some machine's worker beat within
     STALE_BEAT_SECONDS (the queue is shared, so the runner may be elsewhere).
     `host`/`current_pr`/`last_beat` describe the freshest worker; `hosts`
-    carries every known worker's liveness."""
+    carries every known worker's liveness. `reg` is the verify_worker registry
+    when the caller has read it."""
     from prospector_app.backend import verify_worker
-    records = worker_records(data.store().load_verify_worker())
+    records = worker_records(reg if reg is not None else data.store().load_verify_worker())
     hosts = [{"host": r.get("host"), "online": beat_online(r.get("last_beat")),
               "last_beat": r.get("last_beat"), "current_pr": r.get("current_pr"),
               "autohunt": bool(r.get("autohunt"))} for r in records]

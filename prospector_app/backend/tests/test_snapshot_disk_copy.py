@@ -8,7 +8,7 @@ from issue_triage import issue_store
 from pipeline import storekit
 from pipeline.store import LIGHT_CLIP_CHARS, Store
 from pipeline.testsupport import greptile_entry, reviews_section
-from prospector_app.backend import data, issue_data, snapshot_cache
+from prospector_app.backend import data, issue_data, run_ledger, snapshot_cache
 
 NOW = "2026-06-10T00:00:00+00:00"
 
@@ -167,12 +167,13 @@ def _run(phase: str, at: str) -> dict:
 def test_the_ledger_reads_only_rows_past_the_last_seen(store, monkeypatch):
     store.append_run(_run("ingest", "2026-06-01T00:00:00+00:00"))
     assert [r.phase for r in data.runs()] == ["ingest"]
-    asked: list[int | None] = []
+    asked: list[tuple[int | None, list[int]]] = []
     real = store.runs_after
-    monkeypatch.setattr(store, "runs_after", lambda rowid: asked.append(rowid) or real(rowid))
+    monkeypatch.setattr(store, "runs_after", lambda rowid, held=(): asked.append(
+        (rowid, sorted(held))) or real(rowid, held))
     store.append_run(_run("cluster", "2026-06-02T00:00:00+00:00"))
     assert [r.phase for r in data.runs()] == ["ingest", "cluster"]
-    assert asked == [1 - data.RUNS_OVERLAP]
+    assert asked == [(1 - run_ledger.OVERLAP, [1])]
 
 
 def test_the_newest_run_of_a_phase_is_read_alone(store):

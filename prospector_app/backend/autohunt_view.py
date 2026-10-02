@@ -119,11 +119,12 @@ def _host_health(host: str, reg: wire.VerifyPin) -> VerifyBaseHost:
     }
 
 
-def base_health() -> VerifyBaseHealth:
+def base_health(pins: dict[str, wire.VerifyPin] | None = None) -> VerifyBaseHealth:
     """Every verification machine's pinned base, for the Control tab. Each
     machine holds its own pin, so the panel reports each one. Ordered by
-    hostname, so the list does not reshuffle between polls."""
-    hosts = data.store().load_verify_base_hosts()
+    hostname, so the list does not reshuffle between polls. `pins` is
+    `load_verify_base_hosts()` when the caller has read it."""
+    hosts = pins if pins is not None else data.store().load_verify_base_hosts()
     return {"hosts": [_host_health(h, hosts[h]) for h in sorted(hosts)]}
 
 
@@ -152,7 +153,8 @@ def status() -> AutohuntStatus:
     it. The hunter re-queues the ones the harness caused when
     gates.verify_retry_allowed says a retry is due; the PR's own refusals wait
     for an operator."""
-    records = verify_queue.worker_records(data.store().load_verify_worker())
+    regs = data.store().load_worker_registries()
+    records = verify_queue.worker_records(regs["verify_worker"])
     newest: dict = records[0] if records else {}
     prs = data.prs()
     failed = newest.get("security_failed")
@@ -167,9 +169,9 @@ def status() -> AutohuntStatus:
                                   "source": req.get("source")})
     return {
         "enabled": bool(newest.get("autohunt")),
-        "runner": verify_queue.runner_status(),
-        "base": base_health(),
-        "health": escalation.health_status(),
+        "runner": verify_queue.runner_status(regs["verify_worker"]),
+        "base": base_health(regs["verify_base"]),
+        "health": escalation.health_status(regs),
         "security_pool": sum(1 for n, pr in prs.items()
                              if n not in failed_set and gates.blocked_on_security(pr)),
         "verify_pool": sum(1 for pr in prs.values() if verify_worker.auto_verifiable(pr)),
@@ -230,6 +232,13 @@ def _cutoff(days: int | None) -> str | None:
     return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
 
 
+def window_runs(days: int | None) -> list[storekit.RunRecord]:
+    """The ledger records of the last `days` days (None = every record), oldest
+    first — what `summary` and `history_window` read, for a caller that wants
+    both from one read."""
+    return data.runs(since=_cutoff(days))
+
+
 def _row(rec: storekit.RunRecord, prs: dict[int, Pr],
          lanes: frozenset[str] | None) -> AutohuntRun | None:
     """One ledger record as a panel row, or None when it's not a security/verify
@@ -274,18 +283,20 @@ def history(limit: int = 50) -> list[AutohuntRun]:
 
 
 def history_window(days: int | None, limit: int = 100,
-                    lanes: frozenset[str] | None = None) -> list[AutohuntRun]:
+                   lanes: frozenset[str] | None = None,
+                   records: list[storekit.RunRecord] | None = None) -> list[AutohuntRun]:
     """The most recent per-PR security/verify runs within the last `days` days
     (None = every run in the ledger), newest first, capped at `limit` (and
     HISTORY_LIMIT_CAP regardless of what's asked). Filters the ledger by its
-    indexed `ts` column, so — unlike `history`'s bounded tail scan — every
-    matching run in the window is found regardless of how it's interleaved
-    with other phases. `lanes` restricts the result to those lanes; None is
-    every lane the ledger carries."""
+    `ts` column, so — unlike `history`'s bounded tail scan — every matching
+    run in the window is found regardless of how it's interleaved with other
+    phases. `lanes` restricts the result to those lanes; None is every lane
+    the ledger carries. `records` is the window as `window_runs(days)` read
+    it, when the caller already has it."""
     limit = min(limit, HISTORY_LIMIT_CAP)
     prs = data.prs()
     out: list[AutohuntRun] = []
-    for rec in reversed(data.runs(since=_cutoff(days))):
+    for rec in reversed(window_runs(days) if records is None else records):
         row = _row(rec, prs, lanes)
         if row is None:
             continue
@@ -295,18 +306,19 @@ def history_window(days: int | None, limit: int = 100,
     return out
 
 
-def summary(days: int | None) -> AutohuntSummary:
+def summary(days: int | None,
+            records: list[storekit.RunRecord] | None = None) -> AutohuntSummary:
     """Security/verify run counts and result breakdowns over the last `days`
     days (None = the whole ledger) — the auto-hunt panel's default view, a
     fixed-size digest in place of an ever-growing per-run table. Filters the
-    runs ledger by its indexed `ts` column, so the scan cost tracks the
-    window, not the ledger's total size. Each bucket also carries the distinct
+    runs ledger by its `ts` column. Each bucket also carries the distinct
     PR numbers behind it, so the app can open exactly those PRs in the
-    Explorer when an operator clicks a result chip."""
+    Explorer when an operator clicks a result chip. `records` is the window as
+    `window_runs(days)` read it, when the caller already has it."""
     totals = {"security": 0, "verify": 0}
     by_result: dict[str, dict[str, int]] = {"security": {}, "verify": {}}
     pr_ids_by_result: dict[str, dict[str, list[int]]] = {"security": {}, "verify": {}}
-    for rec in data.runs(since=_cutoff(days)):
+    for rec in window_runs(days) if records is None else records:
         if not isinstance(rec, storekit.PhaseRun):
             continue
         lane = _HISTORY_PHASES.get(rec.phase)

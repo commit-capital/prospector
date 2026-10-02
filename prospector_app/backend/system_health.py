@@ -159,25 +159,25 @@ def _pr_ingest_last() -> str | None:
 
 def status() -> SystemHealth:
     """Gather the live inputs and summarize, across every machine on this
-    store."""
+    store. The worker registries are one read (`load_worker_registries`)."""
     from prospector_app.backend import alert_data, issues
-    st = data.store()
+    regs = data.store().load_worker_registries()
     worker_lanes: list[tuple[str, str]] = []
-    for rec in verify_queue.worker_records(st.load_verify_worker()):
+    for rec in verify_queue.worker_records(regs["verify_worker"]):
         host = rec.get("host")
         if host:
             worker_lanes += [("security", str(host)), ("verify", str(host))]
-    for rec in fix_queue.worker_records(st.load_fix_worker()):
+    for rec in fix_queue.worker_records(regs["fix_worker"]):
         host = rec.get("host")
         if host:
             worker_lanes.append(("fix", str(host)))
-    for host in st.load_issue_fix_worker().get("hosts") or {}:
+    for host in regs["issue_fix_worker"].get("hosts") or {}:
         worker_lanes.append(("issue-fix", str(host)))
     ingest_last: dict[str, str | None] = {
         "pr": _pr_ingest_last(),
         "issues": _latest_run(issues.cached_runs(), "ingest"),
         "alerts": _latest_run(alert_data.runs(), "alert-ingest"),
     }
-    health = escalation.health_status()
-    return summarize(health["hosts"], escalation.offline_workers(),
+    health = escalation.health_status(regs)
+    return summarize(health["hosts"], escalation.offline_workers(registries=regs),
                      worker_lanes, ingest_last)

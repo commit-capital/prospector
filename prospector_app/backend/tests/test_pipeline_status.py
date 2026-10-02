@@ -6,40 +6,31 @@ from pipeline.model import Pr
 from prospector_app.backend import pipeline_status
 
 
-def test_last_runs_picks_latest_per_phase(monkeypatch):
+def test_last_runs_picks_latest_per_phase():
     records = [storekit.parse_run(d) for d in [
         {"phase": "ingest", "finished": "2026-06-01T10:00:00+00:00", "started": "2026-06-01T09:00:00+00:00"},
         {"phase": "ingest", "finished": "2026-06-02T10:00:00+00:00", "started": "2026-06-02T09:00:00+00:00"},
         {"phase": "cluster:commit", "finished": "2026-06-01T11:00:00+00:00"},
         {"phase": "ingest", "finished": "2026-06-01T08:00:00+00:00"},
     ]]
-    from prospector_app.backend import data
-    monkeypatch.setattr(data, "runs", lambda: records)
-
-    result = pipeline_status._last_runs()
+    result = pipeline_status._last_runs(records)
 
     assert result["ingest"] == "2026-06-02T10:00:00+00:00"
     assert result["cluster:commit"] == "2026-06-01T11:00:00+00:00"
     assert "analyze:commit" not in result
 
 
-def test_last_runs_falls_back_to_started_when_no_finished(monkeypatch):
+def test_last_runs_falls_back_to_started_when_no_finished():
     records = [storekit.parse_run(d) for d in [
         {"phase": "threat-scan", "started": "2026-06-03T07:00:00+00:00"},
     ]]
-    from prospector_app.backend import data
-    monkeypatch.setattr(data, "runs", lambda: records)
-
-    result = pipeline_status._last_runs()
+    result = pipeline_status._last_runs(records)
 
     assert result["threat-scan"] == "2026-06-03T07:00:00+00:00"
 
 
-def test_last_runs_empty_store_returns_empty(monkeypatch):
-    from prospector_app.backend import data
-    monkeypatch.setattr(data, "runs", lambda: [])
-
-    assert pipeline_status._last_runs() == {}
+def test_last_runs_empty_store_returns_empty():
+    assert pipeline_status._last_runs([]) == {}
 
 
 def test_last_issue_runs_reads_issue_ledger():
@@ -51,7 +42,7 @@ def test_last_issue_runs_reads_issue_ledger():
         {"phase": "cluster", "finished": "2026-07-03T10:00:00+00:00"},
     ]]
 
-    runs = pipeline_status._last_issue_runs(records)
+    runs = pipeline_status._last_runs(records)
     assert runs["ingest"] == "2026-07-02T10:00:00+00:00"
     assert runs["cluster"] == "2026-07-03T10:00:00+00:00"
 
@@ -60,18 +51,15 @@ def test_last_issue_runs_skips_untimestamped_records():
     """Runs recorded without started/finished stamps don't produce a last-run."""
     records = [storekit.parse_run({"phase": "ingest", "issues": 3})]
 
-    assert pipeline_status._last_issue_runs(records) == {}
+    assert pipeline_status._last_runs(records) == {}
 
 
-def test_last_runs_skips_records_with_no_phase(monkeypatch):
+def test_last_runs_skips_records_with_no_phase():
     records = [
         {"phase": "", "finished": "2026-06-01T10:00:00+00:00"},
         {"finished": "2026-06-01T10:00:00+00:00"},
     ]
-    from prospector_app.backend import data
-    monkeypatch.setattr(data, "runs", lambda: records)
-
-    assert pipeline_status._last_runs() == {}
+    assert pipeline_status._last_runs(records) == {}
 
 
 def _seed_issue_store(tmp_path, monkeypatch):
@@ -175,19 +163,19 @@ def test_issue_runs_served_from_cached_snapshot(tmp_path, monkeypatch):
     st.append_run({"phase": "ingest", "started": "2026-07-01T09:00:00+00:00",
                    "finished": "2026-07-01T10:00:00+00:00", "stats": {}})
     reads = {"n": 0}
-    orig = IssueStore.runs
+    orig = IssueStore.runs_after
 
-    def counting(self):
+    def counting(self, rowid, held=()):
         reads["n"] += 1
-        return orig(self)
+        return orig(self, rowid, held)
 
-    monkeypatch.setattr(IssueStore, "runs", counting)
+    monkeypatch.setattr(IssueStore, "runs_after", counting)
 
     pipeline_status._issue_runs()
     after_first = reads["n"]
     second = pipeline_status._issue_runs()
 
-    assert pipeline_status._last_issue_runs(second)["ingest"] == "2026-07-01T10:00:00+00:00"
+    assert pipeline_status._last_runs(second)["ingest"] == "2026-07-01T10:00:00+00:00"
     assert reads["n"] == after_first
 
 
@@ -198,7 +186,7 @@ def test_apply_verdicts_stamps_analyze_last_run(tmp_path, monkeypatch):
     st = _seed_issue_store(tmp_path, monkeypatch)
     issue_analyze_driver.apply_verdicts(st, [
         {"issue": 2, "disposition": "needs-human", "rationale": "r"}])
-    assert "analyze" in pipeline_status._last_issue_runs(st.runs())
+    assert "analyze" in pipeline_status._last_runs(st.runs())
 
 
 def test_seconds_per_unit_averages_recent_samples():
@@ -359,3 +347,15 @@ def test_status_includes_estimates(monkeypatch, tmp_path):
     assert result["estimates"]["ingest_seconds"] is None
     assert result["estimates"]["analyze_clusters_seconds_per_cluster"] is None
     assert result["estimates"]["issue_analyze_seconds_per_issue"] is None
+
+
+def test_status_reads_the_pr_ledger_once(monkeypatch, tmp_path):
+    from prospector_app.backend import data, issues
+    monkeypatch.setattr(issues, "STORE_ROOT", tmp_path)
+    reads: list[int] = []
+    monkeypatch.setattr(data, "runs", lambda: reads.append(1) or [])
+    monkeypatch.setattr(data, "prs", lambda: {})
+
+    pipeline_status.status()
+
+    assert len(reads) == 1

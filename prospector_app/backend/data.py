@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, TypedDict
 from pipeline import authors
 from pipeline import storekit
 from pipeline.store import Store
+from prospector_app.backend import run_ledger
 from prospector_app.backend import snapshot_cache
 
 if TYPE_CHECKING:
@@ -60,11 +61,7 @@ _check_lock = threading.Lock()  # single-flights the freshen; never held by a re
 _light: dict[int, str | None] = {}
 _cache_written = 0.0
 _cache_generation: int | None = None
-# The PR run ledger by rowid (see `runs`).
-RUNS_OVERLAP = 200
-_runs: dict[int, storekit.RunRecord] = {}
-_runs_store: Store | None = None
-_runs_lock = threading.Lock()
+_runs: run_ledger.RunLedger | None = None  # the PR run ledger (see `runs`)
 _author_baseline: dict | None = None  # inner `authors` map, read once
 _author_table: dict[str, dict] | None = None  # combined author profiles; invalidated on freshen
 _author_issue_generation: int | None = None
@@ -398,25 +395,33 @@ def author_stats(handle: str | None) -> dict | None:
 
 
 def runs(limit: int | None = None, since: str | None = None) -> list[storekit.RunRecord]:
-    """Run-ledger records from the store, typed (PhaseRun | StoreEdit), in
-    insertion order — all of them when `limit` is omitted, else only the last
-    `limit`. `since` filters to records at or after that ISO instant (the
-    ledger's indexed `ts` column) and composes with `limit`.
+    """Run-ledger records, typed (PhaseRun | StoreEdit), in insertion order —
+    all of them when `limit` is omitted, else only the last `limit`. `since`
+    keeps the records whose `ts` column is at or after that ISO instant and
+    composes with `limit`.
 
-    The whole ledger is held in memory and each call reads only the rows past
-    the last one seen, less RUNS_OVERLAP: the ledger is append-only, and the
-    overlap picks up a row whose insert committed after a higher rowid's."""
-    global _runs, _runs_store
-    if limit is not None or since is not None:
+    Answered from an in-memory copy of the whole ledger (`run_ledger.RunLedger`),
+    brought current on every call by reading only the rows it does not hold.
+    A `limit` or `since` read made before any whole read has completed asks the
+    store for just that window."""
+    ledger = _pr_ledger()
+    if (limit is not None or since is not None) and not ledger.loaded:
         return _store.runs(limit=limit, since=since)
-    with _runs_lock:
-        if _runs_store is not _store:
-            _runs, _runs_store = {}, _store
-        after = max(_runs) - RUNS_OVERLAP if _runs else None
-        new = [(rowid, rec) for rowid, rec in _store.runs_after(after) if rowid not in _runs]
-        if new:
-            _runs = dict(sorted({**_runs, **dict(new)}.items()))
-        return list(_runs.values())
+    records = [r.record for r in ledger.rows()
+               if since is None or (r.ts is not None and r.ts >= since)]
+    if limit is not None:
+        records = records[max(len(records) - limit, 0):]
+    return records
+
+
+def _pr_ledger() -> run_ledger.RunLedger:
+    """The PR run ledger's in-memory copy, started over when `_store` is
+    replaced."""
+    global _runs
+    ledger, st = _runs, _store
+    if ledger is None or ledger.source is not st:
+        ledger = _runs = run_ledger.RunLedger(st)
+    return ledger
 
 
 def latest_run(phase: str) -> storekit.RunRecord | None:
