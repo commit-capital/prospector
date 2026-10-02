@@ -52,6 +52,11 @@ uv run python pipeline/cluster_driver.py commit-assign-dir    # applies every un
 uv run python pipeline/views.py
 ```
 
+The same incremental pass runs headless, summaries and analysis included, as
+`uv run python pipeline/cluster_pass.py [--limit N] [--analyze N]` — the
+Control tab's "Cluster new PRs" job, and hourly on a machine with
+`TRIAGE_CLUSTER_WORKER=1` within the daily limits.
+
 Existing clusters are **append-only** here — a join reopens just that cluster
 (`outcome=None`) so ANALYZE re-runs on it alone; clusters that gain nothing are
 untouched. "New PRs" are the never-clustered ones (no `cluster` section);

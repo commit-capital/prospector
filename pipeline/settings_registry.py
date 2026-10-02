@@ -89,6 +89,10 @@ SETTINGS: tuple[Setting, ...] = (
        on_by_default=True),
     _i("TRIAGE_FIX_HUNT_LIMIT", "behavior", "Hunted fixes in flight", "3",
        "The most hunter-queued agent fixes running at once."),
+    _i("TRIAGE_CLUSTER_DAILY_PRS", "behavior", "PRs clustered per day", "150",
+       "PRs the clustering worker summarizes and places into clusters per UTC day."),
+    _i("TRIAGE_CLUSTER_DAILY_CLUSTERS", "behavior", "Clusters analyzed per day", "30",
+       "Clusters the clustering worker analyzes per UTC day."),
     _i("TRIAGE_FIX_OBJECTION_BUDGET", "behavior", "Objection fixes per day", "20",
        "Continuations from a machine objection, per worker per UTC day."),
     _i("TRIAGE_REREVIEW_BUDGET", "behavior", "Re-review requests per day", "40",
@@ -100,6 +104,9 @@ SETTINGS: tuple[Setting, ...] = (
        "The most changed lines a fix may push unattended."),
     _i("TRIAGE_REVIEWER_ACTIVE_DAYS", "behavior", "Reviewer activity window (days)", "14",
        "In auto review mode, a reviewer gates PRs when it posted within this many days."),
+    _i("TRIAGE_VERIFY_MAX_AGE_DAYS", "behavior", "Verification window (days)", "30",
+       "How long a passing or inconclusive sandbox verification counts for merge before "
+       "it must be re-run. A failing one blocks until a re-run, whatever its age."),
     # --- this machine's sandbox -----------------------------------------------------
     _i("TRIAGE_SANDBOX_LARGE_SLOTS", "machine", "Large sandbox phases at once", "auto",
        "Compile, build and full-suite phases (10 GB each) run at once; auto sizes it to "
@@ -122,6 +129,9 @@ SETTINGS: tuple[Setting, ...] = (
             editable=True),
     _b("TRIAGE_ISSUE_FIX_WORKER", "workers", "Issue-fix worker",
        "This machine runs the issue-fix factory."),
+    _b("TRIAGE_CLUSTER_WORKER", "workers", "Clustering worker",
+       "This machine summarizes, clusters, and analyzes new PRs every hour, within the "
+       "daily limits. One machine runs it at a time."),
     _b("TRIAGE_ISSUE_FIX_HUNT", "workers", "Issue-fix hunter",
        "An idle issue-fix worker starts attempts on fresh issues itself."),
     Setting("TRIAGE_WORKER_ID", "workers", "text", "Worker name", "(host name)",
@@ -157,6 +167,9 @@ SETTINGS: tuple[Setting, ...] = (
             "The CLI behind the in-app agent pane.", choices=("claude", "codex", "none")),
     Setting("PROSPECTOR_FEEDBACK_REPO", "deployment", "text", "Feedback repository", "(none)",
             "Where the feedback button files issues."),
+    Setting("TRIAGE_SLACK_WEBHOOK_URL", "deployment", "secret", "Slack alerts webhook",
+            "(off)", "The Slack incoming webhook malicious PRs and maintainer credential "
+            "leaks are posted to."),
     Setting("PROSPECTOR_FEEDBACK_TOKEN", "deployment", "secret", "Feedback token",
             "(gh's stored login)",
             "The token the in-app agent files feedback-repository issues with."),

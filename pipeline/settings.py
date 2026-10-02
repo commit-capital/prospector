@@ -223,6 +223,13 @@ def reviewer_active_days() -> int:
     return positive_int("TRIAGE_REVIEWER_ACTIVE_DAYS", 14)
 
 
+def verify_max_age_days() -> int:
+    """How many days a verification that found for the PR, or found nothing either
+    way, keeps counting for merge. The default branch moves under a PR, so such an
+    outcome ages out; one that found against the PR holds until a re-run."""
+    return positive_int("TRIAGE_VERIFY_MAX_AGE_DAYS", 30)
+
+
 def review_threshold() -> int | None:
     """Override of Greptile's pass score. None → 5, and so does a value that is
     not a positive integer."""
@@ -313,6 +320,19 @@ def issue_fix_worker_enabled() -> bool:
     return os.environ.get("TRIAGE_ISSUE_FIX_WORKER", "") == "1"
 
 
+def cluster_worker_enabled() -> bool:
+    """Whether this machine runs the clustering lane."""
+    return os.environ.get("TRIAGE_CLUSTER_WORKER", "") == "1"
+
+
+def cluster_daily_prs() -> int:
+    return positive_int("TRIAGE_CLUSTER_DAILY_PRS", 150)
+
+
+def cluster_daily_clusters() -> int:
+    return positive_int("TRIAGE_CLUSTER_DAILY_CLUSTERS", 30)
+
+
 def issue_fix_hunt() -> bool:
     """Whether an idle issue-fix worker queues attempts on issues itself."""
     return os.environ.get("TRIAGE_ISSUE_FIX_HUNT", "") == "1"
@@ -394,6 +414,12 @@ def fix_hunt_limit() -> int:
 def fix_objection_budget() -> int:
     """Continuations an objection may start per worker per UTC day."""
     return positive_int("TRIAGE_FIX_OBJECTION_BUDGET", 20)
+
+
+def slack_webhook_url() -> str | None:
+    """The Slack incoming-webhook URL the threat scan's alerts post to, or None
+    when this machine posts none."""
+    return os.environ.get("TRIAGE_SLACK_WEBHOOK_URL", "").strip() or None
 
 
 def pr_watch() -> bool:

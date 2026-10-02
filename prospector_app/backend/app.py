@@ -26,7 +26,7 @@ from prospector_app.backend import alerts as alerts_mod
 from prospector_app.backend import autohunt_view
 from prospector_app.backend import autonomous_feed
 from prospector_app.backend import escalation
-from prospector_app.backend import rereview_hunt, stale_refresh, threat_refresh
+from prospector_app.backend import cluster_refresh, rereview_hunt, stale_refresh, threat_refresh
 from prospector_app.backend import worker_control
 from prospector_app.backend import worker_readiness
 from prospector_app.backend import bulk
@@ -243,8 +243,9 @@ def _launch_fix_worker():
 
 def _launch_worker_cadences():
     """Start a worker machine's cadences: the stale merge-candidate refresh,
-    the re-review hunter, the threat scan of new heads, and the watch that
-    records new and pushed-to PRs from GitHub. Skipped under pytest."""
+    the re-review hunter, the threat scan of new heads, the watch that records
+    new and pushed-to PRs from GitHub, and the clustering lane. Skipped under
+    pytest."""
     import sys
     if "pytest" in sys.modules:
         return
@@ -252,6 +253,7 @@ def _launch_worker_cadences():
     rereview_hunt.start()
     threat_refresh.start()
     pr_watch.start()
+    cluster_refresh.start()
 
 
 @app.post("/api/worker/health/resume")
@@ -541,6 +543,17 @@ def onboarding_apply(body: models.OnboardingApply):
         raise HTTPException(400, str(e))
     except OSError as e:
         raise HTTPException(500, f"could not write configuration: {e}")
+
+
+@app.post("/api/onboarding/notify/test")
+def onboarding_notify_test():
+    """Post a test message to this machine's Slack webhook; `ok` says whether
+    Slack took it."""
+    from pipeline import notify
+    url = settings.slack_webhook_url()
+    if not url:
+        raise HTTPException(400, "no Slack webhook is set on this machine")
+    return {"ok": notify.post_webhook(url, notify.test_text())}
 
 
 @app.get("/api/onboarding/push-identity/account")

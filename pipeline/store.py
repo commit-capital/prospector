@@ -12,6 +12,7 @@ import re
 import threading
 from collections.abc import Generator, Iterable
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict, cast
 
@@ -293,6 +294,10 @@ def validate_cluster(rec: dict) -> None:
 
 # Serializes this process's capacity-row writes (Store._save_capacity_half_if_newer).
 _CAPACITY_LOCK = threading.Lock()
+# The same serialization for a Slack alert's claim on a local SQLite store.
+_NOTIFY_LOCK = threading.Lock()
+# And for a lease's claim and release.
+_LEASE_LOCK = threading.Lock()
 
 # PR records `pr_bodies` reads per statement.
 PR_BODIES_BATCH = 200
@@ -771,6 +776,91 @@ class Store:
                 return
             data[half] = value
             conn.execute(update(reg).where(reg.c.name == name).values(data=data))
+
+    # -- Slack alerts (pipeline/notify.py) -----------------------------------
+    # `notify:<key>` records one alert's delivery: `sending` while a machine
+    # holds the claim, then `sent` or `failed`, with the tries spent. The row
+    # exists before it is locked, so two machines claiming one alert serialize
+    # on it and exactly one posts.
+    def claim_notification(self, key: str, *, host: str, max_tries: int,
+                           stale_after: float, now: datetime | None = None) -> bool:
+        """Claim alert `key` for `host`: True for a new alert, one that failed
+        fewer than `max_tries` times, or one left `sending` longer than
+        `stale_after` seconds; False for one sent or held by a live claim."""
+        from sqlalchemy import select, update
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+        storekit.assert_writable(self.engine)
+        now = now or datetime.now(timezone.utc)
+        name = f"notify:{key}"
+        reg = schema.registries
+        ins = pg_insert(reg) if self.engine.dialect.name == "postgresql" else sqlite_insert(reg)
+        with _NOTIFY_LOCK, self.engine.begin() as conn:
+            conn.execute(ins.values(name=name, data={}).on_conflict_do_nothing(
+                index_elements=[reg.c.name]))
+            row = conn.execute(select(reg.c.data).where(reg.c.name == name)
+                               .with_for_update()).first()
+            data = dict(row[0]) if row is not None and row[0] else {}
+            status = data.get("status")
+            tries = int(data.get("tries") or 0)
+            if status == "sent" or tries >= max_tries:
+                return False
+            if status == "sending":
+                age = storekit.seconds_since(data.get("at"), now)
+                if age is not None and age < stale_after:
+                    return False
+            claimed = {"status": "sending", "host": host, "tries": tries + 1,
+                       "at": now.isoformat()}
+            conn.execute(update(reg).where(reg.c.name == name).values(data=claimed))
+        return True
+
+    def finish_notification(self, key: str, *, sent: bool) -> None:
+        """Record how a claimed alert's post went."""
+        data = dict(self._load_registry(f"notify:{key}", {}))
+        data["status"] = "sent" if sent else "failed"
+        self._save_registry(f"notify:{key}", data)
+
+    # -- Leases --------------------------------------------------------------
+    # `lease:<name>` names the one machine doing a job only one machine may do
+    # at a time, and until when. The row exists before it is locked, so two
+    # machines asking at once serialize on it and one of them holds it.
+    def claim_lease(self, name: str, *, host: str, seconds: float,
+                    now: datetime | None = None) -> bool:
+        """Hold lease `name` for `host` for `seconds` from now: True when it
+        was free, expired, or already `host`'s; False while another host holds
+        it."""
+        from sqlalchemy import select, update
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+        storekit.assert_writable(self.engine)
+        now = now or datetime.now(timezone.utc)
+        row_name = f"lease:{name}"
+        reg = schema.registries
+        ins = pg_insert(reg) if self.engine.dialect.name == "postgresql" else sqlite_insert(reg)
+        with _LEASE_LOCK, self.engine.begin() as conn:
+            conn.execute(ins.values(name=row_name, data={}).on_conflict_do_nothing(
+                index_elements=[reg.c.name]))
+            row = conn.execute(select(reg.c.data).where(reg.c.name == row_name)
+                               .with_for_update()).first()
+            data = dict(row[0]) if row is not None and row[0] else {}
+            until = storekit.parse_ts(data.get("until"))
+            if data.get("host") not in (None, host) and until is not None and until > now:
+                return False
+            conn.execute(update(reg).where(reg.c.name == row_name).values(data={
+                "host": host, "until": (now + timedelta(seconds=seconds)).isoformat()}))
+        return True
+
+    def release_lease(self, name: str, *, host: str) -> None:
+        """Give up lease `name` when `host` holds it."""
+        from sqlalchemy import select, update
+        storekit.assert_writable(self.engine)
+        row_name = f"lease:{name}"
+        reg = schema.registries
+        with _LEASE_LOCK, self.engine.begin() as conn:
+            row = conn.execute(select(reg.c.data).where(reg.c.name == row_name)
+                               .with_for_update()).first()
+            if row is not None and (row[0] or {}).get("host") == host:
+                conn.execute(update(reg).where(reg.c.name == row_name).values(data={}))
 
     def append_agent_run(self, record: dict) -> None:
         """Append one agent run (`phase: agent:run`) to the agent ledger, a

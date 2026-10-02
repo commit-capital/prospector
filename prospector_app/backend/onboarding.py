@@ -56,6 +56,8 @@ STEP_KEYS: dict[str, tuple[str, ...]] = {
     # nothing else.
     "profile": (),
     "agent": ("TRIAGE_AGENT_PROVIDER",),
+    # The Slack webhook the threat scan's alerts post to; empty turns them off.
+    "notify": ("TRIAGE_SLACK_WEBHOOK_URL",),
 }
 
 # The agent choices accepted by the first-run wizard and the standing Setup card.
@@ -63,8 +65,13 @@ _AGENT_PROVIDERS = ("claude", "codex", "none")
 
 # What the bundle carries to a teammate: everything a fresh checkout needs to
 # point itself at this deployment, plus the bot identity so its writes are
-# attributed the same way.
-_BUNDLE_KEYS = STEP_KEYS["connect"] + ("TRIAGE_BOT_LOGIN", "TRIAGE_BOT_APP_ID")
+# attributed the same way, and the Slack webhook so its scans alert the same
+# channel.
+_BUNDLE_KEYS = STEP_KEYS["connect"] + ("TRIAGE_BOT_LOGIN", "TRIAGE_BOT_APP_ID",
+                                       "TRIAGE_SLACK_WEBHOOK_URL")
+
+# The prefix every Slack incoming webhook URL carries.
+_SLACK_HOOK_PREFIX = "https://hooks.slack.com/"
 
 # The paste-a-bundle path writes exactly what a bundle carries.
 STEP_KEYS["join"] = _BUNDLE_KEYS
@@ -96,6 +103,10 @@ def _validated(step: str, updates: dict[str, str]) -> dict[str, str]:
     target = clean.get("TRIAGE_REPO")
     if target is not None and not _REPO_RE.match(target):
         raise ValueError(f"TRIAGE_REPO must be owner/name, not {target!r}")
+    hook = clean.get("TRIAGE_SLACK_WEBHOOK_URL")
+    if hook and not hook.startswith(_SLACK_HOOK_PREFIX):
+        raise ValueError("TRIAGE_SLACK_WEBHOOK_URL must be a Slack incoming webhook "
+                         f"({_SLACK_HOOK_PREFIX}…)")
     provider = clean.get("TRIAGE_AGENT_PROVIDER")
     if provider is not None and provider not in _AGENT_PROVIDERS:
         raise ValueError(
@@ -442,5 +453,8 @@ def state() -> dict[str, object]:
         # The raw choice, not the effective provider: None means the operator
         # has never picked, which is what makes the wizard's agent rung ask.
         "agent_provider": os.environ.get("TRIAGE_AGENT_PROVIDER", "").strip() or None,
+        # Whether a Slack webhook is set; the URL itself never leaves the machine
+        # but in a bundle.
+        "slack_alerts": settings.slack_webhook_url() is not None,
         "counts": counts,
     }
