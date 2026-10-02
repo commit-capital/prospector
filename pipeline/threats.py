@@ -30,6 +30,13 @@ _BUILD_CONFIG = re.compile(
     re.IGNORECASE,
 )
 
+# Every character str.splitlines breaks a line on besides "\n", each of them
+# whitespace. The diff keeps the code after one on its line; an editor,
+# terminal, or review tool that breaks there shows that code as a line of its
+# own, or hides it.
+_LINE_BREAKS = "\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029"
+_SHOW_LINE_BREAKS = {ord(c): f"\\u{ord(c):04x}" for c in _LINE_BREAKS}
+
 # Severity ladder. CRITICAL or HIGH ⇒ verdict "malicious" (hard block).
 # MEDIUM ⇒ "suspicious" (surfaced for a human, never auto-cleared, never a
 # block on its own — these patterns can have rare benign causes).
@@ -84,6 +91,15 @@ SIGNATURES: list[tuple[str, str, str, list[re.Pattern]]] = [
         "listed only the first 3,000 of its files, so the scan could not read "
         "every added line.",
         [],  # computed from the files the read could not carry; see scan_diff
+    ),
+    (
+        "embedded-line-break", MEDIUM,
+        "Code after a carriage return, form feed, vertical tab, U+2028 or "
+        "another line-breaking character inside one added line — an editor, "
+        "terminal or review tool that breaks the line there shows that code as "
+        "a line of its own, or hides it. A CRLF ending and a line holding only "
+        "a page break do not fire.",
+        [],  # computed by _embedded_line_break; see scan_diff
     ),
     (
         "secret-leak", MEDIUM,
@@ -165,6 +181,14 @@ def _secret_evidence(fname: str | None, body: str) -> bool:
         return False
     m = _SECRET_ASSIGN.search(body)
     return bool(m and _looks_secret(m.group("val")))
+
+
+def _embedded_line_break(body: str) -> bool:
+    """Whether code follows a line-breaking character in `body`, in time linear
+    in the line's length."""
+    breaks = [i for c in _LINE_BREAKS if (i := body.find(c)) >= 0]
+    return bool(breaks) and not body[min(breaks):].isspace()
+
 
 _CRITICAL_OR_HIGH = {name for name, sev, _, _ in SIGNATURES if sev in (CRITICAL, HIGH)}
 
@@ -255,6 +279,8 @@ def scan_diff(diff_text: str, *, additions: int | None = None,
         if "build-config-require-injection" not in fired and fname and _BUILD_CONFIG.search(fname):
             if any(p.search(body) for p in pats["build-config-require-injection"]):
                 fired["build-config-require-injection"] = f"{fname}: {_evidence(body)}"
+        if "embedded-line-break" not in fired and _embedded_line_break(body):
+            fired["embedded-line-break"] = f"{fname or '?'}: {_evidence(body)}"
         if "secret-leak" not in fired:
             provider_hit = any(p.search(body) for p in pats["secret-leak"])
             if (provider_hit and not (fname and _SECRET_EXCLUDE_FILE.search(fname))) \
@@ -282,7 +308,9 @@ def scan_diff(diff_text: str, *, additions: int | None = None,
 
 
 def _evidence(body: str) -> str:
-    s = body.strip()
+    """The start of an added line as display text, each line-breaking
+    character shown as its \\uXXXX escape."""
+    s = body.strip().translate(_SHOW_LINE_BREAKS)
     return s[:120] + ("…" if len(s) > 120 else "")
 
 
