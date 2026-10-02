@@ -8,8 +8,8 @@ from issue_triage import public_comments
 
 RUN = {"ending": "fix-unproven", "detail": "1 independent reproduction(s); an agreed fix needs 2",
        "root_cause": "The parser drops the flag.", "candidates": [{"reproduces": True}]}
-PINNED = ("@paperclipai/adapter-codex-local src/index.test.ts > codex local adapter metadata > "
-          "advertises current Codex-capable OpenAI models without changing the default")
+PINNED = ("@acme/adapter-local src/index.test.ts > local adapter metadata > "
+          "advertises current models without changing the default")
 PINNED_RUN = {"ending": "fix-pinned", "detail": f"2 fix(es) pass all 2 reproductions: {PINNED}",
               "candidates": [{"reproduces": True}],
               "agreement": {"reproductions": [0, 2], "agreed": [],
@@ -65,8 +65,7 @@ def test_an_agent_cannot_hide_text_spoof_a_marker_or_link_another_issue():
 def test_a_pinned_conclusion_names_the_existing_test_and_what_lets_a_fix_through():
     body = public_comments.conclusion(7, "k", PINNED_RUN)
     assert public_comments.kind_for("fix-pinned") == "no-fix"
-    assert "- @\u200bpaperclipai/adapter-codex-local src/index.test.ts > codex local adapter " \
-           "metadata > advertises current Codex-capable OpenAI models without changing the " \
-           "default" in body
+    assert "- @\u200bacme/adapter-local src/index.test.ts > local adapter metadata > " \
+           "advertises current models without changing the default" in body
     assert "never changes a repository's own tests" in body
     assert "once that change has landed starts another attempt" in body
