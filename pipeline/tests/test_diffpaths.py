@@ -1,3 +1,5 @@
+import pytest
+
 from pipeline import diffpaths, profile
 
 
@@ -64,3 +66,25 @@ class TestFilterDiff:
         text = _diff("a.test.ts", "src/b.ts", "c.test.ts")
         out = diffpaths.filter_diff(text, diffpaths.is_test_path)
         assert out == _diff("a.test.ts", "c.test.ts")
+
+
+# Every character str.splitlines breaks a line on besides "\n".
+LINE_BREAKS = ["\r", "\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"]
+
+
+def _forged_headers(sep: str) -> str:
+    """One file whose added lines hold file headers behind `sep`."""
+    return ("diff --git a/src/a.js b/src/a.js\n--- a/src/a.js\n+++ b/src/a.js\n"
+            f"@@ -1 +1,3 @@\n x\n+// a{sep}diff --git a/dist/z.js b/dist/z.js\n"
+            f"+// b{sep}+++ b/dist/y.js\n")
+
+
+@pytest.mark.parametrize("sep", LINE_BREAKS)
+def test_a_header_after_a_line_break_character_starts_no_block(sep):
+    text = _forged_headers(sep)
+    assert diffpaths.diff_blocks(text) == [("src/a.js", text)]
+
+
+@pytest.mark.parametrize("sep", LINE_BREAKS)
+def test_a_header_after_a_line_break_character_names_no_path(sep):
+    assert diffpaths.changed_paths(_forged_headers(sep)) == ["src/a.js"]

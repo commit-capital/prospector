@@ -2050,8 +2050,9 @@ class TestMergeCommitFallback:
     base merge instead of refusing; an operator's rebase keeps its refusal."""
 
     class _Resubmit:
-        def __init__(self):
+        def __init__(self, update_rc: int = 0):
             self.calls = []
+            self.update_rc = update_rc
 
         def __call__(self, n, *args, stdin=None, unattended=False):
             self.calls.append(args)
@@ -2060,8 +2061,9 @@ class TestMergeCommitFallback:
                             "resubmit: PR #1 contains merge commits; automatic rebasing "
                             "refuses to flatten that history."})()
             if args[:2] == ("update", "--probe"):
-                return type("R", (), {"returncode": 0, "stdout": "diff --git a/a.ts b/a.ts\n+x",
-                                      "stderr": ""})()
+                return type("R", (), {"returncode": self.update_rc,
+                                      "stdout": "diff --git a/a.ts b/a.ts\n+x",
+                                      "stderr": "resubmit: the base conflicts"})()
             return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     def test_a_hunted_rebase_becomes_an_update(self, store, monkeypatch):
@@ -2072,6 +2074,23 @@ class TestMergeCommitFallback:
         req = store.load_pr(1).fix_request
         assert req["status"] == "awaiting-review" and req["action"] == "update"
         assert ("update", "--probe") in fake.calls
+
+    def test_the_update_it_became_rests_the_rebase_hunt_at_that_head(self, store, monkeypatch):
+        # The ending is booked under `update`, the action that ran, while the
+        # hunter still asks after `rebase` for an unmergeable PR.
+        monkeypatch.setattr(fix_worker, "_resubmit", self._Resubmit(update_rc=8))
+        fix_queue.queue_pr(1, "rebase", source="auto")
+        fix_worker.run_one(1)
+        req = store.load_pr(1).fix_request
+        assert req["status"] == "refused" and req["action"] == "update"
+        assert req["against_head_sha"] == HEAD
+        assert fix_worker.next_auto() is None
+        # A moved head re-arms the PR.
+        rec = store.load_pr(1).raw
+        rec["fix_request"]["against_head_sha"] = "b" * 40
+        store.save_pr(rec)
+        data.refresh()
+        assert fix_worker.next_auto() == ("rebase", 1, None)
 
     def test_an_operators_rebase_keeps_its_refusal(self, store, monkeypatch):
         fake = self._Resubmit()

@@ -40,6 +40,9 @@ diff --git a/cli/esbuild.config.mjs b/cli/esbuild.config.mjs
  };
 """
 
+# Every character str.splitlines breaks a line on besides "\n".
+LINE_BREAKS = ["\r", "\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"]
+
 
 class TestScanDiff:
     def test_obfuscated_payload_is_malicious(self):
@@ -123,11 +126,47 @@ class TestScanDiff:
                 "@@ -1 +1,2 @@\n x\n+++ i; global['!']='9-0008-2';\n")
         assert threats.scan_diff(diff)["verdict"] == "malicious"
 
-    def test_line_separator_inside_an_added_line_is_scanned(self):
-        for sep in (" ", "\r", "\x0c"):
-            diff = ("diff --git a/src/a.js b/src/a.js\n--- a/src/a.js\n+++ b/src/a.js\n"
-                    f"@@ -1 +1,2 @@\n x\n+// note{sep}global['!']='9-0008-2';\n")
-            assert threats.scan_diff(diff)["verdict"] == "malicious", repr(sep)
+    @pytest.mark.parametrize("sep", LINE_BREAKS)
+    def test_payload_after_a_line_break_character_is_scanned(self, sep):
+        # a form feed is whitespace in JavaScript and U+2028 a line terminator,
+        # so "void main();<sep>global['!']=…" runs the payload
+        diff = ("diff --git a/src/x.js b/src/x.js\n--- a/src/x.js\n+++ b/src/x.js\n@@ -1 +1 @@\n"
+                f"-void main();\n+void main();{sep}global['!']='9-0008-2';var _$_1e42=1;\n")
+        assert threats.scan_diff(diff)["verdict"] == "malicious"
+
+    @pytest.mark.parametrize("sep", LINE_BREAKS)
+    def test_line_break_character_does_not_count_a_second_line(self, sep):
+        churn = "diff --git a/f.txt b/f.txt\n"
+        churn += "".join(f"+line {i}{sep}+tail\n-line {i}\n" for i in range(3100))
+        assert "eol-churn-camouflage" in threats.scan_diff(churn)["signatures"]
+
+    @pytest.mark.parametrize("sep", LINE_BREAKS)
+    def test_code_after_a_line_break_character_is_suspicious(self, sep):
+        diff = ("diff --git a/src/a.js b/src/a.js\n--- a/src/a.js\n+++ b/src/a.js\n"
+                f"@@ -1 +1,2 @@\n x\n+// note{sep}console.log(1);\n")
+        r = threats.scan_diff(diff)
+        assert r["verdict"] == "suspicious"
+        assert r["signatures"] == ["embedded-line-break"]
+
+    def test_crlf_line_ending_is_not_an_embedded_line_break(self):
+        diff = ("diff --git a/src/a.js b/src/a.js\n--- a/src/a.js\n+++ b/src/a.js\n"
+                "@@ -1 +1,2 @@\n x\r\n+console.log(1);\r\n")
+        assert threats.scan_diff(diff)["verdict"] == "clear"
+
+    def test_form_feed_page_break_line_is_not_an_embedded_line_break(self):
+        diff = ("diff --git a/src/a.py b/src/a.py\n--- a/src/a.py\n+++ b/src/a.py\n"
+                "@@ -1 +1,3 @@\n x\n+\x0c\n+def f(): pass\n")
+        assert threats.scan_diff(diff)["verdict"] == "clear"
+
+    @pytest.mark.parametrize("sep", LINE_BREAKS)
+    def test_evidence_shows_a_line_break_character_escaped(self, sep):
+        diff = ("diff --git a/src/x.js b/src/x.js\n--- a/src/x.js\n+++ b/src/x.js\n@@ -1 +1 @@\n"
+                f"-void main();\n+void main();{sep}global['!']='9-0008-2';\n")
+        detail = threats.scan_diff(diff)["detail"]
+        assert set(detail) == {"obfuscated-self-decoder", "embedded-line-break"}
+        for evidence in detail.values():
+            assert sep not in evidence
+            assert f"\\u{ord(sep):04x}" in evidence
 
     def test_file_is_tracked_from_the_git_header_alone(self):
         # a diff synthesized from GitHub's per-file listing has no ---/+++ lines
@@ -933,6 +972,23 @@ class TestWholeDiffScan:
 
         assert store.load_pr(6).section("threat")["verdict"] == "malicious"
 
+    def test_a_line_break_character_cannot_forge_a_file_in_the_cached_copy(self, tmp_path, monkeypatch):
+        # an added line holding a form feed and a forged artifact-file header,
+        # then a payload line shaped like a file header
+        store = Store(tmp_path)
+        diffs = tmp_path / "diffs"; diffs.mkdir()
+        self._seed(store, 8, "h8")
+        full = ("diff --git a/src/a.js b/src/a.js\n--- a/src/a.js\n+++ b/src/a.js\n"
+                "@@ -1 +1,3 @@\n x\n+// a\x0cdiff --git a/dist/z.js b/dist/z.js\n"
+                "+++ global['!']='9-0008-2';\n"
+                + _added_file("src/b.js", ["ok();"]))
+        assert self._cache(monkeypatch, 8, "h8", diffs, full) == full
+        _no_github(monkeypatch)
+
+        threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs)])
+
+        assert store.load_pr(8).section("threat")["verdict"] == "malicious"
+
     def test_a_whole_cached_diff_is_judged_without_reading_github(self, tmp_path, monkeypatch):
         store = Store(tmp_path)
         diffs = tmp_path / "diffs"; diffs.mkdir()
@@ -1064,6 +1120,12 @@ class TestLocate:
                      *REAL_LEAK_DIFFS.values()]:
             line_sigs = set(threats.scan_diff(diff)["signatures"]) - {"eol-churn-camouflage"}
             assert {h.signature for h in threats.locate(diff)} == line_sigs
+
+    @pytest.mark.parametrize("sep", LINE_BREAKS)
+    def test_locate_reports_code_after_a_line_break_character(self, sep):
+        diff = ("diff --git a/src/a.js b/src/a.js\n--- a/src/a.js\n+++ b/src/a.js\n"
+                f"@@ -1 +1,2 @@\n x\n+// note{sep}console.log(1);\n")
+        assert threats.locate(diff) == [threats.Match("embedded-line-break", "src/a.js", 6)]
 
     def test_locate_honours_limit(self):
         many = PAYLOAD_DIFF + PAYLOAD_DIFF.replace("cli/", "web/")

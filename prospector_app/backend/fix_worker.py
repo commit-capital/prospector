@@ -1983,13 +1983,14 @@ def _hunt_attempted(pr: Pr, action: str) -> bool:
     re-run every sweep would pin the hunter to the same few conflicted PRs. A
     failed ending rests it for FAILED_RETRY_COOLDOWN_SECONDS only: it says
     nothing about the code, so the PR is not rested on it. The stamp a moved
-    head no longer matches re-arms the PR either way. A `resolve` is what a
-    hunted rebase became when it paused on conflicts, so its ending rests the
-    rebase hunt the same way. An operator's click is not bound by any of
+    head no longer matches re-arms the PR either way. A hunted rebase ends
+    under the action it turned into — `resolve` when it paused on conflicts,
+    `update` when its history holds merge commits — so either ending rests
+    the rebase hunt the same way. An operator's click is not bound by any of
     this. A cancel stamped `reclaimed` is a resolve taken back from a
     worker that went offline, and re-arms the head."""
     req = pr.fix_request or {}
-    done = {action, "resolve"} if action == "rebase" else {action}
+    done = {action, "resolve", "update"} if action == "rebase" else {action}
     if not (req.get("action") in done and pr.head_sha is not None
             and req.get("against_head_sha") == pr.head_sha):
         return False
