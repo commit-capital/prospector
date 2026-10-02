@@ -5,8 +5,10 @@ import { PRLink } from "../components/PRLink";
 import { useRepoMeta } from "../RepoMetaContext";
 
 // How often the view re-reads the threat state, so a PR closed upstream or a
-// new incident shows up without a reload.
+// new incident shows up without a reload — sooner while the backend's PR
+// snapshot is still on its first load.
 const POLL_MS = 60_000;
+const LOADING_POLL_MS = 3_000;
 
 const STATE_CHIP: Record<string, string> = {
   open: "chip-red", merged: "chip-red", closed: "chip-muted",
@@ -19,12 +21,23 @@ export default function Threats() {
 
   useEffect(() => {
     let cancelled = false;
-    const load = () => api.threats()
-      .then((d) => { if (!cancelled) { setDetail(d); setErr(null); } })
-      .catch((e: unknown) => { if (!cancelled) setErr(e instanceof Error ? e.message : String(e)); });
-    void load();
-    const timer = window.setInterval(load, POLL_MS);
-    return () => { cancelled = true; window.clearInterval(timer); };
+    let timer: number | undefined;
+    const load = () => {
+      api.threats()
+        .then((d) => {
+          if (cancelled) return;
+          setDetail(d);
+          setErr(null);
+          timer = window.setTimeout(load, d.loading ? LOADING_POLL_MS : POLL_MS);
+        })
+        .catch((e: unknown) => {
+          if (cancelled) return;
+          setErr(e instanceof Error ? e.message : String(e));
+          timer = window.setTimeout(load, POLL_MS);
+        });
+    };
+    load();
+    return () => { cancelled = true; window.clearTimeout(timer); };
   }, []);
 
   const malicious = detail?.flagged.filter((f) => f.verdict === "malicious") ?? [];
@@ -40,8 +53,10 @@ export default function Threats() {
         </p>
       </div>
       {err && <div className="error">Failed to load threats: {err}</div>}
-      {!detail && !err && <div className="muted">Loading…</div>}
-      {detail && (
+      {(!detail || detail.loading) && !err && (
+        <div className="muted">Loading PRs from the shared database…</div>
+      )}
+      {detail && !detail.loading && (
         <>
           <h2>Open flagged PRs</h2>
           {detail.flagged.length === 0 ? (

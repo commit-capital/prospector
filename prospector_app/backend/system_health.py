@@ -196,7 +196,9 @@ def status() -> SystemHealth:
         if _SEVERITY_RANK[item["severity"]] > _SEVERITY_RANK[summary["severity"]]:
             summary["severity"] = item["severity"]
     try:
-        summary["threats"] = threat_view.summary()
+        threats = threat_view.summary()
     except Exception:
-        pass  # the strip still answers; the banner waits for the next poll
+        threats = None  # the strip still answers; the banner waits for the next poll
+    if threats is not None:
+        summary["threats"] = threats
     return summary

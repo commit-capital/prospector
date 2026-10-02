@@ -94,6 +94,7 @@ def test_the_threats_route_serves_the_detail(monkeypatch):
             return {"actors": {}, "incidents": [{"pr": 11987, "author": "mallory",
                                                  "signatures": ["x"], "noticed": "2026-09-30"}]}
 
+    monkeypatch.setattr(data, "snapshot_loading", lambda: False)
     monkeypatch.setattr(data, "prs", lambda: {11987: _pr(11987, verdict="malicious")})
     monkeypatch.setattr(data, "store", lambda: _Store())
     monkeypatch.setattr(data, "action_items", lambda: [])
@@ -101,4 +102,34 @@ def test_the_threats_route_serves_the_detail(monkeypatch):
     assert r.status_code == 200
     body = r.json()
     assert [f["pr"] for f in body["flagged"]] == [11987]
-    assert body["incidents"][0]["state"] == "open"
+    assert body["incidents"][0]["state"] == "open" and body["loading"] is False
+
+
+def test_nothing_is_summarized_while_the_snapshot_loads(monkeypatch):
+    import pytest
+
+    from prospector_app.backend import data
+    monkeypatch.setattr(data, "snapshot_loading", lambda: True)
+    monkeypatch.setattr(data, "prs", lambda: pytest.fail("held a request on the cold load"))
+    assert threat_view.summary() is None
+
+
+def test_the_threats_route_answers_loading_while_the_snapshot_loads(monkeypatch):
+    import pytest
+    from fastapi.testclient import TestClient
+
+    from prospector_app.backend import app as appmod
+    from prospector_app.backend import data
+    monkeypatch.setattr(data, "snapshot_loading", lambda: True)
+    monkeypatch.setattr(data, "prs", lambda: pytest.fail("held a request on the cold load"))
+    body = TestClient(appmod.app).get("/api/threats").json()
+    assert body["loading"] is True and body["flagged"] == []
+
+
+def test_the_detail_marks_fixture_secrets_and_lists_live_ones_first():
+    fixture = {"id": "rotate-secret:3", "kind": "rotate-secret", "pr": 3, "status": "open",
+               "evidence": "tests/fixtures/keys.ts: const key = 'dummy'"}
+    live = {"id": "rotate-secret:9", "kind": "rotate-secret", "pr": 9, "status": "open",
+            "evidence": ".env.prod: SECRET=abc123def456"}
+    out = threat_view.detail([], {}, [fixture, live])
+    assert [(s["pr"], s["fixture"]) for s in out["secrets"]] == [(9, False), (3, True)]

@@ -1130,6 +1130,8 @@ export interface BlockedActor {
 
 /** The Security tab's Threats view (GET /api/threats). */
 export interface ThreatDetail {
+  // True while the backend's PR snapshot is still on its first load.
+  loading: boolean;
   flagged: FlaggedPr[];
   incidents: ThreatIncident[];
   actors: BlockedActor[];

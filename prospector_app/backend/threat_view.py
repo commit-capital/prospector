@@ -54,6 +54,8 @@ class BlockedActor(TypedDict):
 
 
 class ThreatDetail(TypedDict):
+    # True while the PR snapshot's first load runs; every list is then empty.
+    loading: bool
     flagged: list[FlaggedPr]
     incidents: list[Incident]
     actors: list[BlockedActor]
@@ -112,7 +114,8 @@ def summarize(prs: Iterable[Pr], incidents: list[dict], items: list[dict]) -> Th
 def detail(prs: Iterable[Pr], registry: dict, items: list[dict]) -> ThreatDetail:
     """The Threats view: open flagged PRs (malicious first), the incident log
     newest first with each PR's state, the blocked actors with their open PRs,
-    and the open rotate-secret items."""
+    and the open rotate-secret items, each marked whether it reads as a test
+    fixture, live-looking ones first."""
     by_number = {pr.number: pr for pr in prs}
     incidents_raw: list[dict] = list(registry.get("incidents") or [])
     noticed = _noticed(incidents_raw)
@@ -141,8 +144,10 @@ def detail(prs: Iterable[Pr], registry: dict, items: list[dict]) -> ThreatDetail
          "incidents": list(entry.get("incidents") or []),
          "open_prs": sorted(open_by_author.get(login, []))}
         for login, entry in sorted((registry.get("actors") or {}).items())]
-    return {"flagged": flagged, "incidents": incidents, "actors": actors,
-            "secrets": _open_secrets(items)}
+    secrets = [{**it, "fixture": _fixture(it)} for it in _open_secrets(items)]
+    secrets.sort(key=lambda it: it["fixture"])
+    return {"loading": False, "flagged": flagged, "incidents": incidents, "actors": actors,
+            "secrets": secrets}
 
 
 def _registries() -> tuple[list[dict], list[dict]]:
@@ -157,10 +162,16 @@ def _registries() -> tuple[list[dict], list[dict]]:
     return incidents, items
 
 
-def summary() -> ThreatSummary:
+def summary() -> ThreatSummary | None:
+    """The banner's answer, or None while the PR snapshot's first load runs —
+    every page polls this, and none may hold a request on that load."""
+    if data.snapshot_loading():
+        return None
     incidents, items = _registries()
     return summarize(data.prs().values(), incidents, items)
 
 
 def current_detail() -> ThreatDetail:
+    if data.snapshot_loading():
+        return {"loading": True, "flagged": [], "incidents": [], "actors": [], "secrets": []}
     return detail(data.prs().values(), data.store().load_threats(), data.action_items())
