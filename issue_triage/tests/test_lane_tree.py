@@ -134,3 +134,11 @@ def test_materialize_raises_on_a_pre_patch_that_does_not_apply(tmp_path):
     bad = _PRE_PATCH.replace("-export const x = 1;", "-export const x = 999;")
     with pytest.raises(ValueError, match="pre_patch does not apply"):
         lane_tree.materialize(_base(tmp_path), tmp_path / "w", pre_patch=bad)
+
+
+def test_committed_texts_reads_the_commit_and_skips_a_path_it_does_not_hold(tmp_path):
+    repo = lane_tree.materialize(_base(tmp_path), tmp_path / "work" / "src")
+    (repo / "src" / "x.ts").write_text("export const x = 2;\n")
+    (repo / "src" / "y.ts").write_text("export const y = 1;\n")
+    assert lane_tree.committed_texts(repo, ["src/x.ts", "src/y.ts"]) == {
+        "src/x.ts": "export const x = 1;\n"}

@@ -310,18 +310,31 @@ def is_dependabot_bump(author: str | None, changed_paths: list[str] | None) -> b
                for p in paths)
 
 
+def unscannable_reason(pr: Pr) -> str | None:
+    """Why the threat scan could not judge every added line of the PR (the
+    `unscannable-diff` signature, with the files it names), or None."""
+    if "unscannable-diff" not in pr.threat_signatures:
+        return None
+    detail = ((pr.section("threat") or {}).get("detail") or {}).get("unscannable-diff")
+    tail = f" ({detail})" if detail else ""
+    return f"unscannable-diff: the threat scan could not read every added line{tail}"
+
+
 def pr_clean(pr: Pr, today: str | None = None) -> tuple[bool, list[str]]:
     reasons: list[str] = []
     # Hard block: threat flags are sticky and fail closed. We do NOT exempt them
     # on staleness — if the head moved, the PR must be re-scanned, never silently
     # cleared. Detection lives in threats.py; this is just the gate consuming it.
-    # A malicious verdict blocks outright; a committed credential (secret-leak,
-    # a MEDIUM signal) is never merged as-is regardless of the overall verdict.
+    # A malicious verdict blocks outright; a committed credential (secret-leak)
+    # and a diff the scan could not read in full (unscannable-diff), both MEDIUM
+    # signals, are never merged as-is regardless of the overall verdict.
     sigs = pr.threat_signatures
     if pr.threat_verdict == "malicious":
         reasons.append(f"malicious: {', '.join(sigs) or 'flagged'}")
     if "secret-leak" in sigs:
         reasons.append("secret-leak: a live-looking credential is committed in the diff")
+    if unscannable := unscannable_reason(pr):
+        reasons.append(unscannable)
     if pr.state != "open":
         reasons.append(f"not open ({pr.state})")
     if pr.draft:
@@ -595,6 +608,8 @@ def fix_eligibility(pr: Pr, action: str,
 
     Hard blocks, all fail-closed:
       - a `malicious` threat verdict, which is sticky and exempt from nothing
+      - an `unscannable-diff` threat signature: the bot authors nothing on a
+        branch whose diff the threat scan could not read in full
       - any recorded RED security verdict, current or stale. A stale RED on a
         moved head may well be a finding the author already fixed, but the bot
         stays off the branch until an adversarial review says so again.
@@ -637,6 +652,8 @@ def fix_eligibility(pr: Pr, action: str,
         return False, f"PR is {pr.state}, not open"
     if pr.threat_verdict == "malicious":
         return False, "threat verdict is malicious"
+    if unscannable := unscannable_reason(pr):
+        return False, unscannable
     if pr.security_verdict == "RED":
         return False, "security review returned RED"
     if changed_paths is not None:
@@ -1712,6 +1729,12 @@ def bar_asks(reasons: list[str], pr: Pr | None = None) -> list[str]:
                         "from an environment variable / secret store instead, then "
                         "rotate the exposed key at its provider and force-push — it is "
                         "already public in this PR's history, so treat it as compromised.")
+        elif r.startswith("unscannable-diff"):
+            asks.append("Make every changed file readable in the PR diff: GitHub returns "
+                        "no patch for some of the files this PR adds lines to (too large, "
+                        "or past its 3,000-file listing), so they cannot be reviewed. "
+                        "Split the PR, or drop built, generated, or vendored files it "
+                        "does not need.")
     return asks or ["Address the outstanding quality gates before this can merge."]
 
 

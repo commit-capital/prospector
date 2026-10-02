@@ -72,6 +72,9 @@ def classify(pr: Pr) -> dict | None:
     if pr.security_verdict == "RED" and freshness.is_current(
             pr, "security", max_age_days=gates.SECURITY_MAX_AGE_DAYS):
         return _r("handed", "security-red", "the security review returned RED")
+    unscannable = gates.unscannable_reason(pr)
+    if unscannable and pr.threat_verdict != "malicious":
+        return _r("handed", "other", unscannable)
     if req.get("status") in fix_queue.IN_FLIGHT:
         return _r("auto", "queued", f"in the fix queue ({req.get('status')})")
     vr = pr.section("verify_request") or {}

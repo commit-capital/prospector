@@ -8,6 +8,12 @@ from issue_triage import public_comments
 
 RUN = {"ending": "fix-unproven", "detail": "1 independent reproduction(s); an agreed fix needs 2",
        "root_cause": "The parser drops the flag.", "candidates": [{"reproduces": True}]}
+PINNED = ("@acme/adapter-local src/index.test.ts > local adapter metadata > "
+          "advertises current models without changing the default")
+PINNED_RUN = {"ending": "fix-pinned", "detail": f"2 fix(es) pass all 2 reproductions: {PINNED}",
+              "candidates": [{"reproduces": True}],
+              "agreement": {"reproductions": [0, 2], "agreed": [],
+                            "pinned": {"agreed": [0, 2], "tests": [PINNED]}}}
 
 
 @pytest.mark.parametrize("body", [
@@ -15,6 +21,7 @@ RUN = {"ending": "fix-unproven", "detail": "1 independent reproduction(s); an ag
     public_comments.conclusion(7, "k", {**RUN, "ending": "not-reproduced"}),
     public_comments.conclusion(7, "k", {**RUN, "ending": "not-a-defect"}),
     public_comments.conclusion(7, "k", {"ending": "fix-disputed"}),
+    public_comments.conclusion(7, "k", PINNED_RUN),
     public_comments.opened(7, "k", 9, "Keep the flag"),
     public_comments.ready(7, "k"),
     public_comments.handed_back(7, "k", "2 revisions spent; greptile 3/5"),
@@ -54,3 +61,12 @@ def test_an_agent_cannot_hide_text_spoof_a_marker_or_link_another_issue():
     body = public_comments.conclusion(7, "k", run)
     assert "<!-- prospector" not in body.splitlines()[0] and body.count("<!--") == 1
     assert "#4521" not in body and "repo#12" not in body
+
+
+def test_a_pinned_conclusion_names_the_existing_test_and_what_lets_a_fix_through():
+    body = public_comments.conclusion(7, "k", PINNED_RUN)
+    assert public_comments.kind_for("fix-pinned") == "no-fix"
+    assert "- @\u200bacme/adapter-local src/index.test.ts > local adapter metadata > " \
+           "advertises current models without changing the default" in body
+    assert "never changes a repository's own tests" in body
+    assert "once that change has landed starts another attempt" in body
