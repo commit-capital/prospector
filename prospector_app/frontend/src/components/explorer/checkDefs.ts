@@ -14,7 +14,7 @@ export const CHECK_DEFS: CheckDef[] = [
   { key: "mergeable", label: "No merge conflicts" },
   { key: "tests", label: "Includes tests" },
   { key: "drift", label: "Still applies to base branch" },
-  { key: "secrets", label: "No committed secrets" },
+  { key: "secrets", label: "Threat scan" },
   { key: "security", label: "Deep security review" },
   { key: "verify", label: "Dynamic verification" },
 ];

@@ -2,7 +2,7 @@ import { useEffect, useRef, type CSSProperties, type ReactNode } from "react";
 import type {
   FilterSpec, Disposition, LocFilter, FilesFilter,
   SafetyFilter, DriftFilter, CiFilter, ResponsesFilter, CheckStatus, CheckClause,
-  BarStatus, ReviewerCap, ReviewerKind,
+  BarStatus, ReviewerCap, ReviewerKind, ThreatState,
 } from "../../api";
 import { EnumFilter, NumFilter } from "../shared/FilterWidgets";
 import { CHECK_DEFS, CHECK_STATUS_OPTS } from "./checkDefs";
@@ -102,6 +102,13 @@ const DRIFT_OPTS: { v: DriftFilter | ""; label: string }[] = [
   { v: "applicable", label: "applicable" },
   { v: "already-fixed", label: "already-fixed" },
   { v: "conflicts", label: "conflicts" },
+];
+const THREAT_OPTS: { v: ThreatState | ""; label: string }[] = [
+  { v: "", label: "Any" },
+  { v: "malicious", label: "malicious" },
+  { v: "suspicious", label: "suspicious" },
+  { v: "clear", label: "clear" },
+  { v: "unscanned", label: "unscanned" },
 ];
 const CI_OPTS: { v: CiFilter | ""; label: string }[] = [
   { v: "", label: "Any" },
@@ -347,6 +354,18 @@ function renderContent(
             opts={DRIFT_OPTS}
             current={spec.drift}
             onChange={(v) => s("drift", v)}
+          />
+        </>
+      );
+
+    case "threat":
+      return (
+        <>
+          <div className="cfp-label">Threat scan</div>
+          <EnumFilter
+            opts={THREAT_OPTS}
+            current={spec.threat}
+            onChange={(v) => s("threat", v)}
           />
         </>
       );
@@ -719,7 +738,7 @@ export function ColumnFilterPopout({ colKey, spec, onChange, rect, onClose }: Co
 // eslint-disable-next-line react-refresh/only-export-components -- filter metadata co-located with the popout
 export const FILTERABLE_COLS = new Set([
   "pr", "title", "tier", "merge", "summary", "issues",
-  "safety", "disposition", "drift", "checks", "updated",
+  "safety", "disposition", "drift", "threat", "checks", "updated",
   "review", "scans", "age", "author_rate", "pain",
   "loc", "files", "author", "cluster",
 ]);
@@ -737,6 +756,7 @@ export function isColFilterActive(colKey: string, spec: FilterSpec, reviewers?: 
     case "safety":      return spec.safety !== undefined;
     case "disposition": return spec.disposition !== undefined;
     case "drift":       return spec.drift !== undefined;
+    case "threat":      return spec.threat !== undefined;
     case "checks":      return spec.ci !== undefined || (spec.checks?.length ?? 0) > 0;
     case "updated":     return spec.responses !== undefined;
     case "review":      return spec.greptile !== undefined || spec.greptile_stale !== undefined

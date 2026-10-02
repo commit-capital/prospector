@@ -324,15 +324,16 @@ def unscannable_reason(pr: Pr) -> str | None:
     return f"unscannable-diff: the threat scan could not read every added line{tail}"
 
 
-def pr_clean(pr: Pr, today: str | None = None) -> tuple[bool, list[str]]:
+def threat_blocks(pr: Pr) -> list[str]:
+    """The threat scan's hard blocks on `pr`, sticky and fail-closed. We do NOT
+    exempt them on staleness — if the head moved, the PR must be re-scanned,
+    never silently cleared. Detection lives in threats.py; this is the gate
+    consuming it. A malicious verdict blocks outright; a committed credential
+    (secret-leak) and a diff the scan could not read in full
+    (unscannable-diff), both MEDIUM signals, are never merged as-is regardless
+    of the overall verdict; and a clear verdict counts only at the head it was
+    computed against."""
     reasons: list[str] = []
-    # Hard block: threat flags are sticky and fail closed. We do NOT exempt them
-    # on staleness — if the head moved, the PR must be re-scanned, never silently
-    # cleared. Detection lives in threats.py; this is just the gate consuming it.
-    # A malicious verdict blocks outright; a committed credential (secret-leak)
-    # and a diff the scan could not read in full (unscannable-diff), both MEDIUM
-    # signals, are never merged as-is regardless of the overall verdict; and a
-    # clear verdict counts only at the head it was computed against.
     sigs = pr.threat_signatures
     if pr.threat_verdict == "malicious":
         reasons.append(f"malicious: {', '.join(sigs) or 'flagged'}")
@@ -342,6 +343,11 @@ def pr_clean(pr: Pr, today: str | None = None) -> tuple[bool, list[str]]:
         reasons.append(unscannable)
     if not is_current(pr, "threat"):
         reasons.append(THREAT_SCAN_STALE)
+    return reasons
+
+
+def pr_clean(pr: Pr, today: str | None = None) -> tuple[bool, list[str]]:
+    reasons = threat_blocks(pr)
     if pr.state != "open":
         reasons.append(f"not open ({pr.state})")
     if pr.draft:
