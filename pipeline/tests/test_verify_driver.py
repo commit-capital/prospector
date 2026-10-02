@@ -17,6 +17,7 @@ import pytest
 from pipeline import analyze_driver as ad
 from pipeline import gates
 from pipeline import profile
+from pipeline import progress
 from pipeline import settings
 from pipeline import verify_driver as vd
 from pipeline.store import Store
@@ -2632,6 +2633,37 @@ class TestBuildStepOutput:
                             lambda argv, **kw: subprocess.CompletedProcess(argv, 0, stdout="done\n", stderr=""))
         vd._run_build_step("cloning", ["git", "clone"], env={})
         assert "done" in capsys.readouterr().out
+
+    def test_a_step_past_its_timeout_fails_naming_it(self, monkeypatch):
+        seen: dict = {}
+
+        def fake_run(argv, **kw):
+            seen.update(kw)
+            raise subprocess.TimeoutExpired(argv, kw["timeout"], output="Receiving objects: 41%\n")
+        monkeypatch.setattr(vd.subprocess, "run", fake_run)
+        with pytest.raises(vd.BuildFailure) as info:
+            vd._run_build_step("cloning o/r", ["git", "clone"], env={}, timeout=120)
+        assert seen["timeout"] == 120
+        assert "cloning o/r timed out after 2 min" in str(info.value)
+        assert "Receiving objects: 41%" in str(info.value)
+
+    def test_every_step_carries_the_default_timeout(self, monkeypatch):
+        seen: dict = {}
+
+        def fake_run(argv, **kw):
+            seen.update(kw)
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        monkeypatch.setattr(vd.subprocess, "run", fake_run)
+        vd._run_build_step("cloning", ["git", "clone"], env={})
+        assert seen["timeout"] == vd.BUILD_STEP_TIMEOUT_SECONDS
+
+    def test_a_step_is_named_to_the_reporter(self, monkeypatch):
+        monkeypatch.setattr(vd.subprocess, "run",
+                            lambda argv, **kw: subprocess.CompletedProcess(argv, 0, stdout="", stderr=""))
+        steps: list[str] = []
+        with progress.reporting_steps(steps.append):
+            vd._run_build_step("building img", ["docker", "build"], env={})
+        assert steps == ["building img"]
 
 
 class TestCanaryOutput:

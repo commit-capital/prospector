@@ -17,7 +17,7 @@ import logging
 import time
 from pathlib import Path
 
-from pipeline import diffpaths, gates, profile, verify_driver
+from pipeline import diffpaths, gates, profile, progress, verify_driver
 from pipeline.store import Store
 
 logger = logging.getLogger(__name__)
@@ -86,6 +86,7 @@ def run_for_merge(pr: int, head_sha: str) -> dict | None:
         if not head_sha:
             result["refused"] = "the PR has no recorded head SHA"
             return result
+        progress.step("fetching the PR diff")
         patch = verify_driver.fetch_patch(pr, head_sha)
         _compile_over(result, patch, cmd, head_sha)
     except Exception as e:
@@ -111,6 +112,7 @@ def _compile_over(result: dict, patch: Path, cmd: str, head_sha: str,
             "dependencies are never installed in the sandbox, so its "
             "compile result would be meaningless; verify by hand")
         return
+    progress.step("resolving the default-branch HEAD")
     sha = verify_driver.resolve_base_sha()
     result["base_sha"] = sha
     tag = verify_driver.base_image_tag(sha, 1)
@@ -120,6 +122,7 @@ def _compile_over(result: dict, patch: Path, cmd: str, head_sha: str,
         # this machine's verify pin and the newest beside it and reclaims the
         # rest, so a busy day cannot fill the Docker volume.
         verify_driver.collect_garbage(verify_driver.local_pin(Store()).get("base_sha"))
+    progress.step(f"running {cmd} in the sandbox")
     exit_code, tail = verify_driver.run_phase(
         "compile", tag, patch=patch, tier=1, test_cmd=cmd,
         base_sha=sha, head_sha=head_sha)
@@ -127,6 +130,7 @@ def _compile_over(result: dict, patch: Path, cmd: str, head_sha: str,
     excerpt = verify_driver.error_excerpt(tail)
     if exit_code == gates.SENTINEL_TEST_FAIL:
         result["error_excerpt"] = excerpt
+        progress.step(f"re-running {cmd} over the unpatched base")
         base_failure = verify_driver.base_command_failure(
             tag, cmd, lambda: verify_driver.run_phase(
                 "compile", tag, tier=1, test_cmd=cmd, base_sha=sha,

@@ -29,6 +29,7 @@ const STATUS_TIP: Record<string, string> = {
   error: "The action failed — see Detail.",
   blocked: "Refused by the safety gate — see Detail.",
   skipped: "Skipped — no change made.",
+  started: "A live merge began — its outcome is a later event on the same PR.",
 };
 
 // Outcome of a live action, mirroring activity.py's DONE_STATUSES / FAILED_STATUSES

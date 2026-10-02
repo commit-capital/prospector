@@ -10,6 +10,8 @@ app server makes the same reads for its own snapshot.
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import os
 import time
 from collections.abc import Callable, Iterable, Iterator
@@ -34,6 +36,34 @@ _NOUNS = {
 
 def say(line: str) -> None:
     print(line, flush=True)
+
+
+_step_reporter: contextvars.ContextVar[Callable[[str], None] | None] = (
+    contextvars.ContextVar("step_reporter", default=None))
+
+
+@contextlib.contextmanager
+def reporting_steps(report: Callable[[str], None]) -> Iterator[None]:
+    """Hand every `step` named inside this block to `report`, so a caller that
+    waits on a long multi-step run — a merge waiting on its compile preflight —
+    can show which step is under way."""
+    token = _step_reporter.set(report)
+    try:
+        yield
+    finally:
+        _step_reporter.reset(token)
+
+
+def step(what: str) -> None:
+    """Name the step now starting to the reporter `reporting_steps` installed,
+    if any. A failing reporter never fails the step."""
+    report = _step_reporter.get()
+    if report is None:
+        return
+    try:
+        report(what)
+    except Exception:
+        pass
 
 
 def duration(seconds: float) -> str:

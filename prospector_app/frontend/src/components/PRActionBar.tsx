@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, type PRDetail, type ExecResult, type RunState } from "../api";
+import { api, type PRDetail, type ExecResult, type MergeProgress, type RunState } from "../api";
 import { useExec } from "../ExecContext";
 import { TagPicker } from "./TagPicker";
 import { RunBadge } from "./RunBadge";
@@ -8,6 +8,9 @@ import { landed, ExecResultChip } from "./execResult";
 import { StaleOverrideConfirm } from "./FactFreshness";
 import { confirmUnclaimed } from "./claimGuard";
 import { suggestedAct, suggestedCanonical, type Act } from "../prAction";
+
+// How often the action bar asks for a live merge's step while it waits.
+const MERGE_POLL_MS = 2000;
 
 const TONE_ICON = { green: "✅", yellow: "✋", red: "⛔", muted: "↪" } as const;
 
@@ -40,6 +43,8 @@ export function PRActionBar({ pr, runState, onActed }:
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ExecResult | null>(null);
+  // The step a live merge in flight has reached, polled while the click waits.
+  const [mergeStep, setMergeStep] = useState<MergeProgress | null>(null);
   // A refusal because the PR moved past the facts this action quotes. Holds the
   // whole result so the confirm can name the drift and the detail.
   const [staleBlock, setStaleBlock] = useState<ExecResult | null>(null);
@@ -48,6 +53,20 @@ export function PRActionBar({ pr, runState, onActed }:
   const [defComment, setDefComment] = useState("");
   const [edited, setEdited] = useState<string | null>(null);
   const [openComment, setOpenComment] = useState(isReviewEvent(suggestedAct(pr)));
+
+  const mergeLive = busy && action === "MERGE" && !dryRun;
+  useEffect(() => {
+    if (!mergeLive) { setMergeStep(null); return; } // eslint-disable-line react-hooks/set-state-in-effect -- the step belongs to the click that ended
+    let live = true;
+    const poll = () => {
+      api.mergeProgress(pr.number)
+        .then((p) => { if (live) setMergeStep(p.running ? p : null); })
+        .catch(() => {});
+    };
+    poll();
+    const t = window.setInterval(poll, MERGE_POLL_MS);
+    return () => { live = false; window.clearInterval(t); };
+  }, [mergeLive, pr.number]);
 
   const sug = pr.suggestion;
   const mergeGate = pr.merge_gate;
@@ -98,19 +117,25 @@ export function PRActionBar({ pr, runState, onActed }:
   const post = async (overrideStale: boolean): Promise<void> => {
     setBusy(true);
     let r: ExecResult;
-    if (action === "MERGE") {
-      r = await api.mergePr(pr.number, dryRun, method, reason.trim() || undefined);
-    } else if (isReviewEvent(action)) {
-      r = await api.submitReview(pr.number, reviewEvent(action), commentText, dryRun,
-                                 reason || undefined, tags, overrideStale);
-    } else {
-      r = await api.executePr(pr.number, {
-        pr: pr.number, action, canonical: canonical ? Number(canonical) : undefined,
-        tags, reason: reason || undefined, comment: commentText || undefined,
-        override_stale: overrideStale,
-      }, dryRun);
+    try {
+      if (action === "MERGE") {
+        r = await api.mergePr(pr.number, dryRun, method, reason.trim() || undefined);
+      } else if (isReviewEvent(action)) {
+        r = await api.submitReview(pr.number, reviewEvent(action), commentText, dryRun,
+                                   reason || undefined, tags, overrideStale);
+      } else {
+        r = await api.executePr(pr.number, {
+          pr: pr.number, action, canonical: canonical ? Number(canonical) : undefined,
+          tags, reason: reason || undefined, comment: commentText || undefined,
+          override_stale: overrideStale,
+        }, dryRun);
+      }
+    } catch (e) {
+      r = { pr: pr.number, action, status: "error",
+            detail: `the request failed: ${e instanceof Error ? e.message : String(e)}` };
+    } finally {
+      setBusy(false);
     }
-    setBusy(false);
     if (r.status === "stale" && r.stale) { setStaleBlock(r); return; }
     setStaleBlock(null);
     setResult(r);
@@ -201,6 +226,13 @@ export function PRActionBar({ pr, runState, onActed }:
           {runState && !result && <RunBadge rs={runState} compact />}
           {result && <ExecResultChip result={result} />}
         </div>
+        {mergeLive && (
+          <div className="sug-comment muted-note" role="status"
+            title="The merge runs its compile preflight before it fires; a cold base builds an image first.">
+            ⏳ {mergeStep?.step ?? "starting the merge"}…
+            {mergeStep?.started_at && <> · running since {new Date(mergeStep.started_at).toLocaleTimeString()}</>}
+          </div>
+        )}
 
         {/* The PR moved past the facts this action quotes. Nothing was posted;
             the operator confirms the drift or goes and re-analyzes. */}

@@ -2148,6 +2148,7 @@ export const api = {
     const r = await fetch(`/api/merge/pr/${n}?dry_run=${dryRun}&method=${method}${q}`, { method: "POST" });
     return r.json() as Promise<ExecResult>;
   },
+  mergeProgress: (n: number) => get<MergeProgress>(`/api/merge/pr/${n}/progress`),
   commentLine: async (n: number, file: string, line: number, body: string, dryRun: boolean,
                       overrideStale?: boolean) => {
     const r = await fetch(`/api/comment/pr/${n}?dry_run=${dryRun}`, {
@@ -2438,6 +2439,12 @@ export interface TrustLadder {
 }
 // `status: "stale"` is a refusal the operator can confirm past: the write quotes
 // facts the author has moved beyond, and `stale` names the drift.
+/** A live merge this app process is running and the step it has reached. */
+export interface MergeProgress {
+  running: boolean; pr?: number; head_sha?: string | null;
+  started_at?: string; step?: string; step_at?: string;
+}
+
 export interface ExecResult { pr: number; action: string; status: string; detail: string; forced?: boolean; stale?: StaleBlock }
 
 /** One real action taken on a PR (close/merge/reopen/comment/review), from the
