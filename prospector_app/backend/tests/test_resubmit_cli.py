@@ -283,6 +283,36 @@ def test_default_prepare_keeps_the_existing_shallow_clone(monkeypatch, tmp_path)
     assert "--filter=blob:none" not in calls[0]
 
 
+def _times_out(argv, **kwargs):
+    raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+
+def test_a_clone_that_times_out_exits_as_a_git_failure(monkeypatch, tmp_path, capsys):
+    # The fix worker retries exit 4; a timeout talking to GitHub is that same
+    # transient failure, so it reads as one line naming the command, not a crash.
+    monkeypatch.setattr(resubmit, "WORKTREE_ROOT", tmp_path / "resubmit")
+    monkeypatch.setattr(resubmit, "_gh_json", lambda pr: _pr())
+    monkeypatch.setattr(resubmit.subprocess, "run", _times_out)
+
+    assert resubmit.main(["42", "prepare", "--rebase"]) == 4
+    err = capsys.readouterr().err
+    assert err.count("\n") == 1
+    assert err.startswith("resubmit: git clone --filter=blob:none ")
+    assert "git@github.com:contrib/test-repo.git" in err
+    assert "timed out after 300s" in err
+
+
+def test_a_gh_read_that_times_out_exits_as_a_git_failure(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(resubmit, "WORKTREE_ROOT", tmp_path / "resubmit")
+    monkeypatch.setattr(resubmit.subprocess, "run", _times_out)
+
+    assert resubmit.main(["42", "prepare"]) == 4
+    err = capsys.readouterr().err
+    assert err.count("\n") == 1
+    assert err.startswith("resubmit: gh pr view 42 ")
+    assert "timed out after 60s" in err
+
+
 def test_default_content_edit_still_pushes_fast_forward(monkeypatch, tmp_path):
     repos = _make_rebase_repos(tmp_path, conflict=False)
     _wire_rebase(monkeypatch, tmp_path, repos)
