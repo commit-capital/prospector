@@ -53,7 +53,8 @@ outage is retried by later passes, three times at most.
 - The Setup tab gets a Slack alerts card: paste the webhook URL (validated as
   `https://hooks.slack.com/…`), save it through a new onboarding step
   `notify` (open on a configured deployment, the only key it may write), clear
-  it, and send a test message.
+  it, and send a test message (`POST /api/onboarding/notify/test`). The
+  onboarding state reports `slack_alerts` (set or not), never the URL.
 - The join bundle carries the URL with the rest of the deployment env, so a
   machine that joins posts to the same channel.
 - `uv run python -m pipeline.notify --test` posts a test message.

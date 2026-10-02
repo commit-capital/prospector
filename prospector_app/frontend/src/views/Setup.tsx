@@ -16,6 +16,7 @@ import type { AgentPick } from "../agentProvider";
 import { AgentProviderChooser } from "../components/AgentProviderChooser";
 import { SettingsPanel } from "../components/SettingsPanel";
 import { useRepoMeta } from "../RepoMetaContext";
+import { slackHookProblem } from "../slackHook";
 
 /** How often the readiness rows re-check while the page is open. Fast enough
  *  that rows turn green as setup-worker-machine.sh works through its steps. */
@@ -204,6 +205,8 @@ export default function Setup() {
 
       <AgentProviderSettings />
 
+      <SlackAlertsCard />
+
       {botPermissions?.configured && <BotPermissionsCard permissions={botPermissions} />}
 
       {optedIn || expanded || provisioned
@@ -304,6 +307,93 @@ function AgentProviderCard({ provider, onSaved }: {
           {busy ? "saving…" : pick === saved ? "saved" : "save agent setting"}
         </button>
       </div>
+    </section>
+  );
+}
+
+/** Where this machine's threat-scan alerts go: a Slack incoming webhook,
+ *  saved to this machine's .env through the `notify` setup step. The URL is a
+ *  credential, so the card never shows it back, only whether one is set. */
+function SlackAlertsCard() {
+  const [on, setOn] = useState<boolean | null>(null);
+  const [url, setUrl] = useState("");
+  const [busy, setBusy] = useState<"save" | "off" | "test" | null>(null);
+  const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
+
+  useEffect(() => {
+    api.onboardingState().then((s) => setOn(s.slack_alerts)).catch(() => setOn(null));
+  }, []);
+
+  const save = async (value: string, action: "save" | "off") => {
+    setBusy(action);
+    setNote(null);
+    try {
+      const state = await api.onboardingApply({
+        step: "notify", env: { TRIAGE_SLACK_WEBHOOK_URL: value.trim() },
+      });
+      setOn(state.slack_alerts);
+      setUrl("");
+      setNote({ ok: true, text: state.slack_alerts ? "saved — send a test message to check it"
+                                                   : "alerts turned off on this machine" });
+    } catch (e) {
+      setNote({ ok: false, text: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const test = async () => {
+    setBusy("test");
+    setNote(null);
+    try {
+      const { ok } = await api.notifyTest();
+      setNote(ok ? { ok: true, text: "test message posted — check the channel" }
+                 : { ok: false, text: "Slack did not take the test message — check the URL" });
+    } catch (e) {
+      setNote({ ok: false, text: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const problem = url.trim() ? slackHookProblem(url) : null;
+  return (
+    <section className="setup-card">
+      <h3>
+        🔔 Slack alerts{" "}
+        {on != null && <span className={`chip ${on ? "chip-green" : "chip-muted"} sm`}>{on ? "on" : "off"}</span>}
+      </h3>
+      <p className="muted small">
+        Posts to a Slack channel when the threat scan flags a PR malicious, or finds a
+        live-looking credential in a PR a maintainer wrote. Nothing else posts. Every
+        computer that runs scans needs the webhook; a teammate&apos;s copied setup carries it.
+      </p>
+      <p className="muted small">
+        In Slack, add the <a href="https://api.slack.com/messaging/webhooks" target="_blank"
+        rel="noreferrer">Incoming Webhooks</a> app to the channel and paste its Webhook URL here.
+      </p>
+      <input type="password" autoComplete="off" spellCheck={false} value={url}
+        placeholder={on ? "a webhook is set — paste a new one to replace it"
+                        : "https://hooks.slack.com/services/…"}
+        onChange={(e) => setUrl(e.target.value)} style={{ width: "100%" }} />
+      {problem && <p className="chip chip-red sm">{problem}</p>}
+      <div className="welcome-actions">
+        <button className="btn-primary" disabled={busy != null || !url.trim() || problem != null}
+          onClick={() => void save(url, "save")}>
+          {busy === "save" ? "saving…" : "save webhook"}
+        </button>
+        <button className="btn-secondary" disabled={busy != null || !on}
+          onClick={() => void test()}>
+          {busy === "test" ? "posting…" : "send test message"}
+        </button>
+        {on && (
+          <button className="btn-secondary" disabled={busy != null}
+            onClick={() => void save("", "off")}>
+            {busy === "off" ? "turning off…" : "turn off"}
+          </button>
+        )}
+      </div>
+      {note && <p className={`chip ${note.ok ? "chip-green" : "chip-red"} sm`}>{note.text}</p>}
     </section>
   );
 }
@@ -1035,7 +1125,8 @@ function ShareSection() {
       <p className="muted small">
         Copies everything a fresh
         checkout needs to join this deployment: the repo, bot identity, review
-        config, the store URL, and this deployment's <code>profile.json</code>.
+        config, the store URL, the Slack alerts webhook, and this deployment&apos;s{" "}
+        <code>profile.json</code>.
         Your teammate pastes it into the setup wizard their app opens on first
         run.
       </p>
