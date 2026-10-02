@@ -253,7 +253,7 @@ def _launch_worker_cadences():
     rereview_hunt.start()
     threat_refresh.start()
     pr_watch.start()
-    cluster_refresh.start()
+    cluster_refresh.startup()
 
 
 @app.post("/api/worker/health/resume")

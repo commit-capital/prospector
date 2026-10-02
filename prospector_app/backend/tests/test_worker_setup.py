@@ -111,8 +111,10 @@ class TestApply:
         monkeypatch.setattr(worker_control.fix_worker, "startup", lambda: False)
         monkeypatch.setattr(worker_control.issue_fix_worker, "enabled", lambda: False)
         monkeypatch.setattr(worker_control.issue_fix_worker, "running", lambda: False)
+        monkeypatch.setattr(worker_control.cluster_refresh, "enabled", lambda: True)
+        monkeypatch.setattr(worker_control.cluster_refresh, "startup", lambda: True)
         assert worker_control.apply()["lanes"] == {"verify": "running", "fix": "refused",
-                                                   "issue-fix": "off"}
+                                                   "issue-fix": "off", "cluster": "running"}
 
     def test_a_lane_turned_off_is_stopped(self, monkeypatch):
         monkeypatch.setattr(worker_control.verify_worker, "enabled", lambda: False)
@@ -123,8 +125,11 @@ class TestApply:
         monkeypatch.setattr(worker_control.issue_fix_worker, "enabled", lambda: False)
         monkeypatch.setattr(worker_control.issue_fix_worker, "running", lambda: True)
         monkeypatch.setattr(worker_control.issue_fix_worker, "shutdown", lambda: True)
+        monkeypatch.setattr(worker_control.cluster_refresh, "enabled", lambda: False)
+        monkeypatch.setattr(worker_control.cluster_refresh, "running", lambda: True)
+        monkeypatch.setattr(worker_control.cluster_refresh, "shutdown", lambda: True)
         assert worker_control.apply()["lanes"] == {"verify": "stopped", "fix": "off",
-                                                   "issue-fix": "stopped"}
+                                                   "issue-fix": "stopped", "cluster": "stopped"}
 
     def test_a_stop_still_finishing_reports_stopping(self, monkeypatch):
         """The loops are signalled; the run in flight finishes. Not a failure."""

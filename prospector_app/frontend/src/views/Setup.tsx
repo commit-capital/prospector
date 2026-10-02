@@ -72,6 +72,8 @@ const SWITCHES: { key: string; id?: string; label: string; hint: string;
     hint: "when someone queues an issue fix in the app, reproduce it here in a sealed-off container and have the AI draft a fix: the fix must turn the reproduction green while leaving the surrounding tests passing. Every result waits here for a person's approval before anything is opened upstream" },
   { key: "TRIAGE_ISSUE_FIX_HUNT", label: "Fix reported issues on its own",
     hint: "when nothing is queued, pick a fresh, well-reproduced issue with no pull request yet and have the AI draft a fix without being asked. A daily budget caps how many it starts, and each draft waits for approval" },
+  { key: "TRIAGE_CLUSTER_WORKER", label: "Group and analyze new pull requests",
+    hint: "every hour, have the AI summarize new pull requests, group the ones that tackle the same problem, and recommend what to do with each group. Daily limits cap how many it takes on, only one computer does this at a time, and nothing is posted to GitHub" },
 ];
 
 const switchId = (s: { key: string; id?: string }): string => s.id ?? s.key;

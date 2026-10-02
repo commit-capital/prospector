@@ -124,6 +124,22 @@ def test_the_lease_is_released_after_a_pass(store, monkeypatch):
     assert store.claim_lease(cluster_refresh.LEASE, host="macbook", seconds=600)
 
 
+class TestLifecycle:
+    def test_the_lane_starts_only_when_switched_on(self, monkeypatch):
+        monkeypatch.delenv("TRIAGE_CLUSTER_WORKER", raising=False)
+        assert not cluster_refresh.startup()
+        assert not cluster_refresh.running()
+
+    def test_a_started_lane_stops_on_shutdown(self, monkeypatch):
+        """The Setup page's switch reaches a running lane: off stops the loop."""
+        monkeypatch.setenv("TRIAGE_CLUSTER_WORKER", "1")
+        monkeypatch.setattr(cluster_refresh, "pass_once", lambda: None)
+        assert cluster_refresh.startup()
+        assert cluster_refresh.running()
+        assert cluster_refresh.shutdown()
+        assert not cluster_refresh.running()
+
+
 class TestLease:
     def test_one_host_holds_it_until_it_expires(self, tmp_path):
         st = S.Store(tmp_path / "store")
