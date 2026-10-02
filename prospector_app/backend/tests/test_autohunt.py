@@ -76,6 +76,27 @@ def test_security_lane_picks_highest_pain_then_oldest(store):
     assert verify_worker.next_auto() == ("security", 2)
 
 
+def test_security_lane_reviews_an_unanalyzed_clean_pr_after_merge_picks(store):
+    unanalyzed = _clean_merge_pr(1, pain=0.9)
+    del unanalyzed["analysis"]
+    store.save_pr(unanalyzed)
+    store.save_pr(_clean_merge_pr(2, pain=0.1))
+    data.refresh()
+    assert verify_worker.next_auto() == ("security", 2)
+    _green(store, 2)
+    data.refresh()
+    assert verify_worker.next_auto(frozenset({"security"})) == ("security", 1)
+
+
+def test_security_lane_skips_a_pr_analysis_routes_to_a_close(store):
+    rec = _clean_merge_pr(1)
+    rec["analysis"]["disposition"] = "close-dup"
+    rec["analysis"]["canonical"] = 2
+    store.save_pr(rec)
+    data.refresh()
+    assert verify_worker.next_auto(frozenset({"security"})) is None
+
+
 def test_security_lane_skips_failed_this_process(store):
     store.save_pr(_clean_merge_pr(1))
     verify_worker.security_failed.add(1)

@@ -409,7 +409,7 @@ export interface PRRow {
   safety_titles?: { severity: string; title: string; location: string }[];
   author_stats?: AuthorStats | null;
   checks?: ChecksRollup;
-  merge_gate?: { ok: boolean; reason: string; overridable?: boolean; override_kind?: "security" | "verify" | null };
+  merge_gate?: { ok: boolean; reason: string; overridable?: boolean; override_kind?: "security" | "unreviewed" | "verify" | null };
   age_days?: number | null;
   responses?: PRResponses | null;
   claim?: ItemClaim | null;
@@ -1165,7 +1165,7 @@ export interface PRDetail extends PRRow {
   reviews_detail?: ReviewsDetail | null;
   ci_checks?: { name: string; conclusion: string; status: string }[];
   summary?: { one_liner?: string | null; mechanism?: string | null } | null;
-  merge_gate?: { ok: boolean; reason: string; overridable?: boolean; override_kind?: "security" | "verify" | null };
+  merge_gate?: { ok: boolean; reason: string; overridable?: boolean; override_kind?: "security" | "unreviewed" | "verify" | null };
   // the changed paths that pinned risk_tier (the detail view's "why this tier")
   risk_tier_paths?: string[];
 }

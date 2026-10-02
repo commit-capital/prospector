@@ -45,6 +45,7 @@ def _setup(monkeypatch, events: list, *, escalate=True, overridable=True):
             else (False, "dynamic verification escalate"))
     # only the verify override is pending (a GREEN-security, escalate-verify PR)
     monkeypatch.setattr(gates, "security_overridable", lambda rec, **k: False)
+    monkeypatch.setattr(gates, "security_waivable", lambda rec, **k: False)
     monkeypatch.setattr(gates, "verify_overridable", lambda rec, **k: overridable and escalate)
     monkeypatch.setattr(executor, "_pr_live",
                         lambda n: {"state": "open", "merged": False, "head": "h",

@@ -46,6 +46,8 @@ def _setup(monkeypatch, events: list, recorded: list, *, verdict="GREEN",
             else (False, f"security {verdict}"))
     monkeypatch.setattr(gates, "security_overridable",
                         lambda rec, today=None, changed_paths=None: overridable)
+    monkeypatch.setattr(gates, "security_waivable",
+                        lambda rec, today=None, changed_paths=None: False)
     monkeypatch.setattr(gates, "verify_overridable",
                         lambda rec, today=None, changed_paths=None: False)
     monkeypatch.setattr(executor, "_pr_live",

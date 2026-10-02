@@ -358,8 +358,8 @@ class TestServiceRows:
         assert row["suggestion"]["action"] == "MERGE"
 
     def test_merge_gate_allows_clean_unanalyzed_pr(self, patched, monkeypatch):
-        # An Easy-Lane PR: clean signals, never analyzed, never security-reviewed.
-        patched({1: _pr()})
+        # Clean signals and a GREEN review, never analyzed.
+        patched({1: _pr(security=_green())})
         monkeypatch.setattr(service, "_ci_checks", lambda sha: [])
         monkeypatch.setattr(service, "live_changed_paths", lambda n: None)
         rec = service.data.prs()[1]
@@ -367,12 +367,22 @@ class TestServiceRows:
         gate = service.pr_detail(1)["merge_gate"]
         assert gate["ok"] is True
 
+    def test_merge_gate_offers_a_reason_for_an_unreviewed_pr(self, patched, monkeypatch):
+        patched({1: _pr()})
+        monkeypatch.setattr(service, "_ci_checks", lambda sha: [])
+        monkeypatch.setattr(service, "live_changed_paths", lambda n: None)
+        rec = service.data.prs()[1]
+        rec.raw["meta"]["body"] = ""
+        gate = service.pr_detail(1)["merge_gate"]
+        assert gate["ok"] is False and "no security review" in gate["reason"]
+        assert gate["overridable"] is True and gate["override_kind"] == "unreviewed"
+
     @pytest.mark.parametrize("outcome", [
         "unverifiable-no-test", "unverifiable-needs-live-agent",
     ])
     def test_merge_gate_allows_reasonless_unverifiable_pr(
             self, patched, monkeypatch, outcome):
-        rec = _pr(verify=_verified(outcome=outcome))
+        rec = _pr(security=_green(), verify=_verified(outcome=outcome))
         rec.raw["meta"]["body"] = ""
         patched({1: rec})
         monkeypatch.setattr(service, "_ci_checks", lambda sha: [])

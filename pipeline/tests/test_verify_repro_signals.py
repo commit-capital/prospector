@@ -124,7 +124,7 @@ class TestMergeConsequences:
         assert ok is True, why
 
     def test_merge_eligibility_stays_open_but_names_the_gap(self):
-        pr = _pr(verify=_verified(signals=_repro(exit_code=137, rating=MATCHING)))
+        pr = _pr(security=_green(), verify=_verified(signals=_repro(exit_code=137, rating=MATCHING)))
         ok, why = gates.merge_eligibility(pr, today="2026-06-10")
         assert ok is True
         assert "incomplete" in why
