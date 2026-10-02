@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 from pipeline import diff_cache
 from pipeline import freshness
 from pipeline import storekit
+from pipeline import threat_scan
 from prospector_app.backend import data
 
 if TYPE_CHECKING:
@@ -32,6 +33,7 @@ PHASE_LABELS: dict[str, str] = {
 # phase that keeps its fact current; a card absent here reads its own key.
 PHASE_LEDGER: dict[str, tuple[str, ...]] = {
     "cluster": ("cluster:commit", "cluster:assign"),
+    "threat-scan": ("threat-scan", "threat-scan:heads"),
 }
 
 # How many of the most recent samples an estimate averages over — recent
@@ -286,18 +288,14 @@ def _pr_coverage(all_prs: dict[int, Pr], diffs_dir: Path) -> dict:
         present = sum(1 for pr in all_prs.values() if pr.section(section))
         return {"current": current, "stale": present - current, "never": total - present}
 
-    # `threat` is not freshness-governed (a malicious verdict gates sticky, at
-    # any head), so currency here is a direct sha comparison: has the code at
-    # the PR's present head been signature-scanned?
     threat = {"current": 0, "stale": 0, "never": 0, "diff_uncached_here": 0}
     for pr in all_prs.values():
         if pr.head_sha and not (diffs_dir / f"{pr.head_sha}.diff").exists():
             threat["diff_uncached_here"] += 1
-        sec = pr.section("threat")
-        if sec and sec.get("against_head_sha") == pr.head_sha:
+        if threat_scan.stamped_at_head(pr):
             threat["current"] += 1
         else:
-            threat["stale" if sec else "never"] += 1
+            threat["stale" if pr.section("threat") else "never"] += 1
 
     clustered = sum(1 for pr in all_prs.values() if pr.section("cluster"))
     return {
