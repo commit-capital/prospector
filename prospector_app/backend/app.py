@@ -34,6 +34,7 @@ from prospector_app.backend import caps
 from prospector_app.backend import chat
 from prospector_app.backend import claims
 from prospector_app.backend import machines
+from prospector_app.backend import merge_progress
 from prospector_app.backend import data
 from prospector_app.backend import deep_search
 from prospector_app.backend import decisions
@@ -1013,6 +1014,14 @@ def trust_ladder_policy():
     rates, with the bars they are held to — the Policy page's data. Derived on
     read from captured decisions and autofix endings; nothing is stored."""
     return trust_ladder.ladder()
+
+
+@app.get("/api/merge/pr/{n}/progress")
+def merge_progress_pr(n: int):
+    """The live merge of `n` this process is running and the step it has
+    reached, or `{"running": false}`."""
+    entry = merge_progress.get(n)
+    return {"running": True, **entry} if entry is not None else {"running": False}
 
 
 @app.post("/api/merge/pr/{n}")

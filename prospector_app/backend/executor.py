@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 from prospector_app.backend import activity
 from prospector_app.backend import data
 from prospector_app.backend import decisions
+from prospector_app.backend import merge_progress
 from prospector_app.backend import models
 from prospector_app.backend import safety_guard
 from prospector_app.backend import service
@@ -743,7 +744,27 @@ def merge_pr(n: int, method: str = "squash", *, dry_run: bool, reason: str | Non
     gates.compile_preflight_gate blocks on anything but a clean pass — fail
     closed on a machine that cannot run the sandbox. The run and its outcome
     land in the activity log either way: a block records its own event, a pass
-    rides the merge event's compile_preflight payload."""
+    rides the merge event's compile_preflight payload.
+
+    Every outcome lands in the activity log, refusals included, and a live
+    merge records a `started` event before its compile preflight. While a live
+    merge runs, merge_progress names the step it has reached; a second live
+    merge of the same PR is refused until the first returns."""
+    if dry_run:
+        return _merge_pr(n, method, dry_run=True, reason=reason)
+    rec = data.prs().get(int(n))
+    if not merge_progress.start(int(n), rec.head_sha if rec else None):
+        res = {"pr": int(n), "cluster_id": _cluster_id(n), "action": "MERGE",
+               "status": "blocked", "detail": f"a merge of #{n} is already running"}
+        activity.record("merge", identity=settings.bot_login(), dry_run=False, **res)
+        return res
+    try:
+        return _merge_pr(n, method, dry_run=False, reason=reason)
+    finally:
+        merge_progress.finish(int(n))
+
+
+def _merge_pr(n: int, method: str, *, dry_run: bool, reason: str | None) -> dict:
     base = {"pr": int(n), "cluster_id": _cluster_id(n), "action": "MERGE"}
     from pipeline import gates  # pipeline policy (path set up by data import)
     reason = (reason or "").strip() or None
@@ -754,7 +775,9 @@ def merge_pr(n: int, method: str = "squash", *, dry_run: bool, reason: str | Non
     ok, why = (gates.merge_eligibility(rec, changed_paths=paths, override_reason=reason)
                if rec else (False, "PR not in store"))
     if not ok:
-        return {**base, "status": "blocked", "detail": f"merge gate: {why}"}
+        res = {**base, "status": "blocked", "detail": f"merge gate: {why}"}
+        activity.record("merge", identity=settings.bot_login(), dry_run=dry_run, **res)
+        return res
     # Whether the gate passed on the strength of the operator's reason — that
     # override must land in the store before any live merge. Security (YELLOW)
     # and verify (escalate) are disambiguated by the overridable checks, so the
@@ -775,7 +798,9 @@ def merge_pr(n: int, method: str = "squash", *, dry_run: bool, reason: str | Non
     pf = _preflight(n, rec, check_head=True, check_mergeable=True,
                     fail_closed=True)
     if not pf.ok:
-        return {**base, "status": "blocked", "detail": f"pre-flight: {pf.message}"}
+        res = {**base, "status": "blocked", "detail": f"pre-flight: {pf.message}"}
+        activity.record("merge", identity=settings.bot_login(), dry_run=dry_run, **res)
+        return res
     if method not in ("merge", "squash", "rebase"):
         method = "squash"
     token = None if dry_run else mint_bot_token()
@@ -797,7 +822,13 @@ def merge_pr(n: int, method: str = "squash", *, dry_run: bool, reason: str | Non
     # writes no durable override. run_for_merge is None only when the profile
     # configures no compile_cmd; every failure shape blocks via the gate.
     from pipeline import compile_preflight
-    pf = compile_preflight.run_for_merge(int(n), rec.head_sha if rec and rec.head_sha else "")
+    from pipeline import progress
+    head = rec.head_sha if rec and rec.head_sha else ""
+    activity.record("merge", identity=settings.bot_login(), dry_run=False,
+                    **base, status="started", head_sha=head or None,
+                    detail=f"merging #{n} (--{method}) at {head[:12] or 'an unknown head'}")
+    with progress.reporting_steps(lambda what: merge_progress.step(int(n), what)):
+        pf = compile_preflight.run_for_merge(int(n), head)
     if pf is not None:
         ok_cp, why_cp = gates.compile_preflight_gate(pf)
         base["compile_preflight"] = {**pf, "ok": ok_cp}
@@ -822,6 +853,7 @@ def merge_pr(n: int, method: str = "squash", *, dry_run: bool, reason: str | Non
     argv = ["gh", "pr", "merge", str(n), "--repo", settings.repo(), f"--{method}"]
     if rec is not None and rec.head_sha:
         argv += ["--match-head-commit", rec.head_sha]
+    merge_progress.step(int(n), "merging upstream")
     try:
         r = bot_merge_run(argv, token)
         res = ({**base, "status": "merged", "detail": f"merged (--{method})"} if r.returncode == 0
