@@ -2093,8 +2093,7 @@ def _yellow_objection(pr: Pr) -> dict | None:
     YELLOW, an operator has logged an override on it, or it carries no
     findings."""
     if (pr.security_verdict != "YELLOW" or pr.security_override
-            or not freshness.is_current(pr, "security",
-                                        max_age_days=gates.SECURITY_MAX_AGE_DAYS)):
+            or not freshness.is_current(pr, "security")):
         return None
     findings = [f for f in ((pr.section("security") or {}).get("findings") or [])
                 if isinstance(f, dict)]

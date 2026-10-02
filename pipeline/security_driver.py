@@ -115,7 +115,7 @@ def eligible(store: Store, today: str | None = None, max_n: int | None = None,
     for n, rec in sorted(corpus.items()):
         if not gates.security_eligible(rec, today):
             continue
-        if is_current(rec, "security", max_age_days=gates.SECURITY_MAX_AGE_DAYS, today=today):
+        if is_current(rec, "security"):
             continue  # already has a current verdict
         out.append((not gates.priority_author(rec.author, rec.author_association),
                     DiffManifestItem.for_pr(n, rec, DIFFS)))

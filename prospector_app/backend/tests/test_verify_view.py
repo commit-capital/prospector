@@ -88,9 +88,17 @@ def test_stale_verdict_says_it_no_longer_counts_for_merge():
 
 
 def test_aged_out_verdict_is_stale():
-    d = verify_view.verify_detail(_pr(_verify("verified-fix", days_ago=9)))
+    d = verify_view.verify_detail(_pr(_verify("verified-fix", days_ago=31)))
     assert d is not None
     assert d["stale_reason"] is not None
+    assert "no longer counts for merge" in d["detail"]
+
+
+def test_an_aged_failing_verdict_says_it_still_blocks():
+    d = verify_view.verify_detail(_pr(_verify("regressed", days_ago=31)))
+    assert d is not None
+    assert d["stale_reason"] is not None
+    assert "still blocks merge" in d["detail"]
 
 
 def test_signals_pass_through_with_tails_ansi_stripped():

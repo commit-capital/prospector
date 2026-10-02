@@ -231,3 +231,20 @@ def test_a_merge_pick_whose_head_is_unscanned_waits_on_the_threat_scan(store):
     out = _classify(store, rec)
     assert (out["column"], out["bucket"]) == ("auto", "waiting")
     assert "threat scan" in out["reason"]
+
+
+def test_a_merge_pick_red_at_an_earlier_head_waits_on_the_security_hunter(store):
+    rec = _merge_pick(_rec())
+    rec["security"] = {"verdict": "RED", "checked_at": _now(), "against_head_sha": "b" * 40,
+                       "findings": [{"title": "drops an auth check"}]}
+    out = _classify(store, rec)
+    assert (out["column"], out["bucket"]) == ("auto", "waiting")
+    assert "RED at an earlier head" in out["reason"]
+
+
+def test_an_old_red_at_the_current_head_is_handed_to_you(store):
+    rec = _merge_pick(_rec())
+    rec["security"] = {"verdict": "RED", "checked_at": "2026-01-02T00:00:00+00:00",
+                       "against_head_sha": HEAD, "findings": [{"title": "drops an auth check"}]}
+    out = _classify(store, rec)
+    assert out["column"] == "handed" and out["owner"] == "you"

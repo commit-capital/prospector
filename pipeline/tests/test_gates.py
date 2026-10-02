@@ -248,12 +248,19 @@ class TestMergeAllowed:
         ok, reason = gates.merge_allowed(rec, today="2026-06-10")
         assert not ok and "earlier head" in reason
 
-    def test_old_security_reason_names_age_and_window(self):
-        rec = _pr(analysis=_merge_analysis(),
-                  security=_green(checked_at="2026-05-30T00:00:00+00:00"))
+    def test_an_old_green_at_the_current_head_still_counts(self):
+        rec = _pr(analysis=_merge_analysis(), verify=_verified(),
+                  security=_green(checked_at="2026-01-02T00:00:00+00:00"))
+        ok, reason = gates.merge_allowed(rec, today="2026-06-10")
+        assert ok, reason
+
+    def test_a_verification_past_the_window_blocks_and_names_it(self, monkeypatch):
+        monkeypatch.setenv("TRIAGE_VERIFY_MAX_AGE_DAYS", "7")
+        rec = _pr(analysis=_merge_analysis(), security=_green(),
+                  verify=_verified(checked_at="2026-05-30T00:00:00+00:00"))
         ok, reason = gates.merge_allowed(rec, today="2026-06-10")
         assert not ok
-        assert "11d old, outside the 7d window" in reason and "re-run SECURITY" in reason
+        assert "11d old, outside the 7d window" in reason and "re-run VERIFY" in reason
 
 
 class TestMergeEligibility:
@@ -352,11 +359,27 @@ class TestMergeEligibility:
                                         changed_paths=["src/app.ts"])
         assert ok
 
-    def test_old_security_review_blocks(self):
-        rec = _pr(analysis=_merge_analysis(),
-                  security=_green(checked_at="2026-05-01T00:00:00+00:00"))
-        ok, reason = gates.merge_allowed(rec, today="2026-06-10")
-        assert not ok and "security" in reason
+    def test_red_at_an_earlier_head_blocks(self):
+        rec = _pr(security=_green(verdict="RED", against_head_sha="OLD"))
+        ok, reason = gates.merge_eligibility(rec, today="2026-06-10")
+        assert not ok and "RED at an earlier head" in reason and "re-run SECURITY" in reason
+
+    def test_yellow_at_an_earlier_head_blocks_past_any_override(self):
+        rec = _pr(security=_green(verdict="YELLOW", against_head_sha="OLD",
+                                  override="logged: cold path"))
+        ok, reason = gates.merge_eligibility(rec, today="2026-06-10",
+                                             override_reason="still fine")
+        assert not ok and "YELLOW at an earlier head" in reason
+
+    def test_green_at_an_earlier_head_does_not_block(self):
+        rec = _pr(security=_green(against_head_sha="OLD"))
+        ok, reason = gates.merge_eligibility(rec, today="2026-06-10")
+        assert ok, reason
+
+    def test_an_old_red_at_the_current_head_blocks(self):
+        rec = _pr(security=_green(verdict="RED", checked_at="2026-01-02T00:00:00+00:00"))
+        ok, reason = gates.merge_eligibility(rec, today="2026-06-10")
+        assert not ok and reason == "security RED"
 
     def test_yellow_without_override_blocks(self):
         rec = _pr(analysis=_merge_analysis(), security=_green(verdict="YELLOW"))
@@ -391,9 +414,14 @@ class TestBlockedOnSecurity:
         rec = _pr(analysis=_merge_analysis(), security=_green(against_head_sha="OLD"))
         assert gates.blocked_on_security(rec, today="2026-06-10")
 
-    def test_old_security_is_blocked_on_security(self):
+    def test_an_old_verdict_at_the_current_head_is_not_blocked_on_security(self):
         rec = _pr(analysis=_merge_analysis(),
-                  security=_green(checked_at="2026-05-01T00:00:00+00:00"))
+                  security=_green(checked_at="2026-01-02T00:00:00+00:00"))
+        assert not gates.blocked_on_security(rec, today="2026-06-10")
+
+    def test_a_red_at_an_earlier_head_is_blocked_on_security(self):
+        rec = _pr(analysis=_merge_analysis(),
+                  security=_green(verdict="RED", against_head_sha="OLD"))
         assert gates.blocked_on_security(rec, today="2026-06-10")
 
     def test_current_green_is_not_blocked(self):
@@ -773,6 +801,10 @@ class TestSecurityOverridable:
         rec = _pr(security=_green(verdict="YELLOW"))
         assert not gates.security_overridable(
             rec, today="2026-06-10", changed_paths=[".github/workflows/ci.yml"])
+
+    def test_yellow_at_an_earlier_head_is_not_overridable(self):
+        rec = _pr(security=_green(verdict="YELLOW", against_head_sha="OLD"))
+        assert not gates.security_overridable(rec, today="2026-06-10")
 
 
 class TestDepsTouched:
@@ -1787,6 +1819,42 @@ class TestVerifyMergeBar:
                                   override={"reason": "checked by hand", "by": "op"}))
         ok, _ = gates.merge_eligibility(pr, today="2026-06-10")
         assert ok is True
+
+    def test_a_passing_verify_past_the_window_counts_as_not_run(self, monkeypatch):
+        monkeypatch.setenv("TRIAGE_VERIFY_MAX_AGE_DAYS", "7")
+        for outcome in ("verified-fix", "agent-verified", "unverifiable-no-test"):
+            pr = _pr(verify=_verified(outcome=outcome,
+                                      checked_at="2026-05-30T00:00:00+00:00"))
+            ok, why = gates.merge_eligibility(pr, today="2026-06-10")
+            assert ok is True and "older than 7d and not counted" in why, outcome
+
+    def test_a_failing_verify_past_the_window_still_blocks(self, monkeypatch):
+        monkeypatch.setenv("TRIAGE_VERIFY_MAX_AGE_DAYS", "7")
+        for outcome in ("not-verified", "regressed", "needs-rebase", "deps-touched",
+                        "escalate"):
+            pr = _pr(verify=_verified(outcome=outcome,
+                                      checked_at="2026-01-02T00:00:00+00:00"))
+            ok, why = gates.merge_eligibility(pr, today="2026-06-10")
+            assert ok is False and outcome in why, outcome
+
+    def test_a_failing_verify_at_an_earlier_head_does_not_block(self):
+        pr = _pr(verify=_verified(outcome="regressed", against_head_sha="OLD"))
+        ok, why = gates.merge_eligibility(pr, today="2026-06-10")
+        assert ok is True, why
+
+    def test_the_verify_window_defaults_to_thirty_days(self, monkeypatch):
+        monkeypatch.delenv("TRIAGE_VERIFY_MAX_AGE_DAYS", raising=False)
+        pr = _pr(analysis=_merge_analysis(), security=_green(),
+                 verify=_verified(checked_at="2026-05-20T00:00:00+00:00"))
+        assert gates.merge_allowed(pr, today="2026-06-10")[0] is True
+        pr.raw["verify"]["checked_at"] = "2026-05-01T00:00:00+00:00"
+        assert gates.merge_allowed(pr, today="2026-06-10")[0] is False
+
+    def test_an_old_escalate_at_the_current_head_is_overridable(self, monkeypatch):
+        monkeypatch.setenv("TRIAGE_VERIFY_MAX_AGE_DAYS", "7")
+        pr = _pr(verify=_verified(outcome="escalate",
+                                  checked_at="2026-01-02T00:00:00+00:00"))
+        assert gates.verify_overridable(pr, today="2026-06-10")
 
     def test_not_verified_is_never_overridable(self):
         # only escalate is a judgment call; not-verified/regressed are "the PR
