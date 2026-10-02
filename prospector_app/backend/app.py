@@ -16,7 +16,7 @@ from pathlib import Path
 
 from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 
@@ -70,6 +70,7 @@ from prospector_app.backend import work_status
 from pipeline import actions as pipeline_actions
 from pipeline import reviewers
 from pipeline import settings
+from pipeline import threat_evidence
 
 class SurrogateSafeJSONResponse(JSONResponse):
     """JSON render that survives unpaired UTF-16 surrogates. GitHub text (review
@@ -701,6 +702,36 @@ def pr_actions(n: int):
     """Every real action the configured bot has taken on this PR (with the human
     operator who initiated each), newest-first — shown in the PR-detail panel."""
     return {"items": activity.for_pr(n)}
+
+
+@app.get("/api/prs/{n}/evidence")
+def pr_evidence(n: int):
+    """The PR's threat-evidence captures (threat_evidence.summary), newest
+    first: when and by whom, completeness, hashes, force-push history. No diff
+    bytes."""
+    return {"items": [threat_evidence.summary(r) for r in data.store().threat_evidence(pr=n)]}
+
+
+@app.get("/api/prs/{n}/evidence/{capture_id}/bundle.zip")
+def pr_evidence_bundle(n: int, capture_id: int):
+    """One capture as a zip of inert text files with SHA256SUMS, served as a
+    download. Every artifact is re-hashed first; each download is recorded in
+    the runs ledger."""
+    store = data.store()
+    record = store.threat_evidence_record(capture_id)
+    blobs = store.threat_evidence_blobs(capture_id)
+    if record is None or blobs is None or record.pr != n:
+        raise HTTPException(404, f"no evidence capture {capture_id} for PR {n}")
+    try:
+        payload = threat_evidence.bundle_zip(record, blobs)
+    except threat_evidence.IntegrityError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    threat_evidence.log_export(store, record, via="app", operator=activity.operator()["name"])
+    return Response(payload, media_type="application/zip", headers={
+        "Content-Disposition": f'attachment; filename="{threat_evidence.bundle_name(record)}.zip"',
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "no-store",
+    })
 
 
 @app.get("/api/prs/{n}/history")
