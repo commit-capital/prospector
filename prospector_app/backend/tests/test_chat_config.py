@@ -546,6 +546,13 @@ def test_agent_env_drops_the_store_url(monkeypatch):
     assert "TRIAGE_STORE_URL" not in safety_guard.agent_env()
 
 
+def test_agent_env_drops_the_feedback_token(monkeypatch):
+    # The same `jq -n env` reach, and `file-issue` could post what it printed to
+    # a public issue. The helper re-reads the token from the repo-root .env.
+    monkeypatch.setenv("PROSPECTOR_FEEDBACK_TOKEN", "github_pat_feedback")
+    assert "PROSPECTOR_FEEDBACK_TOKEN" not in safety_guard.agent_env()
+
+
 def test_agent_env_drops_variables_the_agent_has_no_use_for(monkeypatch):
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "unrelated-operator-secret")
     monkeypatch.setenv("OPENAI_API_KEY", "unrelated-operator-secret")

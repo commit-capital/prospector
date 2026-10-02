@@ -71,8 +71,9 @@ own branches while still being unable to reach the triage repository.
   create/close/reopen/comment/edit, and workflow reruns against `TRIAGE_REPO`
   as `TRIAGE_BOT_LOGIN`. Without a token those upstream writes are withheld;
   they never fall back to the operator's login. A separate helper may always
-  file an issue only on `PROSPECTOR_FEEDBACK_REPO` as the operator. The agent's
-  resubmit helper uses the confirming operator's identity for interactive
+  file an issue only on `PROSPECTOR_FEEDBACK_REPO` as the operator, with
+  `PROSPECTOR_FEEDBACK_TOKEN` when `.env` sets one, else their stored `gh`
+  login. The agent's resubmit helper uses the confirming operator's identity for interactive
   contributor-branch pushes and is advertised in every interactive session,
   with or without a mintable bot token. On Claude that session's Edit and Write
   tools reach the clones `resubmit prepare` makes and the `--body-file`
@@ -93,11 +94,12 @@ own branches while still being unable to reach the triage repository.
   directory whatever the allow rules say and a deny rule is what reaches the
   Read and Grep tools and an allowlisted text filter's file argument alike. The
   turn's environment is `safety_guard.agent_env` — the operator's, held to what
-  the CLI and the curated helpers need, with `TRIAGE_STORE_URL` withheld because
-  `jq` is an allowlisted filter and `jq -n env` prints the environment; helpers
-  re-read the store URL from the repo-root `.env` that `pipeline.settings` loads
-  on import, so a deployment configured by process environment alone, with no
-  `.env` on disk, has no `store-read` in chat. These
+  the CLI and the curated helpers need, with `TRIAGE_STORE_URL` and
+  `PROSPECTOR_FEEDBACK_TOKEN` withheld because `jq` is an allowlisted filter and
+  `jq -n env` prints the environment; helpers re-read them from the repo-root
+  `.env` that `pipeline.settings` loads on import, so a deployment configured by
+  process environment alone, with no `.env` on disk, has no `store-read` in chat
+  and files feedback with the stored `gh` login. These
   paths do not use the per-PR merge gate. Chat PR close, reopen, and review
   operations, plus issue closes, call their corresponding executor paths; other
   upstream chat writes use `prospector_app/agent/gh-write`, which validates the
