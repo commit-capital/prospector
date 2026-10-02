@@ -387,6 +387,8 @@ export interface PRRow {
   github_state?: string | null;
   clean?: boolean;
   clean_reasons?: string[];
+  /** The threat scan's verdict at its stamp (`threat.verdict`). */
+  threat?: "malicious" | "suspicious" | "clear" | null;
   stale_sections?: string[];
   live_head_sha?: string | null;
   fact_freshness?: FactFreshness[];

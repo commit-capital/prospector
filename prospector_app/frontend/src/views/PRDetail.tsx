@@ -378,6 +378,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
           </div>
         </div>
       ) : resolved ? (
+        <>
         <div className={`verdict-banner ${pr.github_state === "merged" ? "v-safe" : ""}`}>
           <span className="vb-icon">{pr.github_state === "merged" ? "✅" : "🚫"}</span>
           <div>
@@ -387,6 +388,15 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
             </div>
           </div>
         </div>
+        {/* A malicious PR's evidence outlives the PR: closing it upstream is
+            when GitHub may stop serving it. */}
+        {pr.threat === "malicious" && (
+          <div className="gate-block-callout">
+            <div className="co-headline">⛔ Flagged malicious</div>
+            <ThreatEvidencePanel prNum={prNum} refresh={pr} onCapture={runSecretScan} />
+          </div>
+        )}
+        </>
       ) : (
        <>
       {/* the one action surface — comment / approve / request-changes / merge /
