@@ -47,8 +47,10 @@ allowlist:
   or resolve a conflicting PR through a pinned, explicitly confirmed
   force-with-lease rebase.
   Separately, when `PROSPECTOR_FEEDBACK_REPO` is configured, `file-issue` may always
-  open a tooling issue there as the operator. Both helpers drop the injected bot
-  token before invoking GitHub.
+  open a tooling issue there as the operator, with `PROSPECTOR_FEEDBACK_TOKEN`
+  when the repo-root `.env` sets one and with their stored `gh` login otherwise
+  (see `docs/setup.md`). Both helpers drop the injected bot token before
+  invoking GitHub.
 
 The agent drafts the exact upstream change in chat and acts only after the
 operator confirms. With no bot key it has no path that writes to `TRIAGE_REPO`,
