@@ -104,6 +104,9 @@ SETTINGS: tuple[Setting, ...] = (
        "The most changed lines a fix may push unattended."),
     _i("TRIAGE_REVIEWER_ACTIVE_DAYS", "behavior", "Reviewer activity window (days)", "14",
        "In auto review mode, a reviewer gates PRs when it posted within this many days."),
+    _i("TRIAGE_VERIFY_MAX_AGE_DAYS", "behavior", "Verification window (days)", "30",
+       "How long a passing or inconclusive sandbox verification counts for merge before "
+       "it must be re-run. A failing one blocks until a re-run, whatever its age."),
     # --- this machine's sandbox -----------------------------------------------------
     _i("TRIAGE_SANDBOX_LARGE_SLOTS", "machine", "Large sandbox phases at once", "auto",
        "Compile, build and full-suite phases (10 GB each) run at once; auto sizes it to "

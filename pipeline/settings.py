@@ -223,6 +223,13 @@ def reviewer_active_days() -> int:
     return positive_int("TRIAGE_REVIEWER_ACTIVE_DAYS", 14)
 
 
+def verify_max_age_days() -> int:
+    """How many days a verification that found for the PR, or found nothing either
+    way, keeps counting for merge. The default branch moves under a PR, so such an
+    outcome ages out; one that found against the PR holds until a re-run."""
+    return positive_int("TRIAGE_VERIFY_MAX_AGE_DAYS", 30)
+
+
 def review_threshold() -> int | None:
     """Override of Greptile's pass score. None → 5, and so does a value that is
     not a positive integer."""

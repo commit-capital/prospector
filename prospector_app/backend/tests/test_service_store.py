@@ -14,9 +14,9 @@ from prospector_app.backend import suggest
 from pipeline.testsupport import reviews_section, threat_section
 
 HEAD = "abc123"
-# Anchored to the real "now" so the security freshness window (≤7 days) never
-# lapses as wall-clock time passes — a literal date here is a time-bomb that
-# turns the fresh-path fixtures stale once it ages past SECURITY_MAX_AGE_DAYS.
+# Anchored to the real "now" so the verification window never lapses as
+# wall-clock time passes — a literal date here is a time-bomb that turns the
+# fresh-path fixtures stale once it ages past settings.verify_max_age_days().
 NOW = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
@@ -268,22 +268,19 @@ class TestSuggest:
 
 
 class TestSafetySummary:
-    """The security banner must never contradict the merge gate: a verdict outside
-    the SECURITY_MAX_AGE_DAYS window still renders, but says why it no longer
-    counts for merge."""
+    """The security banner must never contradict the merge gate: a verdict taken
+    at an earlier head still renders and says what it means for merge."""
 
     def test_current_green_is_unqualified(self):
         s = service._safety_summary(_pr(security=_green()))
         assert s["headline"] == "Likely safe — no concerns flagged"
         assert "no longer counts" not in s["detail"]
 
-    def test_old_green_says_why_it_does_not_count(self):
-        old = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat(timespec="seconds")
+    def test_an_old_green_at_the_current_head_is_unqualified(self):
+        old = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat(timespec="seconds")
         s = service._safety_summary(_pr(security=_green(checked_at=old)))
-        assert s["level"] == "safe"
-        assert s["headline"] == "Likely safe at last review — no concerns flagged"
-        assert "outside the 7d window" in s["detail"]
-        assert "Re-run SECURITY" in s["detail"]
+        assert s["headline"] == "Likely safe — no concerns flagged"
+        assert "no longer counts" not in s["detail"]
 
     def test_head_moved_green_says_stale(self):
         s = service._safety_summary(_pr(security=_green(against_head_sha="OLD")))
@@ -294,6 +291,7 @@ class TestSafetySummary:
         sec = _green(verdict="RED", findings=[{"title": "x"}], against_head_sha="OLD")
         s = service._safety_summary(_pr(security=sec))
         assert s["level"] == "risk" and "earlier head" in s["detail"]
+        assert "still blocks merge" in s["detail"]
 
     def test_unreviewed_pr_unchanged(self):
         s = service._safety_summary(_pr())
@@ -318,16 +316,34 @@ class TestChecks:
         sec = next(x for x in c["checks"] if x["name"] == "Deep security review")
         assert sec["status"] == "warn" and "STALE" in sec["detail"]
 
-    def test_stale_security_by_age_names_the_days(self):
-        # #550: "security run 25 days old" needs to be a number the operator can
-        # read, not just a generic STALE flag. Age is UTC-calendar days between
-        # checked_at's date and the injected `today`.
-        old = "2026-07-05T00:00:00+00:00"
+    def test_an_old_security_review_at_the_current_head_passes(self):
+        old = "2026-01-05T00:00:00+00:00"
         rec = _pr(security=_green(checked_at=old))
         c = pr_checks.checks_for_record(rec, today="2026-07-15")
         sec = next(x for x in c["checks"] if x["name"] == "Deep security review")
-        assert sec["status"] == "warn" and "10d old" in sec["detail"]
-        assert sec["at"] == old
+        assert sec["status"] == "pass" and sec["at"] == old
+
+    def test_a_red_at_an_earlier_head_fails_and_says_it_blocks(self):
+        rec = _pr(security=_green(verdict="RED", against_head_sha="OLD"))
+        c = pr_checks.checks_for_record(rec)
+        sec = next(x for x in c["checks"] if x["name"] == "Deep security review")
+        assert sec["status"] == "fail" and "blocks merge" in sec["detail"]
+
+    def test_an_old_verification_names_the_days(self):
+        # #550: an age needs to be a number the operator can read, not just a
+        # generic STALE flag.
+        old = (datetime.now(timezone.utc) - timedelta(days=40)).isoformat(timespec="seconds")
+        rec = _pr(security=_green(), verify=_verified(checked_at=old))
+        c = pr_checks.checks_for_record(rec)
+        ver = next(x for x in c["checks"] if x["key"] == "verify")
+        assert ver["status"] == "warn" and "40d old" in ver["detail"]
+
+    def test_an_old_failing_verification_still_fails(self):
+        old = (datetime.now(timezone.utc) - timedelta(days=40)).isoformat(timespec="seconds")
+        rec = _pr(security=_green(), verify=_verified(outcome="regressed", checked_at=old))
+        c = pr_checks.checks_for_record(rec)
+        ver = next(x for x in c["checks"] if x["key"] == "verify")
+        assert ver["status"] == "fail" and "blocks merge until a re-verify" in ver["detail"]
 
 
 class TestServiceRows:

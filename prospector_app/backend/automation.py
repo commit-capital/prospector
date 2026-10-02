@@ -77,9 +77,12 @@ def classify(pr: Pr) -> dict | None:
                                      "a worker scans new heads every ten minutes")
     if pr.disposition == "needs-human":
         return _r("handed", "needs-human", pr.rationale or "flagged needs-human")
-    if pr.security_verdict == "RED" and freshness.is_current(
-            pr, "security", max_age_days=gates.SECURITY_MAX_AGE_DAYS):
+    if pr.security_verdict == "RED" and freshness.is_current(pr, "security"):
         return _r("handed", "security-red", "the security review returned RED")
+    if (pr.disposition == "merge" and pr.section("security")
+            and pr.security_verdict != "GREEN" and gates.blocked_on_security(pr)):
+        return _r("auto", "waiting", f"the security review was {pr.security_verdict} at an "
+                                     "earlier head; the security hunter reviews this one")
     unscannable = gates.unscannable_reason(pr)
     if unscannable and pr.threat_verdict != "malicious":
         return _r("handed", "other", unscannable)

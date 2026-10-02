@@ -131,16 +131,17 @@ def checks_for_record(rec: Pr, today: str | None = None) -> dict:
 
     security = rec.section("security")
     if security:
-        current = freshness.is_current(rec, "security", max_age_days=gates.SECURITY_MAX_AGE_DAYS,
-                                       today=today)
         v = rec.security_verdict
         st = {"GREEN": "pass", "YELLOW": "warn", "RED": "fail"}.get(v or "", "na")
         detail = f"{v} · {len(rec.findings)} finding(s)"
-        if not current:
-            reason = freshness.currency_failure(rec, "security", max_age_days=gates.SECURITY_MAX_AGE_DAYS,
-                                                today=today) or "stale"
+        if not freshness.is_current(rec, "security"):
+            reason = freshness.currency_failure(rec, "security") or "stale"
             tail = "earlier head" if reason.startswith("stale") else reason
-            st, detail = "warn", f"{detail} · STALE — {tail}"
+            if v == "GREEN":
+                st, detail = "warn", f"{detail} · STALE — {tail}"
+            else:
+                detail = (f"{detail} · {tail} — blocks merge until a GREEN review "
+                          "of this head")
         by_key["security"] = _c("security", "Deep security review", st, detail, security.get("checked_at"))
     else:
         by_key["security"] = _c("security", "Deep security review", "na", "not run yet", None)
@@ -161,9 +162,12 @@ def checks_for_record(rec: Pr, today: str | None = None) -> dict:
         if rec.verify_findings:
             detail += f" · {len(rec.verify_findings)} finding(s)"
         why_stale = freshness.currency_failure(rec, "verify",
-                                               max_age_days=gates.VERIFY_MAX_AGE_DAYS)
+                                               max_age_days=settings.verify_max_age_days())
         if o is None:
             st = "warn"
+        elif (why_stale and o not in gates.VERIFY_AGES_OUT
+              and freshness.is_current(rec, "verify")):
+            st, detail = "fail", f"{detail} · {why_stale} — blocks merge until a re-verify"
         elif why_stale:
             tail = "earlier head" if why_stale.startswith("stale") else why_stale
             st, detail = "warn", f"{detail} · STALE — {tail}"

@@ -48,11 +48,11 @@ class TestEligible:
                             "against_head_sha": "OLD"})  # stale review → re-run
         assert [m.pr for m in sd.eligible(s, today="2026-06-10")] == [1, 5]
 
-    def test_old_verdict_needs_rereview(self, tmp_path):
+    def test_an_old_verdict_at_the_current_head_is_not_rereviewed(self, tmp_path):
         s = Store(tmp_path)
         _pr(s, 1, security={"verdict": "GREEN", "findings": [],
-                            "checked_at": "2026-05-01T00:00:00+00:00"})
-        assert [m.pr for m in sd.eligible(s, today="2026-06-10")] == [1]
+                            "checked_at": "2026-01-02T00:00:00+00:00"})
+        assert [m.pr for m in sd.eligible(s, today="2026-06-10")] == []
 
     def _diff(self, diffs_dir, head, path):
         diffs_dir.mkdir(exist_ok=True)
