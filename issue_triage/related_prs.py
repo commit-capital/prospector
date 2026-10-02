@@ -3,15 +3,17 @@ proposed fix's description affirms it made, and the duplicate check before a
 proposal opens.
 
 `search` asks GitHub's search for pull requests, open and closed, whose title or
-body names the issue's number, read as the operator. None means the search did
-not answer, which is not the same as finding nothing: a description affirms the
-search only when it ran.
+body names the issue's number, read as the operator, and marks each whose body
+claims to fix the issue (`link_prs.parse_issue_refs`: Fixes / Closes / Resolves).
+None means the search did not answer, which is not the same as finding nothing:
+a description affirms the search only when it ran.
 """
 from __future__ import annotations
 
 from typing import TypedDict
 from urllib.parse import quote
 
+from issue_triage import link_prs
 from pipeline import gh, settings
 
 
@@ -20,6 +22,7 @@ class RelatedPr(TypedDict):
     title: str
     state: str  # open | closed | merged
     author: str | None
+    closes: bool
 
 
 def search(issue: int, *, exclude: set[int] | None = None) -> list[RelatedPr] | None:
@@ -38,5 +41,6 @@ def search(issue: int, *, exclude: set[int] | None = None) -> list[RelatedPr] | 
         merged = bool((item.get("pull_request") or {}).get("merged_at"))
         out.append({"number": item["number"], "title": str(item.get("title") or ""),
                     "state": "merged" if merged else str(item.get("state") or "closed"),
-                    "author": (item.get("user") or {}).get("login")})
+                    "author": (item.get("user") or {}).get("login"),
+                    "closes": int(issue) in link_prs.parse_issue_refs(item.get("body"))})
     return out

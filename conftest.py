@@ -56,3 +56,11 @@ def _no_real_ai_account(monkeypatch):
     in; no test reaches it. A test that needs an account sets one."""
     from pipeline import capacity
     monkeypatch.setattr(capacity, "account", lambda refresh=False: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_related_pr_search(monkeypatch):
+    """`related_prs.search` asks GitHub's search which pull requests name an
+    issue; no test reaches it. A test that needs pull requests found sets them."""
+    from issue_triage import related_prs
+    monkeypatch.setattr(related_prs, "search", lambda issue, exclude=None: [])

@@ -1221,7 +1221,7 @@ export interface IssueRow {
 }
 /** fix_review.STATUSES — the operator's moves first. */
 export type IssueFixStatus = "review" | "question" | "running" | "reporter" | "pr-open" | "pr-closed"
-  | "failed" | "declined" | "pr-merged";
+  | "failed" | "superseded" | "declined" | "pr-merged";
 export type IssueFixAction = "solve" | "send-back" | "answer" | "ask-reporter" | "propose";
 export interface IssueFixRequest {
   action: IssueFixAction;
@@ -1305,6 +1305,8 @@ export interface IssueFixRun {
   candidates: IssueFixCandidate[];
   question: IssueFixQuestion | null;
   proposal: { pr: number | string | null; url: string | null } | null;
+  /** Someone else's open pull request that took the issue up (issue_triage/superseded.py). */
+  superseded?: { pr: number; author: string | null; title: string; at: string } | null;
 }
 export interface IssueFixThreadEntry {
   at: string;

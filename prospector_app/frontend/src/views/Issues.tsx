@@ -423,6 +423,7 @@ const FIX_FILTERS: { key: string; label: string }[] = [
   { key: "pr-closed", label: "PR closed" },
   { key: "pr-merged", label: "PR merged" },
   { key: "failed", label: "Didn't finish" },
+  { key: "superseded", label: "Someone else's PR" },
   { key: "declined", label: "No fix" },
   { key: "any", label: "Any attempt" },
   { key: "none", label: "Never attempted" },

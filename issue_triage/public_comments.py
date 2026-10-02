@@ -1,6 +1,6 @@
 """The comments the public loop (`issue_triage.public_loop`) posts on an issue
-and on the pull request it opened: what a fix attempt concluded, and where the
-pull request stands.
+and on the pull request it opened: what a fix attempt concluded, where the pull
+request stands, and that it stepped back for someone else's.
 
 The host writes every sentence; an agent's words (a summary, a root cause, a
 reviewer's reason) appear only as clipped, inert plain text: no HTML comment,
@@ -120,6 +120,15 @@ def opened(issue: int, key: str, pr: int, summary: object) -> str:
     if what:
         lines += ["", f"The change: {what}."]
     return _finish(issue, key, lines)
+
+
+def superseded(issue: int, key: str, pr: int) -> str:
+    """The comment on issue `issue` when pull request `pr`, someone else's, is
+    open on an issue the attempt had asked a question on."""
+    return _finish(issue, key, [
+        f"Pull request #{int(pr)} is open for this issue, so Prospector's automated fix "
+        "pipeline is stepping back from it and will not act on an answer to the question "
+        "above."])
 
 
 def ready(issue: int, key: str) -> str:
