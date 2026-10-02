@@ -113,7 +113,11 @@ interrupted Workflow run.
 ## Phase 0.5 — THREAT SCAN (deterministic, no agents)
 
 Runs after INGEST and after diffs are fetched (the CLUSTER `fetch-diffs` step).
-Cheap and idempotent — no Workflow, no metered tokens.
+Cheap and idempotent — no Workflow, no metered tokens. A worker machine (verify
+or fix lane on) also runs the same scan every ten minutes over each open PR
+whose current head has no verdict, so a head that INGEST records is scanned
+without an operator starting this run (`prospector_app/backend/threat_refresh.py`,
+ledger phase `threat-scan:heads`).
 
 ```
 uv run python pipeline/threat_scan.py            # scan every open PR with a cached diff
