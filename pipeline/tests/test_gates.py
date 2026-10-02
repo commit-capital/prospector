@@ -385,10 +385,18 @@ class TestMergeEligibility:
                                              override_reason="still fine")
         assert not ok and "YELLOW at an earlier head" in reason
 
-    def test_green_at_an_earlier_head_does_not_block(self):
+    def test_green_at_an_earlier_head_waits_on_a_review_of_this_one(self):
         rec = _pr(security=_green(against_head_sha="OLD"))
         ok, reason = gates.merge_eligibility(rec, today="2026-06-10")
+        assert not ok and "no security review of this head" in reason
+
+    def test_a_reason_merges_past_a_green_of_an_earlier_head(self):
+        rec = _pr(security=_green(against_head_sha="OLD"))
+        ok, reason = gates.merge_eligibility(rec, today="2026-06-10",
+                                             override_reason="rebased onto main, no code change")
         assert ok, reason
+        assert gates.security_waivable(rec, today="2026-06-10")
+        assert not gates.security_overridable(rec, today="2026-06-10")
 
     def test_an_old_red_at_the_current_head_blocks(self):
         rec = _pr(security=_green(verdict="RED", checked_at="2026-01-02T00:00:00+00:00"))

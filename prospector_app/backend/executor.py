@@ -732,12 +732,12 @@ def retrigger_review(n: int, reviewer_id: str, *, token: str | None, dry_run: bo
 def merge_pr(n: int, method: str = "squash", *, dry_run: bool, reason: str | None = None) -> dict:
     """Merge a PR upstream as the configured bot — ONLY when the human-merge
     gate passes (gates.merge_eligibility: gate-clean, security GREEN, not
-    CODEOWNERS-gated). A current YELLOW verdict, or no security review at all,
-    blocks unless the operator supplies `reason`: for a YELLOW the reason is
-    logged durably to the store as the verdict's override
-    (Pr.log_security_override) before the merge executes, and for a PR never
-    reviewed it rides the merge's activity entry as `security_waiver`, so the
-    pass is auditable either way. RED always blocks. With no configured bot key this is forced to
+    CODEOWNERS-gated). A current YELLOW verdict, or a head no security review
+    has judged, blocks unless the operator supplies `reason`: for a YELLOW the
+    reason is logged durably to the store as the verdict's override
+    (Pr.log_security_override) before the merge executes, and for an unreviewed
+    head it rides the merge's activity entry as `security_waiver`, so the pass
+    is auditable either way. RED always blocks. With no configured bot key this is forced to
     dry-run (no token to mint), so the app cannot merge.
 
     A live merge additionally passes the deterministic compile preflight:

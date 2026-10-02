@@ -523,19 +523,32 @@ def repro_harness_defect(pr: Pr) -> str | None:
     return None
 
 
+def head_unreviewed(pr: Pr) -> bool:
+    """Whether no security review has judged the PR's current head and none
+    stands against the PR: no review at all, or a GREEN one of an earlier
+    head."""
+    if not pr.section("security"):
+        return True
+    return pr.security_verdict == "GREEN" and not is_current(pr, "security")
+
+
 def security_merge_block(pr: Pr, override_reason: str | None = None) -> str | None:
     """Why the PR's security record blocks a human merge, or None when it does not.
 
-    A latest review that is GREEN does not block. No review at all blocks until
+    A GREEN review of the current head does not block. A head no review has
+    judged — no review at all, or a GREEN one of an earlier head — blocks until
     one runs, or until the operator gives a non-blank `override_reason` to merge
     without one. A RED or YELLOW verdict blocks until a later review replaces
     it: a push does not clear it, so a verdict taken at an earlier head blocks
     too, and only a GREEN review of the current head lifts it. At the current
     head a logged override, or a non-blank `override_reason` for a YELLOW,
     clears the block."""
-    if not pr.section("security"):
+    if head_unreviewed(pr):
         if (override_reason or "").strip():
             return None
+        if pr.section("security"):
+            return ("no security review of this head — the GREEN review was of an "
+                    "earlier one; re-run SECURITY, or give a reason to merge without it")
         return ("no security review — run SECURITY, or give a reason to merge "
                 "without one")
     if pr.security_verdict == "GREEN":
@@ -945,10 +958,10 @@ def fix_huntable(pr: Pr, action: str,
 def security_waivable(pr: Pr, today: str | None = None,
                       changed_paths: list[str] | None = None) -> bool:
     """True iff the block a reason would clear is the missing security review:
-    the PR has none, and a reason opens the human merge gate. The executor
-    records the reason on the merge's activity entry, since there is no verdict
-    to annotate."""
-    if pr.section("security"):
+    no review has judged the PR's head (head_unreviewed), and a reason opens
+    the human merge gate. The executor records the reason on the merge's
+    activity entry, since there is no verdict of this head to annotate."""
+    if not head_unreviewed(pr):
         return False
     ok_with, _ = merge_eligibility(pr, today, changed_paths, override_reason="operator override")
     if not ok_with:
