@@ -19,7 +19,8 @@ import os
 import re
 
 from pipeline import settings, settings_registry
-from prospector_app.backend import env_file, fix_worker, issue_fix_worker, verify_worker
+from prospector_app.backend import (cluster_refresh, env_file, fix_worker, issue_fix_worker,
+                                    verify_worker)
 
 # The only keys this module may write.
 WRITABLE = settings_registry.editable()
@@ -81,7 +82,7 @@ def apply() -> dict:
     loops have been signalled and the run in flight is finishing."""
     out: dict[str, str] = {}
     for name, mod in (("verify", verify_worker), ("fix", fix_worker),
-                      ("issue-fix", issue_fix_worker)):
+                      ("issue-fix", issue_fix_worker), ("cluster", cluster_refresh)):
         if mod.enabled():
             out[name] = "running" if mod.startup() else "refused"
         elif mod.running():

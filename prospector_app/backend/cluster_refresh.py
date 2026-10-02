@@ -41,9 +41,10 @@ LEASE = "cluster-lane"
 # Longer than any pass, so a lease outlives its holder's pass only when the
 # holder died mid-pass.
 LEASE_SECONDS = 4 * 3600
+SHUTDOWN_TIMEOUT = 10.0
 
 _thread: threading.Thread | None = None
-_wake = threading.Event()
+_stop = threading.Event()
 
 
 def spent_today(runs: Iterable[storekit.RunRecord], today: str) -> tuple[int, int]:
@@ -136,21 +137,39 @@ def pass_once() -> int | None:
 
 
 def _loop() -> None:
-    while True:
+    while not _stop.is_set():
         try:
             pass_once()
         except Exception:
             traceback.print_exc()
-        _wake.wait(REFRESH_SECONDS)
+        _stop.wait(REFRESH_SECONDS)
 
 
-def start() -> bool:
-    """Start the lane on a clustering worker. Idempotent."""
+def enabled() -> bool:
+    return settings.cluster_worker_enabled()
+
+
+def running() -> bool:
+    return _thread is not None and _thread.is_alive()
+
+
+def startup() -> bool:
+    """Start the lane on a clustering worker. Idempotent; returns whether it
+    runs."""
     global _thread
-    if not settings.cluster_worker_enabled():
+    if not enabled():
         return False
-    if _thread is not None and _thread.is_alive():
+    if running():
         return True
+    _stop.clear()
     _thread = threading.Thread(target=_loop, daemon=True, name="cluster-refresh")
     _thread.start()
     return True
+
+
+def shutdown(timeout: float = SHUTDOWN_TIMEOUT) -> bool:
+    """Signal the lane to stop and wait for it; a pass in flight finishes."""
+    _stop.set()
+    if _thread is not None:
+        _thread.join(timeout)
+    return not running()
