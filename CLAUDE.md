@@ -71,8 +71,9 @@ own branches while still being unable to reach the triage repository.
   create/close/reopen/comment/edit, and workflow reruns against `TRIAGE_REPO`
   as `TRIAGE_BOT_LOGIN`. Without a token those upstream writes are withheld;
   they never fall back to the operator's login. A separate helper may always
-  file an issue only on `PROSPECTOR_FEEDBACK_REPO` as the operator. The agent's
-  resubmit helper uses the confirming operator's identity for interactive
+  file an issue only on `PROSPECTOR_FEEDBACK_REPO` as the operator, with
+  `PROSPECTOR_FEEDBACK_TOKEN` when `.env` sets one, else their stored `gh`
+  login. The agent's resubmit helper uses the confirming operator's identity for interactive
   contributor-branch pushes and is advertised in every interactive session,
   with or without a mintable bot token. On Claude that session's Edit and Write
   tools reach the clones `resubmit prepare` makes and the `--body-file`
@@ -93,11 +94,12 @@ own branches while still being unable to reach the triage repository.
   directory whatever the allow rules say and a deny rule is what reaches the
   Read and Grep tools and an allowlisted text filter's file argument alike. The
   turn's environment is `safety_guard.agent_env` — the operator's, held to what
-  the CLI and the curated helpers need, with `TRIAGE_STORE_URL` withheld because
-  `jq` is an allowlisted filter and `jq -n env` prints the environment; helpers
-  re-read the store URL from the repo-root `.env` that `pipeline.settings` loads
-  on import, so a deployment configured by process environment alone, with no
-  `.env` on disk, has no `store-read` in chat. These
+  the CLI and the curated helpers need, with `TRIAGE_STORE_URL` and
+  `PROSPECTOR_FEEDBACK_TOKEN` withheld because `jq` is an allowlisted filter and
+  `jq -n env` prints the environment; helpers re-read them from the repo-root
+  `.env` that `pipeline.settings` loads on import, so a deployment configured by
+  process environment alone, with no `.env` on disk, has no `store-read` in chat
+  and files feedback with the stored `gh` login. These
   paths do not use the per-PR merge gate. Chat PR close, reopen, and review
   operations, plus issue closes, call their corresponding executor paths; other
   upstream chat writes use `prospector_app/agent/gh-write`, which validates the
@@ -172,7 +174,7 @@ One canonical store, seven phases plus a deterministic threat-scan backstop. **T
 
 Phases (each idempotent; drivers own the deterministic half, Workflow scripts the agentic half):
 - **0 INGEST** (`ingest.py`) — fetch open non-draft PRs + issue links into the store. Cheap, re-runnable.
-- **0.5 THREAT SCAN** (`threat_scan.py` + `threats.py`) — scan cached diffs for attack signatures + check authors against the blocklist; stamp `threat`, block actors, log incidents. Deterministic, no agents. A `malicious` flag removes the PR from the gate permanently.
+- **0.5 THREAT SCAN** (`threat_scan.py` + `threats.py`) — scan cached diffs for attack signatures + check authors against the blocklist; stamp `threat`, block actors, log incidents. Deterministic, no agents. A `malicious` flag removes the PR from the gate permanently. An operator starts the full run (the Control-tab `threat-scan` job or the CLI); a worker machine also runs the same `threat_scan.scan` every ten minutes over the open PRs `threat_scan.unscanned` names — a head INGEST or `refresh_prs` recorded without a verdict, a new arrival, or a blocked author's PR still reading clear — so a force-pushed payload is flagged soon after its head is ingested (`prospector_app/backend/threat_refresh.py`, ledger phase `threat-scan:heads`, woken early by the stale merge-candidate refresh). A head it cannot judge (no diff, an exempt dependency bump) waits six hours before another try; a verdict is stamped only while the stored head is still the one scanned, and the run's blocks, incidents and action items land on a fresh read of their registry.
 - **1 CLUSTER** (`cluster_driver.py` + `workflows/summarize.js`) — diff-grounded summaries → semantic clusters with stable IDs. Identical heads get identical memberships, and open PRs with direct (`explicit` / lower-confidence `body-ref`) links to the same issue are deterministically given a common cluster even when semantic summaries diverge. A PR's `cluster` backref is a list (`cluster.ids`); a straddler can belong to more than one cluster, and each cluster retains its per-member proposed dispositions in `cluster.proposals`.
 - **2 ANALYZE** (`analyze_driver.py` + the analyze workflow) — per-cluster dispositions + outcome, stored verbatim; a merge pick's blockers (below-bar review, a security verdict, a verify outcome) derive its effective disposition at read time (`gates.merge_demotion` via `Pr.disposition`), so a re-run or signal refresh that clears the blocker heals the read with nothing re-stored.
 - **3 GATE** (`gates.py`) — which merge candidates are clean enough for security review.

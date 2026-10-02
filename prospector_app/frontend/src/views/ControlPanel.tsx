@@ -809,8 +809,7 @@ export default function ControlPanel() {
   // the backlog, from recent runs-ledger history. null (rendered as nothing)
   // until a phase has enough history to project from — see pipeline_status.py's
   // `estimates`. Every other row shows its ledger-typical whole-run duration.
-  const estThreatScan = cov && est?.threat_scan_seconds_per_pr != null
-    ? fmtDuration(est.threat_scan_seconds_per_pr * cov.total) : null;
+  const estThreatScan = fmtDuration(est?.threat_scan_seconds);
   const clusterCountNum = Number(countFor("analyze-clusters"));
   const estAnalyzeClusters = cov && est?.analyze_clusters_seconds_per_cluster != null
       && Number.isFinite(clusterCountNum) && clusterCountNum > 0
@@ -976,8 +975,8 @@ export default function ControlPanel() {
                       <br />⚠ {(cov.threat.stale + cov.threat.never).toLocaleString()} PRs lack a scan of their latest push
                       ({cov.threat.never.toLocaleString()} never scanned, {cov.threat.stale.toLocaleString()} pushed to since their scan).
                       {cov.threat.diff_uncached_here > 0 ? (
-                        <> A run here fetches {cov.threat.diff_uncached_here.toLocaleString()} missing
-                        diff{cov.threat.diff_uncached_here === 1 ? "" : "s"} from GitHub as it scans, so it may take longer.</>
+                        <> A run here first fetches {cov.threat.diff_uncached_here.toLocaleString()} open-PR
+                        diff{cov.threat.diff_uncached_here === 1 ? "" : "s"} this machine hasn't cached, so it may take longer.</>
                       ) : (
                         <> All of their diffs are already cached on this machine.</>
                       )}

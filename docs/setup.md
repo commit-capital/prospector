@@ -52,6 +52,31 @@ web UI is the front door; `CLAUDE.md` (trust model and operating rules) and
 deeper. `STATUS.md` is a generated text snapshot of the store — regenerate it
 with `uv run prospector status`.
 
+### Filing tooling issues from the in-app agent
+
+The in-app agent files bugs about Prospector itself on `PROSPECTOR_FEEDBACK_REPO`
+with `prospector_app/agent/file-issue`, as you rather than the bot, because that
+repository is outside the GitHub App's installation. The credential it files
+with needs **Issues: Read and write** on the feedback repository.
+
+By default that credential is your stored `gh auth login`. A fine-grained token
+has exactly one resource owner, so when the login `gh` holds is a fine-grained
+token for the triaged repository's organization and the feedback repository
+belongs to another one, GitHub refuses the filing ("Resource not accessible by
+personal access token"), even when the repository itself is public and
+readable. Give `file-issue` a token of its own: a fine-grained token whose
+resource owner is the feedback repository's owner, with Issues: Read and write
+on that repository, set in the repo-root `.env`:
+
+```dotenv
+PROSPECTOR_FEEDBACK_TOKEN=github_pat_...
+```
+
+Set it in `.env` rather than the process environment. The agent's environment
+withholds the token so a prompt can never print it, and `file-issue` reads it
+back from `.env`. A blank value reads as unset. When a filing is refused, the
+error names the repository, which credential was used, and the grant it needs.
+
 ## Worker machines
 
 To make a machine process work rather than just serve the UI — running

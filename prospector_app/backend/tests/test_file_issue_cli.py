@@ -8,21 +8,28 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 FILE_ISSUE = REPO_ROOT / "prospector_app" / "agent" / "file-issue"
 
 # A stub `gh` that records its argv and whether a token reached it, then prints the
-# issue URL the real command would.
+# issue URL the real command would, or fails the way GitHub refuses a credential.
 _STUB_GH = """#!/usr/bin/env python3
 import json, os, sys
 json.dump({"argv": sys.argv[1:], "gh_token": os.environ.get("GH_TOKEN"),
            "github_token": os.environ.get("GITHUB_TOKEN")},
           open(os.environ["STUB_GH_LOG"], "w"))
+if os.environ.get("STUB_GH_FAIL"):
+    print("GraphQL: Resource not accessible by personal access token (createIssue)",
+          file=sys.stderr)
+    sys.exit(1)
 print(os.environ.get("STUB_GH_OUTPUT", "https://github.com/test-owner/test-meta-repo/issues/42"))
 """
 
 
-def _run(tmp_path, args, feedback_repo="test-owner/test-meta-repo", gh_output=None):
+def _run(tmp_path, args, feedback_repo="test-owner/test-meta-repo", gh_output=None,
+         feedback_token=None, gh_fails=False):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     gh = bin_dir / "gh"
@@ -39,6 +46,10 @@ def _run(tmp_path, args, feedback_repo="test-owner/test-meta-repo", gh_output=No
            "STUB_GH_LOG": str(log)}
     if gh_output is not None:
         env["STUB_GH_OUTPUT"] = gh_output
+    if feedback_token is not None:
+        env["PROSPECTOR_FEEDBACK_TOKEN"] = feedback_token
+    if gh_fails:
+        env["STUB_GH_FAIL"] = "1"
     r = subprocess.run([sys.executable, str(FILE_ISSUE), *args],
                        env=env, capture_output=True, text=True)
     call = json.loads(log.read_text()) if log.exists() else None
@@ -106,3 +117,67 @@ def test_unexpected_gh_success_output_is_not_a_receipt(tmp_path):
     assert r.returncode == 1
     assert r.stdout == ""
     assert "unexpected success output" in r.stderr
+
+
+def test_a_feedback_token_files_as_its_own_credential(tmp_path):
+    r, call = _run(tmp_path, ["--title", "t", "--body", "b"],
+                   feedback_token="github_pat_feedback")
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout)["number"] == 42
+    assert call is not None
+    assert call["gh_token"] == "github_pat_feedback"
+    assert call["github_token"] is None
+
+
+def test_surrounding_whitespace_is_trimmed_from_the_feedback_token(tmp_path):
+    r, call = _run(tmp_path, ["--title", "t", "--body", "b"],
+                   feedback_token="  github_pat_feedback\n")
+    assert r.returncode == 0, r.stderr
+    assert call is not None
+    assert call["gh_token"] == "github_pat_feedback"
+
+
+@pytest.mark.parametrize("blank", ["", " ", "\t\n"])
+def test_a_blank_feedback_token_reads_as_unset(tmp_path, blank):
+    r, call = _run(tmp_path, ["--title", "t", "--body", "b"], feedback_token=blank)
+    assert r.returncode == 0, r.stderr
+    assert call is not None
+    assert call["gh_token"] is None
+    assert call["github_token"] is None
+
+
+def test_a_refusal_under_the_stored_login_names_the_repo_identity_and_grant(tmp_path):
+    r, call = _run(tmp_path, ["--title", "t", "--body", "b"], gh_fails=True)
+    assert call is not None
+    assert r.returncode == 1
+    assert r.stdout == ""
+    assert "Resource not accessible by personal access token" in r.stderr
+    assert "test-owner/test-meta-repo" in r.stderr
+    assert "gh's stored login" in r.stderr
+    assert "PROSPECTOR_FEEDBACK_TOKEN" in r.stderr
+    assert "Issues: Read and write" in r.stderr
+    assert "resource owner" in r.stderr and "test-owner" in r.stderr
+
+
+def test_a_refusal_under_a_fine_grained_feedback_token_names_its_resource_owner(tmp_path):
+    r, call = _run(tmp_path, ["--title", "t", "--body", "b"],
+                   feedback_token="github_pat_feedback", gh_fails=True)
+    assert call is not None
+    assert r.returncode == 1
+    assert "test-owner/test-meta-repo" in r.stderr
+    assert "as PROSPECTOR_FEEDBACK_TOKEN" in r.stderr
+    assert "gh's stored login" not in r.stderr
+    assert "Issues: Read and write" in r.stderr
+    assert "resource owner" in r.stderr
+    assert "github_pat_feedback" not in r.stderr
+
+
+def test_a_refusal_under_a_classic_feedback_token_omits_the_resource_owner(tmp_path):
+    r, call = _run(tmp_path, ["--title", "t", "--body", "b"],
+                   feedback_token="ghp_classic", gh_fails=True)
+    assert call is not None
+    assert r.returncode == 1
+    assert "as PROSPECTOR_FEEDBACK_TOKEN" in r.stderr
+    assert "Issues: Read and write" in r.stderr
+    assert "resource owner" not in r.stderr
+    assert "ghp_classic" not in r.stderr
