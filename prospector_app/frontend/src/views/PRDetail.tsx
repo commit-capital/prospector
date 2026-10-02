@@ -204,7 +204,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
     secJob.start(`/api/jobs/run/security-review?pr=${prNum}`);
   };
 
-  // Run the THREAT SCAN phase from the "No committed secrets" check row,
+  // Run the THREAT SCAN phase from the "Threat scan" check row,
   // scoped to just this PR (`threat_scan.py --only`) — same start-or-reattach
   // job pattern as the security re-run above; reattaches to one already
   // running if this page reloads (#683).

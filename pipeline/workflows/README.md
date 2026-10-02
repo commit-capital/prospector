@@ -117,7 +117,10 @@ Cheap and idempotent — no Workflow, no metered tokens. A worker machine (verif
 or fix lane on) also runs the same scan every ten minutes over each open PR
 whose current head has no verdict, so a head that INGEST records is scanned
 without an operator starting this run (`prospector_app/backend/threat_refresh.py`,
-ledger phase `threat-scan:heads`).
+ledger phase `threat-scan:heads`). The same machine records new and pushed-to
+PRs from GitHub every fifteen minutes (`prospector_app/backend/pr_watch.py`,
+ledger phase `ingest:watch`), so a fresh head reaches that scan without an
+operator's INGEST.
 
 ```
 uv run python pipeline/threat_scan.py            # scan every open PR with a cached diff

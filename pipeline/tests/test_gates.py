@@ -205,6 +205,16 @@ class TestPRClean:
         assert len(asks) == 1 and "Split" in asks[0]
 
 
+class TestThreatBlocks:
+    def test_names_only_the_threat_reasons(self):
+        rec = _pr(threat={"verdict": "malicious", "signatures": ["x"]})
+        rec.raw["signals"]["ci"] = "failing"
+        assert gates.threat_blocks(rec) == ["malicious: x", gates.THREAT_SCAN_STALE]
+
+    def test_a_current_clear_stamp_has_none(self):
+        assert gates.threat_blocks(_pr()) == []
+
+
 class TestSecurityEligible:
     def test_clean_merge_candidate_is_eligible(self):
         assert gates.security_eligible(_pr(analysis=_merge_analysis()), today="2026-06-10")
