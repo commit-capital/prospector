@@ -166,7 +166,82 @@ class TestBound:
         assert (alt / "cafe.diff").read_text() == text
 
 
-DIFF_A = "diff --git a/src/a.ts b/src/a.ts\n+alpha\n"
+class TestIsComplete:
+    def test_a_diff_as_github_returned_it_is_complete(self):
+        assert diff_cache.is_complete(TestBound.SRC + TestBound.LOCK)
+
+    def test_a_copy_cut_at_the_cap_is_not(self):
+        text = "diff --git a/src/a.ts b/src/a.ts\n@@ -0,0 +1,50000 @@\n" + "+line\n" * 50_000
+        assert not diff_cache.is_complete(text[:diff_cache.MAX_DIFF_BYTES])
+
+    def test_a_copy_with_a_stubbed_file_is_not(self):
+        bounded = diff_cache.bound(TestBound.SRC + TestBound.LOCK, cap=len(TestBound.SRC))
+        assert "# omitted:" in bounded
+        assert not diff_cache.is_complete(bounded)
+
+    def test_a_diff_synthesized_from_the_listing_is_not(self, tmp_path, monkeypatch):
+        files = json.dumps([[{"filename": "src/agent.ts", "status": "modified", "additions": 1,
+                              "deletions": 1, "patch": "@@ -1 +1 @@\n-old\n+new"}]])
+        monkeypatch.setattr(diff_cache.subprocess, "run",
+                            TestFetchDiffFallback()._fake_run(files))
+        assert diff_cache.fetch_diff(688, "deadbeef", tmp_path)
+        assert not diff_cache.is_complete((tmp_path / "deadbeef.diff").read_text())
+
+
+class TestFetchComplete:
+    """The whole diff for one reader: never bounded, never cached."""
+
+    def _listing(self, monkeypatch, files: list[dict]) -> None:
+        monkeypatch.setattr(diff_cache.subprocess, "run",
+                            TestFetchDiffFallback()._fake_run(json.dumps([files])))
+
+    def test_the_diff_github_returns_is_whole_and_uncached(self, tmp_path, monkeypatch):
+        cache = tmp_path / "diffs"; cache.mkdir()
+        monkeypatch.setattr(diff_cache, "DIFFS", cache)
+        text = TestBound.SRC * 2
+
+        class R:
+            returncode, stdout, stderr = 0, text, ""
+
+        monkeypatch.setattr(diff_cache.subprocess, "run", lambda *a, **k: R())
+        assert diff_cache.fetch_complete(688) == diff_cache.CompleteDiff(text, ())
+        assert list(cache.iterdir()) == []
+
+    def test_the_listing_names_every_file_whose_added_lines_github_withheld(self, monkeypatch):
+        self._listing(monkeypatch, [
+            {"filename": "src/agent.ts", "status": "modified", "additions": 1, "deletions": 1,
+             "patch": "@@ -1 +1 @@\n-old\n+new"},
+            {"filename": "dist/huge.js", "status": "added", "additions": 90_000, "deletions": 0},
+            {"filename": "src/cut.ts", "status": "modified", "additions": 3, "deletions": 0,
+             "patch": "@@ -1 +1,2 @@\n x\n+one"},
+            {"filename": "logo.png", "status": "added", "additions": 0, "deletions": 0},
+            {"filename": "old.ts", "status": "removed", "additions": 0, "deletions": 40},
+        ])
+        got = diff_cache.fetch_complete(688)
+        assert got is not None
+        assert got.unread == ("dist/huge.js", "src/cut.ts")
+        assert "+new" in got.text
+
+    def test_a_listing_at_githubs_file_limit_reads_as_unread(self, monkeypatch):
+        self._listing(monkeypatch, [
+            {"filename": f"src/f{i}.ts", "status": "added", "additions": 1, "deletions": 0,
+             "patch": "@@ -0,0 +1 @@\n+x"}
+            for i in range(diff_cache.LISTING_MAX_FILES)])
+        got = diff_cache.fetch_complete(688)
+        assert got is not None
+        assert len(got.unread) == 1
+        assert f"{diff_cache.LISTING_MAX_FILES:,}" in got.unread[0]
+
+    def test_github_answering_nothing_is_none(self, monkeypatch):
+        def run(cmd, **kw):
+            class R:
+                returncode, stdout, stderr = 1, "", "boom"
+            return R()
+        monkeypatch.setattr(diff_cache.subprocess, "run", run)
+        assert diff_cache.fetch_complete(688) is None
+
+
+DIFF_A ="diff --git a/src/a.ts b/src/a.ts\n+alpha\n"
 DIFF_B = "diff --git a/src/b.ts b/src/b.ts\n+beta\n"
 
 

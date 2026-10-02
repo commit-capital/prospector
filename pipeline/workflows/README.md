@@ -125,7 +125,7 @@ uv run python pipeline/threat_scan.py --only 5174,5270   # rescan specific PRs
 uv run python pipeline/views.py
 ```
 
-It scans each PR's cached diff against the signatures in `threats.py` (the ONE
+It scans each PR's whole diff against the signatures in `threats.py` (the ONE
 threat policy: obfuscated self-decoders, capability smuggles, build-config
 require-injection, EOL-churn camouflage) and checks the author against the
 durable actor blocklist in the store's `threats` registry. A `malicious` verdict stamps the
@@ -136,6 +136,16 @@ even if Greptile scores it 5/5 and CI is green. A blocked author's *future* PRs
 are flagged on sight, before any diff is fetched. Repository maintainers (the
 profile's `trusted_authors`) are never flagged: their PRs always stamp `clear`,
 though a leaked credential still raises a rotate-secret action item.
+
+The diff cache holds each diff capped at 200 KB, with every file past the cap
+and every artifact-category file (a built `dist/*.js`, say) reduced to a
+one-line stub. A cached copy that is not whole is therefore never the scan's
+input: the scan reads the whole diff from GitHub for that scan alone (it is not
+cached), and a file GitHub itself returns no whole patch for — past the 20k-line
+`.diff` limit, the per-file listing omits large patches and lists at most 3,000
+files — reads as `unscannable-diff` (suspicious, never clear). With `--no-fetch`,
+or GitHub unreachable, a capped copy decides only a malicious verdict; anything
+else leaves the PR unjudged and counted `incomplete` in the run ledger.
 
 ### GREPTILE READ
 

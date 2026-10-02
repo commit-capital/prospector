@@ -19,7 +19,7 @@ usage: prospector <command> [args]
 commands:
   serve            run the app (API + built frontend); --dev runs the hot-reload dev servers
   ingest           refresh open PRs + issue links into the store
-  threat-scan      deterministic threat scan over cached diffs
+  threat-scan      deterministic threat scan over each PR's whole diff
   status           regenerate STATUS.md from the store
   triage-cluster   refresh one cluster's member facts + re-classify
   recluster        re-summarize + re-cluster one cluster's members

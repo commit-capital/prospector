@@ -17,7 +17,7 @@ one command you invoke). Most are also buttons on the app **Control** tab.
 # refresh open PRs + issue links into the store (read-only gh; cheap)
 uv run prospector ingest            # [--max N]
 
-# deterministic threat scan over cached diffs (no agents, no metered tokens)
+# deterministic threat scan over each PR's whole diff (no agents, no metered tokens)
 uv run prospector threat-scan       # [--only 123,456]
 
 # regenerate STATUS.md from the store

@@ -116,6 +116,36 @@ class TestScanDiff:
         r = threats.scan_diff(small, additions=20000, deletions=20010)
         assert "eol-churn-camouflage" in r["signatures"]
 
+    def test_added_line_shaped_like_a_file_header_is_scanned(self):
+        # the added content "++ i; global['!']=…" makes the diff line "+++ i; …"
+        diff = ("diff --git a/src/a.js b/src/a.js\n--- a/src/a.js\n+++ b/src/a.js\n"
+                "@@ -1 +1,2 @@\n x\n+++ i; global['!']='9-0008-2';\n")
+        assert threats.scan_diff(diff)["verdict"] == "malicious"
+
+    def test_line_separator_inside_an_added_line_is_scanned(self):
+        for sep in (" ", "\r", "\x0c"):
+            diff = ("diff --git a/src/a.js b/src/a.js\n--- a/src/a.js\n+++ b/src/a.js\n"
+                    f"@@ -1 +1,2 @@\n x\n+// note{sep}global['!']='9-0008-2';\n")
+            assert threats.scan_diff(diff)["verdict"] == "malicious", repr(sep)
+
+    def test_file_is_tracked_from_the_git_header_alone(self):
+        # a diff synthesized from GitHub's per-file listing has no ---/+++ lines
+        diff = ("diff --git a/cli/esbuild.config.mjs b/cli/esbuild.config.mjs\n"
+                "# modified: +1 -0\n@@ -1 +1,2 @@\n x\n"
+                "+const require = createRequire(import.meta.url);")
+        assert "build-config-require-injection" in threats.scan_diff(diff)["signatures"]
+
+    def test_unread_files_read_suspicious(self):
+        r = threats.scan_diff(CLEAN_DIFF, unread=["dist/huge.js"])
+        assert r["verdict"] == "suspicious"
+        assert r["signatures"] == ["unscannable-diff"]
+        assert "dist/huge.js" in r["detail"]["unscannable-diff"]
+
+    def test_unread_files_do_not_mask_a_malicious_hit(self):
+        r = threats.scan_diff(PAYLOAD_DIFF, unread=["dist/huge.js"])
+        assert r["verdict"] == "malicious"
+        assert "unscannable-diff" in r["signatures"]
+
 
 class TestRegistry:
     def test_block_and_query_actor(self):
@@ -231,10 +261,10 @@ class TestScanDriver:
 
         real_scan = threat_scan.scan_record
 
-        def scan_after_concurrent_write(rec, registry, diffs_dir):
+        def scan_after_concurrent_write(rec, registry, diffs_dir, diff=None):
             # another phase places the PR standalone after the scan's snapshot load
             Store(tmp_path).edit_pr(7).mark_standalone()
-            return real_scan(rec, registry, diffs_dir=diffs_dir)
+            return real_scan(rec, registry, diffs_dir=diffs_dir, diff=diff)
 
         monkeypatch.setattr(threat_scan, "scan_record", scan_after_concurrent_write)
         threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs), "--no-fetch"])
@@ -632,13 +662,207 @@ class TestScanWriteEconomy:
         seen = []
         real_scan = threat_scan.scan_record
 
-        def scan_noting_binding(rec, registry, diffs_dir):
+        def scan_noting_binding(rec, registry, diffs_dir, diff=None):
             seen.append(storekit._bound_conn(Store(tmp_path).engine) is not None)
-            return real_scan(rec, registry, diffs_dir=diffs_dir)
+            return real_scan(rec, registry, diffs_dir=diffs_dir, diff=diff)
 
         monkeypatch.setattr(threat_scan, "scan_record", scan_noting_binding)
         threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs), "--no-fetch"])
         assert seen == [True]
+
+
+# ---------------------------------------------------------------------------
+# The scan judges a PR's whole diff. The cache holds a copy capped at
+# diff_cache.MAX_DIFF_BYTES, with every file past the cap (and the profile's
+# artifact files, ordered last) reduced to a one-line stub; a payload placed
+# there must still fire.
+# ---------------------------------------------------------------------------
+# The zach-hermes shape: a createRequire smuggle plus an obfuscated line hidden
+# after thousands of spaces.
+HIDDEN_PAYLOAD = [
+    "import { createRequire } from 'module';",
+    "const require = createRequire(import.meta.url);",
+    "export const ready = true;" + " " * 20_000
+    + "global['!']='9-0008-2';var _$_1e42=(function(l,e){})('x',1);global[_$_1e42[0]]= require;",
+]
+
+
+def _added_file(path: str, lines: list[str]) -> str:
+    body = "".join(f"+{line}\n" for line in lines)
+    return (f"diff --git a/{path} b/{path}\nnew file mode 100644\n"
+            f"--- /dev/null\n+++ b/{path}\n@@ -0,0 +1,{len(lines)} @@\n{body}")
+
+
+def _churn(nbytes: int) -> str:
+    """Benign added source files, about 3KB each, totalling at least `nbytes`."""
+    out: list[str] = []
+    size = 0
+    i = 0
+    while size < nbytes:
+        block = _added_file(f"server/src/generated_{i}.ts",
+                            [f"export const value_{i}_{j} = {j};" for j in range(100)])
+        out.append(block)
+        size += len(block)
+        i += 1
+    return "".join(out)
+
+
+def _github(monkeypatch, *, diff: str | None = None, files: list[dict] | None = None) -> list[list[str]]:
+    """Answer `gh pr diff` with `diff` and the per-file listing with `files`;
+    either left None fails the way GitHub does (a 406, an unreachable API).
+    Returns the commands run."""
+    import json
+    import subprocess
+
+    calls: list[list[str]] = []
+
+    def run(cmd, **kw):
+        calls.append(list(cmd))
+        if cmd[:3] == ["gh", "pr", "diff"]:
+            ok, out = diff is not None, diff or ""
+        else:
+            ok, out = files is not None, json.dumps([files or []])
+        return subprocess.CompletedProcess(cmd, 0 if ok else 1, out, "" if ok else "HTTP 406")
+
+    monkeypatch.setattr(diff_cache.subprocess, "run", run)
+    return calls
+
+
+def _no_github(monkeypatch) -> None:
+    def run(cmd, **kw):
+        raise AssertionError(f"GitHub must not be read here: {cmd}")
+    monkeypatch.setattr(diff_cache.subprocess, "run", run)
+
+
+class TestWholeDiffScan:
+    def _seed(self, store: Store, n: int, head: str, author: str = "zach-hermes") -> None:
+        store.save_pr({
+            "pr": n,
+            "meta": {"title": "t", "author": author, "state": "open", "draft": False,
+                     "head_sha": head, "checked_at": "2026-10-02T00:00:00+00:00"},
+        })
+
+    def _stats(self, store: Store) -> dict:
+        runs = [r for r in store.runs()
+                if isinstance(r, storekit.PhaseRun) and r.phase == "threat-scan"]
+        return runs[-1].raw["stats"]
+
+    def _cache(self, monkeypatch, pr: int, head: str, diffs, full: str) -> str:
+        """Fetch `full` into the cache the way every caller does; returns the
+        capped copy the cache holds."""
+        _github(monkeypatch, diff=full)
+        assert diff_cache.fetch_diff(pr, head, diffs_dir=diffs)
+        return (diffs / f"{head}.diff").read_text()
+
+    def test_payload_past_the_cap_fires(self, tmp_path, monkeypatch):
+        store = Store(tmp_path)
+        diffs = tmp_path / "diffs"; diffs.mkdir()
+        self._seed(store, 11987, "h1")
+        full = (_churn(diff_cache.MAX_DIFF_BYTES)
+                + _added_file("server/src/index.ts", HIDDEN_PAYLOAD))
+        cached = self._cache(monkeypatch, 11987, "h1", diffs, full)
+        assert "global['!']" not in cached          # the cap stubbed the payload file
+
+        calls = _github(monkeypatch, diff=full)
+        threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs)])
+
+        t = store.load_pr(11987).section("threat")
+        assert t["verdict"] == "malicious"
+        assert {"obfuscated-self-decoder", "capability-smuggle"} <= set(t["signatures"])
+        assert [c[:3] for c in calls] == [["gh", "pr", "diff"]]
+        assert (diffs / "h1.diff").read_text() == cached   # the whole diff is never cached
+        assert self._stats(store)["complete_fetched"] == 1
+
+    def test_payload_in_an_artifact_file_fires(self, tmp_path, monkeypatch):
+        store = Store(tmp_path)
+        diffs = tmp_path / "diffs"; diffs.mkdir()
+        self._seed(store, 12035, "h2")
+        # a built dist/ file sorts last in the cache, so it is the one stubbed
+        full = (_added_file("dist/server.js", HIDDEN_PAYLOAD)
+                + _churn(diff_cache.MAX_DIFF_BYTES - 15_000))
+        cached = self._cache(monkeypatch, 12035, "h2", diffs, full)
+        assert "global['!']" not in cached
+        assert "# omitted: vendored" in cached
+
+        _github(monkeypatch, diff=full)
+        threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs)])
+
+        assert store.load_pr(12035).section("threat")["verdict"] == "malicious"
+
+    def test_a_file_github_withholds_reads_suspicious(self, tmp_path, monkeypatch):
+        # GitHub refuses the .diff of a PR over 20k lines, and its per-file
+        # listing carries no patch for a file past its own limit
+        store = Store(tmp_path)
+        diffs = tmp_path / "diffs"; diffs.mkdir()
+        self._seed(store, 12041, "h3")
+        files = [
+            {"filename": "src/agent.ts", "status": "modified", "additions": 1,
+             "deletions": 1, "patch": "@@ -1 +1 @@\n-old\n+new"},
+            {"filename": "dist/huge.js", "status": "added", "additions": 25_000,
+             "deletions": 0},
+        ]
+        _github(monkeypatch, files=files)
+        assert diff_cache.fetch_diff(12041, "h3", diffs_dir=diffs)
+
+        threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs)])
+
+        t = store.load_pr(12041).section("threat")
+        assert t["verdict"] == "suspicious"
+        assert t["signatures"] == ["unscannable-diff"]
+        assert "dist/huge.js" in t["detail"]["unscannable-diff"]
+
+    def test_capped_copy_without_the_whole_diff_is_no_verdict(self, tmp_path, monkeypatch):
+        store = Store(tmp_path)
+        diffs = tmp_path / "diffs"; diffs.mkdir()
+        self._seed(store, 12063, "h4")
+        full = (_churn(diff_cache.MAX_DIFF_BYTES)
+                + _added_file("server/src/index.ts", HIDDEN_PAYLOAD))
+        self._cache(monkeypatch, 12063, "h4", diffs, full)
+
+        _github(monkeypatch)                         # GitHub answers nothing this run
+        threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs)])
+
+        assert store.load_pr(12063).section("threat") is None
+        stats = self._stats(store)
+        assert stats["incomplete"] == 1
+        assert stats["uncached"] == 0
+
+    def test_no_fetch_leaves_a_capped_copy_unjudged(self, tmp_path, monkeypatch):
+        store = Store(tmp_path)
+        diffs = tmp_path / "diffs"; diffs.mkdir()
+        self._seed(store, 5, "h5")
+        (diffs / "h5.diff").write_text(diff_cache.bound(_churn(diff_cache.MAX_DIFF_BYTES + 10_000)))
+        _no_github(monkeypatch)
+
+        threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs), "--no-fetch"])
+
+        assert store.load_pr(5).section("threat") is None
+        assert self._stats(store)["incomplete"] == 1
+
+    def test_a_hit_in_the_capped_copy_is_malicious_without_the_rest(self, tmp_path, monkeypatch):
+        store = Store(tmp_path)
+        diffs = tmp_path / "diffs"; diffs.mkdir()
+        self._seed(store, 6, "h6")
+        full = (_added_file("server/src/index.ts", HIDDEN_PAYLOAD)
+                + _churn(diff_cache.MAX_DIFF_BYTES))
+        (diffs / "h6.diff").write_text(diff_cache.bound(full))
+        _no_github(monkeypatch)
+
+        threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs), "--no-fetch"])
+
+        assert store.load_pr(6).section("threat")["verdict"] == "malicious"
+
+    def test_a_whole_cached_diff_is_judged_without_reading_github(self, tmp_path, monkeypatch):
+        store = Store(tmp_path)
+        diffs = tmp_path / "diffs"; diffs.mkdir()
+        self._seed(store, 7, "h7")
+        (diffs / "h7.diff").write_text(PAYLOAD_DIFF)
+        _no_github(monkeypatch)
+
+        threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs)])
+
+        assert store.load_pr(7).section("threat")["verdict"] == "malicious"
+        assert self._stats(store)["complete_fetched"] == 0
 
 
 class TestUnscanned:
@@ -714,7 +938,7 @@ class TestScanRun:
         store.save_action_items(items)
         real_scan = threat_scan.scan_record
 
-        def scan_beside_an_operator(rec, registry, diffs_dir):
+        def scan_beside_an_operator(rec, registry, diffs_dir, diff=None):
             # mid-run, an operator dismisses the item and another run blocks an actor
             other = Store(tmp_path)
             reg = other.load_action_items()
@@ -723,7 +947,7 @@ class TestScanRun:
             threats_reg = other.load_threats()
             threats.block_actor(threats_reg, "eve", "elsewhere", added="2026-09-28")
             other.save_threats(threats_reg)
-            return real_scan(rec, registry, diffs_dir=diffs_dir)
+            return real_scan(rec, registry, diffs_dir=diffs_dir, diff=diff)
 
         monkeypatch.setattr(threat_scan, "scan_record", scan_beside_an_operator)
         threat_scan.scan(store, store.all_prs(), diffs, fetch=False)
