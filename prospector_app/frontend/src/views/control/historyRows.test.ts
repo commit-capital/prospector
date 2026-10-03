@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { AutohuntRun } from "../../api";
-import { countResults, mergeRuns } from "./runHistory.ts";
+import { countResults, mergeRuns } from "./historyRows.ts";
 
 const run = (phase: AutohuntRun["phase"], pr: number, finished: string | null, result: string | null = null,
   started: string | null = null): AutohuntRun => ({ phase, pr, finished, started, result });

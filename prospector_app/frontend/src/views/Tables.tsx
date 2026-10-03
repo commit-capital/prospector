@@ -10,9 +10,11 @@ export default function Tables() {
   const [tables, setTables] = useState<TableSummary[]>([]);
   const [err, setErr] = useState<string>();
   const [loading, setLoading] = useState(true);
+  const [learn, setLearn] = useState<{ count: number; with_reason: number; decisions: Record<string, number> } | null>(null);
 
   useEffect(() => {
     api.tables().then((d) => setTables(d.tables)).catch((e) => setErr(String(e))).finally(() => setLoading(false));
+    api.trainingStats().then(setLearn).catch(() => {});
   }, []);
 
   if (err) return <div className="error">Failed to load tables: {err}</div>;
@@ -53,6 +55,13 @@ export default function Tables() {
             </div>
           );
         })}
+      </div>
+      <div className="learn-box">
+        🧠 <b>Decision capture for agent learning</b> — every review action records the PR's features
+        (size, checks, safety, drift, author trust) + your decision + an optional private reason,
+        to <code>training/decisions.jsonl</code>.
+        {learn && <span className="muted small"> · {learn.count} decisions captured ({learn.with_reason} with a private reason)
+          {Object.keys(learn.decisions).length > 0 && <> · {Object.entries(learn.decisions).map(([k, v]) => `${v} ${k}`).join(", ")}</>}</span>}
       </div>
     </div>
   );

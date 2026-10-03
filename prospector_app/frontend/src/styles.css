@@ -809,6 +809,8 @@ button.queue-card:hover { border-color: var(--accent); }
 .job-tile.open { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 .job-tile-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .job-tile-running { color: var(--accent); font-size: 11px; }
+.cpanel .phase-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 0; }
+@media (max-width: 760px) { .cpanel .phase-grid { grid-template-columns: minmax(0, 1fr); } }
 .jobline { border: 1px solid var(--accent); border-radius: 10px; margin: 0 0 16px; overflow: hidden; }
 .jobline .jobstatus { margin: 0; padding: 8px 12px; background: var(--panel); }
 .jobline .joblog { margin: 0; border: none; border-top: 1px solid var(--border); border-radius: 0; }
