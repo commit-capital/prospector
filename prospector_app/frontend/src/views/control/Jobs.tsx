@@ -115,7 +115,7 @@ export function Jobs({ specs, runtimes, suggestions, pipeline, running, onStart 
   const detail = (spec: JobSpec, suggestion?: SuggestedAction) => {
     const runtime = runtimes?.[spec.kind];
     const takes = duration(spec, countFor(spec), runtime, pipeline);
-    const note = backlogNote(spec, pipeline);
+    const note = suggestion ? null : backlogNote(spec, pipeline);
     return (
       <div key={spec.kind} className={suggestion ? "job-recommended" : "job-open"}>
         <div className="job-row-head">
@@ -198,7 +198,7 @@ export function Jobs({ specs, runtimes, suggestions, pipeline, running, onStart 
       <div className="job-tiles" style={recommended.length > 0 ? { marginTop: 12 } : undefined}>
         {tiles.map((t) => (
           <button key={t.kind} className={`job-tile${openKind === t.kind ? " open" : ""}`}
-            aria-expanded={openKind === t.kind}
+            aria-expanded={openKind === t.kind} title={t.label}
             onClick={() => setOpenKind((k) => (k === t.kind ? null : t.kind))}>
             <span className="job-tile-name">{t.label}</span>
             {running === t.kind

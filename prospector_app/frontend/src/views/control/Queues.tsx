@@ -59,8 +59,12 @@ function VerifyTable({ queue, hunt }: { queue: VerifyQueue; hunt: Autohunt | nul
   );
 }
 
+// Rows the fix table shows before "show all".
+const FIX_ROWS = 10;
+
 function FixTable({ queue, onChanged }: { queue: FixQueue; onChanged: () => Promise<unknown> }) {
   const { dryRun, pushToast, pushIdentity } = useExec();
+  const [showAll, setShowAll] = useState(false);
   const [busy, setBusy] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState<number>(() => Date.now());
@@ -115,7 +119,7 @@ function FixTable({ queue, onChanged }: { queue: FixQueue; onChanged: () => Prom
         <tbody>
           {queue.queue.length === 0 ? (
             <tr><td colSpan={6} className="muted small">Nothing queued, running, waiting for review, or finished recently.</td></tr>
-          ) : queue.queue.map((e) => {
+          ) : (showAll ? queue.queue : queue.queue.slice(0, FIX_ROWS)).map((e) => {
             const running = e.status === "running" || e.status === "pushing";
             const ended = e.finished_at != null;
             const detail = running && e.action === "fix" && e.guidance ? `goal: “${e.guidance}”` : e.detail;
@@ -209,6 +213,11 @@ function FixTable({ queue, onChanged }: { queue: FixQueue; onChanged: () => Prom
           })}
         </tbody>
       </table>
+      {queue.queue.length > FIX_ROWS && (
+        <button className="linkish small" style={{ marginTop: 6 }} onClick={() => setShowAll((v) => !v)}>
+          {showAll ? "show fewer ▴" : `show all ${queue.queue.length} ▾`}
+        </button>
+      )}
       {error && <div className="muted small" style={{ marginTop: 6 }}>{error}</div>}
     </div>
   );

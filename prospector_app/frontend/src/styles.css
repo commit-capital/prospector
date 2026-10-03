@@ -802,7 +802,7 @@ button.queue-card:hover { border-color: var(--accent); }
 .job-open { border: 1px solid var(--accent); border-radius: 8px; padding: 9px 12px; background: var(--panel); margin-top: 10px; }
 .job-row-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .job-row-detail { margin-top: 4px; font-size: 12.5px; color: var(--muted); }
-.job-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px; }
+.job-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
 .job-recommended ~ .job-tiles, .job-recommended + .job-tiles { margin-top: 12px; }
 .job-tile { all: unset; box-sizing: border-box; cursor: pointer; display: flex; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; background: var(--panel); font-size: 12.5px; min-width: 0; }
 .job-tile:hover { border-color: var(--accent); }

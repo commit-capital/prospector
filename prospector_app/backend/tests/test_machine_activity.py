@@ -77,7 +77,7 @@ def test_lane_outcomes():
 
 def test_window_edge():
     rows = [_row("ingest:watch", hours_ago=24 + 1 / 60), _row("ingest:watch", hours_ago=24 - 1 / 60)]
-    assert _host(_summarize(rows), "studio")["background"] == [{"label": "PR watches", "count": 1}]
+    assert _host(_summarize(rows), "studio")["background"] == [{"label": "PR watch", "count": 1}]
 
 
 def test_row_without_timestamps_is_skipped():
@@ -89,7 +89,7 @@ def test_host_from_stats_then_unattributed():
     view = _summarize([_row("ingest:watch", host=None), _row("ingest:watch", host="studio")],
                       roster=_roster(_machine("studio")))
     assert [m["host"] for m in view["machines"]] == ["studio", "unattributed"]
-    assert _host(view, "unattributed")["background"] == [{"label": "PR watches", "count": 1}]
+    assert _host(view, "unattributed")["background"] == [{"label": "PR watch", "count": 1}]
 
 
 def test_background_labels_and_worker_cluster_rows():
@@ -99,8 +99,8 @@ def test_background_labels_and_worker_cluster_rows():
             _row("cluster:summaries", trigger="cli")]
     m = _host(_summarize(rows), "studio")
     assert m["background"] == [{"label": "PR watches", "count": 2},
-                               {"label": "threat scans", "count": 1},
-                               {"label": "summary batches", "count": 1}]
+                               {"label": "threat scan", "count": 1},
+                               {"label": "summary batch", "count": 1}]
     assert m["jobs"] == [{"label": "Cluster new PRs", "kind": "cluster-new",
                           "status": "done", "job_id": None}]
 
@@ -154,3 +154,12 @@ def test_route_answers(monkeypatch):
     monkeypatch.setattr(ma, "activity", lambda: {"local": "x", "window_hours": 24, "machines": []})
     r = TestClient(appmod.app, raise_server_exceptions=False).get("/api/machines/activity")
     assert r.status_code == 200 and r.json()["window_hours"] == 24
+
+
+def test_one_background_pass_reads_singular():
+    rows = [_row("cluster:summaries", trigger="worker"), _row("ingest:watch"),
+            _row("analyze:commit", trigger="worker"), _row("analyze:commit", trigger="worker")]
+    assert _host(_summarize(rows), "studio")["background"] == [
+        {"label": "cluster analyses", "count": 2},
+        {"label": "summary batch", "count": 1},
+        {"label": "PR watch", "count": 1}]

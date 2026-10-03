@@ -23,15 +23,19 @@ Lane = Literal["security", "verify", "autofix", "issue_fix"]
 LANE_PHASES: dict[str, Lane] = {
     "security:review-one": "security", "verify:single": "verify",
     "fix:single": "autofix", "issue-fix:run": "issue_fix"}
-BACKGROUND: dict[str, str] = {
-    "ingest:watch": "PR watches", "threat-scan:heads": "threat scans",
-    "rereview:request": "re-review requests", "verify:pin-refresh": "base pin refreshes",
-    "reingest": "re-ingests", "threat-evidence:capture": "evidence captures"}
+# Each background phase's name for one pass and for several.
+BACKGROUND: dict[str, tuple[str, str]] = {
+    "ingest:watch": ("PR watch", "PR watches"), "threat-scan:heads": ("threat scan", "threat scans"),
+    "rereview:request": ("re-review request", "re-review requests"),
+    "verify:pin-refresh": ("base pin refresh", "base pin refreshes"),
+    "reingest": ("re-ingest", "re-ingests"),
+    "threat-evidence:capture": ("evidence capture", "evidence captures")}
 # Phases a Control-tab job writes and the clustering lane writes too; the
 # lane's rows carry `trigger: worker`.
-WORKER_BACKGROUND: dict[str, str] = {
-    "cluster:summaries": "summary batches", "cluster:assign": "cluster placements",
-    "analyze:commit": "cluster analyses"}
+WORKER_BACKGROUND: dict[str, tuple[str, str]] = {
+    "cluster:summaries": ("summary batch", "summary batches"),
+    "cluster:assign": ("cluster placement", "cluster placements"),
+    "analyze:commit": ("cluster analysis", "cluster analyses")}
 WORKER_TRIGGERS = frozenset({"worker", "autohunt", "hunter"})
 UNATTRIBUTED = "unattributed"
 WINDOW_HOURS = 24
@@ -165,7 +169,7 @@ def summarize(rows: list[tuple[str, dict]], agent_runs: list[dict], roster: dict
     machines: dict[str, MachineActivity] = {
         str(m["host"]): _from_roster(m, local) for m in roster.get("machines") or []}
     lanes: dict[str, dict[Lane, dict[str, list[int | None]]]] = {}
-    background: dict[str, Counter[str]] = {}
+    background: dict[str, Counter[tuple[str, str]]] = {}
     jobs: dict[str, dict[str, JobRun]] = {}
 
     for ledger, raw in rows:
@@ -197,8 +201,8 @@ def summarize(rows: list[tuple[str, dict]], agent_runs: list[dict], roster: dict
     for host, by_lane in lanes.items():
         machines[host]["lanes"] = {lane: _lane(outcomes) for lane, outcomes in by_lane.items()}
     for host, counts in background.items():
-        machines[host]["background"] = [{"label": label, "count": n}
-                                        for label, n in counts.most_common()]
+        machines[host]["background"] = [{"label": one if n == 1 else many, "count": n}
+                                        for (one, many), n in counts.most_common()]
     for host, by_label in jobs.items():
         machines[host]["jobs"] = list(by_label.values())
 
