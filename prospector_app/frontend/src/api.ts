@@ -182,6 +182,8 @@ export interface MachineActivity {
   local: boolean;
   online: boolean;
   offline_since: string | null;
+  /** Silent long enough to read as down rather than restarting. */
+  stalled: boolean;
   has_worker: boolean;
   tripped: string[];
   current: { pr: number | null; issue: number | null };
@@ -923,7 +925,10 @@ export interface FixQueueEntry {
 export interface FixQueue {
   queue: FixQueueEntry[];
   runner: FixRunner;
+  /** The newest fix runs in the window, capped at the request's limit. */
   history: AutohuntRun[];
+  /** Every fix run in the window, counted by result. */
+  summary: AutohuntResultCounts;
 }
 
 /** One security, verify, or fix run from the store's runs ledger, normalized

@@ -163,3 +163,16 @@ def test_one_background_pass_reads_singular():
         {"label": "cluster analyses", "count": 2},
         {"label": "summary batch", "count": 1},
         {"label": "PR watch", "count": 1}]
+
+
+def test_spend_rounds_once_after_summing():
+    runs = [{"host": "studio", "cost_usd": 0.013, "finished": _at(1)} for _ in range(300)]
+    view = _summarize([], roster=_roster(_machine("studio")), agent_runs=runs)
+    assert _host(view, "studio")["spend_usd"] == 3.9
+
+
+def test_a_worker_silent_past_the_offline_window_is_stalled():
+    view = _summarize([], roster=_roster(_machine("brief", online=False, last_beat=_at(0.05)),
+                                         _machine("long", online=False, last_beat=_at(2))))
+    assert _host(view, "brief")["stalled"] is False
+    assert _host(view, "long")["stalled"] is True

@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { MachineActivity } from "../../api";
-import { activityPhrases, machineStatus } from "./activitySentence.ts";
+import { activityPhrases, jobToOpen, machineStatus } from "./activitySentence.ts";
 
 const NOW = Date.parse("2026-10-03T12:00:00Z");
 
 function machine(over: Partial<MachineActivity> = {}): MachineActivity {
   return {
     host: "studio", local: false, online: true, offline_since: null, has_worker: true,
-    tripped: [], current: { pr: null, issue: null }, lanes: {}, background: [], jobs: [],
+    stalled: false, tripped: [], current: { pr: null, issue: null }, lanes: {}, background: [], jobs: [],
     spend_usd: 0, ...over,
   };
 }
@@ -93,4 +93,12 @@ test("paused lanes read beside the status", () => {
 test("unattributed rows read as an unrecorded machine", () => {
   assert.deepEqual(machineStatus(machine({ host: "unattributed", online: false, has_worker: false }), NOW),
     [{ text: "machine not recorded", tone: "muted" }]);
+});
+
+test("a past job opens only while no job runs", () => {
+  const view = { local: "studio", window_hours: 24, machines: [machine({ local: true, jobs: [
+    { label: "Ingest", kind: "ingest", status: "done", job_id: 3 }] })] };
+  assert.deepEqual(jobToOpen(view, 3, null), { kind: "ingest", label: "Ingest" });
+  assert.equal(jobToOpen(view, 3, "analyze-clusters"), null);
+  assert.equal(jobToOpen(view, 9, null), null);
 });

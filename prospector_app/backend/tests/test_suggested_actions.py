@@ -19,7 +19,7 @@ def stamp(hours_ago: float) -> str:
 def make_status(*, ingest_ago_h: float | None = 1.0, threat_uncovered: int = 0,
                 analysis_never: int = 0, issue_ingest_ago_h: float | None = 1.0,
                 pending_analysis: int = 0, not_clustered: int = 0,
-                cluster_ago_h: float | None = None,
+                unclustered_work: int | None = None, cluster_ago_h: float | None = None,
                 estimates: dict | None = None) -> dict:
     phases = [
         {"phase": "ingest",
@@ -39,6 +39,7 @@ def make_status(*, ingest_ago_h: float | None = 1.0, threat_uncovered: int = 0,
             "threat": {"stale": threat_uncovered, "never": 0},
             "analysis": {"never": analysis_never},
             "not_clustered": not_clustered,
+            "unclustered_work": not_clustered if unclustered_work is None else unclustered_work,
         },
         "issue_coverage": {"pending_analysis": pending_analysis},
         "estimates": estimates or {},
@@ -148,3 +149,7 @@ def test_merged_views_drop_a_repeated_kind():
          "estimate_seconds": None}
     b = {**a, "kind": "issue-ingest"}
     assert sa.merged([[a], [{**a, "title": "dup"}, b]]) == [a, b]
+
+
+def test_unclustered_prs_the_lane_skips_suggest_nothing():
+    assert sa.pr_suggestions(make_status(not_clustered=3, unclustered_work=0), NOW) == []

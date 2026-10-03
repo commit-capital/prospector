@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, type ActivityView, type Autohunt, type CapacityState, type FixQueue, type JobRuntime, type JobSpec, type PipelineStatus, type SuggestedAction, type VerifyQueue } from "../api";
+import { useExec } from "../ExecContext";
 import { usePoll } from "../poll";
 import { Capacity } from "./control/Capacity";
 import { Coverage } from "./control/Coverage";
@@ -9,6 +10,7 @@ import { NeedsYou } from "./control/NeedsYou";
 import { Queues } from "./control/Queues";
 import { RecentActivity } from "./control/RecentActivity";
 import { RunHistory } from "./control/RunHistory";
+import { jobToOpen } from "./control/activitySentence";
 import { RANGE_OPTIONS, type RangeOpt } from "./control/format";
 import { useJobRunner } from "./control/useJobRunner";
 
@@ -16,6 +18,7 @@ import { useJobRunner } from "./control/useJobRunner";
  *  past day, the worker queues, phase coverage, the jobs to run, and — folded
  *  — AI capacity and the run history. */
 export default function ControlPanel() {
+  const { pushToast } = useExec();
   const [specs, setSpecs] = useState<JobSpec[]>([]);
   const [specsErr, setSpecsErr] = useState<string>();
   const [runtimes, setRuntimes] = useState<Record<string, JobRuntime> | null>(null);
@@ -58,8 +61,11 @@ export default function ControlPanel() {
   usePoll(loadFixQueue, fixRunning ? 10_000 : 30_000);
 
   const openJob = (jobId: number) => {
-    const job = activity?.machines.flatMap((m) => m.jobs).find((j) => j.job_id === jobId);
-    if (!job) return;
+    const job = jobToOpen(activity, jobId, runner.running);
+    if (!job) {
+      if (runner.running) pushToast("A job is running", "yellow", { detail: "Its output stays at the top until it ends; open this one after." });
+      return;
+    }
     runner.attach(`/api/jobs/${jobId}/stream`, job.kind, `↻ job #${jobId} (${job.label}) — replaying its output…`);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };

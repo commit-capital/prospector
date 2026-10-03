@@ -88,7 +88,7 @@ def pr_suggestions(status: dict, now_ts: float) -> list[Suggestion]:
             "estimate_seconds": est.get("threat_scan_seconds"),
         })
 
-    unclustered = cov.get("not_clustered", 0)
+    unclustered = cov.get("unclustered_work", 0)
     cluster_last = last_runs.get("cluster")
     if unclustered > 0 and _stale(cluster_last, now_ts):
         ago = _ago(cluster_last, now_ts)

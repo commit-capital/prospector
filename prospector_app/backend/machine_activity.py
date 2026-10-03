@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Literal, TypedDict
 
 from pipeline import storekit
+from pipeline import worker_health
 
 if TYPE_CHECKING:
     from prospector_app.backend.jobs import JobView
@@ -75,6 +76,8 @@ class MachineActivity(TypedDict):
     local: bool
     online: bool
     offline_since: str | None
+    # Silent past worker_health.OFFLINE_AFTER_SECONDS: down, not restarting.
+    stalled: bool
     has_worker: bool
     tripped: list[str]
     current: Current
@@ -124,11 +127,11 @@ def _number(lane: Lane, raw: dict) -> int | None:
 
 def _blank(host: str, local: str) -> MachineActivity:
     return {"host": host, "local": host == local, "online": False, "offline_since": None,
-            "has_worker": False, "tripped": [], "current": {"pr": None, "issue": None},
+            "stalled": False, "has_worker": False, "tripped": [], "current": {"pr": None, "issue": None},
             "lanes": {}, "background": [], "jobs": [], "spend_usd": 0.0}
 
 
-def _from_roster(m: dict, local: str) -> MachineActivity:
+def _from_roster(m: dict, local: str, now: datetime) -> MachineActivity:
     entry = _blank(str(m["host"]), local)
     beats: dict[str, dict] = m.get("beats") or {}
     entry["online"] = bool(m.get("online"))
@@ -137,6 +140,9 @@ def _from_roster(m: dict, local: str) -> MachineActivity:
     if not entry["online"] and stamps:
         entry["offline_since"] = max(stamps, key=lambda s: storekit.parse_ts(s)
                                      or datetime.min.replace(tzinfo=timezone.utc))
+        last = storekit.parse_ts(entry["offline_since"])
+        entry["stalled"] = (last is not None and (now - last).total_seconds()
+                            >= worker_health.OFFLINE_AFTER_SECONDS)
     entry["tripped"] = sorted(lane for lane, h in (m.get("lanes") or {}).items()
                               if h.get("tripped"))
     for b in beats.values():
@@ -167,7 +173,7 @@ def summarize(rows: list[tuple[str, dict]], agent_runs: list[dict], roster: dict
     cutoff = now - timedelta(hours=WINDOW_HOURS)
     local = str(roster.get("local") or "")
     machines: dict[str, MachineActivity] = {
-        str(m["host"]): _from_roster(m, local) for m in roster.get("machines") or []}
+        str(m["host"]): _from_roster(m, local, now) for m in roster.get("machines") or []}
     lanes: dict[str, dict[Lane, dict[str, list[int | None]]]] = {}
     background: dict[str, Counter[tuple[str, str]]] = {}
     jobs: dict[str, dict[str, JobRun]] = {}
@@ -215,13 +221,16 @@ def summarize(rows: list[tuple[str, dict]], agent_runs: list[dict], roster: dict
             {"label": j["label"], "kind": j["kind"], "status": j["status"], "job_id": j["id"]}
             for j in sorted(mine, key=lambda j: j["id"])] if mine else []
 
+    spend: dict[str, float] = {}
     for run in agent_runs:
         host = run.get("host")
         cost = run.get("cost_usd")
         when = _when(run)
         if (host in machines and isinstance(cost, (int, float))
                 and when is not None and cutoff <= when <= now):
-            machines[str(host)]["spend_usd"] = round(machines[str(host)]["spend_usd"] + cost, 2)
+            spend[str(host)] = spend.get(str(host), 0.0) + cost
+    for host, usd in spend.items():
+        machines[host]["spend_usd"] = round(usd, 2)
 
     ordered = sorted(machines.values(),
                      key=lambda m: (m["host"] == UNATTRIBUTED, not m["online"], m["host"]))

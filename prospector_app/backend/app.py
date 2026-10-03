@@ -508,14 +508,17 @@ def fix_queue_status(days: int = Query(7, ge=1, le=400), all_time: bool = False,
     contributor's branch.
 
     `history` is fix-only run history from the runs ledger over the selected
-    window, which is where an ending goes once it ages out of the queue itself.
+    window, which is where an ending goes once it ages out of the queue itself,
+    capped at `limit`; `summary` counts every fix run in the window by result.
     Pass `all_time=true` to span the whole ledger regardless of `days`."""
     window = None if all_time else days
+    records = autohunt_view.window_runs(window)
     return {
         "queue": fix_queue.queue_entries(),
         "runner": fix_queue.runner_status(),
         "history": autohunt_view.history_window(window, limit=limit,
-                                                lanes=frozenset({"fix"})),
+                                                lanes=frozenset({"fix"}), records=records),
+        "summary": autohunt_view.lane_counts("fix", window, records=records),
     }
 
 

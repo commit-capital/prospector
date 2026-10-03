@@ -1,4 +1,4 @@
-import type { ActivityLane, MachineActivity } from "../../api";
+import type { ActivityLane, ActivityView, MachineActivity } from "../../api";
 
 /** One piece of a machine's sentence. `numbers` are the PRs (or issues) behind
  *  it, for a link; `jobId` names this app's job, whose output it opens. */
@@ -90,4 +90,13 @@ export function machineStatus(m: MachineActivity, now: number): { text: string; 
   else out.push({ text: m.offline_since ? `offline ${since(m.offline_since, now)}` : "offline", tone: "bad" });
   if (m.tripped.length > 0) out.push({ text: `${m.tripped.join(", ")} paused`, tone: "bad" });
   return out;
+}
+
+/** The job behind a "you ran" link, unless a job is running: opening one
+ *  detaches this page from the job it follows. */
+export function jobToOpen(view: ActivityView | null, jobId: number,
+  running: string | null): { kind: string; label: string } | null {
+  if (running != null) return null;
+  const job = view?.machines.flatMap((m) => m.jobs).find((j) => j.job_id === jobId);
+  return job ? { kind: job.kind, label: job.label } : null;
 }

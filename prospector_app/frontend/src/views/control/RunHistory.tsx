@@ -4,7 +4,7 @@ import type { Autohunt, AutohuntRun, FilterSpec, FixQueue } from "../../api";
 import { PRLink } from "../../components/PRLink";
 import { Panel } from "./Panel";
 import { RANGE_OPTIONS, type RangeOpt, ago, fmt, resultChip } from "./format";
-import { countResults, mergeRuns } from "./historyRows";
+import { mergeRuns } from "./historyRows";
 
 type Lane = AutohuntRun["phase"];
 const LANE_LABEL: Record<Lane, string> = { security: "🛡 security", verify: "🧪 verify", fix: "🔧 autofix" };
@@ -47,10 +47,10 @@ export function RunHistory({ hunt, fixQueue, range, onRange }: {
   const [lanes, setLanes] = useState<Set<Lane>>(new Set(["security", "verify", "fix"]));
   const fixRuns = fixQueue?.history ?? [];
   const rows = mergeRuns(hunt?.history ?? [], fixRuns).filter((r) => lanes.has(r.phase));
-  const fixCounts = countResults(fixRuns).fix;
+  const fixSummary = fixQueue?.summary;
   const window = range.allTime ? "all time" : `last ${range.days} days`;
-  const totals = hunt
-    ? `${hunt.summary.security.total} security · ${hunt.summary.verify.total} verify · ${fixRuns.length} autofix · ${window}`
+  const totals = hunt && fixSummary
+    ? `${hunt.summary.security.total} security · ${hunt.summary.verify.total} verify · ${fixSummary.total} autofix · ${window}`
     : "loading…";
   const toggle = (lane: Lane) => setLanes((s) => {
     const next = new Set(s);
@@ -88,8 +88,10 @@ export function RunHistory({ hunt, fixQueue, range, onRange }: {
               <td><ResultChips lane="security" counts={hunt.summary.security.by_result} prs={hunt.summary.security.pr_ids_by_result} /></td></tr>
             <tr><td className="small">{LANE_LABEL.verify} <b>{hunt.summary.verify.total}</b></td>
               <td><ResultChips lane="verify" counts={hunt.summary.verify.by_result} prs={hunt.summary.verify.pr_ids_by_result} /></td></tr>
-            <tr><td className="small">{LANE_LABEL.fix} <b>{fixRuns.length}</b></td>
-              <td><ResultChips lane="fix" counts={fixCounts} /></td></tr>
+            {fixSummary && (
+              <tr><td className="small">{LANE_LABEL.fix} <b>{fixSummary.total}</b></td>
+                <td><ResultChips lane="fix" counts={fixSummary.by_result} prs={fixSummary.pr_ids_by_result} /></td></tr>
+            )}
           </tbody>
         </table>
       )}
@@ -121,9 +123,11 @@ export function RunHistory({ hunt, fixQueue, range, onRange }: {
           ))}
         </tbody>
       </table>
-      {shownHunt < huntTotal && (
+      {(shownHunt < huntTotal || (fixSummary != null && fixRuns.length < fixSummary.total)) && (
         <div className="muted small" style={{ marginTop: 4 }}>
-          showing the latest {shownHunt} of {huntTotal} security and verify runs in this window — narrow the range to see them all.
+          showing the latest {shownHunt} of {huntTotal} security and verify runs
+          {fixSummary != null && <> and {fixRuns.length} of {fixSummary.total} autofix runs</>} in this window —
+          narrow the range to see them all.
         </div>
       )}
     </Panel>

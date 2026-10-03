@@ -80,7 +80,7 @@ export function NeedsYou({ hunt, activity, capacity, onResume }: {
     }
   }
   for (const m of activity?.machines ?? []) {
-    if (m.online || !m.has_worker || m.host === "unattributed") continue;
+    if (!m.stalled) continue;
     lines.push(
       <Line key={`offline-${m.host}`} title={`${m.host} worker offline`}
         meta={m.offline_since ? `last heartbeat ${ago(m.offline_since)}` : "no heartbeat"}>

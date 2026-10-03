@@ -306,6 +306,28 @@ def history_window(days: int | None, limit: int = 100,
     return out
 
 
+def lane_counts(lane: str, days: int | None,
+                records: list[storekit.RunRecord] | None = None) -> AutohuntResultCounts:
+    """One lane's run count and result breakdown over the last `days` days
+    (None = the whole ledger), with the distinct PRs behind each result.
+    `records` is the window as `window_runs(days)` read it, when the caller
+    already has it."""
+    total = 0
+    by_result: dict[str, int] = {}
+    pr_ids: dict[str, list[int]] = {}
+    for rec in window_runs(days) if records is None else records:
+        if not isinstance(rec, storekit.PhaseRun) or _HISTORY_PHASES.get(rec.phase) != lane:
+            continue
+        total += 1
+        result = _result(lane, rec.raw) or "—"
+        by_result[result] = by_result.get(result, 0) + 1
+        n = rec.raw.get("pr")
+        if isinstance(n, int) and n not in (ids := pr_ids.setdefault(result, [])):
+            ids.append(n)
+    return {"total": total, "by_result": by_result,
+            "pr_ids_by_result": {result: sorted(ids) for result, ids in pr_ids.items()}}
+
+
 def summary(days: int | None,
             records: list[storekit.RunRecord] | None = None) -> AutohuntSummary:
     """Security/verify run counts and result breakdowns over the last `days`
