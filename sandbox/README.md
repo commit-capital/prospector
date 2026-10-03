@@ -29,8 +29,12 @@ hand or debugging a machine that will not come up:
    tab's "Docker file sharing" row reports the running VM's mount type.
 2. **Build the hardened image:** `uv run python pipeline/verify_driver.py
    build-image` — bakes the profile's pnpm pin (`verify.pnpm_version`) into
-   `pr-verify:pnpm-<version>`, a tag per pinned version, so deployments on one
-   machine with different pins keep separate images.
+   `pr-verify:pnpm-<version>-<dockerfile>`, a tag per pinned version and per
+   `sandbox/Dockerfile` (the first twelve hex digits of its sha256), so
+   deployments on one machine with different pins keep separate images and a
+   changed Dockerfile names an image the machine has yet to build. A base build
+   builds that image first when the machine lacks it, so a pulled Dockerfile
+   change reaches every worker with its next base.
 3. **Pin a base:** `uv run python pipeline/verify_driver.py prepare-base
    [--tier 1]` — clones the pinned default-branch SHA, scrubs it, builds the
    per-batch base image, and (when the profile has a `verify.suite` contract)
@@ -73,7 +77,7 @@ would otherwise leave no path back), and again once the new pin is saved. The
 sweep also prunes what the two-stage build leaves behind — dangling images
 carrying the `prospector.verify-base=1` label that `Dockerfile.base` stamps on
 both its stages, and BuildKit cache unused for 24h — and the sandbox image tags
-under `pr-verify:*` that neither the active profile's pnpm pin names nor any
+under `pr-verify:*` that neither the active profile's pin and Dockerfile name nor any
 base image here records as its parent (`prospector.sandbox-image=<tag>`, stamped
 by `Dockerfile.base`), so a pin bump does not leave the old image behind. A
 sweep never fails a pin: its errors are reported and swallowed.

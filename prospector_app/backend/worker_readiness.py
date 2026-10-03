@@ -110,7 +110,8 @@ def _sandbox_image() -> tuple[bool, str, str]:
         if others:
             # Naming the image already here tells the operator this is a rebuild.
             return False, (f"{tag} is not built; this machine has {', '.join(others)}, "
-                           f"built for a different pnpm pin"), "run build-image here"
+                           f"built for a different pnpm pin or sandbox Dockerfile, and "
+                           f"builds {tag} with its next base"), "run build-image here"
         return False, f"{tag} is not built", "run build-image here"
     return True, f"{tag} present", ""
 
