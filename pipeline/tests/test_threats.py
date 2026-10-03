@@ -847,8 +847,8 @@ PRIVATE_KEY_LEAKS = {
 }
 
 PRIVATE_KEY_MENTIONS = {
-    # paperclipai/paperclip#13575, packages/plugins/sandbox-providers/exe-dev/src/ssh-key.ts
-    "validation-message": _added_file("packages/plugins/sandbox-providers/exe-dev/src/ssh-key.ts", [
+    # A maintainer's key validator, whose error message quotes the header.
+    "validation-message":_added_file("packages/plugins/sandbox-providers/exe-dev/src/ssh-key.ts", [
         "  const headerMatch = trimmed.match(/^-----BEGIN ([A-Z0-9 ]*)PRIVATE KEY-----/m);",
         "  if (!headerMatch) {",
         "    return \"sshPrivateKey must be a PEM-encoded private key starting with a line like "
