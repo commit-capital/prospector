@@ -185,8 +185,8 @@ def test_the_newest_run_of_a_phase_is_read_alone(store):
     assert store.latest_run("ingest").finished == "2026-06-03T00:00:00+00:00"
 
 
-def _ledger_copy() -> snapshot_cache.LedgerFile:
-    return snapshot_cache.LedgerFile(data.LEDGER_CACHE_NAME, data._store_key())
+def _ledger_copy() -> snapshot_cache.LedgerFile[storekit.RunRecord]:
+    return snapshot_cache.runs_file(data.LEDGER_CACHE_NAME, data._store_key())
 
 
 def _join_copier(ledger: run_ledger.RunLedger | None) -> None:
@@ -267,7 +267,7 @@ def test_an_unreadable_ledger_copy_is_a_miss(store, tmp_path, monkeypatch):
 
 def test_no_ledger_copy_under_pytest_without_a_cache_dir(tmp_path, monkeypatch):
     monkeypatch.delenv("PROSPECTOR_CACHE_DIR", raising=False)
-    copy = snapshot_cache.LedgerFile(data.LEDGER_CACHE_NAME, "sqlite://")
+    copy = snapshot_cache.runs_file(data.LEDGER_CACHE_NAME, "sqlite://")
     assert copy.load() is None
     assert copy.save([storekit.LedgerRow(1, None, storekit.parse_run(_run("ingest", NOW)))]) is False
 

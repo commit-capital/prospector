@@ -20,10 +20,12 @@ def _greptile_profile(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _cold_data_snapshot(monkeypatch):
-    """Reset data's in-memory store snapshot before each test, so one test's
+    """Reset data's in-memory store snapshot and the held activity log before
+    each test, so one test's
     monkeypatched store/overlay never leaks into the next via the module-level
     cache. A test that wants data populated loads it (monkeypatch _store + refresh,
     or monkeypatch data.prs/clusters directly)."""
+    from prospector_app.backend import activity
     from prospector_app.backend import claims
     from prospector_app.backend import data
     from prospector_app.backend import issues
@@ -32,6 +34,7 @@ def _cold_data_snapshot(monkeypatch):
                       ("_pr_watermark", None), ("_clu_watermark", None),
                       ("_generation", 0), ("_loaded", False), ("_last_check", 0.0)):
         monkeypatch.setattr(data, attr, val)
+    monkeypatch.setattr(activity, "_log", None)
     # The row cache and the issue->PR link index are keyed on the snapshot's
     # identity, so drop them with the snapshot — a monkeypatched corpus must never
     # serve another test's rows or links.

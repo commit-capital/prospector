@@ -10,10 +10,11 @@ HEAD = "a" * 40
 
 def _pr(n: int, *, verdict: str | None = None, state: str = "open",
         signatures: list[str] | None = None, author: str = "mallory",
-        head: str = HEAD) -> Pr:
+        association: str | None = None, head: str = HEAD) -> Pr:
     rec: dict = {"pr": n,
-                 "meta": {"title": f"PR {n}", "author": author, "state": state,
-                          "head_sha": HEAD, "url": f"https://github.com/o/r/pull/{n}"}}
+                 "meta": {"title": f"PR {n}", "author": author, "author_association": association,
+                          "state": state, "head_sha": HEAD,
+                          "url": f"https://github.com/o/r/pull/{n}"}}
     if verdict is not None:
         rec["threat"] = {"verdict": verdict, "signatures": signatures or [], "detail": {},
                          "checked_at": "2026-10-01T00:00:00+00:00", "against_head_sha": head}
@@ -44,15 +45,19 @@ def test_the_summary_counts_open_suspicious_prs():
     assert threat_view.summarize(prs, [], [])["suspicious"] == 1
 
 
-def test_the_summary_counts_open_live_looking_secrets_only():
-    items = [_secret(1), _secret(2, status="dismissed"), _secret(3, fixture=True),
-             {"id": "salvage-fix:4", "kind": "salvage-fix", "pr": 4, "status": "open"}]
-    assert threat_view.summarize([], [], items)["secrets"] == 1
+def test_the_summary_names_the_prs_holding_a_maintainers_live_looking_secret():
+    prs = [_pr(n, author="dotta", association="MEMBER") for n in (1, 2, 3, 4)]
+    prs += [_pr(5, author="rando", association="NONE"), _pr(6, author="old"),
+            _pr(7, author="dotta", association="MEMBER", state="closed")]
+    items = [_secret(7), _secret(1), _secret(2, status="dismissed"), _secret(3, fixture=True),
+             {"id": "salvage-fix:4", "kind": "salvage-fix", "pr": 4, "status": "open"},
+             _secret(5), _secret(6), _secret(8)]
+    assert threat_view.summarize(prs, [], items)["secrets"] == [1, 7]
 
 
 def test_a_quiet_store_reads_as_nothing_to_raise():
     out = threat_view.summarize([_pr(1, verdict="clear"), _pr(2)], [], [])
-    assert out == {"malicious": [], "suspicious": 0, "secrets": 0}
+    assert out == {"malicious": [], "suspicious": 0, "secrets": []}
 
 
 def test_the_detail_lists_flagged_prs_incidents_actors_and_secrets():
@@ -66,7 +71,8 @@ def test_the_detail_lists_flagged_prs_incidents_actors_and_secrets():
                                "signatures": ["blocked-actor"], "noticed": "2026-09-28"},
                               {"pr": 11987, "author": "mallory", "head_sha": HEAD,
                                "signatures": ["obfuscated-payload"], "noticed": "2026-09-30"}]}
-    out = threat_view.detail(prs, registry, [_secret(5), _secret(7, status="done")])
+    prs.append(_pr(8, author="dotta", association="OWNER"))
+    out = threat_view.detail(prs, registry, [_secret(5), _secret(7, status="done"), _secret(8)])
     assert [(f["pr"], f["verdict"]) for f in out["flagged"]] == [(11987, "malicious"),
                                                                  (5, "suspicious")]
     assert [(i["pr"], i["state"]) for i in out["incidents"]] == [(11987, "open"),
@@ -74,13 +80,15 @@ def test_the_detail_lists_flagged_prs_incidents_actors_and_secrets():
     assert out["actors"] == [{"login": "mallory", "reason": "Malicious PR(s): obfuscated-payload",
                               "added": "2026-09-28", "incidents": [11987, 12035],
                               "open_prs": [11987]}]
-    assert [s["pr"] for s in out["secrets"]] == [5]
+    assert [(s["pr"], s["author"], s["maintainer"]) for s in out["secrets"]] == [(8, "dotta", True)]
+    assert [(s["pr"], s["author"], s["maintainer"]) for s in out["quiet_secrets"]] == [(5, "bob", False)]
 
 
 def test_an_unmarked_secret_whose_evidence_reads_as_a_fixture_is_not_counted():
     item = {"id": "rotate-secret:9", "kind": "rotate-secret", "pr": 9, "status": "open",
             "evidence": "tests/fixtures/keys.ts: const key = 'sk_live_dummy'"}
-    assert threat_view.summarize([], [], [item])["secrets"] == 0
+    pr = _pr(9, author="dotta", association="MEMBER")
+    assert threat_view.summarize([pr], [], [item])["secrets"] == []
 
 
 def test_the_threats_route_serves_the_detail(monkeypatch):
@@ -126,10 +134,13 @@ def test_the_threats_route_answers_loading_while_the_snapshot_loads(monkeypatch)
     assert body["loading"] is True and body["flagged"] == []
 
 
-def test_the_detail_marks_fixture_secrets_and_lists_live_ones_first():
+def test_the_detail_keeps_a_maintainers_fixture_quiet_and_lists_live_ones_first():
     fixture = {"id": "rotate-secret:3", "kind": "rotate-secret", "pr": 3, "status": "open",
                "evidence": "tests/fixtures/keys.ts: const key = 'dummy'"}
     live = {"id": "rotate-secret:9", "kind": "rotate-secret", "pr": 9, "status": "open",
             "evidence": ".env.prod: SECRET=abc123def456"}
-    out = threat_view.detail([], {}, [fixture, live])
-    assert [(s["pr"], s["fixture"]) for s in out["secrets"]] == [(9, False), (3, True)]
+    prs = [_pr(3, author="dotta", association="MEMBER"), _pr(9, author="rando", association="NONE")]
+    out = threat_view.detail(prs, {}, [fixture, live])
+    assert out["secrets"] == []
+    assert [(s["pr"], s["fixture"], s["maintainer"]) for s in out["quiet_secrets"]] == [
+        (9, False, False), (3, True, True)]
