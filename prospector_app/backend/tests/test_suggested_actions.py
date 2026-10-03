@@ -128,7 +128,7 @@ def test_unparseable_stamp_reads_as_never():
 
 
 def test_unclustered_prs_suggest_clustering_when_it_has_not_run_today():
-    out = sa.pr_suggestions(make_status(not_clustered=826, cluster_ago_h=29 * 24), NOW)
+    out = sa.pr_suggestions(make_status(not_clustered=826, cluster_ago_h=29 * 24 + 1), NOW)
     assert [s["kind"] for s in out] == ["cluster-new"]
     assert out[0]["reason"] == "826 PRs are not in a cluster (last clustering 29d ago)"
     assert out[0]["count"] == sa.CLUSTER_NEW_BATCH

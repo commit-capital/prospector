@@ -50,9 +50,10 @@ def test_mirror_column_queryable_on_postgres(store):
     assert [r[0] for r in rows] == [5]
 
 
-def test_runs_and_registry_on_postgres(store):
+def test_runs_and_registry_on_postgres(store, monkeypatch):
+    monkeypatch.setenv("TRIAGE_WORKER_ID", "pg-host")
     store.append_run({"phase": "ingest", "ts": "c"})
-    assert [r.raw for r in store.runs()] == [{"phase": "ingest", "ts": "c"}]
+    assert [r.raw for r in store.runs()] == [{"phase": "ingest", "ts": "c", "host": "pg-host"}]
     store.save_threats({"actors": {"x": 1}, "incidents": []})
     assert store.load_threats() == {"actors": {"x": 1}, "incidents": []}
 
