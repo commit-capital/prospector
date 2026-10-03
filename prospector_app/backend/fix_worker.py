@@ -564,7 +564,7 @@ def _settle(n: int, req: dict, rc: int, output: str) -> None:
     reason = plain_reason(rc, output)
     if rc in TRANSIENT_EXITS:
         reason = f"{reason} Gave up after {attempts} attempts."
-    _refuse(n, req, reason, result={"output": output[-TAIL_CHARS:]})
+    _decline(n, req, reason, result={"output": output[-TAIL_CHARS:]})
 
 
 def _fail_if_crashed(n: int, req: dict, rc: int, output: str,
@@ -580,23 +580,22 @@ def _fail_if_crashed(n: int, req: dict, rc: int, output: str,
 
 
 def _log_run(n: int, req: dict, status: str, detail: str | None = None,
-             host: str | None = None, *, kind: str = "run-failed") -> None:
+             host: str | None = None, *, kind: str = "run-failed",
+             judged: bool | None = None) -> None:
     """Append this run's ending to the runs ledger, and book it on the fix
     lane's health: a `failed` ending is the machine's (counted under `kind`,
     which its ledger entry carries; an agent outage trips every agent lane at
     once), every other ending is the PR's and ends the failure run. A PR
     carries one fix_request, which the next queue click overwrites — the
     ledger is where an action's outcome survives that, and what the app's fix
-    history reads.
+    history reads. `judged` rides a refusal or cancel into the entry for the
+    trust ladder.
 
     Best-effort: a ledger append that fails must not cost the operator the
     terminal status the caller has already written."""
-    entry = {
-        "phase": "fix:single", "pr": n, "started": req.get("started_at"),
-        "finished": _now(),
-        "trigger": "autohunt" if req.get("source") in AUTO_SOURCES else None,
-        "stats": {"status": status, "action": req.get("action", "fix"),
-                  "detail": detail, "host": host or settings.worker_id()}}
+    entry = fix_queue.ledger_entry(
+        n, req, status, detail, host or settings.worker_id(), _now(),
+        trigger="autohunt" if req.get("source") in AUTO_SOURCES else None, judged=judged)
     signature = (req.get("objection") or {}).get("signature")
     if signature:
         entry["stats"]["objection"] = signature
@@ -628,7 +627,12 @@ def _fail(n: int, req: dict, message: str, result: dict | None = None, *,
     _log_run(n, req, "failed", message[-TAIL_CHARS:], kind=kind)
 
 
-def _refuse(n: int, req: dict, reason: str, result: dict | None = None) -> None:
+def _refuse(n: int, req: dict, reason: str, result: dict | None = None, *,
+            judged: bool = True) -> None:
+    """End the request `refused`: a verdict on the PR that rests its head from
+    the hunter. `judged` is whether a gate or reviewer refused a change the
+    automation prepared, which the trust ladder counts as a reversal; a
+    refusal with nothing to judge goes through `_decline`."""
     data.store().edit_pr(n).record_fix_request(
         "refused", req.get("action", "fix"), queued_at=req.get("queued_at"),
         started_at=req.get("started_at"), finished_at=_now(),
@@ -636,7 +640,15 @@ def _refuse(n: int, req: dict, reason: str, result: dict | None = None) -> None:
         source=req.get("source"), guidance=req.get("guidance"), objection=req.get("objection"),
         host=settings.worker_id(), head_sha=req.get("against_head_sha"))
     data.refresh()
-    _log_run(n, req, "refused", reason[-TAIL_CHARS:])
+    _log_run(n, req, "refused", reason[-TAIL_CHARS:], judged=judged)
+
+
+def _decline(n: int, req: dict, reason: str, result: dict | None = None) -> None:
+    """Refuse the request for a reason that is no verdict on a prepared change:
+    no change was produced to judge (the PR conflicts, left the store, gave the
+    agent nothing to aim at, or the agent declined), or the world moved under
+    one (a push rejected, a base that no longer takes it)."""
+    _refuse(n, req, reason, result, judged=False)
 
 
 def recheck_eligibility(n: int, action: str,
@@ -664,14 +676,15 @@ def _end_on_preflight(n: int, claimed: dict, pf: dict, result: dict) -> None:
     """Write the ending for a compile preflight that did not clear, after
     discarding the worktree. An `error` is the sandbox failing to run at all —
     this machine's problem, a `failed` the hunter retries once it cools —
-    while a refusal or a compile that exits non-zero is a verdict on the
-    change."""
+    while a refusal or a compile that exits non-zero is a verdict on the PR.
+    Only a compile that ran and failed judges the change itself."""
     _resubmit(n, "abort")
     if pf.get("error"):
         _fail(n, claimed, plain_preflight(pf), result=result,
               kind=str(pf.get("error_kind") or "sandbox"))
     else:
-        _refuse(n, claimed, str(result.get("detail") or plain_preflight(pf)), result=result)
+        _refuse(n, claimed, str(result.get("detail") or plain_preflight(pf)), result=result,
+                judged=pf.get("exit") == gates.SENTINEL_TEST_FAIL)
 
 
 def _compile_objection(n: int, claimed: dict, pf: dict) -> dict | None:
@@ -700,7 +713,7 @@ def run_one(n: int) -> None:
     action = claimed.get("action") or "fix"
     ok, why = recheck_eligibility(n, action)
     if not ok:
-        _refuse(n, claimed, f"no longer eligible for {action}: {why}")
+        _decline(n, claimed, f"no longer eligible for {action}: {why}")
         return
 
     try:
@@ -790,7 +803,7 @@ def _probe(n: int, claimed: dict, action: str) -> str | None:
         patch = _diff_text(diff)
     if not patch:
         _resubmit(n, "abort")
-        _refuse(n, claimed, f"the {action} produced no change to push")
+        _decline(n, claimed, f"the {action} produced no change to push")
         return None
     return patch
 
@@ -921,20 +934,20 @@ def _author_fix(n: int, claimed: dict) -> None:
     path, because an agent's edits cannot be re-derived at approval time."""
     rec = data.store().load_pr(n)
     if rec is None:
-        _refuse(n, claimed, f"PR #{n} left the store")
+        _decline(n, claimed, f"PR #{n} left the store")
         return
     goal, findings, checks, review_summary = _fix_goal(rec, claimed)
     if not (claimed.get("guidance") or claimed.get("objection") or findings
             or checks or review_summary):
-        _refuse(n, claimed, "Nothing to aim a fix at: the review left no findings "
-                            "and no summary for this head, and no check is failing.")
+        _decline(n, claimed, "Nothing to aim a fix at: the review left no findings "
+                             "and no summary for this head, and no check is failing.")
         return
     withheld = _withheld_targets(claimed, findings, checks)
     if withheld:
-        _refuse(n, claimed, "Every path the review findings point at is one the bot "
-                            "may not author on (CODEOWNERS-gated or withheld by the "
-                            f"profile): {', '.join(withheld[:5])}. A change there "
-                            "needs a person.")
+        _decline(n, claimed, "Every path the review findings point at is one the bot "
+                             "may not author on (CODEOWNERS-gated or withheld by the "
+                             f"profile): {', '.join(withheld[:5])}. A change there "
+                             "needs a person.")
         return
     if not rec.head_sha:
         _fail(n, claimed, "the PR has no recorded head SHA")
@@ -1083,8 +1096,8 @@ def _author_and_review(n: int, claimed: dict, rec: Pr, worktree: str, goal: str,
         return None
     except headless_agent.AgentDeclined as e:
         _resubmit(n, "abort")
-        _refuse(n, claimed, f"The model's safeguards declined this PR's text, so "
-                            f"nothing was authored: {e}")
+        _decline(n, claimed, f"The model's safeguards declined this PR's text, so "
+                             f"nothing was authored: {e}")
         return None
     except (RuntimeError, ValueError) as e:
         _resubmit(n, "abort")
@@ -1096,8 +1109,8 @@ def _author_and_review(n: int, claimed: dict, rec: Pr, worktree: str, goal: str,
     verdict["checks"] = sandbox_check.collect_checks(n)
     if "give_up" in verdict:
         _resubmit(n, "abort")
-        _refuse(n, claimed, f"The agent declined to write a change: "
-                            f"{verdict['give_up']}", result=_checks_only(verdict["checks"]) or None)
+        _decline(n, claimed, f"The agent declined to write a change: "
+                             f"{verdict['give_up']}", result=_checks_only(verdict["checks"]) or None)
         return None
 
     diff = _resubmit(n, "diff")
@@ -1109,8 +1122,8 @@ def _author_and_review(n: int, claimed: dict, rec: Pr, worktree: str, goal: str,
     patch = _diff_text(diff)
     if not patch.startswith("diff "):
         _resubmit(n, "abort")
-        _refuse(n, claimed, "The agent reported changes, but the worktree holds "
-                            "none — nothing was written.")
+        _decline(n, claimed, "The agent reported changes, but the worktree holds "
+                             "none — nothing was written.")
         return None
     if len(patch) > PATCH_CHARS:
         _resubmit(n, "abort")
@@ -1193,17 +1206,17 @@ def _agent_resolve(n: int, claimed: dict, paused: list[str]) -> None:
     evidence = ({"merge_diff": merge_diff, "conflict_paths": paused}
                 if merge_diff else None)
     if claimed.get("source") == "auto" and not settings.fix_hunt_resolve():
-        _refuse(n, claimed, _conflict_refusal(paused), result=evidence)
+        _decline(n, claimed, _conflict_refusal(paused), result=evidence)
         return
     rec = data.store().load_pr(n)
     if rec is None:
-        _refuse(n, claimed, f"PR #{n} left the store")
+        _decline(n, claimed, f"PR #{n} left the store")
         return
     ok, why = gates.fix_eligibility(rec, "resolve", paused)
     if not ok:
-        _refuse(n, claimed,
-                f"{_conflict_refusal(paused)} An agent resolution was withheld: {why}.",
-                result=evidence)
+        _decline(n, claimed,
+                 f"{_conflict_refusal(paused)} An agent resolution was withheld: {why}.",
+                 result=evidence)
         return
     if claimed.get("source") in AUTO_SOURCES and not lane_health.capacity_open("fix"):
         # The conflicted paths ride the ending whatever the merge diff held:
@@ -1229,7 +1242,7 @@ def _agent_resolve(n: int, claimed: dict, paused: list[str]) -> None:
     if not worktree or not conflicts:
         # The merge did not pause where the rebase did; nothing to resolve here.
         _resubmit(n, "abort")
-        _refuse(n, claimed, _conflict_refusal(paused), result=evidence)
+        _decline(n, claimed, _conflict_refusal(paused), result=evidence)
         return
 
     _running_step(n, claimed, "agent resolving conflicts")
@@ -1250,16 +1263,16 @@ def _agent_resolve(n: int, claimed: dict, paused: list[str]) -> None:
         return
     except (RuntimeError, ValueError) as e:
         _resubmit(n, "abort")
-        _refuse(n, claimed,
-                f"{_conflict_refusal(paused)} The agent attempt did not land: {e}.",
-                result=evidence)
+        _decline(n, claimed,
+                 f"{_conflict_refusal(paused)} The agent attempt did not land: {e}.",
+                 result=evidence)
         return
     if "give_up" in verdict:
         _resubmit(n, "abort")
-        _refuse(n, claimed,
-                f"{_conflict_refusal(paused)} The agent declined to guess: "
-                f"{verdict['give_up']}",
-                result=evidence)
+        _decline(n, claimed,
+                 f"{_conflict_refusal(paused)} The agent declined to guess: "
+                 f"{verdict['give_up']}",
+                 result=evidence)
         return
 
     cont = _resubmit(n, "continue")
@@ -1311,14 +1324,14 @@ def _describe(n: int, claimed: dict) -> None:
     the bot's `pr edit`, run at approval."""
     rec = data.store().load_pr(n)
     if rec is None:
-        _refuse(n, claimed, f"PR #{n} left the store")
+        _decline(n, claimed, f"PR #{n} left the store")
         return
     if not rec.head_sha:
         _fail(n, claimed, "the PR has no recorded head SHA")
         return
     template = describe_pr.fetch_template()
     if template is None:
-        _refuse(n, claimed, f"the repository has no {describe_pr.TEMPLATE_PATH} to follow")
+        _decline(n, claimed, f"the repository has no {describe_pr.TEMPLATE_PATH} to follow")
         return
     live = gh.fetch_pr(n) or {}
     title = str(live.get("title") or rec.title or "")
@@ -1341,14 +1354,14 @@ def _describe(n: int, claimed: dict) -> None:
               kind="agent-unavailable")
         return
     except headless_agent.AgentDeclined as e:
-        _refuse(n, claimed, f"The model's safeguards declined this PR's text, so no "
-                            f"description was written: {e}")
+        _decline(n, claimed, f"The model's safeguards declined this PR's text, so no "
+                             f"description was written: {e}")
         return
     except (RuntimeError, ValueError) as e:
         _fail(n, claimed, f"The agent attempt did not land: {e}")
         return
     if "give_up" in verdict:
-        _refuse(n, claimed, f"The agent declined to write a description: {verdict['give_up']}")
+        _decline(n, claimed, f"The agent declined to write a description: {verdict['give_up']}")
         return
     result = {"body": verdict["body"], "previous_body": body,
               "message": "Rewrite the description to follow the PR template"}
@@ -1506,6 +1519,9 @@ def _commit_message(action: str) -> str:
 
 
 def _cancel(n: int, req: dict, reason: str, result: dict | None = None) -> None:
+    """End the request `cancelled` on the worker's own call — a head that moved,
+    a base it no longer applies to, an authoring worker gone offline — which
+    re-arms the PR and judges nothing about the change."""
     data.store().edit_pr(n).record_fix_request(
         "cancelled", req.get("action", "fix"), queued_at=req.get("queued_at"),
         started_at=req.get("started_at"), finished_at=_now(),
@@ -1513,7 +1529,7 @@ def _cancel(n: int, req: dict, reason: str, result: dict | None = None) -> None:
         guidance=req.get("guidance"), objection=req.get("objection"), host=settings.worker_id(),
         head_sha=req.get("against_head_sha"))
     data.refresh()
-    _log_run(n, req, "cancelled", reason[-TAIL_CHARS:])
+    _log_run(n, req, "cancelled", reason[-TAIL_CHARS:], judged=False)
 
 
 def _related_tests_run(n: int, head: str, patch: str,
@@ -1827,7 +1843,7 @@ def push_approved(n: int) -> None:
     if action == "describe":
         ok, why = recheck_eligibility(n, action)
         if not ok:
-            _refuse(n, claimed, f"no longer eligible for {action}: {why}")
+            _decline(n, claimed, f"no longer eligible for {action}: {why}")
             return
         _post_description(n, claimed, result)
         return
@@ -1842,7 +1858,7 @@ def push_approved(n: int) -> None:
     ok, why = recheck_eligibility(n, action, authored)
     if not ok:
         _resubmit(n, "abort")
-        _refuse(n, claimed, f"no longer eligible for {action}: {why}")
+        _decline(n, claimed, f"no longer eligible for {action}: {why}")
         return
     if action == "rebase":
         # `update` re-derives inside its own push command; a rebase needs the
@@ -1855,10 +1871,10 @@ def push_approved(n: int) -> None:
         paused = _conflicted_state(n)
         if paused is not None:
             _resubmit(n, "abort")
-            _refuse(n, claimed,
-                    f"The base moved since this rebase was proven, and it now "
-                    f"conflicts on {len(paused)} file(s): {', '.join(paused[:5])}. "
-                    f"Nothing was pushed.")
+            _decline(n, claimed,
+                     f"The base moved since this rebase was proven, and it now "
+                     f"conflicts on {len(paused)} file(s): {', '.join(paused[:5])}. "
+                     f"Nothing was pushed.")
             return
     elif action == "fix" and not _rebuild_fix(n, claimed, result):
         return
@@ -1878,8 +1894,8 @@ def _rebuild_fix(n: int, claimed: dict, result: dict) -> bool:
     half-written on the branch."""
     patch = result.get("patch")
     if not isinstance(patch, str) or not patch.startswith("diff "):
-        _refuse(n, claimed, "The reviewed patch is missing from this request, so "
-                            "there is nothing to push — re-queue the fix.")
+        _decline(n, claimed, "The reviewed patch is missing from this request, so "
+                             "there is nothing to push — re-queue the fix.")
         return False
     prepared = _resubmit(n, "prepare")
     if prepared.returncode != 0:
@@ -1892,10 +1908,10 @@ def _rebuild_fix(n: int, claimed: dict, result: dict) -> bool:
         output = (applied.stderr or applied.stdout).strip()
         if _fail_if_crashed(n, claimed, applied.returncode, output, result):
             return False
-        _refuse(n, claimed,
-                f"The reviewed change no longer applies to PR #{n}'s head. "
-                f"Nothing was pushed — re-queue the fix to author it again.",
-                result={**result, "output": output[-TAIL_CHARS:]})
+        _decline(n, claimed,
+                 f"The reviewed change no longer applies to PR #{n}'s head. "
+                 f"Nothing was pushed — re-queue the fix to author it again.",
+                 result={**result, "output": output[-TAIL_CHARS:]})
         return False
     return True
 

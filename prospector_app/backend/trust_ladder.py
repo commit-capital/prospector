@@ -12,12 +12,18 @@ demotes a type with no human action:
   terminal decision against the suggested disposition its capture recorded; a
   capture without a recorded suggestion carries no evidence. Autofix types
   (``update``, ``rebase``, ``resolve``, ``fix``, ``describe``) read the runs
-  ledger's ``fix:single`` lane: a ``pushed`` ending is an acceptance and a
-  ``cancelled`` ending a rejection, whoever cancelled it.
+  ledger's ``fix:single`` lane: a ``pushed`` ending is an acceptance and an
+  operator's ``cancelled`` of a parked change a rejection. The worker's own
+  cancels re-arm a PR and judge nothing.
 - **reversal** — how often the automation's work is undone or rejected. A live
   close later REOPENed counts against its close type; a ``refused`` autofix
-  ending (a gate or reviewer rejecting the prepared change) counts against its
-  action. A merge has no undo signal, so its reversal carries no evidence.
+  ending in which a gate or reviewer rejected the prepared change counts
+  against its action, and a refusal with no change to judge (a conflicted PR,
+  an agent that declined, a push the world moved under) counts for nothing. A
+  merge has no undo signal, so its reversal carries no evidence.
+
+An autofix outcome counts once per PR, action and head, so a hunter that
+reaches the same ending on an unchanged head again adds no evidence.
 
 The rung is a disclosure: the Policy page renders it, and the env-configured
 autopush and hunt switches remain the enforcement.
@@ -129,27 +135,47 @@ def upstream_rates(rows: list[dict]) -> dict[str, tuple[Rate, Rate]]:
             for t in _DECISION_FOR}
 
 
+def _judges(status: str, stats: dict) -> bool:
+    """Whether one autofix ending is a judgment of the change the automation
+    prepared. A refusal that does not say counts, since a refusal can be
+    either; a cancel counts only when it says a person rejected the change."""
+    if status == "pushed":
+        return True
+    if status == "refused":
+        return stats.get("judged") is not False
+    if status == "cancelled":
+        return stats.get("judged") is True
+    return False
+
+
 def ledger_rates(runs: list[storekit.RunRecord]) -> dict[str, tuple[Rate, Rate]]:
     """(agreement, reversal) for the autofix types from the runs ledger's
-    ``fix:single`` endings, in insertion order. ``pushed`` accepts and
-    ``cancelled`` rejects the prepared change; ``refused`` is the gate or
-    reviewer rejecting it, which is the reversal signal. Intermediate and
-    machine endings (``awaiting-review``, ``approved``, ``failed``) judge
-    nothing."""
-    accepted: dict[str, list[bool]] = {t: [] for t in _LEDGER_TYPES}
-    rejected: dict[str, list[bool]] = {t: [] for t in _LEDGER_TYPES}
+    ``fix:single`` endings, in insertion order. ``pushed`` accepts and a
+    person's ``cancelled`` rejects the prepared change; a judged ``refused``
+    is the reversal signal. Endings that judge nothing (``awaiting-review``,
+    ``approved``, ``failed``, the worker's cancels, a refusal with no change
+    to judge) are skipped, and one outcome of one action at one head counts
+    once, at its latest ending; an ending that names no head counts once per
+    PR."""
+    latest: dict[tuple[object, str, object, str], tuple[str, str]] = {}
     for rec in runs:
         if not isinstance(rec, storekit.PhaseRun) or rec.phase != "fix:single":
             continue
         stats = rec.raw.get("stats") or {}
         action, status = stats.get("action"), stats.get("status")
-        if action not in _LEDGER_TYPES:
+        if action not in _LEDGER_TYPES or not isinstance(status, str) or not _judges(status, stats):
             continue
-        if status in ("pushed", "cancelled"):
+        key = (rec.raw.get("pr"), action, stats.get("head_sha"), status)
+        latest.pop(key, None)
+        latest[key] = (action, status)
+    accepted: dict[str, list[bool]] = {t: [] for t in _LEDGER_TYPES}
+    rejected: dict[str, list[bool]] = {t: [] for t in _LEDGER_TYPES}
+    for action, status in latest.values():
+        if status == "refused":
+            rejected[action].append(True)
+        else:
             accepted[action].append(status == "pushed")
             rejected[action].append(False)
-        elif status == "refused":
-            rejected[action].append(True)
     return {t: (_windowed(accepted[t]), _windowed(rejected[t])) for t in _LEDGER_TYPES}
 
 
