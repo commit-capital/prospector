@@ -6,6 +6,8 @@ here with no Docker and no filesystem. The load-bearing property is that the
 pinned SHA is never in a delete set, whatever the timestamps say."""
 import os
 import subprocess
+import threading
+import time
 
 import pytest
 from datetime import datetime, timedelta, timezone
@@ -352,6 +354,70 @@ class TestCollect:
         result = gc.collect("a" * 12)
         assert (tmp_path / "base" / ("c" * 12)).is_dir()
         assert result["reclaimed"] == []
+
+    def test_a_generation_still_being_built_is_left_alone(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(gc, "SCRATCH", tmp_path)
+        building = clone_dirs(tmp_path, "c", "b", "a")["c"]
+        calls: list[list[str]] = []
+
+        def run(cmd: list[str], **kw: object) -> subprocess.CompletedProcess[str]:
+            calls.append(cmd)
+            if cmd[1:3] == ["image", "ls"]:
+                return subprocess.CompletedProcess(cmd, 0, f"{'c' * 12}-t1\t\n", "")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(gc.subprocess, "run", run)
+        with gc.generation_lock(building):
+            result = gc.collect("a" * 12)
+        assert building.is_dir()
+        assert result["reclaimed"] == []
+        assert not [c for c in calls if c[1] == "rmi"]
+
+    def test_a_reclaimed_generation_takes_its_lock_file_with_it(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(gc, "SCRATCH", tmp_path)
+        doomed = clone_dirs(tmp_path, "c", "b", "a")["c"]
+        with gc.generation_lock(doomed):
+            pass
+        monkeypatch.setattr(gc.subprocess, "run", lambda cmd, **kw:
+                            subprocess.CompletedProcess(cmd, 0, "", ""))
+        gc.collect("a" * 12)
+        assert not gc.lock_path(doomed).exists()
+
+
+class TestGenerationLock:
+    def test_a_second_holder_is_refused_while_the_first_holds_it(self, tmp_path):
+        ctx = tmp_path / "base" / ("a" * 12)
+        with gc.generation_lock(ctx) as held:
+            assert held
+            with gc.generation_lock(ctx, wait=False) as other:
+                assert not other
+        with gc.generation_lock(ctx, wait=False) as other:
+            assert other
+
+    def test_a_waiter_takes_the_lock_afresh_when_the_file_was_removed_under_it(self, tmp_path):
+        """A sweep unlinks the lock file of a generation it removes while holding
+        it; a build that was waiting on that file then locks the one at the path,
+        so a third party sees it held."""
+        ctx = tmp_path / "base" / ("a" * 12)
+        waiting, acquired, done = threading.Event(), threading.Event(), threading.Event()
+
+        def waiter() -> None:
+            waiting.set()
+            with gc.generation_lock(ctx):
+                acquired.set()
+                assert done.wait(5)
+
+        with gc.generation_lock(ctx):
+            t = threading.Thread(target=waiter)
+            t.start()
+            assert waiting.wait(5)
+            time.sleep(0.2)
+            gc.lock_path(ctx).unlink()
+        assert acquired.wait(5)
+        with gc.generation_lock(ctx, wait=False) as other:
+            assert not other
+        done.set()
+        t.join(5)
 
 
 class TestTeardown:
