@@ -15,10 +15,10 @@ def _decision(pr, decision, *, at, suggested=None, dry_run=False):
     return rec
 
 
-def _ending(pr, action, status):
+def _ending(pr, action, status, **stats):
     return storekit.parse_run({"phase": "fix:single", "pr": pr, "started": None,
                                "finished": "2026-09-22T00:00:00",
-                               "stats": {"action": action, "status": status}})
+                               "stats": {"action": action, "status": status, **stats}})
 
 
 def test_rung_climbs_and_fails_closed_on_thin_windows():
@@ -79,7 +79,7 @@ def test_a_reopen_before_the_close_does_not_reverse_it():
 def test_ledger_rates_read_verdict_endings_only():
     runs = [
         _ending(1, "update", "pushed"),
-        _ending(2, "update", "cancelled"),
+        _ending(2, "update", "cancelled", judged=True),
         _ending(3, "update", "refused"),
         _ending(4, "update", "awaiting-review"),
         _ending(5, "update", "failed"),
@@ -93,8 +93,42 @@ def test_ledger_rates_read_verdict_endings_only():
     assert (f_agree.hits, f_agree.n) == (1, 1)
 
 
+def test_a_refusal_with_no_change_to_judge_is_not_a_reversal():
+    runs = [_ending(1, "rebase", "refused", judged=False),
+            _ending(2, "rebase", "refused", judged=True),
+            _ending(3, "rebase", "refused")]
+    _, reversal = trust_ladder.ledger_rates(runs)["rebase"]
+    assert (reversal.hits, reversal.n) == (2, 2)
+
+
+def test_only_a_persons_cancel_rejects_the_change():
+    runs = [_ending(1, "resolve", "pushed"),
+            _ending(2, "resolve", "cancelled", judged=False),
+            _ending(3, "resolve", "cancelled"),
+            _ending(4, "resolve", "cancelled", judged=True)]
+    agreement, reversal = trust_ladder.ledger_rates(runs)["resolve"]
+    assert (agreement.hits, agreement.n) == (1, 2)
+    assert (reversal.hits, reversal.n) == (0, 2)
+
+
+def test_one_outcome_at_one_head_counts_once():
+    looped = [_ending(322, "update", "refused", head_sha="a" * 40) for _ in range(50)]
+    runs = [*looped, _ending(322, "update", "refused", head_sha="b" * 40),
+            _ending(322, "update", "pushed", head_sha="b" * 40)]
+    agreement, reversal = trust_ladder.ledger_rates(runs)["update"]
+    assert (reversal.hits, reversal.n) == (2, 3)
+    assert (agreement.hits, agreement.n) == (1, 1)
+
+
+def test_an_ending_that_names_no_head_counts_once_per_pr():
+    runs = [_ending(322, "update", "refused") for _ in range(50)]
+    runs.append(_ending(10293, "update", "refused"))
+    _, reversal = trust_ladder.ledger_rates(runs)["update"]
+    assert (reversal.hits, reversal.n) == (2, 2)
+
+
 def test_window_reads_only_the_most_recent_events():
-    old = [_ending(n, "update", "cancelled") for n in range(trust_ladder.WINDOW)]
+    old = [_ending(n, "update", "cancelled", judged=True) for n in range(trust_ladder.WINDOW)]
     new = [_ending(n, "update", "pushed") for n in range(trust_ladder.WINDOW)]
     agreement, _ = trust_ladder.ledger_rates(old + new)["update"]
     assert (agreement.hits, agreement.n) == (trust_ladder.WINDOW, trust_ladder.WINDOW)

@@ -28,6 +28,23 @@ STALE_BEAT_SECONDS = 90.0
 # second request for the same PR would race it.
 IN_FLIGHT = ("queued", "running", "awaiting-review", "approved", "pushing")
 
+LEDGER_PHASE = "fix:single"
+
+
+def ledger_entry(n: int, req: dict, status: str, detail: str | None, host: str,
+                 finished: str, *, trigger: str | None = None,
+                 judged: bool | None = None) -> dict:
+    """The runs-ledger entry for one ending of PR `n`'s fix request `req`. It
+    names the head the request was pinned against and, when `judged` is given,
+    whether the ending is a verdict on a change the automation prepared — the
+    two facts trust_ladder counts a judgment by."""
+    stats: dict = {"status": status, "action": req.get("action", "fix"), "detail": detail,
+                   "host": host, "head_sha": req.get("against_head_sha")}
+    if judged is not None:
+        stats["judged"] = judged
+    return {"phase": LEDGER_PHASE, "pr": n, "started": req.get("started_at"),
+            "finished": finished, "trigger": trigger, "stats": stats}
+
 
 def queue_pr(n: int, action: str, source: str | None = None,
              guidance: str | None = None, objection: dict | None = None) -> dict:
@@ -68,7 +85,8 @@ def dequeue_pr(n: int) -> dict:
     """Cancel PR `n`'s fix request. Only a request the runner has not started —
     `queued` — or one parked for review can be cancelled; a running action is
     not interrupted from the app. Cancelling an `awaiting-review` request is how
-    an operator discards an authored fix they do not want pushed."""
+    an operator discards an authored fix they do not want pushed, and it lands
+    in the runs ledger as a person's rejection of that change."""
     rec = data.store().load_pr(n)
     if rec is None:
         raise ValueError(f"PR #{n} not in store")
@@ -76,10 +94,15 @@ def dequeue_pr(n: int) -> dict:
     if req.get("status") not in ("queued", "awaiting-review"):
         raise ValueError(f"PR #{n} has no cancellable fix request "
                          f"(status: {req.get('status') or 'none'})")
+    finished = _now()
     rec.record_fix_request("cancelled", req.get("action", "fix"),
-                           queued_at=req.get("queued_at"), finished_at=_now(),
+                           queued_at=req.get("queued_at"), finished_at=finished,
                            source=req.get("source"), guidance=req.get("guidance"),
                            objection=req.get("objection"), head_sha=req.get("against_head_sha"))
+    if req.get("status") == "awaiting-review":
+        data.store().append_run(ledger_entry(
+            n, req, "cancelled", "An operator discarded the change.", settings.worker_id(),
+            finished, judged=True))
     data.refresh()
     return {"pr": n, "status": "cancelled"}
 

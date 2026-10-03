@@ -125,6 +125,26 @@ def test_awaiting_review_can_be_discarded(store):
     assert fix_queue.dequeue_pr(1)["status"] == "cancelled"
 
 
+def test_discarding_a_parked_change_is_a_rejection_in_the_ledger(store):
+    fix_queue.queue_pr(1, "rebase")
+    store.edit_pr(1).record_fix_request("awaiting-review", "rebase",
+                                        result={"patch": "diff"}, head_sha="a" * 40)
+    data.refresh()
+    fix_queue.dequeue_pr(1)
+
+    run, = [r.raw for r in store.runs() if getattr(r, "phase", None) == "fix:single"]
+    assert run["stats"]["status"] == "cancelled" and run["stats"]["judged"] is True
+    assert run["stats"]["head_sha"] == "a" * 40
+    # The backfill skips an ending the ledger holds at the same finished stamp.
+    assert run["finished"] == store.load_pr(1).fix_request["finished_at"]
+
+
+def test_dequeueing_a_request_that_never_ran_leaves_no_ledger_entry(store):
+    fix_queue.queue_pr(1, "rebase")
+    fix_queue.dequeue_pr(1)
+    assert not [r for r in store.runs() if getattr(r, "phase", None) == "fix:single"]
+
+
 def test_approve_moves_an_awaiting_review_request(store):
     fix_queue.queue_pr(1, "rebase")
     store.edit_pr(1).record_fix_request("awaiting-review", "rebase",

@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from pipeline import gates
 from pipeline import store as S
 from prospector_app.backend import autohunt_view, data, fix_history_backfill, fix_queue, fix_worker
 
@@ -54,6 +55,33 @@ def test_a_refusal_records_its_reason_in_the_ledger(store):
     assert run["stats"]["status"] == "refused"
     assert run["stats"]["action"] == "rebase"
     assert run["stats"]["detail"] == "the base conflicts in server/src/index.ts"
+    assert run["stats"]["head_sha"] == HEAD
+    assert run["stats"]["judged"] is True
+
+
+def test_a_decline_records_that_no_change_was_judged(store):
+    fix_worker._decline(1, {"action": "rebase", "against_head_sha": HEAD},
+                        "the base conflicts in server/src/index.ts")
+
+    run, = _fix_runs(store)
+    assert run["stats"]["status"] == "refused" and run["stats"]["judged"] is False
+
+
+def test_the_workers_cancel_records_that_no_change_was_judged(store):
+    fix_worker._cancel(1, {"action": "resolve", "against_head_sha": HEAD}, "the head moved")
+
+    run, = _fix_runs(store)
+    assert run["stats"]["status"] == "cancelled" and run["stats"]["judged"] is False
+
+
+@pytest.mark.parametrize(("exit_code", "judged"), [
+    (gates.SENTINEL_TEST_FAIL, True), (gates.SENTINEL_PATCH_CONFLICT, False)])
+def test_only_a_compile_that_failed_judges_the_change(store, exit_code, judged):
+    fix_worker._end_on_preflight(1, {"action": "rebase", "against_head_sha": HEAD},
+                                 {"exit": exit_code}, {"detail": "the preflight did not clear"})
+
+    run, = _fix_runs(store)
+    assert run["stats"]["status"] == "refused" and run["stats"]["judged"] is judged
 
 
 def test_a_failure_records_its_error(store):
