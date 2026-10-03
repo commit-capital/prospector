@@ -58,6 +58,7 @@ from prospector_app.backend import responses as responses_mod
 from prospector_app.backend import service
 from prospector_app.backend import suggested_actions
 from prospector_app.backend import pr_watch
+from prospector_app.backend import subproc
 from prospector_app.backend import system_health
 from prospector_app.backend import threat_view
 from prospector_app.backend import tables
@@ -87,7 +88,10 @@ class SurrogateSafeJSONResponse(JSONResponse):
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    """Launch background services without blocking application startup."""
+    """Launch background services without blocking application startup. Every
+    one of them starts subprocesses, so stdin is detached from the terminal
+    first."""
+    subproc.detach_stdin()
     _restore_jobs()
     _launch_snapshot_load()
     _launch_live_sweep()
