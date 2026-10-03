@@ -8,6 +8,8 @@ import json
 import os
 import socket
 import subprocess
+import threading
+import time
 import tracemalloc
 from pathlib import Path
 from typing import Self
@@ -2664,6 +2666,79 @@ class TestBuildStepOutput:
         with progress.reporting_steps(steps.append):
             vd._run_build_step("building img", ["docker", "build"], env={})
         assert steps == ["building img"]
+
+
+class TestBaseBuildSharing:
+    """Two callers build the base for current default-branch HEAD — the daily
+    pin refresh and the compile preflight — so builds of one SHA meet."""
+
+    SHA = "deadbeefcafebabe1234"
+
+    @pytest.fixture
+    def builds(self, tmp_path, monkeypatch) -> dict:
+        """The build steps stubbed: `clones` records each clone's destination,
+        `built` the image tags, `fail` names a step to fail, and a clone waits
+        on `release` once `cloning` is set."""
+        monkeypatch.setattr(vd, "SCRATCH", tmp_path / "scratch")
+        state: dict = {"clones": [], "built": set(), "fail": None,
+                       "cloning": threading.Event(), "release": threading.Event()}
+        state["release"].set()
+
+        def step(what: str, cmd: list[str], **kw: object) -> None:
+            if cmd[:2] == ["git", "clone"]:
+                state["clones"].append(Path(cmd[-1]))
+                state["cloning"].set()
+                assert state["release"].wait(5)
+            if state["fail"] and what.startswith(state["fail"]):
+                raise vd.BuildFailure(f"{what} exited 1: boom")
+            if cmd[:2] == ["docker", "build"]:
+                state["built"].add(cmd[cmd.index("-t") + 1])
+
+        monkeypatch.setattr(vd, "_run_build_step", step)
+        monkeypatch.setattr(vd, "scrub_checkout", lambda src: None)
+        monkeypatch.setattr(vd, "assert_scrubbed", lambda src: None)
+        monkeypatch.setattr(vd, "image_exists", lambda tag: tag in state["built"])
+        return state
+
+    def test_a_second_build_waits_for_the_first_and_reuses_it(self, builds):
+        builds["release"].clear()
+        first = threading.Thread(target=vd.build_base_image, args=(self.SHA,), kwargs={"tier": 1})
+        first.start()
+        assert builds["cloning"].wait(5)
+        second_tag: list[str] = []
+        second = threading.Thread(
+            target=lambda: second_tag.append(vd.build_base_image(self.SHA, tier=1)))
+        second.start()
+        time.sleep(0.3)
+        assert len(builds["clones"]) == 1
+        builds["release"].set()
+        first.join(5)
+        second.join(5)
+        assert second_tag == [vd.base_image_tag(self.SHA, 1)]
+        assert len(builds["clones"]) == 1
+        assert vd.base_clone_dir(self.SHA).is_dir()
+
+    def test_a_failed_build_is_not_reused(self, builds):
+        builds["fail"] = "building"
+        with pytest.raises(vd.BuildFailure):
+            vd.build_base_image(self.SHA, tier=1)
+        builds["fail"] = None
+        vd.build_base_image(self.SHA, tier=1)
+        assert len(builds["clones"]) == 2
+
+    def test_an_image_without_a_finished_build_beside_it_is_rebuilt(self, builds):
+        builds["built"].add(vd.base_image_tag(self.SHA, 1))
+        vd.build_base_image(self.SHA, tier=1)
+        assert len(builds["clones"]) == 1
+
+    def test_the_clone_moves_into_place_only_once_complete(self, builds):
+        """A clone left running by a process that died mid-build empties its own
+        directory when it fails, so it must never be the one a later build
+        clones into."""
+        vd.build_base_image(self.SHA, tier=1)
+        assert builds["clones"][0] != vd.base_clone_dir(self.SHA)
+        assert builds["clones"][0].parent == vd.base_clone_dir(self.SHA).parent
+        assert vd.base_clone_dir(self.SHA).is_dir()
 
 
 class TestCanaryOutput:
