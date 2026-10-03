@@ -232,6 +232,17 @@ class TestScrub:
         with pytest.raises(RuntimeError, match="PRIVATE KEY"):
             vd.assert_scrubbed(src)
 
+    @pytest.mark.parametrize("text", [
+        "-----BEGIN PRIVATE KEY-----" + "Proc-Type:" * 24 + "!",
+        "-----BEGIN PRIVATE KEY-----Proc-Type:" * 30_000,
+    ], ids=["armor-run", "header-run"])
+    def test_a_key_header_without_a_body_scans_in_linear_time(self, tmp_path, text):
+        src = self._checkout(tmp_path)
+        (src / "notes.txt").write_text(text)
+        start = time.perf_counter()
+        vd.assert_scrubbed(src)
+        assert time.perf_counter() - start < 1.0
+
     def test_assert_catches_a_github_token(self, tmp_path):
         src = self._checkout(tmp_path)
         (src / "notes.md").write_text("token: ghp_0123456789abcdefghijklmnopqrstuvwxyz")
