@@ -763,6 +763,59 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .jobspec { display: flex; align-items: center; gap: 10px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; }
 .jobspec-label { flex: 1; }
 
+/* Control tab panels (views/control): each section a bordered block with a
+   shaded header band, so the sections read apart. */
+.cpanel { border: 1px solid var(--border); border-radius: 10px; margin: 0 0 16px; overflow: hidden; background: var(--bg); }
+.cpanel-head { display: flex; align-items: center; gap: 10px; padding: 9px 14px; background: var(--panel); border-bottom: 1px solid var(--border); }
+.cpanel.folded .cpanel-head { border-bottom: none; }
+.cpanel-title { font-size: 14px; font-weight: 600; margin: 0; white-space: nowrap; }
+.cpanel-meta { color: var(--muted); font-size: 12px; min-width: 0; }
+.cpanel-action { margin-left: auto; }
+.cpanel-body { padding: 12px 14px; }
+.cpanel-fold { all: unset; cursor: pointer; display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
+.cpanel-fold:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.cpanel.tone-danger { border-color: var(--red); }
+.cpanel.tone-danger > .cpanel-head { background: var(--reason-tint); }
+.cpanel.tone-danger > .cpanel-head .cpanel-title { color: var(--red); }
+.cpanel.tone-accent { border-color: var(--accent); }
+.cpanel-row { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; background: var(--panel); }
+.cpanel-row + .cpanel-row { margin-top: 8px; }
+.cpanel-row-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.cpanel-row-detail { margin-top: 6px; font-size: 12.5px; }
+.cpanel-ok { color: var(--green); font-size: 13px; }
+.activity-line { margin-top: 4px; line-height: 1.6; font-size: 13px; }
+.activity-bad { color: var(--red); }
+.status-ok { color: var(--green); font-size: 12px; }
+.status-bad { color: var(--red); font-size: 12px; }
+.status-muted { color: var(--muted); font-size: 12px; }
+.queue-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
+.queue-card { all: unset; box-sizing: border-box; display: block; border: 1px solid var(--border); border-radius: 8px; padding: 9px 12px; background: var(--panel); }
+button.queue-card { cursor: pointer; }
+button.queue-card:hover { border-color: var(--accent); }
+.queue-card.open { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.queue-card.needs-you { border-color: var(--accent); }
+.queue-card-title { font-weight: 600; font-size: 13px; }
+.queue-card-body { margin-top: 3px; font-size: 12px; color: var(--muted); }
+.queue-card-body b { color: var(--accent); font-weight: 600; }
+.queue-table { margin-top: 12px; }
+.job-recommended { border: 1px solid var(--gold); border-radius: 8px; padding: 9px 12px; background: color-mix(in srgb, var(--gold) 8%, var(--panel)); }
+.job-recommended + .job-recommended { margin-top: 8px; }
+.job-open { border: 1px solid var(--accent); border-radius: 8px; padding: 9px 12px; background: var(--panel); margin-top: 10px; }
+.job-row-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.job-row-detail { margin-top: 4px; font-size: 12.5px; color: var(--muted); }
+.job-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
+.job-recommended ~ .job-tiles, .job-recommended + .job-tiles { margin-top: 12px; }
+.job-tile { all: unset; box-sizing: border-box; cursor: pointer; display: flex; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; background: var(--panel); font-size: 12.5px; min-width: 0; }
+.job-tile:hover { border-color: var(--accent); }
+.job-tile.open { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.job-tile-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.job-tile-running { color: var(--accent); font-size: 11px; }
+.cpanel .phase-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 0; }
+@media (max-width: 760px) { .cpanel .phase-grid { grid-template-columns: minmax(0, 1fr); } }
+.jobline { border: 1px solid var(--accent); border-radius: 10px; margin: 0 0 16px; overflow: hidden; }
+.jobline .jobstatus { margin: 0; padding: 8px 12px; background: var(--panel); }
+.jobline .joblog { margin: 0; border: none; border-top: 1px solid var(--border); border-radius: 0; }
+
 /* suggested actions — Control-tab jobs surfaced on the view they feed */
 .suggest-bar { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
 /* a reserved slot: one card-height held open while suggestions load (or come

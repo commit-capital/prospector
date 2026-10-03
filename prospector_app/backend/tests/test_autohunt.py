@@ -1223,3 +1223,14 @@ def test_a_security_review_held_by_an_overload_books_no_failure(store, monkeypat
     assert verify_worker.run_security(1) == security_review.EXIT_TRANSIENT
     assert booked == [] and 1 in verify_worker.security_failed
     assert (envs[0] or {}).get(capacity.METER_ENV) == "security"
+
+
+def test_lane_counts_totals_the_fix_lane(store):
+    from prospector_app.backend import autohunt_view
+    recent = _now()
+    for pr, status in ((1, "failed"), (1, "failed"), (2, "pushed")):
+        store.append_run({"phase": "fix:single", "pr": pr, "ts": recent, "trigger": "autohunt",
+                          "stats": {"action": "rebase", "status": status}})
+    assert autohunt_view.lane_counts("fix", days=7) == {
+        "total": 3, "by_result": {"failed": 2, "pushed": 1},
+        "pr_ids_by_result": {"failed": [1], "pushed": [2]}}

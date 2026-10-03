@@ -33,6 +33,7 @@ from prospector_app.backend import bulk
 from prospector_app.backend import caps
 from prospector_app.backend import chat
 from prospector_app.backend import claims
+from prospector_app.backend import machine_activity
 from prospector_app.backend import machines
 from prospector_app.backend import merge_progress
 from prospector_app.backend import data
@@ -312,6 +313,13 @@ def machines_roster():
     return machines.roster()
 
 
+@app.get("/api/machines/activity")
+def machines_activity() -> machine_activity.ActivityView:
+    """What every machine did in the past day, with its status — the Control
+    tab's Recent activity panel."""
+    return machine_activity.activity()
+
+
 @app.get("/api/health")
 def health():
     """Liveness, plus what the snapshot holds. The frontend polls this to decide
@@ -513,14 +521,17 @@ def fix_queue_status(days: int = Query(7, ge=1, le=400), all_time: bool = False,
     contributor's branch.
 
     `history` is fix-only run history from the runs ledger over the selected
-    window, which is where an ending goes once it ages out of the queue itself.
+    window, which is where an ending goes once it ages out of the queue itself,
+    capped at `limit`; `summary` counts every fix run in the window by result.
     Pass `all_time=true` to span the whole ledger regardless of `days`."""
     window = None if all_time else days
+    records = autohunt_view.window_runs(window)
     return {
         "queue": fix_queue.queue_entries(),
         "runner": fix_queue.runner_status(),
         "history": autohunt_view.history_window(window, limit=limit,
-                                                lanes=frozenset({"fix"})),
+                                                lanes=frozenset({"fix"}), records=records),
+        "summary": autohunt_view.lane_counts("fix", window, records=records),
     }
 
 

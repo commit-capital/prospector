@@ -243,6 +243,17 @@ class StoreEdit:
 RunRecord = PhaseRun | StoreEdit
 
 
+def stamp_host(record: dict) -> dict:
+    """`record` naming the machine that writes it: a copy with `host` set to
+    this machine's worker id, or `record` itself when it already names one,
+    at its top level or in its `stats`."""
+    stats = record.get("stats")
+    if record.get("host") or (isinstance(stats, dict) and stats.get("host")):
+        return record
+    from pipeline import settings
+    return {**record, "host": settings.worker_id()}
+
+
 def parse_run(record: dict) -> RunRecord:
     """The typed view of one runs-ledger record. A record with a non-empty
     `phase` string is a PhaseRun; one with `action == "store-edit"` is a

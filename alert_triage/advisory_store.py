@@ -151,6 +151,7 @@ class AdvisoryStore:
     def append_run(self, record: dict) -> None:
         """Append to the alert family's runs ledger (kind "alert"), validated."""
         from sqlalchemy import insert
+        record = storekit.stamp_host(record)
         storekit.parse_run(record)
         storekit.assert_writable(self.engine)
         with self.engine.begin() as conn:

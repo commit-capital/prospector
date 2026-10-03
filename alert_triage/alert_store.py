@@ -132,6 +132,7 @@ class AlertStore:
         """Append one ledger record, validated: it must parse as one of the
         ledger's two shapes (storekit.parse_run) or the append raises."""
         from sqlalchemy import insert
+        record = storekit.stamp_host(record)
         storekit.parse_run(record)
         storekit.assert_writable(self.engine)
         with self.engine.begin() as conn:

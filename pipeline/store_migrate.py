@@ -30,7 +30,7 @@ def import_pr_store(src: Path | str, store: Store) -> dict[str, int]:
     if runs.exists():
         for line in runs.read_text().splitlines():
             if line.strip():
-                store.append_run(json.loads(line))
+                store.append_run(json.loads(line), stamp=False)
                 counts["runs"] += 1
     threats = src / "threats.json"
     if threats.exists():

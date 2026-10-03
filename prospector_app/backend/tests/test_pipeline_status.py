@@ -446,3 +446,13 @@ def test_status_reads_the_pr_ledger_once(monkeypatch, tmp_path):
     pipeline_status.status()
 
     assert len(reads) == 1
+
+
+def test_unclustered_work_leaves_out_automation_bumps(tmp_path):
+    """An automation author's PR without a summary is never summarized, so never
+    clustered; the clustering backlog leaves it out, as the lane does."""
+    prs = {1: _cov_pr(1, "h1"), 2: _cov_pr(2, "h2")}
+    prs[2].raw["meta"]["author"] = "dependabot[bot]"
+    cov = pipeline_status._pr_coverage(prs, tmp_path)
+    assert cov["not_clustered"] == 2
+    assert cov["unclustered_work"] == 1

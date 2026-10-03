@@ -169,6 +169,32 @@ export interface MachinesRoster {
   local: string;
 }
 
+/** The kinds of work Recent activity counts per machine. */
+export type ActivityLane = "security" | "verify" | "autofix" | "issue_fix";
+/** One outcome within a lane: how many runs ended this way, and the PRs (or,
+ *  for issue fixes, issues) behind them. */
+export interface ActivityOutcome { label: string; count: number; numbers: number[] }
+export interface LaneActivity { count: number; numbers: number[]; outcomes: ActivityOutcome[] }
+/** What one machine did in the past day, with its status. `unattributed`
+ *  gathers ledger rows written before machines were recorded on them. */
+export interface MachineActivity {
+  host: string;
+  local: boolean;
+  online: boolean;
+  offline_since: string | null;
+  /** Silent long enough to read as down rather than restarting. */
+  stalled: boolean;
+  has_worker: boolean;
+  tripped: string[];
+  current: { pr: number | null; issue: number | null };
+  lanes: Partial<Record<ActivityLane, LaneActivity>>;
+  background: { label: string; count: number }[];
+  /** Jobs a person started; `job_id` names this app's own job record. */
+  jobs: { label: string; kind: string; status: string; job_id: number | null }[];
+  spend_usd: number;
+}
+export interface ActivityView { local: string; window_hours: number; machines: MachineActivity[] }
+
 /** One usage window of an AI account: the share used (0–1) and when it resets. */
 export interface CapacityWindow {
   utilization: number;
@@ -899,7 +925,10 @@ export interface FixQueueEntry {
 export interface FixQueue {
   queue: FixQueueEntry[];
   runner: FixRunner;
+  /** The newest fix runs in the window, capped at the request's limit. */
   history: AutohuntRun[];
+  /** Every fix run in the window, counted by result. */
+  summary: AutohuntResultCounts;
 }
 
 /** One security, verify, or fix run from the store's runs ledger, normalized
@@ -2210,6 +2239,7 @@ export const api = {
     return r.json() as Promise<ClaimSet>;
   },
   machines: () => get<MachinesRoster>("/api/machines"),
+  machinesActivity: () => get<ActivityView>("/api/machines/activity"),
   capacity: () => get<CapacityState>("/api/capacity"),
   /** Save this machine's own AI account's policy; resolves to that account. */
   saveCapacityPolicy: (policy: CapacityPolicy) =>
@@ -2336,7 +2366,7 @@ export const api = {
     get<{ items: SuggestedAction[] }>(`/api/actions/suggested?view=${view}`),
 };
 
-export type SuggestedActionView = "prs" | "issues" | "alerts";
+export type SuggestedActionView = "prs" | "issues" | "alerts" | "all";
 
 /** One Control-tab job worth running now, surfaced on the view whose data it
  * feeds; `count` is the default batch size for jobs that take one. */

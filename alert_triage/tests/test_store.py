@@ -119,3 +119,11 @@ def test_vocabularies():
     assert alert_store.ALERT_STATES == {"open", "dismissed", "fixed"}
     assert alert_store.FIX_SCAN_STATES == {"fixed", "likely-fixed", "not-fixed"}
     assert alert_store.ALERT_ACTIONS == {"dismiss-fixed", "needs-fix", "needs-human"}
+
+
+def test_append_run_names_the_machine(tmp_path, monkeypatch):
+    from alert_triage.advisory_store import AdvisoryStore
+    monkeypatch.setenv("TRIAGE_WORKER_ID", "studio")
+    AlertStore(tmp_path).append_run({"phase": "alert-ingest", "started": now(), "finished": now()})
+    AdvisoryStore(tmp_path).append_run({"phase": "advisory-ingest", "started": now(), "finished": now()})
+    assert [r.raw["host"] for r in AlertStore(tmp_path).runs()] == ["studio", "studio"]

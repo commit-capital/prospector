@@ -657,10 +657,14 @@ class Store:
         return {cid: c for cid, c in self._clusters.all().items() if not c.raw.get("deleted")}
 
     # -- Runs ledger ----------------------------------------------------------
-    def append_run(self, record: dict) -> None:
+    def append_run(self, record: dict, *, stamp: bool = True) -> None:
         """Append one ledger record, validated: it must parse as one of the
-        ledger's two shapes (storekit.parse_run) or the append raises."""
+        ledger's two shapes (storekit.parse_run) or the append raises. The
+        record names this machine as its `host` unless `stamp` is False, which
+        an import of rows another machine wrote passes."""
         from sqlalchemy import insert
+        if stamp:
+            record = storekit.stamp_host(record)
         storekit.parse_run(record)
         storekit.assert_writable(self.engine)
         with self.engine.begin() as conn:

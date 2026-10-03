@@ -154,3 +154,10 @@ def test_stale_schema_refuses_issue_writes(tmp_path):
     with pytest.raises(storekit.StaleSchemaError):
         st.save_issue({"issue": 2, "meta": dict(GOOD_META)})
     assert st.load_issue(1) is not None
+
+
+def test_append_run_names_the_machine(tmp_path, monkeypatch):
+    monkeypatch.setenv("TRIAGE_WORKER_ID", "studio")
+    st = issue_store.IssueStore(tmp_path)
+    st.append_run({"phase": "ingest", "stats": {}})
+    assert st.runs()[-1].raw["host"] == "studio"
