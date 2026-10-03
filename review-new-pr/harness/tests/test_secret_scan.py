@@ -136,7 +136,7 @@ PRIVATE_KEY_LEAKS: dict[str, tuple[str, list[str]]] = {
 }
 
 PRIVATE_KEY_MENTIONS: dict[str, tuple[str, list[str]]] = {
-    # paperclipai/paperclip#13575
+    # A maintainer's key validator, whose error message quotes the header.
     "validation-message": ("packages/plugins/sandbox-providers/exe-dev/src/ssh-key.ts", [
         "  const headerMatch = trimmed.match(/^-----BEGIN ([A-Z0-9 ]*)PRIVATE KEY-----/m);",
         "  if (!headerMatch) {",
