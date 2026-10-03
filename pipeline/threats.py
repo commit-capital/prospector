@@ -144,8 +144,9 @@ SIGNATURES: list[tuple[str, str, str, list[Callable[[str], re.Match[str] | bool 
             re.compile(r"\bAKIA[0-9A-Z]{16}\b").search,                       # AWS access key id
             re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36,}\b").search,             # GitHub PAT/OAuth/refresh
             re.compile(r"\bxox[baprs]-[0-9]{10,}-[A-Za-z0-9-]{10,}\b").search,# Slack token
-            re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----").search,
-            # Generic SECRET=<random hex/base64 value> handled in _secret_evidence.
+            # Read outside this list: a generic SECRET=<random hex/base64 value>
+            # in _secret_evidence, and a private key, whose body may run onto
+            # the lines after it, in _private_key.
         ],
     ),
 ]
@@ -236,6 +237,53 @@ def _secret_evidence(body: str) -> bool:
     return value is not None and _looks_secret(value)
 
 
+# A private key is its header AND the base64 body after it; the header alone is
+# a validation message, a placeholder, or a parser's constant. _KEY_LEAD is what
+# may stand between the two when a PEM block is spread over a string literal or
+# a JSON value — whitespace, quotes, `+`, commas, backslashes, \r and \n escapes
+# — and the armor headers of an encrypted PEM or a PGP block, each read up to a
+# backslash or the next `-----`. Its quantifiers are possessive and it stops
+# short of the next header, so a line's headers are each read past once.
+# _KEY_BODY is 40 characters of the base64 alphabet: a PEM body line runs 64
+# columns and an OpenSSH one 70, while an elided or stub body is shorter.
+_KEY_HEADER = re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----")
+_KEY_GAP = r"""(?:\\[rn]|[\s"'`+,\\])*+"""
+_KEY_LEAD = re.compile(
+    _KEY_GAP
+    + r"(?:(?:Proc-Type|DEK-Info|Version|Comment|Hash|Charset|MessageID):"
+      r"[^\\-]*+(?:-(?!----)[^\\-]*+)*+" + _KEY_GAP + r")*+")
+_KEY_BODY = re.compile(r"[A-Za-z0-9+/]{40}")
+# How many added lines after a header-ending line _private_key reads for the
+# body: an encrypted PEM's or a PGP block's armor headers and blank line come
+# first.
+_KEY_LOOKAHEAD = 6
+
+
+def _key_body_opens(line: str, pos: int) -> bool | None:
+    """Whether `line` from `pos`, past what may stand before a key's body,
+    opens on that body: None when nothing else follows to the line's end."""
+    lead = _KEY_LEAD.match(line, pos)
+    end = lead.end() if lead else pos
+    if _KEY_BODY.match(line, end):
+        return True
+    return None if end == len(line) else False
+
+
+def _private_key(body: str, following: Sequence[str]) -> bool:
+    """Whether a private-key header in this added line has its base64 body
+    after it: in the line itself, or opening one of `following`, the added
+    lines directly after it, past blank and armor-header lines."""
+    for header in _KEY_HEADER.finditer(body):
+        opens = _key_body_opens(body, header.end())
+        for line in following:
+            if opens is not None:
+                break
+            opens = _key_body_opens(line, 0)
+        if opens:
+            return True
+    return False
+
+
 def _embedded_line_break(body: str) -> bool:
     """Whether code follows a line-breaking character in `body`, in time linear
     in the line's length."""
@@ -255,11 +303,12 @@ def _path_flags(fname: str | None) -> tuple[bool, bool]:
             bool(fname and _SECRET_EXCLUDE_FILE.search(fname)))
 
 
-def _line_signatures(fname: str | None, body: str) -> list[str]:
+def _line_signatures(fname: str | None, body: str, following: Sequence[str]) -> list[str]:
     """The line signatures one added line fires: the decoder and smuggle
     patterns anywhere, the require injection only in a build-config file, code
     after a line-breaking character, and a secret leak outside the excluded
-    files."""
+    files. `following` is the added lines directly after it, where a private
+    key's body runs on."""
     build_config, secret_exempt = _path_flags(fname)
     fired = [name for name in ("obfuscated-self-decoder", "capability-smuggle")
              if any(matches(body) for matches in _MATCHERS[name])]
@@ -268,7 +317,7 @@ def _line_signatures(fname: str | None, body: str) -> list[str]:
     if _embedded_line_break(body):
         fired.append("embedded-line-break")
     if not secret_exempt and (any(matches(body) for matches in _MATCHERS["secret-leak"])
-                              or _secret_evidence(body)):
+                              or _secret_evidence(body) or _private_key(body, following)):
         fired.append("secret-leak")
     return fired
 
@@ -288,10 +337,8 @@ def locate(diff_text: str, *, limit: int | None = None) -> list[Match]:
     order, at most `limit` of them. The churn-camouflage and unscannable-diff
     signatures describe the whole diff and have no location."""
     out: list[Match] = []
-    for lineno, fname, sign, body in _numbered_changed_lines(diff_text or ""):
-        if sign != "+":
-            continue
-        for name in _line_signatures(fname, body):
+    for lineno, fname, body, following in _added_lines(diff_text or ""):
+        for name in _line_signatures(fname, body, following):
             out.append(Match(name, fname, lineno))
             if limit is not None and len(out) >= limit:
                 return out
@@ -300,6 +347,31 @@ def locate(diff_text: str, *, limit: int | None = None) -> list[Match]:
 
 _HUNK = re.compile(r"@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@")
 _GIT_HEADER = re.compile(r"diff --git a/.* b/(.*)")
+
+
+def _added_runs(diff_text: str) -> Iterator[list[tuple[int, str | None, str]]]:
+    """Each run of added lines that sit on consecutive lines of the diff, as
+    (line number, filename, body), read as _numbered_changed_lines reads them."""
+    run: list[tuple[int, str | None, str]] = []
+    for lineno, fname, sign, body in _numbered_changed_lines(diff_text):
+        if sign != "+":
+            continue
+        if run and lineno != run[-1][0] + 1:
+            yield run
+            run = []
+        run.append((lineno, fname, body))
+    if run:
+        yield run
+
+
+def _added_lines(diff_text: str) -> Iterator[tuple[int, str | None, str, list[str]]]:
+    """(line number, filename, body, following) for every added line, in diff
+    order, `following` being the added lines directly after it, at most
+    _KEY_LOOKAHEAD of them."""
+    for run in _added_runs(diff_text):
+        bodies = [body for _, _, body in run]
+        for i, (lineno, fname, body) in enumerate(run):
+            yield lineno, fname, body, bodies[i + 1:i + 1 + _KEY_LOOKAHEAD]
 
 
 def _changed_lines(diff_text: str) -> Iterator[tuple[str | None, str, str]]:
@@ -379,10 +451,8 @@ def scan_diff(diff_text: str, *, additions: int | None = None,
     """
     fired: dict[str, str] = {}
 
-    for fname, sign, body in _changed_lines(diff_text):
-        if sign != "+":
-            continue
-        for name in _line_signatures(fname, body):
+    for _, fname, body, following in _added_lines(diff_text):
+        for name in _line_signatures(fname, body, following):
             if name in fired:
                 continue
             if name in ("build-config-require-injection", "embedded-line-break", "secret-leak"):
