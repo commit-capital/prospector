@@ -208,6 +208,12 @@ SECRET_ASSIGN_REGEX = re.compile(
 )
 
 
+def _added_file(path: str, lines: list[str]) -> str:
+    body = "".join(f"+{line}\n" for line in lines)
+    return (f"diff --git a/{path} b/{path}\nnew file mode 100644\n"
+            f"--- /dev/null\n+++ b/{path}\n@@ -0,0 +1,{len(lines)} @@\n{body}")
+
+
 def _lines(slots: list[list[str]], count: int, seed: int) -> list[str]:
     """Random lines built slot by slot, each slot giving up to two of its tokens."""
     rng = random.Random(seed)
@@ -238,7 +244,10 @@ class TestLinearScan:
         "createRequire(" * 75_000,
         "a" * 1_000_000,
         "a_key=" * 170_000 + "!",
-    ], ids=["global-index", "createRequire-call", "secret-name", "secret-value"])
+        "-----BEGIN PRIVATE KEY-----Comment:" * 30_000,
+        "-----BEGIN " + "A " * 500_000,
+    ], ids=["global-index", "createRequire-call", "secret-name", "secret-value", "key-armor",
+            "key-label"])
     def test_a_megabyte_line_scans_within_a_second(self, line: str) -> None:
         # a build config that is not secret-exempt, so every line matcher reads it
         _scan_within_a_second(_added_file("cli/esbuild.config.mjs", [line]))
@@ -797,6 +806,89 @@ def test_secret_leak_catches_real_leaks():
     assert not missed, f"missed real leaks: {missed}"
 
 
+# A private key leaks with its base64 body; a header named in a message, a
+# placeholder, or an elided example carries no key. The bodies are synthetic.
+RSA_BODY = ["MIIEpAIBAAKCAQEAu7Q1fX9kLm2Zp4Vt8Rw3Hs6Jd0Nc5Ye1Gb7Ua2Ki9Ox4Pl3Q",
+            "n6Ev1Tr5Dy0Sf3Cg7Bh2Aj9Zk4Xl8Mo1Np6Iq0Ur5Vs3Wt7Xu2Yv9Zw4Ax6By1Cz"]
+OPENSSH_BODY = ["b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gt",
+                "ZWQyNTUxOQAAACBu7Q1fX9kLm2Zp4Vt8Rw3Hs6Jd0Nc5Ye1Gb7Ua2Ki9Ox4Pl3QmA"]
+ENCRYPTION_HEADERS = ("Proc-Type: 4,ENCRYPTED", "DEK-Info: AES-128-CBC,3F17F5316E2BAC89BCB7BF6E1B4E4B7C", "")
+
+
+def _pem(label: str, body: list[str] = RSA_BODY, headers: tuple[str, ...] = ()) -> list[str]:
+    return [f"-----BEGIN {label}PRIVATE KEY-----", *headers, *body, f"-----END {label}PRIVATE KEY-----"]
+
+
+PRIVATE_KEY_LEAKS = {
+    "pem-file": _added_file("deploy/id_rsa", _pem("RSA ")),
+    "openssh-pem-file": _added_file("deploy/id_ed25519", _pem("OPENSSH ", OPENSSH_BODY)),
+    "crlf-pem-file": _added_file("deploy/id_rsa", [f"{line}\r" for line in _pem("RSA ")]),
+    "encrypted-pem-file": _added_file("deploy/server.key", _pem("RSA ", headers=ENCRYPTION_HEADERS)),
+    "pkcs8-encrypted-pem-file": _added_file("deploy/server.key", _pem("ENCRYPTED ")),
+    "pgp-block": _added_file("deploy/signing.asc", [
+        "-----BEGIN PGP PRIVATE KEY BLOCK-----", "Version: GnuPG v2", "", *RSA_BODY,
+        "-----END PGP PRIVATE KEY BLOCK-----"]),
+    "yaml-block-scalar": _added_file("deploy/values.yaml", [
+        "sshKey: |", *(f"  {line}" for line in _pem("OPENSSH ", OPENSSH_BODY))]),
+    "ts-string-literal": _added_file("src/keys.ts", [
+        'export const key = "' + "\\n".join(_pem("RSA ")) + '\\n";']),
+    "js-template-literal": _added_file("src/keys.js", [
+        "const key = `" + _pem("RSA ")[0], *_pem("RSA ")[1:-1], _pem("RSA ")[-1] + "`;"]),
+    "js-concatenated-lines": _added_file("src/keys.js", [
+        "const key =", *(f'  "{line}\\n" +' for line in _pem("RSA ")), '  "";']),
+    "ts-array-of-lines": _added_file("src/keys.ts", [
+        "const KEY = [", *(f'  "{line}",' for line in _pem("OPENSSH ", OPENSSH_BODY)), '].join("\\n");']),
+    "json-service-account": _added_file("deploy/service-account.json", [
+        "{", '  "type": "service_account",',
+        '  "private_key": "' + "\\n".join(_pem("")) + '\\n",', "}"]),
+    "json-encrypted-crlf": _added_file("deploy/creds.json", [
+        '{"key": "' + "\\r\\n".join(_pem("RSA ", headers=ENCRYPTION_HEADERS)) + '"}']),
+    "one-line-env": _added_file("deploy/prod.env", ['SSH_KEY="' + " ".join(_pem("RSA ")) + '"']),
+}
+
+PRIVATE_KEY_MENTIONS = {
+    # paperclipai/paperclip#13575, packages/plugins/sandbox-providers/exe-dev/src/ssh-key.ts
+    "validation-message": _added_file("packages/plugins/sandbox-providers/exe-dev/src/ssh-key.ts", [
+        "  const headerMatch = trimmed.match(/^-----BEGIN ([A-Z0-9 ]*)PRIVATE KEY-----/m);",
+        "  if (!headerMatch) {",
+        "    return \"sshPrivateKey must be a PEM-encoded private key starting with a line like "
+        "'-----BEGIN OPENSSH PRIVATE KEY-----'.\";",
+        "  }",
+    ]),
+    "ui-placeholder": _added_file("ui/src/SshKeyField.tsx", [
+        '<textarea placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" />']),
+    "elided-example": _added_file("src/keys.ts", [
+        'const EXAMPLE = "-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----";']),
+    "header-constants": _added_file("src/pem.ts", [
+        'const HEADER = "-----BEGIN RSA PRIVATE KEY-----";',
+        'const FOOTER = "-----END RSA PRIVATE KEY-----";']),
+    "template-placeholder": _added_file("deploy/ssh-key.tpl", [
+        "-----BEGIN OPENSSH PRIVATE KEY-----", "<paste the private key here>",
+        "-----END OPENSSH PRIVATE KEY-----"]),
+    "comment-then-code": _added_file("src/pem.ts", [
+        "// a key opens with -----BEGIN OPENSSH PRIVATE KEY-----",
+        "export function readPrivateKeyWithItsHeaderAndFooterIntact(pem: string): string {"]),
+    "header-ends-a-file": _added_file("deploy/header.txt", ["-----BEGIN RSA PRIVATE KEY-----"])
+                          + _added_file("deploy/digests.txt", RSA_BODY),
+}
+
+
+@pytest.mark.parametrize("diff", PRIVATE_KEY_LEAKS.values(), ids=PRIVATE_KEY_LEAKS.keys())
+def test_private_key_with_its_body_is_a_secret_leak(diff: str) -> None:
+    assert "secret-leak" in threats.scan_diff(diff)["signatures"]
+
+
+@pytest.mark.parametrize("diff", PRIVATE_KEY_MENTIONS.values(), ids=PRIVATE_KEY_MENTIONS.keys())
+def test_private_key_header_without_its_body_is_not_a_secret_leak(diff: str) -> None:
+    assert "secret-leak" not in threats.scan_diff(diff)["signatures"]
+
+
+def test_multi_line_private_key_is_reported_at_its_header() -> None:
+    diff = PRIVATE_KEY_LEAKS["pem-file"]
+    assert threats.locate(diff) == [threats.Match("secret-leak", "deploy/id_rsa", 6)]
+    assert threats.scan_diff(diff)["detail"]["secret-leak"] == "deploy/id_rsa: -----BEGIN RSA PRIVATE KEY-----"
+
+
 class TestScanWriteEconomy:
     """The scan runs over every PR in the store; a re-run must not pay a
     read+write round-trip per PR whose stored verdict it merely re-derives."""
@@ -881,12 +973,6 @@ HIDDEN_PAYLOAD = [
     "export const ready = true;" + " " * 20_000
     + "global['!']='9-0008-2';var _$_1e42=(function(l,e){})('x',1);global[_$_1e42[0]]= require;",
 ]
-
-
-def _added_file(path: str, lines: list[str]) -> str:
-    body = "".join(f"+{line}\n" for line in lines)
-    return (f"diff --git a/{path} b/{path}\nnew file mode 100644\n"
-            f"--- /dev/null\n+++ b/{path}\n@@ -0,0 +1,{len(lines)} @@\n{body}")
 
 
 def _churn(nbytes: int) -> str:
@@ -1206,7 +1292,8 @@ class TestLocate:
 
     def test_locate_agrees_with_scan_diff_on_line_signatures(self):
         for diff in [PAYLOAD_DIFF, CLEAN_DIFF, LEAKED_KEY_DIFF, *FP_DIFFS.values(),
-                     *REAL_LEAK_DIFFS.values()]:
+                     *REAL_LEAK_DIFFS.values(), *PRIVATE_KEY_LEAKS.values(),
+                     *PRIVATE_KEY_MENTIONS.values()]:
             line_sigs = set(threats.scan_diff(diff)["signatures"]) - {"eol-churn-camouflage"}
             assert {h.signature for h in threats.locate(diff)} == line_sigs
 
