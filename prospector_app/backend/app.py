@@ -33,6 +33,7 @@ from prospector_app.backend import bulk
 from prospector_app.backend import caps
 from prospector_app.backend import chat
 from prospector_app.backend import claims
+from prospector_app.backend import machine_activity
 from prospector_app.backend import machines
 from prospector_app.backend import merge_progress
 from prospector_app.backend import data
@@ -298,6 +299,13 @@ def machines_roster():
     """Every worker machine the shared store knows, with lane health and
     heartbeats — the Control tab's Machines panel (#323)."""
     return machines.roster()
+
+
+@app.get("/api/machines/activity")
+def machines_activity() -> machine_activity.ActivityView:
+    """What every machine did in the past day, with its status — the Control
+    tab's Recent activity panel."""
+    return machine_activity.activity()
 
 
 @app.get("/api/health")
