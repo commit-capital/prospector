@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import TYPE_CHECKING
 
-from pipeline import actions, gates, settings, storekit
+from pipeline import gates, settings, storekit
 
 if TYPE_CHECKING:
     from pipeline.model import Pr
@@ -101,10 +101,8 @@ def due_alerts(incidents: list[dict], items: list[dict], prs: Mapping[int, Pr],
     for item in items:
         n = item.get("pr")
         pr = prs.get(n) if isinstance(n, int) else None
-        if (not isinstance(n, int) or item.get("kind") != "rotate-secret"
-                or item.get("status") != "open" or pr is None or pr.state != "open" or actions.is_fixture(item)
-                or not _fresh(item.get("created"), today)
-                or not gates.priority_author(pr.author, pr.author_association)):
+        if (not isinstance(n, int) or pr is None or pr.state != "open"
+                or not gates.maintainer_leak(item, pr) or not _fresh(item.get("created"), today)):
             continue
         path = _evidence_path(str(item.get("evidence") or ""))
         where = f" in {_code(path)}" if path else ""
