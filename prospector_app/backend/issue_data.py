@@ -40,7 +40,7 @@ class _IssueSnapshotState:
     full_issues: dict[int, Issue] | None = None
     full_key: tuple[str | None, str | None] | None = None
     runs: list[storekit.RunRecord] = field(default_factory=list)
-    runs_ledger: run_ledger.RunLedger | None = None
+    runs_ledger: run_ledger.RunLedger[storekit.RunRecord] | None = None
     generation: int = 0
     cache_written: float = 0.0
     cache_generation: int | None = None
@@ -152,7 +152,7 @@ def _freshen_runs(full: bool) -> None:
     st = store()
     if _state.runs_ledger is None or _state.runs_ledger.source is not st:
         _state.runs_ledger = run_ledger.RunLedger(
-            st, snapshot_cache.LedgerFile(LEDGER_CACHE_NAME, _store_key(st)))
+            st, snapshot_cache.runs_file(LEDGER_CACHE_NAME, _store_key(st)))
     _state.runs = [r.record for r in _state.runs_ledger.rows()]
 
 

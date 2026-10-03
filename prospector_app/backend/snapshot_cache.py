@@ -5,7 +5,7 @@ A copy is keyed by the store it came from, the repository, the store schema
 version and FORMAT, so a copy from another deployment or an older record shape
 is never read. It holds the records and the watermark they are current to;
 the caller reads `since` that watermark and drops ids the store no longer has.
-A runs ledger's copy (`LedgerFile`) holds each row's rowid, `ts` and record.
+A ledger's copy (`LedgerFile`) holds each row's rowid, `ts` and record.
 Files live owner-only under PROSPECTOR_CACHE_DIR (default ~/.cache/prospector).
 Every failure to read or write a copy is a miss: the caller loads from the
 store as it would with no copy.
@@ -17,6 +17,7 @@ import json
 import os
 import sys
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import NamedTuple
 
@@ -102,22 +103,25 @@ def save(name: str, store_url: str, watermark: str | None, records: dict[int, di
                                     "records": {str(n): rec for n, rec in records.items()}})
 
 
-class LedgerFile:
-    """The disk copy of one runs ledger (`run_ledger.LedgerCopy`): its rows in
-    rowid order."""
+class LedgerFile[R]:
+    """The disk copy of one ledger (`run_ledger.LedgerCopy`): its rows in rowid
+    order, each record written as `raw` gives it and read back through `parse`."""
 
-    def __init__(self, name: str, store_url: str) -> None:
+    def __init__(self, name: str, store_url: str,
+                 parse: Callable[[dict], R], raw: Callable[[R], dict]) -> None:
         self.name = name
         self.store_url = store_url
+        self.parse = parse
+        self.raw = raw
 
-    def load(self) -> list[storekit.LedgerRow] | None:
+    def load(self) -> list[storekit.LedgerRow[R]] | None:
         """The copy's rows, oldest first; None for a copy that is absent,
         unreadable, or not in strictly ascending rowid order."""
         doc = _read(self.name, self.store_url)
         if doc is None:
             return None
         try:
-            rows = [storekit.LedgerRow(rowid, ts, storekit.parse_run(rec))
+            rows = [storekit.LedgerRow(rowid, ts, self.parse(rec))
                     for rowid, ts, rec in doc["rows"]]
         except (ValueError, KeyError, TypeError, AttributeError):
             return None
@@ -130,6 +134,11 @@ class LedgerFile:
             last = row.rowid
         return rows
 
-    def save(self, rows: list[storekit.LedgerRow]) -> bool:
+    def save(self, rows: list[storekit.LedgerRow[R]]) -> bool:
         return _write(self.name, self.store_url,
-                      {"rows": [[r.rowid, r.ts, r.record.raw] for r in rows]})
+                      {"rows": [[r.rowid, r.ts, self.raw(r.record)] for r in rows]})
+
+
+def runs_file(name: str, store_url: str) -> LedgerFile[storekit.RunRecord]:
+    """The disk copy of one runs ledger."""
+    return LedgerFile(name, store_url, storekit.parse_run, lambda r: r.raw)

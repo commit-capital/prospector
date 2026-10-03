@@ -201,6 +201,15 @@ export default function PRExplorer() {
   // refetch when the filter spec, sort, page, or deep overlay changes (not when
   // the ?pr flyout opens)
   const specKey = params.get(SPEC_PARAM) ?? "";
+  // The page stays mounted across in-app navigation (App's kept pages), so a
+  // link that changes the spec (a Home card) starts over at the first page
+  // with no deep-search overlay, as setSpec does.
+  const [prevSpecKey, setPrevSpecKey] = useState(specKey);
+  if (specKey !== prevSpecKey) {
+    setPrevSpecKey(specKey);
+    setPage(1);
+    setDeep(null);
+  }
   const queryOpts = {
     sort: sortKey || undefined, direction: dir || undefined,
     offset: (page - 1) * effectivePageSize, limit: effectivePageSize,

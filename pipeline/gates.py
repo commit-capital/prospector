@@ -25,7 +25,7 @@ import re
 import shlex
 from typing import TYPE_CHECKING
 
-from pipeline import codeowners, describe_pr, diffpaths, profile, review_policy, reviewers, risktier, settings, wire
+from pipeline import actions, codeowners, describe_pr, diffpaths, profile, review_policy, reviewers, risktier, settings, wire
 from pipeline.freshness import currency_failure, is_current
 
 if TYPE_CHECKING:
@@ -279,6 +279,17 @@ def priority_author(author: str | None, association: str | None) -> bool:
     if not author or author.endswith("[bot]") or author in active.automation_bots:
         return False
     return association in MAINTAINER_ASSOCIATIONS or author in active.priority_authors
+
+
+def maintainer_leak(item: dict, pr: Pr | None) -> bool:
+    """Whether an action item is a live-looking credential a maintainer
+    committed: an open rotate-secret item that does not read as a test fixture,
+    on a PR by a `priority_author`. A contributor working from a fork never
+    holds the project's own secrets, so their leaks of their own deployment's
+    secrets do not qualify."""
+    return (item.get("kind") == "rotate-secret" and item.get("status") == "open"
+            and not actions.is_fixture(item) and pr is not None
+            and priority_author(pr.author, pr.author_association))
 
 
 def is_dependabot_bump(author: str | None, changed_paths: list[str] | None) -> bool:

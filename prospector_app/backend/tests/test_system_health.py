@@ -133,14 +133,18 @@ def test_status_carries_the_open_malicious_prs_and_secrets_to_rotate(store, monk
                             "head_sha": "h" * 40},
                    "threat": {"verdict": "malicious", "signatures": ["obfuscated-payload"],
                               "detail": {}, "checked_at": _iso(1), "against_head_sha": "h" * 40}})
+    store.save_pr({"pr": 12001,
+                   "meta": {"title": "t", "author": "dotta", "author_association": "MEMBER",
+                            "state": "open", "head_sha": "m" * 40}})
     reg = actions.empty_registry()
-    actions.upsert(reg, actions.make_item("rotate-secret", pr=11987, summary="leak",
-                                          created="2026-10-01", fixture=False))
+    for n in (11987, 12001):
+        actions.upsert(reg, actions.make_item("rotate-secret", pr=n, summary="leak",
+                                              created="2026-10-01", fixture=False))
     store.save_action_items(reg)
     data.refresh()
     out = system_health.status()
     assert [m["pr"] for m in out["threats"]["malicious"]] == [11987]
-    assert out["threats"]["secrets"] == 1
+    assert out["threats"]["secrets"] == [12001]
 
 
 def test_status_composes_the_live_inputs(store, monkeypatch):
