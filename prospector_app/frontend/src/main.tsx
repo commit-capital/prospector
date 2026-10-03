@@ -5,6 +5,7 @@ import { RouterProvider } from "react-router/dom";
 import "./styles.css";
 import App from "./App";
 import { LANES, type Lane } from "./components/explorer/lanes";
+import { loadHome, loadIssues, loadPipeline, loadPRExplorer, loadSecurity } from "./tabViews";
 
 function lazyView(load: () => Promise<{ default: ComponentType }>) {
   return async () => ({ Component: (await load()).default });
@@ -57,18 +58,18 @@ const router = createBrowserRouter([
     element: <App />,
     children: [
       // The five destinations: Home, PRs, Issues, Security, Pipeline.
-      { index: true, lazy: lazyView(() => import("./views/Home")) },
+      { index: true, lazy: lazyView(loadHome) },
       { path: "prs", element: <Navigate to="/prs/list" replace /> },
-      { path: "prs/list", lazy: lazyView(() => import("./views/PRExplorer")) },
+      { path: "prs/list", lazy: lazyView(loadPRExplorer) },
       { path: "prs/clusters", lazy: lazyView(() => import("./views/ClusterBoard")) },
       { path: "prs/clusters/:id", lazy: lazyView(() => import("./views/ClusterDetail")) },
       { path: "prs/compare", lazy: lazyView(() => import("./views/PRDiffer")) },
-      { path: "issues", lazy: lazyView(() => import("./views/Issues")) },
-      { path: "security", lazy: lazyView(() => import("./views/Alerts")) },
+      { path: "issues", lazy: lazyView(loadIssues) },
+      { path: "security", lazy: lazyView(loadSecurity) },
       { path: "security/threats", lazy: lazyView(() => import("./views/Threats")) },
       { path: "security/actions", lazy: lazyView(() => import("./views/ActionItems")) },
       { path: "pipeline", element: <Navigate to="/pipeline/control" replace /> },
-      { path: "pipeline/control", lazy: lazyView(() => import("./views/ControlPanel")) },
+      { path: "pipeline/control", lazy: lazyView(loadPipeline) },
       { path: "pipeline/activity", lazy: lazyView(() => import("./views/Activity")) },
       { path: "pipeline/policy", lazy: lazyView(() => import("./views/Policy")) },
       { path: "pipeline/setup", lazy: lazyView(() => import("./views/Setup")) },

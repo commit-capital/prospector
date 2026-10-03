@@ -129,7 +129,15 @@ export default function Setup() {
   // `?provision=1` opens the provisioning steps directly — the wizard's
   // "Set this computer up" link lands here already expanded.
   const [params] = useSearchParams();
-  const [expanded, setExpanded] = useState(params.get("provision") === "1");
+  const provision = params.get("provision") === "1";
+  const [expanded, setExpanded] = useState(provision);
+  // The page stays mounted across in-app navigation (App's kept pages), so a
+  // later link that adds the param expands the steps the way a load does.
+  const [prevProvision, setPrevProvision] = useState(provision);
+  if (provision !== prevProvision) {
+    setPrevProvision(provision);
+    if (provision) setExpanded(true);
+  }
 
   const load = useCallback(async () => {
     try {
