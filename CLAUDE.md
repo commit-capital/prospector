@@ -361,7 +361,12 @@ operator's re-queue retries the same head; a `failed` ending is the machine's
 finished, a sandbox that could not run, a `resubmit` that crashed — its
 traceback names the exception) and rests the PR only for
 `fix_worker.FAILED_RETRY_COOLDOWN_SECONDS`, so a recovered machine picks it
-back up unprompted. `TRIAGE_FIX_HUNT_FIX=1`
+back up unprompted. A hunted rebase that pauses on conflicts and fails short of
+a resolve (the AI capacity gate is shut, the sandbox could not run) keeps the
+conflicted paths on its ending; under `TRIAGE_FIX_HUNT_RESOLVE=1` the hunter
+then ranks that head's rebase as an agent pick (`fix_worker._needs_resolve`),
+which waits for the capacity gate like every other, so the rebase is not re-run
+only to pause on the same conflicts. `TRIAGE_FIX_HUNT_FIX=1`
 additionally lets the hunter queue unguided `fix` actions, on the inverse
 population — CI passing, mergeable, review score below the bar and scored at
 the current head — at most `TRIAGE_FIX_HUNT_LIMIT`
