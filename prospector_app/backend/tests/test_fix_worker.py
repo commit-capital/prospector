@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from pipeline import headless_agent, profile
+from pipeline import capacity, headless_agent, profile
 from pipeline import store as S
 from pipeline.storekit import now as _now
 from prospector_app.backend import data, fix_queue, fix_worker, sandbox_check
@@ -576,6 +576,19 @@ def test_a_hunted_rebase_waits_for_capacity_before_an_agent_resolves(store, monk
     assert req["status"] == "failed" and "capacity" in req["error"]
     assert ("prepare", "--merge") not in fake.calls
     assert booked == []
+    [ending] = [r.raw["stats"] for r in store.runs() if getattr(r, "phase", "") == "fix:single"]
+    assert ending["status"] == "failed" and ending["kind"] == capacity.PAUSED_KIND
+
+
+def test_a_failed_ending_records_its_kind_in_the_ledger(store, monkeypatch):
+    monkeypatch.setattr(fix_worker.lane_health, "note_failure", lambda lane, **kw: None)
+    fix_queue.queue_pr(1, "rebase")
+    req = store.load_pr(1).fix_request
+    fix_worker._fail(1, req, "the sandbox could not run", kind="sandbox")
+    fix_worker._refuse(1, req, "the base conflicts")
+    endings = [r.raw["stats"] for r in store.runs() if getattr(r, "phase", "") == "fix:single"]
+    assert [(e["status"], e.get("kind")) for e in endings] == [
+        ("failed", "sandbox"), ("refused", None)]
 
 
 def test_a_rebase_held_for_capacity_waits_for_the_gate_not_the_cooldown(store, monkeypatch,

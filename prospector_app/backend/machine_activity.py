@@ -13,6 +13,7 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Literal, TypedDict
 
+from pipeline import capacity
 from pipeline import storekit
 from pipeline import worker_health
 
@@ -116,6 +117,8 @@ def _outcome(lane: Lane, stats: dict) -> str:
         return str(stats.get("outcome") or status or "unknown")
     if lane == "autofix":
         status = str(stats.get("status") or "unknown")
+        if status == "failed" and stats.get("kind") == capacity.PAUSED_KIND:
+            return "waiting for AI capacity"
         return "parked" if status == "awaiting-review" else status
     return str(stats.get("ending") or "unknown")
 

@@ -47,6 +47,9 @@ UNATTENDED_ENV = "PROSPECTOR_UNATTENDED"
 # The variable that names the lane a process's agent runs are metered under,
 # for a worker's subprocess that runs an unattended item.
 METER_ENV = "PROSPECTOR_AGENT_LANE"
+# The failure kind a worker's ledger entry carries for an unattended item it
+# stopped short of an agent because the gate was closed: a wait, not a fault.
+PAUSED_KIND = "capacity-paused"
 WEEK = timedelta(days=7)
 FIVE_HOURS = timedelta(hours=5)
 # How long a found account, and a failure to find one, are kept.

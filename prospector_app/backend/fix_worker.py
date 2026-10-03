@@ -582,11 +582,12 @@ def _fail_if_crashed(n: int, req: dict, rc: int, output: str,
 def _log_run(n: int, req: dict, status: str, detail: str | None = None,
              host: str | None = None, *, kind: str = "run-failed") -> None:
     """Append this run's ending to the runs ledger, and book it on the fix
-    lane's health: a `failed` ending is the machine's (counted under `kind`;
-    an agent outage trips every agent lane at once), every other ending is
-    the PR's and ends the failure run. A PR carries one fix_request, which the
-    next queue click overwrites — the ledger is where an action's outcome
-    survives that, and what the app's fix history reads.
+    lane's health: a `failed` ending is the machine's (counted under `kind`,
+    which its ledger entry carries; an agent outage trips every agent lane at
+    once), every other ending is the PR's and ends the failure run. A PR
+    carries one fix_request, which the next queue click overwrites — the
+    ledger is where an action's outcome survives that, and what the app's fix
+    history reads.
 
     Best-effort: a ledger append that fails must not cost the operator the
     terminal status the caller has already written."""
@@ -599,13 +600,15 @@ def _log_run(n: int, req: dict, status: str, detail: str | None = None,
     signature = (req.get("objection") or {}).get("signature")
     if signature:
         entry["stats"]["objection"] = signature
+    if status == "failed":
+        entry["stats"]["kind"] = kind
     try:
         data.store().append_run(entry)
     except Exception:
         traceback.print_exc()
     if status != "failed":
         lane_health.note_success("fix")
-    elif kind == "capacity-paused":
+    elif kind == capacity.PAUSED_KIND:
         pass  # a deferral until the AI capacity opens, not this machine's fault
     elif kind == "agent-unavailable":
         lane_health.trip_agent_lanes(detail or "the agent CLI could not run")
@@ -1208,7 +1211,7 @@ def _agent_resolve(n: int, claimed: dict, paused: list[str]) -> None:
         _fail(n, claimed, f"{_conflict_refusal(paused)} Resolving them needs an agent, and "
                           f"this machine's AI capacity is paused; the hunter tries again "
                           f"once it opens.",
-              result=evidence or {"conflict_paths": paused}, kind="capacity-paused")
+              result=evidence or {"conflict_paths": paused}, kind=capacity.PAUSED_KIND)
         return
 
     prepared = _resubmit(n, "prepare", "--merge")

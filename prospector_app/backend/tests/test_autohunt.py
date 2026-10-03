@@ -1234,3 +1234,13 @@ def test_lane_counts_totals_the_fix_lane(store):
     assert autohunt_view.lane_counts("fix", days=7) == {
         "total": 3, "by_result": {"failed": 2, "pushed": 1},
         "pr_ids_by_result": {"failed": [1], "pushed": [2]}}
+
+
+def test_a_fix_run_held_for_ai_capacity_reads_as_waiting(store):
+    from prospector_app.backend import autohunt_view
+    recent = _now()
+    for pr, kind in ((1, "capacity-paused"), (2, "sandbox")):
+        store.append_run({"phase": "fix:single", "pr": pr, "ts": recent, "trigger": "autohunt",
+                          "stats": {"action": "rebase", "status": "failed", "kind": kind}})
+    assert autohunt_view.lane_counts("fix", days=7)["pr_ids_by_result"] == {
+        "waiting-for-capacity": [1], "failed": [2]}
