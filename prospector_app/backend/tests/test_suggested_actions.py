@@ -18,7 +18,8 @@ def stamp(hours_ago: float) -> str:
 
 def make_status(*, ingest_ago_h: float | None = 1.0, threat_uncovered: int = 0,
                 analysis_never: int = 0, issue_ingest_ago_h: float | None = 1.0,
-                pending_analysis: int = 0,
+                pending_analysis: int = 0, not_clustered: int = 0,
+                cluster_ago_h: float | None = None,
                 estimates: dict | None = None) -> dict:
     phases = [
         {"phase": "ingest",
@@ -28,6 +29,8 @@ def make_status(*, ingest_ago_h: float | None = 1.0, threat_uncovered: int = 0,
         {"phase": "issue-ingest",
          "last_run": stamp(issue_ingest_ago_h) if issue_ingest_ago_h is not None else None},
         {"phase": "issue-analyze", "last_run": stamp(2)},
+        {"phase": "cluster",
+         "last_run": stamp(cluster_ago_h) if cluster_ago_h is not None else None},
     ]
     return {
         "phases": phases,
@@ -35,6 +38,7 @@ def make_status(*, ingest_ago_h: float | None = 1.0, threat_uncovered: int = 0,
             "total": 100,
             "threat": {"stale": threat_uncovered, "never": 0},
             "analysis": {"never": analysis_never},
+            "not_clustered": not_clustered,
         },
         "issue_coverage": {"pending_analysis": pending_analysis},
         "estimates": estimates or {},
@@ -120,3 +124,27 @@ def test_unparseable_stamp_reads_as_never():
     out = sa.alert_suggestions("not-a-date", 0, 0, NOW)
     assert len(out) == 1
     assert "never run" in out[0]["reason"]
+
+
+def test_unclustered_prs_suggest_clustering_when_it_has_not_run_today():
+    out = sa.pr_suggestions(make_status(not_clustered=826, cluster_ago_h=29 * 24), NOW)
+    assert [s["kind"] for s in out] == ["cluster-new"]
+    assert out[0]["reason"] == "826 PRs are not in a cluster (last clustering 29d ago)"
+    assert out[0]["count"] == sa.CLUSTER_NEW_BATCH
+
+
+def test_one_unclustered_pr_never_clustered():
+    out = sa.pr_suggestions(make_status(not_clustered=1), NOW)
+    assert out[0]["reason"] == "1 PR is not in a cluster (never clustered)"
+    assert out[0]["count"] == 1
+
+
+def test_recent_clustering_quiets_the_suggestion():
+    assert sa.pr_suggestions(make_status(not_clustered=5, cluster_ago_h=2), NOW) == []
+
+
+def test_merged_views_drop_a_repeated_kind():
+    a = {"kind": "ingest", "title": "a", "reason": "", "last_run": None, "count": None,
+         "estimate_seconds": None}
+    b = {**a, "kind": "issue-ingest"}
+    assert sa.merged([[a], [{**a, "title": "dup"}, b]]) == [a, b]

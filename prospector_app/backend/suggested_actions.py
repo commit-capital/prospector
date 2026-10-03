@@ -31,10 +31,13 @@ STALE_AFTER_HOURS = 24.0
 
 # Default batch sizes, matching the Control tab's inputs and the CLIs' defaults.
 CLUSTER_BATCH = 20
+CLUSTER_NEW_BATCH = 50
 ISSUE_BATCH = 200
 SWEEP_LIMIT = 12
 
 VIEWS = ("prs", "issues", "alerts")
+# Every view's suggestions together, for the Control tab.
+ALL = "all"
 
 
 def _hours_since(iso: str | None, now_ts: float) -> float | None:
@@ -83,6 +86,19 @@ def pr_suggestions(status: dict, now_ts: float) -> list[Suggestion]:
                       "of their latest push",
             "last_run": last_runs.get("threat-scan"), "count": None,
             "estimate_seconds": est.get("threat_scan_seconds"),
+        })
+
+    unclustered = cov.get("not_clustered", 0)
+    cluster_last = last_runs.get("cluster")
+    if unclustered > 0 and _stale(cluster_last, now_ts):
+        ago = _ago(cluster_last, now_ts)
+        when = "never clustered" if ago == "never run" else ago.replace("last run", "last clustering")
+        out.append({
+            "kind": "cluster-new", "title": "Cluster new PRs",
+            "reason": f"{unclustered} PR{'s are' if unclustered != 1 else ' is'} "
+                      f"not in a cluster ({when})",
+            "last_run": cluster_last, "count": min(CLUSTER_NEW_BATCH, unclustered),
+            "estimate_seconds": None,
         })
 
     never_analyzed = (cov.get("analysis") or {}).get("never", 0)
@@ -174,8 +190,23 @@ def _latest_run(records: list[storekit.RunRecord], phase: str) -> str | None:
     return latest
 
 
+def merged(groups: list[list[Suggestion]]) -> list[Suggestion]:
+    """`groups` in order, keeping the first suggestion of each job kind."""
+    seen: set[str] = set()
+    out: list[Suggestion] = []
+    for group in groups:
+        for s in group:
+            if s["kind"] not in seen:
+                seen.add(s["kind"])
+                out.append(s)
+    return out
+
+
 def suggestions(view: str) -> list[Suggestion]:
-    """The named view's suggestions, gathered from live snapshots."""
+    """The named view's suggestions, gathered from live snapshots; `ALL`
+    names every view's."""
+    if view == ALL:
+        return merged([suggestions(v) for v in VIEWS])
     now_ts = time.time()
     if view == "prs":
         from prospector_app.backend import pipeline_status
