@@ -182,15 +182,16 @@ def _launch_live_sweep():
 
 
 def _launch_snapshot_load() -> None:
-    """Start the PR and issue snapshots' first loads at boot, so the first page
-    finds them loaded or loading. Skipped under pytest and on an unconfigured
-    checkout, which has no store to load."""
+    """Start the PR, issue and activity snapshots' first loads at boot, so the
+    first page finds them loaded or loading. Skipped under pytest and on an
+    unconfigured checkout, which has no store to load."""
     import sys
     import threading
     if "pytest" in sys.modules or not settings.configured():
         return
     data.snapshot_loading()
     threading.Thread(target=_load_issue_snapshot, daemon=True, name="issue-snapshot-load").start()
+    threading.Thread(target=_load_activity_log, daemon=True, name="activity-log-load").start()
 
 
 def _load_issue_snapshot() -> None:
@@ -198,6 +199,13 @@ def _load_issue_snapshot() -> None:
         issue_data.issues()
     except Exception:
         pass  # the first Issues request retries the load
+
+
+def _load_activity_log() -> None:
+    try:
+        activity.all_events()
+    except Exception:
+        pass  # the first activity read retries the load
 
 
 def _restore_jobs() -> None:
@@ -345,6 +353,7 @@ async def feedback_generate(payload: dict = Body(...)) -> feedback.GenerateResul
 @app.post("/api/refresh")
 def refresh():
     data.refresh()
+    activity.refresh()
     return {"ok": True}
 
 

@@ -149,7 +149,7 @@ class AlertStore:
         return [storekit.parse_run(r[0]) for r in rows]
 
     def runs_after(self, rowid: int | None,
-                   held: Iterable[int] = ()) -> list[storekit.LedgerRow]:
+                   held: Iterable[int] = ()) -> list[storekit.LedgerRow[storekit.RunRecord]]:
         """The alert ledger's rows past `rowid` (all when None), oldest first,
         without the rowids in `held` (storekit.ledger_after)."""
         return storekit.ledger_after(self.engine, "alert", rowid, held)
