@@ -9,19 +9,19 @@ else claimed; it never blocks the executor.
 from __future__ import annotations
 
 import logging
-import time
 
 from pipeline import settings
 from pipeline import storekit
 from prospector_app.backend import activity
 from prospector_app.backend import data
+from prospector_app.backend.snapshot import LazySnapshot
 
 _log = logging.getLogger(__name__)
 
 KINDS = ("pr", "issue")
 
 _TTL_SEC = 5.0
-_cache: tuple[float, dict[str, dict]] | None = None
+_items: dict[str, dict] = {}
 
 
 def key(kind: str, n: int) -> str:
@@ -35,23 +35,30 @@ def me() -> dict[str, str]:
     return {"by": activity.operator()["name"], "machine": settings.worker_id()}
 
 
-def load() -> dict[str, dict]:
-    """Every live claim, ``{key: {by, machine, at}}``. Cached for _TTL_SEC
-    because ``pr_row`` runs once per row of a list request while the store is
-    a network round-trip; the TTL bounds how long another operator's claim
-    takes to appear. Fails soft — an unreadable store shows every item
-    unclaimed rather than failing the request."""
-    global _cache
-    now = time.monotonic()
-    if _cache and now - _cache[0] < _TTL_SEC:
-        return _cache[1]
+def _freshen(full: bool) -> None:
+    """Read every live claim. Fails soft: an unreadable store reads as no
+    claims on the first read, and keeps the last claims after that."""
+    global _items
     try:
-        items = (data.store().load_claims() or {}).get("items") or {}
+        _items = (data.store().load_claims() or {}).get("items") or {}
     except Exception:
         _log.warning("claims.load: store read failed", exc_info=True)
-        items = {}
-    _cache = (now, items)
-    return items
+        if full:
+            _items = {}
+
+
+# The store is a network round-trip and a list request reads one claim per row,
+# so the claims are held in memory: read on the first call, then re-read in the
+# background at most every _TTL_SEC, which bounds how long another operator's
+# claim takes to appear. This operator's own claim or release reads on the next
+# call.
+_snapshot = LazySnapshot(_freshen, debounce=_TTL_SEC)
+
+
+def load() -> dict[str, dict]:
+    """Every live claim, ``{key: {by, machine, at}}``."""
+    _snapshot.ensure()
+    return _items
 
 
 def for_item(kind: str, n: int) -> dict | None:
@@ -61,22 +68,20 @@ def for_item(kind: str, n: int) -> dict | None:
 def claim(kind: str, n: int) -> dict:
     """Mark the item as being worked by this operator on this machine.
     Returns the record stored."""
-    global _cache
     rec = {**me(), "at": storekit.now()}
     st = data.store()
     reg = st.load_claims()
     reg.setdefault("items", {})[key(kind, n)] = rec
     st.save_claims(reg)
-    _cache = None
+    _snapshot.invalidate()
     return rec
 
 
 def release(kind: str, n: int) -> None:
     """Drop the item's claim, whoever holds it."""
-    global _cache
     st = data.store()
     reg = st.load_claims()
     items = reg.setdefault("items", {})
     if items.pop(key(kind, n), None) is not None:
         st.save_claims(reg)
-    _cache = None
+    _snapshot.invalidate()
