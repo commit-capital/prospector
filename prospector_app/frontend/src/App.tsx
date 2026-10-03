@@ -9,7 +9,7 @@ import type { SnapshotState } from "./health";
 import { api, type WorkStatus, type WorkerFlags } from "./api";
 import { autonomyTooltip } from "./autonomy";
 import { useSystemHealth } from "./useSystemHealth";
-import { threatBannerParts } from "./threatBanner";
+import { threatBannerParts, threatsHref } from "./threatBanner";
 import { loadWithRecovery } from "./lazyLoad";
 import { usePoll } from "./poll";
 import { prefetchTabs } from "./prefetch";
@@ -504,23 +504,25 @@ function HealthStrip() {
 }
 
 // The red threat banner on every page, inside the sticky header: the open PRs
-// the threat scan flagged malicious and the leaked credentials still to
-// rotate. It rides the system-health poll and clears itself once those PRs
-// close and those items are rotated or dismissed. Opens Security → Threats.
+// the threat scan flagged malicious and the credentials maintainers leaked. It
+// rides the system-health poll and clears itself once those PRs close and those
+// items are rotated or dismissed. Each phrase opens Security → Threats narrowed
+// to the PRs it names.
 function ThreatBanner() {
   const parts = threatBannerParts(useSystemHealth()?.threats);
   if (!parts) return null;
   return (
-    <Link to="/security/threats" className="threat-banner" role="alert"
-      title="Open Security → Threats: every flagged PR, the incident log, blocked authors, and credentials to rotate">
+    <div className="threat-banner" role="alert">
       <span aria-hidden="true">⛔</span>
       {parts.map((part, i) => (
-        <span key={part} className="threat-banner-item">
+        <span key={part.focus} className="threat-banner-item">
           {i > 0 && <span className="threat-banner-sep" aria-hidden="true">·</span>}
-          {part}
+          <Link to={threatsHref(part.focus)} title="Open Security → Threats showing just these PRs">
+            {part.text}
+          </Link>
         </span>
       ))}
-    </Link>
+    </div>
   );
 }
 
