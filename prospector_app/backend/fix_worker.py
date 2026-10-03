@@ -1203,9 +1203,12 @@ def _agent_resolve(n: int, claimed: dict, paused: list[str]) -> None:
                 result=evidence)
         return
     if claimed.get("source") in AUTO_SOURCES and not lane_health.capacity_open("fix"):
+        # The conflicted paths ride the ending whatever the merge diff held:
+        # they are what tells the hunter this head now waits for an agent.
         _fail(n, claimed, f"{_conflict_refusal(paused)} Resolving them needs an agent, and "
-                          f"this machine's AI capacity is paused; the hunter tries again later.",
-              result=evidence, kind="capacity-paused")
+                          f"this machine's AI capacity is paused; the hunter tries again "
+                          f"once it opens.",
+              result=evidence or {"conflict_paths": paused}, kind="capacity-paused")
         return
 
     prepared = _resubmit(n, "prepare", "--merge")
@@ -2004,6 +2007,18 @@ def _hunt_attempted(pr: Pr, action: str) -> bool:
     return False
 
 
+def _needs_resolve(pr: Pr) -> bool:
+    """Whether the hunter's next rebase of this head goes straight to an agent:
+    its last rebase paused on conflicts at this head and failed short of a
+    verdict (a closed capacity gate, a sandbox that could not run), and
+    TRIAGE_FIX_HUNT_RESOLVE sends a hunted conflict to an agent."""
+    req = pr.fix_request or {}
+    return (settings.fix_hunt_resolve() and req.get("status") == "failed"
+            and req.get("action") == "rebase" and pr.head_sha is not None
+            and req.get("against_head_sha") == pr.head_sha
+            and bool((req.get("result") or {}).get("conflict_paths")))
+
+
 def _auto_in_flight(action: str) -> int:
     """How many hunter-queued requests for `action` — auto picks and objection
     continuations alike — sit anywhere between queued and pushing.
@@ -2130,10 +2145,12 @@ def next_auto() -> tuple[str, int, dict | None] | None:
     parked fix holds its slot until someone decides on it, which is what bounds
     the unattended spend. A `describe` has its own slots of the same size and
     comes next: one read-only agent, no sandbox. With the slots full the
-    mechanical pool runs. A maintainer's PR (gates.priority_author) in any of
-    the three goes ahead of all of them. While this machine's AI capacity gate
-    is closed (lane_health.capacity_open, asked only when an agent pick leads)
-    only the mechanical pool runs."""
+    mechanical pool runs. A rebase whose head already paused on conflicts
+    (`_needs_resolve`) is an agent pick, ahead of the mechanical pool. A
+    maintainer's PR (gates.priority_author) in any of them goes ahead of all
+    of them. While this machine's AI capacity gate is closed
+    (lane_health.capacity_open, asked only when an agent pick leads) only the
+    mechanical pool runs."""
     limit = settings.fix_hunt_limit()
     slots = {"fix": limit - _auto_in_flight("fix"),
              "describe": limit - _auto_in_flight("describe")}
@@ -2145,14 +2162,16 @@ def next_auto() -> tuple[str, int, dict | None] | None:
         if pick is None:
             continue
         action, objection = pick
-        lane = action if action in slots else "mechanical"
-        if lane != "mechanical" and slots[lane] <= 0:
+        lane = (action if action in slots
+                else "resolve" if action == "rebase" and _needs_resolve(rec)
+                else "mechanical")
+        if lane in slots and slots[lane] <= 0:
             continue
         key = _hunt_key(rec, action, n)
         if lane not in best or key < best[lane][0]:
             best[lane] = (key, action, n, objection)
-    lanes = sorted(best, key=lambda lane: (best[lane][0][0],
-                                           ("fix", "describe", "mechanical").index(lane)))
+    lanes = sorted(best, key=lambda lane: (
+        best[lane][0][0], ("fix", "describe", "resolve", "mechanical").index(lane)))
     if lanes and lanes[0] != "mechanical" and not lane_health.capacity_open("fix"):
         lanes = [lane for lane in lanes if lane == "mechanical"]
     if not lanes:

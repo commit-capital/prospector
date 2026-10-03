@@ -578,6 +578,33 @@ def test_a_hunted_rebase_waits_for_capacity_before_an_agent_resolves(store, monk
     assert booked == []
 
 
+def test_a_rebase_held_for_capacity_waits_for_the_gate_not_the_cooldown(store, monkeypatch,
+                                                                       tmp_path):
+    # The head is known to need an agent, so re-running its rebase while the gate
+    # stays shut only pauses on the same conflicts again. It waits for the gate
+    # however old its failure is; other PRs' rebases go on meanwhile.
+    from datetime import datetime, timedelta, timezone
+    monkeypatch.setenv("TRIAGE_FIX_HUNT_RESOLVE", "1")
+    _gate(monkeypatch, False)
+    fix_queue.queue_pr(1, "rebase", source="auto")
+    monkeypatch.setattr(fix_worker, "_resubmit", _ConflictedResubmit(tmp_path))
+    fix_worker.run_one(1)
+    rec = store.load_pr(1).raw
+    rec["fix_request"]["finished_at"] = (datetime.now(timezone.utc) - timedelta(
+        seconds=fix_worker.FAILED_RETRY_COOLDOWN_SECONDS + 60)).isoformat()
+    store.save_pr(rec)
+    data.refresh()
+
+    assert fix_worker.next_auto() is None
+    other = {**rec, "pr": 2}
+    other.pop("fix_request")
+    store.save_pr(other)
+    data.refresh()
+    assert fix_worker.next_auto() == ("rebase", 2, None)
+    _gate(monkeypatch, True)
+    assert fix_worker.next_auto() == ("rebase", 1, None)
+
+
 def test_agent_give_up_refuses_with_reason(store, monkeypatch, tmp_path):
     fix_queue.queue_pr(1, "rebase")
     fake = _ConflictedResubmit(tmp_path)
