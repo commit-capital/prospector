@@ -2,7 +2,7 @@
 
 One light snapshot over the alert store — alerts are a small corpus, so there
 is no omit/hydrate split. The runs ledger starts from this machine's on-disk
-copy (`snapshot_cache.LedgerFile`). Nothing here runs at app startup.
+copy (`snapshot_cache.runs_file`). Nothing here runs at app startup.
 """
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ class _AlertSnapshotState:
     alerts: dict[int, Alert] = field(default_factory=dict)
     watermark: str | None = None
     runs: list[storekit.RunRecord] = field(default_factory=list)
-    runs_ledger: run_ledger.RunLedger | None = None
+    runs_ledger: run_ledger.RunLedger[storekit.RunRecord] | None = None
 
     def reset(self) -> None:
         self.store = None
@@ -82,7 +82,7 @@ def _freshen_runs(full: bool) -> None:
     st = store()
     if _state.runs_ledger is None or _state.runs_ledger.source is not st:
         _state.runs_ledger = run_ledger.RunLedger(
-            st, snapshot_cache.LedgerFile(LEDGER_CACHE_NAME, _store_key(st)))
+            st, snapshot_cache.runs_file(LEDGER_CACHE_NAME, _store_key(st)))
     _state.runs = [r.record for r in _state.runs_ledger.rows()]
 
 

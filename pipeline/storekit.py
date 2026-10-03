@@ -288,15 +288,16 @@ def parse_run(record: dict) -> RunRecord:
         f"runs-ledger record is neither a phase run nor a store-edit: keys={sorted(record)}")
 
 
-class LedgerRow(NamedTuple):
-    """One runs-ledger row: its rowid, its indexed `ts` column, and its record."""
+class LedgerRow[R](NamedTuple):
+    """One row of an append-only ledger table: its rowid, its indexed timestamp
+    column, and its record."""
     rowid: int
     ts: str | None
-    record: RunRecord
+    record: R
 
 
 def ledger_after(engine: Engine, kind: str, rowid: int | None,
-                 held: Iterable[int] = ()) -> list[LedgerRow]:
+                 held: Iterable[int] = ()) -> list[LedgerRow[RunRecord]]:
     """The `kind` ledger's rows past `rowid` (all when None), oldest first,
     leaving out the rowids in `held` — the rows a caller already has, so only
     the others cross the link."""

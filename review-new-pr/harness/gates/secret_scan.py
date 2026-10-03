@@ -11,6 +11,7 @@ high-entropy).
 """
 from __future__ import annotations
 import re
+from collections.abc import Iterator
 from ._common import PRContext, gate_result
 
 
@@ -63,11 +64,8 @@ SECRET_PATTERNS: list[tuple[str, str, re.Pattern]] = [
         "high",
         re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"),
     ),
-    (
-        "private_key_block",
-        "critical",
-        re.compile(r"-----BEGIN (RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----"),
-    ),
+    # A private key (private_key_block, critical), whose body may run onto the
+    # lines after its header, is read outside this list in _private_keys.
     (
         "jwt_token",
         "medium",
@@ -135,25 +133,89 @@ def _is_fixture_path(filename: str) -> bool:
     return any(hint in fn for hint in FIXTURE_PATH_HINTS)
 
 
+# A private key is its header and the base64 body after it; the header alone is
+# a validation message, a placeholder, or a parser's constant. _KEY_LEAD is what
+# may stand between the two when a PEM block is spread over a string literal or
+# a JSON value — whitespace, quotes, `+`, commas, backslashes, \r and \n escapes
+# — and the armor headers of an encrypted PEM or a PGP block, each read up to a
+# backslash or the next `-----`. Its quantifiers are possessive and it stops
+# short of the next header, so a line's headers are each read past once.
+# _KEY_BODY is 40 characters of the base64 alphabet: a PEM body line runs 64
+# columns and an OpenSSH one 70, while an elided or stub body is shorter. This
+# is pipeline/threats.py's private-key check, restated because the harness
+# imports nothing from pipeline.
+_KEY_HEADER = re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----")
+_KEY_GAP = r"""(?:\\[rn]|[\s"'`+,\\])*+"""
+_KEY_LEAD = re.compile(
+    _KEY_GAP
+    + r"(?:(?:Proc-Type|DEK-Info|Version|Comment|Hash|Charset|MessageID):"
+      r"[^\\-]*+(?:-(?!----)[^\\-]*+)*+" + _KEY_GAP + r")*+")
+_KEY_BODY = re.compile(r"[A-Za-z0-9+/]{40}")
+# How many added lines after a header-ending line _private_keys reads for the
+# body: an encrypted PEM's or a PGP block's armor headers and blank line come
+# first.
+_KEY_LOOKAHEAD = 6
+
+
+def _key_body_opens(line: str, pos: int) -> bool | None:
+    """Whether `line` from `pos`, past what may stand before a key's body,
+    opens on that body: None when nothing else follows to the line's end."""
+    lead = _KEY_LEAD.match(line, pos)
+    end = lead.end() if lead else pos
+    if _KEY_BODY.match(line, end):
+        return True
+    return None if end == len(line) else False
+
+
+def _private_keys(added: str, following: list[str]) -> Iterator[re.Match[str]]:
+    """The private-key headers in this added line that have their base64 body
+    after them: in the line itself, or opening one of `following`, the added
+    lines directly after it, past blank and armor-header lines."""
+    for header in _KEY_HEADER.finditer(added):
+        opens = _key_body_opens(added, header.end())
+        for line in following:
+            if opens is not None:
+                break
+            opens = _key_body_opens(line, 0)
+        if opens:
+            yield header
+
+
+def _added_runs(patch: str) -> Iterator[list[str]]:
+    """Each run of consecutive added lines (starting with '+', not '+++') in
+    `patch`, without their '+'."""
+    run: list[str] = []
+    for raw_line in patch.split("\n"):
+        if raw_line.startswith("+") and not raw_line.startswith("+++"):
+            run.append(raw_line[1:])
+        elif run:
+            yield run
+            run = []
+    if run:
+        yield run
+
+
 def _scan_added_lines(patch: str, filename: str = "") -> list[dict]:
-    """Yield findings against added lines (lines starting with '+', not '+++')."""
+    """Findings against the added lines of `patch`."""
     findings: list[dict] = []
     fixture_path = _is_fixture_path(filename)
-    for raw_line in patch.split("\n"):
-        if not raw_line.startswith("+") or raw_line.startswith("+++"):
-            continue
-        added = raw_line[1:]  # strip leading '+'
-        for name, severity, pat in SECRET_PATTERNS:
-            for m in pat.finditer(added):
-                # Fixture-like: either the line itself hints at fixture, OR
-                # the file path is intrinsically test/docs/examples.
-                is_fixture_like = (
-                    _is_likely_fixture(added) or fixture_path
-                )
+    for run in _added_runs(patch):
+        for i, added in enumerate(run):
+            matches = [(name, severity, m)
+                       for name, severity, pat in SECRET_PATTERNS for m in pat.finditer(added)]
+            matches += [("private_key_block", "critical", m)
+                        for m in _private_keys(added, run[i + 1:i + 1 + _KEY_LOOKAHEAD])]
+            if not matches:
+                continue
+            # Fixture-like: either the line itself hints at fixture, OR
+            # the file path is intrinsically test/docs/examples.
+            is_fixture_like = _is_likely_fixture(added) or fixture_path
+            snippet = (added[:120] + "…") if len(added) > 120 else added
+            for name, severity, m in matches:
                 findings.append({
                     "pattern": name,
                     "severity": severity,
-                    "snippet": (added[:120] + "…") if len(added) > 120 else added,
+                    "snippet": snippet,
                     "match": m.group(0)[:20] + "…",  # never log the full secret
                     "fixture_like": is_fixture_like,
                     "fixture_path": fixture_path,

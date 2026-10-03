@@ -1,5 +1,5 @@
-import { Component, lazy, Suspense, useCallback, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from "react";
-import { Link, NavLink, Outlet, useLocation, useNavigate, useSearchParams } from "react-router";
+import { Activity, Component, lazy, Suspense, useCallback, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from "react";
+import { Link, NavLink, useLocation, useNavigate, useOutlet, useSearchParams } from "react-router";
 import { ExecProvider, useExec, type Toast } from "./ExecContext";
 import { RepoMetaProvider, useRepoMeta } from "./RepoMetaContext";
 import { FeedbackButton } from "./components/FeedbackButton";
@@ -9,9 +9,10 @@ import type { SnapshotState } from "./health";
 import { api, type WorkStatus, type WorkerFlags } from "./api";
 import { autonomyTooltip } from "./autonomy";
 import { useSystemHealth } from "./useSystemHealth";
-import { threatBannerParts } from "./threatBanner";
+import { threatBannerParts, threatsHref } from "./threatBanner";
 import { loadWithRecovery } from "./lazyLoad";
 import { usePoll } from "./poll";
+import { prefetchTabs } from "./prefetch";
 import { timeAgo } from "./timeAgo";
 import { workStatusLabel } from "./workStatusLabel";
 
@@ -503,23 +504,25 @@ function HealthStrip() {
 }
 
 // The red threat banner on every page, inside the sticky header: the open PRs
-// the threat scan flagged malicious and the leaked credentials still to
-// rotate. It rides the system-health poll and clears itself once those PRs
-// close and those items are rotated or dismissed. Opens Security → Threats.
+// the threat scan flagged malicious and the credentials maintainers leaked. It
+// rides the system-health poll and clears itself once those PRs close and those
+// items are rotated or dismissed. Each phrase opens Security → Threats narrowed
+// to the PRs it names.
 function ThreatBanner() {
   const parts = threatBannerParts(useSystemHealth()?.threats);
   if (!parts) return null;
   return (
-    <Link to="/security/threats" className="threat-banner" role="alert"
-      title="Open Security → Threats: every flagged PR, the incident log, blocked authors, and credentials to rotate">
+    <div className="threat-banner" role="alert">
       <span aria-hidden="true">⛔</span>
       {parts.map((part, i) => (
-        <span key={part} className="threat-banner-item">
+        <span key={part.focus} className="threat-banner-item">
           {i > 0 && <span className="threat-banner-sep" aria-hidden="true">·</span>}
-          {part}
+          <Link to={threatsHref(part.focus)} title="Open Security → Threats showing just these PRs">
+            {part.text}
+          </Link>
         </span>
       ))}
-    </Link>
+    </div>
   );
 }
 
@@ -596,6 +599,41 @@ function Nav() {
   );
 }
 
+// The tab pages kept mounted once visited. A page the operator leaves is
+// hidden, keeping its state with its effects (polls, subscriptions, reads)
+// paused; shown again, it paints what it last showed while its effects read
+// again.
+const KEPT_PAGES: ReadonlySet<string> = new Set([
+  "/", "/prs/list", "/prs/clusters", "/issues", "/security", "/security/threats",
+  "/security/actions", "/pipeline/control", "/pipeline/activity", "/pipeline/policy",
+  "/pipeline/setup", "/pipeline/data",
+]);
+
+// How long after the first page mounts the other tabs are read ahead, so the
+// page in front gets its own reads first.
+const PREFETCH_DELAY_MS = 4000;
+
+/** The routed page, with every kept page visited so far rendered beside it
+ *  under a hidden Activity. */
+function Pages() {
+  const outlet = useOutlet();
+  const { pathname } = useLocation();
+  const [kept, setKept] = useState<ReadonlyMap<string, ReactNode>>(new Map());
+  if (KEPT_PAGES.has(pathname) && !kept.has(pathname)) {
+    setKept(new Map(kept).set(pathname, outlet));
+  }
+  return (
+    <>
+      {[...kept].map(([path, page]) => (
+        <Activity key={path} mode={path === pathname ? "visible" : "hidden"}>
+          {path === pathname ? outlet : page}
+        </Activity>
+      ))}
+      {!KEPT_PAGES.has(pathname) && outlet}
+    </>
+  );
+}
+
 /** The routed page, held back until /api/meta has answered: whether the
  *  checkout is configured decides between the wizard and the triage views, so
  *  no view is committed to before that is known — and on an unconfigured
@@ -604,12 +642,18 @@ function Nav() {
 function Content() {
   const { meta } = useRepoMeta();
   const { pathname } = useLocation();
+  const configured = meta?.configured ?? false;
+  useEffect(() => {
+    if (!configured) return;
+    const timer = window.setTimeout(() => { void prefetchTabs(); }, PREFETCH_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [configured]);
   if (!meta) return <div className="pad muted">loading…</div>;
   if (!meta.configured && pathname !== "/welcome") return null;
   return (
     <>
       <InstanceBar />
-      <Outlet />
+      <Pages />
     </>
   );
 }

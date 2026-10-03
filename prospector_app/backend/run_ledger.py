@@ -1,5 +1,5 @@
-"""An in-memory copy of one runs ledger, kept current by reading only the rows
-it does not hold.
+"""An in-memory copy of one append-only ledger table — a runs ledger or the
+activity log — kept current by reading only the rows it does not hold.
 
 The ledger is append-only. A read asks for the rows past the newest one held,
 less OVERLAP rowids — a row whose insert committed after a higher rowid's lands
@@ -29,26 +29,26 @@ OVERLAP = 200
 COPY_EVERY = 300.0  # seconds
 
 
-class LedgerSource(Protocol):
+class LedgerSource[R](Protocol):
     def runs_after(self, rowid: int | None,
-                   held: Iterable[int] = ()) -> list[storekit.LedgerRow]: ...
+                   held: Iterable[int] = ()) -> list[storekit.LedgerRow[R]]: ...
 
 
-class LedgerCopy(Protocol):
-    def load(self) -> list[storekit.LedgerRow] | None:
+class LedgerCopy[R](Protocol):
+    def load(self) -> list[storekit.LedgerRow[R]] | None:
         """The copy's rows, oldest first; None when there is no usable copy."""
         ...
 
-    def save(self, rows: list[storekit.LedgerRow]) -> bool:
+    def save(self, rows: list[storekit.LedgerRow[R]]) -> bool:
         """Replace the copy with `rows`; False when it could not."""
         ...
 
 
-class RunLedger:
-    def __init__(self, source: LedgerSource, copy: LedgerCopy | None = None) -> None:
+class RunLedger[R]:
+    def __init__(self, source: LedgerSource[R], copy: LedgerCopy[R] | None = None) -> None:
         self.source = source
         self.copy = copy
-        self._rows: dict[int, storekit.LedgerRow] = {}
+        self._rows: dict[int, storekit.LedgerRow[R]] = {}
         self._loaded = False
         self._cond = threading.Condition()
         self._reading = False
@@ -63,7 +63,7 @@ class RunLedger:
         """Whether a read has completed, so the copy holds the whole ledger."""
         return self._loaded
 
-    def rows(self) -> list[storekit.LedgerRow]:
+    def rows(self) -> list[storekit.LedgerRow[R]]:
         """Every row, oldest first, as of a read that started after this call."""
         with self._cond:
             arrival = self._started
@@ -91,7 +91,7 @@ class RunLedger:
             self._copy_if_changed()
         return list(rows.values())
 
-    def _first_read(self) -> dict[int, storekit.LedgerRow]:
+    def _first_read(self) -> dict[int, storekit.LedgerRow[R]]:
         """The whole ledger: the disk copy and the rows past it when the source
         still has the copy's newest row with its `ts`, else every row."""
         seed = self.copy.load() if self.copy is not None else None
@@ -105,12 +105,12 @@ class RunLedger:
                 return self._merge(held, new)
         return self._read_past({})
 
-    def _read_past(self, held: dict[int, storekit.LedgerRow]) -> dict[int, storekit.LedgerRow]:
+    def _read_past(self, held: dict[int, storekit.LedgerRow[R]]) -> dict[int, storekit.LedgerRow[R]]:
         """`held` with the rows the source has and it lacks, in rowid order."""
         return self._merge(held, self._read_after(held, ask_newest=False))
 
-    def _read_after(self, held: dict[int, storekit.LedgerRow], *,
-                    ask_newest: bool) -> list[storekit.LedgerRow]:
+    def _read_after(self, held: dict[int, storekit.LedgerRow[R]], *,
+                    ask_newest: bool) -> list[storekit.LedgerRow[R]]:
         """The source's rows past `held`'s newest less OVERLAP, without the ones
         `held` has — but with its newest when `ask_newest`."""
         newest = max(held) if held else None
@@ -120,8 +120,8 @@ class RunLedger:
         return self.source.runs_after(after, skip)
 
     @staticmethod
-    def _merge(held: dict[int, storekit.LedgerRow],
-               new: list[storekit.LedgerRow]) -> dict[int, storekit.LedgerRow]:
+    def _merge(held: dict[int, storekit.LedgerRow[R]],
+               new: list[storekit.LedgerRow[R]]) -> dict[int, storekit.LedgerRow[R]]:
         if not new:
             return held
         rows = {**held, **{r.rowid: r for r in new}}
@@ -141,7 +141,7 @@ class RunLedger:
             daemon=True, name="run-ledger-copy")
         self._copier.start()
 
-    def _write_copy(self, copy: LedgerCopy, rows: list[storekit.LedgerRow]) -> None:
+    def _write_copy(self, copy: LedgerCopy[R], rows: list[storekit.LedgerRow[R]]) -> None:
         saved = False
         try:
             saved = copy.save(rows)

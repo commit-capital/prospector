@@ -7,7 +7,8 @@ flagged, so previews are visible.
 Events are stored in the ``activity`` table of the shared store database (same
 SQLite/Postgres file as the PR/issue store). Each event is stamped with the
 human ``operator`` (from git identity) so the dashboard can attribute and break
-down by teammate.
+down by teammate. The table is append-only, and the app holds it in memory
+(`_HeldLog`), reading only the events its copy lacks.
 
 Every event carries a semantic top-level ``kind`` (#40) so aggregation is a
 ``Counter`` over one field, not a string-parse of ``action``:
@@ -31,6 +32,7 @@ import getpass
 import os
 import re
 import subprocess
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone, tzinfo
 from typing import TYPE_CHECKING
@@ -39,6 +41,9 @@ from pipeline import schema
 from pipeline import settings
 from pipeline import store
 from pipeline import storekit
+from prospector_app.backend import run_ledger
+from prospector_app.backend import snapshot_cache
+from prospector_app.backend.snapshot import LazySnapshot
 
 if TYPE_CHECKING:
     from issue_triage.issue_model import Issue
@@ -217,6 +222,9 @@ def record(kind: str, **fields) -> dict:
     storekit.assert_repo(eng)
     with eng.begin() as conn:
         conn.execute(schema.activity.insert().values(**schema.activity_row(entry)))
+    log = _log
+    if log is not None and log.engine is eng:
+        log.recorded += 1
     return entry
 
 
@@ -240,14 +248,97 @@ def _read(stmt) -> list[dict]:
     return [normalize(r[0]) for r in rows]
 
 
+LEDGER_CACHE_NAME = "activity"
+CHECK_DEBOUNCE = 10.0  # seconds
+
+
+class ActivityTable:
+    """The `activity` table behind `engine`, read as a ledger
+    (`run_ledger.LedgerSource`): each row's rowid, `at` and normalized event."""
+
+    def __init__(self, engine: storekit.Engine) -> None:
+        self.engine = engine
+
+    def runs_after(self, rowid: int | None,
+                   held: Iterable[int] = ()) -> list[storekit.LedgerRow[dict]]:
+        """The events past `rowid` (all when None), oldest first, without the
+        rowids in `held`, read under AUTOCOMMIT as `_read` reads."""
+        from sqlalchemy import select
+        act = schema.activity
+        query = select(act.c.rowid, act.c.at, act.c.data)
+        if rowid is not None:
+            query = query.where(act.c.rowid > rowid)
+        have = sorted(held)
+        if have:
+            query = query.where(act.c.rowid.not_in(have))
+        with self.engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+            rows = conn.execute(query.order_by(act.c.rowid)).all()
+        return [storekit.LedgerRow(int(r[0]), r[1], normalize(r[2])) for r in rows]
+
+
+def _held(record: dict) -> dict:
+    """A disk-copy event read back; anything but an object refuses the copy."""
+    if not isinstance(record, dict):
+        raise ValueError(f"activity copy row is not an event: {type(record).__name__}")
+    return normalize(record)
+
+
+class _HeldLog:
+    """The activity log of the store behind `engine`, held in memory: a ledger
+    over its table (`run_ledger.RunLedger`) started from this machine's disk
+    copy, and its events sorted by true instant. The first read loads it; a
+    read past CHECK_DEBOUNCE brings it current on a background thread; a read
+    after this process recorded an event brings it current first."""
+
+    def __init__(self, engine: storekit.Engine) -> None:
+        self.engine = engine
+        self.ledger = run_ledger.RunLedger(ActivityTable(engine), snapshot_cache.LedgerFile(
+            LEDGER_CACHE_NAME, engine.url.render_as_string(hide_password=True),
+            _held, lambda ev: ev))
+        self.events: list[dict] = []
+        self.recorded = 0  # events this process recorded
+        self.read_through = 0  # of those, how many the held events include
+        self.snapshot = LazySnapshot(self._freshen, debounce=CHECK_DEBOUNCE)
+
+    def _freshen(self, full: bool) -> None:
+        """`full` is irrelevant: the ledger reads only the rows it lacks."""
+        through = self.recorded
+        events = [r.record for r in self.ledger.rows()]
+        events.sort(key=_instant)
+        self.events, self.read_through = events, through
+
+    def read(self) -> list[dict]:
+        if self.recorded > self.read_through:
+            self.snapshot.refresh()
+        else:
+            self.snapshot.ensure()
+        return self.events
+
+
+_log: _HeldLog | None = None
+
+
+def _held_log() -> _HeldLog:
+    """The held log of the store `_engine` names, started over when it names
+    another."""
+    global _log
+    eng = _engine()
+    log = _log
+    if log is None or log.engine is not eng:
+        log = _log = _HeldLog(eng)
+    return log
+
+
+def refresh() -> None:
+    """Bring the held activity log current now."""
+    _held_log().snapshot.refresh()
+
+
 def _all_sorted() -> list[dict]:
-    """Every event, normalized and ordered oldest-first by true instant. Reads the
-    shared `activity` table; legacy rows are normalized on read (`normalize`), and
-    `_instant` gives offset-aware cross-timezone ordering."""
-    from sqlalchemy import select
-    out = _read(select(schema.activity.c.data).order_by(schema.activity.c.at))
-    out.sort(key=_instant)
-    return out
+    """Every event, normalized and ordered oldest-first by true instant
+    (`_instant`: offset-aware, so teammates' timezones interleave correctly),
+    from the held log. Callers read the list without changing it."""
+    return _held_log().read()
 
 
 def _events_for_prs(prs: list[int]) -> list[dict]:

@@ -62,7 +62,7 @@ _check_lock = threading.Lock()  # single-flights the freshen; never held by a re
 _light: dict[int, str | None] = {}
 _cache_written = 0.0
 _cache_generation: int | None = None
-_runs: run_ledger.RunLedger | None = None  # the PR run ledger (see `runs`)
+_runs: run_ledger.RunLedger[storekit.RunRecord] | None = None  # the PR run ledger (see `runs`)
 _author_baseline: dict | None = None  # inner `authors` map, read once
 _author_table: dict[str, dict] | None = None  # combined author profiles; invalidated on freshen
 _author_issue_generation: int | None = None
@@ -404,7 +404,7 @@ def runs(limit: int | None = None, since: str | None = None) -> list[storekit.Ru
     Answered from an in-memory copy of the whole ledger (`run_ledger.RunLedger`),
     brought current on every call by reading only the rows it does not hold. A
     restarted process starts it from this machine's disk copy
-    (`snapshot_cache.LedgerFile`). A `limit` or `since` read made before any
+    (`snapshot_cache.runs_file`). A `limit` or `since` read made before any
     whole read has completed asks the store for just that window."""
     ledger = _pr_ledger()
     if (limit is not None or since is not None) and not ledger.loaded:
@@ -416,14 +416,14 @@ def runs(limit: int | None = None, since: str | None = None) -> list[storekit.Ru
     return records
 
 
-def _pr_ledger() -> run_ledger.RunLedger:
+def _pr_ledger() -> run_ledger.RunLedger[storekit.RunRecord]:
     """The PR run ledger's in-memory copy, started over when `_store` is
     replaced."""
     global _runs
     ledger, st = _runs, _store
     if ledger is None or ledger.source is not st:
         ledger = _runs = run_ledger.RunLedger(
-            st, snapshot_cache.LedgerFile(LEDGER_CACHE_NAME, _store_key(st)))
+            st, snapshot_cache.runs_file(LEDGER_CACHE_NAME, _store_key(st)))
     return ledger
 
 

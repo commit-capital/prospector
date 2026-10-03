@@ -1129,12 +1129,26 @@ export interface FlaggedPr {
   noticed: string | null;
 }
 
-/** What the threat banner on every page says. `secrets` counts open
- *  rotate-secret items that do not read as a test fixture. */
+/** What the threat banner on every page says. `secrets` names the PRs
+ *  holding a live-looking credential a maintainer leaked, lowest first. */
 export interface ThreatSummary {
   malicious: FlaggedPr[];
   suspicious: number;
-  secrets: number;
+  secrets: number[];
+}
+
+/** An open rotate-secret item with its PR's author. */
+export interface ThreatSecret {
+  id: string;
+  pr: number;
+  summary: string | null;
+  evidence: string | null;
+  created: string | null;
+  author: string | null;
+  // A maintainer (or a profile priority author) wrote the PR.
+  maintainer: boolean;
+  // The evidence reads as a test fixture, not a live leak.
+  fixture: boolean;
 }
 
 /** One entry of the durable incident log, with the PR's state now. */
@@ -1164,7 +1178,10 @@ export interface ThreatDetail {
   flagged: FlaggedPr[];
   incidents: ThreatIncident[];
   actors: BlockedActor[];
-  secrets: ActionItem[];
+  // The maintainers' leaks the banner counts.
+  secrets: ThreatSecret[];
+  // Every other open rotate-secret item: a contributor's, or a test fixture.
+  quiet_secrets: ThreatSecret[];
 }
 
 /** One close-dup coverage-map entry: a substantive change in the PR and where
