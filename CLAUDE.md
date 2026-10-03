@@ -374,9 +374,12 @@ the current head — at most `TRIAGE_FIX_HUNT_LIMIT`
 A pushed `fix` re-triggers the review provider as the bot (Activity-logged) and
 starts the backend wait that ingests the fresh score. Every action that ends —
 refused, failed, parked for review, or pushed — appends a `fix:single` entry to
-the runs ledger carrying its action and its one-line reason, which is where an
-outcome outlives the `fix_request` the next queue click overwrites; the app's
-fix run history reads that lane, and `fix_history_backfill.py` seeds it from the
+the runs ledger carrying its action and its one-line reason, and a failed one its
+failure kind, which is where an outcome outlives the `fix_request` the next queue
+click overwrites; the app's fix run history and each machine's Recent activity
+read that lane, a failure of kind `capacity.PAUSED_KIND` (a hunted item the
+closed AI capacity gate stopped short of an agent) reading as waiting for
+capacity rather than failed, and `fix_history_backfill.py` seeds it from the
 endings a store already holds. The queue view itself holds an ending for half an
 hour, so a run that starts and finishes between two polls is still readable.
 

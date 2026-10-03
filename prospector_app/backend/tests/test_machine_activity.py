@@ -75,6 +75,18 @@ def test_lane_outcomes():
         {"label": "fixed", "count": 1, "numbers": [70]}]}
 
 
+def test_an_autofix_held_for_ai_capacity_reads_as_waiting_not_failed():
+    rows = [
+        _row("fix:single", host=None, pr=7, stats={"host": "studio", "status": "failed",
+                                                   "kind": "capacity-paused"}),
+        _row("fix:single", host=None, pr=8, stats={"host": "studio", "status": "failed",
+                                                   "kind": "sandbox"}),
+    ]
+    outcomes = _host(_summarize(rows), "studio")["lanes"]["autofix"]["outcomes"]
+    assert sorted((o["label"], o["numbers"]) for o in outcomes) == [
+        ("failed", [8]), ("waiting for AI capacity", [7])]
+
+
 def test_window_edge():
     rows = [_row("ingest:watch", hours_ago=24 + 1 / 60), _row("ingest:watch", hours_ago=24 - 1 / 60)]
     assert _host(_summarize(rows), "studio")["background"] == [{"label": "PR watch", "count": 1}]

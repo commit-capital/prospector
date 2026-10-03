@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, TypedDict
 
+from pipeline import capacity
 from pipeline import gates
 from pipeline import storekit
 from pipeline import wire
@@ -200,7 +201,10 @@ def _result(lane: str, rec: dict) -> str | None:
     if lane == "fix":
         # A fix run's status IS its result: the worker writes the ledger entry
         # from the terminal status it just recorded, so there is no later
-        # outcome to carry and no in-flight state to misreport.
+        # outcome to carry and no in-flight state to misreport. A run that
+        # stopped for the closed AI capacity gate is waiting, not failing.
+        if status_ == "failed" and stats.get("kind") == capacity.PAUSED_KIND:
+            return "waiting-for-capacity"
         return str(status_) if status_ is not None else None
     if status_ == "error":
         kind = stats.get("error_kind")
