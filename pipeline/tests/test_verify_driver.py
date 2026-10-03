@@ -264,7 +264,7 @@ class TestSandboxImageTag:
     def test_tag_is_keyed_by_the_profile_pnpm_pin(self, monkeypatch):
         p = profile.RepoProfile(verify=profile.VerifyPolicy(pnpm_version="10.4.1"))
         monkeypatch.setattr(vd.profile, "active", lambda: p)
-        assert vd.sandbox_image() == "pr-verify:pnpm-10.4.1"
+        assert vd.sandbox_image().startswith("pr-verify:pnpm-10.4.1-")
 
     def test_two_pins_are_two_images(self, monkeypatch):
         tags = set()
@@ -273,6 +273,14 @@ class TestSandboxImageTag:
             monkeypatch.setattr(vd.profile, "active", lambda p=p: p)
             tags.add(vd.sandbox_image())
         assert len(tags) == 2
+
+    def test_a_changed_dockerfile_names_another_image(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(vd, "SANDBOX", tmp_path)
+        (tmp_path / "Dockerfile").write_text("FROM node:lts-trixie-slim\n")
+        before = vd.sandbox_image()
+        assert vd.sandbox_image() == before
+        (tmp_path / "Dockerfile").write_text("FROM node:lts-trixie-slim\nRUN apt-get install rustup\n")
+        assert vd.sandbox_image() != before
 
 
 class TestBaseImageTag:
@@ -347,14 +355,10 @@ class TestPrepareBase:
             if cmd[:2] == ["docker", "build"]:
                 builds.append(cmd)
 
-        def run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-            builds.append(cmd)
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-
         monkeypatch.setattr(vd, "_run_build_step", step)
         monkeypatch.setattr(vd, "scrub_checkout", lambda src: None)
         monkeypatch.setattr(vd, "assert_scrubbed", lambda src: None)
-        monkeypatch.setattr(vd.subprocess, "run", run)
+        monkeypatch.setattr(vd, "image_exists", lambda tag: True)
         vd.build_base_image("deadbeefcafebabe1234", tier=0)
         vd.build_image()
         assert len(builds) == 2
@@ -2680,11 +2684,13 @@ class TestBaseBuildSharing:
         `built` the image tags, `fail` names a step to fail, and a clone waits
         on `release` once `cloning` is set."""
         monkeypatch.setattr(vd, "SCRATCH", tmp_path / "scratch")
-        state: dict = {"clones": [], "built": set(), "fail": None,
-                       "cloning": threading.Event(), "release": threading.Event()}
+        state: dict = {"clones": [], "built": {vd.sandbox_image(): None}, "fail": None,
+                       "steps": [], "cloning": threading.Event(),
+                       "release": threading.Event()}
         state["release"].set()
 
         def step(what: str, cmd: list[str], **kw: object) -> None:
+            state["steps"].append(cmd[:2])
             if cmd[:2] == ["git", "clone"]:
                 state["clones"].append(Path(cmd[-1]))
                 state["cloning"].set()
@@ -2692,12 +2698,15 @@ class TestBaseBuildSharing:
             if state["fail"] and what.startswith(state["fail"]):
                 raise vd.BuildFailure(f"{what} exited 1: boom")
             if cmd[:2] == ["docker", "build"]:
-                state["built"].add(cmd[cmd.index("-t") + 1])
+                parent = next((a.removeprefix("BASE_IMAGE=") for a in cmd
+                               if a.startswith("BASE_IMAGE=")), None)
+                state["built"][cmd[cmd.index("-t") + 1]] = parent
 
         monkeypatch.setattr(vd, "_run_build_step", step)
         monkeypatch.setattr(vd, "scrub_checkout", lambda src: None)
         monkeypatch.setattr(vd, "assert_scrubbed", lambda src: None)
         monkeypatch.setattr(vd, "image_exists", lambda tag: tag in state["built"])
+        monkeypatch.setattr(vd, "image_parent", lambda tag: state["built"].get(tag))
         return state
 
     def test_a_second_build_waits_for_the_first_and_reuses_it(self, builds):
@@ -2727,9 +2736,23 @@ class TestBaseBuildSharing:
         assert len(builds["clones"]) == 2
 
     def test_an_image_without_a_finished_build_beside_it_is_rebuilt(self, builds):
-        builds["built"].add(vd.base_image_tag(self.SHA, 1))
+        builds["built"][vd.base_image_tag(self.SHA, 1)] = vd.sandbox_image()
         vd.build_base_image(self.SHA, tier=1)
         assert len(builds["clones"]) == 1
+
+    def test_a_finished_build_from_an_older_sandbox_image_is_rebuilt(self, builds, monkeypatch):
+        vd.build_base_image(self.SHA, tier=1)
+        monkeypatch.setattr(vd, "sandbox_image", lambda: "pr-verify:pnpm-9.15.4-0123456789ab")
+        builds["built"]["pr-verify:pnpm-9.15.4-0123456789ab"] = None
+        vd.build_base_image(self.SHA, tier=1)
+        assert len(builds["clones"]) == 2
+        assert builds["built"][vd.base_image_tag(self.SHA, 1)] == "pr-verify:pnpm-9.15.4-0123456789ab"
+
+    def test_a_missing_sandbox_image_is_built_before_the_clone(self, builds):
+        del builds["built"][vd.sandbox_image()]
+        vd.build_base_image(self.SHA, tier=1)
+        assert vd.sandbox_image() in builds["built"]
+        assert builds["steps"][:2] == [["docker", "build"], ["git", "clone"]]
 
     def test_the_clone_moves_into_place_only_once_complete(self, builds):
         """A clone left running by a process that died mid-build empties its own

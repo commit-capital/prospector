@@ -148,7 +148,8 @@ def _base_images() -> dict[str, list[tuple[str, datetime | None]]]:
 
 def sandbox_images() -> list[str]:
     """Every `pr-verify:*` tag present in the local Docker daemon, whatever pnpm
-    pin each was built for. Empty when the daemon cannot answer."""
+    pin and Dockerfile each was built from. Empty when the daemon cannot
+    answer."""
     p = subprocess.run(
         ["docker", "image", "ls", "--filter", f"reference={SANDBOX_REPO}",
          "--format", "{{.Repository}}:{{.Tag}}"],
