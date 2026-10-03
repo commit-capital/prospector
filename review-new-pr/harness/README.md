@@ -25,7 +25,8 @@ harness/
 ```
 
 The harness is standalone on purpose: stdlib-only, run under a bare
-`python3`, never importing `pipeline` — so the whole directory can be copied
+`python3` (3.11 or later, for the possessive quantifiers in `secret_scan`'s
+private-key check), never importing `pipeline` — so the whole directory can be copied
 into the target repository's CI unchanged. Repository policy (the required
 PR-template sections) comes from the same profile JSON the pipeline uses
 (`TRIAGE_PROFILE`), read directly with stdlib `json`.

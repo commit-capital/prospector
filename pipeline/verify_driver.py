@@ -116,10 +116,12 @@ SCRUB_PATTERNS: tuple[str, ...] = (
     # header alone is UI text (a form field's placeholder). The body's first
     # line is 64 columns, and an encrypted key carries Proc-Type / DEK-Info
     # header lines before it. Newlines may be JSON-escaped, as a service-account
-    # file writes them.
+    # file writes them. Its quantifiers are possessive and a Proc-Type /
+    # DEK-Info value stops at a backslash or the next `-----`, so a search reads
+    # past each header once.
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----"
-    r"(?:(?:\\[rn]|\s)*(?:Proc-Type|DEK-Info):[^\n\\]*)*"
-    r"(?:\\[rn]|\s)*[A-Za-z0-9+/]{40,}",
+    r"(?:(?:\\[rn]|\s)*+(?:Proc-Type|DEK-Info):[^\n\\-]*+(?:-(?!----)[^\n\\-]*+)*+)*+"
+    r"(?:\\[rn]|\s)*+[A-Za-z0-9+/]{40,}",
 )
 _SCRUB_RE = re.compile("|".join(SCRUB_PATTERNS))
 
