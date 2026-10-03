@@ -52,6 +52,10 @@ class TestAccessorsReadTheCurrentEnvironment:
         monkeypatch.delenv("TRIAGE_VERIFY_SCRATCH", raising=False)
         assert settings.verify_scratch() == Path.home() / ".pr-triage-verify" / "acme-widgets"
 
+    def test_a_test_process_scratches_outside_the_machines_verify_directory(self):
+        # Parallel test processes writing one directory read each other's files.
+        assert not settings.verify_scratch().is_relative_to(Path.home() / ".pr-triage-verify")
+
 
 class TestWorkerId:
     def test_env_value_wins(self, monkeypatch):

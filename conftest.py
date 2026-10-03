@@ -5,6 +5,7 @@ The identity values here are deliberately fake and intentionally NOT the real
 deployment's repo/bot — a test that silently depends on the real identity fails
 here, which is the point. setdefault so a real shell export still wins."""
 import os
+import tempfile
 
 os.environ["TRIAGE_SKIP_DOTENV"] = "1"
 # Keep tests off the shared DB, and keep parallel workers off each other. Under
@@ -16,11 +17,17 @@ os.environ["TRIAGE_SKIP_DOTENV"] = "1"
 # TRIAGE_STORE_URL export is discarded — the shared store is never touched.
 _worker = os.environ.get("PYTEST_XDIST_WORKER")
 if _worker:
-    import tempfile
     _store_dir = tempfile.mkdtemp(prefix=f"triage-{_worker}-")
     os.environ["TRIAGE_STORE_URL"] = f"sqlite:///{_store_dir}/store.db"
 else:
     os.environ.pop("TRIAGE_STORE_URL", None)
+# The verify scratch directory defaults to one per repository under the home
+# directory, shared by every process that uses it: two test workers writing the
+# same `autofix/pr-1.related-tests.patch` there read each other's. Each test
+# process gets a private one, and a real TRIAGE_VERIFY_SCRATCH export is
+# discarded.
+os.environ["TRIAGE_VERIFY_SCRATCH"] = tempfile.mkdtemp(
+    prefix=f"triage-scratch-{_worker or 'serial'}-")
 # The developer's Docker daemon is the one a live verify worker on this machine
 # boots its pinned base image from, and verify_gc's sweep ends in `docker rmi`.
 # Every docker call a test leaves unstubbed reaches this socket and fails.
