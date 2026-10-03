@@ -6,6 +6,9 @@ safety_guard (gh pr diff) and caches to prospector_app/cache/diffs/<sha>.diff.
 """
 from __future__ import annotations
 
+import dataclasses
+import os
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,7 +34,9 @@ from pipeline import reviewers
 from pipeline import freshness
 from pipeline import gates
 from pipeline import profile
+from pipeline import review_policy
 from pipeline import risktier
+from pipeline import settings_registry
 from pipeline import storekit
 
 CACHE_DIR = Path(__file__).resolve().parents[1] / "cache"
@@ -425,28 +430,126 @@ _DEFAULT_DESC = {"pr", "greptile", "review", "scans", "safety", "updated", "loc"
                  "checks", "merge", "conflicts", "age", "author_rate", "pain", "issues"}
 
 
-# A pr_row is a pure projection of its store record, the cluster index, the
-# author table, and repo config — plus the current UTC date (age and staleness
-# windows) — except `responses`, which the query loop overlays fresh below.
-# Building one walks every gate and freshness window, so rebuilding the whole
-# corpus per list query costs seconds at a few thousand PRs; rows are cached
-# here instead, filled lazily per PR, and the cache is replaced wholesale when
-# the snapshot (generation + object identity) or the date moves. The object
-# identity guards callers that swap `data.prs` out from under the generation
-# counter (tests); the generation guards id() reuse across snapshot swaps.
-_ROW_CACHE: dict[int, dict] = {}
-_ROW_CACHE_KEY: tuple[int, int, str] | None = None
+# A pr_row is a projection of its store record, the clusters it is in, the
+# records it shares a cluster with (a close-oversized suggestion names the open
+# merge picks among them), its cached diff, and the inputs `_row_inputs` names —
+# except `responses`, `claim` and `author_stats`, which the query loop overlays
+# fresh below. Building one walks every gate and freshness window, and building
+# the whole corpus costs seconds at a few thousand PRs, so rows are cached,
+# filled lazily per PR, and a row is dropped only when one of its inputs moves.
+# A freshen replaces the record object of each PR it refetched and keeps every
+# other one, so record identity between two snapshots names the changed PRs.
+type _RowInputs = tuple[str, tuple[str | None, ...], profile.RepoProfile, tuple[str, ...]]
+
+
+@dataclasses.dataclass(frozen=True)
+class _RowCache:
+    """The rows built over one snapshot and cluster index. `rows` only gains
+    entries: a change publishes a new _RowCache, so a query that started on
+    this one keeps reading and filling a coherent set."""
+    snap: dict[int, Pr]
+    index: dict[int, list[int]]
+    inputs: _RowInputs
+    rows: dict[int, dict]
+
+
+_ROWS: _RowCache | None = None
+_ROWS_LOCK = threading.Lock()  # serializes publishing a new _RowCache
+# One query builds missing rows at a time; a concurrent query waits for it and
+# reuses what it built.
+_BUILD_LOCK = threading.Lock()
+
+
+def _row_hour() -> str:
+    """The current UTC hour. The age column and the freshness windows count
+    days, and the retry cooldowns automation.classify reads count hours."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H")
+
+
+def _row_inputs() -> _RowInputs:
+    """What every row reads besides PR records and cluster membership: the
+    hour, the operator settings, the repository profile, and the active
+    reviewers (in auto mode they follow the reviewers registry)."""
+    return (_row_hour(),
+            tuple(os.environ.get(s.name) for s in settings_registry.SETTINGS),
+            profile.active(),
+            tuple(r.id for r in review_policy.active_reviewers()))
+
+
+def _cluster_members(index: dict[int, list[int]]) -> dict[int, list[int]]:
+    out: dict[int, list[int]] = {}
+    for n, cids in index.items():
+        for cid in cids:
+            out.setdefault(cid, []).append(n)
+    return out
+
+
+def _stale_rows(old: _RowCache, snap: dict[int, Pr], index: dict[int, list[int]]) -> set[int]:
+    """The PRs whose rows in `old` no longer describe `snap` and `index`: each
+    PR whose record or cluster membership changed, and every PR it shares a
+    cluster with before or after the change."""
+    changed = {n for n, rec in snap.items() if old.snap.get(n) is not rec}
+    changed.update(old.snap.keys() - snap.keys())
+    if index is not old.index:
+        changed.update(n for n in index.keys() | old.index.keys()
+                       if index.get(n) != old.index.get(n))
+    stale = set(changed)
+    if changed:
+        for idx in (old.index, index):
+            members = _cluster_members(idx)
+            for n in changed:
+                for cid in idx.get(n, ()):
+                    stale.update(members.get(cid, ()))
+    return stale
 
 
 def _row_cache(snap: dict[int, Pr]) -> dict[int, dict]:
-    global _ROW_CACHE, _ROW_CACHE_KEY
-    key = (data.generation(), id(snap), storekit.utc_day())
-    if _ROW_CACHE_KEY != key:
-        # Rebind rather than clear: a query that started under the old key keeps
-        # filling (and reading) the dict it already holds, coherently.
-        _ROW_CACHE = {}
-        _ROW_CACHE_KEY = key
-    return _ROW_CACHE
+    global _ROWS
+    index, inputs = data.pr_to_clusters(), _row_inputs()
+    with _ROWS_LOCK:
+        old = _ROWS
+        if old is not None and old.inputs == inputs:
+            if old.snap is snap and old.index is index:
+                return old.rows
+            stale = _stale_rows(old, snap, index)
+            rows = {n: row for n, row in old.rows.items() if n not in stale}
+        else:
+            rows = {}
+        _ROWS = _RowCache(snap, index, inputs, rows)
+        return rows
+
+
+def _forget_row(n: int) -> None:
+    """Drop PR `n`'s cached row, for an input the snapshot does not carry."""
+    global _ROWS
+    with _ROWS_LOCK:
+        old = _ROWS
+        if old is not None and n in old.rows:
+            _ROWS = dataclasses.replace(old, rows={k: v for k, v in old.rows.items() if k != n})
+
+
+def _build_rows(cache: dict[int, dict], recs: list[tuple[int, Pr]]) -> None:
+    missing = [(n, rec) for n, rec in recs if n not in cache]
+    if not missing:
+        return
+    with _BUILD_LOCK:
+        for n, rec in missing:
+            if n not in cache:
+                row = pr_row(n, rec)
+                if row is not None:
+                    cache[n] = row
+
+
+def _in_state_scope(rec: Pr, spec: dict) -> bool:
+    state = spec.get("state")
+    if state == "all":
+        return True
+    if state == "closed":
+        return rec.state != "open"
+    # Default: the queue is open-PRs-only, but a community response (a reply, a
+    # reopen) is often on a PR we already closed — when filtering by response,
+    # widen to any state so that pushback still surfaces.
+    return rec.state == "open" or bool(spec.get("responses"))
 
 
 def query_prs(spec: dict, sort: str | None = None, direction: str | None = None,
@@ -459,31 +562,21 @@ def query_prs(spec: dict, sort: str | None = None, direction: str | None = None,
         eff["claimed"] = claims.me()["by"]
     snap = data.prs()
     cache = _row_cache(snap)
+    recs = [(n, rec) for n, rec in snap.items() if _in_state_scope(rec, eff)]
+    _build_rows(cache, recs)
     rows = []
-    state_spec = eff.get("state")
-    for n, rec in snap.items():
-        if state_spec == "all":
-            pass
-        elif state_spec == "closed":
-            if rec.state == "open":
-                continue
-        # Default: the queue is open-PRs-only, but a community response (a
-        # reply, a reopen) is often on a PR we already closed — when filtering
-        # by response, widen to any state so that pushback still surfaces.
-        elif rec.state != "open" and not eff.get("responses"):
-            continue
+    for n, rec in recs:
         row = cache.get(n)
         if row is None:
-            row = pr_row(n, rec)
-            if row is None:
-                continue
-            cache[n] = row
-        # Response signals and their acks, and operator claims, live outside the
-        # snapshot (registry + store, own short-TTL caches), so overlay them
-        # fresh on the cached row — an ack must drop the PR from the responses
-        # queue, and a teammate's claim must appear, on the very next query.
+            continue
+        # Response signals and their acks, operator claims, and the author
+        # table live outside the PR record (registry, store, and a table folded
+        # from every PR, each with its own cache), so overlay them fresh on the
+        # cached row — an ack must drop the PR from the responses queue, and a
+        # teammate's claim must appear, on the very next query.
         row = {**row, "responses": responses.for_pr(n),
-               "claim": claims.for_item("pr", n)}
+               "claim": claims.for_item("pr", n),
+               "author_stats": data.author_stats(rec.author)}
         if filters.matches(row, eff):
             rows.append(row)
     key = _SORT_KEYS.get(sort or "", _SORT_KEYS["pr"])
@@ -815,5 +908,6 @@ def get_diff(n: int) -> dict:
     res = run(["gh", "pr", "diff", str(n), "--repo", settings.repo()], timeout=120)
     if res.returncode == 0 and res.stdout.strip():
         cached.write_text(res.stdout)
+        _forget_row(int(n))  # its row's diff facets were built without this diff
         return {"diff": res.stdout, "source": "gh"}
     return _diff_from_files_api(n)
