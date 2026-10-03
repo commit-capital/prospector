@@ -133,8 +133,10 @@ export function NeedsYou({ hunt, activity, capacity, onResume }: {
   }
   return (
     <Panel id="needs-you" title="Needs you" tone={lines.length > 0 ? "danger" : undefined}
-      meta={hunt == null ? "loading…" : lines.length > 0 ? String(lines.length) : undefined}>
-      {lines.length > 0 ? lines : hunt != null && <div className="cpanel-ok">✓ All lanes healthy</div>}
+      meta={lines.length > 0 ? String(lines.length) : undefined}>
+      {lines.length > 0 ? lines
+        : hunt != null ? <div className="cpanel-ok">✓ All lanes healthy</div>
+        : <div className="muted small">Loading…</div>}
     </Panel>
   );
 }
