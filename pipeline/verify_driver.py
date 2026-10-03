@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import functools
+import hashlib
 import json
 import os
 import platform
@@ -62,10 +63,13 @@ SANDBOX = Path(__file__).resolve().parents[1] / "sandbox"
 
 def sandbox_image() -> str:
     """The hardened sandbox image's tag, keyed by the pnpm version the active
-    profile pins — the version the image bakes into corepack's cache — so
-    deployments on one machine whose profiles pin different versions each keep
-    their own image."""
-    return f"pr-verify:pnpm-{profile.active().verify.pnpm_version}"
+    profile pins — the version the image bakes into corepack's cache — and by
+    the sandbox Dockerfile, the image's whole build context. Deployments on one
+    machine whose profiles pin different versions each keep their own image,
+    and a checkout whose Dockerfile changed names an image this machine has yet
+    to build."""
+    dockerfile = hashlib.sha256((SANDBOX / "Dockerfile").read_bytes()).hexdigest()
+    return f"pr-verify:pnpm-{profile.active().verify.pnpm_version}-{dockerfile[:12]}"
 
 DIFFS = Path(__file__).resolve().parent / "cache" / "diffs"
 
@@ -407,6 +411,18 @@ def image_exists(image: str) -> bool:
     return p.returncode == 0
 
 
+def image_parent(image: str) -> str | None:
+    """The sandbox image a base image records it was built FROM (its
+    verify_gc.SANDBOX_LABEL), or None when `image` is absent or carries no such
+    label."""
+    p = subprocess.run(
+        ["docker", "image", "inspect", "--format",
+         f'{{{{index .Config.Labels "{verify_gc.SANDBOX_LABEL}"}}}}', image],
+        capture_output=True, text=True, env=launcher_env())
+    parent = p.stdout.strip() if p.returncode == 0 else ""
+    return parent if parent and parent != "<no value>" else None
+
+
 def sandbox_images() -> list[str]:
     return verify_gc.sandbox_images()
 
@@ -467,27 +483,57 @@ def _run_build_step(what: str, argv: list[str], *, env: dict[str, str],
         raise BuildFailure(f"{what} exited {proc.returncode}: {tail or '(no output)'}")
 
 
+# Written into a base's build directory once its image is built, so a later
+# build of that SHA can tell a finished generation from one a failed build left.
+_BUILT_MARKER = "built"
+
+
 def build_base_image(sha: str, *, tier: int) -> str:
     """Produce a scrubbed remote-stripped clone of `sha` under SCRATCH and build
     the per-batch base image from it (Tier 1 prefetches the pnpm store and the
     Rust toolchains and crates first so the build installs offline). Returns
     the image tag. Upstream is public, so
-    the clone is unauthenticated — there is no tokenized remote to leak."""
+    the clone is unauthenticated — there is no tokenized remote to leak.
+
+    The pin refresh and the compile preflight both build current default-branch
+    HEAD, so one SHA's builds take its generation lock in turn, and a build that
+    finds the finished build directory and an image built FROM the current
+    sandbox image already there returns the tag without rebuilding."""
     if not _BASE_SHA_RE.fullmatch(sha):
         raise ValueError(f"invalid base_sha {sha!r}: expected 7-40 lowercase hex characters")
+    ctx = base_clone_dir(sha).parent
+    tag = base_image_tag(sha, tier)
+    with verify_gc.generation_lock(ctx):
+        if (ctx / _BUILT_MARKER).is_file() and image_parent(tag) == sandbox_image():
+            return tag
+        _build_base_image(sha, tier, ctx, tag)
+        (ctx / _BUILT_MARKER).touch()
+    return tag
+
+
+def _build_base_image(sha: str, tier: int, ctx: Path, tag: str) -> None:
+    """build_base_image's build, under the generation lock. It first builds the
+    sandbox image the base is built FROM when this machine lacks it. The clone
+    lands in a directory of its own and moves into place once complete: a clone
+    left running by a process that died mid-build empties its directory when it
+    fails, and this build's is never that one."""
+    if not image_exists(sandbox_image()):
+        build_image()
     src = base_clone_dir(sha)
-    ctx = src.parent
     pnpm_store = ctx / "pnpm-store"
     rust = ctx / "rust"
     if ctx.exists():
         shutil.rmtree(ctx)
-    src.parent.mkdir(parents=True, exist_ok=True)
-    pnpm_store.mkdir(parents=True, exist_ok=True)
-    rust.mkdir(parents=True, exist_ok=True)
+    ctx.mkdir(parents=True)
+    pnpm_store.mkdir()
+    rust.mkdir()
 
+    cloning = ctx / f"clone-{os.getpid()}-{time.monotonic_ns()}"
+    cloning.mkdir()
     _run_build_step(f"cloning {settings.repo()}",
-                    ["git", "clone", f"https://github.com/{settings.repo()}.git", str(src)],
+                    ["git", "clone", f"https://github.com/{settings.repo()}.git", str(cloning)],
                     env=launcher_env())
+    cloning.rename(src)
     _run_build_step(f"checking out {sha[:12]}",
                     ["git", "-C", str(src), "checkout", "--detach", sha], env=launcher_env())
     scrub_checkout(src)
@@ -497,7 +543,6 @@ def build_base_image(sha: str, *, tier: int) -> str:
         prefetch_store(src, pnpm_store)
         prefetch_rust(src, rust)
 
-    tag = base_image_tag(sha, tier)
     _run_build_step(
         f"building {tag}",
         ["docker", "build", "--force-rm", "--network", "none", "-t", tag,
@@ -505,7 +550,6 @@ def build_base_image(sha: str, *, tier: int) -> str:
          "--build-arg", f"BASE_IMAGE={sandbox_image()}",
          "-f", str(SANDBOX / "Dockerfile.base"), str(ctx)],
         env=launcher_env())
-    return tag
 
 
 def prepare_base(store: Store, *, base_sha: str | None = None, tier: int = 0) -> str:
@@ -2025,14 +2069,16 @@ def _reopen_clusters_on_escalate(store: Store, n: int, *, was_merge: bool) -> No
 
 def build_image() -> str:
     """Build the hardened sandbox image with the profile's pnpm pin baked into
-    corepack's cache, under the tag that names that pin. Returns the tag."""
+    corepack's cache, under the tag that names that pin and the Dockerfile
+    (sandbox_image). Returns the tag."""
     pnpm = profile.active().verify.pnpm_version
     tag = sandbox_image()
-    subprocess.run(
+    _run_build_step(
+        f"building {tag}",
         ["docker", "build", "--force-rm", "-t", tag,
          "--build-arg", f"PNPM_VERSION={pnpm}",
          "-f", str(SANDBOX / "Dockerfile"), str(SANDBOX)],
-        check=True, env=launcher_env())
+        env=launcher_env())
     return tag
 
 

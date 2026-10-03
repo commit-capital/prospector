@@ -22,15 +22,27 @@ concurrent reader's artifacts alive without any cross-thread locking.
 A generation named in the held list (`HELD_FILE`) is kept by identity too and
 takes no slot: the issue-fix evaluation set holds a base per period of history,
 built once and replayed against for as long as the set names it.
+
+A generation is written by one build at a time. `generation_lock` is an
+advisory lock on a file beside the generation's directory: every build of that
+SHA holds it from clearing the directory until its image is built, and a sweep
+removes only a generation whose lock it can take at once, so neither deletes
+files a build is writing.
 """
 from __future__ import annotations
 
+import fcntl
+import os
 import re
 import shutil
 import subprocess
+import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TextIO
 
 from pipeline import settings
 
@@ -136,7 +148,8 @@ def _base_images() -> dict[str, list[tuple[str, datetime | None]]]:
 
 def sandbox_images() -> list[str]:
     """Every `pr-verify:*` tag present in the local Docker daemon, whatever pnpm
-    pin each was built for. Empty when the daemon cannot answer."""
+    pin and Dockerfile each was built from. Empty when the daemon cannot
+    answer."""
     p = subprocess.run(
         ["docker", "image", "ls", "--filter", f"reference={SANDBOX_REPO}",
          "--format", "{{.Repository}}:{{.Tag}}"],
@@ -165,6 +178,53 @@ def sandbox_plan(tags: list[str], current: str,
     keep = [current] + sorted(t for t in tags if t != current and t in parents)
     remove = tuple(t for t in tags if t not in keep)
     return tuple(keep), remove
+
+
+def lock_path(ctx: Path) -> Path:
+    """The lock file of the generation built in `ctx`. It sits beside the
+    directory, which a build clears whole."""
+    return ctx.parent / f"{ctx.name}.lock"
+
+
+@contextmanager
+def generation_lock(ctx: Path, *, wait: bool = True) -> Iterator[bool]:
+    """Hold the exclusive lock on the generation built in `ctx` for the body,
+    yielding True. With `wait` False it yields False at once when another holder
+    has it; a waiting caller says on stderr what it is waiting for."""
+    path = lock_path(ctx)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fh = _acquire(path, blocking=False)
+    if fh is None and wait:
+        print(f"[base] waiting for another build of {ctx.name} to finish",
+              file=sys.stderr, flush=True)
+        fh = _acquire(path, blocking=True)
+    try:
+        yield fh is not None
+    finally:
+        if fh is not None:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            fh.close()
+
+
+def _acquire(path: Path, *, blocking: bool) -> TextIO | None:
+    """An open handle holding the lock on `path`, or None when `blocking` is
+    False and another holder has it. A sweep unlinks the lock file of a
+    generation it removes, so a lock taken on a file no longer at `path` is let
+    go and taken again on the one that is."""
+    while True:
+        fh = open(path, "a+")
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX if blocking
+                        else fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            fh.close()
+            return None
+        try:
+            if os.stat(path).st_ino == os.fstat(fh.fileno()).st_ino:
+                return fh
+        except FileNotFoundError:
+            pass
+        fh.close()
 
 
 def _clone_dirs() -> dict[str, Path]:
@@ -313,6 +373,25 @@ def _clear_build_cache_past(keep_bytes: int) -> None:
                    capture_output=True, text=True, env=_env())
 
 
+def _reclaim(g: Generation) -> bool:
+    """Remove one generation's images, then its directory and lock file,
+    reporting whether all of it went. A generation a build holds is left
+    whole."""
+    ctx = g.clone_dir or SCRATCH / "base" / g.sha12
+    with generation_lock(ctx, wait=False) as held:
+        if not held:
+            return False
+        if not all(_rmi(image) for image in g.images):
+            return False
+        if g.clone_dir is not None:
+            try:
+                shutil.rmtree(g.clone_dir)
+            except OSError:
+                return False
+        lock_path(ctx).unlink(missing_ok=True)
+        return True
+
+
 def collect(pinned_sha: str | None, *, sandbox_tag: str | None = None,
             dry_run: bool = False) -> dict:
     """Sweep every base generation outside the retention rule, the sandbox
@@ -332,18 +411,11 @@ def collect(pinned_sha: str | None, *, sandbox_tag: str | None = None,
         result["keep"] = list(p.keep)
         by_sha = {g.sha12: g for g in generations}
         for sha in sorted({g.sha12 for g in generations} - set(p.keep)):
-            g = by_sha[sha]
             if dry_run:
                 result["reclaimed"].append(sha)
                 continue
-            if not all(_rmi(image) for image in g.images):
-                continue
-            if g.clone_dir is not None:
-                try:
-                    shutil.rmtree(g.clone_dir)
-                except OSError:
-                    continue
-            result["reclaimed"].append(sha)
+            if _reclaim(by_sha[sha]):
+                result["reclaimed"].append(sha)
         if sandbox_tag is not None:
             tags = sandbox_images()
             parents = {t for t in tags if t != sandbox_tag and _is_parent_of_a_base_image(t)}
