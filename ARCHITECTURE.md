@@ -101,6 +101,13 @@ I/O — every board/list read serves from module-level dicts (`_prs`, `_clusters
   `run_ledger.COPY_EVERY`. The issue and alert run ledgers (`issue_data.runs`,
   `alert_data.runs`) are held and copied the same way, each copy under its own
   name, since all three ledgers live in the one store.
+- **The activity log** (`activity.py`, the append-only `activity` table) is held
+  the same way, through the same `run_ledger.RunLedger` and disk copy, with its
+  events sorted by true instant. It loads at boot beside the snapshots; after
+  that a read serves from memory and brings it current on a background thread
+  at most once per `CHECK_DEBOUNCE`, except that a read after this process
+  recorded an event brings it current first, so an operator's own action is in
+  the feed they read next. `POST /api/refresh` brings it current now.
 - **Cluster removals ride the watermark:** a watermark sees inserts/updates but
   not hard-deletes, so `store.delete_cluster` instead **soft-deletes** — it
   tombstones the cluster (a `deleted` flag with a bumped `saved_at`). The tombstone

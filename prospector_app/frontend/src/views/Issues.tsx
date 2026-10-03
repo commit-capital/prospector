@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
 import { api, type IssueRow, type IssueDupGroup, type IssuePR, type IssueExecResult, type IssueDisposition, type IssueTriageDisposition, type IssueFilterSpec, type IssueLikelyFixedItem } from "../api";
 import { PRLink } from "../components/PRLink";
@@ -19,9 +19,9 @@ import { EVIDENCE, REFERENCED, linkStateChip } from "../components/issues/issueL
 import { IssueCloseConfirmDialog, type IssueClosePlan } from "../components/issues/IssueCloseConfirmDialog";
 import { SkeletonRows } from "../components/SkeletonRows";
 import { FixStatusChip } from "../components/IssueFixPanel";
+import { peekRead, runRead } from "../readCache";
+import { ISSUE_PAGE_SIZE as PAGE_SIZE, ISSUE_TABLE_FIRST_PAGE, issueTableRead, type IssueSortKey } from "./issueTable";
 
-const PAGE_SIZE = 50;
-type IssueSortKey = "number" | "title" | "author" | "pain" | "repro" | "dups" | "prs" | "disposition" | "subsystem" | "fix";
 const ISSUE_DESC_FIRST = new Set<IssueSortKey>(["number", "pain", "repro", "dups", "prs"]);
 
 // A GitHub issue number → its issue on github.com. Row-level clicks open the
@@ -429,11 +429,6 @@ const FIX_FILTERS: { key: string; label: string }[] = [
   { key: "none", label: "Never attempted" },
 ];
 
-function fixStatusParam(key: string): string | string[] | undefined {
-  if (!key) return undefined;
-  return key === "needs-you" ? ["review", "question"] : key;
-}
-
 const DISP_FILTERS: { key: string; label: string }[] = [
   { key: "", label: "all" },
   { key: "link-pr", label: "link-pr" },
@@ -658,29 +653,36 @@ export default function Issues() {
   // scrolls into view).
   const [sp] = useSearchParams();
   const dupLinked = sp.get("dup") != null;
-  const [rows, setRows] = useState<IssueRow[]>([]);
   const [groups, setGroups] = useState<IssueDupGroup[]>([]);
   const [likelyItems, setLikelyItems] = useState<IssueLikelyFixedItem[]>([]);
-  const [total, setTotal] = useState(0);
   const [tab, setTab] = useState<"dups" | "all">(dupLinked ? "dups" : "all");
-  const [q, setQ] = useState("");
-  const [page, setPage] = useState(1);
-  const [sortKey, setSortKey] = useState<IssueSortKey | "">("pain");
-  const [sortDir, setSortDir] = useState<SortDir | "">("desc");
+  const [q, setQ] = useState(ISSUE_TABLE_FIRST_PAGE.q);
+  const [page, setPage] = useState(ISSUE_TABLE_FIRST_PAGE.page);
+  const [sortKey, setSortKey] = useState<IssueSortKey | "">(ISSUE_TABLE_FIRST_PAGE.sortKey);
+  const [sortDir, setSortDir] = useState<SortDir | "">(ISSUE_TABLE_FIRST_PAGE.sortDir);
   // ?disposition=<key> (e.g. a Home issue card link) lands the All-issues
   // table pre-filtered to that triage disposition ("none" = unanalyzed).
   const dispParam = sp.get("disposition");
-  const [dispFilter, setDispFilter] = useState(
-    dispParam !== null && DISP_FILTERS.some((f) => f.key === dispParam) ? dispParam : "");
-  const [stateFilter, setStateFilter] = useState("open");
+  const dispFromUrl = dispParam !== null && DISP_FILTERS.some((f) => f.key === dispParam)
+    ? dispParam : ISSUE_TABLE_FIRST_PAGE.disposition;
+  const [dispFilter, setDispFilter] = useState(dispFromUrl);
+  const [stateFilter, setStateFilter] = useState(ISSUE_TABLE_FIRST_PAGE.state);
   const fixParam = sp.get("fix");
-  const [fixFilter, setFixFilter] = useState(
-    fixParam !== null && FIX_FILTERS.some((f) => f.key === fixParam) ? fixParam : "");
+  const fixFromUrl = fixParam !== null && FIX_FILTERS.some((f) => f.key === fixParam)
+    ? fixParam : ISSUE_TABLE_FIRST_PAGE.fix;
+  const [fixFilter, setFixFilter] = useState(fixFromUrl);
   // Per-column filters (author/pain/repro/subsystem/dups/linked-PRs/labels) —
   // the issue-side analog of PR Explorer's filter spec (#494).
-  const [filterSpec, setFilterSpec] = useState<IssueFilterSpec>({});
+  const [filterSpec, setFilterSpec] = useState<IssueFilterSpec>(ISSUE_TABLE_FIRST_PAGE.filterSpec);
+  const tableRead = useMemo(() => issueTableRead({
+    q, sortKey, sortDir, disposition: dispFilter, state: stateFilter, fix: fixFilter, page, filterSpec,
+  }), [q, sortKey, sortDir, dispFilter, stateFilter, fixFilter, page, filterSpec]);
+  // A first page the tab prefetch already read paints at once; the effect
+  // below reads it again.
+  const [rows, setRows] = useState<IssueRow[]>(() => peekRead(tableRead)?.items ?? []);
+  const [total, setTotal] = useState(() => peekRead(tableRead)?.total ?? 0);
   const [err, setErr] = useState<string>();
-  const [loadingIssues, setLoadingIssues] = useState(true);
+  const [loadingIssues, setLoadingIssues] = useState(() => peekRead(tableRead) === undefined);
   const [loadingDups, setLoadingDups] = useState(dupLinked);
   const [dupsLoaded, setDupsLoaded] = useState(false);
   const [loadingLikely, setLoadingLikely] = useState(dupLinked);
@@ -696,18 +698,7 @@ export default function Issues() {
     let active = true;
     let timer: number | undefined;
     const run = () => {
-      api.queryIssues({
-        q,
-        sort: sortKey || undefined,
-        direction: sortDir || undefined,
-        disposition: dispFilter || undefined,
-        state: stateFilter === "all" ? undefined : stateFilter,
-        fix_status: fixStatusParam(fixFilter),
-        collapse_dups: true,
-        offset: (page - 1) * PAGE_SIZE,
-        limit: PAGE_SIZE,
-        ...filterSpec,
-      }).then((d) => {
+      runRead(tableRead).then((d) => {
         if (!active) return;
         setRows(d.items);
         setTotal(d.total);
@@ -724,7 +715,24 @@ export default function Issues() {
     };
     run();
     return () => { active = false; if (timer !== undefined) window.clearTimeout(timer); };
-  }, [q, page, sortKey, sortDir, dispFilter, stateFilter, fixFilter, filterSpec]);
+  }, [tableRead]);
+
+  // The page stays mounted across in-app navigation (App's kept pages), so a
+  // link that changes ?disposition= or ?fix= (a Home issue card) sets those
+  // filters the way a load does.
+  const [prevFilterParams, setPrevFilterParams] = useState([dispParam, fixParam]);
+  if (dispParam !== prevFilterParams[0] || fixParam !== prevFilterParams[1]) {
+    setPrevFilterParams([dispParam, fixParam]);
+    if (dispFromUrl !== dispFilter || fixFromUrl !== fixFilter) {
+      setLoadingIssues(true);
+      setDispFilter(dispFromUrl);
+      setFixFilter(fixFromUrl);
+      setPage(1);
+      setSelected(new Set());
+      setIssueResults({});
+    }
+    if (sp.get("dup") == null) setTab("all");
+  }
 
   // An in-app navigation can add ?dup= while the page is already mounted
   // (e.g. an issue flyout's cluster chip); a param change lands on the
