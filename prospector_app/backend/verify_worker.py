@@ -256,13 +256,19 @@ def base_refresh_due(reg: wire.VerifyPin, now: datetime) -> bool:
 def _record_refresh(st: Store, ok: bool, error: str | None, failures: int) -> None:
     """Stamp the refresh outcome onto this machine's pin: whether the last
     attempt succeeded, its error, the consecutive-failure run, and the
-    once-per-day attempt stamp. Written after prepare_base returns, because
-    prepare_base full-replaces this host's record with the fields it owns."""
+    once-per-day attempt stamp. A success also stamps `confirmed_at`, the pin
+    being the default branch's head as of now. Written after prepare_base
+    returns, because prepare_base full-replaces this host's record with the
+    fields it owns."""
     me = settings.worker_id()
-    st.save_verify_base({
+    now = _now()
+    reg: wire.VerifyPin = {
         **st.load_verify_base(me), "host": me,
-        "refresh_attempted_at": _now(), "refresh_ok": ok,
-        "refresh_error": error, "refresh_failures": 0 if ok else failures + 1})
+        "refresh_attempted_at": now, "refresh_ok": ok,
+        "refresh_error": error, "refresh_failures": 0 if ok else failures + 1}
+    if ok:
+        reg["confirmed_at"] = now
+    st.save_verify_base(reg)
 
 
 def maybe_refresh_base() -> None:
@@ -272,8 +278,9 @@ def maybe_refresh_base() -> None:
     refreshes on its own cadence, so two machines sit a few hours apart at
     worst; every run records the base it used (verify.against_base_sha). The
     attempt stamps refresh_attempted_at BEFORE the work at most once per
-    calendar day (success or failure); a failure keeps the old pin and the queue
-    proceeds on it; every attempt lands in the runs ledger.
+    calendar day (success or failure); a failure keeps the old pin, which the
+    queue proceeds on until it is stale (hold_stale_pin); every attempt lands in
+    the runs ledger.
 
     The outcome is also stamped onto the pin itself, where the app reads it: a
     lane that has silently stopped tracking master is worth showing, and a
@@ -315,6 +322,21 @@ def maybe_refresh_base() -> None:
         finally:
             entry["finished"] = _now()
             st.append_run(entry)
+    except Exception:
+        traceback.print_exc()
+
+
+def hold_stale_pin() -> None:
+    """Trip the verify lane while this machine's pin is stale
+    (verify_driver.pin_stale), so the machine claims no verification against a
+    default branch it has stopped tracking; the lane's self-test reopens it
+    once the pin is current. A lane already tripped keeps the cause it tripped
+    on."""
+    try:
+        why = verify_driver.pin_stale(verify_driver.local_pin(data.store()),
+                                      datetime.now(timezone.utc))
+        if why is not None and lane_health.trip_kind("verify") is None:
+            lane_health.trip_lane("verify", kind="pin-stale", reason=why)
     except Exception:
         traceback.print_exc()
 
@@ -761,6 +783,7 @@ def _drain_loop() -> None:
     while not stop.is_set():
         try:
             maybe_refresh_base()
+            hold_stale_pin()
             if time.monotonic() - last_reclaim >= RECLAIM_SECONDS:
                 last_reclaim = time.monotonic()
                 marked, requeued = recover_orphans()

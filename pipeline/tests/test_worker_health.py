@@ -1,6 +1,8 @@
 """worker_health: the trip policy over a worker's per-lane record."""
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from pipeline import worker_health as wh
 from pipeline.store import Store
 
@@ -109,6 +111,12 @@ class TestRemedy:
 
     def test_pin_trip_points_at_the_base(self):
         assert "pinned verify base" in wh.remedy("pin-refresh", "build failed")
+
+    @pytest.mark.parametrize("kind", ["pin-refresh", "pin-stale"])
+    def test_pin_trip_names_the_rebuild_and_waits_for_a_current_pin(self, kind):
+        hint = wh.remedy(kind, "pinned base was last brought current 4 days ago")
+        assert "prepare-base" in hint and "once the pin is current" in hint
+        assert "Resume reopens it at once" not in hint
 
     def test_untested_trip_says_resume(self):
         hint = wh.remedy("security-run", "exit 1")

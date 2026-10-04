@@ -107,6 +107,9 @@ SETTINGS: tuple[Setting, ...] = (
     _i("TRIAGE_VERIFY_MAX_AGE_DAYS", "behavior", "Verification window (days)", "30",
        "How long a passing or inconclusive sandbox verification counts for merge before "
        "it must be re-run. A failing one blocks until a re-run, whatever its age."),
+    _i("TRIAGE_VERIFY_PIN_MAX_AGE_DAYS", "behavior", "Verify base age limit (days)", "2",
+       "A verify worker whose pinned default-branch base has not been brought current "
+       "for this many days verifies nothing until its pin is rebuilt."),
     # --- this machine's sandbox -----------------------------------------------------
     _i("TRIAGE_SANDBOX_LARGE_SLOTS", "machine", "Large sandbox phases at once", "auto",
        "Compile, build and full-suite phases (10 GB each) run at once; auto sizes it to "

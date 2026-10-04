@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, TypedDict
 from pipeline import capacity
 from pipeline import gates
 from pipeline import storekit
+from pipeline import verify_driver
 from pipeline import wire
 from prospector_app.backend import data
 from prospector_app.backend import escalation
@@ -81,19 +82,10 @@ class AutohuntStatus(TypedDict):
     verify_failed: list[VerifyFailed]
 
 
-# How far past the worker's daily refresh window a pin may drift before the app
-# calls it stale. One missed refresh is a hiccup; two consecutive misses mean
-# the lane has stopped tracking the default branch.
-STALE_AFTER_HOURS = 2 * verify_worker.REFRESH_AFTER_HOURS
-
-
 def _host_health(host: str, reg: wire.VerifyPin) -> VerifyBaseHost:
-    """One machine's pin: what it holds, how old it is, and how its daily
-    refresh last went.
-
-    `stale` needs an age to be true, so a pin with no timestamp reports False. A
-    malformed stamp is not evidence the lane is broken, and a false alarm here is
-    what teaches an operator to stop reading this line."""
+    """One machine's pin: what it holds, how old it is, how its daily refresh
+    last went, and whether it is stale — verify_driver.pin_stale, the same
+    reading that holds that machine's verify lane."""
     sha = reg.get("base_sha")
     tier = reg.get("tier")
     pinned_at = reg.get("pinned_at")
@@ -113,7 +105,7 @@ def _host_health(host: str, reg: wire.VerifyPin) -> VerifyBaseHost:
         "tier": tier if isinstance(tier, int) else None,
         "pinned_at": pinned_at if isinstance(pinned_at, str) else None,
         "age_hours": age,
-        "stale": age is not None and age > STALE_AFTER_HOURS,
+        "stale": verify_driver.pin_stale(reg, datetime.now(timezone.utc)) is not None,
         "refresh_ok": ok if isinstance(ok, bool) else None,
         "refresh_error": error if isinstance(error, str) else None,
         "refresh_failures": failures if isinstance(failures, int) else 0,

@@ -2,18 +2,24 @@
 
 Each test answers the condition that tripped the lane, cheaply and without
 touching any PR: an agent outage asks the CLI for one word; anything else asks
-whether the sandbox this machine verifies and compiles in can still boot. A
-test that raises is a failed test.
+whether the sandbox this machine verifies and compiles in can still boot, and a
+pin trip also whether the pinned base is current again. A test that raises is a
+failed test.
 """
 from __future__ import annotations
+
+from datetime import datetime, timezone
 
 from pipeline import headless_agent, verify_driver
 from prospector_app.backend import data
 
 # Trip kinds that mean the agent CLI, not the sandbox, is what failed.
 AGENT_KINDS = frozenset({"agent-unavailable"})
+# Trip kinds that mean this machine's pin has stopped tracking the default
+# branch: a refresh that keeps failing, or a pin past its age limit.
+PIN_KINDS = frozenset({"pin-refresh", "pin-stale"})
 # Trip kinds the sandbox probe answers: the daemon, the pinned image, the clone.
-SANDBOX_KINDS = frozenset({"sandbox", "sandbox-error", "no-base", "pin-refresh"})
+SANDBOX_KINDS = frozenset({"sandbox", "sandbox-error", "no-base"}) | PIN_KINDS
 
 
 def testable(kind: str) -> bool:
@@ -47,7 +53,11 @@ def run(kind: str) -> str | None:
         if kind in AGENT_KINDS:
             return headless_agent.probe()
         if kind in SANDBOX_KINDS:
-            return sandbox_ready()
+            why = sandbox_ready()
+            if why is None and kind in PIN_KINDS:
+                why = verify_driver.pin_stale(verify_driver.local_pin(data.store()),
+                                              datetime.now(timezone.utc))
+            return why
         return f"no self-test answers a {kind} trip"
     except Exception as e:  # a test that cannot answer is not a pass
         return f"{type(e).__name__}: {e}"

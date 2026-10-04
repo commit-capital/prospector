@@ -663,15 +663,18 @@ an agent outage (`headless_agent.AgentUnavailable`: the CLI is missing or not
 authenticated — `security_review.py` exits `EXIT_AGENT_UNAVAILABLE`, `verify_pr`
 ends the request `agent-unavailable`, the fix worker ends the run `failed`)
 trips every lane the machine runs at once; three consecutive base-pin refresh
-failures trip `verify`. A prompt the API's safeguards refuse
-(`headless_agent.AgentDeclined`) is a verdict on that request's text: the fix
+failures trip `verify`, and so does a pin no refresh has brought current within
+`TRIAGE_VERIFY_PIN_MAX_AGE_DAYS` (default 2; `verify_driver.pin_stale`, kind
+`pin-stale`, the Control tab's stale pin too), so a machine whose pin has
+stopped tracking the default branch claims no verification. A prompt the API's
+safeguards refuse (`headless_agent.AgentDeclined`) is a verdict on that request's text: the fix
 worker ends it `refused`, and it counts toward no trip. Every headless run is
 pinned to `TRIAGE_AGENT_MODEL` (default `opus`; empty leaves the CLI's default). A tripped lane picks nothing (a lane tripped on the
 agent alone still pushes what an operator approved). A lane tripped on the
 agent or the sandbox retests itself every fifteen minutes
-(`worker_selftest.py`: the CLI probe, or the daemon, pinned image and clone)
-and reopens on a pass; one tripped on anything else (crashed runs, held
-verdicts) opens once after a six-hour cool-down; the Control tab's banner
+(`worker_selftest.py`: the CLI probe, or the daemon, pinned image and clone,
+and for a pin trip a pin that is current again) and reopens on a pass; one
+tripped on anything else (crashed runs, held verdicts) opens once after a six-hour cool-down; the Control tab's banner
 offers Resume. Every trip appends a `worker:trip` ledger entry. The operator
 hears of a tripped lane, or of a worker whose heartbeat has been silent an
 hour, through the app alone: the health strip atop every page reads both live
