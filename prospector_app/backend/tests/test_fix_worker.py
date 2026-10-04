@@ -396,6 +396,38 @@ def test_approving_a_fix_re_applies_the_reviewed_patch_verbatim(store, monkeypat
     assert ("prepare",) in probe.calls
 
 
+def test_an_approved_fix_hands_git_a_patch_it_can_apply(store, monkeypatch, tmp_path):
+    # A stored patch is a captured diff with its final newline trimmed
+    # (_diff_text); git apply rejects one that ends mid-line as corrupt.
+    import subprocess
+    monkeypatch.setattr(
+        profile, "active",
+        lambda: profile.RepoProfile(autofix=profile.AutofixPolicy(fixable_gates=("ci",))))
+
+    def git(*args: str, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                              cwd=tmp_path, input=stdin, capture_output=True, text=True,
+                              check=True)
+
+    git("init", "-q")
+    (tmp_path / "a.ts").write_text("one\n  }\n}\n")
+    git("add", "a.ts")
+    git("commit", "-qm", "base")
+    (tmp_path / "a.ts").write_text("two\n  }\n}\n")
+    stored = fix_worker._diff_text(git("diff"))
+    git("checkout", "--", "a.ts")
+    assert not stored.endswith("\n")
+    _parked(store, "fix", patch=stored)
+    probe = _Probe()
+    monkeypatch.setattr(fix_worker, "_resubmit", probe)
+
+    fix_worker.push_approved(1)
+
+    [applied] = probe.applied
+    git("apply", "--check", "-", stdin=applied)
+    assert store.load_pr(1).fix_request["status"] == "pushed"
+
+
 def test_any_machine_can_push_an_approved_fix(store, monkeypatch):
     # The patch is rebuilt from the store, so the machine that authored it is
     # not the only one that can push it.
