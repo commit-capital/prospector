@@ -230,6 +230,12 @@ def verify_max_age_days() -> int:
     return positive_int("TRIAGE_VERIFY_MAX_AGE_DAYS", 30)
 
 
+def verify_pin_max_age_days() -> int:
+    """How many days a verify worker's pinned base may go without being brought
+    current before the worker stops verifying on it."""
+    return positive_int("TRIAGE_VERIFY_PIN_MAX_AGE_DAYS", 2)
+
+
 def review_threshold() -> int | None:
     """Override of Greptile's pass score. None → 5, and so does a value that is
     not a positive integer."""

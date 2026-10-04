@@ -107,7 +107,8 @@ def trip(rec: dict, name: str, *, kind: str, reason: str,
 
 _AGENT_KINDS = frozenset({"agent-unavailable"})
 _DAEMON_KINDS = frozenset({"sandbox", "sandbox-error"})
-_BASE_KINDS = frozenset({"no-base", "pin-refresh"})
+_BASE_KINDS = frozenset({"no-base"})
+_PIN_KINDS = frozenset({"pin-refresh", "pin-stale"})
 _SELF_TESTED = (f" The lane retests itself every {RETEST_SECONDS // 60} minutes and "
                 "reopens once that passes; Resume reopens it at once.")
 
@@ -126,6 +127,14 @@ def remedy(kind: str, reason: str) -> str:
                 "the reason holds the build output. Fix what it names (often disk "
                 "space or Docker), and the worker rebuilds the pin on its next refresh."
                 + _SELF_TESTED)
+    if kind in _PIN_KINDS:
+        return ("This machine's pinned verify base has stopped tracking the default "
+                "branch, so it verifies nothing while the pin is stale; the reason holds "
+                "the last refresh's error. Fix what it names (often disk space or Docker). "
+                "The worker retries the refresh once a day, and `verify_driver.py "
+                "prepare-base` on this machine rebuilds the pin now. The lane retests "
+                f"itself every {RETEST_SECONDS // 60} minutes and reopens once the pin is "
+                "current.")
     return ("Fix what the reason names on this machine, then click Resume. Left "
             f"alone, the lane opens once on its own {COOL_DOWN_SECONDS // 3600} hours "
             "after the trip.")

@@ -11,6 +11,7 @@ import subprocess
 import threading
 import time
 import tracemalloc
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Self
 
@@ -302,6 +303,40 @@ class TestBaseImageTag:
     def test_tier_0_and_1_are_distinct_images(self):
         assert vd.base_image_tag("deadbeefcafebabe1234", 0) != \
                vd.base_image_tag("deadbeefcafebabe1234", 1)
+
+
+class TestPinStale:
+    """A pin is stale once it was last known to be the default branch's head
+    longer ago than the configured limit."""
+    NOW = datetime(2026, 10, 4, 12, 0, tzinfo=timezone.utc)
+
+    def test_a_pin_within_the_limit_is_current(self):
+        pin = {"base_sha": "a" * 40, "pinned_at": "2026-10-03T12:00:00+00:00"}
+        assert vd.pin_stale(pin, self.NOW) is None
+
+    def test_a_pin_past_the_limit_is_stale(self):
+        pin = {"base_sha": "a" * 40, "pinned_at": "2026-09-30T12:00:00+00:00",
+               "refresh_error": "BuildFailure: cloning exited 128"}
+        why = vd.pin_stale(pin, self.NOW)
+        assert why is not None
+        assert "aaaaaaaaaaaa" in why and "4 days" in why
+        assert "cloning exited 128" in why
+
+    def test_a_refresh_that_confirmed_the_pin_keeps_it_current(self):
+        pin = {"base_sha": "a" * 40, "pinned_at": "2026-09-20T12:00:00+00:00",
+               "confirmed_at": "2026-10-04T00:30:00+00:00"}
+        assert vd.pin_stale(pin, self.NOW) is None
+
+    def test_the_limit_is_the_setting(self, monkeypatch):
+        monkeypatch.setenv("TRIAGE_VERIFY_PIN_MAX_AGE_DAYS", "7")
+        pin = {"base_sha": "a" * 40, "pinned_at": "2026-09-30T12:00:00+00:00"}
+        assert vd.pin_stale(pin, self.NOW) is None
+
+    def test_no_pin_is_not_stale(self):
+        assert vd.pin_stale({}, self.NOW) is None
+
+    def test_an_unreadable_pin_time_is_not_evidence_of_staleness(self):
+        assert vd.pin_stale({"base_sha": "a" * 40, "pinned_at": "garbage"}, self.NOW) is None
 
 
 class TestPrepareBase:

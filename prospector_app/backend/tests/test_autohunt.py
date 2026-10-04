@@ -688,6 +688,13 @@ class TestBaseHealth:
         assert [h["host"] for h in hosts] == ["devin-mbp", "mac-studio"]
         assert [h["stale"] for h in hosts] == [True, False]
 
+    def test_a_pin_a_refresh_confirmed_is_not_stale(self, store):
+        """An unmoved default branch leaves the pin as it was; the refresh that
+        found it so is what keeps it current."""
+        from prospector_app.backend import autohunt_view
+        self._pin(store, pinned_at=_iso_hours_ago(200), confirmed_at=_iso_hours_ago(2))
+        assert autohunt_view.status()["base"]["hosts"][0]["stale"] is False
+
     def test_an_unparseable_pin_timestamp_does_not_read_as_stale(self, store):
         """A malformed stamp is not evidence the lane is broken, and a false
         alarm on the Control tab trains the operator to ignore it."""

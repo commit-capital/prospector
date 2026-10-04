@@ -31,6 +31,7 @@ import threading
 import time
 import tomllib
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -40,6 +41,7 @@ from pipeline import gh
 from pipeline import profile
 from pipeline import progress
 from pipeline import settings
+from pipeline import storekit
 from pipeline import verify_gc
 from pipeline import wire
 from pipeline.model import Pr
@@ -626,6 +628,30 @@ def local_pin(store: Store) -> wire.VerifyPin:
     """This machine's pinned base. A pin names a Docker image and a clone on
     local disk, so another machine's pin is not one this machine could boot."""
     return store.load_verify_base(settings.worker_id())
+
+
+def pin_stale(pin: wire.VerifyPin, now: datetime) -> str | None:
+    """Why `pin` is too far behind the default branch to verify on, or None. A
+    pin is current as of the later of when it was built and when a refresh last
+    confirmed it is still the default branch's head, and stale once that is
+    more than settings.verify_pin_max_age_days ago. No pin, or a pin with no
+    time that parses, is not evidence of a stale one."""
+    sha = pin.get("base_sha")
+    stamps = [at for at in (storekit.parse_ts(pin.get("pinned_at")),
+                            storekit.parse_ts(pin.get("confirmed_at"))) if at is not None]
+    if not sha or not stamps:
+        return None
+    limit = settings.verify_pin_max_age_days()
+    days = round((now - max(stamps)).total_seconds() / 86400, 1)
+    if days <= limit:
+        return None
+    why = (f"this machine's pinned base {sha[:12]} was last brought current "
+           f"{days:g} day{'' if days == 1 else 's'} ago, past the {limit}-day limit, "
+           f"so it verifies nothing until the pin is rebuilt")
+    error = pin.get("refresh_error")
+    if error:
+        why += f"; the last refresh failed: {error[:300]}"
+    return why
 
 
 def _pin(store: Store) -> tuple[str, int]:

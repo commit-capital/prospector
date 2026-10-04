@@ -247,6 +247,7 @@ class VerifyPin(TypedDict):
     refresh_ok: NotRequired[bool]
     refresh_error: NotRequired[str | None]
     refresh_failures: NotRequired[int]
+    confirmed_at: NotRequired[str]
 
 
 VERIFY_CONFIDENCES = frozenset({"high", "medium", "low"})
