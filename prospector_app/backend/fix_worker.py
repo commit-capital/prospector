@@ -1902,7 +1902,9 @@ def _rebuild_fix(n: int, claimed: dict, result: dict) -> bool:
         _settle(n, claimed, prepared.returncode,
                 (prepared.stderr or prepared.stdout).strip())
         return False
-    applied = _resubmit(n, "apply", stdin=patch)
+    # A stored patch is a captured diff with its final newline trimmed
+    # (_diff_text), and git apply rejects a patch that ends mid-line.
+    applied = _resubmit(n, "apply", stdin=patch if patch.endswith("\n") else patch + "\n")
     if applied.returncode != 0:
         _resubmit(n, "abort")
         output = (applied.stderr or applied.stdout).strip()
