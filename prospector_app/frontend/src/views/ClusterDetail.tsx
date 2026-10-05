@@ -587,7 +587,7 @@ export default function ClusterDetail() {
               <th {...bucketSort.thProps("author")}>Author{bucketSort.indicator("author")}</th>
               <th {...bucketSort.thProps("pain")} title="Community Pain Score — linked-issue pain + PR comments + reactions. Click to sort: most painful first.">Pain{bucketSort.indicator("pain")}</th>
               <th {...bucketSort.thProps("checks")} title="How thoroughly vetted — hover a cell for the per-check breakdown. Click to sort.">Checks{bucketSort.indicator("checks")}</th>
-              <th {...bucketSort.thProps("security")} title="Deep security review verdict (runs on clean merge candidates). Click to sort: most severe first.">Security{bucketSort.indicator("security")}</th>
+              <th {...bucketSort.thProps("security")} title="Security review result. Click to sort, most serious first.">Security{bucketSort.indicator("security")}</th>
               <th {...bucketSort.thProps("action")}>Action{bucketSort.indicator("action")}</th>
             </tr></thead>
             <tbody>

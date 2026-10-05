@@ -189,7 +189,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
     reportResult(r);
   };
 
-  // Re-run the SECURITY phase from the "Deep security review" check row
+  // Re-run the SECURITY phase from the "Security review" check row
   // (#581) — streamed like the cluster-page re-run (ClusterDetail #56). On
   // done, reload so the fresh verdict flips the row (and the merge gate).
   const secJob = useJobStream("security-review", { pr: prNum }, (status) => {
@@ -344,10 +344,10 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
           {pr.author_stats?.url
             ? <a href={pr.author_stats.url} target="_blank" rel="noreferrer" title={authorTip(pr.author_stats)}>@{pr.author}</a>
             : <span title={authorTip(pr.author_stats)}>@{pr.author}</span>}
-          {pr.trusted_author && <span className="chip chip-gold sm" title="Trusted contributor — named by the repository profile; in ANALYZE their PR breaks an otherwise-close canonical tie (a tiebreaker, never an override of a clearly-better PR).">trusted</span>}
+          {pr.trusted_author && <span className="chip chip-gold sm" title="A contributor we trust. When two PRs are about equally good, theirs is preferred.">trusted</span>}
           <DriftChip s={pr.drift_state} />
           <TierChip tier={pr.risk_tier} pinnedBy={pr.risk_tier_paths} />
-          {pr.clusters.map((cid) => <Link key={cid} className="chip chip-blue" to={`/prs/clusters/${cid}`} title="A dedup cluster this PR belongs to — a group of PRs fixing the same root issue. Click to open.">cluster {cid}</Link>)}
+          {pr.clusters.map((cid) => <Link key={cid} className="chip chip-blue" to={`/prs/clusters/${cid}`} title="The group of PRs that fix the same problem. Click to open.">cluster {cid}</Link>)}
           {pr.url && <a className="chip chip-muted" href={pr.url} target="_blank" rel="noreferrer">GitHub ↗</a>}
           {resolved && <span className={`chip ${pr.github_state === "merged" ? "chip-purple" : "chip-muted"}`} title="Current state on GitHub">{pr.github_state}</span>}
           <ClaimControl kind="pr" n={pr.number} />
@@ -370,10 +370,10 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
         <div className="verdict-banner v-safe">
           <span className="vb-icon">📦</span>
           <div>
-            <div className="vb-headline">Deferred — dependency bump, handled upstream</div>
+            <div className="vb-headline">Skipped — automatic library update</div>
             <div className="vb-detail">
               {pr.suggestion?.rationale ??
-                "Dependabot dependency bump. The pipeline defers these; Socket reviews the package on the PR. No cluster, disposition, or triage action here."}
+                "An automatic library update. We skip these; they're handled on GitHub."}
             </div>
           </div>
         </div>
@@ -384,7 +384,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
           <div>
             <div className="vb-headline">{pr.github_state === "merged" ? "Merged upstream" : "Closed upstream"}</div>
             <div className="vb-detail">
-              This PR is already {pr.github_state} on GitHub — no triage action applies. The size, checks, and diff below reflect its last review as an open PR.
+              This PR is already {pr.github_state} on GitHub, so there's nothing to do. The details below are from when it was still open.
             </div>
           </div>
         </div>
@@ -418,7 +418,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
                   ? <div className="dispo-why">{pr.proposed_action.rationale}</div>
                   : entry?.triggers && <div className="dispo-why muted">{entry.triggers}</div>}
                 {pr.proposed_action?.fresh === false && (
-                  <div className="dispo-stale">⟳ This analysis is stale — the PR head moved since it ran.</div>
+                  <div className="dispo-stale">⟳ The PR changed since we reviewed it, so this may be out of date.</div>
                 )}
               </div>
             </div>
@@ -427,7 +427,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
         {Boolean(pr.concerns?.length) && (
           <div className="dup-coverage">
             <div className="muted small dup-coverage-title"
-              title="The close-dup evidence: each substantive change in this PR and where it is already covered.">
+              title="Each change in this PR, and where that change already exists.">
               Duplicate coverage
             </div>
             <table className="facts-table">
@@ -456,7 +456,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
             </table>
             {Boolean(pr.sanity_trips?.length) && (
               <div className="callout dup-sanity">
-                Sanity checks force human review: {(pr.sanity_trips ?? []).join("; ")}.
+                A person needs to review this because: {(pr.sanity_trips ?? []).join("; ")}.
               </div>
             )}
           </div>
@@ -479,10 +479,10 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
 
       {/* CODEOWNERS manual-merge requirement (#15/#26) */}
       {pr.human_merge?.required && (
-        <div className="codeowners-callout" title="The upstream repo's branch ruleset requires a code owner to approve/merge these paths.">
-          <div className="co-headline">⛔ Requires human merge — touches CODEOWNERS-gated code</div>
+        <div className="codeowners-callout" title="These files are protected: a code owner has to approve and merge changes to them.">
+          <div className="co-headline">⛔ A code owner must merge this — it changes protected files</div>
           <div className="co-detail">
-            {botLogin} can't auto-merge this. A code owner must merge it: <b>{pr.human_merge.owners.join(" + ")}</b>.
+            {botLogin} can't merge this. Ask a code owner to: <b>{pr.human_merge.owners.join(" + ")}</b>.
           </div>
           <ul className="co-paths">{pr.human_merge.paths.map((p) => <li key={p}><code>{p}</code></li>)}</ul>
         </div>
@@ -498,14 +498,14 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
         const secret = blocks.some((r) => r.startsWith("secret-leak"));
         const headline: string = malicious ? "⛔ Merge blocked — flagged malicious"
           : secret ? "🔑 Merge blocked — committed secret"
-          : "⛔ Merge blocked — the threat scan could not read the whole diff";
+          : "⛔ Merge blocked — too big to scan for harmful code";
         return (
-          <div className="gate-block-callout" title="gates.pr_clean refuses to merge a PR with a committed credential, a diff the threat scan could not read in full, or a malicious flag.">
+          <div className="gate-block-callout" title="A PR can't merge if it contains a password or key, looks harmful, or is too big to scan.">
             <div className="co-headline">{headline}</div>
             <div className="co-detail">
               {blocks.join("; ")}.{" "}
-              {!malicious && secret && <>Remove it, rotate the key, and bounce the PR via <b>Disposition → request changes</b>.</>}
-              {!malicious && !secret && <>Ask the author to split the PR or drop the files GitHub returns no patch for, via <b>Disposition → request changes</b>.</>}
+              {!malicious && secret && <>Ask the author to remove it (and replace the leaked key) with <b>Disposition → request changes</b>.</>}
+              {!malicious && !secret && <>Ask the author to split it into smaller PRs with <b>Disposition → request changes</b>.</>}
             </div>
             {malicious && <ThreatEvidencePanel prNum={prNum} refresh={pr} onCapture={runSecretScan} />}
           </div>
@@ -549,13 +549,13 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
           </div>
           {split && (split.non_test.additions + split.non_test.deletions > 0 || split.test.files > 0) && (
             <div className="size-split">
-              <div title="Change excluding test files — the real source-code surface area">
+              <div title="Changes to the app's code, not counting tests">
                 <span className="muted">non-test</span>{" "}
                 <span className="add">+{split.non_test.additions}</span> <span className="del">−{split.non_test.deletions}</span>
                 <span className="muted small"> · {split.non_test.files}f</span>
               </div>
               {split.test.files > 0 && (
-                <div title="Test-file changes">
+                <div title="Changes to tests">
                   <span className="muted">tests</span>{" "}
                   <span className="add">+{split.test.additions}</span> <span className="del">−{split.test.deletions}</span>
                   <span className="muted small"> · {split.test.files}f</span>
@@ -564,7 +564,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
             </div>
           )}
           {split?.removes_tests && (
-            <div className="size-warn" title="This PR removes more test code than it adds — review carefully">
+            <div className="size-warn" title="This PR deletes more tests than it adds — check carefully">
               ⚠ removes more tests than it adds (−{split.test.deletions} / +{split.test.additions})
             </div>
           )}
@@ -587,7 +587,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
           <Collapsible summary={<>🧭 Agent summary — <span className="muted small" style={{ textTransform: "none", letterSpacing: 0 }}>{pr.summary.one_liner}</span></>}>
             {pr.summary.mechanism
               ? <div className="prbody">{pr.summary.mechanism}</div>
-              : <div className="muted small">No mechanism detail.</div>}
+              : <div className="muted small">No more detail.</div>}
           </Collapsible>
         </section>
       )}
@@ -612,7 +612,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
           conflict diff is offered as a second mode beside the PR's own change
           (#46). */}
       <section className="prc-section">
-        <h3>Diff <span className="muted small" style={{ textTransform: "none", letterSpacing: 0 }}>· click a line to explain or comment · ⌘/ctrl-click to open it on GitHub</span></h3>
+        <h3>Diff <span className="muted small" style={{ textTransform: "none", letterSpacing: 0 }}>· click a line to ask about it or comment · ⌘/ctrl-click to open it on GitHub</span></h3>
         {mergeDiff && (
           <div className="segmented diff-mode" role="tablist" aria-label="diff mode">
             <button className={diffMode === "pr" ? "on" : ""} role="tab" aria-selected={diffMode === "pr"}

@@ -39,7 +39,7 @@ export interface ColumnDef {
 
 const NOT_ANALYZED: GlossaryEntry = {
   title: "Not analyzed yet",
-  meaning: "The pipeline hasn't assigned a disposition to this PR — it hasn't been through ANALYZE, or its analysis went stale and needs a re-run.",
+  meaning: "We haven't decided what to do with this PR yet, or it changed since we did.",
 };
 
 // The instance-specific "why this PR landed here" shown under the disposition's

@@ -15,8 +15,8 @@ export const CHECK_DEFS: CheckDef[] = [
   { key: "tests", label: "Includes tests" },
   { key: "drift", label: "Still applies to base branch" },
   { key: "secrets", label: "Threat scan" },
-  { key: "security", label: "Deep security review" },
-  { key: "verify", label: "Dynamic verification" },
+  { key: "security", label: "Security review" },
+  { key: "verify", label: "Test run" },
 ];
 
 export function checkLabel(key: string): string {

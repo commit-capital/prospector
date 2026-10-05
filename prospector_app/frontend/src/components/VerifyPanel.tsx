@@ -233,7 +233,7 @@ function RequestStrip({ req, runner }: { req: VerifyRequest; runner: VerifyRunne
   return null;
 }
 
-/** The queue/re-verify/cancel control for the "Dynamic verification" check row
+/** The queue/re-verify/cancel control for the "Test run" check row
  *  (#581) — any open PR can be queued for the sandbox runner. `busy` names the
  *  in-flight action so the label reads "Queuing…"/"Cancelling…" rather than a
  *  bare ellipsis, and stays disabled-with-that-label until the caller's
@@ -267,7 +267,7 @@ export function VerifyAction({ v, req, busy, canQueue, onQueue, onDequeue }: {
   );
 }
 
-/** The expanded detail for the "Dynamic verification" check row: the queue/
+/** The expanded detail for the "Test run" check row: the queue/
  *  run request's live state plus the stored VERIFY record. Renders the stored
  *  outcome verbatim — gates.py is the one policy; this never recomputes or
  *  softens it — and draws the trust boundary visually: host-observed exit

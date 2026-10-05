@@ -111,7 +111,7 @@ export function SafetyRollupChip({ r, prs = [], emptyTip }: { r: SafetyRollup; p
                     ? <div className="muted small">No concerns flagged.</div>
                     : <ul className="safety-pop-findings">{p.findings.map((f, i) => <li key={i}>{f.title}</li>)}</ul>}
                 {p.fresh === false &&
-                  <div className="muted small">⟳ Stale verdict — re-run SECURITY to clear the merge gate.</div>}
+                  <div className="muted small">⟳ The PR changed since this review — re-run it before merging.</div>}
               </div>
             ));
           })()}
