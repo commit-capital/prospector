@@ -90,7 +90,7 @@ def checks_for_record(rec: Pr, today: str | None = None) -> dict:
 
     extra: list[dict] = []
     if sig and not freshness.is_current(rec, "signals"):
-        extra.append(_c("signals_fresh", "Signals fresh", "warn", "head moved since signals were fetched", sig_at))
+        extra.append(_c("signals_fresh", "Up to date", "warn", "the PR changed since this was checked", sig_at))
 
     drift = rec.section("drift") or {}
     ds = rec.drift_state
@@ -110,19 +110,19 @@ def checks_for_record(rec: Pr, today: str | None = None) -> dict:
         sigs = rec.threat_signatures
         verdict = rec.threat_verdict
         threat_at = threat.get("checked_at")
-        clear = ("dependency bump, exempt from the signature scan"
-                 if (threat.get("detail") or {}).get("exempt") else "threat scan clear")
+        clear = ("automatic library update, not scanned"
+                 if (threat.get("detail") or {}).get("exempt") else "nothing harmful found")
         if verdict == "malicious":
             by_key["secrets"] = _c("secrets", "Threat scan", "fail", "malicious: " + (", ".join(sigs) or "flagged"), threat_at)
         elif "secret-leak" in sigs:
-            by_key["secrets"] = _c("secrets", "Threat scan", "fail", "a live-looking credential is committed in the diff", threat_at)
+            by_key["secrets"] = _c("secrets", "Threat scan", "fail", "contains what looks like a real password or key", threat_at)
         elif unscannable := gates.unscannable_reason(rec):
             by_key["secrets"] = _c("secrets", "Threat scan", "fail", unscannable, threat_at)
         elif verdict == "suspicious":
             by_key["secrets"] = _c("secrets", "Threat scan", "warn", "suspicious: " + ", ".join(sigs), threat_at)
         elif not freshness.is_current(rec, "threat"):
             reason = freshness.currency_failure(rec, "threat") or "stale"
-            tail = "earlier head" if reason.startswith("stale") else reason
+            tail = "older version of the PR" if reason.startswith("stale") else reason
             by_key["secrets"] = _c("secrets", "Threat scan", "warn", f"{clear} · STALE — {tail}", threat_at)
         else:
             by_key["secrets"] = _c("secrets", "Threat scan", "pass", clear, threat_at)
@@ -136,15 +136,15 @@ def checks_for_record(rec: Pr, today: str | None = None) -> dict:
         detail = f"{v} · {len(rec.findings)} finding(s)"
         if not freshness.is_current(rec, "security"):
             reason = freshness.currency_failure(rec, "security") or "stale"
-            tail = "earlier head" if reason.startswith("stale") else reason
+            tail = "older version of the PR" if reason.startswith("stale") else reason
             if v == "GREEN":
                 st, detail = "warn", f"{detail} · STALE — {tail}"
             else:
                 detail = (f"{detail} · {tail} — blocks merge until a GREEN review "
-                          "of this head")
-        by_key["security"] = _c("security", "Deep security review", st, detail, security.get("checked_at"))
+                          "of the latest version")
+        by_key["security"] = _c("security", "Security review", st, detail, security.get("checked_at"))
     else:
-        by_key["security"] = _c("security", "Deep security review", "na", "not run yet", None)
+        by_key["security"] = _c("security", "Security review", "na", "not run yet", None)
 
     # Dynamic verification (VERIFY): the sandbox red→green run. A current
     # verified-fix passes the automatic bar; every other concluded current
@@ -158,7 +158,7 @@ def checks_for_record(rec: Pr, today: str | None = None) -> dict:
     verify = rec.section("verify")
     if verify:
         o = rec.verify_outcome
-        detail = o or "in progress — blind verdict committed, no conclusion yet"
+        detail = o or "in progress — no result yet"
         if rec.verify_findings:
             detail += f" · {len(rec.verify_findings)} finding(s)"
         why_stale = freshness.currency_failure(rec, "verify",
@@ -167,18 +167,18 @@ def checks_for_record(rec: Pr, today: str | None = None) -> dict:
             st = "warn"
         elif (why_stale and o not in gates.VERIFY_AGES_OUT
               and freshness.is_current(rec, "verify")):
-            st, detail = "fail", f"{detail} · {why_stale} — blocks merge until a re-verify"
+            st, detail = "fail", f"{detail} · {why_stale} — blocks merge until the tests are re-run"
         elif why_stale:
-            tail = "earlier head" if why_stale.startswith("stale") else why_stale
+            tail = "older version of the PR" if why_stale.startswith("stale") else why_stale
             st, detail = "warn", f"{detail} · STALE — {tail}"
         else:
             st = "pass" if o == "verified-fix" else "fail"
             partial = gates.verify_signals_incomplete(rec) if st == "pass" else None
             if partial:
                 st, detail = "warn", f"{detail} · PARTIAL — {partial}"
-        by_key["verify"] = _c("verify", "Dynamic verification", st, detail, verify.get("checked_at"))
+        by_key["verify"] = _c("verify", "Test run", st, detail, verify.get("checked_at"))
     else:
-        by_key["verify"] = _c("verify", "Dynamic verification", "na", "not run yet", None)
+        by_key["verify"] = _c("verify", "Test run", "na", "not run yet", None)
 
     out = [by_key[k] for k in CHECK_KEYS if k in by_key] + extra
     ran = [c for c in out if c["status"] != "na"]

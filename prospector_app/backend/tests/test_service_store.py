@@ -285,12 +285,12 @@ class TestSafetySummary:
     def test_head_moved_green_says_stale(self):
         s = service._safety_summary(_pr(security=_green(against_head_sha="OLD")))
         assert s["headline"] == "Likely safe at last review — no concerns flagged"
-        assert "earlier head" in s["detail"]
+        assert "changed since" in s["detail"]
 
     def test_stale_red_keeps_risk_level_with_note(self):
         sec = _green(verdict="RED", findings=[{"title": "x"}], against_head_sha="OLD")
         s = service._safety_summary(_pr(security=sec))
-        assert s["level"] == "risk" and "earlier head" in s["detail"]
+        assert s["level"] == "risk" and "changed since" in s["detail"]
         assert "still blocks merge" in s["detail"]
 
     def test_unreviewed_pr_unchanged(self):
@@ -313,20 +313,20 @@ class TestChecks:
     def test_stale_security_marked(self):
         rec = _pr(security=_green(against_head_sha="OLD"))
         c = pr_checks.checks_for_record(rec)
-        sec = next(x for x in c["checks"] if x["name"] == "Deep security review")
+        sec = next(x for x in c["checks"] if x["name"] == "Security review")
         assert sec["status"] == "warn" and "STALE" in sec["detail"]
 
     def test_an_old_security_review_at_the_current_head_passes(self):
         old = "2026-01-05T00:00:00+00:00"
         rec = _pr(security=_green(checked_at=old))
         c = pr_checks.checks_for_record(rec, today="2026-07-15")
-        sec = next(x for x in c["checks"] if x["name"] == "Deep security review")
+        sec = next(x for x in c["checks"] if x["name"] == "Security review")
         assert sec["status"] == "pass" and sec["at"] == old
 
     def test_a_red_at_an_earlier_head_fails_and_says_it_blocks(self):
         rec = _pr(security=_green(verdict="RED", against_head_sha="OLD"))
         c = pr_checks.checks_for_record(rec)
-        sec = next(x for x in c["checks"] if x["name"] == "Deep security review")
+        sec = next(x for x in c["checks"] if x["name"] == "Security review")
         assert sec["status"] == "fail" and "blocks merge" in sec["detail"]
 
     def test_an_old_verification_names_the_days(self):
@@ -343,7 +343,7 @@ class TestChecks:
         rec = _pr(security=_green(), verify=_verified(outcome="regressed", checked_at=old))
         c = pr_checks.checks_for_record(rec)
         ver = next(x for x in c["checks"] if x["key"] == "verify")
-        assert ver["status"] == "fail" and "blocks merge until a re-verify" in ver["detail"]
+        assert ver["status"] == "fail" and "blocks merge until the tests are re-run" in ver["detail"]
 
 
 class TestServiceRows:

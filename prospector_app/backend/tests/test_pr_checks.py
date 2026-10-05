@@ -30,7 +30,7 @@ def _check(rec):
 
 def test_secret_leak_shows_failing_check():
     chk = _check(_pr(threat={"verdict": "suspicious", "signatures": ["secret-leak"]}))
-    assert chk and chk["status"] == "fail" and "credential" in chk["detail"]
+    assert chk and chk["status"] == "fail" and "password or key" in chk["detail"]
 
 
 def test_malicious_shows_failing_check():
@@ -57,7 +57,7 @@ def test_a_malicious_verdict_from_an_earlier_head_still_fails():
 def test_an_exempt_dependency_bump_says_so():
     chk = _check(_pr(threat={"verdict": "clear", "signatures": [],
                              "detail": {"exempt": "dependency-bump"}, "against_head_sha": HEAD}))
-    assert chk and chk["status"] == "pass" and "dependency bump" in chk["detail"]
+    assert chk and chk["status"] == "pass" and "library update" in chk["detail"]
 
 
 def test_suspicious_threat_warns_with_its_signatures():
@@ -84,8 +84,8 @@ def test_checks_carry_stable_keys():
         "review": "Code review", "ci": "CI", "scans": "Security scans",
         "mergeable": "No merge conflicts",
         "tests": "Includes tests", "drift": "Still applies to trunk",
-        "secrets": "Threat scan", "security": "Deep security review",
-        "verify": "Dynamic verification",
+        "secrets": "Threat scan", "security": "Security review",
+        "verify": "Test run",
     }
 
 
@@ -143,7 +143,7 @@ def test_review_and_scans_rows_aggregate_every_active_reviewer(monkeypatch):
 
 def _verify_check(rec):
     c = pr_checks.checks_for_record(rec)
-    return next((x for x in c["checks"] if x["name"] == "Dynamic verification"), None)
+    return next((x for x in c["checks"] if x["name"] == "Test run"), None)
 
 
 def _verify_section(outcome, *, head=HEAD, at=None, findings=(), signals=None):
@@ -245,5 +245,5 @@ def test_checks_carry_their_own_section_timestamp():
     c = pr_checks.checks_for_record(rec)
     review = next(x for x in c["checks"] if x["key"] == "review")
     assert review["at"] == NOW  # from the reviews section
-    sec = next(x for x in c["checks"] if x["name"] == "Deep security review")
+    sec = next(x for x in c["checks"] if x["name"] == "Security review")
     assert sec["at"] == sec_at  # from the security section, not the signals one

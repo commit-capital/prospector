@@ -847,28 +847,27 @@ def _safety_summary(rec: Pr) -> dict:
     if not sec:
         return {"verdict": None, "level": "unknown",
                 "headline": "Not yet security-reviewed",
-                "detail": "Deep security review runs on clean merge candidates (GATE → SECURITY)."}
+                "detail": "PRs get a security review once they pass the other checks."}
     why_stale = freshness.currency_failure(rec, "security")
     v, n = sec.get("verdict"), len(sec.get("findings", []))
     if v == "GREEN":
         if why_stale:
             return {"verdict": v, "level": "safe",
                     "headline": "Likely safe at last review — no concerns flagged",
-                    "detail": ("The multi-agent security review found nothing concerning, "
-                               f"but it is {why_stale} — it no longer counts for merge. "
-                               "Re-run SECURITY for a current verdict.")}
+                    "detail": ("The security review found nothing concerning, but the PR "
+                               "changed since, so it no longer counts for merge. Re-run it.")}
         return {"verdict": v, "level": "safe", "headline": "Likely safe — no concerns flagged",
-                "detail": "The multi-agent security review found nothing concerning."}
-    note = (f" (The review is {why_stale}, and it still blocks merge until a GREEN "
-            "review of this head — re-run SECURITY.)") if why_stale else ""
+                "detail": "The security review found nothing concerning."}
+    note = (" The PR changed since this review, and it still blocks merge until a "
+            "new review comes back GREEN.") if why_stale else ""
     if v == "YELLOW":
         return {"verdict": v, "level": "caution",
                 "headline": f"Proceed with care — {n} concern{'s' if n != 1 else ''} flagged",
-                "detail": "Non-blocking concerns. Read them before merging." + note}
+                "detail": "Minor concerns. Read them before merging." + note}
     if v == "RED":
         return {"verdict": v, "level": "risk",
                 "headline": f"Risky — {n} serious concern{'s' if n != 1 else ''}",
-                "detail": "Serious issues flagged. Do not merge without addressing them." + note}
+                "detail": "Serious problems found. Don't merge until they're fixed." + note}
     return {"verdict": v, "level": "unknown", "headline": str(v), "detail": note.strip()}
 
 
