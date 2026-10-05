@@ -174,3 +174,17 @@ class TestWorkflowsConsumeNotRestate:
         assert "Adversarially verify" not in src
         assert "privilege escalation" in sd.LENSES[0]["prompt"]
         assert "privilege escalation" not in src
+
+
+class TestSecurityReviewScope:
+    """A merge conflict is gated by pr_clean's mergeable bar; the security review
+    judges the change itself, so it never asks for or upholds such a finding (#473)."""
+
+    def test_no_lens_asks_for_mergeability(self):
+        for lens in sd.LENSES:
+            assert "mergeab" not in lens["prompt"].lower(), lens["key"]
+
+    def test_review_and_verify_exclude_base_branch_state(self):
+        for prompt in (sd.REVIEW_PROMPT, sd.VERIFY_PROMPT):
+            assert "merge conflict" in prompt
+            assert "never a finding" in prompt or "is not-an-issue" in prompt
