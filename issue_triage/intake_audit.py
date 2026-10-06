@@ -14,6 +14,7 @@ unread, and hidden content or a review that gave no verdict is at least
 """
 from __future__ import annotations
 
+import itertools
 import re
 
 from pipeline import headless_agent
@@ -30,9 +31,9 @@ _COMMENT_RE = re.compile(r"<!--(.*?)(?:-->|\Z)", re.DOTALL)
 # Zero-width spaces and joiners that carry no meaning, bidi controls, Unicode
 # tag characters, and the variation selectors that encode bytes; the joiners
 # emoji and scripts use (U+200C, U+200D) and the directional marks stay.
-_INVISIBLE_RE = re.compile(
-    "[\u200b\u2060-\u2064\ufeff\u202a-\u202e\u2066-\u2069"
-    "\U000e0000-\U000e007f\U000e0100-\U000e01ef]")
+_INVISIBLE: dict[int, None] = dict.fromkeys(itertools.chain(
+    (0x200B, 0xFEFF), range(0x2060, 0x2065), range(0x202A, 0x202F), range(0x2066, 0x206A),
+    range(0xE0000, 0xE0080), range(0xE0100, 0xE01F0)))
 _BLOCK_TAG_RE = re.compile(r"<\s*/?\s*(?:issue|notes)\s*>", re.IGNORECASE)
 
 PROMPT = """\
@@ -67,8 +68,8 @@ def visible(text: str) -> str:
     """`text` as GitHub renders it: no HTML comment outside a code fence, no
     invisible character. The odd parts of a split on fences are the fences."""
     parts = _FENCE_RE.split(text)
-    return _INVISIBLE_RE.sub("", "".join(
-        part if i % 2 else _COMMENT_RE.sub("", part) for i, part in enumerate(parts)))
+    return "".join(part if i % 2 else _COMMENT_RE.sub("", part)
+                   for i, part in enumerate(parts)).translate(_INVISIBLE)
 
 
 def hidden(text: str) -> list[str]:
@@ -77,7 +78,7 @@ def hidden(text: str) -> list[str]:
                 for m in _COMMENT_RE.finditer(part)]
     out = [f"an HTML comment GitHub does not show: {' '.join(c.split())[:QUOTE_MAX]}"
            for c in comments if c.strip()]
-    count = len(_INVISIBLE_RE.findall(text))
+    count = sum(1 for c in text if ord(c) in _INVISIBLE)
     if count:
         out.append(f"{count} invisible character{'' if count == 1 else 's'}")
     return out
