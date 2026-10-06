@@ -8,7 +8,8 @@ done/open lifecycle — so they live in the action-items registry (owned by stor
 not in a per-PR section. The app surfaces them as a flat, checkable worklist.
 
 Each item has a STABLE id ("<kind>:<pr>") so re-running a scan upserts rather
-than duplicates, and a human-set status survives re-emission.
+than duplicates, and a human-set status survives re-emission of the evidence
+it judged.
 """
 from __future__ import annotations
 
@@ -84,22 +85,30 @@ def _by_id(reg: dict) -> dict[str, dict]:
 
 
 def upsert(reg: dict, item: dict) -> dict:
-    """Add the item, or refresh an existing one of the same id WITHOUT
-    resetting its human-set status or original created date (so a re-scan
-    never reopens a done/dismissed item or rewrites when it was first found)."""
+    """Add the item, or refresh an existing one of the same id, keeping its
+    created date and, for the same or no evidence, its status. New evidence is
+    a new finding: the item reopens, since a human status judged other
+    evidence, and records the day it was found."""
     items = reg.setdefault("items", [])
     existing = _by_id(reg).get(item["id"])
     if existing is None:
         items.append(item)
     else:
+        if item["evidence"] and item["evidence"] != existing.get("evidence"):
+            existing["evidence_found"] = item["created"]
+            existing["status"] = "open"
         existing["summary"] = item["summary"]
         existing["evidence"] = item["evidence"] or existing.get("evidence", "")
         existing["detail"] = item["detail"] or existing.get("detail", "")
         if "fixture" in item:
             existing["fixture"] = item["fixture"]
-        # status and created are intentionally preserved
     items.sort(key=lambda i: (i["status"] != "open", i["kind"], i["pr"]))
     return reg
+
+
+def found(item: dict) -> str | None:
+    """The day the item's current evidence was first found."""
+    return item.get("evidence_found") or item.get("created")
 
 
 def withdraw(reg: dict, item_id: str) -> dict:
@@ -110,11 +119,14 @@ def withdraw(reg: dict, item_id: str) -> dict:
     return reg
 
 
-def dismiss(reg: dict, item_id: str) -> dict:
-    """Dismiss the item when it is open."""
+def dismiss(reg: dict, item_id: str, evidence: str) -> dict:
+    """Dismiss the item when it is open, as judged on `evidence`, which a
+    re-emission must differ from to reopen it."""
     it = _by_id(reg).get(item_id)
-    if it is not None and it["status"] == "open":
-        it["status"] = "dismissed"
+    if it is not None:
+        it["evidence"] = evidence
+        if it["status"] == "open":
+            it["status"] = "dismissed"
     return reg
 
 

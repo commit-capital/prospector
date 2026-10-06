@@ -3,6 +3,8 @@ triage discovers (rotate a leaked secret, salvage a fix from a rejected PR,
 notify upstream) — distinct from per-PR merge/close dispositions. Stored in
 a durable store-level collection (store/action_items.json), surfaced in the
 app. Mirrors the threats.json registry pattern."""
+import pytest
+
 from pipeline import actions
 from pipeline.store import Store, ValidationError
 
@@ -18,7 +20,6 @@ def test_make_item_has_stable_id():
 
 
 def test_rejects_unknown_kind():
-    import pytest
     with pytest.raises(ValueError, match="kind"):
         actions.make_item("nuke-from-orbit", pr=1, summary="x", created=NOW)
 
@@ -34,13 +35,29 @@ class TestUpsert:
         # original created date preserved; not duplicated
         assert reg["items"][0]["created"] == NOW
 
-    def test_upsert_preserves_done_status(self):
+    @pytest.mark.parametrize("again", ["a.ts: KEY=one", ""])
+    def test_upsert_preserves_done_status(self, again):
         reg = actions.empty_registry()
-        actions.upsert(reg, actions.make_item("rotate-secret", pr=3994, summary="x", created=NOW))
+        actions.upsert(reg, actions.make_item("rotate-secret", pr=3994, summary="x", created=NOW,
+                                              evidence="a.ts: KEY=one"))
         actions.set_status(reg, "rotate-secret:3994", "done")
-        # a re-scan re-emits the same item; it must NOT reopen a done item
-        actions.upsert(reg, actions.make_item("rotate-secret", pr=3994, summary="x", created=NOW))
-        assert reg["items"][0]["status"] == "done"
+        actions.upsert(reg, actions.make_item("rotate-secret", pr=3994, summary="x",
+                                              created="2026-07-01", evidence=again))
+        [it] = reg["items"]
+        assert it["status"] == "done" and it["evidence"] == "a.ts: KEY=one"
+        assert actions.found(it) == NOW
+
+    @pytest.mark.parametrize("status", ["open", "done", "dismissed"])
+    def test_new_evidence_opens_the_item_from_the_day_it_was_found(self, status):
+        reg = actions.empty_registry()
+        actions.upsert(reg, actions.make_item("rotate-secret", pr=3994, summary="x", created=NOW,
+                                              evidence="a.ts: KEY=one"))
+        actions.set_status(reg, "rotate-secret:3994", status)
+        actions.upsert(reg, actions.make_item("rotate-secret", pr=3994, summary="x",
+                                              created="2026-07-01", evidence="b.ts: KEY=two"))
+        [it] = reg["items"]
+        assert it["status"] == "open" and it["evidence"] == "b.ts: KEY=two"
+        assert it["created"] == NOW and actions.found(it) == "2026-07-01"
 
     def test_distinct_kinds_same_pr_coexist(self):
         reg = actions.empty_registry()
