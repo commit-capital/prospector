@@ -124,7 +124,8 @@ def system_prompt() -> str:
     if not text:
         raise RuntimeError(f"app agent context is empty: {AGENT_CONTEXT}")
     review_bar = review_policy.merge_bar_sentence()
-    mentions = [r.retrigger_mention for r in review_policy.active_reviewers(reviewers.REVIEW)
+    mentions = [f"{r.label} `{r.retrigger_mention}`"
+                for r in review_policy.active_reviewers(reviewers.REVIEW)
                 if r.retrigger_mention]
     harness = profile.active().harness
     template_parts = []
@@ -140,7 +141,7 @@ def system_prompt() -> str:
                 .replace("{review_bar}", review_bar)
                 .replace("{pr_template}", pr_template)
                 .replace("{body_dir}", os.path.realpath(agent_backend.BODY_DIR))
-                .replace("{retrigger_mention}", ", ".join(mentions) or "(none configured)"))
+                .replace("{retrigger_mention}", "; ".join(mentions) or "(none configured)"))
 
 
 def _ctx_id(pr: int | None, cluster: int | None, issue: int | None = None,

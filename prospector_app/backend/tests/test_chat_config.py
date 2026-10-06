@@ -443,6 +443,13 @@ def test_context_documents_the_review_retrigger(monkeypatch):
     assert "{retrigger_mention}" not in sp
 
 
+def test_context_names_each_reviewers_retrigger_apart(monkeypatch):
+    monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "greptile,coderabbit")
+    sp = chat.system_prompt()
+    assert "Greptile `@greptileai`; CodeRabbit `@coderabbitai review`" in sp
+    assert "@greptileai, @coderabbitai" not in sp
+
+
 def test_only_text_filters_with_no_write_or_exec_form_are_allowlisted():
     # Every allowlisted filter reads its input and prints to stdout, with no
     # option that writes a file or runs a program. `sed`, `awk`, `sort`, and

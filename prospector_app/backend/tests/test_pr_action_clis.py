@@ -168,6 +168,41 @@ def test_submit_review_uses_executor(monkeypatch, capsys):
     assert json.loads(capsys.readouterr().out)["status"] == "executed"
 
 
+def test_submit_review_reads_multiline_body_from_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cli = _load("submit-review")
+    body_file = tmp_path / "review.md"
+    body_file.write_text("First finding.\n\nSecond finding.\n")
+    seen: dict[str, object] = {}
+
+    def review(pr: int, event: str, body: str, *, token: str,
+               dry_run: bool) -> dict[str, object]:
+        seen["body"] = body
+        return {"pr": pr, "status": "executed", "action": f"REVIEW:{event}"}
+
+    monkeypatch.setattr(cli.executor, "mint_bot_token", lambda: "bot-token")
+    monkeypatch.setattr(cli.executor, "submit_review", review)
+
+    assert cli.main([
+        "2857", "--event", "comment", "--body-file", str(body_file),
+    ]) == 0
+    assert seen["body"] == "First finding.\n\nSecond finding.\n"
+
+
+def test_submit_review_body_inputs_are_mutually_exclusive(tmp_path: Path) -> None:
+    cli = _load("submit-review")
+    body_file = tmp_path / "review.md"
+    body_file.write_text("Looks good.")
+
+    with pytest.raises(SystemExit):
+        cli.main([
+            "2857", "--event", "comment", "--body", "Looks good.",
+            "--body-file", str(body_file),
+        ])
+
+
 def test_executor_rejection_returns_failure_and_prints_result(monkeypatch, capsys):
     cli = _load("submit-review")
     monkeypatch.setattr(cli.executor, "mint_bot_token", lambda: "bot-token")
