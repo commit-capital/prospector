@@ -58,9 +58,10 @@ captures nothing, as it makes no GitHub read.
 Every stamp carries threats.REVISION, and `unscanned` names a head an older
 revision judged, so a signature change reaches every open PR. A rescan of the
 head a secret-leak was found at that no longer finds it withdraws the PR's
-open rotate-secret item. An operator who judges a finding no credential clears
-it at that head (`clear_secret_leak`); a restamp of the head keeps the
-clearing, and a new head starts without one.
+open rotate-secret item, and a finding with other evidence than a closed
+item's reopens it. An operator who judges a finding no credential clears it at
+that head (`clear_secret_leak`), dismissing its item on that evidence; a
+restamp of the head keeps the clearing, and a new head starts without one.
 
 `scan` is the run itself. This CLI runs it over every open PR (or `--only`'s);
 a worker machine runs it on a cadence over the PRs `unscanned` names, so a
@@ -392,7 +393,7 @@ def scan(store: Store, prs: dict[int, Pr], diffs_dir: Path | None = None, *,
 
             # A potential leaked credential is operationally urgent regardless of
             # the PR's disposition — emit an action item for a human to confirm or
-            # dismiss (upsert: re-running the scan never reopens one already closed).
+            # dismiss (upsert: a closed one reopens only for other evidence).
             if "secret-leak" in result["signatures"]:
                 evidence = result["detail"].get("secret-leak", "")
                 item_ops.append(functools.partial(actions.upsert, item=actions.make_item(
@@ -448,9 +449,9 @@ def clear_secret_leak(store: Store, n: int, head_sha: str, *, by: str) -> str | 
         return "the threat scan has not judged the head you reviewed; reload the PR"
     if "secret-leak" not in pr.threat_signatures:
         return "the threat scan finds no secret-leak at this head"
-    pr.clear_secret_leak(by)
+    evidence = pr.clear_secret_leak(by)
     _commit(store.load_action_items, store.save_action_items,
-            [functools.partial(actions.dismiss, item_id=f"rotate-secret:{n}")])
+            [functools.partial(actions.dismiss, item_id=f"rotate-secret:{n}", evidence=evidence)])
     now = storekit.now()
     store.append_run({"phase": "threat-scan:clear", "started": now, "finished": now,
                       "pr": n, "head_sha": head_sha, "by": by})
