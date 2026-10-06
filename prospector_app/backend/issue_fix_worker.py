@@ -277,11 +277,12 @@ def _hunted_today(issues: dict) -> int:
 
 def _retryable(req: dict | None) -> bool:
     """Whether the hunter may queue a `solve` over the issue's request `req`:
-    there is none, or it is a `solve` that failed with no operator guidance to
+    there is none, or it is a `solve` that failed with no guidance or notes to
     carry, has rested FAILED_RETRY_COOLDOWN, and has attempts left."""
     if not req:
         return True
-    if req.get("action") != "solve" or req.get("status") != "failed" or req.get("guidance"):
+    if (req.get("action") != "solve" or req.get("status") != "failed"
+            or req.get("guidance") or req.get("notes")):
         return False
     if int(req.get("attempts") or 1) >= HUNT_MAX_ATTEMPTS:
         return False

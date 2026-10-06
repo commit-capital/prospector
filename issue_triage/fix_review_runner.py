@@ -1,7 +1,8 @@
 """Carry out one issue-fix request (`fix_review.queue`) on the machine that holds
 the sandbox, and write what happened back to the issue.
 
-- `solve` runs the cross-tested lane with the request's guidance; a dispute
+- `solve` runs the cross-tested lane with the request's guidance and notes
+  (a maintainer's instruction, and anyone else's words as data); a dispute
   drafts its question at once (`dispute_question.draft`, kept beside the result
   so a later ask posts the same words).
 - `send-back` asks a small agent whether the comments keep the fix's approach
@@ -12,7 +13,8 @@ the sandbox, and write what happened back to the issue.
   way the follow-up's own revisions do, and a restart is refused: the pull
   request and its reviews belong to the approach the comments discard.
 - `answer` resumes a dispute on the chosen reading (`cross_lane.judge_reading`),
-  or re-solves with the question and a written answer as guidance.
+  or re-solves with the question and a written answer: a maintainer's as
+  guidance, the issue author's as notes.
 - `ask-reporter` and `propose` take the executor's bot paths.
 
 Each run writes `result.json` and its ledger row (`fix_lane.record_result`),
@@ -71,14 +73,20 @@ def route(comments: str) -> str:
     return "restart" if verdict.get("mode") == "restart" else "revise"
 
 
-def _spec(store: IssueStore, n: int, base: prove.PinnedBase,
-          guidance: str | None) -> tuple[fix_lane.LaneSpec, str]:
+def _spec(store: IssueStore, n: int, base: prove.PinnedBase, guidance: str | None,
+          notes: str | None = None) -> tuple[fix_lane.LaneSpec, str]:
     reported = fix_lane.reported_text(store, n)
     if reported is None:
         raise RequestFailed(f"issue #{n} is not in the store and could not be fetched")
     title, body = reported
-    return (fix_lane.LaneSpec(issue=n, title=title, body=body, base=base, guidance=guidance),
+    return (fix_lane.LaneSpec(issue=n, title=title, body=body, base=base, guidance=guidance,
+                              notes=notes),
             fix_lane.report_sha(title, body))
+
+
+def _words(guidance: str | None, notes: str | None) -> dict[str, str] | None:
+    """What a run record keeps of the words the request carried."""
+    return {k: v for k, v in (("guidance", guidance), ("notes", notes)) if v} or None
 
 
 def _held_base(record: dict) -> prove.PinnedBase:
@@ -113,14 +121,15 @@ def _keep_question(n: int, report: str, question: dict) -> None:
 
 
 def solve(store: IssueStore, n: int, *, guidance: str | None, trigger: str,
-          on_step: Callable[[str], None]) -> tuple[dict, dict | None]:
+          on_step: Callable[[str], None],
+          notes: str | None = None) -> tuple[dict, dict | None]:
     """The cross-tested lane on issue `n`; its record and, for a dispute, the
     drafted question."""
     try:
         base = prove.pinned(Store())
     except prove.NoBase as e:
         raise RequestFailed(str(e)) from e
-    spec, report = _spec(store, n, base, guidance)
+    spec, report = _spec(store, n, base, guidance, notes)
     workdir = propose.result_dir(n)
     started = storekit.now()
     res = cross_lane.run(spec, workdir=workdir, on_step=on_step)
@@ -133,8 +142,7 @@ def solve(store: IssueStore, n: int, *, guidance: str | None, trigger: str,
     record = fix_lane.record_result(
         store, workdir, issue=n, report=report, base=base, action="fix", lane="cross",
         models=list(settings.issue_fix_models()), res=res, started=started,
-        finished=storekit.now(), trigger=trigger,
-        extra={"guidance": guidance} if guidance else None)
+        finished=storekit.now(), trigger=trigger, extra=_words(guidance, notes))
     question = None
     if res.ending == "fix-disputed" and len((res.result or {}).get("readings") or []) >= 2:
         on_step("drafting the question")
@@ -149,16 +157,17 @@ def solve(store: IssueStore, n: int, *, guidance: str | None, trigger: str,
 
 
 def revise(store: IssueStore, n: int, *, comments: str,
-           on_step: Callable[[str], None], trigger: str = "send-back") -> dict:
-    """One agent revises the last attempt's change under `comments`, proven on
-    the attempt's base or, when this machine no longer holds it, the current
-    pin."""
+           on_step: Callable[[str], None], trigger: str = "send-back",
+           notes: str | None = None) -> dict:
+    """One agent revises the last attempt's change under a maintainer's
+    `comments` and anyone else's `notes`, proven on the attempt's base or, when
+    this machine no longer holds it, the current pin."""
     previous = _last_record(n)
     res_prev = previous.get("result") or {}
     if not res_prev.get("patch"):
         raise RequestFailed("the last attempt holds no change to revise")
     base = _revision_base(previous)
-    spec, report = _spec(store, n, base, comments)
+    spec, report = _spec(store, n, base, comments or None, notes)
     reviews = res_prev.get("reviews") or []
     review = "; ".join(filter(None, [str(r.get("reason") or "") for r in reviews]
                               + [str(c) for r in reviews for c in r.get("concerns") or []]))
@@ -172,13 +181,13 @@ def revise(store: IssueStore, n: int, *, comments: str,
     return fix_lane.record_result(
         store, workdir, issue=n, report=report, base=base, action="fix", lane="revise",
         models=[settings.agent_model() or "default"], res=res, started=started,
-        finished=storekit.now(), trigger=trigger, extra={"guidance": comments})
+        finished=storekit.now(), trigger=trigger, extra=_words(comments, notes))
 
 
-def answer(store: IssueStore, n: int, answer_: dict, *,
-           on_step: Callable[[str], None]) -> tuple[dict, dict | None]:
+def answer(store: IssueStore, n: int, answer_: dict, *, on_step: Callable[[str], None],
+           notes: str | None = None) -> tuple[dict, dict | None]:
     """Resume a dispute on the chosen reading, or re-solve with a written
-    answer."""
+    answer: a maintainer's in `answer_`, the issue author's in `notes`."""
     previous = _last_record(n)
     qpath = propose.result_dir(n) / "question.json"
     saved = json.loads(qpath.read_text()) if qpath.exists() else {}
@@ -200,9 +209,10 @@ def answer(store: IssueStore, n: int, answer_: dict, *,
             finished=storekit.now(), trigger="answer", extra={"answer": answer_})
         return record, {**question, "answered": answer_}
     text = str(answer_.get("text") or "").strip()
-    guidance = (f"The fix attempt asked: {question.get('question') or '(no question)'}\n"
-                f"The maintainer answered: {text}")
-    return solve(store, n, guidance=guidance, trigger="answer", on_step=on_step)
+    asked = f"The fix attempt asked: {question.get('question') or '(no question)'}\n"
+    return solve(store, n, guidance=asked + f"A maintainer answered: {text}" if text else None,
+                 notes=asked + f"The issue's author answered:\n{notes}" if notes else None,
+                 trigger="answer", on_step=on_step)
 
 
 def _write_run(store: IssueStore, n: int, record: dict, question: dict | None) -> dict:
@@ -260,13 +270,15 @@ def _finish(store: IssueStore, n: int, req: dict, status: str, reason: str) -> N
 def _carry_out(store: IssueStore, n: int, action: str, req: dict, *,
                on_step: Callable[[str], None]) -> str:
     guidance = req.get("guidance")
+    notes = req.get("notes")
     trigger = "hunter" if req.get("source") == "hunter" else "operator"
     if action == "solve":
-        record, question = solve(store, n, guidance=guidance, trigger=trigger, on_step=on_step)
+        record, question = solve(store, n, guidance=guidance, notes=notes, trigger=trigger,
+                                 on_step=on_step)
         _write_run(store, n, record, question)
         return f"Solved: {record['ending']} — {record['detail']}"
     if action == "send-back" and req.get("source") == "followup":
-        return _revise_proposal(store, n, guidance or "", trigger="followup",
+        return _revise_proposal(store, n, guidance or "", notes=notes, trigger="followup",
                                 live=settings.issue_fix_followup() == "live", on_step=on_step)
     if action == "send-back":
         issue = store.load_issue(n)
@@ -278,18 +290,19 @@ def _carry_out(store: IssueStore, n: int, action: str, req: dict, *,
                                 f"fix; a send-back revises the change on #{pr}, so say what "
                                 "to change in it")
         if pr:
-            return _revise_proposal(store, n, guidance or "", trigger="send-back",
+            return _revise_proposal(store, n, guidance or "", notes=notes, trigger="send-back",
                                     live=not req.get("dry_run"), on_step=on_step)
         if mode == "restart":
-            record, question = solve(store, n, guidance=guidance, trigger="send-back",
-                                     on_step=on_step)
+            record, question = solve(store, n, guidance=guidance, notes=notes,
+                                     trigger="send-back", on_step=on_step)
             _write_run(store, n, record, question)
             return f"Started over: {record['ending']} — {record['detail']}"
-        record = revise(store, n, comments=guidance or "", on_step=on_step)
+        record = revise(store, n, comments=guidance or "", notes=notes, on_step=on_step)
         _write_run(store, n, record, None)
         return f"Revised: {record['ending']} — {record['detail']}"
     if action == "answer":
-        record, question = answer(store, n, req.get("answer") or {}, on_step=on_step)
+        record, question = answer(store, n, req.get("answer") or {}, notes=notes,
+                                  on_step=on_step)
         _write_run(store, n, record, question)
         return f"Resumed on the answer: {record['ending']} — {record['detail']}"
     if action in ("ask-reporter", "propose"):
@@ -298,9 +311,9 @@ def _carry_out(store: IssueStore, n: int, action: str, req: dict, *,
 
 
 def _revise_proposal(store: IssueStore, n: int, guidance: str, *, trigger: str, live: bool,
-                     on_step: Callable[[str], None]) -> str:
+                     on_step: Callable[[str], None], notes: str | None = None) -> str:
     """Revise the fix behind issue `n`'s open pull request under `guidance`
-    and, when the revision ends `fixed`, push it onto the same branch
+    and `notes` and, when the revision ends `fixed`, push it onto the same branch
     (`executor.update_issue_fix_proposal`) and set the follow-up watching the
     new head. A revision that ends any other way, or does not reach the pull
     request, leaves the pull request, the run it shows, and the result on disk
@@ -315,7 +328,8 @@ def _revise_proposal(store: IssueStore, n: int, guidance: str, *, trigger: str, 
     result_file = propose.result_dir(n) / "result.json"
     kept = result_file.read_text()
     try:
-        record = revise(store, n, comments=guidance, on_step=on_step, trigger=trigger)
+        record = revise(store, n, comments=guidance, notes=notes, on_step=on_step,
+                        trigger=trigger)
     except BaseException:
         result_file.write_text(kept)
         raise

@@ -82,6 +82,7 @@ class LaneSpec:
     action: Literal["reproduce", "fix"] = "fix"
     pre_patch: str | None = None
     guidance: str | None = None
+    notes: str | None = None
 
 
 @dataclass

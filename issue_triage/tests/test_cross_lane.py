@@ -117,8 +117,8 @@ def cross(tmp_path, monkeypatch):
                               _writes("c.test.ts", 2, extra_lines=3)],
                    "models": [], "docs": [], "green_runs": 0}
 
-    def fake_author(worktree, *, title, body, env, model=None, guidance=None, attempt=None,
-                    contributor_docs=(), on_event=None):
+    def fake_author(worktree, *, title, body, env, model=None, guidance=None, notes=None,
+                    attempt=None, contributor_docs=(), on_event=None):
         index = int(Path(worktree).parent.name.split("-")[1])
         state["models"].append((index, model))
         state["docs"].append(list(contributor_docs))

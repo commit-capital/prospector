@@ -84,8 +84,8 @@ def test_ci_still_failing_in_a_log_that_names_a_changed_file_is_revised():
     pr = _pr([_check("ui", "failure", run_id=4)])
     step = _decide(pr, {**DESCRIBED, "reruns": {HEAD: [4]}},
                    logs={"job 40": "FAIL ui/src/EmailMessageCard.test.tsx"})
-    assert step.kind == "revise"
-    assert "EmailMessageCard" in (step.guidance or "") and "quoted evidence" in (step.guidance or "")
+    assert (step.kind, step.guidance) == ("revise", None)
+    assert "EmailMessageCard" in (step.notes or "") and "quoted evidence" in (step.notes or "")
 
 
 def test_a_reviewer_below_its_bar_sends_the_fix_back_with_its_findings():
@@ -93,8 +93,8 @@ def test_a_reviewer_below_its_bar_sends_the_fix_back_with_its_findings():
                "body": "When connectors are off the provider supplies null."}
     step = _decide(_pr(views=[_greptile(reviewers.FAIL, findings=[finding],
                                         summary="Medium risk.")]))
-    assert step.kind == "revise"
-    assert "ui/a.tsx:32" in (step.guidance or "") and "Medium risk." in (step.guidance or "")
+    assert (step.kind, step.guidance) == ("revise", None)
+    assert "ui/a.tsx:32" in (step.notes or "") and "Medium risk." in (step.notes or "")
 
 
 def test_the_revision_budget_hands_it_back():
@@ -157,13 +157,27 @@ def test_a_live_poll_queues_a_follow_up_revision(store, monkeypatch):
     followup.poll(store, mode="live")
     req = store.load_issue(7).fix_request
     assert req["action"] == "send-back" and req["source"] == "followup"
+    assert "guidance" not in req and "objected to the change" in req["notes"]
     assert store.load_issue(7).fix_followup["revisions"] == 1
 
 
-def _run_follow_up(store: IssueStore) -> str:
-    fix_review.queue(store, 7, "send-back", by="followup", source="followup", guidance="g")
+def _run_follow_up(store: IssueStore, **words: str) -> str:
+    fix_review.queue(store, 7, "send-back", by="followup", source="followup",
+                     **(words or {"guidance": "g"}))
     _, outcome = fix_review_runner.run_request(store, 7, store.claim_fix_request(7, host="s"))
     return outcome
+
+
+def test_a_follow_up_revision_carries_the_bots_findings_as_notes(store, monkeypatch):
+    seen = {}
+
+    def revise(store_, n, **kw):
+        seen.update(kw)
+        return {"ending": "no-fix", "detail": "nothing to change"}
+
+    monkeypatch.setattr(fix_review_runner, "revise", revise)
+    _run_follow_up(store, notes="CI fails in ui")
+    assert (seen["comments"], seen["notes"]) == ("", "CI fails in ui")
 
 
 def test_a_failed_follow_up_revision_leaves_the_proposal_as_it_was(store, monkeypatch, tmp_path):
@@ -209,8 +223,8 @@ def test_review_evidence_keeps_suggested_code_and_drops_badges():
     finding = {"path": "a.tsx", "line": 1, "body": '<a href="#"><img alt="P1" src="x"></a> '
                "Fix it. ```suggestion <Ctx.Provider value={null}> ```"}
     step = _decide(_pr(views=[_greptile(reviewers.FAIL, findings=[finding])]))
-    assert "<Ctx.Provider value={null}>" in (step.guidance or "")
-    assert "<img" not in (step.guidance or "")
+    assert "<Ctx.Provider value={null}>" in (step.notes or "")
+    assert "<img" not in (step.notes or "")
 
 
 # --- maintainer feedback ------------------------------------------------------------

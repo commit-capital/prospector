@@ -456,10 +456,22 @@ def test_the_author_s_reply_with_detail_starts_another_attempt(store, replies):
     issue = store.load_issue(1)
     req = issue.fix_request
     assert (req["action"], req["source"], req["requested_by"]) == ("solve", "public", "nicky")
-    assert "> It only fails with --flag set." in req["guidance"]
+    assert "guidance" not in req and "> It only fails with --flag set." in req["notes"]
+    assert "the issue's author replied" in req["notes"]
     assert issue.fix_thread[-1]["by"] == "nicky"
     assert issue.fix_public["reattempts"] == 1
     assert public_loop.label_for(issue) == IN_PROGRESS
+
+
+def test_a_maintainer_s_reply_is_guidance_and_the_author_s_a_note(store, replies):
+    replies["comments"] = [_comment("nicky", "It only fails with --flag set."),
+                           _comment("dotta", "Look at the parser", association="MEMBER",
+                                    cid=2)]
+    public_loop.answer_replies(store, mode="live", now=NOW)
+    req = store.load_issue(1).fix_request
+    assert "a maintainer replied" in req["guidance"] and "> Look at the parser" in req["guidance"]
+    assert "--flag" not in req["guidance"]
+    assert "> It only fails with --flag set." in req["notes"] and "parser" not in req["notes"]
 
 
 def test_replies_on_a_superseded_attempt_start_nothing(store, replies):
@@ -536,7 +548,18 @@ def test_a_letter_answer_is_left_to_the_question_poll_and_words_answer_it(store,
     _bump(store, "2026-10-01T11:50:00Z")
     public_loop.answer_replies(store, mode="live", now=NOW)
     req = store.load_issue(1).fix_request
-    assert req["action"] == "answer" and "it should read 4" in req["answer"]["text"]
+    assert req["action"] == "answer" and "answer" not in req
+    assert "it should read 4" in req["notes"]
+
+
+def test_a_maintainer_s_written_answer_answers_it(store, replies):
+    store.edit_issue(1).record_fix_run(_run(
+        ending="fix-disputed", report_sha=_sha("bug 1", "b"),
+        question={**QUESTION, "asked": {"at": "2026-10-01T11:10:00+00:00", "url": "u"}}))
+    replies["comments"] = [_comment("dotta", "Neither: it should read 4.", association="MEMBER")]
+    public_loop.answer_replies(store, mode="live", now=NOW)
+    req = store.load_issue(1).fix_request
+    assert "it should read 4" in req["answer"]["text"] and "notes" not in req
 
 
 def test_an_edited_report_starts_another_attempt_once(store, replies):
@@ -602,13 +625,14 @@ def test_a_request_a_machine_fault_ended_runs_again_after_a_rest(store, writes):
     store.edit_issue(1).record_fix_run(_run(ending="sandbox", fault=True))
     store.edit_issue(1).record_fix_request({
         "action": "solve", "status": "done", "source": "public", "guidance": "try X",
-        "finished_at": FINISHED})
+        "notes": "it fails with --flag", "finished_at": FINISHED})
     issue = store.load_issue(1)
     assert public_loop.label_for(issue) == IN_PROGRESS
     assert public_loop.queue_due(issue, NOW - timedelta(minutes=30), {}) is None
     public_loop.sync(store, mode="live", now=NOW + timedelta(minutes=5))
     req = store.load_issue(1).fix_request
-    assert (req["action"], req["status"], req["guidance"]) == ("solve", "queued", "try X")
+    assert (req["action"], req["status"], req["guidance"], req["notes"]) == (
+        "solve", "queued", "try X", "it fails with --flag")
     spent = {"queued": {f"retry:{k}:solve": "t" for k in (1, 2, 3)}}
     assert public_loop.queue_due(store.load_issue(1), NOW, spent) is None
 
@@ -619,14 +643,14 @@ def test_an_edit_carries_the_replies_that_came_with_it(store, replies):
     _bump(store, "2026-10-01T11:40:00Z", body="b, with steps")
     public_loop.answer_replies(store, mode="live", now=NOW)
     req = store.load_issue(1).fix_request
-    assert "the report was edited" in req["guidance"] and "> Added the steps" in req["guidance"]
+    assert "the report was edited" in req["notes"] and "> Added the steps" in req["notes"]
     assert replies["routed"] == []
 
 
 def test_a_reply_posted_while_the_attempt_ran_is_still_routed(store, replies):
     replies["comments"] = [_comment("nicky", "It also needs --flag.", at="2026-10-01T10:45:00Z")]
     public_loop.answer_replies(store, mode="live", now=NOW)
-    assert "--flag" in store.load_issue(1).fix_request["guidance"]
+    assert "--flag" in store.load_issue(1).fix_request["notes"]
 
 
 def test_an_attempt_that_concluded_before_the_loop_read_it_starts_from_that_read(store,

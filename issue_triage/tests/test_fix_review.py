@@ -80,6 +80,19 @@ def test_an_answer_names_an_option_or_says_what_should_happen(store):
     assert store.load_issue(7).fix_thread[-1]["text"] == "Answered B"
     fix_review.cancel(store, 7, by="op")
     assert fix_review.queue(store, 7, "answer", by="op", answer={"text": "x reads 2"})[0]
+    fix_review.cancel(store, 7, by="op")
+    assert fix_review.queue(store, 7, "answer", by="reporter", source="public",
+                            notes="reporter:\n> x reads 2")[0]
+    assert "answer" not in store.load_issue(7).fix_request
+
+
+def test_notes_alone_send_a_fix_back_and_join_the_thread(store):
+    _run(store)
+    assert fix_review.queue(store, 7, "send-back", by="followup", source="followup",
+                            notes="CI fails in ui")[0]
+    issue = store.load_issue(7)
+    assert "guidance" not in issue.fix_request and issue.fix_request["notes"] == "CI fails in ui"
+    assert issue.fix_thread[-1]["text"] == "CI fails in ui"
 
 
 def test_a_closed_issue_takes_no_request(store):
@@ -246,6 +259,29 @@ def test_a_send_back_follows_what_the_comments_ask(store, monkeypatch, mode, wan
     req = store.claim_fix_request(7, host="studio")
     status, outcome = fix_review_runner.run_request(store, 7, req)
     assert status == "done" and outcome.startswith(want)
+
+
+ASKED = f"The fix attempt asked: {QUESTION['question']}\n"
+
+
+@pytest.mark.parametrize("words,guidance,notes", [
+    ({"answer": {"text": "x reads 2"}}, ASKED + "A maintainer answered: x reads 2", None),
+    ({"notes": "reporter:\n> x reads 2"}, None,
+     ASKED + "The issue's author answered:\nreporter:\n> x reads 2"),
+])
+def test_a_written_answer_keeps_who_wrote_it(store, tmp_path, monkeypatch, words, guidance,
+                                             notes):
+    _run(store, ending="fix-disputed", question=QUESTION)
+    monkeypatch.setattr(propose, "result_dir", lambda n: tmp_path / f"issue-{n}")
+    (tmp_path / "issue-7").mkdir()
+    (tmp_path / "issue-7" / "result.json").write_text(json.dumps({"ending": "fix-disputed"}))
+    (tmp_path / "issue-7" / "question.json").write_text(json.dumps({"question": QUESTION}))
+    seen = {}
+    monkeypatch.setattr(fix_review_runner, "solve", lambda s, n, **kw: seen.update(kw) or (
+        {"ending": "no-fix", "detail": "d", "result": {}}, None))
+    fix_review.queue(store, 7, "answer", by="op", **words)
+    fix_review_runner.run_request(store, 7, store.claim_fix_request(7, host="s"))
+    assert (seen["guidance"], seen["notes"]) == (guidance, notes)
 
 
 def _taken_back(store: IssueStore, req: dict) -> None:

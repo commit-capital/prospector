@@ -111,8 +111,8 @@ def open_pr(issue: Issue) -> int | None:
     return int(pr)
 
 
-def _fits(action: str, run: dict | None, *, guidance: str | None,
-          answer: dict | None, pr: int | None, followup: dict | None = None) -> str | None:
+def _fits(action: str, run: dict | None, *, guidance: str | None, answer: dict | None,
+          pr: int | None, followup: dict | None = None, notes: str | None = None) -> str | None:
     """Why `action` does not fit the latest attempt `run`, open as pull request
     `pr` and followed up in `followup`, or None when it does."""
     if action == "solve":
@@ -124,14 +124,15 @@ def _fits(action: str, run: dict | None, *, guidance: str | None,
     if action == "send-back":
         if not run.get("patch"):
             return "the attempt holds no change to send back"
-        if not (guidance or "").strip():
+        if not (guidance or "").strip() and not (notes or "").strip():
             return "sending a fix back needs your comments"
         return None
     if action == "answer":
         if ending != "fix-disputed" or not question.get("options"):
             return "the attempt asks no question"
         labels = [o["label"] for o in question["options"]]
-        if (answer or {}).get("label") in labels or str((answer or {}).get("text") or "").strip():
+        if ((answer or {}).get("label") in labels or str((answer or {}).get("text") or "").strip()
+                or (notes or "").strip()):
             return None
         return f"an answer names one of {labels} or says what should happen"
     if action == "ask-reporter":
@@ -156,10 +157,13 @@ def _fits(action: str, run: dict | None, *, guidance: str | None,
 
 def queue(store: IssueStore, n: int, action: str, *, by: str, source: str = "operator",
           guidance: str | None = None, answer: dict | None = None,
-          dry_run: bool = False) -> tuple[bool, str]:
+          notes: str | None = None, dry_run: bool = False) -> tuple[bool, str]:
     """Queue `action` on issue `n`'s fix attempt for the worker, recording the
-    operator's words in the thread. A request that retries a failed one of the
-    same action carries its attempt count on. (ok, reason)."""
+    words it carries in the thread. `guidance` is an operator's or maintainer's
+    instruction; `notes` are words from anyone else — the issue's author, the
+    code reviewers, CI — which the fix agent weighs as data. A request that
+    retries a failed one of the same action carries its attempt count on.
+    (ok, reason)."""
     issue = store.load_issue(n)
     if issue is None:
         return False, f"issue #{n} is not in the store"
@@ -169,7 +173,7 @@ def queue(store: IssueStore, n: int, action: str, *, by: str, source: str = "ope
     if req and req.get("status") in IN_FLIGHT:
         return False, f"a {req.get('action')} request is already {req.get('status')}"
     why = _fits(action, issue.fix_run, guidance=guidance, answer=answer, pr=open_pr(issue),
-                followup=issue.fix_followup)
+                followup=issue.fix_followup, notes=notes)
     if why:
         return False, why
     retry = bool(req and req.get("status") == "failed" and req.get("action") == action)
@@ -180,9 +184,12 @@ def queue(store: IssueStore, n: int, action: str, *, by: str, source: str = "ope
         section["guidance"] = guidance.strip()
     if answer:
         section["answer"] = answer
+    if notes and notes.strip():
+        section["notes"] = notes.strip()
     issue.record_fix_request(section)
     given = answer or {}
-    words = (guidance or "").strip() or str(given.get("text") or "").strip()
+    words = "\n\n".join(w for w in ((guidance or "").strip(), str(given.get("text") or "").strip(),
+                                    (notes or "").strip()) if w)
     if given.get("label"):
         words = f"Answered {given['label']}" + (f": {words}" if words else "")
     if words:

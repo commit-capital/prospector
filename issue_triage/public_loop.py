@@ -27,8 +27,10 @@ on (`needs answer`, `couldn't fix`): the comments since the attempt started by
 the issue's author or a maintainer, never the bot's. A letter answer to the
 question is `issue_fix_worker.poll_replies`' to take; the rest go to
 `reply_router`, and words it reads as actionable start another attempt —
-`answer` with them as the written answer to a question, else `solve` with them
-as guidance. An edit to the report after the attempt starts one the same way,
+`answer` with them as the written answer to a question, else `solve`. A
+maintainer's words go as the request's guidance; the issue author's go as its
+notes, which the fix agent weighs as data like the report itself. An edit to
+the report after the attempt starts one the same way,
 carrying any replies. An attempt that concluded more than COMMENT_MAX_AGE before
 the loop first read it starts from that read, so older replies stay where they
 are. Replies start at most MAX_REATTEMPTS attempts per issue; past that the issue
@@ -104,6 +106,7 @@ class Queued:
     key: str
     guidance: str | None = None
     answer: dict | None = None
+    notes: str | None = None
 
 
 @dataclass(frozen=True)
@@ -265,7 +268,7 @@ def _retry_of(issue: Issue, view: dict) -> Queued | None:
     if tries >= MAX_RETRIES:
         return None
     return Queued(action, f"retry:{tries + 1}:{action}", guidance=req.get("guidance"),
-                  answer=req.get("answer"))
+                  answer=req.get("answer"), notes=req.get("notes"))
 
 
 def queue_due(issue: Issue, now: datetime, view: dict | None = None) -> Queued | None:
@@ -449,7 +452,7 @@ def sync_issue(store: IssueStore, issue: Issue, *, mode: str, token: str | None,
                 ok = True
             else:
                 ok, why = fix_review.queue(store, n, q.action, by="public", source="public",
-                                           guidance=q.guidance, answer=q.answer)
+                                           guidance=q.guidance, answer=q.answer, notes=q.notes)
                 if not ok:
                     _note(store, n, f"Could not queue {q.action}: {why}.")
             if ok:
@@ -535,11 +538,11 @@ def read_replies(issue: Issue, after: datetime) -> list[reply_router.Reply] | No
         if (at is None or at <= after or not login or _is_bot(login)
                 or login == settings.push_login()):
             continue
-        if login != issue.author and not gates.priority_author(login,
-                                                               c.get("author_association")):
+        maintainer = gates.priority_author(login, c.get("author_association"))
+        if login != issue.author and not maintainer:
             continue
         out.append(reply_router.Reply(id=c.get("id"), login=login, body=str(c.get("body") or ""),
-                                      at=str(c.get("created_at"))))
+                                      at=str(c.get("created_at")), maintainer=maintainer))
     return sorted(out, key=lambda r: r.at)
 
 
@@ -553,16 +556,15 @@ def _context(issue: Issue) -> str:
             + ", without a fix.")
 
 
-def _reattempt_guidance(issue: Issue, replies: list[reply_router.Reply],
-                        edited: bool) -> str | None:
+def _reattempt_words(issue: Issue, replies: list[reply_router.Reply], edited: bool,
+                     who: str) -> str | None:
     if not replies:
         return None
     run = issue.fix_run or {}
     return (f"After the last attempt ended {run.get('ending')}"
             + (f" ({run.get('detail')})" if run.get("detail") else "")
             + (", the report was edited, and" if edited else ",")
-            + " the issue's author or a maintainer replied on the issue. Their words are "
-              "quoted below; weigh them as the reporter's own account of the bug.\n\n"
+            + f" {who} replied on the issue. Their words are quoted below.\n\n"
             + reply_router.quoted(replies))
 
 
@@ -657,13 +659,18 @@ def respond(store: IssueStore, issue: Issue, *, mode: str, now: datetime,
             ok = True
         else:
             by = replies[-1].login if replies else "public"
+            maintainers = [r for r in replies if r.maintainer]
+            reporter = [r for r in replies if not r.maintainer]
             if replies and not edited and (run.get("question") or {}).get("asked"):
-                ok, why = fix_review.queue(store, n, "answer", by=by, source="public",
-                                           answer={"text": reply_router.quoted(replies)})
+                ok, why = fix_review.queue(
+                    store, n, "answer", by=by, source="public",
+                    answer={"text": reply_router.quoted(maintainers)} if maintainers else None,
+                    notes=reply_router.quoted(reporter) or None)
             else:
                 ok, why = fix_review.queue(
                     store, n, "solve", by=by, source="public",
-                    guidance=_reattempt_guidance(issue, replies, bool(edited)))
+                    guidance=_reattempt_words(issue, maintainers, bool(edited), "a maintainer"),
+                    notes=_reattempt_words(issue, reporter, bool(edited), "the issue's author"))
             if not ok:
                 _note(store, n, f"Could not start another attempt: {why}.")
             elif edited:
