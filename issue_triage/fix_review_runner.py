@@ -2,7 +2,9 @@
 the sandbox, and write what happened back to the issue.
 
 - `solve` runs the cross-tested lane with the request's guidance and notes
-  (a maintainer's instruction, and anyone else's words as data); a dispute
+  (a maintainer's instruction, and anyone else's words as data), first having
+  `intake_audit` judge an outsider's report: an unattended solve of a report it
+  reads as malicious ends `refused` with no lane run; a dispute
   drafts its question at once (`dispute_question.draft`, kept beside the result
   so a later ask posts the same words).
 - `send-back` asks a small agent whether the comments keep the fix's approach
@@ -35,12 +37,13 @@ from issue_triage import (
     dispute_question,
     fix_lane,
     fix_review,
+    intake_audit,
     propose,
     solo_lane,
     superseded,
 )
 from issue_triage.issue_store import IssueStore
-from pipeline import headless_agent, prove, settings, storekit
+from pipeline import gates, headless_agent, prove, settings, storekit, threats
 from pipeline.store import Store
 
 ROUTE_PROMPT = """\
@@ -120,11 +123,24 @@ def _keep_question(n: int, report: str, question: dict) -> None:
         dispute_question.dumps({"report_sha": report, "question": question}))
 
 
+def _intake(store: IssueStore, n: int, spec: fix_lane.LaneSpec,
+            on_step: Callable[[str], None]) -> dict | None:
+    """`intake_audit.judge` on issue `n`'s report, or None for a maintainer's."""
+    issue = store.load_issue(n)
+    author = issue.author if issue else None
+    if issue is not None and gates.priority_author(author, issue.author_association):
+        return None
+    on_step("auditing the report")
+    blocked = threats.is_blocked_actor(Store().load_threats(), author)
+    return intake_audit.judge(spec.title, spec.body, spec.notes, blocked=blocked)
+
+
 def solve(store: IssueStore, n: int, *, guidance: str | None, trigger: str,
-          on_step: Callable[[str], None],
-          notes: str | None = None) -> tuple[dict, dict | None]:
+          on_step: Callable[[str], None], notes: str | None = None,
+          unattended: bool = False) -> tuple[dict, dict | None]:
     """The cross-tested lane on issue `n`; its record and, for a dispute, the
-    drafted question."""
+    drafted question. An `unattended` solve of a report the intake audit reads
+    as malicious ends `refused` without running the lane."""
     try:
         base = prove.pinned(Store())
     except prove.NoBase as e:
@@ -132,7 +148,17 @@ def solve(store: IssueStore, n: int, *, guidance: str | None, trigger: str,
     spec, report = _spec(store, n, base, guidance, notes)
     workdir = propose.result_dir(n)
     started = storekit.now()
-    res = cross_lane.run(spec, workdir=workdir, on_step=on_step)
+    intake = _intake(store, n, spec, on_step)
+    audited = int(intake is not None and not intake.get("blocked"))
+    refused = intake_audit.refusal(intake) if unattended else None
+    if refused:
+        res = fix_lane.LaneResult(ending="refused", fault=False, detail=refused,
+                                  result={"intake": intake}, agent_runs=audited)
+    else:
+        res = cross_lane.run(spec, workdir=workdir, on_step=on_step)
+        if intake is not None:
+            res.result = {**(res.result or {}), "intake": intake}
+            res.agent_runs += audited
     if res.ending == "fixed":
         reason = fix_lane.still_valid_for(n, report)
         if reason:
@@ -161,7 +187,8 @@ def revise(store: IssueStore, n: int, *, comments: str,
            notes: str | None = None) -> dict:
     """One agent revises the last attempt's change under a maintainer's
     `comments` and anyone else's `notes`, proven on the attempt's base or, when
-    this machine no longer holds it, the current pin."""
+    this machine no longer holds it, the current pin. The revision keeps the
+    attempt's `intake`."""
     previous = _last_record(n)
     res_prev = previous.get("result") or {}
     if not res_prev.get("patch"):
@@ -178,6 +205,8 @@ def revise(store: IssueStore, n: int, *, comments: str,
                                  "root_cause": res_prev.get("root_cause"),
                                  "review": review or None},
                         review=True)
+    if res_prev.get("intake") is not None:
+        res.result = {**(res.result or {}), "intake": res_prev["intake"]}
     return fix_lane.record_result(
         store, workdir, issue=n, report=report, base=base, action="fix", lane="revise",
         models=[settings.agent_model() or "default"], res=res, started=started,
@@ -185,7 +214,7 @@ def revise(store: IssueStore, n: int, *, comments: str,
 
 
 def answer(store: IssueStore, n: int, answer_: dict, *, on_step: Callable[[str], None],
-           notes: str | None = None) -> tuple[dict, dict | None]:
+           notes: str | None = None, unattended: bool = False) -> tuple[dict, dict | None]:
     """Resume a dispute on the chosen reading, or re-solve with a written
     answer: a maintainer's in `answer_`, the issue author's in `notes`."""
     previous = _last_record(n)
@@ -212,7 +241,7 @@ def answer(store: IssueStore, n: int, answer_: dict, *, on_step: Callable[[str],
     asked = f"The fix attempt asked: {question.get('question') or '(no question)'}\n"
     return solve(store, n, guidance=asked + f"A maintainer answered: {text}" if text else None,
                  notes=asked + f"The issue's author answered:\n{notes}" if notes else None,
-                 trigger="answer", on_step=on_step)
+                 trigger="answer", on_step=on_step, unattended=unattended)
 
 
 def _write_run(store: IssueStore, n: int, record: dict, question: dict | None) -> dict:
@@ -272,9 +301,10 @@ def _carry_out(store: IssueStore, n: int, action: str, req: dict, *,
     guidance = req.get("guidance")
     notes = req.get("notes")
     trigger = "hunter" if req.get("source") == "hunter" else "operator"
+    unattended = req.get("source") in ("hunter", "public")
     if action == "solve":
         record, question = solve(store, n, guidance=guidance, notes=notes, trigger=trigger,
-                                 on_step=on_step)
+                                 on_step=on_step, unattended=unattended)
         _write_run(store, n, record, question)
         return f"Solved: {record['ending']} — {record['detail']}"
     if action == "send-back" and req.get("source") == "followup":
@@ -302,7 +332,7 @@ def _carry_out(store: IssueStore, n: int, action: str, req: dict, *,
         return f"Revised: {record['ending']} — {record['detail']}"
     if action == "answer":
         record, question = answer(store, n, req.get("answer") or {}, notes=notes,
-                                  on_step=on_step)
+                                  on_step=on_step, unattended=unattended)
         _write_run(store, n, record, question)
         return f"Resumed on the answer: {record['ending']} — {record['detail']}"
     if action in ("ask-reporter", "propose"):

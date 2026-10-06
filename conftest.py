@@ -92,6 +92,16 @@ def _no_trust_boundary_reviewer(monkeypatch):
                         lambda *a, **k: {"crossings": [], "reason": "no reviewer in tests"})
 
 
+@pytest.fixture(autouse=True)
+def _no_intake_reviewer(monkeypatch):
+    """`intake_audit.review` runs an agent over an outsider's report before the
+    factory builds it; no test reaches it, so a report reads clear. A test that
+    needs another verdict sets one."""
+    from issue_triage import intake_audit
+    monkeypatch.setattr(intake_audit, "review", lambda *a, **k: {
+        "verdict": "clear", "findings": [], "reason": "no reviewer in tests"})
+
+
 class _OfflineGitHub:
     """threat_evidence.GitHubReads that answers nothing."""
 

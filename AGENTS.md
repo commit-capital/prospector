@@ -394,7 +394,10 @@ hour, so a run that starts and finishes between two polls is still readable.
 
 **ISSUE FIX** (`issue_triage/fix_lane.py`) drives one reported issue through
 reproduce → judge → fix → prove → review over single-commit clones of a base
-this machine already holds; only its separate propose step writes upstream. `run` is the
+this machine already holds; only its separate propose step writes upstream. Every
+agent reads the report as GitHub shows it (`reproduce_issue.report_block` through
+`intake_audit.visible`: no HTML comment outside a code fence, no invisible
+character). `run` is the
 integrator: each locked-down agent (`allow_gh=False`, its own clone as
 `read_root`) authors or judges, and only host-observed sandbox exits and
 `issue_gates` name the ending — a reproduction outcome from
@@ -518,7 +521,15 @@ out: `solve` runs the cross lane with the request's guidance — an operator's o
 maintainer's words, ranked above the agent's own reading (`solo_lane.GUIDANCE`)
 — and its notes — anyone else's words (the issue's author, the code reviewers,
 CI), framed as data like the report (`solo_lane.NOTES`) — and drafts a
-dispute's question at once; `send-back` has a small agent read the comments (`route`), then either one
+dispute's question at once. Before the lane, an issue a maintainer did not file
+gets its `intake` judged (`issue_triage/intake_audit.py`, the ONE policy for
+issue text as input): a reviewer with no tools reads the raw report and notes
+as data and calls it `clear`, `suspicious` or `malicious`, an author on the
+threat blocklist reads `malicious` unread, and hidden content or a review that
+gave no verdict reads at least `suspicious`. A hunted or public solve of a
+malicious report ends `refused` with no lane run — no label, no comment, no
+restart on a reply; an operator's own solve runs. A fix whose intake is short of
+clear is held like a trust-boundary crossing (`trust_boundary.held`); `send-back` has a small agent read the comments (`route`), then either one
 agent revises the current change on a clone that holds it
 (`solo_lane.run(start_patch=…, review=True)`) or the cross lane restarts with the
 comments as guidance. While the attempt is open as a pull request
@@ -609,7 +620,7 @@ attempt, for the issues in scope: the ones a maintainer filed
 `label_for` derives one status label (`fix in progress`, `needs answer`,
 `iterating on PR`, `ready for review`, `couldn't fix`) from
 `fix_review.fix_status`, the attempt and the follow-up, carried by the issue and
-by the pull request it proposed, and none for a `superseded` attempt;
+by the pull request it proposed, and none for a `superseded` or `refused` attempt;
 `comments_due` names the comments the attempt calls for — the conclusion of an
 attempt without a fix (finished within a day), the opened pull request on the
 issue, the follow-up's ready or hand-back on the pull request, once per head,

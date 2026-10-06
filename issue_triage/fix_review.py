@@ -279,7 +279,8 @@ def distill(record: dict, question: dict | None = None) -> dict:
         "tests": [p for p in diffpaths.changed_paths(patch) if diffpaths.is_test_path(p)],
         "agreement": res.get("agreement"), "readings": res.get("readings"),
         "tier": res.get("tier"), "proof": _proof(res.get("proof") or {}),
-        "reviews": reviews, "boundary": res.get("boundary"), "candidates": candidates,
+        "reviews": reviews, "boundary": res.get("boundary"), "intake": res.get("intake"),
+        "candidates": candidates,
         "question": None, "proposal": None,
     }
     if question and "question" in question:

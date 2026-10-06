@@ -494,6 +494,15 @@ def test_a_maintainer_s_reply_is_guidance_and_the_author_s_a_note(store, replies
     assert "> It only fails with --flag set." in req["notes"] and "parser" not in req["notes"]
 
 
+def test_a_refused_attempt_says_nothing_and_replies_do_not_restart_it(store, replies):
+    store.edit_issue(1).record_fix_run(_run(ending="refused", report_sha=_sha("bug 1", "b"),
+                                            detail="the intake audit read it as malicious"))
+    issue = store.load_issue(1)
+    assert public_loop.label_for(issue) is None and public_loop.comments_due(issue, NOW) == []
+    replies["comments"] = [_comment("nicky", "please try again")]
+    assert public_loop.answer_replies(store, mode="live", now=NOW) == 0
+
+
 def test_replies_on_a_superseded_attempt_start_nothing(store, replies):
     store.edit_issue(1).record_fix_run(_run(report_sha=_sha("bug 1", "b"), superseded=RIVAL))
     replies["comments"] = [_comment("nicky", "It only fails with --flag set.")]
