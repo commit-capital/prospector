@@ -31,7 +31,7 @@ _COMMENT_RE = re.compile(r"<!--(.*?)(?:-->|\Z)", re.DOTALL)
 # tag characters, and the variation selectors that encode bytes; the joiners
 # emoji and scripts use (U+200C, U+200D) and the directional marks stay.
 _INVISIBLE_RE = re.compile(
-    "[​⁠-⁤﻿‪-‮⁦-⁩"
+    "[\u200b\u2060-\u2064\ufeff\u202a-\u202e\u2066-\u2069"
     "\U000e0000-\U000e007f\U000e0100-\U000e01ef]")
 _BLOCK_TAG_RE = re.compile(r"<\s*/?\s*(?:issue|notes)\s*>", re.IGNORECASE)
 
