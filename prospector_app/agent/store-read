@@ -4,11 +4,9 @@
 The store is a SQL database (a shared SQL database via TRIAGE_STORE_URL,
 or a local SQLite default) — not files on disk. The agent's file tools
 (Read/Grep/Glob) can't open a DB connection, so this allowlisted command is how
-it reads a PR's or cluster's recorded sections (meta / signals / summary /
-cluster / analysis / security / threat / drift / resolution), an issue's
-recorded sections (meta / summary / repro / cluster / analysis / links /
-resolution / fix_scan), the threat registry, and the app activity log
-(executed upstream actions). It reads through the validated store accessors
+it reads a PR's, cluster's, or issue's recorded sections (`--section` takes
+any name in store.PR_SECTIONS or issue_store.ISSUE_SECTIONS), the threat
+registry, and the app activity log (executed upstream actions). It reads through the validated store accessors
 (store.Store, issue_store.IssueStore) and the app's activity module — the
 ONLY sanctioned readers — and prints the record as indented JSON.
 
@@ -60,8 +58,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # for the `pipeline` package rather than relying on the editable install.
 sys.path.insert(0, str(REPO_ROOT))
 
-from issue_triage.issue_store import IssueStore  # noqa: E402
-from pipeline.store import Store  # noqa: E402
+from issue_triage.issue_store import ISSUE_SECTIONS, IssueStore  # noqa: E402
+from pipeline.store import PR_SECTIONS, Store  # noqa: E402
 
 _STATES = ("open", "closed", "all")
 
@@ -131,8 +129,7 @@ def main(argv: list[str] | None = None) -> int:
     pr = sub.add_parser("pr", parents=[common], help="read one PR's record")
     pr.add_argument("number", type=int, help="the PR number")
     pr.add_argument("--section", default=None,
-                    help="print only this section (meta/signals/summary/cluster/"
-                         "analysis/security/threat/drift/resolution)")
+                    help="print only this section (" + "/".join(PR_SECTIONS) + ")")
 
     cl = sub.add_parser("cluster", parents=[common], help="read one cluster's record")
     cl.add_argument("id", type=int, help="the cluster id")
@@ -140,8 +137,7 @@ def main(argv: list[str] | None = None) -> int:
     iss = sub.add_parser("issue", parents=[common], help="read one issue's record")
     iss.add_argument("number", type=int, help="the issue number")
     iss.add_argument("--section", default=None,
-                     help="print only this section (meta/summary/repro/cluster/"
-                          "analysis/links/resolution/fix_scan)")
+                     help="print only this section (" + "/".join(ISSUE_SECTIONS) + ")")
 
     prs = sub.add_parser("prs", parents=[common], help="list PRs as compact rows")
     _add_bulk_flags(prs)

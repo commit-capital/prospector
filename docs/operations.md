@@ -84,7 +84,7 @@ The security boundary is the machine, not the app:
 
 ## Safety
 
-`CLAUDE.md` is authoritative. In short: reads run as the local login. The app
+`AGENTS.md` is authoritative. In short: reads run as the local login. The app
 executor writes as the configured app, logs every attempt, and applies the
 per-PR gate to merges. The optional chat agent has a separate,
 confirmation-based allowlist for non-merge writes; its issue closes use the
