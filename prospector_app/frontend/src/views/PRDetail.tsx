@@ -48,6 +48,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
   const [diffMode, setDiffMode] = useState<"pr" | "merge">("pr");
   const [lineComment, setLineComment] = useState<{ file: string; line: number } | null>(null);
   const [retriggering, setRetriggering] = useState<string | null>(null);
+  const [clearingSecret, setClearingSecret] = useState(false);
   const [err, setErr] = useState<string>();
   const { botLogin, dryRun, reportResult, activeReviewers, pushToast } = useExec();
   const { meta } = useRepoMeta();
@@ -218,6 +219,25 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
     if (secretJob.running) return;
     pushToast(`▶ #${prNum} · Threat scan — running…`, "muted");
     secretJob.start(`/api/jobs/run/threat-scan-pr?pr=${prNum}`);
+  };
+
+  // Record that the secret-leak finding the operator reviewed is no
+  // credential: it lifts the merge block for that line at that head only.
+  const clearSecretLeak = async (headSha: string, evidence: string) => {
+    if (clearingSecret) return;
+    if (!window.confirm(`Mark the flagged line in #${prNum} as not a real secret?\n\n${evidence}\n\n`
+      + `This lifts the merge block for this line at commit ${headSha.slice(0, 7)} and dismisses its action item. `
+      + "The threat scan checks any new push again.")) return;
+    setClearingSecret(true);
+    try {
+      await api.clearSecretLeak(prNum, headSha);
+      pushToast(`#${prNum} · marked not a secret`, "green");
+      await reloadPr();
+    } catch (e) {
+      pushToast(`#${prNum} · couldn't mark it not a secret`, "red", { detail: String(e) });
+    } finally {
+      setClearingSecret(false);
+    }
   };
 
   if (err) return <div className="error">Failed: {err}</div>;
@@ -499,14 +519,27 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
         const headline: string = malicious ? "⛔ Merge blocked — flagged malicious"
           : secret ? "🔑 Merge blocked — committed secret"
           : "⛔ Merge blocked — too big to scan for harmful code";
+        const threat = pr.threat_detail;
+        const evidence = threat?.detail?.["secret-leak"];
+        const scannedHead = threat?.against_head_sha;
         return (
           <div className="gate-block-callout" title="A PR can't merge if it contains a password or key, looks harmful, or is too big to scan.">
             <div className="co-headline">{headline}</div>
             <div className="co-detail">
               {blocks.join("; ")}.{" "}
-              {!malicious && secret && <>Ask the author to remove it (and replace the leaked key) with <b>Disposition → request changes</b>.</>}
+              {!malicious && secret && <>Ask the author to remove it (and replace the leaked key) with <b>Disposition → request changes</b>, or if it isn't a real secret, mark it so.</>}
               {!malicious && !secret && <>Ask the author to split it into smaller PRs with <b>Disposition → request changes</b>.</>}
             </div>
+            {secret && evidence && <ul className="co-paths"><li><code>{evidence}</code></li></ul>}
+            {!malicious && secret && evidence && scannedHead && !resolved && (
+              <div style={{ marginTop: 8 }}>
+                <button className="btn-secondary sm" disabled={clearingSecret}
+                  onClick={() => void clearSecretLeak(scannedHead, evidence)}
+                  title="You've checked the flagged line and it isn't a real password or key: lift this merge block for this commit and dismiss its action item. A new push is scanned again.">
+                  {clearingSecret ? "Saving…" : "✓ Not a secret"}
+                </button>
+              </div>
+            )}
             {malicious && <ThreatEvidencePanel prNum={prNum} refresh={pr} onCapture={runSecretScan} />}
           </div>
         );

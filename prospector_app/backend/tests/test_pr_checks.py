@@ -247,3 +247,11 @@ def test_checks_carry_their_own_section_timestamp():
     assert review["at"] == NOW  # from the reviews section
     sec = next(x for x in c["checks"] if x["name"] == "Security review")
     assert sec["at"] == sec_at  # from the security section, not the signals one
+
+
+def test_a_cleared_secret_leak_passes_naming_who_cleared_it():
+    chk = _check(_pr(threat={
+        "verdict": "suspicious", "signatures": ["secret-leak"], "against_head_sha": HEAD,
+        "detail": {"secret-leak": "a.ts: KEY=x"},
+        "cleared": {"secret-leak": {"by": "Alex", "at": NOW, "evidence": "a.ts: KEY=x"}}}))
+    assert chk and chk["status"] == "pass" and "Alex" in chk["detail"]
