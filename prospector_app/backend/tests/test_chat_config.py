@@ -420,7 +420,7 @@ def test_context_documents_upstream_writes_and_the_merge_limit():
 def test_context_keeps_cockpit_permission_failures_actionable() -> None:
     sp = chat.system_prompt()
     assert "--comment-file" in sp
-    assert "do not use command substitution" in sp
+    assert "Do not use command substitution" in sp
     assert "Never tell the operator to use `/permissions`" in sp
     assert "those controls are not exposed in cockpit" in sp
     assert "invoke each helper in its\nown tool call" in sp
