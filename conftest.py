@@ -82,6 +82,16 @@ def _no_related_pr_search(monkeypatch):
     monkeypatch.setattr(related_prs, "search", lambda issue, exclude=None: [])
 
 
+@pytest.fixture(autouse=True)
+def _no_trust_boundary_reviewer(monkeypatch):
+    """`trust_boundary.review` runs an agent over every fix that clears the
+    lane's other checks; no test reaches it, so a fix crosses no boundary the
+    reviewer names. A test that needs crossings sets them."""
+    from issue_triage import trust_boundary
+    monkeypatch.setattr(trust_boundary, "review",
+                        lambda *a, **k: {"crossings": [], "reason": "no reviewer in tests"})
+
+
 class _OfflineGitHub:
     """threat_evidence.GitHubReads that answers nothing."""
 

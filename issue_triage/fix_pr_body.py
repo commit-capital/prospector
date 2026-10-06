@@ -152,6 +152,12 @@ def render(*, issue: int, result: dict, tests: list[str], base_sha: str, report_
                for c in (result.get("changes") or [])]
     model_list = ", ".join(sorted(set(models))) or "unrecorded"
     tier = (result.get("tier") or {}).get("tier")
+    boundary = result.get("boundary") or {}
+    crossings = boundary.get("crossings") or []
+    warnings = [*(["This change touches highest-risk code (tier 0)."] if tier == 0 else []),
+                *(["This change crosses a trust boundary."] if crossings else []),
+                *(["Its trust-boundary review did not finish."] if boundary.get("failed")
+                  else [])]
     blocks = {
         "summary": [
             f"- Issue #{issue} reports a defect in {settings.repo()}.",
@@ -172,6 +178,13 @@ def render(*, issue: int, result: dict, tests: list[str], base_sha: str, report_
             *[f"- The scope reviewer found it also changes, beyond the report: "
               f"{inert(item, 200)}"
               for r in (result.get("reviews") or []) for item in (r.get("unasked") or [])[:5]],
+            *(["- It crosses a trust boundary. Check each crossing against what the issue "
+               "asked for, and against who asked:"] if crossings else []),
+            *[f"  - {inert(c.get('kind', ''), 40)} ({inert(c.get('where', ''), 160)}"
+              f"{'' if c.get('requested') else ', not asked for by the report'}): "
+              f"{inert(c.get('what', ''))}" for c in crossings[:10]],
+            *(["- Its trust-boundary review did not finish: nothing has checked what this "
+               "change lets the code reach."] if boundary.get("failed") else []),
         ],
         "model": [f"- {model_list} (Anthropic Claude, via Claude Code), writing and "
                   "checking the change in an isolated sandbox."],
@@ -191,8 +204,7 @@ def render(*, issue: int, result: dict, tests: list[str], base_sha: str, report_
         "> [!NOTE]",
         "> Opened by Prospector's automated issue-fix pipeline. A maintainer reviews "
         "and decides; nothing here merges on its own.",
-        *(["", "> [!WARNING]", "> This change touches highest-risk code (tier 0). See Risks."]
-          if tier == 0 else []),
+        *(["", "> [!WARNING]", f"> {' '.join(warnings)} See Risks."] if warnings else []),
         "",
     ]
     boxes = _checklist(template, searched=related is not None, tests=tests, result=result)

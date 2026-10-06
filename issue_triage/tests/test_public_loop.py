@@ -151,6 +151,26 @@ def test_a_fixed_attempt_opens_its_pull_request_and_a_drafted_question_is_asked(
     assert public_loop.queue_due(store.load_issue(1), NOW + timedelta(days=4)) is None
 
 
+CROSSING = {"kind": "network", "where": "src/x.ts:2", "what": "posts to a new host",
+            "requested": True}
+
+
+@pytest.mark.parametrize("association,crossing,held", [
+    ("MEMBER", CROSSING, False),
+    ("MEMBER", {**CROSSING, "requested": False}, True),
+    ("NONE", CROSSING, True),
+])
+def test_a_fix_that_crosses_a_trust_boundary_waits_for_an_operator(
+        store, monkeypatch, association, crossing, held):
+    monkeypatch.setenv("TRIAGE_ISSUE_FIX_PUBLIC_SCOPE", "all")
+    _save(store, 1, association=association)
+    store.edit_issue(1).record_fix_run(_run(ending="fixed", patch="p",
+                                            boundary={"crossings": [crossing]}))
+    issue = store.load_issue(1)
+    assert (public_loop.queue_due(issue, NOW) is None) == held
+    assert public_loop.label_for(issue) == (READY if held else IN_PROGRESS)
+
+
 def test_the_hand_back_comment_keeps_the_reason_it_was_judged_with(store):
     store.edit_issue(1).record_fix_run(_run(ending="fixed", proposal={"pr": 9}))
     store.edit_issue(1).record_fix_followup({

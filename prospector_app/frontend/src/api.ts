@@ -1363,6 +1363,19 @@ export interface IssueFixReview {
   concerns: string[];
   unasked: string[];
 }
+/** One trust boundary a fix crosses (issue_triage/trust_boundary.py). */
+export interface IssueFixCrossing {
+  kind: string;
+  where: string;
+  what: string;
+  requested: boolean;
+  source?: "scan";
+}
+export interface IssueFixBoundary {
+  crossings: IssueFixCrossing[];
+  failed?: boolean;
+  reason?: string;
+}
 export interface IssueFixQuestion {
   question: string;
   options: { label: string; behavior: string }[];
@@ -1404,6 +1417,7 @@ export interface IssueFixRun {
   tier: { tier: number | null; pinned_by: string[] } | null;
   proof: IssueFixProof;
   reviews: IssueFixReview[];
+  boundary?: IssueFixBoundary | null;
   candidates: IssueFixCandidate[];
   question: IssueFixQuestion | null;
   proposal: { pr: number | string | null; url: string | null } | null;
@@ -1464,6 +1478,8 @@ export interface IssueDetail extends IssueRow {
   fix_followup?: IssueFixFollowup | null;
   /** The pull request the fix attempt is open as (fix_review.open_pr). */
   fix_pr?: number | null;
+  /** Why the fixed attempt waits for an operator to open its PR (trust_boundary.held). */
+  fix_held?: string | null;
 }
 /** Where the follow-up on an issue's proposed pull request stands
  *  (issue_triage/followup.py): the last step it took or waits on, and why. */

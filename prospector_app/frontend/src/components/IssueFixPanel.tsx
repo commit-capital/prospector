@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import {
-  api, type IssueDetail, type IssueFixBody, type IssueFixCandidate, type IssueFixFollowup,
+  api, type IssueDetail, type IssueFixBody, type IssueFixBoundary, type IssueFixCandidate,
+  type IssueFixFollowup,
   type IssueFixQuestion,
   type IssueFixRun, type IssueFixStatus, type IssueFixThreadEntry,
 } from "../api";
@@ -155,6 +156,11 @@ function FixActions({ d, onChanged }: { d: IssueDetail; onChanged: () => void })
   if (status === "review" || (status === "failed" && pr != null)) {
     return (
       <div className="fix-composer">
+        {pr == null && d.fix_held && (
+          <div className="small" style={{ marginBottom: 6 }}>
+            ⚠️ Held for you: {d.fix_held}. Opening the PR is your call.
+          </div>
+        )}
         {pr == null ? (
           <div className="row-actions">
             <button className="btn-primary sm" disabled={busy}
@@ -362,7 +368,31 @@ function FixRunBody({ run, followup }: { run: IssueFixRun; followup: IssueFixFol
           )}
         </>
       )}
+      {run.boundary && <Boundary boundary={run.boundary} />}
       {run.candidates.length > 0 && <Candidates run={run} />}
+    </>
+  );
+}
+
+function Boundary({ boundary }: { boundary: IssueFixBoundary }) {
+  return (
+    <>
+      <h4>Trust boundaries</h4>
+      {boundary.failed && <div className="chip sm chip-red">review didn't finish</div>}
+      {boundary.crossings.length === 0 ? (
+        !boundary.failed && <div className="muted small">None found.</div>
+      ) : (
+        <ul style={{ margin: "4px 0 0 18px" }}>
+          {boundary.crossings.map((c, i) => (
+            <li key={i}>
+              <b>{c.kind}</b> <span className="muted">{c.where}</span>
+              {!c.requested && <span className="chip sm chip-red" style={{ marginLeft: 6 }}>not asked for</span>}
+              {" — "}{c.what}
+            </li>
+          ))}
+        </ul>
+      )}
+      {boundary.reason && <div className="muted small" style={{ marginTop: 4 }}>{boundary.reason}</div>}
     </>
   );
 }

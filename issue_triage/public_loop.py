@@ -58,7 +58,14 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
-from issue_triage import fetch_issues, fix_review, issue_ingest, public_comments, reply_router
+from issue_triage import (
+    fetch_issues,
+    fix_review,
+    issue_ingest,
+    public_comments,
+    reply_router,
+    trust_boundary,
+)
 from pipeline import gates, gh, headless_agent, settings, storekit
 
 if TYPE_CHECKING:
@@ -165,7 +172,9 @@ def label_for(issue: Issue) -> str | None:
     if kind in ("running", "question"):
         return IN_PROGRESS
     if kind == "review":
-        return IN_PROGRESS if run.get("ending") == "fixed" else None
+        if run.get("ending") != "fixed":
+            return None
+        return READY if trust_boundary.held(issue) else IN_PROGRESS
     if kind == "reporter":
         return NEEDS_ANSWER
     if kind == "declined":
@@ -289,7 +298,8 @@ def queue_due(issue: Issue, now: datetime, view: dict | None = None) -> Queued |
     finished = _when(run.get("finished"))
     if finished is None or now - finished > QUEUE_MAX_AGE:
         return None
-    if status[0] == "review" and run.get("ending") == "fixed" and _proposed_pr(run) is None:
+    if (status[0] == "review" and run.get("ending") == "fixed" and _proposed_pr(run) is None
+            and not trust_boundary.held(issue)):
         return Queued("propose", f"{attempt_key(run)}:propose")
     if status[0] == "question":
         return Queued("ask-reporter", f"{attempt_key(run)}:ask-reporter")

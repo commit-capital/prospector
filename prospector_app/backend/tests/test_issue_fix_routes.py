@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from issue_triage.issue_store import IssueStore
-from prospector_app.backend import activity, issue_data
+from prospector_app.backend import activity, issue_data, issues
 
 
 @pytest.fixture
@@ -14,6 +14,7 @@ def client(tmp_path, monkeypatch):
     from prospector_app.backend import app as appmod
 
     issue_data.set_store_root(tmp_path)
+    monkeypatch.setattr(issues, "STORE_ROOT", tmp_path)
     monkeypatch.setattr(activity, "operator", lambda: {"name": "Op", "email": None,
                                                        "slug": "op"})
     store = IssueStore(tmp_path)
@@ -29,6 +30,15 @@ def test_try_to_fix_queues_a_solve_with_the_guidance(client):
     assert r.status_code == 200 and r.json() == {"ok": True, "detail": "solve queued"}
     issue = store.load_issue(7)
     assert issue.fix_request["requested_by"] == "Op" and issue.fix_request["guidance"] == "check x"
+
+
+def test_the_issue_says_why_its_fix_waits_for_an_operator(client):
+    c, store = client
+    store.edit_issue(7).record_fix_run({"ending": "fixed", "host": "s", "patch": "p",
+                                        "boundary": {"crossings": [{
+                                            "kind": "auth", "where": "a", "what": "w",
+                                            "requested": True}]}})
+    assert "auth" in c.get("/api/issues/7").json()["fix_held"]
 
 
 def test_an_action_that_does_not_fit_is_a_409_with_the_reason(client):

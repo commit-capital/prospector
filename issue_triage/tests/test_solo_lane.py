@@ -236,7 +236,8 @@ def test_a_revision_opens_on_the_earlier_attempt_with_the_guidance(solo, revise)
     assert revise["opened_with"] == "export const x = 3;\n"
     assert (solo["guidance"], solo["notes"]) == ("x must be 2, not 3", "CI fails in x.test.ts")
     assert solo["attempt"]["summary"] == "set x to 3"
-    assert res.ending == "fixed" and res.agent_runs == 2
+    assert res.ending == "fixed" and res.agent_runs == 3
+    assert res.result["boundary"]["crossings"] == []
     assert "+export const x = 2;" in res.result["patch"]
     assert "scope-safety review passes" in res.detail
 
@@ -251,6 +252,7 @@ def test_a_revision_the_reviewer_judges_unsafe_ends_fix_rejected(solo, revise):
 def test_without_review_the_one_agent_lane_asks_no_reviewer(solo, revise):
     res = solo["run"]()
     assert res.ending == "fixed" and revise["reviewed"] == []
+    assert "boundary" not in res.result
 
 
 def test_the_contributor_docs_and_house_style_reach_the_agent_s_prompt(monkeypatch):

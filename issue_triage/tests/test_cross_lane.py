@@ -183,7 +183,8 @@ def cross(tmp_path, monkeypatch):
 def test_candidates_that_agree_end_fixed_with_the_smallest_fix(cross):
     res = cross["run"]()
     assert res.ending == "fixed" and res.fault is False
-    assert res.agent_runs == 4
+    assert res.agent_runs == 5
+    assert res.result["boundary"]["crossings"] == []
     assert res.result["pick"] in (0, 1)  # candidate 2's fix is the largest
     pick = res.result["pick"]
     assert res.result["agreement"] == {"reproductions": [0, 1, 2], "agreed": [0, 1, 2],
@@ -354,7 +355,7 @@ def test_an_answer_resumes_a_dispute_on_the_reading_it_chose(cross, reading, shi
     assert res.ending == "fixed", res.detail
     assert res.result["pick"] == reading[0] and res.result["reading"] == reading
     assert res.result["agreement"]["shipped"] == shipped
-    assert res.agent_runs == 1
+    assert res.agent_runs == 2 and res.result["boundary"]["crossings"] == []
     assert cross["green_runs"] == before  # the cross-test results are read, not re-run
 
 
