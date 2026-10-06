@@ -28,6 +28,7 @@ from issue_triage import (
     lane_tree,
     reproduce_issue,
     review_issue_fix,
+    trust_boundary,
 )
 from pipeline import (
     authoring,
@@ -366,6 +367,10 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
                 return finish("fix-rejected",
                               f"scope-safety: {verdict_review.get('reason') or 'not safe'}")
             detail += "; the scope-safety review passes"
+            on_step("reviewing: trust boundaries")
+            agent_runs += 1
+            result["boundary"] = trust_boundary.judge(str(clone), spec.base.clone, fix_patch,
+                                                      title=spec.title, body=spec.body)
         return finish("fixed", detail)
     except headless_agent.AgentUnavailable as e:
         return finish("agent-unavailable", str(e))

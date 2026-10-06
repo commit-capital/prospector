@@ -34,6 +34,7 @@ from issue_triage import (
     lane_tree,
     reproduce_issue,
     review_issue_fix,
+    trust_boundary,
 )
 from issue_triage.issue_store import IssueStore
 from pipeline import (
@@ -499,7 +500,8 @@ def run(spec: LaneSpec, *, workdir: Path,
             return finish("run-failed", str(stalled[0].get("reason")
                                             or "a reviewing agent did not finish"))
 
-        ending, gate_reason = issue_gates.fix_proof_bar(result)
+        ending, gate_reason, spent = _proof_bar(spec, fix_clone, fix_patch, result, on_step)
+        agent_runs += spent
         reason = still_valid()
         if reason:
             return finish("cancelled", reason)
@@ -515,6 +517,19 @@ def run(spec: LaneSpec, *, workdir: Path,
     finally:
         shutil.rmtree(repro_dir, ignore_errors=True)
         shutil.rmtree(fix_dir, ignore_errors=True)
+
+
+def _proof_bar(spec: LaneSpec, tree: Path, fix_patch: str, result: dict,
+               on_step: Callable[[str], None]) -> tuple[str | None, str, int]:
+    """`issue_gates.fix_proof_bar` over `result`, recording the trust boundaries
+    a fix that clears it crosses; the agent runs that spent come last."""
+    ending, reason = issue_gates.fix_proof_bar(result)
+    if ending is not None:
+        return ending, reason, 0
+    on_step("reviewing: trust boundaries")
+    result["boundary"] = trust_boundary.judge(str(tree), spec.base.clone, fix_patch,
+                                              title=spec.title, body=spec.body)
+    return None, reason, 1
 
 
 def reported_text(store: IssueStore, n: int) -> tuple[str, str] | None:

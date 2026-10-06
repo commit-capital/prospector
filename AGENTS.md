@@ -437,7 +437,17 @@ unasked changes to inputs that worked vetoes that `safe` only on tier-0 paths,
 and elsewhere is listed under the proposal's risks. The scope-safety
 reviewer returns an inventory of every behavior the change alters, each marked
 asked-for or not and as working before or not, and `review_issue_fix` reads an
-unasked change to an input that worked as unsafe. All
+unasked change to an input that worked as unsafe. A fix that clears every other
+check then has its trust boundaries recorded (`issue_triage/trust_boundary.py`,
+the ONE policy for them): a locked-down reviewer lists each crossing — network,
+remote code, process, auth, secrets, a loosened check, data exposure — marked
+asked for by the report or not, and every URL host on the fix's added lines
+that the base tree never names is a network crossing whatever the reviewer
+says. The run's `boundary` never changes its ending; `trust_boundary.hold`
+reads it: only a maintainer-filed issue whose report asks for a crossing
+authorizes it, so any other crossing, a review that did not finish, or a run
+with no record on someone else's issue holds the fix for an operator's
+Propose, and the pull request body warns of every crossing under Risks. All
 proof runs on the pinned base's image — `prove.pinned` reads the verify pin,
 `prove.held(sha, tier)` names a base by hand — and neither builds one; every
 fault (an agent outage, a sandbox that could not run, a base that fails the
@@ -617,7 +627,9 @@ writes as the bot — `executor.set_fix_label` through `safety_guard.label_bot_r
 Activity-logged, under a short per-issue lease, a failure retried after thirty
 minutes. It never reads a label back. `sync` also queues, once per attempt with
 source `public`, what an operator's click queues in the app: `propose` for a
-fixed attempt and `ask-reporter` for a drafted question, for an attempt that
+fixed attempt that `trust_boundary.held` does not hold (a held one reads
+`ready for review` and waits for the operator) and `ask-reporter` for a drafted
+question, for an attempt that
 finished within `QUEUE_MAX_AGE` (3 days); a request it or the hunter queued that
 a machine fault ended is queued again after an hour, at most `MAX_RETRIES` (3)
 times per issue, reading `fix in progress` meanwhile. Each pass decides from the

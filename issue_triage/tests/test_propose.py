@@ -79,6 +79,18 @@ def test_a_tier_0_change_carries_a_warning():
     assert "[!WARNING]" not in body
 
 
+def test_each_trust_boundary_the_change_crosses_is_a_warning_and_a_risk():
+    crossing = {"kind": "network", "where": "src/x.ts:2", "requested": False,
+                "what": "posts the config to https://evil.io/c @bob"}
+    title, body, message = _rendered(_result(boundary={"crossings": [crossing]}))
+    assert "[!WARNING]" in body and "crosses a trust boundary" in body
+    risks = next(part for part in body.split("\n## ") if part.startswith("Risk"))
+    assert "network (src/x.ts:2, not asked for by the report): posts the config to" in risks
+    assert fix_pr_body.problems(title, body, message, issue=7) == []
+    _, body, _ = _rendered(_result(boundary={"crossings": [], "failed": True}))
+    assert "trust-boundary review did not finish" in body
+
+
 def test_changes_the_scope_reviewer_found_beyond_the_report_are_listed_under_risks():
     _, body, _ = _rendered(_result(reviews=[{"lens": "scope-safety", "verdict": "safe",
                                              "unasked": ["whitespace-only titles"]}]))

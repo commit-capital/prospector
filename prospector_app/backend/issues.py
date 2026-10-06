@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 from issue_triage import fix_review
 from issue_triage import issue_links
 from issue_triage import pr_index
+from issue_triage import trust_boundary
 from pipeline import gh
 from pipeline import settings
 from pipeline import profile
@@ -324,6 +325,7 @@ def get_issue(n: int) -> dict | None:
     row["fix_thread"] = i.fix_thread
     row["fix_followup"] = i.fix_followup
     row["fix_pr"] = fix_review.open_pr(i)
+    row["fix_held"] = trust_boundary.held(i)
     return row
 
 
