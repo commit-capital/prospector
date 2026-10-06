@@ -500,9 +500,11 @@ lane (`TRIAGE_ISSUE_FIX_WORKER=1`, health lane `issue-fix`) claims one request a
 a time by compare-and-swap (`IssueStore.claim_fix_request`) — a `solve` on any
 issue-fix worker, every follow-up only on the host its run names, since it needs
 that run's files and held base — and `fix_review_runner.run_request` carries it
-out: `solve` runs the cross lane with the operator's guidance (ranked above the
-agent's own reading, `solo_lane.GUIDANCE`) and drafts a dispute's question at
-once; `send-back` has a small agent read the comments (`route`), then either one
+out: `solve` runs the cross lane with the request's guidance — an operator's or
+maintainer's words, ranked above the agent's own reading (`solo_lane.GUIDANCE`)
+— and its notes — anyone else's words (the issue's author, the code reviewers,
+CI), framed as data like the report (`solo_lane.NOTES`) — and drafts a
+dispute's question at once; `send-back` has a small agent read the comments (`route`), then either one
 agent revises the current change on a clone that holds it
 (`solo_lane.run(start_patch=…, review=True)`) or the cross lane restarts with the
 comments as guidance. While the attempt is open as a pull request
@@ -623,9 +625,9 @@ it, `answer_replies` reads back an issue the attempt concluded on (`needs
 answer`, `couldn't fix`) when its `updated_at` moved: the comments since the
 attempt started by the issue's author or a maintainer, never the bot's — a
 letter answer stays `poll_replies`' — go to `reply_router`, and words it reads
-as actionable queue `answer` (a written answer to the question) or `solve` with
-them as guidance; an edit to the report queues `solve` too, carrying any
-replies. An attempt that concluded over a day before the loop first read it
+as actionable queue `answer` (a written answer to the question) or `solve`, a
+maintainer's words as guidance and the issue author's as notes; an edit to the
+report queues `solve` too, carrying any replies. An attempt that concluded over a day before the loop first read it
 starts from that read. Replies start at most `MAX_REATTEMPTS` (3) attempts per
 issue, then one comment leaves it to a maintainer. An agent outage in the pass
 trips the worker's agent lanes. The hunter takes a maintainer's issue whatever its reproduction

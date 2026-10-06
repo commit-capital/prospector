@@ -262,12 +262,14 @@ def _ago(**kw: float) -> str:
 
 
 def _failed(store: IssueStore, n: int, *, finished: str, attempts: int = 1,
-            guidance: str | None = None) -> None:
+            guidance: str | None = None, notes: str | None = None) -> None:
     req = {"action": "solve", "status": "failed", "source": "hunter", "requested_by": "hunter",
            "queued_at": finished, "started_at": finished, "finished_at": finished,
            "attempts": attempts, "reason": "interrupted: the issue-fix worker restarted"}
     if guidance:
         req["guidance"] = guidance
+    if notes:
+        req["notes"] = notes
     store.edit_issue(n).record_fix_request(req)
 
 
@@ -288,8 +290,9 @@ def test_the_hunter_stops_retrying_after_its_attempts(hunting):
     assert issue_fix_worker.hunt(hunting) == 1
 
 
-def test_the_hunter_leaves_a_failed_guided_solve_to_the_operator(hunting):
-    _failed(hunting, 2, finished=_ago(hours=2), guidance="look at x")
+@pytest.mark.parametrize("words", [{"guidance": "look at x"}, {"notes": "reporter: > x"}])
+def test_the_hunter_leaves_a_failed_solve_with_words_to_carry_alone(hunting, words):
+    _failed(hunting, 2, finished=_ago(hours=2), **words)
     assert issue_fix_worker.hunt(hunting) == 1
 
 
