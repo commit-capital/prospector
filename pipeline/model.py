@@ -594,6 +594,14 @@ class Pr:
         _stamp(self.rec, "threat", result, None)
         self._persist()
 
+    def clear_secret_leak(self, by: str) -> None:
+        """Record `by`'s judgment that the threat stamp's secret-leak evidence
+        is no credential."""
+        sec = self.rec["threat"]
+        sec["cleared"] = {"secret-leak": {"by": by, "at": storekit.now(),
+                                          "evidence": sec["detail"].get("secret-leak")}}
+        self._persist()
+
     def set_summary(self, payload: dict, *, head_sha: str | None = None) -> None:
         """Set the diff summary, stamped against the head it was computed on
         (head_sha) so a moved head correctly stales it."""

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from pipeline import diff_cache, storekit
+from pipeline import diff_cache, storekit, threats
 from pipeline import store as S
 from pipeline.tests.test_threats import CLEAN_DIFF, PAYLOAD_DIFF
 from prospector_app.backend import data, threat_refresh
@@ -18,6 +18,7 @@ def _pr(n: int, head: str, *, author: str = "alice", stamped: str | None = None,
                     "checked_at": "2026-09-28T16:44:00+00:00"}}
     if stamped is not None:
         rec["threat"] = {"verdict": "clear", "signatures": [], "detail": {},
+                         "revision": threats.REVISION,
                          "checked_at": "2026-09-27T00:00:00+00:00",
                          "against_head_sha": stamped}
     return rec

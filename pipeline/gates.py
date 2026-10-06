@@ -338,20 +338,31 @@ def unscannable_reason(pr: Pr) -> str | None:
     return f"unscannable-diff: the threat scan could not read every added line{tail}"
 
 
+def secret_leak_blocks(pr: Pr) -> bool:
+    """Whether the threat stamp names a committed credential that no operator
+    has cleared. A clearing (threat_scan.clear_secret_leak) holds only for the
+    evidence it was given at the head it was given."""
+    if "secret-leak" not in pr.threat_signatures:
+        return False
+    sec = pr.section("threat") or {}
+    cleared = (sec.get("cleared") or {}).get("secret-leak")
+    return not cleared or cleared.get("evidence") != (sec.get("detail") or {}).get("secret-leak")
+
+
 def threat_blocks(pr: Pr) -> list[str]:
     """The threat scan's hard blocks on `pr`, sticky and fail-closed. We do NOT
     exempt them on staleness — if the head moved, the PR must be re-scanned,
     never silently cleared. Detection lives in threats.py; this is the gate
     consuming it. A malicious verdict blocks outright; a committed credential
-    (secret-leak) and a diff the scan could not read in full
-    (unscannable-diff), both MEDIUM signals, are never merged as-is regardless
-    of the overall verdict; and a clear verdict counts only at the head it was
-    computed against."""
+    no operator cleared (secret-leak) and a diff the scan could not read in
+    full (unscannable-diff), both MEDIUM signals, are never merged as-is
+    regardless of the overall verdict; and a clear verdict counts only at the
+    head it was computed against."""
     reasons: list[str] = []
     sigs = pr.threat_signatures
     if pr.threat_verdict == "malicious":
         reasons.append(f"malicious: {', '.join(sigs) or 'flagged'}")
-    if "secret-leak" in sigs:
+    if secret_leak_blocks(pr):
         reasons.append("secret-leak: a live-looking credential is committed in the diff")
     if unscannable := unscannable_reason(pr):
         reasons.append(unscannable)

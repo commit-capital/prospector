@@ -110,16 +110,22 @@ def checks_for_record(rec: Pr, today: str | None = None) -> dict:
         sigs = rec.threat_signatures
         verdict = rec.threat_verdict
         threat_at = threat.get("checked_at")
+        # a secret-leak an operator cleared reads as their judgment, not a finding
+        cleared = ((threat.get("cleared") or {}).get("secret-leak")
+                   if "secret-leak" in sigs and not gates.secret_leak_blocks(rec) else None)
+        found = [s for s in sigs if not (cleared and s == "secret-leak")]
         clear = ("automatic library update, not scanned"
-                 if (threat.get("detail") or {}).get("exempt") else "nothing harmful found")
+                 if (threat.get("detail") or {}).get("exempt")
+                 else f"{cleared.get('by') or 'an operator'} judged the flagged key not a real secret"
+                 if cleared else "nothing harmful found")
         if verdict == "malicious":
             by_key["secrets"] = _c("secrets", "Threat scan", "fail", "malicious: " + (", ".join(sigs) or "flagged"), threat_at)
-        elif "secret-leak" in sigs:
+        elif "secret-leak" in found:
             by_key["secrets"] = _c("secrets", "Threat scan", "fail", "contains what looks like a real password or key", threat_at)
         elif unscannable := gates.unscannable_reason(rec):
             by_key["secrets"] = _c("secrets", "Threat scan", "fail", unscannable, threat_at)
-        elif verdict == "suspicious":
-            by_key["secrets"] = _c("secrets", "Threat scan", "warn", "suspicious: " + ", ".join(sigs), threat_at)
+        elif verdict == "suspicious" and found:
+            by_key["secrets"] = _c("secrets", "Threat scan", "warn", "suspicious: " + ", ".join(found), threat_at)
         elif not freshness.is_current(rec, "threat"):
             reason = freshness.currency_failure(rec, "threat") or "stale"
             tail = "older version of the PR" if reason.startswith("stale") else reason

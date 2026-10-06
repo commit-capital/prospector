@@ -1196,10 +1196,22 @@ export interface DupConcern {
   evidence?: string;
 }
 
+/** The threat scan's stamp on a PR: the signatures that fired with their
+ *  evidence, at the head it judged, and an operator's clearing of a
+ *  secret-leak finding. */
+export interface ThreatStamp {
+  verdict: string;
+  signatures: string[];
+  detail?: Record<string, string>;
+  against_head_sha?: string;
+  cleared?: { "secret-leak"?: { by: string; at: string; evidence: string | null } };
+}
+
 export interface PRDetail extends PRRow {
   body?: string | null;
   base?: string | null;
   security_detail?: SafetyVerdict | null;
+  threat_detail?: ThreatStamp | null;
   safety_summary?: SafetySummary;
   verify_detail?: VerifyDetail | null;
   verify_request?: VerifyRequest | null;
@@ -2291,6 +2303,8 @@ export const api = {
     });
     return r.json() as Promise<ExecResult>;
   },
+  clearSecretLeak: (n: number, headSha: string) =>
+    postJson<{ ok: boolean }>(`/api/prs/${n}/threat/clear-secret`, { head_sha: headSha }),
   retriggerReview: async (n: number, reviewer: string, dryRun: boolean) => {
     const r = await fetch(`/api/reviews/${encodeURIComponent(reviewer)}/retrigger/pr/${n}?dry_run=${dryRun}`, { method: "POST" });
     return r.json() as Promise<ExecResult>;

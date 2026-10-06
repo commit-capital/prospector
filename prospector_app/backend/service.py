@@ -771,6 +771,7 @@ def pr_detail(n: int) -> dict | None:
     assert row is not None  # rec is non-None so pr_row always returns a dict
     row["base"] = rec.base
     row["security_detail"] = rec.section("security")
+    row["threat_detail"] = rec.section("threat")
     row["safety_summary"] = _safety_summary(rec)
     row["verify_detail"] = verify_view.verify_detail(rec)
     row["verify_request"] = verify_view.verify_request_view(rec)
