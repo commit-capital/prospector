@@ -55,6 +55,13 @@ table. Capture runs after every verdict is stamped and the registry saved,
 one PR at a time, and its failure never stops the scan. A run with fetch off
 captures nothing, as it makes no GitHub read.
 
+Every stamp carries threats.REVISION, and `unscanned` names a head an older
+revision judged, so a signature change reaches every open PR. A rescan of the
+head a secret-leak was found at that no longer finds it withdraws the PR's
+open rotate-secret item. An operator who judges a finding no credential clears
+it at that head (`clear_secret_leak`); a restamp of the head keeps the
+clearing, and a new head starts without one.
+
 `scan` is the run itself. This CLI runs it over every open PR (or `--only`'s);
 a worker machine runs it on a cadence over the PRs `unscanned` names, so a
 head INGEST records is scanned within minutes
@@ -146,15 +153,17 @@ def stamped_at_head(rec: Pr) -> bool:
 def unscanned(prs: dict[int, Pr], registry: dict) -> list[int]:
     """Open PRs whose current head has no verdict the scan would keep, lowest
     number first: no threat stamp at that head (a moved head or a new
-    arrival), or an author `registry` blocks under a stamp that does not read
-    malicious. A maintainer's PR never reads malicious, so the blocklist
-    clause passes over the profile's trusted authors."""
+    arrival), a stamp an older signature revision made, or an author
+    `registry` blocks under a stamp that does not read malicious. A
+    maintainer's PR never reads malicious, so the blocklist clause passes over
+    the profile's trusted authors."""
     trusted = profile.active().trusted_authors
     out: list[int] = []
     for n, rec in sorted(prs.items()):
         if rec.state != "open" or not rec.head_sha:
             continue
-        if not stamped_at_head(rec):
+        if (not stamped_at_head(rec)
+                or (rec.section("threat") or {}).get("revision", 0) < threats.REVISION):
             out.append(n)
         elif (rec.threat_verdict != "malicious" and rec.author not in trusted
               and threats.is_blocked_actor(registry, rec.author)):
@@ -164,13 +173,14 @@ def unscanned(prs: dict[int, Pr], registry: dict) -> list[int]:
 
 def already_stamped(rec: Pr, result: dict) -> bool:
     """Whether `rec`'s stored threat stamp already carries `result` at the
-    record's current head — verdict, signatures, and detail all equal. Such a
-    record needs no write: re-stamping the same verdict at the same head
-    changes nothing a reader can observe."""
+    record's current head — verdict, signatures, detail, and revision all
+    equal. Such a record needs no write: re-stamping the same verdict at the
+    same head changes nothing a reader can observe."""
     if not stamped_at_head(rec):
         return False
     sec = rec.section("threat") or {}
-    return all(sec.get(k) == result.get(k) for k in ("verdict", "signatures", "detail"))
+    return all(sec.get(k) == result.get(k)
+               for k in ("verdict", "signatures", "detail", "revision"))
 
 
 @dataclass(frozen=True)
@@ -338,6 +348,7 @@ def scan(store: Store, prs: dict[int, Pr], diffs_dir: Path | None = None, *,
                     uncached += 1
                 out.unstamped.append(n)
                 continue
+            result = {**result, "revision": threats.REVISION}
             if not already_stamped(rec, result):
                 # stamped through a fresh read, and only while its head is the one
                 # scanned: the scan runs long, and by write time the startup
@@ -345,6 +356,16 @@ def scan(store: Store, prs: dict[int, Pr], diffs_dir: Path | None = None, *,
                 # INGEST has since moved past
                 current = store.edit_pr(n)
                 if current.head_sha == rec.head_sha:
+                    # the stamp this replaces judged the same head: an
+                    # operator's clearing stays, and a leak it named that this
+                    # scan does not find retires its open item
+                    prior = current.section("threat") if stamped_at_head(current) else None
+                    if prior and "cleared" in prior:
+                        result = {**result, "cleared": prior["cleared"]}
+                    if (prior and "secret-leak" in prior.get("signatures", [])
+                            and "secret-leak" not in result["signatures"]):
+                        item_ops.append(functools.partial(
+                            actions.withdraw, item_id=f"rotate-secret:{n}"))
                     current.set_threat(result)
                     restamped += 1
                 else:
@@ -411,6 +432,29 @@ def scan(store: Store, prs: dict[int, Pr], diffs_dir: Path | None = None, *,
                  "slack_posted": len(posted),
                  **evidence_counts}
     return out
+
+
+def clear_secret_leak(store: Store, n: int, head_sha: str, *, by: str) -> str | None:
+    """Record `by`'s judgment that PR `n`'s secret-leak finding at `head_sha`
+    is no credential: the stamp carries the clearing, which lifts the merge
+    block for that evidence at that head (gates.secret_leak_blocks), the PR's
+    open rotate-secret item is dismissed, and the runs ledger keeps who
+    cleared which head. Returns why it refused, or None."""
+    try:
+        pr = store.edit_pr(n)
+    except KeyError:
+        return f"PR #{n} is not in the store"
+    if pr.head_sha != head_sha or not stamped_at_head(pr):
+        return "the threat scan has not judged the head you reviewed; reload the PR"
+    if "secret-leak" not in pr.threat_signatures:
+        return "the threat scan finds no secret-leak at this head"
+    pr.clear_secret_leak(by)
+    _commit(store.load_action_items, store.save_action_items,
+            [functools.partial(actions.dismiss, item_id=f"rotate-secret:{n}")])
+    now = storekit.now()
+    store.append_run({"phase": "threat-scan:clear", "started": now, "finished": now,
+                      "pr": n, "head_sha": head_sha, "by": by})
+    return None
 
 
 def capture_evidence(store: Store, prs: dict[int, Pr], flagged: dict[int, list[str]],

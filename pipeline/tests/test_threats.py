@@ -6,6 +6,7 @@ import signal
 
 import pytest
 
+from pipeline import actions
 from pipeline import diff_cache
 from pipeline import gates
 from pipeline import notify
@@ -943,6 +944,18 @@ class TestScanWriteEconomy:
         threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs), "--no-fetch"])
         assert store.load_pr(1).threat_verdict == "malicious"
 
+    def test_a_verdict_an_older_revision_stamped_is_restamped_at_this_one(self, tmp_path):
+        store = Store(tmp_path)
+        diffs = tmp_path / "diffs"; diffs.mkdir()
+        self._seed(store, 1, "alice", "shaA", CLEAN_DIFF, diffs)
+        threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs), "--no-fetch"])
+        pr = store.edit_pr(1)
+        pr.set_threat({**pr.section("threat"), "revision": threats.REVISION - 1})
+
+        threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs), "--no-fetch"])
+
+        assert store.load_pr(1).section("threat")["revision"] == threats.REVISION
+
     def test_scan_loop_runs_on_one_bound_connection(self, tmp_path, monkeypatch):
         store = Store(tmp_path)
         diffs = tmp_path / "diffs"; diffs.mkdir()
@@ -1182,7 +1195,7 @@ class TestUnscanned:
     would keep: the selection the worker's new-head pass runs `scan` over."""
 
     def _seed(self, store, n, *, author="alice", head="h1", state="open",
-              stamped=None, verdict="clear"):
+              stamped=None, verdict="clear", revision=threats.REVISION):
         rec = {"pr": n,
                "meta": {"title": "t", "author": author, "state": state, "draft": False,
                         "head_sha": head, "checked_at": "2026-09-28T00:00:00+00:00"}}
@@ -1190,6 +1203,8 @@ class TestUnscanned:
             rec["threat"] = {"verdict": verdict, "signatures": [], "detail": {},
                              "checked_at": "2026-09-28T00:00:00+00:00",
                              "against_head_sha": stamped}
+            if revision is not None:
+                rec["threat"]["revision"] = revision
         store.save_pr(rec)
 
     def test_a_moved_head_and_a_new_arrival_are_named(self, tmp_path):
@@ -1198,6 +1213,13 @@ class TestUnscanned:
         self._seed(store, 2, head="h2b", stamped="h2a")    # force-pushed since its scan
         self._seed(store, 3, head="h3")                     # never scanned
         self._seed(store, 4, head="h4b", stamped="h4a", state="closed")
+        assert threat_scan.unscanned(store.all_prs(), threats.empty_registry()) == [2, 3]
+
+    def test_a_verdict_an_older_signature_revision_stamped_is_named(self, tmp_path):
+        store = Store(tmp_path)
+        self._seed(store, 1, head="h1", stamped="h1")
+        self._seed(store, 2, head="h2", stamped="h2", revision=threats.REVISION - 1)
+        self._seed(store, 3, head="h3", stamped="h3", revision=None)
         assert threat_scan.unscanned(store.all_prs(), threats.empty_registry()) == [2, 3]
 
     def test_a_blocked_authors_pr_still_reading_clear_is_named(self, tmp_path, monkeypatch):
@@ -1306,3 +1328,140 @@ class TestLocate:
     def test_locate_honours_limit(self):
         many = PAYLOAD_DIFF + PAYLOAD_DIFF.replace("cli/", "web/")
         assert len(threats.locate(many, limit=2)) == 2
+
+
+class TestSecretLeakLifecycle:
+    """A secret-leak finding ends when a rescan of the head it judged no longer
+    makes it, or when an operator clears it at that head and evidence."""
+
+    VALIDATOR = PRIVATE_KEY_MENTIONS["validation-message"]
+    OLD_DETAIL = ("packages/plugins/sandbox-providers/exe-dev/src/ssh-key.ts: return "
+                  "\"sshPrivateKey must be a PEM-encoded private key starting with a line "
+                  "like '-----BEGIN OPENSSH PRIVATE KEY-----'.…")
+
+    def _seed(self, store, n, head, diff_text, diffs_dir):
+        TestScanDriver._seed(self, store, n, "mira", head, diff_text, diffs_dir)
+
+    def _flag(self, store, n, head):
+        """Stamp `head` as an earlier signature revision did, with its item open."""
+        store.edit_pr(n).set_threat({"verdict": "suspicious", "signatures": ["secret-leak"],
+                                     "detail": {"secret-leak": self.OLD_DETAIL}})
+        rec = store.edit_pr(n).raw
+        rec["threat"]["against_head_sha"] = head
+        store.save_pr(rec)
+        reg = store.load_action_items()
+        actions.upsert(reg, actions.make_item("rotate-secret", pr=n, summary="s",
+                                              created="2026-10-02", evidence=self.OLD_DETAIL))
+        store.save_action_items(reg)
+
+    def _items(self, store) -> dict[str, dict]:
+        return {i["id"]: i for i in store.load_action_items()["items"]}
+
+    def _scan(self, tmp_path, diffs) -> None:
+        threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs), "--no-fetch"])
+
+    def test_a_leak_a_rescan_of_its_head_withdraws_retires_its_open_item(self, tmp_path):
+        store = Store(tmp_path)
+        diffs = tmp_path / "diffs"; diffs.mkdir()
+        self._seed(store, 13575, "h1", self.VALIDATOR, diffs)
+        self._flag(store, 13575, "h1")
+
+        self._scan(tmp_path, diffs)
+
+        assert store.load_pr(13575).threat_signatures == []
+        assert "rotate-secret:13575" not in self._items(store)
+
+    def test_a_leak_a_later_head_removes_keeps_its_item(self, tmp_path):
+        store = Store(tmp_path)
+        diffs = tmp_path / "diffs"; diffs.mkdir()
+        self._seed(store, 1, "h1", CLEAN_DIFF, diffs)
+        self._flag(store, 1, "h0")
+
+        self._scan(tmp_path, diffs)
+
+        assert self._items(store)["rotate-secret:1"]["status"] == "open"
+
+    def test_a_handled_item_outlives_its_withdrawn_leak(self, tmp_path):
+        store = Store(tmp_path)
+        diffs = tmp_path / "diffs"; diffs.mkdir()
+        self._seed(store, 1, "h1", self.VALIDATOR, diffs)
+        self._flag(store, 1, "h1")
+        reg = store.load_action_items()
+        actions.set_status(reg, "rotate-secret:1", "done")
+        store.save_action_items(reg)
+
+        self._scan(tmp_path, diffs)
+
+        assert self._items(store)["rotate-secret:1"]["status"] == "done"
+
+    def test_clearing_lifts_the_block_and_dismisses_the_item(self, tmp_path):
+        store = Store(tmp_path)
+        diffs = tmp_path / "diffs"; diffs.mkdir()
+        self._seed(store, 1, "h1", LEAKED_KEY_DIFF, diffs)
+        self._scan(tmp_path, diffs)
+        assert gates.secret_leak_blocks(store.load_pr(1))
+
+        assert threat_scan.clear_secret_leak(store, 1, "h1", by="Alex") is None
+
+        pr = store.load_pr(1)
+        assert not gates.secret_leak_blocks(pr)
+        assert not any(r.startswith("secret-leak") for r in gates.threat_blocks(pr))
+        assert pr.section("threat")["cleared"]["secret-leak"]["by"] == "Alex"
+        assert self._items(store)["rotate-secret:1"]["status"] == "dismissed"
+        [run] = [r for r in store.runs() if r.phase == "threat-scan:clear"]
+        assert run.raw["pr"] == 1 and run.raw["head_sha"] == "h1" and run.raw["by"] == "Alex"
+
+    def test_clearing_refuses_a_head_other_than_the_scanned_one(self, tmp_path):
+        store = Store(tmp_path)
+        diffs = tmp_path / "diffs"; diffs.mkdir()
+        self._seed(store, 1, "h1", LEAKED_KEY_DIFF, diffs)
+        self._scan(tmp_path, diffs)
+
+        assert threat_scan.clear_secret_leak(store, 1, "h0", by="Alex")
+        assert gates.secret_leak_blocks(store.load_pr(1))
+
+    def test_clearing_refuses_a_head_with_no_leak(self, tmp_path):
+        store = Store(tmp_path)
+        diffs = tmp_path / "diffs"; diffs.mkdir()
+        self._seed(store, 1, "h1", CLEAN_DIFF, diffs)
+        self._scan(tmp_path, diffs)
+
+        assert threat_scan.clear_secret_leak(store, 1, "h1", by="Alex")
+        assert "cleared" not in store.load_pr(1).section("threat")
+
+    def test_a_restamp_of_the_cleared_head_keeps_the_clearing(self, tmp_path):
+        store = Store(tmp_path)
+        diffs = tmp_path / "diffs"; diffs.mkdir()
+        self._seed(store, 1, "h1", LEAKED_KEY_DIFF, diffs)
+        self._scan(tmp_path, diffs)
+        threat_scan.clear_secret_leak(store, 1, "h1", by="Alex")
+        rec = store.edit_pr(1).raw
+        rec["threat"]["revision"] = threats.REVISION - 1
+        store.save_pr(rec)
+
+        self._scan(tmp_path, diffs)
+
+        pr = store.load_pr(1)
+        assert pr.section("threat")["revision"] == threats.REVISION
+        assert not gates.secret_leak_blocks(pr)
+
+    def test_the_leak_at_a_new_head_blocks_again(self, tmp_path):
+        store = Store(tmp_path)
+        diffs = tmp_path / "diffs"; diffs.mkdir()
+        self._seed(store, 1, "h1", LEAKED_KEY_DIFF, diffs)
+        self._scan(tmp_path, diffs)
+        threat_scan.clear_secret_leak(store, 1, "h1", by="Alex")
+        (diffs / "h2.diff").write_text(LEAKED_KEY_DIFF)
+        pr = store.edit_pr(1)
+        pr.set_meta({**pr.section("meta"), "head_sha": "h2"})
+
+        self._scan(tmp_path, diffs)
+
+        assert gates.secret_leak_blocks(store.load_pr(1))
+
+    def test_a_clearing_of_other_evidence_does_not_lift_the_block(self):
+        pr = Pr(None, {"pr": 1, "meta": {"head_sha": "h1"}, "threat": {
+            "verdict": "suspicious", "signatures": ["secret-leak"],
+            "detail": {"secret-leak": "a.ts: KEY=one"}, "against_head_sha": "h1",
+            "cleared": {"secret-leak": {"by": "Alex", "evidence": "a.ts: KEY=two"}}}})
+        assert gates.secret_leak_blocks(pr)

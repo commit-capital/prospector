@@ -102,6 +102,22 @@ def upsert(reg: dict, item: dict) -> dict:
     return reg
 
 
+def withdraw(reg: dict, item_id: str) -> dict:
+    """Drop the item while it is open: the finding that raised it is gone. A
+    handled item stays."""
+    reg["items"] = [it for it in reg.get("items", [])
+                    if it["id"] != item_id or it["status"] != "open"]
+    return reg
+
+
+def dismiss(reg: dict, item_id: str) -> dict:
+    """Dismiss the item when it is open."""
+    it = _by_id(reg).get(item_id)
+    if it is not None and it["status"] == "open":
+        it["status"] = "dismissed"
+    return reg
+
+
 def set_status(reg: dict, item_id: str, status: str) -> dict:
     if status not in STATUSES:
         raise ValueError(f"status {status!r} not in {sorted(STATUSES)}")

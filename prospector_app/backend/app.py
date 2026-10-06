@@ -75,6 +75,7 @@ from pipeline import actions as pipeline_actions
 from pipeline import reviewers
 from pipeline import settings
 from pipeline import threat_evidence
+from pipeline import threat_scan
 
 class SurrogateSafeJSONResponse(JSONResponse):
     """JSON render that survives unpaired UTF-16 surrogates. GitHub text (review
@@ -1608,6 +1609,20 @@ def threats_get() -> threat_view.ThreatDetail:
     """The Threats view: open flagged PRs, the incident log, the actor
     blocklist, and the credentials still to rotate."""
     return threat_view.current_detail()
+
+
+@app.post("/api/prs/{n}/threat/clear-secret")
+def clear_secret_leak(n: int, payload: dict = Body(...)):
+    """Record the operator's judgment that PR #n's secret-leak finding at the
+    head they reviewed (`head_sha`) is no credential
+    (threat_scan.clear_secret_leak). 409 when the scan's head or finding is
+    not the one they reviewed."""
+    why = threat_scan.clear_secret_leak(data.store(), n, str(payload.get("head_sha") or ""),
+                                        by=activity.operator()["name"])
+    if why:
+        raise HTTPException(409, why)
+    data.refresh()
+    return {"ok": True}
 
 
 @app.get("/api/action-items")

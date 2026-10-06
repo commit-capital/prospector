@@ -42,7 +42,7 @@ def _secret_leak_location(rec: Pr) -> str | None:
     """A safe '`VAR` in `file`' description of a committed credential, parsed
     from the threat evidence (`<file>: <VAR><sep><value>`) WITHOUT echoing the
     value. Falls back to 'a credential in `file`' when no safe name is present."""
-    if "secret-leak" not in rec.threat_signatures:
+    if not gates.secret_leak_blocks(rec):
         return None
     threat = rec.section("threat") or {}
     ev = (threat.get("detail") or {}).get("secret-leak") or ""
