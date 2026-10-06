@@ -33,6 +33,7 @@ def _load():
 
 
 resubmit = _load()
+_REAL_ACCOUNT_ID = resubmit_identity._account_id
 
 
 @pytest.fixture(autouse=True)
@@ -758,6 +759,42 @@ def test_push_env_pins_the_key_and_identity(push_identity):
     assert env["GIT_AUTHOR_NAME"] == env["GIT_COMMITTER_NAME"] == "test-push-bot"
     assert env["GIT_AUTHOR_EMAIL"].endswith("@users.noreply.github.com")
     assert env["PATH"] == "/usr/bin"
+
+
+@pytest.mark.parametrize("bot_login", ["test-bot", "test-bot[bot]"])
+def test_push_env_commits_as_the_app(monkeypatch, bot_login):
+    # The App opens the pull request; commits by the push user would read as a
+    # second contributor a squash merge has to credit.
+    monkeypatch.setenv("TRIAGE_BOT_LOGIN", bot_login)
+    asked = []
+    monkeypatch.setattr(resubmit_identity, "_account_id",
+                        lambda login: asked.append(login) or 284812584)
+    env = resubmit_identity.push_env()
+    assert asked == ["test-bot[bot]"]
+    assert env["GIT_AUTHOR_NAME"] == env["GIT_COMMITTER_NAME"] == "test-bot[bot]"
+    assert env["GIT_AUTHOR_EMAIL"] == env["GIT_COMMITTER_EMAIL"] == \
+        "284812584+test-bot[bot]@users.noreply.github.com"
+
+
+def test_push_env_commits_as_the_push_user_without_an_app(monkeypatch):
+    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "")
+    monkeypatch.setattr(resubmit_identity, "_account_id",
+                        lambda login: pytest.fail("no App to look up"))
+    env = resubmit_identity.push_env()
+    assert env["GIT_AUTHOR_NAME"] == "test-push-bot"
+    assert env["GIT_AUTHOR_EMAIL"] == "1+test-push-bot@users.noreply.github.com"
+
+
+def test_account_id_keeps_an_answer_and_retries_a_failure(monkeypatch):
+    monkeypatch.setattr(resubmit_identity, "_account_ids", {})
+    answers = iter([None, {"login": "test-bot[bot]", "id": 7}])
+    paths = []
+    monkeypatch.setattr(resubmit_identity.gh, "gh_json",
+                        lambda path, timeout: paths.append(path) or next(answers))
+    assert _REAL_ACCOUNT_ID("test-bot[bot]") is None
+    assert _REAL_ACCOUNT_ID("test-bot[bot]") == 7
+    assert _REAL_ACCOUNT_ID("test-bot[bot]") == 7
+    assert paths == ["users/test-bot[bot]"] * 2
 
 
 def test_push_env_refuses_without_a_configured_identity(monkeypatch):

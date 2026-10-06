@@ -285,7 +285,7 @@ def push_identity_partial() -> bool:
 if push_identity_partial():
     raise SystemExit(
         "TRIAGE_PUSH_LOGIN, TRIAGE_PUSH_EMAIL and TRIAGE_PUSH_SSH_KEY_FILE must be "
-        "set together (the contributor-push user's login, its commit email, and "
+        "set together (the contributor-push user's login, its no-reply email, and "
         "its private key). Set all three or none — see .env.example."
     )
 

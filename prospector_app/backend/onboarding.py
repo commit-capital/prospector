@@ -116,7 +116,7 @@ def _validated(step: str, updates: dict[str, str]) -> dict[str, str]:
 
 
 class PushIdentity(NamedTuple):
-    """A contributor-push identity as it travels: the login, its commit email,
+    """A contributor-push identity as it travels: the login, its no-reply email,
     and the SSH private key itself."""
     login: str
     email: str
