@@ -212,7 +212,7 @@ def test_start_isolates_config_and_normalizes_jsonl_events(tmp_path, monkeypatch
     instructions = config_value(command, "developer_instructions")
     assert isinstance(instructions, str)
     assert "PROSPECTOR MANUAL" in instructions
-    assert "inside the worktree printed by `resubmit prepare`" in instructions
+    assert "## Codex cockpit" in instructions
     # The default request grants resubmit, so the sandbox is the chat profile;
     # withholding the grant is what keeps it read-only.
     assert config_value(command, "default_permissions") == "chat"
