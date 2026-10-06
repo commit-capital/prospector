@@ -42,19 +42,13 @@ DESCRIBED = {"described_head": HEAD, "state": "watching"}
 
 
 def _decide(pr: PrState, fu: dict | None = None, **kw) -> followup.Step:
-    return followup.decide(pr, DESCRIBED if fu is None else fu,
-                           older_open=kw.pop("older_open", []), patch=PATCH, **kw)
+    return followup.decide(pr, DESCRIBED if fu is None else fu, patch=PATCH, **kw)
 
 
 def test_a_merged_or_closed_pull_request_ends_the_follow_up():
     assert _decide(_pr(state="merged")).kind == "done"
     step = _decide(_pr(state="closed"))
     assert step.kind == "done" and step.reason == "#9 was closed without merging"
-
-
-def test_an_older_open_pull_request_on_the_issue_hands_it_back():
-    step = _decide(_pr(), older_open=[5])
-    assert step.kind == "hand-back" and "#5" in step.reason
 
 
 def test_each_head_gets_its_description_re_rendered_once():
@@ -129,7 +123,6 @@ def store(tmp_path, monkeypatch):
     (tmp_path / "issue-7").mkdir()
     (tmp_path / "issue-7" / "result.json").write_text(json.dumps(
         {"ending": "fixed", "result": {"patch": PATCH}}))
-    monkeypatch.setattr(followup, "_older_open", lambda issue, pr: [])
     return s
 
 
@@ -348,22 +341,6 @@ def test_a_ready_records_the_head_and_reason_it_was_judged_at(store, monkeypatch
     fu = store.load_issue(7).fix_followup
     assert fu["state"] == "ready" and fu["judged"]["head_sha"] == HEAD
 
-
-
-def test_feedback_on_a_pull_request_handed_back_for_an_older_one_is_read_once(store,
-                                                                              monkeypatch):
-    from issue_triage import reply_router
-    pr = PrState(**{**_pr().__dict__, "feedback": [_said()]})
-    routed = []
-    monkeypatch.setattr(followup, "read", lambda n: pr)
-    monkeypatch.setattr(followup, "_older_open", lambda issue, n: [5])
-    monkeypatch.setattr(reply_router, "route", lambda context, rs: routed.append(rs) or "retry")
-    store.edit_issue(7).record_fix_followup({"pr": 9, "state": "watching", "head_sha": HEAD,
-                                             "described_head": HEAD, "feedback_seen_at": ""})
-    followup.poll(store, mode="live")
-    followup.poll(store, mode="live")
-    assert len(routed) == 1
-    assert store.load_issue(7).fix_followup["state"] == "handed-back"
 
 
 def test_a_maintainer_revision_that_did_not_land_hands_the_pull_request_back(store,

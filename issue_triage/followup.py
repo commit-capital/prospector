@@ -12,9 +12,9 @@ their reviews with words, their open inline comments, their comments).
 
 - `done` — the pull request merged or closed; the record's `closed_as`
   says which (`merged` or `closed`).
-- `hand-back` — an older open pull request by someone else names the issue;
-  a revision budget is spent; a revision failed; or CI still fails after a
-  re-run and no failing job's log names a file the change touches.
+- `hand-back` — a revision budget is spent; a revision failed; or CI still
+  fails after a re-run and no failing job's log names a file the change
+  touches.
 - `revise` (maintainer) — new maintainer feedback that `reply_router` reads as
   asking for a change, ahead of every bot signal; it releases a ready or
   hand-back hold, and has its own budget of MAX_MAINTAINER_REVISIONS. A
@@ -273,12 +273,11 @@ def related_logs(logs: dict[str, str], patch: str) -> dict[str, str]:
     return {job: text for job, text in logs.items() if any(n in text for n in names)}
 
 
-def decide(pr: PrState, fu: dict | None, *, older_open: list[int],
-           logs: dict[str, str] | None = None, patch: str = "",
-           feedback: str | None = None, missed: str | None = None) -> Step:
-    """The next step for `pr`, given the issue's follow-up record `fu`, the
-    older open pull requests by others on the issue, — once a re-run has run at
-    this head — the failing jobs' log excerpts by job name, the guidance from
+def decide(pr: PrState, fu: dict | None, *, logs: dict[str, str] | None = None,
+           patch: str = "", feedback: str | None = None, missed: str | None = None) -> Step:
+    """The next step for `pr`, given the issue's follow-up record `fu`, — once a
+    re-run has run at this head — the failing jobs' log excerpts by job name,
+    the guidance from
     new maintainer feedback that asks for a change, and why a maintainer
     revision left the head where it was (`missed`)."""
     fu = fu or {}
@@ -289,8 +288,6 @@ def decide(pr: PrState, fu: dict | None, *, older_open: list[int],
     if (fu.get("head_sha") == head and fu.get("state") in ("handed-back", "ready")
             and not feedback):
         return Step("wait", f"{fu['state']} at this head")
-    if older_open:
-        return Step("hand-back", f"#{older_open[0]} was opened earlier on the same issue")
     if missed and not feedback:
         return Step("hand-back", f"the change a maintainer asked for did not land: {missed}",
                     maintainer=True)
@@ -355,12 +352,6 @@ def _note(store: IssueStore, n: int, text: str) -> None:
                                            "kind": "note", "text": text})
 
 
-def _older_open(issue: int, pr: int) -> list[int]:
-    from issue_triage import related_prs
-    found = related_prs.search(issue, exclude={pr}) or []
-    return sorted(r["number"] for r in found if r["state"] == "open" and r["number"] < pr)
-
-
 def _route_feedback(store: IssueStore, n: int, pr: int, fresh: list[reply_router.Reply],
                     fu: dict, *, live: bool,
                     may_route: Callable[[], bool] = lambda: True) -> str | None:
@@ -422,7 +413,6 @@ def poll(store: IssueStore, *, mode: str | None = None,
             continue
         record = propose.load_result(n) or {}
         patch = str((record.get("result") or {}).get("patch") or "")
-        older = _older_open(n, int(pr)) if state.state == "open" else []
         if "feedback_seen_at" not in fu:
             fu["feedback_seen_at"] = storekit.now() if fu.get("pr") else ""
         fresh = fresh_feedback(state, fu) if state.state == "open" else []
@@ -432,11 +422,10 @@ def poll(store: IssueStore, *, mode: str | None = None,
         pending = fu.pop("maintainer_pending", None)
         if pending and pending.get("head_sha") == state.head_sha:
             missed = str((issue.fix_request or {}).get("reason") or "no change came of it")[:300]
-        step = decide(state, fu, older_open=older, patch=patch, feedback=asked, missed=missed)
+        step = decide(state, fu, patch=patch, feedback=asked, missed=missed)
         if step.kind == "wait" and step.jobs:
             logs = {f"job {j}": text for j in step.jobs if (text := _job_log(j))}
-            step = decide(state, fu, older_open=older, logs=logs, patch=patch, feedback=asked,
-                          missed=missed)
+            step = decide(state, fu, logs=logs, patch=patch, feedback=asked, missed=missed)
         if asked:
             fu["feedback_seen_at"] = fresh[-1].at
         moved = fu.get("head_sha") != state.head_sha

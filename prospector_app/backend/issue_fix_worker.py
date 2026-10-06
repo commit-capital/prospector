@@ -9,8 +9,7 @@ acts on, so only the host that run names takes it. A claim is a compare-and-swap
 the replies to questions asked on GitHub every half hour (`poll_replies`); every
 ten minutes it follows up its open pull requests (`issue_triage.followup`, as
 `TRIAGE_ISSUE_FIX_FOLLOWUP` allows), then ingests the in-scope issues updated
-since, steps aside from the attempts someone else's pull request took up
-(`issue_triage.superseded`), starts another attempt where a reply or an edited
+since, starts another attempt where a reply or an edited
 report calls for one, and brings GitHub in line with their attempts
 (`issue_triage.public_loop`, as `TRIAGE_ISSUE_FIX_PUBLIC` allows); and, with `TRIAGE_ISSUE_FIX_HUNT=1`, it
 queues one `solve` for a fresh issue (`hunt`) within
@@ -41,7 +40,6 @@ from issue_triage import (
     fix_review_runner,
     followup,
     public_loop,
-    superseded,
 )
 from issue_triage.issue_store import IssueStore
 from pipeline import capacity, gates, headless_agent, settings, storekit
@@ -242,14 +240,13 @@ def run_once(store: IssueStore) -> bool:
 
 def poll_replies(store: IssueStore) -> int:
     """Queue an `answer` for each question asked on GitHub that got one, or
-    whose default is due, on an attempt nobody else's pull request took up.
-    Returns how many were queued."""
+    whose default is due. Returns how many were queued."""
     queued = 0
     for n, issue in store.all_issues(omit_candidates=True).items():
         run = issue.fix_run or {}
         question = run.get("question") or {}
         asked = question.get("asked") or {}
-        if not asked.get("at") or question.get("answered") or run.get("superseded"):
+        if not asked.get("at") or question.get("answered"):
             continue
         if (issue.fix_request or {}).get("status") in fix_review.IN_FLIGHT:
             continue
@@ -291,14 +288,13 @@ def _retryable(req: dict | None) -> bool:
 
 
 def hunt(store: IssueStore) -> int | None:
-    """Queue a `solve` for the newest fresh issue with no linked pull request
-    and no attempt, or whose last `solve` failed and may be retried, a
+    """Queue a `solve` for the newest fresh issue with no attempt, or whose
+    last `solve` failed and may be retried, a
     maintainer's (gates.priority_author) ahead of any other, within the day's
     budget and while the lane's AI capacity is open. Another author's issue
     must be well reproduced (HUNT_GRADES); a maintainer's is taken as
-    reported. The issue queued, or None. Reads the app's issue and PR
-    snapshots; the queue write re-checks the issue on the store."""
-    from issue_triage import issue_links, pr_index
+    reported. The issue queued, or None. Reads the app's issue snapshot; the
+    queue write re-checks the issue on the store."""
     from prospector_app.backend import issue_data
 
     issues = issue_data.issues()
@@ -316,10 +312,7 @@ def hunt(store: IssueStore) -> int | None:
                 or i.fix_run or not _retryable(i.fix_request)):
             continue
         picks.append((maintainer, meta.get("created_at") or "", n))
-    index = pr_index.build(data.prs().values())
     for *_, n in sorted(picks, reverse=True):
-        if issue_links.linked_prs(issues[n], index.get(n)):
-            continue
         if not lane_health.capacity_open(LANE):
             return None
         ok, _ = fix_review.queue(store, n, "solve", by="hunter", source="hunter")
@@ -344,12 +337,10 @@ def _answer_replies(store: IssueStore) -> None:
 
 
 def _every_ten_minutes(store: IssueStore) -> None:
-    """Follow up the open proposals, then refresh the in-scope issues, step the
-    attempts someone else's pull request took up aside, answer the replies, and
-    bring GitHub in line with them; one step failing leaves the others to run,
-    and an agent outage trips the lanes and ends the pass."""
-    for step in (_follow_up, public_loop.refresh, superseded.sweep, _answer_replies,
-                 public_loop.sync):
+    """Follow up the open proposals, then refresh the in-scope issues, answer
+    the replies, and bring GitHub in line with them; one step failing leaves the
+    others to run, and an agent outage trips the lanes and ends the pass."""
+    for step in (_follow_up, public_loop.refresh, _answer_replies, public_loop.sync):
         try:
             step(store)
         except headless_agent.AgentUnavailable as e:

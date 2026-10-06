@@ -12,8 +12,9 @@ land. `problems` is the gate every rendering passes before it is proposed.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 
-from issue_triage import link_prs
+from issue_triage import link_prs, second_opinion
 from issue_triage.related_prs import RelatedPr
 from pipeline import describe_pr, settings
 
@@ -48,8 +49,9 @@ def title(issue: int, summary: str) -> str:
     return inert(f"fix: {summary}", TITLE_MAX) or f"fix: issue #{issue}"
 
 
-def commit_message(issue: int, summary: str) -> str:
-    return f"{title(issue, summary)}\n\nFixes #{issue}\n"
+def commit_message(issue: int, summary: str, co_authors: Sequence[str] = ()) -> str:
+    trailers = "".join(f"\nCo-authored-by: {c}" for c in co_authors)
+    return f"{title(issue, summary)}\n\nFixes #{issue}\n" + (f"{trailers}\n" if trailers else "")
 
 
 def _verification(result: dict, tests: list[str], test_cmd: str | None) -> list[str]:
@@ -105,6 +107,15 @@ def _related(issue: int, related: list[RelatedPr] | None) -> list[str]:
                     f"other pull request that names #{issue}."]
     return ["", f"Other pull requests that name #{issue}:",
             *[f"- #{r['number']} ({r['state']}): {inert(r['title'], 160)}" for r in related]]
+
+
+def _credited(result: dict) -> list[str]:
+    credited = second_opinion.credit(result.get("second_opinion"))
+    if not credited:
+        return []
+    return ["", "Tests in these pull requests found a case the first version of this fix "
+                "missed; it was revised until it passes them. Thank you:",
+            *[f"- #{int(c['pr'])} by {inert(str(c['author']), 60)}" for c in credited]]
 
 
 _BOX_RE = re.compile(r"^\s*[-*]\s*\[[ xX]\]\s*(.+?)\s*$", re.MULTILINE)
@@ -164,7 +175,7 @@ def render(*, issue: int, result: dict, tests: list[str], base_sha: str, report_
             f"- Root cause, as the fixing agent read it: {inert(result.get('root_cause', ''))}",
             f"- This pull request: {inert(result.get('summary', ''))}",
         ],
-        "issue": [f"Fixes #{issue}", *_related(issue, related)],
+        "issue": [f"Fixes #{issue}", *_related(issue, related), *_credited(result)],
         "changes": changes or ["- (no change recorded)"],
         "verification": _verification(result, tests, test_cmd),
         "risks": [

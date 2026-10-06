@@ -246,11 +246,12 @@ def test_a_failed_open_after_a_push_is_an_error_naming_the_branch(lane, monkeypa
     assert "prospector/issue-7-" in res["detail"]
 
 
-def test_an_open_pull_request_on_the_issue_blocks_a_new_one(lane):
-    lane["related"] = [{"number": 40, "title": "fix x", "state": "open", "author": "a"}]
+def test_an_open_pull_request_on_the_issue_is_listed_beside_ours(lane):
+    lane["related"] = [{"number": 40, "title": "fix x", "state": "open", "author": "a",
+                        "closes": True}]
     res = executor.propose_issue_fix(7, token="tok", dry_run=False)
-    assert res["status"] == "blocked" and "#40 is already open" in res["detail"]
-    assert lane["pushes"] == [] and lane["posts"] == []
+    assert res["status"] == "executed"
+    assert "- #40 (open): fix x" in lane["posts"][0]["body"]
 
 
 def test_a_search_that_did_not_answer_blocks_a_proposal(lane):
@@ -305,3 +306,16 @@ def test_a_rerun_re_runs_only_the_failed_jobs_as_the_bot(lane):
     assert res["status"] == "executed"
     assert [e[:5] for e in lane["edits"]] == [["gh", "run", "rerun", "11", "--failed"],
                                               ["gh", "run", "rerun", "12", "--failed"]]
+
+
+def test_a_proposal_credits_the_rival_whose_test_changed_the_fix(lane, monkeypatch):
+    from issue_triage import second_opinion
+    monkeypatch.setattr(second_opinion, "co_author",
+                        lambda login: f"{login} <123+{login}@users.noreply.github.com>")
+    lane["record"]["result"]["second_opinion"] = [
+        {"pr": 12, "author": "contrib", "verdict": "gap-closed", "why": "w"}]
+    res = executor.propose_issue_fix(7, token="tok", dry_run=False)
+    assert res["status"] == "executed"
+    assert lane["pushes"][0]["message"].endswith(
+        "Co-authored-by: contrib <123+contrib@users.noreply.github.com>\n")
+    assert "#12 by contrib" in lane["posts"][0]["body"]

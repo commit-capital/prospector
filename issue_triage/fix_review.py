@@ -7,15 +7,13 @@ An issue holds at most one pending request (`fix_request`, actions
 latest attempt (`fix_run`) and no other request is in flight; the words an
 operator gives with it land in the thread (`fix_thread`). `fix_status` derives,
 on read, whose move the attempt waits on; a proposal's follow-up record
-(`fix_followup`) counts only while it follows the run's own pull request, and
-an attempt someone else's pull request took up (`superseded`) reads as theirs.
+(`fix_followup`) counts only while it follows the run's own pull request.
 `distill` turns a finished run's `result.json` record into the `fix_run` the app
 renders: each candidate's own account, the agreement, the picked change, the
 checks, the reviewers, and the question — never an agent's transcript.
 """
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from issue_triage import dispute_question
@@ -31,7 +29,7 @@ FAULT_ENDINGS = ("agent-unavailable", "run-failed", "sandbox", "base-compile")
 PATCH_MAX = 60_000
 # The status of an issue's fix attempt, in the order the explorer groups them.
 STATUSES = ("review", "question", "running", "reporter", "pr-open", "pr-closed", "failed",
-            "superseded", "declined", "pr-merged")
+            "declined", "pr-merged")
 
 
 def followup_for(fu: dict | None, pr: object) -> dict:
@@ -56,19 +54,11 @@ def _ended(proposal: dict, fu: dict) -> tuple[str, str] | None:
     return "pr-closed", str(fu.get("reason") or f"#{pr} is no longer open")
 
 
-def rival_open(mark: Mapping[str, object]) -> str:
-    """The reason an attempt reads `superseded`, from its `superseded` mark."""
-    by = f" by {mark['author']}" if mark.get("author") else ""
-    return f"#{mark['pr']}{by} is open on the issue"
-
-
 def fix_status(issue: Issue) -> tuple[str, str] | None:
     """(status, reason) for issue's fix attempt, or None when it has none."""
     req, run = issue.fix_request, issue.fix_run
     if req and req.get("status") in IN_FLIGHT:
         return "running", f"{req.get('action')} {req.get('status')}"
-    if run and run.get("superseded") and open_pr(issue) is None:
-        return "superseded", rival_open(run["superseded"])
     if req and req.get("status") == "failed":
         return "failed", str(req.get("reason") or f"{req.get('action')} failed")
     if not run:
@@ -280,6 +270,7 @@ def distill(record: dict, question: dict | None = None) -> dict:
         "agreement": res.get("agreement"), "readings": res.get("readings"),
         "tier": res.get("tier"), "proof": _proof(res.get("proof") or {}),
         "reviews": reviews, "boundary": res.get("boundary"), "intake": res.get("intake"),
+        "second_opinion": res.get("second_opinion"),
         "candidates": candidates,
         "question": None, "proposal": None,
     }

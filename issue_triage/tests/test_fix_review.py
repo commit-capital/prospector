@@ -11,7 +11,6 @@ from issue_triage.issue_store import IssueStore
 from pipeline import settings
 from pipeline.storekit import ValidationError
 
-RIVAL = {"pr": 14918, "author": "contrib", "title": "fix x", "at": "2026-10-02T13:03:00+00:00"}
 QUESTION = {"question": "Should x read 2 or 3?",
             "options": [{"label": "A", "behavior": "2"}, {"label": "B", "behavior": "3"}],
             "default": "A", "default_reason": "the report says 2"}
@@ -111,12 +110,6 @@ def test_a_closed_issue_takes_no_request(store):
     ({"ending": "no-fix"}, None, "declined"),
     ({"ending": "fixed"}, {"action": "propose", "status": "failed", "source": "operator",
                            "reason": "gh said no"}, "failed"),
-    ({"ending": "fix-disputed", "question": QUESTION, "superseded": RIVAL}, None, "superseded"),
-    ({"ending": "fixed", "superseded": RIVAL}, {"action": "propose", "status": "failed",
-                                                "source": "public", "reason": "r"}, "superseded"),
-    ({"ending": "fixed", "superseded": RIVAL}, {"action": "propose", "status": "queued",
-                                                "source": "public"}, "running"),
-    ({"ending": "fixed", "proposal": {"pr": 14589}, "superseded": RIVAL}, None, "pr-open"),
 ])
 def test_the_status_reads_whose_move_it_is(store, run, req, want):
     _run(store, **run)
@@ -404,83 +397,17 @@ def test_a_failure_ends_the_request_failed_with_the_reason(store, monkeypatch):
     assert fix_review.fix_status(issue) == ("failed", issue.fix_request["reason"])
 
 
-@pytest.fixture
-def rivals(monkeypatch):
-    """The open pull requests by someone else the search finds naming issue 7,
-    one list per search in turn (the last one repeats)."""
+def test_a_request_runs_whatever_other_pull_requests_name_the_issue(store, monkeypatch):
     from issue_triage import related_prs
-    answers: list[list[dict]] = [[]]
-
-    def search(issue, exclude=None):
-        return answers.pop(0) if len(answers) > 1 else answers[0]
-
-    monkeypatch.setattr(related_prs, "search", search)
-    return answers
-
-
-def _rival(number: int = 14918) -> dict:
-    return {"number": number, "title": "fix x", "state": "open", "author": "contrib"}
-
-
-def test_a_request_on_an_issue_someone_else_took_up_steps_aside(store, monkeypatch, rivals):
-    monkeypatch.setattr(fix_review_runner, "solve",
-                        lambda *a, **k: pytest.fail("solved an issue someone else took up"))
-    rivals[:] = [[_rival()]]
+    record = {"ending": "fixed", "detail": "proven", "result": {"patch": "diff --git a/x b/x\n"}}
+    monkeypatch.setattr(fix_review_runner, "solve", lambda s, n, **kw: (record, None))
+    monkeypatch.setattr(related_prs, "search", lambda issue, exclude=None: [
+        {"number": 14918, "title": "fix x", "state": "open", "author": "contrib",
+         "closes": True}])
     fix_review.queue(store, 7, "solve", by="hunter", source="hunter")
-    req = store.claim_fix_request(7, host="studio")
-    status, outcome = fix_review_runner.run_request(store, 7, req)
-    issue = store.load_issue(7)
-    assert status == "cancelled" and "#14918" in outcome
-    assert issue.fix_request["status"] == "cancelled" and "#14918" in issue.fix_request["reason"]
-    assert issue.fix_thread[-1]["text"] == outcome
-
-
-def test_a_question_on_an_attempt_someone_else_took_up_is_not_asked(store, monkeypatch, rivals):
-    from prospector_app.backend import executor
-    _run(store, ending="fix-disputed", question=QUESTION)
-    monkeypatch.setattr(executor, "ask_issue_question",
-                        lambda *a, **k: pytest.fail("asked on a superseded attempt"))
-    rivals[:] = [[_rival()]]
-    fix_review.queue(store, 7, "ask-reporter", by="public", source="public")
     status, _ = fix_review_runner.run_request(store, 7, store.claim_fix_request(7, host="s"))
-    issue = store.load_issue(7)
-    assert status == "cancelled" and issue.fix_run["superseded"]["pr"] == 14918
-    assert fix_review.fix_status(issue)[0] == "superseded"
-
-
-def test_a_rival_that_opened_while_the_run_ran_supersedes_its_result(store, monkeypatch, rivals):
-    record = {"ending": "fixed", "detail": "proven", "result": {"patch": "diff --git a/x b/x\n"}}
-    monkeypatch.setattr(fix_review_runner, "solve", lambda s, n, **kw: (record, None))
-    rivals[:] = [[], [_rival()]]
-    fix_review.queue(store, 7, "solve", by="op")
-    status, _ = fix_review_runner.run_request(store, 7, store.claim_fix_request(7, host="s"))
-    issue = store.load_issue(7)
-    assert status == "done" and issue.fix_run["superseded"]["pr"] == 14918
-    assert "#14918" in issue.fix_thread[-1]["text"]
-    assert fix_review.fix_status(issue)[0] == "superseded"
-
-
-def test_a_proposal_refused_for_a_rival_reads_superseded(store, monkeypatch, rivals):
-    from prospector_app.backend import executor
-    _run(store)
-    monkeypatch.setattr(executor, "propose_issue_fix", lambda n, **kw: {
-        "status": "blocked", "detail": "#14918 is already open on issue #7"})
-    rivals[:] = [[], [_rival()]]
-    fix_review.queue(store, 7, "propose", by="public", source="public")
-    status, _ = fix_review_runner.run_request(store, 7, store.claim_fix_request(7, host="s"))
-    assert status == "failed"
-    assert fix_review.fix_status(store.load_issue(7))[0] == "superseded"
-
-
-def test_an_operator_s_request_runs_once_the_rival_closed(store, monkeypatch, rivals):
-    record = {"ending": "fixed", "detail": "proven", "result": {"patch": "diff --git a/x b/x\n"}}
-    monkeypatch.setattr(fix_review_runner, "solve", lambda s, n, **kw: (record, None))
-    _run(store, ending="no-fix", superseded=RIVAL)
-    fix_review.queue(store, 7, "solve", by="op")
-    status, _ = fix_review_runner.run_request(store, 7, store.claim_fix_request(7, host="s"))
-    issue = store.load_issue(7)
-    assert status == "done" and "superseded" not in issue.fix_run
-    assert fix_review.fix_status(issue)[0] == "review"
+    assert status == "done"
+    assert fix_review.fix_status(store.load_issue(7))[0] == "review"
 
 
 def test_a_proposal_that_opens_records_the_pull_request(store, monkeypatch):
@@ -570,8 +497,9 @@ def solving(store, tmp_path, monkeypatch):
 
     def lane(spec, **kw):
         state["lane"] += 1
-        return fix_lane.LaneResult(ending="no-fix", fault=False, detail="d",
-                                   result={"summary": "s"}, agent_runs=3)
+        return fix_lane.LaneResult(ending=state.get("ending", "no-fix"), fault=False,
+                                   detail="d", result={"summary": "s", "patch": "ours"},
+                                   agent_runs=3)
 
     monkeypatch.setattr(cross_lane, "run", lane)
     monkeypatch.setattr(intake_audit, "review", lambda *a: {
@@ -627,3 +555,56 @@ def test_a_revision_keeps_the_attempt_s_intake(store, solving, tmp_path, monkeyp
         ending="fixed", fault=False, detail="d", result={"patch": "p"}))
     record = fix_review_runner.revise(store, 7, comments="handle empty", on_step=lambda s: None)
     assert record["result"]["intake"] == intake
+
+
+# --- the second opinion ------------------------------------------------------------
+
+GAP = {"pr": 12, "author": "contrib", "verdict": "gap", "why": "our fix fails x.test.ts",
+       "output": "FAIL x.test.ts > empty"}
+
+
+@pytest.fixture
+def rival_gap(store, solving, tmp_path, monkeypatch):
+    """Issue 7's cross lane ends fixed and one rival's tests fail with it; the
+    revision and the recheck are faked."""
+    from issue_triage import second_opinion
+    rival = second_opinion.Rival(pr=12, author="contrib", title="t", tests="T", fix="F",
+                                 test_paths=["x.test.ts"])
+    solving.update(ending="fixed", verdict="clear", revised="fixed", revisions=[])
+    monkeypatch.setattr(second_opinion, "rivals", lambda n, **kw: ([rival], [
+        {"pr": 13, "author": "x", "verdict": "skipped", "why": "it adds no tests"}]))
+    monkeypatch.setattr(second_opinion, "judge", lambda base, r, patch, **kw: dict(GAP))
+    monkeypatch.setattr(second_opinion, "recheck", lambda base, r, patch, entry, **kw: {
+        **entry, "verdict": "gap-closed" if patch == "revised" else "gap-open", "why": "w"})
+
+    def revise(store_, n, **kw):
+        solving["revisions"].append(kw)
+        return {"ending": solving["revised"], "detail": "d",
+                "result": {"patch": "revised", "summary": "s2"}}
+
+    monkeypatch.setattr(fix_review_runner, "revise", revise)
+    return solving
+
+
+def test_a_rival_s_failing_test_sends_the_fix_back_once_and_credits_its_author(store,
+                                                                               rival_gap):
+    from issue_triage import second_opinion
+    record = _solve(store, unattended=True)
+    [kw] = rival_gap["revisions"]
+    assert kw["comments"] == "" and "FAIL x.test.ts > empty" in kw["notes"]
+    assert record["result"]["patch"] == "revised"
+    entries = record["result"]["second_opinion"]
+    assert [e["verdict"] for e in entries] == ["skipped", "gap-closed"]
+    assert second_opinion.credit(entries) == [{"pr": 12, "author": "contrib"}]
+    on_disk = json.loads((propose.result_dir(7) / "result.json").read_text())
+    assert on_disk["result"]["second_opinion"] == entries
+
+
+def test_a_revision_that_does_not_end_fixed_keeps_the_fix_and_holds_it(store, rival_gap):
+    from issue_triage import trust_boundary
+    rival_gap["revised"] = "no-fix"
+    record = _solve(store, unattended=True)
+    assert record["result"]["patch"] == "ours"
+    assert [e["verdict"] for e in record["result"]["second_opinion"]] == ["skipped", "gap-open"]
+    fix_review_runner._write_run(store, 7, record, None)
+    assert "#12" in (trust_boundary.held(store.load_issue(7)) or "")
