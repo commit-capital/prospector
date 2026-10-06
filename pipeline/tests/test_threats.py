@@ -1267,8 +1267,8 @@ class TestScanRun:
         self._seed(store, 2, "bob", "h2", LEAKED_KEY_DIFF, diffs)
         items = store.load_action_items()
         actions.upsert(items, actions.make_item(
-            "rotate-secret", pr=2, created="2026-09-27", summary="s", evidence="e",
-            detail="d"))
+            "rotate-secret", pr=2, created="2026-09-27", summary="s",
+            evidence=threats.scan_diff(LEAKED_KEY_DIFF)["detail"]["secret-leak"], detail="d"))
         store.save_action_items(items)
         real_scan = threat_scan.scan_record
 
@@ -1359,6 +1359,11 @@ class TestSecretLeakLifecycle:
 
     def _scan(self, tmp_path, diffs) -> None:
         threat_scan.main(["--store", str(tmp_path), "--diffs", str(diffs), "--no-fetch"])
+
+    def _push(self, store, n, head, diff_text, diffs_dir):
+        (diffs_dir / f"{head}.diff").write_text(diff_text)
+        pr = store.edit_pr(n)
+        pr.set_meta({**pr.section("meta"), "head_sha": head})
 
     def test_a_leak_a_rescan_of_its_head_withdraws_retires_its_open_item(self, tmp_path):
         store = Store(tmp_path)
@@ -1451,13 +1456,62 @@ class TestSecretLeakLifecycle:
         self._seed(store, 1, "h1", LEAKED_KEY_DIFF, diffs)
         self._scan(tmp_path, diffs)
         threat_scan.clear_secret_leak(store, 1, "h1", by="Alex")
-        (diffs / "h2.diff").write_text(LEAKED_KEY_DIFF)
-        pr = store.edit_pr(1)
-        pr.set_meta({**pr.section("meta"), "head_sha": "h2"})
+        self._push(store, 1, "h2", LEAKED_KEY_DIFF, diffs)
 
         self._scan(tmp_path, diffs)
 
         assert gates.secret_leak_blocks(store.load_pr(1))
+
+    def test_the_same_leak_at_a_new_head_keeps_its_item_dismissed(self, tmp_path):
+        store = Store(tmp_path)
+        diffs = tmp_path / "diffs"; diffs.mkdir()
+        self._seed(store, 1, "h1", LEAKED_KEY_DIFF, diffs)
+        self._scan(tmp_path, diffs)
+        threat_scan.clear_secret_leak(store, 1, "h1", by="Alex")
+        self._push(store, 1, "h2", LEAKED_KEY_DIFF, diffs)
+
+        self._scan(tmp_path, diffs)
+
+        assert self._items(store)["rotate-secret:1"]["status"] == "dismissed"
+
+    def test_a_clearing_holds_its_item_to_the_evidence_it_judged(self, tmp_path):
+        store = Store(tmp_path)
+        diffs = tmp_path / "diffs"; diffs.mkdir()
+        self._seed(store, 1, "h1", LEAKED_KEY_DIFF, diffs)
+        self._scan(tmp_path, diffs)
+        reg = store.load_action_items()
+        reg["items"][0]["evidence"] = "x.ts: an earlier scan's finding"
+        store.save_action_items(reg)
+        threat_scan.clear_secret_leak(store, 1, "h1", by="Alex")
+
+        self._scan(tmp_path, diffs)
+
+        assert self._items(store)["rotate-secret:1"]["status"] == "dismissed"
+
+    def test_a_different_leak_reopens_a_dismissed_maintainer_item_and_posts_it(
+            self, tmp_path, monkeypatch):
+        store = Store(tmp_path)
+        diffs = tmp_path / "diffs"; diffs.mkdir()
+        self._seed(store, 1, "h1", LEAKED_KEY_DIFF, diffs)
+        pr = store.edit_pr(1)
+        pr.set_meta({**pr.section("meta"), "author_association": "MEMBER"})
+        monkeypatch.setenv("TRIAGE_SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/T/B/x")
+        posted: list[str] = []
+        monkeypatch.setattr(notify, "post_webhook", lambda url, text: posted.append(text) or True)
+        self._scan(tmp_path, diffs)
+        reg = store.load_action_items()
+        actions.set_status(reg, "rotate-secret:1", "dismissed")
+        reg["items"][0]["created"] = "2026-01-01"
+        store.save_action_items(reg)
+        self._push(store, 1, "h2", REAL_LEAK_DIFFS["config-hex-secret"], diffs)
+
+        self._scan(tmp_path, diffs)
+
+        item = self._items(store)["rotate-secret:1"]
+        assert item["status"] == "open" and item["created"] == "2026-01-01"
+        assert "ecosystem.config.cjs" in item["evidence"]
+        assert gates.maintainer_leak(item, store.load_pr(1))
+        assert len(posted) == 2 and "ecosystem.config.cjs" in posted[1]
 
     def test_a_clearing_of_other_evidence_does_not_lift_the_block(self):
         pr = Pr(None, {"pr": 1, "meta": {"head_sha": "h1"}, "threat": {
