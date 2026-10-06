@@ -136,15 +136,6 @@ def opened(issue: int, key: str, pr: int, summary: object) -> str:
     return _finish(issue, key, lines)
 
 
-def superseded(issue: int, key: str, pr: int) -> str:
-    """The comment on issue `issue` when pull request `pr`, someone else's, is
-    open on an issue the attempt had asked a question on."""
-    return _finish(issue, key, [
-        f"Pull request #{int(pr)} is open for this issue, so Prospector's automated fix "
-        "pipeline is stepping back from it and will not act on an answer to the question "
-        "above."])
-
-
 def ready(issue: int, key: str) -> str:
     """The comment on the pull request once CI and its reviewers pass."""
     return _finish(issue, key, [

@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from issue_triage import dispute_question, fix_review, fix_review_runner, issue_links
+from issue_triage import dispute_question, fix_review, fix_review_runner
 from issue_triage.issue_store import IssueStore
 from pipeline import profile, settings
 from pipeline import store as S
@@ -174,22 +174,9 @@ def test_no_reply_waits_until_the_default_is_due(store, monkeypatch):
     assert store.load_issue(1).fix_request["answer"] == {"label": "A"}
 
 
-def test_a_question_on_a_superseded_attempt_waits_for_no_answer(store, monkeypatch):
-    monkeypatch.setattr(dispute_question, "read_answer",
-                        lambda n, **kw: pytest.fail("read replies to a superseded attempt"))
-    _asked(store, (datetime.now(timezone.utc) - timedelta(days=8)).isoformat())
-    run = store.load_issue(1).fix_run
-    store.edit_issue(1).record_fix_run({**run, "superseded": {
-        "pr": 14918, "author": "contrib", "title": "t", "at": "t"}})
-    assert issue_fix_worker.poll_replies(store) == 0
-    assert store.load_issue(1).fix_request is None
-
-
 @pytest.fixture
 def hunting(store, monkeypatch):
-    monkeypatch.setattr(data, "prs", lambda: {})
     monkeypatch.setattr(issue_data, "issues", lambda: store.all_issues(omit_candidates=True))
-    monkeypatch.setattr(issue_links, "linked_prs", lambda issue, links: [])
     now = datetime.now(timezone.utc)
     store.save_issue({**store.load_issue(1).raw, "meta": {
         **store.load_issue(1).raw["meta"], "created_at": (now - timedelta(days=2)).isoformat()}})
@@ -204,13 +191,11 @@ def test_the_hunter_queues_the_newest_fresh_issue(hunting):
     assert req["action"] == "solve" and req["source"] == "hunter"
 
 
-def test_the_hunter_skips_linked_poorly_reproduced_and_feature_issues(hunting, monkeypatch):
+def test_the_hunter_skips_poorly_reproduced_and_feature_issues(hunting):
     now = datetime.now(timezone.utc).isoformat()
     _issue(hunting, 3, created=now, grade="D")
     _issue(hunting, 4, created=now, labels=["enhancement"])
-    monkeypatch.setattr(issue_links, "linked_prs",
-                        lambda issue, links: [{"pr": 5}] if issue.number == 2 else [])
-    assert issue_fix_worker.hunt(hunting) == 1
+    assert issue_fix_worker.hunt(hunting) == 2
 
 
 def test_the_hunter_keeps_to_its_daily_budget(hunting, monkeypatch):
@@ -227,7 +212,7 @@ def test_the_hunter_queues_nothing_while_capacity_is_paused(hunting, capacity):
 
 
 def test_the_hunter_with_no_pick_never_asks_the_capacity(hunting, capacity, monkeypatch):
-    monkeypatch.setattr(issue_links, "linked_prs", lambda issue, links: [{"pr": 5}])
+    monkeypatch.setattr(issue_data, "issues", lambda: {})
     assert issue_fix_worker.hunt(hunting) is None
     assert capacity["asked"] == []
 
@@ -401,20 +386,20 @@ def test_an_agent_outage_in_the_ten_minute_pass_trips_the_lanes(store, monkeypat
 
 
 def _ten_minute_steps(monkeypatch) -> list[str]:
-    from issue_triage import followup, public_loop, superseded
+    from issue_triage import followup, public_loop
 
     ran: list[str] = []
-    for module, name in ((followup, "poll"), (public_loop, "refresh"), (superseded, "sweep"),
+    for module, name in ((followup, "poll"), (public_loop, "refresh"),
                          (public_loop, "answer_replies"), (public_loop, "sync")):
         monkeypatch.setattr(module, name, lambda store_, name=name, **_: ran.append(name))
     return ran
 
 
-def test_the_ten_minute_pass_steps_aside_before_it_reads_replies_or_writes(store,
-                                                                          monkeypatch):
+def test_the_ten_minute_pass_follows_up_before_it_reads_replies_or_writes(store,
+                                                                         monkeypatch):
     ran = _ten_minute_steps(monkeypatch)
     issue_fix_worker._every_ten_minutes(store)
-    assert ran == ["poll", "refresh", "sweep", "answer_replies", "sync"]
+    assert ran == ["poll", "refresh", "answer_replies", "sync"]
 
 
 def test_reply_routing_asks_the_capacity_only_when_a_reply_needs_it(store, capacity,

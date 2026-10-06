@@ -510,7 +510,7 @@ each candidate's own account, the agreement, the picked change, the checks, the
 reviewers, the question, the proposal — no transcripts); and `fix_thread`, the
 operator's words and the worker's notes. `fix_review.fix_status` derives on
 read whose move it is (`review`, `question`, `running`, `reporter`, `pr-open`,
-`pr-closed`, `failed`, `superseded`, `declined`, `pr-merged`; a proposal's
+`pr-closed`, `failed`, `declined`, `pr-merged`; a proposal's
 `fix_followup` counts only while it follows that pull request, and `pr-closed`
 takes a new `solve`); the Issues query filters and sorts on it. The worker
 lane (`TRIAGE_ISSUE_FIX_WORKER=1`, health lane `issue-fix`) claims one request at
@@ -541,15 +541,21 @@ approach it discards; `answer` resumes a dispute on the chosen reading or
 re-solves with a written answer; `ask-reporter` and `propose` take the executor's
 bot paths. Between requests the lane reads replies to questions asked on GitHub
 every half hour, and `TRIAGE_ISSUE_FIX_HUNT=1` lets it queue one `solve` for a
-fresh, well-reproduced issue with no linked PR within
-`TRIAGE_ISSUE_FIX_HUNT_BUDGET` a UTC day. Until an attempt has a pull request of
-its own open, an open pull request by anyone else whose title or body names the
-issue (`issue_triage/superseded.py`, the propose step's search) supersedes it:
-the runner checks before and after every request, so a request on such an issue
-ends `cancelled` without running, and every ten minutes the lane sweeps the
-attempts waiting on their next step. The attempt's `fix_run.superseded` (schema
-29) reads `superseded`, carries no label, queues nothing, and waits for no
-answer; an operator's request after the rival closed clears it and runs. The lane beats its own heartbeat (the
+fresh, well-reproduced issue within `TRIAGE_ISSUE_FIX_HUNT_BUDGET` a UTC day.
+Another author's pull request on the issue never stops an attempt: it is
+evidence (`issue_triage/second_opinion.py`, the ONE policy for it). Once a solve
+ends `fixed`, the open pull requests by others that claim to fix the issue — at
+most three with tests, none whose author is blocklisted or whose diff reads
+malicious — have their test files run in the sandbox on the base (they must
+fail twice), with their own change (they must pass twice), and with our fix.
+Tests that clear the first two and fail with ours are a gap, and the runner
+revises the fix once with notes naming the failing tests and quoting their code
+as data, never the other author's change; the revision faces every check a fix
+does and replaces the fix only when it ends `fixed`. Each rival's entry
+(`covered`, `gap-closed`, `gap-open`, `skipped`) rides the run as
+`second_opinion`; a gap left open holds the fix (`trust_boundary.held`), and a
+gap closed credits that pull request's author as a co-author of the proposal's
+commit and in its body. The lane beats its own heartbeat (the
 `issue_fix_worker` registry) while its drain loop runs, and on start and every
 five minutes `issue_fix_worker.recover_orphans` ends `failed` (reason
 `interrupted: …`) each `running` request this host claimed before its process
@@ -568,18 +574,18 @@ after a click. `python -m issue_triage.fix_review_backfill [--draft-questions]
 
 **ISSUE FIX FOLLOW-UP** (`issue_triage/followup.py`) is the ONE policy for a
 pull request the factory proposed, from opening until it is green or a person
-must decide. A proposal is refused while another open pull request names the
-issue (`issue_triage/related_prs.py`, GitHub search as the operator), and its
-body lists what the search found and answers the repository template's
+must decide. A proposal's body lists the pull requests that name the issue
+(`issue_triage/related_prs.py`, GitHub search as the operator) and answers the
+repository template's
 checklist, ticking only what the pipeline did (`fix_pr_body._checklist`). Every
 ten minutes the idle issue-fix worker reads each open proposal live
 (`followup.read`: state, head, the repository's own CI checks with their
 workflow run and job, and every code reviewer that gates it — the policy's
 active ones plus any that reviewed this pull request) and `followup.decide`
 names one step: `done` (merged or closed, recorded as `closed_as`; a `done`
-record without one is read once more to fill it in), `hand-back` (an older open pull
-request by someone else names the issue, `MAX_REVISIONS` spent, or CI still
-failing after a re-run with no failing log naming a changed file), `describe`
+record without one is read once more to fill it in), `hand-back` (`MAX_REVISIONS`
+spent, or CI still failing after a re-run with no failing log naming a changed
+file), `describe`
 (the description re-rendered once per head and posted only when it differs),
 `rerun` (failed jobs re-run once per head), `revise` (a reviewer below its bar,
 or CI failing after a re-run in a job whose log names a changed file — the
@@ -620,12 +626,11 @@ attempt, for the issues in scope: the ones a maintainer filed
 `label_for` derives one status label (`fix in progress`, `needs answer`,
 `iterating on PR`, `ready for review`, `couldn't fix`) from
 `fix_review.fix_status`, the attempt and the follow-up, carried by the issue and
-by the pull request it proposed, and none for a `superseded` or `refused` attempt;
+by the pull request it proposed, and none for a `refused` attempt;
 `comments_due` names the comments the attempt calls for — the conclusion of an
 attempt without a fix (finished within a day), the opened pull request on the
-issue, the follow-up's ready or hand-back on the pull request, once per head,
-and, for a superseded attempt that had asked a question on the issue, that it
-stepped back (within a day of the mark) — each rendered by the host with an agent's
+issue, and the follow-up's ready or hand-back on the pull request, once per
+head — each rendered by the host with an agent's
 words held inert, gated by `public_comments.problems`, and marked so it posts
 once. Every ten minutes the issue-fix worker follows up its proposals, then
 `refresh` ingests the in-scope issues GitHub reports updated (listed over REST,

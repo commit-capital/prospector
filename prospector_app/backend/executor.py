@@ -1128,18 +1128,28 @@ def _gh_api_error(r: subprocess.CompletedProcess) -> str:
 def propose_issue_fix(issue: int, *, token: str | None, dry_run: bool = True) -> dict:
     """Open a pull request on TRIAGE_REPO carrying issue `issue`'s last lane
     fix, for a maintainer to review. The run must pass
-    `issue_gates.propose_gate`, no other open pull request may name the issue
-    (`related_prs.search`), and its rendering must pass `fix_pr_body.problems`; the
+    `issue_gates.propose_gate`, the pull requests that name the issue
+    (`related_prs.search`) are listed in its body, and its rendering must pass
+    `fix_pr_body.problems`; the
     push user pushes the lane branch to its fork (`propose.push_fix`) and the
-    bot opens the pull request from it (`safety_guard.propose_bot_run`). The
-    report's lane branches are read in order (`propose.branch_ref`): an open
+    bot opens the pull request from it (`safety_guard.propose_bot_run`). Each
+    author whose pull request's tests changed the fix is a co-author of the
+    commit (`second_opinion.credit`). The report's lane branches are read in order (`propose.branch_ref`): an open
     pull request on one is reported, a merged one refuses, and a branch whose
     pull request was closed without merging passes the proposal on to the next
     one, so the first branch with no pull request carries it; a closed pull
     request is never reopened and its branch never overwritten. A dry-run does
     everything up to the push; with no token every run is one. Every outcome
     is logged to Activity."""
-    from issue_triage import fetch_issues, fix_lane, fix_pr_body, issue_gates, propose, related_prs
+    from issue_triage import (
+        fetch_issues,
+        fix_lane,
+        fix_pr_body,
+        issue_gates,
+        propose,
+        related_prs,
+        second_opinion,
+    )
     from pipeline import describe_pr, diffpaths
     from pipeline.gh import gh_list
     from prospector_app.backend.safety_guard import propose_bot_run
@@ -1188,14 +1198,12 @@ def propose_issue_fix(issue: int, *, token: str | None, dry_run: bool = True) ->
     if related is None:
         return done("blocked", "the search for other pull requests on the issue did not "
                                "answer", dry=dry_run)
-    others = [r for r in related if r["state"] == "open"]
-    if others:
-        return done("blocked", f"#{others[0]['number']} is already open on issue #{issue}",
-                    dry=dry_run)
 
     summary = str(result.get("summary") or "")
     title_text = fix_pr_body.title(issue, summary)
-    message = fix_pr_body.commit_message(issue, summary)
+    co_authors = [c for r in second_opinion.credit(result.get("second_opinion"))
+                  if (c := second_opinion.co_author(str(r["author"])))]
+    message = fix_pr_body.commit_message(issue, summary, co_authors)
     tests = [p for p in diffpaths.changed_paths(patch) if diffpaths.is_test_path(p)]
     body = fix_pr_body.render(
         issue=issue, result=result, tests=tests, base_sha=record["base_sha"],

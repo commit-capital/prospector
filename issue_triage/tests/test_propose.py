@@ -450,3 +450,17 @@ def test_the_search_s_findings_are_listed_under_the_linked_issue():
     assert "found no other pull request" in _body(related=[], template=TEMPLATE)
     title = fix_pr_body.title(7, "Set x to two")
     assert fix_pr_body.problems(title, body, fix_pr_body.commit_message(7, "x"), issue=7) == []
+
+
+CREDITED = [{"pr": 12, "author": "contrib", "verdict": "gap-closed", "why": "w"},
+            {"pr": 13, "author": "other", "verdict": "covered", "why": "w"}]
+
+
+def test_a_rival_whose_test_changed_the_fix_is_credited():
+    trailer = "contrib <123+contrib@users.noreply.github.com>"
+    assert fix_pr_body.commit_message(7, "Set x to two", co_authors=[trailer]) == (
+        f"fix: Set x to two\n\nFixes #7\n\nCo-authored-by: {trailer}\n")
+    title, body, message = _rendered(_result(second_opinion=CREDITED))
+    linked = next(part for part in body.split("\n## ") if part.startswith("Linked"))
+    assert "#12 by contrib" in linked and "#13" not in linked
+    assert fix_pr_body.problems(title, body, message, issue=7) == []

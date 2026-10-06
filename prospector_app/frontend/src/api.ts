@@ -1335,7 +1335,7 @@ export interface IssueRow {
 }
 /** fix_review.STATUSES — the operator's moves first. */
 export type IssueFixStatus = "review" | "question" | "running" | "reporter" | "pr-open" | "pr-closed"
-  | "failed" | "superseded" | "declined" | "pr-merged";
+  | "failed" | "declined" | "pr-merged";
 export type IssueFixAction = "solve" | "send-back" | "answer" | "ask-reporter" | "propose";
 export interface IssueFixRequest {
   action: IssueFixAction;
@@ -1397,6 +1397,13 @@ export interface IssueFixIntake {
   blocked?: boolean;
   failed?: boolean;
 }
+/** How another author's pull request judged the fix (issue_triage/second_opinion.py). */
+export interface IssueFixRivalEntry {
+  pr: number;
+  author: string | null;
+  verdict: "covered" | "gap" | "gap-closed" | "gap-open" | "skipped";
+  why: string;
+}
 export interface IssueFixQuestion {
   question: string;
   options: { label: string; behavior: string }[];
@@ -1440,11 +1447,10 @@ export interface IssueFixRun {
   reviews: IssueFixReview[];
   boundary?: IssueFixBoundary | null;
   intake?: IssueFixIntake | null;
+  second_opinion?: IssueFixRivalEntry[] | null;
   candidates: IssueFixCandidate[];
   question: IssueFixQuestion | null;
   proposal: { pr: number | string | null; url: string | null } | null;
-  /** Someone else's open pull request that took the issue up (issue_triage/superseded.py). */
-  superseded?: { pr: number; author: string | null; title: string; at: string } | null;
 }
 export interface IssueFixThreadEntry {
   at: string;

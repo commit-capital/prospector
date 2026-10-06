@@ -4,7 +4,9 @@ the sandbox, and write what happened back to the issue.
 - `solve` runs the cross-tested lane with the request's guidance and notes
   (a maintainer's instruction, and anyone else's words as data), first having
   `intake_audit` judge an outsider's report: an unattended solve of a report it
-  reads as malicious ends `refused` with no lane run; a dispute
+  reads as malicious ends `refused` with no lane run. A fixed run then faces the
+  tests of other authors' pull requests on the issue (`second_opinion`) and is
+  revised once when any fails with it; a dispute
   drafts its question at once (`dispute_question.draft`, kept beside the result
   so a later ask posts the same words).
 - `send-back` asks a small agent whether the comments keep the fix's approach
@@ -21,10 +23,7 @@ the sandbox, and write what happened back to the issue.
 
 Each run writes `result.json` and its ledger row (`fix_lane.record_result`),
 then the distilled `fix_run`; the request ends `done` with the outcome, or
-`failed` with the reason, and the worker's note joins the thread. Before and
-after every request the runner checks whether someone else's pull request took
-the issue up (`superseded.check`): before, a request on such an issue ends
-`cancelled` without running; after, the attempt it recorded is marked.
+`failed` with the reason, and the worker's note joins the thread.
 """
 from __future__ import annotations
 
@@ -39,8 +38,8 @@ from issue_triage import (
     fix_review,
     intake_audit,
     propose,
+    second_opinion,
     solo_lane,
-    superseded,
 )
 from issue_triage.issue_store import IssueStore
 from pipeline import gates, headless_agent, prove, settings, storekit, threats
@@ -169,6 +168,8 @@ def solve(store: IssueStore, n: int, *, guidance: str | None, trigger: str,
         store, workdir, issue=n, report=report, base=base, action="fix", lane="cross",
         models=list(settings.issue_fix_models()), res=res, started=started,
         finished=storekit.now(), trigger=trigger, extra=_words(guidance, notes))
+    if record["ending"] == "fixed":
+        record = _second_opinion(store, n, base, record, trigger=trigger, on_step=on_step)
     question = None
     if res.ending == "fix-disputed" and len((res.result or {}).get("readings") or []) >= 2:
         on_step("drafting the question")
@@ -180,6 +181,41 @@ def solve(store: IssueStore, n: int, *, guidance: str | None, trigger: str,
             question = {"no_question": f"drafting the question failed: {e}"}
         _keep_question(n, report, question)
     return record, question
+
+
+def _second_opinion(store: IssueStore, n: int, base: prove.PinnedBase, record: dict, *,
+                    trigger: str, on_step: Callable[[str], None]) -> dict:
+    """`record`, a fixed run, judged by the tests of other authors' pull
+    requests on issue `n` (`second_opinion`), and revised once when any fails
+    with it. The revision replaces the fix only when it ends `fixed`. The run
+    written carries every rival's entry."""
+    rivals, entries = second_opinion.rivals(n, exclude=set(), registry=Store().load_threats())
+    if not rivals and not entries:
+        return record
+    label = f"second-{n}"
+    gaps: list[tuple[second_opinion.Rival, dict]] = []
+    for rival in rivals:
+        on_step(f"second opinion: #{rival.pr}'s tests")
+        entry = second_opinion.judge(base, rival, record["result"]["patch"], label=label)
+        entries.append(entry)
+        if entry["verdict"] == "gap":
+            gaps.append((rival, entry))
+    result_file = propose.result_dir(n) / "result.json"
+    if gaps:
+        kept = result_file.read_text()
+        on_step("revising against the other pull requests' tests")
+        revised = revise(store, n, comments="", notes=second_opinion.notes(gaps),
+                         on_step=on_step, trigger=trigger)
+        if revised["ending"] == "fixed":
+            record = revised
+        else:
+            result_file.write_text(kept)
+        for rival, entry in gaps:
+            entries[entries.index(entry)] = second_opinion.recheck(
+                base, rival, record["result"]["patch"], entry, label=label)
+    record["result"]["second_opinion"] = entries
+    result_file.write_text(json.dumps(record, indent=2) + "\n")
+    return record
 
 
 def revise(store: IssueStore, n: int, *, comments: str,
@@ -258,16 +294,10 @@ def _note(store: IssueStore, n: int, text: str) -> None:
 def run_request(store: IssueStore, n: int, req: dict, *,
                 on_step: Callable[[str], None] = lambda step: None) -> tuple[str, str]:
     """Carry out issue `n`'s claimed request `req`, recording the outcome on the
-    issue. Returns the request's ending status (`done`, `failed`, or `cancelled`
-    for an attempt someone else's pull request superseded) and the one-line
-    outcome. An agent outage propagates, after the request is marked failed."""
+    issue. Returns the request's ending status (`done` or `failed`) and the
+    one-line outcome. An agent outage propagates, after the request is marked
+    failed."""
     action = req["action"]
-    mark = superseded.check(store, n)
-    if mark is not None:
-        outcome = f"Stepped aside: {fix_review.rival_open(mark)}"
-        _finish(store, n, req, "cancelled", outcome)
-        _note(store, n, outcome)
-        return "cancelled", outcome
     try:
         outcome = _carry_out(store, n, action, req, on_step=on_step)
         status = "done"
@@ -278,9 +308,6 @@ def run_request(store: IssueStore, n: int, req: dict, *,
         outcome, status = f"{action} failed: {e}", "failed"
     _finish(store, n, req, status, outcome)
     _note(store, n, outcome)
-    mark = superseded.check(store, n)
-    if mark is not None:
-        _note(store, n, f"Stepped aside: {fix_review.rival_open(mark)}")
     return status, outcome
 
 

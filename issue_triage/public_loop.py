@@ -13,10 +13,7 @@ GitHub. In scope (`in_scope`) are the issues a maintainer filed
 
 `sync` also starts what an operator's click starts in the app: a fixed attempt
 with no pull request queues `propose`, and a drafted question queues
-`ask-reporter`, once per attempt, with source `public`. An attempt someone
-else's pull request took up (`superseded`) carries no label and starts
-nothing; when it had asked a question on the issue, one comment says it is
-stepping back. `refresh` ingests the
+`ask-reporter`, once per attempt, with source `public`. `refresh` ingests the
 in-scope issues GitHub reports as updated since its last pass, so a new one
 reaches the store, and the hunter, without a full ingest; it reads them through
 the full ingest's GraphQL selection, so the bot's own labels and comments leave
@@ -160,8 +157,6 @@ def label_for(issue: Issue) -> str | None:
         return None
     run = issue.fix_run or {}
     kind = status[0]
-    if kind == "superseded":
-        return None
     if (pr := _proposed_pr(run)) is not None:
         state = fix_review.followup_for(issue.fix_followup, pr).get("state")
         if state == "done":
@@ -248,12 +243,6 @@ def _attempt_comments(issue: Issue, run: dict, now: datetime) -> list[Due]:
             out.append(Due(key, pr, "handed-back",
                            public_comments.handed_back(n, key, judged.get("reason"))))
         return out
-    mark = run.get("superseded")
-    if mark:
-        if not (run.get("question") or {}).get("asked") or not _recent(mark.get("at"), now):
-            return []
-        key = f"{attempt_key(run)}:superseded"
-        return [Due(key, n, "superseded", public_comments.superseded(n, key, mark["pr"]))]
     if label_for(issue) != COULDNT_FIX or not _recent(run.get("finished"), now):
         return []
     kind = public_comments.kind_for(str(run.get("ending") or ""))
@@ -289,7 +278,7 @@ def queue_due(issue: Issue, now: datetime, view: dict | None = None) -> Queued |
         return None
     status = fix_review.fix_status(issue)
     run = issue.fix_run or {}
-    if status is None or status[0] == "superseded":
+    if status is None:
         return None
     retry = _retry_of(issue, view or {})
     if retry is not None:
@@ -582,7 +571,6 @@ def _answerable(issue: Issue) -> bool:
     """Whether the attempt concluded in a way replies can restart."""
     run = issue.fix_run or {}
     if (issue.state != "open" or not run or _proposed_pr(run) is not None
-            or run.get("superseded")
             or (issue.fix_request or {}).get("status") in fix_review.IN_FLIGHT):
         return False
     return label_for(issue) in (NEEDS_ANSWER, COULDNT_FIX) or run.get("ending") == "cancelled"
