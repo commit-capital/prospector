@@ -178,7 +178,7 @@ def label_for(issue: Issue) -> str | None:
     if kind == "reporter":
         return NEEDS_ANSWER
     if kind == "declined":
-        return None if run.get("ending") == "cancelled" else COULDNT_FIX
+        return None if run.get("ending") in ("cancelled", "refused") else COULDNT_FIX
     if kind == "failed" and _retry_of(issue, issue.fix_public) is not None:
         return IN_PROGRESS
     return None

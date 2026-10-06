@@ -22,7 +22,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from issue_triage import reproduce_issue, review_issue_fix
+from issue_triage import intake_audit, reproduce_issue, review_issue_fix
 from pipeline import diffpaths, gates, headless_agent
 
 if TYPE_CHECKING:
@@ -178,9 +178,12 @@ def hold(boundary: dict | None, *, maintainer_filed: bool) -> str | None:
 
 
 def held(issue: Issue) -> str | None:
-    """Why issue's fixed, unproposed attempt waits for an operator, or None."""
+    """Why issue's fixed, unproposed attempt waits for an operator, or None: a
+    report the intake audit did not read as clear (`intake_audit.flag`), else
+    `hold`."""
     run = issue.fix_run or {}
     if run.get("ending") != "fixed" or (run.get("proposal") or {}).get("pr"):
         return None
-    return hold(run.get("boundary"),
-                maintainer_filed=gates.priority_author(issue.author, issue.author_association))
+    return intake_audit.flag(run.get("intake")) or hold(
+        run.get("boundary"),
+        maintainer_filed=gates.priority_author(issue.author, issue.author_association))

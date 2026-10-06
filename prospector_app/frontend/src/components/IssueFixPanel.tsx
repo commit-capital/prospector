@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   api, type IssueDetail, type IssueFixBody, type IssueFixBoundary, type IssueFixCandidate,
-  type IssueFixFollowup,
+  type IssueFixFollowup, type IssueFixIntake,
   type IssueFixQuestion,
   type IssueFixRun, type IssueFixStatus, type IssueFixThreadEntry,
 } from "../api";
@@ -368,8 +368,28 @@ function FixRunBody({ run, followup }: { run: IssueFixRun; followup: IssueFixFol
           )}
         </>
       )}
+      {run.intake && <Intake intake={run.intake} />}
       {run.boundary && <Boundary boundary={run.boundary} />}
       {run.candidates.length > 0 && <Candidates run={run} />}
+    </>
+  );
+}
+
+function Intake({ intake }: { intake: IssueFixIntake }) {
+  const tone = intake.verdict === "clear" ? "green" : intake.verdict === "malicious" ? "red" : "yellow";
+  return (
+    <>
+      <h4>Intake audit</h4>
+      <div className={`chip sm chip-${tone}`}>{intake.failed ? "didn't finish" : intake.verdict}</div>
+      {intake.reason && <div style={{ marginTop: 4 }}>{intake.reason}</div>}
+      {(intake.findings.length > 0 || (intake.hidden?.length ?? 0) > 0) && (
+        <ul style={{ margin: "4px 0 0 18px" }}>
+          {intake.findings.map((f, i) => (
+            <li key={i}><b>{f.kind}</b>: {f.why} <span className="muted">“{f.quote}”</span></li>
+          ))}
+          {(intake.hidden ?? []).map((h, i) => <li key={`h${i}`}><b>hidden</b>: {h}</li>)}
+        </ul>
+      )}
     </>
   );
 }

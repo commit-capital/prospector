@@ -125,3 +125,14 @@ def test_the_distilled_run_carries_the_boundary():
     boundary = {"crossings": [NETWORK], "reason": "r"}
     assert fix_review.distill({"ending": "fixed", "result": {"boundary": boundary}})[
         "boundary"] == boundary
+
+
+def test_a_report_the_intake_audit_did_not_clear_holds_its_fix(tmp_path):
+    store = IssueStore(tmp_path)
+    store.save_issue({"issue": 7, "meta": {"title": "t", "state": "open", "body": "b",
+                                           "updated_at": "2026-10-01T00:00:00Z",
+                                           "author": "rando", "author_association": "NONE"}})
+    intake = {"verdict": "suspicious", "findings": [], "reason": "talks to the agent"}
+    store.edit_issue(7).record_fix_run({"ending": "fixed", "patch": "p",
+                                        "boundary": {"crossings": []}, "intake": intake})
+    assert "talks to the agent" in (trust_boundary.held(store.load_issue(7)) or "")

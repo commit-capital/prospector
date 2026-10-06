@@ -23,6 +23,7 @@ from pathlib import Path
 
 from issue_triage import (
     fix_lane,
+    intake_audit,
     issue_gates,
     lane_check,
     lane_tree,
@@ -155,7 +156,7 @@ def author(worktree: str, *, title: str, body: str, env: dict[str, str],
         "__GUIDANCE__": headless_agent.fill(GUIDANCE, {"__TEXT__": guidance.strip()})
                         if guidance and guidance.strip() else "",
         "__NOTES__": headless_agent.fill(NOTES, {
-            "__TEXT__": _BLOCK_TAG_RE.sub("", notes).strip()})
+            "__TEXT__": _BLOCK_TAG_RE.sub("", intake_audit.visible(notes)).strip()})
                      if notes and notes.strip() else "",
         "__ATTEMPT__": headless_agent.fill(ATTEMPT, {
             "__SUMMARY__": attempt.get("summary") or "(none)",

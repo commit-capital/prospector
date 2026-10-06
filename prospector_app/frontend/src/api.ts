@@ -1388,6 +1388,15 @@ export interface IssueFixBoundary {
   failed?: boolean;
   reason?: string;
 }
+/** What the intake audit made of an outsider's report (issue_triage/intake_audit.py). */
+export interface IssueFixIntake {
+  verdict: "clear" | "suspicious" | "malicious";
+  findings: { kind: string; quote: string; why: string }[];
+  reason?: string;
+  hidden?: string[];
+  blocked?: boolean;
+  failed?: boolean;
+}
 export interface IssueFixQuestion {
   question: string;
   options: { label: string; behavior: string }[];
@@ -1430,6 +1439,7 @@ export interface IssueFixRun {
   proof: IssueFixProof;
   reviews: IssueFixReview[];
   boundary?: IssueFixBoundary | null;
+  intake?: IssueFixIntake | null;
   candidates: IssueFixCandidate[];
   question: IssueFixQuestion | null;
   proposal: { pr: number | string | null; url: string | null } | null;
