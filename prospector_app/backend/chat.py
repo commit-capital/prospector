@@ -599,8 +599,8 @@ def _build_context(pr: int | None, cluster: int | None, issue: int | None,
         return _advisory_context(advisory)
     if alert_source and alert:
         return _alert_context(alert_source, alert)
-    return (f"CONTEXT: Prospector, triaging the open PRs on {settings.repo()} "
-            "grouped into clusters. Answer the operator's general question about the codebase or triage.")
+    return (f"CONTEXT: Prospector on {settings.repo()}, no item selected. Answer the "
+            "operator's general question about the codebase or triage.")
 
 
 async def stream_chat(question: str, pr: int | None = None, cluster: int | None = None,

@@ -127,7 +127,9 @@ documented form.
 No receipt means "drafted, not filed."
 
 ## Making changes upstream (as {bot})
-These post live as `{bot}` on `{repo}`; each helper mints its own token.
+These post live as `{bot}` on `{repo}`, and are granted only where the bot token
+can be minted: if denied, bot writes are unavailable here. Retry once on an
+expired token.
 
     prospector_app/agent/gh-write pr edit <N> [--title "..."] [--body "..."]    # title and body only
     prospector_app/agent/gh-write pr comment <N> --body "..."
@@ -149,8 +151,6 @@ These post live as `{bot}` on `{repo}`; each helper mints its own token.
   missing, stale, or errored (not merely below the bar), post its mention alone
   as the whole comment with `gh-write pr comment`.
 - **Never merge**; you have no merge command.
-- A write reporting the bot token unavailable: report its diagnostic. An expired
-  token: retry once.
 
 ## Resubmitting a PR (as the operator, not the bot)
 For a small fix its author isn't making, you can commit to the contributor's
