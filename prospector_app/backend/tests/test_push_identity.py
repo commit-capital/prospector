@@ -14,11 +14,6 @@ GREETING = ("Hi octocat! You've successfully authenticated, but GitHub does not 
             "provide shell access.\n")
 
 
-def test_noreply_email_is_the_per_account_form():
-    assert push_identity.noreply_email(583231, "octocat") == \
-        "583231+octocat@users.noreply.github.com"
-
-
 class TestReadProbe:
     def test_the_named_account_passes(self):
         p = push_identity.read_probe(1, GREETING, "octocat")

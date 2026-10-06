@@ -222,6 +222,12 @@ def operator_login(*, timeout: int = 20) -> str | None:
     return login if isinstance(login, str) and login else None
 
 
+def noreply_email(user_id: int, login: str) -> str:
+    """GitHub's per-account no-reply address, which links a commit to the
+    account without committing a real address."""
+    return f"{user_id}+{login}@users.noreply.github.com"
+
+
 def check_runs(sha: str) -> list[dict]:
     """The commit's check runs from GitHub as `[{app, name, status, conclusion,
     title, summary, url}]`, deduped by (name, conclusion), superseded re-runs

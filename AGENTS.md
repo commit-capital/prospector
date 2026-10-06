@@ -39,6 +39,10 @@ own branches while still being unable to reach the triage repository.
   actors, so it cannot scope a restriction to one account, and this is where the
   user's reach is actually bounded. With the worker identity unset every
   unattended push refuses; it never falls back to the operator or the App.
+  What the push user commits is authored as the App's bot account
+  (`resubmit_identity.commit_identity`; the push user itself with no App), so a
+  pull request the App opens reads as one actor and a squash merge has no
+  machine user to credit.
 - **Writes** use a token minted from `TRIAGE_BOT_KEY_FILE` by
   `pipeline/get-bot-token.sh`, and are attributed to `TRIAGE_BOT_LOGIN`. When a
   bot token cannot be minted, the executor obtains no token and **every write is
@@ -450,7 +454,7 @@ run must pass `issue_gates.propose_gate` (ended `fixed`, issue still open, repor
 unedited, patch scans clear) and its rendering `fix_pr_body.problems` (the
 profile's required sections, each filled by its heading; exactly `Fixes #N`;
 agent text held to inert plain text; a tier-0 change carries a warning); the push user commits the exact patch on
-the proven base and pushes it to its own fork of `TRIAGE_REPO`, fenced by
+the proven base, authored as the App, and pushes it to its own fork of `TRIAGE_REPO`, fenced by
 `propose.assert_propose_target` to branch `prospector/issue-<n>-<report sha[:8]>`
 (suffixed `-<k>`, 2 to `propose.MAX_ATTEMPTS`, for the report's k-th proposal),
 never overwriting one (a branch already holding the same change on the same base,

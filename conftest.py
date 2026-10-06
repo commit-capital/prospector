@@ -66,6 +66,15 @@ def _no_real_ai_account(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_bot_account_lookup(monkeypatch):
+    """`resubmit_identity.commit_identity` asks GitHub for the App's bot
+    account; no test reaches it, so machine commits carry the push user. A test
+    that needs the App's account sets one."""
+    from prospector_app.backend import resubmit_identity
+    monkeypatch.setattr(resubmit_identity, "_account_id", lambda login: None)
+
+
+@pytest.fixture(autouse=True)
 def _no_related_pr_search(monkeypatch):
     """`related_prs.search` asks GitHub's search which pull requests name an
     issue; no test reaches it. A test that needs pull requests found sets them."""

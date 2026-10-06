@@ -159,7 +159,7 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("TRIAGE_PUSH_LOGIN", "deployment", "text", "Push user", "(none)",
             "The GitHub user that pushes fixes."),
     Setting("TRIAGE_PUSH_EMAIL", "deployment", "text", "Push user email", "(none)",
-            "The push user's commit email."),
+            "The push user's no-reply email, its commit email when no App is configured."),
     Setting("TRIAGE_PUSH_SSH_KEY_FILE", "deployment", "path", "Push user SSH key", "(none)",
             "The push user's SSH key file."),
     Setting("TRIAGE_REVIEW_PROVIDER", "deployment", "text", "Review provider", "auto",
