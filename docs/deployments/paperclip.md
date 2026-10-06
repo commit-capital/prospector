@@ -31,7 +31,7 @@ proposes merging anything with an open flag.
 
 ## Operating rules
 
-`CLAUDE.md` at the repo root is the authoritative trust model for this
+`AGENTS.md` at the repo root is the authoritative trust model for this
 deployment — read it before doing anything that writes upstream. In short:
 reads run as the operator's local `gh` login; writes go through the app
 executor only, as `commitperclip`, gated per-PR by `pipeline/gates.py`, and

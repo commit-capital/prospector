@@ -15,7 +15,7 @@ It sits between the pipeline's CLUSTER + ANALYZE phases (produce the analysis)
 and the app executor (posts the action). It is **read-only against
 `TRIAGE_REPO`** — it never runs `gh pr close/comment/merge/review`. The operator
 posts the drafted comment through the app UI (gated, logged, as
-`TRIAGE_BOT_LOGIN`); see the trust model in `CLAUDE.md`.
+`TRIAGE_BOT_LOGIN`); see the trust model in `AGENTS.md`.
 
 ## Why this exists: the rationale is a claim, not a fact
 
