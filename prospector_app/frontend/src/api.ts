@@ -1403,6 +1403,8 @@ export interface IssueFixRivalEntry {
   author: string | null;
   verdict: "covered" | "gap" | "gap-closed" | "gap-open" | "skipped";
   why: string;
+  /** Cases the comparison judge found the fix misses. */
+  missed?: string[];
 }
 export interface IssueFixQuestion {
   question: string;

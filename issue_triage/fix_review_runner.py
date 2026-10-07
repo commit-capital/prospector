@@ -38,6 +38,7 @@ from issue_triage import (
     fix_review,
     intake_audit,
     propose,
+    related_prs,
     second_opinion,
     solo_lane,
 )
@@ -192,11 +193,13 @@ def _second_opinion(store: IssueStore, n: int, base: prove.PinnedBase, record: d
     rivals, entries = second_opinion.rivals(n, exclude=set(), registry=Store().load_threats())
     if not rivals and not entries:
         return record
+    title, body = fix_lane.reported_text(store, n) or ("", "")
     label = f"second-{n}"
     gaps: list[tuple[second_opinion.Rival, dict]] = []
     for rival in rivals:
         on_step(f"second opinion: #{rival.pr}'s tests")
-        entry = second_opinion.judge(base, rival, record["result"]["patch"], label=label)
+        entry = second_opinion.judge(base, rival, record["result"]["patch"], label=label,
+                                     title=title, body=body)
         entries.append(entry)
         if entry["verdict"] == "gap":
             gaps.append((rival, entry))
@@ -212,7 +215,8 @@ def _second_opinion(store: IssueStore, n: int, base: prove.PinnedBase, record: d
             result_file.write_text(kept)
         for rival, entry in gaps:
             entries[entries.index(entry)] = second_opinion.recheck(
-                base, rival, record["result"]["patch"], entry, label=label)
+                base, rival, record["result"]["patch"], entry, label=label, title=title,
+                body=body)
     record["result"]["second_opinion"] = entries
     result_file.write_text(json.dumps(record, indent=2) + "\n")
     return record
@@ -334,6 +338,9 @@ def _carry_out(store: IssueStore, n: int, action: str, req: dict, *,
                                  on_step=on_step, unattended=unattended)
         _write_run(store, n, record, question)
         return f"Solved: {record['ending']} — {record['detail']}"
+    if action == "send-back" and req.get("rivals"):
+        return _late_rivals(store, n, [int(p) for p in req["rivals"]],
+                            live=settings.issue_fix_followup() == "live", on_step=on_step)
     if action == "send-back" and req.get("source") == "followup":
         return _revise_proposal(store, n, guidance or "", notes=notes, trigger="followup",
                                 live=settings.issue_fix_followup() == "live", on_step=on_step)
@@ -368,9 +375,11 @@ def _carry_out(store: IssueStore, n: int, action: str, req: dict, *,
 
 
 def _revise_proposal(store: IssueStore, n: int, guidance: str, *, trigger: str, live: bool,
-                     on_step: Callable[[str], None], notes: str | None = None) -> str:
+                     on_step: Callable[[str], None], notes: str | None = None,
+                     amend: Callable[[dict], bool] | None = None) -> str:
     """Revise the fix behind issue `n`'s open pull request under `guidance`
-    and `notes` and, when the revision ends `fixed`, push it onto the same branch
+    and `notes` and, when the revision ends `fixed` and `amend` (given the
+    revised record to complete) passes it, push it onto the same branch
     (`executor.update_issue_fix_proposal`) and set the follow-up watching the
     new head. A revision that ends any other way, or does not reach the pull
     request, leaves the pull request, the run it shows, and the result on disk
@@ -394,6 +403,9 @@ def _revise_proposal(store: IssueStore, n: int, guidance: str, *, trigger: str, 
         result_file.write_text(kept)
         return (f"The revision ended {record.get('ending')}: {record.get('detail')}; "
                 f"#{pr} is unchanged")
+    if amend is not None and not amend(record):
+        result_file.write_text(kept)
+        return f"The revision does not answer what it was for; #{pr} is unchanged"
     on_step("pushing the revision")
     token = executor.mint_bot_token() if live else None
     res = executor.update_issue_fix_proposal(n, pr, push=True, token=token, dry_run=not live)
@@ -412,6 +424,69 @@ def _revise_proposal(store: IssueStore, n: int, guidance: str, *, trigger: str, 
         edit.record_fix_followup({**fu, "state": "watching",
                                   "reason": "revision pushed; following up the new head"})
     return f"Revised #{pr}: {res.get('detail')}"
+
+
+def _late_rivals(store: IssueStore, n: int, prs: list[int], *, live: bool,
+                 on_step: Callable[[str], None]) -> str:
+    """Judge the fix behind issue `n`'s open pull request by the tests of the
+    other authors' pull requests `prs` (`second_opinion`), and revise it onto
+    the pull request when that closes a gap they find. The entries join the
+    run's `second_opinion`; a gap left open hands the pull request back."""
+    record = _last_record(n)
+    base = _revision_base(record)
+    registry = Store().load_threats()
+    related = {r["number"]: r for r in related_prs.search(n) or []}
+    title, body = fix_lane.reported_text(store, n) or ("", "")
+    label = f"second-{n}"
+    entries: list[dict] = []
+    gaps: list[tuple[second_opinion.Rival, dict]] = []
+    for pr in prs:
+        if pr not in related:
+            entries.append({"pr": pr, "author": None, "source": "pr", "verdict": "skipped",
+                            "why": "it no longer names the issue"})
+            continue
+        loaded = second_opinion.load(related[pr], registry)
+        if isinstance(loaded, second_opinion.Rival):
+            on_step(f"second opinion: #{pr}'s tests")
+            loaded_entry = second_opinion.judge(base, loaded, record["result"]["patch"],
+                                                label=label, title=title, body=body)
+            if loaded_entry["verdict"] == "gap":
+                gaps.append((loaded, loaded_entry))
+            entries.append(loaded_entry)
+        else:
+            entries.append(loaded)
+    prior = list(record["result"].get("second_opinion") or [])
+    result_file = propose.result_dir(n) / "result.json"
+
+    def amend(revised: dict) -> bool:
+        for rival, entry in gaps:
+            entries[entries.index(entry)] = second_opinion.recheck(
+                base, rival, revised["result"]["patch"], entry, label=label, title=title,
+                body=body)
+        revised["result"]["second_opinion"] = prior + entries
+        result_file.write_text(json.dumps(revised, indent=2) + "\n")
+        return any(e["verdict"] == "gap-closed" for e in entries)
+
+    outcome = "; ".join(f"#{e['pr']} {e['verdict']}" for e in entries)
+    if gaps:
+        outcome = _revise_proposal(store, n, "", notes=second_opinion.notes(gaps),
+                                   trigger="followup", live=live, on_step=on_step, amend=amend)
+    entries[:] = [{**e, "verdict": "gap-open", "why": f"{e['why']}; no revision passed them"}
+                  if e["verdict"] == "gap" else e for e in entries]
+    current = _last_record(n)
+    if current["result"].get("second_opinion") != prior + entries:
+        current["result"]["second_opinion"] = prior + entries
+        result_file.write_text(json.dumps(current, indent=2) + "\n")
+    edit = store.edit_issue(n)
+    edit.record_fix_run({**(edit.fix_run or {}), "second_opinion": prior + entries})
+    held = second_opinion.flag(entries)
+    pr = fix_review.open_pr(edit)
+    fu = fix_review.followup_for(edit.fix_followup, pr)
+    if held and fu:
+        edit.record_fix_followup({**fu, "state": "handed-back", "reason": held[:400],
+                                  "judged": {"head_sha": fu.get("head_sha"),
+                                             "reason": held[:400]}})
+    return f"Second opinion: {outcome}"
 
 
 def _bot_action(store: IssueStore, n: int, action: str, *, dry_run: bool) -> str:

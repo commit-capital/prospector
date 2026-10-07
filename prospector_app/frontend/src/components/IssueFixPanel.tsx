@@ -400,6 +400,9 @@ function SecondOpinion({ entries }: { entries: IssueFixRivalEntry[] }) {
             {e.author ? ` by ${e.author}` : ""}{" "}
             <span className={`chip sm chip-${RIVAL_TONE[e.verdict]}`}>{e.verdict}</span>{" "}
             <span className="muted">{e.why}</span>
+            {(e.missed?.length ?? 0) > 0 && (
+              <ul style={{ margin: "2px 0 0 18px" }}>{e.missed?.map((m, i) => <li key={i}>{m}</li>)}</ul>
+            )}
           </li>
         ))}
       </ul>

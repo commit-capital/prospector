@@ -21,9 +21,15 @@ it would reintroduce the vetting this direction removes.
 - **Credit only when it changed the fix.** A closed gap makes the rival's author
   a co-author of the proposal's commit and names their pull request in its
   body; a rival that merely existed earns nothing.
-- **Deferred:** an agent judge comparing the two diffs for gaps no test shows,
-  the issue form's failing-test field, and a second opinion for rivals that
-  open after our pull request.
+- **Rivals that open after our pull request** get the same judgment from the
+  follow-up: each is judged once, a gap the revision closes goes onto our pull
+  request with the credit on its commit, and a gap no revision closes hands it
+  back.
+- **A comparison judge** reads the report, our change and the rival's change,
+  with no tools and all three as data, and names in words each case the report
+  asks for that their change handles and ours misses. Those cases are gaps too;
+  the revision is told the words, never their code, and a recheck compares
+  again. A rival without tests is judged by its change alone.
 
 ## Design
 
@@ -43,6 +49,12 @@ it would reintroduce the vetting this direction removes.
   Co-authored-by value at GitHub's noreply address.
 - `flag(entries)` — why a fix with a gap open waits for an operator; read by
   `trust_boundary.held`.
+
+`followup.poll` names the rivals it has not seen (`fix_followup.rivals_seen`)
+and queues a `send-back` carrying them; `fix_review_runner._late_rivals` judges
+them against the open pull request's fix, revises through `_revise_proposal`
+(whose `amend` rechecks before the push), and hands the pull request back on a
+gap left open.
 
 `fix_review_runner.solve` runs it after a fixed cross lane (`_second_opinion`),
 records every entry on the run as `second_opinion`, and `fix_review.distill`

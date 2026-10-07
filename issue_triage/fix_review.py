@@ -102,7 +102,8 @@ def open_pr(issue: Issue) -> int | None:
 
 
 def _fits(action: str, run: dict | None, *, guidance: str | None, answer: dict | None,
-          pr: int | None, followup: dict | None = None, notes: str | None = None) -> str | None:
+          pr: int | None, followup: dict | None = None, notes: str | None = None,
+          rivals: list[int] | None = None) -> str | None:
     """Why `action` does not fit the latest attempt `run`, open as pull request
     `pr` and followed up in `followup`, or None when it does."""
     if action == "solve":
@@ -114,7 +115,7 @@ def _fits(action: str, run: dict | None, *, guidance: str | None, answer: dict |
     if action == "send-back":
         if not run.get("patch"):
             return "the attempt holds no change to send back"
-        if not (guidance or "").strip() and not (notes or "").strip():
+        if not (guidance or "").strip() and not (notes or "").strip() and not rivals:
             return "sending a fix back needs your comments"
         return None
     if action == "answer":
@@ -147,11 +148,13 @@ def _fits(action: str, run: dict | None, *, guidance: str | None, answer: dict |
 
 def queue(store: IssueStore, n: int, action: str, *, by: str, source: str = "operator",
           guidance: str | None = None, answer: dict | None = None,
-          notes: str | None = None, dry_run: bool = False) -> tuple[bool, str]:
+          notes: str | None = None, rivals: list[int] | None = None,
+          dry_run: bool = False) -> tuple[bool, str]:
     """Queue `action` on issue `n`'s fix attempt for the worker, recording the
     words it carries in the thread. `guidance` is an operator's or maintainer's
     instruction; `notes` are words from anyone else — the issue's author, the
-    code reviewers, CI — which the fix agent weighs as data. A request that
+    code reviewers, CI — which the fix agent weighs as data. `rivals` names other
+    authors' pull requests whose tests a `send-back` judges the fix by. A request that
     retries a failed one of the same action carries its attempt count on.
     (ok, reason)."""
     issue = store.load_issue(n)
@@ -163,7 +166,7 @@ def queue(store: IssueStore, n: int, action: str, *, by: str, source: str = "ope
     if req and req.get("status") in IN_FLIGHT:
         return False, f"a {req.get('action')} request is already {req.get('status')}"
     why = _fits(action, issue.fix_run, guidance=guidance, answer=answer, pr=open_pr(issue),
-                followup=issue.fix_followup, notes=notes)
+                followup=issue.fix_followup, notes=notes, rivals=rivals)
     if why:
         return False, why
     retry = bool(req and req.get("status") == "failed" and req.get("action") == action)
@@ -176,6 +179,8 @@ def queue(store: IssueStore, n: int, action: str, *, by: str, source: str = "ope
         section["answer"] = answer
     if notes and notes.strip():
         section["notes"] = notes.strip()
+    if rivals:
+        section["rivals"] = list(rivals)
     issue.record_fix_request(section)
     given = answer or {}
     words = "\n\n".join(w for w in ((guidance or "").strip(), str(given.get("text") or "").strip(),

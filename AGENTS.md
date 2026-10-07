@@ -548,9 +548,11 @@ ends `fixed`, the open pull requests by others that claim to fix the issue — a
 most three with tests, none whose author is blocklisted or whose diff reads
 malicious — have their test files run in the sandbox on the base (they must
 fail twice), with their own change (they must pass twice), and with our fix.
-Tests that clear the first two and fail with ours are a gap, and the runner
-revises the fix once with notes naming the failing tests and quoting their code
-as data, never the other author's change; the revision faces every check a fix
+Tests that clear the first two and fail with ours are a gap, and so is any case
+the report asks for that a judge with no tools (`second_opinion.compare`) finds
+their change handles and ours misses, named in words. The runner revises the
+fix once with notes naming the failing tests, quoting their code as data, and
+listing the judge's cases, never the other author's change; the revision faces every check a fix
 does and replaces the fix only when it ends `fixed`. Each rival's entry
 (`covered`, `gap-closed`, `gap-open`, `skipped`) rides the run as
 `second_opinion`; a gap left open holds the fix (`trust_boundary.held`), and a
@@ -589,7 +591,12 @@ file), `describe`
 (the description re-rendered once per head and posted only when it differs),
 `rerun` (failed jobs re-run once per head), `revise` (a reviewer below its bar,
 or CI failing after a re-run in a job whose log names a changed file — the
-findings or log lines go to the agent as quoted evidence), `wait`, or `ready`.
+findings or log lines go to the agent as quoted evidence), `second-opinion`
+(another author's pull request with tests that opened since, each judged once:
+a `send-back` carrying `rivals` that the runner judges like a solve's second
+opinion, pushing a revision only when it closes a gap they find and handing the
+pull request back when none does), `wait`, or `ready`; a new rival releases a
+ready hold.
 Ahead of every bot signal, new maintainer feedback on the pull request (their
 reviews with words, unresolved inline comments and comments, read from the
 same feed with `authorAssociation`) that `issue_triage/reply_router.py` — one
