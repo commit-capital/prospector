@@ -31,7 +31,11 @@ ERROR_CHARS = 1500
 def _record_unexpected_error(result: dict, error: Exception) -> None:
     logger.error("compile preflight failed unexpectedly",
                  exc_info=(type(error), error, error.__traceback__))
-    result["error"] = f"{type(error).__name__}: {str(error)[-ERROR_CHARS:]}"
+    # A build failure's text is the build's own output tail; any other
+    # exception's stays in the server log.
+    result["error"] = (f"BuildFailure: {str(error)[-ERROR_CHARS:]}"
+                       if isinstance(error, verify_driver.BuildFailure)
+                       else "compile preflight failed unexpectedly; see server logs")
 
 
 def run_for_patch(pr: int, head_sha: str, patch: Path) -> dict | None:
