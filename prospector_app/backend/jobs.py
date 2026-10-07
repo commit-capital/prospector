@@ -186,7 +186,7 @@ JOB_SPECS: dict[str, JobSpec] = {
         "agentic": True,
         "ledger": ("issue", ("find-fixed",)),
         "needs_count": True,
-        "count_default": 12,
+        "count_default": 200,
         "count_noun": "issues",
         "argv_fn": lambda n: [*PIPELINE_PY, "-u",
                               str(REPO_ROOT / "issue_triage" / "find_fixed.py"),

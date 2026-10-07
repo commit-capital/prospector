@@ -551,7 +551,7 @@ def test_job_runtimes_route_serves_the_ledger_runtimes(monkeypatch):
 def test_count_jobs_name_their_own_default_and_noun():
     specs = {s["kind"]: s for s in jobs.list_specs()}
     assert (specs["security-sweep"]["count_default"], specs["security-sweep"]["count_noun"]) == (12, "records")
-    assert specs["issue-find-fixed"]["count_default"] == 12
+    assert specs["issue-find-fixed"]["count_default"] == 200
     assert specs["issue-analyze"]["count_default"] == 200
     assert specs["analyze-clusters"]["count_default"] == 20
     assert all(s["count_default"] is not None for s in specs.values() if s["needs_count"])
