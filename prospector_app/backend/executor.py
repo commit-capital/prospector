@@ -1201,9 +1201,8 @@ def propose_issue_fix(issue: int, *, token: str | None, dry_run: bool = True) ->
 
     summary = str(result.get("summary") or "")
     title_text = fix_pr_body.title(issue, summary)
-    co_authors = [c for r in second_opinion.credit(result.get("second_opinion"))
-                  if (c := second_opinion.co_author(str(r["author"])))]
-    message = fix_pr_body.commit_message(issue, summary, co_authors)
+    message = fix_pr_body.commit_message(
+        issue, summary, second_opinion.co_authors(result.get("second_opinion")))
     tests = [p for p in diffpaths.changed_paths(patch) if diffpaths.is_test_path(p)]
     body = fix_pr_body.render(
         issue=issue, result=result, tests=tests, base_sha=record["base_sha"],
@@ -1249,7 +1248,15 @@ def update_issue_fix_proposal(issue: int, pr: int, *, push: bool, token: str | N
     request must be open from one of the report's lane branches on the push
     user's fork. A dry-run does everything up to the writes; with no token
     every run is one. Every outcome is logged to Activity."""
-    from issue_triage import fetch_issues, fix_lane, fix_pr_body, issue_gates, propose, related_prs
+    from issue_triage import (
+        fetch_issues,
+        fix_lane,
+        fix_pr_body,
+        issue_gates,
+        propose,
+        related_prs,
+        second_opinion,
+    )
     from pipeline import describe_pr, diffpaths
     from pipeline.gh import gh_json
 
@@ -1284,7 +1291,8 @@ def update_issue_fix_proposal(issue: int, pr: int, *, push: bool, token: str | N
     patch = str(result["patch"])
     summary = str(result.get("summary") or "")
     title_text = fix_pr_body.title(issue, summary)
-    message = fix_pr_body.commit_message(issue, summary)
+    message = fix_pr_body.commit_message(
+        issue, summary, second_opinion.co_authors(result.get("second_opinion")))
     tests = [p for p in diffpaths.changed_paths(patch) if diffpaths.is_test_path(p)]
     body = fix_pr_body.render(
         issue=issue, result=result, tests=tests, base_sha=record["base_sha"],

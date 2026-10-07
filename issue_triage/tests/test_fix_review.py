@@ -608,3 +608,71 @@ def test_a_revision_that_does_not_end_fixed_keeps_the_fix_and_holds_it(store, ri
     assert [e["verdict"] for e in record["result"]["second_opinion"]] == ["skipped", "gap-open"]
     fix_review_runner._write_run(store, 7, record, None)
     assert "#12" in (trust_boundary.held(store.load_issue(7)) or "")
+
+
+# --- a rival that opened after the proposal ------------------------------------------
+
+@pytest.fixture
+def late_rival(store, proposed, monkeypatch):
+    """Issue 7 open as #9; rival #12's tests judge it, with the revision, the
+    recheck and the push faked."""
+    from issue_triage import related_prs, second_opinion
+    from pipeline import prove
+    from prospector_app.backend import executor
+    rival = second_opinion.Rival(pr=12, author="contrib", title="t", tests="T", fix="F",
+                                 test_paths=["x.test.ts"])
+    state: dict = {"judge": "gap", "recheck": "gap-closed", "pushes": []}
+    monkeypatch.setattr(related_prs, "search", lambda issue, exclude=None: [
+        {"number": 12, "title": "t", "state": "open", "author": "contrib", "closes": True}])
+    monkeypatch.setattr(fix_review_runner, "Store", lambda: type(
+        "Threats", (), {"load_threats": lambda self: {"actors": {}}})())
+    monkeypatch.setattr(second_opinion, "load", lambda r, registry: rival)
+    monkeypatch.setattr(second_opinion, "judge", lambda base, r, patch, **kw: {
+        "pr": 12, "author": "contrib", "source": "pr", "verdict": state["judge"], "why": "w",
+        "output": "FAIL x.test.ts"})
+    monkeypatch.setattr(second_opinion, "recheck", lambda base, r, patch, entry, **kw: {
+        **entry, "verdict": state["recheck"], "why": "rechecked"})
+    monkeypatch.setattr(fix_review_runner, "_revision_base", lambda record: prove.PinnedBase(
+        sha="a" * 40, tier=2, image="img", clone=proposed.parent))
+    monkeypatch.setattr(fix_review_runner, "revise", _revised(proposed))
+    monkeypatch.setattr(executor, "mint_bot_token", lambda: "t")
+    monkeypatch.setattr(executor, "update_issue_fix_proposal",
+                        lambda n, pr, **kw: state["pushes"].append(kw) or {
+                            "status": "executed", "detail": "Pushed a revision on #9"})
+    fix_review.queue(store, 7, "send-back", by="followup", source="followup", rivals=[12])
+    return state
+
+
+def _late(store: IssueStore) -> str:
+    return fix_review_runner.run_request(store, 7, store.claim_fix_request(7, host="s"))[1]
+
+
+def test_a_late_rival_our_fix_already_passes_is_recorded_and_nothing_is_pushed(store,
+                                                                           late_rival):
+    late_rival["judge"] = "covered"
+    _late(store)
+    issue = store.load_issue(7)
+    assert late_rival["pushes"] == []
+    assert [e["verdict"] for e in issue.fix_run["second_opinion"]] == ["covered"]
+
+
+def test_a_late_rival_s_gap_the_revision_closes_goes_onto_the_pull_request(store, late_rival,
+                                                                        proposed):
+    outcome = _late(store)
+    issue = store.load_issue(7)
+    assert "Revised #9" in outcome and late_rival["pushes"][0]["push"] is True
+    assert [e["verdict"] for e in issue.fix_run["second_opinion"]] == ["gap-closed"]
+    assert json.loads(proposed.read_text())["result"]["second_opinion"][0]["verdict"] == (
+        "gap-closed")
+
+
+def test_a_late_rival_s_gap_the_revision_leaves_open_hands_the_pull_request_back(
+        store, late_rival, proposed):
+    late_rival["recheck"] = "gap-open"
+    kept_patch = json.loads(proposed.read_text())["result"]["patch"]
+    _late(store)
+    issue = store.load_issue(7)
+    assert late_rival["pushes"] == []
+    assert json.loads(proposed.read_text())["result"]["patch"] == kept_patch
+    assert [e["verdict"] for e in issue.fix_run["second_opinion"]] == ["gap-open"]
+    assert issue.fix_followup["state"] == "handed-back" and "#12" in issue.fix_followup["reason"]

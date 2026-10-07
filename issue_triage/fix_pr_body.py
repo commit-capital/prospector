@@ -113,8 +113,8 @@ def _credited(result: dict) -> list[str]:
     credited = second_opinion.credit(result.get("second_opinion"))
     if not credited:
         return []
-    return ["", "Tests in these pull requests found a case the first version of this fix "
-                "missed; it was revised until it passes them. Thank you:",
+    return ["", "These pull requests showed a case the first version of this fix missed; it "
+                "was revised to handle it. Thank you:",
             *[f"- #{int(c['pr'])} by {inert(str(c['author']), 60)}" for c in credited]]
 
 

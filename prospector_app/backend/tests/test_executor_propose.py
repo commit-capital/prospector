@@ -319,3 +319,15 @@ def test_a_proposal_credits_the_rival_whose_test_changed_the_fix(lane, monkeypat
     assert lane["pushes"][0]["message"].endswith(
         "Co-authored-by: contrib <123+contrib@users.noreply.github.com>\n")
     assert "#12 by contrib" in lane["posts"][0]["body"]
+
+
+def test_a_revision_credits_the_rival_whose_test_it_answers(lane, monkeypatch):
+    from issue_triage import second_opinion
+    monkeypatch.setattr(second_opinion, "co_author",
+                        lambda login: f"{login} <123+{login}@users.noreply.github.com>")
+    lane["record"]["result"]["second_opinion"] = [
+        {"pr": 12, "author": "contrib", "verdict": "gap-closed", "why": "w"}]
+    res = executor.update_issue_fix_proposal(7, 9, push=True, token="tok", dry_run=False)
+    assert res["status"] == "executed"
+    assert lane["revisions"][0]["message"].endswith(
+        "Co-authored-by: contrib <123+contrib@users.noreply.github.com>\n")

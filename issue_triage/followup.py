@@ -59,7 +59,7 @@ from typing import TYPE_CHECKING
 
 from datetime import datetime, timezone
 
-from issue_triage import reply_router
+from issue_triage import reply_router, second_opinion
 from pipeline import ci_signal, diffpaths, gates, gh, review_fetch, review_policy, reviewers
 from pipeline import settings, storekit
 
@@ -117,6 +117,7 @@ class Step:
     jobs: list[int] = field(default_factory=list)
     maintainer: bool = False
     notes: str | None = None
+    rivals: list[int] = field(default_factory=list)
 
 
 def read(pr: int) -> PrState | None:
@@ -274,19 +275,20 @@ def related_logs(logs: dict[str, str], patch: str) -> dict[str, str]:
 
 
 def decide(pr: PrState, fu: dict | None, *, logs: dict[str, str] | None = None,
-           patch: str = "", feedback: str | None = None, missed: str | None = None) -> Step:
+           patch: str = "", feedback: str | None = None, missed: str | None = None,
+           rivals: list[int] | None = None) -> Step:
     """The next step for `pr`, given the issue's follow-up record `fu`, — once a
     re-run has run at this head — the failing jobs' log excerpts by job name,
-    the guidance from
-    new maintainer feedback that asks for a change, and why a maintainer
-    revision left the head where it was (`missed`)."""
+    the guidance from new maintainer feedback that asks for a change, why a
+    maintainer revision left the head where it was (`missed`), and the other
+    authors' pull requests with tests that opened since (`rivals`)."""
     fu = fu or {}
     head = pr.head_sha
     if pr.state != "open":
         return Step("done", f"#{pr.number} merged" if pr.state == "merged"
                     else f"#{pr.number} was closed without merging")
     if (fu.get("head_sha") == head and fu.get("state") in ("handed-back", "ready")
-            and not feedback):
+            and not feedback and not rivals):
         return Step("wait", f"{fu['state']} at this head")
     if missed and not feedback:
         return Step("hand-back", f"the change a maintainer asked for did not land: {missed}",
@@ -297,6 +299,9 @@ def decide(pr: PrState, fu: dict | None, *, logs: dict[str, str] | None = None,
                                      "reviews spent", maintainer=True)
         return Step("revise", "a maintainer asked for a change", guidance=feedback,
                     maintainer=True)
+    if rivals:
+        return Step("second-opinion", ", ".join(f"#{r}" for r in rivals)
+                    + " also claim to fix the issue", rivals=rivals)
     if fu.get("described_head") != head:
         return Step("describe", "the description is re-rendered once per head")
     failing = _failing(pr.checks)
@@ -422,10 +427,18 @@ def poll(store: IssueStore, *, mode: str | None = None,
         pending = fu.pop("maintainer_pending", None)
         if pending and pending.get("head_sha") == state.head_sha:
             missed = str((issue.fix_request or {}).get("reason") or "no change came of it")[:300]
-        step = decide(state, fu, patch=patch, feedback=asked, missed=missed)
+        seen = set(fu.get("rivals_seen") or [])
+        rivals: list[int] = []
+        if state.state == "open":
+            found, skipped = second_opinion.rivals(n, exclude={int(pr), *seen})
+            seen |= {e["pr"] for e in skipped}
+            fu["rivals_seen"] = sorted(seen)
+            rivals = [r.pr for r in found]
+        step = decide(state, fu, patch=patch, feedback=asked, missed=missed, rivals=rivals)
         if step.kind == "wait" and step.jobs:
             logs = {f"job {j}": text for j in step.jobs if (text := _job_log(j))}
-            step = decide(state, fu, logs=logs, patch=patch, feedback=asked, missed=missed)
+            step = decide(state, fu, logs=logs, patch=patch, feedback=asked, missed=missed,
+                          rivals=rivals)
         if asked:
             fu["feedback_seen_at"] = fresh[-1].at
         moved = fu.get("head_sha") != state.head_sha
@@ -458,6 +471,8 @@ def poll(store: IssueStore, *, mode: str | None = None,
                 fu["described_head"] = state.head_sha
             elif step.kind == "rerun":
                 fu.setdefault("reruns", {})[state.head_sha] = step.run_ids
+            elif step.kind == "second-opinion":
+                fu["rivals_seen"] = sorted(seen | set(step.rivals))
             else:
                 fu["state"] = "handed-back"
         elif step.kind == "describe":
@@ -473,6 +488,14 @@ def poll(store: IssueStore, *, mode: str | None = None,
                                                   dry_run=not token)
             fu.setdefault("reruns", {})[state.head_sha] = step.run_ids
             _note(store, n, f"Re-run: {res.get('detail')} ({step.reason}).")
+        elif step.kind == "second-opinion":
+            ok, why = fix_review.queue(store, n, "send-back", by="followup", source="followup",
+                                       rivals=step.rivals)
+            if ok:
+                fu["rivals_seen"] = sorted(seen | set(step.rivals))
+                _note(store, n, f"Judging the tests of {step.reason}.")
+            else:
+                _note(store, n, f"Could not queue the second opinion: {why}.")
         elif step.kind == "revise":
             by = fresh[-1].login if step.maintainer else "followup"
             ok, why = fix_review.queue(store, n, "send-back", by=by, source="followup",

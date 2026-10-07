@@ -93,6 +93,15 @@ def _no_trust_boundary_reviewer(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_comparison_judge(monkeypatch):
+    """`second_opinion.compare` runs an agent over another author's pull
+    request; no test reaches it, so it names no case our fix misses. A test
+    that needs cases sets them."""
+    from issue_triage import second_opinion
+    monkeypatch.setattr(second_opinion, "compare", lambda *a, **k: [])
+
+
+@pytest.fixture(autouse=True)
 def _no_intake_reviewer(monkeypatch):
     """`intake_audit.review` runs an agent over an outsider's report before the
     factory builds it; no test reaches it, so a report reads clear. A test that
