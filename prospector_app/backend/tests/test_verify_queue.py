@@ -14,6 +14,7 @@ from prospector_app.backend import data
 from prospector_app.backend import verify_queue
 from prospector_app.backend import verify_view
 from prospector_app.backend import verify_worker
+from prospector_app.backend import worker_children
 
 
 @pytest.fixture
@@ -391,6 +392,7 @@ def test_run_one_streams_and_finalizes(store, monkeypatch):
     argv_seen: list[list[str]] = []
 
     class FakeProc:
+        pid = 0
         stdout = iter(["line one\n", "line two\n"])
 
         def wait(self):
@@ -400,7 +402,7 @@ def test_run_one_streams_and_finalizes(store, monkeypatch):
         argv_seen.append([str(a) for a in argv])
         return FakeProc()
 
-    monkeypatch.setattr(verify_worker.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(worker_children.subprocess, "Popen", fake_popen)
     assert verify_worker.run_one(1) == 3
     assert "--from-queue" in argv_seen[0]
     assert "--pr" in argv_seen[0]

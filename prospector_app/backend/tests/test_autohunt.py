@@ -11,6 +11,7 @@ from pipeline.storekit import now as _now
 from prospector_app.backend import data
 from prospector_app.backend import service
 from prospector_app.backend import verify_worker
+from prospector_app.backend import worker_children
 from pipeline.testsupport import reviews_section, threat_section
 
 HEAD = "a" * 40
@@ -182,6 +183,7 @@ def test_run_security_argv_and_failure_memory(store, monkeypatch):
     argv_seen: list[list[str]] = []
 
     class FakeProc:
+        pid = 0
         stdout = iter(["lens output\n"])
 
         def wait(self):
@@ -191,7 +193,7 @@ def test_run_security_argv_and_failure_memory(store, monkeypatch):
         argv_seen.append([str(a) for a in argv])
         return FakeProc()
 
-    monkeypatch.setattr(verify_worker.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(worker_children.subprocess, "Popen", fake_popen)
     assert verify_worker.run_security(1) == 1
     assert any("security_review.py" in a for a in argv_seen[0])
     assert "--pr" in argv_seen[0]
@@ -221,12 +223,13 @@ def test_run_security_rc0_without_verdict_lands_in_failure_memory(store, monkeyp
     data.refresh()
 
     class FakeProc:
+        pid = 0
         stdout = iter(["lens output\n"])
 
         def wait(self):
             return 0
 
-    monkeypatch.setattr(verify_worker.subprocess, "Popen", lambda argv, **kw: FakeProc())
+    monkeypatch.setattr(worker_children.subprocess, "Popen", lambda argv, **kw: FakeProc())
     assert verify_worker.run_security(1) == 0
     assert 1 in verify_worker.security_failed
     data.refresh()
@@ -240,13 +243,14 @@ def test_run_security_rc0_with_verdict_clears_failure_memory(store, monkeypatch)
     data.refresh()
 
     class FakeProc:
+        pid = 0
         stdout = iter(["lens output\n"])
 
         def wait(self):
             _green(store, 1)
             return 0
 
-    monkeypatch.setattr(verify_worker.subprocess, "Popen", lambda argv, **kw: FakeProc())
+    monkeypatch.setattr(worker_children.subprocess, "Popen", lambda argv, **kw: FakeProc())
     assert verify_worker.run_security(1) == 0
     assert 1 not in verify_worker.security_failed
 
@@ -264,7 +268,7 @@ def test_run_security_pre_spawn_recheck_skips_already_cleared(store, monkeypatch
         spawned["count"] += 1
         raise AssertionError("must not spawn a subprocess")
 
-    monkeypatch.setattr(verify_worker.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(worker_children.subprocess, "Popen", fake_popen)
     assert verify_worker.run_security(1) is None
     assert spawned["count"] == 0
 
@@ -281,7 +285,7 @@ def test_run_security_declines_a_pr_another_machine_claimed(store, monkeypatch):
     def fake_popen(argv, **kw):
         raise AssertionError("must not spawn a subprocess")
 
-    monkeypatch.setattr(verify_worker.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(worker_children.subprocess, "Popen", fake_popen)
     assert verify_worker.run_security(1) is None
 
 
@@ -294,7 +298,7 @@ def test_run_security_releases_its_claim_when_the_run_fails(store, monkeypatch):
     def boom(argv, **kw):
         raise RuntimeError("spawn failed")
 
-    monkeypatch.setattr(verify_worker.subprocess, "Popen", boom)
+    monkeypatch.setattr(worker_children.subprocess, "Popen", boom)
     with pytest.raises(RuntimeError):
         verify_worker.run_security(1)
     assert store.claim_security_run(
@@ -933,12 +937,13 @@ class TestLaneHealth:
         data.refresh()
 
         class FakeProc:
+            pid = 0
             stdout = iter(["✗ the agent CLI could not run: 401 OAuth token expired\n"])
 
             def wait(self):
                 return security_review.EXIT_AGENT_UNAVAILABLE
 
-        monkeypatch.setattr(verify_worker.subprocess, "Popen", lambda argv, **kw: FakeProc())
+        monkeypatch.setattr(worker_children.subprocess, "Popen", lambda argv, **kw: FakeProc())
         assert verify_worker.run_security(1) == security_review.EXIT_AGENT_UNAVAILABLE
         assert 1 not in verify_worker.security_failed
         rec = self._health(store)
@@ -952,13 +957,14 @@ class TestLaneHealth:
         data.refresh()
 
         class FakeProc:
+            pid = 0
             def __init__(self):
                 self.stdout = iter(["boom\n"])
 
             def wait(self):
                 return 1
 
-        monkeypatch.setattr(verify_worker.subprocess, "Popen", lambda argv, **kw: FakeProc())
+        monkeypatch.setattr(worker_children.subprocess, "Popen", lambda argv, **kw: FakeProc())
         for n in (1, 2, 3):
             assert verify_worker.run_security(n) == 1
         rec = self._health(store)
@@ -1215,6 +1221,7 @@ def test_a_security_review_held_by_an_overload_books_no_failure(store, monkeypat
     booked: list[str] = []
 
     class FakeProc:
+        pid = 0
         stdout = iter(["    ! security lens failed: the service was overloaded\n"])
 
         def wait(self):
@@ -1224,7 +1231,7 @@ def test_a_security_review_held_by_an_overload_books_no_failure(store, monkeypat
         envs.append(kw.get("env"))
         return FakeProc()
 
-    monkeypatch.setattr(verify_worker.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(worker_children.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(verify_worker.lane_health, "note_failure",
                         lambda lane, **kw: booked.append(lane))
     assert verify_worker.run_security(1) == security_review.EXIT_TRANSIENT

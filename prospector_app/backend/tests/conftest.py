@@ -71,6 +71,8 @@ def _jobs_dir(monkeypatch, tmp_path):
     monkeypatch.setattr(jobs, "JOBS_DIR", tmp_path / "jobs")
     monkeypatch.setattr(jobs, "JOBS", {})
     monkeypatch.setattr(jobs, "POLL_SECONDS", 0.01)
+    from prospector_app.backend import worker_children
+    monkeypatch.setattr(worker_children, "CHILDREN_DIR", tmp_path / "children")
 
 
 @pytest.fixture

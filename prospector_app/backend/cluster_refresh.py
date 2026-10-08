@@ -18,7 +18,6 @@ other exit is a machine failure.
 from __future__ import annotations
 
 import os
-import subprocess
 import threading
 import traceback
 from collections.abc import Iterable
@@ -26,7 +25,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from pipeline import capacity, cluster_driver, cluster_pass, freshness, settings, storekit
-from prospector_app.backend import data, lane_health
+from prospector_app.backend import data, lane_health, worker_children
 from prospector_app.backend.jobs import PIPELINE_PY, REPO_ROOT
 
 if TYPE_CHECKING:
@@ -88,16 +87,14 @@ def _spawn(limit: int, analyze: int) -> tuple[int, str]:
     """Run one pass in a child process; its exit code and last output line."""
     argv = [*PIPELINE_PY, "-u", str(REPO_ROOT / "pipeline" / "cluster_pass.py"),
             "--limit", str(limit), "--analyze", str(analyze), "--trigger", TRIGGER]
-    proc = subprocess.Popen(argv, cwd=str(REPO_ROOT), stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True,
-                            env={**os.environ, capacity.UNATTENDED_ENV: LANE})
-    assert proc.stdout is not None
     last = ""
-    for line in proc.stdout:
-        print(f"[cluster] {line}", end="", flush=True)
-        if line.strip():
-            last = line.strip()
-    return proc.wait(), last
+    with worker_children.spawn(argv, env={**os.environ, capacity.UNATTENDED_ENV: LANE}) as proc:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            print(f"[cluster] {line}", end="", flush=True)
+            if line.strip():
+                last = line.strip()
+        return proc.wait(), last
 
 
 def book(rc: int, last: str) -> None:
@@ -136,6 +133,10 @@ def pass_once() -> int | None:
 
 
 def _loop() -> None:
+    try:
+        worker_children.reap()
+    except Exception:
+        traceback.print_exc()
     while not _stop.is_set():
         try:
             pass_once()
