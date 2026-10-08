@@ -525,8 +525,9 @@ dispute's question at once. Before the lane, an issue a maintainer did not file
 gets its `intake` judged (`issue_triage/intake_audit.py`, the ONE policy for
 issue text as input): a reviewer with no tools reads the raw report and notes
 as data and calls it `clear`, `suspicious` or `malicious`, an author on the
-threat blocklist reads `malicious` unread, and hidden content or a review that
-gave no verdict reads at least `suspicious`. A hunted or public solve of a
+threat blocklist reads `malicious` unread, and hidden content, a report longer
+than the review reads, or a review that gave no verdict reads at least
+`suspicious`. A hunted or public solve of a
 malicious report ends `refused` with no lane run — no label, no comment, no
 restart on a reply; an operator's own solve runs. A fix whose intake is short of
 clear is held like a trust-boundary crossing (`trust_boundary.held`); `send-back` has a small agent read the comments (`route`), then either one
