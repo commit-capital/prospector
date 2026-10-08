@@ -29,6 +29,7 @@ from pipeline import profile
 from pipeline import settings
 from pipeline import storekit
 from pipeline import taxonomy
+from pipeline import threat_scan
 from pipeline.freshness import SECTION_SCHEMA_VERSION, is_current
 from pipeline.store import Store
 from pipeline.storekit import now as _now
@@ -47,19 +48,19 @@ def _active(store: Store):
 # ---------------------------------------------------------------------------
 # Stage A: which PRs need a (re-)summary, and their diffs.
 # ---------------------------------------------------------------------------
+def summarizable(rec: Pr) -> bool:
+    """Whether the summarize wave may take this PR: not a dependency bump, and an
+    automation author's PR only once the threat scan, which tells a bump apart,
+    has judged its head."""
+    if rec.author in profile.active().automation_bots and not threat_scan.stamped_at_head(rec):
+        return False
+    return not gates.bump_exempt(rec)
+
+
 def wave(store: Store, max_n: int | None = None) -> list[DiffManifestItem]:
     out = []
     for n, rec in _active(store):
-        if is_current(rec, "summary"):
-            continue
-        # Dependency bumps from a configured automation author are out of scope —
-        # never summarized, so never clustered or analyzed (and their diff is never
-        # fetched, so the threat scanner never signature-scans them). The author
-        # lands them upstream. The change-shape check inside is_dependabot_bump
-        # keeps the exemption to genuine bumps only; the network path-fetch fires
-        # for automation authors alone.
-        if rec.author in profile.active().automation_bots and gates.is_dependabot_bump(
-                rec.author, diff_cache.changed_paths(n, rec.head_sha)):
+        if is_current(rec, "summary") or not summarizable(rec):
             continue
         out.append(DiffManifestItem.for_pr(n, rec, diff_cache.DIFFS))
         if max_n and len(out) >= max_n:

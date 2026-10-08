@@ -25,7 +25,7 @@ from collections.abc import Iterable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from pipeline import capacity, cluster_pass, freshness, profile, settings, storekit
+from pipeline import capacity, cluster_driver, cluster_pass, freshness, settings, storekit
 from prospector_app.backend import data, lane_health
 from prospector_app.backend.jobs import PIPELINE_PY, REPO_ROOT
 
@@ -67,15 +67,14 @@ def spent_today(runs: Iterable[storekit.RunRecord], today: str) -> tuple[int, in
 
 
 def has_work(prs: dict[int, Pr]) -> bool:
-    """Whether an open PR lacks a current summary (a configured automation
-    author's aside), is summarized but in no cluster and not stamped
-    standalone, or belongs to a cluster without a current analysis of it."""
-    bots = profile.active().automation_bots
+    """Whether an open PR the wave may take lacks a current summary, is
+    summarized but in no cluster and not stamped standalone, or belongs to a
+    cluster without a current analysis of it."""
     for pr in prs.values():
         if pr.state != "open":
             continue
         if not freshness.is_current(pr, "summary"):
-            if pr.author not in bots:
+            if cluster_driver.summarizable(pr):
                 return True
             continue
         if not pr.section("cluster"):

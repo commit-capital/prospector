@@ -6,7 +6,7 @@ import pytest
 from pipeline import gates, profile, review_policy
 from pipeline.model import Cluster, Pr
 from pipeline.store import Store
-from pipeline.testsupport import threat_section
+from pipeline.testsupport import bump_section, threat_section
 
 
 HEAD = "abc123"
@@ -466,6 +466,9 @@ class TestBlockedOnSecurity:
                          _merge_analysis(disposition="needs-human")):
             rec = _pr(analysis=analysis) if analysis else _pr()
             assert gates.blocked_on_security(rec, today="2026-06-10")
+
+    def test_an_exempt_bump_is_not_blocked_on_security(self):
+        assert not gates.blocked_on_security(_pr(threat=bump_section(HEAD)), today="2026-06-10")
 
     def test_a_stale_close_route_does_not_keep_a_pr_out(self):
         rec = _pr(analysis=_merge_analysis(disposition="close-dup", against_head_sha="OLD"))
@@ -2642,6 +2645,12 @@ class TestFixHuntable:
         self._profile(monkeypatch)
         ok, why = gates.fix_huntable(self._stale(), "rebase")
         assert ok is True, why
+
+    def test_an_exempt_bump_is_never_hunted(self, monkeypatch):
+        self._profile(monkeypatch)
+        for action in ("rebase", "update"):
+            ok, _ = gates.fix_huntable(self._stale(threat=bump_section(HEAD)), action)
+            assert ok is False, action
 
     def test_review_bar_unmet_refused(self, monkeypatch):
         self._profile(monkeypatch)

@@ -61,6 +61,9 @@ def classify(pr: Pr) -> dict | None:
                   "the threat scan flagged it malicious ("
                   + (", ".join(pr.threat_signatures) or "flagged")
                   + "); it can never merge — close it")
+    if gates.bump_exempt(pr):
+        return _r("handed", "other", "a dependency bump, outside the automation's scope; "
+                                     "merge it once CI and the scanners pass")
     from prospector_app.backend import fix_queue, fix_worker, service
     req = pr.fix_request or {}
     ok, why = gates.merge_eligibility(pr)

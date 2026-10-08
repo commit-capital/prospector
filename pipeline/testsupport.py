@@ -44,3 +44,8 @@ def threat_section(head: str, at: str | None = None) -> dict:
     """A clear `threat` stamp at `head`: the scan's verdict a clean PR carries."""
     return {"verdict": "clear", "signatures": [], "detail": {},
             "checked_at": at or _now(), "against_head_sha": head}
+
+
+def bump_section(head: str, at: str | None = None) -> dict:
+    """The `threat` stamp the scan puts on a head it exempts as a dependency bump."""
+    return {**threat_section(head, at), "detail": {"exempt": "dependency-bump"}}

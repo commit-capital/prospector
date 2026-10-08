@@ -295,26 +295,19 @@ def maintainer_leak(item: dict, pr: Pr | None) -> bool:
 def is_dependabot_bump(author: str | None, changed_paths: list[str] | None) -> bool:
     """True iff this PR's author is one of the profile's automation bots AND
     every changed file is a dependency manifest, lockfile, or GitHub-Actions
-    workflow — the shape of a genuine dependency bump.
+    workflow — the shape of a genuine dependency bump. The threat scan asks and
+    stamps the answer on the head, which every other stage reads (bump_exempt).
 
-    Such PRs are out of the pipeline's triage scope. The meaningful risk lives in
-    the upgraded *package*, not in the diff — and the diff is all our threat
-    signatures and the ANALYZE agent can see, so the agent has nothing real to
-    judge and invents dispositions about packages it can't evaluate. Keeping them
-    out of CLUSTER/ANALYZE (the diff is never fetched, so the threat scanner never
-    signature-scans them either) removes that failure mode; the author still merges
-    them upstream.
+    Such a bump is out of triage scope: its risk lives in the upgraded package,
+    which the diff does not show, so neither the signatures nor an agent has
+    anything to judge. The author merges it.
 
-    The change-shape requirement is the security guard: an automation PR that
-    touches anything else does NOT match, so a compromised or spoofed automation
-    author cannot inherit the exemption with an arbitrary diff — it falls back to
-    the full threat scan and analysis. An empty/unknown path list also fails
-    closed.
-
-    Both the automation-author list and the manifest vocabulary are repository
-    policy data (the active profile's `automation_bots` and
-    `dependency_manifests`): waiving a scan is an operator decision, set in
-    configuration."""
+    The change-shape requirement is there because a PR's author is not who
+    pushed its commits: anyone with write access can push to a bot's branch — a
+    maintainer adapting code to an upgrade, or a leaked token — and a profile may
+    list a bot that runs as a plain user account. Such a PR touches more than
+    manifests, so it does NOT match and gets the full threat scan and analysis.
+    An empty/unknown path list also fails closed."""
     if author is None or author not in profile.active().automation_bots:
         return False
     paths = [p for p in (changed_paths or []) if p]
@@ -322,6 +315,19 @@ def is_dependabot_bump(author: str | None, changed_paths: list[str] | None) -> b
         return False
     return all(_is_manifest(p) or _WORKFLOW_RE.search(diffpaths.normalize_path(p))
                for p in paths)
+
+
+# The threat stamp's `detail.exempt` for a head is_dependabot_bump exempts.
+BUMP_EXEMPT = "dependency-bump"
+
+
+def bump_exempt(pr: Pr) -> bool:
+    """Whether the threat scan exempted the PR's current head as a dependency
+    bump. No stage summarizes, clusters, or analyzes one, and no worker spends a
+    reviewer, a security review, or a push on it."""
+    sec = pr.section("threat") or {}
+    return (bool(pr.head_sha) and sec.get("against_head_sha") == pr.head_sha
+            and (sec.get("detail") or {}).get("exempt") == BUMP_EXEMPT)
 
 
 # The pr_clean reason for a head the threat scan has not judged.
@@ -487,6 +493,8 @@ def blocked_on_security(pr: Pr, today: str | None = None) -> bool:
     surfaces its run button from it, and it is the security hunter's pool, so
     every PR a human could merge gets a review before the merge needs one."""
     if is_current(pr, "analysis") and str(pr.disposition or "").startswith("close-"):
+        return False
+    if bump_exempt(pr):
         return False
     ok, _ = pr_clean(pr, today)
     if not ok:
@@ -945,6 +953,8 @@ def fix_huntable(pr: Pr, action: str,
     if action not in HUNTABLE_ACTIONS:
         return False, (f"the hunter queues only {', '.join(HUNTABLE_ACTIONS)}; "
                        f"a {action} is an operator's call")
+    if bump_exempt(pr):
+        return False, "a dependency bump; its bot keeps the branch current"
     if not is_current(pr, "signals") or (
             review_policy.active_reviewers() and not is_current(pr, "reviews")):
         return False, "signals or reviews stale or missing, so the review bar is unknowable"
