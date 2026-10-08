@@ -11,7 +11,7 @@ from prospector_app.backend import models
 from prospector_app.backend import pr_checks
 from prospector_app.backend import service
 from prospector_app.backend import suggest
-from pipeline.testsupport import reviews_section, threat_section
+from pipeline.testsupport import bump_section, reviews_section, threat_section
 
 HEAD = "abc123"
 # Anchored to the real "now" so the verification window never lapses as
@@ -124,9 +124,7 @@ class TestSuggest:
 
     def test_dependabot_bump_is_out_of_scope(self):
         rec = _pr(n=7750)
-        rec.raw["meta"]["author"] = "dependabot[bot]"
-        rec.raw["summary"] = {"paths": ["pnpm-lock.yaml", "package.json"],
-                              "checked_at": NOW, "against_head_sha": HEAD}
+        rec.raw["threat"] = bump_section(HEAD)
         s = suggest.suggest_for_record(rec)
         assert s["action"] == "OUT_OF_SCOPE" and s["accept"] is None
 
@@ -134,9 +132,7 @@ class TestSuggest:
         # the hallucinated close-stale must not surface — deferred wins, even
         # before the analysis-staleness branch.
         rec = _pr(n=7742, analysis=_analysis("close-stale", against_head_sha="OLD"))
-        rec.raw["meta"]["author"] = "dependabot[bot]"
-        rec.raw["summary"] = {"paths": [".github/workflows/pr.yml"],
-                              "checked_at": NOW, "against_head_sha": HEAD}
+        rec.raw["threat"] = bump_section(HEAD)
         assert suggest.suggest_for_record(rec)["action"] == "OUT_OF_SCOPE"
 
     def test_dependabot_touching_source_keeps_its_real_disposition(self):

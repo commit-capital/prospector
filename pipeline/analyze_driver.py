@@ -24,7 +24,6 @@ from typing import TYPE_CHECKING
 import re
 
 from pipeline import actions
-from pipeline import diff_cache
 from pipeline import freshness
 from pipeline import gates
 from pipeline import headless_agent
@@ -147,13 +146,7 @@ def disposition_orphans(store: Store) -> int:
         # A stored close-dup on a confirmed standalone is self-contradictory
         # whatever route it derives as: the canonical relationship only holds
         # within a cluster, so fall through and re-disposition.
-        # Dependency bumps are out of scope (see gates.is_dependabot_bump): the
-        # CLUSTER wave keeps new ones out, but a bump summarized + marked
-        # standalone before that rule still reaches here — leave it un-dispositioned
-        # rather than stamp it. The author lands it upstream; our agent has no
-        # diff-visible signal worth judging.
-        if rec.author in profile.active().automation_bots and gates.is_dependabot_bump(
-                rec.author, diff_cache.changed_paths(n, rec.head_sha)):
+        if gates.bump_exempt(rec):
             continue
 
         if rec.threat_verdict == "malicious":

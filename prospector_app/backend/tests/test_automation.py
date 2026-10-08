@@ -5,7 +5,7 @@ import pytest
 
 from pipeline import store as S
 from pipeline.storekit import now as _now
-from pipeline.testsupport import greptile_entry, reviews_section
+from pipeline.testsupport import bump_section, greptile_entry, reviews_section
 from prospector_app.backend import automation, data, service
 
 HEAD = "a" * 40
@@ -77,6 +77,11 @@ def test_a_stale_verdict_waits_on_the_reviewer(store):
     out = _classify(store, _rec(greptile=4, reviewed_sha="0" * 40))
     assert (out["column"], out["bucket"]) == ("auto", "waiting")
     assert "reviewer" in out["reason"]
+
+
+def test_an_exempt_bump_is_yours_to_merge(store):
+    out = _classify(store, {**_rec(mergeable=False), "threat": bump_section(HEAD)})
+    assert (out["column"], out["owner"]) == ("handed", "you")
 
 
 def test_red_ci_at_the_author_s_head_is_the_author_s(store):

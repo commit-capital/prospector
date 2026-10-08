@@ -1,6 +1,6 @@
 """ANALYZE driver: pending-cluster selection, bundles, validated commits."""
 from pipeline import analyze_driver as ad
-from pipeline.testsupport import set_section
+from pipeline.testsupport import bump_section, set_section, threat_section
 from pipeline.store import Store
 from pipeline.testsupport import reviews_section
 
@@ -539,32 +539,22 @@ class TestDispositionOrphans:
 
 
 class TestOrphansSkipsDependabotBumps:
-    def _dependabot_standalone(self, store, n, head, diff_text, tmp, monkeypatch):
-        from pipeline import diff_cache
-        diffs = tmp / "diffs"; diffs.mkdir(exist_ok=True)
-        monkeypatch.setattr(diff_cache, "DIFFS", diffs)
-        (diffs / f"{head}.diff").write_text(diff_text)
+    def _dependabot_standalone(self, store, n, head, threat):
         store.save_pr({"pr": n, "meta": {
             "title": f"bump {n}", "author": "dependabot[bot]", "state": "open",
-            "draft": False, "head_sha": head, "checked_at": NOW}})
+            "draft": False, "head_sha": head, "checked_at": NOW}, "threat": threat})
         set_section(store, n, "cluster", {})        # marked standalone
 
-    def test_lockfile_bump_left_undispositioned(self, tmp_path, monkeypatch):
+    def test_exempt_bump_left_undispositioned(self, tmp_path):
         s = Store(tmp_path)
-        self._dependabot_standalone(
-            s, 10, "hb", "diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml\n+x\n",
-            tmp_path, monkeypatch)
+        self._dependabot_standalone(s, 10, "hb", bump_section("hb"))
         assert ad.disposition_orphans(s) == 0
         assert s.load_pr(10).section("analysis") is None
 
-    def test_dependabot_touching_source_still_dispositioned(self, tmp_path, monkeypatch):
+    def test_dependabot_pr_the_scan_did_not_exempt_is_dispositioned(self, tmp_path):
         s = Store(tmp_path)
-        self._dependabot_standalone(
-            s, 11, "hc",
-            "diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml\n+x\n"
-            "diff --git a/src/app.ts b/src/app.ts\n+evil\n",
-            tmp_path, monkeypatch)
-        assert ad.disposition_orphans(s) == 1     # shape guard fails → normal path
+        self._dependabot_standalone(s, 11, "hc", threat_section("hc"))
+        assert ad.disposition_orphans(s) == 1
         assert s.load_pr(11).section("analysis")["disposition"] == "merge"
 
 

@@ -175,12 +175,7 @@ def _unanalyzed_card(rec: Pr) -> dict:
 
 def _suggest_inner(rec: Pr, disposition: str | None = None,
                    human_merge: dict | None = None) -> dict:
-    # Dependency bumps are out of the pipeline's scope (gates.is_dependabot_bump):
-    # their supply-chain risk is in the upgraded package — reviewed on the PR by
-    # Socket — not the diff, which is all the agent can see. There's no cluster,
-    # disposition, or triage action to offer here; the author lands it upstream.
-    if disposition is None and gates.is_dependabot_bump(
-            rec.author, (rec.section("summary") or {}).get("paths")):
+    if disposition is None and gates.bump_exempt(rec):
         return {"action": "OUT_OF_SCOPE", "label": "Out of scope — dependency bump",
                 "tone": "muted",
                 "rationale": ("Dependabot dependency bump. The pipeline defers these: the "

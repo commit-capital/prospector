@@ -102,7 +102,7 @@ if TYPE_CHECKING:
 
 
 # The verdict stamped on a dependency bump the scan exempts.
-EXEMPT = {"verdict": "clear", "signatures": [], "detail": {"exempt": "dependency-bump"}}
+EXEMPT = {"verdict": "clear", "signatures": [], "detail": {"exempt": gates.BUMP_EXEMPT}}
 
 
 def fetch_missing_diffs(prs: dict[int, Pr], diffs_dir: Path, workers: int = 8,
