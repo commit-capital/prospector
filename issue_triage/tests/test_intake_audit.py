@@ -117,3 +117,13 @@ def test_only_malicious_refuses_and_anything_short_of_clear_holds(intake, refuse
     assert (intake_audit.flag(intake) is not None) == flagged
     if flagged:
         assert "asks for exfiltration" in (intake_audit.flag(intake) or "")
+
+
+def test_a_report_longer_than_the_review_reads_is_at_least_suspicious(monkeypatch):
+    _reviewed(monkeypatch, "clear")
+    long_body = "x" * intake_audit.REPORT_MAX
+    out = intake_audit.judge("t", long_body, None, blocked=False)
+    assert out["verdict"] == "suspicious" and "past what the intake review reads" in out["hidden"][0]
+    long_notes = "y" * (intake_audit.NOTES_MAX + 1)
+    assert intake_audit.judge("t", "b", long_notes, blocked=False)["verdict"] == "suspicious"
+    assert intake_audit.judge("t", "b", "short", blocked=False)["verdict"] == "clear"

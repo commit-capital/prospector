@@ -8,8 +8,8 @@ names what that removes. Before the factory builds an outsider's issue,
 `judge` records the run's `intake`: a reviewer with no tools reads the raw
 report and the reporter's notes as data (`review`) and calls it `clear`,
 `suspicious` or `malicious`; an author on the threat blocklist is `malicious`
-unread, and hidden content or a review that gave no verdict is at least
-`suspicious`. `refusal` stops an unattended attempt on a malicious report;
+unread, and hidden content, a report longer than the review reads, or a review
+that gave no verdict is at least `suspicious`. `refusal` stops an unattended attempt on a malicious report;
 `flag` holds the fix of any report short of clear for an operator.
 """
 from __future__ import annotations
@@ -132,8 +132,11 @@ def review(title: str, body: str, notes: str | None) -> dict:
 
 def judge(title: str, body: str, notes: str | None, *, blocked: bool) -> dict:
     """The run's `intake` record for an outsider's report. `blocked` when the
-    author is on the threat blocklist."""
+    author is on the threat blocklist. A report or notes longer than the review
+    reads count as hidden content."""
     found = hidden(f"{title}\n{body}\n{notes or ''}")
+    if len(f"Title: {title}\n\n{body}") > REPORT_MAX or len(notes or "") > NOTES_MAX:
+        found.append("the report runs past what the intake review reads")
     if blocked:
         return {"verdict": "malicious", "blocked": True, "findings": [], "hidden": found,
                 "reason": "the issue's author is on the threat blocklist"}
