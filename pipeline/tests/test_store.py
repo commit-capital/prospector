@@ -747,3 +747,29 @@ class TestWorkerRegistries:
         assert got == self._individually(store)
         assert list(got["verify_worker"]["hosts"]) == ["mac"]
         assert list(got["verify_base"]) == ["mac"]
+
+
+def test_pr_rows_project_compact_columns_and_fields(tmp_path):
+    """The projection reads back what walking the raw record would: the value
+    for a present path of any JSON type, None for a missing path or one that
+    runs through a scalar."""
+    st = Store(tmp_path)
+    st.save_pr({"pr": 1, "meta": {"head_sha": "s1", "checked_at": "t", "state": "open",
+                                  "title": "p1", "author": "al", "updated_at": "u"},
+                "analysis": {"disposition": "merge", "rationale": "r", "checked_at": "t",
+                             "against_head_sha": "s1"},
+                "issues": {"linked": [{"issue": 10, "how": "explicit"}],
+                           "checked_at": "t", "against_head_sha": "s1"}})
+    st.save_pr({"pr": 2, "meta": {"head_sha": "s2", "checked_at": "t", "state": "closed",
+                                  "title": "p2"}})
+    paths = [("issues", "linked"), ("analysis", "disposition"), ("meta", "title", "x"),
+             ("nope",)]
+    rows = st.pr_rows(paths)
+    assert rows == [
+        ({"pr": 1, "state": "open", "title": "p1", "author": "al", "head_sha": "s1",
+          "updated_at": "u"}, [[{"issue": 10, "how": "explicit"}], "merge", None, None]),
+        ({"pr": 2, "state": "closed", "title": "p2", "author": None, "head_sha": "s2",
+          "updated_at": None}, [None, None, None, None])]
+    assert [r[0]["pr"] for r in st.pr_rows([], states=["closed"])] == [2]
+    assert [r[0]["pr"] for r in st.pr_rows([], numbers=[2, 999])] == [2]
+    assert st.pr_rows([], states=["open"], numbers=[2]) == []

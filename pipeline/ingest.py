@@ -506,8 +506,7 @@ def _targeted_ingest(store: Store, args: argparse.Namespace, started: str) -> in
     if args.prs:
         requested = sorted(_parse_pr_ids(args.prs))
         if args.new:
-            print("loading every stored PR to skip the ones already stored…", flush=True)
-            existing_ids = set(store.all_prs())
+            existing_ids = store.pr_ids()
             requested = [n for n in requested if n not in existing_ids]
         print(f"refreshing {len(requested)} requested PRs…", flush=True)
         refreshed = refresh_prs(store, requested)

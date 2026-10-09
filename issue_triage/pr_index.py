@@ -28,19 +28,25 @@ class PrLink(TypedDict):
 def build(prs: Iterable[Pr]) -> dict[int, list[PrLink]]:
     """Issue number → its direct links from open and merged PRs, one per PR
     (explicit over body-ref), ordered by PR number."""
+    return _index((pr.n, pr.state, pr.draft, pr.title, pr.linked_issues) for pr in prs)
+
+
+def _index(rows: Iterable[tuple[int, str | None, bool, str | None, list]]
+           ) -> dict[int, list[PrLink]]:
+    """`build` over (number, state, draft, title, issues.linked) rows."""
     best: dict[tuple[int, int], PrLink] = {}
-    for pr in prs:
-        if pr.state not in LINKING_STATES:
+    for n, state, draft, title, linked in rows:
+        if state not in LINKING_STATES:
             continue
-        for entry in pr.linked_issues:
+        for entry in linked:
             how = entry.get("how")
             if how not in DIRECT or entry.get("issue") is None:
                 continue
-            key = (int(entry["issue"]), pr.n)
+            key = (int(entry["issue"]), n)
             if key in best and best[key]["how"] == "explicit":
                 continue
-            best[key] = {"pr": pr.n, "how": how, "state": pr.state, "draft": pr.draft,
-                         "title": pr.title}
+            best[key] = {"pr": n, "how": how, "state": state, "draft": draft,
+                         "title": title}
     out: dict[int, list[PrLink]] = {}
     for (issue, _), link in sorted(best.items()):
         out.setdefault(issue, []).append(link)
@@ -48,6 +54,10 @@ def build(prs: Iterable[Pr]) -> dict[int, list[PrLink]]:
 
 
 def from_store() -> dict[int, list[PrLink]]:
-    """The index over the PR store."""
+    """The index over the PR store, read as the five fields it needs from the
+    open and merged PRs only (`Store.pr_rows`), never the PR records."""
     from pipeline.store import Store
-    return build(Store().all_prs().values())
+    rows = Store().pr_rows([("meta", "draft"), ("issues", "linked")], states=LINKING_STATES)
+    return _index((row["pr"], row["state"], bool(draft), row["title"],
+                   linked if isinstance(linked, list) else [])
+                  for row, (draft, linked) in rows)

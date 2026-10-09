@@ -29,8 +29,10 @@ The `prs` and `issues` subcommands print a JSON array of compact rows (number,
 state, title, author, and a few stamps), open records by default; `--state`
 widens to `closed` or `all`, `--numbers` restricts to a comma-separated list,
 and `--fields` copies dotted paths out of the raw record into each row at their
-nested position (`null` at the leaf when the record lacks them). The rows are
-meant to be piped through `jq`, which joins and filters them.
+nested position (`null` at the leaf when the record lacks them). The state and
+number filters and the field projection run in the database, so a listing ships
+only the columns it prints. The rows are meant to be piped through `jq`, which
+joins and filters them.
 
 The `activity` subcommand reads the app's append-only activity log — the
 record of what was actually *executed* upstream (closes, merges, reopens,
@@ -74,22 +76,14 @@ def _fields(text: str | None) -> list[tuple[str, ...]]:
     return [tuple(f.strip().split(".")) for f in (text or "").split(",") if f.strip()]
 
 
-def _project(raw: dict, fields: list[tuple[str, ...]], row: dict) -> dict:
-    for path in fields:
-        value: object = raw
-        for key in path:
-            value = value.get(key) if isinstance(value, dict) else None
+def _project(row: dict, fields: list[tuple[str, ...]], values: list) -> dict:
+    """`row` with each field's value placed at its nested position."""
+    for path, value in zip(fields, values):
         target = row
         for key in path[:-1]:
             target = target.setdefault(key, {})
         target[path[-1]] = value
     return row
-
-
-def _selected(number: int, state: str | None, want_state: str, want: set[int] | None) -> bool:
-    if want is not None and number not in want:
-        return False
-    return want_state == "all" or state == want_state
 
 
 def _hydrate_issues(rows: list[dict], istore: IssueStore) -> None:
@@ -183,16 +177,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.what == "issues":
-        want = _numbers(args.numbers)
         fields = _fields(args.fields)
-        rows = []
-        for n, irec in sorted(IssueStore(args.store).all_issues().items()):
-            if not _selected(n, irec.state, args.state, want):
-                continue
-            rows.append(_project(irec.raw, fields, {
-                "issue": n, "state": irec.state, "state_reason": irec.state_reason,
-                "title": irec.title, "author": irec.author, "updated_at": irec.updated_at,
-            }))
+        rows = [_project(row, fields, values) for row, values in IssueStore(args.store).issue_rows(
+            fields, states=None if args.state == "all" else [args.state],
+            numbers=_numbers(args.numbers))]
         print(json.dumps(rows, indent=1, sort_keys=True))
         return 0
 
@@ -217,18 +205,12 @@ def main(argv: list[str] | None = None) -> int:
     store = Store(args.store) if args.store else Store()
 
     if args.what == "prs":
-        want = _numbers(args.numbers)
         fields = _fields(args.fields)
         if args.with_issues and ("issues", "linked") not in fields:
             fields.append(("issues", "linked"))
-        rows = []
-        for n, rec in sorted(store.all_prs().items()):
-            if not _selected(n, rec.state, args.state, want):
-                continue
-            rows.append(_project(rec.raw, fields, {
-                "pr": n, "state": rec.state, "title": rec.title, "author": rec.author,
-                "head_sha": rec.head_sha, "updated_at": rec.updated_at,
-            }))
+        rows = [_project(row, fields, values) for row, values in store.pr_rows(
+            fields, states=None if args.state == "all" else [args.state],
+            numbers=_numbers(args.numbers))]
         if args.with_issues:
             _hydrate_issues(rows, IssueStore(args.store))
         print(json.dumps(rows, indent=1, sort_keys=True))
