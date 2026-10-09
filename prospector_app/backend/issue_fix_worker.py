@@ -205,7 +205,10 @@ def next_request(issues: dict, host: str) -> int | None:
 def run_once(store: IssueStore) -> bool:
     """Claim and carry out one request. Whether one ran."""
     host = settings.worker_id()
-    issues = store.all_issues(omit_candidates=True)
+    # Only the queued rows, filtered server-side: this runs every POLL_SECONDS
+    # on every worker, and reading the whole issue table each tick was most of
+    # the store's egress.
+    issues = store.issues_matching(("fix_request", "status"), ["queued"])
     n = next_request(issues, host)
     if n is None:
         return False
