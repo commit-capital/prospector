@@ -26,7 +26,6 @@ operator-queued request always wins the next pick.
 from __future__ import annotations
 
 import os
-import subprocess
 import threading
 from collections.abc import Iterator
 import time
@@ -49,6 +48,7 @@ from prospector_app.backend import data
 from prospector_app.backend import service
 from prospector_app.backend import verify_queue
 from prospector_app.backend import lane_health
+from prospector_app.backend import worker_children
 from prospector_app.backend import worker_log
 from prospector_app.backend.jobs import PIPELINE_PY, REPO_ROOT
 
@@ -623,17 +623,15 @@ def _run_security_claimed(n: int) -> int:
     agent lane at once."""
     argv = [*PIPELINE_PY, "-u", str(REPO_ROOT / "pipeline" / "security_review.py"),
             "--pr", str(n), "--trigger", "autohunt"]
-    proc = subprocess.Popen(argv, cwd=str(REPO_ROOT), stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True,
-                            env={**os.environ, capacity.METER_ENV: "security"})
-    assert proc.stdout is not None
     lines: list[str] = []
-    for line in proc.stdout:
-        print(f"[autohunt pr {n}] {line}", end="", flush=True)
-        lines.append(line)
-        if len(lines) > 60:
-            del lines[:30]
-    rc = proc.wait()
+    with worker_children.spawn(argv, env={**os.environ, capacity.METER_ENV: "security"}) as proc:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            print(f"[autohunt pr {n}] {line}", end="", flush=True)
+            lines.append(line)
+            if len(lines) > 60:
+                del lines[:30]
+        rc = proc.wait()
     last = next((ln.strip() for ln in reversed(lines) if ln.strip()), "")
     data.refresh()
     if rc == security_review.EXIT_AGENT_UNAVAILABLE:
@@ -695,16 +693,15 @@ def run_one(n: int) -> int:
     argv = [*PIPELINE_PY, "-u", str(REPO_ROOT / "pipeline" / "verify_pr.py"),
             "--pr", str(n), "--from-queue"]
     env = {**os.environ, capacity.METER_ENV: "verify"} if _auto_requested(n) else None
-    proc = subprocess.Popen(argv, cwd=str(REPO_ROOT), stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True, env=env)
-    assert proc.stdout is not None
     lines: list[str] = []
-    for line in proc.stdout:
-        print(f"[verify-worker pr {n}] {line}", end="", flush=True)
-        lines.append(line)
-        if len(lines) > 200:
-            del lines[:100]
-    rc = proc.wait()
+    with worker_children.spawn(argv, env=env) as proc:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            print(f"[verify-worker pr {n}] {line}", end="", flush=True)
+            lines.append(line)
+            if len(lines) > 200:
+                del lines[:100]
+        rc = proc.wait()
     _finalize(n, rc, "".join(lines)[-TAIL_CHARS:])
     return rc
 
@@ -758,9 +755,14 @@ def release_stale_claims() -> list[int]:
 
 
 def _drain_loop() -> None:
-    # A phase container the previous process left running holds the VM's
-    # memory; it goes before this process can launch a phase beside it.
+    # A run the previous process left running would race the recovery below
+    # for its request, and a phase container it left holds the VM's memory;
+    # both go before this process can launch a phase beside them.
     try:
+        reaped = worker_children.reap()
+        if reaped:
+            print(f"[verify-worker] stopped runs a previous backend left running: {reaped}",
+                  flush=True)
         verify_driver.stop_orphaned_sandboxes()
     except Exception:
         traceback.print_exc()
