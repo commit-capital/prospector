@@ -165,14 +165,15 @@ def _lane(outcomes: dict[str, list[int | None]]) -> LaneActivity:
                          for label, ns in ordered]}
 
 
-def summarize(rows: list[tuple[str, dict]], agent_runs: list[dict], roster: dict,
+def summarize(rows: list[tuple[str, dict]], spend: dict[str, float], roster: dict,
               local_jobs: list[JobView], job_phases: dict[tuple[str, str], tuple[str, str]],
               now: datetime) -> ActivityView:
     """Every machine's past `WINDOW_HOURS`: `rows` are `(ledger, record)`
     pairs from the PR, issue and alert ledgers, `job_phases` maps a Control-tab
     job's `(ledger, phase)` to its `(kind, label)`, and `local_jobs` are this
     app's job records, which stand in for the ledger's jobs on the machine
-    serving it."""
+    serving it. `spend` is each host's reported agent cost over the window,
+    summed by the store (`Store.agent_spend`)."""
     cutoff = now - timedelta(hours=WINDOW_HOURS)
     local = str(roster.get("local") or "")
     machines: dict[str, MachineActivity] = {
@@ -224,16 +225,9 @@ def summarize(rows: list[tuple[str, dict]], agent_runs: list[dict], roster: dict
             {"label": j["label"], "kind": j["kind"], "status": j["status"], "job_id": j["id"]}
             for j in sorted(mine, key=lambda j: j["id"])] if mine else []
 
-    spend: dict[str, float] = {}
-    for run in agent_runs:
-        host = run.get("host")
-        cost = run.get("cost_usd")
-        when = _when(run)
-        if (host in machines and isinstance(cost, (int, float))
-                and when is not None and cutoff <= when <= now):
-            spend[str(host)] = spend.get(str(host), 0.0) + cost
     for host, usd in spend.items():
-        machines[host]["spend_usd"] = round(usd, 2)
+        if host in machines:
+            machines[host]["spend_usd"] = round(usd, 2)
 
     ordered = sorted(machines.values(),
                      key=lambda m: (m["host"] == UNATTRIBUTED, not m["online"], m["host"]))
@@ -262,5 +256,6 @@ def activity() -> ActivityView:
     for ledger, records in (("pr", data.runs(since=since)), ("issue", issues.cached_runs()),
                             ("alert", alert_data.runs())):
         rows.extend((ledger, r.raw) for r in records if isinstance(r, storekit.PhaseRun))
-    return summarize(rows, data.store().agent_runs(since), machines.roster(),
-                     jobs.list_jobs(), _job_phases(), now)
+    spend = data.store().agent_spend(since, "host", until=now.isoformat())
+    return summarize(rows, {h: usd for h, usd in spend.items() if h is not None},
+                     machines.roster(), jobs.list_jobs(), _job_phases(), now)

@@ -256,10 +256,8 @@ def stale_ingest_warning(store: Store, *, max_age_hours: float = 12.0,
     since moved (issue #253). The store can't tell whether GitHub has moved without
     re-fetching, so elapsed time since the last INGEST is the only signal. Returns a
     warning when that INGEST is older than max_age_hours (or absent), else None."""
-    ingest_ts: str | None = None
-    for r in store.runs():
-        if isinstance(r, storekit.PhaseRun) and r.phase == "ingest":
-            ingest_ts = r.finished or r.started or ingest_ts
+    last = store.latest_run("ingest")
+    ingest_ts = (last.finished or last.started) if isinstance(last, storekit.PhaseRun) else None
     if ingest_ts is None:
         return "no INGEST on record — re-run INGEST before a full recluster"
     now_dt = datetime.fromisoformat(now) if now else datetime.now(timezone.utc)
