@@ -78,6 +78,17 @@ def test_run_once_claims_carries_out_and_books_the_ending(store, monkeypatch):
     assert not issue_fix_worker.run_once(store)
 
 
+def test_run_once_reads_only_queued_requests_not_the_whole_table(store, monkeypatch):
+    def all_issues(**kw):
+        raise AssertionError("run_once read the whole issue table")
+
+    monkeypatch.setattr(store, "all_issues", all_issues)
+    monkeypatch.setattr(fix_review_runner, "run_request",
+                        lambda s, n, req, *, on_step: ("done", "Solved: fixed"))
+    assert not issue_fix_worker.run_once(store)
+    fix_review.queue(store, 2, "solve", by="op")
+    assert issue_fix_worker.run_once(store)
+
 def _carried_out(monkeypatch) -> list[tuple[int, str]]:
     ran: list[tuple[int, str]] = []
 
