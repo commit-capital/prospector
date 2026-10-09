@@ -739,7 +739,10 @@ the label masks the email). Every headless run (`headless_agent.run_agent`)
 parses the CLI's `rate_limit_event` — the account's 5-hour and 7-day window
 utilization — and records the newest reading in the store's `ai_capacity:<key>`
 row (each half replaced only by a newer one), and its usage and cost as an
-`agent:run` record in the `agent` ledger kind. The policy lives in
+`agent:run` record in the `agent` ledger kind. That cost is the CLI's
+`total_cost_usd`, the run priced at API rates: a real charge only on an API-key
+account, notional on a subscription. `Store.agent_cost` sums it in SQL per lane
+or host, and an API-key account's daily budget is held to `Store.capacity_cost`. The policy lives in
 `ai_account:<key>`, set on the Setup tab's AI capacity card for this machine's
 own account (`PUT /api/capacity/policy`): for a subscription, a time zone,
 daytime hours, a daytime and an overnight cap (defaults 08:00–23:00, 50% /
@@ -754,7 +757,7 @@ with an unattended item in hand and before claiming it (the hunters' picks,
 automation-sourced requests, the parked-resolve auto-review, reply routing);
 an item started under the cap runs to completion, and an operator's work is
 never gated. Their unattended items run under `capacity.metered(lane)` (or
-`PROSPECTOR_AGENT_LANE` for a subprocess), which books their spend; a process
+`PROSPECTOR_AGENT_LANE` for a subprocess), which books them to the lane; a process
 started with `PROSPECTOR_UNATTENDED` is a batch whose every agent call is
 gated (`capacity.CapacityPaused`), and `pipeline/agent_wave.py` stops a
 multi-agent job at the first such refusal or usage-limit hit. A usage-limit
@@ -762,7 +765,8 @@ refusal raises `headless_agent.CapacityExhausted` and pauses the account's
 unattended work until the reset; lane health trips no lane for it, and books no
 failure for a service overload (`AgentTransient`). The Control tab's AI
 capacity panel and the health strip show each account's windows, the cap in
-effect, whether unattended work may start, and today's background spend.
+effect, whether unattended work may start, and the cost of today's background
+runs at API prices.
 
 **HOME** (`prospector_app/backend/automation.py` + `prospector_app/frontend/src/views/homeCards.ts`)
 shows every open PR by whose move it is. `automation.classify` is the ONE

@@ -1,7 +1,8 @@
 """What the app shows of each AI account's capacity (pipeline/capacity.py is
 the policy): the accounts the workers report and this machine's own, each
 with its policy, newest reading, the cap in effect, the pacing line, whether
-unattended work may start, and today's background spend by lane. A view never
+unattended work may start, and the cost of today's background agent runs by
+lane at API prices (a real charge only on an API-key account). A view never
 spends capacity to look: decisions read the newest reading whatever its age.
 """
 from __future__ import annotations
@@ -44,7 +45,7 @@ class AccountView(TypedDict):
     pacing_line: float | None
     weekly_resets_at: str | None
     decision: DecisionView
-    spend_today_by_lane: dict[str, float]
+    cost_today_by_lane: dict[str, float]
 
 
 def _iso(at: datetime | None) -> str | None:
@@ -82,12 +83,12 @@ def view(acct: capacity.Account, machines: list[str], this_machine: bool,
     decision = capacity.check(st, acct, now=now, stale_ok=True)
     cap, boundary = capacity.cap_now(p, now)
     week = reading.seven_day if reading is not None else None
-    spend: dict[str, float] = {}
+    cost: dict[str, float] = {}
     start, _ = capacity.local_midnights(p, now)
-    for lane, usd in st.agent_spend(_iso(start) or "", "lane", account=acct.key,
+    for lane, usd in st.agent_cost(_iso(start) or "", "lane", account=acct.key,
                                     unattended=True).items():
         key = lane or "unknown"
-        spend[key] = round(spend.get(key, 0.0) + usd, 4)
+        cost[key] = round(cost.get(key, 0.0) + usd, 4)
     subscription = acct.billing == "subscription"
     return {
         "key": acct.key, "label": acct.label, "billing": acct.billing,
@@ -102,7 +103,7 @@ def view(acct: capacity.Account, machines: list[str], this_machine: bool,
         "weekly_resets_at": _iso(week.resets_at) if week is not None else None,
         "decision": {"allowed": decision.allowed, "reason": decision.reason,
                      "retry_at": _iso(decision.retry_at)},
-        "spend_today_by_lane": spend,
+        "cost_today_by_lane": cost,
     }
 
 

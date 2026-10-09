@@ -1012,7 +1012,7 @@ async def jobs_stop(job_id: int) -> jobs.JobView:
 @app.get("/api/capacity")
 def capacity_get() -> dict:
     """Each AI account's capacity: policy, newest reading, the cap in effect,
-    whether unattended agent work may start, and today's background spend."""
+    whether unattended agent work may start, and today's background cost."""
     from prospector_app.backend import capacity_view
     mine = capacity_view.this_account()
     return {"accounts": capacity_view.accounts(),

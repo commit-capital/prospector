@@ -1,4 +1,4 @@
-"""What each machine did in the past day: the runs ledgers, agent spend, the
+"""What each machine did in the past day: the runs ledgers, agent cost, the
 machine roster and this app's jobs folded per machine."""
 from __future__ import annotations
 
@@ -43,8 +43,8 @@ def _machine(host: str, online: bool = True, last_beat: str | None = None,
 
 
 def _summarize(rows: list[tuple[str, dict]], roster: dict | None = None,
-               spend: dict[str, float] | None = None, local_jobs: list[dict] | None = None) -> dict:
-    return ma.summarize(rows, spend or {}, roster or _roster(), local_jobs or [],
+               cost: dict[str, float] | None = None, local_jobs: list[dict] | None = None) -> dict:
+    return ma.summarize(rows, cost or {}, roster or _roster(), local_jobs or [],
                         JOB_PHASES, NOW)
 
 
@@ -155,14 +155,14 @@ def test_online_machines_first():
     assert [m["host"] for m in view["machines"]] == ["z-on", "b-off"]
 
 
-def test_spend_is_shown_on_the_roster_machines_only():
+def test_cost_is_shown_on_the_roster_machines_only():
     view = _summarize([], roster=_roster(_machine("studio")),
-                      spend={"studio": 3.75, "gone": 9.0})
-    assert _host(view, "studio")["spend_usd"] == 3.75
+                      cost={"studio": 3.75, "gone": 9.0})
+    assert _host(view, "studio")["cost_usd"] == 3.75
     assert [m["host"] for m in view["machines"]] == ["studio"]
 
 
-def test_activity_sums_the_past_days_agent_spend_per_host(tmp_path, monkeypatch):
+def test_activity_sums_the_past_days_agent_cost_per_host(tmp_path, monkeypatch):
     st = S.Store(tmp_path)
     for host, cost, hours_ago in (("studio", 1.25, 1), ("studio", 2.5, 2), ("studio", 9.0, 30),
                                   ("laptop", None, 1)):
@@ -171,9 +171,9 @@ def test_activity_sums_the_past_days_agent_spend_per_host(tmp_path, monkeypatch)
                              "started": ts, "finished": ts, "ts": ts})
     monkeypatch.setattr(data, "store", lambda: st)
     seen = {}
-    monkeypatch.setattr(ma, "summarize", lambda rows, spend, *a: seen.setdefault("spend", spend))
+    monkeypatch.setattr(ma, "summarize", lambda rows, cost, *a: seen.setdefault("cost", cost))
     ma.activity()
-    assert seen["spend"] == {"studio": 3.75}
+    assert seen["cost"] == {"studio": 3.75}
 
 
 def test_route_answers(monkeypatch):
@@ -191,9 +191,9 @@ def test_one_background_pass_reads_singular():
         {"label": "PR watch", "count": 1}]
 
 
-def test_spend_rounds_once_after_summing():
-    view = _summarize([], roster=_roster(_machine("studio")), spend={"studio": 0.013 * 300})
-    assert _host(view, "studio")["spend_usd"] == 3.9
+def test_cost_rounds_once_after_summing():
+    view = _summarize([], roster=_roster(_machine("studio")), cost={"studio": 0.013 * 300})
+    assert _host(view, "studio")["cost_usd"] == 3.9
 
 
 def test_a_worker_silent_past_the_offline_window_is_stalled():

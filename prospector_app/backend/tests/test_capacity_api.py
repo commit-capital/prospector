@@ -65,7 +65,7 @@ def test_the_view_never_spends_a_probe(store, monkeypatch):
     assert view["reading"] is None and view["decision"]["allowed"] is False
 
 
-def test_spend_today_is_split_by_lane(store):
+def test_cost_today_is_split_by_lane(store):
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     for lane, cost, unattended in (("fix", 1.0, True), ("fix", 0.5, True),
                                    ("security", 2.0, True), ("operator", 9.0, False)):
@@ -73,7 +73,7 @@ def test_spend_today_is_split_by_lane(store):
                                 "unattended": unattended, "cost_usd": cost,
                                 "started": now, "finished": now, "ts": now})
     (view,) = capacity_view.accounts()
-    assert view["spend_today_by_lane"] == {"fix": 1.5, "security": 2.0}
+    assert view["cost_today_by_lane"] == {"fix": 1.5, "security": 2.0}
 
 
 def test_get_capacity_route(store):
