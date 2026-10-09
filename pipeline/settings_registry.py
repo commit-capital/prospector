@@ -70,8 +70,9 @@ SETTINGS: tuple[Setting, ...] = (
             choices=("live", "dry-run", "off")),
     Setting("TRIAGE_ISSUE_FIX_PUBLIC_SCOPE", "behavior", "choice",
             "Issues fixed on GitHub", "maintainers",
-            "Which issues the GitHub loop serves: the ones maintainers filed, or all.",
-            editable=True, choices=("maintainers", "all")),
+            "Which issues the GitHub loop serves: the ones maintainers filed, all, or "
+            "all-dry-run (every issue, with the community's held to dry-run).",
+            editable=True, choices=("maintainers", "all", "all-dry-run")),
     _b("TRIAGE_ISSUE_FIX_SUITE", "behavior", "Run the full suite on issue fixes",
        "A fix that clears its other checks also runs the repository's full test suite.",
        on_by_default=True),

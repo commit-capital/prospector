@@ -365,9 +365,11 @@ def issue_fix_public() -> str:
 
 def issue_fix_public_scope() -> str:
     """Which issues the public loop serves: `maintainers` (the default), the
-    issues a maintainer filed (`gates.priority_author`), or `all`."""
+    issues a maintainer filed (`gates.priority_author`); `all`; or
+    `all-dry-run`, every issue, with the ones a maintainer did not file held
+    to dry-run."""
     value = os.environ.get("TRIAGE_ISSUE_FIX_PUBLIC_SCOPE", "maintainers").strip().lower()
-    return value if value in ("maintainers", "all") else "maintainers"
+    return value if value in ("maintainers", "all", "all-dry-run") else "maintainers"
 
 
 def issue_fix_hunt_budget() -> int:
