@@ -557,18 +557,18 @@ class Store:
         return [{"number": r[0], "state": r[1], "head_sha": r[2],
                  "title": r[3] or "", "body": r[4] or ""} for r in rows]
 
-    def pr_rows(self, paths: list[tuple[str, ...]], *, state: str | None = None,
+    def pr_rows(self, paths: list[tuple[str, ...]], *, states: Iterable[str] | None = None,
                 numbers: Iterable[int] | None = None) -> list[tuple[dict, list]]:
         """Each PR's compact row (pr, state, title, author, head_sha, updated_at)
         plus the JSON value at each of `paths` (None where the record has none),
-        in number order. `state` keeps that exact state and `numbers` those PRs;
-        both filter, and the columns are projected, server-side, so a listing
-        never ships the PR records."""
+        in number order. `states` keeps the PRs in one of those exact states and
+        `numbers` those PRs; both filter, and the columns are projected,
+        server-side, so a listing never ships the PR records."""
         from sqlalchemy import and_
         c = schema.prs.c
         where = []
-        if state is not None:
-            where.append(c.state == state)
+        if states is not None:
+            where.append(c.state.in_(sorted(set(states))))
         if numbers is not None:
             where.append(c.pr.in_(sorted({int(n) for n in numbers})))
         rows = self._prs.rows(

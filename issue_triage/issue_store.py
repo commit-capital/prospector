@@ -229,18 +229,19 @@ class IssueStore:
     def issue_ids(self) -> set[int]:
         return self._issues.ids()
 
-    def issue_rows(self, paths: list[tuple[str, ...]], *, state: str | None = None,
+    def issue_rows(self, paths: list[tuple[str, ...]], *, states: Iterable[str] | None = None,
                    numbers: Iterable[int] | None = None) -> list[tuple[dict, list]]:
         """Each issue's compact row (issue, state, state_reason, title, author,
         updated_at) plus the JSON value at each of `paths` (None where the
-        record has none), in number order. `state` keeps that exact state and
-        `numbers` those issues; both filter, and the columns are projected,
-        server-side, so a listing never ships the issue records."""
+        record has none), in number order. `states` keeps the issues in one of
+        those exact states and `numbers` those issues; both filter, and the
+        columns are projected, server-side, so a listing never ships the issue
+        records."""
         from sqlalchemy import and_
         c = schema.issues.c
         where = []
-        if state is not None:
-            where.append(c.state == state)
+        if states is not None:
+            where.append(c.state.in_(sorted(set(states))))
         if numbers is not None:
             where.append(c.issue.in_(sorted({int(n) for n in numbers})))
         rows = self._issues.rows(

@@ -94,7 +94,7 @@ def test_listing_rows_project_on_postgres(store):
     store.save_pr({"pr": 6, "meta": {"head_sha": "h", "checked_at": "c", "state": "closed",
                                      "title": "t6"}})
     assert store.pr_rows([("analysis", "disposition"), ("meta", "title", "x")],
-                         state="open") == [
+                         states=["open"]) == [
         ({"pr": 5, "state": "open", "title": "t", "author": "a", "head_sha": "h",
           "updated_at": "u"}, ["merge", None])]
     ist = IssueStore()

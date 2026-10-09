@@ -770,6 +770,6 @@ def test_pr_rows_project_compact_columns_and_fields(tmp_path):
           "updated_at": "u"}, [[{"issue": 10, "how": "explicit"}], "merge", None, None]),
         ({"pr": 2, "state": "closed", "title": "p2", "author": None, "head_sha": "s2",
           "updated_at": None}, [None, None, None, None])]
-    assert [r[0]["pr"] for r in st.pr_rows([], state="closed")] == [2]
+    assert [r[0]["pr"] for r in st.pr_rows([], states=["closed"])] == [2]
     assert [r[0]["pr"] for r in st.pr_rows([], numbers=[2, 999])] == [2]
-    assert st.pr_rows([], state="open", numbers=[2]) == []
+    assert st.pr_rows([], states=["open"], numbers=[2]) == []

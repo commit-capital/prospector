@@ -26,7 +26,7 @@ def main(argv: list[str] | None = None) -> None:
         issue_ingest.main()
     n_clusters = issue_cluster_driver.run(store)
     pend = issue_analyze_driver.pending(store)
-    print(f"deterministic phases complete: {len(store.all_issues())} issues, "
+    print(f"deterministic phases complete: {len(store.issue_ids())} issues, "
           f"{n_clusters} clusters; {len(pend)} pending agentic ANALYZE "
           f"(run analyze_issues.py --limit N)")
 

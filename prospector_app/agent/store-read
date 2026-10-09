@@ -179,7 +179,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.what == "issues":
         fields = _fields(args.fields)
         rows = [_project(row, fields, values) for row, values in IssueStore(args.store).issue_rows(
-            fields, state=None if args.state == "all" else args.state,
+            fields, states=None if args.state == "all" else [args.state],
             numbers=_numbers(args.numbers))]
         print(json.dumps(rows, indent=1, sort_keys=True))
         return 0
@@ -209,7 +209,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.with_issues and ("issues", "linked") not in fields:
             fields.append(("issues", "linked"))
         rows = [_project(row, fields, values) for row, values in store.pr_rows(
-            fields, state=None if args.state == "all" else args.state,
+            fields, states=None if args.state == "all" else [args.state],
             numbers=_numbers(args.numbers))]
         if args.with_issues:
             _hydrate_issues(rows, IssueStore(args.store))

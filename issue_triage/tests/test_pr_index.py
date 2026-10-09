@@ -39,3 +39,27 @@ def test_explicit_beats_body_ref_for_the_same_pr_and_issue():
     idx = pr_index.build([_pr(10, [{"issue": 1, "how": "body-ref"},
                                    {"issue": 1, "how": "explicit"}])])
     assert [link["how"] for link in idx[1]] == ["explicit"]
+
+
+def test_from_store_matches_build_over_the_records_without_reading_them(tmp_path, monkeypatch):
+    """The store-backed index is the same one `build` makes from the records,
+    read as five projected fields of the open and merged PRs."""
+    from pipeline.store import Store
+    st = Store(tmp_path)
+    for n, state, draft, linked in (
+            (10, "open", True, [{"issue": 1, "how": "explicit"}, {"issue": 2, "how": "subsystem"}]),
+            (11, "merged", False, [{"issue": 1, "how": "body-ref"}, {"issue": 3, "how": "explicit"}]),
+            (12, "closed", False, [{"issue": 1, "how": "explicit"}]),
+            (13, "open", False, None)):
+        rec = {"pr": n, "meta": {"title": f"PR {n}", "state": state, "head_sha": f"h{n}",
+                                 "checked_at": "t", "draft": draft}}
+        if linked is not None:
+            rec["issues"] = {"linked": linked, "checked_at": "t", "against_head_sha": f"h{n}"}
+        st.save_pr(rec)
+    expected = pr_index.build(st.all_prs().values())
+    monkeypatch.setattr("pipeline.store.Store", lambda *a, **k: st)
+    monkeypatch.setattr(type(st), "all_prs", lambda self: (_ for _ in ()).throw(
+        AssertionError("from_store read the PR records")))
+    assert pr_index.from_store() == expected
+    assert expected[1][0] == {"pr": 10, "how": "explicit", "state": "open", "draft": True,
+                              "title": "PR 10"}
