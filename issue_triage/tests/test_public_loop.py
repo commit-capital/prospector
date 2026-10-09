@@ -203,6 +203,18 @@ def writes(monkeypatch):
     return calls
 
 
+def test_a_community_dry_run_keeps_maintainer_issues_live(store, writes, monkeypatch):
+    monkeypatch.setenv("TRIAGE_ISSUE_FIX_PUBLIC_SCOPE", "all-dry-run")
+    _save(store, 2, association="NONE")
+    for n in (1, 2):
+        store.edit_issue(n).record_fix_run(_run())
+    public_loop.sync(store, mode="live", now=NOW)
+    assert ("label", 1, COULDNT_FIX, None, False) in writes
+    assert ("label", 2, COULDNT_FIX, None, True) in writes
+    assert store.load_issue(2).fix_public["dry"]["labels"] == {"2": COULDNT_FIX}
+    assert not store.load_issue(2).fix_public.get("labels")
+
+
 def test_a_pass_labels_and_comments_once(store, writes):
     store.edit_issue(1).record_fix_run(_run())
     assert public_loop.sync(store, mode="live", now=NOW) == 1

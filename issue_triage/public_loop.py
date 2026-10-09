@@ -126,13 +126,22 @@ class Due:
 def author_in_scope(author: str | None, association: str | None) -> bool:
     """Whether an issue by `author` (with GitHub's `association`) is one the
     public loop serves."""
-    if settings.issue_fix_public_scope() == "all":
+    if settings.issue_fix_public_scope() != "maintainers":
         return True
     return gates.priority_author(author, association)
 
 
 def in_scope(issue: Issue) -> bool:
     return author_in_scope(issue.author, issue.author_association)
+
+
+def issue_mode(issue: Issue, mode: str) -> str:
+    """`mode` for `issue`: a live loop runs an issue a maintainer did not file
+    as dry-run under `TRIAGE_ISSUE_FIX_PUBLIC_SCOPE=all-dry-run`."""
+    if (mode == "live" and settings.issue_fix_public_scope() == "all-dry-run"
+            and not gates.priority_author(issue.author, issue.author_association)):
+        return "dry-run"
+    return mode
 
 
 def attempt_key(run: dict) -> str:
@@ -492,7 +501,8 @@ def sync(store: IssueStore, *, mode: str | None = None,
         if not in_scope(issue) and not any((issue.fix_public.get("labels") or {}).values()):
             continue
         try:
-            acted += sync_issue(store, issue, mode=mode, token=token, host=host, now=now)
+            acted += sync_issue(store, issue, mode=issue_mode(issue, mode), token=token,
+                                host=host, now=now)
         except Exception:
             traceback.print_exc()
     return acted
@@ -710,7 +720,8 @@ def answer_replies(store: IssueStore, *, mode: str | None = None,
         if not issue.fix_run or not in_scope(issue):
             continue
         try:
-            acted += respond(store, issue, mode=mode, now=now, may_route=may_route)
+            acted += respond(store, issue, mode=issue_mode(issue, mode), now=now,
+                             may_route=may_route)
         except headless_agent.AgentUnavailable:
             raise
         except Exception:

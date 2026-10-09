@@ -630,7 +630,9 @@ The issue carries the follow-up as `fix_followup` (schema 27).
 `public_comments.py`) is the ONE policy for what GitHub shows of an issue's fix
 attempt, for the issues in scope: the ones a maintainer filed
 (`gates.priority_author`), or every attempted issue under
-`TRIAGE_ISSUE_FIX_PUBLIC_SCOPE=all`. The store stays the state machine:
+`TRIAGE_ISSUE_FIX_PUBLIC_SCOPE=all`; `all-dry-run` serves every issue too, and
+runs a live loop as dry-run for the ones a maintainer did not file
+(`public_loop.issue_mode`). The store stays the state machine:
 `label_for` derives one status label (`fix in progress`, `needs answer`,
 `iterating on PR`, `ready for review`, `couldn't fix`) from
 `fix_review.fix_status`, the attempt and the follow-up, carried by the issue and
