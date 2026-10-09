@@ -229,6 +229,28 @@ class IssueStore:
     def issue_ids(self) -> set[int]:
         return self._issues.ids()
 
+    def issue_rows(self, paths: list[tuple[str, ...]], *, state: str | None = None,
+                   numbers: Iterable[int] | None = None) -> list[tuple[dict, list]]:
+        """Each issue's compact row (issue, state, state_reason, title, author,
+        updated_at) plus the JSON value at each of `paths` (None where the
+        record has none), in number order. `state` keeps that exact state and
+        `numbers` those issues; both filter, and the columns are projected,
+        server-side, so a listing never ships the issue records."""
+        from sqlalchemy import and_
+        c = schema.issues.c
+        where = []
+        if state is not None:
+            where.append(c.state == state)
+        if numbers is not None:
+            where.append(c.issue.in_(sorted({int(n) for n in numbers})))
+        rows = self._issues.rows(
+            [c.state, c.data[("meta", "state_reason")].as_string(),
+             c.data[("meta", "title")].as_string(), c.data[("meta", "author")].as_string(),
+             c.updated_at, *(c.data[p] for p in paths)],
+            where=and_(*where) if where else None)
+        return [({"issue": r[0], "state": r[1], "state_reason": r[2], "title": r[3],
+                  "author": r[4], "updated_at": r[5]}, list(r[6:])) for r in rows]
+
     def link_rows(self) -> dict[int, tuple[int | None, list[dict]]]:
         """Every issue's cluster id and candidate PRs (`links.candidates`), keyed
         by number — what the PR ingest inverts into each PR's linked issues —

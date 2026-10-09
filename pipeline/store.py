@@ -557,6 +557,28 @@ class Store:
         return [{"number": r[0], "state": r[1], "head_sha": r[2],
                  "title": r[3] or "", "body": r[4] or ""} for r in rows]
 
+    def pr_rows(self, paths: list[tuple[str, ...]], *, state: str | None = None,
+                numbers: Iterable[int] | None = None) -> list[tuple[dict, list]]:
+        """Each PR's compact row (pr, state, title, author, head_sha, updated_at)
+        plus the JSON value at each of `paths` (None where the record has none),
+        in number order. `state` keeps that exact state and `numbers` those PRs;
+        both filter, and the columns are projected, server-side, so a listing
+        never ships the PR records."""
+        from sqlalchemy import and_
+        c = schema.prs.c
+        where = []
+        if state is not None:
+            where.append(c.state == state)
+        if numbers is not None:
+            where.append(c.pr.in_(sorted({int(n) for n in numbers})))
+        rows = self._prs.rows(
+            [c.state, c.data[("meta", "title")].as_string(),
+             c.data[("meta", "author")].as_string(), c.head_sha, c.updated_at,
+             *(c.data[p] for p in paths)],
+            where=and_(*where) if where else None)
+        return [({"pr": r[0], "state": r[1], "title": r[2], "author": r[3],
+                  "head_sha": r[4], "updated_at": r[5]}, list(r[6:])) for r in rows]
+
     def pr_bodies(self, ns: list[int]) -> dict[int, str | None]:
         """The stored `meta.body` for each of `ns` — the field `all_prs` omits.
         Projects the body server-side and reads PR_BODIES_BATCH PRs at a time, so

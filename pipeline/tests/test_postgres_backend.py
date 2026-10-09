@@ -85,6 +85,26 @@ def test_issue_link_rows_project_on_postgres(store):
     assert st.link_rows() == {42: (9, [{"pr": 10, "how": "subsystem"}]), 43: (None, [])}
 
 
+def test_listing_rows_project_on_postgres(store):
+    from issue_triage.issue_store import IssueStore
+    store.save_pr({"pr": 5, "meta": {"head_sha": "h", "checked_at": "c", "state": "open",
+                                     "title": "t", "author": "a", "updated_at": "u"},
+                   "analysis": {"disposition": "merge", "rationale": "r", "checked_at": "c",
+                                "against_head_sha": "h"}})
+    store.save_pr({"pr": 6, "meta": {"head_sha": "h", "checked_at": "c", "state": "closed",
+                                     "title": "t6"}})
+    assert store.pr_rows([("analysis", "disposition"), ("meta", "title", "x")],
+                         state="open") == [
+        ({"pr": 5, "state": "open", "title": "t", "author": "a", "head_sha": "h",
+          "updated_at": "u"}, ["merge", None])]
+    ist = IssueStore()
+    ist.save_issue({"issue": 9, "meta": {"title": "x", "state": "closed",
+                                         "state_reason": "completed", "updated_at": "u"}})
+    assert ist.issue_rows([("meta", "labels")], numbers=[9]) == [
+        ({"issue": 9, "state": "closed", "state_reason": "completed", "title": "x",
+          "author": None, "updated_at": "u"}, [None])]
+
+
 def test_importer_into_postgres(tmp_path, monkeypatch):
     from pipeline import store_migrate
     src = tmp_path / "json"
