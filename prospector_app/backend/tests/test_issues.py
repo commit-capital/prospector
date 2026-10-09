@@ -1,6 +1,8 @@
 """#192: the Issues projection over the issue store, the close-as-dup worklist,
 and the bot-gated issue-close path. The store is seeded in a temp dir; GitHub is
 never touched."""
+import pytest
+
 from prospector_app.backend import executor
 from issue_triage import issue_store
 from prospector_app.backend import issues
@@ -763,6 +765,28 @@ def test_close_fixed_gate_accepts_a_github_closing_reference(tmp_path, monkeypat
     monkeypatch.setattr(issues, "_live_pr_states", lambda nums: {901: "merged"})
     ok, reason = issues.close_fixed_gate(10, 901)
     assert ok, reason
+
+
+def test_close_fixed_gate_accepts_a_fixer_linked_on_a_cluster_sibling(tmp_path, monkeypatch):
+    """A PR that fixes the duplicate (#11) closes the canonical (#10) too."""
+    st = _seed(tmp_path, monkeypatch)
+    st.edit_issue(11).set_links([{"pr": 902, "title": "fix", "how": "explicit"}])
+    monkeypatch.setattr(issues, "_live_pr_states", lambda nums: {902: "merged"})
+    ok, reason = issues.close_fixed_gate(10, 902)
+    assert ok, reason
+
+
+def test_close_gates_never_read_the_whole_issue_store(tmp_path, monkeypatch):
+    """Each gate reads the issue it closes (and the fixed gate its cluster
+    siblings), never every issue."""
+    st = _seed_explicit_fixer(tmp_path, monkeypatch)
+    monkeypatch.setattr(type(st), "all_issues",
+                        lambda self, **kw: pytest.fail("a close gate read every issue"))
+    monkeypatch.setattr(issues, "_live_pr_states", lambda nums: {900: "merged"})
+    assert issues.close_fixed_gate(10, 900)[0]
+    assert issues.close_dup_gate(11)[0]
+    assert issues.close_gate(10, "fixed", None, 900, None) == (True, "ok")
+    assert issues.close_gate(99, "completed", "done", None, None) == (False, "issue not in store")
 
 
 def test_close_fixed_gate_still_refuses_a_subsystem_tag_match(tmp_path, monkeypatch):

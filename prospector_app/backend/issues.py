@@ -637,8 +637,7 @@ def close_fixed_gate(n: int, fixed_by: int) -> tuple[bool, str]:
     resolved live too, so an already-closed issue is blocked at this gate. See
     issue_gates.close_fixed_eligibility."""
     st = _store()
-    issues = st.all_issues()
-    iss = issues.get(int(n))
+    iss = st.load_issue(int(n))
     if iss is None:
         return False, "issue not in store"
     members = [int(n)]
@@ -646,6 +645,7 @@ def close_fixed_gate(n: int, fixed_by: int) -> tuple[bool, str]:
         cl = st.load_issue_cluster(iss.cluster_id)
         if cl:
             members = cl.members
+    issues = {**st.load_issues([m for m in members if m != int(n)]), int(n): iss}
     candidates = {c["pr"] for m in members if issues.get(m)
                   for c in _links_for(issues[m]) if c.get("how") in _FIXER_KINDS}
     if int(fixed_by) not in candidates:
@@ -670,13 +670,12 @@ def close_dup_gate(n: int) -> tuple[bool, str]:
     upstream that the duplicate itself is still open. The canonical's state and
     resolution do not affect whether the duplicate relationship is valid."""
     st = _store()
-    issues = st.all_issues()
-    iss = issues.get(int(n))
+    iss = st.load_issue(int(n))
     if iss is None:
         return False, "issue not in store"
     from issue_triage import issue_gates
     cl = st.load_issue_cluster(iss.cluster_id) if iss.cluster_id else None
-    return issue_gates.close_dup_eligibility(iss, cl, issues, live_state=_live_state)
+    return issue_gates.close_dup_eligibility(iss, cl, live_state=_live_state)
 
 
 def close_gate(n: int, disposition: str, comment: str | None,
@@ -699,7 +698,7 @@ def close_gate(n: int, disposition: str, comment: str | None,
     if disposition in ("not-planned", "completed") and not (comment or "").strip():
         return False, "a comment is required"
     st = _store()
-    if st.all_issues().get(int(n)) is None:
+    if st.load_issue(int(n)) is None:
         return False, "issue not in store"
     if _live_state(int(n)) == "closed":
         return False, "issue already closed"
