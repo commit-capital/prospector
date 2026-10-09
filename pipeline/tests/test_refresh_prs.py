@@ -190,3 +190,30 @@ def test_unchanged_head_keeps_sections_current(tmp_path, monkeypatch):
     assert out == [{"pr": 7, "moved": False, "old_sha": "same_sha", "new_sha": "same_sha"}]
     from pipeline.freshness import is_current
     assert is_current(store.load_pr(7), "summary")
+
+
+def test_a_batch_reads_the_issue_side_of_its_links_once(tmp_path, monkeypatch):
+    """Each PR's linked issues come from one read of the issue store for the
+    whole batch; a stale-refresh batch of 40 used to re-read every issue 40
+    times."""
+    from issue_triage.issue_store import IssueStore
+    st = IssueStore(tmp_path / "issues")
+    st.create_issue(42, {"title": "crash", "state": "open", "updated_at": "T"}).set_links(
+        [{"pr": 7, "how": "subsystem"}, {"pr": 8, "how": "issue-ref"}])
+    reads: list[int] = []
+    real = ingest.issue_link_index
+
+    def index(iss_store=None):
+        reads.append(1)
+        return real(st)
+
+    monkeypatch.setattr(ingest, "fetch_pr", lambda n: _open_gh(n, f"s{n}"))
+    monkeypatch.setattr(ingest, "issue_link_index", index)
+    store = Store(str(tmp_path))
+
+    ingest.refresh_prs(store, [7, 8, 9])
+
+    assert reads == [1]
+    assert [e["issue"] for e in store.load_pr(7).section("issues")["linked"]] == [42]
+    assert [e["issue"] for e in store.load_pr(8).section("issues")["linked"]] == [42]
+    assert store.load_pr(9).section("issues")["linked"] == []

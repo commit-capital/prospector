@@ -18,6 +18,11 @@ from prospector_app.backend import data, threat_refresh
 REFRESH_SECONDS = 30 * 60
 # PRs refreshed per pass; each costs a handful of GitHub reads.
 BATCH = 40
+# One machine refreshes at a time; the others' passes find nothing to do.
+LEASE = "stale-refresh"
+# Longer than any pass, so a lease outlives its holder's pass only when the
+# holder died mid-pass.
+LEASE_SECONDS = 2 * 3600
 
 _thread: threading.Thread | None = None
 _stop = threading.Event()
@@ -37,12 +42,20 @@ def stale_merge_candidates() -> list[int]:
 
 def refresh_stale(limit: int = BATCH) -> list[int]:
     """Refresh up to `limit` stale merge candidates, then wake the threat scan
-    for the heads the refresh recorded. Returns the PRs refreshed."""
+    for the heads the refresh recorded. Returns the PRs refreshed — none while
+    another machine holds the pass's lease."""
     numbers = stale_merge_candidates()[:limit]
     if not numbers:
         return []
-    ingest.refresh_prs(data.store(), numbers)
-    data.refresh()
+    host = settings.worker_id()
+    store = data.store()
+    if not store.claim_lease(LEASE, host=host, seconds=LEASE_SECONDS):
+        return []
+    try:
+        ingest.refresh_prs(store, numbers)
+    finally:
+        store.release_lease(LEASE, host=host)
+        data.refresh()
     threat_refresh.wake()
     print(f"[stale-refresh] re-ingested {len(numbers)} stale merge candidate(s): "
           f"{numbers[:12]}{' …' if len(numbers) > 12 else ''}", flush=True)
@@ -60,7 +73,7 @@ def _loop() -> None:
 
 def start() -> bool:
     """Start the cadence on a worker machine (one whose verify or fix lane is
-    enabled), so one machine per deployment does the refreshing. Idempotent."""
+    enabled); the lease keeps one machine refreshing at a time. Idempotent."""
     global _thread
     if not (settings.verify_worker_enabled() or settings.fix_worker_enabled()):
         return False
