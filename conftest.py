@@ -58,6 +58,21 @@ import pytest  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
+def _restore_process_env():
+    """Code under test writes os.environ on purpose (`worker_control.set_flags`,
+    `settings.load_env_file`), and `monkeypatch.delenv(..., raising=False)` on an
+    unset key records nothing to undo. Without this, such a write outlives its
+    test and reaches whichever tests xdist runs next in that process: a leaked
+    TRIAGE_WORKER_ID re-keys `settings.worker_id()` and hides every verify pin a
+    later test saves under the host name."""
+    saved = dict(os.environ)
+    yield
+    if os.environ != saved:
+        os.environ.clear()
+        os.environ.update(saved)
+
+
+@pytest.fixture(autouse=True)
 def _no_real_ai_account(monkeypatch):
     """`capacity.account()` asks the machine's real Claude CLI who is signed
     in; no test reaches it. A test that needs an account sets one."""
