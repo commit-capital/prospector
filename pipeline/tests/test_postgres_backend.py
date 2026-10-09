@@ -74,6 +74,17 @@ def test_agent_cost_and_phase_reads_on_postgres(store):
     assert [r.raw["pr"] for r in store.runs(since=since, phase="fix:single")] == [1]
 
 
+def test_issue_link_rows_project_on_postgres(store):
+    from issue_triage.issue_store import IssueStore
+    st = IssueStore()
+    st.create_issue(42, {"title": "crash", "state": "open", "updated_at": "T"}).set_links(
+        [{"pr": 10, "how": "subsystem"}])
+    st.create_issue(43, {"title": "slow", "state": "open", "updated_at": "T"})
+    cl = st.create_issue_cluster(9, "crashes")
+    cl.set_members([42])
+    assert st.link_rows() == {42: (9, [{"pr": 10, "how": "subsystem"}]), 43: (None, [])}
+
+
 def test_importer_into_postgres(tmp_path, monkeypatch):
     from pipeline import store_migrate
     src = tmp_path / "json"

@@ -170,6 +170,25 @@ class TestIssueLinks:
         # issue 44 has no candidate PRs → it links to nothing
         assert 44 not in {e["issue"] for links in by_pr.values() for e in links}
 
+    def test_load_reads_only_each_issues_cluster_and_candidates(self, tmp_path, monkeypatch):
+        """Linking projects two fields server-side; it never pulls the issue
+        records themselves (bodies, scans, fix runs)."""
+        from issue_triage import issue_store
+        st = issue_store.IssueStore(tmp_path)
+        st.create_issue(42, {"title": "crash", "state": "open", "updated_at": "T",
+                             "body": "x" * 5000}).set_links([{"pr": 10, "how": "subsystem"}])
+        st.create_issue(43, {"title": "slow", "state": "open", "updated_at": "T"})
+        cl = st.create_issue_cluster(9, "crashes")
+        cl.set_members([42])
+        cl.set_pain(0.4)
+        monkeypatch.setattr(st, "all_issues",
+                            lambda **kw: pytest.fail("linking read whole issue records"))
+
+        assert st.link_rows() == {42: (9, [{"pr": 10, "how": "subsystem"}]), 43: (None, [])}
+        by_pr = ingest.load_issue_links(st, prs=[{"number": 11, "body": "Fixes #43"}])
+        assert by_pr == {10: [{"issue": 42, "pain": 0.4, "how": "subsystem"}],
+                         11: [{"issue": 43, "pain": None, "how": "explicit"}]}
+
     def test_live_pr_body_reference_does_not_wait_for_issue_reingest(self, tmp_path):
         from issue_triage import issue_store
         st = issue_store.IssueStore(tmp_path)

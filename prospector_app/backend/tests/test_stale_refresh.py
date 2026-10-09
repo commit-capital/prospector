@@ -51,6 +51,30 @@ def test_refresh_runs_ingest_over_a_bounded_batch(store, monkeypatch):
     assert seen == [[1, 2, 3]]
 
 
+def test_a_pass_another_machine_holds_refreshes_nothing(store, monkeypatch):
+    store.save_pr(_pr(1, head="b" * 40, stamped=HEAD))
+    data.refresh()
+    assert store.claim_lease(stale_refresh.LEASE, host="other-machine",
+                             seconds=stale_refresh.LEASE_SECONDS)
+    monkeypatch.setattr(stale_refresh.ingest, "refresh_prs",
+                        lambda st, numbers: pytest.fail("refreshed under another's lease"))
+    assert stale_refresh.refresh_stale() == []
+
+
+def test_the_lease_is_released_even_when_the_refresh_fails(store, monkeypatch):
+    store.save_pr(_pr(1, head="b" * 40, stamped=HEAD))
+    data.refresh()
+
+    def boom(st, numbers):
+        raise RuntimeError("gh api pulls/1 failed")
+
+    monkeypatch.setattr(stale_refresh.ingest, "refresh_prs", boom)
+    with pytest.raises(RuntimeError):
+        stale_refresh.refresh_stale()
+    assert store.claim_lease(stale_refresh.LEASE, host="other-machine",
+                             seconds=stale_refresh.LEASE_SECONDS)
+
+
 def test_nothing_stale_calls_nothing(store, monkeypatch):
     store.save_pr(_pr(1))
     data.refresh()

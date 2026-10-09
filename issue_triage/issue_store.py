@@ -229,6 +229,16 @@ class IssueStore:
     def issue_ids(self) -> set[int]:
         return self._issues.ids()
 
+    def link_rows(self) -> dict[int, tuple[int | None, list[dict]]]:
+        """Every issue's cluster id and candidate PRs (`links.candidates`), keyed
+        by number — what the PR ingest inverts into each PR's linked issues —
+        projected server-side and read in pages, so linking never ships the
+        rest of the issue records."""
+        c = schema.issues.c
+        rows = self._issues.rows([c.data[("cluster", "id")].as_integer(),
+                                  c.data[("links", "candidates")]])
+        return {r[0]: (r[1], r[2] or []) for r in rows}
+
     def issue_records(self, issues: dict[int, issue_model.Issue]) -> dict[int, dict]:
         """The raw records behind `issues`, for a snapshot cache to serialize."""
         return {n: issue.raw for n, issue in issues.items()}
