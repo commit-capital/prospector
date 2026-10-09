@@ -45,7 +45,6 @@ def close_dup_allowed(issue: Issue, cluster: IssueCluster | None,
 
 
 def close_dup_eligibility(issue: Issue, cluster: IssueCluster | None,
-                          issues: dict[int, Issue] | None = None,
                           live_state: Callable[[int], str | None] | None = None,
                           today: str | None = None,
                           ) -> tuple[bool, str]:

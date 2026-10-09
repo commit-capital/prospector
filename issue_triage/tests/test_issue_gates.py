@@ -74,7 +74,7 @@ def test_eligibility_allows_closed_not_planned_canonical(tmp_path):
     st, iss, cl = _confirmed_dup(tmp_path)
     canon = st.edit_issue(4)
     canon.set_meta({**META, "state": "closed", "state_reason": "not_planned"})
-    ok, reason = issue_gates.close_dup_eligibility(iss, cl, st.all_issues())
+    ok, reason = issue_gates.close_dup_eligibility(iss, cl)
     assert ok, reason
 
 
@@ -83,13 +83,13 @@ def test_eligibility_allows_canonical_closed_as_completed(tmp_path):
     st, iss, cl = _confirmed_dup(tmp_path)
     canon = st.edit_issue(4)
     canon.set_meta({**META, "state": "closed", "state_reason": "completed"})
-    ok, reason = issue_gates.close_dup_eligibility(iss, cl, st.all_issues())
+    ok, reason = issue_gates.close_dup_eligibility(iss, cl)
     assert ok, reason
 
 
 def test_eligibility_passes_with_open_canonical(tmp_path):
     st, iss, cl = _confirmed_dup(tmp_path)
-    ok, reason = issue_gates.close_dup_eligibility(iss, cl, st.all_issues())
+    ok, reason = issue_gates.close_dup_eligibility(iss, cl)
     assert ok, reason
 
 
@@ -98,7 +98,7 @@ def test_eligibility_blocks_live_closed_dup(tmp_path):
     the live check blocks it."""
     st, iss, cl = _confirmed_dup(tmp_path)
     ok, reason = issue_gates.close_dup_eligibility(
-        iss, cl, st.all_issues(), live_state=lambda n: "closed" if n == 5 else "open")
+        iss, cl, live_state=lambda n: "closed" if n == 5 else "open")
     assert not ok and "#5" in reason and "already closed" in reason
 
 
@@ -112,7 +112,7 @@ def test_eligibility_does_not_live_check_canonical(tmp_path):
         calls.append(n)
         return "open" if n == 5 else "closed"
 
-    ok, reason = issue_gates.close_dup_eligibility(iss, cl, st.all_issues(), live_state=fetch)
+    ok, reason = issue_gates.close_dup_eligibility(iss, cl, live_state=fetch)
     assert calls == [5]
     assert ok, reason
 
@@ -121,7 +121,7 @@ def test_eligibility_fails_open_when_live_unreachable(tmp_path):
     """A live fetcher that returns None (GitHub unreachable) falls back to the
     store's state and does not block."""
     st, iss, cl = _confirmed_dup(tmp_path)
-    ok, reason = issue_gates.close_dup_eligibility(iss, cl, st.all_issues(), live_state=lambda n: None)
+    ok, reason = issue_gates.close_dup_eligibility(iss, cl, live_state=lambda n: None)
     assert ok, reason
 
 
@@ -135,7 +135,7 @@ def test_eligibility_skips_live_fetch_when_statically_blocked(tmp_path):
         calls.append(n)
         return "open"
 
-    ok, _ = issue_gates.close_dup_eligibility(iss, st.load_issue_cluster(1), st.all_issues(), live_state=fetch)
+    ok, _ = issue_gates.close_dup_eligibility(iss, st.load_issue_cluster(1), live_state=fetch)
     assert not ok and calls == []
 
 
