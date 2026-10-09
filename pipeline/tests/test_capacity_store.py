@@ -66,3 +66,30 @@ def test_agent_runs_stay_out_of_the_pr_ledger(store):
                             "cost_usd": 1.0, "started": "2026-10-01T10:00:00+00:00",
                             "finished": "2026-10-01T10:00:00+00:00"})
     assert store.runs() == []
+
+
+def _agent_run(store, ts: str, **fields) -> None:
+    store.append_agent_run({"phase": "agent:run", "started": ts, "finished": ts, "ts": ts,
+                            **fields})
+
+
+def test_agent_spend_sums_per_group_in_a_window(store):
+    _agent_run(store, "2026-10-01T10:00:00+00:00", lane="fix", host="a", cost_usd=1.5)
+    _agent_run(store, "2026-10-01T11:00:00+00:00", lane="fix", host="b", cost_usd=0.5)
+    _agent_run(store, "2026-10-01T12:00:00+00:00", lane="verify", host="a", cost_usd=2.0)
+    _agent_run(store, "2026-10-01T12:30:00+00:00", host="a", cost_usd=0.25)
+    _agent_run(store, "2026-10-01T13:00:00+00:00", lane="fix", host="a", cost_usd=None)
+    _agent_run(store, "2026-10-02T09:00:00+00:00", lane="fix", host="a", cost_usd=8.0)
+    _agent_run(store, "2026-09-30T23:00:00+00:00", lane="fix", host="a", cost_usd=7.0)
+    since, until = "2026-10-01T00:00:00+00:00", "2026-10-01T23:59:59+00:00"
+    assert store.agent_spend(since, "lane", until=until) == {"fix": 2.0, "verify": 2.0, None: 0.25}
+    assert store.agent_spend(since, "host", until=until) == {"a": 3.75, "b": 0.5}
+    assert store.agent_spend(since, "host") == {"a": 11.75, "b": 0.5}
+
+
+def test_runs_keeps_only_the_named_phase_server_side(store):
+    store.append_run({"phase": "ingest", "ts": "2026-10-01T10:00:00+00:00"})
+    store.append_run({"phase": "fix:single", "pr": 1, "ts": "2026-10-01T11:00:00+00:00"})
+    store.append_run({"phase": "fix:single", "pr": 2, "ts": "2026-09-30T11:00:00+00:00"})
+    got = store.runs(since="2026-10-01T00:00:00+00:00", phase="fix:single")
+    assert [r.raw.get("pr") for r in got] == [1]

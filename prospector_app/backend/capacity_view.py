@@ -84,10 +84,10 @@ def view(acct: capacity.Account, machines: list[str], this_machine: bool,
     week = reading.seven_day if reading is not None else None
     spend: dict[str, float] = {}
     start, _ = capacity.local_midnights(p, now)
-    for run in st.agent_runs(_iso(start) or ""):
-        if run.get("account") == acct.key and run.get("unattended"):
-            lane = str(run.get("lane") or "unknown")
-            spend[lane] = round(spend.get(lane, 0.0) + float(run.get("cost_usd") or 0.0), 4)
+    for lane, usd in st.agent_spend(_iso(start) or "", "lane", account=acct.key,
+                                    unattended=True).items():
+        key = lane or "unknown"
+        spend[key] = round(spend.get(key, 0.0) + usd, 4)
     subscription = acct.billing == "subscription"
     return {
         "key": acct.key, "label": acct.label, "billing": acct.billing,

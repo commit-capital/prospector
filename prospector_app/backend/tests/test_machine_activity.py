@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 from fastapi.testclient import TestClient
 
 from prospector_app.backend import app as appmod
+from pipeline import store as S
+from prospector_app.backend import data
 from prospector_app.backend import machine_activity as ma
 
 NOW = datetime(2026, 10, 3, 12, tzinfo=timezone.utc)
@@ -41,8 +43,8 @@ def _machine(host: str, online: bool = True, last_beat: str | None = None,
 
 
 def _summarize(rows: list[tuple[str, dict]], roster: dict | None = None,
-               agent_runs: list[dict] | None = None, local_jobs: list[dict] | None = None) -> dict:
-    return ma.summarize(rows, agent_runs or [], roster or _roster(), local_jobs or [],
+               spend: dict[str, float] | None = None, local_jobs: list[dict] | None = None) -> dict:
+    return ma.summarize(rows, spend or {}, roster or _roster(), local_jobs or [],
                         JOB_PHASES, NOW)
 
 
@@ -153,13 +155,25 @@ def test_online_machines_first():
     assert [m["host"] for m in view["machines"]] == ["z-on", "b-off"]
 
 
-def test_spend_sums_agent_runs_per_host():
-    runs = [{"host": "studio", "cost_usd": 1.25, "finished": _at(1)},
-            {"host": "studio", "cost_usd": 2.5, "finished": _at(2)},
-            {"host": "studio", "cost_usd": 9.0, "finished": _at(30)},
-            {"host": "laptop", "cost_usd": None, "finished": _at(1)}]
-    view = _summarize([], roster=_roster(_machine("studio")), agent_runs=runs)
+def test_spend_is_shown_on_the_roster_machines_only():
+    view = _summarize([], roster=_roster(_machine("studio")),
+                      spend={"studio": 3.75, "gone": 9.0})
     assert _host(view, "studio")["spend_usd"] == 3.75
+    assert [m["host"] for m in view["machines"]] == ["studio"]
+
+
+def test_activity_sums_the_past_days_agent_spend_per_host(tmp_path, monkeypatch):
+    st = S.Store(tmp_path)
+    for host, cost, hours_ago in (("studio", 1.25, 1), ("studio", 2.5, 2), ("studio", 9.0, 30),
+                                  ("laptop", None, 1)):
+        ts = (datetime.now(timezone.utc) - timedelta(hours=hours_ago)).isoformat(timespec="seconds")
+        st.append_agent_run({"phase": "agent:run", "host": host, "cost_usd": cost,
+                             "started": ts, "finished": ts, "ts": ts})
+    monkeypatch.setattr(data, "store", lambda: st)
+    seen = {}
+    monkeypatch.setattr(ma, "summarize", lambda rows, spend, *a: seen.setdefault("spend", spend))
+    ma.activity()
+    assert seen["spend"] == {"studio": 3.75}
 
 
 def test_route_answers(monkeypatch):
@@ -178,8 +192,7 @@ def test_one_background_pass_reads_singular():
 
 
 def test_spend_rounds_once_after_summing():
-    runs = [{"host": "studio", "cost_usd": 0.013, "finished": _at(1)} for _ in range(300)]
-    view = _summarize([], roster=_roster(_machine("studio")), agent_runs=runs)
+    view = _summarize([], roster=_roster(_machine("studio")), spend={"studio": 0.013 * 300})
     assert _host(view, "studio")["spend_usd"] == 3.9
 
 

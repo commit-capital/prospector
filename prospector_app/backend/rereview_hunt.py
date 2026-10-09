@@ -63,8 +63,8 @@ def candidates(now: datetime | None = None) -> list[tuple[int, Reviewer]]:
 
 def _requests(since: datetime) -> list[dict]:
     """The request bookings since `since`, as their raw ledger records."""
-    rows = data.store().runs(since=since.isoformat())
-    return [r.raw for r in rows if isinstance(r, storekit.PhaseRun) and r.phase == PHASE]
+    rows = data.store().runs(since=since.isoformat(), phase=PHASE)
+    return [r.raw for r in rows if isinstance(r, storekit.PhaseRun)]
 
 
 def requested(bookings: list[dict], n: int, head_sha: str | None) -> bool:

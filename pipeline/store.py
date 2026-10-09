@@ -671,18 +671,22 @@ class Store:
             conn.execute(insert(schema.runs).values(
                 kind="pr", data=record, ts=record.get("ts") or storekit.now()))
 
-    def runs(self, limit: int | None = None, since: str | None = None) -> list[storekit.RunRecord]:
+    def runs(self, limit: int | None = None, since: str | None = None,
+             phase: str | None = None) -> list[storekit.RunRecord]:
         """The run-ledger records, typed (PhaseRun | StoreEdit), oldest first.
         With `limit` omitted, every record; with `limit` given, only the last
         `limit` records — read newest-first with a bounded query, then
         reversed back to insertion order before returning. `since` filters to
         records inserted at or after that ISO instant, against the ledger's
         indexed `ts` column — cheap regardless of the ledger's total size —
-        and composes with `limit`."""
+        and composes with `limit`. `phase` keeps only that phase's records,
+        filtered server-side, so a caller after one phase never ships the rest."""
         from sqlalchemy import select
         query = select(schema.runs.c.data).where(schema.runs.c.kind == "pr")
         if since is not None:
             query = query.where(schema.runs.c.ts >= since)
+        if phase is not None:
+            query = query.where(schema.runs.c.data["phase"].as_string() == phase)
         if limit is None:
             query = query.order_by(schema.runs.c.rowid)
             with self.engine.connect() as conn:
@@ -884,10 +888,34 @@ class Store:
         with self.engine.connect() as conn:
             return [r[0] for r in conn.execute(query).all()]
 
+    def agent_spend(self, since: str, by: str, *, until: str | None = None,
+                    account: str | None = None,
+                    unattended: bool = False) -> dict[str | None, float]:
+        """Reported agent cost of the runs inserted at or after `since` (and at
+        or before `until`), summed in the database per value of each record's
+        `by` field ("lane", "host"): one row per group crosses the wire, never
+        the runs themselves. `account` and `unattended` narrow the runs summed.
+        A run with no reported cost adds nothing; a run without `by` sums
+        under None."""
+        from sqlalchemy import func, select
+        data = schema.runs.c.data
+        group = data[by].as_string().label("grp")
+        query = (select(group, func.sum(data["cost_usd"].as_float()))
+                 .where(schema.runs.c.kind == "agent")
+                 .where(schema.runs.c.ts >= since))
+        if until is not None:
+            query = query.where(schema.runs.c.ts <= until)
+        if account is not None:
+            query = query.where(data["account"].as_string() == account)
+        if unattended:
+            query = query.where(data["unattended"].as_boolean())
+        query = query.group_by(group)
+        with self.engine.connect() as conn:
+            return {k: float(v) for k, v in conn.execute(query).all() if v is not None}
+
     def capacity_spend(self, account: str, since: str) -> float:
         """Reported cost of `account`'s unattended agent runs since `since`."""
-        return sum(float(r.get("cost_usd") or 0.0) for r in self.agent_runs(since)
-                   if r.get("account") == account and r.get("unattended"))
+        return sum(self.agent_spend(since, "lane", account=account, unattended=True).values())
 
     def load_reviewers(self) -> dict:
         """Each automated reviewer's latest observed activity over the open

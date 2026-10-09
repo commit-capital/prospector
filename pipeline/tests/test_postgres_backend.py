@@ -58,6 +58,22 @@ def test_runs_and_registry_on_postgres(store, monkeypatch):
     assert store.load_threats() == {"actors": {"x": 1}, "incidents": []}
 
 
+def test_agent_spend_and_phase_reads_on_postgres(store):
+    for lane, account, unattended, cost in (("fix", "k", True, 1.5), ("fix", "k", True, 0.5),
+                                            ("verify", "k", True, 2.0), ("fix", "k", False, 9.0),
+                                            ("fix", "other", True, 4.0), ("fix", "k", True, None)):
+        store.append_agent_run({"phase": "agent:run", "lane": lane, "account": account,
+                                "unattended": unattended, "cost_usd": cost,
+                                "ts": "2026-10-01T10:00:00+00:00"})
+    since = "2026-10-01T00:00:00+00:00"
+    assert store.agent_spend(since, "lane", account="k", unattended=True) == {
+        "fix": 2.0, "verify": 2.0}
+    assert store.capacity_spend("k", since) == 4.0
+    store.append_run({"phase": "ingest", "ts": "2026-10-01T10:00:00+00:00"})
+    store.append_run({"phase": "fix:single", "pr": 1, "ts": "2026-10-01T11:00:00+00:00"})
+    assert [r.raw["pr"] for r in store.runs(since=since, phase="fix:single")] == [1]
+
+
 def test_importer_into_postgres(tmp_path, monkeypatch):
     from pipeline import store_migrate
     src = tmp_path / "json"
