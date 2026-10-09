@@ -191,7 +191,7 @@ export interface MachineActivity {
   background: { label: string; count: number }[];
   /** Jobs a person started; `job_id` names this app's own job record. */
   jobs: { label: string; kind: string; status: string; job_id: number | null }[];
-  spend_usd: number;
+  cost_usd: number;
 }
 export interface ActivityView { local: string; window_hours: number; machines: MachineActivity[] }
 
@@ -242,7 +242,7 @@ export interface CapacityAccount {
   pacing_line: number | null;
   weekly_resets_at: string | null;
   decision: CapacityDecision;
-  spend_today_by_lane: Record<string, number>;
+  cost_today_by_lane: Record<string, number>;
 }
 /** Every known AI account, this machine's first, and this machine's account key. */
 export interface CapacityState {

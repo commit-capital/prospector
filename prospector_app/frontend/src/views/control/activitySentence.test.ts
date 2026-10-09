@@ -9,7 +9,7 @@ function machine(over: Partial<MachineActivity> = {}): MachineActivity {
   return {
     host: "studio", local: false, online: true, offline_since: null, has_worker: true,
     stalled: false, tripped: [], current: { pr: null, issue: null }, lanes: {}, background: [], jobs: [],
-    spend_usd: 0, ...over,
+    cost_usd: 0, ...over,
   };
 }
 
@@ -37,13 +37,13 @@ test("failures read as bad", () => {
   assert.deepEqual(p.parts.map((x) => x.bad ?? false), [true, false, true]);
 });
 
-test("lanes come in a fixed order, then background, jobs and spend", () => {
+test("lanes come in a fixed order, then background, jobs and cost", () => {
   const lane = { count: 1, numbers: [1], outcomes: [] };
   const keys = activityPhrases(machine({
     lanes: { autofix: lane, security: lane }, background: [{ label: "PR watches", count: 71 }],
-    jobs: [{ label: "Ingest", kind: "ingest", status: "done", job_id: null }], spend_usd: 41.3,
+    jobs: [{ label: "Ingest", kind: "ingest", status: "done", job_id: null }], cost_usd: 41.3,
   })).map((p) => p.key);
-  assert.deepEqual(keys, ["security", "autofix", "background", "jobs", "spend"]);
+  assert.deepEqual(keys, ["security", "autofix", "background", "jobs", "cost"]);
 });
 
 test("background lists its passes", () => {
@@ -67,10 +67,10 @@ test("another machine's jobs read without you", () => {
   assert.equal(p.parts[0].jobId, undefined);
 });
 
-test("spend rounds to dollars from ten up", () => {
-  assert.equal(activityPhrases(machine({ spend_usd: 41.3 }))[0].lead.text, "$41 AI");
-  assert.equal(activityPhrases(machine({ spend_usd: 3.75 }))[0].lead.text, "$3.75 AI");
-  assert.deepEqual(activityPhrases(machine({ spend_usd: 0.001 })), []);
+test("cost rounds to dollars from ten up", () => {
+  assert.equal(activityPhrases(machine({ cost_usd: 41.3 }))[0].lead.text, "$41 at API prices");
+  assert.equal(activityPhrases(machine({ cost_usd: 3.75 }))[0].lead.text, "$3.75 at API prices");
+  assert.deepEqual(activityPhrases(machine({ cost_usd: 0.001 })), []);
 });
 
 test("a machine with nothing to say has no phrases", () => {

@@ -2,7 +2,7 @@
 
 `summarize` folds plain data: the PR, issue and alert runs ledgers (each row
 naming the machine that wrote it, `storekit.stamp_host`), the agent ledger's
-spend, the machine roster, and this app's own jobs. A row lands in one bucket:
+cost at API prices, the machine roster, and this app's own jobs. A row lands in one bucket:
 a lane (security, verify, autofix, issue fix) counted by outcome, a background
 pass counted by kind, or a job a person started. `activity` gathers those
 inputs from the app's cached reads.
@@ -85,7 +85,7 @@ class MachineActivity(TypedDict):
     lanes: dict[Lane, LaneActivity]
     background: list[Background]
     jobs: list[JobRun]
-    spend_usd: float
+    cost_usd: float
 
 
 class ActivityView(TypedDict):
@@ -131,7 +131,7 @@ def _number(lane: Lane, raw: dict) -> int | None:
 def _blank(host: str, local: str) -> MachineActivity:
     return {"host": host, "local": host == local, "online": False, "offline_since": None,
             "stalled": False, "has_worker": False, "tripped": [], "current": {"pr": None, "issue": None},
-            "lanes": {}, "background": [], "jobs": [], "spend_usd": 0.0}
+            "lanes": {}, "background": [], "jobs": [], "cost_usd": 0.0}
 
 
 def _from_roster(m: dict, local: str, now: datetime) -> MachineActivity:
@@ -165,15 +165,16 @@ def _lane(outcomes: dict[str, list[int | None]]) -> LaneActivity:
                          for label, ns in ordered]}
 
 
-def summarize(rows: list[tuple[str, dict]], spend: dict[str, float], roster: dict,
+def summarize(rows: list[tuple[str, dict]], cost: dict[str, float], roster: dict,
               local_jobs: list[JobView], job_phases: dict[tuple[str, str], tuple[str, str]],
               now: datetime) -> ActivityView:
     """Every machine's past `WINDOW_HOURS`: `rows` are `(ledger, record)`
     pairs from the PR, issue and alert ledgers, `job_phases` maps a Control-tab
     job's `(ledger, phase)` to its `(kind, label)`, and `local_jobs` are this
     app's job records, which stand in for the ledger's jobs on the machine
-    serving it. `spend` is each host's reported agent cost over the window,
-    summed by the store (`Store.agent_spend`)."""
+    serving it. `cost` is each host's agent runs over the window priced at API
+    rates (the CLI's `total_cost_usd`, notional on a subscription account),
+    summed by the store (`Store.agent_cost`)."""
     cutoff = now - timedelta(hours=WINDOW_HOURS)
     local = str(roster.get("local") or "")
     machines: dict[str, MachineActivity] = {
@@ -225,9 +226,9 @@ def summarize(rows: list[tuple[str, dict]], spend: dict[str, float], roster: dic
             {"label": j["label"], "kind": j["kind"], "status": j["status"], "job_id": j["id"]}
             for j in sorted(mine, key=lambda j: j["id"])] if mine else []
 
-    for host, usd in spend.items():
+    for host, usd in cost.items():
         if host in machines:
-            machines[host]["spend_usd"] = round(usd, 2)
+            machines[host]["cost_usd"] = round(usd, 2)
 
     ordered = sorted(machines.values(),
                      key=lambda m: (m["host"] == UNATTRIBUTED, not m["online"], m["host"]))
@@ -256,6 +257,6 @@ def activity() -> ActivityView:
     for ledger, records in (("pr", data.runs(since=since)), ("issue", issues.cached_runs()),
                             ("alert", alert_data.runs())):
         rows.extend((ledger, r.raw) for r in records if isinstance(r, storekit.PhaseRun))
-    spend = data.store().agent_spend(since, "host", until=now.isoformat())
-    return summarize(rows, {h: usd for h, usd in spend.items() if h is not None},
+    cost = data.store().agent_cost(since, "host", until=now.isoformat())
+    return summarize(rows, {h: usd for h, usd in cost.items() if h is not None},
                      machines.roster(), jobs.list_jobs(), _job_phases(), now)

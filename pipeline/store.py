@@ -888,10 +888,11 @@ class Store:
         with self.engine.connect() as conn:
             return [r[0] for r in conn.execute(query).all()]
 
-    def agent_spend(self, since: str, by: str, *, until: str | None = None,
-                    account: str | None = None,
-                    unattended: bool = False) -> dict[str | None, float]:
-        """Reported agent cost of the runs inserted at or after `since` (and at
+    def agent_cost(self, since: str, by: str, *, until: str | None = None,
+                   account: str | None = None,
+                   unattended: bool = False) -> dict[str | None, float]:
+        """The cost the CLI reports (`total_cost_usd`: the run priced at API
+        rates, a real charge only on an API-key account) of the runs inserted at or after `since` (and at
         or before `until`), summed in the database per value of each record's
         `by` field ("lane", "host"): one row per group crosses the wire, never
         the runs themselves. `account` and `unattended` narrow the runs summed.
@@ -913,9 +914,10 @@ class Store:
         with self.engine.connect() as conn:
             return {k: float(v) for k, v in conn.execute(query).all() if v is not None}
 
-    def capacity_spend(self, account: str, since: str) -> float:
-        """Reported cost of `account`'s unattended agent runs since `since`."""
-        return sum(self.agent_spend(since, "lane", account=account, unattended=True).values())
+    def capacity_cost(self, account: str, since: str) -> float:
+        """Reported cost of `account`'s unattended agent runs since `since` —
+        what an API-key account's daily budget is held to."""
+        return sum(self.agent_cost(since, "lane", account=account, unattended=True).values())
 
     def load_reviewers(self) -> dict:
         """Each automated reviewer's latest observed activity over the open

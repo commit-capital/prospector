@@ -33,7 +33,7 @@ function dollars(usd: number): string {
 }
 
 /** A machine's past day as clauses: each lane with its outcomes, the
- *  background passes, the jobs a person ran, and the AI spend. */
+ *  background passes, the jobs a person ran, and its agent runs at API prices. */
 export function activityPhrases(m: MachineActivity): ActivityPhrase[] {
   const out: ActivityPhrase[] = [];
   for (const [lane, one, many] of LANES) {
@@ -67,8 +67,8 @@ export function activityPhrases(m: MachineActivity): ActivityPhrase[] {
       style: "list", linkKind: null,
     });
   }
-  if (m.spend_usd >= 0.01) {
-    out.push({ key: "spend", lead: { text: `${dollars(m.spend_usd)} AI` }, parts: [], style: "plain", linkKind: null });
+  if (m.cost_usd >= 0.01) {
+    out.push({ key: "cost", lead: { text: `${dollars(m.cost_usd)} at API prices` }, parts: [], style: "plain", linkKind: null });
   }
   return out;
 }
