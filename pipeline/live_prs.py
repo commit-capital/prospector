@@ -15,7 +15,7 @@ from pipeline import ci_signal
 from pipeline import diffpaths
 from pipeline import progress
 from pipeline import settings
-from pipeline.gh import gh_graphql, required_checks
+from pipeline.gh import complete_pr_checks, gh_graphql, required_checks
 
 _log = logging.getLogger(__name__)
 
@@ -103,8 +103,10 @@ def fetch(prs: list[int], *,
             if diffstat is None:
                 _log.warning("live PR fetch returned incomplete diffstat for PR #%d", n)
                 continue
+            complete = complete_pr_checks(node, rate_limit_waits=rate_limit_waits)
             runs, statuses = ci_signal.from_graphql_pr(node)
-            required = required_checks(node.get("baseRefName"), required_by_base)
+            required = (required_checks(node.get("baseRefName"), required_by_base,
+                                        rate_limit_waits=rate_limit_waits) if complete else None)
             file_nodes = ((node.get("files") or {}).get("nodes")) or []
             paths = [f.get("path") for f in file_nodes if f.get("path")]
             out[int(n)] = {

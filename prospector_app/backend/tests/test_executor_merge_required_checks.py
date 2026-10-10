@@ -44,12 +44,26 @@ def test_live_failing_check_blocks(merge):
     assert res["status"] == "blocked"
 
 
+def test_passing_does_not_block(merge):
+    res, recorded = merge({"head": "h", "ci": "passing", "unreported": []})
+    assert res["status"] == "dry-run"
+    assert recorded == []
+
+
 @pytest.mark.parametrize("facts", [
-    {"head": "h", "ci": "passing", "unreported": []},
     {"head": "other", "ci": "unreported", "unreported": ["ci / e2e"]},
     None,
 ])
-def test_passing_other_head_or_unanswered_does_not_block(merge, facts):
+def test_unconfirmed_head_blocks(merge, facts):
     res, recorded = merge(facts)
-    assert res["status"] == "dry-run"
+    assert res["status"] == "blocked"
+    assert "retry" in res["detail"]
     assert recorded == []
+
+
+@pytest.mark.parametrize("ci", ["unknown", None])
+def test_unread_ci_blocks_and_replaces_stored_passing(merge, ci):
+    res, recorded = merge({"head": "h", "ci": ci, "unreported": []})
+    assert res["status"] == "blocked"
+    assert "retry" in res["detail"]
+    assert recorded == [{"ci": "unknown"}]

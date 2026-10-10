@@ -46,7 +46,7 @@ def test_required_context_nothing_reported_is_unreported():
     assert ci_signal.unreported(old_names, [], required) == required
     assert ci_signal.verdict(old_names, [], required=required) == "unreported"
     assert ci_signal.verdict([], [], required=required) == "unreported"
-    assert ci_signal.verdict(old_names, [], required=None) is None
+    assert ci_signal.verdict(old_names, [], required=None) == "unknown"
     assert ci_signal.verdict(old_names + [_run("github-actions", "failure")], [],
                              required=None) == "failing"
     assert ci_signal.verdict(old_names + [_run("github-actions", None, "queued")], [],

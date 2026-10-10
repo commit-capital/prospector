@@ -44,7 +44,7 @@ from pipeline import progress
 from pipeline import review_fetch
 from pipeline import reviewers
 from pipeline import settings
-from pipeline.gh import RATE_LIMIT_BACKOFF, fetch_pr, gh_json, gh_list, operator_env
+from pipeline.gh import RATE_LIMIT_BACKOFF, fetch_pr, gh_list, operator_env
 from pipeline.review_fetch import PrFeed
 from pipeline.store import Store
 from pipeline.storekit import now as _now
@@ -246,7 +246,7 @@ def refresh_prs(store: Store, numbers: list[int]) -> list[dict]:
         if feed is not None:
             ci = ci_signal.verdict(feed.check_runs, feed.statuses, required=feed.required)
         else:
-            ci = gh_ci_status(head_sha) if head_sha else None
+            ci = "unknown"
         raw_mergeable = gh_pr.get("mergeable")
         mergeable = raw_mergeable if isinstance(raw_mergeable, bool) else None
         diffstat = _diffstat_from_gh(gh_pr)
@@ -268,21 +268,6 @@ def refresh_prs(store: Store, numbers: list[int]) -> list[dict]:
         out.append({"pr": n, "moved": old_sha != new_sha,
                     "old_sha": old_sha, "new_sha": new_sha})
     return out
-
-
-def gh_ci_status(sha: str) -> str | None:
-    """GitHub's authoritative CI verdict for `sha` ('passing' | 'failing' |
-    'pending'), or None when GitHub has no checks for it or can't be reached — the
-    caller then keeps the stored value. Best-effort: a gh hiccup never breaks a
-    refresh. Combines the check-runs API (filter=latest drops superseded re-runs)
-    and the legacy commit-status API."""
-    runs = gh_json(f"repos/{settings.repo()}/commits/{sha}/check-runs?per_page=100&filter=latest")
-    status = gh_json(f"repos/{settings.repo()}/commits/{sha}/status")
-    if runs is None and status is None:
-        return None  # couldn't reach GitHub at all — keep the stored verdict
-    check_runs = ci_signal.from_rest_check_runs((runs or {}).get("check_runs", []))
-    statuses = (status or {}).get("statuses", [])
-    return ci_signal.verdict(check_runs, statuses)
 
 
 # ---------------------------------------------------------------------------

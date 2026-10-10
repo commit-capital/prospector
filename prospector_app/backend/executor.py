@@ -221,22 +221,23 @@ def _record_observed_head(n: int, head: str) -> None:
 
 
 def _live_ci_block(n: int, head: str | None) -> str | None:
-    """Why PR `n`'s CI at `head`, read live, stops a merge — a required check
-    the head never ran, or a check failing or still running — or None. The
-    verdict read is recorded in the shared store. None when GitHub does not
-    answer or reports another head."""
+    """Read and persist CI at the pinned head; every unconfirmed read blocks."""
     facts, _ = live_prs.fetch([n])
     live = facts.get(n)
-    if live is None or live["head"] != head or live["ci"] in ("passing", None):
+    if live is None or live["head"] != head:
+        return "could not confirm CI at the pinned head — retry the merge"
+    if live["ci"] == "passing":
         return None
+    ci = live["ci"] or "unknown"
     store = data.store()
     if store.load_pr(n) is not None:
-        store.edit_pr(n).record_live_state(ci=live["ci"])
+        store.edit_pr(n).record_live_state(ci=ci)
     data.refresh()
     if live["unreported"]:
         return (f"GitHub requires {', '.join(live['unreported'])}, which never ran at this "
                 "head — update the branch so CI runs them")
-    return f"CI is {live['ci']} at this head"
+    return ("could not read all CI checks and branch requirements — retry the merge"
+            if ci == "unknown" else f"CI is {ci} at this head")
 
 
 class Preflight(NamedTuple):

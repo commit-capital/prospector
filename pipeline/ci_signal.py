@@ -13,17 +13,21 @@ FAIL_CONCLUSIONS = frozenset(
     {"failure", "timed_out", "cancelled", "action_required", "startup_failure", "stale"})
 OK_CONCLUSIONS = frozenset({"success", "neutral", "skipped"})
 
+CONTEXT_FIELDS = (
+    "pageInfo { hasNextPage endCursor } "
+    "nodes { __typename ... on CheckRun { name status conclusion title summary detailsUrl url "
+    "checkSuite { app { slug } } } ... on StatusContext { context state } }")
+
 # GraphQL pullRequest fields `from_graphql_pr` reads: the head's checks.
 PR_FIELDS = (
     "baseRefName commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { "
-    "nodes { __typename ... on CheckRun { name status conclusion title summary detailsUrl url "
-    "checkSuite { app { slug } } } ... on StatusContext { context state } } } } } } }")
+    + CONTEXT_FIELDS + " } } } } }")
 
 # GraphQL Ref fields `required_contexts` reads: the checks a branch's rulesets
 # and branch protection require.
 REF_FIELDS = (
     "branchProtectionRule { requiredStatusCheckContexts } "
-    "rules(first: 100) { nodes { parameters { ... on RequiredStatusChecksParameters { "
+    "rules(first: 100) { pageInfo { hasNextPage } nodes { parameters { ... on RequiredStatusChecksParameters { "
     "requiredStatusChecks { context } } } } }")
 
 
@@ -37,11 +41,9 @@ def unreported(check_runs: list[dict], statuses: list[dict],
 def verdict(check_runs: list[dict], statuses: list[dict], *,
             required: Sequence[str] | None = (),
             exclude_apps: frozenset[str] | None = None) -> str | None:
-    """'passing' | 'failing' | 'pending' | 'unreported', or None when nothing
-    counts. Failure outranks pending outranks unreported (a `required` context
-    the head carries no result for, with nothing still running) outranks
-    passing; skipped/neutral do not fail a run. With `required` None, the
-    branch's requirements unread, nothing reads as passing."""
+    """Failure outranks pending. Unread requirements are unknown; missing
+    required contexts are unreported. Skipped/neutral runs pass. None when
+    nothing counts and no checks are required."""
     excluded = reviewers.app_slugs() if exclude_apps is None else exclude_apps
     saw_any = saw_fail = saw_pending = False
     for run in check_runs:
@@ -63,7 +65,7 @@ def verdict(check_runs: list[dict], statuses: list[dict], *,
     if saw_fail or saw_pending:
         return "failing" if saw_fail else "pending"
     if required is None:
-        return None
+        return "unknown"
     if unreported(check_runs, statuses, required):
         return "unreported"
     return "passing" if saw_any else None
@@ -101,11 +103,15 @@ def from_graphql_contexts(nodes: list[dict]) -> tuple[list[dict], list[dict]]:
     return runs, statuses
 
 
-def from_graphql_pr(node: dict) -> tuple[list[dict], list[dict]]:
-    """A pullRequest node carrying `PR_FIELDS` → (check runs, statuses)."""
+def check_contexts(node: dict) -> dict | None:
     commits = ((node.get("commits") or {}).get("nodes")) or [{}]
     rollup = ((commits[0] or {}).get("commit") or {}).get("statusCheckRollup") or {}
-    return from_graphql_contexts((rollup.get("contexts") or {}).get("nodes") or [])
+    return rollup.get("contexts")
+
+
+def from_graphql_pr(node: dict) -> tuple[list[dict], list[dict]]:
+    """A pullRequest node carrying `PR_FIELDS` → (check runs, statuses)."""
+    return from_graphql_contexts((check_contexts(node) or {}).get("nodes") or [])
 
 
 def required_contexts(ref: dict) -> list[str]:

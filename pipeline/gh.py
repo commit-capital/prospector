@@ -228,23 +228,62 @@ def noreply_email(user_id: int, login: str) -> str:
     return f"{user_id}+{login}@users.noreply.github.com"
 
 
-def required_checks(branch: str | None,
-                    known: dict[str, list[str] | None]) -> list[str] | None:
-    """The status check contexts `branch`'s rulesets and branch protection
-    require, read once per branch into `known`. None when GitHub does not
-    answer."""
+def complete_pr_checks(node: dict, *, rate_limit_waits: Sequence[float] = ()) -> bool:
+    """Fill the PR node's check contexts from every page at its pinned head."""
+    from pipeline import ci_signal
+    contexts = ci_signal.check_contexts(node)
+    if contexts is None or not isinstance(contexts.get("nodes"), list):
+        return False
+    page = contexts
+    nodes = list(contexts.get("nodes") or [])
+    cursors: set[str] = set()
+    while (page.get("pageInfo") or {}).get("hasNextPage") is True:
+        cursor = page["pageInfo"].get("endCursor")
+        head = node.get("headRefOid")
+        if not cursor or cursor in cursors or not head:
+            return False
+        cursors.add(cursor)
+        try:
+            data = gh_graphql_data(
+                f'query($head: String!, $cursor: String!) {{ repository(owner: "{settings.repo_owner()}", '
+                f'name: "{settings.repo_name()}") {{ object(expression: $head) {{ ... on Commit {{ '
+                f'statusCheckRollup {{ contexts(first: 100, after: $cursor) {{ {ci_signal.CONTEXT_FIELDS} }} }} '
+                f'}} }} }} }}',
+                variables={"head": head, "cursor": cursor}, rate_limit_waits=rate_limit_waits)
+        except RuntimeError:
+            return False
+        commit = ((data.get("repository") or {}).get("object") or {})
+        page = ((commit.get("statusCheckRollup") or {}).get("contexts") or {})
+        if not isinstance(page.get("nodes"), list):
+            return False
+        nodes.extend(page["nodes"])
+    if (page.get("pageInfo") or {}).get("hasNextPage") is not False:
+        return False
+    contexts.update(nodes=nodes, pageInfo=page["pageInfo"])
+    return True
+
+
+def required_checks(branch: str | None, known: dict[str, list[str] | None], *,
+                    rate_limit_waits: Sequence[float] = ()) -> list[str] | None:
+    """Required contexts, cached per branch. None when the read is incomplete."""
     from pipeline import ci_signal
     if not branch:
-        return []
+        return None
     if branch not in known:
-        payload = gh_graphql(
-            f'query($ref: String!) {{ repository(owner: "{settings.repo_owner()}", '
-            f'name: "{settings.repo_name()}") {{ ref(qualifiedName: $ref) '
-            f'{{ {ci_signal.REF_FIELDS} }} }} }}',
-            variables={"ref": f"refs/heads/{branch}"})
-        repo = ((payload or {}).get("data") or {}).get("repository")
-        known[branch] = (ci_signal.required_contexts(repo.get("ref") or {})
-                         if isinstance(repo, dict) else None)
+        known[branch] = None
+        try:
+            data = gh_graphql_data(
+                f'query($ref: String!) {{ repository(owner: "{settings.repo_owner()}", '
+                f'name: "{settings.repo_name()}") {{ ref(qualifiedName: $ref) '
+                f'{{ {ci_signal.REF_FIELDS} }} }} }}',
+                variables={"ref": f"refs/heads/{branch}"}, rate_limit_waits=rate_limit_waits)
+        except RuntimeError:
+            return None
+        ref = (data.get("repository") or {}).get("ref") or {}
+        rules = ref.get("rules") or {}
+        if ("branchProtectionRule" in ref and isinstance(rules.get("nodes"), list)
+                and (rules.get("pageInfo") or {}).get("hasNextPage") is False):
+            known[branch] = ci_signal.required_contexts(ref)
     return known[branch]
 
 

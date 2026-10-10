@@ -8,7 +8,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from pipeline import ci_signal, progress, settings
-from pipeline.gh import gh_graphql, required_checks
+from pipeline.gh import complete_pr_checks, gh_graphql, required_checks
 
 _log = logging.getLogger(__name__)
 
@@ -112,8 +112,10 @@ def fetch_feeds(numbers: list[int], *,
         for j, n in enumerate(chunk):
             node = repo.get(f"p{j}")
             if isinstance(node, dict):
+                complete = complete_pr_checks(node, rate_limit_waits=rate_limit_waits)
                 out[n] = feed_from_node(n, node)
-                out[n].required = required_checks(node.get("baseRefName"), required_by_base)
+                out[n].required = (required_checks(node.get("baseRefName"), required_by_base,
+                                                  rate_limit_waits=rate_limit_waits) if complete else None)
     if report is not None:
         missing = len(numbers) - len(out)
         report.finish(f"{len(out):,} read" + (f", {missing:,} missing" if missing else ""))
