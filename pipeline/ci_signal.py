@@ -5,17 +5,45 @@ reviewer's own check reads under the reviewer's name, so CI reflects the
 repository's own workflows."""
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from pipeline import reviewers
 
 FAIL_CONCLUSIONS = frozenset(
     {"failure", "timed_out", "cancelled", "action_required", "startup_failure", "stale"})
 OK_CONCLUSIONS = frozenset({"success", "neutral", "skipped"})
 
+CONTEXT_FIELDS = (
+    "pageInfo { hasNextPage endCursor } "
+    "nodes { __typename ... on CheckRun { name status conclusion title summary detailsUrl url "
+    "checkSuite { app { slug } } } ... on StatusContext { context state } }")
+
+# GraphQL pullRequest fields `from_graphql_pr` reads: the head's checks.
+PR_FIELDS = (
+    "baseRefName commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { "
+    + CONTEXT_FIELDS + " } } } } }")
+
+# GraphQL Ref fields `required_contexts` reads: the checks a branch's rulesets
+# and branch protection require.
+REF_FIELDS = (
+    "branchProtectionRule { requiredStatusCheckContexts } "
+    "rules(first: 100) { pageInfo { hasNextPage } nodes { parameters { ... on RequiredStatusChecksParameters { "
+    "requiredStatusChecks { context } } } } }")
+
+
+def unreported(check_runs: list[dict], statuses: list[dict],
+               required: Sequence[str]) -> list[str]:
+    """The required contexts no check run or status at the head carries."""
+    seen = {r.get("name") for r in check_runs} | {s.get("context") for s in statuses}
+    return [c for c in required if c not in seen]
+
 
 def verdict(check_runs: list[dict], statuses: list[dict], *,
+            required: Sequence[str] | None = (),
             exclude_apps: frozenset[str] | None = None) -> str | None:
-    """'passing' | 'failing' | 'pending', or None when nothing counts. Failure
-    outranks pending outranks passing; skipped/neutral do not fail a run."""
+    """Failure outranks pending. Unread requirements are unknown; missing
+    required contexts are unreported. Skipped/neutral runs pass. None when
+    nothing counts and no checks are required."""
     excluded = reviewers.app_slugs() if exclude_apps is None else exclude_apps
     saw_any = saw_fail = saw_pending = False
     for run in check_runs:
@@ -34,9 +62,13 @@ def verdict(check_runs: list[dict], statuses: list[dict], *,
             saw_fail = True
         elif st.get("state") == "pending":
             saw_pending = True
-    if not saw_any:
-        return None
-    return "failing" if saw_fail else "pending" if saw_pending else "passing"
+    if saw_fail or saw_pending:
+        return "failing" if saw_fail else "pending"
+    if required is None:
+        return "unknown"
+    if unreported(check_runs, statuses, required):
+        return "unreported"
+    return "passing" if saw_any else None
 
 
 def from_rest_check_runs(check_runs: list[dict]) -> list[dict]:
@@ -69,3 +101,23 @@ def from_graphql_contexts(nodes: list[dict]) -> tuple[list[dict], list[dict]]:
             statuses.append({"context": node.get("context"),
                              "state": (node.get("state") or "").lower() or None})
     return runs, statuses
+
+
+def check_contexts(node: dict) -> dict | None:
+    commits = ((node.get("commits") or {}).get("nodes")) or [{}]
+    rollup = ((commits[0] or {}).get("commit") or {}).get("statusCheckRollup") or {}
+    return rollup.get("contexts")
+
+
+def from_graphql_pr(node: dict) -> tuple[list[dict], list[dict]]:
+    """A pullRequest node carrying `PR_FIELDS` → (check runs, statuses)."""
+    return from_graphql_contexts((check_contexts(node) or {}).get("nodes") or [])
+
+
+def required_contexts(ref: dict) -> list[str]:
+    """A Ref node carrying `REF_FIELDS` → the contexts the branch requires."""
+    required = list((ref.get("branchProtectionRule") or {}).get("requiredStatusCheckContexts") or [])
+    for rule in (ref.get("rules") or {}).get("nodes") or []:
+        for check in ((rule or {}).get("parameters") or {}).get("requiredStatusChecks") or []:
+            required.append(check.get("context"))
+    return list(dict.fromkeys(c for c in required if c))

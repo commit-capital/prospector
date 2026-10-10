@@ -99,6 +99,11 @@ def github_api(path, **kwargs):
 
 
 def github_graphql(query, **kwargs):
+    if "ref(qualifiedName: $ref)" in query and kwargs.get("variables") == {"ref": "refs/heads/trunk"}:
+        return {"data": {"repository": {"ref": {
+            "branchProtectionRule": {"requiredStatusCheckContexts": ["test"]},
+            "rules": {"nodes": [], "pageInfo": {"hasNextPage": False}},
+        }}}}
     if "timelineItems" in query and re.search(r"pullRequest\(number: (101|102)\)", query):
         return {"data": {"repository": {"pullRequest": {
             field: {"nodes": []} for field in ("comments", "reviews", "commits", "timelineItems")
@@ -108,10 +113,11 @@ def github_graphql(query, **kwargs):
         return forbidden({"graphql": query})
     nodes = {alias: {
         "number": int(number), "state": "OPEN", "merged": False,
-        "headRefOid": HEAD, "mergeable": "MERGEABLE", "updatedAt": NOW,
+        "headRefOid": HEAD, "baseRefName": "trunk", "mergeable": "MERGEABLE", "updatedAt": NOW,
         "additions": 1, "deletions": 1, "changedFiles": 1,
         "files": {"nodes": [{"path": "src/retry.py"}]},
         "commits": {"nodes": [{"commit": {"statusCheckRollup": {"contexts": {
+            "pageInfo": {"hasNextPage": False, "endCursor": None},
             "nodes": [{"__typename": "StatusContext", "context": "test", "state": "SUCCESS"}],
         }}}}]},
     } for alias, number in matches}
@@ -127,7 +133,7 @@ def github_read(argv, **kwargs):
 
 
 gh.gh_api = github_api
-gh.gh_graphql = github_graphql
+gh._graphql_once = lambda query, variables, timeout: (github_graphql(query, variables=variables), "")
 safety_guard.run = github_read
 # A few UI metadata helpers invoke gh directly rather than through safety_guard.
 # They get the same strict fixture transport; Popen remains blocked by the audit.

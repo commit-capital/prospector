@@ -8,7 +8,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from pipeline import ci_signal, progress, settings
-from pipeline.gh import gh_graphql
+from pipeline.gh import complete_pr_checks, gh_graphql, required_checks
 
 _log = logging.getLogger(__name__)
 
@@ -26,6 +26,7 @@ class PrFeed:
     comments: list[dict] = field(default_factory=list)    # {id, login, association, body, at, updated_at, url}
     check_runs: list[dict] = field(default_factory=list)  # {app, name, status, conclusion, title, summary, url}
     statuses: list[dict] = field(default_factory=list)    # {context, state}
+    required: list[str] | None = field(default_factory=list)  # contexts the base branch requires; None unread
     conversation: bool = True
 
 
@@ -40,9 +41,7 @@ _FIELDS = (
     "originalCommit { oid } createdAt updatedAt url } } } } "
     "comments(last: 40) { nodes { databaseId author { login __typename } authorAssociation "
     "body createdAt updatedAt url } } "
-    "commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes { "
-    "__typename ... on CheckRun { name status conclusion title summary detailsUrl url "
-    "checkSuite { app { slug } } } ... on StatusContext { context state } } } } } } }")
+    + ci_signal.PR_FIELDS)
 
 
 def feed_query(numbers: list[int]) -> str:
@@ -84,9 +83,7 @@ def feed_from_node(n: int, node: dict) -> PrFeed:
                  "association": c.get("authorAssociation"), "body": c.get("body"),
                  "at": c.get("createdAt"), "updated_at": c.get("updatedAt"), "url": c.get("url")}
                 for c in ((node.get("comments") or {}).get("nodes") or []) if isinstance(c, dict)]
-    commits = ((node.get("commits") or {}).get("nodes")) or [{}]
-    rollup = ((commits[0] or {}).get("commit") or {}).get("statusCheckRollup") or {}
-    runs, statuses = ci_signal.from_graphql_contexts((rollup.get("contexts") or {}).get("nodes") or [])
+    runs, statuses = ci_signal.from_graphql_pr(node)
     return PrFeed(pr=int(n), head_sha=node.get("headRefOid"), updated_at=node.get("updatedAt"),
                   reviews=reviews, threads=threads, comments=comments, check_runs=runs,
                   statuses=statuses, conversation=True)
@@ -97,6 +94,7 @@ def fetch_feeds(numbers: list[int], *,
     """Feeds for `numbers`, keyed by PR. A PR missing from the result failed to
     fetch (transient) and keeps its stored entry."""
     out: dict[int, PrFeed] = {}
+    required_by_base: dict[str, list[str] | None] = {}
     # Reported only in a job, and only across several requests: the app server
     # makes this fetch for its own reads.
     report = (progress.Progress("fetching reviews and comments for", len(numbers), "PRs")
@@ -114,7 +112,10 @@ def fetch_feeds(numbers: list[int], *,
         for j, n in enumerate(chunk):
             node = repo.get(f"p{j}")
             if isinstance(node, dict):
+                complete = complete_pr_checks(node, rate_limit_waits=rate_limit_waits)
                 out[n] = feed_from_node(n, node)
+                out[n].required = (required_checks(node.get("baseRefName"), required_by_base,
+                                                  rate_limit_waits=rate_limit_waits) if complete else None)
     if report is not None:
         missing = len(numbers) - len(out)
         report.finish(f"{len(out):,} read" + (f", {missing:,} missing" if missing else ""))

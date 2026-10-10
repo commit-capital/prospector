@@ -206,6 +206,8 @@ def _blocked(pr: Pr, action: str, why: str) -> dict:
                                      "the worker asks for it")
     if "ci is pending" in low:
         return _r("auto", "waiting", "CI is running")
+    if "ci is unreported" in low:
+        return _r("handed", "author-ci", gates.CI_UNREPORTED)
     if "ci is failing" in low:
         return _r("handed", "author-ci", "CI fails at the author's head")
     if "codeowners" in low or "withholds" in low:

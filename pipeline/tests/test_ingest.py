@@ -468,15 +468,14 @@ class TestTargetedIngest:
         rec = store.load_pr(7003)
         assert rec.greptile == 4 and rec.ci == "passing"
 
-    def test_refresh_falls_back_to_rest_ci_without_a_feed(self, tmp_path, monkeypatch):
+    def test_refresh_records_unknown_ci_without_a_feed(self, tmp_path, monkeypatch):
         store = Store(tmp_path)
         b = dict(GH_PR, number=7004, head={"sha": "s4"})
         monkeypatch.setattr(ingest, "fetch_pr", lambda n: b)
         monkeypatch.setattr(ingest, "load_issue_links", lambda **_: {})
-        monkeypatch.setattr(ingest, "gh_ci_status", lambda sha: "failing")
         ingest.refresh_prs(store, [7004])
         rec = store.load_pr(7004)
-        assert rec.ci == "failing" and rec.reviews is None
+        assert rec.ci == "unknown" and rec.reviews is None
 
     def test_main_prs_and_new_refreshes_only_absent_requested(self, tmp_path, monkeypatch):
         store = Store(tmp_path)

@@ -137,10 +137,11 @@ def test_unreachable_pr_marked_not_reachable(monkeypatch):
 
 
 def test_live_states_parses_diffstat_and_has_tests(monkeypatch):
+    monkeypatch.setattr(freshness_live.live_prs, "required_checks", lambda *a, **k: [])
     node = {"number": 1, "state": "OPEN", "merged": False, "headRefOid": HEAD,
             "mergeable": "MERGEABLE", "additions": 40, "deletions": 6, "changedFiles": 2,
             "files": {"nodes": [{"path": "src/app.ts"}, {"path": "src/app.test.ts"}]},
-            "commits": {"nodes": [{"commit": {"statusCheckRollup": {"contexts": {"nodes": [
+            "commits": {"nodes": [{"commit": {"statusCheckRollup": {"contexts": {"pageInfo": {"hasNextPage": False}, "nodes": [
                 {"__typename": "CheckRun", "name": "Build", "status": "COMPLETED",
                  "conclusion": "SUCCESS", "checkSuite": {"app": {"slug": "github-actions"}}},
                 {"__typename": "CheckRun", "name": "Greptile Review", "status": "COMPLETED",
@@ -160,7 +161,7 @@ def test_live_states_has_tests_false_without_test_files(monkeypatch):
     node = {"number": 2, "state": "OPEN", "merged": False, "headRefOid": HEAD,
             "mergeable": "MERGEABLE", "additions": 3, "deletions": 1, "changedFiles": 1,
             "files": {"nodes": [{"path": "README.md"}]},
-            "commits": {"nodes": [{"commit": {"statusCheckRollup": {"contexts": {"nodes": [
+            "commits": {"nodes": [{"commit": {"statusCheckRollup": {"contexts": {"pageInfo": {"hasNextPage": False}, "nodes": [
                 {"__typename": "CheckRun", "name": "Build", "status": "COMPLETED",
                  "conclusion": "SUCCESS", "checkSuite": {"app": {"slug": "github-actions"}}},
                 {"__typename": "CheckRun", "name": "Greptile Review", "status": "COMPLETED",
@@ -195,7 +196,7 @@ def test_live_states_keeps_resolved_aliases_when_one_errors(monkeypatch, caplog)
     node = {"number": 1, "state": "OPEN", "merged": False, "headRefOid": HEAD,
             "mergeable": "MERGEABLE", "additions": 3, "deletions": 1, "changedFiles": 1,
             "files": {"nodes": [{"path": "src/app.ts"}]},
-            "commits": {"nodes": [{"commit": {"statusCheckRollup": {"contexts": {"nodes": [
+            "commits": {"nodes": [{"commit": {"statusCheckRollup": {"contexts": {"pageInfo": {"hasNextPage": False}, "nodes": [
                 {"__typename": "CheckRun", "name": "Build", "status": "COMPLETED",
                  "conclusion": "SUCCESS", "checkSuite": {"app": {"slug": "github-actions"}}},
                 {"__typename": "CheckRun", "name": "Greptile Review", "status": "COMPLETED",

@@ -37,3 +37,38 @@ def test_from_rest_check_runs():
     assert ci_signal.from_rest_check_runs(rest) == [
         {"app": "socket-security", "name": "n", "status": "completed", "conclusion": "neutral",
          "title": "t", "summary": "s", "url": "h"}]
+
+
+def test_required_context_nothing_reported_is_unreported():
+    old_names = [_run("github-actions", "success", name="verify"),
+                 _run("github-actions", "success", name="e2e")]
+    required = ["ci / verify", "ci / e2e"]
+    assert ci_signal.unreported(old_names, [], required) == required
+    assert ci_signal.verdict(old_names, [], required=required) == "unreported"
+    assert ci_signal.verdict([], [], required=required) == "unreported"
+    assert ci_signal.verdict(old_names, [], required=None) == "unknown"
+    assert ci_signal.verdict(old_names + [_run("github-actions", "failure")], [],
+                             required=None) == "failing"
+    assert ci_signal.verdict(old_names + [_run("github-actions", None, "queued")], [],
+                             required=required) == "pending"
+    assert ci_signal.verdict(old_names + [_run("github-actions", "failure")], [],
+                             required=required) == "failing"
+
+
+def test_required_context_reported_by_run_status_or_reviewer_counts():
+    runs = [_run("github-actions", "success", name="ci / verify"),
+            _run("greptile-apps", "success", name="Greptile Review")]
+    statuses = [{"context": "ci / e2e", "state": "success"}]
+    assert ci_signal.verdict(runs, statuses,
+                             required=["ci / verify", "ci / e2e", "Greptile Review"]) == "passing"
+
+
+def test_required_contexts_merges_protection_and_rulesets():
+    ref = {"branchProtectionRule": {"requiredStatusCheckContexts": ["lint", "build"]},
+           "rules": {"nodes": [
+               {"parameters": {}},
+               {"parameters": None},
+               {"parameters": {"requiredStatusChecks": [{"context": "build"},
+                                                        {"context": "ci / e2e"}]}}]}}
+    assert ci_signal.required_contexts(ref) == ["lint", "build", "ci / e2e"]
+    assert ci_signal.required_contexts({}) == []
