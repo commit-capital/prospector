@@ -172,7 +172,7 @@ def _logged(events: list[dict]) -> list[str]:
 
 @pytest.fixture
 def no_refresh(monkeypatch):
-    monkeypatch.setattr(jobs.data, "refresh", lambda: None)
+    monkeypatch.setattr(jobs, "_refresh_snapshots", lambda: None)
 
 
 def test_run_job_completes_with_zero_listeners(no_refresh):
@@ -204,6 +204,25 @@ def test_run_job_keeps_output_and_ending_on_disk(no_refresh):
     record = json.loads((jobs.JOBS_DIR / f"{job['id']}.json").read_text())
     assert record["status"] == "done" and record["returncode"] == 0
     assert "hello" in (jobs.JOBS_DIR / f"{job['id']}.log").read_text()
+
+
+def test_a_finished_job_leaves_the_issue_and_alert_snapshots_current(monkeypatch, tmp_path):
+    from prospector_app.backend import alert_data, issue_data
+    monkeypatch.setattr(jobs.data, "refresh", lambda: None)
+    issue_data.set_store_root(tmp_path / "issues")
+    alert_data.set_store_root(tmp_path / "alerts")
+    try:
+        assert not issue_data.issues() and not issue_data.runs() and not alert_data.runs()
+        issue_data.store().create_issue(1, {"title": "Bug", "state": "open",
+                                            "updated_at": "2026-06-23T00:00:00Z"})
+        for module in (issue_data, alert_data):
+            module.store().append_run({"phase": "ingest", "finished": "2026-06-24T00:00:00+00:00"})
+        asyncio.run(jobs.run_job(_job([sys.executable, "-c", "pass"])))
+        assert set(issue_data.issues()) == {1}
+        assert len(issue_data.runs()) == len(alert_data.runs()) == 1
+    finally:
+        issue_data.set_store_root(None)
+        alert_data.set_store_root(None)
 
 
 def test_job_ids_keep_rising_across_a_restart():

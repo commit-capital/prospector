@@ -41,7 +41,10 @@ from weakref import WeakKeyDictionary
 
 from pipeline import progress
 from pipeline import storekit
+from prospector_app.backend import advisory_data
+from prospector_app.backend import alert_data
 from prospector_app.backend import data
+from prospector_app.backend import issue_data
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 # Phases run via `uv run python` from REPO_ROOT (set as cwd in run_job), which
@@ -514,8 +517,15 @@ def _settle(job: Job, returncode: int | None, note: str | None = None) -> None:
     _save(job)
 
 
+def _refresh_snapshots() -> None:
+    """Bring every family's snapshot current; the page that ran the job reloads
+    from them when it ends."""
+    for family in (data, issue_data, alert_data, advisory_data):
+        family.refresh()
+
+
 async def _complete(job: Job, returncode: int | None, note: str | None = None) -> None:
-    """Settle the job once the snapshot reflects what it wrote to the store,
+    """Settle the job once the snapshots reflect what it wrote to the store,
     saying so in the log, since over a slow link that refresh takes a while."""
     if note:
         _append(job, note)
@@ -523,7 +533,7 @@ async def _complete(job: Job, returncode: int | None, note: str | None = None) -
     _append(job, f"· process ended ({ended}); refreshing the app's data before marking the job finished…")
     _catch_up(job)
     try:
-        await asyncio.to_thread(data.refresh)
+        await asyncio.to_thread(_refresh_snapshots)
     except Exception as e:
         _append(job, f"! refreshing the app's data after the job failed: {e}")
     _settle(job, returncode)
