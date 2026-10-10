@@ -259,10 +259,11 @@ function DupGroupCard({ g }: { g: IssueDupGroup }) {
 }
 
 // The likely-fixed review list: the fix scan sees a probable fix but without a
-// confirmed fixer, so each row is a judgement call — the issue link opens
-// GitHub, and closing happens from the issue flyout's action bar.
+// confirmed fixer, so each row is a judgement call — a row click opens the
+// issue flyout, whose action bar closes it.
 function LikelyFixedSection({ items }: { items: IssueLikelyFixedItem[] }) {
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const { openIssue } = useIssueFlyout();
   if (items.length === 0) {
     return <div className="callout">No likely-fixed issues to review.</div>;
   }
@@ -272,14 +273,17 @@ function LikelyFixedSection({ items }: { items: IssueLikelyFixedItem[] }) {
       <tbody>
         {items.map((it) => (
           <Fragment key={it.number}>
-            <tr>
+            <tr className="rowlink" onClick={() => openIssue(it.number)}>
               <td className="mono"><IssueLink n={it.number} /></td>
               <td>
-                <button className="link-btn" onClick={() => setExpanded((s) => {
-                  const next = new Set(s);
-                  if (next.has(it.number)) next.delete(it.number); else next.add(it.number);
-                  return next;
-                })} title={expanded.has(it.number) ? "Hide the fix scan's reasoning" : "Show the fix scan's reasoning"}>
+                <button className="link-btn" onClick={(e) => {
+                  e.stopPropagation();
+                  setExpanded((s) => {
+                    const next = new Set(s);
+                    if (next.has(it.number)) next.delete(it.number); else next.add(it.number);
+                    return next;
+                  });
+                }} title={expanded.has(it.number) ? "Hide the fix scan's reasoning" : "Show the fix scan's reasoning"}>
                   {expanded.has(it.number) ? "▾" : "▸"}</button>{" "}
                 {it.title}
               </td>
