@@ -228,6 +228,26 @@ def noreply_email(user_id: int, login: str) -> str:
     return f"{user_id}+{login}@users.noreply.github.com"
 
 
+def required_checks(branch: str | None,
+                    known: dict[str, list[str] | None]) -> list[str] | None:
+    """The status check contexts `branch`'s rulesets and branch protection
+    require, read once per branch into `known`. None when GitHub does not
+    answer."""
+    from pipeline import ci_signal
+    if not branch:
+        return []
+    if branch not in known:
+        payload = gh_graphql(
+            f'query($ref: String!) {{ repository(owner: "{settings.repo_owner()}", '
+            f'name: "{settings.repo_name()}") {{ ref(qualifiedName: $ref) '
+            f'{{ {ci_signal.REF_FIELDS} }} }} }}',
+            variables={"ref": f"refs/heads/{branch}"})
+        repo = ((payload or {}).get("data") or {}).get("repository")
+        known[branch] = (ci_signal.required_contexts(repo.get("ref") or {})
+                         if isinstance(repo, dict) else None)
+    return known[branch]
+
+
 def check_runs(sha: str) -> list[dict]:
     """The commit's check runs from GitHub as `[{app, name, status, conclusion,
     title, summary, url}]`, deduped by (name, conclusion), superseded re-runs

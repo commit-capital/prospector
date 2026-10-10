@@ -64,6 +64,14 @@ def _no_merge_threat_rescan(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_live_ci_read(monkeypatch):
+    """The merge pre-flight's live CI read reaches GitHub; it reads clear
+    unless a test restores it (test_executor_merge_required_checks.py)."""
+    from prospector_app.backend import executor
+    monkeypatch.setattr(executor, "_live_ci_block", lambda n, head: None)
+
+
+@pytest.fixture(autouse=True)
 def _jobs_dir(monkeypatch, tmp_path):
     """Keep every test's job records, logs and exit files in its own directory,
     with an empty registry, so no test writes the checkout's job cache."""

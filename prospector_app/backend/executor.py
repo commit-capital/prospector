@@ -35,6 +35,7 @@ from prospector_app.backend import safety_guard
 from prospector_app.backend import service
 from prospector_app.backend.safety_guard import bot_merge_run, bot_run
 from pipeline import gh
+from pipeline import live_prs
 from pipeline import settings
 from pipeline import freshness
 from pipeline import reviewers
@@ -219,9 +220,28 @@ def _record_observed_head(n: int, head: str) -> None:
     data.refresh()
 
 
+def _live_ci_block(n: int, head: str | None) -> str | None:
+    """Why PR `n`'s CI at `head`, read live, stops a merge — a required check
+    the head never ran, or a check failing or still running — or None. The
+    verdict read is recorded in the shared store. None when GitHub does not
+    answer or reports another head."""
+    facts, _ = live_prs.fetch([n])
+    live = facts.get(n)
+    if live is None or live["head"] != head or live["ci"] in ("passing", None):
+        return None
+    store = data.store()
+    if store.load_pr(n) is not None:
+        store.edit_pr(n).record_live_state(ci=live["ci"])
+    data.refresh()
+    if live["unreported"]:
+        return (f"GitHub requires {', '.join(live['unreported'])}, which never ran at this "
+                "head — update the branch so CI runs them")
+    return f"CI is {live['ci']} at this head"
+
+
 class Preflight(NamedTuple):
     """The live re-check's verdict. `kind` names which check failed —
-    `merged | state | head | conflicts | unconfirmed` — so a caller can tell
+    `merged | state | head | conflicts | ci | unconfirmed` — so a caller can tell
     stale evidence, which an operator may override, from a PR that is gone,
     which nobody may. `observed_head` is the head the check read, carried so a
     caller can describe the drift without fetching it again."""
@@ -274,6 +294,10 @@ def _preflight(n: int, rec: Pr | None, *, check_head: bool,
     if check_mergeable and live.get("mergeable_state") == "dirty":
         return Preflight(False, "PR now has merge conflicts — needs a rebase before it can merge",
                          "conflicts")
+    if check_mergeable:
+        ci_block = _live_ci_block(n, live.get("head"))
+        if ci_block is not None:
+            return Preflight(False, ci_block, "ci")
     return Preflight(True)
 
 
@@ -889,7 +913,7 @@ def _merge_pr(n: int, method: str, *, dry_run: bool, reason: str | None) -> dict
     try:
         r = bot_merge_run(argv, token)
         res = ({**base, "status": "merged", "detail": f"merged (--{method})"} if r.returncode == 0
-               else {**base, "status": "error", "detail": r.stderr.strip()[:160]})
+               else {**base, "status": "error", "detail": r.stderr.strip()[:400]})
     except Exception as e:
         res = {**base, "status": "error",
                "detail": _public_exception_detail("merge failed unexpectedly", e)}

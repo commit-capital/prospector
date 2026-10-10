@@ -377,6 +377,10 @@ def threat_blocks(pr: Pr) -> list[str]:
     return reasons
 
 
+CI_UNREPORTED = ("the checks the base branch requires never ran at this head — "
+                 "update the branch so CI runs them")
+
+
 def pr_clean(pr: Pr, today: str | None = None) -> tuple[bool, list[str]]:
     reasons = threat_blocks(pr)
     if pr.state != "open":
@@ -1824,6 +1828,8 @@ def bar_asks(reasons: list[str], pr: Pr | None = None) -> list[str]:
         if r in by_reason:
             if by_reason[r]:
                 asks.append(by_reason[r])
+        elif r == "ci unreported":
+            asks.append(CI_UNREPORTED[0].upper() + CI_UNREPORTED[1:] + ".")
         elif r.startswith("ci"):
             asks.append("CI is not green — fix the failing/unknown checks.")
         elif "conflict" in r:

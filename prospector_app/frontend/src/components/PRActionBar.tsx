@@ -228,6 +228,9 @@ export function PRActionBar({ pr, runState, onActed }:
           {runState && !result && <RunBadge rs={runState} compact />}
           {result && <ExecResultChip result={result} />}
         </div>
+        {result?.detail && (result.status === "error" || result.status === "blocked") && (
+          <div className="sug-comment muted-note" role="alert">⛔ {result.detail}</div>
+        )}
         {mergeLive && (
           <div className="sug-comment muted-note" role="status"
             title="The merge runs its compile preflight before it fires; a cold base builds an image first.">

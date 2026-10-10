@@ -15,7 +15,7 @@ from pipeline import ci_signal
 from pipeline import diffpaths
 from pipeline import progress
 from pipeline import settings
-from pipeline.gh import gh_graphql
+from pipeline.gh import gh_graphql, required_checks
 
 _log = logging.getLogger(__name__)
 
@@ -25,10 +25,7 @@ CHUNK_SIZE = 40
 def _query(prs: list[int]) -> str:
     fields = ("number state merged headRefOid mergeable updatedAt "
               "additions deletions changedFiles "
-              "files(first: 100) { nodes { path } } "
-              "commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes { "
-              "__typename ... on CheckRun { name status conclusion title summary detailsUrl url "
-              "checkSuite { app { slug } } } ... on StatusContext { context state } } } } } } }")
+              "files(first: 100) { nodes { path } } " + ci_signal.PR_FIELDS)
     aliases = " ".join(f"p{i}: pullRequest(number: {int(n)}) {{ {fields} }}"
                        for i, n in enumerate(prs))
     return f'query {{ repository(owner: "{settings.repo_owner()}", name: "{settings.repo_name()}") {{ {aliases} }} }}'
@@ -74,6 +71,7 @@ def fetch(prs: list[int], *,
     """
     out: dict[int, dict] = {}
     not_found: set[int] = set()
+    required_by_base: dict[str, list[str] | None] = {}
     # Reported only in a job, and only across several requests: the app server
     # makes this fetch for its own reads.
     report = (progress.Progress("fetching live CI and mergeability for", len(prs), "PRs")
@@ -105,10 +103,8 @@ def fetch(prs: list[int], *,
             if diffstat is None:
                 _log.warning("live PR fetch returned incomplete diffstat for PR #%d", n)
                 continue
-            commits = ((node.get("commits") or {}).get("nodes")) or [{}]
-            rollup = ((commits[0] or {}).get("commit") or {}).get("statusCheckRollup") or {}
-            runs, statuses = ci_signal.from_graphql_contexts(
-                (rollup.get("contexts") or {}).get("nodes") or [])
+            runs, statuses = ci_signal.from_graphql_pr(node)
+            required = required_checks(node.get("baseRefName"), required_by_base)
             file_nodes = ((node.get("files") or {}).get("nodes")) or []
             paths = [f.get("path") for f in file_nodes if f.get("path")]
             out[int(n)] = {
@@ -117,7 +113,8 @@ def fetch(prs: list[int], *,
                 "head": node.get("headRefOid"),
                 "mergeable": node.get("mergeable"),
                 "updated_at": node.get("updatedAt"),
-                "ci": ci_signal.verdict(runs, statuses),
+                "ci": ci_signal.verdict(runs, statuses, required=required),
+                "unreported": ci_signal.unreported(runs, statuses, required or ()),
                 "check_runs": runs,
                 "statuses": statuses,
                 "diffstat": diffstat,
