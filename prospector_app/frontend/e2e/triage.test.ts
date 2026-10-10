@@ -12,7 +12,7 @@ test("find a PR, preview a close, and read its durable Activity receipt", { time
   await search.press("Enter");
   await page.waitUntil("!document.querySelector('tbody')?.innerText.includes('#102')");
   await page.find({ text: "Fix retry counter" }).click();
-  await page.waitUntil("document.body.innerText.includes('Evidence for PR 101')");
+  await page.waitUntil("document.querySelector('.flyout')?.innerText.includes('Evidence for PR 101')");
   assert.match(await page.find(".flyout").text(), /Fix retry counter/);
   assert.equal(await page.find({ role: "button", text: "DRY RUN" }).isEnabled(), false);
 
