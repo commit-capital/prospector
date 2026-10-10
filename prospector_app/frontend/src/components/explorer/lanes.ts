@@ -1,20 +1,16 @@
 import type { FilterSpec } from "../../api";
 // Explicit .ts extension so the node:test runner (type stripping, no bundler)
 // can resolve this runtime import when homeCards.test.ts loads the module.
-import { ALL_CHECKS_PASS } from "./checkDefs.ts";
+import { HOME_CARDS } from "../../views/homeCards.ts";
 
 // A lane is a named filter template: clicking its chip drops the template's
 // filters into the Explorer spec, where each shows as its own editable,
 // clearable chip. Lanes carry no matching logic of their own — the backend
 // sees only the plain filter fields.
 
-// Every gate green and ready to merge right now — the `review` and `scans`
-// check rows carry every active reviewer's and scanner's bar. The Home tab's
-// "Ready to merge" card narrows this same spec to the pipeline's merge picks.
-export const MERGE_READY_SPEC: FilterSpec = {
-  checks: ALL_CHECKS_PASS,
-  safety: "GREEN",
-};
+function cardSpec(key: string): FilterSpec {
+  return HOME_CARDS.find((c) => c.key === key)!.spec;
+}
 
 export interface Lane {
   key: "easy" | "stale" | "merge-ready" | "needs-human";
@@ -23,20 +19,18 @@ export interface Lane {
 }
 
 export const LANES: Lane[] = [
-  // Merge-ready, and also tiny, leaf-surface, and a pipeline merge pick — the
-  // fastest possible human approvals.
+  // Ready to merge, and also tiny and leaf-surface — the fastest possible
+  // human approvals.
   { key: "easy", label: "⚡ Easy Lane",
-    spec: { ...MERGE_READY_SPEC, risk_tier: 3, disposition: "merge",
+    spec: { ...cardSpec("ready"), risk_tier: 3,
             loc: { metric: "both", scope: "effective", op: "<", value: 20 } } },
   // Feedback stands (review score below the bar, scored against the latest
   // commit) and the author hasn't touched the PR in over a month.
   { key: "stale", label: "🗑️ Stale",
     spec: { age_days: { op: ">", value: 30 },
             greptile: { op: "<", value: 5 }, greptile_stale: false } },
-  // Named like the Home cards they mirror, so one population carries one name.
-  { key: "merge-ready", label: "✅ Ready to merge", spec: MERGE_READY_SPEC },
-  // A RED security verdict already reads as needs-human (gates.forced_disposition),
-  // so the single disposition filter covers those too.
-  { key: "needs-human", label: "👤 Your call",
-    spec: { disposition: "needs-human" } },
+  // Named for the Home cards whose specs they carry, so one population carries
+  // one name.
+  { key: "merge-ready", label: "✅ Ready to merge", spec: cardSpec("ready") },
+  { key: "needs-human", label: "👤 Your call", spec: cardSpec("your-call") },
 ];

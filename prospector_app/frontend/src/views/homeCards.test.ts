@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ALL_CHECKS_PASS, CHECK_DEFS } from "../components/explorer/checkDefs.ts";
 import { LANES } from "../components/explorer/lanes.ts";
 import {
   breakdownHref, exploreHref, HOME_BREAKDOWN_ENTRIES, HOME_CARDS, HOME_COUNT_SPECS,
@@ -72,13 +71,6 @@ test("a breakdown link keeps the card's sort and takes the entry's spec", () => 
   assert.deepEqual(JSON.parse(params.get("spec")!), entry.spec);
 });
 
-test("ALL_CHECKS_PASS requires a pass on every rollup check", () => {
-  assert.deepEqual(
-    ALL_CHECKS_PASS,
-    CHECK_DEFS.map((d) => ({ key: d.key, status: "pass" })),
-  );
-});
-
 test("the ready card is the merge-ready standing, oldest first", () => {
   const ready = HOME_CARDS.find((c) => c.key === "ready")!;
   assert.deepEqual(ready.spec, { automation_bucket: "merge-ready" });
@@ -86,11 +78,11 @@ test("the ready card is the merge-ready standing, oldest first", () => {
   assert.equal(ready.dir, "asc");
 });
 
-test("explorer lanes carry the Home cards' names where the populations overlap", () => {
-  const ready = HOME_CARDS.find((c) => c.key === "ready")!;
-  const yourCall = HOME_CARDS.find((c) => c.key === "your-call")!;
-  assert.ok(LANES.find((l) => l.key === "merge-ready")!.label.includes(ready.title));
-  assert.ok(LANES.find((l) => l.key === "needs-human")!.label.includes(yourCall.title));
+test("a lane named for a Home card opens that card's population", () => {
+  const named = LANES.flatMap((l) =>
+    HOME_CARDS.filter((c) => l.label.includes(c.title)).map((c) => ({ lane: l, card: c })));
+  assert.deepEqual(named.map((p) => p.card.key), ["ready", "your-call"]);
+  for (const { lane, card } of named) assert.deepEqual(lane.spec, card.spec, lane.key);
 });
 
 test("every lane spec uses only fields the filter UI can represent", () => {
