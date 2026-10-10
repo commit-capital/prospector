@@ -190,6 +190,7 @@ def runs() -> list[storekit.RunRecord]:
 
 def refresh() -> None:
     _snapshot.refresh()
+    _runs_snapshot.refresh()
 
 
 def load_full_issues(ns: list[int]) -> dict[int, Issue]:

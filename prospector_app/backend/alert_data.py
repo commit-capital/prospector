@@ -103,3 +103,4 @@ def runs() -> list[storekit.RunRecord]:
 
 def refresh() -> None:
     _snapshot.refresh()
+    _runs_snapshot.refresh()
