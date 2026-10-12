@@ -235,6 +235,21 @@ def test_a_merge_pick_whose_verification_never_ran_is_in_motion_not_ready(store)
     assert "verification has not run" in out["reason"]
 
 
+def test_a_clean_reviewed_pr_analyze_never_reached_is_merge_ready(store):
+    rec = _merge_pick(_rec())
+    del rec["analysis"]
+    out = _classify(store, rec)
+    assert (out["column"], out["bucket"], out["owner"]) == ("act", "merge-ready", "you")
+
+
+def test_an_unanalyzed_pr_without_a_security_review_waits_on_the_hunter(store):
+    rec = _merge_pick(_rec())
+    del rec["analysis"], rec["security"]
+    out = _classify(store, rec)
+    assert (out["column"], out["bucket"]) == ("auto", "waiting")
+    assert "security hunter" in out["reason"]
+
+
 def test_a_merge_pick_whose_verification_hit_a_machine_fault_is_in_motion(store):
     rec = _merge_pick(_rec(), verify_request={
         "status": "error", "error_kind": "base-lane", "queued_at": _now(),

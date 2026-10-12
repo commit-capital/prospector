@@ -67,7 +67,8 @@ def classify(pr: Pr) -> dict | None:
     from prospector_app.backend import fix_queue, fix_worker, service
     req = pr.fix_request or {}
     ok, why = gates.merge_eligibility(pr)
-    if ok and pr.disposition == "merge":
+    # A PR ANALYZE never reached is mergeable on the human gate alone.
+    if ok and pr.disposition in ("merge", None):
         gap = _unclear_check(pr)
         if gap is None:
             return _r("act", "merge-ready", "every check is clear; merge it")
@@ -82,7 +83,7 @@ def classify(pr: Pr) -> dict | None:
         return _r("handed", "needs-human", pr.rationale or "flagged needs-human")
     if pr.security_verdict == "RED" and freshness.is_current(pr, "security"):
         return _r("handed", "security-red", "the security review returned RED")
-    if pr.disposition == "merge" and gates.blocked_on_security(pr):
+    if pr.disposition in ("merge", None) and gates.blocked_on_security(pr):
         if pr.section("security") and pr.security_verdict != "GREEN":
             return _r("auto", "waiting", f"the security review was {pr.security_verdict} at "
                                          "an earlier head; the security hunter reviews this one")
@@ -129,14 +130,16 @@ def _unclear_check(pr: Pr) -> dict | None:
     None. A failed or warning check is not clear, except "Includes tests",
     which may warn (a PR without tests can still be ready). A check that has
     not run counts against readiness only for verification and the deep
-    security review, the two the hunters exist to run; a check that does not
-    apply to this deployment (no active scanner) is clear."""
+    security review, the two the hunters exist to run — verification only on
+    an analyzed merge pick, the one population its hunter runs; a check that
+    does not apply to this deployment (no active scanner) is clear."""
     from prospector_app.backend import pr_checks
+    hunted = ("verify", "security") if pr.disposition == "merge" else ("security",)
     for check in pr_checks.checks_for_record(pr)["checks"]:
         status, key = check["status"], check["key"]
         if status == "pass" or (key == "tests" and status == "warn"):
             continue
-        if status == "na" and key not in ("verify", "security"):
+        if status == "na" and key not in hunted:
             continue
         return check
     return None
