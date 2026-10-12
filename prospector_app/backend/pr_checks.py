@@ -72,8 +72,11 @@ def checks_for_record(rec: Pr, today: str | None = None) -> dict:
 
     ci = sig.get("ci")
     if ci:
-        status = "pass" if ci == "passing" else "fail" if ci in ("failing", "unreported") else "na"
-        by_key["ci"] = _c("ci", "CI", status, gates.CI_UNREPORTED if ci == "unreported" else ci, sig_at)
+        status = ("pass" if ci == "passing"
+                  else "fail" if ci in ("failing", "unreported", "awaiting-approval") else "na")
+        detail = {"unreported": gates.CI_UNREPORTED,
+                  "awaiting-approval": gates.CI_AWAITING_APPROVAL}.get(ci, ci)
+        by_key["ci"] = _c("ci", "CI", status, detail, sig_at)
     else:
         by_key["ci"] = _c("ci", "CI", "na", "no CI signal recorded yet", None)
 

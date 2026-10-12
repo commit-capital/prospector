@@ -18,11 +18,11 @@ test("card keys are unique", () => {
 test("cards run your move, then in motion, then handed back", () => {
   assert.deepEqual(
     HOME_CARDS.map((c) => c.key),
-    ["malicious", "ready", "approve", "queued", "hunt", "waiting", "author", "your-call"],
+    ["malicious", "ready", "approve", "approve-ci", "queued", "hunt", "waiting", "author", "your-call"],
   );
   assert.deepEqual(
     HOME_CARDS.map((c) => c.column),
-    ["act", "act", "act", "auto", "auto", "auto", "handed", "handed"],
+    ["act", "act", "act", "act", "auto", "auto", "auto", "handed", "handed"],
   );
 });
 
@@ -61,7 +61,7 @@ test("the counts request lists card specs first, then every breakdown entry in o
   assert.deepEqual(HOME_COUNT_SPECS.slice(HOME_CARDS.length), HOME_BREAKDOWN_ENTRIES.map((e) => e.entry.spec));
   assert.deepEqual(HOME_BREAKDOWN_ENTRIES.map((e) => e.cardKey),
     HOME_CARDS.flatMap((c) => (c.breakdown ?? []).map(() => c.key)));
-  assert.ok(HOME_COUNT_SPECS.length <= 20, "the counts route accepts at most 20 specs");
+  assert.ok(HOME_COUNT_SPECS.length <= 24, "the counts route accepts at most 24 specs");
 });
 
 test("a breakdown link keeps the card's sort and takes the entry's spec", () => {

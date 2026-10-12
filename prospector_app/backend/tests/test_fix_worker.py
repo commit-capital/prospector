@@ -1309,6 +1309,31 @@ def test_a_code_finding_beside_the_description_nit_is_a_fix_not_a_describe(
     assert fix_worker.auto_fixable(data.prs()[5]) == ("fix", None)
 
 
+def test_a_head_the_required_checks_never_ran_on_is_hunted_as_an_update(store, monkeypatch):
+    monkeypatch.delenv("TRIAGE_FIX_HUNT_FIX", raising=False)
+    store.save_pr({"pr": 6, "meta": {"title": "t", "state": "open", "head_sha": HEAD},
+                   "signals": {"ci": "unreported", "mergeable": True,
+                               "checked_at": NOW, "against_head_sha": HEAD},
+                   "reviews": reviews_section(HEAD, NOW, greptile=greptile_entry(5, HEAD))})
+    data.refresh()
+    assert fix_worker.auto_fixable(data.prs()[6]) == ("update", None)
+    rec = store.load_pr(6).raw
+    rec["fix_request"] = {"status": "refused", "action": "update", "source": "auto",
+                          "against_head_sha": HEAD, "finished_at": NOW}
+    store.save_pr(rec)
+    data.refresh()
+    assert fix_worker.auto_fixable(data.prs()[6]) is None
+
+
+def test_a_head_whose_workflows_await_approval_is_not_hunted(store, monkeypatch):
+    store.save_pr({"pr": 6, "meta": {"title": "t", "state": "open", "head_sha": HEAD},
+                   "signals": {"ci": "awaiting-approval", "mergeable": True,
+                               "checked_at": NOW, "against_head_sha": HEAD},
+                   "reviews": reviews_section(HEAD, NOW, greptile=greptile_entry(5, HEAD))})
+    data.refresh()
+    assert fix_worker.auto_fixable(data.prs()[6]) is None
+
+
 def _fake_describe_inputs(monkeypatch, tmp_path):
     monkeypatch.setattr(fix_worker.describe_pr, "fetch_template", lambda: "## What Changed\n")
     monkeypatch.setattr(fix_worker.describe_pr, "required_sections", lambda: ("What Changed",))

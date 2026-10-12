@@ -27,6 +27,7 @@ class PrFeed:
     check_runs: list[dict] = field(default_factory=list)  # {app, name, status, conclusion, title, summary, url}
     statuses: list[dict] = field(default_factory=list)    # {context, state}
     required: list[str] | None = field(default_factory=list)  # contexts the base branch requires; None unread
+    awaiting_approval: bool = False                       # a head workflow run waits on approval
     conversation: bool = True
 
 
@@ -86,7 +87,8 @@ def feed_from_node(n: int, node: dict) -> PrFeed:
     runs, statuses = ci_signal.from_graphql_pr(node)
     return PrFeed(pr=int(n), head_sha=node.get("headRefOid"), updated_at=node.get("updatedAt"),
                   reviews=reviews, threads=threads, comments=comments, check_runs=runs,
-                  statuses=statuses, conversation=True)
+                  statuses=statuses, awaiting_approval=ci_signal.awaiting_approval(node),
+                  conversation=True)
 
 
 def fetch_feeds(numbers: list[int], *,

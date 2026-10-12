@@ -244,7 +244,8 @@ def refresh_prs(store: Store, numbers: list[int]) -> list[dict]:
         head_sha = (gh_pr.get("head") or {}).get("sha")
         feed = review_fetch.fetch_feeds([n]).get(n)
         if feed is not None:
-            ci = ci_signal.verdict(feed.check_runs, feed.statuses, required=feed.required)
+            ci = ci_signal.verdict(feed.check_runs, feed.statuses, required=feed.required,
+                                   awaiting_approval=feed.awaiting_approval)
         else:
             ci = "unknown"
         raw_mergeable = gh_pr.get("mergeable")

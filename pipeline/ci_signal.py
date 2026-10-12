@@ -20,8 +20,9 @@ CONTEXT_FIELDS = (
 
 # GraphQL pullRequest fields `from_graphql_pr` reads: the head's checks.
 PR_FIELDS = (
-    "baseRefName commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { "
-    + CONTEXT_FIELDS + " } } } } }")
+    "baseRefName commits(last: 1) { nodes { commit { "
+    "checkSuites(first: 50) { nodes { conclusion } } "
+    "statusCheckRollup { contexts(first: 100) { " + CONTEXT_FIELDS + " } } } } }")
 
 # GraphQL Ref fields `required_contexts` reads: the checks a branch's rulesets
 # and branch protection require.
@@ -40,10 +41,12 @@ def unreported(check_runs: list[dict], statuses: list[dict],
 
 def verdict(check_runs: list[dict], statuses: list[dict], *,
             required: Sequence[str] | None = (),
-            exclude_apps: frozenset[str] | None = None) -> str | None:
+            exclude_apps: frozenset[str] | None = None,
+            awaiting_approval: bool = False) -> str | None:
     """Failure outranks pending. Unread requirements are unknown; missing
-    required contexts are unreported. Skipped/neutral runs pass. None when
-    nothing counts and no checks are required."""
+    required contexts are unreported, or awaiting approval when a workflow run
+    at the head waits on a maintainer's approval. Skipped/neutral runs pass.
+    None when nothing counts and no checks are required."""
     excluded = reviewers.app_slugs() if exclude_apps is None else exclude_apps
     saw_any = saw_fail = saw_pending = False
     for run in check_runs:
@@ -67,7 +70,7 @@ def verdict(check_runs: list[dict], statuses: list[dict], *,
     if required is None:
         return "unknown"
     if unreported(check_runs, statuses, required):
-        return "unreported"
+        return "awaiting-approval" if awaiting_approval else "unreported"
     return "passing" if saw_any else None
 
 
@@ -107,6 +110,15 @@ def check_contexts(node: dict) -> dict | None:
     commits = ((node.get("commits") or {}).get("nodes")) or [{}]
     rollup = ((commits[0] or {}).get("commit") or {}).get("statusCheckRollup") or {}
     return rollup.get("contexts")
+
+
+def awaiting_approval(node: dict) -> bool:
+    """Whether a check suite at the PR node's head waits on a maintainer's
+    approval to run (GitHub's first-time-contributor hold), which leaves its
+    workflows without a single check run."""
+    commits = ((node.get("commits") or {}).get("nodes")) or [{}]
+    suites = (((commits[0] or {}).get("commit") or {}).get("checkSuites") or {}).get("nodes") or []
+    return any(isinstance(s, dict) and s.get("conclusion") == "ACTION_REQUIRED" for s in suites)
 
 
 def from_graphql_pr(node: dict) -> tuple[list[dict], list[dict]]:

@@ -24,7 +24,7 @@ COLUMNS = ("act", "auto", "handed")
 # bucket -> owner. `you` is the operator, `author` the contributor, `worker`
 # the automation itself.
 OWNERS: dict[str, str] = {
-    "malicious": "you", "merge-ready": "you", "approve-parked": "you",
+    "malicious": "you", "merge-ready": "you", "approve-parked": "you", "approve-ci": "you",
     "queued": "worker", "hunt": "worker", "waiting": "worker", "retry": "worker",
     "budgeted": "worker",
     "author-conflicts": "author", "author-ci": "author", "author-declined": "author",
@@ -96,10 +96,12 @@ def classify(pr: Pr) -> dict | None:
     vr = pr.section("verify_request") or {}
     if vr.get("status") in _VERIFY_QUEUE:
         return _r("auto", "queued", f"in the verify queue ({vr.get('status')})")
+    if pr.ci == "awaiting-approval" and freshness.is_current(pr, "signals"):
+        return _r("act", "approve-ci", gates.CI_AWAITING_APPROVAL)
 
     if pr.mergeable is False:
         action = "rebase"
-    elif pr.drift_state == "conflicts":
+    elif pr.drift_state == "conflicts" or pr.ci == "unreported":
         action = "update"
     else:
         action = "describe" if describe_pr.only_description_nits(pr) else "fix"
@@ -195,7 +197,7 @@ def _blocked(pr: Pr, action: str, why: str) -> dict:
     low = why.lower()
     if "signals or reviews stale" in low:
         return _r("auto", "waiting", "waiting on re-ingest")
-    if action in ("rebase", "update"):
+    if action == "rebase" or (action == "update" and pr.drift_state == "conflicts"):
         # The hunter rebases only at the review bar, and the re-review hunter
         # asks only on a mergeable head, so a conflicted PR below or without a
         # verdict waits on its author either way.
@@ -214,6 +216,8 @@ def _blocked(pr: Pr, action: str, why: str) -> dict:
         return _r("handed", "gated", why)
     if "returned red" in low:
         return _r("handed", "security-red", why)
+    if action == "update":
+        return _r("handed", "author-ci", f"{gates.CI_UNREPORTED}; the hunter will not: {why}")
     if "no gate a fix could clear" in low:
         dem = gates.merge_demotion(pr)
         if dem is not None:

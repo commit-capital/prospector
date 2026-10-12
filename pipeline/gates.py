@@ -379,6 +379,8 @@ def threat_blocks(pr: Pr) -> list[str]:
 
 CI_UNREPORTED = ("the checks the base branch requires never ran at this head — "
                  "update the branch so CI runs them")
+CI_AWAITING_APPROVAL = ("the head's workflow runs wait on a maintainer's approval "
+                        "(a first-time contributor) — approve the workflow run on GitHub")
 
 
 def pr_clean(pr: Pr, today: str | None = None) -> tuple[bool, list[str]]:
@@ -1830,6 +1832,8 @@ def bar_asks(reasons: list[str], pr: Pr | None = None) -> list[str]:
                 asks.append(by_reason[r])
         elif r == "ci unreported":
             asks.append(CI_UNREPORTED[0].upper() + CI_UNREPORTED[1:] + ".")
+        elif r == "ci awaiting-approval":
+            asks.append(CI_AWAITING_APPROVAL[0].upper() + CI_AWAITING_APPROVAL[1:] + ".")
         elif r.startswith("ci"):
             asks.append("CI is not green — fix the failing/unknown checks.")
         elif "conflict" in r:
