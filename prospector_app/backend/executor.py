@@ -233,6 +233,9 @@ def _live_ci_block(n: int, head: str | None) -> str | None:
     if store.load_pr(n) is not None:
         store.edit_pr(n).record_live_state(ci=ci)
     data.refresh()
+    if ci == "awaiting-approval":
+        from pipeline import gates
+        return f"CI never ran at this head: {gates.CI_AWAITING_APPROVAL}"
     if live["unreported"]:
         return (f"GitHub requires {', '.join(live['unreported'])}, which never ran at this "
                 "head — update the branch so CI runs them")

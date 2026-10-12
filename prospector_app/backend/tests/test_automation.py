@@ -95,6 +95,27 @@ def test_a_head_the_required_checks_never_ran_on_is_handed_back_not_merge_ready(
     assert "update the branch" in out["reason"]
 
 
+def test_a_head_the_required_checks_never_ran_on_at_the_bar_is_the_hunter_s_update(store):
+    out = _classify(store, _rec(ci="unreported"))
+    assert (out["column"], out["bucket"]) == ("auto", "hunt")
+    assert "update" in out["reason"]
+
+
+def test_an_update_already_spent_on_this_head_rests(store):
+    rec = _rec(ci="unreported")
+    rec["fix_request"] = {"action": "update", "status": "refused", "source": "auto",
+                          "against_head_sha": HEAD, "host": "w", "queued_at": _now(),
+                          "refused_reason": "the update did not compile"}
+    out = _classify(store, rec)
+    assert out["bucket"] != "hunt"
+
+
+def test_a_head_whose_workflow_runs_await_approval_is_your_click(store):
+    out = _classify(store, _rec(ci="awaiting-approval"))
+    assert (out["column"], out["bucket"], out["owner"]) == ("act", "approve-ci", "you")
+    assert "approve the workflow run" in out["reason"]
+
+
 def test_a_refusal_the_agent_declined_is_handed_to_the_author_with_its_reasoning(store):
     rec = _rec(greptile=4)
     rec["fix_request"] = {"action": "fix", "status": "refused", "source": "auto",

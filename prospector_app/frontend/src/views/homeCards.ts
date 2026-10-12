@@ -126,6 +126,14 @@ export const HOME_CARDS: HomeCard[] = [
     spec: bucket("approve-parked"),
   },
   {
+    key: "approve-ci",
+    title: "Approve a workflow run",
+    blurb: "A first-time contributor's CI waits on a maintainer's approval, so the checks the base branch requires never ran. Approve the run on the PR's Checks tab on GitHub.",
+    column: "act",
+    spec: bucket("approve-ci"),
+    hideWhenEmpty: true,
+  },
+  {
     key: "queued",
     title: "In a queue right now",
     blurb: "Claimed or waiting in the fix or verify queue. Clears itself as the workers drain it.",

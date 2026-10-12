@@ -55,6 +55,19 @@ def test_required_context_nothing_reported_is_unreported():
                              required=required) == "failing"
 
 
+def test_a_workflow_run_awaiting_approval_reads_as_such():
+    def node(*conclusions):
+        return {"commits": {"nodes": [{"commit": {"checkSuites": {"nodes": [
+            {"conclusion": c} for c in conclusions]}}}]}}
+    assert ci_signal.awaiting_approval(node("SUCCESS", "ACTION_REQUIRED"))
+    assert not ci_signal.awaiting_approval(node("SUCCESS", "SKIPPED"))
+    assert not ci_signal.awaiting_approval({})
+    required = ["ci / verify"]
+    assert ci_signal.verdict([], [], required=required, awaiting_approval=True) == "awaiting-approval"
+    ran = [_run("github-actions", "success", name="ci / verify")]
+    assert ci_signal.verdict(ran, [], required=required, awaiting_approval=True) == "passing"
+
+
 def test_required_context_reported_by_run_status_or_reviewer_counts():
     runs = [_run("github-actions", "success", name="ci / verify"),
             _run("greptile-apps", "success", name="Greptile Review")]

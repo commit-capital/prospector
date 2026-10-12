@@ -2063,7 +2063,9 @@ def auto_fixable(pr: Pr, *, budget_ok: bool = True) -> tuple[str, dict | None] |
 
     A PR GitHub reports unmergeable needs its history replayed on current base,
     which is `rebase`; a PR whose drift scan says the base moved out from under
-    it needs `update`. A PR clean on both whose reviewer objects only to its
+    it needs `update`, and so does one whose head never ran the checks the
+    base branch requires (CI `unreported`), since merging base in re-runs CI
+    under the names it requires now. A PR clean on all three whose reviewer objects only to its
     description takes a `describe`; one the reviewer fails on the code may take
     an agent-authored `fix`; one carrying a current YELLOW security verdict
     takes a `fix` from that finding under TRIAGE_FIX_HUNT_SECURITY. The agent
@@ -2082,7 +2084,7 @@ def auto_fixable(pr: Pr, *, budget_ok: bool = True) -> tuple[str, dict | None] |
     objection: dict | None = None
     if pr.mergeable is False:
         action = "rebase"
-    elif pr.drift_state == "conflicts":
+    elif pr.drift_state == "conflicts" or pr.ci == "unreported":
         action = "update"
     elif settings.fix_hunt_fix():
         broke = _ci_objection(pr) if budget_ok else None
