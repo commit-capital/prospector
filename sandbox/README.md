@@ -237,9 +237,10 @@ deliberate `no-suite-config` skip.
 The `coverage` phase (`--coverage-tool DIR --coverage-request F`, both mounted
 read-only) measures a PR's changed-line coverage for the design review
 (`pipeline/coverage.py`): it applies the patch, copies the coverage provider the
-host fetched into the tree's `node_modules`, runs the host-built test command
-with v8 coverage, and `verify-coverage.mjs` prints a
-`===VERIFY-COVERAGE:BEGIN===` trailer of executable and executed changed lines.
+host fetched into the tree's `node_modules`, runs the host-built command (the
+profile's `verify.test_setup`, then its runner with v8 coverage and a JSON test
+report), and `verify-coverage.mjs` prints a `===VERIFY-COVERAGE:BEGIN===`
+trailer of executable and executed changed lines and the run's test counts.
 Exit 0 means the trailer was printed; the tests' own exit is not the result.
 Like every phase's output, the trailer is the PR process's own and advisory.
 

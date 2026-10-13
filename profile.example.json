@@ -44,6 +44,7 @@
     "compile_cmd": "pnpm -r typecheck",
     "build_cmd": "pnpm build",
     "lint_cmd": "pnpm lint",
+    "test_setup": "pnpm run preflight:workspace-links",
     "suite": {
       "wrapper": "scripts/run-vitest-stable.mjs",
       "server_project": "@your-org/server",

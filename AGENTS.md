@@ -700,11 +700,13 @@ its blocking and major findings only when the profile names `design` in
 head's **changed-line coverage** (`pipeline/coverage.py`,
 `TRIAGE_DESIGN_COVERAGE`, default on): the PR's added and modified tests plus
 `resolve_evidence.related_tests` over its changed JS/TS source run in the
-sandbox's `coverage` phase on this machine's pinned image, with
+sandbox's `coverage` phase on this machine's pinned image, after the profile's
+`verify.test_setup` (what the repository's test scripts run before vitest), with
 `@vitest/coverage-v8` at the base lockfile's root vitest version — fetched once
 per version into `<verify scratch>/coverage-tool/`, `--ignore-scripts`, and
 mounted read-only — and the trusted `sandbox/verify-coverage.mjs` reports which
-changed lines a statement starts on and which ran. The record
+changed lines are executable (a statement starts on the line, or it continues
+a statement holding no other) and which ran, with the run's test counts. The record
 (`measured | untested | skipped | error`) rides the entry as `extra.coverage`,
 fills the prompt's evidence block, and shows on the Design review row. The
 container runs the PR's code, which can forge what it reports, so the figure is

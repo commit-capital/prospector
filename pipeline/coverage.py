@@ -52,11 +52,20 @@ class CoverageFile(TypedDict):
     uncovered: list[list[int]]
 
 
+class TestRuns(TypedDict):
+    files: int
+    failed_files: int
+    passed: int
+    failed: int
+    skipped: int
+
+
 class CoverageRecord(TypedDict):
     status: str
     reason: str | None
     base_sha: str
     tests: list[str]
+    runs: TestRuns | None
     executable: int
     hit: int
     files: list[CoverageFile]
@@ -174,18 +183,22 @@ def _include(path: str) -> str:
 
 
 def command(tests: list[str], files: list[str]) -> str:
-    """The profile's runner over `tests` with v8 coverage of `files` written as
-    istanbul JSON to /tmp/cov, reported even when a test fails."""
+    """The profile's test setup, then its runner over `tests` with v8 coverage
+    of `files` written as istanbul JSON to /tmp/cov — reported even when a
+    test fails — and the test report beside it."""
     v = profile.active().verify
     parts = [*v.test_runner, *tests, *v.test_flags, "--coverage.enabled",
              "--coverage.provider=v8", "--coverage.reporter=json",
              "--coverage.reportOnFailure", "--coverage.reportsDirectory=/tmp/cov",
-             *(_include(f) for f in files)]
-    return " ".join(shlex.quote(p) for p in parts)
+             *(_include(f) for f in files), "--reporter=default", "--reporter=json",
+             "--outputFile.json=/tmp/cov/tests.json"]
+    run = " ".join(shlex.quote(p) for p in parts)
+    return f"( {v.test_setup} ) && {run}" if v.test_setup else run
 
 
-def parse_trailer(tail: str) -> dict[str, dict] | None:
-    """The per-file results of the last coverage trailer in `tail`, or None."""
+def parse_trailer(tail: str) -> tuple[dict[str, dict], TestRuns | None] | None:
+    """The per-file results and the test counts of the last coverage trailer in
+    `tail`, or None when it carries no per-file results."""
     found = _TRAILER_RE.findall(tail)
     if not found:
         return None
@@ -194,7 +207,17 @@ def parse_trailer(tail: str) -> dict[str, dict] | None:
     except ValueError:
         return None
     files = parsed.get("files") if isinstance(parsed, dict) else None
-    return files if isinstance(files, dict) else None
+    if not isinstance(files, dict):
+        return None
+    raw = parsed.get("tests")
+    runs: TestRuns | None = None
+    if isinstance(raw, dict):
+        def n(key: str) -> int:
+            v = raw.get(key)
+            return v if isinstance(v, int) and v >= 0 else 0
+        runs = {"files": n("files"), "failed_files": n("failed_files"), "passed": n("passed"),
+                "failed": n("failed"), "skipped": n("skipped")}
+    return files, runs
 
 
 def _ranges(lines: list[int]) -> list[list[int]]:
@@ -213,7 +236,8 @@ def _ints(value: object, allowed: set[int]) -> list[int]:
 
 def record(status: str, *, base_sha: str, reason: str | None = None,
            tests: list[str] | None = None, wanted: dict[str, list[int]] | None = None,
-           results: dict[str, dict] | None = None, duration_s: float = 0.0) -> CoverageRecord:
+           results: dict[str, dict] | None = None, runs: TestRuns | None = None,
+           duration_s: float = 0.0) -> CoverageRecord:
     """The stored record. For a measured run, each file's counts are the
     trailer's lines held to the ones the host asked about."""
     files: list[CoverageFile] = []
@@ -229,7 +253,7 @@ def record(status: str, *, base_sha: str, reason: str | None = None,
         files.append({"path": path, "measured": True, "executable": len(executable),
                       "hit": len(hit), "uncovered": _ranges(sorted(set(executable) - set(hit)))})
     return {"status": status, "reason": reason[:REASON_CHARS] if reason else None,
-            "base_sha": base_sha, "tests": list(tests or []),
+            "base_sha": base_sha, "tests": list(tests or []), "runs": runs,
             "executable": sum(f["executable"] for f in files),
             "hit": sum(f["hit"] for f in files), "files": files[:MAX_FILES],
             "duration_s": round(duration_s, 1)}
@@ -242,9 +266,10 @@ def measure(clone: Path, *, base_sha: str, tier: int, pr: int, head_sha: str) ->
 
     def done(status: str, reason: str | None = None, *, tests: list[str] | None = None,
              wanted: dict[str, list[int]] | None = None,
-             results: dict[str, dict] | None = None) -> CoverageRecord:
+             results: dict[str, dict] | None = None,
+             runs: TestRuns | None = None) -> CoverageRecord:
         return record(status, base_sha=base_sha, reason=reason, tests=tests, wanted=wanted,
-                      results=results, duration_s=time.monotonic() - t0)
+                      results=results, runs=runs, duration_s=time.monotonic() - t0)
 
     try:
         if "vitest" not in " ".join(profile.active().verify.test_runner):
@@ -280,11 +305,11 @@ def measure(clone: Path, *, base_sha: str, tier: int, pr: int, head_sha: str) ->
         return done(ERROR, str(e), tests=[])
     if code == gates.SENTINEL_PATCH_CONFLICT:
         return done(ERROR, "the PR does not apply onto this machine's pinned base", tests=tests)
-    results = parse_trailer(tail) if code == 0 else None
-    if results is None:
+    parsed = parse_trailer(tail) if code == 0 else None
+    if parsed is None:
         excerpt = verify_driver.error_excerpt(tail)
         return done(ERROR, f"the coverage run exited {code}: {excerpt}", tests=tests)
-    return done(MEASURED, tests=tests, wanted=wanted, results=results)
+    return done(MEASURED, tests=tests, wanted=wanted, results=parsed[0], runs=parsed[1])
 
 
 def summary(rec: CoverageRecord | dict | None) -> str | None:
@@ -299,6 +324,9 @@ def summary(rec: CoverageRecord | dict | None) -> str | None:
                 if executable else "coverage: no executable changed lines")
         if unmeasured:
             line += f", {unmeasured} file{'' if unmeasured == 1 else 's'} not measured"
+        runs = rec.get("runs") or {}
+        if runs.get("failed_files"):
+            line += f"; {runs['failed_files']} of {runs.get('files')} test files failed to run"
         return line
     if status == UNTESTED:
         return "coverage: no related tests"
@@ -318,6 +346,11 @@ def prompt_block(rec: CoverageRecord | None) -> str:
              f"- {summary(rec)}"]
     if rec["tests"]:
         lines.append("- tests run: " + ", ".join(rec["tests"]))
+    runs = rec.get("runs")
+    if runs:
+        lines.append(f"- results: {runs['passed']} passed, {runs['failed']} failed, "
+                     f"{runs['skipped']} skipped; {runs['failed_files']} of {runs['files']} "
+                     "test files could not run in the sandbox")
     for f in rec["files"]:
         if f["uncovered"]:
             spans = ", ".join(str(a) if a == b else f"{a}-{b}" for a, b in f["uncovered"])
