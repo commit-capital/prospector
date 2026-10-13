@@ -722,6 +722,12 @@ function CoverageLine({ coverage }: { coverage: CoverageRecord }): ReactNode {
         Coverage: {line}
       </span>
       {coverage.tests.length > 0 && <div>tests run: {coverage.tests.map((t) => <code key={t} style={{ marginRight: 4 }}>{t}</code>)}</div>}
+      {coverage.runs && (
+        <div>
+          {coverage.runs.passed} passed, {coverage.runs.failed} failed, {coverage.runs.skipped} skipped
+          {coverage.runs.failed_files > 0 && ` · ${coverage.runs.failed_files} of ${coverage.runs.files} test files could not run in the sandbox`}
+        </div>
+      )}
       {gaps.length > 0 && (
         <ul style={{ margin: "2px 0 0 16px" }}>
           {gaps.map((f) => (

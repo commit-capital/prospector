@@ -541,6 +541,7 @@ export interface CoverageRecord {
   reason: string | null;
   base_sha: string;
   tests: string[];
+  runs: { files: number; failed_files: number; passed: number; failed: number; skipped: number } | null;
   executable: number;
   hit: number;
   files: { path: string; measured: boolean; executable: number; hit: number; uncovered: [number, number][] }[];

@@ -182,8 +182,8 @@ case "$PHASE" in
     # Changed-line coverage: the PR's diff applied, the coverage provider
     # Prospector fetched copied into the tree (its own dependencies nested
     # under it, so its peer `vitest` resolves to the tree's), then TEST_CMD —
-    # the profile's runner over the related tests with coverage flags, built
-    # by the host. The tests' own exit is not the result: a failing test's
+    # the profile's test setup and then its runner over the related tests with
+    # coverage flags, built by the host. The tests' own exit is not the result: a failing test's
     # execution still counts. Exit 0 means the trailer was printed.
     apply_patch || exit "$SENTINEL_PATCH_CONFLICT"
     [ -n "$COVERAGE_REQUEST" ] || { echo "coverage requires COVERAGE_REQUEST" >&2; exit 1; }
@@ -196,7 +196,8 @@ case "$PHASE" in
     run_test_cmd
     [ -f /tmp/cov/coverage-final.json ] \
       || { echo "the test run wrote no coverage report" >&2; exit 1; }
-    node /verify-coverage.mjs "$COVERAGE_REQUEST" /tmp/cov/coverage-final.json || exit 1
+    node /verify-coverage.mjs "$COVERAGE_REQUEST" /tmp/cov/coverage-final.json \
+      /tmp/cov/tests.json || exit 1
     exit 0
     ;;
   *)

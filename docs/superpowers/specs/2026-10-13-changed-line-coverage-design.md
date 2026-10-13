@@ -41,14 +41,18 @@ turns the step off.
    `/coverage-tool` and the host-written request (`{"files": {path: [lines]}}`)
    at `/verify/coverage-request.json`, both read-only. `run-phase.sh` applies
    the patch, copies the provider into `node_modules/@vitest/coverage-v8`, runs
-   the host-built command (the profile's runner over the related tests with
+   the host-built command (the profile's `verify.test_setup` — what the
+   repository's own test scripts run before vitest, such as linking and
+   building workspace packages — then the profile's runner over the related tests with
    `--coverage.enabled --coverage.provider=v8 --coverage.reporter=json
    --coverage.reportOnFailure --coverage.reportsDirectory=/tmp/cov` and one
-   `--coverage.include` per changed file), ignores the tests' exit, and runs the
-   mounted `verify-coverage.mjs`, which prints one trailer
-   `===VERIFY-COVERAGE:BEGIN=== {...} ===VERIFY-COVERAGE:END===`: per changed
-   file, the changed lines a statement starts on (`executable`) and those whose
-   statement ran (`hit`). The exit code means only infrastructure: 0 measured,
+   `--coverage.include` per changed file, plus vitest's JSON test report),
+   ignores the tests' exit, and runs the mounted `verify-coverage.mjs`, which
+   prints one trailer `===VERIFY-COVERAGE:BEGIN=== {...} ===VERIFY-COVERAGE:END===`:
+   per changed file, the changed lines that are executable — a statement starts
+   on the line, or the line continues a statement holding no other — and those
+   whose statement ran (`hit`), plus the test counts (files, files that failed
+   with no test run, passed, failed, skipped). The exit code means only infrastructure: 0 measured,
    30 patch conflict, anything else the harness's fault.
 5. **Host** — parses the last trailer and builds the record.
 
@@ -64,7 +68,9 @@ carries the entry verbatim, so no schema bump):
 
 ```
 {"status": "measured" | "untested" | "skipped" | "error", "reason": str | None,
- "base_sha": str, "tests": [str], "executable": int, "hit": int,
+ "base_sha": str, "tests": [str],
+ "runs": {"files", "failed_files", "passed", "failed", "skipped"} | None,
+ "executable": int, "hit": int,
  "files": [{"path": str, "executable": int, "hit": int, "uncovered": [[start, end]],
             "measured": bool}],
  "duration_s": float}
@@ -81,7 +87,8 @@ category.
 
 ## Display
 
-`coverage.summary(record)` — "coverage 62% (31/50 changed lines)", "coverage
+`coverage.summary(record)` — "coverage 62% (31/50 changed lines)" (with "; N
+of M test files failed to run" when some could not load), "coverage
 skipped: …", "no related tests", "coverage not measured: …" — is appended to the Design review
 check row's detail. The PR page's Design review block shows the line and the
 uncovered ranges per file.

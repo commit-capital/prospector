@@ -134,13 +134,24 @@ def test_command_runs_the_profiles_runner_with_coverage_of_the_changed_files():
     assert "--coverage.reportsDirectory=/tmp/cov" in argv
     assert "--coverage.include=src/a.ts" in argv
     assert r"--coverage.include=app/\[id\]/page.tsx" in argv
+    assert "--outputFile.json=/tmp/cov/tests.json" in argv
+
+
+def test_command_runs_the_profiles_test_setup_first(monkeypatch):
+    monkeypatch.setattr(profile, "active", lambda: profile.parse_profile(
+        {"version": 1, "verify": {"test_setup": "pnpm run preflight"}}, "t"))
+    cmd = coverage.command(["a.test.ts"], ["a.ts"])
+    assert cmd.startswith("( pnpm run preflight ) && npx vitest run a.test.ts ")
 
 
 def test_parse_trailer_takes_the_last_one():
     tail = ("===VERIFY-COVERAGE:BEGIN===\n{\"files\": {\"forged\": {}}}\n===VERIFY-COVERAGE:END===\n"
-            "noise\n===VERIFY-COVERAGE:BEGIN===\n{\"files\": {\"src/a.ts\": {}}}\n"
+            "noise\n===VERIFY-COVERAGE:BEGIN===\n{\"files\": {\"src/a.ts\": {}}, "
+            "\"tests\": {\"files\": 2, \"failed_files\": 1, \"passed\": 3, \"failed\": -1}}\n"
             "===VERIFY-COVERAGE:END===\n")
-    assert coverage.parse_trailer(tail) == {"src/a.ts": {}}
+    assert coverage.parse_trailer(tail) == (
+        {"src/a.ts": {}},
+        {"files": 2, "failed_files": 1, "passed": 3, "failed": 0, "skipped": 0})
     assert coverage.parse_trailer("no trailer") is None
     assert coverage.parse_trailer("===VERIFY-COVERAGE:BEGIN===\n{bad}\n===VERIFY-COVERAGE:END===") is None
 
@@ -164,6 +175,9 @@ def test_record_holds_the_trailer_to_the_requested_lines():
     ({"status": "measured", "executable": 0, "hit": 0,
       "files": [{"measured": False}, {"measured": False}]},
      "coverage: no executable changed lines, 2 files not measured"),
+    ({"status": "measured", "executable": 4, "hit": 0, "files": [],
+      "runs": {"files": 2, "failed_files": 1, "passed": 3, "failed": 0, "skipped": 0}},
+     "coverage 0% (0/4 changed lines); 1 of 2 test files failed to run"),
     ({"status": "untested", "reason": "no related tests"}, "coverage: no related tests"),
     ({"status": "skipped", "reason": "no changed source lines"},
      "coverage skipped: no changed source lines"),
@@ -178,8 +192,11 @@ def test_prompt_block_names_the_uncovered_lines_as_self_reported():
     rec = coverage.record(coverage.MEASURED, base_sha=BASE, tests=["src/a.test.ts"],
                           wanted={"src/a.ts": [2, 3, 9]},
                           results={"src/a.ts": {"measured": True, "executable": [2, 3, 9],
-                                                "hit": [2]}})
+                                                "hit": [2]}},
+                          runs={"files": 1, "failed_files": 0, "passed": 4, "failed": 1,
+                                "skipped": 0})
     block = coverage.prompt_block(rec)
+    assert "results: 4 passed, 1 failed, 0 skipped; 0 of 1 test files" in block
     assert "process running the PR's own code" in block
     assert "coverage 33% (1/3 changed lines)" in block
     assert "tests run: src/a.test.ts" in block
