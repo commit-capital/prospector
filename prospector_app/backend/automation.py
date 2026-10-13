@@ -69,6 +69,13 @@ def classify(pr: Pr) -> dict | None:
     ok, why = gates.merge_eligibility(pr)
     # A PR ANALYZE never reached is mergeable on the human gate alone.
     if ok and pr.disposition in ("merge", None):
+        # The cached diff's paths, when there is one: a CODEOWNERS path is a
+        # code owner's merge, never the bot's.
+        paths = service.changed_paths(pr)
+        if paths:
+            ok, why = gates.merge_eligibility(pr, changed_paths=paths)
+            if not ok:
+                return _r("handed", "gated", why)
         gap = _unclear_check(pr)
         if gap is None:
             return _r("act", "merge-ready", "every check is clear; merge it")

@@ -242,6 +242,18 @@ def test_a_clean_reviewed_pr_analyze_never_reached_is_merge_ready(store):
     assert (out["column"], out["bucket"], out["owner"]) == ("act", "merge-ready", "you")
 
 
+def test_a_merge_eligible_pr_on_a_codeowners_path_is_handed_to_you(store, monkeypatch):
+    from pipeline import profile
+    monkeypatch.setattr(profile, "active", lambda: profile.RepoProfile(
+        codeowners=profile.CodeownersPolicy(gated_globs=("skills/**",), owners=("@o",))))
+    monkeypatch.setattr(service, "changed_paths", lambda pr: ["skills/foo.md"])
+    rec = _merge_pick(_rec())
+    del rec["analysis"]
+    out = _classify(store, rec)
+    assert (out["column"], out["bucket"], out["owner"]) == ("handed", "gated", "you")
+    assert "skills/foo.md" in out["reason"]
+
+
 def test_an_unanalyzed_pr_without_a_security_review_waits_on_the_hunter(store):
     rec = _merge_pick(_rec())
     del rec["analysis"], rec["security"]
