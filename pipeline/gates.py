@@ -2123,8 +2123,10 @@ def narrative_staleness(cluster: Cluster, prs: dict[int, Pr]) -> list[str]:
     """Why the stored analysis narrative may no longer describe its members:
     one line per open member whose current derived disposition differs from
     this cluster's proposed one, or whose non-GREEN security verdict was
-    recorded after the analysis was written. Empty while the narrative still
-    matches the facts. Derived on read, never stored."""
+    recorded after the analysis was written. A member whose disposition another
+    cluster's proposal won (`analysis.from_cluster`) is not compared: re-running
+    this analysis cannot change it. Empty while the narrative still matches the
+    facts. Derived on read, never stored."""
     reasons: list[str] = []
     written = cluster.checked_at or ""
     for n in cluster.prs:
@@ -2133,7 +2135,9 @@ def narrative_staleness(cluster: Cluster, prs: dict[int, Pr]) -> list[str]:
             continue
         proposed = (cluster.proposal_for(pr.n) or {}).get("disposition")
         current = pr.disposition
-        if proposed and current and current != proposed:
+        winner = (pr.section("analysis") or {}).get("from_cluster")
+        ours = winner is None or int(winner) == cluster.id
+        if ours and proposed and current and current != proposed:
             reasons.append(f"#{pr.n} is now {current}; the analysis proposed {proposed}")
         sec = pr.section("security") or {}
         verdict = sec.get("verdict")
