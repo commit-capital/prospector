@@ -55,6 +55,7 @@ def store(tmp_path, monkeypatch):
     st = S.Store(tmp_path / "store")
     monkeypatch.setattr(data, "_store", st)
     verify_worker.security_failed.clear()
+    verify_worker.design_failed.clear()
     monkeypatch.setattr(verify_worker, "_last_auto_lane", None)
     monkeypatch.setattr(verify_worker, "_changed_paths", lambda pr: ["src/app.ts"])
     data.refresh()
@@ -1093,6 +1094,7 @@ class _Loop:
         self.asked: list[str] = []
         self.ran: list[int] = []
         self.reviewed: list[int] = []
+        self.designed: list[int] = []
         self.queued: list[tuple[int, str]] = []
         self.stop = _OneTick()
 
@@ -1128,6 +1130,7 @@ class TestCapacityGate:
                             lambda n: lp.reviewed.append(n) or 0)
         monkeypatch.setattr(verify_worker, "auto_queue_verify",
                             lambda n, source="auto": lp.queued.append((n, source)))
+        monkeypatch.setattr(verify_worker, "run_design", lambda n: lp.designed.append(n) or True)
         monkeypatch.setattr(verify_worker, "stop", lp.stop)
         return lp
 
@@ -1187,12 +1190,13 @@ class TestCapacityGate:
 
     @pytest.mark.parametrize("lane, gate", [("security", "security"),
                                             ("verify", "verify"),
-                                            ("resweep", "verify")])
+                                            ("resweep", "verify"),
+                                            ("design", "design")])
     def test_a_paused_account_holds_the_hunters_pick(self, loop, lane, gate):
         loop.pick = (lane, 1)
         verify_worker._drain_loop()
         assert loop.asked == [gate]
-        assert loop.reviewed == [] and loop.queued == []
+        assert loop.reviewed == [] and loop.queued == [] and loop.designed == []
         assert loop.stop.waits == [verify_worker.POLL_SECONDS]
 
     @pytest.mark.parametrize("lane, reviewed, queued", [
@@ -1206,6 +1210,12 @@ class TestCapacityGate:
         verify_worker._drain_loop()
         assert loop.reviewed == reviewed
         assert loop.queued == queued
+
+    def test_an_open_account_takes_a_design_pick(self, loop):
+        loop.capacity = True
+        loop.pick = ("design", 1)
+        verify_worker._drain_loop()
+        assert loop.designed == [1] and loop.reviewed == [] and loop.queued == []
 
     def test_an_idle_hunter_never_asks_the_account(self, loop):
         verify_worker._drain_loop()
@@ -1258,3 +1268,115 @@ def test_a_fix_run_held_for_ai_capacity_reads_as_waiting(store):
                           "stats": {"action": "rebase", "status": "failed", "kind": kind}})
     assert autohunt_view.lane_counts("fix", days=7)["pr_ids_by_result"] == {
         "waiting-for-capacity": [1], "failed": [2]}
+
+
+ALL_LANES = frozenset({"security", "verify", "design"})
+
+
+class TestDesignLane:
+    """The design review rides the idle hunt as a third lane, round-robined
+    with security and verify so it progresses while either backlog is long."""
+
+    def test_rotation_serves_all_three_lanes(self, store):
+        store.save_pr(_clean_merge_pr(1))
+        store.save_pr(_clean_merge_pr(2))
+        _green(store, 2)
+        data.refresh()
+        picks = [verify_worker.next_auto(ALL_LANES) for _ in range(4)]
+        assert picks == [("security", 1), ("verify", 2), ("design", 1), ("security", 1)]
+
+    def test_design_alone(self, store):
+        store.save_pr(_clean_merge_pr(1))
+        data.refresh()
+        assert verify_worker.next_auto(frozenset({"design"})) == ("design", 1)
+        assert verify_worker.next_auto() == ("security", 1)
+
+    def test_pool_skips_a_reviewed_head_a_claim_and_a_failure(self, store):
+        import socket
+        for n in (1, 2, 3, 4):
+            store.save_pr(_clean_merge_pr(n))
+        store.save_design_review(1, {"kind": "review", "reviewed_sha": HEAD, "findings": [],
+                                     "checks": []}, head_sha=HEAD)
+        store.claim_design_run(2, host="some-other-machine", stale_after=3600)
+        verify_worker.design_failed.add(3, "boom")
+        store.claim_design_run(4, host=socket.gethostname(), stale_after=3600)
+        data.refresh()
+        assert verify_worker.next_auto(frozenset({"design"})) == ("design", 4)
+
+    def _ready(self, store, monkeypatch, tmp_path, review):
+        store.save_pr(_clean_merge_pr(1))
+        data.refresh()
+        clone = tmp_path / "clone"
+        clone.mkdir()
+        diff = tmp_path / "d.diff"
+        diff.write_text("diff --git a/x b/x\n")
+        monkeypatch.setattr(verify_worker, "_design_base", lambda st: ("b" * 40, clone))
+        monkeypatch.setattr(verify_worker, "_design_diff", lambda st, n, head: diff)
+        monkeypatch.setattr(verify_worker.design_review, "review", review)
+        booked: list[tuple[str, str]] = []
+        monkeypatch.setattr(verify_worker.lane_health, "note_success",
+                            lambda lane: booked.append(("ok", lane)))
+        monkeypatch.setattr(verify_worker.lane_health, "note_failure",
+                            lambda lane, **kw: booked.append(("fail", lane)))
+        monkeypatch.setattr(verify_worker.lane_health, "trip_agent_lanes",
+                            lambda reason: booked.append(("trip", reason)))
+        return booked
+
+    def test_a_review_lands_and_books_success(self, store, monkeypatch, tmp_path):
+        def review(clone, diff, *, pr, title, head_sha, base_sha):
+            return {"kind": "review", "reviewed_sha": head_sha, "findings": [
+                {"severity": "blocking", "resolved": False, "outdated": False}],
+                "checks": [], "summary": "s", "extra": {"base_sha": base_sha}}
+        booked = self._ready(store, monkeypatch, tmp_path, review)
+        assert verify_worker.run_design(1) is True
+        assert store.load_pr(1).review_entry("design")["extra"]["base_sha"] == "b" * 40
+        assert booked == [("ok", "design")]
+        row = [r for r in store.runs() if r.phase == "design-review:run"][-1]
+        assert row.raw["stats"]["findings"] == {"blocking": 1}
+        assert store.claim_design_run(1, host="some-other-machine", stale_after=3600) is True
+
+    def test_a_failed_review_parks_the_pr_and_books_a_failure(self, store, monkeypatch, tmp_path):
+        def review(*a, **kw):
+            raise verify_worker.design_review.DesignReviewFailed("no answer")
+        booked = self._ready(store, monkeypatch, tmp_path, review)
+        assert verify_worker.run_design(1) is False
+        assert 1 in verify_worker.design_failed
+        assert booked == [("fail", "design")]
+        assert store.load_pr(1).review_entry("design") is None
+        assert store.claim_design_run(1, host="some-other-machine", stale_after=3600) is True
+
+    def test_an_outage_trips_the_agent_lanes(self, store, monkeypatch, tmp_path):
+        from pipeline import headless_agent
+
+        def review(*a, **kw):
+            raise headless_agent.AgentUnavailable("not logged in")
+        booked = self._ready(store, monkeypatch, tmp_path, review)
+        assert verify_worker.run_design(1) is False
+        assert booked == [("trip", "not logged in")]
+        assert 1 not in verify_worker.design_failed
+
+    def test_no_base_clone_runs_nothing(self, store, monkeypatch):
+        store.save_pr(_clean_merge_pr(1))
+        data.refresh()
+        monkeypatch.setattr(verify_worker, "_design_base", lambda st: None)
+        monkeypatch.setattr(verify_worker.design_review, "review",
+                            lambda *a, **kw: pytest.fail("must not review"))
+        assert verify_worker.run_design(1) is None
+
+    def test_design_base_needs_this_machines_pin_and_clone(self, store, monkeypatch, tmp_path):
+        assert verify_worker._design_base(store) is None
+        monkeypatch.setattr(verify_worker.verify_driver, "local_pin",
+                            lambda st: {"base_sha": "b" * 40})
+        monkeypatch.setattr(verify_worker.verify_driver, "base_clone_dir",
+                            lambda sha: tmp_path / sha[:12])
+        assert verify_worker._design_base(store) is None
+        (tmp_path / ("b" * 12)).mkdir()
+        assert verify_worker._design_base(store) == ("b" * 40, tmp_path / ("b" * 12))
+
+    def test_release_stale_claims_frees_design_claims(self, store):
+        import socket
+        store.save_pr(_clean_merge_pr(1))
+        store.claim_design_run(1, host=socket.gethostname(), stale_after=3600)
+        data.refresh()
+        verify_worker.release_stale_claims()
+        assert store.claim_design_run(1, host="some-other-machine", stale_after=3600) is True

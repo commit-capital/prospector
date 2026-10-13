@@ -19,8 +19,9 @@ hunter: it runs the headless security review on clean merge candidates that
 lack a current verdict (highest community pain first), then auto-queues
 sandbox verification for candidates whose security verdict is a current GREEN
 — the sandbox never executes code the adversarial review has not cleared —
-and finally re-sweeps concluded verifications whose independent repro the
-harness itself broke, once each. Selection is pure gate policy; an
+and runs the design review (`pipeline/design_review.py`) on PR heads that have
+none, the three lanes taking turns; it finally re-sweeps concluded
+verifications whose independent repro the harness itself broke, once each. Selection is pure gate policy; an
 operator-queued request always wins the next pick.
 """
 from __future__ import annotations
@@ -31,10 +32,14 @@ from collections.abc import Iterator
 import time
 import traceback
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pipeline import capacity
+from pipeline import design_review
+from pipeline import diff_cache
 from pipeline import gates
+from pipeline import headless_agent
 from pipeline import security_review
 from pipeline import settings
 from pipeline import store
@@ -86,6 +91,8 @@ REFRESH_AFTER_HOURS = 24.0
 # sits well past a slow one — it exists to free a PR whose machine died, not to
 # overtake one still working.
 SECURITY_CLAIM_SECONDS = 4 * 3600.0
+# The same window for a design review, one agent run deep.
+DESIGN_CLAIM_SECONDS = 3600.0
 
 # The steps a restart may resume: at each of them the run has committed nothing
 # and no phase container has run the PR's code, so re-queueing repeats only
@@ -436,6 +443,8 @@ class _SkipSet:
 
 
 security_failed = _SkipSet()
+# Design reviews that failed this process, skipped for the same window.
+design_failed = _SkipSet()
 
 
 def enabled_autohunt() -> bool:
@@ -520,23 +529,40 @@ def auto_resweepable(pr: Pr) -> bool:
 _last_auto_lane: str | None = None
 
 
+# The order the hunt's lanes take turns in, and break a maintainer tie in.
+HUNT_ROTATION = ("security", "verify", "design")
+
+
+def _rotate(live: list[str]) -> str | None:
+    """The lane in `live` that follows the last one picked in HUNT_ROTATION."""
+    if not live:
+        return None
+    if _last_auto_lane in HUNT_ROTATION:
+        start = HUNT_ROTATION.index(_last_auto_lane) + 1
+        for name in HUNT_ROTATION[start:] + HUNT_ROTATION[:start]:
+            if name in live:
+                return name
+    return live[0]
+
+
 def next_auto(open_lanes: frozenset[str] = frozenset({"security", "verify"})
               ) -> tuple[str, int] | None:
     """The idle hunt's next pick, or None: ("security", n) for the best clean PR
     lacking a current security verdict (gates.blocked_on_security), ("verify", n) for the
-    best GREEN-cleared unverified candidate, or ("resweep", n) for a concluded
-    verification whose repro the harness broke. Every lane orders a
+    best GREEN-cleared unverified candidate, ("design", n) for the best head
+    with no design review (design_review.huntable), or ("resweep", n) for a
+    concluded verification whose repro the harness broke. Every lane orders a
     maintainer's PR (gates.priority_author) first, then an analyzed merge pick,
     then by highest community pain, then lowest PR number.
 
-    A maintainer's PR in either pool is picked before anything else, security
-    first. Otherwise security and verify alternate while both have work — a
-    first pick goes to security — so the verify pool is served while the
-    security backlog drains; a resweep runs only when both are empty, since a PR with no
+    A maintainer's PR in any pool is picked before anything else, in
+    HUNT_ROTATION order. Otherwise the lanes with work take turns in that
+    order — a first pick goes to security — so no backlog starves the others;
+    a resweep runs only when every pool is empty, since a PR with no
     verification at all buys more than a second opinion on one that already
-    concluded. A PR another machine holds the security claim on is that
-    machine's to finish: it leaves the pool here so this hunter moves on to
-    the next candidate. `open_lanes` names the lanes whose health allows a
+    concluded. A PR another machine holds the security or design claim on is
+    that machine's to finish: it leaves the pool here so this hunter moves on
+    to the next candidate. `open_lanes` names the lanes whose health allows a
     pick; a tripped lane's pool is skipped."""
     global _last_auto_lane
     prs = data.prs()
@@ -559,24 +585,18 @@ def next_auto(open_lanes: frozenset[str] = frozenset({"security", "verify"})
             pr.raw.get("security_run"), host=me, stale_after=SECURITY_CLAIM_SECONDS)]
     verify_pool = ([(n, pr) for n, pr in prs.items() if auto_verifiable(pr)]
                    if "verify" in open_lanes else [])
-    if _has_priority(security_pool):
-        lane = "security"
-    elif _has_priority(verify_pool):
-        lane = "verify"
-    elif security_pool and verify_pool:
-        lane = "verify" if _last_auto_lane == "security" else "security"
-    elif security_pool:
-        lane = "security"
-    elif verify_pool:
-        lane = "verify"
-    else:
-        lane = None
-    if lane == "security":
+    design_pool = [
+        (n, pr) for n, pr in prs.items()
+        if "design" in open_lanes
+        and n not in design_failed and design_review.huntable(pr)
+        and not store.run_claim_held_elsewhere(
+            pr.raw.get("design_run"), host=me, stale_after=DESIGN_CLAIM_SECONDS)]
+    pools = {"security": security_pool, "verify": verify_pool, "design": design_pool}
+    lane = (next((name for name in HUNT_ROTATION if _has_priority(pools[name])), None)
+            or _rotate([name for name in HUNT_ROTATION if pools[name]]))
+    if lane is not None:
         _last_auto_lane = lane
-        return ("security", min(security_pool, key=_key)[0])
-    if lane == "verify":
-        _last_auto_lane = lane
-        return ("verify", min(verify_pool, key=_key)[0])
+        return (lane, min(pools[lane], key=_key)[0])
     if "verify" not in open_lanes:
         return None
     resweep_pool = [(n, pr) for n, pr in prs.items() if auto_resweepable(pr)]
@@ -651,6 +671,78 @@ def _run_security_claimed(n: int) -> int:
     lane_health.note_failure("security", kind="security-run" if rc else "incomplete",
                              reason=reason, pr=n)
     return rc
+
+
+def _design_base(st: Store) -> tuple[str, Path] | None:
+    """This machine's pinned base SHA and its clone, or None when it holds no
+    pin or no clone."""
+    sha = verify_driver.local_pin(st).get("base_sha")
+    clone = verify_driver.base_clone_dir(str(sha)) if sha else None
+    return (str(sha), clone) if clone is not None and clone.is_dir() else None
+
+
+def _design_diff(st: Store, n: int, head: str) -> Path | None:
+    """The head's diff file, fetched into the cache when it is not there."""
+    path = diff_cache.DIFFS / f"{head}.diff"
+    if path.is_file() or diff_cache.fetch_diff(n, head, store=st):
+        return path
+    return None
+
+
+def _book_design(st: Store, n: int, head: str, stats: dict) -> None:
+    stamp = _now()
+    st.append_run({"phase": design_review.PHASE, "pr": n, "started": stamp, "finished": stamp,
+                   "trigger": "autohunt", "stats": {"head_sha": head, **stats}})
+
+
+def run_design(n: int) -> bool | None:
+    """Run the design review of PR `n`'s head under this host's claim: True
+    when its verdict landed, False when the run failed, None when no review
+    ran (the PR left the pool, another host holds it, or this machine has no
+    base clone or diff to read). A failed run parks the PR in design_failed
+    and books the design lane's health — an agent outage trips every agent
+    lane, an overload or a decline books nothing — and every ending is a
+    `design-review:run` ledger row."""
+    st = data.store()
+    rec = st.load_pr(n)
+    base = _design_base(st)
+    if rec is None or base is None or not design_review.huntable(rec):
+        return None
+    head = rec.head_sha or ""
+    me = settings.worker_id()
+    if not st.claim_design_run(n, host=me, stale_after=DESIGN_CLAIM_SECONDS):
+        return None
+    try:
+        diff = _design_diff(st, n, head)
+        if diff is None:
+            design_failed.add(n, "GitHub returned no diff for this head")
+            return None
+        with capacity.metered("design"):
+            entry = design_review.review(base[1], diff, pr=n, title=rec.title or "",
+                                         head_sha=head, base_sha=base[0])
+        saved = st.save_design_review(n, entry, head_sha=head)
+        counts: dict[str, int] = {}
+        for f in entry["findings"]:
+            counts[f["severity"]] = counts.get(f["severity"], 0) + 1
+        _book_design(st, n, head, {"findings": counts, "saved": saved})
+        design_failed.discard(n)
+        lane_health.note_success("design")
+        data.refresh()
+        return True
+    except headless_agent.AgentUnavailable as e:
+        lane_health.trip_agent_lanes(str(e))
+        return False
+    except (headless_agent.AgentDeclined, headless_agent.AgentTransient) as e:
+        design_failed.add(n, str(e)[:300])
+        _book_design(st, n, head, {"error": str(e)[:300]})
+        return False
+    except design_review.DesignReviewFailed as e:
+        design_failed.add(n, str(e)[:300])
+        _book_design(st, n, head, {"error": str(e)[:300]})
+        lane_health.note_failure("design", kind="design-run", reason=str(e), pr=n)
+        return False
+    finally:
+        st.release_design_run(n, host=me)
 
 
 def _note_verify_ending(n: int) -> None:
@@ -742,15 +834,18 @@ def _beat_loop() -> None:
 
 
 def release_stale_claims() -> list[int]:
-    """Drop this host's leftover security-review claims. A review does not
-    survive the worker's process, so at startup a claim in this host's name is a
-    restart's leftover; another host's is its live run. Returns what it freed."""
+    """Drop this host's leftover security- and design-review claims. A review
+    does not survive the worker's process, so at startup a claim in this host's
+    name is a restart's leftover; another host's is its live run. Returns the
+    security claims it freed."""
     me = settings.worker_id()
     st = data.store()
     freed: list[int] = []
     for n in sorted(st.prs_matching(("security_run", "host"), [me])):
         st.release_security_run(n, host=me)
         freed.append(n)
+    for n in st.prs_matching(("design_run", "host"), [me]):
+        st.release_design_run(n, host=me)
     return freed
 
 
@@ -807,8 +902,11 @@ def _drain_loop() -> None:
                 _note_verify_ending(n)
                 continue
             security_open = lane_health.open_or_retest("security")
+            design_open = (settings.design_review_mode() != "off"
+                           and lane_health.open_or_retest("design"))
             open_lanes = frozenset(lane for lane, ok in (("security", security_open),
-                                                         ("verify", verify_open)) if ok)
+                                                         ("verify", verify_open),
+                                                         ("design", design_open)) if ok)
             pick = next_auto(open_lanes) if enabled_autohunt() and open_lanes else None
             if pick is None:
                 stop.wait(POLL_SECONDS)
@@ -816,7 +914,7 @@ def _drain_loop() -> None:
             lane, n = pick
             # Queueing a verify costs nothing, but the run it leads to spends
             # agents, so every pick waits on the account's capacity.
-            if not lane_health.capacity_open("security" if lane == "security" else "verify"):
+            if not lane_health.capacity_open(lane if lane in ("security", "design") else "verify"):
                 stop.wait(POLL_SECONDS)
                 continue
             if lane == "security":
@@ -824,6 +922,13 @@ def _drain_loop() -> None:
                 beat()
                 print(f"[autohunt] security review for PR #{n}", flush=True)
                 if run_security(n) is None:
+                    data.refresh()
+                    stop.wait(POLL_SECONDS)
+            elif lane == "design":
+                state["current_pr"] = n
+                beat()
+                print(f"[autohunt] design review for PR #{n}", flush=True)
+                if run_design(n) is None:
                     data.refresh()
                     stop.wait(POLL_SECONDS)
             elif lane == "resweep":
