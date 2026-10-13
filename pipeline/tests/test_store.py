@@ -534,6 +534,53 @@ class TestSecurityRunClaim:
         assert Store(tmp_path).claim_security_run(9, host="mac", stale_after=3600) is False
 
 
+class TestDesignReview:
+    """The design review's claim (one idle hunter per PR) and its write, which
+    lands only on the head it judged."""
+
+    def _pr(self, tmp_path, head: str = "h") -> Store:
+        s = Store(tmp_path)
+        s.save_pr({"pr": 1, "meta": {"title": "t", "state": "open", "head_sha": head},
+                   "reviews": {"greptile": {"kind": "review", "findings": [], "checks": []},
+                               "checked_at": "2026-10-13T00:00:00+00:00"}})
+        return s
+
+    def _entry(self, head: str) -> dict:
+        return {"kind": "review", "reviewed_sha": head, "observed_at": "2026-10-13T00:00:00Z",
+                "score": None, "findings": [], "summary": "fine", "checks": [], "extra": {}}
+
+    def test_claims_race_like_the_security_claim(self, tmp_path):
+        s = self._pr(tmp_path)
+        assert s.claim_design_run(1, host="mac", stale_after=3600) is True
+        assert s.claim_design_run(1, host="linux", stale_after=3600) is False
+        assert s.claim_design_run(1, host="mac", stale_after=3600) is True
+        assert s.claim_design_run(1, host="linux", stale_after=-1) is True
+        s.release_design_run(1, host="mac")
+        assert s.claim_design_run(1, host="mac", stale_after=3600) is False
+        s.release_design_run(1, host="linux")
+        assert s.claim_design_run(1, host="mac", stale_after=3600) is True
+        assert Store(tmp_path).claim_design_run(9, host="mac", stale_after=3600) is False
+
+    def test_a_claim_needs_a_host(self, tmp_path):
+        s = Store(tmp_path)
+        with pytest.raises(ValidationError):
+            s.save_pr({"pr": 1, "meta": {"title": "t", "state": "open", "head_sha": "h"},
+                       "design_run": {"started_at": "x"}})
+
+    def test_save_keeps_the_other_reviewers(self, tmp_path):
+        s = self._pr(tmp_path)
+        assert s.save_design_review(1, self._entry("h"), head_sha="h") is True
+        reviews = s.load_pr(1).reviews
+        assert set(reviews) >= {"greptile", "design", "checked_at"}
+        assert reviews["design"]["summary"] == "fine"
+
+    def test_save_refuses_a_moved_head(self, tmp_path):
+        s = self._pr(tmp_path, head="h2")
+        assert s.save_design_review(1, self._entry("h1"), head_sha="h1") is False
+        assert "design" not in s.load_pr(1).reviews
+        assert Store(tmp_path).save_design_review(9, self._entry("h"), head_sha="h") is False
+
+
 class TestVerifyBaseRegistry:
     """A pin names the base image `run` looks for on ONE machine: its SHA and
     the tier it was built at, plus the captured baseline that names the regress

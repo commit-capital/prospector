@@ -351,6 +351,7 @@ export interface ReviewDigest {
   observed_at: string | null;
   checks: { name: string | null; conclusion: string | null; status: string | null; title: string | null }[];
   extra: Record<string, unknown>;
+  advisory: boolean;        // a bar shown without gating (the design review unless it gates)
   summary_line: string;
 }
 
@@ -533,7 +534,7 @@ export interface Suggestion {
   accept: SuggestAccept | null;
 }
 
-export interface CheckItem { key: string; name: string; status: "pass" | "warn" | "fail" | "na"; detail: string; at?: string | null }
+export interface CheckItem { key: string; name: string; status: "pass" | "warn" | "fail" | "na"; detail: string; at?: string | null; advisory?: boolean }
 export interface ChecksRollup { checks: CheckItem[]; passed: number; total: number }
 
 export interface AuthorStats {

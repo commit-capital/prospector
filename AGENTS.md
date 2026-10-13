@@ -679,6 +679,25 @@ grade. `TRIAGE_ISSUE_FIX_PUBLIC` is
 `live` (the default), `dry-run` (each write logged as a dry-run and noted once on
 the issue, its record kept apart in `fix_public.dry`), or `off`.
 
+**DESIGN REVIEW** (`pipeline/design_review.py`) is a reviewer Prospector runs
+itself (`reviewers.DESIGN`, source `prospector`): one locked-down agent per PR
+head (no `gh`, no edits, `env_allow=()`, reads only this machine's pinned base
+clone and the head's diff) judges reuse — every finding cites the base file it
+duplicates — layering, drift from the repository's contributor docs and
+`rules/*.mdc`, and tests that would survive a broken implementation. The host
+keeps only findings on a file the diff touches (and, for reuse, an existing base
+file) and writes `reviews["design"]` through `Store.save_design_review`, which
+refuses a head that moved; ingest's `parse_all` carries the entry over (schema
+31). Its bar fails on any open `blocking` finding. Auto-detection never
+activates it: under `TRIAGE_DESIGN_REVIEW=advisory` (default) it is shown on
+the PR page's Design review row and gates nothing; `gate` (or naming `design`
+in `TRIAGE_REVIEW_PROVIDER`) makes it a merge requirement; `off` stops the
+lane. A verify worker runs it as a third idle-hunt lane (`design`, taking turns
+with security and verify) under a per-PR `design_run` claim, the capacity gate
+and lane health, booking each ending as `design-review:run`. Autofix aims at
+its blocking and major findings only when the profile names `design` in
+`autofix.fixable_gates`, gating or not.
+
 **SLACK ALERTS** (`pipeline/notify.py`) is the ONE path by which a threat-scan
 finding reaches the team outside the app. At the end of every
 `threat_scan.scan` (the worker's pass, the Control-tab job, the CLI, the

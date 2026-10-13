@@ -212,6 +212,17 @@ def test_a_reviewer_that_reviewed_the_pull_request_gates_it(monkeypatch):
     assert followup._gating(None, HEAD) == []
 
 
+def test_a_prospector_reviewer_is_read_from_the_store(monkeypatch):
+    from pipeline import review_fetch
+    stored = {"kind": "review", "reviewed_sha": HEAD, "checks": [], "extra": {},
+              "findings": [{"severity": "blocking", "title": "dup", "resolved": False,
+                            "outdated": False}]}
+    monkeypatch.setattr(followup, "_stored_entry", lambda pr, rid: stored if rid == "design" else None)
+    feed = review_fetch.PrFeed(pr=9, head_sha=HEAD, updated_at=None)
+    assert followup._entry(reviewers.DESIGN, feed, HEAD, 9) == stored
+    assert followup._entry(reviewers.GREPTILE, feed, HEAD, 9) is None
+
+
 def test_review_evidence_keeps_suggested_code_and_drops_badges():
     finding = {"path": "a.tsx", "line": 1, "body": '<a href="#"><img alt="P1" src="x"></a> '
                "Fix it. ```suggestion <Ctx.Provider value={null}> ```"}

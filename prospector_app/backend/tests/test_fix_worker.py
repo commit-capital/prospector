@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from pipeline import capacity, headless_agent, profile
+from pipeline import capacity, headless_agent, profile, review_policy
 from pipeline import store as S
 from pipeline.storekit import now as _now
 from prospector_app.backend import data, fix_queue, fix_worker, sandbox_check
@@ -981,6 +981,39 @@ def test_a_fix_with_nothing_to_aim_at_refuses_before_any_agent_runs(store, monke
     req = store.load_pr(1).fix_request
     assert req["status"] == "refused" and "Nothing to aim" in req["refused_reason"]
     assert probe.calls == []
+
+
+def _design_failing(store) -> None:
+    """Greptile at the bar, a blocking and a minor design finding at the head."""
+    rec = store.load_pr(1).raw
+    rec["reviews"]["design"] = {
+        "kind": "review", "reviewed_sha": HEAD, "checks": [], "extra": {},
+        "summary": "design prose",
+        "findings": [{"severity": "blocking", "title": "duplicates src/util.ts pad",
+                      "body": "use pad", "path": "src/a.ts", "line": 3,
+                      "resolved": False, "outdated": False},
+                     {"severity": "minor", "title": "naming", "body": "n", "path": "src/a.ts",
+                      "line": 4, "resolved": False, "outdated": False}]}
+    store.save_pr(rec)
+    data.refresh()
+
+
+@pytest.mark.parametrize("mode", ["advisory", "gate"])
+def test_design_findings_aim_a_fix_only_when_the_profile_names_design(store, monkeypatch, mode):
+    _design_failing(store)
+    monkeypatch.setenv("TRIAGE_DESIGN_REVIEW", mode)
+    review_policy.reset()
+    monkeypatch.setattr(
+        profile, "active",
+        lambda: profile.RepoProfile(autofix=profile.AutofixPolicy(fixable_gates=("review",))))
+    brief = fix_worker._fix_goal(store.load_pr(1), {})
+    assert brief.findings == [] and "design prose" not in brief.review_summary
+    monkeypatch.setattr(
+        profile, "active",
+        lambda: profile.RepoProfile(autofix=profile.AutofixPolicy(fixable_gates=("design",))))
+    brief = fix_worker._fix_goal(store.load_pr(1), {})
+    assert [f["headline"] for f in brief.findings] == ["duplicates src/util.ts pad"]
+    assert "design review findings" in brief.goal
 
 
 def _withholding_profile(monkeypatch, *, fixable_gates: tuple[str, ...] = ("review",)) -> None:

@@ -2768,6 +2768,29 @@ class TestFixHuntable:
         ok, why = gates.fix_huntable(self._below_bar(), "fix")
         assert ok is False
 
+    def _design_failing(self) -> Pr:
+        """At Greptile's bar, with a blocking design finding at the head."""
+        design = {"kind": "review", "reviewed_sha": HEAD, "checks": [], "extra": {},
+                  "findings": [{"severity": "blocking", "resolved": False, "outdated": False}]}
+        return _pr(reviews=_reviews(design=design))
+
+    def test_a_failing_design_review_is_fix_huntable_when_named(self, monkeypatch):
+        self._profile(monkeypatch, fixable_gates=("design",))
+        monkeypatch.setenv("TRIAGE_DESIGN_REVIEW", "advisory")
+        review_policy.reset()
+        ok, why = gates.fix_huntable(self._design_failing(), "fix")
+        assert ok is True, why
+
+    @pytest.mark.parametrize("mode", ["advisory", "gate"])
+    def test_a_design_review_is_not_a_review_fix_target(self, monkeypatch, mode):
+        self._profile(monkeypatch, fixable_gates=("review",))
+        monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "greptile")
+        monkeypatch.setenv("TRIAGE_DESIGN_REVIEW", mode)
+        review_policy.reset()
+        ok, why = gates.fix_huntable(self._design_failing(), "fix")
+        assert ok is False
+        assert "stale or pending" not in why
+
     def test_never_hunts_a_resolve(self, monkeypatch):
         self._profile(monkeypatch, fixable_gates=("review",))
         ok, why = gates.fix_huntable(self._below_bar(), "resolve")

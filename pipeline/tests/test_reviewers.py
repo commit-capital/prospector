@@ -18,8 +18,9 @@ def _feed(**over) -> PrFeed:
 
 
 class TestRegistry:
-    def test_four_reviewers_with_kinds(self):
-        assert set(reviewers.REVIEWERS) == {"greptile", "coderabbit", "superagent", "socket"}
+    def test_registry_reviewers_with_kinds(self):
+        assert set(reviewers.REVIEWERS) == {"greptile", "coderabbit", "superagent", "socket",
+                                            "design"}
         assert reviewers.GREPTILE.kind == reviewers.REVIEW
         assert reviewers.SUPERAGENT.kind == reviewers.SCANNER
 
@@ -299,3 +300,43 @@ def test_coderabbit_stray_comment_dates_the_entry():
                             "at": "2026-06-18T00:00:00Z", "updated_at": None, "url": "c"}])
     e = reviewers.parse(reviewers.CODERABBIT, feed, HEAD, None)
     assert e is not None and e["observed_at"] == "2026-06-18T00:00:00Z"
+
+
+def _design(findings: list[dict], sha: str = HEAD) -> dict:
+    return {"kind": "review", "reviewed_sha": sha, "observed_at": "2026-10-13T00:00:00Z",
+            "score": None, "findings": findings, "summary": "s", "checks": [], "extra": {}}
+
+
+def _df(severity: str) -> dict:
+    return {"path": "a.ts", "line": 1, "severity": severity, "category": "reuse", "title": "t",
+            "body": "b", "resolved": False, "outdated": False}
+
+
+class TestDesign:
+    def test_no_bot_identity(self):
+        assert reviewers.DESIGN.source == reviewers.PROSPECTOR
+        assert reviewers.by_login("design") is None
+
+    def test_bar_states(self):
+        d = reviewers.DESIGN
+        assert reviewers.bar(d, None, HEAD).status == "pending"
+        assert reviewers.bar(d, _design([], OLD), HEAD).status == "stale"
+        fail = reviewers.bar(d, _design([_df("blocking"), _df("blocking")]), HEAD)
+        assert (fail.status, fail.reason) == ("fail", "design review: 2 open blocking findings")
+        assert reviewers.bar(d, _design([_df("major"), _df("minor")]), HEAD).status == "pass"
+
+    def test_ingest_carries_the_stored_entry(self):
+        prev = {"design": _design([_df("major")])}
+        assert reviewers.parse_all(_feed(), HEAD, prev)["design"] == prev["design"]
+        assert "design" not in reviewers.parse_all(_feed(), HEAD, None)
+
+    def test_fix_findings_are_blocking_and_major(self):
+        entry = _design([_df("blocking"), _df("major"), _df("minor")])
+        out = reviewers.findings_for_fix(reviewers.DESIGN, entry, HEAD, None)
+        assert [f["class"] for f in out] == ["substantive", "substantive"]
+        assert out[0]["path"] == "a.ts"
+
+    def test_activity_registry_ignores_it(self):
+        pr = Pr(None, {"meta": {"state": "open", "head_sha": HEAD},
+                       "reviews": {"design": _design([])}})
+        assert "design" not in reviewers.seen_summary([pr])["seen"]

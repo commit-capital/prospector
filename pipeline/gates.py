@@ -980,11 +980,16 @@ def fix_huntable(pr: Pr, action: str,
                            "human's call, not a fix target")
         if not objection:
             fixable = profile.active().autofix.fixable_gates
-            failing = [b for b in review_blockers if b.bar.status == reviewers.FAIL]
+            failing = [b for b in review_blockers if b.bar.status == reviewers.FAIL
+                       and b.reviewer.source == reviewers.GITHUB]
             review_fixable = "review" in fixable and bool(failing)
             ci_fixable = "ci" in fixable and pr.ci == "failing"
-            if not (review_fixable or ci_fixable):
-                if review_blockers and not failing:
+            design_fixable = ("design" in fixable and review_policy.own_bar(
+                pr, reviewers.DESIGN).status == reviewers.FAIL)
+            if not (review_fixable or ci_fixable or design_fixable):
+                waiting = [b for b in review_blockers
+                           if b.bar.status in (reviewers.STALE, reviewers.PENDING)]
+                if waiting and not failing:
                     return False, ("the review is stale or pending — a re-review, not a "
                                    "fix, is what moves it")
                 return False, "no gate a fix could clear is failing"

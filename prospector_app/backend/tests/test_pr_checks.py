@@ -81,7 +81,7 @@ def test_checks_carry_stable_keys():
     c = pr_checks.checks_for_record(rec)
     by_key = {x["key"]: x["name"] for x in c["checks"]}
     assert by_key == {
-        "review": "Code review", "ci": "CI", "scans": "Security scans",
+        "review": "Code review", "design": "Design review", "ci": "CI", "scans": "Security scans",
         "mergeable": "No merge conflicts",
         "tests": "Includes tests", "drift": "Still applies to trunk",
         "secrets": "Threat scan", "security": "Security review",
@@ -95,10 +95,10 @@ def test_all_checks_shown_even_with_no_data():
     # shows every row (na/never-run for the ones nothing has run yet).
     c = pr_checks.checks_for_record(_pr())  # signals + drift only; no threat/security/verify
     keys = [x["key"] for x in c["checks"]]
-    assert keys == ["review", "ci", "scans", "mergeable", "tests", "drift", "secrets",
+    assert keys == ["review", "design", "ci", "scans", "mergeable", "tests", "drift", "secrets",
                     "security", "verify"]
     never_run = {x["key"] for x in c["checks"] if x["status"] == "na"}
-    assert never_run == {"scans", "secrets", "security", "verify"}
+    assert never_run == {"design", "scans", "secrets", "security", "verify"}
 
 
 def test_no_threat_section_shows_never_run_check():
@@ -255,3 +255,37 @@ def test_a_cleared_secret_leak_passes_naming_who_cleared_it():
         "detail": {"secret-leak": "a.ts: KEY=x"},
         "cleared": {"secret-leak": {"by": "Alex", "at": NOW, "evidence": "a.ts: KEY=x"}}}))
     assert chk and chk["status"] == "pass" and "Alex" in chk["detail"]
+
+
+def _design_check(rec):
+    c = pr_checks.checks_for_record(rec)
+    return next(x for x in c["checks"] if x["key"] == "design")
+
+
+_DESIGN_BLOCKING = {"kind": "review", "reviewed_sha": HEAD, "checks": [], "extra": {},
+                    "findings": [{"severity": "blocking", "resolved": False, "outdated": False}]}
+
+
+def test_design_row_never_ran_until_reviewed(monkeypatch):
+    monkeypatch.setenv("TRIAGE_DESIGN_REVIEW", "advisory")
+    review_policy.reset()
+    chk = _design_check(_pr())
+    assert (chk["status"], chk["detail"]) == ("na", "not reviewed yet")
+
+
+def test_advisory_design_row_shows_its_verdict_marked_advisory(monkeypatch):
+    monkeypatch.setenv("TRIAGE_DESIGN_REVIEW", "advisory")
+    review_policy.reset()
+    rec = _pr(reviews=reviews_section(HEAD, NOW, design=_DESIGN_BLOCKING))
+    chk = _design_check(rec)
+    assert chk["status"] == "fail"
+    assert chk["detail"] == "Design review 1 blocking · advisory"
+    assert "Design" not in _review_check(rec)["detail"]
+
+
+def test_gating_design_row_waits_for_its_review(monkeypatch):
+    monkeypatch.setenv("TRIAGE_DESIGN_REVIEW", "gate")
+    review_policy.reset()
+    chk = _design_check(_pr())
+    assert chk["status"] == "warn" and "advisory" not in chk["detail"]
+    assert "Design" not in _review_check(_pr())["detail"]

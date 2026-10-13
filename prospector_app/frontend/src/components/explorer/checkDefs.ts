@@ -4,11 +4,13 @@ import type { CheckStatus } from "../../api";
 // each row in a PR's checks rollup (`_c(key, name, ...)`) — the per-check
 // filter (#578) matches on these, not the display name, since the name varies
 // with the default branch. `review` aggregates every active code reviewer's
-// bar and `scans` every active security scanner's.
+// bar, `scans` every active security scanner's, and `design` is Prospector's
+// own design review.
 export interface CheckDef { key: string; label: string }
 
 export const CHECK_DEFS: CheckDef[] = [
   { key: "review", label: "Code review" },
+  { key: "design", label: "Design review" },
   { key: "ci", label: "CI" },
   { key: "scans", label: "Security scans" },
   { key: "mergeable", label: "No merge conflicts" },

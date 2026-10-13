@@ -60,7 +60,7 @@ class HarnessPolicy:
 
 
 # Which failing gates an autofix `fix` action may attempt to clear.
-AUTOFIX_GATES: tuple[str, ...] = ("ci", "review", "objection")
+AUTOFIX_GATES: tuple[str, ...] = ("ci", "review", "objection", "design")
 
 
 # Autofix policy: the surfaces the push bot keeps its hands off, and the failing

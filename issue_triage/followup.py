@@ -145,7 +145,7 @@ def read(pr: int) -> PrState | None:
         return None
     views = []
     for r in _gating(feed, head):
-        entry = reviewers.parse(r, feed, head, None) if feed else None
+        entry = _entry(r, feed, head, int(pr))
         b = reviewers.bar(r, entry, head, threshold=review_policy.policy().threshold)
         views.append(ReviewerView(id=r.id, label=r.label, status=b.status, reason=b.reason,
                                   findings=reviewers.open_findings(entry),
@@ -211,6 +211,19 @@ def _maintainer_guidance(pr: int, feedback: list[reply_router.Reply]) -> str:
             "change and asked for more. Their words are quoted below; they say what the "
             "change should do. Make the change they ask for, and say in your summary how "
             "you addressed each point.\n\n" + reply_router.quoted(feedback))[:GUIDANCE_MAX]
+
+
+def _stored_entry(pr: int, reviewer_id: str) -> dict | None:
+    from pipeline.store import Store
+    rec = Store().load_pr(pr)
+    return rec.review_entry(reviewer_id) if rec is not None else None
+
+
+def _entry(r: reviewers.Reviewer, feed: review_fetch.PrFeed, head: str, pr: int) -> dict | None:
+    """`r`'s verdict on the pull request: read off GitHub's feed, or from the
+    store for a reviewer Prospector runs itself."""
+    previous = _stored_entry(pr, r.id) if r.source == reviewers.PROSPECTOR else None
+    return reviewers.parse(r, feed, head, previous)
 
 
 def _gating(feed: review_fetch.PrFeed | None, head: str) -> list[reviewers.Reviewer]:

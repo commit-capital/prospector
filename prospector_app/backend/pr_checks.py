@@ -18,22 +18,26 @@ if TYPE_CHECKING:
     from pipeline.model import Pr
 
 
-def _c(key: str, name: str, status: str, detail: str = "", at: str | None = None) -> dict:
-    return {"key": key, "name": name, "status": status, "detail": detail, "at": at}
+def _c(key: str, name: str, status: str, detail: str = "", at: str | None = None,
+       advisory: bool = False) -> dict:
+    """One rollup row. An `advisory` row is shown without counting toward
+    readiness or the passed/total tally."""
+    return {"key": key, "name": name, "status": status, "detail": detail, "at": at,
+            "advisory": advisory}
 
 
 # Stable identifiers for each named check, independent of the display name
 # (which varies with the configured review provider / default branch) — what
 # the PR Explorer's per-check filter (#578) matches against.
-CHECK_KEYS = ("review", "ci", "scans", "mergeable", "tests", "drift", "secrets", "security",
+CHECK_KEYS = ("review", "design", "ci", "scans", "mergeable", "tests", "drift", "secrets", "security",
               "verify")
 
 
 def _aggregate(key: str, name: str, rec: Pr, kind: str, at: str | None) -> dict:
-    """One check row over every active reviewer of `kind`: pass when all pass,
-    fail when any fails, warn when any is stale or pending, na when none is
-    active. The detail names each reviewer's verdict."""
-    active = review_policy.active_reviewers(kind)
+    """One check row over every active GitHub reviewer of `kind`: pass when all
+    pass, fail when any fails, warn when any is stale or pending, na when none
+    is active. The detail names each reviewer's verdict."""
+    active = [r for r in review_policy.active_reviewers(kind) if r.source == reviewers.GITHUB]
     if not active:
         return _c(key, name, "na", "no active " + ("reviewer" if kind == reviewers.REVIEW else "scanner"), None)
     parts: list[str] = []
@@ -55,6 +59,25 @@ def _aggregate(key: str, name: str, rec: Pr, kind: str, at: str | None) -> dict:
     return _c(key, name, status, " · ".join(parts), at)
 
 
+_BAR_CHECK = {reviewers.PASS: "pass", reviewers.FAIL: "fail", reviewers.STALE: "warn",
+              reviewers.PENDING: "warn", reviewers.NA: "na"}
+
+
+def _design(rec: Pr) -> dict:
+    """The design review's row: its own bar, marked advisory unless it gates,
+    and never-run while it has neither a review nor a merge to hold."""
+    d = reviewers.DESIGN
+    entry = rec.review_entry(d.id)
+    gating = review_policy.is_active(d.id)
+    if entry is None and not gating:
+        return _c("design", d.label, "na", "not reviewed yet", None, advisory=True)
+    b = review_policy.own_bar(rec, d)
+    detail = reviewers.digest(d, entry, b, rec.head_sha)["summary_line"]
+    return _c("design", d.label, _BAR_CHECK[b.status],
+              detail if gating else f"{detail} · advisory", (entry or {}).get("observed_at"),
+              advisory=not gating)
+
+
 def checks_for_record(rec: Pr, today: str | None = None) -> dict:
     """Roll `rec` up into named vetting checks — every check this deployment
     could run on a PR, not only the ones that have. A check with no data yet
@@ -68,6 +91,7 @@ def checks_for_record(rec: Pr, today: str | None = None) -> dict:
 
     reviews_at = (rec.reviews or {}).get("checked_at")
     by_key["review"] = _aggregate("review", "Code review", rec, reviewers.REVIEW, reviews_at)
+    by_key["design"] = _design(rec)
     by_key["scans"] = _aggregate("scans", "Security scans", rec, reviewers.SCANNER, reviews_at)
 
     ci = sig.get("ci")
@@ -191,6 +215,6 @@ def checks_for_record(rec: Pr, today: str | None = None) -> dict:
         by_key["verify"] = _c("verify", "Test run", "na", "not run yet", None)
 
     out = [by_key[k] for k in CHECK_KEYS if k in by_key] + extra
-    ran = [c for c in out if c["status"] != "na"]
+    ran = [c for c in out if c["status"] != "na" and not c["advisory"]]
     passed = [c for c in ran if c["status"] == "pass"]
     return {"checks": out, "passed": len(passed), "total": len(ran)}

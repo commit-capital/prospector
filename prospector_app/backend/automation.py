@@ -128,7 +128,8 @@ def classify(pr: Pr) -> dict | None:
 def _unclear_check(pr: Pr) -> dict | None:
     """The first rollup check that is not clear on a merge-eligible pick, or
     None. A failed or warning check is not clear, except "Includes tests",
-    which may warn (a PR without tests can still be ready). A check that has
+    which may warn (a PR without tests can still be ready), and an advisory
+    check, which never gates. A check that has
     not run counts against readiness only for verification and the deep
     security review, the two the hunters exist to run — verification only on
     an analyzed merge pick, the one population its hunter runs; a check that
@@ -137,7 +138,7 @@ def _unclear_check(pr: Pr) -> dict | None:
     hunted = ("verify", "security") if pr.disposition == "merge" else ("security",)
     for check in pr_checks.checks_for_record(pr)["checks"]:
         status, key = check["status"], check["key"]
-        if status == "pass" or (key == "tests" and status == "warn"):
+        if status == "pass" or check["advisory"] or (key == "tests" and status == "warn"):
             continue
         if status == "na" and key not in hunted:
             continue

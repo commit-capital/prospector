@@ -824,14 +824,14 @@ class _FixBrief(NamedTuple):
 
 
 def _review_summary(rec: Pr) -> str:
-    """Every active review reviewer's own prose on this PR whose bar fails at the
-    current head, or "". A reviewer's summary explains its verdict and names the
+    """Every active GitHub review reviewer's own prose on this PR whose bar
+    fails at the current head, or "". A reviewer's summary explains its verdict and names the
     defects it weighed, so a sub-bar PR with no inline finding still hands the
     agent something concrete."""
     parts: list[str] = []
     for r in review_policy.active_reviewers(reviewers.REVIEW):
         entry = rec.review_entry(r.id)
-        if (entry and entry.get("summary")
+        if (entry and entry.get("summary") and r.source == reviewers.GITHUB
                 and review_policy.bar(rec, r).status == reviewers.FAIL):
             parts.append(f"## {r.label}\n{entry['summary']}")
     return "\n\n".join(parts)[:REVIEW_SUMMARY_CHARS]
@@ -847,10 +847,12 @@ def _fix_goal(rec: Pr, claimed: dict) -> _FixBrief:
     reviewers' summaries and the failing checks — what the store and the reviews
     can say is wrong with the code.
 
-    Findings and summaries come only from active review reviewers whose bar
-    fails at the current head. A stale or pending verdict describes a head the
-    author has moved past (or none yet), so it would send the agent after
-    defects that may already be fixed."""
+    Findings and summaries come only from active GitHub review reviewers whose
+    bar fails at the current head, plus — when the profile names `design` — the
+    design review's blocking and major findings when its own bar fails there.
+    A stale or pending verdict describes a head the author has moved past (or
+    none yet), so it would send the agent after defects that may already be
+    fixed."""
     objection = claimed.get("objection")
     if objection:
         # A ci objection carries the failing check names, which the author
@@ -860,9 +862,14 @@ def _fix_goal(rec: Pr, claimed: dict) -> _FixBrief:
     read = rec.greptile_review if freshness.is_current(rec, "greptile_review") else None
     findings: list[dict] = []
     for r in review_policy.active_reviewers(reviewers.REVIEW):
-        if review_policy.bar(rec, r).status == reviewers.FAIL:
+        if r.source == reviewers.GITHUB and review_policy.bar(rec, r).status == reviewers.FAIL:
             findings.extend(reviewers.findings_for_fix(r, rec.review_entry(r.id), rec.head_sha, read))
     fixable = profile.active().autofix.fixable_gates
+    design: list[dict] = []
+    if "design" in fixable and review_policy.own_bar(rec, reviewers.DESIGN).status == reviewers.FAIL:
+        design = reviewers.findings_for_fix(reviewers.DESIGN, rec.review_entry(reviewers.DESIGN.id),
+                                            rec.head_sha, None)
+    findings += design
     guidance = claimed.get("guidance")
     summary = _review_summary(rec) if ("review" in fixable or guidance) else ""
     checks: list[str] = []
@@ -876,6 +883,8 @@ def _fix_goal(rec: Pr, claimed: dict) -> _FixBrief:
         goals.append("Fix the outstanding review findings listed below.")
     if "review" in fixable and summary:
         goals.append("Address the defects the review summary below describes.")
+    if design:
+        goals.append("Fix the design review findings listed below.")
     if "ci" in fixable and checks:
         goals.append("Make the failing CI checks listed below pass.")
     return _FixBrief("\n".join(goals) or DEFAULT_FIX_GOAL, findings, checks, summary)

@@ -60,5 +60,5 @@ def test_store_has_no_update_or_delete_for_evidence():
                              "threat_evidence_record"]
 
 
-def test_schema_version_is_30():
-    assert schema.STORE_SCHEMA_VERSION == 30
+def test_schema_version_carries_the_evidence_table():
+    assert schema.STORE_SCHEMA_VERSION >= 30

@@ -110,3 +110,60 @@ def test_describe(monkeypatch):
     assert d["greptile"]["threshold"] == 5
     assert d["socket"]["active"] is False and d["socket"]["kind"] == "scanner"
     assert d["coderabbit"]["threshold"] is None
+
+
+def _design_entry(findings: list[dict]) -> dict:
+    return {"kind": "review", "reviewed_sha": HEAD, "findings": findings, "checks": []}
+
+
+_BLOCKING = {"severity": "blocking", "resolved": False, "outdated": False}
+
+
+def test_auto_mode_never_detects_design(monkeypatch):
+    monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "auto")
+    monkeypatch.setenv("TRIAGE_DESIGN_REVIEW", "advisory")
+    monkeypatch.setattr(review_policy, "_load_seen",
+                        lambda: {"design": {"last_observed_at": "2999-01-01T00:00:00Z", "prs": 9}})
+    review_policy.reset()
+    assert "design" not in [r.id for r in review_policy.active_reviewers()]
+
+
+def test_gate_mode_activates_design(monkeypatch):
+    monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "greptile")
+    monkeypatch.setenv("TRIAGE_DESIGN_REVIEW", "gate")
+    review_policy.reset()
+    assert [r.id for r in review_policy.active_reviewers()] == ["greptile", "design"]
+
+
+def test_none_mode_wins_over_gate(monkeypatch):
+    monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "none")
+    monkeypatch.setenv("TRIAGE_DESIGN_REVIEW", "gate")
+    review_policy.reset()
+    assert review_policy.active_reviewers() == []
+
+
+def test_advisory_design_shows_its_own_bar_without_gating(monkeypatch):
+    monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "greptile")
+    monkeypatch.setenv("TRIAGE_DESIGN_REVIEW", "advisory")
+    review_policy.reset()
+    pr = Pr(None, {"meta": {"head_sha": HEAD}, "reviews": {"design": _design_entry([_BLOCKING])}})
+    d = reviewers.digests(pr)["design"]
+    assert (d["status"], d["advisory"]) == ("fail", True)
+    assert review_policy.bar(pr, reviewers.DESIGN).status == "na"
+    assert review_policy.clean_blockers(pr, reviewers.REVIEW)[0].reviewer.id == "greptile"
+
+
+def test_gating_design_blocks(monkeypatch):
+    monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "design")
+    monkeypatch.setenv("TRIAGE_DESIGN_REVIEW", "advisory")
+    review_policy.reset()
+    pr = Pr(None, {"meta": {"head_sha": HEAD}, "reviews": {"design": _design_entry([_BLOCKING])}})
+    assert [b.reviewer.id for b in review_policy.clean_blockers(pr, reviewers.REVIEW)] == ["design"]
+    assert reviewers.digests(pr)["design"]["advisory"] is False
+
+
+def test_an_explicit_design_never_gates_while_the_lane_is_off(monkeypatch):
+    monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "greptile,design")
+    monkeypatch.setenv("TRIAGE_DESIGN_REVIEW", "off")
+    review_policy.reset()
+    assert [r.id for r in review_policy.active_reviewers()] == ["greptile"]
