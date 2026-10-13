@@ -171,6 +171,8 @@ SETTINGS: tuple[Setting, ...] = (
             "The CLI behind the in-app agent pane.", choices=("claude", "codex", "none")),
     Setting("PROSPECTOR_FEEDBACK_REPO", "deployment", "text", "Feedback repository", "(none)",
             "Where the feedback button files issues."),
+    Setting("PROSPECTOR_FEEDBACK_ASSIGNEE", "deployment", "text", "Feedback assignee",
+            "(gh's stored login)", "Who the feedback button pre-assigns new issues to."),
     Setting("TRIAGE_SLACK_WEBHOOK_URL", "deployment", "secret", "Slack alerts webhook",
             "(off)", "The Slack incoming webhook malicious PRs and maintainer credential "
             "leaks are posted to."),
