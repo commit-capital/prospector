@@ -1310,8 +1310,10 @@ class TestDesignLane:
         clone.mkdir()
         diff = tmp_path / "d.diff"
         diff.write_text("diff --git a/x b/x\n")
-        monkeypatch.setattr(verify_worker, "_design_base", lambda st: ("b" * 40, clone))
+        monkeypatch.setattr(verify_worker, "_design_base", lambda st: ("b" * 40, clone, 1))
         monkeypatch.setattr(verify_worker, "_design_diff", lambda st, n, head: diff)
+        monkeypatch.setattr(verify_worker.coverage, "measure",
+                            lambda clone, **kw: {"status": "untested", "reason": "no related tests"})
         monkeypatch.setattr(verify_worker.design_review, "review", review)
         booked: list[tuple[str, str]] = []
         monkeypatch.setattr(verify_worker.lane_health, "note_success",
@@ -1323,17 +1325,34 @@ class TestDesignLane:
         return booked
 
     def test_a_review_lands_and_books_success(self, store, monkeypatch, tmp_path):
-        def review(clone, diff, *, pr, title, head_sha, base_sha):
+        def review(clone, diff, *, pr, title, head_sha, base_sha, coverage_record):
             return {"kind": "review", "reviewed_sha": head_sha, "findings": [
                 {"severity": "blocking", "resolved": False, "outdated": False}],
-                "checks": [], "summary": "s", "extra": {"base_sha": base_sha}}
+                "checks": [], "summary": "s",
+                "extra": {"base_sha": base_sha, "coverage": coverage_record}}
         booked = self._ready(store, monkeypatch, tmp_path, review)
         assert verify_worker.run_design(1) is True
-        assert store.load_pr(1).review_entry("design")["extra"]["base_sha"] == "b" * 40
+        extra = store.load_pr(1).review_entry("design")["extra"]
+        assert extra["base_sha"] == "b" * 40 and extra["coverage"]["status"] == "untested"
         assert booked == [("ok", "design")]
         row = [r for r in store.runs() if r.phase == "design-review:run"][-1]
         assert row.raw["stats"]["findings"] == {"blocking": 1}
+        assert row.raw["stats"]["coverage"] == "coverage: no related tests"
         assert store.claim_design_run(1, host="some-other-machine", stale_after=3600) is True
+
+    def test_coverage_off_measures_nothing(self, store, monkeypatch, tmp_path):
+        seen: list = []
+
+        def review(clone, diff, *, coverage_record, **kw):
+            seen.append(coverage_record)
+            return {"kind": "review", "reviewed_sha": kw["head_sha"], "findings": [],
+                    "checks": [], "extra": {}}
+        self._ready(store, monkeypatch, tmp_path, review)
+        monkeypatch.setenv("TRIAGE_DESIGN_COVERAGE", "0")
+        monkeypatch.setattr(verify_worker.coverage, "measure",
+                            lambda *a, **kw: pytest.fail("must not measure"))
+        assert verify_worker.run_design(1) is True
+        assert seen == [None]
 
     def test_a_failed_review_parks_the_pr_and_books_a_failure(self, store, monkeypatch, tmp_path):
         def review(*a, **kw):
@@ -1385,12 +1404,12 @@ class TestDesignLane:
     def test_design_base_needs_this_machines_pin_and_clone(self, store, monkeypatch, tmp_path):
         assert verify_worker._design_base(store) is None
         monkeypatch.setattr(verify_worker.verify_driver, "local_pin",
-                            lambda st: {"base_sha": "b" * 40})
+                            lambda st: {"base_sha": "b" * 40, "tier": 1})
         monkeypatch.setattr(verify_worker.verify_driver, "base_clone_dir",
                             lambda sha: tmp_path / sha[:12])
         assert verify_worker._design_base(store) is None
         (tmp_path / ("b" * 12)).mkdir()
-        assert verify_worker._design_base(store) == ("b" * 40, tmp_path / ("b" * 12))
+        assert verify_worker._design_base(store) == ("b" * 40, tmp_path / ("b" * 12), 1)
 
     def test_release_stale_claims_frees_design_claims(self, store):
         import socket

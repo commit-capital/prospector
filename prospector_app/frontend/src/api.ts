@@ -534,6 +534,19 @@ export interface Suggestion {
   accept: SuggestAccept | null;
 }
 
+/** Changed-line coverage the design lane measured (`pipeline/coverage.py`),
+ *  carried as the design review's `extra.coverage`. */
+export interface CoverageRecord {
+  status: "measured" | "untested" | "skipped" | "error";
+  reason: string | null;
+  base_sha: string;
+  tests: string[];
+  executable: number;
+  hit: number;
+  files: { path: string; measured: boolean; executable: number; hit: number; uncovered: [number, number][] }[];
+  duration_s: number;
+}
+
 export interface CheckItem { key: string; name: string; status: "pass" | "warn" | "fail" | "na"; detail: string; at?: string | null; advisory?: boolean }
 export interface ChecksRollup { checks: CheckItem[]; passed: number; total: number }
 

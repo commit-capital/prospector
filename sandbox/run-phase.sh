@@ -30,6 +30,7 @@ PATCH_SHA256="${PATCH_SHA256:-}"
 PRE_PATCH_FILE="${PRE_PATCH_FILE:-}"
 PRE_PATCH_SHA256="${PRE_PATCH_SHA256:-}"
 EXCLUDE_FILE="${EXCLUDE_FILE:-}"
+COVERAGE_REQUEST="${COVERAGE_REQUEST:-}"
 SRC=/work/src
 
 # 1. Fail-closed isolation gate, before any PR code, every boot.
@@ -176,6 +177,27 @@ case "$PHASE" in
     [ "$rc" -eq 0 ] && exit 0
     [ "$rc" -eq "$SENTINEL_TEST_FAIL" ] && exit "$SENTINEL_TEST_FAIL"
     exit 1
+    ;;
+  coverage)
+    # Changed-line coverage: the PR's diff applied, the coverage provider
+    # Prospector fetched copied into the tree (its own dependencies nested
+    # under it, so its peer `vitest` resolves to the tree's), then TEST_CMD —
+    # the profile's runner over the related tests with coverage flags, built
+    # by the host. The tests' own exit is not the result: a failing test's
+    # execution still counts. Exit 0 means the trailer was printed.
+    apply_patch || exit "$SENTINEL_PATCH_CONFLICT"
+    [ -n "$COVERAGE_REQUEST" ] || { echo "coverage requires COVERAGE_REQUEST" >&2; exit 1; }
+    provider=node_modules/@vitest/coverage-v8
+    rm -rf "$provider" /tmp/cov
+    mkdir -p node_modules/@vitest \
+      && cp -r /coverage-tool/node_modules/@vitest/coverage-v8 "$provider" \
+      && cp -r /coverage-tool/node_modules "$provider/node_modules" \
+      || { echo "the coverage provider could not be installed into the tree" >&2; exit 1; }
+    run_test_cmd
+    [ -f /tmp/cov/coverage-final.json ] \
+      || { echo "the test run wrote no coverage report" >&2; exit 1; }
+    node /verify-coverage.mjs "$COVERAGE_REQUEST" /tmp/cov/coverage-final.json || exit 1
+    exit 0
     ;;
   *)
     echo "unknown phase: $PHASE" >&2

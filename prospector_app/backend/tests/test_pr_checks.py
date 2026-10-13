@@ -283,6 +283,15 @@ def test_advisory_design_row_shows_its_verdict_marked_advisory(monkeypatch):
     assert "Design" not in _review_check(rec)["detail"]
 
 
+def test_design_row_carries_its_coverage(monkeypatch):
+    monkeypatch.setenv("TRIAGE_DESIGN_REVIEW", "advisory")
+    review_policy.reset()
+    entry = {**_DESIGN_BLOCKING, "extra": {"coverage": {
+        "status": "measured", "executable": 4, "hit": 3, "files": []}}}
+    chk = _design_check(_pr(reviews=reviews_section(HEAD, NOW, design=entry)))
+    assert chk["detail"] == "Design review 1 blocking · coverage 75% (3/4 changed lines) · advisory"
+
+
 def test_gating_design_row_waits_for_its_review(monkeypatch):
     monkeypatch.setenv("TRIAGE_DESIGN_REVIEW", "gate")
     review_policy.reset()

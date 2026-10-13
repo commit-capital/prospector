@@ -192,6 +192,13 @@ def design_review_mode() -> str:
     return value if value in ("off", "advisory", "gate") else "advisory"
 
 
+def design_coverage() -> bool:
+    """Whether the design lane measures a head's changed-line coverage in the
+    sandbox before its review (`pipeline/coverage.py`; TRIAGE_DESIGN_COVERAGE,
+    default on)."""
+    return os.environ.get("TRIAGE_DESIGN_COVERAGE", "1") == "1"
+
+
 # Comma-separated host:port entries the sandbox boot probe must FAIL to reach
 # (this machine's sensitive host services, e.g. a credentialed local server).
 # Empty keeps sandbox/boot-probe.sh's built-in default list.

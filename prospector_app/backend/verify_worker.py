@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pipeline import capacity
+from pipeline import coverage
 from pipeline import design_review
 from pipeline import diff_cache
 from pipeline import gates
@@ -673,12 +674,15 @@ def _run_security_claimed(n: int) -> int:
     return rc
 
 
-def _design_base(st: Store) -> tuple[str, Path] | None:
-    """This machine's pinned base SHA and its clone, or None when it holds no
-    pin or no clone."""
-    sha = verify_driver.local_pin(st).get("base_sha")
+def _design_base(st: Store) -> tuple[str, Path, int] | None:
+    """This machine's pinned base SHA, its clone and its tier, or None when it
+    holds no pin or no clone."""
+    pin = verify_driver.local_pin(st)
+    sha = pin.get("base_sha")
     clone = verify_driver.base_clone_dir(str(sha)) if sha else None
-    return (str(sha), clone) if clone is not None and clone.is_dir() else None
+    if clone is None or not clone.is_dir():
+        return None
+    return str(sha), clone, int(pin.get("tier") or 0)
 
 
 def _design_diff(st: Store, n: int, head: str) -> Path | None:
@@ -699,7 +703,9 @@ def run_design(n: int) -> bool | None:
     """Run the design review of PR `n`'s head under this host's claim: True
     when its verdict landed, False when the run failed, None when no review
     ran (the PR left the pool, another host holds it, or this machine has no
-    base clone or diff to read). A failed run parks the PR in design_failed
+    base clone or diff to read). With TRIAGE_DESIGN_COVERAGE on, the head's
+    changed-line coverage is measured first and rides the entry and the
+    prompt; its failure is recorded there and the review runs. A failed run parks the PR in design_failed
     and books the design lane's health — an agent outage trips every agent
     lane, an overload or a decline books nothing — and every ending is a
     `design-review:run` ledger row."""
@@ -718,14 +724,19 @@ def run_design(n: int) -> bool | None:
             design_failed.add(n, "GitHub returned no diff for this head")
             _book_design(st, n, head, {"error": "GitHub returned no diff for this head"})
             return None
+        measured = (coverage.measure(base[1], base_sha=base[0], tier=base[2], pr=n,
+                                     head_sha=head)
+                    if settings.design_coverage() else None)
         with capacity.metered("design"):
             entry = design_review.review(base[1], diff, pr=n, title=rec.title or "",
-                                         head_sha=head, base_sha=base[0])
+                                         head_sha=head, base_sha=base[0],
+                                         coverage_record=measured)
         saved = st.save_design_review(n, entry, head_sha=head)
         counts: dict[str, int] = {}
         for f in entry["findings"]:
             counts[f["severity"]] = counts.get(f["severity"], 0) + 1
-        _book_design(st, n, head, {"findings": counts, "saved": saved})
+        _book_design(st, n, head, {"findings": counts, "saved": saved,
+                                   "coverage": coverage.summary(measured)})
         design_failed.discard(n)
         lane_health.note_success("design")
         data.refresh()

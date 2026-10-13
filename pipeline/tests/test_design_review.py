@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from pipeline import design_review, headless_agent, profile, settings
+from pipeline import coverage, design_review, headless_agent, profile, settings
 from pipeline.model import Pr
 
 
@@ -84,6 +84,23 @@ def test_validate_needs_no_evidence_outside_reuse(clone):
     f = _finding(category="test", evidence_path=None, line="7")
     _, kept = design_review.validate({"findings": [f, "junk"]}, touched={"src/new.ts"}, clone=clone)
     assert [(k["category"], k["line"]) for k in kept] == [("test", None)]
+
+
+def test_review_hands_the_agent_coverage_and_stores_it(monkeypatch, clone, diff):
+    seen: dict = {}
+
+    def fake(prompt: str, **kw) -> str:
+        seen["prompt"] = prompt
+        return json.dumps({"summary": "s", "findings": []})
+    monkeypatch.setattr(headless_agent, "run_agent", fake)
+    rec = coverage.record(coverage.MEASURED, base_sha="b" * 40, tests=["src/new.test.ts"],
+                          wanted={"src/new.ts": [1]},
+                          results={"src/new.ts": {"measured": True, "executable": [1], "hit": []}})
+    entry = design_review.review(clone, diff, pr=7, title="t", head_sha=HEAD, base_sha="b" * 40,
+                                 coverage_record=rec)
+    assert "coverage 0% (0/1 changed lines)" in seen["prompt"]
+    assert "__COVERAGE__" not in seen["prompt"]
+    assert entry["extra"]["coverage"] == rec
 
 
 def test_review_runs_locked_down(monkeypatch, clone, diff):
