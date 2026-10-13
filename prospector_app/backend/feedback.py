@@ -57,7 +57,7 @@ def target() -> FeedbackTarget:
     inst = instance.instance()
     return {
         "repo": settings.feedback_repo() or None,
-        "assignee": operator_login(),
+        "assignee": settings.feedback_assignee() or operator_login(),
         "labels": LABELS,
         "branch": inst.get("branch"),
         "worktree": inst.get("worktree"),

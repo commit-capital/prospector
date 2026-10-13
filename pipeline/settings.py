@@ -103,6 +103,12 @@ def feedback_repo() -> str:
     return os.environ.get("PROSPECTOR_FEEDBACK_REPO", "")
 
 
+def feedback_assignee() -> str | None:
+    """The login the Feedback button pre-assigns, or None to assign the
+    operator's gh login. A blank value reads as None."""
+    return os.environ.get("PROSPECTOR_FEEDBACK_ASSIGNEE", "").strip() or None
+
+
 def feedback_token() -> str | None:
     """The token `file-issue` files on the feedback repo with, or None to use
     gh's stored login. A blank value reads as None."""
