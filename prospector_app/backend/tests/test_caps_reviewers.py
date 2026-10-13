@@ -33,4 +33,4 @@ def test_capabilities_route_exposes_reviewers(monkeypatch):
     r = TestClient(appmod.app).get("/api/capabilities")
     assert r.status_code == 200
     ids = [x["id"] for x in r.json()["reviewers"]]
-    assert ids == ["greptile", "coderabbit", "superagent", "socket"]
+    assert ids == ["greptile", "coderabbit", "superagent", "socket", "design"]

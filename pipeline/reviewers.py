@@ -1,7 +1,8 @@
 """The ONE registry of automated PR reviewers and security scanners.
 
-A reviewer is a bot that posts feedback on PRs. Two kinds: `review` (code-review
-providers) and `scanner` (security scanners). Each has an adapter that turns a
+A reviewer is a bot that posts feedback on PRs, or a review Prospector runs
+itself (`source` PROSPECTOR — the design review, `pipeline/design_review.py`).
+Two kinds: `review` (code-review providers) and `scanner` (security scanners). Each has an adapter that turns a
 PR's raw GitHub feed (`review_fetch.PrFeed`) into one normalized entry stored
 under `reviews[<id>]`, a `bar` that judges the entry against the reviewer's pass
 condition, and projections for the app, the agents and the autofix goal.
@@ -24,6 +25,9 @@ REVIEW = "review"
 SCANNER = "scanner"
 KINDS = (REVIEW, SCANNER)
 
+GITHUB = "github"
+PROSPECTOR = "prospector"
+
 PASS, FAIL, STALE, PENDING, NA = "pass", "fail", "stale", "pending", "na"
 BAR_STATUSES = (PASS, FAIL, STALE, PENDING, NA)
 
@@ -40,6 +44,7 @@ class Reviewer:
     app_slugs: tuple[str, ...]   # check-run app slugs
     retrigger_mention: str | None
     score_max: int | None
+    source: str = GITHUB         # PROSPECTOR: written by Prospector, never read off GitHub
 
 
 @dataclass(frozen=True)
@@ -58,7 +63,10 @@ SUPERAGENT = Reviewer("superagent", "Superagent", SCANNER, ("superagent-security
 SOCKET = Reviewer("socket", "Socket", SCANNER, ("socket-security",), ("socket-security",),
                   None, None)
 
-REVIEWERS: dict[str, Reviewer] = {r.id: r for r in (GREPTILE, CODERABBIT, SUPERAGENT, SOCKET)}
+DESIGN = Reviewer("design", "Design review", REVIEW, (), (), None, None, source=PROSPECTOR)
+
+REVIEWERS: dict[str, Reviewer] = {r.id: r for r in (GREPTILE, CODERABBIT, SUPERAGENT, SOCKET,
+                                                    DESIGN)}
 
 
 def by_login(login: str | None) -> Reviewer | None:
@@ -430,13 +438,43 @@ def _socket_bar(entry: dict | None, head_sha: str | None) -> Bar:
     return Bar(PASS, None, None)
 
 
+# --- Design review ---------------------------------------------------------
+
+DESIGN_SEVERITIES = ("blocking", "major", "minor")
+DESIGN_CATEGORIES = ("reuse", "layering", "convention", "test")
+_DESIGN_FIXABLE = frozenset({"blocking", "major"})
+
+
+def _design_bar(entry: dict | None, head_sha: str | None) -> Bar:
+    if entry is None:
+        return Bar(PENDING, "awaiting design review", None)
+    reviewed = entry.get("reviewed_sha")
+    if reviewed and head_sha and reviewed != head_sha:
+        return Bar(STALE, "design review stale", None)
+    blocking = [f for f in open_findings(entry) if f.get("severity") == "blocking"]
+    if blocking:
+        return Bar(FAIL, f"design review: {_plural(len(blocking), 'open blocking finding')}",
+                   f"The design review found {_plural(len(blocking), 'blocking problem')} — "
+                   "address its findings.")
+    return Bar(PASS, None, None)
+
+
+def _design_findings_for_fix(entry: dict | None) -> list[dict]:
+    return [{"headline": f.get("title") or "", "class": "substantive",
+             "why": (f.get("body") or "")[:500], "path": f.get("path"), "line": f.get("line")}
+            for f in open_findings(entry) if f.get("severity") in _DESIGN_FIXABLE]
+
+
 # --- dispatch --------------------------------------------------------------
 
 def parse(reviewer: Reviewer, feed: PrFeed, head_sha: str | None,
           previous: dict | None) -> dict | None:
     """The normalized entry for `reviewer` on this PR, or None when the bot has
     left nothing on it. `previous` is the stored entry, kept for its conversation
-    fields when `feed.conversation` is False."""
+    fields when `feed.conversation` is False. A Prospector-run reviewer's entry
+    is never on GitHub, so it is `previous` unchanged."""
+    if reviewer.source == PROSPECTOR:
+        return previous
     if reviewer is GREPTILE:
         return _greptile_parse(feed, head_sha, previous)
     if reviewer is CODERABBIT:
@@ -466,6 +504,8 @@ def bar(reviewer: Reviewer, entry: dict | None, head_sha: str | None, *,
         return _coderabbit_bar(entry, head_sha)
     if reviewer is SUPERAGENT:
         return _superagent_bar(entry, head_sha)
+    if reviewer is DESIGN:
+        return _design_bar(entry, head_sha)
     return _socket_bar(entry, head_sha)
 
 
@@ -489,12 +529,15 @@ def findings_for_fix(reviewer: Reviewer, entry: dict | None, head_sha: str | Non
         return [f for f in ((greptile_review or {}).get("findings") or []) if isinstance(f, dict)]
     if reviewer is CODERABBIT:
         return _coderabbit_findings_for_fix(entry)
+    if reviewer is DESIGN:
+        return _design_findings_for_fix(entry)
     return []
 
 
-def digest(reviewer: Reviewer, entry: dict | None, b: Bar, head_sha: str | None) -> dict:
+def digest(reviewer: Reviewer, entry: dict | None, b: Bar, head_sha: str | None, *,
+           advisory: bool = False) -> dict:
     """The compact row projection: what the app, chat, the analyze bundle and
-    deep search read."""
+    deep search read. `advisory` marks a bar shown without gating."""
     reviewed = (entry or {}).get("reviewed_sha")
     stale: bool | None = (reviewed != head_sha) if reviewed and head_sha else None
     return {"id": reviewer.id, "label": reviewer.label, "kind": reviewer.kind,
@@ -507,6 +550,7 @@ def digest(reviewer: Reviewer, entry: dict | None, b: Bar, head_sha: str | None)
                         "status": c.get("status"), "title": c.get("title")}
                        for c in (entry or {}).get("checks") or []],
             "extra": dict((entry or {}).get("extra") or {}),
+            "advisory": advisory,
             "summary_line": _summary_line_one(reviewer, entry, b, stale)}
 
 
@@ -531,13 +575,17 @@ def summary_line(digests: Iterable[dict]) -> str:
 
 def digests(pr: Pr) -> dict[str, dict]:
     """Every reviewer's digest on `pr` — each reviewer that left an entry, plus
-    each active one — keyed by id, in registry order."""
+    each active one — keyed by id, in registry order. A Prospector-run reviewer
+    that does not gate shows its own bar, marked advisory."""
     from pipeline import review_policy
     out: dict[str, dict] = {}
     active = {r.id for r in review_policy.active_reviewers()}
     for rid, r in REVIEWERS.items():
         entry = pr.review_entry(rid)
         if entry is None and rid not in active:
+            continue
+        if r.source == PROSPECTOR and rid not in active:
+            out[rid] = digest(r, entry, bar(r, entry, pr.head_sha), pr.head_sha, advisory=True)
             continue
         out[rid] = digest(r, entry, review_policy.bar(pr, r), pr.head_sha)
     return out
@@ -579,7 +627,8 @@ def seen_summary(prs: Iterable[Pr]) -> dict:
             continue
         section = pr.reviews or {}
         for rid, entry in section.items():
-            if rid not in REVIEWERS or not isinstance(entry, dict):
+            r = REVIEWERS.get(rid)
+            if r is None or r.source != GITHUB or not isinstance(entry, dict):
                 continue
             # A check run at the head is activity on this head even when the bot
             # left no conversation to date it by; an entry with neither is not.
