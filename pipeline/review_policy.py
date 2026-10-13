@@ -102,6 +102,11 @@ def bar(pr: Pr, reviewer: Reviewer) -> Bar:
     """`reviewer`'s bar on `pr`; `na` when the reviewer is not active."""
     if not is_active(reviewer.id):
         return Bar(reviewers.NA, None, None)
+    return own_bar(pr, reviewer)
+
+
+def own_bar(pr: Pr, reviewer: Reviewer) -> Bar:
+    """`reviewer`'s bar on `pr` whether or not it gates."""
     return reviewers.bar(reviewer, pr.review_entry(reviewer.id), pr.head_sha,
                          threshold=policy().threshold)
 
