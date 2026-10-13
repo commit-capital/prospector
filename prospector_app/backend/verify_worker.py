@@ -555,7 +555,7 @@ def next_auto(open_lanes: frozenset[str] = frozenset({"security", "verify"})
         (n, pr) for n, pr in prs.items()
         if "security" in open_lanes
         and n not in security_failed and gates.blocked_on_security(pr)
-        and not store.security_claim_held_elsewhere(
+        and not store.run_claim_held_elsewhere(
             pr.raw.get("security_run"), host=me, stale_after=SECURITY_CLAIM_SECONDS)]
     verify_pool = ([(n, pr) for n, pr in prs.items() if auto_verifiable(pr)]
                    if "verify" in open_lanes else [])

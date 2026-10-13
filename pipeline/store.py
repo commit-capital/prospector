@@ -106,13 +106,13 @@ FIX_REQUEST_SOURCES = {"operator", "auto", "objection"}
 # round-trips newer records without loss
 PR_SECTIONS = ("meta", "signals", "reviews", "drift", "summary", "cluster", "analysis",
                "security", "issues", "threat", "greptile_review", "verify", "verify_request",
-               "fix_request", "security_run")
+               "fix_request", "security_run", "design_run")
 
 
-def security_claim_held_elsewhere(run: dict | None, *, host: str,
+def run_claim_held_elsewhere(run: dict | None, *, host: str,
                                   stale_after: float) -> bool:
-    """Whether `run`, a PR's `security_run` claim, is another host's live
-    review: held by a different host and started within `stale_after` seconds.
+    """Whether `run`, a PR's `security_run` or `design_run` claim, is another
+    host's live review: held by a different host and started within `stale_after` seconds.
     This host's own claim is a restart's leftover; one past its window is a
     dead machine's. Neither blocks a hunter."""
     run = run or {}
@@ -233,6 +233,9 @@ def validate_pr(rec: dict) -> None:
     sr = rec.get("security_run")
     if sr and not sr.get("host"):
         raise ValidationError("security_run.host: required")
+    dr = rec.get("design_run")
+    if dr and not dr.get("host"):
+        raise ValidationError("design_run.host: required")
     d = rec.get("drift")
     if d and d.get("state") not in DRIFT_STATES:
         raise ValidationError(f"drift.state: {d.get('state')!r} not in {sorted(DRIFT_STATES)}")
@@ -1412,7 +1415,7 @@ class Store:
         if row is None:
             return False
         rec, stamp = row
-        if security_claim_held_elsewhere(rec.get("security_run"), host=host,
+        if run_claim_held_elsewhere(rec.get("security_run"), host=host,
                                          stale_after=stale_after):
             return False
         rec["security_run"] = {"host": host, "started_at": storekit.now()}
@@ -1431,6 +1434,42 @@ class Store:
             return
         rec["security_run"] = None
         self._prs.save_if(rec, stamp)
+
+    def claim_design_run(self, n: int, *, host: str, stale_after: float) -> bool:
+        """Atomically claim PR `n`'s design review for `host`, the same
+        compare-and-swap and reclaim window as `claim_security_run`."""
+        row = self._prs.stamped(n)
+        if row is None:
+            return False
+        rec, stamp = row
+        if run_claim_held_elsewhere(rec.get("design_run"), host=host, stale_after=stale_after):
+            return False
+        rec["design_run"] = {"host": host, "started_at": storekit.now()}
+        return self._prs.save_if(rec, stamp)
+
+    def release_design_run(self, n: int, *, host: str) -> None:
+        """Drop `host`'s claim on PR `n`'s design review, leaving another host's."""
+        row = self._prs.stamped(n)
+        if row is None:
+            return
+        rec, stamp = row
+        if (rec.get("design_run") or {}).get("host") not in (None, host):
+            return
+        rec["design_run"] = None
+        self._prs.save_if(rec, stamp)
+
+    def save_design_review(self, n: int, entry: dict, *, head_sha: str) -> bool:
+        """Write `entry` as PR `n`'s design review, keeping every other
+        reviewer's entry. Refused (False) when the row is gone or its head is no
+        longer `head_sha`, so a verdict never lands on a head it did not judge."""
+        row = self._prs.stamped(n)
+        if row is None:
+            return False
+        rec, stamp = row
+        if (rec.get("meta") or {}).get("head_sha") != head_sha:
+            return False
+        rec["reviews"] = {**(rec.get("reviews") or {}), reviewers.DESIGN.id: entry}
+        return self._prs.save_if(rec, stamp)
 
     def save_verify_base(self, record: wire.VerifyPin) -> None:
         """Merge one machine's pin into the verify_base registry. host is

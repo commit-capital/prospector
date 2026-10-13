@@ -96,7 +96,10 @@ _JSON = JSON().with_variant(JSONB, "postgresql")
 # 30 — the threat_evidence table (an append-only capture of each PR the threat
 #      scan flags malicious); an older threat scan flags a malicious PR without
 #      preserving its evidence.
-STORE_SCHEMA_VERSION = 30
+# 31 — PR records carry `reviews.design` (the Prospector-run design review) and
+#      a `design_run` claim; an older ingest rebuilds `reviews` from GitHub alone
+#      and drops the design review.
+STORE_SCHEMA_VERSION = 31
 
 # saved_at is a microsecond-resolution ISO timestamp stamped on every save — when
 # the store row was last written (distinct from `updated_at`, which mirrors the
