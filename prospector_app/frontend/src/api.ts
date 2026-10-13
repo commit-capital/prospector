@@ -534,7 +534,7 @@ export interface Suggestion {
   accept: SuggestAccept | null;
 }
 
-export interface CheckItem { key: string; name: string; status: "pass" | "warn" | "fail" | "na"; detail: string; at?: string | null }
+export interface CheckItem { key: string; name: string; status: "pass" | "warn" | "fail" | "na"; detail: string; at?: string | null; advisory?: boolean }
 export interface ChecksRollup { checks: CheckItem[]; passed: number; total: number }
 
 export interface AuthorStats {

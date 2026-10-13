@@ -5,7 +5,8 @@ gate a clean merge on this repository, and at what bar.
 within `TRIAGE_REVIEWER_ACTIVE_DAYS`, read from the store's `reviewers`
 registry that ingest recomputes), `none`, or an explicit comma list of reviewer
 ids. The Prospector-run design review is active when listed explicitly or
-under `TRIAGE_DESIGN_REVIEW=gate`, never by detection. Every consumer — the gates, the checks rollup, the prompts, the app
+under `TRIAGE_DESIGN_REVIEW=gate`, never by detection, and never while
+`TRIAGE_DESIGN_REVIEW=off` runs no review to pass it. Every consumer — the gates, the checks rollup, the prompts, the app
 capabilities — reads the active set and each reviewer's bar here."""
 from __future__ import annotations
 
@@ -90,6 +91,8 @@ def active_reviewers(kind: str | None = None) -> list[Reviewer]:
                and _recent((seen.get(rid) or {}).get("last_observed_at"), p.active_days)]
     if p.mode != "none" and settings.design_review_mode() == "gate":
         ids.append(reviewers.DESIGN.id)
+    if settings.design_review_mode() == "off":
+        ids = [rid for rid in ids if rid != reviewers.DESIGN.id]
     out = [r for rid, r in reviewers.REVIEWERS.items() if rid in ids]
     return [r for r in out if kind is None or r.kind == kind]
 

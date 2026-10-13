@@ -160,3 +160,10 @@ def test_gating_design_blocks(monkeypatch):
     pr = Pr(None, {"meta": {"head_sha": HEAD}, "reviews": {"design": _design_entry([_BLOCKING])}})
     assert [b.reviewer.id for b in review_policy.clean_blockers(pr, reviewers.REVIEW)] == ["design"]
     assert reviewers.digests(pr)["design"]["advisory"] is False
+
+
+def test_an_explicit_design_never_gates_while_the_lane_is_off(monkeypatch):
+    monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "greptile,design")
+    monkeypatch.setenv("TRIAGE_DESIGN_REVIEW", "off")
+    review_policy.reset()
+    assert [r.id for r in review_policy.active_reviewers()] == ["greptile"]

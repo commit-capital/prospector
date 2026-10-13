@@ -77,10 +77,13 @@ class DesignReviewFailed(RuntimeError):
 
 def huntable(pr: Pr) -> bool:
     """Whether the idle hunter may spend a design review on `pr`'s head: open,
-    threat-scanned clear at this head, not a dependency bump, and with no
-    design review of this head yet."""
+    not a draft, threat-scanned clear at this head, not a dependency bump, not
+    routed to a close by a current analysis, and with no design review of this
+    head yet."""
     head = pr.head_sha
-    if not head or pr.state != "open" or gates.bump_exempt(pr):
+    if not head or pr.state != "open" or pr.draft or gates.bump_exempt(pr):
+        return False
+    if freshness.is_current(pr, "analysis") and str(pr.disposition or "").startswith("close-"):
         return False
     if pr.threat_verdict != "clear" or gates.threat_blocks(pr) or not freshness.is_current(pr, "threat"):
         return False

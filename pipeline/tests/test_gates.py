@@ -2774,6 +2774,7 @@ class TestFixHuntable:
         review_policy.reset()
         ok, why = gates.fix_huntable(self._design_failing(), "fix")
         assert ok is False
+        assert "stale or pending" not in why
 
     def test_never_hunts_a_resolve(self, monkeypatch):
         self._profile(monkeypatch, fixable_gates=("review",))

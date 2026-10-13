@@ -18,8 +18,12 @@ if TYPE_CHECKING:
     from pipeline.model import Pr
 
 
-def _c(key: str, name: str, status: str, detail: str = "", at: str | None = None) -> dict:
-    return {"key": key, "name": name, "status": status, "detail": detail, "at": at}
+def _c(key: str, name: str, status: str, detail: str = "", at: str | None = None,
+       advisory: bool = False) -> dict:
+    """One rollup row. An `advisory` row is shown without counting toward
+    readiness or the passed/total tally."""
+    return {"key": key, "name": name, "status": status, "detail": detail, "at": at,
+            "advisory": advisory}
 
 
 # Stable identifiers for each named check, independent of the display name
@@ -66,11 +70,12 @@ def _design(rec: Pr) -> dict:
     entry = rec.review_entry(d.id)
     gating = review_policy.is_active(d.id)
     if entry is None and not gating:
-        return _c("design", d.label, "na", "not reviewed yet", None)
+        return _c("design", d.label, "na", "not reviewed yet", None, advisory=True)
     b = review_policy.own_bar(rec, d)
     detail = reviewers.digest(d, entry, b, rec.head_sha)["summary_line"]
     return _c("design", d.label, _BAR_CHECK[b.status],
-              detail if gating else f"{detail} · advisory", (entry or {}).get("observed_at"))
+              detail if gating else f"{detail} · advisory", (entry or {}).get("observed_at"),
+              advisory=not gating)
 
 
 def checks_for_record(rec: Pr, today: str | None = None) -> dict:
@@ -210,6 +215,6 @@ def checks_for_record(rec: Pr, today: str | None = None) -> dict:
         by_key["verify"] = _c("verify", "Test run", "na", "not run yet", None)
 
     out = [by_key[k] for k in CHECK_KEYS if k in by_key] + extra
-    ran = [c for c in out if c["status"] != "na"]
+    ran = [c for c in out if c["status"] != "na" and not c["advisory"]]
     passed = [c for c in ran if c["status"] == "pass"]
     return {"checks": out, "passed": len(passed), "total": len(ran)}

@@ -197,6 +197,22 @@ def test_ready_means_every_check_is_clear(store, monkeypatch):
     assert (out["column"], out["bucket"]) == ("act", "merge-ready")
 
 
+@pytest.mark.parametrize("design_sha", [HEAD, "b" * 40])
+def test_an_advisory_design_review_never_holds_a_ready_pick(store, monkeypatch, design_sha):
+    from pipeline import gates, review_policy
+    monkeypatch.setattr(gates, "verify_signals_incomplete", lambda pr: None)
+    monkeypatch.setenv("TRIAGE_DESIGN_REVIEW", "advisory")
+    review_policy.reset()
+    rec = _merge_pick(_rec(), verify={"outcome": "verified-fix", "checked_at": _now(),
+                                      "against_head_sha": HEAD, "against_base_sha": "b" * 40,
+                                      "signals": {}})
+    rec["reviews"]["design"] = {"kind": "review", "reviewed_sha": design_sha, "checks": [],
+                                "extra": {}, "findings": [{"severity": "blocking",
+                                                           "resolved": False, "outdated": False}]}
+    out = _classify(store, rec)
+    assert (out["column"], out["bucket"]) == ("act", "merge-ready")
+
+
 def test_a_ready_pick_whose_head_the_threat_scan_has_not_judged_waits_on_it(
         store, monkeypatch):
     from pipeline import gates

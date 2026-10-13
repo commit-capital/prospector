@@ -1355,6 +1355,25 @@ class TestDesignLane:
         assert booked == [("trip", "not logged in")]
         assert 1 not in verify_worker.design_failed
 
+    def test_an_unexpected_error_parks_the_pr_and_books_it(self, store, monkeypatch, tmp_path):
+        def review(*a, **kw):
+            raise OSError("disk gone")
+        booked = self._ready(store, monkeypatch, tmp_path, review)
+        assert verify_worker.run_design(1) is False
+        assert 1 in verify_worker.design_failed
+        assert booked == [("fail", "design")]
+        row = [r for r in store.runs() if r.phase == "design-review:run"][-1]
+        assert "disk gone" in row.raw["stats"]["error"]
+        assert store.claim_design_run(1, host="some-other-machine", stale_after=3600) is True
+
+    def test_a_missing_diff_parks_the_pr_and_books_it(self, store, monkeypatch, tmp_path):
+        self._ready(store, monkeypatch, tmp_path, lambda *a, **kw: pytest.fail("no review"))
+        monkeypatch.setattr(verify_worker, "_design_diff", lambda st, n, head: None)
+        assert verify_worker.run_design(1) is None
+        assert 1 in verify_worker.design_failed
+        row = [r for r in store.runs() if r.phase == "design-review:run"][-1]
+        assert "no diff" in row.raw["stats"]["error"]
+
     def test_no_base_clone_runs_nothing(self, store, monkeypatch):
         store.save_pr(_clean_merge_pr(1))
         data.refresh()

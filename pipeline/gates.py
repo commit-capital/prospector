@@ -987,7 +987,9 @@ def fix_huntable(pr: Pr, action: str,
             design_fixable = ("design" in fixable and review_policy.own_bar(
                 pr, reviewers.DESIGN).status == reviewers.FAIL)
             if not (review_fixable or ci_fixable or design_fixable):
-                if review_blockers and not failing:
+                waiting = [b for b in review_blockers
+                           if b.bar.status in (reviewers.STALE, reviewers.PENDING)]
+                if waiting and not failing:
                     return False, ("the review is stale or pending — a re-review, not a "
                                    "fix, is what moves it")
                 return False, "no gate a fix could clear is failing"

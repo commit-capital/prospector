@@ -147,6 +147,9 @@ def test_huntable_wants_a_clear_open_unreviewed_head():
                 "detail": {"exempt": "dependency-bump"}}},
     {"reviews": {"design": {"kind": "review", "reviewed_sha": HEAD, "findings": [],
                             "checks": []}}},
+    {"meta": {"state": "open", "head_sha": HEAD, "draft": True}},
+    {"analysis": {"disposition": "close-dup", "rationale": "r", "against_head_sha": HEAD,
+                  "checked_at": "2026-10-13T00:00:00+00:00"}},
 ])
 def test_huntable_refuses(over):
     assert design_review.huntable(_pr(**over)) is False

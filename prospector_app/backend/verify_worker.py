@@ -91,7 +91,7 @@ REFRESH_AFTER_HOURS = 24.0
 # sits well past a slow one — it exists to free a PR whose machine died, not to
 # overtake one still working.
 SECURITY_CLAIM_SECONDS = 4 * 3600.0
-# The same window for a design review, one agent run deep.
+# How long a design review's claim is honoured: well past one agent run.
 DESIGN_CLAIM_SECONDS = 3600.0
 
 # The steps a restart may resume: at each of them the run has committed nothing
@@ -716,6 +716,7 @@ def run_design(n: int) -> bool | None:
         diff = _design_diff(st, n, head)
         if diff is None:
             design_failed.add(n, "GitHub returned no diff for this head")
+            _book_design(st, n, head, {"error": "GitHub returned no diff for this head"})
             return None
         with capacity.metered("design"):
             entry = design_review.review(base[1], diff, pr=n, title=rec.title or "",
@@ -736,10 +737,11 @@ def run_design(n: int) -> bool | None:
         design_failed.add(n, str(e)[:300])
         _book_design(st, n, head, {"error": str(e)[:300]})
         return False
-    except design_review.DesignReviewFailed as e:
-        design_failed.add(n, str(e)[:300])
-        _book_design(st, n, head, {"error": str(e)[:300]})
-        lane_health.note_failure("design", kind="design-run", reason=str(e), pr=n)
+    except Exception as e:
+        reason = str(e) if isinstance(e, design_review.DesignReviewFailed) else repr(e)
+        design_failed.add(n, reason[:300])
+        _book_design(st, n, head, {"error": reason[:300]})
+        lane_health.note_failure("design", kind="design-run", reason=reason, pr=n)
         return False
     finally:
         st.release_design_run(n, host=me)
