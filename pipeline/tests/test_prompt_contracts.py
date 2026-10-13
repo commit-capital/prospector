@@ -92,6 +92,7 @@ def test_analyze_contract() -> None:
         background=("Input",),
         behavior=(
             "Trust",
+            "One defect per cluster",
             "Per-PR decisions",
             "Close safeguards",
             "Evidence standards",
@@ -103,7 +104,7 @@ def test_analyze_contract() -> None:
         fields=(
             "cluster_id", "outcome", "rationale", "prs", "pr", "head_sha",
             "disposition", "canonical", "upstream_pr", "upstream_date", "asks",
-            "concerns", "coverage", "landed_sha", "covered_by",
+            "concerns", "coverage", "landed_sha", "covered_by", "split", "root_problem",
         ),
     )
     prompt_contracts.assert_prompt_contract(

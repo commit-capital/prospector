@@ -657,3 +657,66 @@ def test_pending_does_not_load_pr_per_member(tmp_path):
         result = ad.pending(s)
     assert {c.id for c in result} == {10, 11}  # behavior unchanged
     assert calls == []                          # no per-member load_pr
+
+
+class TestSplit:
+    def _seed(self, s, ns=(1, 2, 3, 4, 5)):
+        for n in ns:
+            _pr(s, n, head=f"h{n}")
+        return _cluster(s, 1, list(ns), outcome="merge-ready",
+                        proposals=[{"pr": n, "disposition": "merge"} for n in ns])
+
+    def test_split_reforms_the_cluster_by_defect(self, tmp_path):
+        s = Store(tmp_path)
+        self._seed(s)
+        s.edit_pr(3).route_to("merge", "r", head_sha="h3", from_cluster=1)
+        errs = ad.commit_analysis(s, {"cluster_id": 1, "rationale": "two defects", "split": [
+            {"root_problem": "index heartbeat_runs", "prs": [1, 2]},
+            {"root_problem": "cap the list limit", "prs": [3, 4]},
+            {"root_problem": "redaction regex", "prs": [5]}]})
+        assert errs == []
+        kept, new = s.load_cluster(1), s.load_cluster(2)
+        assert kept.prs == [1, 2] and kept.root_problem == "index heartbeat_runs"
+        assert kept.outcome is None and kept.proposals == []
+        assert new.prs == [3, 4] and new.root_problem == "cap the list limit"
+        assert s.load_pr(3).cluster_ids == [2] and not s.load_pr(3).section("analysis")
+        assert s.load_pr(5).cluster_ids == [] and ad.is_current(s.load_pr(5), "cluster")
+        assert [c.id for c in ad.pending(s)] == [1, 2]
+        ad.disposition_orphans(s)
+        assert s.load_pr(5).disposition == "merge"
+
+    def test_split_keeps_prs_sharing_an_issue_together(self, tmp_path):
+        s = Store(tmp_path)
+        self._seed(s, (1, 2, 3, 4))
+        for n in (1, 3):
+            set_section(s, n, "issues", {"linked": [{"issue": 9, "pain": None, "how": "explicit"}]})
+        assert ad.commit_analysis(s, {"cluster_id": 1, "rationale": "r", "split": [
+            {"root_problem": "a", "prs": [1, 2]}, {"root_problem": "b", "prs": [3]},
+            {"root_problem": "c", "prs": [4]}]}) == []
+        assert s.load_cluster(1).prs == [1, 2, 3]
+        assert s.load_pr(4).cluster_ids == []
+
+    def test_split_into_singletons_deletes_the_cluster(self, tmp_path):
+        s = Store(tmp_path)
+        self._seed(s, (1, 2))
+        assert ad.commit_analysis(s, {"cluster_id": 1, "rationale": "r", "split": [
+            {"root_problem": "a", "prs": [1]}, {"root_problem": "b", "prs": [2]}]}) == []
+        assert s.load_cluster(1) is None
+        assert s.load_pr(1).cluster_ids == [] and s.load_pr(2).cluster_ids == []
+
+    def test_invalid_split_writes_nothing(self, tmp_path):
+        s = Store(tmp_path)
+        self._seed(s, (1, 2, 3))
+        errs = ad.commit_analysis(s, {"cluster_id": 1, "rationale": "r", "split": [
+            {"root_problem": "a", "prs": [1, 9]}, {"root_problem": "", "prs": [2]}]})
+        assert any("not an open member" in e for e in errs)
+        assert any("root_problem is empty" in e for e in errs)
+        assert any("member 3 is in no group" in e for e in errs)
+        assert s.load_cluster(1).prs == [1, 2, 3] and s.load_cluster(1).outcome == "merge-ready"
+
+    def test_one_group_is_not_a_split(self, tmp_path):
+        s = Store(tmp_path)
+        self._seed(s, (1, 2))
+        errs = ad.commit_analysis(s, {"cluster_id": 1, "rationale": "r", "split": [
+            {"root_problem": "a", "prs": [1, 2]}]})
+        assert errs == ["split: the members share one defect — analyze them as one cluster"]
