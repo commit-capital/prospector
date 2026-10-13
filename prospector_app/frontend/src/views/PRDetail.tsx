@@ -292,9 +292,11 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
       </>
     );
   }
-  const reviewBlocks = reviewerBlocks(pr.reviews_detail ?? null, "review");
+  const reviewBlocks = reviewerBlocks(pr.reviews_detail ?? null, (d) => d.kind === "review" && d.id !== "design");
   if (reviewBlocks.length > 0) checksBodies.review = <>{reviewBlocks}</>;
-  const scanBlocks = reviewerBlocks(pr.reviews_detail ?? null, "scanner");
+  const designBlocks = reviewerBlocks(pr.reviews_detail ?? null, (d) => d.id === "design");
+  if (designBlocks.length > 0) checksBodies.design = <>{designBlocks}</>;
+  const scanBlocks = reviewerBlocks(pr.reviews_detail ?? null, (d) => d.kind === "scanner");
   if (scanBlocks.length > 0) checksBodies.scans = <>{scanBlocks}</>;
 
   if (ci.length > 0) {
@@ -695,12 +697,13 @@ const STATUS_WORD: Record<ReviewDigest["status"], string> = {
   pending: "awaiting its verdict", na: "not active",
 };
 
-/** One block per reviewer of `kind` on the PR page's Review / Scans check rows:
- *  status line, stale banner, the bot's own summary, and its open findings. */
+/** One block per reviewer `which` picks on the PR page's Review / Design / Scans
+ *  check rows: status line, stale banner, the reviewer's own summary, and its
+ *  open findings. */
 function reviewerBlocks(detail: Record<string, { entry: ReviewEntry | null; digest: ReviewDigest }> | null,
-                        kind: ReviewDigest["kind"]): ReactNode[] {
+                        which: (d: ReviewDigest) => boolean): ReactNode[] {
   if (!detail) return [];
-  return Object.values(detail).filter((d) => d.digest.kind === kind && d.digest.status !== "na").map(({ entry, digest }) => {
+  return Object.values(detail).filter((d) => which(d.digest) && d.digest.status !== "na").map(({ entry, digest }) => {
     const open = (entry?.findings ?? []).filter((f) => !f.resolved && !f.outdated);
     const trust = typeof digest.extra.trust_score === "number" ? digest.extra.trust_score : null;
     const verdict = typeof digest.extra.trust_verdict === "string" ? digest.extra.trust_verdict : null;
@@ -712,6 +715,7 @@ function reviewerBlocks(detail: Record<string, { entry: ReviewEntry | null; dige
           <span className={`chip chip-${digest.status === "pass" ? "green" : digest.status === "fail" ? "red" : "yellow"} sm`} style={{ marginLeft: 6 }}>
             {digest.summary_line}
           </span>
+          {digest.advisory && <span className="chip chip-muted sm" style={{ marginLeft: 4 }} title="Shown for information; it does not block a merge">advisory</span>}
           <span className="muted small"> — {STATUS_WORD[digest.status]}{digest.reason && digest.status !== "pass" ? ` (${digest.reason})` : ""}</span>
         </div>
         {digest.stale === true && (

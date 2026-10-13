@@ -351,6 +351,7 @@ export interface ReviewDigest {
   observed_at: string | null;
   checks: { name: string | null; conclusion: string | null; status: string | null; title: string | null }[];
   extra: Record<string, unknown>;
+  advisory: boolean;        // a bar shown without gating (the design review unless it gates)
   summary_line: string;
 }
 
