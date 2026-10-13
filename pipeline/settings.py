@@ -184,6 +184,14 @@ def verify_worker_enabled() -> bool:
     return os.environ.get("TRIAGE_VERIFY_WORKER", "") == "1"
 
 
+def design_review_mode() -> str:
+    """What the Prospector-run design reviewer does (`pipeline/design_review.py`):
+    `advisory` (the default) reviews PR heads and shows the verdict, `gate` also
+    makes its bar a merge requirement, `off` reviews nothing."""
+    value = os.environ.get("TRIAGE_DESIGN_REVIEW", "advisory").strip().lower()
+    return value if value in ("off", "advisory", "gate") else "advisory"
+
+
 # Comma-separated host:port entries the sandbox boot probe must FAIL to reach
 # (this machine's sensitive host services, e.g. a credentialed local server).
 # Empty keeps sandbox/boot-probe.sh's built-in default list.

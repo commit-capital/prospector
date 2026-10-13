@@ -80,6 +80,10 @@ SETTINGS: tuple[Setting, ...] = (
        "How many attempts the issue-fix hunter starts on its own per UTC day."),
     _i("TRIAGE_ISSUE_FIX_MAX_LINES", "behavior", "Issue-fix size cap (lines)", "300",
        "The most changed lines an issue fix may carry."),
+    Setting("TRIAGE_DESIGN_REVIEW", "behavior", "choice", "Design review", "advisory",
+            "A verify worker reviews each PR head for reuse, layering, the repository's "
+            "conventions and test strength: advisory (shown only), gate (a merge "
+            "requirement), or off.", editable=True, choices=("advisory", "gate", "off")),
     _b("TRIAGE_FIX_HUNT_SECURITY", "behavior", "Fix YELLOW security findings",
        "The autofix hunter may queue a fix for a PR's current YELLOW security finding."),
     _b("TRIAGE_PR_WATCH", "behavior", "Watch GitHub for new PRs",
