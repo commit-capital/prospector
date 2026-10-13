@@ -234,6 +234,15 @@ A repository whose profile has no `verify.suite` section runs no suite phases
 at all: `prepare-base` pins without a baseline and the regress leg records a
 deliberate `no-suite-config` skip.
 
+The `coverage` phase (`--coverage-tool DIR --coverage-request F`, both mounted
+read-only) measures a PR's changed-line coverage for the design review
+(`pipeline/coverage.py`): it applies the patch, copies the coverage provider the
+host fetched into the tree's `node_modules`, runs the host-built test command
+with v8 coverage, and `verify-coverage.mjs` prints a
+`===VERIFY-COVERAGE:BEGIN===` trailer of executable and executed changed lines.
+Exit 0 means the trailer was printed; the tests' own exit is not the result.
+Like every phase's output, the trailer is the PR process's own and advisory.
+
 ## Tiers
 
 Both tiers run every phase `--internal`, with no egress and no secrets. They

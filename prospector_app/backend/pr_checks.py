@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from pipeline import coverage
 from pipeline import freshness
 from pipeline import gates
 from pipeline import review_policy
@@ -64,8 +65,9 @@ _BAR_CHECK = {reviewers.PASS: "pass", reviewers.FAIL: "fail", reviewers.STALE: "
 
 
 def _design(rec: Pr) -> dict:
-    """The design review's row: its own bar, marked advisory unless it gates,
-    and never-run while it has neither a review nor a merge to hold."""
+    """The design review's row: its own bar and its changed-line coverage,
+    marked advisory unless it gates, and never-run while it has neither a
+    review nor a merge to hold."""
     d = reviewers.DESIGN
     entry = rec.review_entry(d.id)
     gating = review_policy.is_active(d.id)
@@ -73,6 +75,9 @@ def _design(rec: Pr) -> dict:
         return _c("design", d.label, "na", "not reviewed yet", None, advisory=True)
     b = review_policy.own_bar(rec, d)
     detail = reviewers.digest(d, entry, b, rec.head_sha)["summary_line"]
+    covered = coverage.summary(((entry or {}).get("extra") or {}).get("coverage"))
+    if covered:
+        detail = f"{detail} · {covered}"
     return _c("design", d.label, _BAR_CHECK[b.status],
               detail if gating else f"{detail} · advisory", (entry or {}).get("observed_at"),
               advisory=not gating)

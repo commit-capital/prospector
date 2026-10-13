@@ -1262,7 +1262,8 @@ def run_phase(phase: str, image: str, *, patch: Path | None = None, tier: int = 
               head_sha: str = "", exclude_file: Path | None = None,
               suite_config: Path | None = None, pre_patch: Path | None = None,
               timeout: int = PHASE_TIMEOUT_SECONDS, pristine: bool = False,
-              tail_bytes: int = OUTPUT_TAIL_BYTES) -> tuple[int, str]:
+              tail_bytes: int = OUTPUT_TAIL_BYTES, coverage_tool: Path | None = None,
+              coverage_request: Path | None = None) -> tuple[int, str]:
     """Run ONE sandbox phase and return (exit_code, captured_output_tail).
     `pristine` runs a compile or build phase over the base tree as pinned,
     with no patch. `tail_bytes` caps the captured output a caller keeps: a
@@ -1280,6 +1281,9 @@ def run_phase(phase: str, image: str, *, patch: Path | None = None, tier: int = 
     verify.suite), mounted read-only for the baseline/regress phases.
     `pre_patch`, for those phases alone, carries the base to the tree the
     suite's plan and baseline are taken over; it applies before the plan.
+    `coverage_tool` and `coverage_request`, for the coverage phase alone, are
+    the fetched coverage provider and the changed lines to measure
+    (`pipeline/coverage.py`).
 
     The launcher gets launcher_env(), never os.environ. A phase in
     LARGE_PHASES holds the host's large-phase lock from launch to exit."""
@@ -1288,14 +1292,17 @@ def run_phase(phase: str, image: str, *, patch: Path | None = None, tier: int = 
                                  base_sha=base_sha, head_sha=head_sha,
                                  exclude_file=exclude_file, suite_config=suite_config,
                                  pre_patch=pre_patch,
-                                 timeout=timeout, pristine=pristine, tail_bytes=tail_bytes)
+                                 timeout=timeout, pristine=pristine, tail_bytes=tail_bytes,
+                                 coverage_tool=coverage_tool,
+                                 coverage_request=coverage_request)
 
 
 def _run_phase_locked(phase: str, image: str, *, patch: Path | None, tier: int,
                       test_cmd: str, base_sha: str, head_sha: str,
                       exclude_file: Path | None, suite_config: Path | None,
                       timeout: int, pristine: bool, pre_patch: Path | None = None,
-                      tail_bytes: int = OUTPUT_TAIL_BYTES) -> tuple[int, str]:
+                      tail_bytes: int = OUTPUT_TAIL_BYTES, coverage_tool: Path | None = None,
+                      coverage_request: Path | None = None) -> tuple[int, str]:
     container = container_name()
     argv = [str(SANDBOX / "sandbox-run.sh"), "--phase", phase, "--image", image,
             "--tier", str(tier), "--test-cmd", test_cmd,
@@ -1313,6 +1320,10 @@ def _run_phase_locked(phase: str, image: str, *, patch: Path | None, tier: int,
         argv += ["--exclude-file", str(exclude_file)]
     if suite_config is not None:
         argv += ["--suite-config", str(suite_config)]
+    if coverage_tool is not None:
+        argv += ["--coverage-tool", str(coverage_tool)]
+    if coverage_request is not None:
+        argv += ["--coverage-request", str(coverage_request)]
     if settings.VERIFY_PROBE_DENY:
         argv += ["--probe-deny", settings.VERIFY_PROBE_DENY]
     env = launcher_env()

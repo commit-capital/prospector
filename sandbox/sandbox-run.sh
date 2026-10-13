@@ -11,7 +11,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NET="${PR_VERIFY_NET:-pr-verify-net}"
 
-IMAGE="" PHASE="" PATCH="" PRE="" EXCL="" SUITE_CFG="" PROBE_DENY_ARG="" CONTAINER_NAME="" CPUS=2 TIER=0 TEST_CMD="pnpm -s test" BASE_SHA="unknown" HEAD_SHA="unknown" PRISTINE=0
+IMAGE="" PHASE="" PATCH="" PRE="" EXCL="" SUITE_CFG="" COV_TOOL="" COV_REQ="" PROBE_DENY_ARG="" CONTAINER_NAME="" CPUS=2 TIER=0 TEST_CMD="pnpm -s test" BASE_SHA="unknown" HEAD_SHA="unknown" PRISTINE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --image) IMAGE="$2"; shift 2;;
@@ -21,6 +21,8 @@ while [ $# -gt 0 ]; do
     --pristine) PRISTINE=1; shift;;
     --exclude-file) EXCL="$2"; shift 2;;
     --suite-config) SUITE_CFG="$2"; shift 2;;
+    --coverage-tool) COV_TOOL="$2"; shift 2;;
+    --coverage-request) COV_REQ="$2"; shift 2;;
     --probe-deny) PROBE_DENY_ARG="$2"; shift 2;;
     --tier) TIER="$2"; shift 2;;
     --test-cmd) TEST_CMD="$2"; shift 2;;
@@ -32,9 +34,9 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$IMAGE" ] && [ -n "$PHASE" ] || {
-  echo "usage: sandbox-run.sh --image IMG --phase apply-check|repro|red|green|compile|build|baseline|regress [--patch F | --pristine] [--pre-patch F] [--cpus N] [--exclude-file F] [--suite-config F] [--probe-deny LIST] [--tier 0|1] [--test-cmd C] [--base-sha S] [--head-sha S] [--container-name N]" >&2
+  echo "usage: sandbox-run.sh --image IMG --phase apply-check|repro|red|green|compile|build|baseline|regress|coverage [--patch F | --pristine] [--pre-patch F] [--cpus N] [--exclude-file F] [--suite-config F] [--coverage-tool DIR --coverage-request F] [--probe-deny LIST] [--tier 0|1] [--test-cmd C] [--base-sha S] [--head-sha S] [--container-name N]" >&2
   exit 2; }
-case "$PHASE" in apply-check|repro|red|green|compile|build|baseline|regress) ;; *) echo "bad --phase: $PHASE" >&2; exit 2;; esac
+case "$PHASE" in apply-check|repro|red|green|compile|build|baseline|regress|coverage) ;; *) echo "bad --phase: $PHASE" >&2; exit 2;; esac
 case "$CPUS" in ''|*[!0-9]*|0) echo "bad --cpus: $CPUS (a positive whole number)" >&2; exit 2;; esac
 # apply-check, green, compile, and build require a patch onto the base tree.
 # red takes one optionally — the test-only hunks, so it can run a test the
@@ -52,7 +54,7 @@ case "$PHASE" in
       [ -n "$PATCH" ] || { echo "usage: --phase $PHASE requires --patch F or --pristine" >&2; exit 2; }
     fi
     ;;
-  apply-check|green|regress)
+  apply-check|green|regress|coverage)
     [ -n "$PATCH" ] || { echo "usage: --phase $PHASE requires --patch F" >&2; exit 2; }
     ;;
 esac
@@ -73,6 +75,15 @@ case "$PHASE" in
     [ -n "$SUITE_CFG" ] || { echo "usage: --phase $PHASE requires --suite-config F" >&2; exit 2; }
     ;;
 esac
+
+# The coverage phase reads the provider Prospector fetched and the host's
+# request naming the changed lines; the two belong to it alone.
+if [ "$PHASE" = "coverage" ]; then
+  [ -n "$COV_TOOL" ] && [ -n "$COV_REQ" ] || {
+    echo "usage: --phase coverage requires --coverage-tool DIR and --coverage-request F" >&2; exit 2; }
+elif [ -n "$COV_TOOL$COV_REQ" ]; then
+  echo "usage: --coverage-tool and --coverage-request are for --phase coverage" >&2; exit 2
+fi
 
 # 1. Isolated network, created and asserted here — never assumed.
 docker network inspect "$NET" >/dev/null 2>&1 || docker network create --internal "$NET" >/dev/null
@@ -142,6 +153,19 @@ else
   env_args+=( -e "SUITE_CONFIG=" )
 fi
 
+# The coverage provider directory and the request are host-written: the
+# provider fetched at the repository's own vitest version, and the changed
+# lines the host read off the patch. Both read-only.
+coverage_mounts=()
+if [ "$PHASE" = "coverage" ]; then
+  env_args+=( -e "COVERAGE_REQUEST=/verify/coverage-request.json" )
+  coverage_mounts=( -v "$COV_TOOL:/coverage-tool:ro"
+                    -v "$COV_REQ:/verify/coverage-request.json:ro"
+                    -v "$HERE/verify-coverage.mjs:/verify-coverage.mjs:ro" )
+else
+  env_args+=( -e "COVERAGE_REQUEST=" )
+fi
+
 # The env dump exists only for the secretless test. It goes to stdout, which the
 # host captures anyway — the container env stays the explicit allowlist above.
 if [ "${PR_VERIFY_DEBUG:-}" = "1" ]; then
@@ -178,5 +202,6 @@ docker run --rm "${name_args[@]+"${name_args[@]}"}" --network "$NET" \
   "${pre_mount[@]+"${pre_mount[@]}"}" \
   "${exclude_mount[@]+"${exclude_mount[@]}"}" \
   "${suite_mount[@]+"${suite_mount[@]}"}" \
+  "${coverage_mounts[@]+"${coverage_mounts[@]}"}" \
   "$IMAGE" bash -lc "$container_cmd"
 exit $?

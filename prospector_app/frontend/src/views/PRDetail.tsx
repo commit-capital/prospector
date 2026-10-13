@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { api, type PRDetail as PD, type DiffResult, type VerifyRunner, type FixAction as FixActionName, type FixRunner, type ReviewDigest, type ReviewEntry } from "../api";
+import { api, type PRDetail as PD, type DiffResult, type VerifyRunner, type FixAction as FixActionName, type FixRunner, type ReviewDigest, type ReviewEntry, type CoverageRecord } from "../api";
 import { DriftChip, TierChip, authorTip } from "../components/Chips";
 import { InfoTip } from "../components/InfoTip";
 import { dispositionEntry } from "../glossary";
@@ -697,6 +697,45 @@ const STATUS_WORD: Record<ReviewDigest["status"], string> = {
   pending: "awaiting its verdict", na: "not active",
 };
 
+function asCoverage(value: unknown): CoverageRecord | null {
+  return value && typeof value === "object" && typeof (value as { status?: unknown }).status === "string"
+    ? value as CoverageRecord : null;
+}
+
+/** The design lane's changed-line coverage: the share of the PR's changed
+ *  source lines its related tests executed, and the lines they did not. */
+function CoverageLine({ coverage }: { coverage: CoverageRecord }): ReactNode {
+  let line: string;
+  if (coverage.status === "measured") {
+    line = coverage.executable > 0
+      ? `${Math.round((100 * coverage.hit) / coverage.executable)}% of changed lines executed (${coverage.hit}/${coverage.executable})`
+      : "no executable changed lines";
+  } else if (coverage.status === "untested") {
+    line = "no related tests reach the changed files";
+  } else {
+    line = `${coverage.status === "skipped" ? "skipped" : "not measured"}: ${coverage.reason ?? ""}`;
+  }
+  const gaps = coverage.files.filter((f) => f.uncovered.length > 0 || !f.measured);
+  return (
+    <div className="muted small" style={{ marginTop: 4 }}>
+      <span title="Measured by running the PR's related tests in the sandbox; reported by the PR's own test run, so advisory">
+        Coverage: {line}
+      </span>
+      {coverage.tests.length > 0 && <div>tests run: {coverage.tests.map((t) => <code key={t} style={{ marginRight: 4 }}>{t}</code>)}</div>}
+      {gaps.length > 0 && (
+        <ul style={{ margin: "2px 0 0 16px" }}>
+          {gaps.map((f) => (
+            <li key={f.path}>
+              <code>{f.path}</code>{" "}
+              {f.measured ? `lines ${f.uncovered.map(([a, b]) => (a === b ? `${a}` : `${a}–${b}`)).join(", ")} not executed` : "not measured"}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 /** One block per reviewer `which` picks on the PR page's Review / Design / Scans
  *  check rows: status line, stale banner, the reviewer's own summary, and its
  *  open findings. */
@@ -708,6 +747,7 @@ function reviewerBlocks(detail: Record<string, { entry: ReviewEntry | null; dige
     const trust = typeof digest.extra.trust_score === "number" ? digest.extra.trust_score : null;
     const verdict = typeof digest.extra.trust_verdict === "string" ? digest.extra.trust_verdict : null;
     const report = typeof digest.extra.report_url === "string" ? digest.extra.report_url : null;
+    const coverage = asCoverage(digest.extra.coverage);
     return (
       <div key={digest.id} className="reviewer-block" style={{ marginBottom: 12 }}>
         <div>
@@ -732,6 +772,7 @@ function reviewerBlocks(detail: Record<string, { entry: ReviewEntry | null; dige
           </div>
         )}
         {report && <div className="small"><a href={report} target="_blank" rel="noreferrer">full report ↗</a></div>}
+        {coverage && <CoverageLine coverage={coverage} />}
         {open.length > 0 && (
           <ul className="small" style={{ margin: "6px 0 0 16px" }}>
             {open.map((f, i) => (

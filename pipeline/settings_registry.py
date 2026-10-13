@@ -84,6 +84,10 @@ SETTINGS: tuple[Setting, ...] = (
             "A verify worker reviews each PR head for reuse, layering, the repository's "
             "conventions and test strength: advisory (shown only), gate (a merge "
             "requirement), or off.", editable=True, choices=("advisory", "gate", "off")),
+    _b("TRIAGE_DESIGN_COVERAGE", "behavior", "Measure changed-line coverage",
+       "Before each design review, run the PR's related tests in the sandbox and record "
+       "how many of its changed source lines they execute (advisory).",
+       on_by_default=True),
     _b("TRIAGE_FIX_HUNT_SECURITY", "behavior", "Fix YELLOW security findings",
        "The autofix hunter may queue a fix for a PR's current YELLOW security finding."),
     _b("TRIAGE_PR_WATCH", "behavior", "Watch GitHub for new PRs",

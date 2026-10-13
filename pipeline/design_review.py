@@ -15,10 +15,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pipeline import (authoring, capacity, diffpaths, freshness, gates, headless_agent, reviewers,
-                      storekit)
+from pipeline import (authoring, capacity, coverage, diffpaths, freshness, gates, headless_agent,
+                      reviewers, storekit)
 
 if TYPE_CHECKING:
+    from pipeline.coverage import CoverageRecord
     from pipeline.model import Pr
 
 PHASE = "design-review:run"
@@ -58,7 +59,7 @@ Report only what you can point at. A finding you cannot tie to a line of the
 diff, or a reuse you did not find in the checkout, is noise: leave it out. An
 empty list is a good answer for a good change.
 
-__DOCS__Your final message is exactly one JSON object, nothing else:
+__COVERAGE____DOCS__Your final message is exactly one JSON object, nothing else:
   {"summary": "<two or three sentences on the change's design>",
    "findings": [{"category": "reuse" | "layering" | "convention" | "test",
                  "severity": "blocking" | "major" | "minor",
@@ -123,15 +124,18 @@ def validate(answer: dict, *, touched: set[str], clone: Path) -> tuple[str, list
 
 
 def review(clone: Path, diff: Path, *, pr: int, title: str, head_sha: str,
-           base_sha: str) -> dict:
+           base_sha: str, coverage_record: CoverageRecord | None = None) -> dict:
     """Review the diff at `diff` against the base checkout at `clone` and
-    return the `reviews["design"]` entry for `head_sha`. Raises
+    return the `reviews["design"]` entry for `head_sha`, carrying
+    `coverage_record` (`pipeline/coverage.py`), which the prompt also hands the
+    agent as evidence. Raises
     DesignReviewFailed when the agent did not finish or gave no usable answer;
     an agent outage, a decline, an overload, and a closed capacity gate
     propagate as headless_agent / capacity raise them."""
     clone, diff = clone.resolve(), diff.resolve()
     prompt = headless_agent.fill(PROMPT, {
         "__PR__": pr, "__TITLE__": title[:TITLE_CHARS], "__CLONE__": clone, "__DIFF__": diff,
+        "__COVERAGE__": coverage.prompt_block(coverage_record),
         "__DOCS__": authoring.docs_block(authoring.docs_from_tree(clone))})
 
     def run() -> str:
@@ -152,4 +156,4 @@ def review(clone: Path, diff: Path, *, pr: int, title: str, head_sha: str,
     summary, findings = validate(answer, touched=touched, clone=clone)
     return {"kind": reviewers.REVIEW, "reviewed_sha": head_sha, "observed_at": storekit.now(),
             "score": None, "findings": findings, "summary": summary[:reviewers.SUMMARY_CHARS] or None,
-            "checks": [], "extra": {"base_sha": base_sha}}
+            "checks": [], "extra": {"base_sha": base_sha, "coverage": coverage_record}}

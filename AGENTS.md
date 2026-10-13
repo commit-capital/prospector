@@ -696,7 +696,19 @@ lane. A verify worker runs it as a third idle-hunt lane (`design`, taking turns
 with security and verify) under a per-PR `design_run` claim, the capacity gate
 and lane health, booking each ending as `design-review:run`. Autofix aims at
 its blocking and major findings only when the profile names `design` in
-`autofix.fixable_gates`, gating or not.
+`autofix.fixable_gates`, gating or not. Before the agent, the lane measures the
+head's **changed-line coverage** (`pipeline/coverage.py`,
+`TRIAGE_DESIGN_COVERAGE`, default on): the PR's added and modified tests plus
+`resolve_evidence.related_tests` over its changed JS/TS source run in the
+sandbox's `coverage` phase on this machine's pinned image, with
+`@vitest/coverage-v8` at the base lockfile's root vitest version — fetched once
+per version into `<verify scratch>/coverage-tool/`, `--ignore-scripts`, and
+mounted read-only — and the trusted `sandbox/verify-coverage.mjs` reports which
+changed lines a statement starts on and which ran. The record
+(`measured | untested | skipped | error`) rides the entry as `extra.coverage`,
+fills the prompt's evidence block, and shows on the Design review row. The
+container runs the PR's code, which can forge what it reports, so the figure is
+never a gate; a failed measurement is recorded and the review runs.
 
 **SLACK ALERTS** (`pipeline/notify.py`) is the ONE path by which a threat-scan
 finding reaches the team outside the app. At the end of every
