@@ -678,6 +678,21 @@ class TestNarrativeStaleness:
         reasons = gates.narrative_staleness(c, {1: pr})
         assert reasons == ["#1 is now request-changes; the analysis proposed merge"]
 
+    def test_disposition_won_by_another_cluster_does_not_flag(self):
+        # A straddler whose needs-human came from another cluster's proposal:
+        # re-running this cluster's analysis cannot change it.
+        pr = _pr(analysis=_merge_analysis(disposition="needs-human", from_cluster=2))
+        c = self._cluster([pr], proposals=[{"pr": 1, "disposition": "request-changes"}])
+        assert gates.narrative_staleness(c, {1: pr}) == []
+
+    def test_demotion_of_this_clusters_pick_flags(self):
+        pr = _pr(analysis=_merge_analysis(from_cluster=1),
+                 security=_green(verdict="RED", findings=[{"title": "authz bypass"}],
+                                 checked_at="2026-05-20T00:00:00+00:00"))
+        c = self._cluster([pr])
+        assert gates.narrative_staleness(c, {1: pr}) == [
+            "#1 is now needs-human; the analysis proposed merge"]
+
     def test_closed_members_are_skipped(self):
         pr = _pr(analysis=_merge_analysis(),
                  security=_green(verdict="RED", findings=[{"title": "authz bypass"}]))
