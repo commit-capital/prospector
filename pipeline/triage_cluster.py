@@ -138,6 +138,11 @@ def _run(store: Store, cid: int, cluster: Cluster) -> int:
         for e in errs:
             _say(f"    ! {e}")
         return 1
+    if payload.get("split"):
+        _say("✓ the members fix more than one defect — split for separate analysis:")
+        for g in payload["split"]:
+            _say(f"    {sorted(g.get('prs') or [])}: {g.get('root_problem')}")
+        return 0
 
     # 6. Format the just-committed rationale for app display. This is derived,
     # presentation-only data: an unavailable model or an unexpected formatter

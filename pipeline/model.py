@@ -629,6 +629,11 @@ class Pr:
         self.rec.pop("cluster", None)
         self._persist()
 
+    def clear_analysis(self) -> None:
+        """Remove the analysis section, leaving the PR to be dispositioned anew."""
+        self.rec.pop("analysis", None)
+        self._persist()
+
     def record_live_state(self, *, state: str | None = None,
                           ci: str | None = None,
                           mergeable: bool | None = None,

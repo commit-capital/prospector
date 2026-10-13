@@ -404,6 +404,88 @@ def _sync_linked_issue_memberships(store: Store) -> list[int]:
     return created
 
 
+def _bound_together(prs: list[Pr]) -> list[set[int]]:
+    """The groups of `prs` the sync steps keep in one cluster: PRs directly
+    referencing one issue, and PRs sharing a head commit."""
+    keys: dict[tuple[str, object], set[int]] = {}
+    for rec in prs:
+        if rec.head_sha:
+            keys.setdefault(("head", rec.head_sha), set()).add(rec.n)
+        for link in rec.linked_issues:
+            if isinstance(link, dict) and link.get("how") in _DIRECT_ISSUE_LINKS \
+                    and type(link.get("issue")) is int:
+                keys.setdefault(("issue", link["issue"]), set()).add(rec.n)
+    return [g for g in keys.values() if len(g) > 1]
+
+
+def split_cluster(store: Store, cid: int, groups: list[dict]) -> tuple[list[int], list[str]]:
+    """Re-form cluster `cid` from `groups` ({root_problem, prs}), a partition of
+    its open members by defect, when ANALYZE finds they fix more than one. Groups
+    that hold PRs the sync steps bind together are merged first. The largest
+    multi-member group keeps the id, every other one becomes a new cluster, a
+    group of one leaves as standalone, and the cluster is deleted when no group
+    has two members. Every resulting cluster awaits analysis, and a departing
+    PR's analysis from `cid` is dropped so it is dispositioned where it lands.
+    Returns (the resulting cluster ids, validation errors); nothing is written
+    on an error."""
+    c = store.load_cluster(cid)
+    if c is None:
+        return [], [f"cluster {cid}: not in store"]
+    recs = {n: r for n in c.prs if (r := store.load_pr(n)) is not None and r.state == "open"}
+    errs: list[str] = []
+    parts: list[tuple[str, set[int]]] = []
+    seen: set[int] = set()
+    for g in groups:
+        prs = {int(x) for x in g.get("prs") or []}
+        root = str(g.get("root_problem") or "").strip()
+        if not root:
+            errs.append(f"split group {sorted(prs)}: root_problem is empty")
+        errs.extend(f"split: pr {n} is not an open member of cluster {cid}"
+                    for n in sorted(prs - set(recs)))
+        errs.extend(f"split: pr {n} is in more than one group" for n in sorted(prs & seen))
+        seen |= prs
+        parts.append((root, prs))
+    errs.extend(f"split: open member {n} is in no group" for n in sorted(set(recs) - seen))
+    for bound in _bound_together(list(recs.values())):
+        hit = [p for p in parts if p[1] & bound]
+        if len(hit) > 1:
+            parts = [p for p in parts if p not in hit]
+            parts.append((max(hit, key=lambda p: len(p[1]))[0],
+                          set().union(*(p[1] for p in hit))))
+    if len(parts) < 2:
+        errs.append("split: the members share one defect — analyze them as one cluster")
+    if errs:
+        return [], errs
+
+    parts.sort(key=lambda p: (-len(p[1]), min(p[1])))
+    clusters = [p for p in parts if len(p[1]) > 1]
+    closed = set(c.prs) - set(recs)
+    resulting: list[int] = []
+    keep = store.edit_cluster(cid)
+    if clusters:
+        keep.set_members(sorted(clusters[0][1] | closed))
+        keep.set_root_problem(clusters[0][0])
+        keep.set_proposals([])
+        keep.record_analysis(None, None, keep.notes)
+        resulting.append(cid)
+    else:
+        keep.set_members([])
+        store.delete_cluster(cid)
+    next_id = max(store.all_clusters(), default=0) + 1
+    for root, prs in clusters[1:]:
+        store.create_cluster(next_id, root).set_members(sorted(prs))
+        resulting.append(next_id)
+        next_id += 1
+    stays = clusters[0][1] if clusters else set()
+    for n in sorted(set(recs) - stays):
+        pr = store.edit_pr(n)
+        if (pr.section("analysis") or {}).get("from_cluster") == cid:
+            pr.clear_analysis()
+        if not pr.cluster_ids:
+            pr.mark_standalone()
+    return resulting, []
+
+
 def _sync_identical_head_memberships(store: Store) -> int:
     """Give open, currently summarized PRs with one head SHA the same cluster ids.
 
@@ -550,7 +632,7 @@ The existing_clusters are FROZEN: you never modify or re-partition them. For eac
 - ADDITIONAL straddle joins (zero or more per PR): if one of the PR's secondary_changes SUBSTANTIALLY advances a DIFFERENT existing cluster's root problem, ALSO emit {pr, cluster_id} for that cluster. A PR that genuinely does two things belongs in both. Most PRs straddle nothing — add an extra join only when the secondary concern clearly delivers that cluster's root fix.
 
 Discipline (same bar as the original clustering):
-- Compare on the relevant change (primary for the home, the secondary concern for a straddle), not incidental overlap. Overlapping identifiers/paths are CORROBORATING, not sufficient.
+- Compare on the relevant change (primary for the home, the secondary concern for a straddle), not incidental overlap. Overlapping identifiers/paths are CORROBORATING, not sufficient: PRs that merely touch the same area, table, or files fix different problems.
 - Bug direction matters: "counts too much" vs "shows too little" are OPPOSITE problems, not the same cluster.
 - When unsure, do NOT add a straddle join; never give a PR a primary home it does not clearly fit.
 - Every new PR has EXACTLY ONE primary placement (a join, a new-cluster membership, or standalone); straddle joins are extra."""

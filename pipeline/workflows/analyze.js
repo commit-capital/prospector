@@ -44,8 +44,12 @@ const ANALYSIS_SCHEMA = { type: 'object', properties: {
     upstream_date: { type: 'string', description: 'for close-fixed: merge date for the upstream fix, if known (YYYY-MM-DD preferred)' },
     asks: { type: 'array', items: { type: 'string' }, description: 'for request-changes: specific author asks' },
     rationale: { type: 'string' } },
-    required: ['pr', 'head_sha', 'disposition', 'rationale'] } } },
-  required: ['cluster_id', 'outcome', 'rationale', 'prs'] }
+    required: ['pr', 'head_sha', 'disposition', 'rationale'] } },
+  split: { type: 'array', description: 'when the members fix more than one defect: every member, one group per defect (outcome and prs are then omitted)', items: { type: 'object', properties: {
+    root_problem: { type: 'string' },
+    prs: { type: 'array', items: { type: 'integer' } } },
+    required: ['root_problem', 'prs'] } } },
+  required: ['cluster_id', 'rationale'] }
 
 phase('Index')
 const index = await agent(
@@ -66,7 +70,7 @@ const results = await parallel(index.clusters.map((c) => () => {
 
 # Output
 
-When done, FIRST use the Write tool to save your analysis as a single raw JSON object (the {cluster_id, outcome, rationale, prs:[...]} object, nothing else — no array, no prose) to the file ${outPath}. THEN return the same object via structured output.`,
+When done, FIRST use the Write tool to save your analysis as a single raw JSON object (the {cluster_id, outcome, rationale, prs:[...]} or {cluster_id, rationale, split:[...]} object, nothing else — no array, no prose) to the file ${outPath}. THEN return the same object via structured output.`,
     { label: `analyze:cluster-${c.cluster_id}`, phase: 'Analyze', schema: ANALYSIS_SCHEMA })
 }))
 
