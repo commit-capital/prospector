@@ -31,6 +31,7 @@ import threading
 from collections.abc import Iterator
 import time
 import traceback
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -546,6 +547,14 @@ def _rotate(live: list[str]) -> str | None:
     return live[0]
 
 
+def hunt_key(item: tuple[int, Pr]) -> tuple[bool, bool, float, int]:
+    """A maintainer's PR first, then an analyzed merge pick, then highest
+    community pain, then lowest PR number."""
+    n, pr = item
+    return (not gates.priority_author(pr.author, pr.author_association),
+            pr.disposition != "merge", -_pain(pr), n)
+
+
 def next_auto(open_lanes: frozenset[str] = frozenset({"security", "verify"})
               ) -> tuple[str, int] | None:
     """The idle hunt's next pick, or None: ("security", n) for the best clean PR
@@ -568,11 +577,6 @@ def next_auto(open_lanes: frozenset[str] = frozenset({"security", "verify"})
     global _last_auto_lane
     prs = data.prs()
     me = settings.worker_id()
-
-    def _key(item: tuple[int, Pr]) -> tuple[bool, bool, float, int]:
-        pr = item[1]
-        return (not gates.priority_author(pr.author, pr.author_association),
-                pr.disposition != "merge", -_pain(pr), item[0])
 
     def _has_priority(pool: list[tuple[int, Pr]]) -> bool:
         return any(gates.priority_author(pr.author, pr.author_association)
@@ -597,12 +601,12 @@ def next_auto(open_lanes: frozenset[str] = frozenset({"security", "verify"})
             or _rotate([name for name in HUNT_ROTATION if pools[name]]))
     if lane is not None:
         _last_auto_lane = lane
-        return (lane, min(pools[lane], key=_key)[0])
+        return (lane, min(pools[lane], key=hunt_key)[0])
     if "verify" not in open_lanes:
         return None
     resweep_pool = [(n, pr) for n, pr in prs.items() if auto_resweepable(pr)]
     if resweep_pool:
-        return ("resweep", min(resweep_pool, key=_key)[0])
+        return ("resweep", min(resweep_pool, key=hunt_key)[0])
     return None
 
 
@@ -674,7 +678,7 @@ def _run_security_claimed(n: int) -> int:
     return rc
 
 
-def _design_base(st: Store) -> tuple[str, Path, int] | None:
+def design_base(st: Store) -> tuple[str, Path, int] | None:
     """This machine's pinned base SHA, its clone and its tier, or None when it
     holds no pin or no clone."""
     pin = verify_driver.local_pin(st)
@@ -693,13 +697,13 @@ def _design_diff(st: Store, n: int, head: str) -> Path | None:
     return None
 
 
-def _book_design(st: Store, n: int, head: str, stats: dict) -> None:
+def _book_design(st: Store, n: int, head: str, stats: dict, trigger: str) -> None:
     stamp = _now()
     st.append_run({"phase": design_review.PHASE, "pr": n, "started": stamp, "finished": stamp,
-                   "trigger": "autohunt", "stats": {"head_sha": head, **stats}})
+                   "trigger": trigger, "stats": {"head_sha": head, **stats}})
 
 
-def run_design(n: int) -> bool | None:
+def run_design(n: int, *, trigger: str = "autohunt") -> bool | None:
     """Run the design review of PR `n`'s head under this host's claim: True
     when its verdict landed, False when the run failed, None when no review
     ran (the PR left the pool, another host holds it, or this machine has no
@@ -708,26 +712,30 @@ def run_design(n: int) -> bool | None:
     prompt; its failure is recorded there and the review runs. A failed run parks the PR in design_failed
     and books the design lane's health — an agent outage trips every agent
     lane, an overload or a decline books nothing — and every ending is a
-    `design-review:run` ledger row."""
+    `design-review:run` ledger row stamped `trigger`. Any trigger but
+    `autohunt` is an operator's run: its spend is not booked to the lane, and
+    it claims as `<worker id>/<trigger>`, so this machine's hunter leaves the
+    PR to it."""
     st = data.store()
     rec = st.load_pr(n)
-    base = _design_base(st)
+    base = design_base(st)
     if rec is None or base is None or not design_review.huntable(rec):
         return None
     head = rec.head_sha or ""
-    me = settings.worker_id()
+    unattended = trigger == "autohunt"
+    me = settings.worker_id() if unattended else f"{settings.worker_id()}/{trigger}"
     if not st.claim_design_run(n, host=me, stale_after=DESIGN_CLAIM_SECONDS):
         return None
     try:
         diff = _design_diff(st, n, head)
         if diff is None:
             design_failed.add(n, "GitHub returned no diff for this head")
-            _book_design(st, n, head, {"error": "GitHub returned no diff for this head"})
+            _book_design(st, n, head, {"error": "GitHub returned no diff for this head"}, trigger)
             return None
         measured = (coverage.measure(base[1], base_sha=base[0], tier=base[2], pr=n,
                                      head_sha=head)
                     if settings.design_coverage() else None)
-        with capacity.metered("design"):
+        with capacity.metered("design") if unattended else nullcontext():
             entry = design_review.review(base[1], diff, pr=n, title=rec.title or "",
                                          head_sha=head, base_sha=base[0],
                                          coverage_record=measured)
@@ -736,22 +744,23 @@ def run_design(n: int) -> bool | None:
         for f in entry["findings"]:
             counts[f["severity"]] = counts.get(f["severity"], 0) + 1
         _book_design(st, n, head, {"findings": counts, "saved": saved,
-                                   "coverage": coverage.summary(measured)})
+                                   "coverage": coverage.summary(measured)}, trigger)
         design_failed.discard(n)
         lane_health.note_success("design")
-        data.refresh()
+        if unattended:
+            data.refresh()
         return True
     except headless_agent.AgentUnavailable as e:
         lane_health.trip_agent_lanes(str(e))
         return False
     except (headless_agent.AgentDeclined, headless_agent.AgentTransient) as e:
         design_failed.add(n, str(e)[:300])
-        _book_design(st, n, head, {"error": str(e)[:300]})
+        _book_design(st, n, head, {"error": str(e)[:300]}, trigger)
         return False
     except Exception as e:
         reason = str(e) if isinstance(e, design_review.DesignReviewFailed) else repr(e)
         design_failed.add(n, reason[:300])
-        _book_design(st, n, head, {"error": reason[:300]})
+        _book_design(st, n, head, {"error": reason[:300]}, trigger)
         lane_health.note_failure("design", kind="design-run", reason=reason, pr=n)
         return False
     finally:

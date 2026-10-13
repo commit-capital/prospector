@@ -1310,7 +1310,7 @@ class TestDesignLane:
         clone.mkdir()
         diff = tmp_path / "d.diff"
         diff.write_text("diff --git a/x b/x\n")
-        monkeypatch.setattr(verify_worker, "_design_base", lambda st: ("b" * 40, clone, 1))
+        monkeypatch.setattr(verify_worker, "design_base", lambda st: ("b" * 40, clone, 1))
         monkeypatch.setattr(verify_worker, "_design_diff", lambda st, n, head: diff)
         monkeypatch.setattr(verify_worker.coverage, "measure",
                             lambda clone, **kw: {"status": "untested", "reason": "no related tests"})
@@ -1339,6 +1339,24 @@ class TestDesignLane:
         assert row.raw["stats"]["findings"] == {"blocking": 1}
         assert row.raw["stats"]["coverage"] == "coverage: no related tests"
         assert store.claim_design_run(1, host="some-other-machine", stale_after=3600) is True
+
+    def test_an_operator_run_claims_apart_and_books_no_lane_spend(self, store, monkeypatch,
+                                                                   tmp_path):
+        monkeypatch.setenv("TRIAGE_WORKER_ID", "mac")
+        lanes: list[str | None] = []
+
+        def review(clone, diff, *, head_sha, **kw):
+            lanes.append(verify_worker.capacity.meter_lane())
+            assert store.load_pr(1).raw["design_run"]["host"] == "mac/control"
+            data.refresh()
+            assert verify_worker.next_auto(frozenset({"design"})) is None
+            return {"kind": "review", "reviewed_sha": head_sha, "findings": [],
+                    "checks": [], "summary": "s"}
+        self._ready(store, monkeypatch, tmp_path, review)
+        assert verify_worker.run_design(1, trigger="control") is True
+        assert lanes == [None]
+        row = [r for r in store.runs() if r.phase == "design-review:run"][-1]
+        assert row.raw["trigger"] == "control"
 
     def test_coverage_off_measures_nothing(self, store, monkeypatch, tmp_path):
         seen: list = []
@@ -1396,20 +1414,20 @@ class TestDesignLane:
     def test_no_base_clone_runs_nothing(self, store, monkeypatch):
         store.save_pr(_clean_merge_pr(1))
         data.refresh()
-        monkeypatch.setattr(verify_worker, "_design_base", lambda st: None)
+        monkeypatch.setattr(verify_worker, "design_base", lambda st: None)
         monkeypatch.setattr(verify_worker.design_review, "review",
                             lambda *a, **kw: pytest.fail("must not review"))
         assert verify_worker.run_design(1) is None
 
     def test_design_base_needs_this_machines_pin_and_clone(self, store, monkeypatch, tmp_path):
-        assert verify_worker._design_base(store) is None
+        assert verify_worker.design_base(store) is None
         monkeypatch.setattr(verify_worker.verify_driver, "local_pin",
                             lambda st: {"base_sha": "b" * 40, "tier": 1})
         monkeypatch.setattr(verify_worker.verify_driver, "base_clone_dir",
                             lambda sha: tmp_path / sha[:12])
-        assert verify_worker._design_base(store) is None
+        assert verify_worker.design_base(store) is None
         (tmp_path / ("b" * 12)).mkdir()
-        assert verify_worker._design_base(store) == ("b" * 40, tmp_path / ("b" * 12), 1)
+        assert verify_worker.design_base(store) == ("b" * 40, tmp_path / ("b" * 12), 1)
 
     def test_release_stale_claims_frees_design_claims(self, store):
         import socket

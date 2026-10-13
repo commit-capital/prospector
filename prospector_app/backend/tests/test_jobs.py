@@ -37,6 +37,12 @@ def test_second_concurrent_triage_same_cluster_rejected():
     jobs.start_job("triage-cluster", 204)
 
 
+def test_design_review_runs_the_backfill_module_with_its_count():
+    jobs.JOBS.clear()
+    job = jobs.start_job("design-review", count=7)
+    assert job["_argv"][-4:] == ["-m", "prospector_app.backend.design_backfill", "--limit", "7"]
+
+
 def test_security_review_spec_is_listed_and_needs_pr():
     specs = {s["kind"]: s for s in jobs.list_specs()}
     assert "security-review" in specs
