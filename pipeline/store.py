@@ -1361,6 +1361,40 @@ class Store:
     def clear_worker_health(self, host: str) -> bool:
         return self._delete_registry(f"{self._HEALTH_PREFIX}{host}")
 
+    _MODE_PREFIX = "machine_mode:"
+    _LOOPS_PREFIX = "worker_loops:"
+
+    def _rows_by_host(self, prefix: str) -> dict[str, dict]:
+        from sqlalchemy import select
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(schema.registries.c.name, schema.registries.c.data)
+                .where(schema.registries.c.name.like(f"{prefix}%"))).all()
+        return {name[len(prefix):]: rec for name, rec in rows}
+
+    def save_machine_mode(self, record: dict) -> None:
+        """An operator's mark on one machine, keyed by `host`: `{host,
+        stood_down, at, by, note}`."""
+        if not record.get("host"):
+            raise ValidationError("machine_mode.host: required")
+        self._save_registry(f"{self._MODE_PREFIX}{record['host']}", record)
+
+    def load_machine_modes(self) -> dict[str, dict]:
+        return self._rows_by_host(self._MODE_PREFIX)
+
+    def clear_machine_mode(self, host: str) -> bool:
+        return self._delete_registry(f"{self._MODE_PREFIX}{host}")
+
+    def save_worker_loops(self, record: dict) -> None:
+        """One machine's lanes and periodic-loop passes, keyed by `host`:
+        `{host, at, lanes: {lane: bool}, loops: {name: {last_at, every_seconds}}}`."""
+        if not record.get("host"):
+            raise ValidationError("worker_loops.host: required")
+        self._save_registry(f"{self._LOOPS_PREFIX}{record['host']}", record)
+
+    def load_worker_loops(self) -> dict[str, dict]:
+        return self._rows_by_host(self._LOOPS_PREFIX)
+
     def _delete_registry(self, name: str) -> bool:
         from sqlalchemy import delete as sa_delete
         storekit.assert_writable(self.engine)
