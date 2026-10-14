@@ -27,3 +27,11 @@ export function isMuted(key: string, mutes: Record<string, number>, now: number)
   const at = mutes[key];
   return at != null && now - at < MUTE_MS;
 }
+
+export function unmuteAll(storage: () => Pick<Storage, "setItem"> = () => localStorage): void {
+  try {
+    storage().setItem(KEY, "{}");
+  } catch {
+    // Unsaved: the mutes expire on their own.
+  }
+}

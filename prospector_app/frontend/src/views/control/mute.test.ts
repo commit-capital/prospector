@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { isMuted, mute, readMutes } from "./mute.ts";
+import { isMuted, mute, readMutes, unmuteAll } from "./mute.ts";
 
 function memory(): Storage {
   const m = new Map<string, string>();
@@ -21,4 +21,12 @@ test("blocked storage mutes nothing and never throws", () => {
   const broken = () => { throw new Error("blocked"); };
   assert.doesNotThrow(() => mute("pins", 0, broken));
   assert.deepEqual(readMutes(broken), {});
+});
+
+test("unmute all clears every mute", () => {
+  const s = memory();
+  mute("pins", 0, () => s);
+  mute("parked", 0, () => s);
+  unmuteAll(() => s);
+  assert.deepEqual(readMutes(() => s), {});
 });

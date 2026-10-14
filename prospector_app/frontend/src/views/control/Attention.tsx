@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router";
 import { api, type ControlOverview, type FilterSpec, type OverviewNeed } from "../../api";
 import { ago } from "./format";
-import { isMuted, mute, readMutes } from "./mute";
+import { isMuted, mute, readMutes, unmuteAll } from "./mute";
 
 function NeedRow({ need, onChanged, onReviewParked, onMute }: {
   need: OverviewNeed; onChanged: () => void; onReviewParked: () => void; onMute: () => void;
@@ -72,14 +72,18 @@ export function Attention({ overview, onChanged, onReviewParked }: {
   const shown = overview.needs.filter((n) => !isMuted(n.key, mutes, now));
   const muted = overview.needs.length - shown.length;
   if (shown.length === 0 && muted === 0) return null;
+  const unmute = <button className="linkish small" onClick={() => { unmuteAll(); setMutes(readMutes()); }}>unmute</button>;
+  if (shown.length === 0) {
+    return <div className="status-line">Nothing needs you · {muted} muted {unmute}</div>;
+  }
   return (
     <section className="cpanel tone-danger" aria-label="Needs you">
       <div className="cpanel-head">
         <h3 className="cpanel-title">Needs you · {shown.length}</h3>
-        {muted > 0 && <span className="cpanel-meta">{muted} muted</span>}
+        {muted > 0 && <span className="cpanel-meta">{muted} muted {unmute}</span>}
       </div>
       <div className="cpanel-body">
-        {shown.length === 0 ? <div className="muted small">Only muted items.</div> : shown.map((n) => (
+        {shown.map((n) => (
           <NeedRow key={n.key} need={n} onChanged={onChanged} onReviewParked={onReviewParked}
             onMute={() => { const at = Date.now(); mute(n.key, at); setMutes(readMutes()); setNow(at); }} />
         ))}

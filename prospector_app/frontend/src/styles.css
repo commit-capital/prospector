@@ -787,9 +787,9 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .lane-queue { margin: 0 0 8px 18px; padding: 0; }
 .loop-chip { display: inline-block; margin-right: 14px; }
 .timeline { display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
-.tl-row { display: grid; grid-template-columns: 56px 90px minmax(0, 1fr); gap: 8px; }
+.tl-row { display: grid; grid-template-columns: 76px 90px minmax(0, 1fr); gap: 8px; }
 .tl-upcoming { color: var(--muted); }
-.tl-when { color: var(--muted); font-variant-numeric: tabular-nums; }
+.tl-when { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .tl-divider { border-top: 1px dashed var(--border); color: var(--muted); font-size: 11px; text-align: center; margin: 4px 0; }
 .ctabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin: 8px 0 12px; }
 .ctabs button { all: unset; cursor: pointer; padding: 6px 12px; color: var(--muted); border-bottom: 2px solid transparent; }
