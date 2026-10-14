@@ -58,14 +58,12 @@ def summarizable(rec: Pr) -> bool:
 
 
 def wave(store: Store, max_n: int | None = None) -> list[DiffManifestItem]:
-    out = []
-    for n, rec in _active(store):
-        if is_current(rec, "summary") or not summarizable(rec):
-            continue
-        out.append(DiffManifestItem.for_pr(n, rec, diff_cache.DIFFS))
-        if max_n and len(out) >= max_n:
-            break
-    return out
+    """The PRs lacking a current summary, nearest a merge first (gates.merge_rank)."""
+    todo = [(n, rec) for n, rec in _active(store)
+            if not is_current(rec, "summary") and summarizable(rec)]
+    todo.sort(key=lambda t: (gates.merge_rank(t[1]), t[0]))
+    return [DiffManifestItem.for_pr(n, rec, diff_cache.DIFFS)
+            for n, rec in todo[:max_n or None]]
 
 
 BATCH_DIR = Path("/tmp/pipeline-batches")      # driver writes per-batch inputs here
@@ -662,19 +660,24 @@ def assign_payloads(store: Store, sample_n: int = 4) -> list[dict]:
     """One unit per subsystem that has unclustered PRs: {subsystem,
     existing_clusters:[{id, root_problem, sample_changes}], new_prs:[...]}. The
     new PRs are the never-clustered ones with a current summary (no `cluster`
-    section at all) — already standalone-stamped PRs are left alone."""
+    section at all) — already standalone-stamped PRs are left alone. PRs nearest
+    a merge come first (gates.merge_rank), in each unit and across units."""
     prs = store.all_prs()
     cl_by_sub = _clusters_by_subsystem(store, prs, sample_n)
-    new_by_sub: dict[str, list[dict]] = {}
-    for n, rec in sorted(prs.items()):
+    new_by_sub: dict[str, list[tuple[tuple[int, int], dict]]] = {}
+    for n, rec in prs.items():
         if rec.state != "open" or rec.section("cluster"):
             continue
         s = rec.section("summary")
         if not s or not is_current(rec, "summary"):
             continue
-        new_by_sub.setdefault(s["subsystem"], []).append(summary_entry(n, rec, s))
+        new_by_sub.setdefault(s["subsystem"], []).append(
+            ((gates.merge_rank(rec), n), summary_entry(n, rec, s)))
+    for ranked in new_by_sub.values():
+        ranked.sort(key=lambda t: t[0])
+    order = sorted(new_by_sub, key=lambda sub: (new_by_sub[sub][0][0][0], sub))
     return [{"subsystem": sub, "existing_clusters": cl_by_sub.get(sub, []),
-             "new_prs": new_by_sub[sub]} for sub in sorted(new_by_sub)]
+             "new_prs": [e for _, e in new_by_sub[sub]]} for sub in order]
 
 
 def assign_units(store: Store, sample_n: int = 4) -> dict:

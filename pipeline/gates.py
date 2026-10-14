@@ -713,6 +713,15 @@ def merge_eligibility(pr: Pr, today: str | None = None,
     return True, "passed all checks run"
 
 
+def merge_rank(pr: Pr) -> int:
+    """How close a PR is to a merge, lowest first: 0 merge-eligible (clean with
+    a current GREEN security review), 1 clean, 2 the rest. The clustering lane
+    takes work in this order."""
+    if not pr_clean(pr)[0]:
+        return 2
+    return 0 if merge_eligibility(pr)[0] else 1
+
+
 def fix_eligibility(pr: Pr, action: str,
                     changed_paths: list[str] | None = None, *,
                     guided: bool = False, objection: bool = False) -> tuple[bool, str]:

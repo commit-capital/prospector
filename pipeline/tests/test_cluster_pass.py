@@ -8,14 +8,26 @@ import pytest
 from pipeline import analyze_clusters, capacity, cluster_driver, cluster_pass, diff_cache, headless_agent
 from pipeline.freshness import SECTION_SCHEMA_VERSION
 from pipeline.store import Store
+from pipeline.testsupport import reviews_section, threat_section
 
 NOW = "2026-06-10T00:00:00+00:00"
 
 
-def _pr(store: Store, n: int, *, summarized: bool = False, subsystem: str = "ui") -> None:
+def _pr(store: Store, n: int, *, summarized: bool = False, subsystem: str = "ui",
+        clean: bool = False, green: bool = False) -> None:
     head = f"h{n}"
     rec: dict = {"pr": n, "meta": {"title": f"t{n}", "author": "a", "state": "open",
                                    "draft": False, "head_sha": head, "checked_at": NOW}}
+    if clean or green:
+        rec.update({"signals": {"ci": "passing", "mergeable": True,
+                                "checked_at": NOW, "against_head_sha": head},
+                    "reviews": reviews_section(head, NOW),
+                    "drift": {"state": "applicable", "checked_at": NOW,
+                              "against_head_sha": head},
+                    "threat": threat_section(head, NOW)})
+    if green:
+        rec["security"] = {"verdict": "GREEN", "findings": [], "override": None,
+                           "checked_at": NOW, "against_head_sha": head}
     if summarized:
         rec["summary"] = {"one_liner": f"o{n}", "subsystem": subsystem, "mechanism": "m",
                           "identifiers": [], "paths": [], "primary_change": f"p{n}",
@@ -66,6 +78,16 @@ class TestSummarize:
         assert store.load_pr(6).section("summary") is None
         [row] = _ledger(store, "cluster:summaries")
         assert row["trigger"] == "worker" and row["stats"]["attempted"] == 5
+
+    def test_prs_nearest_a_merge_are_summarized_first(self, store, monkeypatch):
+        _pr(store, 1)
+        _pr(store, 2)
+        _pr(store, 3, clean=True)
+        _pr(store, 4, green=True)
+        calls: list[list[int]] = []
+        monkeypatch.setattr(cluster_driver, "run_summarize_agent", _summarizer(calls))
+        cluster_pass.summarize(store, 2, 1, cluster_pass._Outage(), None)
+        assert calls == [[4, 3]]
 
     def test_a_zero_limit_summarizes_nothing(self, store, monkeypatch):
         _pr(store, 1)
@@ -142,6 +164,19 @@ class TestAssign:
         monkeypatch.setattr(cluster_driver, "run_assign_agent", assign_agent)
         stage = cluster_pass.assign(store, 3, 1, cluster_pass._Outage(), None)
         assert stage.attempted == 3 and calls == [[1, 2, 3]]
+
+    def test_prs_nearest_a_merge_are_placed_first(self, store, monkeypatch):
+        _pr(store, 1, summarized=True, subsystem="api")
+        _pr(store, 2, summarized=True, subsystem="ui")
+        _pr(store, 3, summarized=True, subsystem="ui", green=True)
+        calls: list[list[int]] = []
+
+        def assign_agent(unit, on_event=None):
+            calls.append([p["pr"] for p in unit["new_prs"]])
+            return '```json\n{"joins": [], "new_clusters": [], "standalone": []}\n```'
+        monkeypatch.setattr(cluster_driver, "run_assign_agent", assign_agent)
+        cluster_pass.assign(store, 2, 1, cluster_pass._Outage(), None)
+        assert calls == [[3, 2]]
 
 
 class TestRun:

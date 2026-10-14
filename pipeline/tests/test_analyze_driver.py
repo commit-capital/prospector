@@ -33,6 +33,18 @@ def _cluster(store, cid, prs, outcome=None, proposals=None):
     return store.load_cluster(cid)
 
 
+class TestPendingOrder:
+    def test_a_cluster_with_a_green_member_is_analyzed_first(self, tmp_path):
+        s = Store(tmp_path)
+        _pr(s, 1)
+        _pr(s, 2, head="h2")
+        set_section(s, 2, "threat", threat_section("h2"))
+        set_section(s, 2, "security", {"verdict": "GREEN", "findings": [], "override": None})
+        _cluster(s, 1, [1])
+        _cluster(s, 2, [2])
+        assert [c.id for c in ad.pending(s)] == [2, 1]
+
+
 class TestDraftMembers:
     def test_draft_is_an_active_member(self, tmp_path):
         s = Store(tmp_path)
