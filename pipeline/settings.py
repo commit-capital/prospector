@@ -212,35 +212,9 @@ def profile_path() -> str:
     return os.environ.get("TRIAGE_PROFILE", "")
 
 
-def parse_review_provider(raw: str | None) -> tuple[str, tuple[str, ...]]:
-    """(mode, ids): "auto" detects active reviewers from the repository's PR
-    data, "none" requires no external review, "explicit" names exactly the
-    reviewer ids that gate (a comma list of pipeline.reviewers ids). An unknown
-    id is a hard error so a typo never silently disables a bar."""
-    from pipeline import reviewers
-    text = (raw or "auto").strip().lower()
-    if text in ("", "auto"):
-        return ("auto", ())
-    if text == "none":
-        return ("none", ())
-    ids = tuple(p.strip() for p in text.split(",") if p.strip())
-    unknown = [i for i in ids if i not in reviewers.REVIEWERS]
-    if unknown:
-        raise SystemExit(
-            f"TRIAGE_REVIEW_PROVIDER: unknown reviewer(s) {unknown!r}; use 'auto', 'none', or a "
-            f"comma list of {sorted(reviewers.REVIEWERS)}. Set it in .env — see .env.example.")
-    return ("explicit", ids)
-
-
-def review_provider() -> tuple[str, tuple[str, ...]]:
-    """Which automated reviewers gate a clean merge (see pipeline/review_policy.py).
-    Defaults to "auto" so a fresh checkout gates on whatever the repository runs."""
-    return parse_review_provider(os.environ.get("TRIAGE_REVIEW_PROVIDER"))
-
-
 def reviewer_active_days() -> int:
     """How recently a reviewer must have posted on an open PR to count as active
-    in auto mode."""
+    and gate merges."""
     return positive_int("TRIAGE_REVIEWER_ACTIVE_DAYS", 14)
 
 

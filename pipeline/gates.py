@@ -4,7 +4,7 @@ Every consumer — the GATE phase, the app chips, the executor's merge
 check — calls these functions; nothing else encodes policy.
 
 Policy (per the operator's bar): a merge candidate is CLEAN iff
-  the configured review provider's bar (when one is set) ∧ CI passing
+  every active reviewer's bar ∧ CI passing
   ∧ mergeable/applicable ∧ open non-draft
   ∧ signals+drift computed against the current head.
 A merge is ALLOWED iff additionally

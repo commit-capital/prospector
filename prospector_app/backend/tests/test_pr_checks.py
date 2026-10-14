@@ -120,15 +120,14 @@ def test_greptile_review_check_at_bar():
     assert chk["status"] == "pass" and chk["detail"] == "Greptile 5/5"
 
 
-def test_review_check_na_when_no_reviewer_active(monkeypatch):
-    monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "none")
+def test_review_check_na_when_no_reviewer_active(monkeypatch, active_reviewers):
+    active_reviewers()
     chk = _review_check(_pr())
     assert chk and chk["status"] == "na"
 
 
-def test_review_and_scans_rows_aggregate_every_active_reviewer(monkeypatch):
-    monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "greptile,coderabbit,superagent,socket")
-    review_policy.reset()
+def test_review_and_scans_rows_aggregate_every_active_reviewer(monkeypatch, active_reviewers):
+    active_reviewers("greptile", "coderabbit", "superagent", "socket")
     rec = _pr(reviews=reviews_section(
         HEAD, NOW,
         superagent={"kind": "scanner", "reviewed_sha": HEAD, "checks": [], "extra": {},

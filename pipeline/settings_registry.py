@@ -171,8 +171,6 @@ SETTINGS: tuple[Setting, ...] = (
             "The push user's no-reply email, its commit email when no App is configured."),
     Setting("TRIAGE_PUSH_SSH_KEY_FILE", "deployment", "path", "Push user SSH key", "(none)",
             "The push user's SSH key file."),
-    Setting("TRIAGE_REVIEW_PROVIDER", "deployment", "text", "Review provider", "auto",
-            "Which reviewers gate a merge: auto, none, or reviewer ids."),
     Setting("TRIAGE_REVIEW_THRESHOLD", "deployment", "int", "Greptile pass score", "5",
             "The Greptile score a PR needs."),
     Setting("TRIAGE_AGENT_PROVIDER", "deployment", "choice", "In-app agent", "claude",
@@ -249,6 +247,13 @@ INTERNAL: tuple[str, ...] = (
     "PROBE_DENY", "HOME", "TZ",
     "PYTEST_XDIST_WORKER",
 )
+
+# Settings the code no longer reads, with what replaced each. The Setup page
+# names any still set, and a pasted bundle drops them.
+RETIRED: dict[str, str] = {
+    "TRIAGE_REVIEW_PROVIDER": "Which reviewers gate a merge is detected from the reviewers seen "
+                              "on the repository's open PRs; delete this line.",
+}
 
 BY_NAME = {s.name: s for s in SETTINGS}
 _LIST_TOKEN = re.compile(r"^[A-Za-z0-9._-]+$")

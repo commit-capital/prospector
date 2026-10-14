@@ -453,10 +453,10 @@ class TestTargetedIngest:
         assert rec.greptile_reviewed_sha == "s2"
         assert store.runs()[-1].raw["stats"]["upserted"] == 1
 
-    def test_refresh_stores_every_reviewer_regardless_of_policy(self, tmp_path, monkeypatch):
+    def test_refresh_stores_every_reviewer_regardless_of_policy(self, tmp_path, monkeypatch, active_reviewers):
         # Detection needs the data, so a reviewer's entry is stored even when the
         # policy does not gate on it.
-        monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "none")
+        active_reviewers()
         store = Store(tmp_path)
         b = dict(GH_PR, number=7003, head={"sha": "s3"})
         monkeypatch.setattr(ingest, "fetch_pr", lambda n: b)

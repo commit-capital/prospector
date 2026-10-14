@@ -111,8 +111,8 @@ def extract_spec(text: str) -> dict:
         return {}
 
 
-# Greptile-provider query fields, spliced into the prompt only when Greptile is the
-# configured review provider (the braces are doubled to survive str.format).
+# Greptile query fields, spliced into the prompt only when Greptile is an
+# active reviewer (the braces are doubled to survive str.format).
 _GREPTILE_FIELD_DOCS = """- greptile_stale: boolean — true = Greptile reviewed an older commit (score predates author's post-review fixes); false = Greptile reviewed the current head
 - greptile_severity: defects|nits|clean — what Greptile's own review text implies about a sub-5 score: "defects" = it flagged a substantive bug/security/logic issue, "nits" = only style-level feedback, "clean" = it left no findings at all
 - greptile: {{"op": "<|<=|==|>=|>", "value": <number>}} — the review confidence score

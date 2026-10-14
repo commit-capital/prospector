@@ -94,8 +94,8 @@ def test_system_prompt_separates_background_behavior_and_output() -> None:
     )
 
 
-def test_system_prompt_renders_configured_review_bar(monkeypatch):
-    monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "greptile")
+def test_system_prompt_renders_configured_review_bar(monkeypatch, active_reviewers):
+    active_reviewers("greptile")
     monkeypatch.setenv("TRIAGE_REVIEW_THRESHOLD", str(4))
     sp = chat.system_prompt()
     assert "Greptile at 4/5" in sp
@@ -425,7 +425,7 @@ def test_context_keeps_cockpit_permission_failures_actionable() -> None:
     assert "continue with the remaining confirmed independent actions" in sp
 
 
-def test_context_documents_the_review_retrigger(monkeypatch):
+def test_context_documents_the_review_retrigger(monkeypatch, active_reviewers):
     # Re-triggering the review is a bot comment carrying the provider's mention —
     # the prompt names the configured one so the agent doesn't have to guess it.
     sp = chat.system_prompt()
@@ -435,14 +435,14 @@ def test_context_documents_the_review_retrigger(monkeypatch):
     assert "{retrigger_mention}" not in sp
     # A deployment whose provider has no re-trigger says so, rather than leaving a
     # bare placeholder for the agent to invent a mention from.
-    monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "none")
+    active_reviewers()
     sp = chat.system_prompt()
     assert "@greptileai" not in sp
     assert "{retrigger_mention}" not in sp
 
 
-def test_context_names_each_reviewers_retrigger_apart(monkeypatch):
-    monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "greptile,coderabbit")
+def test_context_names_each_reviewers_retrigger_apart(monkeypatch, active_reviewers):
+    active_reviewers("greptile", "coderabbit")
     sp = chat.system_prompt()
     assert "Greptile `@greptileai`; CodeRabbit `@coderabbitai review`" in sp
     assert "@greptileai, @coderabbitai" not in sp

@@ -1757,9 +1757,17 @@ export interface SettingRow {
   source: ".env" | "environment" | "default";
   effective?: string;
 }
+/** A setting the code no longer reads that this machine still sets. */
+export interface RetiredSetting {
+  name: string;
+  value: string;
+  help: string;
+  source: ".env" | "environment";
+}
 export interface SettingsReport {
   groups: { id: string; label: string }[];
   settings: SettingRow[];
+  retired: RetiredSetting[];
 }
 
 /** Where this checkout stands on the setup ladder. */

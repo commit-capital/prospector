@@ -14,7 +14,7 @@ proposes merging anything with an open flag.
 
 ## Deployment configuration
 
-- **Review bar:** `TRIAGE_REVIEW_PROVIDER=auto` — every automated reviewer and
+- **Review bar:** detected from the repository — every automated reviewer and
   scanner the repository runs gates at its own bar (Greptile at 5/5; CodeRabbit
   with no open Critical/Major finding; Superagent with no open P1/P2 and a
   passing scan; Socket with no new dependency alerts). A PR any of them blocks

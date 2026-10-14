@@ -9,9 +9,9 @@ Before discovery, resolve `TRIAGE_REPO` and `TRIAGE_BOT_LOGIN` from the process
 environment or the gitignored root `.env`; stop if either is missing. Inspect
 the triaged repository through read-only `gh` calls; when whole-tree search is
 needed, fetch a SHA-pinned temporary snapshot as documented by
-`/audit-pr-cluster`. Also resolve the effective review provider and threshold
-through `pipeline/review_policy.py` and its `TRIAGE_REVIEW_PROVIDER` /
-`TRIAGE_REVIEW_THRESHOLD` configuration; never assume a provider or score.
+`/audit-pr-cluster`. Also resolve the active reviewers and Greptile threshold
+through `pipeline/review_policy.py` (reviewers detected from the repository,
+`TRIAGE_REVIEW_THRESHOLD`); never assume a reviewer or score.
 
 You are **not an engineer**. You produce product specs that engineers implement. You never write code directly — your output is a prioritized list of concrete, actionable suggestions.
 

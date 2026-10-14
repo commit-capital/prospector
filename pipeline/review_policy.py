@@ -1,12 +1,11 @@
 """The ONE review/merge-provider policy: which automated reviewers and scanners
 gate a clean merge on this repository, and at what bar.
 
-`TRIAGE_REVIEW_PROVIDER` is `auto` (every GitHub reviewer seen on an open PR
-within `TRIAGE_REVIEWER_ACTIVE_DAYS`, read from the store's `reviewers`
-registry that ingest recomputes), `none`, or an explicit comma list of reviewer
-ids. The Prospector-run design review is active when listed explicitly or
-under `TRIAGE_DESIGN_REVIEW=gate`, never by detection, and never while
-`TRIAGE_DESIGN_REVIEW=off` runs no review to pass it. Every consumer — the gates, the checks rollup, the prompts, the app
+The active GitHub reviewers are the ones seen on an open PR within
+`TRIAGE_REVIEWER_ACTIVE_DAYS`, read from the store's `reviewers` registry that
+ingest recomputes, so every machine on one store gates alike. The
+Prospector-run design review is active under `TRIAGE_DESIGN_REVIEW=gate` alone,
+never by detection. Every consumer — the gates, the checks rollup, the prompts, the app
 capabilities — reads the active set and each reviewer's bar here."""
 from __future__ import annotations
 
@@ -26,8 +25,6 @@ _SEEN_TTL_SECONDS = 60.0
 
 @dataclass(frozen=True)
 class ReviewPolicy:
-    mode: str                       # "auto" | "none" | "explicit"
-    explicit: tuple[str, ...]
     active_days: int
     threshold: int | None           # Greptile score bar override
 
@@ -39,8 +36,7 @@ class Blocker:
 
 
 def policy() -> ReviewPolicy:
-    mode, ids = settings.review_provider()
-    return ReviewPolicy(mode, ids, settings.reviewer_active_days(), settings.review_threshold())
+    return ReviewPolicy(settings.reviewer_active_days(), settings.review_threshold())
 
 
 _seen_cache: tuple[float, dict] | None = None
@@ -80,19 +76,11 @@ def _recent(stamp: str | None, days: int) -> bool:
 
 def active_reviewers(kind: str | None = None) -> list[Reviewer]:
     """The reviewers that gate this repository, in registry order."""
-    p = policy()
-    if p.mode == "none":
-        ids: list[str] = []
-    elif p.mode == "explicit":
-        ids = list(p.explicit)
-    else:
-        seen = _seen()
-        ids = [rid for rid, r in reviewers.REVIEWERS.items() if r.source == reviewers.GITHUB
-               and _recent((seen.get(rid) or {}).get("last_observed_at"), p.active_days)]
-    if p.mode != "none" and settings.design_review_mode() == "gate":
+    seen, days = _seen(), policy().active_days
+    ids = [rid for rid, r in reviewers.REVIEWERS.items() if r.source == reviewers.GITHUB
+           and _recent((seen.get(rid) or {}).get("last_observed_at"), days)]
+    if settings.design_review_mode() == "gate":
         ids.append(reviewers.DESIGN.id)
-    if settings.design_review_mode() == "off":
-        ids = [rid for rid in ids if rid != reviewers.DESIGN.id]
     out = [r for rid, r in reviewers.REVIEWERS.items() if rid in ids]
     return [r for r in out if kind is None or r.kind == kind]
 

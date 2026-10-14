@@ -255,6 +255,11 @@ class TestBundle:
         with pytest.raises(ValueError, match="version 99"):
             onboarding.parse_bundle(json.dumps({"version": 99, "env": {}}))
 
+    def test_a_retired_setting_in_an_older_bundle_is_dropped(self):
+        text = json.dumps({"version": onboarding.BUNDLE_VERSION,
+                           "env": {"TRIAGE_REPO": "acme/widgets", "TRIAGE_REVIEW_PROVIDER": "greptile"}})
+        assert onboarding.parse_bundle(text).env == {"TRIAGE_REPO": "acme/widgets"}
+
     def test_junk_is_refused_without_a_traceback(self):
         with pytest.raises(ValueError, match="not a Prospector bundle"):
             onboarding.parse_bundle("hello")
