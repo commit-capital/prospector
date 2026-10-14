@@ -196,8 +196,9 @@ def host_checks(spec: fix_lane.LaneSpec, *, test_patch: str, fix_patch: str,
     """The host's checks over a fix, recorded on `proof`: its own tests green
     twice with it applied (unless `own_green` is False — a caller that already
     proved them), the compile, the lint, the related tests, and the full suite.
-    None when it clears them all, else the (ending, reason) it stops at. `tree`
-    is a checkout of the lane's tree the related tests are picked from."""
+    None when it clears them all, else the (ending, reason) it stops at — a
+    check whose sandbox could not run (issue_gates.sandbox_fault) ends
+    `sandbox`, the machine's condition, never a verdict. `tree` is a checkout of the lane's tree the related tests are picked from."""
     test_cmd = verify_driver.derive_test_command(test_paths)
     if test_cmd and own_green:
         green = prove.green_legs(spec.base, patch=proof_patch(test_patch, fix_patch),
@@ -216,6 +217,9 @@ def host_checks(spec: fix_lane.LaneSpec, *, test_patch: str, fix_patch: str,
         if compiled.get("error_kind") == "base-compile":
             return "base-compile", str(compiled.get("error")
                                        or "the base fails the compile command")
+        fault = issue_gates.sandbox_fault(compiled)
+        if fault:
+            return "sandbox", f"the compile sandbox could not run: {fault}"
         not_run = compiled.get("refused") or compiled.get("error")
         if not_run or (compiled.get("exit") != gates.SENTINEL_PASS
                        and not compiled.get("tree_fails")):
@@ -228,6 +232,9 @@ def host_checks(spec: fix_lane.LaneSpec, *, test_patch: str, fix_patch: str,
         on_step("lint")
         proof["lint"] = fix_lane.compile_proof(spec, proof_patch, (test_patch, fix_patch),
                                                lint_cmd, label, lane="lint")
+        fault = issue_gates.sandbox_fault(proof["lint"])
+        if fault:
+            return "sandbox", f"the lint sandbox could not run: {fault}"
         block = gates.lint_block(proof["lint"], "the fix")
         if block:
             return "fix-unproven", block
@@ -245,6 +252,9 @@ def host_checks(spec: fix_lane.LaneSpec, *, test_patch: str, fix_patch: str,
                                          phase="green", label=label)
             entry["base_fails"] = base_run.get("exit") == gates.SENTINEL_TEST_FAIL
         proof["related_tests"] = entry
+        fault = issue_gates.sandbox_fault(entry["run"])
+        if fault:
+            return "sandbox", f"the related-tests sandbox could not run: {fault}"
         if not entry.get("base_fails"):
             block = gates.related_tests_block(entry, "the fix")
             if block:
