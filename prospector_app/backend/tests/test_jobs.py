@@ -43,6 +43,14 @@ def test_design_review_runs_the_backfill_module_with_its_count():
     assert job["_argv"][-4:] == ["-m", "prospector_app.backend.design_backfill", "--limit", "7"]
 
 
+def test_design_review_pr_runs_the_backfill_module_for_one_pr():
+    jobs.JOBS.clear()
+    job = jobs.start_job("design-review-pr", pr=42)
+    assert job["_argv"][-4:] == ["-m", "prospector_app.backend.design_backfill", "--pr", "42"]
+    with pytest.raises(ValueError):
+        jobs.start_job("design-review-pr", pr=42)
+
+
 def test_security_review_spec_is_listed_and_needs_pr():
     specs = {s["kind"]: s for s in jobs.list_specs()}
     assert "security-review" in specs
