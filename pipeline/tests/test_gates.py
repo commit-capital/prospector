@@ -263,6 +263,14 @@ class TestMergeAllowed:
         assert "11d old, outside the 7d window" in reason and "re-run VERIFY" in reason
 
 
+class TestMergeRank:
+    def test_merge_eligible_then_clean_then_the_rest(self):
+        assert gates.merge_rank(_pr(security=_green())) == 0
+        assert gates.merge_rank(_pr()) == 1
+        assert gates.merge_rank(_pr(security=_green(verdict="RED"))) == 1
+        assert gates.merge_rank(_pr(threat=None)) == 2
+
+
 class TestMergeEligibility:
     """The app's human-initiated merge gate: mergeable iff every check we
     actually ran passed. ANALYZE/SECURITY absence does not block."""

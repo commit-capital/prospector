@@ -187,18 +187,20 @@ def pending(store: Store) -> list[Cluster]:
     analysis is missing/stale (head moved), or an active member with no
     proposal row in this cluster. A PR that joins after an analysis may carry
     a current per-PR analysis from another cluster or a standalone pass, so
-    the proposal-coverage check is what detects the membership change (#137)."""
+    the proposal-coverage check is what detects the membership change (#137).
+    A cluster ranks by its member nearest a merge (gates.merge_rank)."""
     prs = store.all_prs()
-    out = []
-    for cid, c in sorted(store.all_clusters().items()):
+    ranked: list[tuple[int, int, Cluster]] = []
+    for cid, c in store.all_clusters().items():
         members = _active_members(store, c, prs)
         if not members:
             continue
         if (c.outcome is None
                 or any(not is_current(r, "analysis") for r in members)
                 or any(c.proposal_for(r.n) is None for r in members)):
-            out.append(c)
-    return out
+            ranked.append((min(gates.merge_rank(r) for r in members), cid, c))
+    ranked.sort(key=lambda t: t[:2])
+    return [c for _, _, c in ranked]
 
 
 def _already_on_master(rec: Pr, master: redundancy.MasterTree | None) -> dict | None:

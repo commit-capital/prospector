@@ -210,7 +210,9 @@ never-clustered PRs into the existing clusters, new ones, or standalone (one
 agent per subsystem chunk of `ASSIGN_CHUNK`, in rounds built against the
 clusters the round before committed, each answer held to its unit by
 `cluster_pass.restrict`), then analyzes pending clusters through
-`analyze_clusters.run`. The SUMMARIZE and ASSIGN prompts each have one copy in
+`analyze_clusters.run`. Every stage takes the PRs nearest a merge first, and a
+cluster ranks by its best member (`gates.merge_rank`: merge-eligible, then
+clean, then the rest). The SUMMARIZE and ASSIGN prompts each have one copy in
 `cluster_driver.py`, shipped to the Workflow scripts in their index files. On a
 machine with `TRIAGE_CLUSTER_WORKER=1` the lane runs a pass every hour in a
 child process under `PROSPECTOR_UNATTENDED=cluster`, so every agent call is
