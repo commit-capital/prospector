@@ -1170,7 +1170,7 @@ def list_issues():
 def issues_query(payload: dict = Body(default_factory=dict)):
     """Paginated Issue-table endpoint. Body: {q?, sort?, direction?, disposition?,
     state?, author?, pain?, repro_grade?, subsystem?, dups?, linked_prs?, labels?,
-    collapse_dups?, fix_status?, offset?, limit?}; disposition "none" selects unanalyzed
+    collapse_dups?, fix_status?, maintainer?, offset?, limit?}; disposition "none" selects unanalyzed
     issues, state "open"/"closed" filters by lifecycle ("all"/absent returns
     both). See issues.query_issues for the per-field filter semantics."""
     return issues_mod.query_issues(
@@ -1186,6 +1186,7 @@ def issues_query(payload: dict = Body(default_factory=dict)):
         labels=payload.get("labels") or None,
         collapse_dups=bool(payload.get("collapse_dups")),
         fix_status=payload.get("fix_status") or None,
+        maintainer=payload.get("maintainer"),
         offset=int(payload.get("offset", 0)), limit=min(int(payload.get("limit", 50)), 500),
     )
 

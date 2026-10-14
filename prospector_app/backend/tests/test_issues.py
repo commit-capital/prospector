@@ -926,6 +926,20 @@ def test_the_query_filters_and_sorts_on_fix_status(tmp_path, monkeypatch):
     assert sorted_rows[0]["number"] == 10
 
 
+def test_the_query_filters_on_a_maintainer_author(tmp_path, monkeypatch):
+    st = _seed(tmp_path, monkeypatch)
+    st.create_issue(12, {"title": "owner report", "state": "open", "author": "ma",
+                         "author_association": "MEMBER",
+                         "created_at": "2026-01-03T00:00:00Z", "updated_at": "2026-01-03T00:00:00Z"})
+    st.create_issue(13, {"title": "app report", "state": "open", "author": "app[bot]",
+                         "author_association": "MEMBER",
+                         "created_at": "2026-01-03T00:00:00Z", "updated_at": "2026-01-03T00:00:00Z"})
+    got = issues.query_issues(maintainer=True, state="all")
+    assert [r["number"] for r in got["items"]] == [12]
+    assert got["items"][0]["maintainer"] is True
+    assert {r["number"] for r in issues.query_issues(maintainer=False, state="all")["items"]} == {10, 11, 13}
+
+
 def test_a_row_whose_full_record_fails_to_build_serves_its_light_row(tmp_path, monkeypatch, caplog):
     st = _seed(tmp_path, monkeypatch)
     st.edit_issue(10).record_fix_run({"ending": "fixed", "detail": "proven", "host": "s"})

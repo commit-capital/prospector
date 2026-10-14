@@ -22,6 +22,7 @@ from issue_triage import fix_review
 from issue_triage import issue_links
 from issue_triage import pr_index
 from issue_triage import trust_boundary
+from pipeline import gates
 from pipeline import gh
 from pipeline import settings
 from pipeline import profile
@@ -253,6 +254,7 @@ def _row(iss: Issue, clusters_by_id: dict[int, IssueCluster], store_states: dict
         # cold-loads.
         "author_stats": None if snapshot_loading else data.author_stats(iss.author),
         "trusted_author": iss.author in profile.active().trusted_authors,
+        "maintainer": gates.priority_author(iss.author, iss.author_association),
         "labels": iss.labels,
         "comments": iss.comments,
         "reactions": iss.reactions_total,
@@ -412,6 +414,7 @@ def query_issues(q: str = "", sort: str | None = None, direction: str | None = N
                  dups: dict | None = None, linked_prs: dict | None = None,
                  labels: str | None = None, collapse_dups: bool = False,
                  fix_status: str | list[str] | None = None,
+                 maintainer: bool | None = None,
                  offset: int = 0, limit: int = 50) -> dict:
     """Paginated issue-table query. Uses the light cached snapshot for filtering
     and sorting, then hydrates only the returned page with full candidate PR data.
@@ -427,7 +430,9 @@ def query_issues(q: str = "", sort: str | None = None, direction: str | None = N
     `dups` (duplicate count), and `linked_prs` (linked-PR count) are `{op, value}`
     numeric compares — see filters.num_cmp — and a missing row value never matches
     one. `fix_status` accepts one fix_review status or a list (OR'd); "any"
-    selects every issue with a fix attempt and "none" those without. While the PR snapshot is still cold-loading, the result carries
+    selects every issue with a fix attempt and "none" those without.
+    `maintainer` keeps the issues whose author is (True) or is not (False) a
+    `gates.priority_author`. While the PR snapshot is still cold-loading, the result carries
     `pr_states_loading` true and answers immediately with unhydrated linked-PR
     chips, no author stats, and (for sort=prs) no merged-fixer ranking — the
     view refetches until the flag clears."""
@@ -466,6 +471,8 @@ def query_issues(q: str = "", sort: str | None = None, direction: str | None = N
                 if ("any" in wanted_fix and r["fix_status"] is not None)
                 or ("none" in wanted_fix and r["fix_status"] is None)
                 or r["fix_status"] in wanted_fix]
+    if maintainer is not None:
+        rows = [r for r in rows if r["maintainer"] == maintainer]
     if labels:
         needle_label = labels.strip().lower()
         if needle_label:

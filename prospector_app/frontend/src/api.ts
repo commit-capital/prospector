@@ -1366,6 +1366,8 @@ export interface IssueRow {
   linked_pr_count: number;
   referenced_pr_count: number;
   referenced_merged_count: number;
+  /** The author is a gates.priority_author, whose issues the fix worker takes first. */
+  maintainer?: boolean;
   /** Whose move the issue's fix attempt waits on (issue_triage/fix_review.py). */
   fix_status?: IssueFixStatus | null;
   fix_reason?: string | null;
@@ -2002,7 +2004,7 @@ export const api = {
   listIssues: () => get<{ items: IssueRow[]; pr_states_loading: boolean }>("/api/issues"),
   queryIssues: (opts: {
     q?: string; sort?: string; direction?: string; disposition?: string; state?: string;
-    collapse_dups?: boolean; fix_status?: string | string[]; offset?: number; limit?: number;
+    collapse_dups?: boolean; fix_status?: string | string[]; maintainer?: boolean; offset?: number; limit?: number;
   } & IssueFilterSpec = {}) =>
     postJson<{ items: IssueRow[]; total: number; offset: number; limit: number; pr_states_loading: boolean }>(
       "/api/issues/query", opts),
