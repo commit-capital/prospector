@@ -83,6 +83,10 @@ def classify(pr: Pr) -> dict | None:
             ok, why = gates.merge_eligibility(pr, changed_paths=paths)
             if not ok:
                 return _r("handed", "gated", why)
+        if pr.disposition is None:
+            # Not ready: the verify hunter runs only analyzed merge picks.
+            return _r("auto", "waiting", "not analyzed yet; once the clustering lane picks "
+                                         "it to merge, the verify hunter runs its Test Run")
         gap = _unclear_check(pr)
         if gap is None:
             return _r("act", "merge-ready", "every check is clear; merge it")
@@ -145,16 +149,14 @@ def _unclear_check(pr: Pr) -> dict | None:
     which may warn (a PR without tests can still be ready), and an advisory
     check, which never gates. A check that has
     not run counts against readiness only for verification and the deep
-    security review, the two the hunters exist to run — verification only on
-    an analyzed merge pick, the one population its hunter runs; a check that
-    does not apply to this deployment (no active scanner) is clear."""
+    security review, the two the hunters exist to run; a check that does not
+    apply to this deployment (no active scanner) is clear."""
     from prospector_app.backend import pr_checks
-    hunted = ("verify", "security") if pr.disposition == "merge" else ("security",)
     for check in pr_checks.checks_for_record(pr)["checks"]:
         status, key = check["status"], check["key"]
         if status == "pass" or check["advisory"] or (key == "tests" and status == "warn"):
             continue
-        if status == "na" and key not in hunted:
+        if status == "na" and key not in ("verify", "security"):
             continue
         return check
     return None

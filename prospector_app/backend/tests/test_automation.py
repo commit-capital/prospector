@@ -252,11 +252,12 @@ def test_a_merge_pick_whose_verification_never_ran_is_in_motion_not_ready(store)
     assert "verification has not run" in out["reason"]
 
 
-def test_a_clean_reviewed_pr_analyze_never_reached_is_merge_ready(store):
+def test_a_clean_reviewed_pr_analyze_never_reached_waits_on_analysis_not_ready(store):
     rec = _merge_pick(_rec())
     del rec["analysis"]
     out = _classify(store, rec)
-    assert (out["column"], out["bucket"], out["owner"]) == ("act", "merge-ready", "you")
+    assert (out["column"], out["bucket"], out["owner"]) == ("auto", "waiting", "worker")
+    assert "not analyzed" in out["reason"]
 
 
 def test_a_merge_eligible_pr_on_a_codeowners_path_is_handed_to_you(store, monkeypatch):
