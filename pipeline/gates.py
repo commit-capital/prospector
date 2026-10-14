@@ -737,6 +737,10 @@ def fix_eligibility(pr: Pr, action: str,
         stays off the branch until an adversarial review says so again.
       - a path the profile's autofix.deny_globs names
       - a PR that is not open
+      - any action but `describe` (which pushes nothing) on a head the push
+        user cannot reach: a branch on the upstream repository itself, or a
+        fork branch with "Allow edits from maintainers" off. Ingest records
+        both; an unread one does not block, and resubmit re-reads them live.
       - an unguided `fix` action where the profile names no fixable gates, i.e.
         the deployment has not opted into agent-authored changes
       - a `fix` or `resolve` action on a CODEOWNERS-gated path
@@ -774,6 +778,13 @@ def fix_eligibility(pr: Pr, action: str,
         return False, f"PR is {pr.state}, not open"
     if pr.threat_verdict == "malicious":
         return False, "threat verdict is malicious"
+    if action != "describe":
+        if pr.cross_repo is False:
+            return False, ("the head branch is on the upstream repository itself, which the "
+                           "push user does not push to")
+        if pr.maintainer_can_modify is False:
+            return False, ("'Allow edits from maintainers' is off, so the push user cannot "
+                           "push to the fork branch")
     if unscannable := unscannable_reason(pr):
         return False, unscannable
     if pr.security_verdict == "RED":

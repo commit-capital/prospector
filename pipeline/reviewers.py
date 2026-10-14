@@ -182,9 +182,14 @@ def open_findings(entry: dict | None) -> list[dict]:
 
 
 def open_counts(entry: dict | None) -> dict[str, int]:
+    """Open findings by severity. A finding a verifier refuted is left out,
+    and one it could not judge counts as `unverified`."""
     counts: dict[str, int] = {}
     for f in open_findings(entry):
-        sev = str(f.get("severity") or "unclassified")
+        verdict = (f.get("verification") or {}).get("verdict")
+        if verdict == "refuted":
+            continue
+        sev = "unverified" if verdict == "unverified" else str(f.get("severity") or "unclassified")
         counts[sev] = counts.get(sev, 0) + 1
     return counts
 
@@ -442,10 +447,11 @@ def _socket_bar(entry: dict | None, head_sha: str | None) -> Bar:
 
 DESIGN_SEVERITIES = ("blocking", "major", "minor")
 DESIGN_CATEGORIES = ("reuse", "layering", "convention", "test")
-_DESIGN_BLOCKING = frozenset({"blocking", "major"})
-# Raised with any change to what the design review's severities mean; a review
-# stamped with an earlier rubric reads stale and is taken again.
-DESIGN_RUBRIC = 2
+DESIGN_BLOCKING = frozenset({"blocking", "major"})
+# Raised with any change to what the design review's severities mean or how
+# its findings are judged; a review stamped with an earlier rubric reads stale
+# and is taken again.
+DESIGN_RUBRIC = 3
 
 
 def design_rubric(entry: dict) -> int:
@@ -460,7 +466,7 @@ def _design_bar(entry: dict | None, head_sha: str | None) -> Bar:
         return Bar(STALE, "design review stale", None)
     if design_rubric(entry) < DESIGN_RUBRIC:
         return Bar(STALE, "design review predates the current rubric", None)
-    blocking = [f for f in open_findings(entry) if f.get("severity") in _DESIGN_BLOCKING]
+    blocking = design_standing(entry)
     if blocking:
         worst = "blocking" if any(f["severity"] == "blocking" for f in blocking) else "major"
         return Bar(FAIL, f"design review: {_plural(len(blocking), f'open {worst} finding')}",
@@ -469,10 +475,18 @@ def _design_bar(entry: dict | None, head_sha: str | None) -> Bar:
     return Bar(PASS, None, None)
 
 
+def design_standing(entry: dict | None) -> list[dict]:
+    """The open blocking and major findings a refuting verifier confirmed
+    (`pipeline/design_verify.py`): the ones the bar fails on and autofix aims
+    at. A refuted, unsure or unverified finding is shown and nothing more."""
+    return [f for f in open_findings(entry) if f.get("severity") in DESIGN_BLOCKING
+            and (f.get("verification") or {}).get("verdict") == "confirmed"]
+
+
 def _design_findings_for_fix(entry: dict | None) -> list[dict]:
     return [{"headline": f.get("title") or "", "class": "substantive",
              "why": (f.get("body") or "")[:500], "path": f.get("path"), "line": f.get("line")}
-            for f in open_findings(entry) if f.get("severity") in _DESIGN_BLOCKING]
+            for f in design_standing(entry)]
 
 
 # --- dispatch --------------------------------------------------------------

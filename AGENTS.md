@@ -337,7 +337,10 @@ after its cooldown. `gates.fix_eligibility` is the ONE
 policy —
 fail-closed on a malicious threat verdict, any recorded RED security verdict, a
 CODEOWNERS-gated path, a path the profile's `autofix.deny_globs` names, a
-non-open PR, and (for an unguided `fix`) a profile naming no
+non-open PR, a head the push user cannot reach for any action but `describe`
+(a branch on `TRIAGE_REPO` itself, or a fork with "Allow edits from
+maintainers" off — ingest records `head_repo` and `maintainer_can_modify` in
+the PR's meta; an unread one does not block), and (for an unguided `fix`) a profile naming no
 `autofix.fixable_gates`. Operator guidance is its own opt-in: a named human
 typing the goal authorizes the fix where the profile does not, and the change
 still parks for that same human's approval. Guidance chooses the job only —
@@ -686,11 +689,23 @@ clone and the head's diff) judges reuse — every finding cites the base file it
 duplicates — layering, drift from the repository's contributor docs and
 `rules/*.mdc`, and tests that would survive a broken implementation. The host
 keeps only findings on a file the diff touches (and, for reuse, an existing base
-file) and writes `reviews["design"]` through `Store.save_design_review`, which
-refuses a head that moved; ingest's `parse_all` carries the entry over (schema
-31). Its bar fails on any open `blocking` or `major` finding; a review
-stamped with an earlier `reviewers.DESIGN_RUBRIC` (the severity rubric's
-revision) reads stale and is taken again. Auto-detection never
+file) and has each `blocking` or `major` one judged by a refuting verifier
+(`pipeline/design_verify.py`): one agent per finding, in the reviewer's sandbox
+and from a fresh context, told to refute it — for reuse, that the cited helper
+is reachable from the PR's file and behaves identically on every input the
+PR's code handles, with the PR's tests still passing; for layering, how many
+callers the move would change; for a test or convention claim, the test code or
+the rule itself. Its verdict rides the finding as `verification`: `confirmed`,
+`refuted` (kept, struck through on the PR page with the reason), `unsure`
+(downgraded to minor, `claimed_severity` kept), or `unverified` when the
+verifier gave no answer (shown, advisory); an agent outage or a closed capacity
+gate fails the whole review. The host writes `reviews["design"]` through
+`Store.save_design_review`, which refuses a head that moved; ingest's
+`parse_all` carries the entry over (schema 31). Its bar fails on any open
+`blocking` or `major` finding a verifier confirmed (`reviewers.design_standing`),
+and only those are autofix goals; a review stamped with an earlier
+`reviewers.DESIGN_RUBRIC` (the rubric's revision) reads stale and is taken
+again. Auto-detection never
 activates it: under `TRIAGE_DESIGN_REVIEW=advisory` (default) it is shown on
 the PR page's Design review row and gates nothing; `gate` makes it a merge requirement; `off` stops the
 lane. A verify worker runs it as a third idle-hunt lane (`design`, taking turns

@@ -81,7 +81,8 @@ def _design_entry(findings: list[dict]) -> dict:
             "extra": {"rubric": reviewers.DESIGN_RUBRIC}}
 
 
-_BLOCKING = {"severity": "blocking", "resolved": False, "outdated": False}
+_BLOCKING = {"severity": "blocking", "verification": {"verdict": "confirmed", "reason": "r"},
+             "resolved": False, "outdated": False}
 
 
 def test_never_detects_design(monkeypatch):

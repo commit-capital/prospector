@@ -263,7 +263,8 @@ def _design_check(rec):
 
 _DESIGN_BLOCKING = {"kind": "review", "reviewed_sha": HEAD, "checks": [],
                     "extra": {"rubric": reviewers.DESIGN_RUBRIC},
-                    "findings": [{"severity": "blocking", "resolved": False, "outdated": False}]}
+                    "findings": [{"severity": "blocking", "verification": {"verdict": "confirmed", "reason": "r"},
+             "resolved": False, "outdated": False}]}
 
 
 def test_design_row_never_ran_until_reviewed(monkeypatch):

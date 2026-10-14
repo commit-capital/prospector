@@ -991,6 +991,7 @@ def _design_failing(store) -> None:
         "extra": {"rubric": reviewers.DESIGN_RUBRIC}, "summary": "design prose",
         "findings": [{"severity": "blocking", "title": "duplicates src/util.ts pad",
                       "body": "use pad", "path": "src/a.ts", "line": 3,
+                      "verification": {"verdict": "confirmed", "reason": "r"},
                       "resolved": False, "outdated": False},
                      {"severity": "minor", "title": "naming", "body": "n", "path": "src/a.ts",
                       "line": 4, "resolved": False, "outdated": False}]}

@@ -71,6 +71,7 @@ class _UpsertStats(TypedDict):
 def meta_from_gh(pr: dict) -> dict:
     state = "merged" if pr.get("merged_at") else pr.get("state", "open")
     reactions = pr.get("reactions") or {}
+    can_modify = pr.get("maintainer_can_modify")
     return {
         "title": pr.get("title") or "(untitled)",
         "body": (pr.get("body") or "")[:20000] or None,
@@ -87,6 +88,8 @@ def meta_from_gh(pr: dict) -> dict:
         "updated_at": pr.get("updated_at"),
         "comments": pr.get("comments"),
         "reactions_total": reactions.get("total_count"),
+        # None when GitHub's answer was not read (the REST listing omits it).
+        "maintainer_can_modify": can_modify if isinstance(can_modify, bool) else None,
     }
 
 
@@ -185,6 +188,8 @@ def _stage_pr(store: Store, gh_pr: dict, existing: Pr | None,
     """Merge GitHub facts into a new or existing PR without writing it."""
     n = int(gh_pr["number"])
     meta = meta_from_gh(gh_pr)
+    if meta["maintainer_can_modify"] is None and existing is not None:
+        meta["maintainer_can_modify"] = existing.maintainer_can_modify
     head_moved = existing is not None and existing.head_sha != meta.get("head_sha")
     sig = _build_signals(
         existing_signals=existing.signals if existing is not None else None,
@@ -464,6 +469,8 @@ def _upsert_all(store: Store, prs: list[dict], issue_links: dict[int, list[dict]
                           check_runs=current.get("check_runs") or [],
                           statuses=current.get("statuses") or [], conversation=False)
         reviews = stage_reviews(existing, feed, head_sha) if feed is not None else None
+        if isinstance(live.get("maintainer_can_modify"), bool):
+            gh_pr = {**gh_pr, "maintainer_can_modify": live["maintainer_can_modify"]}
         rec = _stage_pr(
             store, gh_pr, existing, issue_links.get(n, []),
             ci_override=current.get("ci"), mergeable_override=live_mergeable,

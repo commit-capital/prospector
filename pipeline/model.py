@@ -116,6 +116,17 @@ class Pr:
         return self._meta().get("author_association")
 
     @property
+    def cross_repo(self) -> bool | None:
+        """Whether the head branch lives on a fork; None when its repository is
+        unknown (a deleted fork, or a record ingested before it was read)."""
+        head = self.head_repo
+        return head.lower() != settings.repo().lower() if head else None
+
+    @property
+    def maintainer_can_modify(self) -> bool | None:
+        return self._meta().get("maintainer_can_modify")
+
+    @property
     def title(self) -> str | None:
         return self._meta().get("title")
 

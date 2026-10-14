@@ -85,6 +85,10 @@ class TestMetaFromGh:
         assert meta["comments"] is None
         assert meta["reactions_total"] is None
 
+    def test_records_whether_maintainers_may_push(self):
+        assert ingest.meta_from_gh(dict(GH_PR, maintainer_can_modify=True))["maintainer_can_modify"] is True
+        assert ingest.meta_from_gh(GH_PR)["maintainer_can_modify"] is None
+
     def test_reactions_without_total_count_is_none(self):
         pr = dict(GH_PR, reactions={"url": "https://api.github.com/..."})
         assert ingest.meta_from_gh(pr)["reactions_total"] is None
@@ -383,6 +387,16 @@ class TestUpsertAll:
         assert rec.signals["has_tests"] is True
         assert rec.ci == "passing"
         assert rec.mergeable is True
+
+    def test_maintainer_edits_come_from_live_facts_and_are_kept(self, tmp_path):
+        st = Store(tmp_path)
+        with st.batch():
+            ingest._upsert_all(st, [GH_PR], issue_links={}, existing_prs={},
+                               live_facts={5001: {"maintainer_can_modify": False}})
+        assert st.load_pr(5001).maintainer_can_modify is False
+        with st.batch():
+            ingest._upsert_all(st, [GH_PR], issue_links={}, existing_prs=st.all_prs())
+        assert st.load_pr(5001).maintainer_can_modify is False
 
     def test_ignores_batched_facts_for_a_different_head(self, tmp_path):
         st = Store(tmp_path)

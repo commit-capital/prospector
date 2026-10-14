@@ -366,6 +366,10 @@ export interface ReviewFinding {
   outdated: boolean;
   commit: string | null;
   url: string | null;
+  /** The design review's refuting verifier on a blocking or major finding. */
+  verification?: { verdict: "confirmed" | "refuted" | "unsure" | "unverified"; reason: string };
+  /** The severity the design reviewer gave a finding its verifier was unsure of. */
+  claimed_severity?: string;
 }
 
 /** A reviewer's stored entry on one PR (the `reviews` section). */
