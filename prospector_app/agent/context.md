@@ -139,7 +139,7 @@ expired token.
     prospector_app/agent/gh-write run rerun <run-id> [--failed]
     prospector_app/agent/reopen-pr <N>
     prospector_app/agent/submit-review <N> --event approve|request-changes|comment [--body "..."]
-    prospector_app/agent/close-pr <N> --disposition manual|dup|fixed|stale|oversized [--comment "..."]
+    prospector_app/agent/close-pr <N> --disposition manual|dup|fixed|stale|wontfix|oversized [--comment "..."]
     prospector_app/agent/close-issue <N> --disposition not-planned|completed|fixed|dup [--comment "..."]
 
 - The last four run through the executor and are logged; never use `gh issue

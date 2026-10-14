@@ -94,6 +94,12 @@ def test_close_stale():
     assert "inactive" in app.default_comment("CLOSE_STALE")["comment"].lower()
 
 
+def test_close_wontfix_says_no_revision_would_fix_it():
+    out = decisions.default_comment(models.CloseAction(action="CLOSE_WONTFIX"))
+    assert "decided not to take this change" in out
+    assert "inactive" not in out.lower()
+
+
 def test_close_oversized_encourages_splitting():
     """#183: the oversized-close comment asks the author to break it into smaller PRs."""
     out = decisions.default_comment(models.CloseAction(action="CLOSE_OVERSIZED"))
@@ -146,3 +152,14 @@ def test_a_request_changes_comment_never_bounces_a_cleared_secret():
     cleared = suggest.suggest_for_record(model.Pr(None, rec), "request-changes")
     assert "live credential" in leak["comment"]
     assert "live credential" not in cleared["comment"]
+
+
+def test_close_wontfix_suggestion_carries_the_analysis_rationale():
+    from types import SimpleNamespace
+    from prospector_app.backend import suggest
+    target = SimpleNamespace(number=5, rationale="breaks assertCheckoutOwner")
+    s = suggest.suggest_for_record(target, "close-wontfix")
+    assert s["action"] == "CLOSE_WONTFIX"
+    assert s["rationale"] == "breaks assertCheckoutOwner"
+    assert s["accept"].tags == ["wontfix", "agent-suggested"]
+    assert s["bot_comment"] == decisions.default_comment(models.CloseAction(action="CLOSE_WONTFIX"))

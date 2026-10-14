@@ -32,7 +32,7 @@ import { splitDiffSizes } from "../testPaths";
 const LEVEL_ICON: Record<string, string> = { safe: "🛡️", caution: "⚠️", risk: "⛔", unknown: "❔" };
 const SEV_TONE: Record<string, "red" | "yellow" | "muted"> = { critical: "red", high: "red", medium: "yellow", low: "muted" };
 const DISPO_ICON: Record<string, string> = {
-  "merge": "✅", "request-changes": "✋", "close-dup": "🗑️", "close-fixed": "🗑️", "close-stale": "🗑️", "needs-human": "👤",
+  "merge": "✅", "request-changes": "✋", "close-dup": "🗑️", "close-fixed": "🗑️", "close-wontfix": "🗑️", "close-stale": "🗑️", "needs-human": "👤",
 };
 
 /** PR detail content — designed for the flyout. Verdict and primary action

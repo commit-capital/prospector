@@ -285,10 +285,11 @@ A cluster is ONE defect or feature: its members are duplicates, competing implem
 ## Per-PR decisions
 
 Decide per PR (every member MUST get exactly one):
-- "merge": the canonical best implementation — ONLY if it genuinely clears our hard merge bar: __MERGE_BAR__. If it is the best candidate but below that bar, use "request-changes" instead with asks that close exactly those gaps (e.g. "address the review comments to clear the review bar", "rebase onto __BRANCH__"). A DRAFT member can NEVER be the "merge" winner — a draft is the author's not-yet-ready signal; if a draft is the strongest implementation, use "request-changes" ("mark the PR ready for review") and pick a non-draft winner or set the cluster outcome to needs-first-party-work / awaiting-authors. Drafts ARE eligible for the close dispositions (close-dup / close-fixed / close-stale).
+- "merge": the canonical best implementation — ONLY if it genuinely clears our hard merge bar: __MERGE_BAR__. If it is the best candidate but below that bar, use "request-changes" instead with asks that close exactly those gaps (e.g. "address the review comments to clear the review bar", "rebase onto __BRANCH__"). A DRAFT member can NEVER be the "merge" winner — a draft is the author's not-yet-ready signal; if a draft is the strongest implementation, use "request-changes" ("mark the PR ready for review") and pick a non-draft winner or set the cluster outcome to needs-first-party-work / awaiting-authors. Drafts ARE eligible for the close dispositions (close-dup / close-fixed / close-wontfix / close-stale).
 - "request-changes": right direction, needs author fixes first — give SPECIFIC asks.
 - "close-dup": duplicate/subset of a kept member — set canonical.
 - "close-fixed": the defect the PR fixes no longer exists on __BRANCH__. A member whose `already_on_master` count marks every hunk redundant is a strong close-fixed candidate, but that count only detects hunks that landed verbatim; most fixes land through a different mechanism (a guard moved to another call site, a policy that makes the PR's branch unreachable, a rewrite of the function), so judge the defect, not the text. You MUST cite the evidence: set upstream_pr to the specific upstream PR that landed the fix (and upstream_date if known) — use read-only `gh` against __REPO__ to find it (e.g. `gh pr list --search`, or `__GH_READ__ commits <path>` for the newest commits touching a file, each squash-merge subject carrying its PR number, and `__GH_READ__ commit <sha>` for one commit's patch). Everything reaches __BRANCH__ through a squash-merged PR, so there is always a PR to cite; cite that, not a raw commit hash (a squash-merge collapses the branch commits, so a branch hash may not exist on __BRANCH__). If you genuinely cannot pin a specific upstream PR, do NOT use close-fixed — fall back to "needs-human" (so a person verifies) rather than closing on an uncited claim. A close-fixed with no upstream_pr is treated as not-yet-verified.
+- "close-wontfix": the change itself is wrong — its approach breaks an intended contract or design on __BRANCH__, and no revision that keeps the PR's purpose would be acceptable. Use it when fixing the PR would mean changing what it is for. Verify the contract with read-only source or `gh` reads and name the contract, the function, and the guard it breaks in the rationale; if you cannot, use "needs-human".
 - "close-stale": abandoned/obsolete, no salvageable value.
 - "needs-human": product decision or judgment we can't make here — explain why.
 
@@ -302,7 +303,7 @@ Before finalizing any close-dup group, inspect the defect's call site on __BRANC
 
 A close-dup canonical must fix the SAME defect as the PR it closes. Check the canonical's own disposition before closing duplicates against it: when the canonical is needs-human or otherwise has no path to merge and the member is an independently landable fix, keep the member open (merge or request-changes) rather than stranding the only fix for a live defect behind a blocked canonical. Surface cross-PR functional dependencies in the rationale and asks: when part of a member's change is inert until a separate unmerged fix lands (e.g. a threshold value whose trigger a different defect keeps from firing), name the dependency explicitly and do not credit the inert portion when comparing candidates.
 
-A `trusted` member (a maintainer named in the repository profile) is NEVER given a close disposition — no close-dup, close-fixed, or close-stale. A maintainer's open PR is intentional; if it is not the winner, use "request-changes" (with specific asks) or "needs-human". The commit validator rejects a close on a trusted member.
+A `trusted` member (a maintainer named in the repository profile) is NEVER given a close disposition — no close-dup, close-fixed, close-wontfix, or close-stale. A maintainer's open PR is intentional; if it is not the winner, use "request-changes" (with specific asks) or "needs-human". The commit validator rejects a close on a trusted member.
 
 ## Evidence standards
 
@@ -455,7 +456,7 @@ def commit_analysis(store: Store, payload: dict) -> list[str]:
             errs.append(f"pr {n}: draft cannot be a merge winner")
         # a maintainer's open PR is intentional — the pipeline never proposes
         # closing it; the operator can still close manually from the app
-        if d in ("close-dup", "close-fixed", "close-stale") and m is not None \
+        if d in ("close-dup", "close-fixed", "close-wontfix", "close-stale") and m is not None \
                 and m.author in trusted:
             errs.append(f"pr {n}: {d} on a trusted contributor's PR — "
                         f"use request-changes or needs-human")

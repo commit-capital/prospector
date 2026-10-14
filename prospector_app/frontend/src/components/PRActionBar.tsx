@@ -23,6 +23,7 @@ const OPTS: { v: Act; label: string }[] = [
   { v: "CLOSE_DUP", label: "close — dup of" },
   { v: "CLOSE_FIXED", label: "close — already-fixed" },
   { v: "CLOSE_STALE", label: "close — stale" },
+  { v: "CLOSE_WONTFIX", label: "close — won't fix" },
   { v: "CLOSE_OVERSIZED", label: "close — too big (break up)" },
 ];
 

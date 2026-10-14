@@ -50,7 +50,7 @@ agents; agents never write the store directly.
 
 ## Vocabulary
 
-- **Disposition** (per PR): `merge`, `request-changes` (ask the author for specific fixes, then merge), `close-dup`, `close-fixed`, `close-stale`, `needs-human`.
+- **Disposition** (per PR): `merge`, `request-changes` (ask the author for specific fixes, then merge), `close-dup`, `close-fixed`, `close-wontfix` (the change itself is the wrong approach), `close-stale`, `needs-human`.
 - **Cluster state**: `needs-analysis`, `awaiting-authors`, `needs-first-party-work` (the feature is wanted but no contributed PR is cleanly salvageable — write our own), `blocked-on-decision`, `security-pending`, `ready`, `done`.
 
 The automatic merge recommendation is strict: **every active reviewer's

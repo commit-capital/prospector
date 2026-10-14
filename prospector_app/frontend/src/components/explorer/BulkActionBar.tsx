@@ -3,7 +3,7 @@ import { Term } from "../InfoTip";
 import { term } from "../../glossary";
 import { useExec } from "../../ExecContext";
 
-export type BulkAction = "CLOSE" | "CLOSE_DUP" | "CLOSE_FIXED" | "CLOSE_STALE"
+export type BulkAction = "CLOSE" | "CLOSE_DUP" | "CLOSE_FIXED" | "CLOSE_STALE" | "CLOSE_WONTFIX"
   | "CLOSE_OVERSIZED" | "REQUEST_CHANGES" | "COMMENT" | "REVIEW_RETRIGGER"
   | "QUEUE_VERIFY" | "RUN_SECURITY" | "RUN_DESIGN" | "MERGE";
 
@@ -11,6 +11,7 @@ const ACTS: { v: BulkAction; label: string }[] = [
   { v: "CLOSE_DUP", label: "close — dup of" },
   { v: "CLOSE_FIXED", label: "close — already-fixed" },
   { v: "CLOSE_STALE", label: "close — stale" },
+  { v: "CLOSE_WONTFIX", label: "close — won't fix" },
   { v: "CLOSE_OVERSIZED", label: "close — too big (break up)" },
   { v: "CLOSE", label: "triage close" },
   { v: "REQUEST_CHANGES", label: "request changes" },

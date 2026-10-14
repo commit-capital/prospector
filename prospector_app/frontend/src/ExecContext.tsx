@@ -68,7 +68,8 @@ function friendlyAction(action: string): string {
   }
   const map: Record<string, string> = {
     CLOSE: "close", CLOSE_DUP: "close (dup)", CLOSE_FIXED: "close (already-fixed)",
-    CLOSE_STALE: "close (stale)", MERGE: "merge", REVIEW_RETRIGGER: "review re-trigger",
+    CLOSE_STALE: "close (stale)", CLOSE_WONTFIX: "close (won't fix)",
+    MERGE: "merge", REVIEW_RETRIGGER: "review re-trigger",
   };
   return map[action] ?? action.toLowerCase().replace(/_/g, " ");
 }

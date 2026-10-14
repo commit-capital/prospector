@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { TERMS, clusterStateEntry, dispositionEntry, safetyEntry, type GlossaryEntry } from "./glossary.ts";
 import type { ClusterState, Disposition } from "./api.ts";
 
-const DISPOSITIONS: Disposition[] = ["merge", "request-changes", "close-dup", "close-fixed", "close-stale", "close-oversized", "needs-human"];
+const DISPOSITIONS: Disposition[] = ["merge", "request-changes", "close-dup", "close-fixed", "close-wontfix", "close-stale", "close-oversized", "needs-human"];
 const CLUSTER_STATES: ClusterState[] = ["needs-analysis", "awaiting-authors", "needs-first-party-work", "blocked-on-decision", "security-pending", "ready", "done"];
 
 // Pipeline vocabulary a non-technical reader would not know.

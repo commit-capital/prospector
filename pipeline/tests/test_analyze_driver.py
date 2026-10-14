@@ -226,6 +226,30 @@ class TestCommitAnalysis:
                              "asks": ["rebase"], "rationale": "r", "head_sha": "h1"}
         assert ad.commit_analysis(s, payload) == []
 
+    def test_wontfix_close_commits_as_close_out(self, tmp_path):
+        s = Store(tmp_path)
+        _pr(s, 1); _pr(s, 2)
+        _cluster(s, 1, [1, 2])
+        payload = {"cluster_id": 1, "outcome": "close-out", "rationale": "wrong approach",
+                   "prs": [{"pr": n, "disposition": "close-wontfix", "head_sha": "h1",
+                            "rationale": "breaks the blocked-to-resume checkout contract"}
+                           for n in (1, 2)]}
+        assert ad.commit_analysis(s, payload) == []
+        assert s.load_pr(1).section("analysis")["disposition"] == "close-wontfix"
+        assert s.load_cluster(1).outcome == "close-out"
+
+    def test_wontfix_on_trusted_member_rejected(self, tmp_path, monkeypatch):
+        from pipeline import profile
+        monkeypatch.setattr(profile, "active",
+                            lambda: profile.RepoProfile(trusted_authors=("trusted-dev",)))
+        s = Store(tmp_path)
+        _pr(s, 1); _pr(s, 2, author="trusted-dev"); _pr(s, 3)
+        _cluster(s, 1, [1, 2, 3])
+        payload = self._payload()
+        payload["prs"][1] = {"pr": 2, "disposition": "close-wontfix",
+                             "rationale": "r", "head_sha": "h1"}
+        assert any("trusted" in e for e in ad.commit_analysis(s, payload))
+
     def test_merge_on_draft_member_rejected(self, tmp_path):
         s = Store(tmp_path)
         _pr(s, 1, draft=True); _pr(s, 2); _pr(s, 3)

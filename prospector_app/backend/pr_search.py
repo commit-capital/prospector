@@ -28,7 +28,7 @@ _ENUMS = {
     "safety": {"GREEN", "YELLOW", "RED", "not-run"},
     "drift": {"applicable", "already-fixed", "conflicts"},
     "disposition": {"merge", "request-changes", "close-dup", "close-fixed",
-                    "close-stale", "needs-human"},
+                    "close-wontfix", "close-stale", "needs-human"},
     "ci": {"passing", "failing", "unknown"},
     "threat": {"malicious", "suspicious", "clear", "unscanned"},
     "greptile_severity": {"defects", "nits", "clean"},
@@ -137,7 +137,7 @@ Output ONLY a single JSON object, no prose. Allowed keys:
 - q (string), author (string), cluster (int)
 - safety: one of GREEN|YELLOW|RED|not-run   ("no security audit"/"not reviewed" => not-run)
 - drift: applicable|already-fixed|conflicts
-- disposition: merge|request-changes|close-dup|close-fixed|close-stale|needs-human
+- disposition: merge|request-changes|close-dup|close-fixed|close-wontfix|close-stale|needs-human
 - ci: passing|failing|unknown
 - threat: malicious|suspicious|clear|unscanned   (supply-chain threat-scan verdict; unscanned = no scan of the current head)
 - conflicts/has_tests/trusted_author/clean: booleans

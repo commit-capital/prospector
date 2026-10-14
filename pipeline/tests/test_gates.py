@@ -710,7 +710,7 @@ def test_reconcile_disposition_most_blocking_wins():
 
 
 def test_reconcile_disposition_full_order():
-    order = ["needs-human", "close-dup", "close-fixed", "close-stale",
+    order = ["needs-human", "close-dup", "close-fixed", "close-wontfix", "close-stale",
              "request-changes", "merge"]
     for i, hi in enumerate(order):
         for lo in order[i + 1:]:

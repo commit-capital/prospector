@@ -43,7 +43,8 @@ from pipeline import reviewers
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GET_TOKEN = REPO_ROOT / "pipeline" / "get-bot-token.sh"
 
-CLOSE_ACTIONS = {"CLOSE_DUP", "CLOSE_FIXED", "CLOSE", "CLOSE_STALE", "CLOSE_OVERSIZED"}
+CLOSE_ACTIONS = {"CLOSE_DUP", "CLOSE_FIXED", "CLOSE", "CLOSE_STALE", "CLOSE_OVERSIZED",
+                 "CLOSE_WONTFIX"}
 
 logger = logging.getLogger(__name__)
 

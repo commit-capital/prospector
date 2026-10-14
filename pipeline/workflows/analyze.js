@@ -29,7 +29,7 @@ const ANALYSIS_SCHEMA = { type: 'object', properties: {
   prs: { type: 'array', items: { type: 'object', properties: {
     pr: { type: 'integer' },
     head_sha: { type: 'string', description: 'copy from the bundle' },
-    disposition: { type: 'string', enum: ['merge', 'request-changes', 'close-dup', 'close-fixed', 'close-stale', 'needs-human'] },
+    disposition: { type: 'string', enum: ['merge', 'request-changes', 'close-dup', 'close-fixed', 'close-wontfix', 'close-stale', 'needs-human'] },
     canonical: { type: 'integer', description: 'for close-dup: the kept PR this duplicates' },
     concerns: { type: 'array', description: 'for close-dup: the coverage map — one entry per substantive change in the PR', items: { type: 'object', properties: {
       label: { type: 'string', description: 'short name of the change' },

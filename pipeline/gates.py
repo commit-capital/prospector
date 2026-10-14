@@ -232,7 +232,7 @@ SENTINEL_SETUP_FAIL = 60
 # blocking proposal wins (a close overrides a merge; needs-human overrides all).
 # Lower index = higher precedence. The ONE place this order is defined.
 DISPOSITION_PRECEDENCE: tuple[str, ...] = (
-    "needs-human", "close-dup", "close-fixed", "close-stale",
+    "needs-human", "close-dup", "close-fixed", "close-wontfix", "close-stale",
     "request-changes", "merge",
 )
 _DISPOSITION_RANK = {d: i for i, d in enumerate(DISPOSITION_PRECEDENCE)}
