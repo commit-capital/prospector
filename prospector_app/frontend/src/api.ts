@@ -397,7 +397,14 @@ interface SignalSummary {
   changed_files: number | null;
 }
 
-export interface IssueLink { issue: number; pain: number | null; how: string }
+// `state`/`state_reason` ride only the PR detail, from the issue store.
+export interface IssueLink {
+  issue: number;
+  pain: number | null;
+  how: string;
+  state?: "open" | "closed";
+  state_reason?: string | null;
+}
 
 // The threat scan's word on a PR: a verdict at any head, `clear` only for a
 // clear scan of the current head, `unscanned` when the head has none.

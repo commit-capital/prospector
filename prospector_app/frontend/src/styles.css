@@ -958,7 +958,7 @@ html.ap-resizing .agentpane { transition: none; }
 
 /* non-test LOC breakdown + test-removal flag (#17/#22) */
 .size-split { margin-top: 4px; font-size: 12px; line-height: 1.5; }
-.size-warn { margin-top: 4px; font-size: 12px; color: var(--red); font-weight: 600; }
+.size-warn, .issue-closed-warn { margin-top: 4px; font-size: 12px; color: var(--red); font-weight: 600; }
 .sizecell { line-height: 1.4; }
 .sizecell .small { font-size: 11px; }
 
