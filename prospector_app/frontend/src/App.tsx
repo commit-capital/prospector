@@ -181,10 +181,10 @@ function InstanceBar() {
 }
 
 // The topbar product name, from backend repo metadata (display name defaults to
-// the configured repo's short name).
+// the configured repo's short name). It links home, as the Home tab does.
 function Brand() {
   const { meta } = useRepoMeta();
-  return <div className="brand">⛏️ {meta ? `${meta.display_name} Prospector` : "Prospector"}</div>;
+  return <Link to="/" className="brand">⛏️ {meta ? `${meta.display_name} Prospector` : "Prospector"}</Link>;
 }
 
 function ScrollToTop() {
