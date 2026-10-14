@@ -64,9 +64,10 @@ SETTINGS: tuple[Setting, ...] = (
             "green: live, dry-run (notes only), or off.", editable=True,
             choices=("live", "dry-run", "off")),
     Setting("TRIAGE_ISSUE_FIX_PUBLIC", "behavior", "choice", "Issue fixes on GitHub", "live",
-            "For issues in scope, the issue-fix worker sets a status label, posts its "
-            "conclusions, opens fixed pull requests, asks its questions, and acts on "
-            "replies on GitHub: live, dry-run (notes only), or off.", editable=True,
+            "For issues in scope, the issue-fix worker sets a status label, opens fixed "
+            "pull requests and comments on them, asks its questions, and acts on "
+            "replies on GitHub (a failed attempt shows nothing): live, dry-run (notes "
+            "only), or off.", editable=True,
             choices=("live", "dry-run", "off")),
     Setting("TRIAGE_ISSUE_FIX_PUBLIC_SCOPE", "behavior", "choice",
             "Issues fixed on GitHub", "maintainers",

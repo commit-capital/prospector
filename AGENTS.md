@@ -639,13 +639,14 @@ attempt, for the issues in scope: the ones a maintainer filed
 runs a live loop as dry-run for the ones a maintainer did not file
 (`public_loop.issue_mode`). The store stays the state machine:
 `label_for` derives one status label (`fix in progress`, `needs answer`,
-`iterating on PR`, `ready for review`, `couldn't fix`) from
+`iterating on PR`, `ready for review`) from
 `fix_review.fix_status`, the attempt and the follow-up, carried by the issue and
-by the pull request it proposed, and none for a `refused` attempt;
-`comments_due` names the comments the attempt calls for — the conclusion of an
-attempt without a fix (finished within a day), the opened pull request on the
-issue, and the follow-up's ready or hand-back on the pull request, once per
-head — each rendered by the host with an agent's
+by the pull request it proposed; an attempt that ends without a fix gets no
+label and no comment, since the fault may be the pipeline's rather than the
+report's (`couldn't fix` is kept only to take off a label set earlier);
+`comments_due` names the comments the attempt calls for — the opened pull
+request on the issue, and the follow-up's ready or hand-back on the pull
+request, once per head — each rendered by the host with an agent's
 words held inert, gated by `public_comments.problems`, and marked so it posts
 once. Every ten minutes the issue-fix worker follows up its proposals, then
 `refresh` ingests the in-scope issues GitHub reports updated (listed over REST,
@@ -654,7 +655,7 @@ stored, so a new maintainer issue reaches the hunter without a full ingest and
 the loop's own labels and comments leave its facts current), then `sync` compares each in-scope issue's derived label and
 comments with its `fix_public` record (schema 28) and makes only the missing
 writes as the bot — `executor.set_fix_label` through `safety_guard.label_bot_run`
-(the five names only, created on first use) and `executor.post_fix_comment` —
+(the status labels only, created on first use) and `executor.post_fix_comment` —
 Activity-logged, under a short per-issue lease, a failure retried after thirty
 minutes. It never reads a label back. `sync` also queues, once per attempt with
 source `public`, what an operator's click queues in the app: `propose` for a
@@ -668,8 +669,8 @@ issue as its lease found it, and an issue that leaves scope only has its
 recorded labels taken off. Agent words in a comment lose HTML comment markers
 and their issue references are defused. The ready and hand-back comments name
 the head and reason the follow-up judged them at (`fix_followup.judged`). Before
-it, `answer_replies` reads back an issue the attempt concluded on (`needs
-answer`, `couldn't fix`) when its `updated_at` moved: the comments since the
+it, `answer_replies` reads back an issue the attempt concluded on (a question
+asked, or an ending without a fix that was not refused) when its `updated_at` moved: the comments since the
 attempt started by the issue's author or a maintainer, never the bot's — a
 letter answer stays `poll_replies`' — go to `reply_router`, and words it reads
 as actionable queue `answer` (a written answer to the question) or `solve`, a
