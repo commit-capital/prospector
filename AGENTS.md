@@ -339,7 +339,7 @@ fail-closed on a malicious threat verdict, any recorded RED security verdict, a
 CODEOWNERS-gated path, a path the profile's `autofix.deny_globs` names, a
 non-open PR, a head the push user cannot reach for any action but `describe`
 (a branch on `TRIAGE_REPO` itself, or a fork with "Allow edits from
-maintainers" off — ingest records `cross_repo` and `maintainer_can_modify` in
+maintainers" off — ingest records `head_repo` and `maintainer_can_modify` in
 the PR's meta; an unread one does not block), and (for an unguided `fix`) a profile naming no
 `autofix.fixable_gates`. Operator guidance is its own opt-in: a named human
 typing the goal authorizes the fix where the profile does not, and the change

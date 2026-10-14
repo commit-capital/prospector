@@ -71,8 +71,6 @@ class _UpsertStats(TypedDict):
 def meta_from_gh(pr: dict) -> dict:
     state = "merged" if pr.get("merged_at") else pr.get("state", "open")
     reactions = pr.get("reactions") or {}
-    head_repo = (((pr.get("head") or {}).get("repo")) or {}).get("full_name")
-    base_repo = (((pr.get("base") or {}).get("repo")) or {}).get("full_name")
     can_modify = pr.get("maintainer_can_modify")
     return {
         "title": pr.get("title") or "(untitled)",
@@ -90,9 +88,7 @@ def meta_from_gh(pr: dict) -> dict:
         "updated_at": pr.get("updated_at"),
         "comments": pr.get("comments"),
         "reactions_total": reactions.get("total_count"),
-        # Whether the push user can reach the head branch; None when GitHub's
-        # answer was not read (the REST listing omits maintainer_can_modify).
-        "cross_repo": head_repo != base_repo if head_repo and base_repo else None,
+        # None when GitHub's answer was not read (the REST listing omits it).
         "maintainer_can_modify": can_modify if isinstance(can_modify, bool) else None,
     }
 

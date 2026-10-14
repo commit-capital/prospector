@@ -85,16 +85,9 @@ class TestMetaFromGh:
         assert meta["comments"] is None
         assert meta["reactions_total"] is None
 
-    def test_records_whether_the_head_is_a_fork(self):
-        fork = dict(GH_PR, head={"sha": "d", "repo": {"full_name": "someone/repo"}},
-                    base={"ref": "main", "repo": {"full_name": "owner/repo"}},
-                    maintainer_can_modify=True)
-        meta = ingest.meta_from_gh(fork)
-        assert (meta["cross_repo"], meta["maintainer_can_modify"]) == (True, True)
-        same = dict(fork, head={"sha": "d", "repo": {"full_name": "owner/repo"}})
-        assert ingest.meta_from_gh(same)["cross_repo"] is False
-        unread = ingest.meta_from_gh(GH_PR)
-        assert (unread["cross_repo"], unread["maintainer_can_modify"]) == (None, None)
+    def test_records_whether_maintainers_may_push(self):
+        assert ingest.meta_from_gh(dict(GH_PR, maintainer_can_modify=True))["maintainer_can_modify"] is True
+        assert ingest.meta_from_gh(GH_PR)["maintainer_can_modify"] is None
 
     def test_reactions_without_total_count_is_none(self):
         pr = dict(GH_PR, reactions={"url": "https://api.github.com/..."})

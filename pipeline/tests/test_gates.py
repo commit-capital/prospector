@@ -3,7 +3,7 @@ implementations (checks._tier0_is_clean, verdict.gate_decision, app
 merge_concerns)."""
 import pytest
 
-from pipeline import gates, profile, review_policy, reviewers
+from pipeline import gates, profile, review_policy, reviewers, settings
 from pipeline.model import Cluster, Pr
 from pipeline.store import Store
 from pipeline.testsupport import bump_section, threat_section
@@ -2548,11 +2548,13 @@ class TestFixEligibility:
             assert action in why
 
     @pytest.mark.parametrize("meta, why", [
-        ({"cross_repo": False}, "upstream repository itself"),
-        ({"cross_repo": True, "maintainer_can_modify": False}, "Allow edits from maintainers"),
+        ({"head_repo": None}, "upstream repository itself"),
+        ({"head_repo": "someone/fork", "maintainer_can_modify": False},
+         "Allow edits from maintainers"),
     ])
     def test_an_unpushable_head_is_refused_but_described(self, monkeypatch, meta, why):
         self._profile(monkeypatch, fixable_gates=("review",))
+        meta = {**meta, "head_repo": meta["head_repo"] or settings.repo()}
         pr = _pr(meta={"title": "t", "state": "open", "head_sha": HEAD, **meta})
         for action in ("update", "rebase", "fix", "resolve"):
             ok, reason = gates.fix_eligibility(pr, action, changed_paths=["src/a.ts"])
@@ -2560,7 +2562,8 @@ class TestFixEligibility:
         assert gates.fix_eligibility(pr, "describe")[0] is True
 
     def test_an_unread_push_permission_does_not_block(self):
-        pr = _pr(meta={"title": "t", "state": "open", "head_sha": HEAD, "cross_repo": True})
+        pr = _pr(meta={"title": "t", "state": "open", "head_sha": HEAD,
+                       "head_repo": "someone/fork"})
         assert gates.fix_eligibility(pr, "update")[0] is True
 
     def test_unknown_action_refused(self):
