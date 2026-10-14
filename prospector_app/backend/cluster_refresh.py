@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from pipeline import capacity, cluster_driver, cluster_pass, freshness, settings, storekit
-from prospector_app.backend import data, lane_health, worker_children
+from prospector_app.backend import data, lane_health, worker_children, worker_loops
 from prospector_app.backend.jobs import PIPELINE_PY, REPO_ROOT
 
 if TYPE_CHECKING:
@@ -142,6 +142,7 @@ def _loop() -> None:
             pass_once()
         except Exception:
             traceback.print_exc()
+        worker_loops.ran("cluster", REFRESH_SECONDS)
         _stop.wait(REFRESH_SECONDS)
 
 

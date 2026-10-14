@@ -28,6 +28,7 @@ from prospector_app.backend import autonomous_feed
 from prospector_app.backend import escalation
 from prospector_app.backend import cluster_refresh, rereview_hunt, stale_refresh, threat_refresh
 from prospector_app.backend import worker_control
+from prospector_app.backend import worker_loops
 from prospector_app.backend import worker_readiness
 from prospector_app.backend import bulk
 from prospector_app.backend import caps
@@ -269,6 +270,7 @@ def _launch_worker_cadences():
     threat_refresh.start()
     pr_watch.start()
     cluster_refresh.startup()
+    worker_loops.publish()
 
 
 @app.post("/api/worker/health/resume")
@@ -700,8 +702,9 @@ def setup_flags(body: models.WorkerFlags):
         worker_control.set_flags(body.flags)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    return {"applied": worker_control.apply(),
-            "readiness": worker_readiness.report()}
+    applied = worker_control.apply()
+    worker_loops.publish()
+    return {"applied": applied, "readiness": worker_readiness.report()}
 
 
 @app.post("/api/setup/share")
