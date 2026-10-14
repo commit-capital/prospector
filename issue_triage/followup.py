@@ -229,10 +229,7 @@ def _entry(r: reviewers.Reviewer, feed: review_fetch.PrFeed, head: str, pr: int)
 def _gating(feed: review_fetch.PrFeed | None, head: str) -> list[reviewers.Reviewer]:
     """The code reviewers whose bar the pull request must clear: the policy's
     active ones, and any other that reviewed this pull request — a reviewer at
-    work on it gates it whatever the repository-wide activity window says. None
-    when the policy names no reviewer."""
-    if review_policy.policy().mode == "none":
-        return []
+    work on it gates it whatever the repository-wide activity window says."""
     active = {r.id for r in review_policy.active_reviewers(reviewers.REVIEW)}
     return [r for rid, r in reviewers.REVIEWERS.items() if r.kind == reviewers.REVIEW
             and (rid in active or (feed is not None

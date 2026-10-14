@@ -41,6 +41,11 @@ export function SettingsPanel({ refresh }: { refresh: unknown }) {
         effect. Changes save to this machine's <code>.env</code> and apply at once.
       </p>
       {error && <p className="chip chip-red sm">{error}</p>}
+      {report.retired.map((r) => (
+        <p key={r.name} className="chip chip-amber sm">
+          <code>{r.name}={r.value}</code> in {r.source} is no longer read. {r.help}
+        </p>
+      ))}
       {(["behavior", "machine"] as const).map((g) => (
         <SettingsTable key={g} title={label(g)} rows={rows(g)} onSaved={load} onError={setError} />
       ))}

@@ -220,7 +220,6 @@ def test_profile_change_rebuilds_every_row(monkeypatch):
 def test_active_reviewer_change_rebuilds_every_row(monkeypatch):
     # In auto mode the active set follows the reviewers registry, which moves
     # without any PR record moving.
-    monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "auto")
     monkeypatch.setattr(review_policy, "_seen_cache",
                         (time.monotonic(), {"superagent": {"last_observed_at": storekit.now()}}))
     _serve(monkeypatch, ({1: _rec(1), 2: _rec(2)}, [], "t1"), ({}, [], None))

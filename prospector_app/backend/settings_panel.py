@@ -1,7 +1,8 @@
 """Every setting in `settings_registry` as this process runs it, for the Setup
 page: its value, where the value came from (the repo-root `.env`, the process
 environment, or the default), and for the sandbox sizes the number in effect.
-A secret's value is never returned, only whether it is set.
+A secret's value is never returned, only whether it is set. A retired setting
+still set is named with what replaced it.
 """
 from __future__ import annotations
 
@@ -69,5 +70,9 @@ def report() -> dict:
             except (OSError, RuntimeError, ValueError):
                 pass
         rows.append(row)
+    retired = [{"name": name, "value": os.environ.get(name, ""), "help": why,
+                "source": ".env" if name in in_file else "environment"}
+               for name, why in settings_registry.RETIRED.items()
+               if name in in_file or name in os.environ]
     return {"groups": [{"id": g, "label": label} for g, label in settings_registry.GROUPS.items()],
-            "settings": rows}
+            "settings": rows, "retired": retired}

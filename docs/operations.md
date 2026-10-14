@@ -53,13 +53,14 @@ agents; agents never write the store directly.
 - **Disposition** (per PR): `merge`, `request-changes` (ask the author for specific fixes, then merge), `close-dup`, `close-fixed`, `close-stale`, `needs-human`.
 - **Cluster state**: `needs-analysis`, `awaiting-authors`, `needs-first-party-work` (the feature is wanted but no contributed PR is cleanly salvageable — write our own), `blocked-on-decision`, `security-pending`, `ready`, `done`.
 
-The automatic merge recommendation is strict: **the configured review-provider
+The automatic merge recommendation is strict: **every active reviewer's
 bar + passing CI + mergeability + current GREEN security + an author-shipped
 verified fix**. Human-initiated merges use `gates.merge_eligibility`: they must
 pass every check that actually ran, but missing or inconclusive SECURITY/VERIFY
-evidence is not itself a block. The provider and score threshold are deployment
-configuration (`TRIAGE_REVIEW_PROVIDER`, `TRIAGE_REVIEW_THRESHOLD`); `none`
-disables the external-review requirement.
+evidence is not itself a block. The active reviewers are
+the ones seen on the repository's open PRs (`pipeline/review_policy.py`), and
+`TRIAGE_REVIEW_THRESHOLD` sets Greptile's pass score; a repository running no
+reviewer has no external-review requirement.
 
 ## Deployment boundary
 

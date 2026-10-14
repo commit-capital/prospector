@@ -44,7 +44,6 @@ os.environ.update({
     "TRIAGE_BOT_LOGIN": "e2e-bot",
     "TRIAGE_DEFAULT_BRANCH": "trunk",
     "TRIAGE_STORE_URL": f"sqlite:///{SCRATCH / 'store.db'}",
-    "TRIAGE_REVIEW_PROVIDER": "none",
     "TRIAGE_AGENT_PROVIDER": "none",
     "TRIAGE_VERIFY_SCRATCH": str(SCRATCH / "verify"),
     "PROSPECTOR_OPERATOR": "E2E Operator",

@@ -134,9 +134,9 @@ class TestPRClean:
         ok, reasons = gates.pr_clean(rec, today="2026-06-10")
         assert not ok and any("greptile" in r for r in reasons)
 
-    def test_none_provider_ignores_review(self, monkeypatch):
-        # No provider configured: a PR with no review score is still clean.
-        monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "none")
+    def test_no_reviewer_seen_ignores_review(self, monkeypatch, active_reviewers):
+        # No reviewer seen on the repository: a PR with no review score is still clean.
+        active_reviewers()
         rec = _pr()
         del rec.raw["reviews"]["greptile"]
         ok, reasons = gates.pr_clean(rec, today="2026-06-10")
@@ -2812,9 +2812,9 @@ class TestFixHuntable:
         assert ok is True, why
 
     @pytest.mark.parametrize("mode", ["advisory", "gate"])
-    def test_a_design_review_is_not_a_review_fix_target(self, monkeypatch, mode):
+    def test_a_design_review_is_not_a_review_fix_target(self, monkeypatch, mode, active_reviewers):
         self._profile(monkeypatch, fixable_gates=("review",))
-        monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "greptile")
+        active_reviewers("greptile")
         monkeypatch.setenv("TRIAGE_DESIGN_REVIEW", mode)
         review_policy.reset()
         ok, why = gates.fix_huntable(self._design_failing(), "fix")
@@ -2835,9 +2835,8 @@ class TestMultiReviewerClean:
         return {"kind": "scanner", "reviewed_sha": HEAD, "checks": [], "extra": {},
                 "findings": [{"severity": severity, "resolved": False, "outdated": False}]}
 
-    def test_every_active_reviewer_gates(self, monkeypatch):
-        monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "greptile,coderabbit,superagent")
-        review_policy.reset()
+    def test_every_active_reviewer_gates(self, monkeypatch, active_reviewers):
+        active_reviewers("greptile", "coderabbit", "superagent")
         rec = _pr(reviews=_reviews(superagent=self._superagent()))
         ok, reasons = gates.pr_clean(rec)
         assert not ok
@@ -2868,27 +2867,24 @@ class TestMultiReviewerClean:
         asks = gates.bar_asks(reasons, rec)
         assert any("5/5" in a for a in asks)
 
-    def test_scanner_block_demotes_a_merge_pick(self, monkeypatch):
-        monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "greptile,superagent")
-        review_policy.reset()
+    def test_scanner_block_demotes_a_merge_pick(self, monkeypatch, active_reviewers):
+        active_reviewers("greptile", "superagent")
         rec = _pr(analysis=_merge_analysis(), security=_green(),
                   reviews=_reviews(superagent=self._superagent("P1")))
         route = gates.merge_demotion(rec)
         assert route is not None and route[0] == "request-changes"
         assert any("Superagent" in a for a in route[2])
 
-    def test_fix_not_huntable_under_scanner_block(self, monkeypatch):
-        monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "greptile,superagent")
-        review_policy.reset()
+    def test_fix_not_huntable_under_scanner_block(self, monkeypatch, active_reviewers):
+        active_reviewers("greptile", "superagent")
         p = profile.RepoProfile(autofix=profile.AutofixPolicy(fixable_gates=("review",)))
         monkeypatch.setattr(profile, "active", lambda: p)
         rec = _pr(reviews=_reviews(greptile=_greptile(3), superagent=self._superagent("P1")))
         ok, why = gates.fix_huntable(rec, "fix")
         assert not ok and "superagent" in why
 
-    def test_coderabbit_fail_is_fix_huntable(self, monkeypatch):
-        monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "greptile,coderabbit")
-        review_policy.reset()
+    def test_coderabbit_fail_is_fix_huntable(self, monkeypatch, active_reviewers):
+        active_reviewers("greptile", "coderabbit")
         p = profile.RepoProfile(autofix=profile.AutofixPolicy(fixable_gates=("review",)))
         monkeypatch.setattr(profile, "active", lambda: p)
         cr = {"kind": "review", "reviewed_sha": HEAD, "checks": [], "extra": {},

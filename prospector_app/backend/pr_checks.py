@@ -28,7 +28,7 @@ def _c(key: str, name: str, status: str, detail: str = "", at: str | None = None
 
 
 # Stable identifiers for each named check, independent of the display name
-# (which varies with the configured review provider / default branch) — what
+# (which varies with the default branch) — what
 # the PR Explorer's per-check filter (#578) matches against.
 CHECK_KEYS = ("review", "design", "ci", "scans", "mergeable", "tests", "drift", "secrets", "security",
               "verify")

@@ -9,12 +9,23 @@ import pytest
 
 
 
+@pytest.fixture
+def active_reviewers(monkeypatch):
+    """Make exactly the given reviewer ids the ones seen on the repository today."""
+    from pipeline import review_policy, storekit
+
+    def pin(*ids: str) -> None:
+        seen = {rid: {"last_observed_at": storekit.now(), "prs": 1} for rid in ids}
+        monkeypatch.setattr(review_policy, "_load_seen", lambda: seen)
+        review_policy.reset()
+    return pin
+
+
 @pytest.fixture(autouse=True)
-def _greptile_profile(monkeypatch):
+def _greptile_profile(active_reviewers, monkeypatch):
     """These tests were written against the greptile deployment (Greptile columns,
-    filters, checks). Pin the greptile review profile so they assert that surface
-    regardless of the `none` default; no-provider tests override explicitly."""
-    monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "greptile")
+    filters, checks): Greptile is the one reviewer seen, unless a test names others."""
+    active_reviewers("greptile")
     monkeypatch.delenv("TRIAGE_REVIEW_THRESHOLD", raising=False)
 
 
