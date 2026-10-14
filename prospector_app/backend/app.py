@@ -35,6 +35,7 @@ from prospector_app.backend import caps
 from prospector_app.backend import chat
 from prospector_app.backend import claims
 from prospector_app.backend import machine_activity
+from prospector_app.backend import control_overview
 from prospector_app.backend import machine_mode
 from prospector_app.backend import machines
 from prospector_app.backend import merge_progress
@@ -336,6 +337,12 @@ def machines_stand_down(host: str, body: dict = Body(default={})):
 @app.post("/api/machines/{host}/stand-up")
 def machines_stand_up(host: str):
     return {"cleared": machine_mode.stand_up(host)}
+
+
+@app.get("/api/control/overview")
+def control_overview_get() -> control_overview.Overview:
+    """Health & queues in one read: machines, lanes, loops, needs, timeline."""
+    return control_overview.gather()
 
 
 @app.get("/api/health")
