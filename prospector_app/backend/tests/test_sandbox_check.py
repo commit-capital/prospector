@@ -103,7 +103,7 @@ def test_main_runs_the_lane_over_pr_plus_edits(tmp_path, monkeypatch, typecheck_
                         lambda wt: "diff --git a/edit.ts b/edit.ts\n+e\n")
     seen: dict = {}
 
-    def fake_run(pr, head, patch, cmd, lane="compile"):
+    def fake_run(pr, head, patch, cmd, lane="compile", runs_tests=False):
         seen.update(pr=pr, head=head, text=patch.read_text(), cmd=cmd, lane=lane)
         return {"cmd": cmd, "exit": 0, "duration_s": 2.0}
     monkeypatch.setattr(compile_preflight, "run_command_for_patch", fake_run)
@@ -127,7 +127,7 @@ def test_a_failing_lane_exits_nonzero_with_the_excerpt(tmp_path, monkeypatch,
     monkeypatch.setenv("PROSPECTOR_CHECK_PR_PATCH", str(pr_patch))
     monkeypatch.setattr(sandbox_check, "authored_patch", lambda wt: "")
     monkeypatch.setattr(compile_preflight, "run_command_for_patch",
-                        lambda pr, head, patch, cmd, lane="compile": {"cmd": cmd, "exit": 20,
+                        lambda pr, head, patch, cmd, lane="compile", runs_tests=False: {"cmd": cmd, "exit": 20,
                                                       "duration_s": 2.0,
                                                       "error_excerpt": "TS2345 nope"})
     assert sandbox_check.main(["typecheck"]) == 1
@@ -174,12 +174,17 @@ def test_every_run_is_recorded_for_the_worker_to_collect(tmp_path, monkeypatch,
         {"cmd": "npx vitest run src/a.test.ts", "duration_s": 0.4,
          "error": "TimeoutError: the sandbox lock was held for 600s"},
     ])
-    monkeypatch.setattr(compile_preflight, "run_command_for_patch",
-                        lambda pr, head, patch, cmd, lane="compile": next(runs))
+    setups: list[bool] = []
+
+    def fake_run(pr, head, patch, cmd, lane="compile", runs_tests=False):
+        setups.append(runs_tests)
+        return next(runs)
+    monkeypatch.setattr(compile_preflight, "run_command_for_patch", fake_run)
 
     assert sandbox_check.main(["typecheck"]) == 0
     assert sandbox_check.main(["test", "src/a.test.ts"]) == 1
     assert sandbox_check.main(["test", "src/a.test.ts"]) == 1
+    assert setups == [False, True, True]
     capsys.readouterr()
 
     checks = sandbox_check.collect_checks(7)
@@ -202,7 +207,7 @@ def test_a_refused_run_records_the_refusal_as_its_error(tmp_path, monkeypatch,
                                                         typecheck_profile, capsys):
     _under_author(monkeypatch, tmp_path)
     monkeypatch.setattr(compile_preflight, "run_command_for_patch",
-                        lambda pr, head, patch, cmd, lane="compile": {"cmd": cmd, "duration_s": 0.0,
+                        lambda pr, head, patch, cmd, lane="compile", runs_tests=False: {"cmd": cmd, "duration_s": 0.0,
                                                       "refused": "deps touched"})
     assert sandbox_check.main(["typecheck"]) == 1
     capsys.readouterr()
@@ -214,7 +219,7 @@ def test_the_preflights_own_error_kind_is_kept(tmp_path, monkeypatch, typecheck_
                                               capsys):
     _under_author(monkeypatch, tmp_path)
     monkeypatch.setattr(compile_preflight, "run_command_for_patch",
-                        lambda pr, head, patch, cmd, lane="compile": {"cmd": cmd, "exit": 20, "duration_s": 1.0,
+                        lambda pr, head, patch, cmd, lane="compile", runs_tests=False: {"cmd": cmd, "exit": 20, "duration_s": 1.0,
                                                       "error": "the base fails it too",
                                                       "error_kind": "base-compile"})
     sandbox_check.main(["typecheck"])
@@ -226,7 +231,7 @@ def test_the_preflights_own_error_kind_is_kept(tmp_path, monkeypatch, typecheck_
 def test_the_record_is_bounded(tmp_path, monkeypatch, typecheck_profile, capsys):
     _under_author(monkeypatch, tmp_path)
     monkeypatch.setattr(compile_preflight, "run_command_for_patch",
-                        lambda pr, head, patch, cmd, lane="compile": {"cmd": cmd, "exit": 20, "duration_s": 1.0,
+                        lambda pr, head, patch, cmd, lane="compile", runs_tests=False: {"cmd": cmd, "exit": 20, "duration_s": 1.0,
                                                       "error_excerpt": "x" * 10_000,
                                                       "error": "y" * 10_000})
     sandbox_check.main(["typecheck"])

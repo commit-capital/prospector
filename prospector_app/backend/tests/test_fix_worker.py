@@ -1778,7 +1778,8 @@ def review_lane(store, monkeypatch, tmp_path):
     runs: list[str] = []
     run_patches: list[str] = []
 
-    def fake_run(pr, head, patch, cmd):
+    def fake_run(pr, head, patch, cmd, runs_tests=False):
+        assert runs_tests
         runs.append(cmd)
         run_patches.append(patch.read_text())
         return {"exit": 0, "cmd": cmd}
@@ -1891,7 +1892,7 @@ def test_a_tier0_conflict_parks_without_spending_agents(review_lane, store, monk
 
 def test_failing_related_tests_stay_parked(review_lane, store, monkeypatch):
     monkeypatch.setattr(fix_worker.compile_preflight, "run_command_for_patch",
-                        lambda pr, head, patch, cmd: {"exit": 1, "cmd": cmd})
+                        lambda pr, head, patch, cmd, runs_tests=False: {"exit": 1, "cmd": cmd})
     _parked_resolve(store)
     fix_worker.review_parked_resolve(1)
     req = store.load_pr(1).fix_request
@@ -1903,7 +1904,7 @@ def test_a_sandbox_error_leaves_no_stamp_so_a_recovered_host_retries(
         review_lane, store, monkeypatch):
     monkeypatch.setattr(
         fix_worker.compile_preflight, "run_command_for_patch",
-        lambda pr, head, patch, cmd: {
+        lambda pr, head, patch, cmd, runs_tests=False: {
             "cmd": cmd,
             "error": "compile preflight failed unexpectedly; see server logs"})
     _parked_resolve(store)
@@ -1919,7 +1920,7 @@ def test_a_sandbox_error_leaves_no_stamp_so_a_recovered_host_retries(
 def test_a_sandbox_refusal_stamps_with_its_reason(review_lane, store, monkeypatch):
     monkeypatch.setattr(
         fix_worker.compile_preflight, "run_command_for_patch",
-        lambda pr, head, patch, cmd: {
+        lambda pr, head, patch, cmd, runs_tests=False: {
             "cmd": cmd,
             "refused": "the PR changes dependency manifests"})
     _parked_resolve(store)
@@ -3048,7 +3049,7 @@ def _linted(monkeypatch, tmp_path, with_fix: dict, pr_alone: dict | None = None)
     monkeypatch.setenv("TRIAGE_VERIFY_SCRATCH", str(tmp_path / "scratch"))
     runs: list[dict] = []
 
-    def fake_run(pr, head, patch, cmd, lane="compile"):
+    def fake_run(pr, head, patch, cmd, lane="compile", runs_tests=False):
         alone = patch.read_text() == PR_DIFF
         runs.append({"cmd": cmd, "lane": lane, "alone": alone})
         return dict(pr_alone if alone else with_fix, cmd=cmd)

@@ -1316,6 +1316,36 @@ class TestVerifyRunErrored:
                 "no_test_hunks": True}
         assert gates.verify_run_errored(_blind(), host, regress=None) is False
 
+    def test_a_failed_test_setup_errored(self):
+        host = _host(red_exit=gates.SENTINEL_SETUP_FAIL)
+        assert gates.verify_run_errored(_blind(), host, regress=None) is True
+        assert gates.verify_outcome(_blind(), host, _judge(), regress=None) is None
+
+    def test_a_test_file_that_failed_to_load_in_both_legs_errored(self):
+        line = 'Error: Failed to resolve entry for package "@acme/sdk".'
+        host = _host(red_exit=20, green_exit=20, red_load_error=line,
+                     green_load_error=line)
+        assert gates.shared_load_error(host) == line
+        assert gates.verify_run_errored(_blind(), host, regress=None) is True
+        assert gates.verify_outcome(_blind(), host, _judge(), regress=None) is None
+
+    def test_different_load_errors_in_red_and_green_are_a_verdict(self):
+        # Red cannot import what the fix adds; green fails on the PR's own
+        # missing module: evidence about the PR, not the harness.
+        host = _host(red_exit=20, green_exit=20,
+                     red_load_error="SyntaxError: does not provide an export named 'fix'",
+                     green_load_error="Error: Cannot find module './helper'")
+        assert gates.shared_load_error(host) is None
+        assert gates.verify_outcome(_blind(), host, _judge(), regress=None) == "not-verified"
+
+    def test_a_load_error_with_a_passing_green_is_not_shared(self):
+        line = "Error: Cannot find module './fix'"
+        host = _host(red_load_error=line, green_load_error=line)
+        assert gates.shared_load_error(host) is None
+
+    def test_a_hold_is_a_system_fault_the_hunter_retries(self):
+        assert gates.VERIFY_REQUEST_FAULT["hold"] == "system"
+
     def test_it_agrees_with_verify_outcome_on_every_errored_run_hold(self):
         # The two must never disagree: whenever the host facts error, no outcome
         # follows however the judge rates the output.

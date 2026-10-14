@@ -11,7 +11,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NET="${PR_VERIFY_NET:-pr-verify-net}"
 
-IMAGE="" PHASE="" PATCH="" PRE="" EXCL="" SUITE_CFG="" COV_TOOL="" COV_REQ="" PROBE_DENY_ARG="" CONTAINER_NAME="" CPUS=2 TIER=0 TEST_CMD="pnpm -s test" BASE_SHA="unknown" HEAD_SHA="unknown" PRISTINE=0
+IMAGE="" PHASE="" PATCH="" PRE="" EXCL="" SUITE_CFG="" COV_TOOL="" COV_REQ="" PROBE_DENY_ARG="" CONTAINER_NAME="" CPUS=2 TIER=0 TEST_CMD="pnpm -s test" TEST_SETUP="" BASE_SHA="unknown" HEAD_SHA="unknown" PRISTINE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --image) IMAGE="$2"; shift 2;;
@@ -26,6 +26,7 @@ while [ $# -gt 0 ]; do
     --probe-deny) PROBE_DENY_ARG="$2"; shift 2;;
     --tier) TIER="$2"; shift 2;;
     --test-cmd) TEST_CMD="$2"; shift 2;;
+    --test-setup) TEST_SETUP="$2"; shift 2;;
     --base-sha) BASE_SHA="$2"; shift 2;;
     --head-sha) HEAD_SHA="$2"; shift 2;;
     --container-name) CONTAINER_NAME="$2"; shift 2;;
@@ -34,7 +35,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$IMAGE" ] && [ -n "$PHASE" ] || {
-  echo "usage: sandbox-run.sh --image IMG --phase apply-check|repro|red|green|compile|build|baseline|regress|coverage [--patch F | --pristine] [--pre-patch F] [--cpus N] [--exclude-file F] [--suite-config F] [--coverage-tool DIR --coverage-request F] [--probe-deny LIST] [--tier 0|1] [--test-cmd C] [--base-sha S] [--head-sha S] [--container-name N]" >&2
+  echo "usage: sandbox-run.sh --image IMG --phase apply-check|repro|red|green|compile|build|baseline|regress|coverage [--patch F | --pristine] [--pre-patch F] [--cpus N] [--exclude-file F] [--suite-config F] [--coverage-tool DIR --coverage-request F] [--probe-deny LIST] [--tier 0|1] [--test-cmd C] [--test-setup C] [--base-sha S] [--head-sha S] [--container-name N]" >&2
   exit 2; }
 case "$PHASE" in apply-check|repro|red|green|compile|build|baseline|regress|coverage) ;; *) echo "bad --phase: $PHASE" >&2; exit 2;; esac
 case "$CPUS" in ''|*[!0-9]*|0) echo "bad --cpus: $CPUS (a positive whole number)" >&2; exit 2;; esac
@@ -99,6 +100,7 @@ env_args=(
   -e "HEAD_SHA=$HEAD_SHA"
   -e "TIER=$TIER"
   -e "TEST_CMD=$TEST_CMD"
+  -e "TEST_SETUP=$TEST_SETUP"
   -e "PHASE=$PHASE"
 )
 # PROBE_DENY is the boot probe's must-be-unreachable host:port list. Set only

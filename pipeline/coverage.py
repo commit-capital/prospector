@@ -183,17 +183,16 @@ def _include(path: str) -> str:
 
 
 def command(tests: list[str], files: list[str]) -> str:
-    """The profile's test setup, then its runner over `tests` with v8 coverage
-    of `files` written as istanbul JSON to /tmp/cov — reported even when a
-    test fails — and the test report beside it."""
+    """The profile's runner over `tests` with v8 coverage of `files` written
+    as istanbul JSON to /tmp/cov — reported even when a test fails — and the
+    test report beside it."""
     v = profile.active().verify
     parts = [*v.test_runner, *tests, *v.test_flags, "--coverage.enabled",
              "--coverage.provider=v8", "--coverage.reporter=json",
              "--coverage.reportOnFailure", "--coverage.reportsDirectory=/tmp/cov",
              *(_include(f) for f in files), "--reporter=default", "--reporter=json",
              "--outputFile.json=/tmp/cov/tests.json"]
-    run = " ".join(shlex.quote(p) for p in parts)
-    return f"( {v.test_setup} ) && {run}" if v.test_setup else run
+    return " ".join(shlex.quote(p) for p in parts)
 
 
 def parse_trailer(tail: str) -> tuple[dict[str, dict], TestRuns | None] | None:

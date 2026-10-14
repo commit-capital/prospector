@@ -989,6 +989,18 @@ def tests_never_ran(tail: str) -> bool:
     return bool(_FAILED_SUITES_HEADER_RE.search(text) or _UNBOUND_RE.search(text))
 
 
+def load_error(tail: str) -> str | None:
+    """The first line of a run's output naming a test file it could not load —
+    an import that does not resolve, a package entry that does not exist —
+    whitespace-normalized, or None. Red and green failing on the same such line
+    never reached the code under test; gates.verify_run_errored reads that as
+    an errored run. Like tests_never_ran, read only to withhold a verdict."""
+    for line in _ANSI_RE.sub("", tail).splitlines():
+        if _UNBOUND_RE.search(line):
+            return " ".join(line.split())
+    return None
+
+
 def failing_in_test_diff(names: list[str] | None, diff_text: str) -> list[str] | None:
     """The parsed failing tests whose leaf title (the segment after the last
     " > ") appears anywhere in the PR's test-file hunks — added, removed, or
@@ -1257,16 +1269,23 @@ def stop_orphaned_sandboxes() -> list[str]:
     return stopped
 
 
+# The phases whose command is a test run.
+TEST_PHASES = frozenset({"red", "green", "repro", "coverage"})
+
+
 def run_phase(phase: str, image: str, *, patch: Path | None = None, tier: int = 0,
               test_cmd: str = "pnpm -s test", base_sha: str = "",
               head_sha: str = "", exclude_file: Path | None = None,
               suite_config: Path | None = None, pre_patch: Path | None = None,
               timeout: int = PHASE_TIMEOUT_SECONDS, pristine: bool = False,
               tail_bytes: int = OUTPUT_TAIL_BYTES, coverage_tool: Path | None = None,
-              coverage_request: Path | None = None) -> tuple[int, str]:
+              coverage_request: Path | None = None,
+              runs_tests: bool = False) -> tuple[int, str]:
     """Run ONE sandbox phase and return (exit_code, captured_output_tail).
     `pristine` runs a compile or build phase over the base tree as pinned,
-    with no patch. `tail_bytes` caps the captured output a caller keeps: a
+    with no patch. A phase in TEST_PHASES, or one whose caller says its
+    command `runs_tests`, runs the profile's verify.test_setup first; a setup
+    that fails exits SENTINEL_SETUP_FAIL. `tail_bytes` caps the captured output a caller keeps: a
     caller that reads the runner's end-of-run failed-tests report needs a cap
     wide enough to hold it, and one that stores the tail keeps the default.
 
@@ -1294,7 +1313,8 @@ def run_phase(phase: str, image: str, *, patch: Path | None = None, tier: int = 
                                  pre_patch=pre_patch,
                                  timeout=timeout, pristine=pristine, tail_bytes=tail_bytes,
                                  coverage_tool=coverage_tool,
-                                 coverage_request=coverage_request)
+                                 coverage_request=coverage_request,
+                                 runs_tests=runs_tests or phase in TEST_PHASES)
 
 
 def _run_phase_locked(phase: str, image: str, *, patch: Path | None, tier: int,
@@ -1302,12 +1322,16 @@ def _run_phase_locked(phase: str, image: str, *, patch: Path | None, tier: int,
                       exclude_file: Path | None, suite_config: Path | None,
                       timeout: int, pristine: bool, pre_patch: Path | None = None,
                       tail_bytes: int = OUTPUT_TAIL_BYTES, coverage_tool: Path | None = None,
-                      coverage_request: Path | None = None) -> tuple[int, str]:
+                      coverage_request: Path | None = None,
+                      runs_tests: bool = False) -> tuple[int, str]:
     container = container_name()
     argv = [str(SANDBOX / "sandbox-run.sh"), "--phase", phase, "--image", image,
             "--tier", str(tier), "--test-cmd", test_cmd,
             "--base-sha", base_sha, "--head-sha", head_sha,
             "--container-name", container]
+    setup = profile.active().verify.test_setup
+    if runs_tests and setup:
+        argv += ["--test-setup", setup]
     if patch is not None:
         argv += ["--patch", str(patch)]
     if pre_patch is not None:
@@ -1789,6 +1813,8 @@ def verify_pr(rec: Pr, image: str, base: str, tier: int,
             and green_rc == gates.SENTINEL_TEST_FAIL):
         red_green["red_failing"] = parse_failed_tests(red_tail)
         red_green["green_failing"] = parse_failed_tests(green_tail)
+        red_green["red_load_error"] = load_error(red_tail)
+        red_green["green_load_error"] = load_error(green_tail)
         red_green["failing_in_diff"] = failing_in_test_diff(
             red_green.get("green_failing"), cached_diff_text(rec))
 

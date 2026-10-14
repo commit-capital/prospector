@@ -1139,6 +1139,31 @@ class TestRunPhase:
         vd.run_phase("red", "img:t1")
         assert "--cpus" not in fake.seen["argv"]
 
+    def test_a_test_run_gets_the_profiles_test_setup(self, monkeypatch):
+        fake = _FakePopen(output=b"ok", returncode=0)
+        monkeypatch.setattr(vd.subprocess, "Popen", fake)
+        monkeypatch.setattr(profile, "active", lambda: profile.parse_profile(
+            {"version": 1, "verify": {"test_setup": "pnpm run preflight"}}, "t"))
+
+        def setup() -> str | None:
+            argv = fake.seen["argv"]
+            return argv[argv.index("--test-setup") + 1] if "--test-setup" in argv else None
+        for phase in ("red", "green", "repro", "coverage"):
+            vd.run_phase(phase, "img:t0")
+            assert setup() == "pnpm run preflight"
+        vd.run_phase("compile", "img:t1")
+        assert setup() is None
+        vd.run_phase("compile", "img:t1", runs_tests=True)
+        assert setup() == "pnpm run preflight"
+
+    def test_no_test_setup_configured_passes_none(self, monkeypatch):
+        fake = _FakePopen(output=b"ok", returncode=0)
+        monkeypatch.setattr(vd.subprocess, "Popen", fake)
+        monkeypatch.setattr(profile, "active", lambda: profile.parse_profile(
+            {"version": 1}, "t"))
+        vd.run_phase("red", "img:t0")
+        assert "--test-setup" not in fake.seen["argv"]
+
     def test_omits_exclude_file_when_not_given(self, monkeypatch):
         fake = _FakePopen(output=b"ok", returncode=0)
         monkeypatch.setattr(vd.subprocess, "Popen", fake)
@@ -1173,6 +1198,17 @@ class TestRunPhase:
     ])
     def test_tests_never_ran_leaves_a_run_that_reached_the_code(self, tail):
         assert not vd.tests_never_ran(tail)
+
+    def test_load_error_names_the_first_load_failure_line(self):
+        tail = ("\x1b[41m FAIL \x1b[49m src/__tests__/a.test.ts [ server/src/__tests__/a.test.ts ]\n"
+                "\x1b[31mError\x1b[22m: Failed to resolve entry for package "
+                "\"@acme/sdk\".  The package may\n"
+                " Test Files  1 failed (1)\n      Tests  no tests\n")
+        assert vd.load_error(tail) == ('Error: Failed to resolve entry for package '
+                                       '"@acme/sdk". The package may')
+
+    def test_load_error_is_none_for_a_run_that_reached_the_code(self):
+        assert vd.load_error("Failed Tests 1\n FAIL  app > compute > expected 1 to be 2") is None
 
     def test_a_caller_that_parses_the_report_can_widen_the_cap(self, monkeypatch):
         # The failed-tests report sits behind whatever the test files printed,
@@ -1344,6 +1380,22 @@ class TestVerifyPr:
         assert rg["green_failing_confirm"] == ["a.test.ts > s > contam"]
         assert rg["failing_in_diff"] == []
         assert ev["regress"]["ran"] is True
+
+    def test_a_load_error_in_both_legs_is_recorded_and_holds(
+            self, tmp_path, diffs, monkeypatch):
+        s = _pinned(tmp_path)
+        _pr(s, 1); _diff(diffs, "h1", "src/a.test.ts")
+        self._blind(s)
+        unloaded = ("Failed Suites 1\n FAIL  src/a.test.ts [ src/a.test.ts ]\n"
+                    "Error: Failed to resolve entry for package \"@acme/sdk\".\n"
+                    "      Tests  no tests\n")
+        calls = self._dirty_phases(monkeypatch, [unloaded], red_tail=unloaded)
+        ev = vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0, [], suite_config=SUITE_CFG)
+        assert calls == ["apply-check", "red", "green"]
+        rg = ev["red_green"]
+        assert rg["red_load_error"] == rg["green_load_error"] == (
+            'Error: Failed to resolve entry for package "@acme/sdk".')
+        assert gates.verify_run_errored(ev["blind_adequacy"], rg, regress=ev["regress"]) is True
 
     def test_an_uncontained_dirty_green_stops_after_the_first_run(
             self, tmp_path, diffs, monkeypatch):

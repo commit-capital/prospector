@@ -224,6 +224,9 @@ SENTINEL_PATCH_UNREADABLE = 40
 # A suite phase whose tree's own test wrapper cannot derive the runner's plan:
 # the tree has no full suite this runner can run. Exited before any test does.
 SENTINEL_NO_PLAN = 50
+# The profile's verify.test_setup failed before any test ran: no tree to test,
+# so a harness fault, never a verdict.
+SENTINEL_SETUP_FAIL = 60
 
 # Disposition precedence for a PR that belongs to several clusters: the most
 # blocking proposal wins (a close overrides a merge; needs-human overrides all).
@@ -1464,12 +1467,25 @@ def contained_green_failures(host: wire.VerifyRedGreenSignal) -> list[str]:
     return sorted(out)
 
 
+def shared_load_error(host: wire.VerifyRedGreenSignal) -> str | None:
+    """The test-file load error both red and green failed on, or None. The
+    lines are the untrusted test's own output, so they only ever withhold a
+    verdict: a forger gains nothing a PR shipping no test would not."""
+    if not (host.get("red_exit") == SENTINEL_TEST_FAIL
+            and host.get("green_exit") == SENTINEL_TEST_FAIL):
+        return None
+    red = host.get("red_load_error")
+    return red if red and red == host.get("green_load_error") else None
+
+
 def verify_run_errored(blind: wire.VerifyBlindSignal,
                        host: wire.VerifyRedGreenSignal, *,
                        regress: wire.VerifyRegressSignal | None) -> bool:
     """True iff a PR's committed signals record a run that errored: the host saw a
     phase exit outside its sentinel set (a killed container, an OOM, a timeout, an
-    image fault), or a clean red->green's confirm re-run or regress leg is
+    image fault, a test setup that failed), red and green both failed on the same
+    test-file load error (`shared_load_error` — neither reached the code under
+    test), or a clean red->green's confirm re-run or regress leg is
     incomplete — missing, not run, a non-sentinel exit, or a first failure whose
     confirming run never concluded. Nothing follows from such a run however the
     judge rates the output, because the exit code it reported carries no meaning.
@@ -1493,6 +1509,8 @@ def verify_run_errored(blind: wire.VerifyBlindSignal,
         return True
     accepted = (SENTINEL_PASS, SENTINEL_TEST_FAIL)
     if host.get("red_exit") not in accepted or host.get("green_exit") not in accepted:
+        return True
+    if shared_load_error(host):
         return True
     if not (host.get("red_exit") == SENTINEL_TEST_FAIL and green_accepted(host)):
         return False
