@@ -7,9 +7,13 @@ machine beats after it, so a machine that comes back reads as working again.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 from pipeline import storekit
 from prospector_app.backend import data
+
+if TYPE_CHECKING:
+    from pipeline.store import WorkerRegistries
 
 
 def stand_down(host: str, *, by: str, note: str | None = None,
@@ -39,3 +43,13 @@ def stood_down(modes: dict[str, dict], roster: dict) -> dict[str, dict]:
             continue
         out[host] = mark
     return out
+
+
+def stood_down_in(regs: WorkerRegistries) -> dict[str, dict]:
+    """`stood_down` over one `Store.load_worker_registries` read."""
+    machines: dict[str, dict] = {}
+    for lane, reg in (("verify", regs["verify_worker"]), ("fix", regs["fix_worker"]),
+                      ("issue-fix", regs["issue_fix_worker"])):
+        for host, rec in (reg.get("hosts") or {}).items():
+            machines.setdefault(str(host), {"host": str(host), "beats": {}})["beats"][lane] = rec
+    return stood_down(regs["machine_modes"], {"machines": list(machines.values())})

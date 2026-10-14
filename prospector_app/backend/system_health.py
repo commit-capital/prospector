@@ -83,13 +83,18 @@ def _ingest_item(label: str, last: str | None, now_ts: float) -> HealthItem | No
 def summarize(health_hosts: list[dict], offline: list[dict],
               worker_lanes: list[tuple[str, str]],
               ingest_last: dict[str, str | None],
-              now_ts: float | None = None) -> SystemHealth:
+              now_ts: float | None = None,
+              stood_down: frozenset[str] = frozenset()) -> SystemHealth:
     """The strip's answer, from plain data: `health_hosts` is
     `escalation.health_status()["hosts"]`, `offline` is
     `escalation.offline_workers()`, `worker_lanes` every `(lane, host)` the
     worker registries name, and `ingest_last` each ingest's last-run stamp
-    keyed per INGEST_LABELS."""
+    keyed per INGEST_LABELS. `stood_down` names the machines an operator
+    stood down; they contribute nothing."""
     now_ts = now_ts if now_ts is not None else time.time()
+    health_hosts = [h for h in health_hosts if str(h["host"]) not in stood_down]
+    offline = [o for o in offline if str(o["host"]) not in stood_down]
+    worker_lanes = [(lane, host) for lane, host in worker_lanes if host not in stood_down]
     tripped_by_host: dict[str, list[str]] = {
         str(h["host"]): list(h["tripped"]) for h in health_hosts if h.get("tripped")}
     offline_by_host: dict[str, float] = {}
@@ -182,8 +187,10 @@ def status() -> SystemHealth:
         "alerts": _latest_run(alert_data.runs(), "alert-ingest"),
     }
     health = escalation.health_status(regs)
+    from prospector_app.backend import machine_mode
+    stood = frozenset(machine_mode.stood_down_in(regs))
     summary = summarize(health["hosts"], escalation.offline_workers(registries=regs),
-                        worker_lanes, ingest_last)
+                        worker_lanes, ingest_last, stood_down=stood)
     from prospector_app.backend import capacity_view
     try:
         paused = capacity_view.health_items()

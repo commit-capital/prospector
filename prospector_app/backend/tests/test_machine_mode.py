@@ -59,3 +59,11 @@ def test_endpoints(store, monkeypatch):
     assert r.status_code == 200 and r.json()["stood_down"] is True
     assert "lap" in store.load_machine_modes()
     assert client.post("/api/machines/lap/stand-up").json() == {"cleared": True}
+
+
+def test_stood_down_in_reads_one_registries_load(store):
+    machine_mode.stand_down("lap", by="ops", now=NOW)
+    store.save_fix_worker({"host": "lap", "last_beat": _iso(30)})
+    assert set(machine_mode.stood_down_in(store.load_worker_registries())) == {"lap"}
+    store.save_fix_worker({"host": "lap", "last_beat": (NOW + timedelta(minutes=1)).isoformat()})
+    assert machine_mode.stood_down_in(store.load_worker_registries()) == {}

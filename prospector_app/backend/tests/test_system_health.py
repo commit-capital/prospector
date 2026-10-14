@@ -215,3 +215,22 @@ def test_status_reads_every_worker_registry_in_one_statement(store, monkeypatch)
     assert sum("FROM registries" in s for s in statements) == 1
     assert (out["lanes_total"], out["lanes_down"]) == (3, 3)
     assert [i["kind"] for i in out["items"]] == ["lanes", "offline", "trip"]
+
+
+def test_stood_down_host_drops_out_of_strip():
+    out = system_health.summarize(
+        [_tripped_host("lap", ["fix"])],
+        [{"host": "lap", "lane": "fix", "last_beat": _iso(5), "age_seconds": 5 * 3600}],
+        [("fix", "lap"), ("verify", "mac")], FRESH, NOW_TS,
+        stood_down=frozenset({"lap"}))
+    assert out["severity"] == "ok" and out["items"] == []
+    assert out["lanes_total"] == 1 and out["lanes_down"] == 0
+
+
+def test_other_hosts_still_report_when_one_is_stood_down():
+    out = system_health.summarize(
+        [_tripped_host("mac", ["verify"])], [],
+        [("verify", "mac"), ("fix", "lap")], FRESH, NOW_TS,
+        stood_down=frozenset({"lap"}))
+    assert [i["kind"] for i in out["items"]] == ["lanes", "trip"]
+    assert out["lanes_total"] == 1 and out["workers_stalled"] is True
