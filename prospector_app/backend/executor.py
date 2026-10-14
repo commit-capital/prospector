@@ -758,7 +758,8 @@ def retrigger_review(n: int, reviewer_id: str, *, token: str | None, dry_run: bo
         attempt=attempt, failure="review retrigger failed unexpectedly")
 
 
-def merge_pr(n: int, method: str = "squash", *, dry_run: bool, reason: str | None = None) -> dict:
+def merge_pr(n: int, method: str = "squash", *, dry_run: bool, reason: str | None = None,
+             compile_reason: str | None = None) -> dict:
     """Merge a PR upstream as the configured bot — ONLY when the human-merge
     gate passes (gates.merge_eligibility: gate-clean, security GREEN, not
     CODEOWNERS-gated). A current YELLOW verdict, or a head no security review
@@ -773,16 +774,19 @@ def merge_pr(n: int, method: str = "squash", *, dry_run: bool, reason: str | Non
     pipeline/compile_preflight.py runs the profile's verify.compile_cmd over
     (current default-branch HEAD + this PR's diff) in the sandbox, and
     gates.compile_preflight_gate blocks on anything but a clean pass — fail
-    closed on a machine that cannot run the sandbox. The run and its outcome
-    land in the activity log either way: a block records its own event, a pass
-    rides the merge event's compile_preflight payload.
+    closed on a machine that cannot run the sandbox. A block that gives no
+    verdict on the PR (gates.compile_preflight_waivable: no Docker, a base that
+    will not build) is cleared by `compile_reason`, which rides the merge's
+    activity entry as `compile_waiver`; a compile failure is never cleared. The
+    run and its outcome land in the activity log either way: a block records
+    its own event, a pass rides the merge event's compile_preflight payload.
 
     Every outcome lands in the activity log, refusals included, and a live
     merge records a `started` event before its compile preflight. While a live
     merge runs, merge_progress names the step it has reached; a second live
     merge of the same PR is refused until the first returns."""
     if dry_run:
-        return _merge_pr(n, method, dry_run=True, reason=reason)
+        return _merge_pr(n, method, dry_run=True, reason=reason, compile_reason=None)
     rec = data.prs().get(int(n))
     if not merge_progress.start(int(n), rec.head_sha if rec else None):
         res = {"pr": int(n), "cluster_id": _cluster_id(n), "action": "MERGE",
@@ -790,7 +794,8 @@ def merge_pr(n: int, method: str = "squash", *, dry_run: bool, reason: str | Non
         activity.record("merge", identity=settings.bot_login(), dry_run=False, **res)
         return res
     try:
-        return _merge_pr(n, method, dry_run=False, reason=reason)
+        return _merge_pr(n, method, dry_run=False, reason=reason,
+                         compile_reason=(compile_reason or "").strip() or None)
     finally:
         merge_progress.finish(int(n))
 
@@ -816,7 +821,8 @@ def _threat_rescan(n: int) -> str | None:
     return "; ".join(blocks) if blocks else None
 
 
-def _merge_pr(n: int, method: str, *, dry_run: bool, reason: str | None) -> dict:
+def _merge_pr(n: int, method: str, *, dry_run: bool, reason: str | None,
+              compile_reason: str | None) -> dict:
     base = {"pr": int(n), "cluster_id": _cluster_id(n), "action": "MERGE"}
     from pipeline import gates  # pipeline policy (path set up by data import)
     reason = (reason or "").strip() or None
@@ -893,8 +899,12 @@ def _merge_pr(n: int, method: str, *, dry_run: bool, reason: str | None) -> dict
     if pf is not None:
         ok_cp, why_cp = gates.compile_preflight_gate(pf)
         base["compile_preflight"] = {**pf, "ok": ok_cp}
-        if not ok_cp:
-            res = {**base, "status": "blocked", "detail": f"compile preflight: {why_cp}"}
+        waivable = not ok_cp and gates.compile_preflight_waivable(pf)
+        if waivable and compile_reason:
+            base["compile_waiver"] = compile_reason
+        elif not ok_cp:
+            res = {**base, "status": "blocked", "detail": f"compile preflight: {why_cp}",
+                   "compile_waivable": waivable}
             activity.record("merge", identity=settings.bot_login(), dry_run=False, **res)
             return res
     if override_pending or verify_override_pending:
@@ -917,7 +927,9 @@ def _merge_pr(n: int, method: str, *, dry_run: bool, reason: str | None) -> dict
     merge_progress.step(int(n), "merging upstream")
     try:
         r = bot_merge_run(argv, token)
-        res = ({**base, "status": "merged", "detail": f"merged (--{method})"} if r.returncode == 0
+        merged = f"merged (--{method})" + (
+            " without a compile verdict, logging your reason" if "compile_waiver" in base else "")
+        res = ({**base, "status": "merged", "detail": merged} if r.returncode == 0
                else {**base, "status": "error", "detail": r.stderr.strip()[:400]})
     except Exception as e:
         res = {**base, "status": "error",

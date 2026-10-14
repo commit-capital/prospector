@@ -75,8 +75,11 @@ own branches while still being unable to reach the triage repository.
   preflight (`pipeline/compile_preflight.py` +
   `gates.compile_preflight_gate`), which runs the profile's
   `verify.compile_cmd` over the current default-branch HEAD plus the PR diff in
-  the sandbox. Anything but a clean pass blocks, including missing or broken
-  sandbox infrastructure. The preflight runs only on a live merge; dry-run
+  the sandbox. Anything but a clean pass blocks. A block that gives no verdict
+  on the PR — missing sandbox infrastructure, a default branch that will not
+  build (`gates.compile_preflight_waivable`) — clears on the operator's
+  reason, which rides the merge's Activity entry (`compile_waiver`); a compile
+  failure or a diff that no longer applies never does. The preflight runs only on a live merge; dry-run
   previews never boot a container. `gh pr edit` is never allowed on the
   executor path.
 - **The app chat agent** (`prospector_app/backend/chat.py`) has a separate,

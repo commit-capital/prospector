@@ -42,6 +42,9 @@ export function PRActionBar({ pr, runState, onActed }:
   const [canonical, setCanonical] = useState(() => suggestedCanonical(pr));
   const [tags, setTags] = useState<string[]>([]);
   const [reason, setReason] = useState("");
+  // Why to merge past a compile preflight that could not run (no Docker, a base
+  // that will not build); offered only after a merge comes back compile_waivable.
+  const [compileReason, setCompileReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ExecResult | null>(null);
   // The step a live merge in flight has reached, polled while the click waits.
@@ -117,12 +120,13 @@ export function PRActionBar({ pr, runState, onActed }:
   /** Post the selected action. `overrideStale` re-sends after the operator has
    *  confirmed the drift the backend refused on; a stale refusal parks in
    *  `staleBlock` and renders the confirm instead of a result chip. */
-  const post = async (overrideStale: boolean): Promise<void> => {
+  const post = async (overrideStale: boolean, waiveCompile = false): Promise<void> => {
     setBusy(true);
     let r: ExecResult;
     try {
       if (action === "MERGE") {
-        r = await api.mergePr(pr.number, dryRun, method, reason.trim() || undefined);
+        r = await api.mergePr(pr.number, dryRun, method, reason.trim() || undefined,
+                              waiveCompile ? compileReason.trim() : undefined);
       } else if (isReviewEvent(action)) {
         r = await api.submitReview(pr.number, reviewEvent(action), commentText, dryRun,
                                    reason || undefined, tags, overrideStale);
@@ -156,6 +160,12 @@ export function PRActionBar({ pr, runState, onActed }:
     else confirmMsg = `Submit a "${reviewEvent(action)}" review on #${pr.number} as ${botLogin}?`;
     if (!dryRun && !window.confirm(confirmMsg)) return;
     await post(false);
+  };
+
+  const mergeWithoutCompile = async () => {
+    if (!compileReason.trim()) return;
+    if (!window.confirm(`⚠ PERMANENT: merge #${pr.number} upstream as ${botLogin} without a compile verdict? Your reason will be logged with the merge. This cannot be undone.`)) return;
+    await post(false, true);
   };
 
   const reopen = async () => {
@@ -231,6 +241,17 @@ export function PRActionBar({ pr, runState, onActed }:
         </div>
         {result?.detail && (result.status === "error" || result.status === "blocked") && (
           <div className="sug-comment muted-note" role="alert">⛔ {result.detail}</div>
+        )}
+        {action === "MERGE" && !dryRun && result?.status === "blocked" && result.compile_waivable && (
+          <div className="pr-tags" title="The compile check could not run on this machine, so it has no verdict on this PR. A real compile failure is never waivable.">
+            <span className="muted small">The compile check could not run. To merge without it, say why (logged with the merge):</span>
+            <textarea className="modal-text" rows={2} placeholder="e.g. 'no Docker on this machine; CI green against current main'"
+              value={compileReason} onChange={(e) => setCompileReason(e.target.value)} disabled={busy} />
+            <div>
+              <button className="btn-secondary sm" onClick={() => { void mergeWithoutCompile(); }}
+                disabled={busy || !compileReason.trim()}>Merge without compile check</button>
+            </div>
+          </div>
         )}
         {mergeLive && (
           <div className="sug-comment muted-note" role="status"

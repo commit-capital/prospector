@@ -2381,6 +2381,23 @@ class TestCompilePreflightGate:
         assert "docker not found" in why and "refused" in why
 
 
+class TestCompilePreflightWaivable:
+    def test_a_check_that_could_not_run_is_waivable(self):
+        for rec in ({"error": "OSError: docker not found"},
+                    {"error": "BuildFailure: pnpm install failed"},
+                    {"refused": "the PR changes dependency manifests"},
+                    {}, {"exit": 10}, {"exit": 40}, {"exit": 124}):
+            assert gates.compile_preflight_waivable(rec) is True, rec
+
+    def test_a_compile_failure_the_base_shares_is_waivable(self):
+        assert gates.compile_preflight_waivable(
+            {"exit": 20, "error": "base fault", "error_kind": "base-compile"}) is True
+
+    def test_a_verdict_on_the_pr_is_never_waivable(self):
+        for rec in ({"exit": 20, "error_excerpt": "error TS2739"}, {"exit": 30}, {"exit": 0}):
+            assert gates.compile_preflight_waivable(rec) is False, rec
+
+
 class TestLaneOutcomes:
     BLIND = {"test_cmd": "npx vitest run x.test.ts", "faithful": True}
     HOST = {"apply_exit": 0, "red_exit": 20, "green_exit": 0,

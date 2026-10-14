@@ -2354,8 +2354,10 @@ export const api = {
   }>("/api/capabilities"),
   instance: () => get<{ branch: string | null; worktree: string | null }>("/api/instance"),
   meta: () => get<RepoMeta>("/api/meta"),
-  mergePr: async (n: number, dryRun: boolean, method = "squash", reason?: string) => {
-    const q = reason ? `&reason=${encodeURIComponent(reason)}` : "";
+  mergePr: async (n: number, dryRun: boolean, method = "squash", reason?: string,
+                  compileReason?: string) => {
+    const q = (reason ? `&reason=${encodeURIComponent(reason)}` : "")
+      + (compileReason ? `&compile_reason=${encodeURIComponent(compileReason)}` : "");
     const r = await fetch(`/api/merge/pr/${n}?dry_run=${dryRun}&method=${method}${q}`, { method: "POST" });
     return r.json() as Promise<ExecResult>;
   },
@@ -2659,7 +2661,11 @@ export interface MergeProgress {
   started_at?: string; step?: string; step_at?: string;
 }
 
-export interface ExecResult { pr: number; action: string; status: string; detail: string; forced?: boolean; stale?: StaleBlock }
+export interface ExecResult {
+  pr: number; action: string; status: string; detail: string; forced?: boolean; stale?: StaleBlock;
+  /** A merge the compile preflight blocked without a verdict on the PR: a reason clears it. */
+  compile_waivable?: boolean;
+}
 
 /** One stored diff of a threat-evidence capture. */
 export interface ThreatEvidenceArtifact {
