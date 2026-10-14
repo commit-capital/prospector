@@ -1,4 +1,4 @@
-import type { ActivityLane, ActivityView, MachineActivity } from "../../api";
+import type { ActivityJobs, ActivityLane, ActivityView, JobStatus, MachineActivity } from "../../api";
 
 /** One piece of a machine's sentence. `numbers` are the PRs (or issues) behind
  *  it, for a link; `jobId` names this app's job, whose output it opens. */
@@ -9,13 +9,13 @@ export interface PhrasePart {
   bad?: boolean;
 }
 
-/** One clause: `paren` reads "lead (a, b)", `list` reads "lead a, b", `plain`
- *  is the lead alone. */
+/** One clause: `paren` reads "lead (a, b)", `list` reads "lead a, b", `colon`
+ *  reads "lead: a, b", `plain` is the lead alone. */
 export interface ActivityPhrase {
   key: string;
   lead: PhrasePart;
   parts: PhrasePart[];
-  style: "paren" | "list" | "plain";
+  style: "paren" | "list" | "colon" | "plain";
   linkKind: "pr" | "issue" | null;
 }
 
@@ -28,12 +28,32 @@ const LANES: [ActivityLane, string, string][] = [
 
 const BAD = /^(failed|RED|regressed|error)/;
 
+const JOB_STATUSES: JobStatus[] = ["done", "running", "queued", "failed"];
+
+function jobTotal(j: ActivityJobs): number {
+  return JOB_STATUSES.reduce((n, s) => n + (j.counts[s] ?? 0), 0);
+}
+
+/** A kind run more than once, as its count at each status; the running count
+ *  opens the earliest running job. */
+function jobCounts(j: ActivityJobs): ActivityPhrase {
+  const parts = JOB_STATUSES.flatMap((s): PhrasePart[] => {
+    const n = j.counts[s] ?? 0;
+    if (n === 0) return [];
+    const part: PhrasePart = { text: `${n} ${s}`, bad: s === "failed" };
+    if (s === "running" && j.running_id != null) part.jobId = j.running_id;
+    return [part];
+  });
+  return { key: `jobs:${j.kind}`, lead: { text: `${j.label} ×${jobTotal(j)}` }, parts, style: "colon", linkKind: null };
+}
+
 function dollars(usd: number): string {
   return usd >= 10 ? `$${Math.round(usd)}` : `$${usd.toFixed(2)}`;
 }
 
 /** A machine's past day as clauses: each lane with its outcomes, the
- *  background passes, the jobs a person ran, and its agent runs at API prices. */
+ *  background passes, the jobs a person ran (one clause per kind run more than
+ *  once), and its agent runs at API prices. */
 export function activityPhrases(m: MachineActivity): ActivityPhrase[] {
   const out: ActivityPhrase[] = [];
   for (const [lane, one, many] of LANES) {
@@ -54,19 +74,20 @@ export function activityPhrases(m: MachineActivity): ActivityPhrase[] {
       style: "list", linkKind: null,
     });
   }
-  if (m.jobs.length > 0) {
+  const once = m.jobs.filter((j) => jobTotal(j) === 1);
+  if (once.length > 0) {
     out.push({
       key: "jobs", lead: { text: m.local ? "you ran" : "ran" },
-      parts: m.jobs.map((j) => {
-        const suffix = j.status === "failed" ? " (failed)"
-          : j.status === "running" || j.status === "queued" ? " (running)" : "";
-        const part: PhrasePart = { text: `${j.label}${suffix}`, bad: j.status === "failed" };
+      parts: once.map((j) => {
+        const status = JOB_STATUSES.find((s) => j.counts[s]);
+        const part: PhrasePart = { text: status === "done" ? j.label : `${j.label} (${status})`, bad: status === "failed" };
         if (j.job_id != null) part.jobId = j.job_id;
         return part;
       }),
       style: "list", linkKind: null,
     });
   }
+  out.push(...m.jobs.filter((j) => jobTotal(j) > 1).map(jobCounts));
   if (m.cost_usd >= 0.01) {
     out.push({ key: "cost", lead: { text: `${dollars(m.cost_usd)} at API prices` }, parts: [], style: "plain", linkKind: null });
   }
@@ -97,6 +118,6 @@ export function machineStatus(m: MachineActivity, now: number): { text: string; 
 export function jobToOpen(view: ActivityView | null, jobId: number,
   running: string | null): { kind: string; label: string } | null {
   if (running != null) return null;
-  const job = view?.machines.flatMap((m) => m.jobs).find((j) => j.job_id === jobId);
+  const job = view?.machines.flatMap((m) => m.jobs).find((j) => j.job_id === jobId || j.running_id === jobId);
   return job ? { kind: job.kind, label: job.label } : null;
 }

@@ -1,17 +1,37 @@
 import { useEffect, useRef, useState } from "react";
-import type { JobMeta } from "../../jobStream";
+import type { JobMeta, QueueSpot } from "../../jobStream";
 import { fmtElapsed } from "./format";
 import type { JobRunner } from "./useJobRunner";
+
+/** Where a queued job stands: how many of its kind wait ahead of it and the
+ *  jobs running now, each a button that switches the console to it. */
+function QueueNote({ queue, onOpen }: { queue: QueueSpot | null; onOpen: (id: number) => void }) {
+  if (queue == null) return <> — waiting for another run of this job to finish</>;
+  const running = queue.running.map((r, i) => {
+    const target = r.pr != null ? ` (PR #${r.pr})` : r.cluster != null ? ` (cluster ${r.cluster})` : "";
+    return (
+      <span key={r.id}>{i > 0 && ", "}
+        <button className="linkish" style={{ fontSize: "inherit", padding: 0 }}
+          title="Show this job's output" onClick={() => onOpen(r.id)}>job #{r.id}</button>{target}
+      </span>
+    );
+  });
+  return (
+    <> — {queue.ahead === 0 ? "next in line" : `${queue.ahead} ahead`}
+      {running.length > 0 && <>; now running {running}</>}</>
+  );
+}
 
 /** The line above a job's console: queued or running and for how long, how
  *  long since it last printed, a Stop button, or how it ended. Ticks each
  *  second while the job runs. */
-function JobStatus({ meta, running, reconnecting, lastOutputAt, onStop }: {
+function JobStatus({ meta, running, reconnecting, lastOutputAt, onStop, onOpen }: {
   meta: JobMeta;
   running: boolean;
   reconnecting: boolean;
   lastOutputAt: number | null;
   onStop: () => void;
+  onOpen: (id: number) => void;
 }) {
   const [now, setNow] = useState<number>(() => Date.now());
   useEffect(() => {
@@ -33,7 +53,7 @@ function JobStatus({ meta, running, reconnecting, lastOutputAt, onStop }: {
       <>
         <span className="jobstatus-dot" />
         {meta.status === "queued"
-          ? <span><b>{meta.label}</b> (job #{meta.id}) queued — waiting for another run of this job to finish</span>
+          ? <span><b>{meta.label}</b> (job #{meta.id}) queued<QueueNote queue={meta.queue} onOpen={onOpen} /></span>
           : <span><b>{meta.label}</b> (job #{meta.id}) running · {fmtElapsed((now - started) / 1000)}
             {quiet != null && quiet >= 10 && <> · no output for {fmtElapsed(quiet)}</>}</span>}
         <button className="btn-secondary sm" onClick={onStop}
@@ -67,7 +87,9 @@ export function JobLine({ runner }: { runner: JobRunner }) {
       <div className="jobstatus">
         {runner.meta
           ? <JobStatus meta={runner.meta} running={live} reconnecting={runner.reconnecting}
-              lastOutputAt={runner.lastOutputAt} onStop={() => runner.meta && runner.stop(runner.meta.id)} />
+              lastOutputAt={runner.lastOutputAt} onStop={() => runner.meta && runner.stop(runner.meta.id)}
+              onOpen={(id) => runner.meta && runner.attach(`/api/jobs/${id}/stream`, runner.meta.kind,
+                `↻ attached to job #${id} (${runner.meta.label}) — replaying its output so far…`)} />
           : <span>{runner.log[0]}</span>}
         <button className="linkish small" onClick={() => setShowOutput((v) => !v)} aria-expanded={showOutput}
           style={live ? undefined : { marginLeft: "auto" }}>

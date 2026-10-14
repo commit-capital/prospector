@@ -11,14 +11,12 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Literal, TypedDict
+from typing import Literal, TypedDict
 
 from pipeline import capacity
 from pipeline import storekit
 from pipeline import worker_health
-
-if TYPE_CHECKING:
-    from prospector_app.backend.jobs import JobView
+from prospector_app.backend.jobs import JobStatus, JobView
 
 Lane = Literal["security", "verify", "autofix", "issue_fix"]
 
@@ -61,10 +59,13 @@ class Background(TypedDict):
 
 
 class JobRun(TypedDict):
+    """The jobs of one kind a machine ran: how many stand at each status, the
+    latest one and the earliest still running, by this app's job id."""
     label: str
     kind: str
-    status: str
+    counts: dict[JobStatus, int]
     job_id: int | None
+    running_id: int | None
 
 
 class Current(TypedDict):
@@ -204,7 +205,8 @@ def summarize(rows: list[tuple[str, dict]], cost: dict[str, float], roster: dict
         elif (ledger, phase) in job_phases and trigger not in WORKER_TRIGGERS:
             kind, label = job_phases[(ledger, phase)]
             jobs.setdefault(host, {}).setdefault(
-                label, {"label": label, "kind": kind, "status": "done", "job_id": None})
+                label, {"label": label, "kind": kind, "counts": {"done": 1},
+                        "job_id": None, "running_id": None})
         else:
             continue
         machines.setdefault(host, _blank(host, local))
@@ -222,9 +224,7 @@ def summarize(rows: list[tuple[str, dict]], cost: dict[str, float], roster: dict
     if mine:
         machines.setdefault(local, _blank(local, local))
     if local in machines:
-        machines[local]["jobs"] = [
-            {"label": j["label"], "kind": j["kind"], "status": j["status"], "job_id": j["id"]}
-            for j in sorted(mine, key=lambda j: j["id"])] if mine else []
+        machines[local]["jobs"] = _job_runs(mine)
 
     for host, usd in cost.items():
         if host in machines:
@@ -233,6 +233,19 @@ def summarize(rows: list[tuple[str, dict]], cost: dict[str, float], roster: dict
     ordered = sorted(machines.values(),
                      key=lambda m: (m["host"] == UNATTRIBUTED, not m["online"], m["host"]))
     return {"local": local, "window_hours": WINDOW_HOURS, "machines": ordered}
+
+
+def _job_runs(local_jobs: list[JobView]) -> list[JobRun]:
+    """This app's jobs, one entry per kind in the order each kind first ran."""
+    by_kind: dict[str, JobRun] = {}
+    for job in sorted(local_jobs, key=lambda j: j["id"]):
+        run = by_kind.setdefault(job["kind"], {"label": job["label"], "kind": job["kind"],
+                                               "counts": {}, "job_id": None, "running_id": None})
+        run["counts"][job["status"]] = run["counts"].get(job["status"], 0) + 1
+        run["job_id"] = job["id"]
+        if job["status"] == "running" and run["running_id"] is None:
+            run["running_id"] = job["id"]
+    return list(by_kind.values())
 
 
 def _job_phases() -> dict[tuple[str, str], tuple[str, str]]:

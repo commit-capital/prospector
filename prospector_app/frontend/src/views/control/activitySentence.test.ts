@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { MachineActivity } from "../../api";
+import type { ActivityJobs, MachineActivity } from "../../api";
 import { activityPhrases, jobToOpen, machineStatus } from "./activitySentence.ts";
 
 const NOW = Date.parse("2026-10-03T12:00:00Z");
@@ -11,6 +11,11 @@ function machine(over: Partial<MachineActivity> = {}): MachineActivity {
     stalled: false, tripped: [], current: { pr: null, issue: null }, lanes: {}, background: [], jobs: [],
     cost_usd: 0, ...over,
   };
+}
+
+function job(label: string, kind: string, counts: ActivityJobs["counts"], jobId: number | null = null,
+  runningId: number | null = null): ActivityJobs {
+  return { label, kind, counts, job_id: jobId, running_id: runningId };
 }
 
 test("a lane reads as a count with its outcomes", () => {
@@ -41,7 +46,7 @@ test("lanes come in a fixed order, then background, jobs and cost", () => {
   const lane = { count: 1, numbers: [1], outcomes: [] };
   const keys = activityPhrases(machine({
     lanes: { autofix: lane, security: lane }, background: [{ label: "PR watches", count: 71 }],
-    jobs: [{ label: "Ingest", kind: "ingest", status: "done", job_id: null }], cost_usd: 41.3,
+    jobs: [job("Ingest", "ingest", { done: 1 })], cost_usd: 41.3,
   })).map((p) => p.key);
   assert.deepEqual(keys, ["security", "autofix", "background", "jobs", "cost"]);
 });
@@ -55,14 +60,13 @@ test("background lists its passes", () => {
 
 test("this machine's jobs read as yours and carry their id", () => {
   const [p] = activityPhrases(machine({ local: true, jobs: [
-    { label: "Ingest", kind: "ingest", status: "done", job_id: 3 },
-    { label: "Threat scan", kind: "threat-scan", status: "failed", job_id: 4 }] }));
+    job("Ingest", "ingest", { done: 1 }, 3), job("Threat scan", "threat-scan", { failed: 1 }, 4)] }));
   assert.equal(p.lead.text, "you ran");
   assert.deepEqual(p.parts, [{ text: "Ingest", jobId: 3, bad: false }, { text: "Threat scan (failed)", jobId: 4, bad: true }]);
 });
 
 test("another machine's jobs read without you", () => {
-  const [p] = activityPhrases(machine({ jobs: [{ label: "Ingest", kind: "ingest", status: "done", job_id: null }] }));
+  const [p] = activityPhrases(machine({ jobs: [job("Ingest", "ingest", { done: 1 })] }));
   assert.equal(p.lead.text, "ran");
   assert.equal(p.parts[0].jobId, undefined);
 });
@@ -97,8 +101,32 @@ test("unattributed rows read as an unrecorded machine", () => {
 
 test("a past job opens only while no job runs", () => {
   const view = { local: "studio", window_hours: 24, machines: [machine({ local: true, jobs: [
-    { label: "Ingest", kind: "ingest", status: "done", job_id: 3 }] })] };
+    job("Ingest", "ingest", { done: 1 }, 3)] })] };
   assert.deepEqual(jobToOpen(view, 3, null), { kind: "ingest", label: "Ingest" });
   assert.equal(jobToOpen(view, 3, "analyze-clusters"), null);
   assert.equal(jobToOpen(view, 9, null), null);
+});
+
+test("a kind run many times reads as its counts, the running one opening its job", () => {
+  const phrases = activityPhrases(machine({ local: true, jobs: [
+    job("Ingest", "ingest", { done: 1 }, 2),
+    job("Design review (single PR)", "design-review-pr", { done: 30, running: 1, queued: 25, failed: 1 }, 65, 9)] }));
+  assert.deepEqual(phrases.map((p) => p.key), ["jobs", "jobs:design-review-pr"]);
+  const [, counts] = phrases;
+  assert.equal(counts.lead.text, "Design review (single PR) ×57");
+  assert.equal(counts.style, "colon");
+  assert.deepEqual(counts.parts, [
+    { text: "30 done", bad: false }, { text: "1 running", bad: false, jobId: 9 },
+    { text: "25 queued", bad: false }, { text: "1 failed", bad: true }]);
+});
+
+test("a single job still waiting reads as queued", () => {
+  const [p] = activityPhrases(machine({ local: true, jobs: [job("Ingest", "ingest", { queued: 1 }, 5)] }));
+  assert.deepEqual(p.parts, [{ text: "Ingest (queued)", bad: false, jobId: 5 }]);
+});
+
+test("the running job of a folded kind opens", () => {
+  const view = { local: "studio", window_hours: 24, machines: [machine({ local: true, jobs: [
+    job("Design review (single PR)", "design-review-pr", { done: 3, running: 1 }, 12, 9)] })] };
+  assert.deepEqual(jobToOpen(view, 9, null), { kind: "design-review-pr", label: "Design review (single PR)" });
 });

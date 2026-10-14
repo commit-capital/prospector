@@ -190,9 +190,17 @@ export interface MachineActivity {
   current: { pr: number | null; issue: number | null };
   lanes: Partial<Record<ActivityLane, LaneActivity>>;
   background: { label: string; count: number }[];
-  /** Jobs a person started; `job_id` names this app's own job record. */
-  jobs: { label: string; kind: string; status: string; job_id: number | null }[];
+  /** Jobs a person started, one entry per kind: how many stand at each status,
+   *  and by this app's job id the latest and the earliest still running. */
+  jobs: ActivityJobs[];
   cost_usd: number;
+}
+export interface ActivityJobs {
+  label: string;
+  kind: string;
+  counts: Partial<Record<JobStatus, number>>;
+  job_id: number | null;
+  running_id: number | null;
 }
 export interface ActivityView { local: string; window_hours: number; machines: MachineActivity[] }
 

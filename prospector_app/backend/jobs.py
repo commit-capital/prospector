@@ -106,6 +106,19 @@ class JobView(TypedDict):
     returncode: int | None
 
 
+class RunningJob(TypedDict):
+    id: int
+    pr: int | None
+    cluster: int | None
+
+
+class QueueSpot(TypedDict):
+    """Where a job held by its kind's `max_concurrency` stands: the queued jobs
+    of its kind ahead of it, and the ones running now."""
+    ahead: int
+    running: list[RunningJob]
+
+
 class Job(JobView):
     log: list[str]
     pid: int | None
@@ -659,7 +672,11 @@ def restore() -> None:
     each unfinished one back: a running job whose process is still going is
     followed again, one whose exit code was recorded is settled, one whose
     process is gone without an exit code is failed, and a queued one is scheduled.
-    Runs on the event loop, which the followed and scheduled jobs need."""
+    Runs on the event loop, which the followed and scheduled jobs need. The
+    followed jobs take their places under their kinds' limits before any
+    queued job is scheduled, and queued ones are scheduled in id order, the
+    order `queue_spot` counts."""
+    queued: list[Job] = []
     for job_id in sorted(_recorded_ids()):
         if job_id in JOBS:
             continue
@@ -672,16 +689,18 @@ def restore() -> None:
             continue
         JOBS[job_id] = job
         if job["status"] == "queued":
-            schedule_job(job)
+            queued.append(job)
         elif job["status"] == "running":
             returncode = _recorded_exit(job_id)
             if returncode is not None:
                 _settle(job, returncode)
             elif _runs_job(job) is not False:
-                _retain(asyncio.create_task(_follow(job, None)))
+                _retain(asyncio.create_task(_adopt(job)))
             else:
                 _settle(job, None, "! lost: the job's process ended while the backend was "
                                    "restarting, without recording an exit code")
+    for job in queued:
+        schedule_job(job)
 
 
 async def stop_job(job_id: int) -> Job:
@@ -712,7 +731,7 @@ async def stop_job(job_id: int) -> Job:
 
 
 def _job_limiter(kind: str) -> asyncio.Semaphore | None:
-    limit = JOB_SPECS[kind].get("max_concurrency")
+    limit = JOB_SPECS.get(kind, {}).get("max_concurrency")
     if limit is None:
         return None
     loop = asyncio.get_running_loop()
@@ -730,6 +749,17 @@ async def _run_scheduled_job(job: Job) -> None:
         await run_job(job)
 
 
+async def _adopt(job: Job) -> None:
+    """Follow a job left running by an earlier backend, holding a place under
+    its kind's limit so the jobs queued behind it keep waiting."""
+    limiter = _job_limiter(job["kind"])
+    if limiter is None:
+        await _follow(job, None)
+        return
+    async with limiter:
+        await _follow(job, None)
+
+
 def _retain(task: asyncio.Task[None]) -> None:
     _TASKS.add(task)
     task.add_done_callback(_TASKS.discard)
@@ -740,34 +770,64 @@ def schedule_job(job: Job) -> None:
     _retain(asyncio.create_task(_run_scheduled_job(job)))
 
 
+def queue_spot(job: Job) -> QueueSpot | None:
+    """Where a queued job stands under its kind's limit, which admits waiting
+    jobs in id order; None for any other job."""
+    if job["status"] != "queued" or JOB_SPECS.get(job["kind"], {}).get("max_concurrency") is None:
+        return None
+    same = [j for j in JOBS.values() if j["kind"] == job["kind"]]
+    return {"ahead": sum(1 for j in same if j["status"] == "queued" and j["id"] < job["id"]),
+            "running": [{"id": j["id"], "pr": j["pr"], "cluster": j["cluster"]}
+                        for j in sorted(same, key=lambda j: j["id"]) if j["status"] == "running"]}
+
+
 def _meta(job: Job) -> dict[str, object]:
-    """The job's view, when its log last changed, and how many lines it holds —
-    what a console shows above the output, and how it tells replayed lines from
-    live ones."""
+    """The job's view, its place in its kind's queue, when its log last
+    changed, and how many lines it holds — what a console shows above the
+    output, and how it tells replayed lines from live ones."""
     try:
         last_output: str | None = datetime.fromtimestamp(
             _log_path(job["id"]).stat().st_mtime, timezone.utc).isoformat(timespec="seconds")
     except OSError:
         last_output = None
-    return {**view(job), "last_output": last_output, "lines": len(job["log"])}
+    return {**view(job), "queue": queue_spot(job), "last_output": last_output,
+            "lines": len(job["log"])}
+
+
+async def _wait_any(wakes: list[asyncio.Event]) -> None:
+    waiters = [asyncio.create_task(wake.wait()) for wake in wakes]
+    _, pending = await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+    for waiter in pending:
+        waiter.cancel()
+    await asyncio.gather(*pending, return_exceptions=True)
 
 
 async def attach_job(job: Job, after: int = 0) -> AsyncIterator[dict[str, str]]:
     """Stream `job`'s log as SSE — a `job` event with its view first, then every
     line from index `after` on (a reconnecting reader passes the count it already
-    has), then following live, then a final `done` event. Safe to call more than
-    once per job and safe to abandon at any point: closing this generator only
-    drops this reader, the job keeps going."""
+    has), then following live, then a final `done` event. While the job waits
+    under its kind's limit, a `queue` event carries each change to its
+    `queue_spot`. Safe to call more than once per job and safe to abandon at any
+    point: closing this generator only drops this reader, the job keeps going."""
     _catch_up(job, final=job["status"] in ("done", "failed"))
-    yield {"event": "job", "data": json.dumps(_meta(job))}
+    meta = _meta(job)
+    yield {"event": "job", "data": json.dumps(meta)}
+    spot = meta["queue"]
     i = max(0, after)
     while True:
+        # Captured before reading state, so a change racing the read sets one.
+        wakes = [job["_wake"]]
+        if job["status"] == "queued":
+            wakes += [j["_wake"] for j in JOBS.values() if j["kind"] == job["kind"] and j is not job]
         while i < len(job["log"]):
             yield {"event": "log", "data": job["log"][i]}
             i += 1
         if job["status"] not in ("queued", "running"):
             break
-        await job["_wake"].wait()
+        if (now := queue_spot(job)) != spot:
+            spot = now
+            yield {"event": "queue", "data": json.dumps(spot)}
+        await _wait_any(wakes)
     yield {"event": "done", "data": json.dumps({"returncode": job["returncode"],
                                                 "status": job["status"],
                                                 "finished": job["finished"]})}
@@ -797,9 +857,5 @@ async def attach_job_group(group: list[Job]) -> AsyncIterator[dict[str, str]]:
             active = active or job["status"] in ("queued", "running")
         if not active:
             break
-        waiters = [asyncio.create_task(wake.wait()) for wake in wakes]
-        _, pending = await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
-        for waiter in pending:
-            waiter.cancel()
-        await asyncio.gather(*pending, return_exceptions=True)
+        await _wait_any(wakes)
     yield {"event": "done", "data": json.dumps({"jobs": len(group)})}
