@@ -1,94 +1,116 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, type ActivityView, type Autohunt, type CapacityState, type FixQueue, type JobRuntime, type JobSpec, type PipelineStatus, type SuggestedAction, type VerifyQueue } from "../api";
-import { useExec } from "../ExecContext";
+import { api, type Autohunt, type CapacityState, type ControlOverview, type FixQueue, type JobRuntime, type JobSpec, type PipelineStatus, type SuggestedAction, type VerifyQueue } from "../api";
 import { usePoll } from "../poll";
+import { Attention } from "./control/Attention";
 import { Capacity } from "./control/Capacity";
 import { Coverage } from "./control/Coverage";
 import { JobLine } from "./control/JobLine";
 import { Jobs } from "./control/Jobs";
-import { NeedsYou } from "./control/NeedsYou";
-import { Queues } from "./control/Queues";
-import { RecentActivity } from "./control/RecentActivity";
+import { Lanes } from "./control/Lanes";
 import { RunHistory } from "./control/RunHistory";
-import { jobToOpen } from "./control/activitySentence";
+import { StatusLine } from "./control/StatusLine";
+import { Timeline } from "./control/Timeline";
 import { RANGE_OPTIONS, type RangeOpt } from "./control/format";
 import { useJobRunner } from "./control/useJobRunner";
 
-/** Pipeline → Health & queues: what needs you, what every machine did in the
- *  past day, the worker queues, phase coverage, the jobs to run, and — folded
- *  — AI capacity and the run history. */
+type Tab = "jobs" | "capacity" | "history";
+const TAB_KEY = "control.tab";
+
+function readTab(): Tab {
+  try {
+    const v = localStorage.getItem(TAB_KEY);
+    return v === "capacity" || v === "history" ? v : "jobs";
+  } catch {
+    return "jobs";
+  }
+}
+
+/** Pipeline → Health & queues: every machine in a line, the problems that
+ *  need a person, each lane's now and next, a timeline, and the secondary
+ *  panels in tabs. */
 export default function ControlPanel() {
-  const { pushToast } = useExec();
+  const [overview, setOverview] = useState<ControlOverview | null>(null);
+  const [overviewErr, setOverviewErr] = useState<string>();
+  const [open, setOpen] = useState<string | null>(null);
+  const [tab, setTab] = useState<Tab>(readTab);
   const [specs, setSpecs] = useState<JobSpec[]>([]);
-  const [specsErr, setSpecsErr] = useState<string>();
   const [runtimes, setRuntimes] = useState<Record<string, JobRuntime> | null>(null);
   const [pipeline, setPipeline] = useState<PipelineStatus | null>(null);
   const [suggestions, setSuggestions] = useState<SuggestedAction[]>([]);
-  const [activity, setActivity] = useState<ActivityView | null>(null);
   const [capacity, setCapacity] = useState<CapacityState | null>(null);
   const [hunt, setHunt] = useState<Autohunt | null>(null);
   const [verifyQueue, setVerifyQueue] = useState<VerifyQueue | null>(null);
   const [fixQueue, setFixQueue] = useState<FixQueue | null>(null);
   const [range, setRange] = useState<RangeOpt>(RANGE_OPTIONS[0]);
 
+  const loadOverview = useCallback(() => api.controlOverview()
+    .then((o) => { setOverview(o); setOverviewErr(undefined); })
+    .catch((e) => setOverviewErr(String(e))), []);
   const loadPipeline = useCallback(() => {
     api.pipelineStatus().then(setPipeline).catch(() => {});
     api.suggestedActions("all").then((d) => setSuggestions(d.items)).catch(() => {});
     api.jobRuntimes().then((d) => setRuntimes(d.runtimes)).catch(() => {});
   }, []);
-  const loadActivity = useCallback(() => api.machinesActivity().then(setActivity).catch(() => {}), []);
-  const loadCapacity = useCallback(() => api.capacity().then(setCapacity).catch(() => {}), []);
-  const loadHunt = useCallback(
-    () => api.autohunt(range.days, range.allTime).then(setHunt).catch(() => {}), [range]);
-  const loadVerifyQueue = useCallback(() => api.verifyQueue(7, false).then(setVerifyQueue).catch(() => {}), []);
   const loadFixQueue = useCallback(
     () => api.fixQueue(range.days, range.allTime).then(setFixQueue).catch(() => {}), [range]);
+  const loadVerifyQueue = useCallback(() => api.verifyQueue(7, false).then(setVerifyQueue).catch(() => {}), []);
+  const loadHunt = useCallback(
+    () => api.autohunt(range.days, range.allTime).then(setHunt).catch(() => {}), [range]);
+  const loadCapacity = useCallback(() => api.capacity().then(setCapacity).catch(() => {}), []);
+  const noop = useCallback(() => Promise.resolve(), []);
 
-  const runner = useJobRunner(() => { loadPipeline(); loadActivity(); });
-
+  const runner = useJobRunner(() => { loadPipeline(); loadOverview(); });
   useEffect(() => {
-    api.jobSpecs().then((d) => setSpecs(d.specs)).catch((e) => setSpecsErr(String(e)));
+    api.jobSpecs().then((d) => setSpecs(d.specs)).catch(() => {});
     loadPipeline();
   }, [loadPipeline]);
 
-  const fixRunning = (fixQueue?.queue ?? []).some((e) => e.status === "running" || e.status === "pushing");
-  usePoll(loadActivity, 30_000);
-  usePoll(loadCapacity, 30_000);
-  usePoll(loadHunt, 30_000);
-  usePoll(loadVerifyQueue, 30_000);
-  // A mechanical action runs for a minute or two, so an in-flight queue is
-  // polled fast enough to show it moving through its steps.
-  usePoll(loadFixQueue, fixRunning ? 10_000 : 30_000);
+  const busy = (overview?.lanes ?? []).some((l) => l.now.length > 0);
+  usePoll(loadOverview, busy ? 5_000 : 15_000);
+  usePoll(open === "autofix" || tab === "history" ? loadFixQueue : noop, 15_000);
+  usePoll(open === "verify" || tab === "history" ? loadVerifyQueue : noop, 30_000);
+  usePoll(open === "verify" || tab === "history" ? loadHunt : noop, 30_000);
+  usePoll(tab === "capacity" ? loadCapacity : noop, 30_000);
 
-  const openJob = (jobId: number) => {
-    const job = jobToOpen(activity, jobId, runner.running);
-    if (!job) {
-      if (runner.running) pushToast("A job is running", "yellow", { detail: "Its output stays at the top until it ends; open this one after." });
-      return;
-    }
-    runner.attach(`/api/jobs/${jobId}/stream`, job.kind, `↻ job #${jobId} (${job.label}) — replaying its output…`);
-    window.scrollTo({ top: 0, behavior: "smooth" });
+  const pickTab = (t: Tab) => {
+    setTab(t);
+    try { localStorage.setItem(TAB_KEY, t); } catch { /* the tab resets next visit */ }
   };
 
   return (
     <div className="control">
-      <div className="detail-head">
-        <h1>🎛️ Health &amp; queues</h1>
-      </div>
-      {specsErr && !specs.length && <div className="error">Couldn't load pipeline jobs: {specsErr}</div>}
+      <div className="detail-head"><h1>🎛️ Health &amp; queues</h1></div>
       <JobLine runner={runner} />
-      <NeedsYou hunt={hunt} activity={activity} capacity={capacity} onResume={loadHunt} />
-      <RecentActivity activity={activity} onOpenJob={openJob} />
-      <Queues hunt={hunt} verifyQueue={verifyQueue} fixQueue={fixQueue} onFixChanged={loadFixQueue} />
-      <Coverage pipeline={pipeline} />
-      <Jobs specs={specs} runtimes={runtimes} suggestions={suggestions} pipeline={pipeline}
-        running={runner.running}
-        onStart={(url, spec) => {
-          runner.attach(url, spec.kind, `▶ starting ${spec.label}…`);
-          window.scrollTo({ top: 0, behavior: "smooth" });
-        }} />
-      <Capacity state={capacity} />
-      <RunHistory hunt={hunt} fixQueue={fixQueue} range={range} onRange={setRange} />
+      {overviewErr && !overview && <div className="error">Couldn't load the overview: {overviewErr}</div>}
+      {overview == null ? <div className="muted small">Loading…</div> : (
+        <>
+          <StatusLine overview={overview} onChanged={loadOverview} />
+          <Attention overview={overview} onChanged={loadOverview}
+            onReviewParked={() => { setOpen("autofix"); loadFixQueue(); }} />
+          <Lanes overview={overview} open={open}
+            onToggle={(l) => setOpen((o) => (o === l ? null : l))}
+            verifyQueue={verifyQueue} fixQueue={fixQueue} hunt={hunt} onFixChanged={loadFixQueue} />
+          <Timeline overview={overview} />
+        </>
+      )}
+      <div className="ctabs" role="tablist">
+        {([["jobs", "Coverage and jobs"], ["capacity", "AI capacity"], ["history", "Run history"]] as const).map(([k, label]) => (
+          <button key={k} role="tab" aria-selected={tab === k} onClick={() => pickTab(k)}>{label}</button>
+        ))}
+      </div>
+      {tab === "jobs" && (
+        <>
+          <Coverage pipeline={pipeline} />
+          <Jobs specs={specs} runtimes={runtimes} suggestions={suggestions} pipeline={pipeline}
+            running={runner.running}
+            onStart={(url, spec) => {
+              runner.attach(url, spec.kind, `▶ starting ${spec.label}…`);
+              window.scrollTo({ top: 0, behavior: "smooth" });
+            }} />
+        </>
+      )}
+      {tab === "capacity" && <Capacity state={capacity} />}
+      {tab === "history" && <RunHistory hunt={hunt} fixQueue={fixQueue} range={range} onRange={setRange} />}
     </div>
   );
 }
