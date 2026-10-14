@@ -32,3 +32,8 @@ test("status line names working, off and offline machines and the AI hold", () =
   } as unknown as ControlOverview;
   assert.equal(statusLine(o), "studio working on 2 lanes · lap off · background AI paused: weekly limit");
 });
+
+test("a lane off everywhere shows no pool", () => {
+  assert.equal(nextText(lane({ pool: 2577, cells: [{ host: "a", state: "off" }, { host: "b", state: "stood-down" }] }), null), "—");
+  assert.equal(nextText(lane({ pool: 3, cells: [{ host: "a", state: "on" }] }), null), "3 in hunter pool");
+});

@@ -14,6 +14,8 @@ export function cellLabel(state: OverviewCellState): string {
 export function nextText(lane: OverviewLane, aiRetryAt: string | null): string {
   const head = lane.queue[0];
   if (head) return `#${head.pr ?? head.issue} · ${lane.queue.length} queued`;
+  const running = lane.cells.some((c) => c.state === "on" || c.state === "tripped" || c.state === "ai-paused");
+  if (lane.cells.length > 0 && !running) return "—";
   if (lane.cells.length > 0 && lane.cells.every((c) => c.state === "ai-paused")) {
     return aiRetryAt ? "after AI resumes" : "waiting for AI";
   }

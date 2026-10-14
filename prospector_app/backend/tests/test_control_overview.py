@@ -47,7 +47,8 @@ def test_tripped_lane_is_a_need_unless_stood_down():
     tripped = {"studio": {"design": {"at": _iso(120), "kind": "coverage", "reason": "r"}}}
     out = co.build(_inputs(tripped=tripped), NOW)
     assert _cell(out, "design", "studio") == "tripped"
-    assert [n["key"] for n in out["needs"]] == ["trip:studio:design"]
+    [need] = out["needs"]
+    assert need["kind"] == "trip" and need["key"].startswith("trip:studio:design:")
     out = co.build(_inputs(tripped=tripped, stood_down={"studio": {"at": _iso(1)}}), NOW)
     assert _cell(out, "design", "studio") == "stood-down" and out["needs"] == []
 
@@ -56,10 +57,10 @@ def test_offline_machine_is_a_need_unless_stood_down():
     roster = {"local": "studio", "machines": [_machine("studio", 0.5), _machine("lap", 300)]}
     loops = {"studio": {"lanes": ALL_ON, "loops": {}}, "lap": {"lanes": ALL_ON, "loops": {}}}
     out = co.build(_inputs(roster=roster, loops=loops), NOW)
-    assert "offline:lap" in [n["key"] for n in out["needs"]]
+    assert "lap" in [n["host"] for n in out["needs"] if n["kind"] == "offline"]
     assert next(m for m in out["machines"] if m["host"] == "lap")["state"] == "offline"
     out = co.build(_inputs(roster=roster, loops=loops, stood_down={"lap": {"at": _iso(400)}}), NOW)
-    assert "offline:lap" not in [n["key"] for n in out["needs"]]
+    assert not [n for n in out["needs"] if n["kind"] == "offline"]
     lap = next(m for m in out["machines"] if m["host"] == "lap")
     assert lap["state"] == "off" and lap["stood_down"] is True
 
@@ -112,7 +113,7 @@ def test_parked_changes_are_one_need():
            "step": None, "queued_at": _iso(60 * p), "started_at": None, "host": None}
           for p in (1, 2)]
     [need] = co.build(_inputs(fix_queue=fq), NOW)["needs"]
-    assert need["key"] == "parked" and need["count"] == 2 and need["at"] == _iso(120)
+    assert need["kind"] == "parked" and need["count"] == 2 and need["at"] == _iso(120)
 
 
 def test_timeline_lists_endings_and_collapses_background():
@@ -129,3 +130,65 @@ def test_timeline_lists_endings_and_collapses_background():
     assert len(watch) == 1 and watch[0]["text"] == "PR watch ×2"
     row = next(r for r in co.build(_inputs(rows=rows), NOW)["lanes"] if r["lane"] == "autofix")
     assert row["ended_24h"] == 1 and row["faults_24h"] == 1
+
+
+def test_loop_of_a_lane_turned_off_has_no_next():
+    loops = {"studio": {"lanes": {**ALL_ON, "cluster": False}, "loops": {
+        "cluster": {"last_at": _iso(10), "every_seconds": 3600}}}}
+    [loop] = co.build(_inputs(loops=loops), NOW)["loops"]
+    assert loop["next_at"] is None
+
+
+def test_overdue_loop_has_no_next():
+    loops = {"studio": {"lanes": ALL_ON, "loops": {
+        "pr-watch": {"last_at": _iso(180), "every_seconds": 900}}}}
+    [loop] = co.build(_inputs(loops=loops), NOW)["loops"]
+    assert loop["next_at"] is None
+    assert not [t for t in co.build(_inputs(loops=loops), NOW)["timeline"] if t["when"] == "upcoming"]
+
+
+def test_trip_need_carries_remedy_and_last_self_test():
+    tripped = {"studio": {"verify": {"at": _iso(5), "kind": "sandbox", "reason": "mount broke",
+                                     "remedy": "restart colima", "retest": "docker unreachable"}}}
+    [need] = co.build(_inputs(tripped=tripped), NOW)["needs"]
+    assert need["detail"] is not None
+    assert "mount broke" in need["detail"] and "restart colima" in need["detail"]
+    assert "docker unreachable" in need["detail"]
+
+
+def test_need_keys_change_when_their_content_does():
+    def parked(prs):
+        return [{"pr": p, "title": None, "status": "awaiting-review", "action": "fix", "source": "auto",
+                 "step": None, "queued_at": _iso(60), "started_at": None, "host": None} for p in prs]
+    key = lambda fq: co.build(_inputs(fix_queue=fq), NOW)["needs"][0]["key"]  # noqa: E731
+    assert key(parked([1, 2])) == key(parked([2, 1]))
+    assert key(parked([1, 2])) != key(parked([1, 2, 3]))
+    runs = lambda groups: co.build(_inputs(failed_runs=groups), NOW)["needs"][0]["key"]  # noqa: E731
+    assert runs([{"lane": "verify", "reason": "a", "prs": [1]}]) != runs(
+        [{"lane": "verify", "reason": "a", "prs": [1]}, {"lane": "verify", "reason": "b", "prs": [2]}])
+    trip = lambda at: co.build(_inputs(tripped={"studio": {"design": {"at": at, "kind": "k"}}}),  # noqa: E731
+                               NOW)["needs"][0]["key"]
+    assert trip(_iso(5)) != trip(_iso(1))
+
+
+def test_stale_beat_with_a_current_pr_is_not_working():
+    roster = {"local": "studio", "machines": [{
+        "host": "studio", "online": True, "ai_account": None, "beats": {
+            "verify": {"last_beat": _iso(0.5), "online": True, "current_pr": None, "current_issue": None},
+            "fix": {"last_beat": _iso(300), "online": False, "current_pr": 9, "current_issue": None}}}]}
+    [m] = co.build(_inputs(roster=roster), NOW)["machines"]
+    assert m["state"] == "idle"
+
+
+def test_gather_survives_a_failing_source_and_caches(monkeypatch, temp_store):
+    from prospector_app.backend import capacity_view
+    def boom():
+        raise RuntimeError("capacity read failed")
+    monkeypatch.setattr(capacity_view, "accounts", boom)
+    calls = []
+    real = co.build
+    monkeypatch.setattr(co, "build", lambda inp, now: calls.append(1) or real(inp, now))
+    monkeypatch.setattr(co, "_cache", None)
+    first = co.gather()
+    assert first["ai_paused"] is None
+    assert co.gather() is first and len(calls) == 1

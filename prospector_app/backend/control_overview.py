@@ -7,9 +7,14 @@ flag), tripped, AI paused, on.
 """
 from __future__ import annotations
 
+import hashlib
+import threading
+import time
+import traceback
 from collections import Counter
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
-from typing import Literal, TypedDict
+from typing import Literal, TypedDict, TypeVar
 
 from pipeline import capacity, gates, storekit
 from prospector_app.backend import machine_activity, worker_loops
@@ -28,6 +33,11 @@ LANE_PHASES: dict[str, str] = {"security:review-one": "security", "verify:single
                                "design-review:run": "design", "fix:single": "autofix",
                                "issue-fix:run": "issue-fix", "cluster:summaries": "cluster",
                                "cluster:assign": "cluster", "analyze:commit": "cluster"}
+# The lanes whose flag runs each periodic loop: a loop is enabled while any is on.
+LOOP_LANES: dict[str, tuple[str, ...]] = {
+    "cluster": ("cluster",), "issue-followup": ("issue-fix",), "rereview": ("autofix",),
+    "threat-refresh": ("verify", "autofix"), "pr-watch": ("verify", "autofix"),
+    "stale-refresh": ("verify", "autofix")}
 PAST_LIMIT = 60
 WINDOW = timedelta(hours=24)
 
@@ -132,7 +142,7 @@ class Inputs(TypedDict):
     roster: dict                              # machines.roster()
     stood_down: dict[str, dict]               # machine_mode.stood_down(...)
     loops: dict[str, dict]                    # Store.load_worker_loops()
-    tripped: dict[str, dict[str, dict]]       # host → health lane → trip stamp {at, kind, reason}
+    tripped: dict[str, dict[str, dict]]       # host → health lane → {at, kind, reason, remedy, retest}
     pins: list[dict]                          # autohunt_view.base_health()["hosts"] in trouble
     ai_paused: dict[str, AiPaused]            # account key → decision, paused accounts only
     verify_queue: list[dict]                  # verify_queue.queue_entries()
@@ -189,6 +199,9 @@ def _need_rows(inp: Inputs, machines: list[Machine], fq: list[dict]) -> list[Nee
         return {"key": key, "kind": kind, "title": title, "at": at, "host": host,
                 "lane": lane, "detail": detail, "count": count, "groups": groups or []}
 
+    def digest(*parts: object) -> str:
+        return hashlib.sha1(repr(parts).encode()).hexdigest()[:10]
+
     out: list[Need] = []
     online = {m["host"] for m in machines if m["state"] in ("working", "idle")}
     for host, lanes in sorted(inp["tripped"].items()):
@@ -196,27 +209,33 @@ def _need_rows(inp: Inputs, machines: list[Machine], fq: list[dict]) -> list[Nee
             continue
         for lane, t in sorted(lanes.items()):
             label = next((LABELS[k] for k, v in HEALTH_LANE.items() if v == lane), lane)
-            out.append(need(f"trip:{host}:{lane}", "trip",
+            detail = "\n".join(part for part in (
+                t.get("reason"), t.get("remedy") and f"To fix: {t['remedy']}",
+                t.get("retest") and f"Last self-test: {t['retest']}") if part)
+            out.append(need(f"trip:{host}:{lane}:{t.get('at')}", "trip",
                             f"{label} lane tripped on {host}: {t.get('kind') or 'unknown'}",
-                            at=t.get("at"), host=host, lane=lane, detail=t.get("reason")))
+                            at=t.get("at"), host=host, lane=lane, detail=detail or None))
     for m in machines:
         if m["state"] == "offline":
-            out.append(need(f"offline:{m['host']}", "offline", f"{m['host']} worker offline",
+            out.append(need(f"offline:{m['host']}:{m['last_beat']}", "offline", f"{m['host']} worker offline",
                             at=m["last_beat"], host=m["host"]))
     pins = [p for p in inp["pins"] if p.get("host") not in inp["stood_down"]]
     if pins:
-        out.append(need("pins", "pins", f"Base pin refresh failing on {len(pins)} "
+        out.append(need(f"pins:{digest(sorted((p.get('host'), p.get('refresh_error')) for p in pins))}",
+                        "pins", f"Base pin refresh failing on {len(pins)} "
                         f"machine{'s' if len(pins) != 1 else ''}", count=len(pins),
                         detail="\n".join(f"{p['host']}: {p.get('refresh_error') or 'stale'}"
                                          for p in pins)))
     runs = sum(len(g["prs"]) for g in inp["failed_runs"])
     if runs:
-        out.append(need("failed-runs", "failed-runs", f"{runs} failed hunter "
+        groups = sorted((g["lane"], g["reason"], tuple(sorted(g["prs"]))) for g in inp["failed_runs"])
+        out.append(need(f"failed-runs:{digest(groups)}", "failed-runs", f"{runs} failed hunter "
                         f"run{'s' if runs != 1 else ''}", count=runs, groups=inp["failed_runs"]))
     parked = [e for e in fq if e.get("status") == "awaiting-review"]
     if parked:
         oldest = min((e.get("queued_at") or "" for e in parked), default="") or None
-        out.append(need("parked", "parked", f"{len(parked)} parked change"
+        out.append(need(f"parked:{digest(sorted(str(e.get('pr')) for e in parked))}", "parked",
+                        f"{len(parked)} parked change"
                         f"{'s' if len(parked) != 1 else ''} waiting for your push",
                         at=oldest, count=len(parked), lane="autofix"))
     return out
@@ -233,7 +252,8 @@ def build(inp: Inputs, now: datetime) -> Overview:
         for lane, cell_state in cells.items():
             lane_cells[lane].append({"host": host, "state": cell_state})
         beats = [b.get("last_beat") for b in (m.get("beats") or {}).values() if b.get("last_beat")]
-        busy = any(b.get("current_pr") is not None or b.get("current_issue") is not None
+        busy = any(b.get("online") and (b.get("current_pr") is not None
+                                        or b.get("current_issue") is not None)
                    for b in (m.get("beats") or {}).values())
         n_on = sum(1 for s in cells.values() if s in ("on", "tripped", "ai-paused"))
         state: MachineState = ("off" if host in inp["stood_down"] or (m.get("online") and n_on == 0)
@@ -305,8 +325,11 @@ def build(inp: Inputs, now: datetime) -> Overview:
         for name, p in sorted((row.get("loops") or {}).items()):
             name = str(name)
             last = storekit.parse_ts(p.get("last_at"))
-            nxt = (last + timedelta(seconds=int(p.get("every_seconds") or 0))
-                   if last and host in online else None)
+            every = timedelta(seconds=int(p.get("every_seconds") or 0))
+            lanes_on = row.get("lanes") or {}
+            enabled = any(lanes_on.get(lane) for lane in LOOP_LANES.get(name, ()))
+            nxt = (last + every if last and host in online and enabled
+                   and last + 2 * every >= now else None)
             loops.append({"loop": name, "label": worker_loops.LABELS.get(name, name),
                           "host": host, "last_at": p.get("last_at"),
                           "next_at": nxt.isoformat() if nxt else None})
@@ -376,43 +399,87 @@ def _hunter_now(roster: dict, verify_running: set[int]) -> dict[str, list[NowIte
     return out
 
 
+T = TypeVar("T")
+# Every open tab polls the overview, so one answer serves them all this long.
+CACHE_SECONDS = 5.0
+_cache: tuple[float, Overview] | None = None
+_cache_lock = threading.Lock()
+
+
+def _safe(read: Callable[[], T], fallback: T) -> T:
+    """`read()`, or `fallback` when that source fails: one broken read leaves
+    the rest of the overview standing."""
+    try:
+        return read()
+    except Exception:
+        traceback.print_exc()
+        return fallback
+
+
+def _tripped(health_hosts: list[dict]) -> dict[str, dict[str, dict]]:
+    out: dict[str, dict[str, dict]] = {}
+    for h in health_hosts:
+        for lane in h.get("tripped") or []:
+            entry = (h.get("lanes") or {}).get(lane) or {}
+            retest = entry.get("retest") or {}
+            out.setdefault(str(h["host"]), {})[lane] = {
+                **(entry.get("tripped") or {}), "remedy": entry.get("remedy"),
+                "retest": retest.get("detail") if retest and not retest.get("ok") else None}
+    return out
+
+
 def gather() -> Overview:
+    global _cache
+    with _cache_lock:
+        if _cache is not None and time.monotonic() - _cache[0] < CACHE_SECONDS:
+            return _cache[1]
+        out = _gather()
+        _cache = (time.monotonic(), out)
+        return out
+
+
+def _gather() -> Overview:
     from pipeline import design_review, settings
     from prospector_app.backend import (alert_data, autohunt_view, capacity_view, data, escalation,
                                         fix_queue, issues, machine_mode, machines, verify_queue)
     now = datetime.now(timezone.utc)
     st = data.store()
+    regs = st.load_worker_registries()
     roster = machines.roster()
-    tripped = {str(h["host"]): {lane: ((h.get("lanes") or {}).get(lane) or {}).get("tripped") or {}
-                                for lane in h["tripped"]}
-               for h in escalation.health_status()["hosts"] if h.get("tripped")}
-    hunt = autohunt_view.status()
-    pins = [dict(p) for p in hunt["base"]["hosts"] if p["refresh_failures"] > 0 or p["stale"]]
+    hunt = _safe(autohunt_view.status, None)
+    pins = [dict(p) for p in (hunt["base"]["hosts"] if hunt else [])
+            if p["refresh_failures"] > 0 or p["stale"]]
     paused: dict[str, AiPaused] = {
         a["key"]: {"reason": a["decision"]["reason"], "retry_at": a["decision"]["retry_at"]}
-        for a in capacity_view.accounts() if a["machines"] and not a["decision"]["allowed"]}
-    vq = [dict(e) for e in verify_queue.queue_entries()]
+        for a in _safe(capacity_view.accounts, [])
+        if a["machines"] and not a["decision"]["allowed"]}
+    vq = [dict(e) for e in _safe(verify_queue.queue_entries, [])]
     groups: dict[tuple[str, str], list[int]] = {}
-    for n in hunt["security_failed"]:
-        reason = (hunt["security_failed_reasons"].get(str(n)) or "run failed").strip()
-        groups.setdefault(("security", reason), []).append(n)
-    for f in hunt["verify_failed"]:
-        groups.setdefault(("verify", (f.get("error_kind") or "run failed").strip()), []).append(f["pr"])
+    if hunt:
+        for n in hunt["security_failed"]:
+            reason = (hunt["security_failed_reasons"].get(str(n)) or "run failed").strip()
+            groups.setdefault(("security", reason), []).append(n)
+        for f in hunt["verify_failed"]:
+            groups.setdefault(("verify", (f.get("error_kind") or "run failed").strip()), []).append(f["pr"])
     since = (now - WINDOW).isoformat()
     rows: list[tuple[str, dict]] = []
-    for ledger, records in (("pr", data.runs(since=since)), ("issue", issues.cached_runs()),
-                            ("alert", alert_data.runs())):
-        rows.extend((ledger, r.raw) for r in records if isinstance(r, storekit.PhaseRun))
-    open_prs = [pr for pr in data.prs().values() if pr.state == "open"]
+    for ledger, read in (("pr", lambda: data.runs(since=since)), ("issue", issues.cached_runs),
+                         ("alert", alert_data.runs)):
+        rows.extend((ledger, r.raw) for r in _safe(read, []) if isinstance(r, storekit.PhaseRun))
+    design_on = settings.design_review_mode() != "off"
     inp: Inputs = {
         "local": settings.worker_id(), "roster": roster,
-        "stood_down": machine_mode.stood_down(st.load_machine_modes(), roster),
-        "loops": st.load_worker_loops(), "tripped": tripped, "pins": pins, "ai_paused": paused,
-        "verify_queue": vq, "fix_queue": [dict(e) for e in fix_queue.queue_entries()],
-        "issue_queue": _issue_queue(),
+        "stood_down": machine_mode.stood_down_in(regs),
+        "loops": st.load_worker_loops(),
+        "tripped": _tripped(escalation.health_status(regs)["hosts"]),
+        "pins": pins, "ai_paused": paused, "verify_queue": vq,
+        "fix_queue": [dict(e) for e in _safe(fix_queue.queue_entries, [])],
+        "issue_queue": _safe(_issue_queue, []),
         "hunter_now": _hunter_now(roster, {int(str(e["pr"])) for e in vq if e["status"] == "running"}),
-        "pools": {"security": hunt["security_pool"], "verify": hunt["verify_pool"],
-                  "design": sum(1 for pr in open_prs if design_review.huntable(pr))},
+        "pools": {"security": hunt["security_pool"] if hunt else 0,
+                  "verify": hunt["verify_pool"] if hunt else 0,
+                  "design": sum(1 for pr in data.prs().values()
+                                if design_on and pr.state == "open" and design_review.huntable(pr))},
         "failed_runs": [{"lane": lane, "reason": reason, "prs": prs}
                         for (lane, reason), prs in sorted(groups.items(), key=lambda kv: -len(kv[1]))],
         "rows": rows}
