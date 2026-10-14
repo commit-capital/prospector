@@ -36,6 +36,10 @@ FETCH_TIMEOUT_SECONDS = 600
 REASON_CHARS = 300
 
 MEASURED, UNTESTED, SKIPPED, ERROR = "measured", "untested", "skipped", "error"
+# A run this machine could not carry out — a full disk, a missing image, a
+# harness exit — books a fault on the design lane's health, never on the PR.
+FAULT = "fault"
+_FAULT_EXITS = frozenset({gates.SENTINEL_PATCH_UNREADABLE, gates.SENTINEL_SETUP_FAIL})
 
 _HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 _VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
@@ -260,7 +264,8 @@ def record(status: str, *, base_sha: str, reason: str | None = None,
 
 def measure(clone: Path, *, base_sha: str, tier: int, pr: int, head_sha: str) -> CoverageRecord:
     """Measure PR `pr`'s changed-line coverage at `head_sha` on this machine's
-    pinned base. Never raises: every failure is an `error` record."""
+    pinned base. Never raises: a failure is a `fault` record when it is this
+    machine's, else an `error` record."""
     t0 = time.monotonic()
 
     def done(status: str, reason: str | None = None, *, tests: list[str] | None = None,
@@ -289,7 +294,7 @@ def measure(clone: Path, *, base_sha: str, tier: int, pr: int, head_sha: str) ->
             return done(ERROR, "the base's pnpm-lock.yaml names no vitest version")
         image = verify_driver.base_image_tag(base_sha, tier)
         if not verify_driver.image_exists(image):
-            return done(ERROR, f"this machine has no pinned base image {image}")
+            return done(FAULT, f"this machine has no pinned base image {image}")
         tool = provider_dir(version)
         req_dir = verify_driver.SCRATCH / "coverage"
         req_dir.mkdir(parents=True, exist_ok=True)
@@ -299,15 +304,18 @@ def measure(clone: Path, *, base_sha: str, tier: int, pr: int, head_sha: str) ->
             "coverage", image, patch=patch, tier=tier, test_cmd=command(tests, list(wanted)),
             base_sha=base_sha, head_sha=head_sha, timeout=TIMEOUT_SECONDS,
             tail_bytes=TAIL_BYTES, coverage_tool=tool, coverage_request=req)
-    except (verify_driver.FetchFailure, verify_driver.BuildFailure, OSError, ValueError,
-            subprocess.SubprocessError) as e:
+    except ValueError as e:
         return done(ERROR, str(e), tests=[])
+    except (verify_driver.FetchFailure, verify_driver.BuildFailure, OSError,
+            subprocess.SubprocessError) as e:
+        return done(FAULT, str(e), tests=[])
     if code == gates.SENTINEL_PATCH_CONFLICT:
         return done(ERROR, "the PR does not apply onto this machine's pinned base", tests=tests)
     parsed = parse_trailer(tail) if code == 0 else None
     if parsed is None:
         excerpt = verify_driver.error_excerpt(tail)
-        return done(ERROR, f"the coverage run exited {code}: {excerpt}", tests=tests)
+        return done(FAULT if code in _FAULT_EXITS else ERROR,
+                    f"the coverage run exited {code}: {excerpt}", tests=tests)
     return done(MEASURED, tests=tests, wanted=wanted, results=parsed[0], runs=parsed[1])
 
 
@@ -331,13 +339,15 @@ def summary(rec: CoverageRecord | dict | None) -> str | None:
         return "coverage: no related tests"
     if status == SKIPPED:
         return f"coverage skipped: {reason}"
+    if status == FAULT:
+        return f"coverage could not run (worker fault, not this PR): {reason[:120]}"
     return f"coverage not measured: {reason[:120]}"
 
 
 def prompt_block(rec: CoverageRecord | None) -> str:
     """The design reviewer's evidence block, or "" when there is nothing to
     weigh (no record, or a run that failed)."""
-    if rec is None or rec["status"] == ERROR:
+    if rec is None or rec["status"] in (ERROR, FAULT):
         return ""
     lines = ["Changed-line coverage, measured by running the PR's related tests in a "
              "sandbox. The numbers are reported by a process running the PR's own code: "

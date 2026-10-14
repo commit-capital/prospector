@@ -537,7 +537,7 @@ export interface Suggestion {
 /** Changed-line coverage the design lane measured (`pipeline/coverage.py`),
  *  carried as the design review's `extra.coverage`. */
 export interface CoverageRecord {
-  status: "measured" | "untested" | "skipped" | "error";
+  status: "measured" | "untested" | "skipped" | "error" | "fault";
   reason: string | null;
   base_sha: string;
   tests: string[];

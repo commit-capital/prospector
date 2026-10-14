@@ -1359,6 +1359,18 @@ class TestDesignLane:
         row = [r for r in store.runs() if r.phase == "design-review:run"][-1]
         assert row.raw["trigger"] == "control"
 
+    def test_a_coverage_fault_lands_the_review_and_books_a_failure(self, store, monkeypatch,
+                                                                    tmp_path):
+        def review(clone, diff, *, head_sha, **kw):
+            return {"kind": "review", "reviewed_sha": head_sha, "findings": [],
+                    "checks": [], "summary": "s"}
+        booked = self._ready(store, monkeypatch, tmp_path, review)
+        monkeypatch.setattr(verify_worker.coverage, "measure",
+                            lambda clone, **kw: {"status": "fault", "reason": "disk full"})
+        assert verify_worker.run_design(1) is True
+        assert booked == [("fail", "design")]
+        assert 1 not in verify_worker.design_failed
+
     def test_coverage_off_measures_nothing(self, store, monkeypatch, tmp_path):
         seen: list = []
 

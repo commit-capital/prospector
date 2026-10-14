@@ -708,8 +708,11 @@ per version into `<verify scratch>/coverage-tool/`, `--ignore-scripts`, and
 mounted read-only — and the trusted `sandbox/verify-coverage.mjs` reports which
 changed lines are executable (a statement starts on the line, or it continues
 a statement holding no other) and which ran, with the run's test counts. The record
-(`measured | untested | skipped | error`) rides the entry as `extra.coverage`,
-fills the prompt's evidence block, and shows on the Design review row. The
+(`measured | untested | skipped | error | fault`) rides the entry as `extra.coverage`,
+fills the prompt's evidence block, and shows on the Design review row; a
+`fault` — a run this machine could not carry out (a missing image, a harness
+exit, a full disk) — reads there as a worker fault and books the design lane's
+health. The
 container runs the PR's code, which can forge what it reports, so the figure is
 never a gate; a failed measurement is recorded and the review runs.
 

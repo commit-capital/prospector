@@ -712,6 +712,16 @@ function CoverageLine({ coverage }: { coverage: CoverageRecord }): ReactNode {
       : "no executable changed lines";
   } else if (coverage.status === "untested") {
     line = "no related tests reach the changed files";
+  } else if (coverage.status === "fault") {
+    return (
+      <div className="muted small" style={{ marginTop: 4 }}>
+        <span className="chip chip-amber sm"
+          title="This machine could not run the measurement; booked to the design lane's worker health, not to this PR">
+          worker fault
+        </span>{" "}
+        Coverage could not run on this machine — a fault in Prospector, not this PR: {coverage.reason ?? ""}
+      </div>
+    );
   } else {
     line = `${coverage.status === "skipped" ? "skipped" : "not measured"}: ${coverage.reason ?? ""}`;
   }

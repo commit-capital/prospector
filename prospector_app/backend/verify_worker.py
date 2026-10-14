@@ -709,7 +709,8 @@ def run_design(n: int, *, trigger: str = "autohunt") -> bool | None:
     ran (the PR left the pool, another host holds it, or this machine has no
     base clone or diff to read). With TRIAGE_DESIGN_COVERAGE on, the head's
     changed-line coverage is measured first and rides the entry and the
-    prompt; its failure is recorded there and the review runs. A failed run parks the PR in design_failed
+    prompt; its failure is recorded there and the review runs, and a failure
+    that is this machine's books the design lane's health. A failed run parks the PR in design_failed
     and books the design lane's health — an agent outage trips every agent
     lane, an overload or a decline books nothing — and every ending is a
     `design-review:run` ledger row stamped `trigger`. Any trigger but
@@ -746,7 +747,11 @@ def run_design(n: int, *, trigger: str = "autohunt") -> bool | None:
         _book_design(st, n, head, {"findings": counts, "saved": saved,
                                    "coverage": coverage.summary(measured)}, trigger)
         design_failed.discard(n)
-        lane_health.note_success("design")
+        if measured is not None and measured["status"] == coverage.FAULT:
+            lane_health.note_failure("design", kind="coverage",
+                                     reason=measured["reason"] or "", pr=n)
+        else:
+            lane_health.note_success("design")
         if unattended:
             data.refresh()
         return True

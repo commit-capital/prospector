@@ -175,6 +175,8 @@ def test_record_holds_the_trailer_to_the_requested_lines():
     ({"status": "skipped", "reason": "no changed source lines"},
      "coverage skipped: no changed source lines"),
     ({"status": "error", "reason": "docker gone"}, "coverage not measured: docker gone"),
+    ({"status": "fault", "reason": "disk full"},
+     "coverage could not run (worker fault, not this PR): disk full"),
     (None, None),
 ])
 def test_summary(rec, line):
@@ -199,6 +201,7 @@ def test_prompt_block_names_the_uncovered_lines_as_self_reported():
 def test_prompt_block_is_empty_for_no_record_or_a_failed_run():
     assert coverage.prompt_block(None) == ""
     assert coverage.prompt_block(coverage.record(coverage.ERROR, base_sha=BASE, reason="x")) == ""
+    assert coverage.prompt_block(coverage.record(coverage.FAULT, base_sha=BASE, reason="x")) == ""
 
 
 @pytest.fixture
@@ -306,7 +309,6 @@ def test_measure_skips_a_runner_that_is_not_vitest(monkeypatch, tmp_path, scratc
 
 
 @pytest.mark.parametrize("over, reason", [
-    ({"image": False}, "no pinned base image"),
     ({"code": 30}, "does not apply"),
     ({"code": 1, "tail": "the test run wrote no coverage report"}, "exited 1"),
     ({"code": 0, "tail": "no trailer"}, "exited 0"),
@@ -316,11 +318,23 @@ def test_measure_records_a_failure_as_an_error(monkeypatch, tmp_path, scratch, o
     assert rec["status"] == "error" and reason in (rec["reason"] or "")
 
 
-def test_measure_records_a_fetch_failure(monkeypatch, tmp_path, scratch):
+@pytest.mark.parametrize("over, reason", [
+    ({"image": False}, "no pinned base image"),
+    ({"code": 40, "tail": "error: unable to create temporary file: No space left on device"},
+     "No space left on device"),
+    ({"code": 60}, "exited 60"),
+])
+def test_measure_records_a_machine_failure_as_a_fault(monkeypatch, tmp_path, scratch, over,
+                                                      reason):
+    rec = _Sandbox(monkeypatch, tmp_path, scratch, **over).measure()
+    assert rec["status"] == "fault" and reason in (rec["reason"] or "")
+
+
+def test_measure_records_a_fetch_failure_as_a_fault(monkeypatch, tmp_path, scratch):
     sb = _Sandbox(monkeypatch, tmp_path, scratch)
 
     def fail(pr: int, head: str) -> Path:
         raise verify_driver.FetchFailure("gh down")
     monkeypatch.setattr(verify_driver, "fetch_patch", fail)
     rec = sb.measure()
-    assert (rec["status"], rec["reason"]) == ("error", "gh down")
+    assert (rec["status"], rec["reason"]) == ("fault", "gh down")
