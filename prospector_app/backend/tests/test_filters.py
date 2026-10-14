@@ -460,3 +460,9 @@ def test_threat_filter_takes_a_list_of_states():
     spec = {"threat": ["malicious", "suspicious"]}
     assert filters.matches(_row(threat="suspicious"), spec)
     assert not filters.matches(_row(threat="clear"), spec)
+
+
+def test_stacked_filter():
+    assert filters.matches({"stacked": True}, {"stacked": True})
+    assert not filters.matches({"stacked": False}, {"stacked": True})
+    assert filters.matches({}, {"stacked": False})

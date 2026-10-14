@@ -54,6 +54,7 @@ export const HANDED_UNBLOCK: Record<string, string> = {
   "author-verify": "A verification run that confirms the fix red→green.",
   "author-rejected": "A patch the refuting reviewer calls safe.",
   "author-other": "An author push that clears the recorded refusal.",
+  "stacked": "Its base PR merging, so GitHub retargets it onto the default branch.",
   "needs-human": "Nothing — a needs-human pick is a decision reserved for a person.",
   "security-red": "Nothing — a RED security verdict always stops the automation.",
   "security-yellow": "TRIAGE_FIX_HUNT_SECURITY=1, which lets the hunter fix YELLOW findings as objections.",
@@ -157,7 +158,7 @@ export const HOME_CARDS: HomeCard[] = [
   {
     key: "author",
     title: "Author's turn",
-    blurb: "The automation cannot move these without the contributor: conflicts the bot will not rebase, red CI, verification that did not confirm the fix, or an agent that tried and declined with its reasoning.",
+    blurb: "The automation cannot move these without the contributor: conflicts the bot will not rebase, red CI, verification that did not confirm the fix, an agent that tried and declined with its reasoning, or a stacked PR waiting on its base.",
     column: "handed",
     spec: { automation_owner: "author" },
     breakdown: [
@@ -166,6 +167,7 @@ export const HOME_CARDS: HomeCard[] = [
       { label: "agent declined", spec: bucket("author-declined"), hint: HANDED_UNBLOCK["author-declined"] },
       { label: "verification failed", spec: bucket("author-verify"), hint: HANDED_UNBLOCK["author-verify"] },
       { label: "fix rejected by reviewer", spec: bucket("author-rejected"), hint: HANDED_UNBLOCK["author-rejected"] },
+      { label: "stacked on another PR", spec: bucket("stacked"), hint: HANDED_UNBLOCK["stacked"] },
       { label: "other", spec: bucket("author-other"), hint: HANDED_UNBLOCK["author-other"] },
     ],
   },

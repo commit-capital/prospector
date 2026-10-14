@@ -80,6 +80,8 @@ def meta_from_gh(pr: dict) -> dict:
         "draft": bool(pr.get("draft")),
         "head_sha": (pr.get("head") or {}).get("sha"),
         "base": (pr.get("base") or {}).get("ref"),
+        "head_ref": (pr.get("head") or {}).get("ref"),
+        "head_repo": ((pr.get("head") or {}).get("repo") or {}).get("full_name"),
         "url": pr.get("html_url"),
         "created_at": pr.get("created_at"),
         "updated_at": pr.get("updated_at"),

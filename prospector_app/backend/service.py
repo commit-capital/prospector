@@ -86,6 +86,26 @@ def changed_paths(rec: Pr) -> list[str]:
     return _facets(rec).get("changed_paths") or []
 
 
+_heads: tuple[int, dict[str, int]] = (-1, {})
+
+
+def stacked_on(rec: Pr) -> int | None:
+    """The open PR whose head branch in the triage repository is `rec`'s base,
+    or None for a PR that is not stacked or whose base no open PR heads."""
+    global _heads
+    if not rec.stacked:
+        return None
+    gen = data.generation()
+    if _heads[0] != gen:
+        repo = settings.repo().lower()
+        index: dict[str, int] = {}
+        for n, pr in sorted(data.prs().items()):
+            if pr.state == "open" and pr.head_ref and (pr.head_repo or "").lower() == repo:
+                index.setdefault(pr.head_ref, n)
+        _heads = (gen, index)
+    return _heads[1].get(rec.base_ref or "")
+
+
 # ---------------------------------------------------------------------------
 # PR rows.
 # ---------------------------------------------------------------------------
@@ -283,6 +303,9 @@ def pr_row(n: int, rec: Pr | None = None) -> dict | None:
         "created_at": rec.created_at,
         "updated_at": rec.updated_at,
         "draft": rec.draft,
+        "stacked": rec.stacked,
+        "stacked_on": stacked_on(rec),
+        "base_ref": rec.base_ref,
         "github_state": rec.state,
         "clusters": data.pr_to_clusters().get(rec.number, []),
         "disposition": rec.disposition,
@@ -769,7 +792,6 @@ def pr_detail(n: int) -> dict | None:
         return None
     row = pr_row(n, rec)
     assert row is not None  # rec is non-None so pr_row always returns a dict
-    row["base"] = rec.base
     row["security_detail"] = rec.section("security")
     row["threat_detail"] = rec.section("threat")
     row["safety_summary"] = _safety_summary(rec)

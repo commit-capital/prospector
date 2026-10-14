@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, cast
 
 from pipeline import gates
+from pipeline import settings
 from pipeline import storekit
 from pipeline import wire
 
@@ -123,8 +124,23 @@ class Pr:
         return self._meta().get("url")
 
     @property
-    def base(self) -> str | None:
+    def base_ref(self) -> str | None:
         return self._meta().get("base")
+
+    @property
+    def head_ref(self) -> str | None:
+        return self._meta().get("head_ref")
+
+    @property
+    def head_repo(self) -> str | None:
+        return self._meta().get("head_repo")
+
+    @property
+    def stacked(self) -> bool:
+        """Whether the PR targets a branch other than the repository's default
+        branch — a layer of a stack whose base is another PR's head."""
+        base = self.base_ref
+        return bool(base) and base != settings.default_branch()
 
     @property
     def created_at(self) -> str | None:

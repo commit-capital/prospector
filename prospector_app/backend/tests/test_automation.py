@@ -332,3 +332,26 @@ def test_a_merge_pick_no_review_reached_waits_on_the_security_hunter(store):
     out = _classify(store, rec)
     assert (out["column"], out["bucket"]) == ("auto", "waiting")
     assert "security review has not run" in out["reason"]
+
+
+def _layer(n: int, head_ref: str, base: str, head_repo: str = "test-owner/test-repo") -> dict:
+    rec = _rec(n)
+    rec["meta"].update(head_ref=head_ref, head_repo=head_repo, base=base)
+    rec["security"] = {"verdict": "GREEN", "findings": [], "override": None,
+                       "checked_at": _now(), "against_head_sha": HEAD}
+    return rec
+
+
+def test_a_stacked_pr_waits_on_the_pr_it_is_stacked_on(store):
+    store.save_pr(_layer(10, "layer-1", "trunk"))
+    out = _classify(store, _layer(11, "layer-2", "layer-1"))
+    assert (out["column"], out["bucket"], out["owner"]) == ("handed", "stacked", "author")
+    assert out["reason"].startswith("stacked on #10 (layer-1)")
+    assert service.stacked_on(store.load_pr(10)) is None
+
+
+def test_a_fork_branch_of_the_same_name_is_not_the_base(store):
+    store.save_pr(_layer(10, "layer-1", "trunk", head_repo="someone/fork"))
+    out = _classify(store, _layer(11, "layer-2", "layer-1"))
+    assert out["bucket"] == "stacked"
+    assert out["reason"].startswith("stacked on branch layer-1")

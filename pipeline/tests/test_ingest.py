@@ -59,6 +59,17 @@ class TestMetaFromGh:
         assert meta["state"] == "open"
         assert meta["draft"] is False
 
+    def test_records_base_and_head_refs(self):
+        pr = dict(GH_PR, head={"sha": "deadbeef", "ref": "layer-2",
+                               "repo": {"full_name": "test-owner/test-repo"}},
+                  base={"ref": "layer-1"})
+        meta = ingest.meta_from_gh(pr)
+        assert (meta["base"], meta["head_ref"], meta["head_repo"]) == (
+            "layer-1", "layer-2", "test-owner/test-repo")
+
+    def test_deleted_head_repo_reads_none(self):
+        assert ingest.meta_from_gh(dict(GH_PR, head={"sha": "d", "repo": None}))["head_repo"] is None
+
     def test_merged_state(self):
         merged = dict(GH_PR, state="closed", merged_at="2026-06-01T00:00:00Z")
         assert ingest.meta_from_gh(merged)["state"] == "merged"

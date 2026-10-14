@@ -28,6 +28,14 @@ export function FilterControls({ spec, onChange }: {
         <option value="no">non-draft only</option>
       </select>
 
+      <select value={spec.stacked === undefined ? "" : spec.stacked ? "yes" : "no"}
+        onChange={(e) => set("stacked", e.target.value === "" ? undefined : e.target.value === "yes")}
+        title="Filter by whether the PR is stacked on another PR's branch rather than the default branch.">
+        <option value="">stacked: any</option>
+        <option value="yes">stacked only</option>
+        <option value="no">not stacked</option>
+      </select>
+
       {/* state: always shown — the queue defaults to open PRs only */}
       <select value={spec.state ?? ""}
         onChange={(e) => set("state", e.target.value || undefined)}

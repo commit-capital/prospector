@@ -64,6 +64,7 @@ export interface FilterSpec {
   conflicts?: boolean;
   has_tests?: boolean;
   draft?: boolean;
+  stacked?: boolean;
   // "mine" / "unclaimed" / an operator name, over the row's shared claim marker
   claimed?: string;
   state?: "closed" | "all";       // PR Explorer defaults to open PRs only; widen to include closed/merged
@@ -408,6 +409,11 @@ export interface PRRow {
   created_at?: string;
   updated_at?: string;
   draft?: boolean;
+  // base is another PR's branch, not the default branch; stacked_on is the
+  // open PR heading that branch, when one does
+  stacked?: boolean;
+  stacked_on?: number | null;
+  base_ref?: string | null;
   clusters: number[];
   disposition: Disposition | null;
   // deferred out of triage (dependency bump handled upstream) — see suggest.py
@@ -1224,7 +1230,6 @@ export interface ThreatStamp {
 
 export interface PRDetail extends PRRow {
   body?: string | null;
-  base?: string | null;
   security_detail?: SafetyVerdict | null;
   threat_detail?: ThreatStamp | null;
   safety_summary?: SafetySummary;
