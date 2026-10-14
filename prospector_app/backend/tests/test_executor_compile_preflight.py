@@ -166,3 +166,47 @@ def test_preflight_pass_then_override_logs_then_merges(monkeypatch):
     res = executor.merge_pr(5, dry_run=False, reason="mirrors upstream fix")
     assert res["status"] == "merged"
     assert [e[0] for e in events] == ["override", "merge"]
+
+
+def _no_docker(n, head):
+    return {"cmd": "c", "pr": n, "head_sha": head,
+            "error": "OSError: docker not found", "duration_s": 0.1}
+
+
+def test_a_preflight_that_could_not_run_offers_the_waiver(monkeypatch):
+    events: list = []
+    recorded: list = []
+    _setup(monkeypatch, events, recorded)
+    monkeypatch.setattr(compile_preflight, "run_for_merge", _no_docker)
+    res = executor.merge_pr(5, dry_run=False)
+    assert res["status"] == "blocked" and res["compile_waivable"] is True
+    assert events == []
+
+
+def test_a_compile_reason_merges_past_a_preflight_that_could_not_run(monkeypatch):
+    events: list = []
+    recorded: list = []
+    _setup(monkeypatch, events, recorded)
+    monkeypatch.setattr(compile_preflight, "run_for_merge", _no_docker)
+    res = executor.merge_pr(5, dry_run=False, compile_reason="  no Docker here  ")
+    assert res["status"] == "merged"
+    assert res["compile_waiver"] == "no Docker here"
+    assert res["compile_preflight"]["ok"] is False
+    assert [e[0] for e in events] == ["merge"]
+    merged = [r for r in recorded if r.get("status") == "merged"]
+    assert merged and merged[0]["compile_waiver"] == "no Docker here"
+
+
+def test_a_compile_reason_never_clears_a_compile_failure(monkeypatch):
+    events: list = []
+    recorded: list = []
+    _setup(monkeypatch, events, recorded)
+    monkeypatch.setattr(compile_preflight, "run_for_merge",
+                        lambda n, head: {"cmd": "c", "pr": n, "head_sha": head,
+                                         "base_sha": BASE, "exit": 20,
+                                         "error_excerpt": "error TS2739",
+                                         "duration_s": 1.0})
+    res = executor.merge_pr(5, dry_run=False, compile_reason="ship it")
+    assert res["status"] == "blocked" and res["compile_waivable"] is False
+    assert "compile_waiver" not in res
+    assert events == []

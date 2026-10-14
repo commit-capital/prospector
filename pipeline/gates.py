@@ -1126,6 +1126,16 @@ def compile_preflight_gate(result: dict) -> tuple[bool, str]:
                    "infrastructure failure, live merge refused")
 
 
+def compile_preflight_waivable(result: dict) -> bool:
+    """Whether a preflight record that blocks gives no verdict on the PR — a
+    refusal, a machine or base fault, no exit — so an operator's logged reason
+    may merge past it. A compile failure the base does not share and a diff that
+    no longer applies are verdicts, never waivable."""
+    if result.get("refused") or result.get("error"):
+        return True
+    return result.get("exit") not in (SENTINEL_PASS, SENTINEL_TEST_FAIL, SENTINEL_PATCH_CONFLICT)
+
+
 def security_disposition(pr: Pr) -> tuple[str, str] | None:
     """The disposition a current, non-overridden security verdict forces on a merge
     candidate, with rationale — or None when the verdict does not override (GREEN,

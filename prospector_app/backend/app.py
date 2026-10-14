@@ -1101,8 +1101,10 @@ def merge_progress_pr(n: int):
 
 
 @app.post("/api/merge/pr/{n}")
-def merge_pr(n: int, method: str = "squash", dry_run: bool = True, reason: str | None = None):
-    res = executor.merge_pr(n, method, dry_run=dry_run, reason=reason)
+def merge_pr(n: int, method: str = "squash", dry_run: bool = True, reason: str | None = None,
+             compile_reason: str | None = None):
+    res = executor.merge_pr(n, method, dry_run=dry_run, reason=reason,
+                            compile_reason=compile_reason)
     training.capture(n, "MERGE", reason=reason, dry_run=dry_run, result=res)
     return res
 
