@@ -44,6 +44,7 @@ function Phrase({ p, onOpenJob }: { p: ActivityPhrase; onOpenJob: (jobId: number
   if (p.style === "plain") return <span className="muted">{p.lead.text}</span>;
   const lead = <Part part={p.lead} linkKind={p.linkKind} onOpenJob={onOpenJob} />;
   if (p.style === "list") return <>{lead} {parts}</>;
+  if (p.style === "colon") return <>{lead}: {parts}</>;
   return <>{lead}{parts.length > 0 && <> ({parts})</>}</>;
 }
 

@@ -588,3 +588,69 @@ def test_count_jobs_name_their_own_default_and_noun():
     assert specs["issue-analyze"]["count_default"] == 200
     assert specs["analyze-clusters"]["count_default"] == 20
     assert all(s["count_default"] is not None for s in specs.values() if s["needs_count"])
+
+
+def test_a_queued_job_counts_the_queued_jobs_of_its_kind_ahead_of_it():
+    first, second, third = (jobs.start_job("design-review-pr", pr=n) for n in (11, 12, 13))
+    first["status"] = "running"
+    assert jobs.queue_spot(third) == {"ahead": 1, "running": [{"id": first["id"], "pr": 11, "cluster": None}]}
+    assert jobs.queue_spot(second) == {"ahead": 0, "running": [{"id": first["id"], "pr": 11, "cluster": None}]}
+    assert jobs.queue_spot(first) is None
+    assert jobs.queue_spot(jobs.start_job("selftest")) is None
+
+
+def test_attach_job_follows_a_queued_jobs_place_in_line():
+    async def run() -> list[dict]:
+        first, second, third = (jobs.start_job("design-review-pr", pr=n) for n in (11, 12, 13))
+        first["status"] = "running"
+        stream = jobs.attach_job(third)
+        opened = json.loads((await anext(stream))["data"])
+        assert opened["queue"] == {"ahead": 1, "running": [{"id": first["id"], "pr": 11, "cluster": None}]}
+        moved = asyncio.ensure_future(anext(stream))
+        await asyncio.sleep(0)
+        first["status"] = "done"
+        second["status"] = "running"
+        jobs._notify(first)
+        events = [await asyncio.wait_for(moved, 5)]
+        third.update(status="done", returncode=0)
+        jobs._notify(third)
+        events += [ev async for ev in stream]
+        return events
+
+    events = asyncio.run(run())
+    assert [e["event"] for e in events] == ["queue", "done"]
+    assert json.loads(events[0]["data"]) == {"ahead": 0, "running": [{"id": 2, "pr": 12, "cluster": None}]}
+
+
+def test_restore_keeps_queued_jobs_behind_a_running_job_it_adopts(monkeypatch):
+    first = jobs.start_job("design-review-pr", pr=11)
+    second = jobs.start_job("design-review-pr", pr=12)
+    first.update(status="running", pid=1)
+    jobs._save(first)
+    jobs.JOBS.clear()
+    started: list[int] = []
+    release = asyncio.Event()
+
+    async def follow(job, proc):
+        started.append(job["id"])
+        await release.wait()
+        job["status"] = "done"
+
+    async def run_job(job):
+        started.append(job["id"])
+
+    monkeypatch.setattr(jobs, "_runs_job", lambda job: True)
+    monkeypatch.setattr(jobs, "_follow", follow)
+    monkeypatch.setattr(jobs, "run_job", run_job)
+
+    async def run() -> list[int]:
+        jobs.restore()
+        for _ in range(5):
+            await asyncio.sleep(0)
+        held = list(started)
+        release.set()
+        await asyncio.gather(*jobs._TASKS)
+        return held
+
+    assert asyncio.run(run()) == [first["id"]]
+    assert started == [first["id"], second["id"]]

@@ -116,7 +116,7 @@ def test_background_labels_and_worker_cluster_rows():
                                {"label": "threat scan", "count": 1},
                                {"label": "summary batch", "count": 1}]
     assert m["jobs"] == [{"label": "Cluster new PRs", "kind": "cluster-new",
-                          "status": "done", "job_id": None}]
+                          "counts": {"done": 1}, "job_id": None, "running_id": None}]
 
 
 def test_job_phase_is_keyed_by_ledger():
@@ -133,7 +133,26 @@ def test_local_jobs_replace_ledger_jobs():
              "count": None, "returncode": 0}]
     m = _host(_summarize([_row("ingest", host="laptop")], local_jobs=jobs), "laptop")
     assert m["local"] is True
-    assert m["jobs"] == [{"label": "Threat scan", "kind": "threat-scan", "status": "failed", "job_id": 9}]
+    assert m["jobs"] == [{"label": "Threat scan", "kind": "threat-scan", "counts": {"failed": 1},
+                          "job_id": 9, "running_id": None}]
+
+
+def _local_job(job_id: int, status: str, kind: str = "design-review-pr",
+               label: str = "Design review (single PR)") -> dict:
+    return {"id": job_id, "kind": kind, "label": label, "status": status, "started": _at(1),
+            "finished": None, "cluster": None, "pr": 100 + job_id, "count": None, "returncode": None}
+
+
+def test_local_jobs_of_one_kind_fold_into_counts():
+    local = [_local_job(n, "done") for n in range(1, 4)] + [
+        _local_job(4, "failed"), _local_job(5, "running"), _local_job(6, "queued"),
+        _local_job(7, "queued"), _local_job(8, "done", kind="ingest", label="Ingest")]
+    m = _host(_summarize([], local_jobs=local), "laptop")
+    assert m["jobs"] == [
+        {"label": "Design review (single PR)", "kind": "design-review-pr",
+         "counts": {"done": 3, "failed": 1, "running": 1, "queued": 2},
+         "job_id": 7, "running_id": 5},
+        {"label": "Ingest", "kind": "ingest", "counts": {"done": 1}, "job_id": 8, "running_id": None}]
 
 
 def test_offline_roster_machine_without_rows():

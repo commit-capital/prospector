@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api } from "../../api";
+import { api, type JobStatus } from "../../api";
 import { useExec } from "../../ExecContext";
 import { attachJobStream, type JobMeta } from "../../jobStream";
 import { fmtElapsed } from "./format";
@@ -21,8 +21,8 @@ export interface JobRunner {
 
 /** The one job this page follows. A job runs server-side whatever this page
  *  does (#683): attaching replays its output so far and follows it live, and
- *  closing the stream never touches the job. On load it reattaches to a job
- *  still queued or running. A job that ends while followed raises a toast and
+ *  closing the stream never touches the job. On load it reattaches to the
+ *  newest running job, else the newest queued one. A job that ends while followed raises a toast and
  *  calls `onSettled`. */
 export function useJobRunner(onSettled: () => void): JobRunner {
   const { pushToast } = useExec();
@@ -61,6 +61,7 @@ export function useJobRunner(onSettled: () => void): JobRunner {
           setMeta((m) => (m && m.status === "queued" ? { ...m, status: "running" } : m));
         }
       },
+      onQueue: (queue) => setMeta((m) => m && { ...m, queue }),
       onReconnecting: () => setReconnecting(true),
       onDone: (c) => {
         setLog((l) => [...l, `■ job ${c.status}`]);
@@ -98,8 +99,9 @@ export function useJobRunner(onSettled: () => void): JobRunner {
 
   useEffect(() => {
     api.jobsList().then((d) => {
-      const live = d.jobs.filter((j) => j.status === "queued" || j.status === "running")
+      const newest = (status: JobStatus) => d.jobs.filter((j) => j.status === status)
         .sort((a, b) => b.id - a.id)[0];
+      const live = newest("running") ?? newest("queued");
       if (live) attach(`/api/jobs/${live.id}/stream`, live.kind,
         `↻ reattached to job #${live.id} (${live.label}) — replaying its output so far…`);
     }).catch(() => {});
