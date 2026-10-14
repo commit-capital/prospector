@@ -186,10 +186,10 @@ def verify_worker_enabled() -> bool:
 
 def design_review_mode() -> str:
     """What the Prospector-run design reviewer does (`pipeline/design_review.py`):
-    `advisory` (the default) reviews PR heads and shows the verdict, `gate` also
-    makes its bar a merge requirement, `off` reviews nothing."""
-    value = os.environ.get("TRIAGE_DESIGN_REVIEW", "advisory").strip().lower()
-    return value if value in ("off", "advisory", "gate") else "advisory"
+    `gate` (the default) reviews PR heads and makes its bar a merge requirement,
+    `advisory` shows the verdict and gates nothing, `off` reviews nothing."""
+    value = os.environ.get("TRIAGE_DESIGN_REVIEW", "gate").strip().lower()
+    return value if value in ("off", "advisory", "gate") else "gate"
 
 
 def design_coverage() -> bool:

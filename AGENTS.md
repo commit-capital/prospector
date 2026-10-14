@@ -703,12 +703,12 @@ gate fails the whole review. The host writes `reviews["design"]` through
 `Store.save_design_review`, which refuses a head that moved; ingest's
 `parse_all` carries the entry over (schema 31). Its bar fails on any open
 `blocking` or `major` finding a verifier confirmed (`reviewers.design_standing`),
-and only those are autofix goals; a review stamped with an earlier
-`reviewers.DESIGN_RUBRIC` (the rubric's revision) reads stale and is taken
-again. Auto-detection never
-activates it: under `TRIAGE_DESIGN_REVIEW=advisory` (default) it is shown on
-the PR page's Design review row and gates nothing; `gate` makes it a merge requirement; `off` stops the
-lane. A verify worker runs it as a third idle-hunt lane (`design`, taking turns
+so minor findings leave it green, and only those are autofix goals; a review
+stamped with an earlier `reviewers.DESIGN_RUBRIC` (the rubric's revision) reads
+stale and is taken again. Auto-detection plays no part: under
+`TRIAGE_DESIGN_REVIEW=gate` (default) it is a merge requirement and a PR waits
+on its review; `advisory` shows it on the PR page's Design review row and gates
+nothing; `off` stops the lane. A verify worker runs it as a third idle-hunt lane (`design`, taking turns
 with security and verify) under a per-PR `design_run` claim, the capacity gate
 and lane health, booking each ending as `design-review:run`. Autofix aims at
 its blocking and major findings only when the profile names `design` in

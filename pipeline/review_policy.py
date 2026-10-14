@@ -4,7 +4,7 @@ gate a clean merge on this repository, and at what bar.
 The active GitHub reviewers are the ones seen on an open PR within
 `TRIAGE_REVIEWER_ACTIVE_DAYS`, read from the store's `reviewers` registry that
 ingest recomputes, so every machine on one store gates alike. The
-Prospector-run design review is active under `TRIAGE_DESIGN_REVIEW=gate` alone,
+Prospector-run design review is active under `TRIAGE_DESIGN_REVIEW=gate` (the default),
 never by detection. Every consumer — the gates, the checks rollup, the prompts, the app
 capabilities — reads the active set and each reviewer's bar here."""
 from __future__ import annotations

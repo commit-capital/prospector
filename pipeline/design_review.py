@@ -10,7 +10,7 @@ findings it can anchor — on a file the diff touches, and for reuse on an
 existing file in the base — has every blocking and major one judged by a
 refuting verifier (`pipeline/design_verify.py`), and stores the result as
 `reviews["design"]`
-(`reviewers.DESIGN`), advisory unless `TRIAGE_DESIGN_REVIEW=gate`.
+(`reviewers.DESIGN`), a merge requirement unless `TRIAGE_DESIGN_REVIEW` is `advisory` or `off`.
 """
 from __future__ import annotations
 

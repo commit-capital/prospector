@@ -80,10 +80,11 @@ SETTINGS: tuple[Setting, ...] = (
        "How many attempts the issue-fix hunter starts on its own per UTC day."),
     _i("TRIAGE_ISSUE_FIX_MAX_LINES", "behavior", "Issue-fix size cap (lines)", "300",
        "The most changed lines an issue fix may carry."),
-    Setting("TRIAGE_DESIGN_REVIEW", "behavior", "choice", "Design review", "advisory",
+    Setting("TRIAGE_DESIGN_REVIEW", "behavior", "choice", "Design review", "gate",
             "A verify worker reviews each PR head for reuse, layering, the repository's "
-            "conventions and test strength: advisory (shown only), gate (a merge "
-            "requirement), or off.", editable=True, choices=("advisory", "gate", "off")),
+            "conventions and test strength: gate (a merge requirement, passing with no "
+            "open blocking or major finding), advisory (shown only), or off.",
+            editable=True, choices=("gate", "advisory", "off")),
     _b("TRIAGE_DESIGN_COVERAGE", "behavior", "Measure changed-line coverage",
        "Before each design review, run the PR's related tests in the sandbox and record "
        "how many of its changed source lines they execute (advisory).",

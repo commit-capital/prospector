@@ -299,3 +299,14 @@ def test_gating_design_row_waits_for_its_review(monkeypatch):
     chk = _design_check(_pr())
     assert chk["status"] == "warn" and "advisory" not in chk["detail"]
     assert "Design" not in _review_check(_pr())["detail"]
+
+
+def test_gating_design_row_passes_with_only_minor_or_unconfirmed_findings(monkeypatch):
+    monkeypatch.delenv("TRIAGE_DESIGN_REVIEW", raising=False)
+    review_policy.reset()
+    findings = [{"severity": sev, "verification": {"verdict": verdict, "reason": "r"},
+                 "resolved": False, "outdated": False}
+                for sev, verdict in (("minor", "confirmed"), ("major", "refuted"), ("major", "unverified"))]
+    entry = {**_DESIGN_BLOCKING, "findings": findings}
+    chk = _design_check(_pr(reviews=reviews_section(HEAD, NOW, design=entry)))
+    assert chk["status"] == "pass" and not chk["advisory"]
