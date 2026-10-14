@@ -11,16 +11,16 @@ from pipeline import coverage, design_review, headless_agent, profile, reviewers
 from pipeline.model import Pr
 
 
-def test_mode_defaults_to_advisory(monkeypatch):
+def test_mode_defaults_to_gate(monkeypatch):
     monkeypatch.delenv("TRIAGE_DESIGN_REVIEW", raising=False)
-    assert settings.design_review_mode() == "advisory"
+    assert settings.design_review_mode() == "gate"
 
 
 def test_mode_reads_choices_and_falls_back(monkeypatch):
-    monkeypatch.setenv("TRIAGE_DESIGN_REVIEW", "Gate")
-    assert settings.design_review_mode() == "gate"
-    monkeypatch.setenv("TRIAGE_DESIGN_REVIEW", "bogus")
+    monkeypatch.setenv("TRIAGE_DESIGN_REVIEW", "Advisory")
     assert settings.design_review_mode() == "advisory"
+    monkeypatch.setenv("TRIAGE_DESIGN_REVIEW", "bogus")
+    assert settings.design_review_mode() == "gate"
 
 HEAD = "h" * 40
 DIFF = """diff --git a/src/new.ts b/src/new.ts

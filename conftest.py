@@ -53,6 +53,9 @@ os.environ.setdefault("TRIAGE_PROFILE", os.path.join(
 # Unattended agent work is marked by this variable; a developer's shell must
 # never make a test's agent calls gated.
 os.environ.pop("PROSPECTOR_UNATTENDED", None)
+# A PR fixture carries no design review, so the gating default would hold
+# every merge on one; tests of the design gate set the mode themselves.
+os.environ["TRIAGE_DESIGN_REVIEW"] = "advisory"
 
 import pytest  # noqa: E402
 
