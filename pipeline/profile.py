@@ -118,7 +118,7 @@ class SuiteConfig:
 # convention checks, which every agent-authored change must pass and the
 # authoring agent may run itself (None means no lint), the optional test setup
 # command — what the repository's own test scripts run before its runner, run
-# ahead of the changed-line coverage tests (None means none) — and the optional
+# ahead of every sandbox test run (None means none) — and the optional
 # full-suite contract. A repository with a compile_cmd must install offline at
 # tier 1 — the command runs against baked-in node_modules with no network.
 @dataclass(frozen=True)

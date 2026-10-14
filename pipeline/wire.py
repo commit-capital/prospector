@@ -146,6 +146,8 @@ class VerifyRedGreenSignal(VerifyRunSignal, total=False):
     green_failing: list[str] | None
     green_failing_confirm: list[str] | None
     failing_in_diff: list[str] | None
+    red_load_error: str | None
+    green_load_error: str | None
     no_test_hunks: bool
 
 

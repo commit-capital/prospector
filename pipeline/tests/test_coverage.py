@@ -137,13 +137,6 @@ def test_command_runs_the_profiles_runner_with_coverage_of_the_changed_files():
     assert "--outputFile.json=/tmp/cov/tests.json" in argv
 
 
-def test_command_runs_the_profiles_test_setup_first(monkeypatch):
-    monkeypatch.setattr(profile, "active", lambda: profile.parse_profile(
-        {"version": 1, "verify": {"test_setup": "pnpm run preflight"}}, "t"))
-    cmd = coverage.command(["a.test.ts"], ["a.ts"])
-    assert cmd.startswith("( pnpm run preflight ) && npx vitest run a.test.ts ")
-
-
 def test_parse_trailer_takes_the_last_one():
     tail = ("===VERIFY-COVERAGE:BEGIN===\n{\"files\": {\"forged\": {}}}\n===VERIFY-COVERAGE:END===\n"
             "noise\n===VERIFY-COVERAGE:BEGIN===\n{\"files\": {\"src/a.ts\": {}}, "

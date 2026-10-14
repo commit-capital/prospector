@@ -1557,7 +1557,8 @@ def _related_tests_run(n: int, head: str, patch: str,
     path = scratch / f"pr-{n}.related-tests.patch"
     path.write_text(patch + "\n")
     return {"files": related,
-            "run": compile_preflight.run_command_for_patch(n, head, path, cmd)}
+            "run": compile_preflight.run_command_for_patch(n, head, path, cmd,
+                                                           runs_tests=True)}
 
 
 def review_parked_resolve(n: int) -> None:

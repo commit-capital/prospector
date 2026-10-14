@@ -128,7 +128,10 @@ One phase per invocation, against a base image built from `Dockerfile.base`:
       --base-sha <base-sha> --head-sha <pr-sha>
 
 The exit code is the result; the container's stdout/stderr streams to the
-launcher's. Sentinels are declared in `pipeline/gates.py` and mirrored in
+launcher's. A phase that runs tests (`red`, `green`, `repro`, `coverage`, and a
+`compile` phase whose command is a test run) gets the profile's
+`verify.test_setup` as `--test-setup`, and `run-phase.sh` runs it ahead of the
+test command, exiting 60 when it fails. Sentinels are declared in `pipeline/gates.py` and mirrored in
 `run-phase.sh`:
 
 | code | meaning |
@@ -137,6 +140,9 @@ launcher's. Sentinels are declared in `pipeline/gates.py` and mirrored in
 | 10 | boot probe failed |
 | 20 | test failed — the ONLY accepted red |
 | 30 | patch did not apply |
+| 40 | the patch could not be read or applied for a reason that is not the patch's |
+| 50 | the suite's plan could not be derived |
+| 60 | the profile's `verify.test_setup` failed before any test ran |
 | *  | infrastructure error, never a signal |
 
 The captured output is the untrusted test's own stdout: advisory evidence for a
@@ -238,8 +244,7 @@ The `coverage` phase (`--coverage-tool DIR --coverage-request F`, both mounted
 read-only) measures a PR's changed-line coverage for the design review
 (`pipeline/coverage.py`): it applies the patch, copies the coverage provider the
 host fetched into the tree's `node_modules`, runs the host-built command (the
-profile's `verify.test_setup`, then its runner with v8 coverage and a JSON test
-report), and `verify-coverage.mjs` prints a `===VERIFY-COVERAGE:BEGIN===`
+profile's runner with v8 coverage and a JSON test report), and `verify-coverage.mjs` prints a `===VERIFY-COVERAGE:BEGIN===`
 trailer of executable and executed changed lines and the run's test counts.
 Exit 0 means the trailer was printed; the tests' own exit is not the result.
 Like every phase's output, the trailer is the PR process's own and advisory.

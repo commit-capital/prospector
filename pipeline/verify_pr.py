@@ -709,9 +709,13 @@ def _run_inner(store: Store, rec: Pr, req: _Request) -> int:
     req.running("commit")
     ok, held, errs = verify_driver.commit_outcomes(store, [judge_item])
     if held:
-        return _fail(req, "hold",
-                     "the run errored (a phase exited outside its sentinel set) — "
-                     "no verdict is trusted from it; re-queue to retry")
+        held_rec = store.load_pr(n)
+        host = (held_rec.verify_signals.get("red_green") if held_rec else None) or {}
+        loaded = gates.shared_load_error(host)
+        why = (f"the test file failed to load in both red and green ({loaded})" if loaded
+               else "a phase did not conclude: a sandbox fault or a failed test setup")
+        return _fail(req, "hold", f"the run errored ({why}) — no verdict is trusted "
+                                  "from it; re-queue to retry")
     if errs or not ok:
         return _fail(req, "agent-failed", f"outcome commit failed: {'; '.join(errs)}")
 

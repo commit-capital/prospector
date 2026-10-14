@@ -225,6 +225,22 @@ class TestRunCommandForPatch:
         assert phase == "compile" and kw["test_cmd"] == "npx vitest run src/app.test.ts"
         assert kw["patch"] == patch
 
+    def test_a_test_run_asks_for_the_test_setup_on_both_legs(self, monkeypatch, tmp_path):
+        patch = _patch_file(tmp_path, SRC_DIFF)
+        monkeypatch.setattr(verify_driver, "resolve_base_sha", lambda: BASE)
+        monkeypatch.setattr(verify_driver, "image_exists", lambda tag: True)
+        monkeypatch.setattr(verify_driver, "base_command_failure",
+                            lambda image, cmd, rerun: rerun() and None)
+        calls: list = []
+
+        def fake_run(phase, image, **kw):
+            calls.append(kw)
+            return 20, "boom"
+        monkeypatch.setattr(verify_driver, "run_phase", fake_run)
+        compile_preflight.run_command_for_patch(7, "a" * 40, patch, "npx vitest run x",
+                                                runs_tests=True)
+        assert len(calls) == 2 and all(kw["runs_tests"] for kw in calls)
+
     def test_nothing_raises_into_the_caller(self, monkeypatch, tmp_path):
         patch = _patch_file(tmp_path, SRC_DIFF)
         monkeypatch.setattr(verify_driver, "resolve_base_sha",

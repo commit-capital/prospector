@@ -21,11 +21,12 @@ def test_sentinels_match_gates():
     assert _declared("SENTINEL_PATCH_CONFLICT") == gates.SENTINEL_PATCH_CONFLICT
     assert _declared("SENTINEL_PATCH_UNREADABLE") == gates.SENTINEL_PATCH_UNREADABLE
     assert _declared("SENTINEL_NO_PLAN") == gates.SENTINEL_NO_PLAN
+    assert _declared("SENTINEL_SETUP_FAIL") == gates.SENTINEL_SETUP_FAIL
 
 
 def test_sentinels_are_distinct_and_nonzero():
     codes = (gates.SENTINEL_PROBE_FAIL, gates.SENTINEL_TEST_FAIL,
              gates.SENTINEL_PATCH_CONFLICT, gates.SENTINEL_PATCH_UNREADABLE,
-             gates.SENTINEL_NO_PLAN)
-    assert len(set(codes)) == 5
+             gates.SENTINEL_NO_PLAN, gates.SENTINEL_SETUP_FAIL)
+    assert len(set(codes)) == 6
     assert gates.SENTINEL_PASS == 0 and all(c != 0 for c in codes)
