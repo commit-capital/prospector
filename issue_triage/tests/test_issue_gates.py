@@ -313,7 +313,16 @@ def test_related_tests_the_base_fails_too_do_not_count_against_the_fix():
     ({"proof__compile": {"refused": "empty"}}, "fix-unproven"),
     ({"proof__related_tests": {"files": ["a.test.ts"], "run": {"exit": 20}}}, "fix-unproven"),
     ({"proof__lint": {"exit": 20, "error_excerpt": "boundary"}}, "fix-unproven"),
-    ({"proof__lint": {"error": "docker down"}}, "fix-unproven"),
+    ({"proof__lint": {"error": "docker down"}}, "sandbox"),
+    # A sandbox that could not run the check is the machine's fault, never a
+    # verdict on the fix (#13817: a full disk on the worker).
+    ({"proof__compile": {"exit": 40, "error": "the sandbox could not apply the patch for a "
+                         "reason that is not the patch's: No space left on device"}},
+     "sandbox"),
+    ({"proof__compile": {"error": "the sandbox phase exited 125 before the command "
+                         "concluded"}}, "sandbox"),
+    ({"proof__related_tests": {"files": ["a.test.ts"], "run": {"error": "docker down"}}},
+     "sandbox"),
     ({"reviews": PROVEN["reviews"][:1]}, "fix-rejected"),
     ({"reviews": [PROVEN["reviews"][0],
                   {"lens": "scope-safety", "verdict": "unsafe", "reason": "widens auth",

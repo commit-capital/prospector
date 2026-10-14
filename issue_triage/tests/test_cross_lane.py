@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from issue_triage import cross_lane, fix_lane, review_issue_fix, solo_lane
+from issue_triage import cross_lane, fix_lane, fix_review, review_issue_fix, solo_lane
 from pipeline import authoring, gates, headless_agent, prove, resolve_evidence, verify_driver
 
 
@@ -284,6 +284,45 @@ def test_the_picked_fix_still_faces_the_host_s_checks(cross, monkeypatch):
         "new_failures": ["src/other.test.ts"]})
     res = cross["run"]()
     assert res.ending == "fix-unproven" and "other.test.ts" in res.detail
+
+
+_DISK_FULL = {"exit": gates.SENTINEL_PATCH_UNREADABLE, "output_tail": "",
+              "error": "the sandbox could not apply the patch for a reason that is not the "
+                       "patch's: fatal: unable to read blob object 5a89 | error: unable to "
+                       "create temporary file: No space left on device"}
+
+
+def _compile_faults(monkeypatch):
+    from pipeline import profile
+    configured = profile.parse_profile(
+        {"version": 1, "verify": {"compile_cmd": "tsc --noEmit"}}, "t")
+    monkeypatch.setattr(profile, "active", lambda: configured)
+    monkeypatch.setattr(prove, "run_command", lambda *a, phase, **k: (
+        dict(_DISK_FULL) if phase == "compile" else {"exit": 0, "output_tail": ""}))
+
+
+def test_a_compile_sandbox_that_cannot_apply_the_patch_is_a_machine_fault(cross, monkeypatch):
+    _compile_faults(monkeypatch)
+    res = cross["run"]()
+    assert res.ending in fix_review.FAULT_ENDINGS and res.fault is True
+    assert "No space left on device" in res.detail
+
+
+def test_a_resumed_reading_whose_compile_sandbox_faults_is_a_machine_fault(cross, monkeypatch):
+    # #13817: an answer resumed a dispute, and a full disk on the worker kept the
+    # compile sandbox from applying the patch; it ended fix-unproven, read as
+    # declined, and was never retried.
+    cross["agents"] = [_writes("a.test.ts", 2), _writes("b.test.ts", 3),
+                       _writes("c.test.ts", 2, extra_lines=1)]
+    disputed = cross["run"]()
+    _compile_faults(monkeypatch)
+    spec = fix_lane.LaneSpec(issue=7, title="x is wrong", body="x should be 2",
+                             base=prove.PinnedBase(sha="a" * 40, tier=2, image="img",
+                                                   clone=cross["workdir"].parent / "base"))
+    res = cross_lane.judge_reading(spec, workdir=cross["workdir"], result=disputed.result,
+                                   reading=[0, 2])
+    assert res.ending in fix_review.FAULT_ENDINGS and res.fault is True
+    assert "No space left on device" in res.detail
 
 
 def test_every_clone_is_removed_afterward(cross):
