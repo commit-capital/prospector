@@ -84,7 +84,7 @@ a:hover { text-decoration: underline; }
   width: calc(100% + var(--ap-w, 0)); margin-left: calc(-1 * var(--ap-w, 0)); }
 .topbar { display: flex; align-items: center; gap: 24px; padding: 10px 20px;
   background: var(--panel); border-bottom: 1px solid var(--border); }
-.brand { font-weight: 700; }
+.brand, .brand:hover { font-weight: 700; color: inherit; text-decoration: none; }
 .instance-bar {
   display: flex;
   align-items: baseline;
