@@ -168,6 +168,26 @@ def test_run_security_schedules_background_jobs_in_the_per_pr_dispatch(monkeypat
         "queued": 2, "skipped": 1}
 
 
+def test_run_design_schedules_one_design_review_job_per_pr(monkeypatch):
+    started: list[tuple[str, int]] = []
+
+    def fake_start(kind, cluster=None, pr=None, count=None):
+        started.append((kind, pr))
+        return {"id": pr + 200, "pr": pr}
+
+    monkeypatch.setattr(bulk.jobs, "start_job", fake_start)
+    monkeypatch.setattr(bulk.jobs, "schedule_job", lambda job: None)
+    monkeypatch.setattr(executor, "mint_bot_token",
+                        lambda: (_ for _ in ()).throw(AssertionError("must not mint")))
+
+    evs = _drain(bulk.run_bulk([4, 5], "RUN_DESIGN", dry_run=False))
+
+    results = [json.loads(e["data"]) for e in evs if e["event"] == "result"]
+    assert started == [("design-review-pr", 4), ("design-review-pr", 5)]
+    assert [r["job_id"] for r in results] == [204, 205]
+    assert "design review" in results[0]["detail"]
+
+
 def test_cap_rejects_oversized_batch(monkeypatch):
     evs = _drain(bulk.run_bulk(list(range(1, 1002)), "CLOSE", dry_run=True))
     err = [e for e in evs if e["event"] == "error"]

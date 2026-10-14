@@ -17,6 +17,7 @@ parameter is a validated integer cluster id, PR number, or count.
                      find-fixed, one process (bot reads, store writes, agents)
   - design-review : design-review up to `count` PR heads now, merge-ready first
                     (agents + the verify sandbox, store writes only)
+  - design-review-pr : design-review one PR's head now (the bulk action's job)
   - analyze-clusters : ANALYZE phase — parallel per-cluster dispositions for the
                         `count` lowest-id pending clusters (gh reads only, store
                         writes; no upstream writes)
@@ -220,6 +221,16 @@ JOB_SPECS: dict[str, JobSpec] = {
         "count_noun": "PRs",
         "argv_fn": lambda n: [*PIPELINE_PY, "-u", "-m", "prospector_app.backend.design_backfill",
                               "--limit", str(n)],
+    },
+    "design-review-pr": {
+        "label": "Design review (single PR)",
+        "detail": "review one PR's head for reuse, layering and test quality. Needs this machine's verify base pin. Store writes only, nothing upstream.",
+        "agentic": True,
+        "ledger": ("pr", ("design-review:run",)),
+        "needs_pr": True,
+        "max_concurrency": 1,
+        "argv_fn": lambda pr: [*PIPELINE_PY, "-u", "-m", "prospector_app.backend.design_backfill",
+                               "--pr", str(pr)],
     },
     "triage-cluster": {
         "label": "Triage cluster",
