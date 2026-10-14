@@ -1322,7 +1322,7 @@ class TestVerifyRunErrored:
         assert gates.verify_outcome(_blind(), host, _judge(), regress=None) is None
 
     def test_a_test_file_that_failed_to_load_in_both_legs_errored(self):
-        line = 'Error: Failed to resolve entry for package "@paperclipai/plugin-sdk".'
+        line = 'Error: Failed to resolve entry for package "@acme/sdk".'
         host = _host(red_exit=20, green_exit=20, red_load_error=line,
                      green_load_error=line)
         assert gates.shared_load_error(host) == line

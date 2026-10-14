@@ -1202,10 +1202,10 @@ class TestRunPhase:
     def test_load_error_names_the_first_load_failure_line(self):
         tail = ("\x1b[41m FAIL \x1b[49m src/__tests__/a.test.ts [ server/src/__tests__/a.test.ts ]\n"
                 "\x1b[31mError\x1b[22m: Failed to resolve entry for package "
-                "\"@paperclipai/plugin-sdk\".  The package may\n"
+                "\"@acme/sdk\".  The package may\n"
                 " Test Files  1 failed (1)\n      Tests  no tests\n")
         assert vd.load_error(tail) == ('Error: Failed to resolve entry for package '
-                                       '"@paperclipai/plugin-sdk". The package may')
+                                       '"@acme/sdk". The package may')
 
     def test_load_error_is_none_for_a_run_that_reached_the_code(self):
         assert vd.load_error("Failed Tests 1\n FAIL  app > compute > expected 1 to be 2") is None
