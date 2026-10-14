@@ -81,7 +81,7 @@ Clicking a row expands it in place:
   worker will take them, with **Move to top** and **Remove**. Autofix keeps its
   parked changes here with Push and Discard, as the Fix table does today.
 - **Hunter's next picks** (Security, Verify, Design, Autofix): the next five
-  candidates the hunter would take, read-only.
+  candidates the hunter would take, read-only (PR 2).
 - **Recent**: this lane's last ten endings, one line each.
 
 Clustering shows its pending count and daily budget used. Background lists
@@ -99,8 +99,8 @@ split by a `now` divider:
   `12:31 · Security · #11340 → GREEN · 4m · Mac Studio`. Machine faults read
   red. Background passes that did nothing collapse into one line per hour.
 
-Clicking a past line opens its PR or issue, or its job output as today
-(`jobToOpen`). This replaces Recent activity; the per-machine cost moves to
+Clicking a past line opens its PR or issue. Jobs started from this app show
+in the running-job line. This replaces Recent activity; the per-machine cost moves to
 the AI capacity tab.
 
 ### Tabs
@@ -120,8 +120,7 @@ working again without a click.
 - `escalation.offline_workers` and `system_health.summarize` skip a
   stood-down host. Its tripped lanes are kept in the roster but excluded from
   Needs you and the strip.
-- The status line and Lanes read `off` for it. The machine block in Setup →
-  Machines offers the same toggle.
+- The status line and Lanes read `off` for it.
 
 ## Operator pause
 
@@ -172,9 +171,7 @@ read, built from what exists:
   constant, only for loops enabled on some online machine;
 - the Needs you items, already filtered.
 
-Each worker heartbeat adds the lane flags its process runs under
-(`worker_control.flags()`), so a remote machine's `off` is known rather than
-guessed. The page polls this one endpoint every 15 s (5 s while anything runs)
+Each machine writes a `worker_loops:<host>` row (`worker_loops.py`) holding which lanes it runs and each periodic loop's last pass, so a remote machine's `off` and its loops' next runs are known rather than guessed. The page polls this one endpoint every 15 s (5 s while anything runs)
 in place of its six polls.
 
 ## Log tail
@@ -194,7 +191,8 @@ Three PRs:
    new page (status line, Lanes without pause or reorder, Timeline, tabs).
    Removes `NeedsYou`, `RecentActivity` and `Queues` as page sections.
 2. **Pause and reorder.** `lane_pause`, the `open_or_retest` check, the
-   `priority` sort, the move-to-top endpoints, the controls.
+   `priority` sort, the move-to-top endpoints, the hunter's next picks,
+   the controls.
 3. **Log tail.** The endpoint, `worker_log` for issue-fix and cluster, the
    Now cell's log.
 
