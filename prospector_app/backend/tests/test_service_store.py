@@ -836,3 +836,48 @@ class TestVerifyAndReversible:
         from prospector_app.backend import decisions
         body = decisions.default_comment(models.CloseAction(action="CLOSE_FIXED"))
         assert "appears" in body and "reopen" in body  # honest hedge, no fabricated commit
+
+
+class TestPrDetailLinkedIssueState:
+    def _stub_live(self, monkeypatch):
+        monkeypatch.setattr(service, "_ci_checks", lambda sha: [])
+        monkeypatch.setattr(service, "live_changed_paths", lambda n: None)
+
+    def test_linked_issues_carry_their_stored_state(self, patched, monkeypatch, tmp_path):
+        from issue_triage import issue_store
+        from prospector_app.backend import issues
+        monkeypatch.setattr(issues, "STORE_ROOT", tmp_path)
+        st = issue_store.IssueStore(tmp_path)
+        st.create_issue(7, {"title": "t", "state": "closed", "state_reason": "not_planned",
+                            "author": "al", "created_at": NOW, "updated_at": NOW})
+        linked = [{"issue": 7, "pain": None, "how": "explicit"},
+                  {"issue": 8, "pain": None, "how": "explicit"}]
+        patched({1: _pr(analysis=_analysis(), security=_green(),
+                        issues={"linked": linked, "checked_at": NOW})})
+        service.data.prs()[1].raw["meta"]["body"] = ""
+        self._stub_live(monkeypatch)
+
+        row = service.pr_detail(1)
+
+        assert row["issues"] == [
+            {"issue": 7, "pain": None, "how": "explicit",
+             "state": "closed", "state_reason": "not_planned"},
+            {"issue": 8, "pain": None, "how": "explicit"}]
+        assert row["live_refresh_failed"] == []
+
+    def test_issue_store_failure_degrades_to_bare_links(self, patched, monkeypatch):
+        from prospector_app.backend import issues
+        linked = [{"issue": 7, "pain": None, "how": "explicit"}]
+        patched({1: _pr(analysis=_analysis(), security=_green(),
+                        issues={"linked": linked, "checked_at": NOW})})
+        service.data.prs()[1].raw["meta"]["body"] = ""
+        self._stub_live(monkeypatch)
+
+        def boom(numbers):
+            raise RuntimeError("issue store unreachable")
+        monkeypatch.setattr(issues, "issue_states", boom)
+
+        row = service.pr_detail(1)
+
+        assert row["issues"] == linked
+        assert "issue_states" in row["live_refresh_failed"]

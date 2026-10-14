@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { IssueLink } from "../api";
-import { FIX_EVIDENCE, shownIssues } from "./linkedIssuesShown.ts";
+import { FIX_EVIDENCE, closedNote, shownIssues } from "./linkedIssuesShown.ts";
 
 function link(issue: number, how: string): IssueLink {
   return { issue, pain: null, how };
@@ -45,4 +45,17 @@ test("no limit shows every fix link", () => {
 test("undefined and evidence-free lists are empty", () => {
   assert.deepEqual(shownIssues(undefined, 3), { shown: [], hidden: 0 });
   assert.deepEqual(shownIssues([link(1, "mention")], 3), { shown: [], hidden: 0 });
+});
+
+test("a closed issue's note names its close reason", () => {
+  const closed = (state_reason: string | null): IssueLink => ({ ...link(1, "explicit"), state: "closed", state_reason });
+  assert.match(closedNote(closed("not_planned")) ?? "", /not planned/);
+  assert.match(closedNote(closed("duplicate")) ?? "", /duplicate/);
+  assert.match(closedNote(closed("completed")) ?? "", /already be fixed/);
+  assert.match(closedNote(closed(null)) ?? "", /already be fixed/);
+});
+
+test("an open or unknown-state issue has no closed note", () => {
+  assert.equal(closedNote({ ...link(1, "explicit"), state: "open" }), null);
+  assert.equal(closedNote(link(1, "explicit")), null);
 });

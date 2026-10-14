@@ -27,6 +27,7 @@ import { FactFreshnessPanel } from "../components/FactFreshness";
 import { useRunState } from "../useRunState";
 import { useJobStream } from "../useJobStream";
 import { LinkedIssues } from "../components/LinkedIssues";
+import { closedNote, shownIssues } from "../components/linkedIssuesShown";
 import { splitDiffSizes } from "../testPaths";
 
 const LEVEL_ICON: Record<string, string> = { safe: "🛡️", caution: "⚠️", risk: "⛔", unknown: "❔" };
@@ -616,6 +617,12 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
       <section className="prc-section">
         <h3>Issues this may fix</h3>
         <LinkedIssues issues={pr.issues} />
+        {shownIssues(pr.issues).shown.map((issue) => {
+          const closed = closedNote(issue);
+          return closed && (
+            <div key={issue.issue} className="issue-closed-warn">⚠ Issue #{issue.issue} is {closed}.</div>
+          );
+        })}
       </section>
 
       {/* agent summary — diff-grounded one-liner + mechanism, distinct from

@@ -89,6 +89,15 @@ def issue_state(n: int) -> str | None:
     return iss.state if iss is not None else None
 
 
+def issue_states(numbers: list[int]) -> dict[int, tuple[str, str | None]]:
+    """Each stored issue's `(state, state_reason)` among `numbers`, read in one
+    projected query; an issue with no row is absent."""
+    if not numbers:
+        return {}
+    return {row["issue"]: (row["state"], row["state_reason"])
+            for row, _ in _store().issue_rows([], numbers=numbers)}
+
+
 def _store_pr_states() -> tuple[dict[int, str], bool]:
     """PR number -> state (open/merged/closed) for every PR in the app's PR
     store, plus True while that snapshot is still cold-loading — the load runs

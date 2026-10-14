@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 from prospector_app.backend import automation, data
 from prospector_app.backend import claims
 from prospector_app.backend import filters  # spec predicate
+from prospector_app.backend import issues
 from prospector_app.backend import pr_checks
 from prospector_app.backend import responses
 from prospector_app.backend import suggest
@@ -811,8 +812,9 @@ def pr_detail(n: int) -> dict | None:
                    "changed_files": ds.get("changed_files")}
 
     # The rest each need a live round-trip — GitHub's CI check runs, its file
-    # list (CODEOWNERS), and the PR body. They're independent, so fan them out:
-    # wall time is one round-trip, not the sum of three. The CODEOWNERS and body
+    # list (CODEOWNERS), and the PR body — plus the issue store's read of the
+    # linked issues' states. They're independent, so fan them out: wall time is
+    # one round-trip, not the sum of them. The CODEOWNERS and body
     # calls only fire when their cached/ingested value is missing, so most warm
     # PRs spend their latency on the CI fetch alone. Reviewer feedback comes from
     # the store's reviews section, which ingest and the live sweep keep current.
@@ -823,8 +825,10 @@ def pr_detail(n: int) -> dict | None:
     # live GitHub fetch is the last resort, for a PR whose body was never ingested.
     body = rec.body or data.pr_body(n)
     failed_live: list[str] = []
-    with ThreadPoolExecutor(max_workers=3) as pool:
+    linked = rec.linked_issues
+    with ThreadPoolExecutor(max_workers=4) as pool:
         detail_fut = pool.submit(_ci_checks, rec.head_sha)
+        states_fut = pool.submit(issues.issue_states, sorted({int(i["issue"]) for i in linked}))
         # authoritative CODEOWNERS + tier source; live file list only when uncached (#15/#26)
         paths_fut = None if hm_known else pool.submit(live_changed_paths, n)
         body_fut = pool.submit(_pr_body_live, n) if body is None else None  # ingested lazily
@@ -844,6 +848,13 @@ def pr_detail(n: int) -> dict | None:
                 row["risk_tier"] = live_risk["tier"]
                 row["risk_tier_paths"] = live_risk["pinned_by"]
         row["body"] = body if body_fut is None else _resolve_live(body_fut, body, failed_live, "body")
+        states = _resolve_live(states_fut, {}, failed_live, "issue_states")
+    # Each linked issue's stored state, so the page can say when the issue a PR
+    # fixes has closed (e.g. as not planned) and the PR may no longer be needed.
+    row["issues"] = [
+        {**link, "state": st[0], "state_reason": st[1]} if (st := states.get(int(link["issue"])))
+        else link
+        for link in linked]
     # Which live bits couldn't refresh (empty when all succeeded). The app shows
     # a "couldn't refresh live data" note rather than the operator seeing a 500.
     row["live_refresh_failed"] = failed_live
