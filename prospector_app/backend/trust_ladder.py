@@ -92,7 +92,7 @@ _DECISION_FOR: dict[str, str] = {
 #: other than request-changes leave the pick undecided, so they carry no
 #: agreement evidence.
 _VERDICTS = frozenset({
-    "MERGE", "CLOSE", "CLOSE_DUP", "CLOSE_FIXED", "CLOSE_STALE",
+    "MERGE", "CLOSE", "CLOSE_DUP", "CLOSE_FIXED", "CLOSE_STALE", "CLOSE_WONTFIX",
     "REVIEW:request-changes",
 })
 

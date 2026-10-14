@@ -38,25 +38,25 @@ function authorRep(a: AuthorStats | null | undefined): ReactNode {
 
 // "resolved" holds PRs already closed/merged upstream (reconciled, #107) — it
 // renders read-only and is excluded from the comment/edit/execute machinery.
-const BUCKET_ORDER = ["merge", "request-changes", "close-dup", "close-fixed", "close-stale", "close-oversized", "needs-human", "unanalyzed", "resolved"];
+const BUCKET_ORDER = ["merge", "request-changes", "close-dup", "close-fixed", "close-wontfix", "close-stale", "close-oversized", "needs-human", "unanalyzed", "resolved"];
 const ACTIVE_BUCKETS = BUCKET_ORDER.filter((b) => b !== "resolved");
 const BUCKET_LABEL: Record<string, string> = {
   "merge": "Merge", "request-changes": "Request changes (ask the author)",
   "close-dup": "Close as duplicate", "close-fixed": "Close as already-fixed",
-  "close-stale": "Close as stale", "close-oversized": "Close as too big (break up)",
+  "close-wontfix": "Close as won't fix", "close-stale": "Close as stale", "close-oversized": "Close as too big (break up)",
   "needs-human": "Needs human routing",
   "unanalyzed": "Not yet analyzed", "resolved": "Resolved upstream (already closed / merged)",
 };
-const ACTION_OPTS = ["merge", "request-changes", "close-dup", "close-fixed", "close-stale", "close-oversized", "needs-human", "skip"];
+const ACTION_OPTS = ["merge", "request-changes", "close-dup", "close-fixed", "close-wontfix", "close-stale", "close-oversized", "needs-human", "skip"];
 const ACTION_VERB: Record<string, string> = {
   "merge": "Merge", "request-changes": "Request changes on",
-  "close-dup": "Close (duplicate)", "close-fixed": "Close (already-fixed)", "close-stale": "Close (stale)",
+  "close-dup": "Close (duplicate)", "close-fixed": "Close (already-fixed)", "close-wontfix": "Close (won't fix)", "close-stale": "Close (stale)",
   "close-oversized": "Close (too big)",
 };
 
 // closes + author asks are executable; merge waits for its gate; needs-human is a punt
 const defaultApproved = (d: string | null) =>
-  ["merge", "request-changes", "close-dup", "close-fixed", "close-stale", "close-oversized"].includes(d ?? "");
+  ["merge", "request-changes", "close-dup", "close-fixed", "close-wontfix", "close-stale", "close-oversized"].includes(d ?? "");
 
 // Security severity as a sortable rank — RED (most severe) first on a desc sort.
 const SAFETY_RANK: Record<string, number> = { RED: 3, YELLOW: 2, GREEN: 1 };
@@ -371,7 +371,7 @@ export default function ClusterDetail() {
     !!r.signals?.conflicts || (fresh.byPr[r.number] || []).some((d) => d.kind === "conflicts");
   const liveConflict = (r: PRRow) => (fresh.byPr[r.number] || []).some((d) => d.kind === "conflicts");
 
-  const EXECUTABLE = ["merge", "request-changes", "close-dup", "close-fixed", "close-stale", "close-oversized"];
+  const EXECUTABLE = ["merge", "request-changes", "close-dup", "close-fixed", "close-wontfix", "close-stale", "close-oversized"];
   const executable = () => (cd?.prs ?? []).filter((r) => {
     const st = state[r.number];
     // already-closed/merged PRs may be checked for diff comparison, but are

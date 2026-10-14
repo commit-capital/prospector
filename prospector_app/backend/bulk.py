@@ -27,12 +27,17 @@ from prospector_app.backend import verify_queue
 
 CAP = 1000
 
+# Bulk actions that start one background job per PR.
+_JOB_ACTIONS = {"RUN_SECURITY": ("security-review", "security review"),
+                "RUN_DESIGN": ("design-review-pr", "design review")}
+
 _REVIEW = {"APPROVE": "approve", "REQUEST_CHANGES": "request-changes", "COMMENT": "comment"}
 
 # Cluster dispositions (the raw UI strings) → the executor's vocabulary.
 _CLUSTER_REVIEW = ("request-changes", "approve", "comment")  # submit_review events
 _CLUSTER_CLOSE = {"close-dup": "CLOSE_DUP", "close-fixed": "CLOSE_FIXED",
-                  "close-stale": "CLOSE_STALE", "close": "CLOSE"}
+                  "close-stale": "CLOSE_STALE", "close-wontfix": "CLOSE_WONTFIX",
+                  "close": "CLOSE"}
 
 
 def _warn_bookkeeping(done: dict[str, Any], errors: list[str]) -> None:
@@ -70,20 +75,21 @@ async def run_bulk(prs: list[int], action: str, *, comment: str | None = None,
         return
 
     # Local background actions use no upstream token.
-    token = (None if dry_run or action in ("QUEUE_VERIFY", "RUN_SECURITY")
+    token = (None if dry_run or (action == "QUEUE_VERIFY" or action in _JOB_ACTIONS)
              else await asyncio.to_thread(executor.mint_bot_token))
     summary: dict[str, int] = {}
     bookkeeping_errors: list[str] = []
     for n in prs:
         pr_comment = (comments or {}).get(n) or comment
         try:
-            if action == "RUN_SECURITY":
+            if action in _JOB_ACTIONS:
+                kind, noun = _JOB_ACTIONS[action]
                 try:
-                    job = jobs.start_job("security-review", pr=n)
+                    job = jobs.start_job(kind, pr=n)
                     jobs.schedule_job(job)
                     res = {"pr": n, "action": action, "status": "queued",
                            "job_id": job["id"],
-                           "detail": f"security review queued as background job #{job['id']}"}
+                           "detail": f"{noun} queued as background job #{job['id']}"}
                 except ValueError as e:
                     res = {"pr": n, "action": action, "status": "skipped",
                            "detail": str(e)}
@@ -107,8 +113,8 @@ async def run_bulk(prs: list[int], action: str, *, comment: str | None = None,
 def _apply(n: int, action: str, *, comment: str | None, canonical: int | None,
            method: str, reason: str | None, tags: list[str] | None,
            reviewer: str | None, token: str | None, dry_run: bool) -> dict[str, Any]:
-    """Apply one PR's bulk action other than RUN_SECURITY, whose job is
-    scheduled on the event loop."""
+    """Apply one PR's bulk action other than a `_JOB_ACTIONS` one, whose job
+    is scheduled on the event loop."""
     if action == "QUEUE_VERIFY":
         # A local write to the shared verify queue; the sandbox worker
         # picks it up. Nothing is posted upstream, so dry-run does not
@@ -139,7 +145,7 @@ def _apply(n: int, action: str, *, comment: str | None, canonical: int | None,
     if action in _REVIEW:
         return executor.submit_review(n, _REVIEW[action], comment or "",
                                       token=token, dry_run=dry_run)
-    # CLOSE / CLOSE_DUP / CLOSE_FIXED / CLOSE_STALE
+    # CLOSE / CLOSE_DUP / CLOSE_FIXED / CLOSE_STALE / CLOSE_WONTFIX
     return executor.execute_pr(n, models.CloseAction(
         pr=n, action=action,
         canonical=canonical, comment=comment or None,

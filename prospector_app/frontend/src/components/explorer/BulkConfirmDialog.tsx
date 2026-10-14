@@ -15,7 +15,7 @@ export function BulkConfirmDialog({ action, comment, canonical, perPr = false, r
   const [running, setRunning] = useState(false);
   const [results, setResults] = useState<Record<number, BulkResult>>({});
   const [summary, setSummary] = useState<Record<string, number> | null>(null);
-  const securityJobs = useJobGroup(onJobsFinished);
+  const reviewJobs = useJobGroup(onJobsFinished);
 
   // `rows` is only the currently-loaded page, but `selected` can span every page
   // ("select all N matching"). Snapshot what's already on hand, then fetch the
@@ -42,15 +42,16 @@ export function BulkConfirmDialog({ action, comment, canonical, perPr = false, r
   }, []);
 
   const postsComment = action !== "MERGE" && action !== "REVIEW_RETRIGGER"
-    && action !== "QUEUE_VERIFY" && action !== "RUN_SECURITY";
+    && action !== "QUEUE_VERIFY" && action !== "RUN_SECURITY" && action !== "RUN_DESIGN";
   const localQueue = action === "QUEUE_VERIFY";
-  const backgroundSecurity = action === "RUN_SECURITY";
-  const localAction = localQueue || backgroundSecurity;
+  const reviewNoun = action === "RUN_SECURITY" ? "security review" : action === "RUN_DESIGN" ? "design review" : null;
+  const backgroundJobs = reviewNoun !== null;
+  const localAction = localQueue || backgroundJobs;
   const displayedResult = (result: BulkResult): BulkResult => {
-    const job = securityJobs.byKey[result.pr];
+    const job = reviewJobs.byKey[result.pr];
     return job ? { ...result, status: job.status, detail: job.detail } : result;
   };
-  const visibleSummary = backgroundSecurity && summary
+  const visibleSummary = backgroundJobs && summary
     ? countStatuses(Object.values(results).map((r) => displayedResult(r).status))
     : summary;
 
@@ -88,24 +89,24 @@ export function BulkConfirmDialog({ action, comment, canonical, perPr = false, r
         canonical, reviewer, dry_run: dryRun },
       (r) => {
         setResults((prev) => ({ ...prev, [r.pr]: r }));
-        if (!backgroundSecurity || r.status !== "queued" || r.job_id === undefined) return;
+        if (!backgroundJobs || r.status !== "queued" || r.job_id === undefined) return;
         startedJobs.push({ key: r.pr, jobId: r.job_id });
       },
-      (s) => { securityJobs.track(startedJobs); setSummary(s); setRunning(false); onDone(); },
+      (s) => { reviewJobs.track(startedJobs); setSummary(s); setRunning(false); onDone(); },
     );
   };
 
   return (
     <BulkDialogFrame running={running} onClose={onClose}
-      title={`${action} — ${count} PR(s) ${localQueue ? "(local verify queue)" : backgroundSecurity ? "(background jobs)" : dryRun ? "(dry run)" : `LIVE as ${botLogin}`}`}>
+      title={`${action} — ${count} PR(s) ${localQueue ? "(local verify queue)" : backgroundJobs ? "(background jobs)" : dryRun ? "(dry run)" : `LIVE as ${botLogin}`}`}>
       {running && <div className="bulk-progress">Starting… {submittedCount} of {count} submitted</div>}
-      {backgroundSecurity && summary && (
+      {backgroundJobs && summary && (
         <div className="bulk-progress">
-          {securityJobs.jobCount === 0
-            ? "No new security reviews were started"
-            : securityJobs.allFinished
-              ? `All ${securityJobs.jobCount} started security reviews finished`
-              : `Security reviews… ${securityJobs.finishedCount} of ${securityJobs.jobCount} finished`}
+          {reviewJobs.jobCount === 0
+            ? `No new ${reviewNoun}s were started`
+            : reviewJobs.allFinished
+              ? `All ${reviewJobs.jobCount} started ${reviewNoun}s finished`
+              : `Running ${reviewNoun}s… ${reviewJobs.finishedCount} of ${reviewJobs.jobCount} finished`}
         </div>
       )}
       {localQueue && (
@@ -114,10 +115,17 @@ export function BulkConfirmDialog({ action, comment, canonical, perPr = false, r
           from the shared queue; nothing is posted upstream.
         </div>
       )}
-      {backgroundSecurity && (
+      {action === "RUN_SECURITY" && (
         <div className="muted small bulk-perpr-note">
           🛡️ Starts one deep security review per PR, with two reviews running at a
           time. The jobs continue if this dialog or page is closed.
+        </div>
+      )}
+      {action === "RUN_DESIGN" && (
+        <div className="muted small bulk-perpr-note">
+          📐 Starts one design review per PR, one at a time, on this machine's verify
+          base pin. A PR already reviewed at its head, or not threat-scanned clear, is
+          skipped. The jobs continue if this dialog or page is closed.
         </div>
       )}
       {postsComment && (perPr
@@ -132,8 +140,8 @@ export function BulkConfirmDialog({ action, comment, canonical, perPr = false, r
           const rawResult = results[r.number];
           const res = rawResult ? displayedResult(rawResult) : undefined;
           const gate = action === "MERGE" ? r.merge_gate : undefined;
-          const resultFinished = res && (!backgroundSecurity || res.job_id === undefined
-            || securityJobs.byKey[r.number]?.finished);
+          const resultFinished = res && (!backgroundJobs || res.job_id === undefined
+            || reviewJobs.byKey[r.number]?.finished);
           return (
             <li key={r.number} className={resultFinished ? "bulk-target-done" : undefined}>
               <GitHubPRLink n={r.number} url={r.url} className="num" /> {r.title}
@@ -153,11 +161,11 @@ export function BulkConfirmDialog({ action, comment, canonical, perPr = false, r
         : <div className="modal-actions">
             <button className="btn-secondary" onClick={onClose} disabled={running}>Cancel</button>
             <button className={`btn-primary ${!dryRun && !localAction ? "btn-live" : ""}`} onClick={run} disabled={running}>
-              {running ? "Running…" : localQueue ? `Queue ${count}` : backgroundSecurity ? `Start ${count}` : dryRun ? "Run (dry)" : `● Apply to ${count}`}
+              {running ? "Running…" : localQueue ? `Queue ${count}` : backgroundJobs ? `Start ${count}` : dryRun ? "Run (dry)" : `● Apply to ${count}`}
             </button>
           </div>}
       {summary && <div className="modal-actions"><button className="btn-primary" onClick={onClose}>
-        {backgroundSecurity && securityJobs.jobCount > 0 && !securityJobs.allFinished ? "Close" : "Done"}
+        {backgroundJobs && reviewJobs.jobCount > 0 && !reviewJobs.allFinished ? "Close" : "Done"}
       </button></div>}
     </BulkDialogFrame>
   );

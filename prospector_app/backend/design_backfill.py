@@ -3,9 +3,10 @@ job. Reviews run one at a time through `verify_worker.run_design` as an
 operator's run: Home's merge-ready PRs first, then the hunter's order, with no
 AI capacity gate and no turn-taking with the security and verify lanes. The
 batch stops after `--limit` reviews land, when the pool runs out, or after
-three failures in a row.
+three failures in a row. With `--pr N` it reviews that one PR's head instead
+— the PR explorer's bulk "run design reviews", one job per PR.
 
-  uv run python -m prospector_app.backend.design_backfill [--limit N]
+  uv run python -m prospector_app.backend.design_backfill [--limit N | --pr N]
 """
 from __future__ import annotations
 
@@ -24,6 +25,7 @@ if TYPE_CHECKING:
     from pipeline.model import Pr
 
 TRIGGER = "control"
+ONE_TRIGGER = "bulk"
 MAX_FAILURES_IN_A_ROW = 3
 
 
@@ -43,10 +45,38 @@ def candidates() -> list[int]:
     return [n for n, _ in sorted(pool, key=key)]
 
 
+def _has_base() -> bool:
+    if verify_worker.design_base(data.store()) is not None:
+        return True
+    print("This machine holds no verify base pin, so it cannot run a design review. "
+          "Run this job on a verify worker.", flush=True)
+    return False
+
+
+def run_one(n: int) -> int:
+    if not _has_base():
+        return 1
+    pr = data.store().load_pr(n)
+    if pr is None or not design_review.huntable(pr):
+        print(f"PR #{n}: skipped (closed, a draft, not threat-scanned clear at its head, "
+              "routed to a close, or this head already has a design review)", flush=True)
+        return 0
+    print(f"PR #{n}: reviewing", flush=True)
+    outcome = verify_worker.run_design(n, trigger=ONE_TRIGGER)
+    if outcome is False:
+        print(f"PR #{n}: failed (see the design-review:run ledger row)", flush=True)
+        return 1
+    if outcome is None:
+        print(f"PR #{n}: skipped (head moved, claimed elsewhere, or no diff)", flush=True)
+        return 0
+    entry = data.store().load_pr(n)
+    findings = (entry.review_entry("design") or {}).get("findings", []) if entry else []
+    print(f"PR #{n}: done, {len(findings)} finding(s)", flush=True)
+    return 0
+
+
 def run(limit: int) -> int:
-    if verify_worker.design_base(data.store()) is None:
-        print("This machine holds no verify base pin, so it cannot run a design review. "
-              "Run this job on a verify worker.", flush=True)
+    if not _has_base():
         return 1
     queue = candidates()
     print(f"{len(queue)} PR heads have no design review; reviewing up to {limit}.", flush=True)
@@ -76,8 +106,11 @@ def run(limit: int) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--limit", type=int, default=20)
-    return run(ap.parse_args().limit)
+    group = ap.add_mutually_exclusive_group()
+    group.add_argument("--limit", type=int, default=20)
+    group.add_argument("--pr", type=int)
+    args = ap.parse_args()
+    return run_one(args.pr) if args.pr is not None else run(args.limit)
 
 
 if __name__ == "__main__":

@@ -100,7 +100,7 @@ def test_analyze_contract() -> None:
             "Cluster outcome",
             "Selection",
         ),
-        placeholders=(("__BUNDLE_PATH__", 1), ("__BRANCH__", 7)),
+        placeholders=(("__BUNDLE_PATH__", 1), ("__BRANCH__", 8)),
         fields=(
             "cluster_id", "outcome", "rationale", "prs", "pr", "head_sha",
             "disposition", "canonical", "upstream_pr", "upstream_date", "asks",

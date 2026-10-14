@@ -99,7 +99,9 @@ _JSON = JSON().with_variant(JSONB, "postgresql")
 # 31 — PR records carry `reviews.design` (the Prospector-run design review) and
 #      a `design_run` claim; an older ingest rebuilds `reviews` from GitHub alone
 #      and drops the design review.
-STORE_SCHEMA_VERSION = 31
+# 32 — an analysis may carry the `close-wontfix` disposition; an older validator
+#      refuses it.
+STORE_SCHEMA_VERSION = 32
 
 # saved_at is a microsecond-resolution ISO timestamp stamped on every save — when
 # the store row was last written (distinct from `updated_at`, which mirrors the

@@ -58,3 +58,29 @@ def test_refuses_without_a_base_pin(store, monkeypatch, capsys):
     assert design_backfill.run(5) == 1
     assert "no verify base pin" in capsys.readouterr().out
 
+
+def test_one_pr_runs_as_the_bulk_trigger(store, monkeypatch):
+    ran: list[tuple[int, str]] = []
+    monkeypatch.setattr(verify_worker, "run_design",
+                        lambda n, trigger: ran.append((n, trigger)) or True)
+    assert design_backfill.run_one(3) == 0
+    assert ran == [(3, "bulk")]
+
+
+def test_one_pr_already_reviewed_at_its_head_is_skipped(store, monkeypatch, capsys):
+    store.save_design_review(1, {"kind": "review", "reviewed_sha": HEAD, "findings": [],
+                                 "checks": [], "extra": {"rubric": reviewers.DESIGN_RUBRIC}}, head_sha=HEAD)
+    monkeypatch.setattr(verify_worker, "run_design",
+                        lambda n, trigger: pytest.fail("must not run"))
+    assert design_backfill.run_one(1) == 0
+    assert "skipped" in capsys.readouterr().out
+
+
+def test_one_pr_failure_fails_the_job(store, monkeypatch):
+    monkeypatch.setattr(verify_worker, "run_design", lambda n, trigger: False)
+    assert design_backfill.run_one(2) == 1
+
+
+def test_one_pr_refuses_without_a_base_pin(store, monkeypatch):
+    monkeypatch.setattr(verify_worker, "design_base", lambda st: None)
+    assert design_backfill.run_one(2) == 1
