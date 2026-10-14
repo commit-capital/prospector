@@ -34,6 +34,7 @@ from prospector_app.backend import caps
 from prospector_app.backend import chat
 from prospector_app.backend import claims
 from prospector_app.backend import machine_activity
+from prospector_app.backend import machine_mode
 from prospector_app.backend import machines
 from prospector_app.backend import merge_progress
 from prospector_app.backend import data
@@ -319,6 +320,20 @@ def machines_activity() -> machine_activity.ActivityView:
     """What every machine did in the past day, with its status — the Control
     tab's Recent activity panel."""
     return machine_activity.activity()
+
+
+@app.post("/api/machines/{host}/stand-down")
+def machines_stand_down(host: str, body: dict = Body(default={})):
+    """Mark a machine off on purpose: its silence and trips stop reading as
+    problems until one of its workers beats again."""
+    note = body.get("note")
+    return machine_mode.stand_down(host, by=activity.operator()["name"],
+                                   note=str(note) if note else None)
+
+
+@app.post("/api/machines/{host}/stand-up")
+def machines_stand_up(host: str):
+    return {"cleared": machine_mode.stand_up(host)}
 
 
 @app.get("/api/health")
