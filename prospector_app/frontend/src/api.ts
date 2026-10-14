@@ -7,7 +7,7 @@ export type Safety = "GREEN" | "YELLOW" | "RED" | null;
 export type SafetyRollup = { green: number; yellow: number; red: number; unknown?: number };
 
 export type Disposition =
-  | "merge" | "request-changes" | "close-dup" | "close-fixed" | "close-stale"
+  | "merge" | "request-changes" | "close-dup" | "close-fixed" | "close-wontfix" | "close-stale"
   | "close-oversized" | "needs-human";
 
 export type SafetyFilter = "GREEN" | "YELLOW" | "RED" | "not-run";

@@ -94,6 +94,7 @@ const DISP_OPTS: { v: "" | Disposition; label: string }[] = [
   { v: "request-changes", label: "request-changes" },
   { v: "close-dup", label: "close-dup" },
   { v: "close-fixed", label: "close-fixed" },
+  { v: "close-wontfix", label: "close-wontfix" },
   { v: "close-stale", label: "close-stale" },
   { v: "needs-human", label: "needs-human" },
 ];

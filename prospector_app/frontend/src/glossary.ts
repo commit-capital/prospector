@@ -36,6 +36,10 @@ const DISPOSITION_GLOSSARY: Record<Disposition, GlossaryEntry> = {
     title: "Close — already fixed",
     meaning: "This problem is already fixed in the main code. We'll close it with a link to the fix.",
   },
+  "close-wontfix": {
+    title: "Close — won't fix",
+    meaning: "The change itself is the wrong approach, so no revision would fix it. We'll close it and say why.",
+  },
   "close-stale": {
     title: "Close — stale",
     meaning: "Old and inactive. We'll close it; the author can reopen it later.",
@@ -155,6 +159,7 @@ export const TERMS: Record<string, GlossaryEntry> = {
   "bulk.CLOSE_DUP": { title: "Close — dup of", meaning: "Close each selected PR as a copy of another PR (you'll enter its number)." },
   "bulk.CLOSE_FIXED": { title: "Close — already-fixed", meaning: "Close each selected PR because the problem is already fixed." },
   "bulk.CLOSE_STALE": { title: "Close — stale", meaning: "Close each selected PR as old and inactive." },
+  "bulk.CLOSE_WONTFIX": { title: "Close — won't fix", meaning: "Close each selected PR because its approach is wrong." },
   "bulk.CLOSE": { title: "Triage close", meaning: "Close each selected PR with a general note." },
   "bulk.REQUEST_CHANGES": { title: "Request changes", meaning: "Ask the author of each selected PR to make changes." },
   "bulk.COMMENT": { title: "Comment", meaning: "Post the same comment on every selected PR." },

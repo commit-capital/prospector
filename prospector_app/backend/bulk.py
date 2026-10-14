@@ -36,7 +36,8 @@ _REVIEW = {"APPROVE": "approve", "REQUEST_CHANGES": "request-changes", "COMMENT"
 # Cluster dispositions (the raw UI strings) → the executor's vocabulary.
 _CLUSTER_REVIEW = ("request-changes", "approve", "comment")  # submit_review events
 _CLUSTER_CLOSE = {"close-dup": "CLOSE_DUP", "close-fixed": "CLOSE_FIXED",
-                  "close-stale": "CLOSE_STALE", "close": "CLOSE"}
+                  "close-stale": "CLOSE_STALE", "close-wontfix": "CLOSE_WONTFIX",
+                  "close": "CLOSE"}
 
 
 def _warn_bookkeeping(done: dict[str, Any], errors: list[str]) -> None:
@@ -144,7 +145,7 @@ def _apply(n: int, action: str, *, comment: str | None, canonical: int | None,
     if action in _REVIEW:
         return executor.submit_review(n, _REVIEW[action], comment or "",
                                       token=token, dry_run=dry_run)
-    # CLOSE / CLOSE_DUP / CLOSE_FIXED / CLOSE_STALE
+    # CLOSE / CLOSE_DUP / CLOSE_FIXED / CLOSE_STALE / CLOSE_WONTFIX
     return executor.execute_pr(n, models.CloseAction(
         pr=n, action=action,
         canonical=canonical, comment=comment or None,

@@ -49,6 +49,21 @@ def test_close_pr_uses_executor_with_full_disposition(monkeypatch, capsys):
     assert json.loads(capsys.readouterr().out)["status"] == "executed"
 
 
+def test_close_pr_wontfix_records_its_own_action(monkeypatch, capsys):
+    cli = _load("close-pr")
+    seen = {}
+
+    def close(pr, action, *, token, dry_run):
+        seen.update(pr=pr, action=action)
+        return {"pr": pr, "status": "executed", "action": action.action}
+
+    monkeypatch.setattr(cli.executor, "mint_bot_token", lambda: "bot-token")
+    monkeypatch.setattr(cli.executor, "execute_pr", close)
+    assert cli.main(["13385", "--disposition", "wontfix", "--comment", "Wrong approach."]) == 0
+    assert seen["action"] == models.CloseAction(action="CLOSE_WONTFIX", comment="Wrong approach.")
+    capsys.readouterr()
+
+
 def test_close_pr_reads_multiline_comment_from_file(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

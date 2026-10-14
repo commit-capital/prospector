@@ -12,7 +12,7 @@ const RANGE_OPTIONS = [
 
 type RangeOpt = (typeof RANGE_OPTIONS)[number];
 
-const REASON_LABEL: Record<string, string> = { duplicate: "dup", "already-fixed": "fixed", stale: "stale", oversized: "oversized", manual: "manual" };
+const REASON_LABEL: Record<string, string> = { duplicate: "dup", "already-fixed": "fixed", stale: "stale", "won't-fix": "won't fix", oversized: "oversized", manual: "manual" };
 const REOPENED_PAGE_SIZE = 10;
 
 const CHART_KINDS = ["close", "merge", "comment", "reopen"] as const;

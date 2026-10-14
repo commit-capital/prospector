@@ -36,7 +36,8 @@ if TYPE_CHECKING:
 
 DEFAULT_ROOT = Path(__file__).resolve().parent / "store"
 
-DISPOSITIONS = {"merge", "request-changes", "close-dup", "close-fixed", "close-stale", "needs-human"}
+DISPOSITIONS = {"merge", "request-changes", "close-dup", "close-fixed", "close-wontfix", "close-stale",
+                "needs-human"}
 OUTCOMES = {"merge-ready", "awaiting-authors", "needs-first-party-work", "close-out", "blocked-on-decision"}
 SECURITY_VERDICTS = {"GREEN", "YELLOW", "RED"}
 DRIFT_STATES = {"applicable", "already-fixed", "conflicts"}

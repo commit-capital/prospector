@@ -3,7 +3,7 @@ import type { PRDetail } from "./api";
 // Every action the operator can take on a PR, in one menu. Reopen is the ↩
 // undo button beside the fire button, shown once an undoable action landed.
 export type Act = "MERGE" | "APPROVE" | "REQUEST_CHANGES" | "COMMENT"
-  | "CLOSE" | "CLOSE_DUP" | "CLOSE_FIXED" | "CLOSE_STALE" | "CLOSE_OVERSIZED";
+  | "CLOSE" | "CLOSE_DUP" | "CLOSE_FIXED" | "CLOSE_STALE" | "CLOSE_WONTFIX" | "CLOSE_OVERSIZED";
 
 /** The agent's recommended disposition → the matching dropdown action, so the
  *  bar opens pre-selected on what the agent suggests. A blocked merge pick

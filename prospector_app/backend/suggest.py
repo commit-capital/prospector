@@ -253,6 +253,11 @@ def _suggest_inner(rec: Pr, disposition: str | None = None,
                 "rationale": rec.rationale or "Drifted/abandoned with no clear path.",
                 "accept": models.CloseAccept(action="CLOSE_STALE", tags=["stale", "agent-suggested"])}
 
+    if d == "close-wontfix":
+        return {"action": "CLOSE_WONTFIX", "label": "Close — won't fix", "tone": "muted",
+                "rationale": rec.rationale or "The change itself is the wrong approach.",
+                "accept": models.CloseAccept(action="CLOSE_WONTFIX", tags=["wontfix", "agent-suggested"])}
+
     if d == "close-oversized":
         return {"action": "CLOSE_OVERSIZED", "label": "Close — too big (break up)", "tone": "muted",
                 "rationale": rec.rationale or "Bundles too much for one PR — ask the author to split it into smaller PRs.",
