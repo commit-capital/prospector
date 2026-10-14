@@ -85,6 +85,17 @@ class TestMetaFromGh:
         assert meta["comments"] is None
         assert meta["reactions_total"] is None
 
+    def test_records_whether_the_head_is_a_fork(self):
+        fork = dict(GH_PR, head={"sha": "d", "repo": {"full_name": "someone/repo"}},
+                    base={"ref": "main", "repo": {"full_name": "owner/repo"}},
+                    maintainer_can_modify=True)
+        meta = ingest.meta_from_gh(fork)
+        assert (meta["cross_repo"], meta["maintainer_can_modify"]) == (True, True)
+        same = dict(fork, head={"sha": "d", "repo": {"full_name": "owner/repo"}})
+        assert ingest.meta_from_gh(same)["cross_repo"] is False
+        unread = ingest.meta_from_gh(GH_PR)
+        assert (unread["cross_repo"], unread["maintainer_can_modify"]) == (None, None)
+
     def test_reactions_without_total_count_is_none(self):
         pr = dict(GH_PR, reactions={"url": "https://api.github.com/..."})
         assert ingest.meta_from_gh(pr)["reactions_total"] is None
@@ -383,6 +394,16 @@ class TestUpsertAll:
         assert rec.signals["has_tests"] is True
         assert rec.ci == "passing"
         assert rec.mergeable is True
+
+    def test_maintainer_edits_come_from_live_facts_and_are_kept(self, tmp_path):
+        st = Store(tmp_path)
+        with st.batch():
+            ingest._upsert_all(st, [GH_PR], issue_links={}, existing_prs={},
+                               live_facts={5001: {"maintainer_can_modify": False}})
+        assert st.load_pr(5001).maintainer_can_modify is False
+        with st.batch():
+            ingest._upsert_all(st, [GH_PR], issue_links={}, existing_prs=st.all_prs())
+        assert st.load_pr(5001).maintainer_can_modify is False
 
     def test_ignores_batched_facts_for_a_different_head(self, tmp_path):
         st = Store(tmp_path)

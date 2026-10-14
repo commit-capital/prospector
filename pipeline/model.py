@@ -116,6 +116,14 @@ class Pr:
         return self._meta().get("author_association")
 
     @property
+    def cross_repo(self) -> bool | None:
+        return self._meta().get("cross_repo")
+
+    @property
+    def maintainer_can_modify(self) -> bool | None:
+        return self._meta().get("maintainer_can_modify")
+
+    @property
     def title(self) -> str | None:
         return self._meta().get("title")
 

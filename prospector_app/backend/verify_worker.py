@@ -742,9 +742,12 @@ def run_design(n: int, *, trigger: str = "autohunt") -> bool | None:
                                          coverage_record=measured)
         saved = st.save_design_review(n, entry, head_sha=head)
         counts: dict[str, int] = {}
+        verdicts: dict[str, int] = {}
         for f in entry["findings"]:
             counts[f["severity"]] = counts.get(f["severity"], 0) + 1
-        _book_design(st, n, head, {"findings": counts, "saved": saved,
+            if v := (f.get("verification") or {}).get("verdict"):
+                verdicts[v] = verdicts.get(v, 0) + 1
+        _book_design(st, n, head, {"findings": counts, "verification": verdicts, "saved": saved,
                                    "coverage": coverage.summary(measured)}, trigger)
         design_failed.discard(n)
         if measured is not None and measured["status"] == coverage.FAULT:

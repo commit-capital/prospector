@@ -1,4 +1,6 @@
 """pipeline/reviewers.py — the ONE registry of automated PR reviewers and scanners."""
+import pytest
+
 from pipeline import reviewers
 from pipeline.model import Pr
 from pipeline.review_fetch import PrFeed
@@ -308,9 +310,12 @@ def _design(findings: list[dict], sha: str = HEAD) -> dict:
             "extra": {"rubric": reviewers.DESIGN_RUBRIC}}
 
 
-def _df(severity: str) -> dict:
-    return {"path": "a.ts", "line": 1, "severity": severity, "category": "reuse", "title": "t",
-            "body": "b", "resolved": False, "outdated": False}
+def _df(severity: str, verdict: str = "confirmed") -> dict:
+    f = {"path": "a.ts", "line": 1, "severity": severity, "category": "reuse", "title": "t",
+         "body": "b", "resolved": False, "outdated": False}
+    if severity != "minor":
+        f["verification"] = {"verdict": verdict, "reason": "r"}
+    return f
 
 
 class TestDesign:
@@ -342,6 +347,16 @@ class TestDesign:
         out = reviewers.findings_for_fix(reviewers.DESIGN, entry, HEAD, None)
         assert [f["class"] for f in out] == ["substantive", "substantive"]
         assert out[0]["path"] == "a.ts"
+
+    @pytest.mark.parametrize("verdict", ["refuted", "unverified"])
+    def test_only_confirmed_findings_fail_or_aim_a_fix(self, verdict):
+        entry = _design([_df("blocking", verdict), _df("major", verdict)])
+        assert reviewers.bar(reviewers.DESIGN, entry, HEAD).status == "pass"
+        assert reviewers.findings_for_fix(reviewers.DESIGN, entry, HEAD, None) == []
+
+    def test_counts_leave_out_refuted_and_name_unverified(self):
+        entry = _design([_df("major", "refuted"), _df("major", "unverified"), _df("major")])
+        assert reviewers.open_counts(entry) == {"major": 1, "unverified": 1}
 
     def test_activity_registry_ignores_it(self):
         pr = Pr(None, {"meta": {"state": "open", "head_sha": HEAD},

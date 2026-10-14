@@ -4,7 +4,8 @@ One GraphQL request covers up to 40 PRs and returns the inexpensive signals that
 share the PR head as their freshness boundary: state, mergeability, the head's
 check runs and statuses (CI, with reviewer-owned runs carried separately for the
 reviewer adapters), aggregate diffstat, the first page of changed paths for
-test-presence classification, and the PR's updatedAt for the incremental feed.
+test-presence classification, the PR's updatedAt for the incremental feed, and
+whether maintainers may push to its head branch.
 """
 from __future__ import annotations
 
@@ -23,7 +24,7 @@ CHUNK_SIZE = 40
 
 
 def _query(prs: list[int]) -> str:
-    fields = ("number state merged headRefOid mergeable updatedAt "
+    fields = ("number state merged headRefOid mergeable updatedAt maintainerCanModify "
               "additions deletions changedFiles "
               "files(first: 100) { nodes { path } } " + ci_signal.PR_FIELDS)
     aliases = " ".join(f"p{i}: pullRequest(number: {int(n)}) {{ {fields} }}"
@@ -115,6 +116,7 @@ def fetch(prs: list[int], *,
                 "head": node.get("headRefOid"),
                 "mergeable": node.get("mergeable"),
                 "updated_at": node.get("updatedAt"),
+                "maintainer_can_modify": node.get("maintainerCanModify"),
                 "ci": ci_signal.verdict(runs, statuses, required=required,
                                         awaiting_approval=ci_signal.awaiting_approval(node)),
                 "unreported": ci_signal.unreported(runs, statuses, required or ()),

@@ -794,14 +794,28 @@ function reviewerBlocks(detail: Record<string, { entry: ReviewEntry | null; dige
         {coverage && <CoverageLine coverage={coverage} />}
         {open.length > 0 && (
           <ul className="small" style={{ margin: "6px 0 0 16px" }}>
-            {open.map((f, i) => (
-              <li key={i}>
-                {f.path ? <code>{f.path}{f.line != null ? `:${f.line}` : ""}</code> : null}
-                {f.severity ? <span className="chip chip-muted sm" style={{ marginLeft: 4 }}>{f.severity}</span> : null}
-                {" "}{f.title ?? f.body.split("\n")[0]}
-                {f.url && <a className="action-log-link" href={f.url} target="_blank" rel="noreferrer" title="view on GitHub ↗"> ↗</a>}
-              </li>
-            ))}
+            {open.map((f, i) => {
+              const verdict = f.verification?.verdict;
+              return (
+                <li key={i}>
+                  <span style={verdict === "refuted" ? { textDecoration: "line-through", opacity: 0.6 } : undefined}>
+                    {f.path ? <code>{f.path}{f.line != null ? `:${f.line}` : ""}</code> : null}
+                    {f.severity ? <span className="chip chip-muted sm" style={{ marginLeft: 4 }}>{f.severity}</span> : null}
+                    {" "}{f.title ?? f.body.split("\n")[0]}
+                  </span>
+                  {verdict && verdict !== "confirmed" && (
+                    <span className="chip chip-muted sm" style={{ marginLeft: 4 }}
+                          title={f.verification?.reason || undefined}>
+                      {verdict === "unsure" ? `unsure (was ${f.claimed_severity ?? "major"})` : verdict}
+                    </span>
+                  )}
+                  {f.url && <a className="action-log-link" href={f.url} target="_blank" rel="noreferrer" title="view on GitHub ↗"> ↗</a>}
+                  {verdict && verdict !== "confirmed" && f.verification?.reason && (
+                    <div className="muted small">{f.verification.reason}</div>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         )}
         {entry?.summary && (

@@ -103,23 +103,80 @@ def test_review_hands_the_agent_coverage_and_stores_it(monkeypatch, clone, diff)
     assert entry["extra"]["coverage"] == rec
 
 
-def test_review_runs_locked_down(monkeypatch, clone, diff):
-    seen: dict = {}
+def _agents(monkeypatch, review: dict, verdict: dict | str) -> list[dict]:
+    """Fake the reviewer (answering `review`) and every verifier (answering
+    `verdict`); returns each call's keywords and prompt."""
+    calls: list[dict] = []
 
     def fake(prompt: str, **kw) -> str:
-        seen.update(kw, prompt=prompt)
-        return json.dumps({"summary": "one dup", "findings": [_finding()]})
+        calls.append({**kw, "prompt": prompt})
+        if "REFUTE" in prompt:
+            return verdict if isinstance(verdict, str) else json.dumps(verdict)
+        return json.dumps(review)
     monkeypatch.setattr(headless_agent, "run_agent", fake)
+    return calls
+
+
+def test_review_runs_locked_down(monkeypatch, clone, diff):
+    calls = _agents(monkeypatch, {"summary": "one dup", "findings": [_finding()]},
+                    {"verdict": "confirmed", "reason": "same helper"})
     entry = design_review.review(clone, diff, pr=7, title="t", head_sha=HEAD, base_sha="b" * 40)
-    assert seen["allow_gh"] is False and seen["edit_root"] is None and seen["env_allow"] == ()
-    assert set(seen["read_root"]) == {str(clone.resolve()), str(diff.resolve())}
-    assert seen["cwd"] == str(clone.resolve())
-    assert "Reuse helpers in src/util.ts." in seen["prompt"]
-    assert str(diff.resolve()) in seen["prompt"]
+    assert len(calls) == 2
+    for seen in calls:
+        assert seen["allow_gh"] is False and seen["edit_root"] is None and seen["env_allow"] == ()
+        assert set(seen["read_root"]) == {str(clone.resolve()), str(diff.resolve())}
+        assert seen["cwd"] == str(clone.resolve())
+        assert str(diff.resolve()) in seen["prompt"]
+    assert "Reuse helpers in src/util.ts." in calls[0]["prompt"]
+    assert "src/util.ts" in calls[1]["prompt"] and "duplicates pad" in calls[1]["prompt"]
     assert entry["kind"] == "review" and entry["reviewed_sha"] == HEAD
     assert entry["summary"] == "one dup" and len(entry["findings"]) == 1
+    assert entry["findings"][0]["verification"] == {"verdict": "confirmed", "reason": "same helper"}
     assert entry["extra"]["base_sha"] == "b" * 40
     assert entry["extra"]["rubric"] == reviewers.DESIGN_RUBRIC
+
+
+def test_review_verifies_only_blocking_and_major(monkeypatch, clone, diff):
+    calls = _agents(monkeypatch, {"findings": [_finding(severity="minor")]},
+                    {"verdict": "confirmed", "reason": "r"})
+    entry = design_review.review(clone, diff, pr=7, title="t", head_sha=HEAD, base_sha="b")
+    assert len(calls) == 1 and "verification" not in entry["findings"][0]
+
+
+def test_a_refuted_finding_stays_with_its_reason(monkeypatch, clone, diff):
+    _agents(monkeypatch, {"findings": [_finding()]},
+            {"verdict": "refuted", "reason": "util.pad ignores HOME"})
+    [f] = design_review.review(clone, diff, pr=7, title="t", head_sha=HEAD,
+                               base_sha="b")["findings"]
+    assert f["severity"] == "major"
+    assert f["verification"] == {"verdict": "refuted", "reason": "util.pad ignores HOME"}
+
+
+def test_an_unsure_finding_is_downgraded_to_minor(monkeypatch, clone, diff):
+    _agents(monkeypatch, {"findings": [_finding(severity="blocking")]},
+            {"verdict": "unsure", "reason": "could not tell"})
+    [f] = design_review.review(clone, diff, pr=7, title="t", head_sha=HEAD,
+                               base_sha="b")["findings"]
+    assert (f["severity"], f["claimed_severity"]) == ("minor", "blocking")
+
+
+@pytest.mark.parametrize("verdict", ["no json", {"verdict": "maybe"}])
+def test_a_verifier_without_a_verdict_leaves_the_finding_unverified(monkeypatch, clone, diff,
+                                                                    verdict):
+    _agents(monkeypatch, {"findings": [_finding()]}, verdict)
+    [f] = design_review.review(clone, diff, pr=7, title="t", head_sha=HEAD,
+                               base_sha="b")["findings"]
+    assert f["severity"] == "major" and f["verification"]["verdict"] == "unverified"
+
+
+def test_a_verifier_outage_fails_the_whole_review(monkeypatch, clone, diff):
+    def fake(prompt: str, **kw) -> str:
+        if "REFUTE" in prompt:
+            raise headless_agent.AgentUnavailable("not logged in")
+        return json.dumps({"findings": [_finding()]})
+    monkeypatch.setattr(headless_agent, "run_agent", fake)
+    with pytest.raises(headless_agent.AgentUnavailable):
+        design_review.review(clone, diff, pr=7, title="t", head_sha=HEAD, base_sha="b")
 
 
 @pytest.mark.parametrize("answer", ["no json here", '{"findings": "nope"}'])

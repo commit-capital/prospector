@@ -7,7 +7,9 @@ One locked-down agent reads two things: this machine's pinned default-branch
 clone, where only maintainers' code lives, and the head's diff. It has no
 GitHub, no edits, and no environment beyond the CLI's own. The host keeps only
 findings it can anchor — on a file the diff touches, and for reuse on an
-existing file in the base — and stores the result as `reviews["design"]`
+existing file in the base — has every blocking and major one judged by a
+refuting verifier (`pipeline/design_verify.py`), and stores the result as
+`reviews["design"]`
 (`reviewers.DESIGN`), advisory unless `TRIAGE_DESIGN_REVIEW=gate`.
 """
 from __future__ import annotations
@@ -15,8 +17,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pipeline import (authoring, capacity, coverage, diffpaths, freshness, gates, headless_agent,
-                      reviewers, storekit)
+from pipeline import (authoring, capacity, coverage, design_verify, diffpaths, freshness, gates,
+                      headless_agent, reviewers, storekit)
 
 if TYPE_CHECKING:
     from pipeline.coverage import CoverageRecord
@@ -174,6 +176,8 @@ def review(clone: Path, diff: Path, *, pr: int, title: str, head_sha: str,
         raise DesignReviewFailed("the design reviewer's answer carried no findings list")
     touched = set(diffpaths.changed_paths(diff.read_text(errors="replace")))
     summary, findings = validate(answer, touched=touched, clone=clone)
+    findings = design_verify.apply(findings, lambda f: design_verify.verify(
+        f, clone=clone, diff=diff, pr=pr, title=title[:TITLE_CHARS]))
     return {"kind": reviewers.REVIEW, "reviewed_sha": head_sha, "observed_at": storekit.now(),
             "score": None, "findings": findings, "summary": summary[:reviewers.SUMMARY_CHARS] or None,
             "checks": [], "extra": {"base_sha": base_sha, "coverage": coverage_record,
