@@ -688,7 +688,9 @@ duplicates — layering, drift from the repository's contributor docs and
 keeps only findings on a file the diff touches (and, for reuse, an existing base
 file) and writes `reviews["design"]` through `Store.save_design_review`, which
 refuses a head that moved; ingest's `parse_all` carries the entry over (schema
-31). Its bar fails on any open `blocking` finding. Auto-detection never
+31). Its bar fails on any open `blocking` or `major` finding; a review
+stamped with an earlier `reviewers.DESIGN_RUBRIC` (the severity rubric's
+revision) reads stale and is taken again. Auto-detection never
 activates it: under `TRIAGE_DESIGN_REVIEW=advisory` (default) it is shown on
 the PR page's Design review row and gates nothing; `gate` (or naming `design`
 in `TRIAGE_REVIEW_PROVIDER`) makes it a merge requirement; `off` stops the

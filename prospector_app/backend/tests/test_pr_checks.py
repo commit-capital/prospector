@@ -3,7 +3,7 @@ is a failing check, so the merge block is visible, not just in clean_reasons."""
 from pipeline import model
 from prospector_app.backend import pr_checks
 from pipeline.testsupport import reviews_section
-from pipeline import review_policy
+from pipeline import review_policy, reviewers
 
 HEAD = "abc123"
 NOW = "2026-06-10T00:00:00+00:00"
@@ -262,7 +262,8 @@ def _design_check(rec):
     return next(x for x in c["checks"] if x["key"] == "design")
 
 
-_DESIGN_BLOCKING = {"kind": "review", "reviewed_sha": HEAD, "checks": [], "extra": {},
+_DESIGN_BLOCKING = {"kind": "review", "reviewed_sha": HEAD, "checks": [],
+                    "extra": {"rubric": reviewers.DESIGN_RUBRIC},
                     "findings": [{"severity": "blocking", "resolved": False, "outdated": False}]}
 
 
@@ -286,7 +287,7 @@ def test_advisory_design_row_shows_its_verdict_marked_advisory(monkeypatch):
 def test_design_row_carries_its_coverage(monkeypatch):
     monkeypatch.setenv("TRIAGE_DESIGN_REVIEW", "advisory")
     review_policy.reset()
-    entry = {**_DESIGN_BLOCKING, "extra": {"coverage": {
+    entry = {**_DESIGN_BLOCKING, "extra": {"rubric": reviewers.DESIGN_RUBRIC, "coverage": {
         "status": "measured", "executable": 4, "hit": 3, "files": []}}}
     chk = _design_check(_pr(reviews=reviews_section(HEAD, NOW, design=entry)))
     assert chk["detail"] == "Design review 1 blocking · coverage 75% (3/4 changed lines) · advisory"

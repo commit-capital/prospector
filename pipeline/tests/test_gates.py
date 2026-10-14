@@ -3,7 +3,7 @@ implementations (checks._tier0_is_clean, verdict.gate_decision, app
 merge_concerns)."""
 import pytest
 
-from pipeline import gates, profile, review_policy
+from pipeline import gates, profile, review_policy, reviewers
 from pipeline.model import Cluster, Pr
 from pipeline.store import Store
 from pipeline.testsupport import bump_section, threat_section
@@ -2770,7 +2770,7 @@ class TestFixHuntable:
 
     def _design_failing(self) -> Pr:
         """At Greptile's bar, with a blocking design finding at the head."""
-        design = {"kind": "review", "reviewed_sha": HEAD, "checks": [], "extra": {},
+        design = {"kind": "review", "reviewed_sha": HEAD, "checks": [], "extra": {"rubric": reviewers.DESIGN_RUBRIC},
                   "findings": [{"severity": "blocking", "resolved": False, "outdated": False}]}
         return _pr(reviews=_reviews(design=design))
 

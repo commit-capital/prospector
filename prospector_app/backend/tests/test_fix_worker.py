@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from pipeline import capacity, headless_agent, profile, review_policy
+from pipeline import capacity, headless_agent, profile, review_policy, reviewers
 from pipeline import store as S
 from pipeline.storekit import now as _now
 from prospector_app.backend import data, fix_queue, fix_worker, sandbox_check
@@ -987,8 +987,8 @@ def _design_failing(store) -> None:
     """Greptile at the bar, a blocking and a minor design finding at the head."""
     rec = store.load_pr(1).raw
     rec["reviews"]["design"] = {
-        "kind": "review", "reviewed_sha": HEAD, "checks": [], "extra": {},
-        "summary": "design prose",
+        "kind": "review", "reviewed_sha": HEAD, "checks": [],
+        "extra": {"rubric": reviewers.DESIGN_RUBRIC}, "summary": "design prose",
         "findings": [{"severity": "blocking", "title": "duplicates src/util.ts pad",
                       "body": "use pad", "path": "src/a.ts", "line": 3,
                       "resolved": False, "outdated": False},

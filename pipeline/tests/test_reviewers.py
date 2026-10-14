@@ -304,7 +304,8 @@ def test_coderabbit_stray_comment_dates_the_entry():
 
 def _design(findings: list[dict], sha: str = HEAD) -> dict:
     return {"kind": "review", "reviewed_sha": sha, "observed_at": "2026-10-13T00:00:00Z",
-            "score": None, "findings": findings, "summary": "s", "checks": [], "extra": {}}
+            "score": None, "findings": findings, "summary": "s", "checks": [],
+            "extra": {"rubric": reviewers.DESIGN_RUBRIC}}
 
 
 def _df(severity: str) -> dict:
@@ -323,7 +324,13 @@ class TestDesign:
         assert reviewers.bar(d, _design([], OLD), HEAD).status == "stale"
         fail = reviewers.bar(d, _design([_df("blocking"), _df("blocking")]), HEAD)
         assert (fail.status, fail.reason) == ("fail", "design review: 2 open blocking findings")
-        assert reviewers.bar(d, _design([_df("major"), _df("minor")]), HEAD).status == "pass"
+        major = reviewers.bar(d, _design([_df("major"), _df("minor")]), HEAD)
+        assert (major.status, major.reason) == ("fail", "design review: 1 open major finding")
+        assert reviewers.bar(d, _design([_df("minor")]), HEAD).status == "pass"
+
+    def test_an_earlier_rubric_reads_stale(self):
+        entry = {**_design([_df("minor")]), "extra": {}}
+        assert reviewers.bar(reviewers.DESIGN, entry, HEAD).status == "stale"
 
     def test_ingest_carries_the_stored_entry(self):
         prev = {"design": _design([_df("major")])}

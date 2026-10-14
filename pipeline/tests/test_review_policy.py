@@ -113,7 +113,8 @@ def test_describe(monkeypatch):
 
 
 def _design_entry(findings: list[dict]) -> dict:
-    return {"kind": "review", "reviewed_sha": HEAD, "findings": findings, "checks": []}
+    return {"kind": "review", "reviewed_sha": HEAD, "findings": findings, "checks": [],
+            "extra": {"rubric": reviewers.DESIGN_RUBRIC}}
 
 
 _BLOCKING = {"severity": "blocking", "resolved": False, "outdated": False}

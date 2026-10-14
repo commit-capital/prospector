@@ -442,7 +442,14 @@ def _socket_bar(entry: dict | None, head_sha: str | None) -> Bar:
 
 DESIGN_SEVERITIES = ("blocking", "major", "minor")
 DESIGN_CATEGORIES = ("reuse", "layering", "convention", "test")
-_DESIGN_FIXABLE = frozenset({"blocking", "major"})
+_DESIGN_BLOCKING = frozenset({"blocking", "major"})
+# Raised with any change to what the design review's severities mean; a review
+# stamped with an earlier rubric reads stale and is taken again.
+DESIGN_RUBRIC = 2
+
+
+def design_rubric(entry: dict) -> int:
+    return int((entry.get("extra") or {}).get("rubric") or 1)
 
 
 def _design_bar(entry: dict | None, head_sha: str | None) -> Bar:
@@ -451,10 +458,13 @@ def _design_bar(entry: dict | None, head_sha: str | None) -> Bar:
     reviewed = entry.get("reviewed_sha")
     if reviewed and head_sha and reviewed != head_sha:
         return Bar(STALE, "design review stale", None)
-    blocking = [f for f in open_findings(entry) if f.get("severity") == "blocking"]
+    if design_rubric(entry) < DESIGN_RUBRIC:
+        return Bar(STALE, "design review predates the current rubric", None)
+    blocking = [f for f in open_findings(entry) if f.get("severity") in _DESIGN_BLOCKING]
     if blocking:
-        return Bar(FAIL, f"design review: {_plural(len(blocking), 'open blocking finding')}",
-                   f"The design review found {_plural(len(blocking), 'blocking problem')} — "
+        worst = "blocking" if any(f["severity"] == "blocking" for f in blocking) else "major"
+        return Bar(FAIL, f"design review: {_plural(len(blocking), f'open {worst} finding')}",
+                   f"The design review found {_plural(len(blocking), f'{worst} problem')} — "
                    "address its findings.")
     return Bar(PASS, None, None)
 
@@ -462,7 +472,7 @@ def _design_bar(entry: dict | None, head_sha: str | None) -> Bar:
 def _design_findings_for_fix(entry: dict | None) -> list[dict]:
     return [{"headline": f.get("title") or "", "class": "substantive",
              "why": (f.get("body") or "")[:500], "path": f.get("path"), "line": f.get("line")}
-            for f in open_findings(entry) if f.get("severity") in _DESIGN_FIXABLE]
+            for f in open_findings(entry) if f.get("severity") in _DESIGN_BLOCKING]
 
 
 # --- dispatch --------------------------------------------------------------

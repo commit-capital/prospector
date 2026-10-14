@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import pytest
 
+from pipeline import reviewers
 from pipeline import store as S
 from pipeline.storekit import now as _now
 from prospector_app.backend import data
@@ -1296,7 +1297,7 @@ class TestDesignLane:
         for n in (1, 2, 3, 4):
             store.save_pr(_clean_merge_pr(n))
         store.save_design_review(1, {"kind": "review", "reviewed_sha": HEAD, "findings": [],
-                                     "checks": []}, head_sha=HEAD)
+                                     "checks": [], "extra": {"rubric": reviewers.DESIGN_RUBRIC}}, head_sha=HEAD)
         store.claim_design_run(2, host="some-other-machine", stale_after=3600)
         verify_worker.design_failed.add(3, "boom")
         store.claim_design_run(4, host=socket.gethostname(), stale_after=3600)

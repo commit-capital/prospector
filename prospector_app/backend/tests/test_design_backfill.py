@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from pipeline import reviewers
 from pipeline import store as S
 from prospector_app.backend import data
 from prospector_app.backend import design_backfill
@@ -29,7 +30,7 @@ def test_merge_ready_prs_come_first_then_the_hunt_order(store, monkeypatch):
 
 def test_reviewed_heads_and_other_claims_are_left_out(store):
     store.save_design_review(1, {"kind": "review", "reviewed_sha": HEAD, "findings": [],
-                                 "checks": []}, head_sha=HEAD)
+                                 "checks": [], "extra": {"rubric": reviewers.DESIGN_RUBRIC}}, head_sha=HEAD)
     store.claim_design_run(2, host="studio", stale_after=3600)
     data.refresh()
     assert design_backfill.candidates() == [3]

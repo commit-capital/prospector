@@ -51,9 +51,28 @@ Judge the diff on four things:
    change does, over-mocking of the code under test, or an edge case the diff
    introduces that no test reaches.
 
-Severity: `blocking` — the change should not merge as written for this
-reason; `major` — a maintainer would ask for it to be changed; `minor` — worth
-saying, not worth a round trip.
+Severity is about the code's behavior and structure, judged as a maintainer
+deciding whether to merge:
+
+- `blocking` — merging it as written does harm: logic the checkout already
+  has, reimplemented so the two copies will diverge; behavior put in a layer
+  that breaks how the modules depend on one another; or the change's main
+  behavior left with no test that would fail if it broke.
+- `major` — a defect a maintainer would hold the merge for: a duplicated
+  helper, code in the wrong module, or a test that asserts nothing the change
+  does.
+- `minor` — everything else worth saying: an edge case or secondary branch no
+  test reaches, comments, docstrings, naming, documentation or spec updates
+  the change could carry, formatting, test hygiene, and any convention
+  departure that leaves the code's behavior and structure as they would be
+  otherwise.
+
+A change a maintainer would merge after a careful read has no `major` or
+`blocking` finding.
+
+A finding about comments, docs or naming is `minor` whatever the contributor
+docs say about them. When a finding sits between two severities, take the
+lower.
 
 Report only what you can point at. A finding you cannot tie to a line of the
 diff, or a reuse you did not find in the checkout, is noise: leave it out. An
@@ -80,7 +99,7 @@ def huntable(pr: Pr) -> bool:
     """Whether the idle hunter may spend a design review on `pr`'s head: open,
     not a draft, threat-scanned clear at this head, not a dependency bump, not
     routed to a close by a current analysis, and with no design review of this
-    head yet."""
+    head under the current rubric yet."""
     head = pr.head_sha
     if not head or pr.state != "open" or pr.draft or gates.bump_exempt(pr):
         return False
@@ -88,7 +107,8 @@ def huntable(pr: Pr) -> bool:
         return False
     if pr.threat_verdict != "clear" or gates.threat_blocks(pr) or not freshness.is_current(pr, "threat"):
         return False
-    return (pr.review_entry(reviewers.DESIGN.id) or {}).get("reviewed_sha") != head
+    entry = pr.review_entry(reviewers.DESIGN.id) or {}
+    return entry.get("reviewed_sha") != head or reviewers.design_rubric(entry) < reviewers.DESIGN_RUBRIC
 
 
 def _within(clone: Path, path: str) -> bool:
@@ -156,4 +176,5 @@ def review(clone: Path, diff: Path, *, pr: int, title: str, head_sha: str,
     summary, findings = validate(answer, touched=touched, clone=clone)
     return {"kind": reviewers.REVIEW, "reviewed_sha": head_sha, "observed_at": storekit.now(),
             "score": None, "findings": findings, "summary": summary[:reviewers.SUMMARY_CHARS] or None,
-            "checks": [], "extra": {"base_sha": base_sha, "coverage": coverage_record}}
+            "checks": [], "extra": {"base_sha": base_sha, "coverage": coverage_record,
+                      "rubric": reviewers.DESIGN_RUBRIC}}

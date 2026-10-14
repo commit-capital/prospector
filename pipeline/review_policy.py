@@ -138,7 +138,7 @@ def bar_label(reviewer: Reviewer) -> str:
     if reviewer is reviewers.SUPERAGENT:
         return f"{reviewer.label} scan clean (no open P1/P2)"
     if reviewer is reviewers.DESIGN:
-        return f"{reviewer.label} with no open blocking findings"
+        return f"{reviewer.label} with no open blocking or major findings"
     return f"{reviewer.label} with no new dependency alerts"
 
 

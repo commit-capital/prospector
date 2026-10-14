@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from pipeline import coverage, design_review, headless_agent, profile, settings
+from pipeline import coverage, design_review, headless_agent, profile, reviewers, settings
 from pipeline.model import Pr
 
 
@@ -119,6 +119,7 @@ def test_review_runs_locked_down(monkeypatch, clone, diff):
     assert entry["kind"] == "review" and entry["reviewed_sha"] == HEAD
     assert entry["summary"] == "one dup" and len(entry["findings"]) == 1
     assert entry["extra"]["base_sha"] == "b" * 40
+    assert entry["extra"]["rubric"] == reviewers.DESIGN_RUBRIC
 
 
 @pytest.mark.parametrize("answer", ["no json here", '{"findings": "nope"}'])
@@ -163,7 +164,7 @@ def test_huntable_wants_a_clear_open_unreviewed_head():
     {"threat": {"verdict": "clear", "signatures": [], "against_head_sha": HEAD,
                 "detail": {"exempt": "dependency-bump"}}},
     {"reviews": {"design": {"kind": "review", "reviewed_sha": HEAD, "findings": [],
-                            "checks": []}}},
+                            "checks": [], "extra": {"rubric": reviewers.DESIGN_RUBRIC}}}},
     {"meta": {"state": "open", "head_sha": HEAD, "draft": True}},
     {"analysis": {"disposition": "close-dup", "rationale": "r", "against_head_sha": HEAD,
                   "checked_at": "2026-10-13T00:00:00+00:00"}},
@@ -174,6 +175,11 @@ def test_huntable_refuses(over):
 
 def test_huntable_re_reviews_a_moved_head():
     old = {"design": {"kind": "review", "reviewed_sha": "o" * 40, "findings": [], "checks": []}}
+    assert design_review.huntable(_pr(reviews=old)) is True
+
+
+def test_huntable_re_reviews_an_earlier_rubric():
+    old = {"design": {"kind": "review", "reviewed_sha": HEAD, "findings": [], "checks": []}}
     assert design_review.huntable(_pr(reviews=old)) is True
 
 

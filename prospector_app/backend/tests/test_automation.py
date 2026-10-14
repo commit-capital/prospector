@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import pytest
 
+from pipeline import reviewers
 from pipeline import store as S
 from pipeline.storekit import now as _now
 from pipeline.testsupport import bump_section, greptile_entry, reviews_section
@@ -207,7 +208,7 @@ def test_an_advisory_design_review_never_holds_a_ready_pick(store, monkeypatch, 
                                       "against_head_sha": HEAD, "against_base_sha": "b" * 40,
                                       "signals": {}})
     rec["reviews"]["design"] = {"kind": "review", "reviewed_sha": design_sha, "checks": [],
-                                "extra": {}, "findings": [{"severity": "blocking",
+                                "extra": {"rubric": reviewers.DESIGN_RUBRIC}, "findings": [{"severity": "blocking",
                                                            "resolved": False, "outdated": False}]}
     out = _classify(store, rec)
     assert (out["column"], out["bucket"]) == ("act", "merge-ready")
