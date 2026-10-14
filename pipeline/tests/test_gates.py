@@ -422,6 +422,39 @@ class TestMergeEligibility:
         assert not ok
 
 
+class TestStacked:
+    """A PR whose base is another PR's branch is out of every merge and hunt,
+    however clean it reads against the default branch."""
+
+    def _stacked(self, base: str = "layer-1") -> Pr:
+        rec = _pr(analysis=_merge_analysis(), security=_green(), verify=_verified())
+        rec.raw["meta"]["base"] = base
+        return rec
+
+    def test_a_pr_on_the_default_branch_is_not_stacked(self):
+        rec = self._stacked(base="trunk")
+        assert gates.stacked_block(rec) is None
+        assert gates.merge_eligibility(rec, today="2026-06-10")[0]
+        assert gates.merge_allowed(rec, today="2026-06-10")[0]
+
+    def test_merge_gates_block_with_the_base_named(self):
+        rec = self._stacked()
+        for ok, reason in (gates.merge_eligibility(rec, today="2026-06-10",
+                                                   override_reason="ship it"),
+                           gates.merge_allowed(rec, today="2026-06-10")):
+            assert not ok and "stacked on layer-1, not trunk" in reason
+
+    def test_no_hunter_pool_takes_it(self):
+        rec = self._stacked()
+        rec.raw.pop("security")
+        assert not gates.security_eligible(rec, today="2026-06-10")
+        assert not gates.verify_eligible(rec, ["src/a.ts"], today="2026-06-10")
+        assert not gates.blocked_on_security(rec, today="2026-06-10")
+        for action in gates.HUNTABLE_ACTIONS:
+            ok, reason = gates.fix_huntable(rec, action, ["src/a.ts"])
+            assert not ok and "stacked on layer-1" in reason
+
+
 class TestBlockedOnSecurity:
     """True iff a clean merge PR is blocked solely because its security review is
     missing/stale/>7d — i.e. re-running SECURITY is exactly what unblocks merge.

@@ -74,6 +74,8 @@ export function buildPrFilterParts(spec: FilterSpec, onChange: (next: FilterSpec
   if (spec.paths) push("paths", `path contains "${spec.paths}"`, "paths");
   if (spec.draft === true) push("draft", "drafts only", "draft");
   if (spec.draft === false) push("draft", "non-drafts only", "draft");
+  if (spec.stacked === true) push("stacked", "stacked only", "stacked");
+  if (spec.stacked === false) push("stacked", "not stacked", "stacked");
   if (spec.state === "closed") push("state", "state: closed only", "state");
   if (spec.state === "all") push("state", "state: all (open + closed)", "state");
   if (spec.trusted_author) push("trusted_author", "trusted author", "trusted_author");

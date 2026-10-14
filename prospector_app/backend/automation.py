@@ -29,6 +29,7 @@ OWNERS: dict[str, str] = {
     "budgeted": "worker",
     "author-conflicts": "author", "author-ci": "author", "author-declined": "author",
     "author-verify": "author", "author-rejected": "author", "author-other": "author",
+    "stacked": "author",
     "needs-human": "you", "security-red": "you", "security-yellow": "you", "asks": "you",
     "gated": "you", "other": "you",
 }
@@ -61,6 +62,12 @@ def classify(pr: Pr) -> dict | None:
                   "the threat scan flagged it malicious ("
                   + (", ".join(pr.threat_signatures) or "flagged")
                   + "); it can never merge — close it")
+    if pr.stacked:
+        from prospector_app.backend import service
+        base = service.stacked_on(pr)
+        on = f"#{base} ({pr.base_ref})" if base is not None else f"branch {pr.base_ref}"
+        return _r("handed", "stacked", f"stacked on {on} — waits for its base to merge "
+                                       f"and GitHub to retarget it onto {settings.default_branch()}")
     if gates.bump_exempt(pr):
         return _r("handed", "other", "a dependency bump, outside the automation's scope; "
                                      "merge it once CI and the scanners pass")

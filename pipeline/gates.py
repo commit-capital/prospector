@@ -386,6 +386,17 @@ CI_AWAITING_APPROVAL = ("the head's workflow runs wait on a maintainer's approva
                         "(a first-time contributor) — approve the workflow run on GitHub")
 
 
+def stacked_block(pr: Pr) -> str | None:
+    """Why a stacked PR is out of every merge and idle hunt, or None for a PR
+    that targets the default branch. A stacked PR's diff is against another
+    PR's branch: judged against the default branch it reads as code that branch
+    lacks, and a squash merge lands it on the stack branch."""
+    if not pr.stacked:
+        return None
+    return (f"stacked on {pr.base_ref}, not {settings.default_branch()} — it waits "
+            "for its base to merge and GitHub to retarget it")
+
+
 def pr_clean(pr: Pr, today: str | None = None) -> tuple[bool, list[str]]:
     reasons = threat_blocks(pr)
     if pr.state != "open":
@@ -424,8 +435,8 @@ def _analyzed_merge(pr: Pr) -> bool:
 
 def security_eligible(pr: Pr, today: str | None = None) -> bool:
     """Should the (expensive) deep security review run on this PR?
-    Only clean merge candidates — never dirty or non-merge PRs."""
-    if not is_current(pr, "analysis"):
+    Only clean merge candidates — never dirty, stacked or non-merge PRs."""
+    if pr.stacked or not is_current(pr, "analysis"):
         return False
     if not _analyzed_merge(pr):
         return False
@@ -445,7 +456,7 @@ def verify_eligible(pr: Pr, changed_paths: list[str], today: str | None = None) 
     A deps-touching PR IS eligible — this function does not filter it out. The
     caller uses deps_touched to distinguish a deps-touching PR and route it to
     needs-human."""
-    if not changed_paths:
+    if not changed_paths or pr.stacked:
         return False
     if not is_current(pr, "analysis"):
         return False
@@ -461,6 +472,9 @@ def merge_allowed(pr: Pr, today: str | None = None,
 
     When `changed_paths` is given, a CODEOWNERS-gated path forces a manual merge
     by a code owner — the bot must never auto-merge it (#15, #26)."""
+    stacked = stacked_block(pr)
+    if stacked is not None:
+        return False, stacked
     if not is_current(pr, "analysis"):
         return False, "analysis missing or stale — re-run ANALYZE"
     if not _analyzed_merge(pr):
@@ -501,6 +515,8 @@ def blocked_on_security(pr: Pr, today: str | None = None) -> bool:
     The single source of truth for 'security is the merge blocker': the app
     surfaces its run button from it, and it is the security hunter's pool, so
     every PR a human could merge gets a review before the merge needs one."""
+    if pr.stacked:
+        return False
     if is_current(pr, "analysis") and str(pr.disposition or "").startswith("close-"):
         return False
     if bump_exempt(pr):
@@ -631,7 +647,11 @@ def merge_eligibility(pr: Pr, today: str | None = None,
     any live merge — as the verdict's override (Pr.log_security_override) for a
     YELLOW, on the merge's activity entry for a PR never reviewed — so passing
     it here without logging it is only for previewing the gate. RED is never
-    overridable this way, and neither is a verdict taken at an earlier head."""
+    overridable this way, and neither is a verdict taken at an earlier head.
+    A stacked PR blocks outright (stacked_block)."""
+    stacked = stacked_block(pr)
+    if stacked is not None:
+        return False, stacked
     if changed_paths is not None:
         hm = codeowners.human_merge(changed_paths)
         if hm:
@@ -964,6 +984,9 @@ def fix_huntable(pr: Pr, action: str,
                        f"a {action} is an operator's call")
     if bump_exempt(pr):
         return False, "a dependency bump; its bot keeps the branch current"
+    stacked = stacked_block(pr)
+    if stacked is not None:
+        return False, stacked
     if not is_current(pr, "signals") or (
             review_policy.active_reviewers() and not is_current(pr, "reviews")):
         return False, "signals or reviews stale or missing, so the review bar is unknowable"

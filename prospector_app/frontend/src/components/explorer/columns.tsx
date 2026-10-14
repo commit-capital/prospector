@@ -9,7 +9,7 @@ import { ReviewCell } from "./ReviewCell";
 import { ScansCell } from "./ScansCell";
 import { sizeCell } from "./sizeCell";
 import { GitHubPRLink } from "../GitHubPRLink";
-import { DraftChip, TierChip, AckButton } from "../Chips";
+import { DraftChip, StackedChip, TierChip, AckButton } from "../Chips";
 import { AuthorHover } from "../AuthorHover";
 import { LinkedIssues } from "../LinkedIssues";
 
@@ -231,6 +231,7 @@ export const COLUMNS: ColumnDef[] = [
     cell: (r, ctx) => (
       <span className="title-cell">
         <DraftChip draft={r.draft} />
+        <StackedChip stacked={r.stacked} on={r.stacked_on} base={r.base_ref} />
         {r.threat === "malicious" && (
           <InfoTip entry={term("threat.malicious")} cue={false} focusable={false}>
             <span className="chip chip-red sm">⛔ malicious</span>

@@ -190,6 +190,8 @@ def matches(row: dict, spec: dict) -> bool:
         return False
     if "draft" in spec and bool(row.get("draft")) != bool(spec["draft"]):
         return False
+    if "stacked" in spec and bool(row.get("stacked")) != bool(spec["stacked"]):
+        return False
     if "trusted_author" in spec and bool(row.get("trusted_author")) != bool(spec["trusted_author"]):
         return False
     if "clean" in spec and bool(row.get("clean")) != bool(spec["clean"]):

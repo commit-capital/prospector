@@ -166,6 +166,7 @@ def test_huntable_wants_a_clear_open_unreviewed_head():
     {"reviews": {"design": {"kind": "review", "reviewed_sha": HEAD, "findings": [],
                             "checks": [], "extra": {"rubric": reviewers.DESIGN_RUBRIC}}}},
     {"meta": {"state": "open", "head_sha": HEAD, "draft": True}},
+    {"meta": {"state": "open", "head_sha": HEAD, "base": "layer-1"}},
     {"analysis": {"disposition": "close-dup", "rationale": "r", "against_head_sha": HEAD,
                   "checked_at": "2026-10-13T00:00:00+00:00"}},
 ])

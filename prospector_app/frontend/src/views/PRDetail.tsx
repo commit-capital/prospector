@@ -369,6 +369,9 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
           {pr.trusted_author && <span className="chip chip-gold sm" title="A contributor we trust. When two PRs are about equally good, theirs is preferred.">trusted</span>}
           <DriftChip s={pr.drift_state} />
           <TierChip tier={pr.risk_tier} pinnedBy={pr.risk_tier_paths} />
+          {pr.stacked && (pr.stacked_on != null
+            ? <Link className="chip chip-muted" to={`/prs/${pr.stacked_on}`} title={`Stacked on #${pr.stacked_on} (base ${pr.base_ref}), not the default branch. It is never merge-ready and no hunter judges it until its base merges and GitHub retargets it.`}>stacked on #{pr.stacked_on}</Link>
+            : <span className="chip chip-muted" title={`Targets ${pr.base_ref}, not the default branch. It is never merge-ready and no hunter judges it until GitHub retargets it.`}>stacked on {pr.base_ref}</span>)}
           {pr.clusters.map((cid) => <Link key={cid} className="chip chip-blue" to={`/prs/clusters/${cid}`} title="The group of PRs that fix the same problem. Click to open.">cluster {cid}</Link>)}
           {pr.url && <a className="chip chip-muted" href={pr.url} target="_blank" rel="noreferrer">GitHub ↗</a>}
           {resolved && <span className={`chip ${pr.github_state === "merged" ? "chip-purple" : "chip-muted"}`} title="Current state on GitHub">{pr.github_state}</span>}
