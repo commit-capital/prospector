@@ -218,3 +218,21 @@ def test_picks_and_priority_reach_their_lane():
     assert sec["picks"] == picks["security"]
     ver = next(r for r in out["lanes"] if r["lane"] == "verify")
     assert ver["picks"] == [] and ver["queue"][0]["priority"] == 2.0
+
+
+def test_a_queue_head_reads_as_its_number_then_next():
+    vq = [{"pr": 8, "title": "b", "status": "queued", "source": "operator", "step": None,
+           "queued_at": _iso(5), "started_at": None, "host": None}]
+    [head] = [t for t in co.build(_inputs(verify_queue=vq), NOW)["timeline"] if t["when"] == "upcoming"]
+    assert head["text"] == "#8 · first in its queue"
+
+
+def test_a_fresh_gather_skips_the_cache(monkeypatch):
+    calls = []
+    monkeypatch.setattr(co, "_gather", lambda: calls.append(1) or {"n": len(calls)})
+    monkeypatch.setattr(co, "_cache", None)
+    co.gather()
+    co.gather()
+    assert len(calls) == 1
+    co.gather(fresh=True)
+    assert len(calls) == 2

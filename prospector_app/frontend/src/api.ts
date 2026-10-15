@@ -2357,7 +2357,8 @@ export const api = {
   },
   machines: () => get<MachinesRoster>("/api/machines"),
   machinesActivity: () => get<ActivityView>("/api/machines/activity"),
-  controlOverview: () => get<ControlOverview>("/api/control/overview"),
+  controlOverview: (fresh = false) =>
+    get<ControlOverview>(`/api/control/overview${fresh ? "?fresh=true" : ""}`),
   standDown: (host: string, note?: string) =>
     postJson<{ stood_down: boolean }>(`/api/machines/${encodeURIComponent(host)}/stand-down`, { note: note ?? null }),
   pauseLane: (lane: string, host: string) =>

@@ -388,9 +388,9 @@ def _queue_top(kind: queue_order.Kind, n: int) -> dict:
 
 
 @app.get("/api/control/overview")
-def control_overview_get() -> control_overview.Overview:
+def control_overview_get(fresh: bool = False) -> control_overview.Overview:
     """Health & queues in one read: machines, lanes, loops, needs, timeline."""
-    return control_overview.gather()
+    return control_overview.gather(fresh=fresh)
 
 
 @app.get("/api/health")

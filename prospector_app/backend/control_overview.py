@@ -361,7 +361,7 @@ def build(inp: Inputs, now: datetime) -> Overview:
         if q:
             upcoming.append({"when": "upcoming", "at": now.isoformat(), "lane": lane, "host": None,
                              "pr": q[0]["pr"], "issue": q[0]["issue"], "bad": False,
-                             "text": f"next: #{q[0]['pr'] or q[0]['issue']}"})
+                             "text": f"#{q[0]['pr'] or q[0]['issue']} · first in its queue"})
     upcoming.sort(key=lambda t: t["at"])
     current: list[TimelineItem] = [
         {"when": "now", "at": n["started_at"] or now.isoformat(), "lane": lane, "host": n["host"],
@@ -447,10 +447,12 @@ def _tripped(health_hosts: list[dict]) -> dict[str, dict[str, dict]]:
     return out
 
 
-def gather() -> Overview:
+def gather(fresh: bool = False) -> Overview:
+    """The overview, from the cache unless `fresh` (a page reloading after its
+    own action, which must see what it changed)."""
     global _cache
     with _cache_lock:
-        if _cache is not None and time.monotonic() - _cache[0] < CACHE_SECONDS:
+        if not fresh and _cache is not None and time.monotonic() - _cache[0] < CACHE_SECONDS:
             return _cache[1]
         out = _gather()
         _cache = (time.monotonic(), out)

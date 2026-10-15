@@ -42,9 +42,12 @@ export default function ControlPanel() {
   const [fixQueue, setFixQueue] = useState<FixQueue | null>(null);
   const [range, setRange] = useState<RangeOpt>(RANGE_OPTIONS[0]);
 
-  const loadOverview = useCallback(() => api.controlOverview()
+  const fetchOverview = useCallback((fresh: boolean) => api.controlOverview(fresh)
     .then((o) => { setOverview(o); setOverviewErr(undefined); })
     .catch((e) => setOverviewErr(String(e))), []);
+  const loadOverview = useCallback(() => fetchOverview(false), [fetchOverview]);
+  // After an action of its own the page reads past the shared cache.
+  const refreshOverview = useCallback(() => { void fetchOverview(true); }, [fetchOverview]);
   const loadPipeline = useCallback(() => {
     api.pipelineStatus().then(setPipeline).catch(() => {});
     api.suggestedActions("all").then((d) => setSuggestions(d.items)).catch(() => {});
@@ -57,7 +60,7 @@ export default function ControlPanel() {
   const loadCapacity = useCallback(() => api.capacity().then(setCapacity).catch(() => {}), []);
   const noop = useCallback(() => Promise.resolve(), []);
 
-  const runner = useJobRunner(() => { loadPipeline(); loadOverview(); });
+  const runner = useJobRunner(() => { loadPipeline(); refreshOverview(); });
   useEffect(() => {
     api.jobSpecs().then((d) => setSpecs(d.specs)).catch(() => {});
     loadPipeline();
@@ -81,12 +84,12 @@ export default function ControlPanel() {
       {overviewErr && !overview && <div className="error">Couldn't load the overview: {overviewErr}</div>}
       {overview == null ? <div className="muted small">Loading…</div> : (
         <>
-          <StatusLine overview={overview} onChanged={loadOverview} />
-          <Attention overview={overview} onChanged={loadOverview}
+          <StatusLine overview={overview} onChanged={refreshOverview} />
+          <Attention overview={overview} onChanged={refreshOverview}
             onReviewParked={() => { setOpen("autofix"); loadFixQueue(); }} />
           <Lanes overview={overview} open={open}
             onToggle={(l) => setOpen((o) => (o === l ? null : l))}
-            fixQueue={fixQueue} onFixChanged={loadFixQueue} onChanged={loadOverview} />
+            fixQueue={fixQueue} onFixChanged={loadFixQueue} onChanged={refreshOverview} />
           <Timeline overview={overview} />
         </>
       )}
