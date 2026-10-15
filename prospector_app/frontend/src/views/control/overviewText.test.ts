@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { cellLabel, nextText, statusLine } from "./overviewText.ts";
+import { cellLabel, healthLane, nextText, statusLine } from "./overviewText.ts";
 import type { ControlOverview, OverviewLane } from "../../api.ts";
 
 const lane = (over: Partial<OverviewLane>): OverviewLane => ({
-  lane: "verify", label: "Verify", cells: [], now: [], queue: [], parked: 0, pool: null,
+  lane: "verify", label: "Verify", cells: [], now: [], queue: [], picks: [], parked: 0, pool: null,
   ended_24h: 0, faults_24h: 0, ...over });
 
 test("cell labels read as words", () => {
@@ -14,7 +14,7 @@ test("cell labels read as words", () => {
 });
 
 test("next prefers the queue head, then the pool, then nothing", () => {
-  const q = { pr: 8, issue: null, title: "b", status: "queued", source: "operator", queued_at: null };
+  const q = { pr: 8, issue: null, title: "b", status: "queued", source: "operator", queued_at: null, priority: null };
   assert.equal(nextText(lane({ queue: [q, q] }), null), "#8 · 2 queued");
   assert.equal(nextText(lane({ pool: 4 }), null), "4 in hunter pool");
   assert.equal(nextText(lane({ pool: 0 }), null), "nothing waiting");
@@ -36,4 +36,15 @@ test("status line names working, off and offline machines and the AI hold", () =
 test("a lane off everywhere shows no pool", () => {
   assert.equal(nextText(lane({ pool: 2577, cells: [{ host: "a", state: "off" }, { host: "b", state: "stood-down" }] }), null), "—");
   assert.equal(nextText(lane({ pool: 3, cells: [{ host: "a", state: "on" }] }), null), "3 in hunter pool");
+});
+
+test("a paused lane reads paused and shows no pool", () => {
+  assert.equal(cellLabel("paused"), "paused");
+  assert.equal(nextText(lane({ pool: 9, cells: [{ host: "a", state: "paused" }] }), null), "—");
+});
+
+test("health lane names map the overview's lanes", () => {
+  assert.equal(healthLane("autofix"), "fix");
+  assert.equal(healthLane("issue-fix"), "issue-fix");
+  assert.equal(healthLane("verify"), "verify");
 });

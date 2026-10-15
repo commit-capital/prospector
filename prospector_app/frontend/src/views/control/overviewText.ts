@@ -3,9 +3,14 @@
 import type { ControlOverview, OverviewCellState, OverviewLane } from "../../api";
 
 const CELL: Record<OverviewCellState, string> = {
-  on: "on", off: "off", tripped: "tripped", "ai-paused": "AI paused",
+  on: "on", off: "off", paused: "paused", tripped: "tripped", "ai-paused": "AI paused",
   "stood-down": "stood down", offline: "offline",
 };
+
+/** The worker-health name of an overview lane, which pause and resume take. */
+export function healthLane(lane: string): string {
+  return lane === "autofix" ? "fix" : lane;
+}
 
 export function cellLabel(state: OverviewCellState): string {
   return CELL[state];

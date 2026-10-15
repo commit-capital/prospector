@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, type Autohunt, type CapacityState, type ControlOverview, type FixQueue, type JobRuntime, type JobSpec, type PipelineStatus, type SuggestedAction, type VerifyQueue } from "../api";
+import { api, type Autohunt, type CapacityState, type ControlOverview, type FixQueue, type JobRuntime, type JobSpec, type PipelineStatus, type SuggestedAction } from "../api";
 import { usePoll } from "../poll";
 import { Attention } from "./control/Attention";
 import { Capacity } from "./control/Capacity";
@@ -39,7 +39,6 @@ export default function ControlPanel() {
   const [suggestions, setSuggestions] = useState<SuggestedAction[]>([]);
   const [capacity, setCapacity] = useState<CapacityState | null>(null);
   const [hunt, setHunt] = useState<Autohunt | null>(null);
-  const [verifyQueue, setVerifyQueue] = useState<VerifyQueue | null>(null);
   const [fixQueue, setFixQueue] = useState<FixQueue | null>(null);
   const [range, setRange] = useState<RangeOpt>(RANGE_OPTIONS[0]);
 
@@ -53,7 +52,6 @@ export default function ControlPanel() {
   }, []);
   const loadFixQueue = useCallback(
     () => api.fixQueue(range.days, range.allTime).then(setFixQueue).catch(() => {}), [range]);
-  const loadVerifyQueue = useCallback(() => api.verifyQueue(7, false).then(setVerifyQueue).catch(() => {}), []);
   const loadHunt = useCallback(
     () => api.autohunt(range.days, range.allTime).then(setHunt).catch(() => {}), [range]);
   const loadCapacity = useCallback(() => api.capacity().then(setCapacity).catch(() => {}), []);
@@ -68,8 +66,7 @@ export default function ControlPanel() {
   const busy = (overview?.lanes ?? []).some((l) => l.now.length > 0);
   usePoll(loadOverview, busy ? 10_000 : 30_000);
   usePoll(open === "autofix" || tab === "history" ? loadFixQueue : noop, 15_000);
-  usePoll(open === "verify" || tab === "history" ? loadVerifyQueue : noop, 30_000);
-  usePoll(open === "verify" || tab === "history" ? loadHunt : noop, 30_000);
+  usePoll(tab === "history" ? loadHunt : noop, 30_000);
   usePoll(tab === "capacity" ? loadCapacity : noop, 30_000);
 
   const pickTab = (t: Tab) => {
@@ -89,7 +86,7 @@ export default function ControlPanel() {
             onReviewParked={() => { setOpen("autofix"); loadFixQueue(); }} />
           <Lanes overview={overview} open={open}
             onToggle={(l) => setOpen((o) => (o === l ? null : l))}
-            verifyQueue={verifyQueue} fixQueue={fixQueue} hunt={hunt} onFixChanged={loadFixQueue} />
+            fixQueue={fixQueue} onFixChanged={loadFixQueue} onChanged={loadOverview} />
           <Timeline overview={overview} />
         </>
       )}
