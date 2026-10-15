@@ -83,6 +83,14 @@ def _no_live_ci_read(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_worker_log_tee(monkeypatch):
+    """A lane's startup mirrors stdout to the worker log; under test that would
+    wrap pytest's own capture stream for the rest of the session."""
+    from prospector_app.backend import worker_log
+    monkeypatch.setattr(worker_log, "install", lambda: None)
+
+
+@pytest.fixture(autouse=True)
 def _jobs_dir(monkeypatch, tmp_path):
     """Keep every test's job records, logs and exit files in its own directory,
     with an empty registry, so no test writes the checkout's job cache."""

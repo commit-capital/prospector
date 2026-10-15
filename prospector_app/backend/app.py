@@ -389,10 +389,11 @@ def _queue_top(kind: queue_order.Kind, n: int) -> dict:
 
 
 @app.get("/api/worker/log")
-def worker_log_read(after: int | None = Query(None, ge=0)):
+def worker_log_read(after: int | None = Query(None, ge=0),
+                    file: str | None = None) -> worker_log.WorkerLogRead:
     """This machine's worker log, for the Now cell following it: the tail on a
-    first read, then what was written since `after`."""
-    return worker_log.read(after)
+    first read, then what was written since byte `after` of `file`."""
+    return worker_log.read(after, file)
 
 
 @app.get("/api/control/overview")

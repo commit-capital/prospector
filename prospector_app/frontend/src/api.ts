@@ -2367,9 +2367,9 @@ export const api = {
     postJson<unknown>(`/api/worker/lanes/${encodeURIComponent(lane)}/resume`, { host }),
   queueTop: (kind: "verify" | "fix" | "issue-fix", n: number) =>
     postJson<{ priority: number }>(kind === "issue-fix" ? `/api/issues/${n}/fix/top` : `/api/${kind}/queue/${n}/top`, {}),
-  workerLog: (after: number | null) =>
-    get<{ lines: string[]; offset: number; exists: boolean }>(
-      `/api/worker/log${after == null ? "" : `?after=${after}`}`),
+  workerLog: (after: number | null, file: string | null) =>
+    get<{ lines: string[]; offset: number; file: string | null; exists: boolean; skipped: boolean }>(
+      `/api/worker/log${after == null || file == null ? "" : `?after=${after}&file=${encodeURIComponent(file)}`}`),
   standUp: (host: string) =>
     postJson<{ cleared: boolean }>(`/api/machines/${encodeURIComponent(host)}/stand-up`, {}),
   capacity: () => get<CapacityState>("/api/capacity"),

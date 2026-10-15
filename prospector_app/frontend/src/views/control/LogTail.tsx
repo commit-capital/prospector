@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../../api";
 import { usePoll } from "../../poll";
-import { appendLines } from "./logBuffer";
+import { nextLines } from "./logBuffer";
 
 const KEEP_LINES = 500;
 
@@ -12,14 +12,16 @@ export function LogTail() {
   const [err, setErr] = useState<string | null>(null);
   const [missing, setMissing] = useState(false);
   const offset = useRef<number | null>(null);
+  const file = useRef<string | null>(null);
   const box = useRef<HTMLPreElement>(null);
   const pinned = useRef(true);
 
-  const load = useCallback(() => api.workerLog(offset.current).then((r) => {
+  const load = useCallback(() => api.workerLog(offset.current, file.current).then((r) => {
     offset.current = r.offset;
+    file.current = r.file;
     setMissing(!r.exists);
     setErr(null);
-    if (r.lines.length > 0) setLines((prev) => appendLines(prev, r.lines, KEEP_LINES));
+    if (r.lines.length > 0 || r.skipped) setLines((prev) => nextLines(prev, r, KEEP_LINES));
   }, (e: unknown) => setErr(e instanceof Error ? e.message : String(e))), []);
   usePoll(load, 2_000);
 
