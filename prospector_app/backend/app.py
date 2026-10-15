@@ -827,13 +827,6 @@ def verify_queue_status(days: int = Query(7, ge=1, le=400), all_time: bool = Fal
     }
 
 
-@app.get("/api/prs/{n}/actions")
-def pr_actions(n: int):
-    """Every real action the configured bot has taken on this PR (with the human
-    operator who initiated each), newest-first — shown in the PR-detail panel."""
-    return {"items": activity.for_pr(n)}
-
-
 @app.get("/api/prs/{n}/evidence")
 def pr_evidence(n: int):
     """The PR's threat-evidence captures (threat_evidence.summary), newest
@@ -866,11 +859,10 @@ def pr_evidence_bundle(n: int, capture_id: int):
 
 @app.get("/api/prs/{n}/history")
 def pr_history_endpoint(n: int):
-    """Condensed upstream activity for this PR — comments, reviews (each
-    automated reviewer's flagged), commits, and reopen/close/force-push/rename
-    events — read live from GitHub, oldest first. Powers the PR-detail history
-    panel so a reviewer doesn't have to open GitHub to see the back-and-forth."""
-    return {"items": pr_history.fetch_pr_history(n)}
+    """This PR's single timeline (pr_history.timeline), oldest first: GitHub's
+    comments, reviews, commits and state events read live, Prospector's own
+    writes tagged from the activity log, and a Prospector summary per commit."""
+    return {"items": pr_history.timeline(n)}
 
 
 @app.get("/api/prs/{n}/diff")

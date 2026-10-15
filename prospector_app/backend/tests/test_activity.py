@@ -24,11 +24,43 @@ def test_close_actions_map_to_close_with_reason():
 
 def test_legacy_mechanical_kinds_normalize():
     assert activity.canonical_kind({"kind": "execute", "action": "CLOSE_DUP"}) == "close"
-    assert activity.canonical_kind({"kind": "review", "action": "REVIEW:REQUEST_CHANGES"}) == "comment"
-    assert activity.canonical_kind({"kind": "line_comment", "action": "LINE_COMMENT"}) == "comment"
+    assert activity.canonical_kind({"kind": "review", "action": "REVIEW:REQUEST_CHANGES"}) == "review"
+    assert activity.canonical_kind({"kind": "line_comment", "action": "LINE_COMMENT"}) == "line-comment"
     assert activity.canonical_kind({"kind": "reopen", "action": "REOPEN"}) == "reopen"
     assert activity.canonical_kind({"kind": "merge", "action": "MERGE"}) == "merge"
     assert activity.canonical_kind({"kind": "emit", "cluster": 1}) == "handoff"
+
+
+def test_rows_stored_as_comment_relabel_from_their_action():
+    for action, kind, verb in [
+        ("REVIEW:request-changes", "review", "requested changes"),
+        ("REVIEW:approve", "review", "approved"),
+        ("REVIEW:comment", "review", "reviewed"),
+        ("LINE_COMMENT", "line-comment", "commented on a line"),
+        ("DESCRIBE", "pr-edit", "rewrote the description"),
+        ("COMMENT_ISSUE", "issue-comment", "commented"),
+    ]:
+        ev = activity.normalize({"kind": "comment", "action": action})
+        assert (ev["kind"], activity.verb(ev)) == (kind, verb)
+
+
+def test_retrigger_names_its_reviewer():
+    ev = activity.normalize({"kind": "comment", "action": "REVIEW_RETRIGGER", "reviewer": "greptile"})
+    assert ev["kind"] == "review-retrigger"
+    assert activity.verb(ev) == "re-triggered Greptile"
+
+
+def test_resubmit_verb_follows_its_action():
+    for action, verb in [("RESUBMIT", "pushed a fix"), ("REBASE", "rebased"),
+                         ("UPDATE_BRANCH", "merged the base"),
+                         ("RESOLVE_CONFLICTS", "resolved conflicts")]:
+        ev = activity.normalize({"kind": "resubmit", "action": action})
+        assert activity.verb(ev) == verb
+
+
+def test_ci_rerun_is_its_own_kind():
+    ev = activity.normalize({"kind": "issue-propose", "action": "RERUN", "issue": 1, "pr": 2})
+    assert ev["kind"] == "issue-fix-rerun" and activity.verb(ev) == "re-ran CI"
 
 
 def test_canonical_kinds_pass_through():

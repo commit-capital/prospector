@@ -1089,19 +1089,11 @@ html.ap-resizing .agentpane { transition: none; }
 /* Action run-state (#10) — already-landed actions, log-backed */
 .run-badge { vertical-align: middle; white-space: nowrap; }
 
-/* Per-PR action history — who did what to this PR (close/merge/reopen/…).
-   Yellow callout so "we already acted on this" stands out before you act again. */
-.action-log { border: 1px solid var(--yellow); border-radius: 6px; padding: 8px 10px; margin-bottom: 10px;
-  background: color-mix(in srgb, var(--yellow) 12%, transparent); }
-.action-log-title { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--yellow); font-weight: 700; margin-bottom: 4px; }
-.action-log ul { list-style: none; margin: 0; padding: 0; }
-.action-log li { font-size: 12.5px; padding: 1px 0; }
 .action-log-link { color: var(--accent); text-decoration: none; font-weight: 600; }
 .action-log-link:hover { text-decoration: underline; }
-.action-log-reason { color: var(--accent); }
 
-/* PR-detail history panel — condensed upstream activity (comments, reviews,
-   commits, reopen/close/force-push/rename), oldest first. */
+/* PR-detail timeline — GitHub's activity with Prospector's writes tagged, and
+   one Prospector summary row per commit, oldest first. */
 .pr-history-list { list-style: none; margin: 0; padding: 0; }
 .ph-row { display: flex; align-items: baseline; gap: 6px; font-size: 12.5px; padding: 3px 0;
   border-bottom: 1px solid var(--border); }
@@ -1110,6 +1102,12 @@ html.ap-resizing .agentpane { transition: none; }
 .ph-body { flex: 1 1 auto; min-width: 0; }
 .ph-text { color: var(--muted); }
 .ph-time { flex: 0 0 auto; white-space: nowrap; }
+.ph-via { color: var(--accent); }
+.ph-prospector { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.ph-fact + .ph-fact::before { content: " · "; color: var(--muted); }
+.ph-fact.tone-pass { color: var(--green); }
+.ph-fact.tone-warn { color: var(--yellow); }
+.ph-fact.tone-fail { color: var(--red); }
 tr.row-done > td { opacity: .6; }            /* completed PRs recede in the queue */
 tr.row-done:hover > td { opacity: 1; }
 

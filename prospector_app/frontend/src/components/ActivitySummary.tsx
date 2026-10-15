@@ -16,8 +16,10 @@ type RangeOpt = (typeof RANGE_OPTIONS)[number];
 
 const REOPENED_PAGE_SIZE = 10;
 
-const CHART_KINDS = ["close", "merge", "comment", "reopen"] as const;
-const WEEK_KINDS = [...CHART_KINDS, "issue-close"] as const;
+const WEEK_KINDS = ["close", "merge", "comment", "reopen", "issue-close"] as const;
+// The kinds that post text on a PR as the bot, tallied together as "comments"
+// (activity.py COMMENT_KINDS).
+const COMMENT_KINDS = ["comment", "review", "line-comment", "review-retrigger"];
 const num = (b: ActivityBucket | undefined, k: string) => (b ? Number(b[k] ?? 0) : 0);
 
 // The local calendar day of `d` as YYYY-MM-DD. Not toISOString(), which is UTC:
@@ -562,7 +564,10 @@ export function ActivitySummary({ onQuickFilter }: ActivitySummaryProps) {
   const weekStart = days[days.length - 7];
   const week = useMemo(() => {
     const acc: Record<string, number> = { close: 0, merge: 0, comment: 0, reopen: 0, "issue-close": 0 };
-    for (const k of days.slice(-7)) for (const kind of WEEK_KINDS) acc[kind] += num(byKey[k], kind);
+    for (const k of days.slice(-7)) {
+      for (const kind of WEEK_KINDS) if (kind !== "comment") acc[kind] += num(byKey[k], kind);
+      for (const kind of COMMENT_KINDS) acc.comment += num(byKey[k], kind);
+    }
     return acc;
   }, [byKey, days]);
 
@@ -680,7 +685,7 @@ export function ActivitySummary({ onQuickFilter }: ActivitySummaryProps) {
           <StatCard n={week.merge} label="merged this week"
             onClick={() => quickFilter(["merge"], "7d")} />
           <StatCard n={week.comment} label="comments this week"
-            onClick={() => quickFilter(["comment"], "7d")} />
+            onClick={() => quickFilter(COMMENT_KINDS, "7d")} />
           <StatCard n={week.reopen} label="reopens this week"
             onClick={() => quickFilter(["reopen"], "7d")} />
           <StatCard n={allPrActions} label="actions all-time" muted

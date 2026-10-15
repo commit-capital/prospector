@@ -13,17 +13,19 @@ down by teammate. The table is append-only, and the app holds it in memory
 Every event carries a semantic top-level ``kind`` (#40) so aggregation is a
 ``Counter`` over one field, not a string-parse of ``action``:
 
-    merge | close | comment | resubmit | reopen | undo | handoff | reconcile
-      | issue-close | issue-reopen
+    merge | close | comment | review | line-comment | review-retrigger | pr-edit
+      | resubmit | reopen | undo | handoff | reconcile | issue-close | issue-reopen
+      | issue-comment | issue-fix-rerun | …
 
 PR kinds and issue kinds are disjoint, so ``summarize`` never mixes the two —
 an issue close is ``issue-close``, never a PR ``close`` or ``comment``, and an
 issue reopen is ``issue-reopen``, never the PR ``reopen`` that drives PR velocity.
 ``close`` events also carry a ``reason`` (duplicate / already-fixed / stale /
-manual). Legacy rows were written with mechanical kinds (``execute``,
-``review``, ``line_comment``, ``emit``) + an ``action`` like ``CLOSE_DUP``;
-``canonical_kind`` maps both shapes onto the vocabulary above, so old rows are
-normalized on read with no destructive migration.
+manual). Rows written with a mechanical kind (``execute``, ``review``,
+``line_comment``, ``emit``) or stored under the catch-all ``comment``
+carry an ``action`` like ``CLOSE_DUP`` or ``REVIEW:approve``; ``canonical_kind``
+reads the action first, so every row is normalized on read with no migration.
+``verb`` is each event's human phrase ("requested changes", "rebased").
 """
 from __future__ import annotations
 
@@ -37,6 +39,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone, tzinfo
 from typing import TYPE_CHECKING
 
+from pipeline import reviewers
 from pipeline import schema
 from pipeline import settings
 from pipeline import store
@@ -67,9 +70,26 @@ def _engine() -> storekit.Engine:
 
 
 # The semantic vocabulary (#40). Aggregation groups on these.
-KINDS = ("merge", "close", "comment", "resubmit", "reopen", "undo", "handoff", "reconcile",
-         "issue-close", "issue-reopen", "alert-dismiss", "issue-propose", "issue-question",
-         "issue-fix-label", "issue-fix-comment")
+KINDS = ("merge", "close", "comment", "review", "line-comment", "review-retrigger", "pr-edit",
+         "resubmit", "reopen", "undo", "handoff", "reconcile",
+         "issue-close", "issue-reopen", "issue-comment", "alert-dismiss", "issue-propose",
+         "issue-question", "issue-fix-label", "issue-fix-comment", "issue-fix-rerun")
+
+# The kinds that post text on a PR as the bot — the dashboard's "comments" tally.
+COMMENT_KINDS = frozenset({"comment", "review", "line-comment", "review-retrigger"})
+
+# A mechanical `action` that alone decides the kind, whatever kind the row was stored under.
+_ACTION_KIND = {
+    "LINE_COMMENT": "line-comment",
+    "REVIEW_RETRIGGER": "review-retrigger",
+    "DESCRIBE": "pr-edit",
+    "RESUBMIT": "resubmit",
+    "REBASE": "resubmit",
+    "UPDATE_BRANCH": "resubmit",
+    "RESOLVE_CONFLICTS": "resubmit",
+    "RERUN": "issue-fix-rerun",
+    "COMMENT_ISSUE": "issue-comment",
+}
 
 
 @dataclass(frozen=True)
@@ -126,11 +146,15 @@ def canonical_kind(event: dict) -> str:
     """Map any event — current semantic kind or legacy mechanical kind — onto
     the #40 vocabulary. Pure; safe to call on already-normalized events.
 
-    The ``CLOSE_ISSUE_*`` action check comes before the kind check so a legacy
-    issue row stored under a PR kind still reads as ``issue-close``."""
+    The action checks come before the kind check so a row stored under a
+    broader kind (``comment``, ``issue-propose``) reads as what it did."""
     action = (event.get("action") or "").upper()
     if action.startswith("CLOSE_ISSUE"):
         return "issue-close"
+    if action.startswith("REVIEW:"):
+        return "review"
+    if action in _ACTION_KIND:
+        return _ACTION_KIND[action]
     k = (event.get("kind") or "").lower()
     if k in KINDS:
         return k
@@ -144,9 +168,41 @@ def canonical_kind(event: dict) -> str:
         return "undo"
     if action in CLOSE_REASONS:
         return "close"
-    # legacy "execute" (non-close), "review", "line_comment" all posted a
-    # comment without closing → comment.
+    # legacy "execute" (non-close) posted a comment without closing → comment.
     return "comment"
+
+
+_REVIEW_VERB = {"APPROVE": "approved", "REQUEST-CHANGES": "requested changes",
+                "REQUEST_CHANGES": "requested changes"}
+_RESUBMIT_VERB = {"REBASE": "rebased", "UPDATE_BRANCH": "merged the base",
+                  "RESOLVE_CONFLICTS": "resolved conflicts"}
+_PROPOSE_VERB = {"PROPOSE": "opened a fix PR", "UPDATE": "updated the fix PR"}
+_VERB = {
+    "merge": "merged", "close": "closed", "comment": "commented", "reopen": "reopened",
+    "undo": "undid an action", "handoff": "handed off", "reconcile": "reconciled",
+    "line-comment": "commented on a line", "pr-edit": "rewrote the description",
+    "resubmit": "pushed a fix", "issue-close": "closed", "issue-reopen": "reopened",
+    "issue-comment": "commented", "alert-dismiss": "dismissed the alert",
+    "issue-question": "asked a question", "issue-fix-label": "labelled",
+    "issue-fix-comment": "commented", "issue-fix-rerun": "re-ran CI",
+}
+
+
+def verb(event: dict) -> str:
+    """The human verb phrase for a normalized event, without its object."""
+    kind = event.get("kind") or ""
+    action = (event.get("action") or "").upper()
+    if kind == "review":
+        return _REVIEW_VERB.get(action.removeprefix("REVIEW:"), "reviewed")
+    if kind == "review-retrigger":
+        rid = event.get("reviewer")
+        reviewer = reviewers.REVIEWERS.get(rid) if isinstance(rid, str) else None
+        return f"re-triggered {reviewer.label if reviewer else 'a review'}"
+    if kind == "resubmit":
+        return _RESUBMIT_VERB.get(action, "pushed a fix")
+    if kind == "issue-propose":
+        return _PROPOSE_VERB.get(action, "proposed a fix")
+    return _VERB.get(kind, kind)
 
 
 def close_reason(event: dict) -> str | None:
@@ -431,6 +487,9 @@ def for_pr(n: int) -> list[dict]:
             "reason": ev.get("reason"),
             "detail": ev.get("detail"),
             "event_url": ev.get("event_url"),  # deep-link to the exact GitHub event, when captured
+            "verb": verb(ev),
+            "initiator": ev.get("initiator"),  # "worker" when the automation acted on its own
+            "to_sha": ev.get("to_sha"),  # a push: the head it left the branch at
         })
     return out
 

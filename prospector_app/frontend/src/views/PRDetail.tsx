@@ -15,7 +15,6 @@ import { VerifyAction, VerifyBody } from "../components/VerifyPanel";
 import { FixAction, FixBody, ResolveConflictsButton } from "../components/FixPanel";
 import { designFixGoal, unavailable as fixUnavailable } from "../components/fixAvailability";
 import { withLiveConflicts } from "../components/liveChecks";
-import { PRActionLog } from "../components/PRActionLog";
 import { ThreatEvidencePanel } from "../components/ThreatEvidencePanel";
 import { PRLink } from "../components/PRLink";
 import { coverageLabel, coverageTone } from "../dupCoverage";
@@ -559,7 +558,6 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
             )}
           </div>
         )}
-        <PRActionLog pr={pr.number} refresh={actLog} />
         <PRActionBar pr={pr} runState={rs} onActed={() => { run.refresh(); setActLog((k) => k + 1); reloadPr(); }} />
       </section>
 
@@ -717,9 +715,9 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
         </section>
       )}
 
-      {/* condensed upstream history — comments, reviews, commits, and
-          reopen/close/force-push/rename events, oldest first */}
-      <PRHistory pr={pr.number} />
+      {/* the PR's single timeline: GitHub's activity with our writes tagged,
+          and a Prospector summary per commit, oldest first */}
+      <PRHistory pr={pr.number} refresh={actLog} />
 
       {/* the diff, last — click a line for the explain/comment popup. When a
           "Resolve merge conflicts" attempt refused on conflicts, the captured
