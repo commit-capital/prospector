@@ -14,6 +14,7 @@ import os
 import re
 import sys
 import threading
+import uuid
 from pathlib import Path
 from typing import TypedDict
 from urllib.parse import unquote, urlsplit
@@ -22,6 +23,10 @@ from pipeline import settings, settings_registry
 
 # One file plus one rotated predecessor, so the log never grows past twice this.
 ROTATE_BYTES = 10 * 1024 * 1024
+
+# The first line of every file the tee starts: its id, which tells a reader's
+# file apart from a later one even when the filesystem reuses its inode.
+HEADER = "# prospector worker log "
 
 _lock = threading.Lock()
 _installed: _Tee | None = None
@@ -44,6 +49,8 @@ class _Tee(io.TextIOBase):
             with _lock:
                 if self.file.exists() and self.file.stat().st_size > ROTATE_BYTES:
                     self.file.replace(self.file.with_suffix(".log.1"))
+                if not self.file.exists():
+                    start_file(self.file)
                 with self.file.open("a", encoding="utf-8", errors="replace") as fh:
                     fh.write(s)
         except OSError:
@@ -59,6 +66,10 @@ class _Tee(io.TextIOBase):
     @property
     def encoding(self) -> str:  # type: ignore[override]
         return getattr(self.wrapped, "encoding", "utf-8")
+
+
+def start_file(file: Path) -> None:
+    file.write_text(f"{HEADER}{uuid.uuid4().hex}\n", encoding="utf-8")
 
 
 def install() -> Path | None:
@@ -96,7 +107,7 @@ SECRET_PATTERNS = (re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),
 class WorkerLogRead(TypedDict):
     lines: list[str]
     offset: int
-    # The file `offset` is in (device:inode), so a rotation is told apart
+    # The file `offset` is in (its header id), so a rotation is told apart
     # from growth; None while there is no log.
     file: str | None
     exists: bool
@@ -114,9 +125,12 @@ def _secrets() -> list[str]:
 
 
 def _redact(lines: list[str]) -> list[str]:
+    """The lines a page may show: no header line, and no secret."""
     secrets = _secrets()
     out = []
     for line in lines:
+        if line.startswith(HEADER):
+            continue
         for secret in secrets:
             line = line.replace(secret, "[redacted]")
         for pattern in SECRET_PATTERNS:
@@ -160,9 +174,16 @@ def _read_from(file: Path, start: int, max_bytes: int, *, final: bool = False) -
     return chunk[:end].decode("utf-8", errors="replace").splitlines(), start + end
 
 
-def _identity(file: Path) -> str:
+def _inode(file: Path) -> str:
     st = file.stat()
     return f"{st.st_dev}:{st.st_ino}"
+
+
+def _identity(file: Path) -> str:
+    """The file's header id; device:inode for a file no tee started."""
+    with file.open("rb") as fh:
+        first = fh.readline(200).decode("utf-8", errors="replace")
+    return first[len(HEADER):].strip() if first.startswith(HEADER) else _inode(file)
 
 
 def _tail(file: Path, tail_lines: int, max_bytes: int, skipped: bool) -> WorkerLogRead:

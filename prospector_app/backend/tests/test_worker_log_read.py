@@ -64,14 +64,42 @@ def test_a_rotated_log_that_regrew_past_the_offset_is_not_skipped(log):
     assert out["lines"] == ["b"] + ["c"] * 10
 
 
+def _rotate(log, text: str) -> None:
+    log.replace(log.with_suffix(".log.1"))
+    worker_log.start_file(log)
+    with log.open("a") as fh:
+        fh.write(text)
+
+
 def test_two_rotations_return_the_tail_marked_skipped(log):
-    log.write_text("a\n")
+    worker_log.start_file(log)
+    with log.open("a") as fh:
+        fh.write("a\n")
     first = worker_log.read(None)
     for text in ("b\n", "c\n"):
-        log.replace(log.with_suffix(".log.1"))
-        log.write_text(text)
+        _rotate(log, text)
     out = worker_log.read(first["offset"], first["file"])
     assert out["skipped"] is True and out["lines"] == ["c"]
+
+
+def test_a_file_the_writer_started_is_known_by_its_header_not_its_inode(log, monkeypatch):
+    worker_log.start_file(log)
+    first = worker_log.read(None)
+    assert first["lines"] == [] and first["file"] and ":" not in first["file"]
+    _rotate(log, "b\n")
+    monkeypatch.setattr(worker_log, "_inode", lambda f: "same-inode")
+    out = worker_log.read(first["offset"], first["file"])
+    assert out["lines"] == ["b"] and out["file"] != first["file"]
+
+
+def test_the_tee_starts_each_file_with_its_header(log, monkeypatch):
+    import io
+    tee = worker_log._Tee(io.StringIO(), log)
+    tee.write("hello\n")
+    monkeypatch.setattr(worker_log, "ROTATE_BYTES", 1)
+    tee.write("again\n")
+    for f in (log.with_suffix(".log.1"), log):
+        assert f.read_text().startswith(worker_log.HEADER)
 
 
 def test_a_truncated_log_returns_its_tail_marked_skipped(log):
