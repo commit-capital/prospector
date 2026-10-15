@@ -2002,6 +2002,8 @@ export const api = {
   chatReady: () => get<ChatReady>("/api/chat/ready"),
   chatHistory: (params: URLSearchParams) =>
     get<{ messages: ChatTurn[] }>(`/api/chat/history?${params}`),
+  chatTitle: (question: string) =>
+    postJson<{ title: string }>("/api/chat/title", { question }),
   onboardingProbe: async (body: {
     store_url?: string; repo?: string; key_file?: string; agent?: boolean;
     agent_provider?: string;

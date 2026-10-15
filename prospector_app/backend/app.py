@@ -1024,6 +1024,12 @@ async def chat_stream(q: str, pr: int | None = None, cluster: int | None = None,
     return EventSourceResponse(gen())
 
 
+@app.post("/api/chat/title")
+def chat_title(question: str = Body(..., embed=True)) -> dict[str, str]:
+    """A short name for a chat, summarized from its first message."""
+    return {"title": chat.chat_title(question)}
+
+
 @app.post("/api/chat/stop")
 def chat_stop(pr: int | None = None, cluster: int | None = None, issue: int | None = None,
               advisory: str | None = None, alert_source: str | None = None,

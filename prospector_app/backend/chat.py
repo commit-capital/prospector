@@ -43,6 +43,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
@@ -60,6 +61,7 @@ from prospector_app.backend import executor
 from prospector_app.backend import issues
 from prospector_app.backend import issue_receipts
 from prospector_app.backend import safety_guard
+from pipeline import headless_agent
 from pipeline import settings
 from pipeline import profile
 from pipeline import review_policy
@@ -742,6 +744,46 @@ def _finish_turn(ctx_id: str, text: str, session_id: str | None, reground: bool)
     _clear_partial(ctx_id)
     if reground:
         _mark_reground(ctx_id)
+
+
+TITLE_MAX_CHARS = 48
+TITLE_PROMPT = (
+    "Name this chat in 3 to 6 words, like a chat app's sidebar title. Reply with the "
+    "title alone: no quotes, no trailing punctuation, no preamble.\n\n"
+    "FIRST MESSAGE:\n{question}")
+
+
+def _clip_title(text: str) -> str:
+    """One line of at most TITLE_MAX_CHARS, cut on a word boundary."""
+    line = " ".join(text.split()).strip(" \"'`*#.:;-")
+    if len(line) <= TITLE_MAX_CHARS:
+        return line
+    cut = line[:TITLE_MAX_CHARS - 1]
+    space = cut.rfind(" ")
+    return (cut[:space] if space > TITLE_MAX_CHARS // 2 else cut).rstrip(" ,;:-") + "…"
+
+
+def fallback_title(question: str) -> str:
+    """The question's first sentence, clipped."""
+    first = re.split(r"(?<=[.?!])\s|\n", question.strip(), maxsplit=1)[0]
+    return _clip_title(first) or "New chat"
+
+
+def chat_title(question: str) -> str:
+    """A short name for a chat, summarized from its first message by one
+    tool-less run of the cheapest Claude model; the question's own opening
+    when the provider is not Claude or the run fails."""
+    if settings.agent_provider() != claude_backend.CLAUDE_BACKEND.provider:
+        return fallback_title(question)
+    try:
+        with headless_agent.workdir("chat-title-") as tmp:
+            text = headless_agent.run_agent(
+                TITLE_PROMPT.format(question=question[:4000]), allow_gh=False, cwd=tmp,
+                read_root=tmp, env_allow=(), model="haiku", timeout=60)
+    except RuntimeError:
+        return fallback_title(question)
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    return (_clip_title(lines[0]) if lines else "") or fallback_title(question)
 
 
 def stop_chat(pr: int | None = None, cluster: int | None = None, issue: int | None = None,
