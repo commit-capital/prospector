@@ -1,3 +1,4 @@
+import { AuthorReturnNote } from "../components/AuthorReturn";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
 import { api, type IssueRow, type IssueDupGroup, type IssuePR, type IssueExecResult, type IssueDisposition, type IssueTriageDisposition, type IssueFilterSpec, type IssueLikelyFixedItem } from "../api";
@@ -449,8 +450,8 @@ const STATE_FILTERS: { key: string; label: string }[] = [
 ];
 
 function AllIssuesTable({
-  rows, total, page, q, sortKey, sortDir, loading, dispFilter, stateFilter, fixFilter, maintainerFilter,
-  onQ, onPage, onSort, onDispFilter, onStateFilter, onFixFilter, onMaintainerFilter, filterSpec, onFilterSpecChange,
+  rows, total, page, q, sortKey, sortDir, loading, dispFilter, stateFilter, fixFilter, maintainerFilter, cameBackFilter,
+  onQ, onPage, onSort, onDispFilter, onStateFilter, onFixFilter, onMaintainerFilter, onCameBackFilter, filterSpec, onFilterSpecChange,
   selected, results, onToggle, onToggleAll, closeBar,
 }: {
   rows: IssueRow[];
@@ -464,6 +465,7 @@ function AllIssuesTable({
   stateFilter: string;
   fixFilter: string;
   maintainerFilter: boolean;
+  cameBackFilter: boolean;
   onQ: (q: string) => void;
   onPage: (page: number) => void;
   onSort: (key: IssueSortKey) => void;
@@ -471,6 +473,7 @@ function AllIssuesTable({
   onStateFilter: (s: string) => void;
   onFixFilter: (f: string) => void;
   onMaintainerFilter: (on: boolean) => void;
+  onCameBackFilter: (on: boolean) => void;
   filterSpec: IssueFilterSpec;
   onFilterSpecChange: (next: IssueFilterSpec) => void;
   selected: Set<number>;
@@ -550,6 +553,10 @@ function AllIssuesTable({
           <input type="checkbox" checked={maintainerFilter} onChange={(e) => onMaintainerFilter(e.target.checked)} />
           Filed by a maintainer
         </label>
+        <label className="muted small" title="Only open issues whose author came back after we closed their work: reopened it, or filed this one linking what we closed">
+          <input type="checkbox" checked={cameBackFilter} onChange={(e) => onCameBackFilter(e.target.checked)} />
+          Author came back
+        </label>
         <input className="author-in" placeholder="label contains" value={filterSpec.labels ?? ""}
           title="Filter by GitHub label (substring match)"
           onChange={(e) => onFilterSpecChange({ ...filterSpec, labels: e.target.value || undefined })} />
@@ -619,7 +626,8 @@ function AllIssuesTable({
                         title={results[row.number].detail}>{results[row.number].status}</span>
                     )}
                   </td>
-                  <td>{row.title}{row.is_dup && row.canonical != null && <span className="muted small" title={`Duplicate of #${row.canonical}`}> · dup of <IssueLink n={row.canonical} /></span>}</td>
+                  <td>{row.title}{row.is_dup && row.canonical != null && <span className="muted small" title={`Duplicate of #${row.canonical}`}> · dup of <IssueLink n={row.canonical} /></span>}
+                    {row.author_return && <div className="small muted"><AuthorReturnNote ret={row.author_return} /></div>}</td>
                   <td className="muted small"><AuthorHover author={row.author} trusted={row.trusted_author} stats={row.author_stats} fallback="" />
                     {row.maintainer && <> <span className="chip chip-muted sm">maintainer</span></>}</td>
                   <td className="mono small">{row.pain != null ? row.pain.toFixed(2) : "—"}</td>
@@ -684,13 +692,16 @@ export default function Issues() {
   // ?maintainer=1 keeps the issues a maintainer filed (gates.priority_author).
   const maintainerFromUrl = sp.get("maintainer") === "1";
   const [maintainerFilter, setMaintainerFilter] = useState(maintainerFromUrl);
+  // ?came_back=1 keeps the open issues an author returned to (author_returns).
+  const cameBackFromUrl = sp.get("came_back") === "1";
+  const [cameBackFilter, setCameBackFilter] = useState(cameBackFromUrl);
   // Per-column filters (author/pain/repro/subsystem/dups/linked-PRs/labels) —
   // the issue-side analog of PR Explorer's filter spec (#494).
   const [filterSpec, setFilterSpec] = useState<IssueFilterSpec>(ISSUE_TABLE_FIRST_PAGE.filterSpec);
   const tableRead = useMemo(() => issueTableRead({
     q, sortKey, sortDir, disposition: dispFilter, state: stateFilter, fix: fixFilter,
-    maintainer: maintainerFilter, page, filterSpec,
-  }), [q, sortKey, sortDir, dispFilter, stateFilter, fixFilter, maintainerFilter, page, filterSpec]);
+    maintainer: maintainerFilter, cameBack: cameBackFilter, page, filterSpec,
+  }), [q, sortKey, sortDir, dispFilter, stateFilter, fixFilter, maintainerFilter, cameBackFilter, page, filterSpec]);
   // A first page the tab prefetch already read paints at once; the effect
   // below reads it again.
   const [rows, setRows] = useState<IssueRow[]>(() => peekRead(tableRead)?.items ?? []);
@@ -758,6 +769,19 @@ export default function Issues() {
       setSelected(new Set());
       setIssueResults({});
     }
+  }
+
+  const [prevCameBackParam, setPrevCameBackParam] = useState(cameBackFromUrl);
+  if (cameBackFromUrl !== prevCameBackParam) {
+    setPrevCameBackParam(cameBackFromUrl);
+    if (cameBackFromUrl !== cameBackFilter) {
+      setLoadingIssues(true);
+      setCameBackFilter(cameBackFromUrl);
+      setPage(1);
+      setSelected(new Set());
+      setIssueResults({});
+    }
+    if (cameBackFromUrl) setTab("all");
   }
 
   // An in-app navigation can add ?dup= while the page is already mounted
@@ -895,6 +919,7 @@ export default function Issues() {
           stateFilter={stateFilter}
           fixFilter={fixFilter}
           maintainerFilter={maintainerFilter}
+          cameBackFilter={cameBackFilter}
           onQ={(next) => { setLoadingIssues(true); setQ(next); setPage(1); setSelected(new Set()); setIssueResults({}); }}
           onPage={(next) => { setLoadingIssues(true); setPage(next); setSelected(new Set()); setIssueResults({}); }}
           onDispFilter={(d) => { setLoadingIssues(true); setDispFilter(d); setPage(1); setSelected(new Set()); setIssueResults({}); }}
@@ -903,6 +928,11 @@ export default function Issues() {
           onMaintainerFilter={(on) => {
             setLoadingIssues(true); setMaintainerFilter(on); setPage(1); setSelected(new Set()); setIssueResults({});
             setSp((prev) => { if (on) prev.set("maintainer", "1"); else prev.delete("maintainer"); return prev; },
+              { replace: true });
+          }}
+          onCameBackFilter={(on) => {
+            setLoadingIssues(true); setCameBackFilter(on); setPage(1); setSelected(new Set()); setIssueResults({});
+            setSp((prev) => { if (on) prev.set("came_back", "1"); else prev.delete("came_back"); return prev; },
               { replace: true });
           }}
           onSort={clickSort}

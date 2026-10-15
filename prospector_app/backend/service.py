@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from pipeline.model import Pr
 
-from prospector_app.backend import automation, data
+from prospector_app.backend import author_returns, automation, data
 from prospector_app.backend import claims
 from prospector_app.backend import filters  # spec predicate
 from prospector_app.backend import issues
@@ -593,12 +593,13 @@ def query_prs(spec: dict, sort: str | None = None, direction: str | None = None,
         row = cache.get(n)
         if row is None:
             continue
-        # Response signals and their acks, operator claims, and the author
-        # table live outside the PR record (registry, store, and a table folded
+        # Response signals and their acks, author returns, operator claims, and
+        # the author table live outside the PR record (registry, store, and a table folded
         # from every PR, each with its own cache), so overlay them fresh on the
         # cached row — an ack must drop the PR from the responses queue, and a
         # teammate's claim must appear, on the very next query.
         row = {**row, "responses": responses.for_pr(n),
+               "author_return": author_returns.open_returns()["pr"].get(n),
                "claim": claims.for_item("pr", n),
                "author_stats": data.author_stats(rec.author)}
         if filters.matches(row, eff):

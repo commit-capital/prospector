@@ -94,6 +94,13 @@ export function buildPrFilterParts(spec: FilterSpec, onChange: (next: FilterSpec
       : (LABELS[spec.responses] ?? spec.responses);
     push("responses", `response: ${label}`, "responses");
   }
+  if (spec.author_return) {
+    const LABELS: Record<string, string> = { reopened: "reopened", "follow-up": "follow-up to our close" };
+    const label = spec.author_return === true ? "came back"
+      : Array.isArray(spec.author_return) ? spec.author_return.map((r) => LABELS[r] ?? r).join(" or ")
+        : (LABELS[spec.author_return] ?? spec.author_return);
+    push("author_return", `author ${label}`, "author_return");
+  }
   if (spec.greptile !== undefined) push("greptile", `greptile ${spec.greptile.op} ${spec.greptile.value ?? "?"}`, "greptile");
   if (spec.greptile_stale === true) push("greptile_stale", "Greptile stale", "greptile_stale");
   if (spec.greptile_stale === false) push("greptile_stale", "Greptile current", "greptile_stale");

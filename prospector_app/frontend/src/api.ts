@@ -83,6 +83,8 @@ export interface FilterSpec {
   has_summary?: boolean;     // an agent summary exists for the PR
   has_issues?: boolean;      // the PR has linked issues
   responses?: ResponsesFilter | ResponsesFilter[];
+  // an author came back after we closed their work: true for either signal
+  author_return?: true | AuthorReturnSignal | AuthorReturnSignal[];
   loc?: LocFilter;
   files?: FilesFilter;       // how many files a PR touches, greater-/less-than
   pain?: NumCmp;
@@ -486,6 +488,7 @@ export interface PRRow {
   merge_gate?: { ok: boolean; reason: string; overridable?: boolean; override_kind?: "security" | "unreviewed" | "verify" | null };
   age_days?: number | null;
   responses?: PRResponses | null;
+  author_return?: OpenAuthorReturn | null;
   claim?: ItemClaim | null;
   pain_score?: number | null;
   automation?: AutomationStanding | null;
@@ -1359,7 +1362,40 @@ export interface IssuePR {
   how?: "explicit" | "github" | "fix-found" | "issue-ref" | "body-ref" | "subsystem" | null;
   in_store?: boolean; state?: "open" | "merged" | "closed" | null; draft?: boolean;
 }
+/** How an author came back after we closed their PR or issue
+ *  (prospector_app/backend/author_returns.py): they reopened it, or opened a
+ *  new PR or issue that links it. */
+export type AuthorReturnSignal = "reopened" | "follow-up";
+
+export interface ItemRef {
+  kind: "pr" | "issue";
+  number: number;
+  title: string | null;
+  url: string | null;
+  created_at: string | null;
+}
+
+/** On an open PR or issue row: the closed item it returns to (itself, when
+ *  reopened) and our close. */
+export interface OpenAuthorReturn {
+  signal: AuthorReturnSignal;
+  closed: ItemRef;
+  reason: string | null;
+  closed_at: string | null;
+}
+
+/** A closed-by-us item its author came back to, with the follow-ups. */
+export interface AuthorReturn extends ItemRef {
+  author: string | null;
+  closed_at: string | null;
+  reason: string | null;
+  signal: AuthorReturnSignal;
+  follow_ups: ItemRef[];
+  last_at: string | null;
+}
+
 export interface IssueRow {
+  author_return?: OpenAuthorReturn | null;
   number: number;
   title: string | null;
   author: string | null;
@@ -2026,7 +2062,8 @@ export const api = {
   listIssues: () => get<{ items: IssueRow[]; pr_states_loading: boolean }>("/api/issues"),
   queryIssues: (opts: {
     q?: string; sort?: string; direction?: string; disposition?: string; state?: string;
-    collapse_dups?: boolean; fix_status?: string | string[]; maintainer?: boolean; offset?: number; limit?: number;
+    collapse_dups?: boolean; fix_status?: string | string[]; maintainer?: boolean; author_return?: boolean;
+    offset?: number; limit?: number;
   } & IssueFilterSpec = {}) =>
     postJson<{ items: IssueRow[]; total: number; offset: number; limit: number; pr_states_loading: boolean }>(
       "/api/issues/query", opts),
@@ -2641,10 +2678,7 @@ export interface FirehoseStats {
     pr_triaged_30d: number;
     iss_incoming_30d: number;
   };
-  reopened_after_close: Array<{
-    pr: number; title: string | null; url: string | null;
-    author: string | null; closed_at: string | null; reason: string | null;
-  }>;
+  author_returns: AuthorReturn[];
   iss_action_counts: Record<string, number>;
   // When each corpus was last refreshed from upstream — days after these
   // stamps carry no ingested data and render hatched, not as zero.

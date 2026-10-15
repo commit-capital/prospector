@@ -306,4 +306,11 @@ def matches(row: dict, spec: dict) -> bool:
         want_list = want if isinstance(want, list) else [want]
         if not any(v == "any" or resp.get(v) for v in want_list):
             return False
+    if spec.get("author_return"):
+        # an author came back after we closed their work (author_returns):
+        # True for either signal, else "reopened" / "follow-up"
+        ret = row.get("author_return")
+        want = spec["author_return"]
+        if not ret or (want is not True and ret["signal"] not in (want if isinstance(want, list) else [want])):
+            return False
     return True

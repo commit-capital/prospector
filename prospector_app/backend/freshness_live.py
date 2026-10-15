@@ -192,7 +192,7 @@ def sweep(prs: list[int] | None = None) -> dict:
     if full_sweep:
         # store-open PRs, plus the PRs we've closed — a closed PR is off the open
         # set, so re-checking the closed-by-us set is how an upstream reopen lands
-        # back in the store (and surfaces in the reopened-after-close panel).
+        # back in the store (and surfaces in the author-returns panel).
         # Unresolvable PRs are gone upstream; no fetch can reach them.
         targets = sorted({n for n, pr in snapshot.items()
                           if pr.state == "open" and not pr.unresolvable}

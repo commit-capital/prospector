@@ -16,13 +16,14 @@ export type IssueTablePage = {
   state: string;
   fix: string;
   maintainer: boolean;
+  cameBack: boolean;
   page: number;
   filterSpec: IssueFilterSpec;
 };
 
 /** The page the Issues view opens on when its URL names no filter. */
 export const ISSUE_TABLE_FIRST_PAGE: IssueTablePage = {
-  q: "", sortKey: "pain", sortDir: "desc", disposition: "", state: "open", fix: "", maintainer: false, page: 1, filterSpec: {},
+  q: "", sortKey: "pain", sortDir: "desc", disposition: "", state: "open", fix: "", maintainer: false, cameBack: false, page: 1, filterSpec: {},
 };
 
 export function fixStatusParam(key: string): string | string[] | undefined {
@@ -39,6 +40,7 @@ export function issueTableRead(p: IssueTablePage): Read<IssueQueryResult> {
     state: p.state === "all" ? undefined : p.state,
     fix_status: fixStatusParam(p.fix),
     maintainer: p.maintainer || undefined,
+    author_return: p.cameBack || undefined,
     collapse_dups: true,
     offset: (p.page - 1) * ISSUE_PAGE_SIZE,
     limit: ISSUE_PAGE_SIZE,

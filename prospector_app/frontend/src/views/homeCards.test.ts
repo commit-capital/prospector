@@ -18,11 +18,11 @@ test("card keys are unique", () => {
 test("cards run your move, then in motion, then handed back", () => {
   assert.deepEqual(
     HOME_CARDS.map((c) => c.key),
-    ["malicious", "ready", "approve", "approve-ci", "queued", "hunt", "waiting", "author", "your-call"],
+    ["malicious", "ready", "approve", "approve-ci", "came-back", "queued", "hunt", "waiting", "author", "your-call"],
   );
   assert.deepEqual(
     HOME_CARDS.map((c) => c.column),
-    ["act", "act", "act", "act", "auto", "auto", "auto", "handed", "handed"],
+    ["act", "act", "act", "act", "act", "auto", "auto", "auto", "handed", "handed"],
   );
 });
 
@@ -34,8 +34,8 @@ test("the malicious card leads Home as an alert and shows only while it has PRs"
   assert.equal(card.hideWhenEmpty, true);
 });
 
-test("every card filters on the automation standing alone", () => {
-  for (const card of HOME_CARDS) {
+test("every card but came-back filters on the automation standing alone", () => {
+  for (const card of HOME_CARDS.filter((c) => c.key !== "came-back")) {
     const keys = Object.keys(card.spec);
     assert.ok(keys.every((k) => k.startsWith("automation_")), card.key);
     assert.equal(keys.length, 1, card.key);
@@ -69,6 +69,14 @@ test("a breakdown link keeps the card's sort and takes the entry's spec", () => 
   const entry = card.breakdown![0];
   const params = new URLSearchParams(breakdownHref(card, entry).slice("/prs/list?".length));
   assert.deepEqual(JSON.parse(params.get("spec")!), entry.spec);
+});
+
+test("the came-back card is every open PR an author returned with, newest first", () => {
+  const card = HOME_CARDS.find((c) => c.key === "came-back")!;
+  assert.deepEqual(card.spec, { author_return: true });
+  assert.equal(card.cameBack, true);
+  assert.equal(card.hideWhenEmpty, undefined);
+  assert.equal(card.dir, "desc");
 });
 
 test("the ready card is the merge-ready standing, oldest first", () => {
@@ -144,11 +152,11 @@ test("issue card keys are unique and disjoint from PR card keys", () => {
   assert.equal(new Set(keys).size, keys.length);
 });
 
-test("the issue cards cover fixes to review, questions, close-fixed picks and the unanalyzed backlog", () => {
+test("the issue cards cover fixes to review, questions, authors who came back, close-fixed picks and the unanalyzed backlog", () => {
   assert.deepEqual(HOME_ISSUE_CARDS.map((c) => c.key),
-    ["issues-fix-review", "issues-fix-question", "issues-close-fixed", "issues-unanalyzed"]);
-  assert.deepEqual(HOME_ISSUE_CARDS.map((c) => c.fix ?? c.disposition),
-    ["review", "question", "close-fixed", "none"]);
+    ["issues-fix-review", "issues-fix-question", "issues-came-back", "issues-close-fixed", "issues-unanalyzed"]);
+  assert.deepEqual(HOME_ISSUE_CARDS.map((c) => c.fix ?? c.disposition ?? (c.cameBack ? "came-back" : null)),
+    ["review", "question", "came-back", "close-fixed", "none"]);
 });
 
 test("only the unanalyzed card runs a job, and it runs issue-analyze", () => {
@@ -158,12 +166,13 @@ test("only the unanalyzed card runs a job, and it runs issue-analyze", () => {
     { kind: "issue-analyze", label: "Analyze", batch: ISSUE_ANALYZE_BATCH });
 });
 
-test("issuesHref carries the card's fix or disposition filter", () => {
+test("issuesHref carries the card's came-back, fix or disposition filter", () => {
   for (const card of HOME_ISSUE_CARDS) {
     const href = issuesHref(card);
     assert.ok(href.startsWith("/issues?"));
     const params = new URLSearchParams(href.slice("/issues?".length));
-    if (card.fix) assert.equal(params.get("fix"), card.fix);
+    if (card.cameBack) assert.equal(params.get("came_back"), "1");
+    else if (card.fix) assert.equal(params.get("fix"), card.fix);
     else assert.equal(params.get("disposition"), card.disposition);
   }
 });

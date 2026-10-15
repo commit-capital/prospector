@@ -31,6 +31,9 @@ export interface HomeCard {
   // Rendered only while its count is above zero.
   hideWhenEmpty?: boolean;
   rowAction?: HomeRowAction;
+  // Each sample row says how its author came back after our close
+  // (PRRow.author_return), with its automation standing.
+  cameBack?: boolean;
   // Sub-buckets shown as counted links under the blurb, each its own spec.
   breakdown?: HomeBreakdown[];
 }
@@ -133,6 +136,16 @@ export const HOME_CARDS: HomeCard[] = [
     column: "act",
     spec: bucket("approve-ci"),
     hideWhenEmpty: true,
+  },
+  {
+    key: "came-back",
+    title: "Authors came back",
+    blurb: "We closed their work and the author answered: reopened the PR, or opened this one linking the PR or issue we closed — often scoped to what we asked for. They still care; take another look and move each to its next step.",
+    column: "act",
+    spec: { author_return: true },
+    sort: "updated",
+    dir: "desc",
+    cameBack: true,
   },
   {
     key: "queued",
@@ -271,6 +284,8 @@ export interface HomeIssueCard {
   blurb: string;
   disposition?: "close-fixed" | "none";
   fix?: "review" | "question";
+  // The open issues an author came back to after our close (author_returns).
+  cameBack?: boolean;
   action?: HomeIssueAction;
   lead?: boolean;
 }
@@ -294,6 +309,12 @@ export const HOME_ISSUE_CARDS: HomeIssueCard[] = [
     fix: "question",
   },
   {
+    key: "issues-came-back",
+    title: "Authors came back",
+    blurb: "We closed the author's issue or PR and they answered: reopened the issue, or filed this one linking what we closed. Take another look.",
+    cameBack: true,
+  },
+  {
     key: "issues-close-fixed",
     title: "Issues to close as fixed",
     blurb: "The triage pick is close-fixed — a merged PR already fixed each one. Review and close them as the bot.",
@@ -310,6 +331,7 @@ export const HOME_ISSUE_CARDS: HomeIssueCard[] = [
 ];
 
 export function issuesHref(card: HomeIssueCard): string {
+  if (card.cameBack) return "/issues?came_back=1";
   if (card.fix) return `/issues?fix=${encodeURIComponent(card.fix)}`;
   return `/issues?disposition=${encodeURIComponent(card.disposition ?? "")}`;
 }

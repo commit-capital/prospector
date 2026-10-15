@@ -62,6 +62,16 @@ export function FilterControls({ spec, onChange }: {
         <option value="resubmitted">⤴ resubmitted</option>
       </select>
 
+      {/* author_return: the open PRs an author came back with after we closed their work */}
+      <select value={spec.author_return === true ? "any" : Array.isArray(spec.author_return) ? "" : (spec.author_return ?? "")}
+        onChange={(e) => set("author_return", e.target.value === "any" ? true : (e.target.value || undefined))}
+        title="Open PRs whose author came back after we closed their work: reopened it, or opened this PR linking the PR or issue we closed.">
+        <option value="">came back: any</option>
+        <option value="any">author came back</option>
+        <option value="reopened">↩ reopened</option>
+        <option value="follow-up">↪ follow-up to our close</option>
+      </select>
+
       <button className="link-btn" onClick={() => onChange({})}>Clear all</button>
     </div>
   );

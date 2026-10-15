@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from pathlib import Path
 
@@ -74,6 +75,13 @@ def _snippet(body: str | None) -> str | None:
     return s[:SNIPPET_LEN] + ("…" if len(s) > SNIPPET_LEN else "")
 
 
+def _mention_re(repo: str) -> re.Pattern[str]:
+    """``#N`` or a PR/issue URL in `repo`; the number is group 1 or 2."""
+    return re.compile(
+        rf"(?<![\w/&])#(\d+)\b|github\.com/{re.escape(repo)}/(?:pull|issues)/(\d+)\b",
+        re.IGNORECASE)
+
+
 def classify(action_at: str, action_kind: str, *, state: str,
              comments: list[dict], reopens: list[dict], commit_dates: list[str],
              cross_refs: list[dict] | None = None,
@@ -89,6 +97,8 @@ def classify(action_at: str, action_kind: str, *, state: str,
     - new_commits: a commit pushed after we acted
     - resubmitted: a new PR in this repository, by the same author, cross-referenced
       on this closed PR after our action (author opened a fresh PR as a redo)
+    - mentions: the PR/issue numbers the author names in their own comments
+      after our action (not a signal by itself; the author's comment is a reply)
     """
     _ = bots  # bot filtering is applied via _is_human (module-level BOTS)
     cut = _dt(action_at)
@@ -143,6 +153,14 @@ def classify(action_at: str, action_kind: str, *, state: str,
                 resubmitted_at = ref.get("createdAt")
                 break
 
+    # mentions — the PRs or issues the author names in their own comments after
+    # our action ("opened a new PR at #N"), the link a resubmission's own body
+    # may never carry.
+    mentions = sorted({
+        int(m.group(1) or m.group(2))
+        for c in human if pr_author and _login(c, "author") == pr_author
+        for m in _mention_re(this_repo).finditer(c.get("bodyText") or "")})
+
     if not (replied or reopened or new_commits or resubmitted):
         return None
 
@@ -153,6 +171,7 @@ def classify(action_at: str, action_kind: str, *, state: str,
         "replied": replied,
         "resubmitted": resubmitted,
         "resubmitted_pr": resubmitted_pr,
+        "mentions": mentions,
         "last_response_at": last,
         "snippet": _snippet(latest.get("bodyText")) if latest else None,
         "by": reply_login or (_login(reopen_after[-1], "actor") if reopen_after else None),

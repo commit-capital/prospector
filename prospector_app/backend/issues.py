@@ -27,6 +27,7 @@ from pipeline import gh
 from pipeline import settings
 from pipeline import profile
 from pipeline import storekit
+from prospector_app.backend import author_returns
 from prospector_app.backend import claims
 from prospector_app.backend import data
 from prospector_app.backend import issue_data
@@ -415,6 +416,7 @@ def query_issues(q: str = "", sort: str | None = None, direction: str | None = N
                  labels: str | None = None, collapse_dups: bool = False,
                  fix_status: str | list[str] | None = None,
                  maintainer: bool | None = None,
+                 author_return: bool = False,
                  offset: int = 0, limit: int = 50) -> dict:
     """Paginated issue-table query. Uses the light cached snapshot for filtering
     and sorting, then hydrates only the returned page with full candidate PR data.
@@ -432,7 +434,9 @@ def query_issues(q: str = "", sort: str | None = None, direction: str | None = N
     one. `fix_status` accepts one fix_review status or a list (OR'd); "any"
     selects every issue with a fix attempt and "none" those without.
     `maintainer` keeps the issues whose author is (True) or is not (False) a
-    `gates.priority_author`. While the PR snapshot is still cold-loading, the result carries
+    `gates.priority_author`. `author_return` keeps the open issues an author
+    reopened after we closed them or opened as a follow-up to our close
+    (author_returns). While the PR snapshot is still cold-loading, the result carries
     `pr_states_loading` true and answers immediately with unhydrated linked-PR
     chips, no author stats, and (for sort=prs) no merged-fixer ranking — the
     view refetches until the flag clears."""
@@ -473,6 +477,9 @@ def query_issues(q: str = "", sort: str | None = None, direction: str | None = N
                 or r["fix_status"] in wanted_fix]
     if maintainer is not None:
         rows = [r for r in rows if r["maintainer"] == maintainer]
+    if author_return:
+        returns = author_returns.open_returns()["issue"]
+        rows = [r for r in rows if r["number"] in returns]
     if labels:
         needle_label = labels.strip().lower()
         if needle_label:
@@ -497,6 +504,7 @@ def query_issues(q: str = "", sort: str | None = None, direction: str | None = N
         row = _hydrate(r, full.get(r["number"]), clusters, store_states, pr_states_loading)
         if collapse_dups and row is not r:
             row["dup_rows"] = r["dup_rows"]
+        row["author_return"] = author_returns.open_returns()["issue"].get(r["number"])
         hydrated.append(row)
     return {"items": hydrated, "total": total, "offset": offset, "limit": limit,
             "pr_states_loading": pr_states_loading}

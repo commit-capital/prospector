@@ -1,4 +1,4 @@
-"""Tests for activity.firehose_stats() and activity.reopened_after_close() (#238)."""
+"""Tests for activity.firehose_stats() and activity.closed_by_us_prs() (#238)."""
 from datetime import date, timedelta, timezone
 from prospector_app.backend import activity
 
@@ -202,67 +202,7 @@ def test_firehose_errored_events_excluded():
     assert sum(stats["pr_closed"]) == 1
 
 
-# ── reopened_after_close ──────────────────────────────────────────────────────
-
-def test_reopened_after_close_detects_reopened_pr():
-    # store state='open' after our close means the sweep/INGEST re-observed it open.
-    prs = {42: _pr(42, "2026-01-01T00:00:00Z", state="open")}
-    events = [_ev("2026-06-20T10:00:00+00:00", "close", pr=42, reason="duplicate")]
-    result = activity.reopened_after_close(prs, events)
-    assert len(result) == 1
-    assert result[0]["pr"] == 42
-    assert result[0]["reason"] == "duplicate"
-
-
-def test_reopened_after_close_ignores_still_closed():
-    # our close persisted state='closed'; no reopen observed → not a reopen.
-    prs = {10: _pr(10, "2026-01-01T00:00:00Z", state="closed")}
-    events = [_ev("2026-06-20T10:00:00+00:00", "close", pr=10)]
-    assert activity.reopened_after_close(prs, events) == []
-
-
-def test_reopened_after_close_trusts_the_live_store_state():
-    """The store state is live-maintained (our close writes 'closed'; the sweep
-    writes an upstream reopen back to 'open'), so it alone is the reopen signal — a
-    closed-by-us PR reads 'closed' until a reopen is actually observed. No stale
-    committed 'open' to guard against (the 138-phantom-reopen bug is structural now)."""
-    events = [_ev("2026-06-20T10:00:00+00:00", "close", pr=7, reason="stale")]
-    assert activity.reopened_after_close(
-        {7: _pr(7, "2026-01-01T00:00:00Z", state="closed")}, events) == []   # not yet reopened
-    assert [r["pr"] for r in activity.reopened_after_close(
-        {7: _pr(7, "2026-01-01T00:00:00Z", state="open")}, events)] == [7]   # reopen observed
-
-
-def test_reopened_after_close_ignores_merged():
-    prs = {20: _pr(20, "2026-01-01T00:00:00Z", state="open")}
-    events = [_ev("2026-06-20T10:00:00+00:00", "merge", pr=20)]
-    assert activity.reopened_after_close(prs, events) == []
-
-
-def test_reopened_after_close_latest_action_wins():
-    """A PR that was closed then reopened by us shouldn't appear — the latest
-    action is reopen, not close."""
-    prs = {99: _pr(99, "2026-01-01T00:00:00Z", state="open")}
-    events = [
-        # newest first
-        _ev("2026-06-22T10:00:00+00:00", "reopen", pr=99),
-        _ev("2026-06-20T10:00:00+00:00", "close", pr=99),
-    ]
-    assert activity.reopened_after_close(prs, events) == []
-
-
-def test_reopened_after_close_results_sorted_newest_first():
-    prs = {
-        1: _pr(1, "2026-01-01T00:00:00Z", state="open"),
-        2: _pr(2, "2026-01-01T00:00:00Z", state="open"),
-    }
-    events = [
-        _ev("2026-06-21T10:00:00+00:00", "close", pr=1),
-        _ev("2026-06-22T10:00:00+00:00", "close", pr=2),
-    ]
-    result = activity.reopened_after_close(prs, events)
-    assert [r["pr"] for r in result] == [2, 1]
-
+# ── closed_by_us_prs ──────────────────────────────────────────────────────────
 
 def test_closed_by_us_prs_are_the_latest_landed_closes():
     events = [

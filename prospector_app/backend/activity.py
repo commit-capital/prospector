@@ -724,33 +724,6 @@ def closed_by_us_prs(events: list[dict] | None = None) -> list[int]:
                   if ev.get("kind") == "close")
 
 
-def reopened_after_close(prs: dict[int, Pr], events: list[dict] | None = None) -> list[dict]:
-    """PRs where our latest landed action was a close, yet the store now sees them
-    open again — reopened by the author (or a maintainer) after we closed them.
-
-    The store's PR state is live-maintained: our own close persists state='closed'
-    immediately (executor), and the live sweep persists an upstream reopen back to
-    state='open' (it re-checks the closed-by-us set for exactly this). So a
-    latest-landed-close PR reading 'open' was genuinely reopened — there is no stale
-    committed 'open' to guard against."""
-    events = all_events() if events is None else events
-    result = []
-    for pr_n, ev in _latest_landed_state_action(events).items():
-        if ev.get("kind") != "close":
-            continue
-        rec = prs.get(pr_n)
-        if rec and rec.state == "open":
-            result.append({
-                "pr": pr_n,
-                "title": rec.title,
-                "url": rec.url,
-                "author": rec.author,
-                "closed_at": ev.get("at"),
-                "reason": ev.get("reason"),
-            })
-    return sorted(result, key=lambda x: x["closed_at"] or "", reverse=True)
-
-
 def progress(prs: dict[int, Pr], events: list[dict] | None = None) -> dict:
     """Backlog progress (#27): how far through the PR backlog we've gotten.
 
@@ -800,6 +773,15 @@ def progress(prs: dict[int, Pr], events: list[dict] | None = None) -> dict:
     }
 
 
+def issue_close_reason(ev: dict) -> str:
+    action = ev.get("action")
+    if action == "CLOSE_ISSUE_DUP":
+        return "duplicate"
+    if action == "CLOSE_ISSUE_FIXED":
+        return "already-fixed"
+    return ev.get("reason") or "manual"
+
+
 def issue_progress(issues: dict[int, Issue], events: list[dict] | None = None) -> dict:
     """Backlog progress for issues closed through the app.
 
@@ -826,13 +808,7 @@ def issue_progress(issues: dict[int, Issue], events: list[dict] | None = None) -
         if ev.get("kind") != "issue-close":
             continue
         actioned_ids.add(issue)
-        action = ev.get("action")
-        if action == "CLOSE_ISSUE_DUP":
-            reason = "duplicate"
-        elif action == "CLOSE_ISSUE_FIXED":
-            reason = "already-fixed"
-        else:
-            reason = ev.get("reason") or "manual"
+        reason = issue_close_reason(ev)
         by_reason[reason] = by_reason.get(reason, 0) + 1
 
     actioned = len(actioned_ids)
