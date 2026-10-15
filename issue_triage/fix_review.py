@@ -207,9 +207,10 @@ def cancel(store: IssueStore, n: int, *, by: str) -> tuple[bool, str]:
 
 
 def queued_issues(issues: dict[int, Issue]) -> list[int]:
-    """Issues with a queued request, a maintainer's (gates.priority_author)
-    first, then oldest first."""
-    rows = [(not gates.priority_author(i.author, i.author_association),
+    """Issues with a queued request, an operator's priority first (higher
+    first), then a maintainer's (gates.priority_author), then oldest first."""
+    rows = [(-float((i.fix_request or {}).get("priority") or 0),
+             not gates.priority_author(i.author, i.author_association),
              (i.fix_request or {}).get("queued_at") or "", n) for n, i in issues.items()
             if (i.fix_request or {}).get("status") == "queued"]
     return [n for *_, n in sorted(rows)]

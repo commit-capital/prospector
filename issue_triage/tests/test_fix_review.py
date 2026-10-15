@@ -676,3 +676,18 @@ def test_a_late_rival_s_gap_the_revision_leaves_open_hands_the_pull_request_back
     assert json.loads(proposed.read_text())["result"]["patch"] == kept_patch
     assert [e["verdict"] for e in issue.fix_run["second_opinion"]] == ["gap-open"]
     assert issue.fix_followup["state"] == "handed-back" and "#12" in issue.fix_followup["reason"]
+
+
+def test_a_prioritized_issue_goes_first_and_only_while_queued(store):
+    store.save_issue({"issue": 8, "meta": {"title": "y", "state": "open",
+                                           "updated_at": "2026-09-01T00:00:00Z", "body": "b",
+                                           "author": "reporter"}})
+    fix_review.queue(store, 7, "solve", by="op")
+    fix_review.queue(store, 8, "solve", by="op")
+    issues = {n: store.load_issue(n) for n in (7, 8)}
+    assert fix_review.queued_issues(issues) == [7, 8]
+    assert store.prioritize_fix_request(8, 1.0) is True
+    issues = {n: store.load_issue(n) for n in (7, 8)}
+    assert fix_review.queued_issues(issues) == [8, 7]
+    store.claim_fix_request(7, host="studio")
+    assert store.prioritize_fix_request(7, 2.0) is False

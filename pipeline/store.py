@@ -1266,6 +1266,8 @@ class Store:
         section: wire.VerifyRequest = {
             "status": "running", "step": "claimed", "host": host,
             "started_at": storekit.now()}
+        if isinstance(req.get("priority"), (int, float)):
+            section["priority"] = float(req["priority"])
         for field in ("queued_at", "source", "attempts"):
             if req.get(field) is not None:
                 if field == "attempts" and isinstance(req[field], int):
@@ -1278,6 +1280,26 @@ class Store:
         storekit.stamp(
             rec, "verify_request", cast(dict, section), "against_head_sha", head)
         return section if self._prs.save_if(rec, stamp) else None
+
+    def _prioritize(self, n: int, section: str, waiting: tuple[str, ...], priority: float) -> bool:
+        """Set PR `n`'s `section` request's queue `priority` while it is still
+        waiting, under a compare-and-swap on the saved_at write-stamp, so a
+        worker's claim landing first is never undone. Whether it was set."""
+        row = self._prs.stamped(n)
+        if row is None:
+            return False
+        rec, stamp = row
+        req = rec.get(section)
+        if not isinstance(req, dict) or req.get("status") not in waiting:
+            return False
+        rec[section] = {**req, "priority": float(priority)}
+        return self._prs.save_if(rec, stamp)
+
+    def prioritize_verify_request(self, n: int, priority: float) -> bool:
+        return self._prioritize(n, "verify_request", ("queued", "waiting-for-base"), priority)
+
+    def prioritize_fix_request(self, n: int, priority: float) -> bool:
+        return self._prioritize(n, "fix_request", ("queued",), priority)
 
     def load_fix_worker(self) -> dict:
         """Autofix-worker heartbeats, one record per host (`{hosts: {<hostname>:
@@ -1399,6 +1421,18 @@ class Store:
     def load_worker_loops(self) -> dict[str, dict]:
         return self._rows_by_host(self._LOOPS_PREFIX)
 
+    _PAUSE_PREFIX = "lane_pause:"
+
+    def save_lane_pause(self, record: dict) -> None:
+        """The lanes an operator paused on one machine, keyed by `host`:
+        `{host, lanes: {lane: {at, by}}}`."""
+        if not record.get("host"):
+            raise ValidationError("lane_pause.host: required")
+        self._save_registry(f"{self._PAUSE_PREFIX}{record['host']}", record)
+
+    def load_lane_pauses(self) -> dict[str, dict]:
+        return self._rows_by_host(self._PAUSE_PREFIX)
+
     def _delete_registry(self, name: str) -> bool:
         from sqlalchemy import delete as sa_delete
         storekit.assert_writable(self.engine)
@@ -1434,7 +1468,7 @@ class Store:
                          "step": "claimed", "host": host,
                          "started_at": storekit.now()}
         for field in ("queued_at", "source", "attempts", "base_sha", "result",
-                      "guidance", "objection"):
+                      "guidance", "objection", "priority"):
             if req.get(field) is not None:
                 section[field] = req[field]
         head = (rec.get("meta") or {}).get("head_sha")

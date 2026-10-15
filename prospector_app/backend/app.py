@@ -36,7 +36,9 @@ from prospector_app.backend import chat
 from prospector_app.backend import claims
 from prospector_app.backend import machine_activity
 from prospector_app.backend import control_overview
+from prospector_app.backend import lane_pause
 from prospector_app.backend import machine_mode
+from prospector_app.backend import queue_order
 from prospector_app.backend import machines
 from prospector_app.backend import merge_progress
 from prospector_app.backend import data
@@ -339,10 +341,56 @@ def machines_stand_up(host: str):
     return {"cleared": machine_mode.stand_up(host)}
 
 
+@app.post("/api/worker/lanes/{lane}/pause")
+def worker_lane_pause(lane: str, body: dict = Body(default={})):
+    """Pause one lane on one machine: it takes no new work until Resume."""
+    host = str(body.get("host") or "")
+    if not host:
+        raise HTTPException(400, "host required")
+    try:
+        return lane_pause.pause(host, lane, by=activity.operator()["name"])
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/worker/lanes/{lane}/resume")
+def worker_lane_resume(lane: str, body: dict = Body(default={})):
+    host = str(body.get("host") or "")
+    if not host:
+        raise HTTPException(400, "host required")
+    try:
+        return lane_pause.resume(host, lane)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/verify/queue/{n}/top")
+def verify_queue_top(n: int):
+    """Move a waiting verification to the front of its queue."""
+    return _queue_top("verify", n)
+
+
+@app.post("/api/fix/queue/{n}/top")
+def fix_queue_top(n: int):
+    return _queue_top("fix", n)
+
+
+@app.post("/api/issues/{n}/fix/top")
+def issue_fix_top(n: int):
+    return _queue_top("issue-fix", n)
+
+
+def _queue_top(kind: queue_order.Kind, n: int) -> dict:
+    try:
+        return queue_order.top(kind, n)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
 @app.get("/api/control/overview")
-def control_overview_get() -> control_overview.Overview:
+def control_overview_get(fresh: bool = False) -> control_overview.Overview:
     """Health & queues in one read: machines, lanes, loops, needs, timeline."""
-    return control_overview.gather()
+    return control_overview.gather(fresh=fresh)
 
 
 @app.get("/api/health")

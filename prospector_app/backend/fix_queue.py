@@ -12,12 +12,16 @@ compile preflight — all of which fail closed there.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime, timezone
-from typing import TypedDict
+from typing import TYPE_CHECKING, TypedDict
 
 from pipeline import gates, settings
 from pipeline.storekit import now as _now
-from prospector_app.backend import activity, data, service
+from prospector_app.backend import activity, data, service, verify_queue
+
+if TYPE_CHECKING:
+    from pipeline.model import Pr
 
 # A worker heartbeat older than this reads as offline: the worker beats every
 # poll tick (fix_worker.POLL_SECONDS), so several missed beats mean the process
@@ -189,6 +193,20 @@ def _paths_phrase(paths: list[str]) -> str:
 
 # Listing order. `awaiting-review` leads because it is the only status an
 # operator can act on; everything else is work in progress they are waiting out.
+# The sources that queue a request without an operator: the idle hunter's picks
+# and objection continuations.
+AUTO_SOURCES = ("auto", "objection")
+
+
+def run_order(rec: Pr, req: Mapping[str, object]) -> tuple[float, bool, bool, str]:
+    """The order the worker takes requests of one status in: an operator's
+    priority (queue_order, higher first), operator picks before auto-picks, a
+    maintainer's PR (gates.priority_author) first, then oldest queued_at."""
+    return (-verify_queue.priority_of(req), req.get("source") in AUTO_SOURCES,
+            not gates.priority_author(rec.author, rec.author_association),
+            str(req.get("queued_at") or ""))
+
+
 _QUEUE_STATUS_ORDER = {"awaiting-review": 0, "pushing": 1, "running": 2,
                        "approved": 3, "queued": 4}
 
@@ -209,6 +227,7 @@ class FixQueueEntry(TypedDict):
     source: str | None
     step: str | None
     queued_at: str | None
+    priority: float | None
     started_at: str | None
     finished_at: str | None
     host: str | None
@@ -287,6 +306,7 @@ def _entry(n: int, title: str | None, req: dict) -> FixQueueEntry:
         "step": req.get("step"), "started_at": req.get("started_at"),
         "finished_at": req.get("finished_at"), "host": req.get("host"),
         "queued_at": req.get("queued_at"), "base_sha": req.get("base_sha"),
+        "priority": float(p) if (p := req.get("priority")) is not None else None,
         "guidance": req.get("guidance"), "detail": _detail(req),
         "conflict_paths": [str(p) for p in paths] if isinstance(paths, list) else [],
         "resolvable": status == "awaiting-review" and (pf is None or pf.get("exit") == 0),
@@ -309,25 +329,25 @@ def _auto_review_bar(result: dict) -> dict | None:
 
 def queue_entries() -> list[FixQueueEntry]:
     """Every PR with an autofix request in flight, the reviewable ones first and
-    oldest-queued first within each status, followed by the requests that ended
+    in the worker's order within each status (`run_order`), followed by the requests that ended
     within RECENT_SECONDS, newest ending first.
 
     `resolvable` is the claim a reviewable row makes: the action produced a
     change and the compile preflight did not reject it. A deployment configuring
     no verify.compile_cmd records None, which is not a failure — the merge or
     rebase resolving is the claim, and the build check corroborates it."""
-    live: list[FixQueueEntry] = []
+    live: list[tuple[tuple[int, tuple[float, bool, bool, str]], FixQueueEntry]] = []
     finished: list[FixQueueEntry] = []
     for n, rec in data.prs().items():
         req = rec.fix_request or {}
         status = req.get("status")
         if status in _QUEUE_STATUS_ORDER:
-            live.append(_entry(n, rec.title, req))
+            live.append(((_QUEUE_STATUS_ORDER[status], run_order(rec, req)), _entry(n, rec.title, req)))
         elif status in FINISHED_STATUSES and _recent(req):
             finished.append(_entry(n, rec.title, req))
-    live.sort(key=lambda e: (_QUEUE_STATUS_ORDER[e["status"]], str(e["queued_at"] or "")))
+    live.sort(key=lambda r: r[0])
     finished.sort(key=lambda e: str(e["finished_at"] or ""), reverse=True)
-    return live + finished
+    return [entry for _, entry in live] + finished
 
 
 def beat_online(last: object) -> bool:

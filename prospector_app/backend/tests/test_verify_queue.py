@@ -114,7 +114,7 @@ def test_queue_entries_lists_in_flight_ordered_and_labels_source(store):
                        "source": None, "step": "commit",
                        "queued_at": "2026-05-01T00:00:00+00:00",
                        "started_at": "2026-05-01T00:05:00+00:00",
-                       "host": None}
+                       "host": None, "priority": None}
     assert older_queued["pr"] == 2 and older_queued["source"] is None
     assert newer_queued["pr"] == 1 and newer_queued["source"] == "auto"
 

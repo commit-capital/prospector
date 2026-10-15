@@ -202,6 +202,20 @@ class IssueStore:
         issue.stage_fix_request(claimed)
         return claimed if self.save_issue_if(issue, stamp) else None
 
+    def prioritize_fix_request(self, n: int, priority: float) -> bool:
+        """Set issue `n`'s queued fix request's queue `priority` under a
+        compare-and-swap, so a worker's claim landing first is never undone.
+        Whether it was set."""
+        got = self.stamped_issue(n)
+        if got is None:
+            return False
+        issue, stamp = got
+        req = issue.fix_request
+        if not req or req.get("status") != "queued":
+            return False
+        issue.stage_fix_request({**req, "priority": float(priority)})
+        return self.save_issue_if(issue, stamp)
+
     def edit_issue(self, n: int) -> issue_model.Issue:
         """A typed, auto-saving handle for mutating issue `n`. Raises KeyError if
         the issue is not in the store."""

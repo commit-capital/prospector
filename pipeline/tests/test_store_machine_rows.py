@@ -42,3 +42,75 @@ def test_new_rows_do_not_leak_into_worker_health(st):
     st.save_machine_mode({"host": "mac-1", "stood_down": True, "at": "t"})
     st.save_worker_loops({"host": "mac-1", "at": "t", "lanes": {}, "loops": {}})
     assert st.load_worker_health() == {"hosts": {}}
+
+
+def test_lane_pause_round_trips(st):
+    st.save_lane_pause({"host": "mac-1", "lanes": {"verify": {"at": "t", "by": "ops"}}})
+    assert st.load_lane_pauses() == {"mac-1": {"host": "mac-1",
+                                               "lanes": {"verify": {"at": "t", "by": "ops"}}}}
+    with pytest.raises(S.ValidationError):
+        st.save_lane_pause({"lanes": {}})
+
+
+def _queued(st, n: int, section: str, status: str = "queued") -> None:
+    st.save_pr({"pr": n, "meta": {"title": f"pr {n}", "state": "open", "head_sha": "a" * 40},
+                section: {"status": status, "queued_at": f"2026-10-0{n}T00:00:00+00:00",
+                          "source": "operator", **({"action": "rebase"} if section == "fix_request" else {})}})
+
+
+def test_prioritize_sets_priority_on_a_waiting_request(st):
+    _queued(st, 1, "verify_request")
+    _queued(st, 2, "fix_request")
+    assert st.prioritize_verify_request(1, 3.0) is True
+    assert st.prioritize_fix_request(2, 1.0) is True
+    assert st.load_pr(1).verify_request["priority"] == 3.0
+    assert st.load_pr(2).fix_request["priority"] == 1.0
+    assert st.load_pr(2).fix_request["status"] == "queued"
+
+
+def test_prioritize_refuses_a_request_that_is_not_waiting(st):
+    _queued(st, 1, "verify_request", status="running")
+    assert st.prioritize_verify_request(1, 3.0) is False
+    assert "priority" not in st.load_pr(1).verify_request
+
+
+def test_prioritize_refuses_a_claimed_request(st):
+    _queued(st, 1, "verify_request")
+    real = st._prs.stamped
+    raced = []
+
+    def racing(n):
+        row = real(n)
+        if not raced:
+            raced.append(1)
+            assert st.claim_verify_request(n, host="worker") is not None
+        return row
+    st._prs.stamped = racing
+    assert st.prioritize_verify_request(1, 5.0) is False
+    st._prs.stamped = real
+    req = st.load_pr(1).verify_request
+    assert req["status"] == "running" and "priority" not in req
+
+
+def test_priority_survives_a_claim_and_a_requeue_and_ends_with_the_request(st):
+    _queued(st, 1, "verify_request")
+    assert st.prioritize_verify_request(1, 4.0)
+    assert st.claim_verify_request(1, host="w")["priority"] == 4.0
+    st.load_pr(1).record_verify_request("queued", queued_at="2026-10-01T00:00:00+00:00", attempts=1)
+    assert st.load_pr(1).verify_request["priority"] == 4.0
+    st.load_pr(1).record_verify_request("waiting-for-base", queued_at="q")
+    assert st.load_pr(1).verify_request["priority"] == 4.0
+    st.load_pr(1).record_verify_request("done", queued_at="q")
+    assert "priority" not in st.load_pr(1).verify_request
+    st.load_pr(1).record_verify_request("queued", queued_at="later")
+    assert "priority" not in st.load_pr(1).verify_request
+
+
+def test_fix_priority_survives_a_claim_and_a_requeue(st):
+    _queued(st, 2, "fix_request")
+    assert st.prioritize_fix_request(2, 2.0)
+    assert st.claim_fix_request(2, host="w")["priority"] == 2.0
+    st.load_pr(2).record_fix_request("queued", "rebase", queued_at="q", attempts=1)
+    assert st.load_pr(2).fix_request["priority"] == 2.0
+    st.load_pr(2).record_fix_request("pushed", "rebase", queued_at="q")
+    assert "priority" not in st.load_pr(2).fix_request

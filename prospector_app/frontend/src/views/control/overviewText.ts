@@ -3,9 +3,20 @@
 import type { ControlOverview, OverviewCellState, OverviewLane } from "../../api";
 
 const CELL: Record<OverviewCellState, string> = {
-  on: "on", off: "off", tripped: "tripped", "ai-paused": "AI paused",
+  on: "on", off: "off", paused: "paused", tripped: "tripped", "ai-paused": "AI paused",
   "stood-down": "stood down", offline: "offline",
 };
+
+/** The worker-health name of an overview lane, which pause and resume take. */
+export function healthLane(lane: string): string {
+  return lane === "autofix" ? "fix" : lane;
+}
+
+/** Whether Move to top and Remove apply to a queued row: the backend acts on
+ *  a request still waiting, and an approved autofix push is not. */
+export function canReorder(lane: string, status: string): boolean {
+  return status === "queued" || (lane === "verify" && status === "waiting-for-base");
+}
 
 export function cellLabel(state: OverviewCellState): string {
   return CELL[state];

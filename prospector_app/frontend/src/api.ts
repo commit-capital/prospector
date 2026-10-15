@@ -204,12 +204,13 @@ export interface ActivityJobs {
 }
 export interface ActivityView { local: string; window_hours: number; machines: MachineActivity[] }
 
-export type OverviewCellState = "on" | "off" | "tripped" | "ai-paused" | "stood-down" | "offline";
+export type OverviewCellState = "on" | "off" | "paused" | "tripped" | "ai-paused" | "stood-down" | "offline";
 export interface OverviewCell { host: string; state: OverviewCellState }
 export interface OverviewNowItem { host: string | null; pr: number | null; issue: number | null; title: string | null; step: string | null; started_at: string | null }
-export interface OverviewQueueItem { pr: number | null; issue: number | null; title: string | null; status: string; source: string | null; queued_at: string | null }
+export interface OverviewQueueItem { pr: number | null; issue: number | null; title: string | null; status: string; source: string | null; queued_at: string | null; priority: number | null }
+export interface OverviewPick { pr: number; title: string | null; action: string | null }
 export interface OverviewLane {
-  lane: string; label: string; cells: OverviewCell[]; now: OverviewNowItem[]; queue: OverviewQueueItem[];
+  lane: string; label: string; cells: OverviewCell[]; now: OverviewNowItem[]; queue: OverviewQueueItem[]; picks: OverviewPick[];
   parked: number; pool: number | null; ended_24h: number; faults_24h: number;
 }
 export interface OverviewLoop { loop: string; label: string; host: string; last_at: string | null; next_at: string | null }
@@ -2356,9 +2357,16 @@ export const api = {
   },
   machines: () => get<MachinesRoster>("/api/machines"),
   machinesActivity: () => get<ActivityView>("/api/machines/activity"),
-  controlOverview: () => get<ControlOverview>("/api/control/overview"),
+  controlOverview: (fresh = false) =>
+    get<ControlOverview>(`/api/control/overview${fresh ? "?fresh=true" : ""}`),
   standDown: (host: string, note?: string) =>
     postJson<{ stood_down: boolean }>(`/api/machines/${encodeURIComponent(host)}/stand-down`, { note: note ?? null }),
+  pauseLane: (lane: string, host: string) =>
+    postJson<unknown>(`/api/worker/lanes/${encodeURIComponent(lane)}/pause`, { host }),
+  resumeLane: (lane: string, host: string) =>
+    postJson<unknown>(`/api/worker/lanes/${encodeURIComponent(lane)}/resume`, { host }),
+  queueTop: (kind: "verify" | "fix" | "issue-fix", n: number) =>
+    postJson<{ priority: number }>(kind === "issue-fix" ? `/api/issues/${n}/fix/top` : `/api/${kind}/queue/${n}/top`, {}),
   standUp: (host: string) =>
     postJson<{ cleared: boolean }>(`/api/machines/${encodeURIComponent(host)}/stand-up`, {}),
   capacity: () => get<CapacityState>("/api/capacity"),

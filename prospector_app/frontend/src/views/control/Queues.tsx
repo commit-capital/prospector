@@ -1,10 +1,10 @@
 import { Fragment, useEffect, useState } from "react";
 import { Link } from "react-router";
-import { api, type Autohunt, type FixQueue, type VerifyQueue } from "../../api";
+import { api, type FixQueue } from "../../api";
 import { useExec } from "../../ExecContext";
 import { PRLink } from "../../components/PRLink";
 import { SandboxChecks } from "../../components/SandboxChecks";
-import { ago, elapsed, fixStatusChip, fmt, queueStatusChip } from "./format";
+import { ago, elapsed, fixStatusChip, fmt } from "./format";
 
 /** The parked-and-ready chip, worded by what the action actually produced. */
 const PARKED_READY: Record<string, string> = {
@@ -26,35 +26,6 @@ function RunningMeta({ host, online }: { host?: string | null; online: boolean }
       title={`${host}'s worker has stopped heartbeating, so this run is not progressing. Restart the worker on ${host}, then re-queue if the row doesn't recover.`}>
       on {host} — worker offline?
     </div>
-  );
-}
-
-export function VerifyTable({ queue, hunt }: { queue: VerifyQueue; hunt: Autohunt | null }) {
-  return (
-    <table className="grid compact queue-table">
-      <thead><tr><th>Status</th><th>PR</th><th>Source</th><th>Since</th></tr></thead>
-      <tbody>
-        {queue.queue.length === 0 ? (
-          <tr><td colSpan={4} className="muted small">Nothing queued, waiting, or running.</td></tr>
-        ) : queue.queue.map((e) => (
-          <tr key={e.pr}>
-            <td>
-              <span className={queueStatusChip(e.status)}>{e.status}{e.step ? ` · ${e.step}` : ""}</span>
-              {e.status === "running" && (
-                <RunningMeta host={e.host}
-                  online={(hunt?.status.runner.hosts ?? []).some((h) => h.host === e.host && h.online)} />
-              )}
-            </td>
-            <td className="mono">
-              <PRLink n={e.pr} />
-              {e.title && <div className="muted small">{e.title.slice(0, 60)}</div>}
-            </td>
-            <td><span className="chip chip-muted sm">{e.source === "auto-resweep" ? "re-sweep" : e.source === "auto" ? "auto" : "manual"}</span></td>
-            <td className="muted small" title={fmt(e.started_at ?? e.queued_at)}>{ago(e.started_at ?? e.queued_at)}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
   );
 }
 
