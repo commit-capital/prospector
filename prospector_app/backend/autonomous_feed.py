@@ -23,6 +23,7 @@ def item(ev: dict) -> dict:
         "at": ev.get("at"),
         "kind": kind,
         "action": ev.get("action"),
+        "verb": activity.verb({**ev, "kind": kind}),
         "pr": ev.get("pr"),
         "issue": ev.get("issue"),
         "identity": ev.get("identity"),

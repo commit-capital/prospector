@@ -116,13 +116,9 @@ def _mark_commit(rec: Pr, row: dict) -> None:
     row["detail"] = f"{row['detail']} · older commit"
 
 
-def checks_for_record(rec: Pr, today: str | None = None) -> dict:
-    """Roll `rec` up into named vetting checks — every check this deployment
-    could run on a PR, not only the ones that have. A check with no data yet
-    still gets a row, `status="na"`, so the panel shows the full check surface
-    up front instead of growing rows in as phases happen to run.
-    `today` (an ISO date) is the reference for age-window checks; None means
-    the current UTC date."""
+def _rows(rec: Pr) -> list[dict]:
+    """Every named check row of `rec`, in CHECK_KEYS order, each judged as
+    if its commit were the PR's head."""
     by_key: dict[str, dict] = {}
     sig = rec.signals or {}
     sig_at = sig.get("checked_at")
@@ -237,12 +233,35 @@ def checks_for_record(rec: Pr, today: str | None = None) -> dict:
     else:
         by_key["verify"] = _c("verify", "Validation test run", "na", "not run yet", None)
 
-    out = [by_key[k] for k in CHECK_KEYS if k in by_key]
+    return [by_key[k] for k in CHECK_KEYS if k in by_key]
+
+
+def checks_for_record(rec: Pr, today: str | None = None) -> dict:
+    """Roll `rec` up into named vetting checks — every check this deployment
+    could run on a PR, not only the ones that have. A check with no data yet
+    still gets a row, `status="na"`, so the panel shows the full check surface
+    up front instead of growing rows in as phases happen to run.
+    `today` (an ISO date) is the reference for age-window checks; None means
+    the current UTC date."""
+    out = _rows(rec)
     for row in out:
         _mark_commit(rec, row)
     ran = [c for c in out if c["status"] != "na" and not c["advisory"]]
     passed = [c for c in ran if c["status"] == "pass"]
     return {"checks": out, "passed": len(passed), "total": len(ran)}
+
+
+def checks_by_commit(rec: Pr) -> dict[str, list[dict]]:
+    """`rec`'s concluded check rows keyed by the commit each describes, every
+    row with the status it earned at that commit."""
+    out: dict[str, list[dict]] = {}
+    for row in _rows(rec):
+        section = _SECTION.get(row["key"])
+        if section:
+            row["against"] = (rec.section(section) or {}).get("against_head_sha")
+        if row["status"] != "na" and row["against"]:
+            out.setdefault(row["against"], []).append(row)
+    return out
 
 
 def _stage_commit(rec: Pr, row: dict, section: str) -> None:

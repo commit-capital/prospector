@@ -279,21 +279,6 @@ function HomeSecurityCard() {
 // holds the full record.
 const AUTO_FEED_LIMIT = 8;
 
-// A short verb for a feed row, from the event's kind and mechanical action.
-function feedLabel(item: AutonomousItem): string {
-  const action = (item.action ?? "").toUpperCase();
-  if (action === "REVIEW_RETRIGGER") return "asked for a re-review";
-  if (action === "UPDATE_BRANCH") return "merged the base in";
-  if (action === "REBASE") return "rebased onto the base";
-  if (action === "RESOLVE_CONFLICTS") return "resolved merge conflicts";
-  if (item.kind === "resubmit") return "pushed a change";
-  if (item.kind === "close") return "closed";
-  if (item.kind === "issue-close") return "closed issue";
-  if (item.kind === "merge") return "merged";
-  if (item.kind === "comment") return "commented";
-  return item.kind;
-}
-
 // A compact relative age for a feed row ("3h", "2d"); empty when unparseable.
 function agoLabel(iso: string | null): string {
   if (!iso) return "";
@@ -371,7 +356,7 @@ function HomeAutoFeedCard() {
                         : it.issue != null ? <span className="mono">#{it.issue}</span> : null}
                     </td>
                     <td className="home-sample-title" title={it.detail ?? undefined}>
-                      {feedLabel(it)}
+                      {it.verb}
                     </td>
                     <td className="home-sample-pain small muted">{agoLabel(it.at)}</td>
                     <td className="home-sample-run small">

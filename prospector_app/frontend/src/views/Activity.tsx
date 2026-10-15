@@ -10,13 +10,22 @@ import { localDateTime } from "../timeAgo";
 import { term } from "../glossary";
 import { SkeletonRows } from "../components/SkeletonRows";
 
-const KIND_ICON: Record<string, string> = { merge: "🔀", close: "📮", comment: "💬", resubmit: "🔄", reopen: "↩", undo: "⤺", handoff: "📤", reconcile: "♻️", "issue-close": "🎫" };
+const KIND_ICON: Record<string, string> = {
+  merge: "🔀", close: "📮", comment: "💬", review: "📝", "line-comment": "💬", "review-retrigger": "🔁",
+  "pr-edit": "✏️", resubmit: "🔄", reopen: "↩", undo: "⤺", handoff: "📤", reconcile: "♻️", "issue-close": "🎫",
+  "issue-fix-rerun": "🔁",
+};
 const KIND_TIP: Record<string, string> = {
   merge: "A PR was merged upstream as {bot}.",
   close: "A PR was closed (with a comment) as {bot} — reopenable.",
   "issue-close": "A GitHub issue was closed (with a comment) as {bot} — as a duplicate or as fixed by a merged PR.",
   comment: "A comment was posted on a PR as {bot}.",
-  resubmit: "A contributor PR branch was updated through the guarded resubmit flow.",
+  review: "A review (approve / request changes / comment) was submitted on a PR as {bot}.",
+  "line-comment": "An inline comment was posted on one line of a PR's diff as {bot}.",
+  "review-retrigger": "An automated reviewer was asked to re-review the PR's current head, as {bot}.",
+  "pr-edit": "A PR's description was rewritten as {bot}.",
+  "issue-fix-rerun": "The failed CI jobs on an issue-fix PR were re-run as {bot}.",
+  resubmit: "A contributor PR branch was pushed to (a fix, a rebase, a base merge, or a conflict resolution) through the guarded resubmit flow.",
   reopen: "A closed PR was reopened and the bot's closing comment removed.",
   undo: "A prior action was reversed.",
   handoff: "A batch of approved actions was emitted in one handoff.",

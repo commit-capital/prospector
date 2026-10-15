@@ -2138,12 +2138,11 @@ export const api = {
   },
   cluster: (id: number) => get<ClusterDetail>(`/api/clusters/${id}`),
   pr: (n: number) => get<PRDetail>(`/api/prs/${n}`),
-  prActions: (n: number) => get<{ items: PRAction[] }>(`/api/prs/${n}/actions`),
   /** The PR's preserved threat evidence, newest first (metadata only). */
   prEvidence: (n: number) => get<{ items: ThreatEvidence[] }>(`/api/prs/${n}/evidence`),
   /** Where one capture downloads as a zip of inert text files. */
   prEvidenceBundleUrl: (n: number, id: number): string => `/api/prs/${n}/evidence/${id}/bundle.zip`,
-  prHistory: (n: number) => get<{ items: PRHistoryItem[] }>(`/api/prs/${n}/history`),
+  prHistory: (n: number) => get<{ items: PRTimelineItem[] }>(`/api/prs/${n}/history`),
   prReviews: (n: number) => get<{ reviews: ReviewsDetail }>(`/api/prs/${n}/reviews`),
   suggestForAction: (n: number, disposition: string) =>
     get<Suggestion>(`/api/suggest/pr/${n}?disposition=${encodeURIComponent(disposition)}`),
@@ -2619,6 +2618,7 @@ export interface AutonomousItem {
   at: string | null;
   kind: string;
   action?: string | null;
+  verb: string;  // the human verb phrase ("rebased", "re-triggered Greptile")
   pr?: number | null;
   issue?: number | null;
   identity?: string | null;
@@ -2755,29 +2755,43 @@ export interface ThreatEvidence {
   signatures: string[]; errors: string[];
 }
 
-/** One real action taken on a PR (close/merge/reopen/comment/review), from the
- *  activity log — the bot `identity` that posted it + the human `operator`. */
-export interface PRAction {
-  kind: string; action?: string | null; status: string;
-  identity?: string | null; operator?: string | null;
-  at: string; reason?: string | null; detail?: string | null;
-  event_url?: string | null;  // deep-link to the exact GitHub event, when captured
+/** The Prospector activity-log event behind a timeline entry. */
+export interface PRHistoryVia {
+  verb: string;                // "re-triggered Greptile", "rebased", …
+  operator: string | null;     // the person who initiated it
+  initiator: string | null;    // "worker" when the automation acted on its own
+  reason: string | null;       // a close's reason
+  detail: string | null;
 }
 
-/** One event in a PR's condensed upstream activity history — a comment,
- *  review (an automated reviewer's is `bot_review` with its `reviewer` id and,
- *  for Greptile, the parsed `score`), commit, or reopen/close/force-push/rename
- *  event. Oldest first. */
+/** One event in a PR's timeline — a comment, review (an automated reviewer's
+ *  is `bot_review` with its `reviewer` id and, for Greptile, the parsed
+ *  `score`), commit, state event, or `prospector_action` (an activity event
+ *  GitHub shows no entry for). `via` is set when Prospector made it. */
 export interface PRHistoryItem {
-  kind: "comment" | "review" | "bot_review" | "commit" | "reopened" | "closed" | "force_push" | "renamed";
+  kind: "comment" | "review" | "bot_review" | "commit" | "reopened" | "closed" | "merged"
+    | "force_push" | "renamed" | "prospector_action";
   at: string;
-  actor?: string | null;
-  summary?: string | null;
-  url?: string | null;
-  state?: string | null;
-  reviewer?: string | null;
-  score?: number | null;
+  actor: string | null;
+  summary: string | null;
+  url: string | null;
+  state: string | null;
+  reviewer: string | null;
+  score: number | null;
+  sha: string | null;
+  via: PRHistoryVia | null;
 }
+
+/** What the pipeline concluded about one commit (pr_history.CommitSummary). */
+export interface PRCommitSummary {
+  kind: "prospector";
+  sha: string;
+  head: boolean;
+  facts: { label: string; tone: "pass" | "warn" | "fail" | "na" }[];
+  unrecorded: string[];  // stages with no per-commit record of this older commit
+}
+
+export type PRTimelineItem = PRHistoryItem | PRCommitSummary;
 
 /** The latest landed live action on a PR, from the activity log (#10). */
 export interface RunState {
