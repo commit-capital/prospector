@@ -1,3 +1,4 @@
+import { AuthorReturnNote } from "../AuthorReturn";
 import type { ReactNode } from "react";
 import { Link } from "react-router";
 import type { PRRow, PRResponses, ChecksRollup, LocBreakdown, ReviewerKind } from "../../api";
@@ -238,6 +239,14 @@ export const COLUMNS: ColumnDef[] = [
           </InfoTip>
         )}
         <InfoTip className="title-text" body={titleBody(r)} cue={false} focusable={false}>{r.title}</InfoTip>
+        {r.author_return && (
+          <InfoTip cue={false} focusable={false}
+            body={<div className="tip-rows"><AuthorReturnNote ret={r.author_return} /></div>}>
+            <span className="chip chip-purple sm">
+              {r.author_return.signal === "reopened" ? "↩ reopened" : `↪ #${r.author_return.closed.number}`}
+            </span>
+          </InfoTip>
+        )}
         {ctx.deepReasons.has(r.number) && (
           <InfoTip cue={false} focusable={false}
             entry={{ title: "Why Deep Search matched this", meaning: ctx.deepReasons.get(r.number) || "(the agent gave no reason)" }}>

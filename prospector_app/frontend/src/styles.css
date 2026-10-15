@@ -1166,6 +1166,7 @@ tr.row-done:hover > td { opacity: 1; }
 .act-reopened-list li { display: flex; align-items: baseline; gap: 8px; padding: 2px 0; font-size: 12.5px; flex-wrap: wrap; }
 .act-reopened-list li > a { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .act-reopened-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; max-width: 320px; }
+.act-reopened-follow { white-space: nowrap; }
 .act-reopened-pager { justify-content: flex-start; gap: 10px; margin: 8px 0 0; }
 .act-reopened-pager button { padding: 3px 9px; font-size: 12px; }
 

@@ -21,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 
 from prospector_app.backend import activity
+from prospector_app.backend import author_returns
 from prospector_app.backend import advisories as advisories_mod
 from prospector_app.backend import alerts as alerts_mod
 from prospector_app.backend import autohunt_view
@@ -1254,7 +1255,7 @@ def list_issues():
 def issues_query(payload: dict = Body(default_factory=dict)):
     """Paginated Issue-table endpoint. Body: {q?, sort?, direction?, disposition?,
     state?, author?, pain?, repro_grade?, subsystem?, dups?, linked_prs?, labels?,
-    collapse_dups?, fix_status?, maintainer?, offset?, limit?}; disposition "none" selects unanalyzed
+    collapse_dups?, fix_status?, maintainer?, author_return?, offset?, limit?}; disposition "none" selects unanalyzed
     issues, state "open"/"closed" filters by lifecycle ("all"/absent returns
     both). See issues.query_issues for the per-field filter semantics."""
     return issues_mod.query_issues(
@@ -1271,6 +1272,7 @@ def issues_query(payload: dict = Body(default_factory=dict)):
         collapse_dups=bool(payload.get("collapse_dups")),
         fix_status=payload.get("fix_status") or None,
         maintainer=payload.get("maintainer"),
+        author_return=bool(payload.get("author_return")),
         offset=int(payload.get("offset", 0)), limit=min(int(payload.get("limit", 50)), 500),
     )
 
@@ -1639,10 +1641,17 @@ def activity_firehose(days: int = Query(30, le=400), all_time: bool = False,
         if dates:
             start_date = min(dates)
     stats = activity.firehose_stats(scoped_prs, all_issues, days, events, start_date=start_date)
-    stats["reopened_after_close"] = activity.reopened_after_close(scoped_prs, events)
+    stats["author_returns"] = author_returns.current(scoped_prs, events)
     stats["iss_action_counts"] = activity.issue_action_counts(events)
     stats.update(activity.ingest_as_of(data.runs(), issues_mod.cached_runs()))
     return stats
+
+
+@app.get("/api/activity/author-returns")
+def activity_author_returns():
+    """PRs and issues we closed that their author came back to — reopened, or
+    answered with a new PR or issue linking the closed one."""
+    return {"items": author_returns.current()}
 
 
 @app.get("/api/activity/pr-authors")

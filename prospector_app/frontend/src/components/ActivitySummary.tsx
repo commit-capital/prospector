@@ -1,6 +1,8 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { api, type ActivitySummary as Sum, type ActivityBucket, type ActivityProgress, type IssueActivityProgress, type FirehoseStats, type ActivityPerson, type ActivityScopeParams } from "../api";
 import { useRepoMeta } from "../RepoMetaContext";
+import { CLOSE_REASON_LABEL } from "../closeReasons";
+import { ItemRefLink } from "./AuthorReturn";
 import { localDateTime, timeAgo } from "../timeAgo";
 
 const RANGE_OPTIONS = [
@@ -12,7 +14,6 @@ const RANGE_OPTIONS = [
 
 type RangeOpt = (typeof RANGE_OPTIONS)[number];
 
-const REASON_LABEL: Record<string, string> = { duplicate: "dup", "already-fixed": "fixed", stale: "stale", "won't-fix": "won't fix", oversized: "oversized", manual: "manual" };
 const REOPENED_PAGE_SIZE = 10;
 
 const CHART_KINDS = ["close", "merge", "comment", "reopen"] as const;
@@ -497,9 +498,9 @@ type ChartView = "line" | "bar";
 /** Statistics dashboard: headline cards, a multi-series velocity
  *  chart with bar/line toggle, a cumulative open PRs + issues chart side-by-side
  *  with the daily view, an incoming-vs-triaged category breakdown, and a list
- *  of any PRs that were reopened after we closed them. */
+ *  of the PRs and issues we closed that their author came back to. */
 export function ActivitySummary({ onQuickFilter }: ActivitySummaryProps) {
-  const { meta, prUrl } = useRepoMeta();
+  const { meta } = useRepoMeta();
   const [day, setDay] = useState<Sum>();
   const [prog, setProg] = useState<ActivityProgress>();
   const [issueProg, setIssueProg] = useState<IssueActivityProgress>();
@@ -586,7 +587,7 @@ export function ActivitySummary({ onQuickFilter }: ActivitySummaryProps) {
   const chartIngestAt = chartStamps.length && !chartStamps.some((s) => !s)
     ? chartStamps.reduce((a, b) => (a! < b! ? a : b))
     : null;
-  const reopened = firehose?.reopened_after_close ?? [];
+  const reopened = firehose?.author_returns ?? [];
   const reopenedPageCount = Math.max(1, Math.ceil(reopened.length / REOPENED_PAGE_SIZE));
   const reopenedClampedPage = Math.min(reopenedPage, reopenedPageCount - 1);
   const reopenedStart = reopenedClampedPage * REOPENED_PAGE_SIZE;
@@ -659,7 +660,7 @@ export function ActivitySummary({ onQuickFilter }: ActivitySummaryProps) {
             <span className="act-progress-split muted small">
               {prog.merged} merged · {prog.closed} closed
               {Object.entries(prog.by_reason).sort((a, b) => b[1] - a[1]).map(([r, n]) => (
-                <span key={r} className="chip chip-muted sm">{REASON_LABEL[r] ?? r} {n}</span>
+                <span key={r} className="chip chip-muted sm">{CLOSE_REASON_LABEL[r] ?? r} {n}</span>
               ))}
             </span>
           </div>
@@ -695,7 +696,7 @@ export function ActivitySummary({ onQuickFilter }: ActivitySummaryProps) {
             <span className="act-progress-split muted small">
               {issueProg.closed} closed
               {Object.entries(issueProg.by_reason).sort((a, b) => b[1] - a[1]).map(([r, n]) => (
-                <span key={r} className="chip chip-muted sm">{REASON_LABEL[r] ?? r} {n}</span>
+                <span key={r} className="chip chip-muted sm">{CLOSE_REASON_LABEL[r] ?? r} {n}</span>
               ))}
             </span>
           </div>
@@ -875,28 +876,34 @@ export function ActivitySummary({ onQuickFilter }: ActivitySummaryProps) {
               </div>
             )}
 
-            {/* PRs we closed that were subsequently reopened. Always shown (with an
-                explicit empty state) so a zero count reads as "none reopened", not a
-                missing/broken panel — reopens are rare, so empty is the common case. */}
+            {/* PRs and issues we closed that their author came back to — reopened,
+                or answered with a new submission linking it. Always shown (with an
+                explicit empty state) so a zero count reads as "none", not a
+                missing/broken panel — returns are rare, so empty is the common case. */}
             <div className="act-reopened">
               <div className="act-chart-title muted small" style={{ marginTop: 14 }}>
-                closed by us · now open again
+                closed by us · author came back
                 <span className="chip chip-muted sm" style={{ marginLeft: 6 }}>{reopened.length}</span>
               </div>
               {reopened.length === 0 ? (
-                <div className="muted small">None — no PR we've closed has been reopened upstream.</div>
+                <div className="muted small">None — no PR or issue we closed has been reopened or followed up by its author.</div>
               ) : (
                 <>
                   <ul className="act-reopened-list">
                     {reopenedShown.map((r) => (
-                      <li key={r.pr}>
-                        <a href={r.url ?? prUrl(r.pr)} target="_blank" rel="noreferrer">
-                          #{r.pr}
-                        </a>
+                      <li key={`${r.kind}-${r.number}`}>
+                        <ItemRefLink item={r} />
                         <span className="act-reopened-title" title={r.title ?? ""}>{r.title}</span>
                         <span className="muted small">
-                          {r.reason ? REASON_LABEL[r.reason] ?? r.reason : "closed"} · {fmtDate(r.closed_at)}
+                          {r.reason ? CLOSE_REASON_LABEL[r.reason] ?? r.reason : "closed"} · {fmtDate(r.closed_at)}
                         </span>
+                        {r.signal === "reopened"
+                          ? <span className="chip chip-purple sm">↩ reopened</span>
+                          : r.follow_ups.map((f) => (
+                            <span key={`${f.kind}-${f.number}`} className="act-reopened-follow small" title={f.title ?? ""}>
+                              ↪ <ItemRefLink item={f} /> {fmtDate(f.created_at)}
+                            </span>
+                          ))}
                       </li>
                     ))}
                   </ul>

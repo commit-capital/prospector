@@ -5,6 +5,7 @@ import {
   type IssueRow,
   type PRRow, type QueryResult,
 } from "../api";
+import { AuthorReturnNote } from "../components/AuthorReturn";
 import { HomeProgressRow } from "../components/HomeProgressRow";
 import { LinkedIssues } from "../components/LinkedIssues";
 import { PRLink } from "../components/PRLink";
@@ -51,11 +52,12 @@ function RowJobButton({ action, pr, onDone }: { action: HomeRowAction; pr: numbe
 // flyout) — plus the card's per-PR job button when it carries one. `reason`
 // (a handed card's escalation reason) renders as a second line under the
 // title, so every escalation says why it was handed back.
-function SamplePR({ r, rowAction, onActionDone, reason }: {
+function SamplePR({ r, rowAction, onActionDone, reason, cameBack }: {
   r: PRRow;
   rowAction?: HomeRowAction;
   onActionDone: () => void;
   reason?: string | null;
+  cameBack?: boolean;
 }) {
   return (
     <tr className="home-sample-row">
@@ -71,6 +73,12 @@ function SamplePR({ r, rowAction, onActionDone, reason }: {
           </span>
         )}
         {reason && <div className="small muted home-sample-reason" title={reason}>{reason}</div>}
+        {cameBack && r.author_return && (
+          <div className="small muted home-sample-reason" title={r.automation?.reason ?? undefined}>
+            <AuthorReturnNote ret={r.author_return} />
+            {r.automation?.reason && <> · {r.automation.reason}</>}
+          </div>
+        )}
       </td>
       <td className="home-sample-pain mono small" title="Community Pain Score — linked-issue pain + PR engagement">
         {painLabel(r.pain_score)}
@@ -132,7 +140,8 @@ function HomeCardRow({ card, count, sample, breakdown, onActionDone }: {
               <tbody>
                 {sample.items.map((r) => (
                   <SamplePR key={r.number} r={r} rowAction={card.rowAction} onActionDone={onActionDone}
-                    reason={card.column === "handed" ? r.automation?.reason : undefined} />
+                    reason={card.column === "handed" ? r.automation?.reason : undefined}
+                    cameBack={card.cameBack} />
                 ))}
               </tbody>
             </table>
@@ -403,7 +412,12 @@ function SampleIssue({ r }: { r: IssueRow }) {
             openIssue(r.number);
           }}>#{r.number}</a>
       </td>
-      <td className="home-sample-title">{r.title ?? "(no title)"}</td>
+      <td className="home-sample-title">
+        {r.title ?? "(no title)"}
+        {r.author_return && (
+          <div className="small muted home-sample-reason"><AuthorReturnNote ret={r.author_return} /></div>
+        )}
+      </td>
       <td className="home-sample-pain mono small" title="Pain rank — higher = more community impact">
         {painLabel(r.pain)}
       </td>
@@ -445,13 +459,13 @@ function HomeIssueCardRow({ card }: { card: HomeIssueCard }) {
   useEffect(() => {
     let cancelled = false;
     api.queryIssues({
-      disposition: card.disposition, fix_status: card.fix, state: "open",
+      disposition: card.disposition, fix_status: card.fix, author_return: card.cameBack, state: "open",
       sort: "pain", direction: "desc", limit: SAMPLE_LIMIT,
     })
       .then((d) => { if (!cancelled) { setSample({ items: d.items, total: d.total }); setFailed(false); } })
       .catch(() => { if (!cancelled) setFailed(true); });
     return () => { cancelled = true; };
-  }, [card.disposition, card.fix, generation]);
+  }, [card.disposition, card.fix, card.cameBack, generation]);
   const href = issuesHref(card);
   const total = sample ? sample.total : null;
   return (
