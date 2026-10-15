@@ -473,7 +473,8 @@ function Toasts() {
 }
 
 // The thin systemwide health strip on every page: worker lanes down on any
-// machine sharing this store (tripped, or the worker offline), stale ingests,
+// machine sharing this store (tripped, or the worker offline), a worker whose
+// Docker disk is filling (its remedy is the hover tooltip), stale ingests,
 // and AI accounts whose background work is paused at its capacity cap. Amber
 // for a partial problem, red for a full outage; hidden while everything is
 // healthy. A capacity pause is a hold, not a fault: it carries a pause mark

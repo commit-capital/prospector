@@ -20,6 +20,7 @@ LABELS: dict[str, str] = {
     "responses": "Author responses sweep",
     "cluster": "Clustering pass",
     "issue-followup": "Issue follow-up",
+    "docker-disk": "Docker disk check",
 }
 
 _lock = threading.Lock()

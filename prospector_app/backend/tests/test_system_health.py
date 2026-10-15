@@ -234,3 +234,58 @@ def test_other_hosts_still_report_when_one_is_stood_down():
         stood_down=frozenset({"lap"}))
     assert [i["kind"] for i in out["items"]] == ["lanes", "trip"]
     assert out["lanes_total"] == 1 and out["workers_stalled"] is True
+
+
+GB = 10**9
+
+
+def _disk_host(host: str, disk: dict) -> dict:
+    return {"host": host, "lanes": {}, "tripped": [], "disk": disk}
+
+
+def test_a_filling_docker_disk_warns_naming_the_machine_and_figures():
+    disk = {"at": _iso(0.1), "free_bytes": 12 * GB, "total_bytes": 158 * GB,
+            "min_free_bytes": 20 * GB}
+    out = system_health.summarize([_disk_host("studio", disk)], [], [("verify", "studio")],
+                                  FRESH, NOW_TS)
+    assert out["severity"] == "amber"
+    [item] = out["items"]
+    assert (item["kind"], item["host"]) == ("disk", "studio")
+    assert item["label"] == "studio: Docker disk 12 GB free of 158 GB"
+    assert "verify_driver.py gc" in item["detail"] and "docker system df" in item["detail"]
+    assert out["lanes_down"] == 0
+
+
+def test_docker_disk_above_its_floor_reads_ok():
+    disk = {"at": _iso(0.1), "free_bytes": 77 * GB, "total_bytes": 158 * GB,
+            "min_free_bytes": 20 * GB}
+    out = system_health.summarize([_disk_host("studio", disk)], [], [], FRESH, NOW_TS)
+    assert out["items"] == []
+
+
+def test_a_full_docker_disk_is_red():
+    disk = {"at": _iso(0.1), "error": "docker: Error response from daemon: "
+                                      "mkdir /var/lib/docker/x: no space left on device"}
+    out = system_health.summarize([_disk_host("studio", disk)], [], [], FRESH, NOW_TS)
+    assert out["severity"] == "red"
+    assert out["items"][0]["label"] == "studio: Docker disk full"
+
+
+def test_an_old_or_unreadable_disk_reading_reports_nothing():
+    old = {"at": _iso(2), "free_bytes": 1 * GB, "total_bytes": 158 * GB,
+           "min_free_bytes": 20 * GB}
+    unreadable = {"at": _iso(0.1), "error": "no sandbox image to measure with"}
+    out = system_health.summarize([_disk_host("a", old), _disk_host("b", unreadable)],
+                                  [], [], FRESH, NOW_TS)
+    assert out["items"] == []
+
+
+def test_status_reads_the_recorded_docker_disk(store, monkeypatch):
+    from prospector_app.backend import alert_data, issues
+    monkeypatch.setattr(issues, "cached_runs", lambda: [])
+    monkeypatch.setattr(alert_data, "runs", lambda: [])
+    worker_health.update(store, "studio", lambda r: worker_health.record_disk(
+        r, {"free_bytes": 5 * GB, "total_bytes": 158 * GB}, min_free_bytes=20 * GB))
+
+    out = system_health.status()
+    assert [i["kind"] for i in out["items"]] == ["disk"]

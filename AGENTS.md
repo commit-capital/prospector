@@ -786,7 +786,11 @@ offers Resume. Every trip appends a `worker:trip` ledger entry. The operator
 hears of a tripped lane, or of a worker whose heartbeat has been silent an
 hour, through the app alone: the health strip atop every page reads both live
 and clears when the condition does, and a worker stopping on purpose drops its
-heartbeat so it never reads as offline. No issue is filed for either. Each
+heartbeat so it never reads as offline. Every five minutes a verify, autofix or
+issue-fix machine reads the free space on Docker's own disk (`df` inside the
+sandbox image, so the Colima or Docker Desktop VM's; `disk_watch.py`) onto its
+health record, and the strip warns, without tripping a lane, while it is below
+`TRIAGE_DOCKER_MIN_FREE_GB` (default 20) or full. No issue is filed for either. Each
 worker's health is its own `worker_health:<id>` registry row. Worker stdout
 is mirrored to `<verify scratch>/logs/worker-<id>.log` (`worker_log.py`).
 The security lane's skip set carries a reason per PR

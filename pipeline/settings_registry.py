@@ -130,6 +130,9 @@ SETTINGS: tuple[Setting, ...] = (
        "the Docker VM's memory.", maximum=8),
     _i("TRIAGE_SANDBOX_LARGE_CPUS", "machine", "CPUs per large phase", "auto",
        "CPUs each large phase gets; auto shares the Docker VM's CPUs.", maximum=32),
+    _i("TRIAGE_DOCKER_MIN_FREE_GB", "machine", "Docker disk warning (GB free)", "20",
+       "The health strip warns when the disk Docker stores images on has less than this "
+       "much free on this worker, before a full disk fails every sandbox run."),
     # --- worker lanes (the Setup page's worker switches) -----------------------------
     _b("TRIAGE_VERIFY_WORKER", "workers", "Verify worker", "This machine verifies PRs."),
     _b("TRIAGE_VERIFY_AUTOHUNT", "workers", "Verify hunter",

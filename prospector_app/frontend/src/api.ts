@@ -1160,10 +1160,11 @@ export interface WorkStatus {
 export interface VerifyQueue { queue: VerifyQueueEntry[]; history: AutohuntRun[]; }
 
 /** One problem the health strip names: a lane count, a tripped or offline
- *  worker, a stale ingest, or an AI account whose background work is paused.
+ *  worker, a worker whose Docker disk is filling, a stale ingest, or an AI
+ *  account whose background work is paused.
  *  `detail` is the hover tooltip, shown inline on a capacity line. */
 export interface SystemHealthItem {
-  kind: "lanes" | "trip" | "offline" | "ingest" | "capacity";
+  kind: "lanes" | "trip" | "offline" | "ingest" | "capacity" | "disk";
   severity: "amber" | "red";
   label: string;
   detail?: string | null;

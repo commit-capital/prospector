@@ -67,7 +67,7 @@ def offline_workers(now: datetime | None = None,
 
 
 def health_status(registries: WorkerRegistries | None = None) -> dict:
-    """Every worker's lane health for the app: `{hosts: [{host, lanes}]}`,
+    """Every worker's lane health for the app: `{hosts: [{host, lanes, disk}]}`,
     tripped lanes first, each tripped lane carrying the `remedy` that clears
     it. `registries` is the store's worker registries when the caller has
     read them."""
@@ -85,7 +85,7 @@ def health_status(registries: WorkerRegistries | None = None) -> dict:
             if tripped:
                 entry["remedy"] = worker_health.remedy(
                     str(tripped.get("kind") or ""), str(tripped.get("reason") or ""))
-        out.append({"host": host, "lanes": lanes,
+        out.append({"host": host, "lanes": lanes, "disk": rec.get("disk"),
                     "tripped": sorted(n for n, e in lanes.items() if e.get("tripped"))})
     out.sort(key=lambda h: (not h["tripped"], h["host"]))
     return {"hosts": out, "any_tripped": any(h["tripped"] for h in out)}
