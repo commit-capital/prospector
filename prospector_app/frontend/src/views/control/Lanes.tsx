@@ -4,6 +4,7 @@ import { FlyoutIssueLink } from "../../components/FlyoutIssueLink";
 import { PRLink } from "../../components/PRLink";
 import { ago, elapsed } from "./format";
 import { canReorder, cellLabel, healthLane, nextText } from "./overviewText";
+import { LogTail } from "./LogTail";
 import { FixTable } from "./Queues";
 
 const TONE: Record<string, string> = {
@@ -32,7 +33,9 @@ function useAction(onChanged: () => void): [(fn: () => Promise<unknown>) => void
   return [run, busy, err];
 }
 
-function NowCell({ lane, now }: { lane: OverviewLane; now: number }) {
+function NowCell({ lane, now, local, logOpen, onLog }: {
+  lane: OverviewLane; now: number; local: string; logOpen: boolean; onLog: () => void;
+}) {
   if (lane.now.length === 0) return <span className="muted">idle</span>;
   return (
     <>
@@ -42,6 +45,11 @@ function NowCell({ lane, now }: { lane: OverviewLane; now: number }) {
           {n.step && <span className="muted"> · {n.step}</span>}
           {n.started_at && <span className="muted"> · {elapsed(n.started_at, now)}</span>}
           {n.host && <span className="muted small"> · {n.host}</span>}
+          {n.host === local && (
+            <button className="linkish small" aria-expanded={logOpen}
+              onClick={(e) => { e.stopPropagation(); onLog(); }}
+              title="Follow this machine's worker log">{logOpen ? " log ▴" : " log ▾"}</button>
+          )}
         </div>
       ))}
     </>
@@ -153,12 +161,14 @@ function Expanded({ lane, overview, fixQueue, onFixChanged, onChanged }: {
 
 /** One row per lane: its state on each machine, what it runs now and next,
  *  its past day, and a pause for this machine. A row opens its pauses, its
- *  queue with Move to top, the hunter's next picks, and recent endings. */
+ *  queue with Move to top, the hunter's next picks, and recent endings; an
+ *  item this machine runs opens its worker log. */
 export function Lanes({ overview, open, onToggle, fixQueue, onFixChanged, onChanged }: {
   overview: ControlOverview; open: string | null; onToggle: (lane: string) => void;
   fixQueue: FixQueue | null; onFixChanged: () => Promise<unknown>; onChanged: () => void;
 }) {
   const [now, setNow] = useState<number>(() => Date.now());
+  const [logFor, setLogFor] = useState<string | null>(null);
   const live = overview.lanes.some((l) => l.now.length > 0);
   useEffect(() => {
     if (!live) return;
@@ -182,12 +192,16 @@ export function Lanes({ overview, open, onToggle, fixQueue, onFixChanged, onChan
                     {many ? `${c.host.split(/[.-]/)[0]}: ` : ""}{cellLabel(c.state)}
                   </span>
                 ))}</td>
-                <td><NowCell lane={l} now={now} /></td>
+                <td><NowCell lane={l} now={now} local={overview.local} logOpen={logFor === l.lane}
+                  onLog={() => setLogFor((f) => (f === l.lane ? null : l.lane))} /></td>
                 <td className="muted">{nextText(l, overview.ai_paused?.retry_at ?? null)}
                   {l.parked > 0 && <b> · {l.parked} parked</b>}</td>
                 <td>{l.ended_24h}{l.faults_24h > 0 && <span className="activity-bad"> ({l.faults_24h} failed)</span>}</td>
                 <td><PauseControl lane={l} local={overview.local} onChanged={onChanged} /></td>
               </tr>
+              {logFor === l.lane && l.now.some((n) => n.host === overview.local) && (
+                <tr><td colSpan={6}><LogTail /></td></tr>
+              )}
               {open === l.lane && (
                 <tr><td colSpan={6}><Expanded lane={l} overview={overview} fixQueue={fixQueue}
                   onFixChanged={onFixChanged} onChanged={onChanged} /></td></tr>
