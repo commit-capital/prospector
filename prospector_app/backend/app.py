@@ -28,6 +28,7 @@ from prospector_app.backend import autonomous_feed
 from prospector_app.backend import escalation
 from prospector_app.backend import cluster_refresh, rereview_hunt, stale_refresh, threat_refresh
 from prospector_app.backend import worker_control
+from prospector_app.backend import worker_log
 from prospector_app.backend import worker_loops
 from prospector_app.backend import worker_readiness
 from prospector_app.backend import bulk
@@ -385,6 +386,13 @@ def _queue_top(kind: queue_order.Kind, n: int) -> dict:
         return queue_order.top(kind, n)
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+@app.get("/api/worker/log")
+def worker_log_read(after: int | None = Query(None, ge=0)):
+    """This machine's worker log, for the Now cell following it: the tail on a
+    first read, then what was written since `after`."""
+    return worker_log.read(after)
 
 
 @app.get("/api/control/overview")
