@@ -12,8 +12,9 @@ import { Collapsible } from "../components/Collapsible";
 import { PRActionBar } from "../components/PRActionBar";
 import { ClaimControl } from "../components/ClaimControl";
 import { VerifyAction, VerifyBody } from "../components/VerifyPanel";
-import { FixAction, FixBody } from "../components/FixPanel";
+import { FixAction, FixBody, ResolveConflictsButton } from "../components/FixPanel";
 import { designFixGoal, unavailable as fixUnavailable } from "../components/fixAvailability";
+import { withLiveConflicts } from "../components/liveChecks";
 import { PRActionLog } from "../components/PRActionLog";
 import { ThreatEvidencePanel } from "../components/ThreatEvidencePanel";
 import { PRLink } from "../components/PRLink";
@@ -154,6 +155,12 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
   // Live freshness check (#25): re-fetch this PR's upstream state in the
   // background and warn loudly if it diverged from the snapshot we're showing.
   const fresh = useFreshness([prNum]);
+  // The check persists what diverged into the store, so read the PR back to
+  // bring the stored checks and gates up to what it found.
+  useEffect(() => {
+    if (fresh.status === "done" && fresh.changed) reloadPr();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fresh.status, fresh.changed, fresh.at]);
 
   // Re-run analysis right from the "new commits" banner (#582): reuses the
   // cluster-scoped triage-cluster job — CLUSTER/ANALYZE aren't single-PR
@@ -292,6 +299,14 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
   // right there next to the status, instead of scattered across separate panels.
   const checksActions: Partial<Record<string, ReactNode>> = {};
   const checksBodies: Partial<Record<string, ReactNode>> = {};
+  const checks = withLiveConflicts(pr.checks, fresh.byPr[prNum]);
+  const resolveConflicts = (
+    <ResolveConflictsButton req={pr.fix_request ?? null} runner={fixRunner} busy={fixBusy}
+      resolved={resolved} onQueue={queueFix} />
+  );
+  if (checks?.checks.some((check) => check.key === "mergeable" && check.status === "fail")) {
+    checksActions.mergeable = resolveConflicts;
+  }
 
   const retriggerable = activeReviewers("review").filter((r) => r.retrigger);
   if (retriggerable.length > 0 && !resolved) {
@@ -431,6 +446,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
           picture is how you contradict reality in a contributor's PR. */}
       <FreshnessCallout diverged={fresh.byPr[prNum]}
         onRerunAnalysis={pr.clusters.length ? runAnalyze : undefined}
+        conflictAction={resolved ? undefined : resolveConflicts}
         rerunning={analyzeJob.running} rerunLog={analyzeJob.log} />
 
       {/* Verdict and primary action first, before anything scrolls. Deferred
@@ -606,7 +622,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
 
       {/* #550/#581: what checks ran, when, and what they found — plus the
           action that unblocks each one, right there. */}
-      <ChecksPanel c={pr.checks} actions={checksActions} bodies={checksBodies} />
+      <ChecksPanel c={checks} actions={checksActions} bodies={checksBodies} />
 
       {/* Autofix: have the configured machine user push a small fix to the
           contributor's branch, rather than asking the author and waiting.

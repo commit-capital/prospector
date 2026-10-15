@@ -112,13 +112,13 @@ def reviewable(pr: Pr) -> bool:
 
 def huntable(pr: Pr) -> bool:
     """Whether the idle hunter may spend a design review on `pr`'s head: a
-    reviewable head with no design review under the current rubric, or one
+    reviewable head with no design review the current rubric keeps, or one
     whose coverage this machine's fault kept from running, taken at least
     `coverage.FAULT_RETRY_HOURS` ago."""
     if not reviewable(pr):
         return False
     entry = pr.review_entry(reviewers.DESIGN.id) or {}
-    if entry.get("reviewed_sha") != pr.head_sha or reviewers.design_rubric(entry) < reviewers.DESIGN_RUBRIC:
+    if entry.get("reviewed_sha") != pr.head_sha or reviewers.design_outdated(entry):
         return True
     age = storekit.hours_since(entry.get("observed_at"))
     return (coverage.is_fault((entry.get("extra") or {}).get("coverage"))
