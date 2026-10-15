@@ -1359,6 +1359,19 @@ class TestDesignLane:
         row = [r for r in store.runs() if r.phase == "design-review:run"][-1]
         assert row.raw["trigger"] == "control"
 
+    def test_force_reviews_a_head_that_already_has_a_review(self, store, monkeypatch, tmp_path):
+        def review(clone, diff, *, head_sha, **kw):
+            return {"kind": "review", "reviewed_sha": head_sha, "findings": [],
+                    "checks": [], "summary": "again",
+                    "extra": {"rubric": reviewers.DESIGN_RUBRIC}}
+        self._ready(store, monkeypatch, tmp_path, review)
+        store.save_design_review(1, {"kind": "review", "reviewed_sha": HEAD, "findings": [],
+                                     "checks": [], "summary": "first",
+                                     "extra": {"rubric": reviewers.DESIGN_RUBRIC}}, head_sha=HEAD)
+        assert verify_worker.run_design(1, trigger="bulk") is None
+        assert verify_worker.run_design(1, trigger="bulk", force=True) is True
+        assert store.load_pr(1).review_entry("design")["summary"] == "again"
+
     def test_a_coverage_fault_lands_the_review_and_books_a_failure(self, store, monkeypatch,
                                                                     tmp_path):
         def review(clone, diff, *, head_sha, **kw):

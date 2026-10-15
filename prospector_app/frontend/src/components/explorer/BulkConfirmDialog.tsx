@@ -124,8 +124,8 @@ export function BulkConfirmDialog({ action, comment, canonical, perPr = false, r
       {action === "RUN_DESIGN" && (
         <div className="muted small bulk-perpr-note">
           📐 Starts one design review per PR, one at a time, on this machine's verify
-          base pin. A PR already reviewed at its head, or not threat-scanned clear, is
-          skipped. The jobs continue if this dialog or page is closed.
+          base pin, replacing any review the PR's head already has. A PR not
+          threat-scanned clear is skipped. The jobs continue if this dialog or page is closed.
         </div>
       )}
       {postsComment && (perPr

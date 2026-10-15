@@ -237,7 +237,7 @@ JOB_SPECS: dict[str, JobSpec] = {
     },
     "design-review-pr": {
         "label": "Design review (single PR)",
-        "detail": "review one PR's head for reuse, layering and test quality. Needs this machine's verify base pin. Store writes only, nothing upstream.",
+        "detail": "review one PR's head for reuse, layering and test quality, replacing any review it has. Needs this machine's verify base pin. Store writes only, nothing upstream.",
         "agentic": True,
         "ledger": ("pr", ("design-review:run",)),
         "needs_pr": True,

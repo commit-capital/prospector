@@ -13,6 +13,7 @@ import { PRActionBar } from "../components/PRActionBar";
 import { ClaimControl } from "../components/ClaimControl";
 import { VerifyAction, VerifyBody } from "../components/VerifyPanel";
 import { FixAction, FixBody, ResolveConflictsButton } from "../components/FixPanel";
+import { designFixGoal, unavailable as fixUnavailable } from "../components/fixAvailability";
 import { withLiveConflicts } from "../components/liveChecks";
 import { PRActionLog } from "../components/PRActionLog";
 import { ThreatEvidencePanel } from "../components/ThreatEvidencePanel";
@@ -229,6 +230,19 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
     secretJob.start(`/api/jobs/run/threat-scan-pr?pr=${prNum}`);
   };
 
+  // Re-run the design review from its check row: the single-PR job replaces
+  // whatever review the head already has.
+  const designJob = useJobStream("design-review-pr", { pr: prNum }, (status) => {
+    pushToast(`#${prNum} · Design review ${status}`, status === "done" ? "green" : "red",
+      { detail: status === "done" ? "review reloaded below" : "the job exited non-zero — see the log" });
+    reloadPr();
+  });
+  const runDesign = () => {
+    if (designJob.running) return;
+    pushToast(`▶ #${prNum} · Design review — running…`, "muted");
+    designJob.start(`/api/jobs/run/design-review-pr?pr=${prNum}`);
+  };
+
   // Record that the secret-leak finding the operator reviewed is no
   // credential: it lifts the merge block for that line at that head only.
   const clearSecretLeak = async (headSha: string, evidence: string) => {
@@ -311,7 +325,39 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
   const reviewBlocks = reviewerBlocks(pr.reviews_detail ?? null, (d) => d.kind === "review" && d.id !== "design");
   if (reviewBlocks.length > 0) checksBodies.review = <>{reviewBlocks}</>;
   const designBlocks = reviewerBlocks(pr.reviews_detail ?? null, (d) => d.id === "design");
-  if (designBlocks.length > 0) checksBodies.design = <>{designBlocks}</>;
+  if (designBlocks.length > 0 || designJob.log.length > 1) {
+    checksBodies.design = (
+      <>
+        {designBlocks}
+        {designJob.log.length > 1 && (
+          <div className="joblog" aria-label="design review log">
+            {designJob.log.map((l, i) => <div key={i} className="logline">{l}</div>)}
+          </div>
+        )}
+      </>
+    );
+  }
+  if (!resolved) {
+    const design = pr.reviews_detail?.design ?? null;
+    const goal = design && design.digest.stale !== true ? designFixGoal(design.entry?.findings ?? []) : "";
+    const fixWhy = fixUnavailable(fixRunner, pr.fix_request ?? null, resolved);
+    checksActions.design = (
+      <>
+        {goal && (
+          <button className="btn-secondary sm" disabled={fixBusy != null || fixWhy != null}
+            onClick={() => void queueFix("fix", goal)}
+            title={fixWhy ?? "Queue an autofix aimed at these findings. The agent writes the change, "
+              + "a second agent reviews it, and it parks in Autofix for your approval."}>
+            {fixBusy === "fix" ? "Queuing…" : "🔧 Fix findings"}
+          </button>
+        )}
+        <button className="btn-secondary sm" onClick={runDesign} disabled={designJob.running}
+          title="Design-review this PR's current head now, replacing any review it has. Runs on a machine holding a verify base pin.">
+          {designJob.running ? "Running…" : design?.entry ? "↻ Re-run" : "↻ Run"}
+        </button>
+      </>
+    );
+  }
   const scanBlocks = reviewerBlocks(pr.reviews_detail ?? null, (d) => d.kind === "scanner");
   if (scanBlocks.length > 0) checksBodies.scans = <>{scanBlocks}</>;
 

@@ -40,6 +40,9 @@ MEASURED, UNTESTED, SKIPPED, ERROR = "measured", "untested", "skipped", "error"
 # harness exit — books a fault on the design lane's health, never on the PR.
 FAULT = "fault"
 _FAULT_EXITS = frozenset({gates.SENTINEL_PATCH_UNREADABLE, gates.SENTINEL_SETUP_FAIL})
+_FAULT_REASON = re.compile(rf"^the coverage run exited ({'|'.join(map(str, sorted(_FAULT_EXITS)))}):")
+# A design review whose coverage faulted is taken again once this long has passed.
+FAULT_RETRY_HOURS = 6
 
 _HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 _VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
@@ -319,6 +322,15 @@ def measure(clone: Path, *, base_sha: str, tier: int, pr: int, head_sha: str) ->
     return done(MEASURED, tests=tests, wanted=wanted, results=parsed[0], runs=parsed[1])
 
 
+def is_fault(rec: CoverageRecord | dict | None) -> bool:
+    """Whether `rec` is a run this machine could not carry out, including an
+    `error` record stamped with a harness exit."""
+    if not rec:
+        return False
+    return rec.get("status") == FAULT or (
+        rec.get("status") == ERROR and bool(_FAULT_REASON.match(rec.get("reason") or "")))
+
+
 def summary(rec: CoverageRecord | dict | None) -> str | None:
     """One line for the Checks row, or None when there is no record."""
     if not rec:
@@ -339,7 +351,7 @@ def summary(rec: CoverageRecord | dict | None) -> str | None:
         return "coverage: no related tests"
     if status == SKIPPED:
         return f"coverage skipped: {reason}"
-    if status == FAULT:
+    if is_fault(rec):
         return f"coverage could not run (worker fault, not this PR): {reason[:120]}"
     return f"coverage not measured: {reason[:120]}"
 
