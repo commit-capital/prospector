@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from pipeline import capacity, headless_agent, profile
+from pipeline import capacity, headless_agent, profile, review_policy, reviewers
 from pipeline import store as S
 from pipeline.storekit import now as _now
 from prospector_app.backend import data, fix_queue, fix_worker, sandbox_check
@@ -983,6 +983,40 @@ def test_a_fix_with_nothing_to_aim_at_refuses_before_any_agent_runs(store, monke
     assert probe.calls == []
 
 
+def _design_failing(store) -> None:
+    """Greptile at the bar, a blocking and a minor design finding at the head."""
+    rec = store.load_pr(1).raw
+    rec["reviews"]["design"] = {
+        "kind": "review", "reviewed_sha": HEAD, "checks": [],
+        "extra": {"rubric": reviewers.DESIGN_RUBRIC}, "summary": "design prose",
+        "findings": [{"severity": "blocking", "title": "duplicates src/util.ts pad",
+                      "body": "use pad", "path": "src/a.ts", "line": 3,
+                      "verification": {"verdict": "confirmed", "reason": "r"},
+                      "resolved": False, "outdated": False},
+                     {"severity": "minor", "title": "naming", "body": "n", "path": "src/a.ts",
+                      "line": 4, "resolved": False, "outdated": False}]}
+    store.save_pr(rec)
+    data.refresh()
+
+
+@pytest.mark.parametrize("mode", ["advisory", "gate"])
+def test_design_findings_aim_a_fix_only_when_the_profile_names_design(store, monkeypatch, mode):
+    _design_failing(store)
+    monkeypatch.setenv("TRIAGE_DESIGN_REVIEW", mode)
+    review_policy.reset()
+    monkeypatch.setattr(
+        profile, "active",
+        lambda: profile.RepoProfile(autofix=profile.AutofixPolicy(fixable_gates=("review",))))
+    brief = fix_worker._fix_goal(store.load_pr(1), {})
+    assert brief.findings == [] and "design prose" not in brief.review_summary
+    monkeypatch.setattr(
+        profile, "active",
+        lambda: profile.RepoProfile(autofix=profile.AutofixPolicy(fixable_gates=("design",))))
+    brief = fix_worker._fix_goal(store.load_pr(1), {})
+    assert [f["headline"] for f in brief.findings] == ["duplicates src/util.ts pad"]
+    assert "design review findings" in brief.goal
+
+
 def _withholding_profile(monkeypatch, *, fixable_gates: tuple[str, ...] = ("review",)) -> None:
     monkeypatch.setattr(profile, "active", lambda: profile.RepoProfile(
         codeowners=profile.CodeownersPolicy(gated_globs=("skills/**",), owners=("@core",)),
@@ -1307,6 +1341,31 @@ def test_a_code_finding_beside_the_description_nit_is_a_fix_not_a_describe(
     store.save_pr(rec)
     data.refresh()
     assert fix_worker.auto_fixable(data.prs()[5]) == ("fix", None)
+
+
+def test_a_head_the_required_checks_never_ran_on_is_hunted_as_an_update(store, monkeypatch):
+    monkeypatch.delenv("TRIAGE_FIX_HUNT_FIX", raising=False)
+    store.save_pr({"pr": 6, "meta": {"title": "t", "state": "open", "head_sha": HEAD},
+                   "signals": {"ci": "unreported", "mergeable": True,
+                               "checked_at": NOW, "against_head_sha": HEAD},
+                   "reviews": reviews_section(HEAD, NOW, greptile=greptile_entry(5, HEAD))})
+    data.refresh()
+    assert fix_worker.auto_fixable(data.prs()[6]) == ("update", None)
+    rec = store.load_pr(6).raw
+    rec["fix_request"] = {"status": "refused", "action": "update", "source": "auto",
+                          "against_head_sha": HEAD, "finished_at": NOW}
+    store.save_pr(rec)
+    data.refresh()
+    assert fix_worker.auto_fixable(data.prs()[6]) is None
+
+
+def test_a_head_whose_workflows_await_approval_is_not_hunted(store, monkeypatch):
+    store.save_pr({"pr": 6, "meta": {"title": "t", "state": "open", "head_sha": HEAD},
+                   "signals": {"ci": "awaiting-approval", "mergeable": True,
+                               "checked_at": NOW, "against_head_sha": HEAD},
+                   "reviews": reviews_section(HEAD, NOW, greptile=greptile_entry(5, HEAD))})
+    data.refresh()
+    assert fix_worker.auto_fixable(data.prs()[6]) is None
 
 
 def _fake_describe_inputs(monkeypatch, tmp_path):
@@ -1720,7 +1779,8 @@ def review_lane(store, monkeypatch, tmp_path):
     runs: list[str] = []
     run_patches: list[str] = []
 
-    def fake_run(pr, head, patch, cmd):
+    def fake_run(pr, head, patch, cmd, runs_tests=False):
+        assert runs_tests
         runs.append(cmd)
         run_patches.append(patch.read_text())
         return {"exit": 0, "cmd": cmd}
@@ -1833,7 +1893,7 @@ def test_a_tier0_conflict_parks_without_spending_agents(review_lane, store, monk
 
 def test_failing_related_tests_stay_parked(review_lane, store, monkeypatch):
     monkeypatch.setattr(fix_worker.compile_preflight, "run_command_for_patch",
-                        lambda pr, head, patch, cmd: {"exit": 1, "cmd": cmd})
+                        lambda pr, head, patch, cmd, runs_tests=False: {"exit": 1, "cmd": cmd})
     _parked_resolve(store)
     fix_worker.review_parked_resolve(1)
     req = store.load_pr(1).fix_request
@@ -1845,7 +1905,7 @@ def test_a_sandbox_error_leaves_no_stamp_so_a_recovered_host_retries(
         review_lane, store, monkeypatch):
     monkeypatch.setattr(
         fix_worker.compile_preflight, "run_command_for_patch",
-        lambda pr, head, patch, cmd: {
+        lambda pr, head, patch, cmd, runs_tests=False: {
             "cmd": cmd,
             "error": "compile preflight failed unexpectedly; see server logs"})
     _parked_resolve(store)
@@ -1861,7 +1921,7 @@ def test_a_sandbox_error_leaves_no_stamp_so_a_recovered_host_retries(
 def test_a_sandbox_refusal_stamps_with_its_reason(review_lane, store, monkeypatch):
     monkeypatch.setattr(
         fix_worker.compile_preflight, "run_command_for_patch",
-        lambda pr, head, patch, cmd: {
+        lambda pr, head, patch, cmd, runs_tests=False: {
             "cmd": cmd,
             "refused": "the PR changes dependency manifests"})
     _parked_resolve(store)
@@ -2990,7 +3050,7 @@ def _linted(monkeypatch, tmp_path, with_fix: dict, pr_alone: dict | None = None)
     monkeypatch.setenv("TRIAGE_VERIFY_SCRATCH", str(tmp_path / "scratch"))
     runs: list[dict] = []
 
-    def fake_run(pr, head, patch, cmd, lane="compile"):
+    def fake_run(pr, head, patch, cmd, lane="compile", runs_tests=False):
         alone = patch.read_text() == PR_DIFF
         runs.append({"cmd": cmd, "lane": lane, "alone": alone})
         return dict(pr_alone if alone else with_fix, cmd=cmd)

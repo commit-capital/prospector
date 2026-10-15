@@ -64,14 +64,16 @@ SETTINGS: tuple[Setting, ...] = (
             "green: live, dry-run (notes only), or off.", editable=True,
             choices=("live", "dry-run", "off")),
     Setting("TRIAGE_ISSUE_FIX_PUBLIC", "behavior", "choice", "Issue fixes on GitHub", "live",
-            "For issues in scope, the issue-fix worker sets a status label, posts its "
-            "conclusions, opens fixed pull requests, asks its questions, and acts on "
-            "replies on GitHub: live, dry-run (notes only), or off.", editable=True,
+            "For issues in scope, the issue-fix worker sets a status label, opens fixed "
+            "pull requests and comments on them, asks its questions, and acts on "
+            "replies on GitHub (a failed attempt shows nothing): live, dry-run (notes "
+            "only), or off.", editable=True,
             choices=("live", "dry-run", "off")),
     Setting("TRIAGE_ISSUE_FIX_PUBLIC_SCOPE", "behavior", "choice",
             "Issues fixed on GitHub", "maintainers",
-            "Which issues the GitHub loop serves: the ones maintainers filed, or all.",
-            editable=True, choices=("maintainers", "all")),
+            "Which issues the GitHub loop serves: the ones maintainers filed, all, or "
+            "all-dry-run (every issue, with the community's held to dry-run).",
+            editable=True, choices=("maintainers", "all", "all-dry-run")),
     _b("TRIAGE_ISSUE_FIX_SUITE", "behavior", "Run the full suite on issue fixes",
        "A fix that clears its other checks also runs the repository's full test suite.",
        on_by_default=True),
@@ -79,6 +81,15 @@ SETTINGS: tuple[Setting, ...] = (
        "How many attempts the issue-fix hunter starts on its own per UTC day."),
     _i("TRIAGE_ISSUE_FIX_MAX_LINES", "behavior", "Issue-fix size cap (lines)", "300",
        "The most changed lines an issue fix may carry."),
+    Setting("TRIAGE_DESIGN_REVIEW", "behavior", "choice", "Design review", "gate",
+            "A verify worker reviews each PR head for reuse, layering, the repository's "
+            "conventions and test strength: gate (a merge requirement, passing with no "
+            "open blocking or major finding), advisory (shown only), or off.",
+            editable=True, choices=("gate", "advisory", "off")),
+    _b("TRIAGE_DESIGN_COVERAGE", "behavior", "Measure changed-line coverage",
+       "Before each design review, run the PR's related tests in the sandbox and record "
+       "how many of its changed source lines they execute (advisory).",
+       on_by_default=True),
     _b("TRIAGE_FIX_HUNT_SECURITY", "behavior", "Fix YELLOW security findings",
        "The autofix hunter may queue a fix for a PR's current YELLOW security finding."),
     _b("TRIAGE_PR_WATCH", "behavior", "Watch GitHub for new PRs",
@@ -159,17 +170,17 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("TRIAGE_PUSH_LOGIN", "deployment", "text", "Push user", "(none)",
             "The GitHub user that pushes fixes."),
     Setting("TRIAGE_PUSH_EMAIL", "deployment", "text", "Push user email", "(none)",
-            "The push user's commit email."),
+            "The push user's no-reply email, its commit email when no App is configured."),
     Setting("TRIAGE_PUSH_SSH_KEY_FILE", "deployment", "path", "Push user SSH key", "(none)",
             "The push user's SSH key file."),
-    Setting("TRIAGE_REVIEW_PROVIDER", "deployment", "text", "Review provider", "auto",
-            "Which reviewers gate a merge: auto, none, or reviewer ids."),
     Setting("TRIAGE_REVIEW_THRESHOLD", "deployment", "int", "Greptile pass score", "5",
             "The Greptile score a PR needs."),
     Setting("TRIAGE_AGENT_PROVIDER", "deployment", "choice", "In-app agent", "claude",
             "The CLI behind the in-app agent pane.", choices=("claude", "codex", "none")),
     Setting("PROSPECTOR_FEEDBACK_REPO", "deployment", "text", "Feedback repository", "(none)",
             "Where the feedback button files issues."),
+    Setting("PROSPECTOR_FEEDBACK_ASSIGNEE", "deployment", "text", "Feedback assignee",
+            "(gh's stored login)", "Who the feedback button pre-assigns new issues to."),
     Setting("TRIAGE_SLACK_WEBHOOK_URL", "deployment", "secret", "Slack alerts webhook",
             "(off)", "The Slack incoming webhook malicious PRs and maintainer credential "
             "leaks are posted to."),
@@ -238,6 +249,13 @@ INTERNAL: tuple[str, ...] = (
     "PROBE_DENY", "HOME", "TZ",
     "PYTEST_XDIST_WORKER",
 )
+
+# Settings the code no longer reads, with what replaced each. The Setup page
+# names any still set, and a pasted bundle drops them.
+RETIRED: dict[str, str] = {
+    "TRIAGE_REVIEW_PROVIDER": "Which reviewers gate a merge is detected from the reviewers seen "
+                              "on the repository's open PRs; delete this line.",
+}
 
 BY_NAME = {s.name: s for s in SETTINGS}
 _LIST_TOKEN = re.compile(r"^[A-Za-z0-9._-]+$")

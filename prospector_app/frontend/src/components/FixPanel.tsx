@@ -292,6 +292,25 @@ export function FixAction({ req, runner, busy, resolved, onQueue, onDequeue, onA
   );
 }
 
+/** "Resolve merge conflicts" on its own, for the places that report a conflict:
+ *  the live-state banner and the Checks row. Queues the same `rebase` the
+ *  Autofix panel does, under the same availability rule. */
+export function ResolveConflictsButton({ req, runner, busy, resolved, onQueue }: {
+  req: FixRequest | null;
+  runner: FixRunner | null;
+  busy: FixAction | "dequeue" | "approve" | null;
+  resolved: boolean;
+  onQueue: (action: FixAction) => void;
+}) {
+  const why = unavailable(runner, req, resolved);
+  return (
+    <button className="btn-secondary sm" disabled={busy != null || why != null}
+      onClick={() => onQueue("rebase")} title={why ?? HELP.rebase}>
+      {busy === "rebase" ? "Queuing…" : LABEL.rebase}
+    </button>
+  );
+}
+
 /** The expanded autofix detail: the request's live state plus, once one is
  *  parked for review, the exact diff the runner authored. The diff is shown
  *  before anything is pushed — approving is what sends it. */

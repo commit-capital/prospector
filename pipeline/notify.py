@@ -20,13 +20,14 @@ credential alert names the file, never the value.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import TYPE_CHECKING
 
-from pipeline import gates, settings, storekit
+from pipeline import actions, gates, settings, storekit
 
 if TYPE_CHECKING:
     from pipeline.model import Pr
@@ -84,7 +85,8 @@ def due_alerts(incidents: list[dict], items: list[dict], prs: Mapping[int, Pr],
                today: date) -> list[Alert]:
     """The alerts the registries call for: each open PR flagged malicious, and
     each open, non-fixture rotate-secret item on an open PR a maintainer wrote,
-    first seen within WINDOW_DAYS of `today`. A PR missing from `prs` is
+    first seen within WINDOW_DAYS of `today` — an item from the day its current
+    evidence was found, and keyed by that evidence. A PR missing from `prs` is
     skipped."""
     out: list[Alert] = []
     for inc in incidents:
@@ -102,11 +104,13 @@ def due_alerts(incidents: list[dict], items: list[dict], prs: Mapping[int, Pr],
         n = item.get("pr")
         pr = prs.get(n) if isinstance(n, int) else None
         if (not isinstance(n, int) or pr is None or pr.state != "open"
-                or not gates.maintainer_leak(item, pr) or not _fresh(item.get("created"), today)):
+                or not gates.maintainer_leak(item, pr) or not _fresh(actions.found(item), today)):
             continue
-        path = _evidence_path(str(item.get("evidence") or ""))
+        evidence = str(item.get("evidence") or "")
+        path = _evidence_path(evidence)
         where = f" in {_code(path)}" if path else ""
-        out.append(Alert(f"secret:{n}", (
+        digest = hashlib.sha256(evidence.encode()).hexdigest()[:12]
+        out.append(Alert(f"secret:{n}:{digest}", (
             f"🔑 *Possible {_esc(settings.display_name() or 'project')} credential leaked:*"
             f" {_pr_link(n, pr)} by maintainer"
             f" {_code(pr.author or '?')}{where} · Rotate it at the provider if real —"
@@ -140,7 +144,7 @@ def send_due(store: Store, registry: dict, items: list[dict], *, url: str | None
     incidents = list(registry.get("incidents") or [])
     wanted = {inc.get("pr") for inc in incidents if _fresh(inc.get("noticed"), today)}
     wanted |= {it.get("pr") for it in items
-               if it.get("kind") == "rotate-secret" and _fresh(it.get("created"), today)}
+               if it.get("kind") == "rotate-secret" and _fresh(actions.found(it), today)}
     prs = {n: rec for n in wanted
            if isinstance(n, int) and (rec := store.load_pr(n)) is not None}
     sent: list[str] = []

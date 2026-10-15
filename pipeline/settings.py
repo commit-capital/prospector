@@ -103,6 +103,12 @@ def feedback_repo() -> str:
     return os.environ.get("PROSPECTOR_FEEDBACK_REPO", "")
 
 
+def feedback_assignee() -> str | None:
+    """The login the Feedback button pre-assigns, or None to assign the
+    operator's gh login. A blank value reads as None."""
+    return os.environ.get("PROSPECTOR_FEEDBACK_ASSIGNEE", "").strip() or None
+
+
 def feedback_token() -> str | None:
     """The token `file-issue` files on the feedback repo with, or None to use
     gh's stored login. A blank value reads as None."""
@@ -178,6 +184,21 @@ def verify_worker_enabled() -> bool:
     return os.environ.get("TRIAGE_VERIFY_WORKER", "") == "1"
 
 
+def design_review_mode() -> str:
+    """What the Prospector-run design reviewer does (`pipeline/design_review.py`):
+    `gate` (the default) reviews PR heads and makes its bar a merge requirement,
+    `advisory` shows the verdict and gates nothing, `off` reviews nothing."""
+    value = os.environ.get("TRIAGE_DESIGN_REVIEW", "gate").strip().lower()
+    return value if value in ("off", "advisory", "gate") else "gate"
+
+
+def design_coverage() -> bool:
+    """Whether the design lane measures a head's changed-line coverage in the
+    sandbox before its review (`pipeline/coverage.py`; TRIAGE_DESIGN_COVERAGE,
+    default on)."""
+    return os.environ.get("TRIAGE_DESIGN_COVERAGE", "1") == "1"
+
+
 # Comma-separated host:port entries the sandbox boot probe must FAIL to reach
 # (this machine's sensitive host services, e.g. a credentialed local server).
 # Empty keeps sandbox/boot-probe.sh's built-in default list.
@@ -191,35 +212,9 @@ def profile_path() -> str:
     return os.environ.get("TRIAGE_PROFILE", "")
 
 
-def parse_review_provider(raw: str | None) -> tuple[str, tuple[str, ...]]:
-    """(mode, ids): "auto" detects active reviewers from the repository's PR
-    data, "none" requires no external review, "explicit" names exactly the
-    reviewer ids that gate (a comma list of pipeline.reviewers ids). An unknown
-    id is a hard error so a typo never silently disables a bar."""
-    from pipeline import reviewers
-    text = (raw or "auto").strip().lower()
-    if text in ("", "auto"):
-        return ("auto", ())
-    if text == "none":
-        return ("none", ())
-    ids = tuple(p.strip() for p in text.split(",") if p.strip())
-    unknown = [i for i in ids if i not in reviewers.REVIEWERS]
-    if unknown:
-        raise SystemExit(
-            f"TRIAGE_REVIEW_PROVIDER: unknown reviewer(s) {unknown!r}; use 'auto', 'none', or a "
-            f"comma list of {sorted(reviewers.REVIEWERS)}. Set it in .env — see .env.example.")
-    return ("explicit", ids)
-
-
-def review_provider() -> tuple[str, tuple[str, ...]]:
-    """Which automated reviewers gate a clean merge (see pipeline/review_policy.py).
-    Defaults to "auto" so a fresh checkout gates on whatever the repository runs."""
-    return parse_review_provider(os.environ.get("TRIAGE_REVIEW_PROVIDER"))
-
-
 def reviewer_active_days() -> int:
     """How recently a reviewer must have posted on an open PR to count as active
-    in auto mode."""
+    and gate merges."""
     return positive_int("TRIAGE_REVIEWER_ACTIVE_DAYS", 14)
 
 
@@ -285,7 +280,7 @@ def push_identity_partial() -> bool:
 if push_identity_partial():
     raise SystemExit(
         "TRIAGE_PUSH_LOGIN, TRIAGE_PUSH_EMAIL and TRIAGE_PUSH_SSH_KEY_FILE must be "
-        "set together (the contributor-push user's login, its commit email, and "
+        "set together (the contributor-push user's login, its no-reply email, and "
         "its private key). Set all three or none — see .env.example."
     )
 
@@ -365,9 +360,11 @@ def issue_fix_public() -> str:
 
 def issue_fix_public_scope() -> str:
     """Which issues the public loop serves: `maintainers` (the default), the
-    issues a maintainer filed (`gates.priority_author`), or `all`."""
+    issues a maintainer filed (`gates.priority_author`); `all`; or
+    `all-dry-run`, every issue, with the ones a maintainer did not file held
+    to dry-run."""
     value = os.environ.get("TRIAGE_ISSUE_FIX_PUBLIC_SCOPE", "maintainers").strip().lower()
-    return value if value in ("maintainers", "all") else "maintainers"
+    return value if value in ("maintainers", "all", "all-dry-run") else "maintainers"
 
 
 def issue_fix_hunt_budget() -> int:

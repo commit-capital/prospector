@@ -18,15 +18,14 @@ other exit is a machine failure.
 from __future__ import annotations
 
 import os
-import subprocess
 import threading
 import traceback
 from collections.abc import Iterable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from pipeline import capacity, cluster_pass, freshness, profile, settings, storekit
-from prospector_app.backend import data, lane_health
+from pipeline import capacity, cluster_driver, cluster_pass, freshness, settings, storekit
+from prospector_app.backend import data, lane_health, worker_children, worker_log, worker_loops
 from prospector_app.backend.jobs import PIPELINE_PY, REPO_ROOT
 
 if TYPE_CHECKING:
@@ -67,15 +66,14 @@ def spent_today(runs: Iterable[storekit.RunRecord], today: str) -> tuple[int, in
 
 
 def has_work(prs: dict[int, Pr]) -> bool:
-    """Whether an open PR lacks a current summary (a configured automation
-    author's aside), is summarized but in no cluster and not stamped
-    standalone, or belongs to a cluster without a current analysis of it."""
-    bots = profile.active().automation_bots
+    """Whether an open PR the wave may take lacks a current summary, is
+    summarized but in no cluster and not stamped standalone, or belongs to a
+    cluster without a current analysis of it."""
     for pr in prs.values():
         if pr.state != "open":
             continue
         if not freshness.is_current(pr, "summary"):
-            if pr.author not in bots:
+            if cluster_driver.summarizable(pr):
                 return True
             continue
         if not pr.section("cluster"):
@@ -89,16 +87,14 @@ def _spawn(limit: int, analyze: int) -> tuple[int, str]:
     """Run one pass in a child process; its exit code and last output line."""
     argv = [*PIPELINE_PY, "-u", str(REPO_ROOT / "pipeline" / "cluster_pass.py"),
             "--limit", str(limit), "--analyze", str(analyze), "--trigger", TRIGGER]
-    proc = subprocess.Popen(argv, cwd=str(REPO_ROOT), stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True,
-                            env={**os.environ, capacity.UNATTENDED_ENV: LANE})
-    assert proc.stdout is not None
     last = ""
-    for line in proc.stdout:
-        print(f"[cluster] {line}", end="", flush=True)
-        if line.strip():
-            last = line.strip()
-    return proc.wait(), last
+    with worker_children.spawn(argv, env={**os.environ, capacity.UNATTENDED_ENV: LANE}) as proc:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            print(f"[cluster] {line}", end="", flush=True)
+            if line.strip():
+                last = line.strip()
+        return proc.wait(), last
 
 
 def book(rc: int, last: str) -> None:
@@ -137,11 +133,16 @@ def pass_once() -> int | None:
 
 
 def _loop() -> None:
+    try:
+        worker_children.reap()
+    except Exception:
+        traceback.print_exc()
     while not _stop.is_set():
         try:
             pass_once()
         except Exception:
             traceback.print_exc()
+        worker_loops.ran("cluster", REFRESH_SECONDS)
         _stop.wait(REFRESH_SECONDS)
 
 
@@ -161,6 +162,7 @@ def startup() -> bool:
         return False
     if running():
         return True
+    worker_log.install()
     _stop.clear()
     _thread = threading.Thread(target=_loop, daemon=True, name="cluster-refresh")
     _thread.start()

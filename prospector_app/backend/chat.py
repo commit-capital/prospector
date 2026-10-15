@@ -124,7 +124,8 @@ def system_prompt() -> str:
     if not text:
         raise RuntimeError(f"app agent context is empty: {AGENT_CONTEXT}")
     review_bar = review_policy.merge_bar_sentence()
-    mentions = [r.retrigger_mention for r in review_policy.active_reviewers(reviewers.REVIEW)
+    mentions = [f"{r.label} `{r.retrigger_mention}`"
+                for r in review_policy.active_reviewers(reviewers.REVIEW)
                 if r.retrigger_mention]
     harness = profile.active().harness
     template_parts = []
@@ -140,7 +141,7 @@ def system_prompt() -> str:
                 .replace("{review_bar}", review_bar)
                 .replace("{pr_template}", pr_template)
                 .replace("{body_dir}", os.path.realpath(agent_backend.BODY_DIR))
-                .replace("{retrigger_mention}", ", ".join(mentions) or "(none configured)"))
+                .replace("{retrigger_mention}", "; ".join(mentions) or "(none configured)"))
 
 
 def _ctx_id(pr: int | None, cluster: int | None, issue: int | None = None,
@@ -598,8 +599,8 @@ def _build_context(pr: int | None, cluster: int | None, issue: int | None,
         return _advisory_context(advisory)
     if alert_source and alert:
         return _alert_context(alert_source, alert)
-    return (f"CONTEXT: Prospector, triaging the open PRs on {settings.repo()} "
-            "grouped into clusters. Answer the operator's general question about the codebase or triage.")
+    return (f"CONTEXT: Prospector on {settings.repo()}, no item selected. Answer the "
+            "operator's general question about the codebase or triage.")
 
 
 async def stream_chat(question: str, pr: int | None = None, cluster: int | None = None,

@@ -45,18 +45,12 @@ class Probe(TypedDict):
     problem: str | None
 
 
-def noreply_email(user_id: int, login: str) -> str:
-    """GitHub's per-account no-reply address, so no real address is ever
-    committed."""
-    return f"{user_id}+{login}@users.noreply.github.com"
-
-
 def _gh_user(path: str) -> Account | None:
     user = gh.gh_json(path, timeout=20) or {}
     login, uid = user.get("login"), user.get("id")
     if not isinstance(login, str) or not login or not isinstance(uid, int) or isinstance(uid, bool):
         return None
-    return {"login": login, "id": uid, "email": noreply_email(uid, login)}
+    return {"login": login, "id": uid, "email": gh.noreply_email(uid, login)}
 
 
 def operator_account() -> Account | None:

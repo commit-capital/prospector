@@ -123,7 +123,7 @@ def capture_baseline(store: Store) -> dict:
     """Materialize the historical baseline: enumerate every PR, keep only those
     absent from the store (terminal, pre-ingest), aggregate per author, persist.
     Idempotent — re-running recomputes from scratch."""
-    present = set(store.all_prs().keys())
+    present = store.pr_ids()
     out: dict[str, dict] = {}
     for node in _enumerate():
         n = node.get("number")

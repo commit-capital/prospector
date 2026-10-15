@@ -172,7 +172,7 @@ class TestRunForMerge:
                             lambda *a, **k: pytest.fail("ran despite no base"))
         res = compile_preflight.run_for_merge(7, "a" * 40)
         assert res is not None
-        assert res["error"] == "RuntimeError: cannot resolve default branch"
+        assert res["error"] == "compile preflight failed unexpectedly; see server logs"
         assert "exit" not in res
 
     def test_every_record_carries_duration(self, configured, no_sandbox_calls):
@@ -225,6 +225,22 @@ class TestRunCommandForPatch:
         assert phase == "compile" and kw["test_cmd"] == "npx vitest run src/app.test.ts"
         assert kw["patch"] == patch
 
+    def test_a_test_run_asks_for_the_test_setup_on_both_legs(self, monkeypatch, tmp_path):
+        patch = _patch_file(tmp_path, SRC_DIFF)
+        monkeypatch.setattr(verify_driver, "resolve_base_sha", lambda: BASE)
+        monkeypatch.setattr(verify_driver, "image_exists", lambda tag: True)
+        monkeypatch.setattr(verify_driver, "base_command_failure",
+                            lambda image, cmd, rerun: rerun() and None)
+        calls: list = []
+
+        def fake_run(phase, image, **kw):
+            calls.append(kw)
+            return 20, "boom"
+        monkeypatch.setattr(verify_driver, "run_phase", fake_run)
+        compile_preflight.run_command_for_patch(7, "a" * 40, patch, "npx vitest run x",
+                                                runs_tests=True)
+        assert len(calls) == 2 and all(kw["runs_tests"] for kw in calls)
+
     def test_nothing_raises_into_the_caller(self, monkeypatch, tmp_path):
         patch = _patch_file(tmp_path, SRC_DIFF)
         monkeypatch.setattr(verify_driver, "resolve_base_sha",
@@ -262,7 +278,7 @@ class TestExitClassification:
         rec = self._run(configured, monkeypatch, tmp_path, 137, "Killed\n")
         assert "exited 137" in rec["error"]
 
-    def test_an_exception_keeps_its_text(self, configured, monkeypatch, tmp_path):
+    def test_a_build_failure_keeps_its_text(self, configured, monkeypatch, tmp_path):
         from pipeline import compile_preflight, verify_driver
         patch = tmp_path / "p.patch"
         patch.write_text("diff --git a/x.ts b/x.ts\n--- a/x.ts\n+++ b/x.ts\n@@ -1 +1 @@\n-a\n+b\n")

@@ -322,7 +322,8 @@ def test_the_happy_path_ends_fixed(lane):
     assert [r["lens"] for r in res.result["reviews"]] == ["root-cause", "scope-safety"]
     assert res.result["proof"]["red"]["exit"] == gates.SENTINEL_TEST_FAIL
     assert res.result["proof"]["green"]["exit"] == gates.SENTINEL_PASS
-    assert res.agent_runs == 5
+    assert res.result["boundary"]["crossings"] == []
+    assert res.agent_runs == 6
 
 
 def test_the_fix_clone_carries_the_frozen_test_committed(lane):
@@ -487,9 +488,9 @@ def test_the_clones_are_removed_after_a_fault(lane):
 
 
 def test_agent_runs_counts_every_agent_invocation(lane):
-    # reproduce + judge + fix + root-cause + scope-safety.
+    # reproduce + judge + fix + root-cause + scope-safety + trust-boundary.
     res = lane.run()
-    assert res.agent_runs == 5
+    assert res.agent_runs == 6
 
 
 def test_the_happy_path_emits_its_steps_in_order(lane):
@@ -504,7 +505,8 @@ def test_the_happy_path_emits_its_steps_in_order(lane):
     assert "agent authoring the fix" in steps
     assert "re-gating the fix" in steps
     assert "proving green" in steps
-    assert steps.index("reviewing: root-cause") < steps.index("reviewing: scope-safety")
+    assert (steps.index("reviewing: root-cause") < steps.index("reviewing: scope-safety")
+            < steps.index("reviewing: trust boundaries"))
 
 
 def test_a_passing_compile_continues_to_review_and_fixes(lane, monkeypatch):

@@ -9,7 +9,6 @@ import pytest
 from issue_triage import public_comments, public_loop
 from issue_triage.issue_store import IssueStore
 from issue_triage.public_loop import (
-    COULDNT_FIX,
     IN_PROGRESS,
     ITERATING,
     NEEDS_ANSWER,
@@ -24,6 +23,8 @@ HEAD = "a" * 40
 QUESTION = {"question": "2 or 3?", "options": [{"label": "A", "behavior": "2"},
                                                {"label": "B", "behavior": "3"}],
             "default": "A", "default_reason": "r"}
+# An attempt that asked its question on GitHub: a label and no comment.
+ASKED = {"ending": "fix-disputed", "question": {**QUESTION, "asked": {"at": FINISHED, "url": "u"}}}
 
 
 def _save(store: IssueStore, n: int, *, association: str | None = "MEMBER",
@@ -73,8 +74,7 @@ def test_a_running_request_or_a_result_awaiting_its_next_step_is_in_progress(sto
 
 
 def test_a_question_asked_on_github_needs_an_answer(store):
-    store.edit_issue(1).record_fix_run(_run(ending="fix-disputed", question={
-        **QUESTION, "asked": {"at": FINISHED, "url": "u"}}))
+    store.edit_issue(1).record_fix_run(_run(**ASKED))
     assert _label(store) == NEEDS_ANSWER
 
 
@@ -100,17 +100,20 @@ def test_a_failed_revision_leaves_an_open_proposal_iterating(store):
     assert _label(store) == ITERATING
 
 
-def test_an_attempt_without_a_fix_could_not_fix_it_but_a_fault_or_cancel_says_nothing(store):
-    store.edit_issue(1).record_fix_run(_run())
-    assert _label(store) == COULDNT_FIX
-    store.edit_issue(1).record_fix_run(_run(ending="cancelled"))
+@pytest.mark.parametrize("ending", ["no-fix", "not-reproduced", "fix-pinned", "cancelled"])
+def test_an_attempt_without_a_fix_says_nothing_on_github(store, ending):
+    store.edit_issue(1).record_fix_run(_run(ending=ending))
     assert _label(store) is None
+    assert public_loop.comments_due(store.load_issue(1), NOW) == []
+
+
+def test_a_fault_says_nothing(store):
     store.edit_issue(1).record_fix_run(_run(ending="sandbox", fault=True))
     assert _label(store) is None
 
 
 def test_a_closed_issue_carries_no_label(store):
-    store.edit_issue(1).record_fix_run(_run())
+    store.edit_issue(1).record_fix_run(_run(**ASKED))
     store.edit_issue(1).record_live_state("closed", "completed")
     assert _label(store) is None
 
@@ -121,14 +124,6 @@ def test_the_pull_request_carries_its_issue_s_label(store):
 
 
 # --- the comments and the queue ------------------------------------------------
-
-def test_an_attempt_without_a_fix_gets_its_conclusion_while_it_is_recent(store):
-    store.edit_issue(1).record_fix_run(_run(ending="not-reproduced"))
-    [due] = public_loop.comments_due(store.load_issue(1), NOW)
-    assert (due.number, due.kind) == (1, "not-reproduced")
-    assert due.key == f"{FINISHED}:not-reproduced"
-    assert public_loop.comments_due(store.load_issue(1), NOW + timedelta(days=2)) == []
-
 
 def test_a_proposal_is_announced_on_the_issue_and_ready_on_the_pull_request(store):
     store.edit_issue(1).record_fix_run(_run(ending="fixed", proposal={"pr": 9},
@@ -151,6 +146,26 @@ def test_a_fixed_attempt_opens_its_pull_request_and_a_drafted_question_is_asked(
     assert public_loop.queue_due(store.load_issue(1), NOW + timedelta(days=4)) is None
 
 
+CROSSING = {"kind": "network", "where": "src/x.ts:2", "what": "posts to a new host",
+            "requested": True}
+
+
+@pytest.mark.parametrize("association,crossing,held", [
+    ("MEMBER", CROSSING, False),
+    ("MEMBER", {**CROSSING, "requested": False}, True),
+    ("NONE", CROSSING, True),
+])
+def test_a_fix_that_crosses_a_trust_boundary_waits_for_an_operator(
+        store, monkeypatch, association, crossing, held):
+    monkeypatch.setenv("TRIAGE_ISSUE_FIX_PUBLIC_SCOPE", "all")
+    _save(store, 1, association=association)
+    store.edit_issue(1).record_fix_run(_run(ending="fixed", patch="p",
+                                            boundary={"crossings": [crossing]}))
+    issue = store.load_issue(1)
+    assert (public_loop.queue_due(issue, NOW) is None) == held
+    assert public_loop.label_for(issue) == (READY if held else IN_PROGRESS)
+
+
 def test_the_hand_back_comment_keeps_the_reason_it_was_judged_with(store):
     store.edit_issue(1).record_fix_run(_run(ending="fixed", proposal={"pr": 9}))
     store.edit_issue(1).record_fix_followup({
@@ -158,40 +173,6 @@ def test_the_hand_back_comment_keeps_the_reason_it_was_judged_with(store):
         "judged": {"head_sha": HEAD, "reason": "2 revisions spent; greptile 3/5"}})
     _, back = public_loop.comments_due(store.load_issue(1), NOW)
     assert back.kind == "handed-back" and "2 revisions spent" in back.body
-
-
-RIVAL = {"pr": 14918, "author": "contrib", "title": "fix x", "at": FINISHED}
-
-
-def test_a_superseded_attempt_carries_no_label_and_starts_nothing(store):
-    store.edit_issue(1).record_fix_run(_run(ending="fixed", patch="p", superseded=RIVAL))
-    issue = store.load_issue(1)
-    assert public_loop.label_for(issue) is None
-    assert public_loop.queue_due(issue, NOW) is None
-    store.edit_issue(1).record_fix_run(_run(ending="sandbox", fault=True, superseded=RIVAL))
-    store.edit_issue(1).record_fix_request({"action": "solve", "status": "done",
-                                            "source": "public", "finished_at": FINISHED})
-    issue = store.load_issue(1)
-    assert public_loop.label_for(issue) is None
-    assert public_loop.queue_due(issue, NOW + timedelta(hours=2), {}) is None
-
-
-def test_stepping_aside_from_a_question_asked_says_so_once(store):
-    asked = {**QUESTION, "asked": {"url": "u", "at": FINISHED}}
-    store.edit_issue(1).record_fix_run(_run(ending="fix-disputed", question=asked,
-                                            superseded=RIVAL))
-    [due] = public_loop.comments_due(store.load_issue(1), NOW)
-    assert (due.number, due.kind, due.key) == (1, "superseded", f"{FINISHED}:superseded")
-    assert "#14918" in due.body
-    assert public_loop.comments_due(store.load_issue(1), NOW + timedelta(days=2)) == []
-
-
-def test_stepping_aside_with_nothing_asked_says_nothing(store):
-    store.edit_issue(1).record_fix_run(_run(superseded=RIVAL))
-    assert public_loop.comments_due(store.load_issue(1), NOW) == []
-    store.edit_issue(1).record_fix_run(_run(ending="fix-disputed", question=QUESTION,
-                                            superseded=RIVAL))
-    assert public_loop.comments_due(store.load_issue(1), NOW) == []
 
 
 # --- a pass ----------------------------------------------------------------------
@@ -217,24 +198,37 @@ def writes(monkeypatch):
     return calls
 
 
+def test_a_community_dry_run_keeps_maintainer_issues_live(store, writes, monkeypatch):
+    monkeypatch.setenv("TRIAGE_ISSUE_FIX_PUBLIC_SCOPE", "all-dry-run")
+    _save(store, 2, association="NONE")
+    for n in (1, 2):
+        store.edit_issue(n).record_fix_run(_run(**ASKED))
+    public_loop.sync(store, mode="live", now=NOW)
+    assert ("label", 1, NEEDS_ANSWER, None, False) in writes
+    assert ("label", 2, NEEDS_ANSWER, None, True) in writes
+    assert store.load_issue(2).fix_public["dry"]["labels"] == {"2": NEEDS_ANSWER}
+    assert not store.load_issue(2).fix_public.get("labels")
+
+
 def test_a_pass_labels_and_comments_once(store, writes):
-    store.edit_issue(1).record_fix_run(_run())
+    store.edit_issue(1).record_fix_run(_run(ending="fixed", proposal={"pr": 9}))
     assert public_loop.sync(store, mode="live", now=NOW) == 1
-    assert writes == [("label", 1, COULDNT_FIX, None, False),
-                      ("comment", 1, "no-fix", False)]
+    assert writes == [("label", 1, ITERATING, None, False),
+                      ("label", 9, ITERATING, None, False),
+                      ("comment", 1, "opened", False)]
     pub = store.load_issue(1).fix_public
-    assert pub["labels"] == {"1": COULDNT_FIX} and "lease" not in pub
+    assert pub["labels"] == {"1": ITERATING, "9": ITERATING} and "lease" not in pub
     assert public_loop.sync(store, mode="live", now=NOW) == 0
-    assert len(writes) == 2
+    assert len(writes) == 3
 
 
 def test_a_new_state_swaps_the_label(store, writes):
-    store.edit_issue(1).record_fix_run(_run())
+    store.edit_issue(1).record_fix_run(_run(**ASKED))
     public_loop.sync(store, mode="live", now=NOW)
     store.edit_issue(1).record_fix_request({"action": "solve", "status": "running",
                                             "source": "operator"})
     public_loop.sync(store, mode="live", now=NOW)
-    assert writes[-1] == ("label", 1, IN_PROGRESS, COULDNT_FIX, False)
+    assert writes[-1] == ("label", 1, IN_PROGRESS, NEEDS_ANSWER, False)
 
 
 def test_a_pass_opens_the_pull_request_for_a_fixed_attempt_once(store, writes):
@@ -248,22 +242,22 @@ def test_a_pass_opens_the_pull_request_for_a_fixed_attempt_once(store, writes):
 
 
 def test_a_dry_run_notes_each_write_once_and_keeps_its_record_apart(store, writes):
-    store.edit_issue(1).record_fix_run(_run())
+    store.edit_issue(1).record_fix_run(_run(ending="fixed", proposal={"pr": 9}))
     public_loop.sync(store, mode="dry-run", now=NOW)
-    assert all(call[-1] is True for call in writes) and len(writes) == 2
+    assert all(call[-1] is True for call in writes) and len(writes) == 3
     issue = store.load_issue(1)
-    assert issue.fix_public["dry"]["labels"] == {"1": COULDNT_FIX}
+    assert issue.fix_public["dry"]["labels"] == {"1": ITERATING, "9": ITERATING}
     assert "labels" not in {k for k, v in issue.fix_public.items() if v and k != "dry"}
-    assert [e["text"][:7] for e in issue.fix_thread] == ["Dry run", "Dry run"]
+    assert [e["text"][:7] for e in issue.fix_thread] == ["Dry run"] * 3
     public_loop.sync(store, mode="dry-run", now=NOW)
-    assert len(writes) == 2
+    assert len(writes) == 3
     public_loop.sync(store, mode="live", now=NOW)
-    assert [c[-1] for c in writes[2:]] == [False, False]
+    assert [c[-1] for c in writes[3:]] == [False, False, False]
 
 
 def test_an_issue_out_of_scope_is_left_alone(store, writes):
     _save(store, 2, association="NONE")
-    store.edit_issue(2).record_fix_run(_run())
+    store.edit_issue(2).record_fix_run(_run(**ASKED))
     public_loop.sync(store, mode="live", now=NOW)
     assert writes == []
 
@@ -271,13 +265,43 @@ def test_an_issue_out_of_scope_is_left_alone(store, writes):
 def test_scope_all_serves_every_issue(store, writes, monkeypatch):
     monkeypatch.setenv("TRIAGE_ISSUE_FIX_PUBLIC_SCOPE", "all")
     _save(store, 2, association="NONE")
-    store.edit_issue(2).record_fix_run(_run())
+    store.edit_issue(2).record_fix_run(_run(**ASKED))
     public_loop.sync(store, mode="live", now=NOW)
-    assert ("label", 2, COULDNT_FIX, None, False) in writes
+    assert ("label", 2, NEEDS_ANSWER, None, False) in writes
+
+
+def test_scope_all_opens_a_community_fix_and_says_nothing_of_a_failure(store, writes,
+                                                                        monkeypatch):
+    monkeypatch.setenv("TRIAGE_ISSUE_FIX_PUBLIC_SCOPE", "all")
+    for n in (2, 3):
+        _save(store, n, association="NONE")
+    store.edit_issue(2).record_fix_run(_run(ending="fixed", patch="p",
+                                            boundary={"crossings": []}))
+    store.edit_issue(3).record_fix_run(_run(ending="not-reproduced"))
+    public_loop.sync(store, mode="live", now=NOW)
+    req = store.load_issue(2).fix_request
+    assert (req["action"], req["source"], req["status"]) == ("propose", "public", "queued")
+    assert [w for w in writes if w[1] == 3] == []
+    assert store.load_issue(3).fix_request is None
+
+
+def test_a_community_fix_is_not_proposed_under_the_default_scope(store, writes):
+    _save(store, 2, association="NONE")
+    store.edit_issue(2).record_fix_run(_run(ending="fixed", patch="p",
+                                            boundary={"crossings": []}))
+    public_loop.sync(store, mode="live", now=NOW)
+    assert store.load_issue(2).fix_request is None and writes == []
+
+
+def test_a_couldn_t_fix_label_set_earlier_is_taken_off(store, writes):
+    store.edit_issue(1).record_fix_run(_run())
+    store.edit_issue(1).record_fix_public({"labels": {"1": "couldn't fix"}})
+    public_loop.sync(store, mode="live", now=NOW)
+    assert writes == [("label", 1, None, "couldn't fix", False)]
 
 
 def test_another_worker_s_lease_holds_the_issue(store, writes):
-    store.edit_issue(1).record_fix_run(_run())
+    store.edit_issue(1).record_fix_run(_run(**ASKED))
     store.edit_issue(1).record_fix_public({"lease": {
         "host": "laptop", "until": (NOW + timedelta(minutes=3)).isoformat()}})
     assert public_loop.sync(store, mode="live", now=NOW) == 0
@@ -288,7 +312,7 @@ def test_another_worker_s_lease_holds_the_issue(store, writes):
 def test_a_failed_write_backs_off_then_retries(store, writes, monkeypatch):
     from prospector_app.backend import executor
 
-    store.edit_issue(1).record_fix_run(_run())
+    store.edit_issue(1).record_fix_run(_run(**ASKED))
     monkeypatch.setattr(executor, "set_fix_label",
                         lambda *a, **k: {"status": "error", "detail": "HTTP 502"})
     public_loop.sync(store, mode="live", now=NOW)
@@ -307,10 +331,10 @@ def test_a_failed_write_backs_off_then_retries(store, writes, monkeypatch):
 
 def test_a_comment_that_fails_its_problems_is_recorded_and_not_posted(store, writes,
                                                                       monkeypatch):
-    store.edit_issue(1).record_fix_run(_run())
+    store.edit_issue(1).record_fix_run(_run(ending="fixed", proposal={"pr": 9}))
     monkeypatch.setattr(public_comments, "problems", lambda body: ["the comment carries a link"])
     public_loop.sync(store, mode="live", now=NOW)
-    assert [c[0] for c in writes] == ["label"]
+    assert [c[0] for c in writes] == ["label", "label"]
     posted = store.load_issue(1).fix_public["posted"]
     assert list(posted.values())[0]["blocked"] == ["the comment carries a link"]
 
@@ -318,7 +342,7 @@ def test_a_comment_that_fails_its_problems_is_recorded_and_not_posted(store, wri
 def test_live_without_a_bot_token_writes_nothing(store, writes, monkeypatch):
     from prospector_app.backend import executor
 
-    store.edit_issue(1).record_fix_run(_run())
+    store.edit_issue(1).record_fix_run(_run(**ASKED))
     monkeypatch.setattr(executor, "mint_bot_token", lambda: None)
     assert public_loop.sync(store, mode="live", now=NOW) == 0
     assert writes == []
@@ -456,30 +480,31 @@ def test_the_author_s_reply_with_detail_starts_another_attempt(store, replies):
     issue = store.load_issue(1)
     req = issue.fix_request
     assert (req["action"], req["source"], req["requested_by"]) == ("solve", "public", "nicky")
-    assert "> It only fails with --flag set." in req["guidance"]
+    assert "guidance" not in req and "> It only fails with --flag set." in req["notes"]
+    assert "the issue's author replied" in req["notes"]
     assert issue.fix_thread[-1]["by"] == "nicky"
     assert issue.fix_public["reattempts"] == 1
     assert public_loop.label_for(issue) == IN_PROGRESS
 
 
-def test_replies_on_a_superseded_attempt_start_nothing(store, replies):
-    store.edit_issue(1).record_fix_run(_run(report_sha=_sha("bug 1", "b"), superseded=RIVAL))
-    replies["comments"] = [_comment("nicky", "It only fails with --flag set.")]
+def test_a_maintainer_s_reply_is_guidance_and_the_author_s_a_note(store, replies):
+    replies["comments"] = [_comment("nicky", "It only fails with --flag set."),
+                           _comment("dotta", "Look at the parser", association="MEMBER",
+                                    cid=2)]
+    public_loop.answer_replies(store, mode="live", now=NOW)
+    req = store.load_issue(1).fix_request
+    assert "a maintainer replied" in req["guidance"] and "> Look at the parser" in req["guidance"]
+    assert "--flag" not in req["guidance"]
+    assert "> It only fails with --flag set." in req["notes"] and "parser" not in req["notes"]
+
+
+def test_a_refused_attempt_says_nothing_and_replies_do_not_restart_it(store, replies):
+    store.edit_issue(1).record_fix_run(_run(ending="refused", report_sha=_sha("bug 1", "b"),
+                                            detail="the intake audit read it as malicious"))
+    issue = store.load_issue(1)
+    assert public_loop.label_for(issue) is None and public_loop.comments_due(issue, NOW) == []
+    replies["comments"] = [_comment("nicky", "please try again")]
     assert public_loop.answer_replies(store, mode="live", now=NOW) == 0
-    assert store.load_issue(1).fix_request is None and replies["routed"] == []
-
-
-def test_a_pass_takes_the_label_off_an_attempt_someone_else_took_up(store, writes):
-    asked = {**QUESTION, "asked": {"url": "u", "at": FINISHED}}
-    store.edit_issue(1).record_fix_run(_run(ending="fix-disputed", question=asked))
-    public_loop.sync(store, mode="live", now=NOW)
-    assert writes == [("label", 1, NEEDS_ANSWER, None, False)]
-    store.edit_issue(1).record_fix_run(_run(ending="fix-disputed", question=asked,
-                                            superseded=RIVAL))
-    public_loop.sync(store, mode="live", now=NOW)
-    public_loop.sync(store, mode="live", now=NOW)
-    assert writes[1:] == [("label", 1, None, NEEDS_ANSWER, False),
-                          ("comment", 1, "superseded", False)]
 
 
 def test_chatter_is_read_once_and_starts_nothing(store, replies):
@@ -536,7 +561,18 @@ def test_a_letter_answer_is_left_to_the_question_poll_and_words_answer_it(store,
     _bump(store, "2026-10-01T11:50:00Z")
     public_loop.answer_replies(store, mode="live", now=NOW)
     req = store.load_issue(1).fix_request
-    assert req["action"] == "answer" and "it should read 4" in req["answer"]["text"]
+    assert req["action"] == "answer" and "answer" not in req
+    assert "it should read 4" in req["notes"]
+
+
+def test_a_maintainer_s_written_answer_answers_it(store, replies):
+    store.edit_issue(1).record_fix_run(_run(
+        ending="fix-disputed", report_sha=_sha("bug 1", "b"),
+        question={**QUESTION, "asked": {"at": "2026-10-01T11:10:00+00:00", "url": "u"}}))
+    replies["comments"] = [_comment("dotta", "Neither: it should read 4.", association="MEMBER")]
+    public_loop.answer_replies(store, mode="live", now=NOW)
+    req = store.load_issue(1).fix_request
+    assert "it should read 4" in req["answer"]["text"] and "notes" not in req
 
 
 def test_an_edited_report_starts_another_attempt_once(store, replies):
@@ -580,18 +616,18 @@ def test_an_open_proposal_s_replies_belong_to_the_follow_up(store, replies):
 
 
 def test_an_issue_that_leaves_scope_has_its_labels_taken_off_and_nothing_more(store, writes):
-    store.edit_issue(1).record_fix_run(_run())
+    store.edit_issue(1).record_fix_run(_run(**ASKED))
     public_loop.sync(store, mode="live", now=NOW)
     raw = store.load_issue(1).raw
     store.save_issue({**raw, "meta": {**raw["meta"], "author_association": "NONE"}})
     store.edit_issue(1).record_fix_run(_run(ending="fixed", patch="p"))
     public_loop.sync(store, mode="live", now=NOW)
-    assert writes[-1] == ("label", 1, None, COULDNT_FIX, False)
+    assert writes[-1] == ("label", 1, None, NEEDS_ANSWER, False)
     assert store.load_issue(1).fix_request is None
 
 
 def test_a_pass_decides_from_the_issue_as_its_lease_found_it(store, writes, monkeypatch):
-    store.edit_issue(1).record_fix_run(_run())
+    store.edit_issue(1).record_fix_run(_run(**ASKED))
     stale = store.load_issue(1)
     store.edit_issue(1).record_fix_run(_run(ending="cancelled"))
     public_loop.sync_issue(store, stale, mode="live", token="t", host="studio", now=NOW)
@@ -602,13 +638,14 @@ def test_a_request_a_machine_fault_ended_runs_again_after_a_rest(store, writes):
     store.edit_issue(1).record_fix_run(_run(ending="sandbox", fault=True))
     store.edit_issue(1).record_fix_request({
         "action": "solve", "status": "done", "source": "public", "guidance": "try X",
-        "finished_at": FINISHED})
+        "notes": "it fails with --flag", "finished_at": FINISHED})
     issue = store.load_issue(1)
     assert public_loop.label_for(issue) == IN_PROGRESS
     assert public_loop.queue_due(issue, NOW - timedelta(minutes=30), {}) is None
     public_loop.sync(store, mode="live", now=NOW + timedelta(minutes=5))
     req = store.load_issue(1).fix_request
-    assert (req["action"], req["status"], req["guidance"]) == ("solve", "queued", "try X")
+    assert (req["action"], req["status"], req["guidance"], req["notes"]) == (
+        "solve", "queued", "try X", "it fails with --flag")
     spent = {"queued": {f"retry:{k}:solve": "t" for k in (1, 2, 3)}}
     assert public_loop.queue_due(store.load_issue(1), NOW, spent) is None
 
@@ -619,14 +656,14 @@ def test_an_edit_carries_the_replies_that_came_with_it(store, replies):
     _bump(store, "2026-10-01T11:40:00Z", body="b, with steps")
     public_loop.answer_replies(store, mode="live", now=NOW)
     req = store.load_issue(1).fix_request
-    assert "the report was edited" in req["guidance"] and "> Added the steps" in req["guidance"]
+    assert "the report was edited" in req["notes"] and "> Added the steps" in req["notes"]
     assert replies["routed"] == []
 
 
 def test_a_reply_posted_while_the_attempt_ran_is_still_routed(store, replies):
     replies["comments"] = [_comment("nicky", "It also needs --flag.", at="2026-10-01T10:45:00Z")]
     public_loop.answer_replies(store, mode="live", now=NOW)
-    assert "--flag" in store.load_issue(1).fix_request["guidance"]
+    assert "--flag" in store.load_issue(1).fix_request["notes"]
 
 
 def test_an_attempt_that_concluded_before_the_loop_read_it_starts_from_that_read(store,

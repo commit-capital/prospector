@@ -534,6 +534,53 @@ class TestSecurityRunClaim:
         assert Store(tmp_path).claim_security_run(9, host="mac", stale_after=3600) is False
 
 
+class TestDesignReview:
+    """The design review's claim (one idle hunter per PR) and its write, which
+    lands only on the head it judged."""
+
+    def _pr(self, tmp_path, head: str = "h") -> Store:
+        s = Store(tmp_path)
+        s.save_pr({"pr": 1, "meta": {"title": "t", "state": "open", "head_sha": head},
+                   "reviews": {"greptile": {"kind": "review", "findings": [], "checks": []},
+                               "checked_at": "2026-10-13T00:00:00+00:00"}})
+        return s
+
+    def _entry(self, head: str) -> dict:
+        return {"kind": "review", "reviewed_sha": head, "observed_at": "2026-10-13T00:00:00Z",
+                "score": None, "findings": [], "summary": "fine", "checks": [], "extra": {}}
+
+    def test_claims_race_like_the_security_claim(self, tmp_path):
+        s = self._pr(tmp_path)
+        assert s.claim_design_run(1, host="mac", stale_after=3600) is True
+        assert s.claim_design_run(1, host="linux", stale_after=3600) is False
+        assert s.claim_design_run(1, host="mac", stale_after=3600) is True
+        assert s.claim_design_run(1, host="linux", stale_after=-1) is True
+        s.release_design_run(1, host="mac")
+        assert s.claim_design_run(1, host="mac", stale_after=3600) is False
+        s.release_design_run(1, host="linux")
+        assert s.claim_design_run(1, host="mac", stale_after=3600) is True
+        assert Store(tmp_path).claim_design_run(9, host="mac", stale_after=3600) is False
+
+    def test_a_claim_needs_a_host(self, tmp_path):
+        s = Store(tmp_path)
+        with pytest.raises(ValidationError):
+            s.save_pr({"pr": 1, "meta": {"title": "t", "state": "open", "head_sha": "h"},
+                       "design_run": {"started_at": "x"}})
+
+    def test_save_keeps_the_other_reviewers(self, tmp_path):
+        s = self._pr(tmp_path)
+        assert s.save_design_review(1, self._entry("h"), head_sha="h") is True
+        reviews = s.load_pr(1).reviews
+        assert set(reviews) >= {"greptile", "design", "checked_at"}
+        assert reviews["design"]["summary"] == "fine"
+
+    def test_save_refuses_a_moved_head(self, tmp_path):
+        s = self._pr(tmp_path, head="h2")
+        assert s.save_design_review(1, self._entry("h1"), head_sha="h1") is False
+        assert "design" not in s.load_pr(1).reviews
+        assert Store(tmp_path).save_design_review(9, self._entry("h"), head_sha="h") is False
+
+
 class TestVerifyBaseRegistry:
     """A pin names the base image `run` looks for on ONE machine: its SHA and
     the tier it was built at, plus the captured baseline that names the regress
@@ -707,7 +754,8 @@ class TestWorkerRegistries:
         return {"verify_worker": s.load_verify_worker(), "fix_worker": s.load_fix_worker(),
                 "issue_fix_worker": s.load_issue_fix_worker(),
                 "worker_health": s.load_worker_health(),
-                "verify_base": s.load_verify_base_hosts()}
+                "verify_base": s.load_verify_base_hosts(),
+                "machine_modes": s.load_machine_modes()}
 
     def test_an_empty_store_reads_as_each_loader_does(self, store):
         assert store.load_worker_registries() == self._individually(store)
@@ -716,6 +764,7 @@ class TestWorkerRegistries:
         from sqlalchemy import event
         beat = {"last_beat": "2026-07-15T00:00:00+00:00"}
         store.save_verify_worker({"host": "mac", **beat})
+        store.save_machine_mode({"host": "lap", "stood_down": True, "at": beat["last_beat"]})
         store.save_fix_worker({"host": "linux", **beat})
         store.save_issue_fix_worker({"host": "mac", **beat})
         store.save_worker_health({"host": "mac", "lanes": {}})
@@ -747,3 +796,29 @@ class TestWorkerRegistries:
         assert got == self._individually(store)
         assert list(got["verify_worker"]["hosts"]) == ["mac"]
         assert list(got["verify_base"]) == ["mac"]
+
+
+def test_pr_rows_project_compact_columns_and_fields(tmp_path):
+    """The projection reads back what walking the raw record would: the value
+    for a present path of any JSON type, None for a missing path or one that
+    runs through a scalar."""
+    st = Store(tmp_path)
+    st.save_pr({"pr": 1, "meta": {"head_sha": "s1", "checked_at": "t", "state": "open",
+                                  "title": "p1", "author": "al", "updated_at": "u"},
+                "analysis": {"disposition": "merge", "rationale": "r", "checked_at": "t",
+                             "against_head_sha": "s1"},
+                "issues": {"linked": [{"issue": 10, "how": "explicit"}],
+                           "checked_at": "t", "against_head_sha": "s1"}})
+    st.save_pr({"pr": 2, "meta": {"head_sha": "s2", "checked_at": "t", "state": "closed",
+                                  "title": "p2"}})
+    paths = [("issues", "linked"), ("analysis", "disposition"), ("meta", "title", "x"),
+             ("nope",)]
+    rows = st.pr_rows(paths)
+    assert rows == [
+        ({"pr": 1, "state": "open", "title": "p1", "author": "al", "head_sha": "s1",
+          "updated_at": "u"}, [[{"issue": 10, "how": "explicit"}], "merge", None, None]),
+        ({"pr": 2, "state": "closed", "title": "p2", "author": None, "head_sha": "s2",
+          "updated_at": None}, [None, None, None, None])]
+    assert [r[0]["pr"] for r in st.pr_rows([], states=["closed"])] == [2]
+    assert [r[0]["pr"] for r in st.pr_rows([], numbers=[2, 999])] == [2]
+    assert st.pr_rows([], states=["open"], numbers=[2]) == []

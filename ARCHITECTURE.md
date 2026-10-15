@@ -3,7 +3,7 @@
 How a fact gets from GitHub into the store and out to an API request. This is
 the part that isn't obvious from any single file: the SQL store, the app's
 in-memory snapshot, and the live sweep. For *what the system does* and the
-trust model see `README.md` and `CLAUDE.md`; for the phase run-commands see
+trust model see `README.md` and `AGENTS.md`; for the phase run-commands see
 `pipeline/workflows/README.md`. This doc is the map of *where state lives and how
 it flows* — it points at the source files that are the detail-of-record rather
 than restating them.
@@ -160,7 +160,7 @@ GitHub App named by `TRIAGE_BOT_LOGIN` and mint its token through
   and append best-effort activity entries.
 
 Neither path can write as the app when token minting fails. The trust model in
-`CLAUDE.md` is authoritative — read it before anything that writes.
+`AGENTS.md` is authoritative — read it before anything that writes.
 
 ## Gotchas worth knowing before you touch the backend
 

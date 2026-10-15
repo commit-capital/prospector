@@ -14,15 +14,17 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 
 from pipeline import capacity, headless_agent, settings, storekit, worker_health
-from prospector_app.backend import data, escalation, worker_selftest
+from prospector_app.backend import data, escalation, lane_pause, worker_selftest
 
 def enabled_lanes() -> tuple[str, ...]:
     """The lanes this machine runs: `security` and `verify` on a verify
-    worker, `fix` on an autofix worker, `issue-fix` on an issue-fix worker,
+    worker, with `design` unless the design review is off, `fix` on an autofix worker, `issue-fix` on an issue-fix worker,
     `cluster` on a clustering worker."""
     lanes: list[str] = []
     if settings.verify_worker_enabled():
         lanes += ["security", "verify"]
+        if settings.design_review_mode() != "off":
+            lanes.append("design")
     if settings.fix_worker_enabled():
         lanes.append("fix")
     if settings.issue_fix_worker_enabled():
@@ -116,12 +118,15 @@ def trip_kind(lane: str) -> str | None:
 
 
 def open_or_retest(lane: str) -> bool:
-    """Whether `lane` may pick work now. A tripped lane whose retest is due
+    """Whether `lane` may pick work now. A lane an operator paused
+    (lane_pause) answers False. A tripped lane whose retest is due
     runs the self-test for its trip kind and reopens on a pass; a lane tripped
     on a kind no probe answers reopens once after the cool-down; a tripped
     lane between retests answers False without doing anything."""
     note_account()
     try:
+        if lane_pause.paused(settings.worker_id(), lane):
+            return False
         rec = worker_health.load(data.store(), settings.worker_id())
         if not worker_health.is_tripped(rec, lane):
             return True

@@ -40,6 +40,11 @@ _BUILD_CONFIG = re.compile(
 _LINE_BREAKS = "\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029"
 _SHOW_LINE_BREAKS = {ord(c): f"\\u{ord(c):04x}" for c in _LINE_BREAKS}
 
+# The signatures' revision, stamped on every verdict. Raise it with any change
+# to what a signature fires on: the worker's pass rescans each open PR whose
+# verdict a lower revision stamped (threat_scan.unscanned).
+REVISION = 1
+
 # Severity ladder. CRITICAL or HIGH ⇒ verdict "malicious" (hard block).
 # MEDIUM ⇒ "suspicious" (surfaced for a human, never auto-cleared, never a
 # block on its own — these patterns can have rare benign causes).

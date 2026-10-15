@@ -1,6 +1,6 @@
 """ANALYZE driver: pending-cluster selection, bundles, validated commits."""
 from pipeline import analyze_driver as ad
-from pipeline.testsupport import set_section
+from pipeline.testsupport import bump_section, set_section, threat_section
 from pipeline.store import Store
 from pipeline.testsupport import reviews_section
 
@@ -31,6 +31,18 @@ def _cluster(store, cid, prs, outcome=None, proposals=None):
     if proposals is not None:
         cl.set_proposals(proposals)
     return store.load_cluster(cid)
+
+
+class TestPendingOrder:
+    def test_a_cluster_with_a_green_member_is_analyzed_first(self, tmp_path):
+        s = Store(tmp_path)
+        _pr(s, 1)
+        _pr(s, 2, head="h2")
+        set_section(s, 2, "threat", threat_section("h2"))
+        set_section(s, 2, "security", {"verdict": "GREEN", "findings": [], "override": None})
+        _cluster(s, 1, [1])
+        _cluster(s, 2, [2])
+        assert [c.id for c in ad.pending(s)] == [2, 1]
 
 
 class TestDraftMembers:
@@ -225,6 +237,30 @@ class TestCommitAnalysis:
         payload["prs"][1] = {"pr": 2, "disposition": "request-changes",
                              "asks": ["rebase"], "rationale": "r", "head_sha": "h1"}
         assert ad.commit_analysis(s, payload) == []
+
+    def test_wontfix_close_commits_as_close_out(self, tmp_path):
+        s = Store(tmp_path)
+        _pr(s, 1); _pr(s, 2)
+        _cluster(s, 1, [1, 2])
+        payload = {"cluster_id": 1, "outcome": "close-out", "rationale": "wrong approach",
+                   "prs": [{"pr": n, "disposition": "close-wontfix", "head_sha": "h1",
+                            "rationale": "breaks the blocked-to-resume checkout contract"}
+                           for n in (1, 2)]}
+        assert ad.commit_analysis(s, payload) == []
+        assert s.load_pr(1).section("analysis")["disposition"] == "close-wontfix"
+        assert s.load_cluster(1).outcome == "close-out"
+
+    def test_wontfix_on_trusted_member_rejected(self, tmp_path, monkeypatch):
+        from pipeline import profile
+        monkeypatch.setattr(profile, "active",
+                            lambda: profile.RepoProfile(trusted_authors=("trusted-dev",)))
+        s = Store(tmp_path)
+        _pr(s, 1); _pr(s, 2, author="trusted-dev"); _pr(s, 3)
+        _cluster(s, 1, [1, 2, 3])
+        payload = self._payload()
+        payload["prs"][1] = {"pr": 2, "disposition": "close-wontfix",
+                             "rationale": "r", "head_sha": "h1"}
+        assert any("trusted" in e for e in ad.commit_analysis(s, payload))
 
     def test_merge_on_draft_member_rejected(self, tmp_path):
         s = Store(tmp_path)
@@ -539,32 +575,22 @@ class TestDispositionOrphans:
 
 
 class TestOrphansSkipsDependabotBumps:
-    def _dependabot_standalone(self, store, n, head, diff_text, tmp, monkeypatch):
-        from pipeline import diff_cache
-        diffs = tmp / "diffs"; diffs.mkdir(exist_ok=True)
-        monkeypatch.setattr(diff_cache, "DIFFS", diffs)
-        (diffs / f"{head}.diff").write_text(diff_text)
+    def _dependabot_standalone(self, store, n, head, threat):
         store.save_pr({"pr": n, "meta": {
             "title": f"bump {n}", "author": "dependabot[bot]", "state": "open",
-            "draft": False, "head_sha": head, "checked_at": NOW}})
+            "draft": False, "head_sha": head, "checked_at": NOW}, "threat": threat})
         set_section(store, n, "cluster", {})        # marked standalone
 
-    def test_lockfile_bump_left_undispositioned(self, tmp_path, monkeypatch):
+    def test_exempt_bump_left_undispositioned(self, tmp_path):
         s = Store(tmp_path)
-        self._dependabot_standalone(
-            s, 10, "hb", "diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml\n+x\n",
-            tmp_path, monkeypatch)
+        self._dependabot_standalone(s, 10, "hb", bump_section("hb"))
         assert ad.disposition_orphans(s) == 0
         assert s.load_pr(10).section("analysis") is None
 
-    def test_dependabot_touching_source_still_dispositioned(self, tmp_path, monkeypatch):
+    def test_dependabot_pr_the_scan_did_not_exempt_is_dispositioned(self, tmp_path):
         s = Store(tmp_path)
-        self._dependabot_standalone(
-            s, 11, "hc",
-            "diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml\n+x\n"
-            "diff --git a/src/app.ts b/src/app.ts\n+evil\n",
-            tmp_path, monkeypatch)
-        assert ad.disposition_orphans(s) == 1     # shape guard fails → normal path
+        self._dependabot_standalone(s, 11, "hc", threat_section("hc"))
+        assert ad.disposition_orphans(s) == 1
         assert s.load_pr(11).section("analysis")["disposition"] == "merge"
 
 
@@ -667,3 +693,66 @@ def test_pending_does_not_load_pr_per_member(tmp_path):
         result = ad.pending(s)
     assert {c.id for c in result} == {10, 11}  # behavior unchanged
     assert calls == []                          # no per-member load_pr
+
+
+class TestSplit:
+    def _seed(self, s, ns=(1, 2, 3, 4, 5)):
+        for n in ns:
+            _pr(s, n, head=f"h{n}")
+        return _cluster(s, 1, list(ns), outcome="merge-ready",
+                        proposals=[{"pr": n, "disposition": "merge"} for n in ns])
+
+    def test_split_reforms_the_cluster_by_defect(self, tmp_path):
+        s = Store(tmp_path)
+        self._seed(s)
+        s.edit_pr(3).route_to("merge", "r", head_sha="h3", from_cluster=1)
+        errs = ad.commit_analysis(s, {"cluster_id": 1, "rationale": "two defects", "split": [
+            {"root_problem": "index heartbeat_runs", "prs": [1, 2]},
+            {"root_problem": "cap the list limit", "prs": [3, 4]},
+            {"root_problem": "redaction regex", "prs": [5]}]})
+        assert errs == []
+        kept, new = s.load_cluster(1), s.load_cluster(2)
+        assert kept.prs == [1, 2] and kept.root_problem == "index heartbeat_runs"
+        assert kept.outcome is None and kept.proposals == []
+        assert new.prs == [3, 4] and new.root_problem == "cap the list limit"
+        assert s.load_pr(3).cluster_ids == [2] and not s.load_pr(3).section("analysis")
+        assert s.load_pr(5).cluster_ids == [] and ad.is_current(s.load_pr(5), "cluster")
+        assert [c.id for c in ad.pending(s)] == [1, 2]
+        ad.disposition_orphans(s)
+        assert s.load_pr(5).disposition == "merge"
+
+    def test_split_keeps_prs_sharing_an_issue_together(self, tmp_path):
+        s = Store(tmp_path)
+        self._seed(s, (1, 2, 3, 4))
+        for n in (1, 3):
+            set_section(s, n, "issues", {"linked": [{"issue": 9, "pain": None, "how": "explicit"}]})
+        assert ad.commit_analysis(s, {"cluster_id": 1, "rationale": "r", "split": [
+            {"root_problem": "a", "prs": [1, 2]}, {"root_problem": "b", "prs": [3]},
+            {"root_problem": "c", "prs": [4]}]}) == []
+        assert s.load_cluster(1).prs == [1, 2, 3]
+        assert s.load_pr(4).cluster_ids == []
+
+    def test_split_into_singletons_deletes_the_cluster(self, tmp_path):
+        s = Store(tmp_path)
+        self._seed(s, (1, 2))
+        assert ad.commit_analysis(s, {"cluster_id": 1, "rationale": "r", "split": [
+            {"root_problem": "a", "prs": [1]}, {"root_problem": "b", "prs": [2]}]}) == []
+        assert s.load_cluster(1) is None
+        assert s.load_pr(1).cluster_ids == [] and s.load_pr(2).cluster_ids == []
+
+    def test_invalid_split_writes_nothing(self, tmp_path):
+        s = Store(tmp_path)
+        self._seed(s, (1, 2, 3))
+        errs = ad.commit_analysis(s, {"cluster_id": 1, "rationale": "r", "split": [
+            {"root_problem": "a", "prs": [1, 9]}, {"root_problem": "", "prs": [2]}]})
+        assert any("not an open member" in e for e in errs)
+        assert any("root_problem is empty" in e for e in errs)
+        assert any("member 3 is in no group" in e for e in errs)
+        assert s.load_cluster(1).prs == [1, 2, 3] and s.load_cluster(1).outcome == "merge-ready"
+
+    def test_one_group_is_not_a_split(self, tmp_path):
+        s = Store(tmp_path)
+        self._seed(s, (1, 2))
+        errs = ad.commit_analysis(s, {"cluster_id": 1, "rationale": "r", "split": [
+            {"root_problem": "a", "prs": [1, 2]}]})
+        assert errs == ["split: the members share one defect — analyze them as one cluster"]

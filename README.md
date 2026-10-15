@@ -79,7 +79,7 @@ directly.
 - [Operations](docs/operations.md) - which commands you run, which the agent
   runs, the disposition vocabulary, and the merge bars.
 - [ARCHITECTURE.md](ARCHITECTURE.md) - where state lives and how it flows.
-- [CLAUDE.md](CLAUDE.md) - the trust model and operating rules (authoritative).
+- [AGENTS.md](AGENTS.md) - the trust model and operating rules (authoritative).
 - [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md). MIT licensed.
 
 ## Safety
@@ -88,5 +88,5 @@ Prospector is a local, single-operator tool: the backend binds localhost and
 has no authentication. Reads run as your local `gh` login; writes run only as
 the GitHub App you register, only on a machine holding its private key, and
 every executor action is gated and logged. Merges additionally pass a per-PR
-eligibility gate. The full model is in [CLAUDE.md](CLAUDE.md) and
+eligibility gate. The full model is in [AGENTS.md](AGENTS.md) and
 [docs/operations.md](docs/operations.md).

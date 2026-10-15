@@ -40,12 +40,14 @@ Return ONLY a JSON object, as a ```json fenced block: {"route": "retry" | "none"
 @dataclass(frozen=True)
 class Reply:
     """One person's words after an attempt: an issue comment, a review, or an
-    inline review comment (`where` names the file and line)."""
+    inline review comment (`where` names the file and line). `maintainer` when
+    `gates.priority_author` names the person one."""
     id: int | None
     login: str
     body: str
     at: str
     where: str | None = None
+    maintainer: bool = False
 
 
 def quoted(replies: list[Reply], limit: int = QUOTED_MAX) -> str:

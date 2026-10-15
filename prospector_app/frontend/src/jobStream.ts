@@ -6,8 +6,15 @@ export interface JobCompletion {
   finished: string | null;
 }
 
-/** The `job` event a job stream opens with: the job's record, plus when its
- *  output last changed. */
+/** Where a job held by its kind's concurrency limit stands: the queued jobs of
+ *  its kind ahead of it, and the ones running now. */
+export interface QueueSpot {
+  ahead: number;
+  running: { id: number; pr: number | null; cluster: number | null }[];
+}
+
+/** The `job` event a job stream opens with: the job's record, its place in
+ *  its kind's queue, and when its output last changed. */
 export interface JobMeta {
   id: number;
   kind: string;
@@ -16,6 +23,7 @@ export interface JobMeta {
   started: string;
   finished: string | null;
   returncode: number | null;
+  queue: QueueSpot | null;
   last_output: string | null;
   /** Lines the job had already logged when this stream opened. */
   lines: number;
@@ -26,6 +34,8 @@ interface JobStreamHandlers {
   onLog: (line: string, live: boolean) => void;
   onDone: (completion: JobCompletion) => void;
   onJob?: (meta: JobMeta) => void;
+  /** The queued job's place in line moved; null once it starts. */
+  onQueue?: (spot: QueueSpot | null) => void;
   /** The connection dropped mid-job; the stream is retrying. */
   onReconnecting?: () => void;
   /** The stream ended without a `done` event. `named` is false when it never
@@ -76,6 +86,9 @@ export function attachJobStream(url: string, handlers: JobStreamHandlers): () =>
       replayed = meta.lines;
       attempts = 0;
       handlers.onJob?.(meta);
+    });
+    source.addEventListener("queue", (e: MessageEvent) => {
+      handlers.onQueue?.(JSON.parse(e.data) as QueueSpot | null);
     });
     source.addEventListener("log", (e: MessageEvent) => {
       received += 1;

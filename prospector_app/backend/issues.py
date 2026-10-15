@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING
 from issue_triage import fix_review
 from issue_triage import issue_links
 from issue_triage import pr_index
+from issue_triage import trust_boundary
+from pipeline import gates
 from pipeline import gh
 from pipeline import settings
 from pipeline import profile
@@ -86,6 +88,15 @@ def issue_state(n: int) -> str | None:
     when we have no row for it."""
     iss = _store().load_issue(int(n))
     return iss.state if iss is not None else None
+
+
+def issue_states(numbers: list[int]) -> dict[int, tuple[str, str | None]]:
+    """Each stored issue's `(state, state_reason)` among `numbers`, read in one
+    projected query; an issue with no row is absent."""
+    if not numbers:
+        return {}
+    return {row["issue"]: (row["state"], row["state_reason"])
+            for row, _ in _store().issue_rows([], numbers=numbers)}
 
 
 def _store_pr_states() -> tuple[dict[int, str], bool]:
@@ -243,6 +254,7 @@ def _row(iss: Issue, clusters_by_id: dict[int, IssueCluster], store_states: dict
         # cold-loads.
         "author_stats": None if snapshot_loading else data.author_stats(iss.author),
         "trusted_author": iss.author in profile.active().trusted_authors,
+        "maintainer": gates.priority_author(iss.author, iss.author_association),
         "labels": iss.labels,
         "comments": iss.comments,
         "reactions": iss.reactions_total,
@@ -324,6 +336,7 @@ def get_issue(n: int) -> dict | None:
     row["fix_thread"] = i.fix_thread
     row["fix_followup"] = i.fix_followup
     row["fix_pr"] = fix_review.open_pr(i)
+    row["fix_held"] = trust_boundary.held(i)
     return row
 
 
@@ -401,6 +414,7 @@ def query_issues(q: str = "", sort: str | None = None, direction: str | None = N
                  dups: dict | None = None, linked_prs: dict | None = None,
                  labels: str | None = None, collapse_dups: bool = False,
                  fix_status: str | list[str] | None = None,
+                 maintainer: bool | None = None,
                  offset: int = 0, limit: int = 50) -> dict:
     """Paginated issue-table query. Uses the light cached snapshot for filtering
     and sorting, then hydrates only the returned page with full candidate PR data.
@@ -416,7 +430,9 @@ def query_issues(q: str = "", sort: str | None = None, direction: str | None = N
     `dups` (duplicate count), and `linked_prs` (linked-PR count) are `{op, value}`
     numeric compares — see filters.num_cmp — and a missing row value never matches
     one. `fix_status` accepts one fix_review status or a list (OR'd); "any"
-    selects every issue with a fix attempt and "none" those without. While the PR snapshot is still cold-loading, the result carries
+    selects every issue with a fix attempt and "none" those without.
+    `maintainer` keeps the issues whose author is (True) or is not (False) a
+    `gates.priority_author`. While the PR snapshot is still cold-loading, the result carries
     `pr_states_loading` true and answers immediately with unhydrated linked-PR
     chips, no author stats, and (for sort=prs) no merged-fixer ranking — the
     view refetches until the flag clears."""
@@ -455,6 +471,8 @@ def query_issues(q: str = "", sort: str | None = None, direction: str | None = N
                 if ("any" in wanted_fix and r["fix_status"] is not None)
                 or ("none" in wanted_fix and r["fix_status"] is None)
                 or r["fix_status"] in wanted_fix]
+    if maintainer is not None:
+        rows = [r for r in rows if r["maintainer"] == maintainer]
     if labels:
         needle_label = labels.strip().lower()
         if needle_label:
@@ -635,8 +653,7 @@ def close_fixed_gate(n: int, fixed_by: int) -> tuple[bool, str]:
     resolved live too, so an already-closed issue is blocked at this gate. See
     issue_gates.close_fixed_eligibility."""
     st = _store()
-    issues = st.all_issues()
-    iss = issues.get(int(n))
+    iss = st.load_issue(int(n))
     if iss is None:
         return False, "issue not in store"
     members = [int(n)]
@@ -644,6 +661,7 @@ def close_fixed_gate(n: int, fixed_by: int) -> tuple[bool, str]:
         cl = st.load_issue_cluster(iss.cluster_id)
         if cl:
             members = cl.members
+    issues = {**st.load_issues([m for m in members if m != int(n)]), int(n): iss}
     candidates = {c["pr"] for m in members if issues.get(m)
                   for c in _links_for(issues[m]) if c.get("how") in _FIXER_KINDS}
     if int(fixed_by) not in candidates:
@@ -668,13 +686,12 @@ def close_dup_gate(n: int) -> tuple[bool, str]:
     upstream that the duplicate itself is still open. The canonical's state and
     resolution do not affect whether the duplicate relationship is valid."""
     st = _store()
-    issues = st.all_issues()
-    iss = issues.get(int(n))
+    iss = st.load_issue(int(n))
     if iss is None:
         return False, "issue not in store"
     from issue_triage import issue_gates
     cl = st.load_issue_cluster(iss.cluster_id) if iss.cluster_id else None
-    return issue_gates.close_dup_eligibility(iss, cl, issues, live_state=_live_state)
+    return issue_gates.close_dup_eligibility(iss, cl, live_state=_live_state)
 
 
 def close_gate(n: int, disposition: str, comment: str | None,
@@ -697,7 +714,7 @@ def close_gate(n: int, disposition: str, comment: str | None,
     if disposition in ("not-planned", "completed") and not (comment or "").strip():
         return False, "a comment is required"
     st = _store()
-    if st.all_issues().get(int(n)) is None:
+    if st.load_issue(int(n)) is None:
         return False, "issue not in store"
     if _live_state(int(n)) == "closed":
         return False, "issue already closed"

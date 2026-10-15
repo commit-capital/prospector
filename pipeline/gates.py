@@ -4,7 +4,7 @@ Every consumer — the GATE phase, the app chips, the executor's merge
 check — calls these functions; nothing else encodes policy.
 
 Policy (per the operator's bar): a merge candidate is CLEAN iff
-  the configured review provider's bar (when one is set) ∧ CI passing
+  every active reviewer's bar ∧ CI passing
   ∧ mergeable/applicable ∧ open non-draft
   ∧ signals+drift computed against the current head.
 A merge is ALLOWED iff additionally
@@ -224,12 +224,15 @@ SENTINEL_PATCH_UNREADABLE = 40
 # A suite phase whose tree's own test wrapper cannot derive the runner's plan:
 # the tree has no full suite this runner can run. Exited before any test does.
 SENTINEL_NO_PLAN = 50
+# The profile's verify.test_setup failed before any test ran: no tree to test,
+# so a harness fault, never a verdict.
+SENTINEL_SETUP_FAIL = 60
 
 # Disposition precedence for a PR that belongs to several clusters: the most
 # blocking proposal wins (a close overrides a merge; needs-human overrides all).
 # Lower index = higher precedence. The ONE place this order is defined.
 DISPOSITION_PRECEDENCE: tuple[str, ...] = (
-    "needs-human", "close-dup", "close-fixed", "close-stale",
+    "needs-human", "close-dup", "close-fixed", "close-wontfix", "close-stale",
     "request-changes", "merge",
 )
 _DISPOSITION_RANK = {d: i for i, d in enumerate(DISPOSITION_PRECEDENCE)}
@@ -295,26 +298,19 @@ def maintainer_leak(item: dict, pr: Pr | None) -> bool:
 def is_dependabot_bump(author: str | None, changed_paths: list[str] | None) -> bool:
     """True iff this PR's author is one of the profile's automation bots AND
     every changed file is a dependency manifest, lockfile, or GitHub-Actions
-    workflow — the shape of a genuine dependency bump.
+    workflow — the shape of a genuine dependency bump. The threat scan asks and
+    stamps the answer on the head, which every other stage reads (bump_exempt).
 
-    Such PRs are out of the pipeline's triage scope. The meaningful risk lives in
-    the upgraded *package*, not in the diff — and the diff is all our threat
-    signatures and the ANALYZE agent can see, so the agent has nothing real to
-    judge and invents dispositions about packages it can't evaluate. Keeping them
-    out of CLUSTER/ANALYZE (the diff is never fetched, so the threat scanner never
-    signature-scans them either) removes that failure mode; the author still merges
-    them upstream.
+    Such a bump is out of triage scope: its risk lives in the upgraded package,
+    which the diff does not show, so neither the signatures nor an agent has
+    anything to judge. The author merges it.
 
-    The change-shape requirement is the security guard: an automation PR that
-    touches anything else does NOT match, so a compromised or spoofed automation
-    author cannot inherit the exemption with an arbitrary diff — it falls back to
-    the full threat scan and analysis. An empty/unknown path list also fails
-    closed.
-
-    Both the automation-author list and the manifest vocabulary are repository
-    policy data (the active profile's `automation_bots` and
-    `dependency_manifests`): waiving a scan is an operator decision, set in
-    configuration."""
+    The change-shape requirement is there because a PR's author is not who
+    pushed its commits: anyone with write access can push to a bot's branch — a
+    maintainer adapting code to an upgrade, or a leaked token — and a profile may
+    list a bot that runs as a plain user account. Such a PR touches more than
+    manifests, so it does NOT match and gets the full threat scan and analysis.
+    An empty/unknown path list also fails closed."""
     if author is None or author not in profile.active().automation_bots:
         return False
     paths = [p for p in (changed_paths or []) if p]
@@ -322,6 +318,19 @@ def is_dependabot_bump(author: str | None, changed_paths: list[str] | None) -> b
         return False
     return all(_is_manifest(p) or _WORKFLOW_RE.search(diffpaths.normalize_path(p))
                for p in paths)
+
+
+# The threat stamp's `detail.exempt` for a head is_dependabot_bump exempts.
+BUMP_EXEMPT = "dependency-bump"
+
+
+def bump_exempt(pr: Pr) -> bool:
+    """Whether the threat scan exempted the PR's current head as a dependency
+    bump. No stage summarizes, clusters, or analyzes one, and no worker spends a
+    reviewer, a security review, or a push on it."""
+    sec = pr.section("threat") or {}
+    return (bool(pr.head_sha) and sec.get("against_head_sha") == pr.head_sha
+            and (sec.get("detail") or {}).get("exempt") == BUMP_EXEMPT)
 
 
 # The pr_clean reason for a head the threat scan has not judged.
@@ -338,26 +347,54 @@ def unscannable_reason(pr: Pr) -> str | None:
     return f"unscannable-diff: the threat scan could not read every added line{tail}"
 
 
+def secret_leak_blocks(pr: Pr) -> bool:
+    """Whether the threat stamp names a committed credential that no operator
+    has cleared. A clearing (threat_scan.clear_secret_leak) holds only for the
+    evidence it was given at the head it was given."""
+    if "secret-leak" not in pr.threat_signatures:
+        return False
+    sec = pr.section("threat") or {}
+    cleared = (sec.get("cleared") or {}).get("secret-leak")
+    return not cleared or cleared.get("evidence") != (sec.get("detail") or {}).get("secret-leak")
+
+
 def threat_blocks(pr: Pr) -> list[str]:
     """The threat scan's hard blocks on `pr`, sticky and fail-closed. We do NOT
     exempt them on staleness — if the head moved, the PR must be re-scanned,
     never silently cleared. Detection lives in threats.py; this is the gate
     consuming it. A malicious verdict blocks outright; a committed credential
-    (secret-leak) and a diff the scan could not read in full
-    (unscannable-diff), both MEDIUM signals, are never merged as-is regardless
-    of the overall verdict; and a clear verdict counts only at the head it was
-    computed against."""
+    no operator cleared (secret-leak) and a diff the scan could not read in
+    full (unscannable-diff), both MEDIUM signals, are never merged as-is
+    regardless of the overall verdict; and a clear verdict counts only at the
+    head it was computed against."""
     reasons: list[str] = []
     sigs = pr.threat_signatures
     if pr.threat_verdict == "malicious":
         reasons.append(f"malicious: {', '.join(sigs) or 'flagged'}")
-    if "secret-leak" in sigs:
+    if secret_leak_blocks(pr):
         reasons.append("secret-leak: a live-looking credential is committed in the diff")
     if unscannable := unscannable_reason(pr):
         reasons.append(unscannable)
     if not is_current(pr, "threat"):
         reasons.append(THREAT_SCAN_STALE)
     return reasons
+
+
+CI_UNREPORTED = ("the checks the base branch requires never ran at this head — "
+                 "update the branch so CI runs them")
+CI_AWAITING_APPROVAL = ("the head's workflow runs wait on a maintainer's approval "
+                        "(a first-time contributor) — approve the workflow run on GitHub")
+
+
+def stacked_block(pr: Pr) -> str | None:
+    """Why a stacked PR is out of every merge and idle hunt, or None for a PR
+    that targets the default branch. A stacked PR's diff is against another
+    PR's branch: judged against the default branch it reads as code that branch
+    lacks, and a squash merge lands it on the stack branch."""
+    if not pr.stacked:
+        return None
+    return (f"stacked on {pr.base_ref}, not {settings.default_branch()} — it waits "
+            "for its base to merge and GitHub to retarget it")
 
 
 def pr_clean(pr: Pr, today: str | None = None) -> tuple[bool, list[str]]:
@@ -398,8 +435,8 @@ def _analyzed_merge(pr: Pr) -> bool:
 
 def security_eligible(pr: Pr, today: str | None = None) -> bool:
     """Should the (expensive) deep security review run on this PR?
-    Only clean merge candidates — never dirty or non-merge PRs."""
-    if not is_current(pr, "analysis"):
+    Only clean merge candidates — never dirty, stacked or non-merge PRs."""
+    if pr.stacked or not is_current(pr, "analysis"):
         return False
     if not _analyzed_merge(pr):
         return False
@@ -419,7 +456,7 @@ def verify_eligible(pr: Pr, changed_paths: list[str], today: str | None = None) 
     A deps-touching PR IS eligible — this function does not filter it out. The
     caller uses deps_touched to distinguish a deps-touching PR and route it to
     needs-human."""
-    if not changed_paths:
+    if not changed_paths or pr.stacked:
         return False
     if not is_current(pr, "analysis"):
         return False
@@ -435,6 +472,9 @@ def merge_allowed(pr: Pr, today: str | None = None,
 
     When `changed_paths` is given, a CODEOWNERS-gated path forces a manual merge
     by a code owner — the bot must never auto-merge it (#15, #26)."""
+    stacked = stacked_block(pr)
+    if stacked is not None:
+        return False, stacked
     if not is_current(pr, "analysis"):
         return False, "analysis missing or stale — re-run ANALYZE"
     if not _analyzed_merge(pr):
@@ -475,7 +515,11 @@ def blocked_on_security(pr: Pr, today: str | None = None) -> bool:
     The single source of truth for 'security is the merge blocker': the app
     surfaces its run button from it, and it is the security hunter's pool, so
     every PR a human could merge gets a review before the merge needs one."""
+    if pr.stacked:
+        return False
     if is_current(pr, "analysis") and str(pr.disposition or "").startswith("close-"):
+        return False
+    if bump_exempt(pr):
         return False
     ok, _ = pr_clean(pr, today)
     if not ok:
@@ -603,7 +647,11 @@ def merge_eligibility(pr: Pr, today: str | None = None,
     any live merge — as the verdict's override (Pr.log_security_override) for a
     YELLOW, on the merge's activity entry for a PR never reviewed — so passing
     it here without logging it is only for previewing the gate. RED is never
-    overridable this way, and neither is a verdict taken at an earlier head."""
+    overridable this way, and neither is a verdict taken at an earlier head.
+    A stacked PR blocks outright (stacked_block)."""
+    stacked = stacked_block(pr)
+    if stacked is not None:
+        return False, stacked
     if changed_paths is not None:
         hm = codeowners.human_merge(changed_paths)
         if hm:
@@ -665,6 +713,15 @@ def merge_eligibility(pr: Pr, today: str | None = None,
     return True, "passed all checks run"
 
 
+def merge_rank(pr: Pr) -> int:
+    """How close a PR is to a merge, lowest first: 0 merge-eligible (clean with
+    a current GREEN security review), 1 clean, 2 the rest. The clustering lane
+    takes work in this order."""
+    if not pr_clean(pr)[0]:
+        return 2
+    return 0 if merge_eligibility(pr)[0] else 1
+
+
 def fix_eligibility(pr: Pr, action: str,
                     changed_paths: list[str] | None = None, *,
                     guided: bool = False, objection: bool = False) -> tuple[bool, str]:
@@ -689,6 +746,10 @@ def fix_eligibility(pr: Pr, action: str,
         stays off the branch until an adversarial review says so again.
       - a path the profile's autofix.deny_globs names
       - a PR that is not open
+      - any action but `describe` (which pushes nothing) on a head the push
+        user cannot reach: a branch on the upstream repository itself, or a
+        fork branch with "Allow edits from maintainers" off. Ingest records
+        both; an unread one does not block, and resubmit re-reads them live.
       - an unguided `fix` action where the profile names no fixable gates, i.e.
         the deployment has not opted into agent-authored changes
       - a `fix` or `resolve` action on a CODEOWNERS-gated path
@@ -726,6 +787,13 @@ def fix_eligibility(pr: Pr, action: str,
         return False, f"PR is {pr.state}, not open"
     if pr.threat_verdict == "malicious":
         return False, "threat verdict is malicious"
+    if action != "describe":
+        if pr.cross_repo is False:
+            return False, ("the head branch is on the upstream repository itself, which the "
+                           "push user does not push to")
+        if pr.maintainer_can_modify is False:
+            return False, ("'Allow edits from maintainers' is off, so the push user cannot "
+                           "push to the fork branch")
     if unscannable := unscannable_reason(pr):
         return False, unscannable
     if pr.security_verdict == "RED":
@@ -934,6 +1002,11 @@ def fix_huntable(pr: Pr, action: str,
     if action not in HUNTABLE_ACTIONS:
         return False, (f"the hunter queues only {', '.join(HUNTABLE_ACTIONS)}; "
                        f"a {action} is an operator's call")
+    if bump_exempt(pr):
+        return False, "a dependency bump; its bot keeps the branch current"
+    stacked = stacked_block(pr)
+    if stacked is not None:
+        return False, stacked
     if not is_current(pr, "signals") or (
             review_policy.active_reviewers() and not is_current(pr, "reviews")):
         return False, "signals or reviews stale or missing, so the review bar is unknowable"
@@ -953,11 +1026,16 @@ def fix_huntable(pr: Pr, action: str,
                            "human's call, not a fix target")
         if not objection:
             fixable = profile.active().autofix.fixable_gates
-            failing = [b for b in review_blockers if b.bar.status == reviewers.FAIL]
+            failing = [b for b in review_blockers if b.bar.status == reviewers.FAIL
+                       and b.reviewer.source == reviewers.GITHUB]
             review_fixable = "review" in fixable and bool(failing)
             ci_fixable = "ci" in fixable and pr.ci == "failing"
-            if not (review_fixable or ci_fixable):
-                if review_blockers and not failing:
+            design_fixable = ("design" in fixable and review_policy.own_bar(
+                pr, reviewers.DESIGN).status == reviewers.FAIL)
+            if not (review_fixable or ci_fixable or design_fixable):
+                waiting = [b for b in review_blockers
+                           if b.bar.status in (reviewers.STALE, reviewers.PENDING)]
+                if waiting and not failing:
                     return False, ("the review is stale or pending — a re-review, not a "
                                    "fix, is what moves it")
                 return False, "no gate a fix could clear is failing"
@@ -1055,6 +1133,16 @@ def compile_preflight_gate(result: dict) -> tuple[bool, str]:
         return False, f"{why}: {excerpt}" if excerpt else why
     return False, (f"compile phase exited {exit_code}, not a sentinel — "
                    "infrastructure failure, live merge refused")
+
+
+def compile_preflight_waivable(result: dict) -> bool:
+    """Whether a preflight record that blocks gives no verdict on the PR — a
+    refusal, a machine or base fault, no exit — so an operator's logged reason
+    may merge past it. A compile failure the base does not share and a diff that
+    no longer applies are verdicts, never waivable."""
+    if result.get("refused") or result.get("error"):
+        return True
+    return result.get("exit") not in (SENTINEL_PASS, SENTINEL_TEST_FAIL, SENTINEL_PATCH_CONFLICT)
 
 
 def security_disposition(pr: Pr) -> tuple[str, str] | None:
@@ -1432,12 +1520,25 @@ def contained_green_failures(host: wire.VerifyRedGreenSignal) -> list[str]:
     return sorted(out)
 
 
+def shared_load_error(host: wire.VerifyRedGreenSignal) -> str | None:
+    """The test-file load error both red and green failed on, or None. The
+    lines are the untrusted test's own output, so they only ever withhold a
+    verdict: a forger gains nothing a PR shipping no test would not."""
+    if not (host.get("red_exit") == SENTINEL_TEST_FAIL
+            and host.get("green_exit") == SENTINEL_TEST_FAIL):
+        return None
+    red = host.get("red_load_error")
+    return red if red and red == host.get("green_load_error") else None
+
+
 def verify_run_errored(blind: wire.VerifyBlindSignal,
                        host: wire.VerifyRedGreenSignal, *,
                        regress: wire.VerifyRegressSignal | None) -> bool:
     """True iff a PR's committed signals record a run that errored: the host saw a
     phase exit outside its sentinel set (a killed container, an OOM, a timeout, an
-    image fault), or a clean red->green's confirm re-run or regress leg is
+    image fault, a test setup that failed), red and green both failed on the same
+    test-file load error (`shared_load_error` — neither reached the code under
+    test), or a clean red->green's confirm re-run or regress leg is
     incomplete — missing, not run, a non-sentinel exit, or a first failure whose
     confirming run never concluded. Nothing follows from such a run however the
     judge rates the output, because the exit code it reported carries no meaning.
@@ -1461,6 +1562,8 @@ def verify_run_errored(blind: wire.VerifyBlindSignal,
         return True
     accepted = (SENTINEL_PASS, SENTINEL_TEST_FAIL)
     if host.get("red_exit") not in accepted or host.get("green_exit") not in accepted:
+        return True
+    if shared_load_error(host):
         return True
     if not (host.get("red_exit") == SENTINEL_TEST_FAIL and green_accepted(host)):
         return False
@@ -1803,6 +1906,10 @@ def bar_asks(reasons: list[str], pr: Pr | None = None) -> list[str]:
         if r in by_reason:
             if by_reason[r]:
                 asks.append(by_reason[r])
+        elif r == "ci unreported":
+            asks.append(CI_UNREPORTED[0].upper() + CI_UNREPORTED[1:] + ".")
+        elif r == "ci awaiting-approval":
+            asks.append(CI_AWAITING_APPROVAL[0].upper() + CI_AWAITING_APPROVAL[1:] + ".")
         elif r.startswith("ci"):
             asks.append("CI is not green — fix the failing/unknown checks.")
         elif "conflict" in r:
@@ -2092,8 +2199,10 @@ def narrative_staleness(cluster: Cluster, prs: dict[int, Pr]) -> list[str]:
     """Why the stored analysis narrative may no longer describe its members:
     one line per open member whose current derived disposition differs from
     this cluster's proposed one, or whose non-GREEN security verdict was
-    recorded after the analysis was written. Empty while the narrative still
-    matches the facts. Derived on read, never stored."""
+    recorded after the analysis was written. A member whose disposition another
+    cluster's proposal won (`analysis.from_cluster`) is not compared: re-running
+    this analysis cannot change it. Empty while the narrative still matches the
+    facts. Derived on read, never stored."""
     reasons: list[str] = []
     written = cluster.checked_at or ""
     for n in cluster.prs:
@@ -2102,7 +2211,9 @@ def narrative_staleness(cluster: Cluster, prs: dict[int, Pr]) -> list[str]:
             continue
         proposed = (cluster.proposal_for(pr.n) or {}).get("disposition")
         current = pr.disposition
-        if proposed and current and current != proposed:
+        winner = (pr.section("analysis") or {}).get("from_cluster")
+        ours = winner is None or int(winner) == cluster.id
+        if ours and proposed and current and current != proposed:
             reasons.append(f"#{pr.n} is now {current}; the analysis proposed {proposed}")
         sec = pr.section("security") or {}
         verdict = sec.get("verdict")

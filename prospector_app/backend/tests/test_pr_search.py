@@ -6,8 +6,8 @@ import json
 from prospector_app.backend import pr_search
 
 
-def test_coerce_drops_greptile_fields_when_no_provider(monkeypatch):
-    monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "none")
+def test_coerce_drops_greptile_fields_when_no_reviewer_seen(monkeypatch, active_reviewers):
+    active_reviewers()
     spec = pr_search.coerce({"greptile": {"op": "<", "value": 5}, "greptile_stale": True,
                              "greptile_severity": "defects", "ci": "passing"})
     assert "greptile" not in spec
@@ -16,10 +16,10 @@ def test_coerce_drops_greptile_fields_when_no_provider(monkeypatch):
     assert spec["ci"] == "passing"
 
 
-def test_review_field_docs_follow_provider(monkeypatch):
-    monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "greptile")
+def test_review_field_docs_follow_the_active_reviewers(monkeypatch, active_reviewers):
+    active_reviewers("greptile")
     assert "greptile_severity" in pr_search._review_field_docs()
-    monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "none")
+    active_reviewers()
     assert pr_search._review_field_docs() == ""
 
 

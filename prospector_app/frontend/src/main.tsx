@@ -30,7 +30,7 @@ function LaneRedirect({ lane }: { lane: Lane["key"] }) {
   return <Navigate to={`/prs/list?${next}`} replace />;
 }
 
-// A view's old route, redirected to its home under the five destinations with
+// A redirect to a view's home under the five destinations, with
 // the query string (flyout params, filter specs) carried through.
 // eslint-disable-next-line react-refresh/only-export-components -- route redirect local to the entry's router setup
 function Moved({ to }: { to: string }) {
@@ -59,7 +59,7 @@ const router = createBrowserRouter([
     children: [
       // The five destinations: Home, PRs, Issues, Security, Pipeline.
       { index: true, lazy: lazyView(loadHome) },
-      { path: "prs", element: <Navigate to="/prs/list" replace /> },
+      { path: "prs", element: <Moved to="/prs/list" /> },
       { path: "prs/list", lazy: lazyView(loadPRExplorer) },
       { path: "prs/clusters", lazy: lazyView(() => import("./views/ClusterBoard")) },
       { path: "prs/clusters/:id", lazy: lazyView(() => import("./views/ClusterDetail")) },
@@ -68,7 +68,7 @@ const router = createBrowserRouter([
       { path: "security", lazy: lazyView(loadSecurity) },
       { path: "security/threats", lazy: lazyView(() => import("./views/Threats")) },
       { path: "security/actions", lazy: lazyView(() => import("./views/ActionItems")) },
-      { path: "pipeline", element: <Navigate to="/pipeline/control" replace /> },
+      { path: "pipeline", element: <Moved to="/pipeline/control" /> },
       { path: "pipeline/control", lazy: lazyView(loadPipeline) },
       { path: "pipeline/activity", lazy: lazyView(() => import("./views/Activity")) },
       { path: "pipeline/policy", lazy: lazyView(() => import("./views/Policy")) },

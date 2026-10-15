@@ -37,6 +37,20 @@ def test_second_concurrent_triage_same_cluster_rejected():
     jobs.start_job("triage-cluster", 204)
 
 
+def test_design_review_runs_the_backfill_module_with_its_count():
+    jobs.JOBS.clear()
+    job = jobs.start_job("design-review", count=7)
+    assert job["_argv"][-4:] == ["-m", "prospector_app.backend.design_backfill", "--limit", "7"]
+
+
+def test_design_review_pr_runs_the_backfill_module_for_one_pr():
+    jobs.JOBS.clear()
+    job = jobs.start_job("design-review-pr", pr=42)
+    assert job["_argv"][-4:] == ["-m", "prospector_app.backend.design_backfill", "--pr", "42"]
+    with pytest.raises(ValueError):
+        jobs.start_job("design-review-pr", pr=42)
+
+
 def test_security_review_spec_is_listed_and_needs_pr():
     specs = {s["kind"]: s for s in jobs.list_specs()}
     assert "security-review" in specs
@@ -172,7 +186,7 @@ def _logged(events: list[dict]) -> list[str]:
 
 @pytest.fixture
 def no_refresh(monkeypatch):
-    monkeypatch.setattr(jobs.data, "refresh", lambda: None)
+    monkeypatch.setattr(jobs, "_refresh_snapshots", lambda: None)
 
 
 def test_run_job_completes_with_zero_listeners(no_refresh):
@@ -204,6 +218,25 @@ def test_run_job_keeps_output_and_ending_on_disk(no_refresh):
     record = json.loads((jobs.JOBS_DIR / f"{job['id']}.json").read_text())
     assert record["status"] == "done" and record["returncode"] == 0
     assert "hello" in (jobs.JOBS_DIR / f"{job['id']}.log").read_text()
+
+
+def test_a_finished_job_leaves_the_issue_and_alert_snapshots_current(monkeypatch, tmp_path):
+    from prospector_app.backend import alert_data, issue_data
+    monkeypatch.setattr(jobs.data, "refresh", lambda: None)
+    issue_data.set_store_root(tmp_path / "issues")
+    alert_data.set_store_root(tmp_path / "alerts")
+    try:
+        assert not issue_data.issues() and not issue_data.runs() and not alert_data.runs()
+        issue_data.store().create_issue(1, {"title": "Bug", "state": "open",
+                                            "updated_at": "2026-06-23T00:00:00Z"})
+        for module in (issue_data, alert_data):
+            module.store().append_run({"phase": "ingest", "finished": "2026-06-24T00:00:00+00:00"})
+        asyncio.run(jobs.run_job(_job([sys.executable, "-c", "pass"])))
+        assert set(issue_data.issues()) == {1}
+        assert len(issue_data.runs()) == len(alert_data.runs()) == 1
+    finally:
+        issue_data.set_store_root(None)
+        alert_data.set_store_root(None)
 
 
 def test_job_ids_keep_rising_across_a_restart():
@@ -551,7 +584,73 @@ def test_job_runtimes_route_serves_the_ledger_runtimes(monkeypatch):
 def test_count_jobs_name_their_own_default_and_noun():
     specs = {s["kind"]: s for s in jobs.list_specs()}
     assert (specs["security-sweep"]["count_default"], specs["security-sweep"]["count_noun"]) == (12, "records")
-    assert specs["issue-find-fixed"]["count_default"] == 12
+    assert specs["issue-find-fixed"]["count_default"] == 200
     assert specs["issue-analyze"]["count_default"] == 200
     assert specs["analyze-clusters"]["count_default"] == 20
     assert all(s["count_default"] is not None for s in specs.values() if s["needs_count"])
+
+
+def test_a_queued_job_counts_the_queued_jobs_of_its_kind_ahead_of_it():
+    first, second, third = (jobs.start_job("design-review-pr", pr=n) for n in (11, 12, 13))
+    first["status"] = "running"
+    assert jobs.queue_spot(third) == {"ahead": 1, "running": [{"id": first["id"], "pr": 11, "cluster": None}]}
+    assert jobs.queue_spot(second) == {"ahead": 0, "running": [{"id": first["id"], "pr": 11, "cluster": None}]}
+    assert jobs.queue_spot(first) is None
+    assert jobs.queue_spot(jobs.start_job("selftest")) is None
+
+
+def test_attach_job_follows_a_queued_jobs_place_in_line():
+    async def run() -> list[dict]:
+        first, second, third = (jobs.start_job("design-review-pr", pr=n) for n in (11, 12, 13))
+        first["status"] = "running"
+        stream = jobs.attach_job(third)
+        opened = json.loads((await anext(stream))["data"])
+        assert opened["queue"] == {"ahead": 1, "running": [{"id": first["id"], "pr": 11, "cluster": None}]}
+        moved = asyncio.ensure_future(anext(stream))
+        await asyncio.sleep(0)
+        first["status"] = "done"
+        second["status"] = "running"
+        jobs._notify(first)
+        events = [await asyncio.wait_for(moved, 5)]
+        third.update(status="done", returncode=0)
+        jobs._notify(third)
+        events += [ev async for ev in stream]
+        return events
+
+    events = asyncio.run(run())
+    assert [e["event"] for e in events] == ["queue", "done"]
+    assert json.loads(events[0]["data"]) == {"ahead": 0, "running": [{"id": 2, "pr": 12, "cluster": None}]}
+
+
+def test_restore_keeps_queued_jobs_behind_a_running_job_it_adopts(monkeypatch):
+    first = jobs.start_job("design-review-pr", pr=11)
+    second = jobs.start_job("design-review-pr", pr=12)
+    first.update(status="running", pid=1)
+    jobs._save(first)
+    jobs.JOBS.clear()
+    started: list[int] = []
+    release = asyncio.Event()
+
+    async def follow(job, proc):
+        started.append(job["id"])
+        await release.wait()
+        job["status"] = "done"
+
+    async def run_job(job):
+        started.append(job["id"])
+
+    monkeypatch.setattr(jobs, "_runs_job", lambda job: True)
+    monkeypatch.setattr(jobs, "_follow", follow)
+    monkeypatch.setattr(jobs, "run_job", run_job)
+
+    async def run() -> list[int]:
+        jobs.restore()
+        for _ in range(5):
+            await asyncio.sleep(0)
+        held = list(started)
+        release.set()
+        await asyncio.gather(*jobs._TASKS)
+        return held
+
+    assert asyncio.run(run()) == [first["id"]]
+    assert started == [first["id"], second["id"]]

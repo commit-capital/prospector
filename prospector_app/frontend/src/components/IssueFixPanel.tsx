@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import {
-  api, type IssueDetail, type IssueFixBody, type IssueFixCandidate, type IssueFixFollowup,
+  api, type IssueDetail, type IssueFixBody, type IssueFixBoundary, type IssueFixCandidate,
+  type IssueFixFollowup, type IssueFixIntake, type IssueFixRivalEntry,
   type IssueFixQuestion,
   type IssueFixRun, type IssueFixStatus, type IssueFixThreadEntry,
 } from "../api";
@@ -19,13 +20,12 @@ const STATUS_LABEL: Record<IssueFixStatus, string> = {
   "pr-open": "PR open",
   "pr-closed": "PR closed",
   failed: "Didn't finish",
-  superseded: "Someone else's PR",
   declined: "No fix",
   "pr-merged": "PR merged",
 };
 const STATUS_TONE: Record<IssueFixStatus, string> = {
   review: "green", question: "yellow", running: "blue", reporter: "muted",
-  "pr-open": "purple", "pr-closed": "amber", failed: "red", superseded: "muted",
+  "pr-open": "purple", "pr-closed": "amber", failed: "red",
   declined: "muted", "pr-merged": "green",
 };
 
@@ -72,7 +72,6 @@ export function IssueFixPanel({ d, onChanged }: { d: IssueDetail; onChanged: () 
 
 function FixBanner({ d, onChanged }: { d: IssueDetail; onChanged: () => void }) {
   const { pushToast } = useExec();
-  const { prUrl } = useRepoMeta();
   const req = d.fix_request;
   const status = d.fix_status;
   if (req && (req.status === "queued" || req.status === "running")) {
@@ -108,19 +107,12 @@ function FixBanner({ d, onChanged }: { d: IssueDetail; onChanged: () => void }) 
       <span className="vb-icon">
         {status === "review" ? "✅" : status === "question" ? "❓" : status === "pr-open" ? "🔗"
           : status === "pr-merged" ? "🔀" : status === "failed" ? "✗" : status === "reporter" ? "⏳"
-          : status === "superseded" ? "↪" : "⛔"}
+          : "⛔"}
       </span>
       <div>
         <div className="vb-headline">{STATUS_LABEL[status]}</div>
         {status === "question"
           ? <div className="vb-detail">The agents read the report differently — the question is below.</div>
-          : status === "superseded" && d.fix_run?.superseded
-          ? <div className="vb-detail">
-              <a href={prUrl(d.fix_run.superseded.pr)} target="_blank" rel="noreferrer">
-                #{d.fix_run.superseded.pr} ↗</a>
-              {d.fix_run.superseded.author ? ` by ${d.fix_run.superseded.author}` : ""} is open for
-              this issue, so the automation stepped aside.
-            </div>
           : d.fix_reason && <div className="vb-detail">{d.fix_reason}</div>}
       </div>
     </div>
@@ -155,6 +147,11 @@ function FixActions({ d, onChanged }: { d: IssueDetail; onChanged: () => void })
   if (status === "review" || (status === "failed" && pr != null)) {
     return (
       <div className="fix-composer">
+        {pr == null && d.fix_held && (
+          <div className="small" style={{ marginBottom: 6 }}>
+            ⚠️ Held for you: {d.fix_held}. Opening the PR is your call.
+          </div>
+        )}
         {pr == null ? (
           <div className="row-actions">
             <button className="btn-primary sm" disabled={busy}
@@ -191,8 +188,6 @@ function FixActions({ d, onChanged }: { d: IssueDetail; onChanged: () => void })
       <textarea className="fix-goal" rows={2} value={text}
         placeholder={status === "pr-closed"
           ? "Optional: why the PR was closed, or what the agents should do differently this time."
-          : status === "superseded"
-          ? "The agents stepped aside for that PR; trying again runs only once it is no longer open."
           : "Optional: anything the agents should know (where to look, what correct behavior is)."}
         onChange={(e) => setText(e.target.value)} aria-label="Guidance for the fix" />
       <div className="row-actions">
@@ -362,7 +357,78 @@ function FixRunBody({ run, followup }: { run: IssueFixRun; followup: IssueFixFol
           )}
         </>
       )}
+      {run.intake && <Intake intake={run.intake} />}
+      {run.boundary && <Boundary boundary={run.boundary} />}
+      {(run.second_opinion?.length ?? 0) > 0 && <SecondOpinion entries={run.second_opinion ?? []} />}
       {run.candidates.length > 0 && <Candidates run={run} />}
+    </>
+  );
+}
+
+function Intake({ intake }: { intake: IssueFixIntake }) {
+  const tone = intake.verdict === "clear" ? "green" : intake.verdict === "malicious" ? "red" : "yellow";
+  return (
+    <>
+      <h4>Intake audit</h4>
+      <div className={`chip sm chip-${tone}`}>{intake.failed ? "didn't finish" : intake.verdict}</div>
+      {intake.reason && <div style={{ marginTop: 4 }}>{intake.reason}</div>}
+      {(intake.findings.length > 0 || (intake.hidden?.length ?? 0) > 0) && (
+        <ul style={{ margin: "4px 0 0 18px" }}>
+          {intake.findings.map((f, i) => (
+            <li key={i}><b>{f.kind}</b>: {f.why} <span className="muted">“{f.quote}”</span></li>
+          ))}
+          {(intake.hidden ?? []).map((h, i) => <li key={`h${i}`}><b>hidden</b>: {h}</li>)}
+        </ul>
+      )}
+    </>
+  );
+}
+
+const RIVAL_TONE: Record<IssueFixRivalEntry["verdict"], string> = {
+  covered: "green", "gap-closed": "green", gap: "red", "gap-open": "red", skipped: "muted",
+};
+
+function SecondOpinion({ entries }: { entries: IssueFixRivalEntry[] }) {
+  const { prUrl } = useRepoMeta();
+  return (
+    <>
+      <h4>Second opinion</h4>
+      <ul style={{ margin: "4px 0 0 18px" }}>
+        {entries.map((e) => (
+          <li key={e.pr}>
+            <a href={prUrl(e.pr)} target="_blank" rel="noreferrer">#{e.pr}</a>
+            {e.author ? ` by ${e.author}` : ""}{" "}
+            <span className={`chip sm chip-${RIVAL_TONE[e.verdict]}`}>{e.verdict}</span>{" "}
+            <span className="muted">{e.why}</span>
+            {(e.missed?.length ?? 0) > 0 && (
+              <ul style={{ margin: "2px 0 0 18px" }}>{e.missed?.map((m, i) => <li key={i}>{m}</li>)}</ul>
+            )}
+          </li>
+        ))}
+      </ul>
+    </>
+  );
+}
+
+function Boundary({ boundary }: { boundary: IssueFixBoundary }) {
+  return (
+    <>
+      <h4>Trust boundaries</h4>
+      {boundary.failed && <div className="chip sm chip-red">review didn't finish</div>}
+      {boundary.crossings.length === 0 ? (
+        !boundary.failed && <div className="muted small">None found.</div>
+      ) : (
+        <ul style={{ margin: "4px 0 0 18px" }}>
+          {boundary.crossings.map((c, i) => (
+            <li key={i}>
+              <b>{c.kind}</b> <span className="muted">{c.where}</span>
+              {!c.requested && <span className="chip sm chip-red" style={{ marginLeft: 6 }}>not asked for</span>}
+              {" — "}{c.what}
+            </li>
+          ))}
+        </ul>
+      )}
+      {boundary.reason && <div className="muted small" style={{ marginTop: 4 }}>{boundary.reason}</div>}
     </>
   );
 }

@@ -15,7 +15,7 @@ from __future__ import annotations
 import os
 import shlex
 
-from pipeline import settings
+from pipeline import gh, settings
 from pipeline.gh import operator_env
 
 MACHINE_USER_ENV = "PROSPECTOR_RESUBMIT_MACHINE_USER"
@@ -41,8 +41,35 @@ def initiator(env: dict[str, str] | None = None) -> str:
     return "worker" if source.get(INITIATOR_ENV) == "worker" else "operator"
 
 
+# GitHub's account id for a login, kept once GitHub has named it.
+_account_ids: dict[str, int] = {}
+
+
+def _account_id(login: str) -> int | None:
+    if login not in _account_ids:
+        uid = (gh.gh_json(f"users/{login}", timeout=20) or {}).get("id")
+        if not isinstance(uid, int):
+            return None
+        _account_ids[login] = uid
+    return _account_ids[login]
+
+
+def commit_identity() -> tuple[str, str]:
+    """The name and email a machine commit carries: the configured App's bot
+    account, whose no-reply address GitHub links to the App, so a pull request
+    the App opens reads as one actor and a squash merge has no machine user to
+    credit; the push user when no App is configured or GitHub cannot name the
+    App's account."""
+    login = settings.bot_login().removesuffix("[bot]") + "[bot]"
+    uid = _account_id(login) if login != "[bot]" else None
+    if uid is None:
+        return settings.push_login(), settings.push_email()
+    return login, gh.noreply_email(uid, login)
+
+
 def push_env(base: dict[str, str] | None = None) -> dict[str, str]:
-    """Authenticate git as the configured contributor-push user.
+    """Authenticate git as the configured contributor-push user, committing
+    under `commit_identity`.
 
     Only the pinned key is ever offered: ``-F /dev/null`` ignores the operator's
     ssh_config (an ``IdentityFile`` it names for github.com is offered even
@@ -63,10 +90,9 @@ def push_env(base: dict[str, str] | None = None) -> dict[str, str]:
     env["GIT_SSH_COMMAND"] = (
         f"ssh -F /dev/null -i {shlex.quote(str(key))} -o IdentitiesOnly=yes "
         "-o IdentityAgent=none -o StrictHostKeyChecking=accept-new")
-    env["GIT_AUTHOR_NAME"] = settings.push_login()
-    env["GIT_AUTHOR_EMAIL"] = settings.push_email()
-    env["GIT_COMMITTER_NAME"] = settings.push_login()
-    env["GIT_COMMITTER_EMAIL"] = settings.push_email()
+    name, email = commit_identity()
+    env["GIT_AUTHOR_NAME"] = env["GIT_COMMITTER_NAME"] = name
+    env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = email
     return env
 
 

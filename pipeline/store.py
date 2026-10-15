@@ -36,7 +36,8 @@ if TYPE_CHECKING:
 
 DEFAULT_ROOT = Path(__file__).resolve().parent / "store"
 
-DISPOSITIONS = {"merge", "request-changes", "close-dup", "close-fixed", "close-stale", "needs-human"}
+DISPOSITIONS = {"merge", "request-changes", "close-dup", "close-fixed", "close-wontfix", "close-stale",
+                "needs-human"}
 OUTCOMES = {"merge-ready", "awaiting-authors", "needs-first-party-work", "close-out", "blocked-on-decision"}
 SECURITY_VERDICTS = {"GREEN", "YELLOW", "RED"}
 DRIFT_STATES = {"applicable", "already-fixed", "conflicts"}
@@ -106,13 +107,13 @@ FIX_REQUEST_SOURCES = {"operator", "auto", "objection"}
 # round-trips newer records without loss
 PR_SECTIONS = ("meta", "signals", "reviews", "drift", "summary", "cluster", "analysis",
                "security", "issues", "threat", "greptile_review", "verify", "verify_request",
-               "fix_request", "security_run")
+               "fix_request", "security_run", "design_run")
 
 
-def security_claim_held_elsewhere(run: dict | None, *, host: str,
+def run_claim_held_elsewhere(run: dict | None, *, host: str,
                                   stale_after: float) -> bool:
-    """Whether `run`, a PR's `security_run` claim, is another host's live
-    review: held by a different host and started within `stale_after` seconds.
+    """Whether `run`, a PR's `security_run` or `design_run` claim, is another
+    host's live review: held by a different host and started within `stale_after` seconds.
     This host's own claim is a restart's leftover; one past its window is a
     dead machine's. Neither blocks a hunter."""
     run = run or {}
@@ -233,6 +234,9 @@ def validate_pr(rec: dict) -> None:
     sr = rec.get("security_run")
     if sr and not sr.get("host"):
         raise ValidationError("security_run.host: required")
+    dr = rec.get("design_run")
+    if dr and not dr.get("host"):
+        raise ValidationError("design_run.host: required")
     d = rec.get("drift")
     if d and d.get("state") not in DRIFT_STATES:
         raise ValidationError(f"drift.state: {d.get('state')!r} not in {sorted(DRIFT_STATES)}")
@@ -396,6 +400,7 @@ class WorkerRegistries(TypedDict):
     issue_fix_worker: dict
     worker_health: dict
     verify_base: dict[str, wire.VerifyPin]
+    machine_modes: dict[str, dict]
 
 
 _EVIDENCE_META = ("id", "pr", "head_sha", "author", "captured_at", "complete", "data")
@@ -557,6 +562,28 @@ class Store:
         return [{"number": r[0], "state": r[1], "head_sha": r[2],
                  "title": r[3] or "", "body": r[4] or ""} for r in rows]
 
+    def pr_rows(self, paths: list[tuple[str, ...]], *, states: Iterable[str] | None = None,
+                numbers: Iterable[int] | None = None) -> list[tuple[dict, list]]:
+        """Each PR's compact row (pr, state, title, author, head_sha, updated_at)
+        plus the JSON value at each of `paths` (None where the record has none),
+        in number order. `states` keeps the PRs in one of those exact states and
+        `numbers` those PRs; both filter, and the columns are projected,
+        server-side, so a listing never ships the PR records."""
+        from sqlalchemy import and_
+        c = schema.prs.c
+        where = []
+        if states is not None:
+            where.append(c.state.in_(sorted(set(states))))
+        if numbers is not None:
+            where.append(c.pr.in_(sorted({int(n) for n in numbers})))
+        rows = self._prs.rows(
+            [c.state, c.data[("meta", "title")].as_string(),
+             c.data[("meta", "author")].as_string(), c.head_sha, c.updated_at,
+             *(c.data[p] for p in paths)],
+            where=and_(*where) if where else None)
+        return [({"pr": r[0], "state": r[1], "title": r[2], "author": r[3],
+                  "head_sha": r[4], "updated_at": r[5]}, list(r[6:])) for r in rows]
+
     def pr_bodies(self, ns: list[int]) -> dict[int, str | None]:
         """The stored `meta.body` for each of `ns` — the field `all_prs` omits.
         Projects the body server-side and reads PR_BODIES_BATCH PRs at a time, so
@@ -671,18 +698,22 @@ class Store:
             conn.execute(insert(schema.runs).values(
                 kind="pr", data=record, ts=record.get("ts") or storekit.now()))
 
-    def runs(self, limit: int | None = None, since: str | None = None) -> list[storekit.RunRecord]:
+    def runs(self, limit: int | None = None, since: str | None = None,
+             phase: str | None = None) -> list[storekit.RunRecord]:
         """The run-ledger records, typed (PhaseRun | StoreEdit), oldest first.
         With `limit` omitted, every record; with `limit` given, only the last
         `limit` records — read newest-first with a bounded query, then
         reversed back to insertion order before returning. `since` filters to
         records inserted at or after that ISO instant, against the ledger's
         indexed `ts` column — cheap regardless of the ledger's total size —
-        and composes with `limit`."""
+        and composes with `limit`. `phase` keeps only that phase's records,
+        filtered server-side, so a caller after one phase never ships the rest."""
         from sqlalchemy import select
         query = select(schema.runs.c.data).where(schema.runs.c.kind == "pr")
         if since is not None:
             query = query.where(schema.runs.c.ts >= since)
+        if phase is not None:
+            query = query.where(schema.runs.c.data["phase"].as_string() == phase)
         if limit is None:
             query = query.order_by(schema.runs.c.rowid)
             with self.engine.connect() as conn:
@@ -884,10 +915,36 @@ class Store:
         with self.engine.connect() as conn:
             return [r[0] for r in conn.execute(query).all()]
 
-    def capacity_spend(self, account: str, since: str) -> float:
-        """Reported cost of `account`'s unattended agent runs since `since`."""
-        return sum(float(r.get("cost_usd") or 0.0) for r in self.agent_runs(since)
-                   if r.get("account") == account and r.get("unattended"))
+    def agent_cost(self, since: str, by: str, *, until: str | None = None,
+                   account: str | None = None,
+                   unattended: bool = False) -> dict[str | None, float]:
+        """The cost the CLI reports (`total_cost_usd`: the run priced at API
+        rates, a real charge only on an API-key account) of the runs inserted at or after `since` (and at
+        or before `until`), summed in the database per value of each record's
+        `by` field ("lane", "host"): one row per group crosses the wire, never
+        the runs themselves. `account` and `unattended` narrow the runs summed.
+        A run with no reported cost adds nothing; a run without `by` sums
+        under None."""
+        from sqlalchemy import func, select
+        data = schema.runs.c.data
+        group = data[by].as_string().label("grp")
+        query = (select(group, func.sum(data["cost_usd"].as_float()))
+                 .where(schema.runs.c.kind == "agent")
+                 .where(schema.runs.c.ts >= since))
+        if until is not None:
+            query = query.where(schema.runs.c.ts <= until)
+        if account is not None:
+            query = query.where(data["account"].as_string() == account)
+        if unattended:
+            query = query.where(data["unattended"].as_boolean())
+        query = query.group_by(group)
+        with self.engine.connect() as conn:
+            return {k: float(v) for k, v in conn.execute(query).all() if v is not None}
+
+    def capacity_cost(self, account: str, since: str) -> float:
+        """Reported cost of `account`'s unattended agent runs since `since` —
+        what an API-key account's daily budget is held to."""
+        return sum(self.agent_cost(since, "lane", account=account, unattended=True).values())
 
     def load_reviewers(self) -> dict:
         """Each automated reviewer's latest observed activity over the open
@@ -1209,6 +1266,8 @@ class Store:
         section: wire.VerifyRequest = {
             "status": "running", "step": "claimed", "host": host,
             "started_at": storekit.now()}
+        if isinstance(req.get("priority"), (int, float)):
+            section["priority"] = float(req["priority"])
         for field in ("queued_at", "source", "attempts"):
             if req.get(field) is not None:
                 if field == "attempts" and isinstance(req[field], int):
@@ -1221,6 +1280,26 @@ class Store:
         storekit.stamp(
             rec, "verify_request", cast(dict, section), "against_head_sha", head)
         return section if self._prs.save_if(rec, stamp) else None
+
+    def _prioritize(self, n: int, section: str, waiting: tuple[str, ...], priority: float) -> bool:
+        """Set PR `n`'s `section` request's queue `priority` while it is still
+        waiting, under a compare-and-swap on the saved_at write-stamp, so a
+        worker's claim landing first is never undone. Whether it was set."""
+        row = self._prs.stamped(n)
+        if row is None:
+            return False
+        rec, stamp = row
+        req = rec.get(section)
+        if not isinstance(req, dict) or req.get("status") not in waiting:
+            return False
+        rec[section] = {**req, "priority": float(priority)}
+        return self._prs.save_if(rec, stamp)
+
+    def prioritize_verify_request(self, n: int, priority: float) -> bool:
+        return self._prioritize(n, "verify_request", ("queued", "waiting-for-base"), priority)
+
+    def prioritize_fix_request(self, n: int, priority: float) -> bool:
+        return self._prioritize(n, "fix_request", ("queued",), priority)
 
     def load_fix_worker(self) -> dict:
         """Autofix-worker heartbeats, one record per host (`{hosts: {<hostname>:
@@ -1277,14 +1356,15 @@ class Store:
 
     def load_worker_registries(self) -> WorkerRegistries:
         """What `load_verify_worker`, `load_fix_worker`, `load_issue_fix_worker`,
-        `load_worker_health` and `load_verify_base_hosts` return, read in one
+        `load_worker_health`, `load_verify_base_hosts` and `load_machine_modes` return, read in one
         statement over one connection."""
         from sqlalchemy import or_, select
         reg = schema.registries
         with self.engine.connect() as conn:
             rows = conn.execute(
                 select(reg.c.name, reg.c.data)
-                .where(or_(reg.c.name.in_(self._WORKER_REGISTRIES), self._is_health_row()))
+                .where(or_(reg.c.name.in_(self._WORKER_REGISTRIES), self._is_health_row(),
+                           reg.c.name.like(f"{self._MODE_PREFIX}%")))
             ).all()
         named = {name: rec for name, rec in rows if name in self._WORKER_REGISTRIES}
         return {
@@ -1292,7 +1372,9 @@ class Store:
             "fix_worker": named.get("fix_worker", {"hosts": {}}),
             "issue_fix_worker": named.get("issue_fix_worker", {"hosts": {}}),
             "worker_health": self._health_by_host(
-                (name, rec) for name, rec in rows if name not in self._WORKER_REGISTRIES),
+                (name, rec) for name, rec in rows if name.startswith(self._HEALTH_PREFIX)),
+            "machine_modes": {name[len(self._MODE_PREFIX):]: rec for name, rec in rows
+                              if name.startswith(self._MODE_PREFIX)},
             "verify_base": self._pins_by_host(named.get("verify_base", {"hosts": {}})),
         }
 
@@ -1304,6 +1386,52 @@ class Store:
 
     def clear_worker_health(self, host: str) -> bool:
         return self._delete_registry(f"{self._HEALTH_PREFIX}{host}")
+
+    _MODE_PREFIX = "machine_mode:"
+    _LOOPS_PREFIX = "worker_loops:"
+
+    def _rows_by_host(self, prefix: str) -> dict[str, dict]:
+        from sqlalchemy import select
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(schema.registries.c.name, schema.registries.c.data)
+                .where(schema.registries.c.name.like(f"{prefix}%"))).all()
+        return {name[len(prefix):]: rec for name, rec in rows}
+
+    def save_machine_mode(self, record: dict) -> None:
+        """An operator's mark on one machine, keyed by `host`: `{host,
+        stood_down, at, by, note}`."""
+        if not record.get("host"):
+            raise ValidationError("machine_mode.host: required")
+        self._save_registry(f"{self._MODE_PREFIX}{record['host']}", record)
+
+    def load_machine_modes(self) -> dict[str, dict]:
+        return self._rows_by_host(self._MODE_PREFIX)
+
+    def clear_machine_mode(self, host: str) -> bool:
+        return self._delete_registry(f"{self._MODE_PREFIX}{host}")
+
+    def save_worker_loops(self, record: dict) -> None:
+        """One machine's lanes and periodic-loop passes, keyed by `host`:
+        `{host, at, lanes: {lane: bool}, loops: {name: {last_at, every_seconds}}}`."""
+        if not record.get("host"):
+            raise ValidationError("worker_loops.host: required")
+        self._save_registry(f"{self._LOOPS_PREFIX}{record['host']}", record)
+
+    def load_worker_loops(self) -> dict[str, dict]:
+        return self._rows_by_host(self._LOOPS_PREFIX)
+
+    _PAUSE_PREFIX = "lane_pause:"
+
+    def save_lane_pause(self, record: dict) -> None:
+        """The lanes an operator paused on one machine, keyed by `host`:
+        `{host, lanes: {lane: {at, by}}}`."""
+        if not record.get("host"):
+            raise ValidationError("lane_pause.host: required")
+        self._save_registry(f"{self._PAUSE_PREFIX}{record['host']}", record)
+
+    def load_lane_pauses(self) -> dict[str, dict]:
+        return self._rows_by_host(self._PAUSE_PREFIX)
 
     def _delete_registry(self, name: str) -> bool:
         from sqlalchemy import delete as sa_delete
@@ -1340,7 +1468,7 @@ class Store:
                          "step": "claimed", "host": host,
                          "started_at": storekit.now()}
         for field in ("queued_at", "source", "attempts", "base_sha", "result",
-                      "guidance", "objection"):
+                      "guidance", "objection", "priority"):
             if req.get(field) is not None:
                 section[field] = req[field]
         head = (rec.get("meta") or {}).get("head_sha")
@@ -1360,7 +1488,7 @@ class Store:
         if row is None:
             return False
         rec, stamp = row
-        if security_claim_held_elsewhere(rec.get("security_run"), host=host,
+        if run_claim_held_elsewhere(rec.get("security_run"), host=host,
                                          stale_after=stale_after):
             return False
         rec["security_run"] = {"host": host, "started_at": storekit.now()}
@@ -1379,6 +1507,42 @@ class Store:
             return
         rec["security_run"] = None
         self._prs.save_if(rec, stamp)
+
+    def claim_design_run(self, n: int, *, host: str, stale_after: float) -> bool:
+        """Atomically claim PR `n`'s design review for `host`, the same
+        compare-and-swap and reclaim window as `claim_security_run`."""
+        row = self._prs.stamped(n)
+        if row is None:
+            return False
+        rec, stamp = row
+        if run_claim_held_elsewhere(rec.get("design_run"), host=host, stale_after=stale_after):
+            return False
+        rec["design_run"] = {"host": host, "started_at": storekit.now()}
+        return self._prs.save_if(rec, stamp)
+
+    def release_design_run(self, n: int, *, host: str) -> None:
+        """Drop `host`'s claim on PR `n`'s design review, leaving another host's."""
+        row = self._prs.stamped(n)
+        if row is None:
+            return
+        rec, stamp = row
+        if (rec.get("design_run") or {}).get("host") not in (None, host):
+            return
+        rec["design_run"] = None
+        self._prs.save_if(rec, stamp)
+
+    def save_design_review(self, n: int, entry: dict, *, head_sha: str) -> bool:
+        """Write `entry` as PR `n`'s design review, keeping every other
+        reviewer's entry. Refused (False) when the row is gone or its head is no
+        longer `head_sha`, so a verdict never lands on a head it did not judge."""
+        row = self._prs.stamped(n)
+        if row is None:
+            return False
+        rec, stamp = row
+        if (rec.get("meta") or {}).get("head_sha") != head_sha:
+            return False
+        rec["reviews"] = {**(rec.get("reviews") or {}), reviewers.DESIGN.id: entry}
+        return self._prs.save_if(rec, stamp)
 
     def save_verify_base(self, record: wire.VerifyPin) -> None:
         """Merge one machine's pin into the verify_base registry. host is

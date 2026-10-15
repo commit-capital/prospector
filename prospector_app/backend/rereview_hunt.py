@@ -15,11 +15,11 @@ import threading
 import traceback
 from datetime import datetime, timedelta, timezone
 
-from pipeline import review_policy, reviewers, settings, storekit
+from pipeline import gates, review_policy, reviewers, settings, storekit
 from pipeline.freshness import is_current
 from pipeline.reviewers import Reviewer
 from pipeline.storekit import now as _now
-from prospector_app.backend import data, executor, review_refresh
+from prospector_app.backend import data, executor, review_refresh, worker_loops
 
 REFRESH_SECONDS = 30 * 60
 # Mentions posted per pass, so one sweep never floods the repository.
@@ -39,15 +39,16 @@ _stop = threading.Event()
 
 def candidates(now: datetime | None = None) -> list[tuple[int, Reviewer]]:
     """(PR, reviewer) pairs whose verdict is missing at the current head: open,
-    mergeable, CI passing, signals current, head at least HEAD_AGE_SECONDS old,
-    and the reviewer's bar stale or pending. Lowest PR number first."""
+    mergeable, CI passing, not a dependency bump, signals current, head at least
+    HEAD_AGE_SECONDS old, and the reviewer's bar stale or pending. Lowest PR number first."""
     now = now or datetime.now(timezone.utc)
     out: list[tuple[int, Reviewer]] = []
     askable = [r for r in review_policy.active_reviewers(reviewers.REVIEW) if r.retrigger_mention]
     if not askable:
         return out
     for n, pr in sorted(data.prs().items()):
-        if pr.state != "open" or pr.mergeable is not True or pr.ci != "passing":
+        if (pr.state != "open" or pr.mergeable is not True or pr.ci != "passing"
+                or gates.bump_exempt(pr)):
             continue
         if not is_current(pr, "signals"):
             continue
@@ -62,8 +63,8 @@ def candidates(now: datetime | None = None) -> list[tuple[int, Reviewer]]:
 
 def _requests(since: datetime) -> list[dict]:
     """The request bookings since `since`, as their raw ledger records."""
-    rows = data.store().runs(since=since.isoformat())
-    return [r.raw for r in rows if isinstance(r, storekit.PhaseRun) and r.phase == PHASE]
+    rows = data.store().runs(since=since.isoformat(), phase=PHASE)
+    return [r.raw for r in rows if isinstance(r, storekit.PhaseRun)]
 
 
 def requested(bookings: list[dict], n: int, head_sha: str | None) -> bool:
@@ -127,6 +128,7 @@ def _loop() -> None:
             request_rereviews()
         except Exception:
             traceback.print_exc()
+        worker_loops.ran("rereview", REFRESH_SECONDS)
         _stop.wait(REFRESH_SECONDS)
 
 

@@ -40,13 +40,13 @@ function CapacityBar({ label, win, marker, markerLabel, markerTitle }: {
   );
 }
 
-function spendToday(a: CapacityAccount): number {
-  return Object.values(a.spend_today_by_lane).reduce((sum, usd) => sum + usd, 0);
+function costToday(a: CapacityAccount): number {
+  return Object.values(a.cost_today_by_lane).reduce((sum, usd) => sum + usd, 0);
 }
 
 function AccountCard({ account: a }: { account: CapacityAccount }) {
-  const spend = Object.entries(a.spend_today_by_lane).sort((x, y) => y[1] - x[1]);
-  const used = spendToday(a);
+  const cost = Object.entries(a.cost_today_by_lane).sort((x, y) => y[1] - x[1]);
+  const used = costToday(a);
   const budget = a.policy.daily_budget_usd;
   const split = a.policy.day_cap !== a.policy.night_cap;
   const period = a.cap_now === a.policy.day_cap ? "day" : "night";
@@ -102,9 +102,9 @@ function AccountCard({ account: a }: { account: CapacityAccount }) {
             ? `reading ${ageText(a.reading_age_seconds)} old` : "no reading yet"}
         </span>
         <span>·</span>
-        {spend.length > 0
-          ? spend.map(([lane, usd]) => (
-            <span key={lane} className="chip chip-muted sm" title={`Today's unattended ${lane} agent spend`}>
+        {cost.length > 0
+          ? cost.map(([lane, usd]) => (
+            <span key={lane} className="chip chip-muted sm" title={`Today's unattended ${lane} agent runs at API prices`}>
               {lane} ${usd.toFixed(2)}
             </span>
           ))
@@ -115,7 +115,7 @@ function AccountCard({ account: a }: { account: CapacityAccount }) {
 }
 
 /** One account as a line: its windows, whether background work may start,
- *  and today's spend. */
+ *  and today's cost. */
 function capacitySummary(a: CapacityAccount): string {
   const parts: string[] = [a.label];
   if (a.billing === "subscription") {
@@ -123,12 +123,13 @@ function capacitySummary(a: CapacityAccount): string {
     if (a.reading?.seven_day) parts.push(`weekly ${percent(a.reading.seven_day.utilization)}`);
   }
   parts.push(a.decision.allowed ? "background AI on" : "background AI paused");
-  parts.push(`$${spendToday(a).toFixed(2)} today`);
+  parts.push(a.billing === "api" ? `$${costToday(a).toFixed(2)} today`
+    : `$${costToday(a).toFixed(2)} at API prices today`);
   return parts.join(" · ");
 }
 
 /** Every AI account the machines run under, with the lines unattended agent
- *  work starts under, whether it may start now, and today's spend. */
+ *  work starts under, whether it may start now, and today's cost. */
 export function Capacity({ state }: { state: CapacityState | null }) {
   const summary = state == null ? "loading…"
     : state.accounts.length === 0 ? "no AI account known yet"

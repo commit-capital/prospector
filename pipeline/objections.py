@@ -92,9 +92,7 @@ def used_today(store: Store, worker: str, now: datetime | None = None) -> int:
     `worker` ended since UTC midnight, read from the fix lane's ledger
     entries; a continuation that parks and later pushes counts once."""
     seen: set[tuple[object, str]] = set()
-    for run in store.runs(since=storekit.utc_midnight(now).isoformat()):
-        if getattr(run, "phase", None) != "fix:single":
-            continue
+    for run in store.runs(since=storekit.utc_midnight(now).isoformat(), phase="fix:single"):
         stats = run.raw.get("stats") or {}
         if stats.get("host") == worker and stats.get("objection"):
             seen.add((run.raw.get("pr"), str(stats["objection"])))

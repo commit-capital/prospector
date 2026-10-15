@@ -17,7 +17,7 @@ import traceback
 from datetime import datetime, timedelta, timezone
 
 from pipeline import ingest, settings, storekit
-from prospector_app.backend import data, threat_refresh
+from prospector_app.backend import data, threat_refresh, worker_loops
 
 PHASE = "ingest:watch"
 INTERVAL_SECONDS = 15 * 60
@@ -85,6 +85,7 @@ def _loop() -> None:
             watch_once()
         except Exception:
             traceback.print_exc()
+        worker_loops.ran("pr-watch", INTERVAL_SECONDS)
         _stop.wait(INTERVAL_SECONDS)
 
 

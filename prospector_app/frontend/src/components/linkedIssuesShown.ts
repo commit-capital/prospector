@@ -20,3 +20,12 @@ export function shownIssues(
   const shown = limit == null ? fixing : fixing.slice(0, limit);
   return { shown, hidden: fixing.length - shown.length };
 }
+
+// Why a closed fix-linked issue may leave the PR with nothing to fix, keyed by
+// GitHub's close reason; null while the issue is open or its state is unknown.
+export function closedNote(issue: IssueLink): string | null {
+  if (issue.state !== "closed") return null;
+  if (issue.state_reason === "not_planned") return "closed as not planned — this PR may no longer be wanted";
+  if (issue.state_reason === "duplicate") return "closed as a duplicate — check the issue it duplicates";
+  return "closed — it may already be fixed";
+}

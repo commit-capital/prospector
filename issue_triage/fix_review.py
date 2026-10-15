@@ -7,15 +7,13 @@ An issue holds at most one pending request (`fix_request`, actions
 latest attempt (`fix_run`) and no other request is in flight; the words an
 operator gives with it land in the thread (`fix_thread`). `fix_status` derives,
 on read, whose move the attempt waits on; a proposal's follow-up record
-(`fix_followup`) counts only while it follows the run's own pull request, and
-an attempt someone else's pull request took up (`superseded`) reads as theirs.
+(`fix_followup`) counts only while it follows the run's own pull request.
 `distill` turns a finished run's `result.json` record into the `fix_run` the app
 renders: each candidate's own account, the agreement, the picked change, the
 checks, the reviewers, and the question — never an agent's transcript.
 """
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from issue_triage import dispute_question
@@ -31,7 +29,7 @@ FAULT_ENDINGS = ("agent-unavailable", "run-failed", "sandbox", "base-compile")
 PATCH_MAX = 60_000
 # The status of an issue's fix attempt, in the order the explorer groups them.
 STATUSES = ("review", "question", "running", "reporter", "pr-open", "pr-closed", "failed",
-            "superseded", "declined", "pr-merged")
+            "declined", "pr-merged")
 
 
 def followup_for(fu: dict | None, pr: object) -> dict:
@@ -56,19 +54,11 @@ def _ended(proposal: dict, fu: dict) -> tuple[str, str] | None:
     return "pr-closed", str(fu.get("reason") or f"#{pr} is no longer open")
 
 
-def rival_open(mark: Mapping[str, object]) -> str:
-    """The reason an attempt reads `superseded`, from its `superseded` mark."""
-    by = f" by {mark['author']}" if mark.get("author") else ""
-    return f"#{mark['pr']}{by} is open on the issue"
-
-
 def fix_status(issue: Issue) -> tuple[str, str] | None:
     """(status, reason) for issue's fix attempt, or None when it has none."""
     req, run = issue.fix_request, issue.fix_run
     if req and req.get("status") in IN_FLIGHT:
         return "running", f"{req.get('action')} {req.get('status')}"
-    if run and run.get("superseded") and open_pr(issue) is None:
-        return "superseded", rival_open(run["superseded"])
     if req and req.get("status") == "failed":
         return "failed", str(req.get("reason") or f"{req.get('action')} failed")
     if not run:
@@ -111,8 +101,9 @@ def open_pr(issue: Issue) -> int | None:
     return int(pr)
 
 
-def _fits(action: str, run: dict | None, *, guidance: str | None,
-          answer: dict | None, pr: int | None, followup: dict | None = None) -> str | None:
+def _fits(action: str, run: dict | None, *, guidance: str | None, answer: dict | None,
+          pr: int | None, followup: dict | None = None, notes: str | None = None,
+          rivals: list[int] | None = None) -> str | None:
     """Why `action` does not fit the latest attempt `run`, open as pull request
     `pr` and followed up in `followup`, or None when it does."""
     if action == "solve":
@@ -124,14 +115,15 @@ def _fits(action: str, run: dict | None, *, guidance: str | None,
     if action == "send-back":
         if not run.get("patch"):
             return "the attempt holds no change to send back"
-        if not (guidance or "").strip():
+        if not (guidance or "").strip() and not (notes or "").strip() and not rivals:
             return "sending a fix back needs your comments"
         return None
     if action == "answer":
         if ending != "fix-disputed" or not question.get("options"):
             return "the attempt asks no question"
         labels = [o["label"] for o in question["options"]]
-        if (answer or {}).get("label") in labels or str((answer or {}).get("text") or "").strip():
+        if ((answer or {}).get("label") in labels or str((answer or {}).get("text") or "").strip()
+                or (notes or "").strip()):
             return None
         return f"an answer names one of {labels} or says what should happen"
     if action == "ask-reporter":
@@ -156,10 +148,15 @@ def _fits(action: str, run: dict | None, *, guidance: str | None,
 
 def queue(store: IssueStore, n: int, action: str, *, by: str, source: str = "operator",
           guidance: str | None = None, answer: dict | None = None,
+          notes: str | None = None, rivals: list[int] | None = None,
           dry_run: bool = False) -> tuple[bool, str]:
     """Queue `action` on issue `n`'s fix attempt for the worker, recording the
-    operator's words in the thread. A request that retries a failed one of the
-    same action carries its attempt count on. (ok, reason)."""
+    words it carries in the thread. `guidance` is an operator's or maintainer's
+    instruction; `notes` are words from anyone else — the issue's author, the
+    code reviewers, CI — which the fix agent weighs as data. `rivals` names other
+    authors' pull requests whose tests a `send-back` judges the fix by. A request that
+    retries a failed one of the same action carries its attempt count on.
+    (ok, reason)."""
     issue = store.load_issue(n)
     if issue is None:
         return False, f"issue #{n} is not in the store"
@@ -169,7 +166,7 @@ def queue(store: IssueStore, n: int, action: str, *, by: str, source: str = "ope
     if req and req.get("status") in IN_FLIGHT:
         return False, f"a {req.get('action')} request is already {req.get('status')}"
     why = _fits(action, issue.fix_run, guidance=guidance, answer=answer, pr=open_pr(issue),
-                followup=issue.fix_followup)
+                followup=issue.fix_followup, notes=notes, rivals=rivals)
     if why:
         return False, why
     retry = bool(req and req.get("status") == "failed" and req.get("action") == action)
@@ -180,9 +177,14 @@ def queue(store: IssueStore, n: int, action: str, *, by: str, source: str = "ope
         section["guidance"] = guidance.strip()
     if answer:
         section["answer"] = answer
+    if notes and notes.strip():
+        section["notes"] = notes.strip()
+    if rivals:
+        section["rivals"] = list(rivals)
     issue.record_fix_request(section)
     given = answer or {}
-    words = (guidance or "").strip() or str(given.get("text") or "").strip()
+    words = "\n\n".join(w for w in ((guidance or "").strip(), str(given.get("text") or "").strip(),
+                                    (notes or "").strip()) if w)
     if given.get("label"):
         words = f"Answered {given['label']}" + (f": {words}" if words else "")
     if words:
@@ -205,9 +207,10 @@ def cancel(store: IssueStore, n: int, *, by: str) -> tuple[bool, str]:
 
 
 def queued_issues(issues: dict[int, Issue]) -> list[int]:
-    """Issues with a queued request, a maintainer's (gates.priority_author)
-    first, then oldest first."""
-    rows = [(not gates.priority_author(i.author, i.author_association),
+    """Issues with a queued request, an operator's priority first (higher
+    first), then a maintainer's (gates.priority_author), then oldest first."""
+    rows = [(-float((i.fix_request or {}).get("priority") or 0),
+             not gates.priority_author(i.author, i.author_association),
              (i.fix_request or {}).get("queued_at") or "", n) for n, i in issues.items()
             if (i.fix_request or {}).get("status") == "queued"]
     return [n for *_, n in sorted(rows)]
@@ -272,7 +275,10 @@ def distill(record: dict, question: dict | None = None) -> dict:
         "tests": [p for p in diffpaths.changed_paths(patch) if diffpaths.is_test_path(p)],
         "agreement": res.get("agreement"), "readings": res.get("readings"),
         "tier": res.get("tier"), "proof": _proof(res.get("proof") or {}),
-        "reviews": reviews, "candidates": candidates, "question": None, "proposal": None,
+        "reviews": reviews, "boundary": res.get("boundary"), "intake": res.get("intake"),
+        "second_opinion": res.get("second_opinion"),
+        "candidates": candidates,
+        "question": None, "proposal": None,
     }
     if question and "question" in question:
         out["question"] = {**question, "labels": dispute_question.labels(

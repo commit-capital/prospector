@@ -6,10 +6,12 @@ Ctrl-C, a closed terminal and SIGTERM each stop both servers."""
 from __future__ import annotations
 
 import os
+import pty
 import signal
 import socket
 import subprocess
 import sys
+import termios
 import threading
 import time
 from pathlib import Path
@@ -241,3 +243,50 @@ def test_the_repo_has_every_reload_dir():
     one that does not, and falls back to watching the whole repo root."""
     for d in devserve.reload_dirs(settings.REPO_ROOT):
         assert Path(d).is_dir(), d
+
+
+def _raw(fd: int) -> None:
+    attrs = termios.tcgetattr(fd)
+    attrs[3] &= ~(termios.ISIG | termios.ICANON | termios.ECHO)
+    termios.tcsetattr(fd, termios.TCSANOW, attrs)
+
+
+def test_restore_signals_puts_back_a_raw_terminal():
+    leader, follower = pty.openpty()
+    try:
+        saved = termios.tcgetattr(follower)
+        _raw(follower)
+        assert devserve.restore_signals(follower, saved)
+        assert termios.tcgetattr(follower)[3] & termios.ISIG
+        assert termios.tcgetattr(follower)[3] & termios.ECHO
+    finally:
+        os.close(leader)
+        os.close(follower)
+
+
+def test_restore_signals_leaves_a_terminal_with_signals_on():
+    leader, follower = pty.openpty()
+    try:
+        saved = termios.tcgetattr(follower)
+        attrs = termios.tcgetattr(follower)
+        attrs[3] &= ~termios.ECHO
+        termios.tcsetattr(follower, termios.TCSANOW, attrs)
+        assert not devserve.restore_signals(follower, saved)
+        assert not termios.tcgetattr(follower)[3] & termios.ECHO
+    finally:
+        os.close(leader)
+        os.close(follower)
+
+
+def test_terminal_holders_names_another_process_on_the_terminal():
+    leader, follower = pty.openpty()
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(5)"],
+                            stdin=follower)
+    try:
+        time.sleep(0.5)
+        assert any(h.startswith(f"{proc.pid} ") for h in devserve.terminal_holders(follower))
+    finally:
+        proc.kill()
+        proc.wait()
+        os.close(leader)
+        os.close(follower)

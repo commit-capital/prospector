@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { api, type PRDetail as PD, type DiffResult, type VerifyRunner, type FixAction as FixActionName, type FixRunner, type ReviewDigest, type ReviewEntry } from "../api";
+import { api, type PRDetail as PD, type DiffResult, type VerifyRunner, type FixAction as FixActionName, type FixRunner, type ReviewDigest, type ReviewEntry, type CoverageRecord } from "../api";
 import { DriftChip, TierChip, authorTip } from "../components/Chips";
 import { InfoTip } from "../components/InfoTip";
 import { dispositionEntry } from "../glossary";
@@ -12,7 +12,8 @@ import { Collapsible } from "../components/Collapsible";
 import { PRActionBar } from "../components/PRActionBar";
 import { ClaimControl } from "../components/ClaimControl";
 import { VerifyAction, VerifyBody } from "../components/VerifyPanel";
-import { FixAction, FixBody } from "../components/FixPanel";
+import { FixAction, FixBody, ResolveConflictsButton } from "../components/FixPanel";
+import { withLiveConflicts } from "../components/liveChecks";
 import { PRActionLog } from "../components/PRActionLog";
 import { ThreatEvidencePanel } from "../components/ThreatEvidencePanel";
 import { PRLink } from "../components/PRLink";
@@ -27,12 +28,13 @@ import { FactFreshnessPanel } from "../components/FactFreshness";
 import { useRunState } from "../useRunState";
 import { useJobStream } from "../useJobStream";
 import { LinkedIssues } from "../components/LinkedIssues";
+import { closedNote, shownIssues } from "../components/linkedIssuesShown";
 import { splitDiffSizes } from "../testPaths";
 
 const LEVEL_ICON: Record<string, string> = { safe: "🛡️", caution: "⚠️", risk: "⛔", unknown: "❔" };
 const SEV_TONE: Record<string, "red" | "yellow" | "muted"> = { critical: "red", high: "red", medium: "yellow", low: "muted" };
 const DISPO_ICON: Record<string, string> = {
-  "merge": "✅", "request-changes": "✋", "close-dup": "🗑️", "close-fixed": "🗑️", "close-stale": "🗑️", "needs-human": "👤",
+  "merge": "✅", "request-changes": "✋", "close-dup": "🗑️", "close-fixed": "🗑️", "close-wontfix": "🗑️", "close-stale": "🗑️", "needs-human": "👤",
 };
 
 /** PR detail content — designed for the flyout. Verdict and primary action
@@ -48,6 +50,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
   const [diffMode, setDiffMode] = useState<"pr" | "merge">("pr");
   const [lineComment, setLineComment] = useState<{ file: string; line: number } | null>(null);
   const [retriggering, setRetriggering] = useState<string | null>(null);
+  const [clearingSecret, setClearingSecret] = useState(false);
   const [err, setErr] = useState<string>();
   const { botLogin, dryRun, reportResult, activeReviewers, pushToast } = useExec();
   const { meta } = useRepoMeta();
@@ -151,6 +154,12 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
   // Live freshness check (#25): re-fetch this PR's upstream state in the
   // background and warn loudly if it diverged from the snapshot we're showing.
   const fresh = useFreshness([prNum]);
+  // The check persists what diverged into the store, so read the PR back to
+  // bring the stored checks and gates up to what it found.
+  useEffect(() => {
+    if (fresh.status === "done" && fresh.changed) reloadPr();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fresh.status, fresh.changed, fresh.at]);
 
   // Re-run analysis right from the "new commits" banner (#582): reuses the
   // cluster-scoped triage-cluster job — CLUSTER/ANALYZE aren't single-PR
@@ -189,7 +198,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
     reportResult(r);
   };
 
-  // Re-run the SECURITY phase from the "Deep security review" check row
+  // Re-run the SECURITY phase from the "Security review" check row
   // (#581) — streamed like the cluster-page re-run (ClusterDetail #56). On
   // done, reload so the fresh verdict flips the row (and the merge gate).
   const secJob = useJobStream("security-review", { pr: prNum }, (status) => {
@@ -218,6 +227,25 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
     if (secretJob.running) return;
     pushToast(`▶ #${prNum} · Threat scan — running…`, "muted");
     secretJob.start(`/api/jobs/run/threat-scan-pr?pr=${prNum}`);
+  };
+
+  // Record that the secret-leak finding the operator reviewed is no
+  // credential: it lifts the merge block for that line at that head only.
+  const clearSecretLeak = async (headSha: string, evidence: string) => {
+    if (clearingSecret) return;
+    if (!window.confirm(`Mark the flagged line in #${prNum} as not a real secret?\n\n${evidence}\n\n`
+      + `This lifts the merge block for this line at commit ${headSha.slice(0, 7)} and dismisses its action item. `
+      + "The threat scan checks any new push again.")) return;
+    setClearingSecret(true);
+    try {
+      await api.clearSecretLeak(prNum, headSha);
+      pushToast(`#${prNum} · marked not a secret`, "green");
+      await reloadPr();
+    } catch (e) {
+      pushToast(`#${prNum} · couldn't mark it not a secret`, "red", { detail: String(e) });
+    } finally {
+      setClearingSecret(false);
+    }
   };
 
   if (err) return <div className="error">Failed: {err}</div>;
@@ -257,6 +285,14 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
   // right there next to the status, instead of scattered across separate panels.
   const checksActions: Partial<Record<string, ReactNode>> = {};
   const checksBodies: Partial<Record<string, ReactNode>> = {};
+  const checks = withLiveConflicts(pr.checks, fresh.byPr[prNum]);
+  const resolveConflicts = (
+    <ResolveConflictsButton req={pr.fix_request ?? null} runner={fixRunner} busy={fixBusy}
+      resolved={resolved} onQueue={queueFix} />
+  );
+  if (checks?.checks.some((check) => check.key === "mergeable" && check.status === "fail")) {
+    checksActions.mergeable = resolveConflicts;
+  }
 
   const retriggerable = activeReviewers("review").filter((r) => r.retrigger);
   if (retriggerable.length > 0 && !resolved) {
@@ -272,9 +308,11 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
       </>
     );
   }
-  const reviewBlocks = reviewerBlocks(pr.reviews_detail ?? null, "review");
+  const reviewBlocks = reviewerBlocks(pr.reviews_detail ?? null, (d) => d.kind === "review" && d.id !== "design");
   if (reviewBlocks.length > 0) checksBodies.review = <>{reviewBlocks}</>;
-  const scanBlocks = reviewerBlocks(pr.reviews_detail ?? null, "scanner");
+  const designBlocks = reviewerBlocks(pr.reviews_detail ?? null, (d) => d.id === "design");
+  if (designBlocks.length > 0) checksBodies.design = <>{designBlocks}</>;
+  const scanBlocks = reviewerBlocks(pr.reviews_detail ?? null, (d) => d.kind === "scanner");
   if (scanBlocks.length > 0) checksBodies.scans = <>{scanBlocks}</>;
 
   if (ci.length > 0) {
@@ -344,10 +382,13 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
           {pr.author_stats?.url
             ? <a href={pr.author_stats.url} target="_blank" rel="noreferrer" title={authorTip(pr.author_stats)}>@{pr.author}</a>
             : <span title={authorTip(pr.author_stats)}>@{pr.author}</span>}
-          {pr.trusted_author && <span className="chip chip-gold sm" title="Trusted contributor — named by the repository profile; in ANALYZE their PR breaks an otherwise-close canonical tie (a tiebreaker, never an override of a clearly-better PR).">trusted</span>}
+          {pr.trusted_author && <span className="chip chip-gold sm" title="A contributor we trust. When two PRs are about equally good, theirs is preferred.">trusted</span>}
           <DriftChip s={pr.drift_state} />
           <TierChip tier={pr.risk_tier} pinnedBy={pr.risk_tier_paths} />
-          {pr.clusters.map((cid) => <Link key={cid} className="chip chip-blue" to={`/prs/clusters/${cid}`} title="A dedup cluster this PR belongs to — a group of PRs fixing the same root issue. Click to open.">cluster {cid}</Link>)}
+          {pr.stacked && (pr.stacked_on != null
+            ? <Link className="chip chip-muted" to={`/prs/${pr.stacked_on}`} title={`Stacked on #${pr.stacked_on} (base ${pr.base_ref}), not the default branch. It is never merge-ready and no hunter judges it until its base merges and GitHub retargets it.`}>stacked on #{pr.stacked_on}</Link>
+            : <span className="chip chip-muted" title={`Targets ${pr.base_ref}, not the default branch. It is never merge-ready and no hunter judges it until GitHub retargets it.`}>stacked on {pr.base_ref}</span>)}
+          {pr.clusters.map((cid) => <Link key={cid} className="chip chip-blue" to={`/prs/clusters/${cid}`} title="The group of PRs that fix the same problem. Click to open.">cluster {cid}</Link>)}
           {pr.url && <a className="chip chip-muted" href={pr.url} target="_blank" rel="noreferrer">GitHub ↗</a>}
           {resolved && <span className={`chip ${pr.github_state === "merged" ? "chip-purple" : "chip-muted"}`} title="Current state on GitHub">{pr.github_state}</span>}
           <ClaimControl kind="pr" n={pr.number} />
@@ -359,6 +400,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
           picture is how you contradict reality in a contributor's PR. */}
       <FreshnessCallout diverged={fresh.byPr[prNum]}
         onRerunAnalysis={pr.clusters.length ? runAnalyze : undefined}
+        conflictAction={resolved ? undefined : resolveConflicts}
         rerunning={analyzeJob.running} rerunLog={analyzeJob.log} />
 
       {/* Verdict and primary action first, before anything scrolls. Deferred
@@ -370,10 +412,10 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
         <div className="verdict-banner v-safe">
           <span className="vb-icon">📦</span>
           <div>
-            <div className="vb-headline">Deferred — dependency bump, handled upstream</div>
+            <div className="vb-headline">Skipped — automatic library update</div>
             <div className="vb-detail">
               {pr.suggestion?.rationale ??
-                "Dependabot dependency bump. The pipeline defers these; Socket reviews the package on the PR. No cluster, disposition, or triage action here."}
+                "An automatic library update. We skip these; they're handled on GitHub."}
             </div>
           </div>
         </div>
@@ -384,7 +426,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
           <div>
             <div className="vb-headline">{pr.github_state === "merged" ? "Merged upstream" : "Closed upstream"}</div>
             <div className="vb-detail">
-              This PR is already {pr.github_state} on GitHub — no triage action applies. The size, checks, and diff below reflect its last review as an open PR.
+              This PR is already {pr.github_state} on GitHub, so there's nothing to do. The details below are from when it was still open.
             </div>
           </div>
         </div>
@@ -418,7 +460,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
                   ? <div className="dispo-why">{pr.proposed_action.rationale}</div>
                   : entry?.triggers && <div className="dispo-why muted">{entry.triggers}</div>}
                 {pr.proposed_action?.fresh === false && (
-                  <div className="dispo-stale">⟳ This analysis is stale — the PR head moved since it ran.</div>
+                  <div className="dispo-stale">⟳ The PR changed since we reviewed it, so this may be out of date.</div>
                 )}
               </div>
             </div>
@@ -427,7 +469,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
         {Boolean(pr.concerns?.length) && (
           <div className="dup-coverage">
             <div className="muted small dup-coverage-title"
-              title="The close-dup evidence: each substantive change in this PR and where it is already covered.">
+              title="Each change in this PR, and where that change already exists.">
               Duplicate coverage
             </div>
             <table className="facts-table">
@@ -456,7 +498,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
             </table>
             {Boolean(pr.sanity_trips?.length) && (
               <div className="callout dup-sanity">
-                Sanity checks force human review: {(pr.sanity_trips ?? []).join("; ")}.
+                A person needs to review this because: {(pr.sanity_trips ?? []).join("; ")}.
               </div>
             )}
           </div>
@@ -479,10 +521,10 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
 
       {/* CODEOWNERS manual-merge requirement (#15/#26) */}
       {pr.human_merge?.required && (
-        <div className="codeowners-callout" title="The upstream repo's branch ruleset requires a code owner to approve/merge these paths.">
-          <div className="co-headline">⛔ Requires human merge — touches CODEOWNERS-gated code</div>
+        <div className="codeowners-callout" title="These files are protected: a code owner has to approve and merge changes to them.">
+          <div className="co-headline">⛔ A code owner must merge this — it changes protected files</div>
           <div className="co-detail">
-            {botLogin} can't auto-merge this. A code owner must merge it: <b>{pr.human_merge.owners.join(" + ")}</b>.
+            {botLogin} can't merge this. Ask a code owner to: <b>{pr.human_merge.owners.join(" + ")}</b>.
           </div>
           <ul className="co-paths">{pr.human_merge.paths.map((p) => <li key={p}><code>{p}</code></li>)}</ul>
         </div>
@@ -498,15 +540,28 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
         const secret = blocks.some((r) => r.startsWith("secret-leak"));
         const headline: string = malicious ? "⛔ Merge blocked — flagged malicious"
           : secret ? "🔑 Merge blocked — committed secret"
-          : "⛔ Merge blocked — the threat scan could not read the whole diff";
+          : "⛔ Merge blocked — too big to scan for harmful code";
+        const threat = pr.threat_detail;
+        const evidence = threat?.detail?.["secret-leak"];
+        const scannedHead = threat?.against_head_sha;
         return (
-          <div className="gate-block-callout" title="gates.pr_clean refuses to merge a PR with a committed credential, a diff the threat scan could not read in full, or a malicious flag.">
+          <div className="gate-block-callout" title="A PR can't merge if it contains a password or key, looks harmful, or is too big to scan.">
             <div className="co-headline">{headline}</div>
             <div className="co-detail">
               {blocks.join("; ")}.{" "}
-              {!malicious && secret && <>Remove it, rotate the key, and bounce the PR via <b>Disposition → request changes</b>.</>}
-              {!malicious && !secret && <>Ask the author to split the PR or drop the files GitHub returns no patch for, via <b>Disposition → request changes</b>.</>}
+              {!malicious && secret && <>Ask the author to remove it (and replace the leaked key) with <b>Disposition → request changes</b>, or if it isn't a real secret, mark it so.</>}
+              {!malicious && !secret && <>Ask the author to split it into smaller PRs with <b>Disposition → request changes</b>.</>}
             </div>
+            {secret && evidence && <ul className="co-paths"><li><code>{evidence}</code></li></ul>}
+            {!malicious && secret && evidence && scannedHead && !resolved && (
+              <div style={{ marginTop: 8 }}>
+                <button className="btn-secondary sm" disabled={clearingSecret}
+                  onClick={() => void clearSecretLeak(scannedHead, evidence)}
+                  title="You've checked the flagged line and it isn't a real password or key: lift this merge block for this commit and dismiss its action item. A new push is scanned again.">
+                  {clearingSecret ? "Saving…" : "✓ Not a secret"}
+                </button>
+              </div>
+            )}
             {malicious && <ThreatEvidencePanel prNum={prNum} refresh={pr} onCapture={runSecretScan} />}
           </div>
         );
@@ -521,7 +576,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
 
       {/* #550/#581: what checks ran, when, and what they found — plus the
           action that unblocks each one, right there. */}
-      <ChecksPanel c={pr.checks} actions={checksActions} bodies={checksBodies} />
+      <ChecksPanel c={checks} actions={checksActions} bodies={checksBodies} />
 
       {/* Autofix: have the configured machine user push a small fix to the
           contributor's branch, rather than asking the author and waiting.
@@ -549,13 +604,13 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
           </div>
           {split && (split.non_test.additions + split.non_test.deletions > 0 || split.test.files > 0) && (
             <div className="size-split">
-              <div title="Change excluding test files — the real source-code surface area">
+              <div title="Changes to the app's code, not counting tests">
                 <span className="muted">non-test</span>{" "}
                 <span className="add">+{split.non_test.additions}</span> <span className="del">−{split.non_test.deletions}</span>
                 <span className="muted small"> · {split.non_test.files}f</span>
               </div>
               {split.test.files > 0 && (
-                <div title="Test-file changes">
+                <div title="Changes to tests">
                   <span className="muted">tests</span>{" "}
                   <span className="add">+{split.test.additions}</span> <span className="del">−{split.test.deletions}</span>
                   <span className="muted small"> · {split.test.files}f</span>
@@ -564,7 +619,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
             </div>
           )}
           {split?.removes_tests && (
-            <div className="size-warn" title="This PR removes more test code than it adds — review carefully">
+            <div className="size-warn" title="This PR deletes more tests than it adds — check carefully">
               ⚠ removes more tests than it adds (−{split.test.deletions} / +{split.test.additions})
             </div>
           )}
@@ -578,6 +633,12 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
       <section className="prc-section">
         <h3>Issues this may fix</h3>
         <LinkedIssues issues={pr.issues} />
+        {shownIssues(pr.issues).shown.map((issue) => {
+          const closed = closedNote(issue);
+          return closed && (
+            <div key={issue.issue} className="issue-closed-warn">⚠ Issue #{issue.issue} is {closed}.</div>
+          );
+        })}
       </section>
 
       {/* agent summary — diff-grounded one-liner + mechanism, distinct from
@@ -587,7 +648,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
           <Collapsible summary={<>🧭 Agent summary — <span className="muted small" style={{ textTransform: "none", letterSpacing: 0 }}>{pr.summary.one_liner}</span></>}>
             {pr.summary.mechanism
               ? <div className="prbody">{pr.summary.mechanism}</div>
-              : <div className="muted small">No mechanism detail.</div>}
+              : <div className="muted small">No more detail.</div>}
           </Collapsible>
         </section>
       )}
@@ -612,7 +673,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
           conflict diff is offered as a second mode beside the PR's own change
           (#46). */}
       <section className="prc-section">
-        <h3>Diff <span className="muted small" style={{ textTransform: "none", letterSpacing: 0 }}>· click a line to explain or comment · ⌘/ctrl-click to open it on GitHub</span></h3>
+        <h3>Diff <span className="muted small" style={{ textTransform: "none", letterSpacing: 0 }}>· click a line to ask about it or comment · ⌘/ctrl-click to open it on GitHub</span></h3>
         {mergeDiff && (
           <div className="segmented diff-mode" role="tablist" aria-label="diff mode">
             <button className={diffMode === "pr" ? "on" : ""} role="tab" aria-selected={diffMode === "pr"}
@@ -662,16 +723,73 @@ const STATUS_WORD: Record<ReviewDigest["status"], string> = {
   pending: "awaiting its verdict", na: "not active",
 };
 
-/** One block per reviewer of `kind` on the PR page's Review / Scans check rows:
- *  status line, stale banner, the bot's own summary, and its open findings. */
+function asCoverage(value: unknown): CoverageRecord | null {
+  return value && typeof value === "object" && typeof (value as { status?: unknown }).status === "string"
+    ? value as CoverageRecord : null;
+}
+
+/** The design lane's changed-line coverage: the share of the PR's changed
+ *  source lines its related tests executed, and the lines they did not. */
+function CoverageLine({ coverage }: { coverage: CoverageRecord }): ReactNode {
+  let line: string;
+  if (coverage.status === "measured") {
+    line = coverage.executable > 0
+      ? `${Math.round((100 * coverage.hit) / coverage.executable)}% of changed lines executed (${coverage.hit}/${coverage.executable})`
+      : "no executable changed lines";
+  } else if (coverage.status === "untested") {
+    line = "no related tests reach the changed files";
+  } else if (coverage.status === "fault") {
+    return (
+      <div className="muted small" style={{ marginTop: 4 }}>
+        <span className="chip chip-amber sm"
+          title="This machine could not run the measurement; booked to the design lane's worker health, not to this PR">
+          worker fault
+        </span>{" "}
+        Coverage could not run on this machine — a fault in Prospector, not this PR: {coverage.reason ?? ""}
+      </div>
+    );
+  } else {
+    line = `${coverage.status === "skipped" ? "skipped" : "not measured"}: ${coverage.reason ?? ""}`;
+  }
+  const gaps = coverage.files.filter((f) => f.uncovered.length > 0 || !f.measured);
+  return (
+    <div className="muted small" style={{ marginTop: 4 }}>
+      <span title="Measured by running the PR's related tests in the sandbox; reported by the PR's own test run, so advisory">
+        Coverage: {line}
+      </span>
+      {coverage.tests.length > 0 && <div>tests run: {coverage.tests.map((t) => <code key={t} style={{ marginRight: 4 }}>{t}</code>)}</div>}
+      {coverage.runs && (
+        <div>
+          {coverage.runs.passed} passed, {coverage.runs.failed} failed, {coverage.runs.skipped} skipped
+          {coverage.runs.failed_files > 0 && ` · ${coverage.runs.failed_files} of ${coverage.runs.files} test files could not run in the sandbox`}
+        </div>
+      )}
+      {gaps.length > 0 && (
+        <ul style={{ margin: "2px 0 0 16px" }}>
+          {gaps.map((f) => (
+            <li key={f.path}>
+              <code>{f.path}</code>{" "}
+              {f.measured ? `lines ${f.uncovered.map(([a, b]) => (a === b ? `${a}` : `${a}–${b}`)).join(", ")} not executed` : "not measured"}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/** One block per reviewer `which` picks on the PR page's Review / Design / Scans
+ *  check rows: status line, stale banner, the reviewer's own summary, and its
+ *  open findings. */
 function reviewerBlocks(detail: Record<string, { entry: ReviewEntry | null; digest: ReviewDigest }> | null,
-                        kind: ReviewDigest["kind"]): ReactNode[] {
+                        which: (d: ReviewDigest) => boolean): ReactNode[] {
   if (!detail) return [];
-  return Object.values(detail).filter((d) => d.digest.kind === kind && d.digest.status !== "na").map(({ entry, digest }) => {
+  return Object.values(detail).filter((d) => which(d.digest) && d.digest.status !== "na").map(({ entry, digest }) => {
     const open = (entry?.findings ?? []).filter((f) => !f.resolved && !f.outdated);
     const trust = typeof digest.extra.trust_score === "number" ? digest.extra.trust_score : null;
     const verdict = typeof digest.extra.trust_verdict === "string" ? digest.extra.trust_verdict : null;
     const report = typeof digest.extra.report_url === "string" ? digest.extra.report_url : null;
+    const coverage = asCoverage(digest.extra.coverage);
     return (
       <div key={digest.id} className="reviewer-block" style={{ marginBottom: 12 }}>
         <div>
@@ -679,6 +797,7 @@ function reviewerBlocks(detail: Record<string, { entry: ReviewEntry | null; dige
           <span className={`chip chip-${digest.status === "pass" ? "green" : digest.status === "fail" ? "red" : "yellow"} sm`} style={{ marginLeft: 6 }}>
             {digest.summary_line}
           </span>
+          {digest.advisory && <span className="chip chip-muted sm" style={{ marginLeft: 4 }} title="Shown for information; it does not block a merge">advisory</span>}
           <span className="muted small"> — {STATUS_WORD[digest.status]}{digest.reason && digest.status !== "pass" ? ` (${digest.reason})` : ""}</span>
         </div>
         {digest.stale === true && (
@@ -695,16 +814,31 @@ function reviewerBlocks(detail: Record<string, { entry: ReviewEntry | null; dige
           </div>
         )}
         {report && <div className="small"><a href={report} target="_blank" rel="noreferrer">full report ↗</a></div>}
+        {coverage && <CoverageLine coverage={coverage} />}
         {open.length > 0 && (
           <ul className="small" style={{ margin: "6px 0 0 16px" }}>
-            {open.map((f, i) => (
-              <li key={i}>
-                {f.path ? <code>{f.path}{f.line != null ? `:${f.line}` : ""}</code> : null}
-                {f.severity ? <span className="chip chip-muted sm" style={{ marginLeft: 4 }}>{f.severity}</span> : null}
-                {" "}{f.title ?? f.body.split("\n")[0]}
-                {f.url && <a className="action-log-link" href={f.url} target="_blank" rel="noreferrer" title="view on GitHub ↗"> ↗</a>}
-              </li>
-            ))}
+            {open.map((f, i) => {
+              const verdict = f.verification?.verdict;
+              return (
+                <li key={i}>
+                  <span style={verdict === "refuted" ? { textDecoration: "line-through", opacity: 0.6 } : undefined}>
+                    {f.path ? <code>{f.path}{f.line != null ? `:${f.line}` : ""}</code> : null}
+                    {f.severity ? <span className="chip chip-muted sm" style={{ marginLeft: 4 }}>{f.severity}</span> : null}
+                    {" "}{f.title ?? f.body.split("\n")[0]}
+                  </span>
+                  {verdict && verdict !== "confirmed" && (
+                    <span className="chip chip-muted sm" style={{ marginLeft: 4 }}
+                          title={f.verification?.reason || undefined}>
+                      {verdict === "unsure" ? `unsure (was ${f.claimed_severity ?? "major"})` : verdict}
+                    </span>
+                  )}
+                  {f.url && <a className="action-log-link" href={f.url} target="_blank" rel="noreferrer" title="view on GitHub ↗"> ↗</a>}
+                  {verdict && verdict !== "confirmed" && f.verification?.reason && (
+                    <div className="muted small">{f.verification.reason}</div>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         )}
         {entry?.summary && (

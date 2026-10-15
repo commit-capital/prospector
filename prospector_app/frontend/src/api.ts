@@ -7,7 +7,7 @@ export type Safety = "GREEN" | "YELLOW" | "RED" | null;
 export type SafetyRollup = { green: number; yellow: number; red: number; unknown?: number };
 
 export type Disposition =
-  | "merge" | "request-changes" | "close-dup" | "close-fixed" | "close-stale"
+  | "merge" | "request-changes" | "close-dup" | "close-fixed" | "close-wontfix" | "close-stale"
   | "close-oversized" | "needs-human";
 
 export type SafetyFilter = "GREEN" | "YELLOW" | "RED" | "not-run";
@@ -64,6 +64,7 @@ export interface FilterSpec {
   conflicts?: boolean;
   has_tests?: boolean;
   draft?: boolean;
+  stacked?: boolean;
   // "mine" / "unclaimed" / an operator name, over the row's shared claim marker
   claimed?: string;
   state?: "closed" | "all";       // PR Explorer defaults to open PRs only; widen to include closed/merged
@@ -189,11 +190,41 @@ export interface MachineActivity {
   current: { pr: number | null; issue: number | null };
   lanes: Partial<Record<ActivityLane, LaneActivity>>;
   background: { label: string; count: number }[];
-  /** Jobs a person started; `job_id` names this app's own job record. */
-  jobs: { label: string; kind: string; status: string; job_id: number | null }[];
-  spend_usd: number;
+  /** Jobs a person started, one entry per kind: how many stand at each status,
+   *  and by this app's job id the latest and the earliest still running. */
+  jobs: ActivityJobs[];
+  cost_usd: number;
+}
+export interface ActivityJobs {
+  label: string;
+  kind: string;
+  counts: Partial<Record<JobStatus, number>>;
+  job_id: number | null;
+  running_id: number | null;
 }
 export interface ActivityView { local: string; window_hours: number; machines: MachineActivity[] }
+
+export type OverviewCellState = "on" | "off" | "paused" | "tripped" | "ai-paused" | "stood-down" | "offline";
+export interface OverviewCell { host: string; state: OverviewCellState }
+export interface OverviewNowItem { host: string | null; pr: number | null; issue: number | null; title: string | null; step: string | null; started_at: string | null }
+export interface OverviewQueueItem { pr: number | null; issue: number | null; title: string | null; status: string; source: string | null; queued_at: string | null; priority: number | null }
+export interface OverviewPick { pr: number; title: string | null; action: string | null }
+export interface OverviewLane {
+  lane: string; label: string; cells: OverviewCell[]; now: OverviewNowItem[]; queue: OverviewQueueItem[]; picks: OverviewPick[];
+  parked: number; pool: number | null; ended_24h: number; faults_24h: number;
+}
+export interface OverviewLoop { loop: string; label: string; host: string; last_at: string | null; next_at: string | null }
+export interface OverviewMachine { host: string; local: boolean; state: "working" | "idle" | "off" | "offline"; last_beat: string | null; lanes_on: number; stood_down: boolean; stood_down_note: string | null }
+export interface OverviewNeed {
+  key: string; kind: "trip" | "offline" | "pins" | "failed-runs" | "parked"; title: string; at: string | null;
+  host: string | null; lane: string | null; detail: string | null; count: number;
+  groups: { lane: "security" | "verify"; reason: string; prs: number[] }[];
+}
+export interface OverviewTimelineItem { when: "past" | "now" | "upcoming"; at: string; lane: string; host: string | null; pr: number | null; issue: number | null; text: string; bad: boolean }
+export interface ControlOverview {
+  local: string; machines: OverviewMachine[]; lanes: OverviewLane[]; loops: OverviewLoop[];
+  needs: OverviewNeed[]; timeline: OverviewTimelineItem[]; ai_paused: { reason: string; retry_at: string | null } | null;
+}
 
 /** One usage window of an AI account: the share used (0–1) and when it resets. */
 export interface CapacityWindow {
@@ -242,7 +273,7 @@ export interface CapacityAccount {
   pacing_line: number | null;
   weekly_resets_at: string | null;
   decision: CapacityDecision;
-  spend_today_by_lane: Record<string, number>;
+  cost_today_by_lane: Record<string, number>;
 }
 /** Every known AI account, this machine's first, and this machine's account key. */
 export interface CapacityState {
@@ -351,6 +382,7 @@ export interface ReviewDigest {
   observed_at: string | null;
   checks: { name: string | null; conclusion: string | null; status: string | null; title: string | null }[];
   extra: Record<string, unknown>;
+  advisory: boolean;        // a bar shown without gating (the design review unless it gates)
   summary_line: string;
 }
 
@@ -364,6 +396,10 @@ export interface ReviewFinding {
   outdated: boolean;
   commit: string | null;
   url: string | null;
+  /** The design review's refuting verifier on a blocking or major finding. */
+  verification?: { verdict: "confirmed" | "refuted" | "unsure" | "unverified"; reason: string };
+  /** The severity the design reviewer gave a finding its verifier was unsure of. */
+  claimed_severity?: string;
 }
 
 /** A reviewer's stored entry on one PR (the `reviews` section). */
@@ -391,7 +427,14 @@ interface SignalSummary {
   changed_files: number | null;
 }
 
-export interface IssueLink { issue: number; pain: number | null; how: string }
+// `state`/`state_reason` ride only the PR detail, from the issue store.
+export interface IssueLink {
+  issue: number;
+  pain: number | null;
+  how: string;
+  state?: "open" | "closed";
+  state_reason?: string | null;
+}
 
 // The threat scan's word on a PR: a verdict at any head, `clear` only for a
 // clear scan of the current head, `unscanned` when the head has none.
@@ -407,6 +450,11 @@ export interface PRRow {
   created_at?: string;
   updated_at?: string;
   draft?: boolean;
+  // base is another PR's branch, not the default branch; stacked_on is the
+  // open PR heading that branch, when one does
+  stacked?: boolean;
+  stacked_on?: number | null;
+  base_ref?: string | null;
   clusters: number[];
   disposition: Disposition | null;
   // deferred out of triage (dependency bump handled upstream) — see suggest.py
@@ -533,7 +581,21 @@ export interface Suggestion {
   accept: SuggestAccept | null;
 }
 
-export interface CheckItem { key: string; name: string; status: "pass" | "warn" | "fail" | "na"; detail: string; at?: string | null }
+/** Changed-line coverage the design lane measured (`pipeline/coverage.py`),
+ *  carried as the design review's `extra.coverage`. */
+export interface CoverageRecord {
+  status: "measured" | "untested" | "skipped" | "error" | "fault";
+  reason: string | null;
+  base_sha: string;
+  tests: string[];
+  runs: { files: number; failed_files: number; passed: number; failed: number; skipped: number } | null;
+  executable: number;
+  hit: number;
+  files: { path: string; measured: boolean; executable: number; hit: number; uncovered: [number, number][] }[];
+  duration_s: number;
+}
+
+export interface CheckItem { key: string; name: string; status: "pass" | "warn" | "fail" | "na"; detail: string; at?: string | null; advisory?: boolean }
 export interface ChecksRollup { checks: CheckItem[]; passed: number; total: number }
 
 export interface AuthorStats {
@@ -1196,10 +1258,21 @@ export interface DupConcern {
   evidence?: string;
 }
 
+/** The threat scan's stamp on a PR: the signatures that fired with their
+ *  evidence, at the head it judged, and an operator's clearing of a
+ *  secret-leak finding. */
+export interface ThreatStamp {
+  verdict: string;
+  signatures: string[];
+  detail?: Record<string, string>;
+  against_head_sha?: string;
+  cleared?: { "secret-leak"?: { by: string; at: string; evidence: string | null } };
+}
+
 export interface PRDetail extends PRRow {
   body?: string | null;
-  base?: string | null;
   security_detail?: SafetyVerdict | null;
+  threat_detail?: ThreatStamp | null;
   safety_summary?: SafetySummary;
   verify_detail?: VerifyDetail | null;
   verify_request?: VerifyRequest | null;
@@ -1315,6 +1388,8 @@ export interface IssueRow {
   linked_pr_count: number;
   referenced_pr_count: number;
   referenced_merged_count: number;
+  /** The author is a gates.priority_author, whose issues the fix worker takes first. */
+  maintainer?: boolean;
   /** Whose move the issue's fix attempt waits on (issue_triage/fix_review.py). */
   fix_status?: IssueFixStatus | null;
   fix_reason?: string | null;
@@ -1323,7 +1398,7 @@ export interface IssueRow {
 }
 /** fix_review.STATUSES — the operator's moves first. */
 export type IssueFixStatus = "review" | "question" | "running" | "reporter" | "pr-open" | "pr-closed"
-  | "failed" | "superseded" | "declined" | "pr-merged";
+  | "failed" | "declined" | "pr-merged";
 export type IssueFixAction = "solve" | "send-back" | "answer" | "ask-reporter" | "propose";
 export interface IssueFixRequest {
   action: IssueFixAction;
@@ -1362,6 +1437,37 @@ export interface IssueFixReview {
   reason: string | null;
   concerns: string[];
   unasked: string[];
+}
+/** One trust boundary a fix crosses (issue_triage/trust_boundary.py). */
+export interface IssueFixCrossing {
+  kind: string;
+  where: string;
+  what: string;
+  requested: boolean;
+  source?: "scan";
+}
+export interface IssueFixBoundary {
+  crossings: IssueFixCrossing[];
+  failed?: boolean;
+  reason?: string;
+}
+/** What the intake audit made of an outsider's report (issue_triage/intake_audit.py). */
+export interface IssueFixIntake {
+  verdict: "clear" | "suspicious" | "malicious";
+  findings: { kind: string; quote: string; why: string }[];
+  reason?: string;
+  hidden?: string[];
+  blocked?: boolean;
+  failed?: boolean;
+}
+/** How another author's pull request judged the fix (issue_triage/second_opinion.py). */
+export interface IssueFixRivalEntry {
+  pr: number;
+  author: string | null;
+  verdict: "covered" | "gap" | "gap-closed" | "gap-open" | "skipped";
+  why: string;
+  /** Cases the comparison judge found the fix misses. */
+  missed?: string[];
 }
 export interface IssueFixQuestion {
   question: string;
@@ -1404,11 +1510,12 @@ export interface IssueFixRun {
   tier: { tier: number | null; pinned_by: string[] } | null;
   proof: IssueFixProof;
   reviews: IssueFixReview[];
+  boundary?: IssueFixBoundary | null;
+  intake?: IssueFixIntake | null;
+  second_opinion?: IssueFixRivalEntry[] | null;
   candidates: IssueFixCandidate[];
   question: IssueFixQuestion | null;
   proposal: { pr: number | string | null; url: string | null } | null;
-  /** Someone else's open pull request that took the issue up (issue_triage/superseded.py). */
-  superseded?: { pr: number; author: string | null; title: string; at: string } | null;
 }
 export interface IssueFixThreadEntry {
   at: string;
@@ -1464,6 +1571,8 @@ export interface IssueDetail extends IssueRow {
   fix_followup?: IssueFixFollowup | null;
   /** The pull request the fix attempt is open as (fix_review.open_pr). */
   fix_pr?: number | null;
+  /** Why the fixed attempt waits for an operator to open its PR (trust_boundary.held). */
+  fix_held?: string | null;
 }
 /** Where the follow-up on an issue's proposed pull request stands
  *  (issue_triage/followup.py): the last step it took or waits on, and why. */
@@ -1696,9 +1805,17 @@ export interface SettingRow {
   source: ".env" | "environment" | "default";
   effective?: string;
 }
+/** A setting the code no longer reads that this machine still sets. */
+export interface RetiredSetting {
+  name: string;
+  value: string;
+  help: string;
+  source: ".env" | "environment";
+}
 export interface SettingsReport {
   groups: { id: string; label: string }[];
   settings: SettingRow[];
+  retired: RetiredSetting[];
 }
 
 /** Where this checkout stands on the setup ladder. */
@@ -1909,7 +2026,7 @@ export const api = {
   listIssues: () => get<{ items: IssueRow[]; pr_states_loading: boolean }>("/api/issues"),
   queryIssues: (opts: {
     q?: string; sort?: string; direction?: string; disposition?: string; state?: string;
-    collapse_dups?: boolean; fix_status?: string | string[]; offset?: number; limit?: number;
+    collapse_dups?: boolean; fix_status?: string | string[]; maintainer?: boolean; offset?: number; limit?: number;
   } & IssueFilterSpec = {}) =>
     postJson<{ items: IssueRow[]; total: number; offset: number; limit: number; pr_states_loading: boolean }>(
       "/api/issues/query", opts),
@@ -2240,6 +2357,21 @@ export const api = {
   },
   machines: () => get<MachinesRoster>("/api/machines"),
   machinesActivity: () => get<ActivityView>("/api/machines/activity"),
+  controlOverview: (fresh = false) =>
+    get<ControlOverview>(`/api/control/overview${fresh ? "?fresh=true" : ""}`),
+  standDown: (host: string, note?: string) =>
+    postJson<{ stood_down: boolean }>(`/api/machines/${encodeURIComponent(host)}/stand-down`, { note: note ?? null }),
+  pauseLane: (lane: string, host: string) =>
+    postJson<unknown>(`/api/worker/lanes/${encodeURIComponent(lane)}/pause`, { host }),
+  resumeLane: (lane: string, host: string) =>
+    postJson<unknown>(`/api/worker/lanes/${encodeURIComponent(lane)}/resume`, { host }),
+  queueTop: (kind: "verify" | "fix" | "issue-fix", n: number) =>
+    postJson<{ priority: number }>(kind === "issue-fix" ? `/api/issues/${n}/fix/top` : `/api/${kind}/queue/${n}/top`, {}),
+  workerLog: (after: number | null, file: string | null) =>
+    get<{ lines: string[]; offset: number; file: string | null; exists: boolean; skipped: boolean }>(
+      `/api/worker/log${after == null || file == null ? "" : `?after=${after}&file=${encodeURIComponent(file)}`}`),
+  standUp: (host: string) =>
+    postJson<{ cleared: boolean }>(`/api/machines/${encodeURIComponent(host)}/stand-up`, {}),
   capacity: () => get<CapacityState>("/api/capacity"),
   /** Save this machine's own AI account's policy; resolves to that account. */
   saveCapacityPolicy: (policy: CapacityPolicy) =>
@@ -2261,8 +2393,10 @@ export const api = {
   }>("/api/capabilities"),
   instance: () => get<{ branch: string | null; worktree: string | null }>("/api/instance"),
   meta: () => get<RepoMeta>("/api/meta"),
-  mergePr: async (n: number, dryRun: boolean, method = "squash", reason?: string) => {
-    const q = reason ? `&reason=${encodeURIComponent(reason)}` : "";
+  mergePr: async (n: number, dryRun: boolean, method = "squash", reason?: string,
+                  compileReason?: string) => {
+    const q = (reason ? `&reason=${encodeURIComponent(reason)}` : "")
+      + (compileReason ? `&compile_reason=${encodeURIComponent(compileReason)}` : "");
     const r = await fetch(`/api/merge/pr/${n}?dry_run=${dryRun}&method=${method}${q}`, { method: "POST" });
     return r.json() as Promise<ExecResult>;
   },
@@ -2275,6 +2409,8 @@ export const api = {
     });
     return r.json() as Promise<ExecResult>;
   },
+  clearSecretLeak: (n: number, headSha: string) =>
+    postJson<{ ok: boolean }>(`/api/prs/${n}/threat/clear-secret`, { head_sha: headSha }),
   retriggerReview: async (n: number, reviewer: string, dryRun: boolean) => {
     const r = await fetch(`/api/reviews/${encodeURIComponent(reviewer)}/retrigger/pr/${n}?dry_run=${dryRun}`, { method: "POST" });
     return r.json() as Promise<ExecResult>;
@@ -2564,7 +2700,11 @@ export interface MergeProgress {
   started_at?: string; step?: string; step_at?: string;
 }
 
-export interface ExecResult { pr: number; action: string; status: string; detail: string; forced?: boolean; stale?: StaleBlock }
+export interface ExecResult {
+  pr: number; action: string; status: string; detail: string; forced?: boolean; stale?: StaleBlock;
+  /** A merge the compile preflight blocked without a verdict on the PR: a reason clears it. */
+  compile_waivable?: boolean;
+}
 
 /** One stored diff of a threat-evidence capture. */
 export interface ThreatEvidenceArtifact {

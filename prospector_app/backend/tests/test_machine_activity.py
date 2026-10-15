@@ -1,4 +1,4 @@
-"""What each machine did in the past day: the runs ledgers, agent spend, the
+"""What each machine did in the past day: the runs ledgers, agent cost, the
 machine roster and this app's jobs folded per machine."""
 from __future__ import annotations
 
@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 from fastapi.testclient import TestClient
 
 from prospector_app.backend import app as appmod
+from pipeline import store as S
+from prospector_app.backend import data
 from prospector_app.backend import machine_activity as ma
 
 NOW = datetime(2026, 10, 3, 12, tzinfo=timezone.utc)
@@ -41,8 +43,8 @@ def _machine(host: str, online: bool = True, last_beat: str | None = None,
 
 
 def _summarize(rows: list[tuple[str, dict]], roster: dict | None = None,
-               agent_runs: list[dict] | None = None, local_jobs: list[dict] | None = None) -> dict:
-    return ma.summarize(rows, agent_runs or [], roster or _roster(), local_jobs or [],
+               cost: dict[str, float] | None = None, local_jobs: list[dict] | None = None) -> dict:
+    return ma.summarize(rows, cost or {}, roster or _roster(), local_jobs or [],
                         JOB_PHASES, NOW)
 
 
@@ -114,7 +116,7 @@ def test_background_labels_and_worker_cluster_rows():
                                {"label": "threat scan", "count": 1},
                                {"label": "summary batch", "count": 1}]
     assert m["jobs"] == [{"label": "Cluster new PRs", "kind": "cluster-new",
-                          "status": "done", "job_id": None}]
+                          "counts": {"done": 1}, "job_id": None, "running_id": None}]
 
 
 def test_job_phase_is_keyed_by_ledger():
@@ -131,7 +133,26 @@ def test_local_jobs_replace_ledger_jobs():
              "count": None, "returncode": 0}]
     m = _host(_summarize([_row("ingest", host="laptop")], local_jobs=jobs), "laptop")
     assert m["local"] is True
-    assert m["jobs"] == [{"label": "Threat scan", "kind": "threat-scan", "status": "failed", "job_id": 9}]
+    assert m["jobs"] == [{"label": "Threat scan", "kind": "threat-scan", "counts": {"failed": 1},
+                          "job_id": 9, "running_id": None}]
+
+
+def _local_job(job_id: int, status: str, kind: str = "design-review-pr",
+               label: str = "Design review (single PR)") -> dict:
+    return {"id": job_id, "kind": kind, "label": label, "status": status, "started": _at(1),
+            "finished": None, "cluster": None, "pr": 100 + job_id, "count": None, "returncode": None}
+
+
+def test_local_jobs_of_one_kind_fold_into_counts():
+    local = [_local_job(n, "done") for n in range(1, 4)] + [
+        _local_job(4, "failed"), _local_job(5, "running"), _local_job(6, "queued"),
+        _local_job(7, "queued"), _local_job(8, "done", kind="ingest", label="Ingest")]
+    m = _host(_summarize([], local_jobs=local), "laptop")
+    assert m["jobs"] == [
+        {"label": "Design review (single PR)", "kind": "design-review-pr",
+         "counts": {"done": 3, "failed": 1, "running": 1, "queued": 2},
+         "job_id": 7, "running_id": 5},
+        {"label": "Ingest", "kind": "ingest", "counts": {"done": 1}, "job_id": 8, "running_id": None}]
 
 
 def test_offline_roster_machine_without_rows():
@@ -153,13 +174,25 @@ def test_online_machines_first():
     assert [m["host"] for m in view["machines"]] == ["z-on", "b-off"]
 
 
-def test_spend_sums_agent_runs_per_host():
-    runs = [{"host": "studio", "cost_usd": 1.25, "finished": _at(1)},
-            {"host": "studio", "cost_usd": 2.5, "finished": _at(2)},
-            {"host": "studio", "cost_usd": 9.0, "finished": _at(30)},
-            {"host": "laptop", "cost_usd": None, "finished": _at(1)}]
-    view = _summarize([], roster=_roster(_machine("studio")), agent_runs=runs)
-    assert _host(view, "studio")["spend_usd"] == 3.75
+def test_cost_is_shown_on_the_roster_machines_only():
+    view = _summarize([], roster=_roster(_machine("studio")),
+                      cost={"studio": 3.75, "gone": 9.0})
+    assert _host(view, "studio")["cost_usd"] == 3.75
+    assert [m["host"] for m in view["machines"]] == ["studio"]
+
+
+def test_activity_sums_the_past_days_agent_cost_per_host(tmp_path, monkeypatch):
+    st = S.Store(tmp_path)
+    for host, cost, hours_ago in (("studio", 1.25, 1), ("studio", 2.5, 2), ("studio", 9.0, 30),
+                                  ("laptop", None, 1)):
+        ts = (datetime.now(timezone.utc) - timedelta(hours=hours_ago)).isoformat(timespec="seconds")
+        st.append_agent_run({"phase": "agent:run", "host": host, "cost_usd": cost,
+                             "started": ts, "finished": ts, "ts": ts})
+    monkeypatch.setattr(data, "store", lambda: st)
+    seen = {}
+    monkeypatch.setattr(ma, "summarize", lambda rows, cost, *a: seen.setdefault("cost", cost))
+    ma.activity()
+    assert seen["cost"] == {"studio": 3.75}
 
 
 def test_route_answers(monkeypatch):
@@ -177,10 +210,9 @@ def test_one_background_pass_reads_singular():
         {"label": "PR watch", "count": 1}]
 
 
-def test_spend_rounds_once_after_summing():
-    runs = [{"host": "studio", "cost_usd": 0.013, "finished": _at(1)} for _ in range(300)]
-    view = _summarize([], roster=_roster(_machine("studio")), agent_runs=runs)
-    assert _host(view, "studio")["spend_usd"] == 3.9
+def test_cost_rounds_once_after_summing():
+    view = _summarize([], roster=_roster(_machine("studio")), cost={"studio": 0.013 * 300})
+    assert _host(view, "studio")["cost_usd"] == 3.9
 
 
 def test_a_worker_silent_past_the_offline_window_is_stalled():

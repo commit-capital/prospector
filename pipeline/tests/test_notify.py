@@ -67,13 +67,19 @@ def _incident(n: int, noticed: str = "2026-10-02") -> dict:
             "signatures": ["obfuscated-self-decoder", "capability-smuggle"], "noticed": noticed}
 
 
+KEY = "server/src/config.ts: const API_KEY = 'q8Zr2LmXv0Pd7KsT4wYc9Hn1Bf6Ug3Ja'"
+OTHER_KEY = "server/src/db.ts: const DB_PASSWORD = 'Vt3nR8wQ1zLk5PbX9sYe2HmC7Ja4Gd6U'"
+
+
 def _secret(n: int, *, status: str = "open", created: str = "2026-10-02",
-            evidence: str = "server/src/config.ts: const API_KEY = 'q8Zr2LmXv0Pd7KsT4wYc9Hn1Bf6Ug3Ja'",
-            fixture: bool | None = False) -> dict:
+            evidence: str = KEY, fixture: bool | None = False,
+            found: str | None = None) -> dict:
     item = {"id": f"rotate-secret:{n}", "kind": "rotate-secret", "pr": n, "status": status,
             "created": created, "evidence": evidence, "summary": "s"}
     if fixture is not None:
         item["fixture"] = fixture
+    if found is not None:
+        item["evidence_found"] = found
     return item
 
 
@@ -92,11 +98,21 @@ class TestDueAlerts:
 
     def test_a_maintainer_s_live_looking_secret_is_announced_by_file_alone(self):
         prs = {8939: _pr(8939, author="dotta", association="MEMBER")}
-        alerts = notify.due_alerts([], [_secret(8939)], prs, TODAY)
-        assert [a.key for a in alerts] == ["secret:8939"]
-        text = alerts[0].text
-        assert "server/src/config.ts" in text and "dotta" in text
-        assert "q8Zr2LmXv0Pd7KsT4wYc9Hn1Bf6Ug3Ja" not in text and "API_KEY" not in text
+        [alert] = notify.due_alerts([], [_secret(8939)], prs, TODAY)
+        assert "server/src/config.ts" in alert.text and "dotta" in alert.text
+        assert "q8Zr2LmXv0Pd7KsT4wYc9Hn1Bf6Ug3Ja" not in alert.text and "API_KEY" not in alert.text
+
+    def test_each_credential_a_pr_holds_is_its_own_alert(self):
+        prs = {8939: _pr(8939, author="dotta", association="MEMBER")}
+        keys = [notify.due_alerts([], [_secret(8939, evidence=ev)], prs, TODAY)[0].key
+                for ev in (KEY, OTHER_KEY, KEY)]
+        assert keys[0] == keys[2] != keys[1]
+        assert all(k.startswith("secret:8939:") and "q8Zr2" not in k for k in keys)
+
+    def test_a_credential_found_on_an_old_item_is_announced(self):
+        prs = {8939: _pr(8939, author="dotta", association="MEMBER")}
+        item = _secret(8939, created="2026-09-20", found="2026-10-02")
+        assert len(notify.due_alerts([], [item], prs, TODAY)) == 1
 
     def test_a_credential_alert_names_the_deployment(self, monkeypatch):
         monkeypatch.setenv("TRIAGE_DISPLAY_NAME", "Acme")
@@ -151,6 +167,18 @@ class TestSendDue:
                                 post=lambda url, text: next(results), today=TODAY)
                 for _ in range(2)]
         assert sent == [[], ["malicious:12063"]]
+
+    def test_a_credential_found_after_an_alert_is_posted_too(self, tmp_path):
+        st = Store(tmp_path)
+        st.save_pr({"pr": 8939, "meta": {"title": "t", "author": "dotta",
+                                         "author_association": "MEMBER", "state": "open",
+                                         "head_sha": "h"}})
+        posted: list[str] = []
+        for item in (_secret(8939), _secret(8939, evidence=OTHER_KEY, found="2026-10-02"),
+                     _secret(8939, evidence=OTHER_KEY, found="2026-10-02")):
+            notify.send_due(st, {}, [item], url="https://hooks.slack.com/services/T/B/x",
+                            post=lambda url, text: posted.append(text) or True, today=TODAY)
+        assert len(posted) == 2 and "server/src/db.ts" in posted[1]
 
     def test_with_no_webhook_nothing_is_read_or_posted(self, monkeypatch):
         monkeypatch.delenv("TRIAGE_SLACK_WEBHOOK_URL", raising=False)

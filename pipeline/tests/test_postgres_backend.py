@@ -58,6 +58,53 @@ def test_runs_and_registry_on_postgres(store, monkeypatch):
     assert store.load_threats() == {"actors": {"x": 1}, "incidents": []}
 
 
+def test_agent_cost_and_phase_reads_on_postgres(store):
+    for lane, account, unattended, cost in (("fix", "k", True, 1.5), ("fix", "k", True, 0.5),
+                                            ("verify", "k", True, 2.0), ("fix", "k", False, 9.0),
+                                            ("fix", "other", True, 4.0), ("fix", "k", True, None)):
+        store.append_agent_run({"phase": "agent:run", "lane": lane, "account": account,
+                                "unattended": unattended, "cost_usd": cost,
+                                "ts": "2026-10-01T10:00:00+00:00"})
+    since = "2026-10-01T00:00:00+00:00"
+    assert store.agent_cost(since, "lane", account="k", unattended=True) == {
+        "fix": 2.0, "verify": 2.0}
+    assert store.capacity_cost("k", since) == 4.0
+    store.append_run({"phase": "ingest", "ts": "2026-10-01T10:00:00+00:00"})
+    store.append_run({"phase": "fix:single", "pr": 1, "ts": "2026-10-01T11:00:00+00:00"})
+    assert [r.raw["pr"] for r in store.runs(since=since, phase="fix:single")] == [1]
+
+
+def test_issue_link_rows_project_on_postgres(store):
+    from issue_triage.issue_store import IssueStore
+    st = IssueStore()
+    st.create_issue(42, {"title": "crash", "state": "open", "updated_at": "T"}).set_links(
+        [{"pr": 10, "how": "subsystem"}])
+    st.create_issue(43, {"title": "slow", "state": "open", "updated_at": "T"})
+    cl = st.create_issue_cluster(9, "crashes")
+    cl.set_members([42])
+    assert st.link_rows() == {42: (9, [{"pr": 10, "how": "subsystem"}]), 43: (None, [])}
+
+
+def test_listing_rows_project_on_postgres(store):
+    from issue_triage.issue_store import IssueStore
+    store.save_pr({"pr": 5, "meta": {"head_sha": "h", "checked_at": "c", "state": "open",
+                                     "title": "t", "author": "a", "updated_at": "u"},
+                   "analysis": {"disposition": "merge", "rationale": "r", "checked_at": "c",
+                                "against_head_sha": "h"}})
+    store.save_pr({"pr": 6, "meta": {"head_sha": "h", "checked_at": "c", "state": "closed",
+                                     "title": "t6"}})
+    assert store.pr_rows([("analysis", "disposition"), ("meta", "title", "x")],
+                         states=["open"]) == [
+        ({"pr": 5, "state": "open", "title": "t", "author": "a", "head_sha": "h",
+          "updated_at": "u"}, ["merge", None])]
+    ist = IssueStore()
+    ist.save_issue({"issue": 9, "meta": {"title": "x", "state": "closed",
+                                         "state_reason": "completed", "updated_at": "u"}})
+    assert ist.issue_rows([("meta", "labels")], numbers=[9]) == [
+        ({"issue": 9, "state": "closed", "state_reason": "completed", "title": "x",
+          "author": None, "updated_at": "u"}, [None])]
+
+
 def test_importer_into_postgres(tmp_path, monkeypatch):
     from pipeline import store_migrate
     src = tmp_path / "json"

@@ -7,6 +7,7 @@ Usage:
     close-pr <pr> --disposition dup [--canonical <pr>] [--comment "<why>"]
     close-pr <pr> --disposition fixed [--upstream-pr <pr>] [--comment "<why>"]
     close-pr <pr> --disposition stale [--comment "<why>"]
+    close-pr <pr> --disposition wontfix [--comment "<why>"]
     close-pr <pr> --disposition oversized [--merge-pr <pr> ...] [--comment "<why>"]
 """
 from __future__ import annotations
@@ -28,6 +29,7 @@ _ACTION = {
     "dup": "CLOSE_DUP",
     "fixed": "CLOSE_FIXED",
     "stale": "CLOSE_STALE",
+    "wontfix": "CLOSE_WONTFIX",
     "oversized": "CLOSE_OVERSIZED",
 }
 

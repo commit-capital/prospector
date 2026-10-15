@@ -14,7 +14,7 @@ proposes merging anything with an open flag.
 
 ## Deployment configuration
 
-- **Review bar:** `TRIAGE_REVIEW_PROVIDER=auto` — every automated reviewer and
+- **Review bar:** detected from the repository — every automated reviewer and
   scanner the repository runs gates at its own bar (Greptile at 5/5; CodeRabbit
   with no open Critical/Major finding; Superagent with no open P1/P2 and a
   passing scan; Socket with no new dependency alerts). A PR any of them blocks
@@ -31,7 +31,7 @@ proposes merging anything with an open flag.
 
 ## Operating rules
 
-`CLAUDE.md` at the repo root is the authoritative trust model for this
+`AGENTS.md` at the repo root is the authoritative trust model for this
 deployment — read it before doing anything that writes upstream. In short:
 reads run as the operator's local `gh` login; writes go through the app
 executor only, as `commitperclip`, gated per-PR by `pipeline/gates.py`, and

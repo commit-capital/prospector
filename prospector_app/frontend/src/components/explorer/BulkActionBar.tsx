@@ -3,20 +3,22 @@ import { Term } from "../InfoTip";
 import { term } from "../../glossary";
 import { useExec } from "../../ExecContext";
 
-export type BulkAction = "CLOSE" | "CLOSE_DUP" | "CLOSE_FIXED" | "CLOSE_STALE"
+export type BulkAction = "CLOSE" | "CLOSE_DUP" | "CLOSE_FIXED" | "CLOSE_STALE" | "CLOSE_WONTFIX"
   | "CLOSE_OVERSIZED" | "REQUEST_CHANGES" | "COMMENT" | "REVIEW_RETRIGGER"
-  | "QUEUE_VERIFY" | "RUN_SECURITY" | "MERGE";
+  | "QUEUE_VERIFY" | "RUN_SECURITY" | "RUN_DESIGN" | "MERGE";
 
 const ACTS: { v: BulkAction; label: string }[] = [
   { v: "CLOSE_DUP", label: "close — dup of" },
   { v: "CLOSE_FIXED", label: "close — already-fixed" },
   { v: "CLOSE_STALE", label: "close — stale" },
+  { v: "CLOSE_WONTFIX", label: "close — won't fix" },
   { v: "CLOSE_OVERSIZED", label: "close — too big (break up)" },
   { v: "CLOSE", label: "triage close" },
   { v: "REQUEST_CHANGES", label: "request changes" },
   { v: "COMMENT", label: "comment" },
   { v: "QUEUE_VERIFY", label: "queue for verification" },
   { v: "RUN_SECURITY", label: "run security reviews" },
+  { v: "RUN_DESIGN", label: "run design reviews" },
   { v: "MERGE", label: "merge" },
 ];
 
@@ -35,7 +37,7 @@ export function BulkActionBar({ selected, onApply }:
   if (selected.length === 0) return null;
   const isMerge = action === "MERGE";
   const postsComment = action !== "MERGE" && action !== "REVIEW_RETRIGGER"
-    && action !== "QUEUE_VERIFY" && action !== "RUN_SECURITY";
+    && action !== "QUEUE_VERIFY" && action !== "RUN_SECURITY" && action !== "RUN_DESIGN";
   const retriggers = activeReviewers("review").filter((r) => r.retrigger)
     .map((r) => ({ v: `REVIEW_RETRIGGER:${r.id}`, label: `re-trigger ${r.label}` }));
   const actions: { v: string; label: string }[] = [...ACTS.slice(0, -1), ...retriggers, ACTS.at(-1)!];
@@ -87,6 +89,9 @@ export function BulkActionBar({ selected, onApply }:
       )}
       {action === "RUN_SECURITY" && (
         <span className="muted small">starts a background security review for each PR — two run at a time</span>
+      )}
+      {action === "RUN_DESIGN" && (
+        <span className="muted small">starts a background design review for each PR — one runs at a time</span>
       )}
       {isMerge && <span className="muted small">merge posts no comment — each PR is gated individually</span>}
       <button className="btn-primary sm"

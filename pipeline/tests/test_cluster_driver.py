@@ -1,7 +1,6 @@
 """CLUSTER driver: wave selection, summary commits, stable-ID cluster commits."""
 from pipeline import cluster_driver as cd
-from pipeline import diff_cache
-from pipeline.testsupport import set_section
+from pipeline.testsupport import bump_section, set_section, threat_section
 from pipeline.freshness import SECTION_SCHEMA_VERSION, is_current
 from pipeline.store import Store
 
@@ -609,29 +608,22 @@ class TestLinkedIssueMemberships:
 
 
 class TestWaveSkipsDependabotBumps:
-    def _dependabot(self, store, n, head, files):
+    def _dependabot(self, store, n, head, threat=None):
         store.save_pr({"pr": n, "meta": {
             "title": f"bump {n}", "author": "dependabot[bot]", "state": "open",
-            "draft": False, "head_sha": head, "checked_at": NOW}})
+            "draft": False, "head_sha": head, "checked_at": NOW},
+            **({"threat": threat} if threat else {})})
 
-    def test_skips_lockfile_only_bump(self, tmp_path, monkeypatch):
+    def test_skips_exempt_bump_and_waits_on_an_unscanned_head(self, tmp_path):
         s = Store(tmp_path)
-        diffs = tmp_path / "diffs"; diffs.mkdir()
-        monkeypatch.setattr(diff_cache, "DIFFS", diffs)
-        self._dependabot(s, 10, "hb", None)
-        (diffs / "hb.diff").write_text(
-            "diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml\n+x\n")
+        self._dependabot(s, 10, "hb", bump_section("hb"))
+        self._dependabot(s, 12, "hd", bump_section("older"))
         _pr(s, 1)                       # ordinary PR still waves
         assert [p.pr for p in cd.wave(s)] == [1]
 
-    def test_keeps_dependabot_pr_that_touches_source(self, tmp_path, monkeypatch):
+    def test_keeps_dependabot_pr_the_scan_did_not_exempt(self, tmp_path):
         s = Store(tmp_path)
-        diffs = tmp_path / "diffs"; diffs.mkdir()
-        monkeypatch.setattr(diff_cache, "DIFFS", diffs)
-        self._dependabot(s, 11, "hc", None)
-        (diffs / "hc.diff").write_text(
-            "diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml\n+x\n"
-            "diff --git a/src/app.ts b/src/app.ts\n+evil\n")
+        self._dependabot(s, 11, "hc", threat_section("hc"))
         assert [p.pr for p in cd.wave(s)] == [11]
 
 

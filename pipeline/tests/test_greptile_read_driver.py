@@ -24,8 +24,8 @@ def test_candidates_only_sub5_without_current_review(tmp_path):
     assert drv.candidates(st) == [2]
 
 
-def test_candidates_empty_when_no_review_provider(tmp_path, monkeypatch):
-    monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "none")
+def test_candidates_empty_when_no_reviewer_seen(tmp_path, monkeypatch, active_reviewers):
+    active_reviewers()
     st = Store(tmp_path)
     _pr(st, 2, 3)                    # sub-5 would be a candidate under greptile
     assert drv.candidates(st) == []

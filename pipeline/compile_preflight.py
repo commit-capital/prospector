@@ -31,7 +31,11 @@ ERROR_CHARS = 1500
 def _record_unexpected_error(result: dict, error: Exception) -> None:
     logger.error("compile preflight failed unexpectedly",
                  exc_info=(type(error), error, error.__traceback__))
-    result["error"] = f"{type(error).__name__}: {str(error)[-ERROR_CHARS:]}"
+    # A build failure's text is the build's own output tail; any other
+    # exception's stays in the server log.
+    result["error"] = (f"BuildFailure: {str(error)[-ERROR_CHARS:]}"
+                       if isinstance(error, verify_driver.BuildFailure)
+                       else "compile preflight failed unexpectedly; see server logs")
 
 
 def run_for_patch(pr: int, head_sha: str, patch: Path) -> dict | None:
@@ -51,18 +55,19 @@ def run_for_patch(pr: int, head_sha: str, patch: Path) -> dict | None:
 
 
 def run_command_for_patch(pr: int, head_sha: str, patch: Path, cmd: str, *,
-                          lane: str = "compile") -> dict:
+                          lane: str = "compile", runs_tests: bool = False) -> dict:
     """The sandbox record for `cmd` run over current default-branch HEAD with
     `patch` applied — the compile preflight's mechanics under a caller-chosen
     command, which is how the fix author's sandbox check runs the profile's
     test runner over named test files and the fix worker runs its lint. `lane`
-    names the command in a base fault (`error_kind` "base-<lane>"). Fail-safe
+    names the command in a base fault (`error_kind` "base-<lane>"), and
+    `runs_tests` has the profile's test setup run ahead of it. Fail-safe
     shape, fail-closed content: every failure lands in the record; nothing
     raises into the caller."""
     t0 = time.monotonic()
     result: dict = {"cmd": cmd, "pr": pr, "head_sha": head_sha}
     try:
-        _compile_over(result, patch, cmd, head_sha, lane)
+        _compile_over(result, patch, cmd, head_sha, lane, runs_tests=runs_tests)
     except Exception as e:
         _record_unexpected_error(result, e)
     finally:
@@ -97,7 +102,7 @@ def run_for_merge(pr: int, head_sha: str) -> dict | None:
 
 
 def _compile_over(result: dict, patch: Path, cmd: str, head_sha: str,
-                  lane: str = "compile") -> None:
+                  lane: str = "compile", *, runs_tests: bool = False) -> None:
     """Build the tier-1 base image for current default-branch HEAD and run `cmd`
     over it with `patch` applied, recording the outcome into `result`. Refusals
     (an empty diff, a dependency-manifest change) land as `refused` and run
@@ -125,7 +130,7 @@ def _compile_over(result: dict, patch: Path, cmd: str, head_sha: str,
     progress.step(f"running {cmd} in the sandbox")
     exit_code, tail = verify_driver.run_phase(
         "compile", tag, patch=patch, tier=1, test_cmd=cmd,
-        base_sha=sha, head_sha=head_sha)
+        base_sha=sha, head_sha=head_sha, runs_tests=runs_tests)
     result["exit"] = exit_code
     excerpt = verify_driver.error_excerpt(tail)
     if exit_code == gates.SENTINEL_TEST_FAIL:
@@ -134,7 +139,7 @@ def _compile_over(result: dict, patch: Path, cmd: str, head_sha: str,
         base_failure = verify_driver.base_command_failure(
             tag, cmd, lambda: verify_driver.run_phase(
                 "compile", tag, tier=1, test_cmd=cmd, base_sha=sha,
-                head_sha="pristine", pristine=True))
+                head_sha="pristine", pristine=True, runs_tests=runs_tests))
         if base_failure is not None:
             result["error"] = gates.base_fault_text(lane, f"at {sha[:12]}: {base_failure}")
             result["error_kind"] = f"base-{lane}"

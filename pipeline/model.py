@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, cast
 
 from pipeline import gates
+from pipeline import settings
 from pipeline import storekit
 from pipeline import wire
 
@@ -29,6 +30,18 @@ def _stamp(rec: dict, section: str, payload: dict, against_head_sha: str | None)
     token_field = None if section == "meta" else "against_head_sha"
     token_value = (against_head_sha or rec["meta"]["head_sha"]) if token_field else None
     storekit.stamp(rec, section, payload, token_field, token_value)
+
+
+# The request statuses a queue still holds: an operator's priority
+# (queue_order) carries across them and ends with the request.
+_VERIFY_LIVE = frozenset({"queued", "waiting-for-base", "running"})
+_FIX_LIVE = frozenset({"queued", "running", "awaiting-review", "approved", "pushing"})
+
+
+def _keep_priority(prior: object, section: dict, live: frozenset[str]) -> None:
+    if (isinstance(prior, dict) and prior.get("status") in live
+            and section["status"] in live and prior.get("priority") is not None):
+        section["priority"] = prior["priority"]
 
 
 class Pr:
@@ -115,6 +128,17 @@ class Pr:
         return self._meta().get("author_association")
 
     @property
+    def cross_repo(self) -> bool | None:
+        """Whether the head branch lives on a fork; None when its repository is
+        unknown (a deleted fork, or a record ingested before it was read)."""
+        head = self.head_repo
+        return head.lower() != settings.repo().lower() if head else None
+
+    @property
+    def maintainer_can_modify(self) -> bool | None:
+        return self._meta().get("maintainer_can_modify")
+
+    @property
     def title(self) -> str | None:
         return self._meta().get("title")
 
@@ -123,8 +147,23 @@ class Pr:
         return self._meta().get("url")
 
     @property
-    def base(self) -> str | None:
+    def base_ref(self) -> str | None:
         return self._meta().get("base")
+
+    @property
+    def head_ref(self) -> str | None:
+        return self._meta().get("head_ref")
+
+    @property
+    def head_repo(self) -> str | None:
+        return self._meta().get("head_repo")
+
+    @property
+    def stacked(self) -> bool:
+        """Whether the PR targets a branch other than the repository's default
+        branch — a layer of a stack whose base is another PR's head."""
+        base = self.base_ref
+        return bool(base) and base != settings.default_branch()
 
     @property
     def created_at(self) -> str | None:
@@ -457,6 +496,7 @@ class Pr:
                              ("source", source), ("host", host)):
             if value is not None:
                 section[field] = value
+        _keep_priority(self.rec.get("verify_request"), section, _VERIFY_LIVE)
         _stamp(self.rec, "verify_request", section, head_sha)
         self._persist()
 
@@ -498,6 +538,7 @@ class Pr:
                              ("objection", objection)):
             if value is not None:
                 section[field] = value
+        _keep_priority(self.rec.get("fix_request"), section, _FIX_LIVE)
         _stamp(self.rec, "fix_request", section, head_sha)
         self._persist()
 
@@ -594,6 +635,15 @@ class Pr:
         _stamp(self.rec, "threat", result, None)
         self._persist()
 
+    def clear_secret_leak(self, by: str) -> str:
+        """Record `by`'s judgment that the threat stamp's secret-leak evidence
+        is no credential, and return that evidence."""
+        sec = self.rec["threat"]
+        evidence = sec["detail"].get("secret-leak", "")
+        sec["cleared"] = {"secret-leak": {"by": by, "at": storekit.now(), "evidence": evidence}}
+        self._persist()
+        return evidence
+
     def set_summary(self, payload: dict, *, head_sha: str | None = None) -> None:
         """Set the diff summary, stamped against the head it was computed on
         (head_sha) so a moved head correctly stales it."""
@@ -618,6 +668,11 @@ class Pr:
         """Remove the cluster section entirely (the section becomes absent, not an
         empty standalone stamp) — used by a from-scratch re-cluster reset."""
         self.rec.pop("cluster", None)
+        self._persist()
+
+    def clear_analysis(self) -> None:
+        """Remove the analysis section, leaving the PR to be dispositioned anew."""
+        self.rec.pop("analysis", None)
         self._persist()
 
     def record_live_state(self, *, state: str | None = None,

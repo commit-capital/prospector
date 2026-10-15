@@ -9,6 +9,7 @@ from prospector_app.backend import feedback
 
 def test_target_uses_configured_repo(monkeypatch):
     monkeypatch.setenv("PROSPECTOR_FEEDBACK_REPO", "someone/elsewhere")
+    monkeypatch.delenv("PROSPECTOR_FEEDBACK_ASSIGNEE", raising=False)
     monkeypatch.setattr(feedback, "operator_login", lambda: "tester")
     monkeypatch.setattr(feedback.instance, "instance", lambda: {"branch": "feat/x", "worktree": "wt"})
     t = feedback.target()
@@ -18,6 +19,14 @@ def test_target_uses_configured_repo(monkeypatch):
     assert t["branch"] == "feat/x"
     assert t["worktree"] == "wt"
     assert set(t) == {"repo", "assignee", "labels", "branch", "worktree"}
+
+
+def test_target_assignee_setting_overrides_gh_login(monkeypatch):
+    monkeypatch.setenv("PROSPECTOR_FEEDBACK_REPO", "someone/elsewhere")
+    monkeypatch.setenv("PROSPECTOR_FEEDBACK_ASSIGNEE", "maintainer")
+    monkeypatch.setattr(feedback, "operator_login", lambda: "bot-account")
+    monkeypatch.setattr(feedback.instance, "instance", lambda: {"branch": None, "worktree": None})
+    assert feedback.target()["assignee"] == "maintainer"
 
 
 def test_target_repo_none_when_unconfigured(monkeypatch):

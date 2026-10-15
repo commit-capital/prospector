@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 from prospector_app.backend import automation, data
 from prospector_app.backend import claims
 from prospector_app.backend import filters  # spec predicate
+from prospector_app.backend import issues
 from prospector_app.backend import pr_checks
 from prospector_app.backend import responses
 from prospector_app.backend import suggest
@@ -84,6 +85,26 @@ def changed_paths(rec: Pr) -> list[str]:
     """The PR's changed file paths from its cached diff, memoized by head SHA
     (the _facets memo); [] when no diff is cached."""
     return _facets(rec).get("changed_paths") or []
+
+
+_heads: tuple[int, dict[str, int]] = (-1, {})
+
+
+def stacked_on(rec: Pr) -> int | None:
+    """The open PR whose head branch in the triage repository is `rec`'s base,
+    or None for a PR that is not stacked or whose base no open PR heads."""
+    global _heads
+    if not rec.stacked:
+        return None
+    gen = data.generation()
+    if _heads[0] != gen:
+        repo = settings.repo().lower()
+        index: dict[str, int] = {}
+        for n, pr in sorted(data.prs().items()):
+            if pr.state == "open" and pr.head_ref and (pr.head_repo or "").lower() == repo:
+                index.setdefault(pr.head_ref, n)
+        _heads = (gen, index)
+    return _heads[1].get(rec.base_ref or "")
 
 
 # ---------------------------------------------------------------------------
@@ -283,6 +304,9 @@ def pr_row(n: int, rec: Pr | None = None) -> dict | None:
         "created_at": rec.created_at,
         "updated_at": rec.updated_at,
         "draft": rec.draft,
+        "stacked": rec.stacked,
+        "stacked_on": stacked_on(rec),
+        "base_ref": rec.base_ref,
         "github_state": rec.state,
         "clusters": data.pr_to_clusters().get(rec.number, []),
         "disposition": rec.disposition,
@@ -769,8 +793,8 @@ def pr_detail(n: int) -> dict | None:
         return None
     row = pr_row(n, rec)
     assert row is not None  # rec is non-None so pr_row always returns a dict
-    row["base"] = rec.base
     row["security_detail"] = rec.section("security")
+    row["threat_detail"] = rec.section("threat")
     row["safety_summary"] = _safety_summary(rec)
     row["verify_detail"] = verify_view.verify_detail(rec)
     row["verify_request"] = verify_view.verify_request_view(rec)
@@ -788,8 +812,9 @@ def pr_detail(n: int) -> dict | None:
                    "changed_files": ds.get("changed_files")}
 
     # The rest each need a live round-trip — GitHub's CI check runs, its file
-    # list (CODEOWNERS), and the PR body. They're independent, so fan them out:
-    # wall time is one round-trip, not the sum of three. The CODEOWNERS and body
+    # list (CODEOWNERS), and the PR body — plus the issue store's read of the
+    # linked issues' states. They're independent, so fan them out: wall time is
+    # one round-trip, not the sum of them. The CODEOWNERS and body
     # calls only fire when their cached/ingested value is missing, so most warm
     # PRs spend their latency on the CI fetch alone. Reviewer feedback comes from
     # the store's reviews section, which ingest and the live sweep keep current.
@@ -800,8 +825,10 @@ def pr_detail(n: int) -> dict | None:
     # live GitHub fetch is the last resort, for a PR whose body was never ingested.
     body = rec.body or data.pr_body(n)
     failed_live: list[str] = []
-    with ThreadPoolExecutor(max_workers=3) as pool:
+    linked = rec.linked_issues
+    with ThreadPoolExecutor(max_workers=4) as pool:
         detail_fut = pool.submit(_ci_checks, rec.head_sha)
+        states_fut = pool.submit(issues.issue_states, sorted({int(i["issue"]) for i in linked}))
         # authoritative CODEOWNERS + tier source; live file list only when uncached (#15/#26)
         paths_fut = None if hm_known else pool.submit(live_changed_paths, n)
         body_fut = pool.submit(_pr_body_live, n) if body is None else None  # ingested lazily
@@ -821,6 +848,13 @@ def pr_detail(n: int) -> dict | None:
                 row["risk_tier"] = live_risk["tier"]
                 row["risk_tier_paths"] = live_risk["pinned_by"]
         row["body"] = body if body_fut is None else _resolve_live(body_fut, body, failed_live, "body")
+        states = _resolve_live(states_fut, {}, failed_live, "issue_states")
+    # Each linked issue's stored state, so the page can say when the issue a PR
+    # fixes has closed (e.g. as not planned) and the PR may no longer be needed.
+    row["issues"] = [
+        {**link, "state": st[0], "state_reason": st[1]} if (st := states.get(int(link["issue"])))
+        else link
+        for link in linked]
     # Which live bits couldn't refresh (empty when all succeeded). The app shows
     # a "couldn't refresh live data" note rather than the operator seeing a 500.
     row["live_refresh_failed"] = failed_live
@@ -847,28 +881,27 @@ def _safety_summary(rec: Pr) -> dict:
     if not sec:
         return {"verdict": None, "level": "unknown",
                 "headline": "Not yet security-reviewed",
-                "detail": "Deep security review runs on clean merge candidates (GATE → SECURITY)."}
+                "detail": "PRs get a security review once they pass the other checks."}
     why_stale = freshness.currency_failure(rec, "security")
     v, n = sec.get("verdict"), len(sec.get("findings", []))
     if v == "GREEN":
         if why_stale:
             return {"verdict": v, "level": "safe",
                     "headline": "Likely safe at last review — no concerns flagged",
-                    "detail": ("The multi-agent security review found nothing concerning, "
-                               f"but it is {why_stale} — it no longer counts for merge. "
-                               "Re-run SECURITY for a current verdict.")}
+                    "detail": ("The security review found nothing concerning, but the PR "
+                               "changed since, so it no longer counts for merge. Re-run it.")}
         return {"verdict": v, "level": "safe", "headline": "Likely safe — no concerns flagged",
-                "detail": "The multi-agent security review found nothing concerning."}
-    note = (f" (The review is {why_stale}, and it still blocks merge until a GREEN "
-            "review of this head — re-run SECURITY.)") if why_stale else ""
+                "detail": "The security review found nothing concerning."}
+    note = (" The PR changed since this review, and it still blocks merge until a "
+            "new review comes back GREEN.") if why_stale else ""
     if v == "YELLOW":
         return {"verdict": v, "level": "caution",
                 "headline": f"Proceed with care — {n} concern{'s' if n != 1 else ''} flagged",
-                "detail": "Non-blocking concerns. Read them before merging." + note}
+                "detail": "Minor concerns. Read them before merging." + note}
     if v == "RED":
         return {"verdict": v, "level": "risk",
                 "headline": f"Risky — {n} serious concern{'s' if n != 1 else ''}",
-                "detail": "Serious issues flagged. Do not merge without addressing them." + note}
+                "detail": "Serious problems found. Don't merge until they're fixed." + note}
     return {"verdict": v, "level": "unknown", "headline": str(v), "detail": note.strip()}
 
 

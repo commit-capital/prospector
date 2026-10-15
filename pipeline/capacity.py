@@ -417,7 +417,7 @@ def check(store: Store, acct: Account | None, now: datetime | None = None,
         if p.daily_budget_usd is None:
             return Decision(False, "no daily budget is set for this API key", None)
         start, tomorrow = local_midnights(p, now)
-        spent = store.capacity_spend(acct.key, _iso(start))
+        spent = store.capacity_cost(acct.key, _iso(start))
         if spent >= p.daily_budget_usd:
             return Decision(False, f"today's budget of ${p.daily_budget_usd:.2f} is spent "
                                    f"(${spent:.2f})", tomorrow)

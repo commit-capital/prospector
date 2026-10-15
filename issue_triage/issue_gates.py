@@ -45,7 +45,6 @@ def close_dup_allowed(issue: Issue, cluster: IssueCluster | None,
 
 
 def close_dup_eligibility(issue: Issue, cluster: IssueCluster | None,
-                          issues: dict[int, Issue] | None = None,
                           live_state: Callable[[int], str | None] | None = None,
                           today: str | None = None,
                           ) -> tuple[bool, str]:
@@ -206,13 +205,27 @@ def _twice(legs: dict | None, want: int) -> bool:
     return bool(legs) and legs.get("exit") == want and legs.get("exit_confirm") == want
 
 
+def sandbox_fault(record: dict | None) -> str | None:
+    """The machine fault a host check's sandbox record (`prove.run_command`)
+    carries, or None: an `error` that is not the base's own failure (an
+    `error_kind`, which each caller reads on its own) — the sandbox unable to
+    apply the patch for a reason that is not the patch's, a phase that exited
+    before its command concluded, a docker error. A `refused` patch is the
+    patch's, not the machine's."""
+    if not record or record.get("error_kind") or not record.get("error"):
+        return None
+    return str(record["error"])
+
+
 def fix_proof_bar(result: dict) -> tuple[str | None, str]:
     """(None, …) when a fix is proven and reviewed, else the ending it falls
     short at — "fix-unproven" for the host's proof, "fix-rejected" for a
-    reviewer — with the reason. The proof is the reproduction red on the base
-    and green with the fix, the preservation tests green with the fix, the
-    compile lane, the lint (gates.lint_block), and the related tests. Only an
-    explicit `safe` from every lens in REVIEW_LENSES passes."""
+    reviewer, "sandbox" when a check's sandbox could not run (sandbox_fault),
+    which is the machine's condition, never a verdict — with the reason. The
+    proof is the reproduction red on the base and green with the fix, the
+    preservation tests green with the fix, the compile lane, the lint
+    (gates.lint_block), and the related tests. Only an explicit `safe` from
+    every lens in REVIEW_LENSES passes."""
     proof = result.get("proof") or {}
     if not _twice(proof.get("red"), gates.SENTINEL_TEST_FAIL):
         return "fix-unproven", "the reproduction is not red twice on the base"
@@ -221,6 +234,11 @@ def fix_proof_bar(result: dict) -> tuple[str | None, str]:
     if not _twice(proof.get("preserve"), gates.SENTINEL_PASS):
         return "fix-unproven", ("the preservation tests do not pass twice with the fix "
                                 "applied: it changes behavior they pin")
+    for name, record in (("compile", proof.get("compile")), ("lint", proof.get("lint")),
+                         ("related-tests", (proof.get("related_tests") or {}).get("run"))):
+        fault = sandbox_fault(record)
+        if fault:
+            return "sandbox", f"the {name} sandbox could not run: {fault}"
     compiled = proof.get("compile")
     if compiled is not None:
         not_run = compiled.get("refused") or compiled.get("error")

@@ -94,6 +94,12 @@ def test_close_stale():
     assert "inactive" in app.default_comment("CLOSE_STALE")["comment"].lower()
 
 
+def test_close_wontfix_says_no_revision_would_fix_it():
+    out = decisions.default_comment(models.CloseAction(action="CLOSE_WONTFIX"))
+    assert "decided not to take this change" in out
+    assert "inactive" not in out.lower()
+
+
 def test_close_oversized_encourages_splitting():
     """#183: the oversized-close comment asks the author to break it into smaller PRs."""
     out = decisions.default_comment(models.CloseAction(action="CLOSE_OVERSIZED"))
@@ -131,3 +137,29 @@ def test_close_oversized_suggestion_pulls_cluster_merge_prs(monkeypatch):
     assert s["action"] == "CLOSE_OVERSIZED"
     assert s["accept"].merge_prs == [7]
     assert "#7" in s["bot_comment"] and "smaller" in s["bot_comment"].lower()
+
+
+def test_a_request_changes_comment_never_bounces_a_cleared_secret():
+    from pipeline import model
+    from prospector_app.backend import suggest
+    threat = {"verdict": "suspicious", "signatures": ["secret-leak"], "against_head_sha": "h1",
+              "detail": {"secret-leak": "deploy/compose.yml: API_KEY: 1c68877401"}}
+    rec = {"pr": 1, "meta": {"title": "t", "author": "a", "state": "open", "draft": False,
+                             "head_sha": "h1", "checked_at": "2026-10-06T00:00:00+00:00"},
+           "threat": threat}
+    leak = suggest.suggest_for_record(model.Pr(None, rec), "request-changes")
+    threat["cleared"] = {"secret-leak": {"by": "Alex", "evidence": threat["detail"]["secret-leak"]}}
+    cleared = suggest.suggest_for_record(model.Pr(None, rec), "request-changes")
+    assert "live credential" in leak["comment"]
+    assert "live credential" not in cleared["comment"]
+
+
+def test_close_wontfix_suggestion_carries_the_analysis_rationale():
+    from types import SimpleNamespace
+    from prospector_app.backend import suggest
+    target = SimpleNamespace(number=5, rationale="breaks assertCheckoutOwner")
+    s = suggest.suggest_for_record(target, "close-wontfix")
+    assert s["action"] == "CLOSE_WONTFIX"
+    assert s["rationale"] == "breaks assertCheckoutOwner"
+    assert s["accept"].tags == ["wontfix", "agent-suggested"]
+    assert s["bot_comment"] == decisions.default_comment(models.CloseAction(action="CLOSE_WONTFIX"))

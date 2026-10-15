@@ -1,6 +1,8 @@
 """#192: the Issues projection over the issue store, the close-as-dup worklist,
 and the bot-gated issue-close path. The store is seeded in a temp dir; GitHub is
 never touched."""
+import pytest
+
 from prospector_app.backend import executor
 from issue_triage import issue_store
 from prospector_app.backend import issues
@@ -765,6 +767,28 @@ def test_close_fixed_gate_accepts_a_github_closing_reference(tmp_path, monkeypat
     assert ok, reason
 
 
+def test_close_fixed_gate_accepts_a_fixer_linked_on_a_cluster_sibling(tmp_path, monkeypatch):
+    """A PR that fixes the duplicate (#11) closes the canonical (#10) too."""
+    st = _seed(tmp_path, monkeypatch)
+    st.edit_issue(11).set_links([{"pr": 902, "title": "fix", "how": "explicit"}])
+    monkeypatch.setattr(issues, "_live_pr_states", lambda nums: {902: "merged"})
+    ok, reason = issues.close_fixed_gate(10, 902)
+    assert ok, reason
+
+
+def test_close_gates_never_read_the_whole_issue_store(tmp_path, monkeypatch):
+    """Each gate reads the issue it closes (and the fixed gate its cluster
+    siblings), never every issue."""
+    st = _seed_explicit_fixer(tmp_path, monkeypatch)
+    monkeypatch.setattr(type(st), "all_issues",
+                        lambda self, **kw: pytest.fail("a close gate read every issue"))
+    monkeypatch.setattr(issues, "_live_pr_states", lambda nums: {900: "merged"})
+    assert issues.close_fixed_gate(10, 900)[0]
+    assert issues.close_dup_gate(11)[0]
+    assert issues.close_gate(10, "fixed", None, 900, None) == (True, "ok")
+    assert issues.close_gate(99, "completed", "done", None, None) == (False, "issue not in store")
+
+
 def test_close_fixed_gate_still_refuses_a_subsystem_tag_match(tmp_path, monkeypatch):
     _seed(tmp_path, monkeypatch)  # PR 900 is linked to #10 with how="subsystem"
     monkeypatch.setattr(issues, "_pr_links", lambda: {})
@@ -900,6 +924,20 @@ def test_the_query_filters_and_sorts_on_fix_status(tmp_path, monkeypatch):
     assert issues.query_issues(fix_status=["any"], state="all")["total"] == 1
     sorted_rows = issues.query_issues(sort="fix", direction="asc", state="all")["items"]
     assert sorted_rows[0]["number"] == 10
+
+
+def test_the_query_filters_on_a_maintainer_author(tmp_path, monkeypatch):
+    st = _seed(tmp_path, monkeypatch)
+    st.create_issue(12, {"title": "owner report", "state": "open", "author": "ma",
+                         "author_association": "MEMBER",
+                         "created_at": "2026-01-03T00:00:00Z", "updated_at": "2026-01-03T00:00:00Z"})
+    st.create_issue(13, {"title": "app report", "state": "open", "author": "app[bot]",
+                         "author_association": "MEMBER",
+                         "created_at": "2026-01-03T00:00:00Z", "updated_at": "2026-01-03T00:00:00Z"})
+    got = issues.query_issues(maintainer=True, state="all")
+    assert [r["number"] for r in got["items"]] == [12]
+    assert got["items"][0]["maintainer"] is True
+    assert {r["number"] for r in issues.query_issues(maintainer=False, state="all")["items"]} == {10, 11, 13}
 
 
 def test_a_row_whose_full_record_fails_to_build_serves_its_light_row(tmp_path, monkeypatch, caplog):

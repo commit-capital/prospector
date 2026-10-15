@@ -44,7 +44,7 @@ from pipeline import progress
 from pipeline import review_fetch
 from pipeline import reviewers
 from pipeline import settings
-from pipeline.gh import RATE_LIMIT_BACKOFF, fetch_pr, gh_json, gh_list, operator_env
+from pipeline.gh import RATE_LIMIT_BACKOFF, fetch_pr, gh_list, operator_env
 from pipeline.review_fetch import PrFeed
 from pipeline.store import Store
 from pipeline.storekit import now as _now
@@ -71,6 +71,7 @@ class _UpsertStats(TypedDict):
 def meta_from_gh(pr: dict) -> dict:
     state = "merged" if pr.get("merged_at") else pr.get("state", "open")
     reactions = pr.get("reactions") or {}
+    can_modify = pr.get("maintainer_can_modify")
     return {
         "title": pr.get("title") or "(untitled)",
         "body": (pr.get("body") or "")[:20000] or None,
@@ -80,11 +81,15 @@ def meta_from_gh(pr: dict) -> dict:
         "draft": bool(pr.get("draft")),
         "head_sha": (pr.get("head") or {}).get("sha"),
         "base": (pr.get("base") or {}).get("ref"),
+        "head_ref": (pr.get("head") or {}).get("ref"),
+        "head_repo": ((pr.get("head") or {}).get("repo") or {}).get("full_name"),
         "url": pr.get("html_url"),
         "created_at": pr.get("created_at"),
         "updated_at": pr.get("updated_at"),
         "comments": pr.get("comments"),
         "reactions_total": reactions.get("total_count"),
+        # None when GitHub's answer was not read (the REST listing omits it).
+        "maintainer_can_modify": can_modify if isinstance(can_modify, bool) else None,
     }
 
 
@@ -183,6 +188,8 @@ def _stage_pr(store: Store, gh_pr: dict, existing: Pr | None,
     """Merge GitHub facts into a new or existing PR without writing it."""
     n = int(gh_pr["number"])
     meta = meta_from_gh(gh_pr)
+    if meta["maintainer_can_modify"] is None and existing is not None:
+        meta["maintainer_can_modify"] = existing.maintainer_can_modify
     head_moved = existing is not None and existing.head_sha != meta.get("head_sha")
     sig = _build_signals(
         existing_signals=existing.signals if existing is not None else None,
@@ -226,6 +233,8 @@ def refresh_prs(store: Store, numbers: list[int]) -> list[dict]:
     summary/analysis/security via the store's against_head_sha stamping — no
     explicit invalidation here."""
     out: list[dict] = []
+    # The issue side of the links is read once for the whole batch, not per PR.
+    index: IssueLinkIndex | None = None
     for n in numbers:
         n = int(n)
         before = store.load_pr(n)
@@ -233,16 +242,19 @@ def refresh_prs(store: Store, numbers: list[int]) -> list[dict]:
         gh_pr = fetch_pr(n)
         if gh_pr is None:
             raise RuntimeError(f"gh api pulls/{n} failed or returned no PR")
-        issue_links = load_issue_links(prs=[gh_pr])
+        if index is None:
+            index = issue_link_index()
+        issue_links = load_issue_links(prs=[gh_pr], index=index)
         # GitHub is the source of truth for CI and reviewer feedback: the feed
         # carries this exact head's check runs and the PR's conversation, so a
         # stale 'failing' can't false-block and every bot's verdict is current.
         head_sha = (gh_pr.get("head") or {}).get("sha")
         feed = review_fetch.fetch_feeds([n]).get(n)
         if feed is not None:
-            ci = ci_signal.verdict(feed.check_runs, feed.statuses)
+            ci = ci_signal.verdict(feed.check_runs, feed.statuses, required=feed.required,
+                                   awaiting_approval=feed.awaiting_approval)
         else:
-            ci = gh_ci_status(head_sha) if head_sha else None
+            ci = "unknown"
         raw_mergeable = gh_pr.get("mergeable")
         mergeable = raw_mergeable if isinstance(raw_mergeable, bool) else None
         diffstat = _diffstat_from_gh(gh_pr)
@@ -264,21 +276,6 @@ def refresh_prs(store: Store, numbers: list[int]) -> list[dict]:
         out.append({"pr": n, "moved": old_sha != new_sha,
                     "old_sha": old_sha, "new_sha": new_sha})
     return out
-
-
-def gh_ci_status(sha: str) -> str | None:
-    """GitHub's authoritative CI verdict for `sha` ('passing' | 'failing' |
-    'pending'), or None when GitHub has no checks for it or can't be reached — the
-    caller then keeps the stored value. Best-effort: a gh hiccup never breaks a
-    refresh. Combines the check-runs API (filter=latest drops superseded re-runs)
-    and the legacy commit-status API."""
-    runs = gh_json(f"repos/{settings.repo()}/commits/{sha}/check-runs?per_page=100&filter=latest")
-    status = gh_json(f"repos/{settings.repo()}/commits/{sha}/status")
-    if runs is None and status is None:
-        return None  # couldn't reach GitHub at all — keep the stored verdict
-    check_runs = ci_signal.from_rest_check_runs((runs or {}).get("check_runs", []))
-    statuses = (status or {}).get("statuses", [])
-    return ci_signal.verdict(check_runs, statuses)
 
 
 # ---------------------------------------------------------------------------
@@ -303,27 +300,42 @@ def fetch_open_prs(max_n: int | None = None) -> list[dict]:
     return out[:max_n] if max_n else out
 
 
+class IssueLinkIndex(NamedTuple):
+    """The issue store's side of PR ↔ issue linking: each issue's cluster pain
+    (None when unclustered), keyed by every issue number, and its stored
+    candidate PRs inverted into PR → linked issues."""
+    pain: dict[int, float | None]
+    by_pr: dict[int, list[dict]]
+
+
+def issue_link_index(iss_store: IssueStore | None = None) -> IssueLinkIndex:
+    """Read the issue store's side of the links: every issue's cluster and
+    candidate PRs (projected server-side, `IssueStore.link_rows`) and the
+    clusters' pain."""
+    from issue_triage.issue_store import IssueStore
+    st = iss_store or IssueStore()
+    pain_by_cluster = {cid: cl.pain for cid, cl in st.all_issue_clusters().items()}
+    rows = st.link_rows()
+    pain = {n: pain_by_cluster.get(cid) if cid is not None else None
+            for n, (cid, _) in rows.items()}
+    by_pr = issues_by_pr([{"issue": n, "pain": pain[n], "candidates": cands}
+                          for n, (_, cands) in rows.items() if cands])
+    return IssueLinkIndex(pain, by_pr)
+
+
 def load_issue_links(iss_store: IssueStore | None = None,
-                     prs: list[dict] | None = None) -> dict[int, list[dict]]:
+                     prs: list[dict] | None = None,
+                     index: IssueLinkIndex | None = None) -> dict[int, list[dict]]:
     """PR → linked issues, read from the SQL issue store. Each issue carries its
     candidate PRs (stamped by issue_ingest via set_links) and belongs to a cluster
     whose pain applies to it; invert that issue→PRs mapping into the PR→issues map
     the ingest attaches to each PR. When live PRs are supplied, their current
-    bodies authoritatively refresh direct explicit/body-ref evidence."""
-    from issue_triage.issue_store import IssueStore
-    st = iss_store or IssueStore()
-    pain_by_cluster = {cid: cl.pain for cid, cl in st.all_issue_clusters().items()}
-    issues = st.all_issues()
-    issue_pain = {
-        n: pain_by_cluster.get(iss.cluster_id) if iss.cluster_id is not None else None
-        for n, iss in issues.items()
-    }
-    out = issues_by_pr([
-        {"issue": iss.number, "pain": issue_pain[iss.number],
-         "candidates": iss.candidate_prs}
-        for iss in issues.values()
-        if iss.candidate_prs
-    ])
+    bodies authoritatively refresh direct explicit/body-ref evidence. A caller
+    linking PRs one at a time passes one `index` (`issue_link_index`) to all of
+    them rather than re-reading the issue store each time."""
+    idx = index or issue_link_index(iss_store)
+    issue_pain = idx.pain
+    out = dict(idx.by_pr)
 
     # The issue store's candidate snapshot is refreshed when the issue changes,
     # but a newly opened or newly edited PR must not wait for that unrelated
@@ -335,7 +347,7 @@ def load_issue_links(iss_store: IssueStore | None = None,
         by_issue = {entry["issue"]: entry for entry in out.get(n, [])
                     if entry.get("how") not in ("explicit", "body-ref")}
         refs = link_prs.classify_issue_refs(pr.get("body"))
-        for issue_n in sorted(refs.keys() & issues.keys()):
+        for issue_n in sorted(refs.keys() & issue_pain.keys()):
             how = refs[issue_n]
             by_issue[issue_n] = {"issue": issue_n, "pain": issue_pain[issue_n], "how": how}
         if by_issue:
@@ -457,6 +469,8 @@ def _upsert_all(store: Store, prs: list[dict], issue_links: dict[int, list[dict]
                           check_runs=current.get("check_runs") or [],
                           statuses=current.get("statuses") or [], conversation=False)
         reviews = stage_reviews(existing, feed, head_sha) if feed is not None else None
+        if isinstance(live.get("maintainer_can_modify"), bool):
+            gh_pr = {**gh_pr, "maintainer_can_modify": live["maintainer_can_modify"]}
         rec = _stage_pr(
             store, gh_pr, existing, issue_links.get(n, []),
             ci_override=current.get("ci"), mergeable_override=live_mergeable,
@@ -487,8 +501,7 @@ def _targeted_ingest(store: Store, args: argparse.Namespace, started: str) -> in
     if args.prs:
         requested = sorted(_parse_pr_ids(args.prs))
         if args.new:
-            print("loading every stored PR to skip the ones already stored…", flush=True)
-            existing_ids = set(store.all_prs())
+            existing_ids = store.pr_ids()
             requested = [n for n in requested if n not in existing_ids]
         print(f"refreshing {len(requested)} requested PRs…", flush=True)
         refreshed = refresh_prs(store, requested)

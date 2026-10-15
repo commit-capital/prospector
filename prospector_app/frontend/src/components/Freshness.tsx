@@ -1,5 +1,7 @@
+import type { ReactNode } from "react";
 import type { Divergence } from "../api";
 import type { FreshnessState } from "../useFreshness";
+import { liveConflicts } from "./liveChecks";
 
 /** Header indicator for the background live-state refresh (#25). */
 export function FreshnessBar({ f }: { f: FreshnessState }) {
@@ -19,10 +21,12 @@ export function FreshnessBar({ f }: { f: FreshnessState }) {
  *  itself moved (new commits), offers a "Re-run Analysis" action right there —
  *  the fix for a warning belongs next to the warning, not buried in a panel
  *  further down the page (#582). `onRerunAnalysis` is omitted (button hidden)
- *  when the PR isn't clustered yet, since re-analysis is cluster-scoped. */
-export function FreshnessCallout({ diverged, onRerunAnalysis, rerunning, rerunLog }: {
+ *  when the PR isn't clustered yet, since re-analysis is cluster-scoped.
+ *  `conflictAction` renders beside a new-conflicts warning. */
+export function FreshnessCallout({ diverged, onRerunAnalysis, conflictAction, rerunning, rerunLog }: {
   diverged?: Divergence[];
   onRerunAnalysis?: () => void;
+  conflictAction?: ReactNode;
   rerunning?: boolean;
   rerunLog?: string[];
 }) {
@@ -37,6 +41,7 @@ export function FreshnessCallout({ diverged, onRerunAnalysis, rerunning, rerunLo
           {rerunning ? "Running…" : "↻ Re-run Analysis for this PR"}
         </button>
       )}
+      {liveConflicts(diverged) && conflictAction && <div style={{ marginTop: 6 }}>{conflictAction}</div>}
       {rerunLog && rerunLog.length > 1 && (
         <div className="joblog" style={{ marginTop: 8 }} aria-label="re-analysis log">
           {rerunLog.map((l, i) => <div key={i} className="logline">{l}</div>)}

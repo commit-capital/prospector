@@ -974,7 +974,7 @@ function KeyFlow({ mode, onDone }: { mode: "me" | "dedicated"; onDone: () => voi
       )}
       {account && (
         <p className="small">
-          <strong>{account.login}</strong> · commits as <code>{account.email}</code>
+          <strong>{account.login}</strong> · <code>{account.email}</code>
         </p>
       )}
       {account && !ownKey && !key && (

@@ -202,6 +202,20 @@ class IssueStore:
         issue.stage_fix_request(claimed)
         return claimed if self.save_issue_if(issue, stamp) else None
 
+    def prioritize_fix_request(self, n: int, priority: float) -> bool:
+        """Set issue `n`'s queued fix request's queue `priority` under a
+        compare-and-swap, so a worker's claim landing first is never undone.
+        Whether it was set."""
+        got = self.stamped_issue(n)
+        if got is None:
+            return False
+        issue, stamp = got
+        req = issue.fix_request
+        if not req or req.get("status") != "queued":
+            return False
+        issue.stage_fix_request({**req, "priority": float(priority)})
+        return self.save_issue_if(issue, stamp)
+
     def edit_issue(self, n: int) -> issue_model.Issue:
         """A typed, auto-saving handle for mutating issue `n`. Raises KeyError if
         the issue is not in the store."""
@@ -228,6 +242,39 @@ class IssueStore:
 
     def issue_ids(self) -> set[int]:
         return self._issues.ids()
+
+    def issue_rows(self, paths: list[tuple[str, ...]], *, states: Iterable[str] | None = None,
+                   numbers: Iterable[int] | None = None) -> list[tuple[dict, list]]:
+        """Each issue's compact row (issue, state, state_reason, title, author,
+        updated_at) plus the JSON value at each of `paths` (None where the
+        record has none), in number order. `states` keeps the issues in one of
+        those exact states and `numbers` those issues; both filter, and the
+        columns are projected, server-side, so a listing never ships the issue
+        records."""
+        from sqlalchemy import and_
+        c = schema.issues.c
+        where = []
+        if states is not None:
+            where.append(c.state.in_(sorted(set(states))))
+        if numbers is not None:
+            where.append(c.issue.in_(sorted({int(n) for n in numbers})))
+        rows = self._issues.rows(
+            [c.state, c.data[("meta", "state_reason")].as_string(),
+             c.data[("meta", "title")].as_string(), c.data[("meta", "author")].as_string(),
+             c.updated_at, *(c.data[p] for p in paths)],
+            where=and_(*where) if where else None)
+        return [({"issue": r[0], "state": r[1], "state_reason": r[2], "title": r[3],
+                  "author": r[4], "updated_at": r[5]}, list(r[6:])) for r in rows]
+
+    def link_rows(self) -> dict[int, tuple[int | None, list[dict]]]:
+        """Every issue's cluster id and candidate PRs (`links.candidates`), keyed
+        by number — what the PR ingest inverts into each PR's linked issues —
+        projected server-side and read in pages, so linking never ships the
+        rest of the issue records."""
+        c = schema.issues.c
+        rows = self._issues.rows([c.data[("cluster", "id")].as_integer(),
+                                  c.data[("links", "candidates")]])
+        return {r[0]: (r[1], r[2] or []) for r in rows}
 
     def issue_records(self, issues: dict[int, issue_model.Issue]) -> dict[int, dict]:
         """The raw records behind `issues`, for a snapshot cache to serialize."""

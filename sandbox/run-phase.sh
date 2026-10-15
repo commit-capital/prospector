@@ -17,9 +17,13 @@ SENTINEL_TEST_FAIL=20
 SENTINEL_PATCH_CONFLICT=30
 SENTINEL_PATCH_UNREADABLE=40
 SENTINEL_NO_PLAN=50
+SENTINEL_SETUP_FAIL=60
 
 PHASE="${PHASE:?PHASE is required}"
 TEST_CMD="${TEST_CMD:-pnpm -s test}"
+# The profile's verify.test_setup — host-authored policy, never agent text —
+# set by the host for a phase whose TEST_CMD runs tests.
+TEST_SETUP="${TEST_SETUP:-}"
 PATCH_FILE="${PATCH_FILE:-}"
 # The host's sha256 of the patch it mounted. Docker's file sharing can hand a
 # container a stale or empty view of a file the host just wrote; the apply
@@ -30,6 +34,7 @@ PATCH_SHA256="${PATCH_SHA256:-}"
 PRE_PATCH_FILE="${PRE_PATCH_FILE:-}"
 PRE_PATCH_SHA256="${PRE_PATCH_SHA256:-}"
 EXCLUDE_FILE="${EXCLUDE_FILE:-}"
+COVERAGE_REQUEST="${COVERAGE_REQUEST:-}"
 SRC=/work/src
 
 # 1. Fail-closed isolation gate, before any PR code, every boot.
@@ -102,7 +107,18 @@ apply_pre_patch() {
 # blind agent, whose input includes attacker-controlled PR text, so the string
 # itself is untrusted and may name a sentinel.
 run_test_cmd() {
+  run_test_setup
   ( eval "$TEST_CMD" )
+}
+
+# What the repository's own test scripts run before the runner. A setup that
+# fails leaves no tree to test, so it exits its own sentinel: a harness fault,
+# never a test's verdict.
+run_test_setup() {
+  [ -n "$TEST_SETUP" ] || return 0
+  ( eval "$TEST_SETUP" ) && return 0
+  echo "the profile's test setup failed before any test ran: $TEST_SETUP" >&2
+  exit "$SENTINEL_SETUP_FAIL"
 }
 
 case "$PHASE" in
@@ -176,6 +192,28 @@ case "$PHASE" in
     [ "$rc" -eq 0 ] && exit 0
     [ "$rc" -eq "$SENTINEL_TEST_FAIL" ] && exit "$SENTINEL_TEST_FAIL"
     exit 1
+    ;;
+  coverage)
+    # Changed-line coverage: the PR's diff applied, the coverage provider
+    # Prospector fetched copied into the tree (its own dependencies nested
+    # under it, so its peer `vitest` resolves to the tree's), then TEST_CMD —
+    # the profile's runner over the related tests with coverage flags, built by
+    # the host, after its test setup. The tests' own exit is not the result: a failing test's
+    # execution still counts. Exit 0 means the trailer was printed.
+    apply_patch || exit "$SENTINEL_PATCH_CONFLICT"
+    [ -n "$COVERAGE_REQUEST" ] || { echo "coverage requires COVERAGE_REQUEST" >&2; exit 1; }
+    provider=node_modules/@vitest/coverage-v8
+    rm -rf "$provider" /tmp/cov
+    mkdir -p node_modules/@vitest \
+      && cp -r /coverage-tool/node_modules/@vitest/coverage-v8 "$provider" \
+      && cp -r /coverage-tool/node_modules "$provider/node_modules" \
+      || { echo "the coverage provider could not be installed into the tree" >&2; exit 1; }
+    run_test_cmd
+    [ -f /tmp/cov/coverage-final.json ] \
+      || { echo "the test run wrote no coverage report" >&2; exit 1; }
+    node /verify-coverage.mjs "$COVERAGE_REQUEST" /tmp/cov/coverage-final.json \
+      /tmp/cov/tests.json || exit 1
+    exit 0
     ;;
   *)
     echo "unknown phase: $PHASE" >&2

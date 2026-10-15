@@ -12,8 +12,9 @@ land. `problems` is the gate every rendering passes before it is proposed.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 
-from issue_triage import link_prs
+from issue_triage import link_prs, second_opinion
 from issue_triage.related_prs import RelatedPr
 from pipeline import describe_pr, settings
 
@@ -48,8 +49,9 @@ def title(issue: int, summary: str) -> str:
     return inert(f"fix: {summary}", TITLE_MAX) or f"fix: issue #{issue}"
 
 
-def commit_message(issue: int, summary: str) -> str:
-    return f"{title(issue, summary)}\n\nFixes #{issue}\n"
+def commit_message(issue: int, summary: str, co_authors: Sequence[str] = ()) -> str:
+    trailers = "".join(f"\nCo-authored-by: {c}" for c in co_authors)
+    return f"{title(issue, summary)}\n\nFixes #{issue}\n" + (f"{trailers}\n" if trailers else "")
 
 
 def _verification(result: dict, tests: list[str], test_cmd: str | None) -> list[str]:
@@ -107,6 +109,15 @@ def _related(issue: int, related: list[RelatedPr] | None) -> list[str]:
             *[f"- #{r['number']} ({r['state']}): {inert(r['title'], 160)}" for r in related]]
 
 
+def _credited(result: dict) -> list[str]:
+    credited = second_opinion.credit(result.get("second_opinion"))
+    if not credited:
+        return []
+    return ["", "These pull requests showed a case the first version of this fix missed; it "
+                "was revised to handle it. Thank you:",
+            *[f"- #{int(c['pr'])} by {inert(str(c['author']), 60)}" for c in credited]]
+
+
 _BOX_RE = re.compile(r"^\s*[-*]\s*\[[ xX]\]\s*(.+?)\s*$", re.MULTILINE)
 # A template checklist line the pipeline can answer, by the words in it, and
 # the fact that ticks it; the first match wins, a None fact keeps the line open,
@@ -152,13 +163,19 @@ def render(*, issue: int, result: dict, tests: list[str], base_sha: str, report_
                for c in (result.get("changes") or [])]
     model_list = ", ".join(sorted(set(models))) or "unrecorded"
     tier = (result.get("tier") or {}).get("tier")
+    boundary = result.get("boundary") or {}
+    crossings = boundary.get("crossings") or []
+    warnings = [*(["This change touches highest-risk code (tier 0)."] if tier == 0 else []),
+                *(["This change crosses a trust boundary."] if crossings else []),
+                *(["Its trust-boundary review did not finish."] if boundary.get("failed")
+                  else [])]
     blocks = {
         "summary": [
             f"- Issue #{issue} reports a defect in {settings.repo()}.",
             f"- Root cause, as the fixing agent read it: {inert(result.get('root_cause', ''))}",
             f"- This pull request: {inert(result.get('summary', ''))}",
         ],
-        "issue": [f"Fixes #{issue}", *_related(issue, related)],
+        "issue": [f"Fixes #{issue}", *_related(issue, related), *_credited(result)],
         "changes": changes or ["- (no change recorded)"],
         "verification": _verification(result, tests, test_cmd),
         "risks": [
@@ -172,6 +189,13 @@ def render(*, issue: int, result: dict, tests: list[str], base_sha: str, report_
             *[f"- The scope reviewer found it also changes, beyond the report: "
               f"{inert(item, 200)}"
               for r in (result.get("reviews") or []) for item in (r.get("unasked") or [])[:5]],
+            *(["- It crosses a trust boundary. Check each crossing against what the issue "
+               "asked for, and against who asked:"] if crossings else []),
+            *[f"  - {inert(c.get('kind', ''), 40)} ({inert(c.get('where', ''), 160)}"
+              f"{'' if c.get('requested') else ', not asked for by the report'}): "
+              f"{inert(c.get('what', ''))}" for c in crossings[:10]],
+            *(["- Its trust-boundary review did not finish: nothing has checked what this "
+               "change lets the code reach."] if boundary.get("failed") else []),
         ],
         "model": [f"- {model_list} (Anthropic Claude, via Claude Code), writing and "
                   "checking the change in an isolated sandbox."],
@@ -191,8 +215,7 @@ def render(*, issue: int, result: dict, tests: list[str], base_sha: str, report_
         "> [!NOTE]",
         "> Opened by Prospector's automated issue-fix pipeline. A maintainer reviews "
         "and decides; nothing here merges on its own.",
-        *(["", "> [!WARNING]", "> This change touches highest-risk code (tier 0). See Risks."]
-          if tier == 0 else []),
+        *(["", "> [!WARNING]", f"> {' '.join(warnings)} See Risks."] if warnings else []),
         "",
     ]
     boxes = _checklist(template, searched=related is not None, tests=tests, result=result)

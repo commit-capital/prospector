@@ -103,7 +103,7 @@ __OUTPUT__
 """
 
 
-def _clip(patch: str) -> str:
+def clip(patch: str) -> str:
     """The patch, dropping the middle when it is enormous; the head and tail are
     kept, since a smuggled edit sits at the end."""
     if len(patch) <= PATCH_HEAD_CHARS + PATCH_TAIL_CHARS:
@@ -166,7 +166,7 @@ def review(worktree: str, patch: str, *, lens: str, title: str, body: str,
         "__TEST_PATHS__": "\n".join(test_paths),
         "__EVIDENCE__": evidence.strip(),
         "__WORKTREE__": worktree,
-        "__PATCH__": _clip(patch),
+        "__PATCH__": clip(patch),
         "__OUTPUT__": _OUTPUT[lens],
     })
     try:

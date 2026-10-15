@@ -259,10 +259,11 @@ function DupGroupCard({ g }: { g: IssueDupGroup }) {
 }
 
 // The likely-fixed review list: the fix scan sees a probable fix but without a
-// confirmed fixer, so each row is a judgement call — the issue link opens
-// GitHub, and closing happens from the issue flyout's action bar.
+// confirmed fixer, so each row is a judgement call — a row click opens the
+// issue flyout, whose action bar closes it.
 function LikelyFixedSection({ items }: { items: IssueLikelyFixedItem[] }) {
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const { openIssue } = useIssueFlyout();
   if (items.length === 0) {
     return <div className="callout">No likely-fixed issues to review.</div>;
   }
@@ -272,14 +273,17 @@ function LikelyFixedSection({ items }: { items: IssueLikelyFixedItem[] }) {
       <tbody>
         {items.map((it) => (
           <Fragment key={it.number}>
-            <tr>
+            <tr className="rowlink" onClick={() => openIssue(it.number)}>
               <td className="mono"><IssueLink n={it.number} /></td>
               <td>
-                <button className="link-btn" onClick={() => setExpanded((s) => {
-                  const next = new Set(s);
-                  if (next.has(it.number)) next.delete(it.number); else next.add(it.number);
-                  return next;
-                })} title={expanded.has(it.number) ? "Hide the fix scan's reasoning" : "Show the fix scan's reasoning"}>
+                <button className="link-btn" onClick={(e) => {
+                  e.stopPropagation();
+                  setExpanded((s) => {
+                    const next = new Set(s);
+                    if (next.has(it.number)) next.delete(it.number); else next.add(it.number);
+                    return next;
+                  });
+                }} title={expanded.has(it.number) ? "Hide the fix scan's reasoning" : "Show the fix scan's reasoning"}>
                   {expanded.has(it.number) ? "▾" : "▸"}</button>{" "}
                 {it.title}
               </td>
@@ -423,7 +427,6 @@ const FIX_FILTERS: { key: string; label: string }[] = [
   { key: "pr-closed", label: "PR closed" },
   { key: "pr-merged", label: "PR merged" },
   { key: "failed", label: "Didn't finish" },
-  { key: "superseded", label: "Someone else's PR" },
   { key: "declined", label: "No fix" },
   { key: "any", label: "Any attempt" },
   { key: "none", label: "Never attempted" },
@@ -446,8 +449,8 @@ const STATE_FILTERS: { key: string; label: string }[] = [
 ];
 
 function AllIssuesTable({
-  rows, total, page, q, sortKey, sortDir, loading, dispFilter, stateFilter, fixFilter,
-  onQ, onPage, onSort, onDispFilter, onStateFilter, onFixFilter, filterSpec, onFilterSpecChange,
+  rows, total, page, q, sortKey, sortDir, loading, dispFilter, stateFilter, fixFilter, maintainerFilter,
+  onQ, onPage, onSort, onDispFilter, onStateFilter, onFixFilter, onMaintainerFilter, filterSpec, onFilterSpecChange,
   selected, results, onToggle, onToggleAll, closeBar,
 }: {
   rows: IssueRow[];
@@ -460,12 +463,14 @@ function AllIssuesTable({
   dispFilter: string;
   stateFilter: string;
   fixFilter: string;
+  maintainerFilter: boolean;
   onQ: (q: string) => void;
   onPage: (page: number) => void;
   onSort: (key: IssueSortKey) => void;
   onDispFilter: (d: string) => void;
   onStateFilter: (s: string) => void;
   onFixFilter: (f: string) => void;
+  onMaintainerFilter: (on: boolean) => void;
   filterSpec: IssueFilterSpec;
   onFilterSpecChange: (next: IssueFilterSpec) => void;
   selected: Set<number>;
@@ -541,6 +546,10 @@ function AllIssuesTable({
           title="Filter by the auto-fix factory's status for each issue">
           {FIX_FILTERS.map((f) => <option key={f.key} value={f.key}>{f.label}</option>)}
         </select>
+        <label className="muted small" title="Only issues a maintainer filed — the ones the auto-fix worker takes first">
+          <input type="checkbox" checked={maintainerFilter} onChange={(e) => onMaintainerFilter(e.target.checked)} />
+          Filed by a maintainer
+        </label>
         <input className="author-in" placeholder="label contains" value={filterSpec.labels ?? ""}
           title="Filter by GitHub label (substring match)"
           onChange={(e) => onFilterSpecChange({ ...filterSpec, labels: e.target.value || undefined })} />
@@ -611,7 +620,8 @@ function AllIssuesTable({
                     )}
                   </td>
                   <td>{row.title}{row.is_dup && row.canonical != null && <span className="muted small" title={`Duplicate of #${row.canonical}`}> · dup of <IssueLink n={row.canonical} /></span>}</td>
-                  <td className="muted small"><AuthorHover author={row.author} trusted={row.trusted_author} stats={row.author_stats} fallback="" /></td>
+                  <td className="muted small"><AuthorHover author={row.author} trusted={row.trusted_author} stats={row.author_stats} fallback="" />
+                    {row.maintainer && <> <span className="chip chip-muted sm">maintainer</span></>}</td>
                   <td className="mono small">{row.pain != null ? row.pain.toFixed(2) : "—"}</td>
                   <td><ReproChip grade={row.repro_grade} /></td>
                   <td><DispositionChip d={row.disposition} /></td>
@@ -651,7 +661,7 @@ export default function Issues() {
   // ?dup=<cluster> deep-links to a duplicate-triage card: any load or in-app
   // navigation carrying that param lands on the Close-out tab (where the card
   // scrolls into view).
-  const [sp] = useSearchParams();
+  const [sp, setSp] = useSearchParams();
   const dupLinked = sp.get("dup") != null;
   const [groups, setGroups] = useState<IssueDupGroup[]>([]);
   const [likelyItems, setLikelyItems] = useState<IssueLikelyFixedItem[]>([]);
@@ -671,12 +681,16 @@ export default function Issues() {
   const fixFromUrl = fixParam !== null && FIX_FILTERS.some((f) => f.key === fixParam)
     ? fixParam : ISSUE_TABLE_FIRST_PAGE.fix;
   const [fixFilter, setFixFilter] = useState(fixFromUrl);
+  // ?maintainer=1 keeps the issues a maintainer filed (gates.priority_author).
+  const maintainerFromUrl = sp.get("maintainer") === "1";
+  const [maintainerFilter, setMaintainerFilter] = useState(maintainerFromUrl);
   // Per-column filters (author/pain/repro/subsystem/dups/linked-PRs/labels) —
   // the issue-side analog of PR Explorer's filter spec (#494).
   const [filterSpec, setFilterSpec] = useState<IssueFilterSpec>(ISSUE_TABLE_FIRST_PAGE.filterSpec);
   const tableRead = useMemo(() => issueTableRead({
-    q, sortKey, sortDir, disposition: dispFilter, state: stateFilter, fix: fixFilter, page, filterSpec,
-  }), [q, sortKey, sortDir, dispFilter, stateFilter, fixFilter, page, filterSpec]);
+    q, sortKey, sortDir, disposition: dispFilter, state: stateFilter, fix: fixFilter,
+    maintainer: maintainerFilter, page, filterSpec,
+  }), [q, sortKey, sortDir, dispFilter, stateFilter, fixFilter, maintainerFilter, page, filterSpec]);
   // A first page the tab prefetch already read paints at once; the effect
   // below reads it again.
   const [rows, setRows] = useState<IssueRow[]>(() => peekRead(tableRead)?.items ?? []);
@@ -732,6 +746,18 @@ export default function Issues() {
       setIssueResults({});
     }
     if (sp.get("dup") == null) setTab("all");
+  }
+
+  const [prevMaintainerParam, setPrevMaintainerParam] = useState(maintainerFromUrl);
+  if (maintainerFromUrl !== prevMaintainerParam) {
+    setPrevMaintainerParam(maintainerFromUrl);
+    if (maintainerFromUrl !== maintainerFilter) {
+      setLoadingIssues(true);
+      setMaintainerFilter(maintainerFromUrl);
+      setPage(1);
+      setSelected(new Set());
+      setIssueResults({});
+    }
   }
 
   // An in-app navigation can add ?dup= while the page is already mounted
@@ -868,11 +894,17 @@ export default function Issues() {
           dispFilter={dispFilter}
           stateFilter={stateFilter}
           fixFilter={fixFilter}
+          maintainerFilter={maintainerFilter}
           onQ={(next) => { setLoadingIssues(true); setQ(next); setPage(1); setSelected(new Set()); setIssueResults({}); }}
           onPage={(next) => { setLoadingIssues(true); setPage(next); setSelected(new Set()); setIssueResults({}); }}
           onDispFilter={(d) => { setLoadingIssues(true); setDispFilter(d); setPage(1); setSelected(new Set()); setIssueResults({}); }}
           onStateFilter={(s) => { setLoadingIssues(true); setStateFilter(s); setPage(1); setSelected(new Set()); setIssueResults({}); }}
           onFixFilter={(f) => { setLoadingIssues(true); setFixFilter(f); setPage(1); setSelected(new Set()); setIssueResults({}); }}
+          onMaintainerFilter={(on) => {
+            setLoadingIssues(true); setMaintainerFilter(on); setPage(1); setSelected(new Set()); setIssueResults({});
+            setSp((prev) => { if (on) prev.set("maintainer", "1"); else prev.delete("maintainer"); return prev; },
+              { replace: true });
+          }}
           onSort={clickSort}
           filterSpec={filterSpec}
           onFilterSpecChange={changeFilterSpec}

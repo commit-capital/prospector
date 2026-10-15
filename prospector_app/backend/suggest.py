@@ -42,7 +42,7 @@ def _secret_leak_location(rec: Pr) -> str | None:
     """A safe '`VAR` in `file`' description of a committed credential, parsed
     from the threat evidence (`<file>: <VAR><sep><value>`) WITHOUT echoing the
     value. Falls back to 'a credential in `file`' when no safe name is present."""
-    if "secret-leak" not in rec.threat_signatures:
+    if not gates.secret_leak_blocks(rec):
         return None
     threat = rec.section("threat") or {}
     ev = (threat.get("detail") or {}).get("secret-leak") or ""
@@ -175,12 +175,7 @@ def _unanalyzed_card(rec: Pr) -> dict:
 
 def _suggest_inner(rec: Pr, disposition: str | None = None,
                    human_merge: dict | None = None) -> dict:
-    # Dependency bumps are out of the pipeline's scope (gates.is_dependabot_bump):
-    # their supply-chain risk is in the upgraded package — reviewed on the PR by
-    # Socket — not the diff, which is all the agent can see. There's no cluster,
-    # disposition, or triage action to offer here; the author lands it upstream.
-    if disposition is None and gates.is_dependabot_bump(
-            rec.author, (rec.section("summary") or {}).get("paths")):
+    if disposition is None and gates.bump_exempt(rec):
         return {"action": "OUT_OF_SCOPE", "label": "Out of scope — dependency bump",
                 "tone": "muted",
                 "rationale": ("Dependabot dependency bump. The pipeline defers these: the "
@@ -257,6 +252,11 @@ def _suggest_inner(rec: Pr, disposition: str | None = None,
         return {"action": "CLOSE_STALE", "label": "Close — stale", "tone": "muted",
                 "rationale": rec.rationale or "Drifted/abandoned with no clear path.",
                 "accept": models.CloseAccept(action="CLOSE_STALE", tags=["stale", "agent-suggested"])}
+
+    if d == "close-wontfix":
+        return {"action": "CLOSE_WONTFIX", "label": "Close — won't fix", "tone": "muted",
+                "rationale": rec.rationale or "The change itself is the wrong approach.",
+                "accept": models.CloseAccept(action="CLOSE_WONTFIX", tags=["wontfix", "agent-suggested"])}
 
     if d == "close-oversized":
         return {"action": "CLOSE_OVERSIZED", "label": "Close — too big (break up)", "tone": "muted",

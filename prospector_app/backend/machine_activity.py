@@ -2,7 +2,7 @@
 
 `summarize` folds plain data: the PR, issue and alert runs ledgers (each row
 naming the machine that wrote it, `storekit.stamp_host`), the agent ledger's
-spend, the machine roster, and this app's own jobs. A row lands in one bucket:
+cost at API prices, the machine roster, and this app's own jobs. A row lands in one bucket:
 a lane (security, verify, autofix, issue fix) counted by outcome, a background
 pass counted by kind, or a job a person started. `activity` gathers those
 inputs from the app's cached reads.
@@ -11,14 +11,12 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Literal, TypedDict
+from typing import Literal, TypedDict
 
 from pipeline import capacity
 from pipeline import storekit
 from pipeline import worker_health
-
-if TYPE_CHECKING:
-    from prospector_app.backend.jobs import JobView
+from prospector_app.backend.jobs import JobStatus, JobView
 
 Lane = Literal["security", "verify", "autofix", "issue_fix"]
 
@@ -61,10 +59,13 @@ class Background(TypedDict):
 
 
 class JobRun(TypedDict):
+    """The jobs of one kind a machine ran: how many stand at each status, the
+    latest one and the earliest still running, by this app's job id."""
     label: str
     kind: str
-    status: str
+    counts: dict[JobStatus, int]
     job_id: int | None
+    running_id: int | None
 
 
 class Current(TypedDict):
@@ -85,7 +86,7 @@ class MachineActivity(TypedDict):
     lanes: dict[Lane, LaneActivity]
     background: list[Background]
     jobs: list[JobRun]
-    spend_usd: float
+    cost_usd: float
 
 
 class ActivityView(TypedDict):
@@ -105,7 +106,7 @@ def _when(raw: dict) -> datetime | None:
     return storekit.parse_ts(raw.get("finished") or raw.get("started"))
 
 
-def _outcome(lane: Lane, stats: dict) -> str:
+def outcome(lane: Lane, stats: dict) -> str:
     if lane == "security":
         return str(stats.get("verdict") or "no verdict")
     if lane == "verify":
@@ -131,7 +132,7 @@ def _number(lane: Lane, raw: dict) -> int | None:
 def _blank(host: str, local: str) -> MachineActivity:
     return {"host": host, "local": host == local, "online": False, "offline_since": None,
             "stalled": False, "has_worker": False, "tripped": [], "current": {"pr": None, "issue": None},
-            "lanes": {}, "background": [], "jobs": [], "spend_usd": 0.0}
+            "lanes": {}, "background": [], "jobs": [], "cost_usd": 0.0}
 
 
 def _from_roster(m: dict, local: str, now: datetime) -> MachineActivity:
@@ -165,14 +166,16 @@ def _lane(outcomes: dict[str, list[int | None]]) -> LaneActivity:
                          for label, ns in ordered]}
 
 
-def summarize(rows: list[tuple[str, dict]], agent_runs: list[dict], roster: dict,
+def summarize(rows: list[tuple[str, dict]], cost: dict[str, float], roster: dict,
               local_jobs: list[JobView], job_phases: dict[tuple[str, str], tuple[str, str]],
               now: datetime) -> ActivityView:
     """Every machine's past `WINDOW_HOURS`: `rows` are `(ledger, record)`
     pairs from the PR, issue and alert ledgers, `job_phases` maps a Control-tab
     job's `(ledger, phase)` to its `(kind, label)`, and `local_jobs` are this
     app's job records, which stand in for the ledger's jobs on the machine
-    serving it."""
+    serving it. `cost` is each host's agent runs over the window priced at API
+    rates (the CLI's `total_cost_usd`, notional on a subscription account),
+    summed by the store (`Store.agent_cost`)."""
     cutoff = now - timedelta(hours=WINDOW_HOURS)
     local = str(roster.get("local") or "")
     machines: dict[str, MachineActivity] = {
@@ -194,7 +197,7 @@ def summarize(rows: list[tuple[str, dict]], agent_runs: list[dict], roster: dict
             lane = LANE_PHASES[phase]
             stats = s if isinstance(s := raw.get("stats"), dict) else {}
             (lanes.setdefault(host, {}).setdefault(lane, {})
-             .setdefault(_outcome(lane, stats), []).append(_number(lane, raw)))
+             .setdefault(outcome(lane, stats), []).append(_number(lane, raw)))
         elif phase in BACKGROUND:
             background.setdefault(host, Counter())[BACKGROUND[phase]] += 1
         elif phase in WORKER_BACKGROUND and trigger in WORKER_TRIGGERS:
@@ -202,7 +205,8 @@ def summarize(rows: list[tuple[str, dict]], agent_runs: list[dict], roster: dict
         elif (ledger, phase) in job_phases and trigger not in WORKER_TRIGGERS:
             kind, label = job_phases[(ledger, phase)]
             jobs.setdefault(host, {}).setdefault(
-                label, {"label": label, "kind": kind, "status": "done", "job_id": None})
+                label, {"label": label, "kind": kind, "counts": {"done": 1},
+                        "job_id": None, "running_id": None})
         else:
             continue
         machines.setdefault(host, _blank(host, local))
@@ -220,24 +224,28 @@ def summarize(rows: list[tuple[str, dict]], agent_runs: list[dict], roster: dict
     if mine:
         machines.setdefault(local, _blank(local, local))
     if local in machines:
-        machines[local]["jobs"] = [
-            {"label": j["label"], "kind": j["kind"], "status": j["status"], "job_id": j["id"]}
-            for j in sorted(mine, key=lambda j: j["id"])] if mine else []
+        machines[local]["jobs"] = _job_runs(mine)
 
-    spend: dict[str, float] = {}
-    for run in agent_runs:
-        host = run.get("host")
-        cost = run.get("cost_usd")
-        when = _when(run)
-        if (host in machines and isinstance(cost, (int, float))
-                and when is not None and cutoff <= when <= now):
-            spend[str(host)] = spend.get(str(host), 0.0) + cost
-    for host, usd in spend.items():
-        machines[host]["spend_usd"] = round(usd, 2)
+    for host, usd in cost.items():
+        if host in machines:
+            machines[host]["cost_usd"] = round(usd, 2)
 
     ordered = sorted(machines.values(),
                      key=lambda m: (m["host"] == UNATTRIBUTED, not m["online"], m["host"]))
     return {"local": local, "window_hours": WINDOW_HOURS, "machines": ordered}
+
+
+def _job_runs(local_jobs: list[JobView]) -> list[JobRun]:
+    """This app's jobs, one entry per kind in the order each kind first ran."""
+    by_kind: dict[str, JobRun] = {}
+    for job in sorted(local_jobs, key=lambda j: j["id"]):
+        run = by_kind.setdefault(job["kind"], {"label": job["label"], "kind": job["kind"],
+                                               "counts": {}, "job_id": None, "running_id": None})
+        run["counts"][job["status"]] = run["counts"].get(job["status"], 0) + 1
+        run["job_id"] = job["id"]
+        if job["status"] == "running" and run["running_id"] is None:
+            run["running_id"] = job["id"]
+    return list(by_kind.values())
 
 
 def _job_phases() -> dict[tuple[str, str], tuple[str, str]]:
@@ -262,5 +270,6 @@ def activity() -> ActivityView:
     for ledger, records in (("pr", data.runs(since=since)), ("issue", issues.cached_runs()),
                             ("alert", alert_data.runs())):
         rows.extend((ledger, r.raw) for r in records if isinstance(r, storekit.PhaseRun))
-    return summarize(rows, data.store().agent_runs(since), machines.roster(),
-                     jobs.list_jobs(), _job_phases(), now)
+    cost = data.store().agent_cost(since, "host", until=now.isoformat())
+    return summarize(rows, {h: usd for h, usd in cost.items() if h is not None},
+                     machines.roster(), jobs.list_jobs(), _job_phases(), now)

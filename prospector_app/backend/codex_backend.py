@@ -80,19 +80,13 @@ _PROFILE = "chat"
 _CODEX_CONTEXT = """
 
 ## Codex cockpit
-You are running through the Codex CLI. The operating manual's references to
-Claude Code's cockpit describe this app's provider-independent boundary. Run
-the documented commands with the shell tool exactly as written. Commands not
-granted by the cockpit remain inside the network-disabled sandbox. A session
-that grants resubmit lets that sandbox write to the worktrees `resubmit
-prepare` makes and to the body-file directory; the rest of the Prospector
-checkout is read-only. An approval or network denial means the action did not
-run. Do not ask the operator for a Codex approval prompt; this embedded surface
-has none.
-
-Use filesystem write tools only for a `--body-file` in the directory the manual
-names, and for a resubmit the operator confirmed,
-inside the worktree printed by `resubmit prepare`.
+You run in the Codex CLI. Run the documented commands with the shell tool
+exactly as written; any other command runs in a network-disabled sandbox. That
+sandbox reads the whole filesystem, so the manual's read limits do not hold:
+never read `.env` or a private key. Write only where the manual says. Its
+`don't ask mode`, `/permissions`, and Claude Code modes do not apply: an
+approval or network denial means the action did not run, and there is no
+approval prompt to ask the operator for.
 """.rstrip()
 
 _OUTPUT_HEADING = "\n# Output\n"

@@ -28,7 +28,7 @@ _ENUMS = {
     "safety": {"GREEN", "YELLOW", "RED", "not-run"},
     "drift": {"applicable", "already-fixed", "conflicts"},
     "disposition": {"merge", "request-changes", "close-dup", "close-fixed",
-                    "close-stale", "needs-human"},
+                    "close-wontfix", "close-stale", "needs-human"},
     "ci": {"passing", "failing", "unknown"},
     "threat": {"malicious", "suspicious", "clear", "unscanned"},
     "greptile_severity": {"defects", "nits", "clean"},
@@ -111,8 +111,8 @@ def extract_spec(text: str) -> dict:
         return {}
 
 
-# Greptile-provider query fields, spliced into the prompt only when Greptile is the
-# configured review provider (the braces are doubled to survive str.format).
+# Greptile query fields, spliced into the prompt only when Greptile is an
+# active reviewer (the braces are doubled to survive str.format).
 _GREPTILE_FIELD_DOCS = """- greptile_stale: boolean — true = Greptile reviewed an older commit (score predates author's post-review fixes); false = Greptile reviewed the current head
 - greptile_severity: defects|nits|clean — what Greptile's own review text implies about a sub-5 score: "defects" = it flagged a substantive bug/security/logic issue, "nits" = only style-level feedback, "clean" = it left no findings at all
 - greptile: {{"op": "<|<=|==|>=|>", "value": <number>}} — the review confidence score
@@ -137,7 +137,7 @@ Output ONLY a single JSON object, no prose. Allowed keys:
 - q (string), author (string), cluster (int)
 - safety: one of GREEN|YELLOW|RED|not-run   ("no security audit"/"not reviewed" => not-run)
 - drift: applicable|already-fixed|conflicts
-- disposition: merge|request-changes|close-dup|close-fixed|close-stale|needs-human
+- disposition: merge|request-changes|close-dup|close-fixed|close-wontfix|close-stale|needs-human
 - ci: passing|failing|unknown
 - threat: malicious|suspicious|clear|unscanned   (supply-chain threat-scan verdict; unscanned = no scan of the current head)
 - conflicts/has_tests/trusted_author/clean: booleans

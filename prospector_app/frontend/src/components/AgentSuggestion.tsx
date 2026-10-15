@@ -135,8 +135,8 @@ export function AgentSuggestion({ pr, suggestion, compact = false, commentSameAs
       </div>
 
       {manualMerge && humanMerge && (
-        <div className="sug-manual" title="The upstream repo's branch ruleset requires a code owner to approve/merge these paths.">
-          ⛔ <b>Requires human merge — touches CODEOWNERS-gated code.</b>{" "}
+        <div className="sug-manual" title="These files are protected: a code owner has to approve and merge changes to them.">
+          ⛔ <b>A code owner must merge this — it changes protected files.</b>{" "}
           Ping {humanMerge.owners.join(" + ")} to merge.
           <div className="sug-manual-paths">{humanMerge.paths.slice(0, 6).join(" · ")}{humanMerge.paths.length > 6 ? " …" : ""}</div>
         </div>

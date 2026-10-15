@@ -15,6 +15,7 @@ from prospector_app.backend import data
 def test_close_actions_map_to_close_with_reason():
     for action, reason in [("CLOSE_DUP", "duplicate"), ("CLOSE_FIXED", "already-fixed"),
                            ("CLOSE_STALE", "stale"), ("CLOSE_OVERSIZED", "oversized"),
+                           ("CLOSE_WONTFIX", "won't-fix"),
                            ("CLOSE", "manual")]:
         ev = {"kind": "execute", "action": action}
         assert activity.canonical_kind(ev) == "close"

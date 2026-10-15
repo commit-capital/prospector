@@ -11,7 +11,7 @@ from prospector_app.backend import models
 from prospector_app.backend import pr_checks
 from prospector_app.backend import service
 from prospector_app.backend import suggest
-from pipeline.testsupport import reviews_section, threat_section
+from pipeline.testsupport import bump_section, reviews_section, threat_section
 
 HEAD = "abc123"
 # Anchored to the real "now" so the verification window never lapses as
@@ -124,9 +124,7 @@ class TestSuggest:
 
     def test_dependabot_bump_is_out_of_scope(self):
         rec = _pr(n=7750)
-        rec.raw["meta"]["author"] = "dependabot[bot]"
-        rec.raw["summary"] = {"paths": ["pnpm-lock.yaml", "package.json"],
-                              "checked_at": NOW, "against_head_sha": HEAD}
+        rec.raw["threat"] = bump_section(HEAD)
         s = suggest.suggest_for_record(rec)
         assert s["action"] == "OUT_OF_SCOPE" and s["accept"] is None
 
@@ -134,9 +132,7 @@ class TestSuggest:
         # the hallucinated close-stale must not surface — deferred wins, even
         # before the analysis-staleness branch.
         rec = _pr(n=7742, analysis=_analysis("close-stale", against_head_sha="OLD"))
-        rec.raw["meta"]["author"] = "dependabot[bot]"
-        rec.raw["summary"] = {"paths": [".github/workflows/pr.yml"],
-                              "checked_at": NOW, "against_head_sha": HEAD}
+        rec.raw["threat"] = bump_section(HEAD)
         assert suggest.suggest_for_record(rec)["action"] == "OUT_OF_SCOPE"
 
     def test_dependabot_touching_source_keeps_its_real_disposition(self):
@@ -285,12 +281,12 @@ class TestSafetySummary:
     def test_head_moved_green_says_stale(self):
         s = service._safety_summary(_pr(security=_green(against_head_sha="OLD")))
         assert s["headline"] == "Likely safe at last review — no concerns flagged"
-        assert "earlier head" in s["detail"]
+        assert "changed since" in s["detail"]
 
     def test_stale_red_keeps_risk_level_with_note(self):
         sec = _green(verdict="RED", findings=[{"title": "x"}], against_head_sha="OLD")
         s = service._safety_summary(_pr(security=sec))
-        assert s["level"] == "risk" and "earlier head" in s["detail"]
+        assert s["level"] == "risk" and "changed since" in s["detail"]
         assert "still blocks merge" in s["detail"]
 
     def test_unreviewed_pr_unchanged(self):
@@ -313,20 +309,20 @@ class TestChecks:
     def test_stale_security_marked(self):
         rec = _pr(security=_green(against_head_sha="OLD"))
         c = pr_checks.checks_for_record(rec)
-        sec = next(x for x in c["checks"] if x["name"] == "Deep security review")
+        sec = next(x for x in c["checks"] if x["name"] == "Security review")
         assert sec["status"] == "warn" and "STALE" in sec["detail"]
 
     def test_an_old_security_review_at_the_current_head_passes(self):
         old = "2026-01-05T00:00:00+00:00"
         rec = _pr(security=_green(checked_at=old))
         c = pr_checks.checks_for_record(rec, today="2026-07-15")
-        sec = next(x for x in c["checks"] if x["name"] == "Deep security review")
+        sec = next(x for x in c["checks"] if x["name"] == "Security review")
         assert sec["status"] == "pass" and sec["at"] == old
 
     def test_a_red_at_an_earlier_head_fails_and_says_it_blocks(self):
         rec = _pr(security=_green(verdict="RED", against_head_sha="OLD"))
         c = pr_checks.checks_for_record(rec)
-        sec = next(x for x in c["checks"] if x["name"] == "Deep security review")
+        sec = next(x for x in c["checks"] if x["name"] == "Security review")
         assert sec["status"] == "fail" and "blocks merge" in sec["detail"]
 
     def test_an_old_verification_names_the_days(self):
@@ -343,7 +339,7 @@ class TestChecks:
         rec = _pr(security=_green(), verify=_verified(outcome="regressed", checked_at=old))
         c = pr_checks.checks_for_record(rec)
         ver = next(x for x in c["checks"] if x["key"] == "verify")
-        assert ver["status"] == "fail" and "blocks merge until a re-verify" in ver["detail"]
+        assert ver["status"] == "fail" and "blocks merge until the tests are re-run" in ver["detail"]
 
 
 class TestServiceRows:
@@ -840,3 +836,48 @@ class TestVerifyAndReversible:
         from prospector_app.backend import decisions
         body = decisions.default_comment(models.CloseAction(action="CLOSE_FIXED"))
         assert "appears" in body and "reopen" in body  # honest hedge, no fabricated commit
+
+
+class TestPrDetailLinkedIssueState:
+    def _stub_live(self, monkeypatch):
+        monkeypatch.setattr(service, "_ci_checks", lambda sha: [])
+        monkeypatch.setattr(service, "live_changed_paths", lambda n: None)
+
+    def test_linked_issues_carry_their_stored_state(self, patched, monkeypatch, tmp_path):
+        from issue_triage import issue_store
+        from prospector_app.backend import issues
+        monkeypatch.setattr(issues, "STORE_ROOT", tmp_path)
+        st = issue_store.IssueStore(tmp_path)
+        st.create_issue(7, {"title": "t", "state": "closed", "state_reason": "not_planned",
+                            "author": "al", "created_at": NOW, "updated_at": NOW})
+        linked = [{"issue": 7, "pain": None, "how": "explicit"},
+                  {"issue": 8, "pain": None, "how": "explicit"}]
+        patched({1: _pr(analysis=_analysis(), security=_green(),
+                        issues={"linked": linked, "checked_at": NOW})})
+        service.data.prs()[1].raw["meta"]["body"] = ""
+        self._stub_live(monkeypatch)
+
+        row = service.pr_detail(1)
+
+        assert row["issues"] == [
+            {"issue": 7, "pain": None, "how": "explicit",
+             "state": "closed", "state_reason": "not_planned"},
+            {"issue": 8, "pain": None, "how": "explicit"}]
+        assert row["live_refresh_failed"] == []
+
+    def test_issue_store_failure_degrades_to_bare_links(self, patched, monkeypatch):
+        from prospector_app.backend import issues
+        linked = [{"issue": 7, "pain": None, "how": "explicit"}]
+        patched({1: _pr(analysis=_analysis(), security=_green(),
+                        issues={"linked": linked, "checked_at": NOW})})
+        service.data.prs()[1].raw["meta"]["body"] = ""
+        self._stub_live(monkeypatch)
+
+        def boom(numbers):
+            raise RuntimeError("issue store unreachable")
+        monkeypatch.setattr(issues, "issue_states", boom)
+
+        row = service.pr_detail(1)
+
+        assert row["issues"] == linked
+        assert "issue_states" in row["live_refresh_failed"]

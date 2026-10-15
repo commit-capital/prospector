@@ -23,7 +23,7 @@ import json
 import os
 from collections.abc import Callable, Sequence
 
-from issue_triage import lane_check
+from issue_triage import intake_audit, lane_check
 from pipeline import authoring, headless_agent, profile, verify_driver
 
 # The reported defect is embedded JSON-encoded, its body cut to this so a long
@@ -80,9 +80,10 @@ or {"give_up": "<why>", "kind": "needs-live-service|insufficient-detail|cannot-i
 
 
 def report_block(title: str, body: str) -> str:
-    """The reported defect as a JSON object for the prompt, its body cut to
-    REPORT_MAX."""
-    return json.dumps({"title": title, "body": body[:REPORT_MAX]})
+    """The reported defect as GitHub shows it (`intake_audit.visible`), as a
+    JSON object for the prompt, its body cut to REPORT_MAX."""
+    return json.dumps({"title": intake_audit.visible(title),
+                       "body": intake_audit.visible(body)[:REPORT_MAX]})
 
 
 def _test_paths() -> str:

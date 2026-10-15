@@ -8,7 +8,7 @@ import pytest
 
 from pipeline import store as S
 from pipeline.storekit import now as _now
-from pipeline.testsupport import greptile_entry, reviews_section
+from pipeline.testsupport import bump_section, greptile_entry, reviews_section
 from prospector_app.backend import data, rereview_hunt
 
 HEAD = "a" * 40
@@ -69,6 +69,7 @@ def test_a_fresh_verdict_a_young_head_or_red_ci_is_left_alone(store, monkeypatch
     store.save_pr(_pr(2, updated=datetime.now(timezone.utc).isoformat()))
     store.save_pr(_pr(3, ci="failing"))
     store.save_pr(_pr(4, mergeable=False))
+    store.save_pr({**_pr(5), "threat": bump_section(HEAD)})
     data.refresh()
     assert rereview_hunt.candidates() == []
 

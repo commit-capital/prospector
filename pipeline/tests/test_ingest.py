@@ -59,6 +59,17 @@ class TestMetaFromGh:
         assert meta["state"] == "open"
         assert meta["draft"] is False
 
+    def test_records_base_and_head_refs(self):
+        pr = dict(GH_PR, head={"sha": "deadbeef", "ref": "layer-2",
+                               "repo": {"full_name": "test-owner/test-repo"}},
+                  base={"ref": "layer-1"})
+        meta = ingest.meta_from_gh(pr)
+        assert (meta["base"], meta["head_ref"], meta["head_repo"]) == (
+            "layer-1", "layer-2", "test-owner/test-repo")
+
+    def test_deleted_head_repo_reads_none(self):
+        assert ingest.meta_from_gh(dict(GH_PR, head={"sha": "d", "repo": None}))["head_repo"] is None
+
     def test_merged_state(self):
         merged = dict(GH_PR, state="closed", merged_at="2026-06-01T00:00:00Z")
         assert ingest.meta_from_gh(merged)["state"] == "merged"
@@ -73,6 +84,10 @@ class TestMetaFromGh:
         meta = ingest.meta_from_gh(GH_PR)
         assert meta["comments"] is None
         assert meta["reactions_total"] is None
+
+    def test_records_whether_maintainers_may_push(self):
+        assert ingest.meta_from_gh(dict(GH_PR, maintainer_can_modify=True))["maintainer_can_modify"] is True
+        assert ingest.meta_from_gh(GH_PR)["maintainer_can_modify"] is None
 
     def test_reactions_without_total_count_is_none(self):
         pr = dict(GH_PR, reactions={"url": "https://api.github.com/..."})
@@ -169,6 +184,25 @@ class TestIssueLinks:
         assert by_pr[5002] == [{"issue": 42, "pain": 0.7, "how": "subsystem"}]
         # issue 44 has no candidate PRs → it links to nothing
         assert 44 not in {e["issue"] for links in by_pr.values() for e in links}
+
+    def test_load_reads_only_each_issues_cluster_and_candidates(self, tmp_path, monkeypatch):
+        """Linking projects two fields server-side; it never pulls the issue
+        records themselves (bodies, scans, fix runs)."""
+        from issue_triage import issue_store
+        st = issue_store.IssueStore(tmp_path)
+        st.create_issue(42, {"title": "crash", "state": "open", "updated_at": "T",
+                             "body": "x" * 5000}).set_links([{"pr": 10, "how": "subsystem"}])
+        st.create_issue(43, {"title": "slow", "state": "open", "updated_at": "T"})
+        cl = st.create_issue_cluster(9, "crashes")
+        cl.set_members([42])
+        cl.set_pain(0.4)
+        monkeypatch.setattr(st, "all_issues",
+                            lambda **kw: pytest.fail("linking read whole issue records"))
+
+        assert st.link_rows() == {42: (9, [{"pr": 10, "how": "subsystem"}]), 43: (None, [])}
+        by_pr = ingest.load_issue_links(st, prs=[{"number": 11, "body": "Fixes #43"}])
+        assert by_pr == {10: [{"issue": 42, "pain": 0.4, "how": "subsystem"}],
+                         11: [{"issue": 43, "pain": None, "how": "explicit"}]}
 
     def test_live_pr_body_reference_does_not_wait_for_issue_reingest(self, tmp_path):
         from issue_triage import issue_store
@@ -354,6 +388,16 @@ class TestUpsertAll:
         assert rec.ci == "passing"
         assert rec.mergeable is True
 
+    def test_maintainer_edits_come_from_live_facts_and_are_kept(self, tmp_path):
+        st = Store(tmp_path)
+        with st.batch():
+            ingest._upsert_all(st, [GH_PR], issue_links={}, existing_prs={},
+                               live_facts={5001: {"maintainer_can_modify": False}})
+        assert st.load_pr(5001).maintainer_can_modify is False
+        with st.batch():
+            ingest._upsert_all(st, [GH_PR], issue_links={}, existing_prs=st.all_prs())
+        assert st.load_pr(5001).maintainer_can_modify is False
+
     def test_ignores_batched_facts_for_a_different_head(self, tmp_path):
         st = Store(tmp_path)
         facts = {
@@ -434,10 +478,10 @@ class TestTargetedIngest:
         assert rec.greptile_reviewed_sha == "s2"
         assert store.runs()[-1].raw["stats"]["upserted"] == 1
 
-    def test_refresh_stores_every_reviewer_regardless_of_policy(self, tmp_path, monkeypatch):
+    def test_refresh_stores_every_reviewer_regardless_of_policy(self, tmp_path, monkeypatch, active_reviewers):
         # Detection needs the data, so a reviewer's entry is stored even when the
         # policy does not gate on it.
-        monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "none")
+        active_reviewers()
         store = Store(tmp_path)
         b = dict(GH_PR, number=7003, head={"sha": "s3"})
         monkeypatch.setattr(ingest, "fetch_pr", lambda n: b)
@@ -449,15 +493,14 @@ class TestTargetedIngest:
         rec = store.load_pr(7003)
         assert rec.greptile == 4 and rec.ci == "passing"
 
-    def test_refresh_falls_back_to_rest_ci_without_a_feed(self, tmp_path, monkeypatch):
+    def test_refresh_records_unknown_ci_without_a_feed(self, tmp_path, monkeypatch):
         store = Store(tmp_path)
         b = dict(GH_PR, number=7004, head={"sha": "s4"})
         monkeypatch.setattr(ingest, "fetch_pr", lambda n: b)
         monkeypatch.setattr(ingest, "load_issue_links", lambda **_: {})
-        monkeypatch.setattr(ingest, "gh_ci_status", lambda sha: "failing")
         ingest.refresh_prs(store, [7004])
         rec = store.load_pr(7004)
-        assert rec.ci == "failing" and rec.reviews is None
+        assert rec.ci == "unknown" and rec.reviews is None
 
     def test_main_prs_and_new_refreshes_only_absent_requested(self, tmp_path, monkeypatch):
         store = Store(tmp_path)

@@ -35,6 +35,7 @@ from prospector_app.backend import safety_guard
 from prospector_app.backend import service
 from prospector_app.backend.safety_guard import bot_merge_run, bot_run
 from pipeline import gh
+from pipeline import live_prs
 from pipeline import settings
 from pipeline import freshness
 from pipeline import reviewers
@@ -42,7 +43,8 @@ from pipeline import reviewers
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GET_TOKEN = REPO_ROOT / "pipeline" / "get-bot-token.sh"
 
-CLOSE_ACTIONS = {"CLOSE_DUP", "CLOSE_FIXED", "CLOSE", "CLOSE_STALE", "CLOSE_OVERSIZED"}
+CLOSE_ACTIONS = {"CLOSE_DUP", "CLOSE_FIXED", "CLOSE", "CLOSE_STALE", "CLOSE_OVERSIZED",
+                 "CLOSE_WONTFIX"}
 
 logger = logging.getLogger(__name__)
 
@@ -219,9 +221,32 @@ def _record_observed_head(n: int, head: str) -> None:
     data.refresh()
 
 
+def _live_ci_block(n: int, head: str | None) -> str | None:
+    """Read and persist CI at the pinned head; every unconfirmed read blocks."""
+    facts, _ = live_prs.fetch([n])
+    live = facts.get(n)
+    if live is None or live["head"] != head:
+        return "could not confirm CI at the pinned head — retry the merge"
+    if live["ci"] == "passing":
+        return None
+    ci = live["ci"] or "unknown"
+    store = data.store()
+    if store.load_pr(n) is not None:
+        store.edit_pr(n).record_live_state(ci=ci)
+    data.refresh()
+    if ci == "awaiting-approval":
+        from pipeline import gates
+        return f"CI never ran at this head: {gates.CI_AWAITING_APPROVAL}"
+    if live["unreported"]:
+        return (f"GitHub requires {', '.join(live['unreported'])}, which never ran at this "
+                "head — update the branch so CI runs them")
+    return ("could not read all CI checks and branch requirements — retry the merge"
+            if ci == "unknown" else f"CI is {ci} at this head")
+
+
 class Preflight(NamedTuple):
     """The live re-check's verdict. `kind` names which check failed —
-    `merged | state | head | conflicts | unconfirmed` — so a caller can tell
+    `merged | state | head | conflicts | ci | unconfirmed` — so a caller can tell
     stale evidence, which an operator may override, from a PR that is gone,
     which nobody may. `observed_head` is the head the check read, carried so a
     caller can describe the drift without fetching it again."""
@@ -274,6 +299,10 @@ def _preflight(n: int, rec: Pr | None, *, check_head: bool,
     if check_mergeable and live.get("mergeable_state") == "dirty":
         return Preflight(False, "PR now has merge conflicts — needs a rebase before it can merge",
                          "conflicts")
+    if check_mergeable:
+        ci_block = _live_ci_block(n, live.get("head"))
+        if ci_block is not None:
+            return Preflight(False, ci_block, "ci")
     return Preflight(True)
 
 
@@ -729,7 +758,8 @@ def retrigger_review(n: int, reviewer_id: str, *, token: str | None, dry_run: bo
         attempt=attempt, failure="review retrigger failed unexpectedly")
 
 
-def merge_pr(n: int, method: str = "squash", *, dry_run: bool, reason: str | None = None) -> dict:
+def merge_pr(n: int, method: str = "squash", *, dry_run: bool, reason: str | None = None,
+             compile_reason: str | None = None) -> dict:
     """Merge a PR upstream as the configured bot — ONLY when the human-merge
     gate passes (gates.merge_eligibility: gate-clean, security GREEN, not
     CODEOWNERS-gated). A current YELLOW verdict, or a head no security review
@@ -744,16 +774,19 @@ def merge_pr(n: int, method: str = "squash", *, dry_run: bool, reason: str | Non
     pipeline/compile_preflight.py runs the profile's verify.compile_cmd over
     (current default-branch HEAD + this PR's diff) in the sandbox, and
     gates.compile_preflight_gate blocks on anything but a clean pass — fail
-    closed on a machine that cannot run the sandbox. The run and its outcome
-    land in the activity log either way: a block records its own event, a pass
-    rides the merge event's compile_preflight payload.
+    closed on a machine that cannot run the sandbox. A block that gives no
+    verdict on the PR (gates.compile_preflight_waivable: no Docker, a base that
+    will not build) is cleared by `compile_reason`, which rides the merge's
+    activity entry as `compile_waiver`; a compile failure is never cleared. The
+    run and its outcome land in the activity log either way: a block records
+    its own event, a pass rides the merge event's compile_preflight payload.
 
     Every outcome lands in the activity log, refusals included, and a live
     merge records a `started` event before its compile preflight. While a live
     merge runs, merge_progress names the step it has reached; a second live
     merge of the same PR is refused until the first returns."""
     if dry_run:
-        return _merge_pr(n, method, dry_run=True, reason=reason)
+        return _merge_pr(n, method, dry_run=True, reason=reason, compile_reason=None)
     rec = data.prs().get(int(n))
     if not merge_progress.start(int(n), rec.head_sha if rec else None):
         res = {"pr": int(n), "cluster_id": _cluster_id(n), "action": "MERGE",
@@ -761,7 +794,8 @@ def merge_pr(n: int, method: str = "squash", *, dry_run: bool, reason: str | Non
         activity.record("merge", identity=settings.bot_login(), dry_run=False, **res)
         return res
     try:
-        return _merge_pr(n, method, dry_run=False, reason=reason)
+        return _merge_pr(n, method, dry_run=False, reason=reason,
+                         compile_reason=(compile_reason or "").strip() or None)
     finally:
         merge_progress.finish(int(n))
 
@@ -787,7 +821,8 @@ def _threat_rescan(n: int) -> str | None:
     return "; ".join(blocks) if blocks else None
 
 
-def _merge_pr(n: int, method: str, *, dry_run: bool, reason: str | None) -> dict:
+def _merge_pr(n: int, method: str, *, dry_run: bool, reason: str | None,
+              compile_reason: str | None) -> dict:
     base = {"pr": int(n), "cluster_id": _cluster_id(n), "action": "MERGE"}
     from pipeline import gates  # pipeline policy (path set up by data import)
     reason = (reason or "").strip() or None
@@ -864,8 +899,12 @@ def _merge_pr(n: int, method: str, *, dry_run: bool, reason: str | None) -> dict
     if pf is not None:
         ok_cp, why_cp = gates.compile_preflight_gate(pf)
         base["compile_preflight"] = {**pf, "ok": ok_cp}
-        if not ok_cp:
-            res = {**base, "status": "blocked", "detail": f"compile preflight: {why_cp}"}
+        waivable = not ok_cp and gates.compile_preflight_waivable(pf)
+        if waivable and compile_reason:
+            base["compile_waiver"] = compile_reason
+        elif not ok_cp:
+            res = {**base, "status": "blocked", "detail": f"compile preflight: {why_cp}",
+                   "compile_waivable": waivable}
             activity.record("merge", identity=settings.bot_login(), dry_run=False, **res)
             return res
     if override_pending or verify_override_pending:
@@ -888,8 +927,10 @@ def _merge_pr(n: int, method: str, *, dry_run: bool, reason: str | None) -> dict
     merge_progress.step(int(n), "merging upstream")
     try:
         r = bot_merge_run(argv, token)
-        res = ({**base, "status": "merged", "detail": f"merged (--{method})"} if r.returncode == 0
-               else {**base, "status": "error", "detail": r.stderr.strip()[:160]})
+        merged = f"merged (--{method})" + (
+            " without a compile verdict, logging your reason" if "compile_waiver" in base else "")
+        res = ({**base, "status": "merged", "detail": merged} if r.returncode == 0
+               else {**base, "status": "error", "detail": r.stderr.strip()[:400]})
     except Exception as e:
         res = {**base, "status": "error",
                "detail": _public_exception_detail("merge failed unexpectedly", e)}
@@ -1128,18 +1169,28 @@ def _gh_api_error(r: subprocess.CompletedProcess) -> str:
 def propose_issue_fix(issue: int, *, token: str | None, dry_run: bool = True) -> dict:
     """Open a pull request on TRIAGE_REPO carrying issue `issue`'s last lane
     fix, for a maintainer to review. The run must pass
-    `issue_gates.propose_gate`, no other open pull request may name the issue
-    (`related_prs.search`), and its rendering must pass `fix_pr_body.problems`; the
+    `issue_gates.propose_gate`, the pull requests that name the issue
+    (`related_prs.search`) are listed in its body, and its rendering must pass
+    `fix_pr_body.problems`; the
     push user pushes the lane branch to its fork (`propose.push_fix`) and the
-    bot opens the pull request from it (`safety_guard.propose_bot_run`). The
-    report's lane branches are read in order (`propose.branch_ref`): an open
+    bot opens the pull request from it (`safety_guard.propose_bot_run`). Each
+    author whose pull request's tests changed the fix is a co-author of the
+    commit (`second_opinion.credit`). The report's lane branches are read in order (`propose.branch_ref`): an open
     pull request on one is reported, a merged one refuses, and a branch whose
     pull request was closed without merging passes the proposal on to the next
     one, so the first branch with no pull request carries it; a closed pull
     request is never reopened and its branch never overwritten. A dry-run does
     everything up to the push; with no token every run is one. Every outcome
     is logged to Activity."""
-    from issue_triage import fetch_issues, fix_lane, fix_pr_body, issue_gates, propose, related_prs
+    from issue_triage import (
+        fetch_issues,
+        fix_lane,
+        fix_pr_body,
+        issue_gates,
+        propose,
+        related_prs,
+        second_opinion,
+    )
     from pipeline import describe_pr, diffpaths
     from pipeline.gh import gh_list
     from prospector_app.backend.safety_guard import propose_bot_run
@@ -1188,14 +1239,11 @@ def propose_issue_fix(issue: int, *, token: str | None, dry_run: bool = True) ->
     if related is None:
         return done("blocked", "the search for other pull requests on the issue did not "
                                "answer", dry=dry_run)
-    others = [r for r in related if r["state"] == "open"]
-    if others:
-        return done("blocked", f"#{others[0]['number']} is already open on issue #{issue}",
-                    dry=dry_run)
 
     summary = str(result.get("summary") or "")
     title_text = fix_pr_body.title(issue, summary)
-    message = fix_pr_body.commit_message(issue, summary)
+    message = fix_pr_body.commit_message(
+        issue, summary, second_opinion.co_authors(result.get("second_opinion")))
     tests = [p for p in diffpaths.changed_paths(patch) if diffpaths.is_test_path(p)]
     body = fix_pr_body.render(
         issue=issue, result=result, tests=tests, base_sha=record["base_sha"],
@@ -1241,7 +1289,15 @@ def update_issue_fix_proposal(issue: int, pr: int, *, push: bool, token: str | N
     request must be open from one of the report's lane branches on the push
     user's fork. A dry-run does everything up to the writes; with no token
     every run is one. Every outcome is logged to Activity."""
-    from issue_triage import fetch_issues, fix_lane, fix_pr_body, issue_gates, propose, related_prs
+    from issue_triage import (
+        fetch_issues,
+        fix_lane,
+        fix_pr_body,
+        issue_gates,
+        propose,
+        related_prs,
+        second_opinion,
+    )
     from pipeline import describe_pr, diffpaths
     from pipeline.gh import gh_json
 
@@ -1276,7 +1332,8 @@ def update_issue_fix_proposal(issue: int, pr: int, *, push: bool, token: str | N
     patch = str(result["patch"])
     summary = str(result.get("summary") or "")
     title_text = fix_pr_body.title(issue, summary)
-    message = fix_pr_body.commit_message(issue, summary)
+    message = fix_pr_body.commit_message(
+        issue, summary, second_opinion.co_authors(result.get("second_opinion")))
     tests = [p for p in diffpaths.changed_paths(patch) if diffpaths.is_test_path(p)]
     body = fix_pr_body.render(
         issue=issue, result=result, tests=tests, base_sha=record["base_sha"],

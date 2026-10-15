@@ -47,7 +47,7 @@ For a single-process setup without the dev servers, build the frontend once
 and run `uv run prospector serve`.
 
 `uv run prospector --help` lists every subcommand. The Clusters board in the
-web UI is the front door; `CLAUDE.md` (trust model and operating rules) and
+web UI is the front door; `AGENTS.md` (trust model and operating rules) and
 `ARCHITECTURE.md` (the data layer) are the two documents to read before going
 deeper. `STATUS.md` is a generated text snapshot of the store — regenerate it
 with `uv run prospector status`.

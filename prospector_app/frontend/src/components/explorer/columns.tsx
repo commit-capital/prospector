@@ -9,7 +9,7 @@ import { ReviewCell } from "./ReviewCell";
 import { ScansCell } from "./ScansCell";
 import { sizeCell } from "./sizeCell";
 import { GitHubPRLink } from "../GitHubPRLink";
-import { DraftChip, TierChip, AckButton } from "../Chips";
+import { DraftChip, StackedChip, TierChip, AckButton } from "../Chips";
 import { AuthorHover } from "../AuthorHover";
 import { LinkedIssues } from "../LinkedIssues";
 
@@ -39,7 +39,7 @@ export interface ColumnDef {
 
 const NOT_ANALYZED: GlossaryEntry = {
   title: "Not analyzed yet",
-  meaning: "The pipeline hasn't assigned a disposition to this PR — it hasn't been through ANALYZE, or its analysis went stale and needs a re-run.",
+  meaning: "We haven't decided what to do with this PR yet, or it changed since we did.",
 };
 
 // The instance-specific "why this PR landed here" shown under the disposition's
@@ -176,6 +176,17 @@ function safetyBody(r: PRRow): ReactNode {
   );
 }
 
+function titleBody(r: PRRow): ReactNode {
+  const s = r.summary;
+  return (
+    <div className="tip-rows">
+      <div className="tip-head">{r.title}</div>
+      {s?.one_liner && <div className="glo-pop-meaning">{s.one_liner}</div>}
+      {s?.primary_change && s.primary_change !== s.one_liner && <div className="tip-meta">{s.primary_change}</div>}
+    </div>
+  );
+}
+
 export const COLUMNS: ColumnDef[] = [
   // --- anchors (always shown, not in the toggle menu) + current default-on set ---
   // The PR number links straight to GitHub (new tab); stopOpen keeps that click
@@ -220,12 +231,13 @@ export const COLUMNS: ColumnDef[] = [
     cell: (r, ctx) => (
       <span className="title-cell">
         <DraftChip draft={r.draft} />
+        <StackedChip stacked={r.stacked} on={r.stacked_on} base={r.base_ref} />
         {r.threat === "malicious" && (
           <InfoTip entry={term("threat.malicious")} cue={false} focusable={false}>
             <span className="chip chip-red sm">⛔ malicious</span>
           </InfoTip>
         )}
-        <span className="title-text">{r.title}</span>
+        <InfoTip className="title-text" body={titleBody(r)} cue={false} focusable={false}>{r.title}</InfoTip>
         {ctx.deepReasons.has(r.number) && (
           <InfoTip cue={false} focusable={false}
             entry={{ title: "Why Deep Search matched this", meaning: ctx.deepReasons.get(r.number) || "(the agent gave no reason)" }}>

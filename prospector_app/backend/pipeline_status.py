@@ -11,9 +11,9 @@ import statistics
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from pipeline import cluster_driver
 from pipeline import diff_cache
 from pipeline import freshness
-from pipeline import profile
 from pipeline import storekit
 from pipeline import threat_scan
 from prospector_app.backend import data
@@ -299,14 +299,10 @@ def _pr_coverage(all_prs: dict[int, Pr], diffs_dir: Path) -> dict:
             threat["stale" if pr.section("threat") else "never"] += 1
 
     clustered = sum(1 for pr in all_prs.values() if pr.section("cluster"))
-    # An automation author's PR with no current summary is never summarized,
-    # so never clustered (cluster_driver.wave); the lane leaves it out of its
-    # work (cluster_refresh.has_work), and so does this backlog.
-    bots = profile.active().automation_bots
     unclustered_work = sum(
         1 for pr in all_prs.values()
         if not pr.section("cluster")
-        and (pr.author not in bots or freshness.is_current(pr, "summary")))
+        and (freshness.is_current(pr, "summary") or cluster_driver.summarizable(pr)))
     return {
         "tracked": tracked,
         "total": total,

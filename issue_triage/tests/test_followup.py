@@ -42,19 +42,13 @@ DESCRIBED = {"described_head": HEAD, "state": "watching"}
 
 
 def _decide(pr: PrState, fu: dict | None = None, **kw) -> followup.Step:
-    return followup.decide(pr, DESCRIBED if fu is None else fu,
-                           older_open=kw.pop("older_open", []), patch=PATCH, **kw)
+    return followup.decide(pr, DESCRIBED if fu is None else fu, patch=PATCH, **kw)
 
 
 def test_a_merged_or_closed_pull_request_ends_the_follow_up():
     assert _decide(_pr(state="merged")).kind == "done"
     step = _decide(_pr(state="closed"))
     assert step.kind == "done" and step.reason == "#9 was closed without merging"
-
-
-def test_an_older_open_pull_request_on_the_issue_hands_it_back():
-    step = _decide(_pr(), older_open=[5])
-    assert step.kind == "hand-back" and "#5" in step.reason
 
 
 def test_each_head_gets_its_description_re_rendered_once():
@@ -84,8 +78,8 @@ def test_ci_still_failing_in_a_log_that_names_a_changed_file_is_revised():
     pr = _pr([_check("ui", "failure", run_id=4)])
     step = _decide(pr, {**DESCRIBED, "reruns": {HEAD: [4]}},
                    logs={"job 40": "FAIL ui/src/EmailMessageCard.test.tsx"})
-    assert step.kind == "revise"
-    assert "EmailMessageCard" in (step.guidance or "") and "quoted evidence" in (step.guidance or "")
+    assert (step.kind, step.guidance) == ("revise", None)
+    assert "EmailMessageCard" in (step.notes or "") and "quoted evidence" in (step.notes or "")
 
 
 def test_a_reviewer_below_its_bar_sends_the_fix_back_with_its_findings():
@@ -93,8 +87,8 @@ def test_a_reviewer_below_its_bar_sends_the_fix_back_with_its_findings():
                "body": "When connectors are off the provider supplies null."}
     step = _decide(_pr(views=[_greptile(reviewers.FAIL, findings=[finding],
                                         summary="Medium risk.")]))
-    assert step.kind == "revise"
-    assert "ui/a.tsx:32" in (step.guidance or "") and "Medium risk." in (step.guidance or "")
+    assert (step.kind, step.guidance) == ("revise", None)
+    assert "ui/a.tsx:32" in (step.notes or "") and "Medium risk." in (step.notes or "")
 
 
 def test_the_revision_budget_hands_it_back():
@@ -129,7 +123,6 @@ def store(tmp_path, monkeypatch):
     (tmp_path / "issue-7").mkdir()
     (tmp_path / "issue-7" / "result.json").write_text(json.dumps(
         {"ending": "fixed", "result": {"patch": PATCH}}))
-    monkeypatch.setattr(followup, "_older_open", lambda issue, pr: [])
     return s
 
 
@@ -157,13 +150,27 @@ def test_a_live_poll_queues_a_follow_up_revision(store, monkeypatch):
     followup.poll(store, mode="live")
     req = store.load_issue(7).fix_request
     assert req["action"] == "send-back" and req["source"] == "followup"
+    assert "guidance" not in req and "objected to the change" in req["notes"]
     assert store.load_issue(7).fix_followup["revisions"] == 1
 
 
-def _run_follow_up(store: IssueStore) -> str:
-    fix_review.queue(store, 7, "send-back", by="followup", source="followup", guidance="g")
+def _run_follow_up(store: IssueStore, **words: str) -> str:
+    fix_review.queue(store, 7, "send-back", by="followup", source="followup",
+                     **(words or {"guidance": "g"}))
     _, outcome = fix_review_runner.run_request(store, 7, store.claim_fix_request(7, host="s"))
     return outcome
+
+
+def test_a_follow_up_revision_carries_the_bots_findings_as_notes(store, monkeypatch):
+    seen = {}
+
+    def revise(store_, n, **kw):
+        seen.update(kw)
+        return {"ending": "no-fix", "detail": "nothing to change"}
+
+    monkeypatch.setattr(fix_review_runner, "revise", revise)
+    _run_follow_up(store, notes="CI fails in ui")
+    assert (seen["comments"], seen["notes"]) == ("", "CI fails in ui")
 
 
 def test_a_failed_follow_up_revision_leaves_the_proposal_as_it_was(store, monkeypatch, tmp_path):
@@ -205,12 +212,23 @@ def test_a_reviewer_that_reviewed_the_pull_request_gates_it(monkeypatch):
     assert followup._gating(None, HEAD) == []
 
 
+def test_a_prospector_reviewer_is_read_from_the_store(monkeypatch):
+    from pipeline import review_fetch
+    stored = {"kind": "review", "reviewed_sha": HEAD, "checks": [], "extra": {},
+              "findings": [{"severity": "blocking", "title": "dup", "resolved": False,
+                            "outdated": False}]}
+    monkeypatch.setattr(followup, "_stored_entry", lambda pr, rid: stored if rid == "design" else None)
+    feed = review_fetch.PrFeed(pr=9, head_sha=HEAD, updated_at=None)
+    assert followup._entry(reviewers.DESIGN, feed, HEAD, 9) == stored
+    assert followup._entry(reviewers.GREPTILE, feed, HEAD, 9) is None
+
+
 def test_review_evidence_keeps_suggested_code_and_drops_badges():
     finding = {"path": "a.tsx", "line": 1, "body": '<a href="#"><img alt="P1" src="x"></a> '
                "Fix it. ```suggestion <Ctx.Provider value={null}> ```"}
     step = _decide(_pr(views=[_greptile(reviewers.FAIL, findings=[finding])]))
-    assert "<Ctx.Provider value={null}>" in (step.guidance or "")
-    assert "<img" not in (step.guidance or "")
+    assert "<Ctx.Provider value={null}>" in (step.notes or "")
+    assert "<img" not in (step.notes or "")
 
 
 # --- maintainer feedback ------------------------------------------------------------
@@ -336,22 +354,6 @@ def test_a_ready_records_the_head_and_reason_it_was_judged_at(store, monkeypatch
 
 
 
-def test_feedback_on_a_pull_request_handed_back_for_an_older_one_is_read_once(store,
-                                                                              monkeypatch):
-    from issue_triage import reply_router
-    pr = PrState(**{**_pr().__dict__, "feedback": [_said()]})
-    routed = []
-    monkeypatch.setattr(followup, "read", lambda n: pr)
-    monkeypatch.setattr(followup, "_older_open", lambda issue, n: [5])
-    monkeypatch.setattr(reply_router, "route", lambda context, rs: routed.append(rs) or "retry")
-    store.edit_issue(7).record_fix_followup({"pr": 9, "state": "watching", "head_sha": HEAD,
-                                             "described_head": HEAD, "feedback_seen_at": ""})
-    followup.poll(store, mode="live")
-    followup.poll(store, mode="live")
-    assert len(routed) == 1
-    assert store.load_issue(7).fix_followup["state"] == "handed-back"
-
-
 def test_a_maintainer_revision_that_did_not_land_hands_the_pull_request_back(store,
                                                                              monkeypatch):
     monkeypatch.setattr(followup, "read", lambda n: _pr())
@@ -419,3 +421,49 @@ def test_a_new_proposal_is_followed_past_an_earlier_one_s_finished_record(store,
     assert fu["pr"] == 9 and fu["state"] == "watching" and fu["step"] == "describe"
     assert "closed_as" not in fu and "revisions" not in fu
     assert fix_review.fix_status(store.load_issue(7))[0] == "pr-open"
+
+
+# --- rivals that open after the proposal ----------------------------------------------
+
+def test_a_new_rival_is_judged_ahead_of_the_bot_signals_and_a_ready_hold():
+    pr = _pr([_check("chat", "failure", run_id=4)])
+    step = _decide(pr, rivals=[12])
+    assert (step.kind, step.rivals) == ("second-opinion", [12])
+    held = {**DESCRIBED, "state": "ready", "head_sha": HEAD}
+    assert _decide(_pr(), held, rivals=[12]).kind == "second-opinion"
+    assert _decide(_pr(), held).kind == "wait"
+    assert _decide(pr, feedback="keep the flag", rivals=[12]).kind == "revise"
+
+
+@pytest.fixture
+def late(store, monkeypatch):
+    """The open proposal #9 with one rival carrying tests (#12) and one
+    without (#13) found by the search."""
+    from issue_triage import second_opinion
+    seen: list[set[int]] = []
+    rival = second_opinion.Rival(pr=12, author="contrib", title="t", tests="T", fix="F",
+                                 test_paths=["x.test.ts"])
+
+    def rivals(n, *, exclude, registry=None):
+        seen.append(set(exclude))
+        fresh = [r for r in (rival,) if r.pr not in exclude]
+        skipped = [{"pr": 13, "author": "x", "verdict": "skipped", "why": "no tests"}]
+        return fresh, [e for e in skipped if e["pr"] not in exclude]
+
+    monkeypatch.setattr(second_opinion, "rivals", rivals)
+    monkeypatch.setattr(followup, "read", lambda n: _pr())
+    store.edit_issue(7).record_fix_followup({"pr": 9, "state": "watching", "head_sha": HEAD,
+                                             "described_head": HEAD})
+    return seen
+
+
+def test_a_live_poll_queues_one_judgment_per_new_rival(store, late):
+    followup.poll(store, mode="live")
+    issue = store.load_issue(7)
+    req = issue.fix_request
+    assert (req["action"], req["source"], req["rivals"]) == ("send-back", "followup", [12])
+    assert issue.fix_followup["rivals_seen"] == [12, 13]
+    store.edit_issue(7).record_fix_request({**req, "status": "done"})
+    followup.poll(store, mode="live")
+    assert late[-1] == {9, 12, 13}
+    assert store.load_issue(7).fix_request["status"] == "done"

@@ -16,6 +16,19 @@ export function ConflictChip({ live = false }: { live?: boolean }) {
   );
 }
 
+/** A PR whose base is another PR's branch: it merges after its base lands. */
+export function StackedChip({ stacked, on, base }: { stacked?: boolean; on?: number | null; base?: string | null }) {
+  if (!stacked) return null;
+  return (
+    <Badge tone="grey" sm title={
+      `Stacked on ${on != null ? `#${on}` : "another branch"} (base ${base ?? "unknown"}), not the `
+      + "default branch. It is never merge-ready and no hunter judges it until its base "
+      + "merges and GitHub retargets it."}>
+      {on != null ? `stacked on #${on}` : "stacked"}
+    </Badge>
+  );
+}
+
 /** Compact flag that a PR is CODEOWNERS-gated and can't be bot-merged — shown
  *  in tables, not just the PR detail page (#71). */
 export function HumanMergeChip({ hm }: { hm?: HumanMerge | null }) {
@@ -111,7 +124,7 @@ export function SafetyRollupChip({ r, prs = [], emptyTip }: { r: SafetyRollup; p
                     ? <div className="muted small">No concerns flagged.</div>
                     : <ul className="safety-pop-findings">{p.findings.map((f, i) => <li key={i}>{f.title}</li>)}</ul>}
                 {p.fresh === false &&
-                  <div className="muted small">⟳ Stale verdict — re-run SECURITY to clear the merge gate.</div>}
+                  <div className="muted small">⟳ The PR changed since this review — re-run it before merging.</div>}
               </div>
             ));
           })()}

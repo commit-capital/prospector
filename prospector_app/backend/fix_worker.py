@@ -58,7 +58,8 @@ from pipeline import (author_fix, capacity, ci_signal, compile_preflight, descri
                       reviewers, risktier, settings, storekit, verify_driver)
 from pipeline.storekit import now as _now
 from prospector_app.backend import (activity, data, executor, fix_queue, lane_health,
-                                    review_refresh, safety_guard, sandbox_check, service,
+                                    lane_pause, review_refresh, safety_guard, sandbox_check,
+                                    service,
                                     verify_worker, worker_log, worker_selftest)
 from prospector_app.backend.resubmit_identity import unattended_env, worker_env
 
@@ -332,9 +333,7 @@ def reclaim_stranded_resolves() -> list[int]:
     return cancelled
 
 
-# The sources that queue a request without an operator: the idle hunter's picks
-# and objection continuations.
-AUTO_SOURCES = ("auto", "objection")
+AUTO_SOURCES = fix_queue.AUTO_SOURCES
 # The actions an agent carries out.
 AGENT_ACTIONS = ("fix", "resolve", "describe")
 
@@ -420,14 +419,15 @@ def next_reviewable() -> int | None:
 
 def _oldest(status: str, mine_only: tuple[str, ...] = (),
             hold: Callable[[dict], bool] | None = None) -> int | None:
-    """The best PR at `status`, operator picks before auto-picks and, within
+    """The best PR at `status`: an operator's priority (queue_order, higher
+    first), then operator picks before auto-picks and, within
     each, a maintainer's PR (gates.priority_author) first, then oldest. An action named in `mine_only` is passed over unless this
     machine recorded it (or the record names none, from before hosts were
     stamped) — it depends on state only that machine holds. A request `hold`
     names is passed over."""
     me = settings.worker_id()
     best_n: int | None = None
-    best_key: tuple[bool, bool, str] | None = None
+    best_key: tuple[float, bool, bool, str] | None = None
     for n, rec in data.prs().items():
         req = rec.fix_request or {}
         if req.get("status") != status:
@@ -438,9 +438,7 @@ def _oldest(status: str, mine_only: tuple[str, ...] = (),
             continue
         if req.get("attempts") and not _rested(req, TRANSIENT_RETRY_SECONDS):
             continue
-        key = (req.get("source") in AUTO_SOURCES,
-               not gates.priority_author(rec.author, rec.author_association),
-               str(req.get("queued_at") or ""))
+        key = fix_queue.run_order(rec, req)
         if best_key is None or key < best_key:
             best_n, best_key = n, key
     return best_n
@@ -824,14 +822,14 @@ class _FixBrief(NamedTuple):
 
 
 def _review_summary(rec: Pr) -> str:
-    """Every active review reviewer's own prose on this PR whose bar fails at the
-    current head, or "". A reviewer's summary explains its verdict and names the
+    """Every active GitHub review reviewer's own prose on this PR whose bar
+    fails at the current head, or "". A reviewer's summary explains its verdict and names the
     defects it weighed, so a sub-bar PR with no inline finding still hands the
     agent something concrete."""
     parts: list[str] = []
     for r in review_policy.active_reviewers(reviewers.REVIEW):
         entry = rec.review_entry(r.id)
-        if (entry and entry.get("summary")
+        if (entry and entry.get("summary") and r.source == reviewers.GITHUB
                 and review_policy.bar(rec, r).status == reviewers.FAIL):
             parts.append(f"## {r.label}\n{entry['summary']}")
     return "\n\n".join(parts)[:REVIEW_SUMMARY_CHARS]
@@ -847,10 +845,12 @@ def _fix_goal(rec: Pr, claimed: dict) -> _FixBrief:
     reviewers' summaries and the failing checks — what the store and the reviews
     can say is wrong with the code.
 
-    Findings and summaries come only from active review reviewers whose bar
-    fails at the current head. A stale or pending verdict describes a head the
-    author has moved past (or none yet), so it would send the agent after
-    defects that may already be fixed."""
+    Findings and summaries come only from active GitHub review reviewers whose
+    bar fails at the current head, plus — when the profile names `design` — the
+    design review's blocking and major findings when its own bar fails there.
+    A stale or pending verdict describes a head the author has moved past (or
+    none yet), so it would send the agent after defects that may already be
+    fixed."""
     objection = claimed.get("objection")
     if objection:
         # A ci objection carries the failing check names, which the author
@@ -860,9 +860,14 @@ def _fix_goal(rec: Pr, claimed: dict) -> _FixBrief:
     read = rec.greptile_review if freshness.is_current(rec, "greptile_review") else None
     findings: list[dict] = []
     for r in review_policy.active_reviewers(reviewers.REVIEW):
-        if review_policy.bar(rec, r).status == reviewers.FAIL:
+        if r.source == reviewers.GITHUB and review_policy.bar(rec, r).status == reviewers.FAIL:
             findings.extend(reviewers.findings_for_fix(r, rec.review_entry(r.id), rec.head_sha, read))
     fixable = profile.active().autofix.fixable_gates
+    design: list[dict] = []
+    if "design" in fixable and review_policy.own_bar(rec, reviewers.DESIGN).status == reviewers.FAIL:
+        design = reviewers.findings_for_fix(reviewers.DESIGN, rec.review_entry(reviewers.DESIGN.id),
+                                            rec.head_sha, None)
+    findings += design
     guidance = claimed.get("guidance")
     summary = _review_summary(rec) if ("review" in fixable or guidance) else ""
     checks: list[str] = []
@@ -876,6 +881,8 @@ def _fix_goal(rec: Pr, claimed: dict) -> _FixBrief:
         goals.append("Fix the outstanding review findings listed below.")
     if "review" in fixable and summary:
         goals.append("Address the defects the review summary below describes.")
+    if design:
+        goals.append("Fix the design review findings listed below.")
     if "ci" in fixable and checks:
         goals.append("Make the failing CI checks listed below pass.")
     return _FixBrief("\n".join(goals) or DEFAULT_FIX_GOAL, findings, checks, summary)
@@ -1548,7 +1555,8 @@ def _related_tests_run(n: int, head: str, patch: str,
     path = scratch / f"pr-{n}.related-tests.patch"
     path.write_text(patch + "\n")
     return {"files": related,
-            "run": compile_preflight.run_command_for_patch(n, head, path, cmd)}
+            "run": compile_preflight.run_command_for_patch(n, head, path, cmd,
+                                                           runs_tests=True)}
 
 
 def review_parked_resolve(n: int) -> None:
@@ -2063,7 +2071,9 @@ def auto_fixable(pr: Pr, *, budget_ok: bool = True) -> tuple[str, dict | None] |
 
     A PR GitHub reports unmergeable needs its history replayed on current base,
     which is `rebase`; a PR whose drift scan says the base moved out from under
-    it needs `update`. A PR clean on both whose reviewer objects only to its
+    it needs `update`, and so does one whose head never ran the checks the
+    base branch requires (CI `unreported`), since merging base in re-runs CI
+    under the names it requires now. A PR clean on all three whose reviewer objects only to its
     description takes a `describe`; one the reviewer fails on the code may take
     an agent-authored `fix`; one carrying a current YELLOW security verdict
     takes a `fix` from that finding under TRIAGE_FIX_HUNT_SECURITY. The agent
@@ -2082,7 +2092,7 @@ def auto_fixable(pr: Pr, *, budget_ok: bool = True) -> tuple[str, dict | None] |
     objection: dict | None = None
     if pr.mergeable is False:
         action = "rebase"
-    elif pr.drift_state == "conflicts":
+    elif pr.drift_state == "conflicts" or pr.ci == "unreported":
         action = "update"
     elif settings.fix_hunt_fix():
         broke = _ci_objection(pr) if budget_ok else None
@@ -2172,12 +2182,29 @@ def next_auto() -> tuple[str, int, dict | None] | None:
     of them. While this machine's AI capacity gate is closed
     (lane_health.capacity_open, asked only when an agent pick leads) only the
     mechanical pool runs."""
+    ranked = _ranked_picks()
+    if ranked and ranked[0][1] != "mechanical" and not lane_health.capacity_open("fix"):
+        ranked = [r for r in ranked if r[1] == "mechanical"]
+    if not ranked:
+        return None
+    _, _, action, n, objection = ranked[0]
+    return (action, n, objection)
+
+
+_HUNT_LANES = ("fix", "describe", "resolve", "mechanical")
+
+
+def _ranked_picks() -> list[tuple[tuple[bool, int, int, float, int], str, str, int, dict | None]]:
+    """Every PR the hunter could take now as (key, lane, action, PR, objection),
+    in the order it takes them: a maintainer's PR first, then by lane in
+    _HUNT_LANES order, then by hunt priority; an agent lane whose slots are all
+    taken is left out."""
     limit = settings.fix_hunt_limit()
     slots = {"fix": limit - _auto_in_flight("fix"),
              "describe": limit - _auto_in_flight("describe")}
-    best: dict[str, tuple[tuple[bool, int, int, float, int], str, int, dict | None]] = {}
     budget_ok = (not settings.fix_hunt_security()
                  or _budget_used(data.store()) < settings.fix_objection_budget())
+    ranked: list[tuple[tuple[bool, int, int, float, int], str, str, int, dict | None]] = []
     for n, rec in data.prs().items():
         pick = auto_fixable(rec, budget_ok=budget_ok)
         if pick is None:
@@ -2188,17 +2215,26 @@ def next_auto() -> tuple[str, int, dict | None] | None:
                 else "mechanical")
         if lane in slots and slots[lane] <= 0:
             continue
-        key = _hunt_key(rec, action, n)
-        if lane not in best or key < best[lane][0]:
-            best[lane] = (key, action, n, objection)
-    lanes = sorted(best, key=lambda lane: (
-        best[lane][0][0], ("fix", "describe", "resolve", "mechanical").index(lane)))
-    if lanes and lanes[0] != "mechanical" and not lane_health.capacity_open("fix"):
-        lanes = [lane for lane in lanes if lane == "mechanical"]
-    if not lanes:
-        return None
-    _, action, n, objection = best[lanes[0]]
-    return (action, n, objection)
+        ranked.append((_hunt_key(rec, action, n), lane, action, n, objection))
+    ranked.sort(key=lambda r: (r[0][0], _HUNT_LANES.index(r[1]), r[0]))
+    return ranked
+
+
+def pushes_open(fix_open: bool) -> bool:
+    """Whether this machine may push what an operator approved. An approved
+    push needs the sandbox and no agent, so a lane tripped on the agent alone
+    still pushes; every other trip, and an operator's pause, holds it."""
+    if fix_open:
+        return True
+    if lane_pause.paused(settings.worker_id(), "fix"):
+        return False
+    return lane_health.trip_kind("fix") in worker_selftest.AGENT_KINDS
+
+
+def hunt_candidates(limit: int = 5) -> list[tuple[str, int]]:
+    """The hunter's next `limit` (action, PR) picks in the order `next_auto`
+    takes them, read without picking; the AI capacity gate is not asked."""
+    return [(action, n) for _, _, action, n, _ in _ranked_picks()[:limit]]
 
 
 def _beat_loop() -> None:
@@ -2234,11 +2270,7 @@ def _drain_loop() -> None:
                     print(f"[fix-worker] reclaimed from an offline worker: "
                           f"failed {marked}, re-armed {stranded}", flush=True)
             fix_open = lane_health.open_or_retest("fix")
-            # An approved push needs the sandbox and no agent, so a lane
-            # tripped on the agent alone still pushes what the operator
-            # approved; every other trip holds everything.
-            pushes_open = fix_open or lane_health.trip_kind("fix") in worker_selftest.AGENT_KINDS
-            n = next_approved() if pushes_open else None
+            n = next_approved() if pushes_open(fix_open) else None
             if n is not None:
                 state["current_pr"] = n
                 beat()

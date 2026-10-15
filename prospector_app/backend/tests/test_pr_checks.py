@@ -3,7 +3,7 @@ is a failing check, so the merge block is visible, not just in clean_reasons."""
 from pipeline import model
 from prospector_app.backend import pr_checks
 from pipeline.testsupport import reviews_section
-from pipeline import review_policy
+from pipeline import review_policy, reviewers
 
 HEAD = "abc123"
 NOW = "2026-06-10T00:00:00+00:00"
@@ -30,7 +30,7 @@ def _check(rec):
 
 def test_secret_leak_shows_failing_check():
     chk = _check(_pr(threat={"verdict": "suspicious", "signatures": ["secret-leak"]}))
-    assert chk and chk["status"] == "fail" and "credential" in chk["detail"]
+    assert chk and chk["status"] == "fail" and "password or key" in chk["detail"]
 
 
 def test_malicious_shows_failing_check():
@@ -57,7 +57,7 @@ def test_a_malicious_verdict_from_an_earlier_head_still_fails():
 def test_an_exempt_dependency_bump_says_so():
     chk = _check(_pr(threat={"verdict": "clear", "signatures": [],
                              "detail": {"exempt": "dependency-bump"}, "against_head_sha": HEAD}))
-    assert chk and chk["status"] == "pass" and "dependency bump" in chk["detail"]
+    assert chk and chk["status"] == "pass" and "library update" in chk["detail"]
 
 
 def test_suspicious_threat_warns_with_its_signatures():
@@ -81,11 +81,11 @@ def test_checks_carry_stable_keys():
     c = pr_checks.checks_for_record(rec)
     by_key = {x["key"]: x["name"] for x in c["checks"]}
     assert by_key == {
-        "review": "Code review", "ci": "CI", "scans": "Security scans",
+        "review": "Code review", "design": "Design review", "ci": "CI", "scans": "Security scans",
         "mergeable": "No merge conflicts",
         "tests": "Includes tests", "drift": "Still applies to trunk",
-        "secrets": "Threat scan", "security": "Deep security review",
-        "verify": "Dynamic verification",
+        "secrets": "Threat scan", "security": "Security review",
+        "verify": "Test run",
     }
 
 
@@ -95,10 +95,10 @@ def test_all_checks_shown_even_with_no_data():
     # shows every row (na/never-run for the ones nothing has run yet).
     c = pr_checks.checks_for_record(_pr())  # signals + drift only; no threat/security/verify
     keys = [x["key"] for x in c["checks"]]
-    assert keys == ["review", "ci", "scans", "mergeable", "tests", "drift", "secrets",
+    assert keys == ["review", "design", "ci", "scans", "mergeable", "tests", "drift", "secrets",
                     "security", "verify"]
     never_run = {x["key"] for x in c["checks"] if x["status"] == "na"}
-    assert never_run == {"scans", "secrets", "security", "verify"}
+    assert never_run == {"design", "scans", "secrets", "security", "verify"}
 
 
 def test_no_threat_section_shows_never_run_check():
@@ -120,15 +120,14 @@ def test_greptile_review_check_at_bar():
     assert chk["status"] == "pass" and chk["detail"] == "Greptile 5/5"
 
 
-def test_review_check_na_when_no_reviewer_active(monkeypatch):
-    monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "none")
+def test_review_check_na_when_no_reviewer_active(monkeypatch, active_reviewers):
+    active_reviewers()
     chk = _review_check(_pr())
     assert chk and chk["status"] == "na"
 
 
-def test_review_and_scans_rows_aggregate_every_active_reviewer(monkeypatch):
-    monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "greptile,coderabbit,superagent,socket")
-    review_policy.reset()
+def test_review_and_scans_rows_aggregate_every_active_reviewer(monkeypatch, active_reviewers):
+    active_reviewers("greptile", "coderabbit", "superagent", "socket")
     rec = _pr(reviews=reviews_section(
         HEAD, NOW,
         superagent={"kind": "scanner", "reviewed_sha": HEAD, "checks": [], "extra": {},
@@ -143,7 +142,7 @@ def test_review_and_scans_rows_aggregate_every_active_reviewer(monkeypatch):
 
 def _verify_check(rec):
     c = pr_checks.checks_for_record(rec)
-    return next((x for x in c["checks"] if x["name"] == "Dynamic verification"), None)
+    return next((x for x in c["checks"] if x["name"] == "Test run"), None)
 
 
 def _verify_section(outcome, *, head=HEAD, at=None, findings=(), signals=None):
@@ -245,5 +244,69 @@ def test_checks_carry_their_own_section_timestamp():
     c = pr_checks.checks_for_record(rec)
     review = next(x for x in c["checks"] if x["key"] == "review")
     assert review["at"] == NOW  # from the reviews section
-    sec = next(x for x in c["checks"] if x["name"] == "Deep security review")
+    sec = next(x for x in c["checks"] if x["name"] == "Security review")
     assert sec["at"] == sec_at  # from the security section, not the signals one
+
+
+def test_a_cleared_secret_leak_passes_naming_who_cleared_it():
+    chk = _check(_pr(threat={
+        "verdict": "suspicious", "signatures": ["secret-leak"], "against_head_sha": HEAD,
+        "detail": {"secret-leak": "a.ts: KEY=x"},
+        "cleared": {"secret-leak": {"by": "Alex", "at": NOW, "evidence": "a.ts: KEY=x"}}}))
+    assert chk and chk["status"] == "pass" and "Alex" in chk["detail"]
+
+
+def _design_check(rec):
+    c = pr_checks.checks_for_record(rec)
+    return next(x for x in c["checks"] if x["key"] == "design")
+
+
+_DESIGN_BLOCKING = {"kind": "review", "reviewed_sha": HEAD, "checks": [],
+                    "extra": {"rubric": reviewers.DESIGN_RUBRIC},
+                    "findings": [{"severity": "blocking", "verification": {"verdict": "confirmed", "reason": "r"},
+             "resolved": False, "outdated": False}]}
+
+
+def test_design_row_never_ran_until_reviewed(monkeypatch):
+    monkeypatch.setenv("TRIAGE_DESIGN_REVIEW", "advisory")
+    review_policy.reset()
+    chk = _design_check(_pr())
+    assert (chk["status"], chk["detail"]) == ("na", "not reviewed yet")
+
+
+def test_advisory_design_row_shows_its_verdict_marked_advisory(monkeypatch):
+    monkeypatch.setenv("TRIAGE_DESIGN_REVIEW", "advisory")
+    review_policy.reset()
+    rec = _pr(reviews=reviews_section(HEAD, NOW, design=_DESIGN_BLOCKING))
+    chk = _design_check(rec)
+    assert chk["status"] == "fail"
+    assert chk["detail"] == "Design review 1 blocking · advisory"
+    assert "Design" not in _review_check(rec)["detail"]
+
+
+def test_design_row_carries_its_coverage(monkeypatch):
+    monkeypatch.setenv("TRIAGE_DESIGN_REVIEW", "advisory")
+    review_policy.reset()
+    entry = {**_DESIGN_BLOCKING, "extra": {"rubric": reviewers.DESIGN_RUBRIC, "coverage": {
+        "status": "measured", "executable": 4, "hit": 3, "files": []}}}
+    chk = _design_check(_pr(reviews=reviews_section(HEAD, NOW, design=entry)))
+    assert chk["detail"] == "Design review 1 blocking · coverage 75% (3/4 changed lines) · advisory"
+
+
+def test_gating_design_row_waits_for_its_review(monkeypatch):
+    monkeypatch.setenv("TRIAGE_DESIGN_REVIEW", "gate")
+    review_policy.reset()
+    chk = _design_check(_pr())
+    assert chk["status"] == "warn" and "advisory" not in chk["detail"]
+    assert "Design" not in _review_check(_pr())["detail"]
+
+
+def test_gating_design_row_passes_with_only_minor_or_unconfirmed_findings(monkeypatch):
+    monkeypatch.delenv("TRIAGE_DESIGN_REVIEW", raising=False)
+    review_policy.reset()
+    findings = [{"severity": sev, "verification": {"verdict": verdict, "reason": "r"},
+                 "resolved": False, "outdated": False}
+                for sev, verdict in (("minor", "confirmed"), ("major", "refuted"), ("major", "unverified"))]
+    entry = {**_DESIGN_BLOCKING, "findings": findings}
+    chk = _design_check(_pr(reviews=reviews_section(HEAD, NOW, design=entry)))
+    assert chk["status"] == "pass" and not chk["advisory"]

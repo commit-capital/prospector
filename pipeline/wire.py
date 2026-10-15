@@ -146,6 +146,8 @@ class VerifyRedGreenSignal(VerifyRunSignal, total=False):
     green_failing: list[str] | None
     green_failing_confirm: list[str] | None
     failing_in_diff: list[str] | None
+    red_load_error: str | None
+    green_load_error: str | None
     no_test_hunks: bool
 
 
@@ -232,6 +234,8 @@ class VerifyRequest(TypedDict):
     host: NotRequired[str]
     checked_at: NotRequired[str]
     against_head_sha: NotRequired[str]
+    # Queue order an operator set: higher goes first; absent reads as 0.
+    priority: NotRequired[float]
 
 
 class VerifyPin(TypedDict):

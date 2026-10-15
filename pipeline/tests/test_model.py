@@ -480,8 +480,19 @@ def test_pr_base_property(tmp_path):
     rec = _base_pr(11, "h1")
     rec["meta"]["base"] = "main"
     pr = _seed(tmp_path, rec).edit_pr(11)
-    assert pr.base == "main"
-    assert _seed(tmp_path, _base_pr(12, "h1")).edit_pr(12).base is None
+    assert pr.base_ref == "main"
+    assert _seed(tmp_path, _base_pr(12, "h1")).edit_pr(12).base_ref is None
+
+
+def test_pr_stacked_reads_a_base_other_than_the_default_branch(tmp_path):
+    def pr(n: int, base: str | None):
+        rec = _base_pr(n, "h1")
+        if base is not None:
+            rec["meta"]["base"] = base
+        return _seed(tmp_path, rec).edit_pr(n)
+    assert pr(21, "codex/layer-1").stacked is True
+    assert pr(22, "trunk").stacked is False
+    assert pr(23, None).stacked is False
 
 
 def test_record_live_state_persists_state_and_mergeable(tmp_path):

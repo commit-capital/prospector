@@ -317,3 +317,29 @@ def test_prs_with_issues_leaves_an_unknown_issue_bare(tmp_path):
     rows = json.loads(r.stdout)
     assert rows[0]["issues"]["linked"] == [{"issue": 999, "how": "explicit", "state": None,
                                             "state_reason": None, "title": None}]
+
+
+def _store_read_module():
+    from importlib.machinery import SourceFileLoader
+    from importlib.util import module_from_spec, spec_from_loader
+    loader = SourceFileLoader("store_read", str(STORE_READ))
+    mod = module_from_spec(spec_from_loader("store_read", loader))
+    loader.exec_module(mod)
+    return mod
+
+
+def test_listings_filter_and_project_in_the_database(tmp_path, monkeypatch, capsys):
+    """`prs` and `issues` never load whole records: the state and number
+    filters and the field projection run in the query."""
+    root = tmp_path / "store"
+    _seed_population(root)
+    mod = _store_read_module()
+    monkeypatch.setattr(Store, "all_prs",
+                        lambda self: (_ for _ in ()).throw(AssertionError("read every PR")))
+    monkeypatch.setattr(IssueStore, "all_issues",
+                        lambda self, **kw: (_ for _ in ()).throw(AssertionError("read every issue")))
+    assert mod.main(["prs", "--numbers", "2", "--fields", "issues.linked", "--with-issues",
+                     "--store", str(root)]) == 0
+    assert [row["pr"] for row in json.loads(capsys.readouterr().out)] == [2]
+    assert mod.main(["issues", "--state", "closed", "--store", str(root)]) == 0
+    assert [row["issue"] for row in json.loads(capsys.readouterr().out)] == [11]

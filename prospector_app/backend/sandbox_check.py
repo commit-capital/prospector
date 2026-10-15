@@ -178,7 +178,8 @@ def main(argv: list[str]) -> int:
         return 2
     patch = combined_patch(pr, pr_patch, authored)
     rec = compile_preflight.run_command_for_patch(
-        pr, head, patch, cmd, lane="lint" if argv == ["lint"] else "compile")
+        pr, head, patch, cmd, lane="lint" if argv == ["lint"] else "compile",
+        runs_tests=argv[0] == "test")
     record_check(pr, check_record(argv, rec))
     print(render(rec))
     return 0 if rec.get("exit") == gates.SENTINEL_PASS else 1

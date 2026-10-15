@@ -39,7 +39,15 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from issue_triage import fix_lane, issue_gates, lane_check, lane_tree, review_issue_fix, solo_lane
+from issue_triage import (
+    fix_lane,
+    issue_gates,
+    lane_check,
+    lane_tree,
+    review_issue_fix,
+    solo_lane,
+    trust_boundary,
+)
 from pipeline import (
     authoring,
     check_records,
@@ -99,7 +107,7 @@ def _author(spec: fix_lane.LaneSpec, workdir: Path, cand: Candidate,
                                    records=records, test_patch=None, pre_patch=pre_patch_file)
         env["PROSPECTOR_ISSUE_CHECK_MAX_RUNS"] = str(solo_lane.MAX_RUNS)
         verdict = solo_lane.author(str(clone), title=spec.title, body=spec.body, env=env,
-                                   model=cand.model, guidance=spec.guidance,
+                                   model=cand.model, guidance=spec.guidance, notes=spec.notes,
                                    contributor_docs=authoring.docs_from_tree(spec.base.clone))
         cand.checks = check_records.collect(records, solo_lane.MAX_RUNS)
         if "give_up" in verdict:
@@ -242,7 +250,8 @@ def _judge_pick(spec: fix_lane.LaneSpec, workdir: Path, pick: Candidate,
                 proof_patch: Callable[..., Path], label: str,
                 on_step: Callable[[str], None]) -> tuple[str | None, str, dict, int]:
     """Ship `pick` with the tests of `repros` and put it through the host's
-    checks and the scope-safety review, recording both on `result`. Returns the
+    checks and the scope-safety review, recording both on `result`, then record
+    the trust boundaries a pick that clears them crosses. Returns the
     ending it stops at (None when it clears every check) with the reason, the
     reproduction record, and the agent runs spent. The review tree is removed on
     the way out."""
@@ -282,7 +291,10 @@ def _judge_pick(spec: fix_lane.LaneSpec, workdir: Path, pick: Candidate,
         if review.get("verdict") != "safe":
             return ("fix-rejected", f"scope-safety: {review.get('reason') or 'not safe'}",
                     reproduction, 1)
-        return None, "", reproduction, 1
+        on_step("reviewing: trust boundaries")
+        result["boundary"] = trust_boundary.judge(str(tree), spec.base.clone, pick.fix_patch,
+                                                  title=spec.title, body=spec.body)
+        return None, "", reproduction, 2
     finally:
         shutil.rmtree(workdir / "pick", ignore_errors=True)
 

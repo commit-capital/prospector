@@ -65,6 +65,11 @@ def default_comment(a: models.CloseAction) -> str:
         return ("Thanks for the contribution! This PR has been inactive for a while and has drifted from the "
                 "current codebase. Closing during triage to keep the queue manageable — please reopen or resubmit "
                 "if it's still relevant.")
+    if act == "CLOSE_WONTFIX":
+        return ("Thanks for the contribution! After review, we've decided not to take this change: its "
+                "approach conflicts with how this part of the codebase is meant to work, so it isn't something "
+                "a revision of this PR could fix. Closing during triage — please open an issue first if you'd "
+                "like to discuss a different approach.")
     if act == "CLOSE_OVERSIZED":
         # Encourage splitting an over-scoped PR, and — when it's part of a cluster
         # we're already merging from — point at those PRs so the author doesn't

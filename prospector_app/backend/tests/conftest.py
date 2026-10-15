@@ -9,12 +9,23 @@ import pytest
 
 
 
+@pytest.fixture
+def active_reviewers(monkeypatch):
+    """Make exactly the given reviewer ids the ones seen on the repository today."""
+    from pipeline import review_policy, storekit
+
+    def pin(*ids: str) -> None:
+        seen = {rid: {"last_observed_at": storekit.now(), "prs": 1} for rid in ids}
+        monkeypatch.setattr(review_policy, "_load_seen", lambda: seen)
+        review_policy.reset()
+    return pin
+
+
 @pytest.fixture(autouse=True)
-def _greptile_profile(monkeypatch):
+def _greptile_profile(active_reviewers, monkeypatch):
     """These tests were written against the greptile deployment (Greptile columns,
-    filters, checks). Pin the greptile review profile so they assert that surface
-    regardless of the `none` default; no-provider tests override explicitly."""
-    monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "greptile")
+    filters, checks): Greptile is the one reviewer seen, unless a test names others."""
+    active_reviewers("greptile")
     monkeypatch.delenv("TRIAGE_REVIEW_THRESHOLD", raising=False)
 
 
@@ -64,6 +75,22 @@ def _no_merge_threat_rescan(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_live_ci_read(monkeypatch):
+    """The merge pre-flight's live CI read reaches GitHub; it reads clear
+    unless a test restores it (test_executor_merge_required_checks.py)."""
+    from prospector_app.backend import executor
+    monkeypatch.setattr(executor, "_live_ci_block", lambda n, head: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_worker_log_tee(monkeypatch):
+    """A lane's startup mirrors stdout to the worker log; under test that would
+    wrap pytest's own capture stream for the rest of the session."""
+    from prospector_app.backend import worker_log
+    monkeypatch.setattr(worker_log, "install", lambda: None)
+
+
+@pytest.fixture(autouse=True)
 def _jobs_dir(monkeypatch, tmp_path):
     """Keep every test's job records, logs and exit files in its own directory,
     with an empty registry, so no test writes the checkout's job cache."""
@@ -71,6 +98,8 @@ def _jobs_dir(monkeypatch, tmp_path):
     monkeypatch.setattr(jobs, "JOBS_DIR", tmp_path / "jobs")
     monkeypatch.setattr(jobs, "JOBS", {})
     monkeypatch.setattr(jobs, "POLL_SECONDS", 0.01)
+    from prospector_app.backend import worker_children
+    monkeypatch.setattr(worker_children, "CHILDREN_DIR", tmp_path / "children")
 
 
 @pytest.fixture

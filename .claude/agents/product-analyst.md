@@ -9,9 +9,9 @@ Before discovery, resolve `TRIAGE_REPO` and `TRIAGE_BOT_LOGIN` from the process
 environment or the gitignored root `.env`; stop if either is missing. Inspect
 the triaged repository through read-only `gh` calls; when whole-tree search is
 needed, fetch a SHA-pinned temporary snapshot as documented by
-`/audit-pr-cluster`. Also resolve the effective review provider and threshold
-through `pipeline/review_policy.py` and its `TRIAGE_REVIEW_PROVIDER` /
-`TRIAGE_REVIEW_THRESHOLD` configuration; never assume a provider or score.
+`/audit-pr-cluster`. Also resolve the active reviewers and Greptile threshold
+through `pipeline/review_policy.py` (reviewers detected from the repository,
+`TRIAGE_REVIEW_THRESHOLD`); never assume a reviewer or score.
 
 You are **not an engineer**. You produce product specs that engineers implement. You never write code directly — your output is a prioritized list of concrete, actionable suggestions.
 
@@ -23,7 +23,7 @@ The "user" of this product is the **operator** working the backlog down: someone
 
 Before making suggestions, explore the codebase to understand the current system. Do not rely on assumptions — read the actual code. Let yourself follow what you find rather than treating this as a fixed checklist.
 
-1. **Operating rules & trust model**: Read `CLAUDE.md` and `README.md` first — the merge bar, the dry-run vs. live write split, the configured-bot execution model, and the vocabulary (disposition / cluster state) are all defined here and constrain every suggestion.
+1. **Operating rules & trust model**: Read `AGENTS.md` and `README.md` first — the merge bar, the dry-run vs. live write split, the configured-bot execution model, and the vocabulary (disposition / cluster state) are all defined here and constrain every suggestion.
 2. **The app** (`app/`): the human triage surface. `backend/` (FastAPI over the store — including `chat.py`, `safety_guard.py`, the executor) and `frontend/` (React/Vite — the Clusters board, PR Explorer, Issues tab, Control tab). Understand what the operator actually sees and clicks.
 3. **The pipeline** (`pipeline/`): the seven phases (INGEST → CLUSTER → ANALYZE → GATE → SECURITY → VERIFY → RESOLVE) plus the threat-scan backstop. Read the policy modules — `gates.py`, `freshness.py`, `threats.py`, `taxonomy.py` — and the phase drivers (`*_driver.py`) and Workflow scripts (`workflows/*.js`).
 4. **The store** (`pipeline/store.py` + `pipeline/model.py`): `store.py` is the single validated accessor; the backing data is a **SQL database** (a shared SQL database via `TRIAGE_STORE_URL`, or a local SQLite default). Every PR and cluster record is stamped with `against_head_sha`. Understand what's recorded and what isn't.

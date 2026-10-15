@@ -94,8 +94,8 @@ def test_system_prompt_separates_background_behavior_and_output() -> None:
     )
 
 
-def test_system_prompt_renders_configured_review_bar(monkeypatch):
-    monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "greptile")
+def test_system_prompt_renders_configured_review_bar(monkeypatch, active_reviewers):
+    active_reviewers("greptile")
     monkeypatch.setenv("TRIAGE_REVIEW_THRESHOLD", str(4))
     sp = chat.system_prompt()
     assert "Greptile at 4/5" in sp
@@ -389,7 +389,7 @@ def test_context_has_critic_and_issue_guidance():
 
 
 def test_context_documents_upstream_writes_and_the_merge_limit():
-    sp = chat.system_prompt()
+    sp = " ".join(chat.system_prompt().split())
     # The prompt interpolates the configured deployment identity and repo.
     assert settings.bot_login() in sp
     assert settings.repo() in sp
@@ -401,7 +401,7 @@ def test_context_documents_upstream_writes_and_the_merge_limit():
     for direct in ("gh pr close", "gh pr reopen", "gh pr review"):
         assert direct not in sp
     assert "prospector_app/agent/close-issue" in sp
-    assert "never direct\n  `gh issue close`" in sp
+    assert "never use `gh issue close` directly" in sp
     # Updating a stale PR's branch is documented as the operator-identity path, so
     # the agent doesn't look for a bot command that isn't allowlisted.
     assert "resubmit <pr> update" in sp
@@ -410,24 +410,22 @@ def test_context_documents_upstream_writes_and_the_merge_limit():
     # edits and requires an exact old-head acknowledgement for the leased rewrite.
     assert "prepare --rebase" in sp
     assert "push --confirm-rewrite <full-old-head-sha>" in sp
-    assert "never change the\nshape or style" in sp.lower()
+    assert "never change the shape or style" in sp.lower()
     assert "force-with-lease" in sp
-    # ...and the hard "never merge" limit is stated.
-    assert "merge" in sp.lower()
-    assert "cannot" in sp.lower() or "never" in sp.lower()
+    assert "**Never merge**" in sp
 
 
 def test_context_keeps_cockpit_permission_failures_actionable() -> None:
-    sp = chat.system_prompt()
+    sp = " ".join(chat.system_prompt().split())
     assert "--comment-file" in sp
-    assert "do not use command substitution" in sp
+    assert "Do not use command substitution" in sp
     assert "Never tell the operator to use `/permissions`" in sp
     assert "those controls are not exposed in cockpit" in sp
-    assert "invoke each helper in its\nown tool call" in sp
-    assert "continue with\nthe remaining confirmed independent actions" in sp
+    assert "invoke each helper in its own tool call" in sp
+    assert "continue with the remaining confirmed independent actions" in sp
 
 
-def test_context_documents_the_review_retrigger(monkeypatch):
+def test_context_documents_the_review_retrigger(monkeypatch, active_reviewers):
     # Re-triggering the review is a bot comment carrying the provider's mention —
     # the prompt names the configured one so the agent doesn't have to guess it.
     sp = chat.system_prompt()
@@ -437,10 +435,17 @@ def test_context_documents_the_review_retrigger(monkeypatch):
     assert "{retrigger_mention}" not in sp
     # A deployment whose provider has no re-trigger says so, rather than leaving a
     # bare placeholder for the agent to invent a mention from.
-    monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "none")
+    active_reviewers()
     sp = chat.system_prompt()
     assert "@greptileai" not in sp
     assert "{retrigger_mention}" not in sp
+
+
+def test_context_names_each_reviewers_retrigger_apart(monkeypatch, active_reviewers):
+    active_reviewers("greptile", "coderabbit")
+    sp = chat.system_prompt()
+    assert "Greptile `@greptileai`; CodeRabbit `@coderabbitai review`" in sp
+    assert "@greptileai, @coderabbitai" not in sp
 
 
 def test_only_text_filters_with_no_write_or_exec_form_are_allowlisted():

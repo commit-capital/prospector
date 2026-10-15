@@ -28,12 +28,18 @@ from prospector_app.backend import autonomous_feed
 from prospector_app.backend import escalation
 from prospector_app.backend import cluster_refresh, rereview_hunt, stale_refresh, threat_refresh
 from prospector_app.backend import worker_control
+from prospector_app.backend import worker_log
+from prospector_app.backend import worker_loops
 from prospector_app.backend import worker_readiness
 from prospector_app.backend import bulk
 from prospector_app.backend import caps
 from prospector_app.backend import chat
 from prospector_app.backend import claims
 from prospector_app.backend import machine_activity
+from prospector_app.backend import control_overview
+from prospector_app.backend import lane_pause
+from prospector_app.backend import machine_mode
+from prospector_app.backend import queue_order
 from prospector_app.backend import machines
 from prospector_app.backend import merge_progress
 from prospector_app.backend import data
@@ -75,6 +81,7 @@ from pipeline import actions as pipeline_actions
 from pipeline import reviewers
 from pipeline import settings
 from pipeline import threat_evidence
+from pipeline import threat_scan
 
 class SurrogateSafeJSONResponse(JSONResponse):
     """JSON render that survives unpaired UTF-16 surrogates. GitHub text (review
@@ -267,6 +274,7 @@ def _launch_worker_cadences():
     threat_refresh.start()
     pr_watch.start()
     cluster_refresh.startup()
+    worker_loops.publish()
 
 
 @app.post("/api/worker/health/resume")
@@ -318,6 +326,80 @@ def machines_activity() -> machine_activity.ActivityView:
     """What every machine did in the past day, with its status — the Control
     tab's Recent activity panel."""
     return machine_activity.activity()
+
+
+@app.post("/api/machines/{host}/stand-down")
+def machines_stand_down(host: str, body: dict = Body(default={})):
+    """Mark a machine off on purpose: its silence and trips stop reading as
+    problems until one of its workers beats again."""
+    note = body.get("note")
+    return machine_mode.stand_down(host, by=activity.operator()["name"],
+                                   note=str(note) if note else None)
+
+
+@app.post("/api/machines/{host}/stand-up")
+def machines_stand_up(host: str):
+    return {"cleared": machine_mode.stand_up(host)}
+
+
+@app.post("/api/worker/lanes/{lane}/pause")
+def worker_lane_pause(lane: str, body: dict = Body(default={})):
+    """Pause one lane on one machine: it takes no new work until Resume."""
+    host = str(body.get("host") or "")
+    if not host:
+        raise HTTPException(400, "host required")
+    try:
+        return lane_pause.pause(host, lane, by=activity.operator()["name"])
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/worker/lanes/{lane}/resume")
+def worker_lane_resume(lane: str, body: dict = Body(default={})):
+    host = str(body.get("host") or "")
+    if not host:
+        raise HTTPException(400, "host required")
+    try:
+        return lane_pause.resume(host, lane)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/verify/queue/{n}/top")
+def verify_queue_top(n: int):
+    """Move a waiting verification to the front of its queue."""
+    return _queue_top("verify", n)
+
+
+@app.post("/api/fix/queue/{n}/top")
+def fix_queue_top(n: int):
+    return _queue_top("fix", n)
+
+
+@app.post("/api/issues/{n}/fix/top")
+def issue_fix_top(n: int):
+    return _queue_top("issue-fix", n)
+
+
+def _queue_top(kind: queue_order.Kind, n: int) -> dict:
+    try:
+        return queue_order.top(kind, n)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/worker/log")
+def worker_log_read(after: int | None = Query(None, ge=0),
+                    file: str | None = None) -> worker_log.WorkerLogRead:
+    """This machine's worker log, for the Now cell following it: the tail on a
+    first read, then what was written since byte `after` of `file`."""
+    return worker_log.read(after, file)
+
+
+@app.get("/api/control/overview")
+def control_overview_get(fresh: bool = False) -> control_overview.Overview:
+    """Health & queues in one read: machines, lanes, loops, needs, timeline."""
+    return control_overview.gather(fresh=fresh)
 
 
 @app.get("/api/health")
@@ -395,7 +477,7 @@ def prs_query(payload: dict = Body(...)):
     )
 
 
-MAX_PR_COUNT_SPECS = 20  # bounds one counts request; the Home screen sends a handful of specs
+MAX_PR_COUNT_SPECS = 24  # bounds one counts request; the Home screen sends a handful of specs
 
 
 @app.post("/api/prs/counts")
@@ -684,8 +766,9 @@ def setup_flags(body: models.WorkerFlags):
         worker_control.set_flags(body.flags)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    return {"applied": worker_control.apply(),
-            "readiness": worker_readiness.report()}
+    applied = worker_control.apply()
+    worker_loops.publish()
+    return {"applied": applied, "readiness": worker_readiness.report()}
 
 
 @app.post("/api/setup/share")
@@ -1011,7 +1094,7 @@ async def jobs_stop(job_id: int) -> jobs.JobView:
 @app.get("/api/capacity")
 def capacity_get() -> dict:
     """Each AI account's capacity: policy, newest reading, the cap in effect,
-    whether unattended agent work may start, and today's background spend."""
+    whether unattended agent work may start, and today's background cost."""
     from prospector_app.backend import capacity_view
     mine = capacity_view.this_account()
     return {"accounts": capacity_view.accounts(),
@@ -1100,8 +1183,10 @@ def merge_progress_pr(n: int):
 
 
 @app.post("/api/merge/pr/{n}")
-def merge_pr(n: int, method: str = "squash", dry_run: bool = True, reason: str | None = None):
-    res = executor.merge_pr(n, method, dry_run=dry_run, reason=reason)
+def merge_pr(n: int, method: str = "squash", dry_run: bool = True, reason: str | None = None,
+             compile_reason: str | None = None):
+    res = executor.merge_pr(n, method, dry_run=dry_run, reason=reason,
+                            compile_reason=compile_reason)
     training.capture(n, "MERGE", reason=reason, dry_run=dry_run, result=res)
     return res
 
@@ -1169,7 +1254,7 @@ def list_issues():
 def issues_query(payload: dict = Body(default_factory=dict)):
     """Paginated Issue-table endpoint. Body: {q?, sort?, direction?, disposition?,
     state?, author?, pain?, repro_grade?, subsystem?, dups?, linked_prs?, labels?,
-    collapse_dups?, fix_status?, offset?, limit?}; disposition "none" selects unanalyzed
+    collapse_dups?, fix_status?, maintainer?, offset?, limit?}; disposition "none" selects unanalyzed
     issues, state "open"/"closed" filters by lifecycle ("all"/absent returns
     both). See issues.query_issues for the per-field filter semantics."""
     return issues_mod.query_issues(
@@ -1185,6 +1270,7 @@ def issues_query(payload: dict = Body(default_factory=dict)):
         labels=payload.get("labels") or None,
         collapse_dups=bool(payload.get("collapse_dups")),
         fix_status=payload.get("fix_status") or None,
+        maintainer=payload.get("maintainer"),
         offset=int(payload.get("offset", 0)), limit=min(int(payload.get("limit", 50)), 500),
     )
 
@@ -1608,6 +1694,20 @@ def threats_get() -> threat_view.ThreatDetail:
     """The Threats view: open flagged PRs, the incident log, the actor
     blocklist, and the credentials still to rotate."""
     return threat_view.current_detail()
+
+
+@app.post("/api/prs/{n}/threat/clear-secret")
+def clear_secret_leak(n: int, payload: dict = Body(...)):
+    """Record the operator's judgment that PR #n's secret-leak finding at the
+    head they reviewed (`head_sha`) is no credential
+    (threat_scan.clear_secret_leak). 409 when the scan's head or finding is
+    not the one they reviewed."""
+    why = threat_scan.clear_secret_leak(data.store(), n, str(payload.get("head_sha") or ""),
+                                        by=activity.operator()["name"])
+    if why:
+        raise HTTPException(409, why)
+    data.refresh()
+    return {"ok": True}
 
 
 @app.get("/api/action-items")

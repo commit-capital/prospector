@@ -1,4 +1,6 @@
 """pipeline/reviewers.py — the ONE registry of automated PR reviewers and scanners."""
+import pytest
+
 from pipeline import reviewers
 from pipeline.model import Pr
 from pipeline.review_fetch import PrFeed
@@ -18,8 +20,9 @@ def _feed(**over) -> PrFeed:
 
 
 class TestRegistry:
-    def test_four_reviewers_with_kinds(self):
-        assert set(reviewers.REVIEWERS) == {"greptile", "coderabbit", "superagent", "socket"}
+    def test_registry_reviewers_with_kinds(self):
+        assert set(reviewers.REVIEWERS) == {"greptile", "coderabbit", "superagent", "socket",
+                                            "design"}
         assert reviewers.GREPTILE.kind == reviewers.REVIEW
         assert reviewers.SUPERAGENT.kind == reviewers.SCANNER
 
@@ -299,3 +302,73 @@ def test_coderabbit_stray_comment_dates_the_entry():
                             "at": "2026-06-18T00:00:00Z", "updated_at": None, "url": "c"}])
     e = reviewers.parse(reviewers.CODERABBIT, feed, HEAD, None)
     assert e is not None and e["observed_at"] == "2026-06-18T00:00:00Z"
+
+
+def _design(findings: list[dict], sha: str = HEAD) -> dict:
+    return {"kind": "review", "reviewed_sha": sha, "observed_at": "2026-10-13T00:00:00Z",
+            "score": None, "findings": findings, "summary": "s", "checks": [],
+            "extra": {"rubric": reviewers.DESIGN_RUBRIC}}
+
+
+def _df(severity: str, verdict: str = "confirmed") -> dict:
+    f = {"path": "a.ts", "line": 1, "severity": severity, "category": "reuse", "title": "t",
+         "body": "b", "resolved": False, "outdated": False}
+    if severity != "minor":
+        f["verification"] = {"verdict": verdict, "reason": "r"}
+    return f
+
+
+class TestDesign:
+    def test_no_bot_identity(self):
+        assert reviewers.DESIGN.source == reviewers.PROSPECTOR
+        assert reviewers.by_login("design") is None
+
+    def test_bar_states(self):
+        d = reviewers.DESIGN
+        assert reviewers.bar(d, None, HEAD).status == "pending"
+        assert reviewers.bar(d, _design([], OLD), HEAD).status == "stale"
+        fail = reviewers.bar(d, _design([_df("blocking"), _df("blocking")]), HEAD)
+        assert (fail.status, fail.reason) == ("fail", "design review: 2 open blocking findings")
+        major = reviewers.bar(d, _design([_df("major"), _df("minor")]), HEAD)
+        assert (major.status, major.reason) == ("fail", "design review: 1 open major finding")
+        assert reviewers.bar(d, _design([_df("minor")]), HEAD).status == "pass"
+
+    def test_an_earlier_rubric_reads_stale(self):
+        entry = {**_design([_df("minor")]), "extra": {}}
+        assert reviewers.bar(reviewers.DESIGN, entry, HEAD).status == "stale"
+        b = reviewers.bar(reviewers.DESIGN, entry, HEAD)
+        assert reviewers.digest(reviewers.DESIGN, entry, b, HEAD)["summary_line"] == \
+            "Design review 1 minor ⚠older rubric"
+
+    def test_an_unverified_rubric_stands_without_blocking_findings(self):
+        def rubric2(findings: list[dict]) -> dict:
+            return {**_design(findings), "extra": {"rubric": reviewers.DESIGN_SEVERITY_RUBRIC}}
+        assert reviewers.bar(reviewers.DESIGN, rubric2([_df("minor")]), HEAD).status == "pass"
+        assert reviewers.bar(reviewers.DESIGN, rubric2([]), HEAD).status == "pass"
+        assert reviewers.bar(reviewers.DESIGN, rubric2([_df("major")]), HEAD).status == "stale"
+
+    def test_ingest_carries_the_stored_entry(self):
+        prev = {"design": _design([_df("major")])}
+        assert reviewers.parse_all(_feed(), HEAD, prev)["design"] == prev["design"]
+        assert "design" not in reviewers.parse_all(_feed(), HEAD, None)
+
+    def test_fix_findings_are_blocking_and_major(self):
+        entry = _design([_df("blocking"), _df("major"), _df("minor")])
+        out = reviewers.findings_for_fix(reviewers.DESIGN, entry, HEAD, None)
+        assert [f["class"] for f in out] == ["substantive", "substantive"]
+        assert out[0]["path"] == "a.ts"
+
+    @pytest.mark.parametrize("verdict", ["refuted", "unverified"])
+    def test_only_confirmed_findings_fail_or_aim_a_fix(self, verdict):
+        entry = _design([_df("blocking", verdict), _df("major", verdict)])
+        assert reviewers.bar(reviewers.DESIGN, entry, HEAD).status == "pass"
+        assert reviewers.findings_for_fix(reviewers.DESIGN, entry, HEAD, None) == []
+
+    def test_counts_leave_out_refuted_and_name_unverified(self):
+        entry = _design([_df("major", "refuted"), _df("major", "unverified"), _df("major")])
+        assert reviewers.open_counts(entry) == {"major": 1, "unverified": 1}
+
+    def test_activity_registry_ignores_it(self):
+        pr = Pr(None, {"meta": {"state": "open", "head_sha": HEAD},
+                       "reviews": {"design": _design([])}})
+        assert "design" not in reviewers.seen_summary([pr])["seen"]

@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import pytest
 
+from pipeline import reviewers
 from pipeline import store as S
 from pipeline.storekit import now as _now
-from pipeline.testsupport import greptile_entry, reviews_section
+from pipeline.testsupport import bump_section, greptile_entry, reviews_section
 from prospector_app.backend import automation, data, service
 
 HEAD = "a" * 40
@@ -79,9 +80,41 @@ def test_a_stale_verdict_waits_on_the_reviewer(store):
     assert "reviewer" in out["reason"]
 
 
+def test_an_exempt_bump_is_yours_to_merge(store):
+    out = _classify(store, {**_rec(mergeable=False), "threat": bump_section(HEAD)})
+    assert (out["column"], out["owner"]) == ("handed", "you")
+
+
 def test_red_ci_at_the_author_s_head_is_the_author_s(store):
     out = _classify(store, _rec(ci="failing", greptile=4))
     assert (out["column"], out["bucket"], out["owner"]) == ("handed", "author-ci", "author")
+
+
+def test_a_head_the_required_checks_never_ran_on_is_handed_back_not_merge_ready(store):
+    out = _classify(store, _rec(ci="unreported", greptile=4))
+    assert (out["column"], out["bucket"]) == ("handed", "author-ci")
+    assert "update the branch" in out["reason"]
+
+
+def test_a_head_the_required_checks_never_ran_on_at_the_bar_is_the_hunter_s_update(store):
+    out = _classify(store, _rec(ci="unreported"))
+    assert (out["column"], out["bucket"]) == ("auto", "hunt")
+    assert "update" in out["reason"]
+
+
+def test_an_update_already_spent_on_this_head_rests(store):
+    rec = _rec(ci="unreported")
+    rec["fix_request"] = {"action": "update", "status": "refused", "source": "auto",
+                          "against_head_sha": HEAD, "host": "w", "queued_at": _now(),
+                          "refused_reason": "the update did not compile"}
+    out = _classify(store, rec)
+    assert out["bucket"] != "hunt"
+
+
+def test_a_head_whose_workflow_runs_await_approval_is_your_click(store):
+    out = _classify(store, _rec(ci="awaiting-approval"))
+    assert (out["column"], out["bucket"], out["owner"]) == ("act", "approve-ci", "you")
+    assert "approve the workflow run" in out["reason"]
 
 
 def test_a_refusal_the_agent_declined_is_handed_to_the_author_with_its_reasoning(store):
@@ -165,6 +198,22 @@ def test_ready_means_every_check_is_clear(store, monkeypatch):
     assert (out["column"], out["bucket"]) == ("act", "merge-ready")
 
 
+@pytest.mark.parametrize("design_sha", [HEAD, "b" * 40])
+def test_an_advisory_design_review_never_holds_a_ready_pick(store, monkeypatch, design_sha):
+    from pipeline import gates, review_policy
+    monkeypatch.setattr(gates, "verify_signals_incomplete", lambda pr: None)
+    monkeypatch.setenv("TRIAGE_DESIGN_REVIEW", "advisory")
+    review_policy.reset()
+    rec = _merge_pick(_rec(), verify={"outcome": "verified-fix", "checked_at": _now(),
+                                      "against_head_sha": HEAD, "against_base_sha": "b" * 40,
+                                      "signals": {}})
+    rec["reviews"]["design"] = {"kind": "review", "reviewed_sha": design_sha, "checks": [],
+                                "extra": {"rubric": reviewers.DESIGN_RUBRIC}, "findings": [{"severity": "blocking", "verification": {"verdict": "confirmed", "reason": "r"},
+                                                           "resolved": False, "outdated": False}]}
+    out = _classify(store, rec)
+    assert (out["column"], out["bucket"]) == ("act", "merge-ready")
+
+
 def test_a_ready_pick_whose_head_the_threat_scan_has_not_judged_waits_on_it(
         store, monkeypatch):
     from pipeline import gates
@@ -201,6 +250,34 @@ def test_a_merge_pick_whose_verification_never_ran_is_in_motion_not_ready(store)
     out = _classify(store, _merge_pick(_rec()))
     assert (out["column"], out["bucket"]) == ("auto", "waiting")
     assert "verification has not run" in out["reason"]
+
+
+def test_a_clean_reviewed_pr_analyze_never_reached_waits_on_analysis_not_ready(store):
+    rec = _merge_pick(_rec())
+    del rec["analysis"]
+    out = _classify(store, rec)
+    assert (out["column"], out["bucket"], out["owner"]) == ("auto", "waiting", "worker")
+    assert "not analyzed" in out["reason"]
+
+
+def test_a_merge_eligible_pr_on_a_codeowners_path_is_handed_to_you(store, monkeypatch):
+    from pipeline import profile
+    monkeypatch.setattr(profile, "active", lambda: profile.RepoProfile(
+        codeowners=profile.CodeownersPolicy(gated_globs=("skills/**",), owners=("@o",))))
+    monkeypatch.setattr(service, "changed_paths", lambda pr: ["skills/foo.md"])
+    rec = _merge_pick(_rec())
+    del rec["analysis"]
+    out = _classify(store, rec)
+    assert (out["column"], out["bucket"], out["owner"]) == ("handed", "gated", "you")
+    assert "skills/foo.md" in out["reason"]
+
+
+def test_an_unanalyzed_pr_without_a_security_review_waits_on_the_hunter(store):
+    rec = _merge_pick(_rec())
+    del rec["analysis"], rec["security"]
+    out = _classify(store, rec)
+    assert (out["column"], out["bucket"]) == ("auto", "waiting")
+    assert "security hunter" in out["reason"]
 
 
 def test_a_merge_pick_whose_verification_hit_a_machine_fault_is_in_motion(store):
@@ -256,3 +333,26 @@ def test_a_merge_pick_no_review_reached_waits_on_the_security_hunter(store):
     out = _classify(store, rec)
     assert (out["column"], out["bucket"]) == ("auto", "waiting")
     assert "security review has not run" in out["reason"]
+
+
+def _layer(n: int, head_ref: str, base: str, head_repo: str = "test-owner/test-repo") -> dict:
+    rec = _rec(n)
+    rec["meta"].update(head_ref=head_ref, head_repo=head_repo, base=base)
+    rec["security"] = {"verdict": "GREEN", "findings": [], "override": None,
+                       "checked_at": _now(), "against_head_sha": HEAD}
+    return rec
+
+
+def test_a_stacked_pr_waits_on_the_pr_it_is_stacked_on(store):
+    store.save_pr(_layer(10, "layer-1", "trunk"))
+    out = _classify(store, _layer(11, "layer-2", "layer-1"))
+    assert (out["column"], out["bucket"], out["owner"]) == ("handed", "stacked", "author")
+    assert out["reason"].startswith("stacked on #10 (layer-1)")
+    assert service.stacked_on(store.load_pr(10)) is None
+
+
+def test_a_fork_branch_of_the_same_name_is_not_the_base(store):
+    store.save_pr(_layer(10, "layer-1", "trunk", head_repo="someone/fork"))
+    out = _classify(store, _layer(11, "layer-2", "layer-1"))
+    assert out["bucket"] == "stacked"
+    assert out["reason"].startswith("stacked on branch layer-1")

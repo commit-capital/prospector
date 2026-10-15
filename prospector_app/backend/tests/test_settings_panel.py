@@ -39,6 +39,19 @@ def test_each_value_names_where_it_came_from(env_path):
     assert rows["TRIAGE_FIX_HUNT_LIMIT"]["source"] == "default"
 
 
+def test_a_retired_setting_still_set_is_named(env_path, monkeypatch):
+    env_path.write_text(env_path.read_text() + "TRIAGE_REVIEW_PROVIDER=greptile\n")
+    monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "greptile")
+    [row] = settings_panel.report()["retired"]
+    assert (row["name"], row["value"], row["source"]) == ("TRIAGE_REVIEW_PROVIDER", "greptile", ".env")
+    assert "TRIAGE_REVIEW_PROVIDER" not in _rows()
+
+
+def test_no_retired_setting_set_names_none(env_path, monkeypatch):
+    monkeypatch.delenv("TRIAGE_REVIEW_PROVIDER", raising=False)
+    assert settings_panel.report()["retired"] == []
+
+
 def test_the_sandbox_sizes_in_effect_are_shown(env_path):
     rows = _rows()
     assert rows["TRIAGE_SANDBOX_LARGE_SLOTS"]["effective"] == "2"

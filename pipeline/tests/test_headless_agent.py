@@ -772,7 +772,7 @@ def test_a_metered_run_is_booked_as_unattended_spend(monkeypatch, capacity_store
         ha.run_agent("hi", allow_gh=False, cwd="/tmp")
     (run,) = capacity_store.agent_runs("2000-01-01T00:00:00+00:00")
     assert (run["lane"], run["unattended"]) == ("fix", True)
-    assert capacity_store.capacity_spend("k", "2000-01-01T00:00:00+00:00") == 0.5
+    assert capacity_store.capacity_cost("k", "2000-01-01T00:00:00+00:00") == 0.5
 
 
 def test_a_reason_naming_a_pull_request_is_not_transient():

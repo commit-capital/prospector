@@ -55,6 +55,7 @@ const DISPO_ACTION: Record<string, (n: number) => string> = {
   "request-changes": (n) => `ask ${n} author${n > 1 ? "s" : ""} to address requested changes`,
   "close-dup": (n) => `close ${n} duplicate${n > 1 ? "s" : ""}`,
   "close-fixed": (n) => `close ${n} already-fixed upstream`,
+  "close-wontfix": (n) => `close ${n} as won't fix (wrong approach)`,
   "close-stale": (n) => `close ${n} stale / abandoned`,
   "needs-human": (n) => `route ${n} by hand (needs-human)`,
 };

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from pipeline import coverage
 from pipeline import freshness
 from pipeline import gates
 from pipeline import review_policy
@@ -18,22 +19,26 @@ if TYPE_CHECKING:
     from pipeline.model import Pr
 
 
-def _c(key: str, name: str, status: str, detail: str = "", at: str | None = None) -> dict:
-    return {"key": key, "name": name, "status": status, "detail": detail, "at": at}
+def _c(key: str, name: str, status: str, detail: str = "", at: str | None = None,
+       advisory: bool = False) -> dict:
+    """One rollup row. An `advisory` row is shown without counting toward
+    readiness or the passed/total tally."""
+    return {"key": key, "name": name, "status": status, "detail": detail, "at": at,
+            "advisory": advisory}
 
 
 # Stable identifiers for each named check, independent of the display name
-# (which varies with the configured review provider / default branch) — what
+# (which varies with the default branch) — what
 # the PR Explorer's per-check filter (#578) matches against.
-CHECK_KEYS = ("review", "ci", "scans", "mergeable", "tests", "drift", "secrets", "security",
+CHECK_KEYS = ("review", "design", "ci", "scans", "mergeable", "tests", "drift", "secrets", "security",
               "verify")
 
 
 def _aggregate(key: str, name: str, rec: Pr, kind: str, at: str | None) -> dict:
-    """One check row over every active reviewer of `kind`: pass when all pass,
-    fail when any fails, warn when any is stale or pending, na when none is
-    active. The detail names each reviewer's verdict."""
-    active = review_policy.active_reviewers(kind)
+    """One check row over every active GitHub reviewer of `kind`: pass when all
+    pass, fail when any fails, warn when any is stale or pending, na when none
+    is active. The detail names each reviewer's verdict."""
+    active = [r for r in review_policy.active_reviewers(kind) if r.source == reviewers.GITHUB]
     if not active:
         return _c(key, name, "na", "no active " + ("reviewer" if kind == reviewers.REVIEW else "scanner"), None)
     parts: list[str] = []
@@ -55,6 +60,29 @@ def _aggregate(key: str, name: str, rec: Pr, kind: str, at: str | None) -> dict:
     return _c(key, name, status, " · ".join(parts), at)
 
 
+_BAR_CHECK = {reviewers.PASS: "pass", reviewers.FAIL: "fail", reviewers.STALE: "warn",
+              reviewers.PENDING: "warn", reviewers.NA: "na"}
+
+
+def _design(rec: Pr) -> dict:
+    """The design review's row: its own bar and its changed-line coverage,
+    marked advisory unless it gates, and never-run while it has neither a
+    review nor a merge to hold."""
+    d = reviewers.DESIGN
+    entry = rec.review_entry(d.id)
+    gating = review_policy.is_active(d.id)
+    if entry is None and not gating:
+        return _c("design", d.label, "na", "not reviewed yet", None, advisory=True)
+    b = review_policy.own_bar(rec, d)
+    detail = reviewers.digest(d, entry, b, rec.head_sha)["summary_line"]
+    covered = coverage.summary(((entry or {}).get("extra") or {}).get("coverage"))
+    if covered:
+        detail = f"{detail} · {covered}"
+    return _c("design", d.label, _BAR_CHECK[b.status],
+              detail if gating else f"{detail} · advisory", (entry or {}).get("observed_at"),
+              advisory=not gating)
+
+
 def checks_for_record(rec: Pr, today: str | None = None) -> dict:
     """Roll `rec` up into named vetting checks — every check this deployment
     could run on a PR, not only the ones that have. A check with no data yet
@@ -68,11 +96,16 @@ def checks_for_record(rec: Pr, today: str | None = None) -> dict:
 
     reviews_at = (rec.reviews or {}).get("checked_at")
     by_key["review"] = _aggregate("review", "Code review", rec, reviewers.REVIEW, reviews_at)
+    by_key["design"] = _design(rec)
     by_key["scans"] = _aggregate("scans", "Security scans", rec, reviewers.SCANNER, reviews_at)
 
     ci = sig.get("ci")
     if ci:
-        by_key["ci"] = _c("ci", "CI", "pass" if ci == "passing" else "fail" if ci == "failing" else "na", ci, sig_at)
+        status = ("pass" if ci == "passing"
+                  else "fail" if ci in ("failing", "unreported", "awaiting-approval") else "na")
+        detail = {"unreported": gates.CI_UNREPORTED,
+                  "awaiting-approval": gates.CI_AWAITING_APPROVAL}.get(ci, ci)
+        by_key["ci"] = _c("ci", "CI", status, detail, sig_at)
     else:
         by_key["ci"] = _c("ci", "CI", "na", "no CI signal recorded yet", None)
 
@@ -90,7 +123,7 @@ def checks_for_record(rec: Pr, today: str | None = None) -> dict:
 
     extra: list[dict] = []
     if sig and not freshness.is_current(rec, "signals"):
-        extra.append(_c("signals_fresh", "Signals fresh", "warn", "head moved since signals were fetched", sig_at))
+        extra.append(_c("signals_fresh", "Up to date", "warn", "the PR changed since this was checked", sig_at))
 
     drift = rec.section("drift") or {}
     ds = rec.drift_state
@@ -110,19 +143,25 @@ def checks_for_record(rec: Pr, today: str | None = None) -> dict:
         sigs = rec.threat_signatures
         verdict = rec.threat_verdict
         threat_at = threat.get("checked_at")
-        clear = ("dependency bump, exempt from the signature scan"
-                 if (threat.get("detail") or {}).get("exempt") else "threat scan clear")
+        # a secret-leak an operator cleared reads as their judgment, not a finding
+        cleared = ((threat.get("cleared") or {}).get("secret-leak")
+                   if "secret-leak" in sigs and not gates.secret_leak_blocks(rec) else None)
+        found = [s for s in sigs if not (cleared and s == "secret-leak")]
+        clear = ("automatic library update, not scanned"
+                 if (threat.get("detail") or {}).get("exempt")
+                 else f"{cleared.get('by') or 'an operator'} judged the flagged key not a real secret"
+                 if cleared else "nothing harmful found")
         if verdict == "malicious":
             by_key["secrets"] = _c("secrets", "Threat scan", "fail", "malicious: " + (", ".join(sigs) or "flagged"), threat_at)
-        elif "secret-leak" in sigs:
-            by_key["secrets"] = _c("secrets", "Threat scan", "fail", "a live-looking credential is committed in the diff", threat_at)
+        elif "secret-leak" in found:
+            by_key["secrets"] = _c("secrets", "Threat scan", "fail", "contains what looks like a real password or key", threat_at)
         elif unscannable := gates.unscannable_reason(rec):
             by_key["secrets"] = _c("secrets", "Threat scan", "fail", unscannable, threat_at)
-        elif verdict == "suspicious":
-            by_key["secrets"] = _c("secrets", "Threat scan", "warn", "suspicious: " + ", ".join(sigs), threat_at)
+        elif verdict == "suspicious" and found:
+            by_key["secrets"] = _c("secrets", "Threat scan", "warn", "suspicious: " + ", ".join(found), threat_at)
         elif not freshness.is_current(rec, "threat"):
             reason = freshness.currency_failure(rec, "threat") or "stale"
-            tail = "earlier head" if reason.startswith("stale") else reason
+            tail = "older version of the PR" if reason.startswith("stale") else reason
             by_key["secrets"] = _c("secrets", "Threat scan", "warn", f"{clear} · STALE — {tail}", threat_at)
         else:
             by_key["secrets"] = _c("secrets", "Threat scan", "pass", clear, threat_at)
@@ -136,15 +175,15 @@ def checks_for_record(rec: Pr, today: str | None = None) -> dict:
         detail = f"{v} · {len(rec.findings)} finding(s)"
         if not freshness.is_current(rec, "security"):
             reason = freshness.currency_failure(rec, "security") or "stale"
-            tail = "earlier head" if reason.startswith("stale") else reason
+            tail = "older version of the PR" if reason.startswith("stale") else reason
             if v == "GREEN":
                 st, detail = "warn", f"{detail} · STALE — {tail}"
             else:
                 detail = (f"{detail} · {tail} — blocks merge until a GREEN review "
-                          "of this head")
-        by_key["security"] = _c("security", "Deep security review", st, detail, security.get("checked_at"))
+                          "of the latest version")
+        by_key["security"] = _c("security", "Security review", st, detail, security.get("checked_at"))
     else:
-        by_key["security"] = _c("security", "Deep security review", "na", "not run yet", None)
+        by_key["security"] = _c("security", "Security review", "na", "not run yet", None)
 
     # Dynamic verification (VERIFY): the sandbox red→green run. A current
     # verified-fix passes the automatic bar; every other concluded current
@@ -158,7 +197,7 @@ def checks_for_record(rec: Pr, today: str | None = None) -> dict:
     verify = rec.section("verify")
     if verify:
         o = rec.verify_outcome
-        detail = o or "in progress — blind verdict committed, no conclusion yet"
+        detail = o or "in progress — no result yet"
         if rec.verify_findings:
             detail += f" · {len(rec.verify_findings)} finding(s)"
         why_stale = freshness.currency_failure(rec, "verify",
@@ -167,20 +206,20 @@ def checks_for_record(rec: Pr, today: str | None = None) -> dict:
             st = "warn"
         elif (why_stale and o not in gates.VERIFY_AGES_OUT
               and freshness.is_current(rec, "verify")):
-            st, detail = "fail", f"{detail} · {why_stale} — blocks merge until a re-verify"
+            st, detail = "fail", f"{detail} · {why_stale} — blocks merge until the tests are re-run"
         elif why_stale:
-            tail = "earlier head" if why_stale.startswith("stale") else why_stale
+            tail = "older version of the PR" if why_stale.startswith("stale") else why_stale
             st, detail = "warn", f"{detail} · STALE — {tail}"
         else:
             st = "pass" if o == "verified-fix" else "fail"
             partial = gates.verify_signals_incomplete(rec) if st == "pass" else None
             if partial:
                 st, detail = "warn", f"{detail} · PARTIAL — {partial}"
-        by_key["verify"] = _c("verify", "Dynamic verification", st, detail, verify.get("checked_at"))
+        by_key["verify"] = _c("verify", "Test run", st, detail, verify.get("checked_at"))
     else:
-        by_key["verify"] = _c("verify", "Dynamic verification", "na", "not run yet", None)
+        by_key["verify"] = _c("verify", "Test run", "na", "not run yet", None)
 
     out = [by_key[k] for k in CHECK_KEYS if k in by_key] + extra
-    ran = [c for c in out if c["status"] != "na"]
+    ran = [c for c in out if c["status"] != "na" and not c["advisory"]]
     passed = [c for c in ran if c["status"] == "pass"]
     return {"checks": out, "passed": len(passed), "total": len(ran)}

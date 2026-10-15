@@ -8,6 +8,9 @@ terminal tab sends, and SIGTERM reach this process alone, and each of them
 stops it through that teardown. uvicorn's --reload worker tree shuts down on
 SIGINT but ignores SIGTERM, so teardown sends SIGINT to each group, waits
 briefly, then SIGKILLs survivors.
+While both run, a child that switches off the terminal's signal keys (raw mode)
+has the launcher's terminal settings put back, so Ctrl-C keeps reaching it, and
+the processes holding the terminal are named.
 Node/pnpm discovery stays in frontend-toolchain.sh, sourced by the bash child.
 """
 from __future__ import annotations
@@ -17,6 +20,7 @@ import signal
 import socket
 import subprocess
 import sys
+import termios
 import time
 from pathlib import Path
 from types import FrameType
@@ -94,6 +98,55 @@ def _killpg(proc: subprocess.Popen[bytes], sig: signal.Signals) -> None:
         pass
 
 
+def _foreground_terminal() -> int | None:
+    """stdin's fd when it is a terminal this launcher runs in the foreground of.
+    Setting a terminal's attributes from a background process stops it."""
+    try:
+        fd = sys.stdin.fileno()
+        if os.isatty(fd) and os.tcgetpgrp(fd) == os.getpgrp():
+            return fd
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def restore_signals(fd: int, saved: list[int | list[bytes | int]]) -> bool:
+    """Put `saved` back on terminal `fd` when its signal keys (ISIG) are off.
+    True when it had to."""
+    if termios.tcgetattr(fd)[3] & termios.ISIG:
+        return False
+    termios.tcsetattr(fd, termios.TCSANOW, saved)
+    return True
+
+
+def terminal_holders(fd: int) -> list[str]:
+    """`pid command` for each other process with terminal `fd` open."""
+    try:
+        out = subprocess.run(["lsof", "-Fpc", os.ttyname(fd)],
+                             stdin=subprocess.DEVNULL, capture_output=True,
+                             text=True, timeout=5).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    holders: list[str] = []
+    pid = ""
+    for line in out.splitlines():
+        if line.startswith("p"):
+            pid = line[1:]
+        elif line.startswith("c") and pid not in (str(os.getpid()), str(os.getppid())):
+            holders.append(f"{pid} {line[1:]}")
+    return holders
+
+
+def _guard_terminal(saved: list[int | list[bytes | int]]) -> None:
+    fd = _foreground_terminal()
+    if fd is None or not restore_signals(fd, saved):
+        return
+    print("⚠ a child process switched off Ctrl-C on this terminal; restored it."
+          " Processes holding the terminal:", file=sys.stderr)
+    for holder in terminal_holders(fd):
+        print(f"    {holder}", file=sys.stderr)
+
+
 def _stop(signum: int, frame: FrameType | None) -> None:
     """The first stop signal ends the supervision loop; the copies that follow
     it (a closed tab under `uv run` delivers several) are ignored, so none of
@@ -134,6 +187,8 @@ def run() -> int:
 
     for sig in STOP_SIGNALS:
         signal.signal(sig, _stop)
+    fd = _foreground_terminal()
+    saved = termios.tcgetattr(fd) if fd is not None else None
     procs: list[subprocess.Popen[bytes]] = []
     try:
         print(f"→ backend  http://localhost:{api_port}  (API)")
@@ -161,8 +216,13 @@ def run() -> int:
                 code = proc.poll()
                 if code is not None:
                     return code
+            if saved is not None:
+                _guard_terminal(saved)
             time.sleep(0.5)
     except KeyboardInterrupt:
         return 0
     finally:
         _teardown(procs)
+        fd = _foreground_terminal()
+        if saved is not None and fd is not None:
+            termios.tcsetattr(fd, termios.TCSANOW, saved)

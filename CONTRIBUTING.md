@@ -51,7 +51,7 @@ CI against its local PostgreSQL service.
 - Never commit `.env`, private keys, database files, generated status reports,
   cached diffs, or deployment operating data.
 
-`CLAUDE.md` is the authoritative trust model. Changes to upstream-write paths,
+`AGENTS.md` is the authoritative trust model. Changes to upstream-write paths,
 bot identity, command allowlists, merge gates, or activity logging deserve
 explicit security-focused tests and review.
 

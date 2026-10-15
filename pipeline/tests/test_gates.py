@@ -3,10 +3,10 @@ implementations (checks._tier0_is_clean, verdict.gate_decision, app
 merge_concerns)."""
 import pytest
 
-from pipeline import gates, profile, review_policy
+from pipeline import gates, profile, review_policy, reviewers, settings
 from pipeline.model import Cluster, Pr
 from pipeline.store import Store
-from pipeline.testsupport import threat_section
+from pipeline.testsupport import bump_section, threat_section
 
 
 HEAD = "abc123"
@@ -134,9 +134,9 @@ class TestPRClean:
         ok, reasons = gates.pr_clean(rec, today="2026-06-10")
         assert not ok and any("greptile" in r for r in reasons)
 
-    def test_none_provider_ignores_review(self, monkeypatch):
-        # No provider configured: a PR with no review score is still clean.
-        monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "none")
+    def test_no_reviewer_seen_ignores_review(self, monkeypatch, active_reviewers):
+        # No reviewer seen on the repository: a PR with no review score is still clean.
+        active_reviewers()
         rec = _pr()
         del rec.raw["reviews"]["greptile"]
         ok, reasons = gates.pr_clean(rec, today="2026-06-10")
@@ -261,6 +261,14 @@ class TestMergeAllowed:
         ok, reason = gates.merge_allowed(rec, today="2026-06-10")
         assert not ok
         assert "11d old, outside the 7d window" in reason and "re-run VERIFY" in reason
+
+
+class TestMergeRank:
+    def test_merge_eligible_then_clean_then_the_rest(self):
+        assert gates.merge_rank(_pr(security=_green())) == 0
+        assert gates.merge_rank(_pr()) == 1
+        assert gates.merge_rank(_pr(security=_green(verdict="RED"))) == 1
+        assert gates.merge_rank(_pr(threat=None)) == 2
 
 
 class TestMergeEligibility:
@@ -422,6 +430,39 @@ class TestMergeEligibility:
         assert not ok
 
 
+class TestStacked:
+    """A PR whose base is another PR's branch is out of every merge and hunt,
+    however clean it reads against the default branch."""
+
+    def _stacked(self, base: str = "layer-1") -> Pr:
+        rec = _pr(analysis=_merge_analysis(), security=_green(), verify=_verified())
+        rec.raw["meta"]["base"] = base
+        return rec
+
+    def test_a_pr_on_the_default_branch_is_not_stacked(self):
+        rec = self._stacked(base="trunk")
+        assert gates.stacked_block(rec) is None
+        assert gates.merge_eligibility(rec, today="2026-06-10")[0]
+        assert gates.merge_allowed(rec, today="2026-06-10")[0]
+
+    def test_merge_gates_block_with_the_base_named(self):
+        rec = self._stacked()
+        for ok, reason in (gates.merge_eligibility(rec, today="2026-06-10",
+                                                   override_reason="ship it"),
+                           gates.merge_allowed(rec, today="2026-06-10")):
+            assert not ok and "stacked on layer-1, not trunk" in reason
+
+    def test_no_hunter_pool_takes_it(self):
+        rec = self._stacked()
+        rec.raw.pop("security")
+        assert not gates.security_eligible(rec, today="2026-06-10")
+        assert not gates.verify_eligible(rec, ["src/a.ts"], today="2026-06-10")
+        assert not gates.blocked_on_security(rec, today="2026-06-10")
+        for action in gates.HUNTABLE_ACTIONS:
+            ok, reason = gates.fix_huntable(rec, action, ["src/a.ts"])
+            assert not ok and "stacked on layer-1" in reason
+
+
 class TestBlockedOnSecurity:
     """True iff a clean merge PR is blocked solely because its security review is
     missing/stale/>7d — i.e. re-running SECURITY is exactly what unblocks merge.
@@ -466,6 +507,9 @@ class TestBlockedOnSecurity:
                          _merge_analysis(disposition="needs-human")):
             rec = _pr(analysis=analysis) if analysis else _pr()
             assert gates.blocked_on_security(rec, today="2026-06-10")
+
+    def test_an_exempt_bump_is_not_blocked_on_security(self):
+        assert not gates.blocked_on_security(_pr(threat=bump_section(HEAD)), today="2026-06-10")
 
     def test_a_stale_close_route_does_not_keep_a_pr_out(self):
         rec = _pr(analysis=_merge_analysis(disposition="close-dup", against_head_sha="OLD"))
@@ -675,6 +719,21 @@ class TestNarrativeStaleness:
         reasons = gates.narrative_staleness(c, {1: pr})
         assert reasons == ["#1 is now request-changes; the analysis proposed merge"]
 
+    def test_disposition_won_by_another_cluster_does_not_flag(self):
+        # A straddler whose needs-human came from another cluster's proposal:
+        # re-running this cluster's analysis cannot change it.
+        pr = _pr(analysis=_merge_analysis(disposition="needs-human", from_cluster=2))
+        c = self._cluster([pr], proposals=[{"pr": 1, "disposition": "request-changes"}])
+        assert gates.narrative_staleness(c, {1: pr}) == []
+
+    def test_demotion_of_this_clusters_pick_flags(self):
+        pr = _pr(analysis=_merge_analysis(from_cluster=1),
+                 security=_green(verdict="RED", findings=[{"title": "authz bypass"}],
+                                 checked_at="2026-05-20T00:00:00+00:00"))
+        c = self._cluster([pr])
+        assert gates.narrative_staleness(c, {1: pr}) == [
+            "#1 is now needs-human; the analysis proposed merge"]
+
     def test_closed_members_are_skipped(self):
         pr = _pr(analysis=_merge_analysis(),
                  security=_green(verdict="RED", findings=[{"title": "authz bypass"}]))
@@ -692,7 +751,7 @@ def test_reconcile_disposition_most_blocking_wins():
 
 
 def test_reconcile_disposition_full_order():
-    order = ["needs-human", "close-dup", "close-fixed", "close-stale",
+    order = ["needs-human", "close-dup", "close-fixed", "close-wontfix", "close-stale",
              "request-changes", "merge"]
     for i, hi in enumerate(order):
         for lo in order[i + 1:]:
@@ -1297,6 +1356,36 @@ class TestVerifyRunErrored:
         host = {"apply_exit": 0, "red_exit": None, "green_exit": None,
                 "no_test_hunks": True}
         assert gates.verify_run_errored(_blind(), host, regress=None) is False
+
+    def test_a_failed_test_setup_errored(self):
+        host = _host(red_exit=gates.SENTINEL_SETUP_FAIL)
+        assert gates.verify_run_errored(_blind(), host, regress=None) is True
+        assert gates.verify_outcome(_blind(), host, _judge(), regress=None) is None
+
+    def test_a_test_file_that_failed_to_load_in_both_legs_errored(self):
+        line = 'Error: Failed to resolve entry for package "@acme/sdk".'
+        host = _host(red_exit=20, green_exit=20, red_load_error=line,
+                     green_load_error=line)
+        assert gates.shared_load_error(host) == line
+        assert gates.verify_run_errored(_blind(), host, regress=None) is True
+        assert gates.verify_outcome(_blind(), host, _judge(), regress=None) is None
+
+    def test_different_load_errors_in_red_and_green_are_a_verdict(self):
+        # Red cannot import what the fix adds; green fails on the PR's own
+        # missing module: evidence about the PR, not the harness.
+        host = _host(red_exit=20, green_exit=20,
+                     red_load_error="SyntaxError: does not provide an export named 'fix'",
+                     green_load_error="Error: Cannot find module './helper'")
+        assert gates.shared_load_error(host) is None
+        assert gates.verify_outcome(_blind(), host, _judge(), regress=None) == "not-verified"
+
+    def test_a_load_error_with_a_passing_green_is_not_shared(self):
+        line = "Error: Cannot find module './fix'"
+        host = _host(red_load_error=line, green_load_error=line)
+        assert gates.shared_load_error(host) is None
+
+    def test_a_hold_is_a_system_fault_the_hunter_retries(self):
+        assert gates.VERIFY_REQUEST_FAULT["hold"] == "system"
 
     def test_it_agrees_with_verify_outcome_on_every_errored_run_hold(self):
         # The two must never disagree: whenever the host facts error, no outcome
@@ -2300,6 +2389,23 @@ class TestCompilePreflightGate:
         assert "docker not found" in why and "refused" in why
 
 
+class TestCompilePreflightWaivable:
+    def test_a_check_that_could_not_run_is_waivable(self):
+        for rec in ({"error": "OSError: docker not found"},
+                    {"error": "BuildFailure: pnpm install failed"},
+                    {"refused": "the PR changes dependency manifests"},
+                    {}, {"exit": 10}, {"exit": 40}, {"exit": 124}):
+            assert gates.compile_preflight_waivable(rec) is True, rec
+
+    def test_a_compile_failure_the_base_shares_is_waivable(self):
+        assert gates.compile_preflight_waivable(
+            {"exit": 20, "error": "base fault", "error_kind": "base-compile"}) is True
+
+    def test_a_verdict_on_the_pr_is_never_waivable(self):
+        for rec in ({"exit": 20, "error_excerpt": "error TS2739"}, {"exit": 30}, {"exit": 0}):
+            assert gates.compile_preflight_waivable(rec) is False, rec
+
+
 class TestLaneOutcomes:
     BLIND = {"test_cmd": "npx vitest run x.test.ts", "faithful": True}
     HOST = {"apply_exit": 0, "red_exit": 20, "green_exit": 0,
@@ -2465,6 +2571,25 @@ class TestFixEligibility:
             ok, why = gates.fix_eligibility(_pr(), action)
             assert ok is True, why
             assert action in why
+
+    @pytest.mark.parametrize("meta, why", [
+        ({"head_repo": None}, "upstream repository itself"),
+        ({"head_repo": "someone/fork", "maintainer_can_modify": False},
+         "Allow edits from maintainers"),
+    ])
+    def test_an_unpushable_head_is_refused_but_described(self, monkeypatch, meta, why):
+        self._profile(monkeypatch, fixable_gates=("review",))
+        meta = {**meta, "head_repo": meta["head_repo"] or settings.repo()}
+        pr = _pr(meta={"title": "t", "state": "open", "head_sha": HEAD, **meta})
+        for action in ("update", "rebase", "fix", "resolve"):
+            ok, reason = gates.fix_eligibility(pr, action, changed_paths=["src/a.ts"])
+            assert ok is False and why in reason
+        assert gates.fix_eligibility(pr, "describe")[0] is True
+
+    def test_an_unread_push_permission_does_not_block(self):
+        pr = _pr(meta={"title": "t", "state": "open", "head_sha": HEAD,
+                       "head_repo": "someone/fork"})
+        assert gates.fix_eligibility(pr, "update")[0] is True
 
     def test_unknown_action_refused(self):
         ok, why = gates.fix_eligibility(_pr(), "amend")
@@ -2643,6 +2768,12 @@ class TestFixHuntable:
         ok, why = gates.fix_huntable(self._stale(), "rebase")
         assert ok is True, why
 
+    def test_an_exempt_bump_is_never_hunted(self, monkeypatch):
+        self._profile(monkeypatch)
+        for action in ("rebase", "update"):
+            ok, _ = gates.fix_huntable(self._stale(threat=bump_section(HEAD)), action)
+            assert ok is False, action
+
     def test_review_bar_unmet_refused(self, monkeypatch):
         self._profile(monkeypatch)
         pr = self._stale()
@@ -2744,6 +2875,29 @@ class TestFixHuntable:
         ok, why = gates.fix_huntable(self._below_bar(), "fix")
         assert ok is False
 
+    def _design_failing(self) -> Pr:
+        """At Greptile's bar, with a blocking design finding at the head."""
+        design = {"kind": "review", "reviewed_sha": HEAD, "checks": [], "extra": {"rubric": reviewers.DESIGN_RUBRIC},
+                  "findings": [{"severity": "blocking", "verification": {"verdict": "confirmed", "reason": "r"}, "resolved": False, "outdated": False}]}
+        return _pr(reviews=_reviews(design=design))
+
+    def test_a_failing_design_review_is_fix_huntable_when_named(self, monkeypatch):
+        self._profile(monkeypatch, fixable_gates=("design",))
+        monkeypatch.setenv("TRIAGE_DESIGN_REVIEW", "advisory")
+        review_policy.reset()
+        ok, why = gates.fix_huntable(self._design_failing(), "fix")
+        assert ok is True, why
+
+    @pytest.mark.parametrize("mode", ["advisory", "gate"])
+    def test_a_design_review_is_not_a_review_fix_target(self, monkeypatch, mode, active_reviewers):
+        self._profile(monkeypatch, fixable_gates=("review",))
+        active_reviewers("greptile")
+        monkeypatch.setenv("TRIAGE_DESIGN_REVIEW", mode)
+        review_policy.reset()
+        ok, why = gates.fix_huntable(self._design_failing(), "fix")
+        assert ok is False
+        assert "stale or pending" not in why
+
     def test_never_hunts_a_resolve(self, monkeypatch):
         self._profile(monkeypatch, fixable_gates=("review",))
         ok, why = gates.fix_huntable(self._below_bar(), "resolve")
@@ -2758,9 +2912,8 @@ class TestMultiReviewerClean:
         return {"kind": "scanner", "reviewed_sha": HEAD, "checks": [], "extra": {},
                 "findings": [{"severity": severity, "resolved": False, "outdated": False}]}
 
-    def test_every_active_reviewer_gates(self, monkeypatch):
-        monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "greptile,coderabbit,superagent")
-        review_policy.reset()
+    def test_every_active_reviewer_gates(self, monkeypatch, active_reviewers):
+        active_reviewers("greptile", "coderabbit", "superagent")
         rec = _pr(reviews=_reviews(superagent=self._superagent()))
         ok, reasons = gates.pr_clean(rec)
         assert not ok
@@ -2791,27 +2944,24 @@ class TestMultiReviewerClean:
         asks = gates.bar_asks(reasons, rec)
         assert any("5/5" in a for a in asks)
 
-    def test_scanner_block_demotes_a_merge_pick(self, monkeypatch):
-        monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "greptile,superagent")
-        review_policy.reset()
+    def test_scanner_block_demotes_a_merge_pick(self, monkeypatch, active_reviewers):
+        active_reviewers("greptile", "superagent")
         rec = _pr(analysis=_merge_analysis(), security=_green(),
                   reviews=_reviews(superagent=self._superagent("P1")))
         route = gates.merge_demotion(rec)
         assert route is not None and route[0] == "request-changes"
         assert any("Superagent" in a for a in route[2])
 
-    def test_fix_not_huntable_under_scanner_block(self, monkeypatch):
-        monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "greptile,superagent")
-        review_policy.reset()
+    def test_fix_not_huntable_under_scanner_block(self, monkeypatch, active_reviewers):
+        active_reviewers("greptile", "superagent")
         p = profile.RepoProfile(autofix=profile.AutofixPolicy(fixable_gates=("review",)))
         monkeypatch.setattr(profile, "active", lambda: p)
         rec = _pr(reviews=_reviews(greptile=_greptile(3), superagent=self._superagent("P1")))
         ok, why = gates.fix_huntable(rec, "fix")
         assert not ok and "superagent" in why
 
-    def test_coderabbit_fail_is_fix_huntable(self, monkeypatch):
-        monkeypatch.setenv("TRIAGE_REVIEW_PROVIDER", "greptile,coderabbit")
-        review_policy.reset()
+    def test_coderabbit_fail_is_fix_huntable(self, monkeypatch, active_reviewers):
+        active_reviewers("greptile", "coderabbit")
         p = profile.RepoProfile(autofix=profile.AutofixPolicy(fixable_gates=("review",)))
         monkeypatch.setattr(profile, "active", lambda: p)
         cr = {"kind": "review", "reviewed_sha": HEAD, "checks": [], "extra": {},

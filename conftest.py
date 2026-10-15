@@ -53,8 +53,26 @@ os.environ.setdefault("TRIAGE_PROFILE", os.path.join(
 # Unattended agent work is marked by this variable; a developer's shell must
 # never make a test's agent calls gated.
 os.environ.pop("PROSPECTOR_UNATTENDED", None)
+# A PR fixture carries no design review, so the gating default would hold
+# every merge on one; tests of the design gate set the mode themselves.
+os.environ["TRIAGE_DESIGN_REVIEW"] = "advisory"
 
 import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _restore_process_env():
+    """Code under test writes os.environ on purpose (`worker_control.set_flags`,
+    `settings.load_env_file`), and `monkeypatch.delenv(..., raising=False)` on an
+    unset key records nothing to undo. Without this, such a write outlives its
+    test and reaches whichever tests xdist runs next in that process: a leaked
+    TRIAGE_WORKER_ID re-keys `settings.worker_id()` and hides every verify pin a
+    later test saves under the host name."""
+    saved = dict(os.environ)
+    yield
+    if os.environ != saved:
+        os.environ.clear()
+        os.environ.update(saved)
 
 
 @pytest.fixture(autouse=True)
@@ -66,11 +84,49 @@ def _no_real_ai_account(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_bot_account_lookup(monkeypatch):
+    """`resubmit_identity.commit_identity` asks GitHub for the App's bot
+    account; no test reaches it, so machine commits carry the push user. A test
+    that needs the App's account sets one."""
+    from prospector_app.backend import resubmit_identity
+    monkeypatch.setattr(resubmit_identity, "_account_id", lambda login: None)
+
+
+@pytest.fixture(autouse=True)
 def _no_related_pr_search(monkeypatch):
     """`related_prs.search` asks GitHub's search which pull requests name an
     issue; no test reaches it. A test that needs pull requests found sets them."""
     from issue_triage import related_prs
     monkeypatch.setattr(related_prs, "search", lambda issue, exclude=None: [])
+
+
+@pytest.fixture(autouse=True)
+def _no_trust_boundary_reviewer(monkeypatch):
+    """`trust_boundary.review` runs an agent over every fix that clears the
+    lane's other checks; no test reaches it, so a fix crosses no boundary the
+    reviewer names. A test that needs crossings sets them."""
+    from issue_triage import trust_boundary
+    monkeypatch.setattr(trust_boundary, "review",
+                        lambda *a, **k: {"crossings": [], "reason": "no reviewer in tests"})
+
+
+@pytest.fixture(autouse=True)
+def _no_comparison_judge(monkeypatch):
+    """`second_opinion.compare` runs an agent over another author's pull
+    request; no test reaches it, so it names no case our fix misses. A test
+    that needs cases sets them."""
+    from issue_triage import second_opinion
+    monkeypatch.setattr(second_opinion, "compare", lambda *a, **k: [])
+
+
+@pytest.fixture(autouse=True)
+def _no_intake_reviewer(monkeypatch):
+    """`intake_audit.review` runs an agent over an outsider's report before the
+    factory builds it; no test reaches it, so a report reads clear. A test that
+    needs another verdict sets one."""
+    from issue_triage import intake_audit
+    monkeypatch.setattr(intake_audit, "review", lambda *a, **k: {
+        "verdict": "clear", "findings": [], "reason": "no reviewer in tests"})
 
 
 class _OfflineGitHub:

@@ -388,6 +388,10 @@ def test_operator_login_none_when_gh_fails(monkeypatch):
     assert gh.operator_login() is None
 
 
+def test_noreply_email_is_the_per_account_form():
+    assert gh.noreply_email(583231, "octocat") == "583231+octocat@users.noreply.github.com"
+
+
 def test_gh_api_refuses_a_flag_shaped_path(monkeypatch):
     def run(*a, **k):
         raise AssertionError("gh must not run")

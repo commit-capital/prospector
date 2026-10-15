@@ -116,6 +116,7 @@ CLOSE_REASONS = {
     "CLOSE_DUP": "duplicate",
     "CLOSE_FIXED": "already-fixed",
     "CLOSE_STALE": "stale",
+    "CLOSE_WONTFIX": "won't-fix",
     "CLOSE_OVERSIZED": "oversized",
     "CLOSE": "manual",
 }

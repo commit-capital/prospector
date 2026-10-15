@@ -21,7 +21,7 @@ import subprocess
 from pathlib import Path
 from typing import NamedTuple
 
-from pipeline import profile, settings
+from pipeline import profile, settings, settings_registry
 from prospector_app.backend import data, env_file
 
 BUNDLE_VERSION = 2
@@ -47,7 +47,7 @@ _REPO_RE = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+\Z")
 STEP_KEYS: dict[str, tuple[str, ...]] = {
     "connect": ("TRIAGE_REPO", "TRIAGE_STORE_URL", "TRIAGE_PROFILE",
                 "TRIAGE_DEFAULT_BRANCH", "TRIAGE_DISPLAY_NAME",
-                "TRIAGE_REVIEW_PROVIDER", "TRIAGE_REVIEW_THRESHOLD",
+                "TRIAGE_REVIEW_THRESHOLD",
                 "PROSPECTOR_FEEDBACK_REPO"),
     "writes": ("TRIAGE_BOT_LOGIN", "TRIAGE_BOT_APP_ID", "TRIAGE_BOT_KEY_FILE"),
     "worker": PUSH_KEYS,
@@ -116,7 +116,7 @@ def _validated(step: str, updates: dict[str, str]) -> dict[str, str]:
 
 
 class PushIdentity(NamedTuple):
-    """A contributor-push identity as it travels: the login, its commit email,
+    """A contributor-push identity as it travels: the login, its no-reply email,
     and the SSH private key itself."""
     login: str
     email: str
@@ -364,7 +364,8 @@ def parse_bundle(text: str) -> Bundle:
         push = PushIdentity(str(raw_push.get("login", "")).strip(),
                             str(raw_push.get("email", "")).strip(),
                             str(raw_push.get("ssh_key", "")))
-    return Bundle({str(k): str(v) for k, v in env.items()},
+    return Bundle({str(k): str(v) for k, v in env.items()
+                   if str(k) not in settings_registry.RETIRED},
                   prof if isinstance(prof, dict) else None,
                   pem if isinstance(pem, str) and pem.strip() else None,
                   push)

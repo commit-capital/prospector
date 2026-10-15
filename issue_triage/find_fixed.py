@@ -87,8 +87,8 @@ def scan_batch(store: IssueStore, numbers: list[int]) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--limit", type=int, default=12,
-                    help="max issues to scan this wave (default 12)")
+    ap.add_argument("--limit", type=int, default=200,
+                    help="max issues to scan this wave (default 200)")
     ap.add_argument("--batch", type=int, default=6,
                     help="issues per agent call (default 6)")
     ap.add_argument("--concurrency", type=int, default=4,

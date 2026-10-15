@@ -25,8 +25,17 @@ def main(argv: list[str] | None = None) -> int:
         choices=("approve", "request-changes", "comment"),
         help="the GitHub review event to submit",
     )
-    p.add_argument("--body", default="", help="the review body")
+    body = p.add_mutually_exclusive_group()
+    body.add_argument("--body", default="", help="the review body")
+    body.add_argument("--body-file", type=Path, help="read the review body from this file")
     args = p.parse_args(argv)
+
+    body_text = args.body
+    if args.body_file is not None:
+        try:
+            body_text = args.body_file.read_text()
+        except OSError as e:
+            p.error(f"cannot read body file {args.body_file}: {e}")
 
     token = executor.mint_bot_token()
     if not token:
@@ -35,7 +44,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     result = executor.submit_review(
-        args.pr, args.event, args.body, token=token, dry_run=False,
+        args.pr, args.event, body_text, token=token, dry_run=False,
     )
     print(json.dumps(result, sort_keys=True))
     return 0 if result.get("status") == "executed" else 1
