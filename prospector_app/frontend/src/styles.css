@@ -913,6 +913,9 @@ html.ap-resizing .agentpane { transition: none; }
 .ap-session-remove { flex: 0 0 auto; border: none; background: none; color: var(--muted); padding: 2px 8px;
   font: inherit; font-size: 14px; line-height: 1; cursor: pointer; opacity: .55; }
 .ap-session-remove:hover, .ap-session-remove:focus-visible { color: var(--red); opacity: 1; }
+.ap-recent-archived { border-top: 1px solid var(--border); margin-top: 4px; padding-top: 4px; }
+.ap-recent-archived-toggle { color: var(--muted); }
+.ap-recent-archived .ap-recent-item { padding-left: 10px; }
 .agentpane-log-wrap { position: relative; flex: 1; min-height: 0; display: flex; }
 .agentpane-log { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
 .ap-follow-latest { position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); z-index: 1;
