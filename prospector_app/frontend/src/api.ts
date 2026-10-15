@@ -1263,6 +1263,8 @@ export interface ThreatStamp {
   cleared?: { "secret-leak"?: { by: string; at: string; evidence: string | null } };
 }
 
+export interface PRDisplay { problem: string; fix: string; why: string[]; how: string[] }
+
 export interface PRDetail extends PRRow {
   body?: string | null;
   security_detail?: SafetyVerdict | null;
@@ -1277,7 +1279,9 @@ export interface PRDetail extends PRRow {
   size?: { additions: number | null; deletions: number | null; changed_files: number | null };
   reviews_detail?: ReviewsDetail | null;
   ci_checks?: { name: string; conclusion: string; status: string }[];
-  summary?: { one_liner?: string | null; mechanism?: string | null } | null;
+  summary?: { one_liner?: string | null } | null;
+  // the plain-language card (pipeline/display_pass.py); null until written for this head and verdict
+  display?: PRDisplay | null;
   // the processing rows ahead of the checks: summary, cluster, analysis
   stages?: CheckItem[];
   merge_gate?: { ok: boolean; reason: string; overridable?: boolean; override_kind?: "security" | "unreviewed" | "verify" | null };
@@ -2440,6 +2444,7 @@ export const api = {
     });
     return r.json() as Promise<ExecResult>;
   },
+  writeDisplay: (n: number) => postJson<PRDisplay>(`/api/prs/${n}/display`, {}),
   clearSecretLeak: (n: number, headSha: string) =>
     postJson<{ ok: boolean }>(`/api/prs/${n}/threat/clear-secret`, { head_sha: headSha }),
   retriggerReview: async (n: number, reviewer: string, dryRun: boolean) => {

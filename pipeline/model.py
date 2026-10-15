@@ -657,6 +657,11 @@ class Pr:
         _stamp(self.rec, "greptile_review", payload, head_sha)
         self._persist()
 
+    def set_display(self, payload: dict, *, head_sha: str | None = None) -> None:
+        """Stamp the page's plain-language card (pipeline/display_pass.py)."""
+        _stamp(self.rec, "display", payload, head_sha)
+        self._persist()
+
     def mark_standalone(self) -> None:
         """Stamp a cluster section with an empty id-list — a PR a clustering pass
         considered but placed in no cluster (a confirmed singleton). Membership

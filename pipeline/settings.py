@@ -338,6 +338,10 @@ def cluster_daily_clusters() -> int:
     return positive_int("TRIAGE_CLUSTER_DAILY_CLUSTERS", 30)
 
 
+def display_daily() -> int:
+    return positive_int("TRIAGE_DISPLAY_DAILY", 60)
+
+
 def issue_fix_hunt() -> bool:
     """Whether an idle issue-fix worker queues attempts on issues itself."""
     return os.environ.get("TRIAGE_ISSUE_FIX_HUNT", "") == "1"

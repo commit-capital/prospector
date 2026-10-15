@@ -27,7 +27,8 @@ from prospector_app.backend import alerts as alerts_mod
 from prospector_app.backend import autohunt_view
 from prospector_app.backend import autonomous_feed
 from prospector_app.backend import escalation
-from prospector_app.backend import cluster_refresh, rereview_hunt, stale_refresh, threat_refresh
+from prospector_app.backend import (cluster_refresh, display_refresh, rereview_hunt, stale_refresh,
+                                    threat_refresh)
 from prospector_app.backend import worker_control
 from prospector_app.backend import worker_log
 from prospector_app.backend import worker_loops
@@ -81,6 +82,8 @@ from prospector_app.backend import verify_worker
 from prospector_app.backend import work_status
 
 from pipeline import actions as pipeline_actions
+from pipeline import display_pass
+from pipeline import headless_agent
 from pipeline import reviewers
 from pipeline import settings
 from pipeline import threat_evidence
@@ -268,7 +271,8 @@ def _launch_worker_cadences():
     """Start a worker machine's cadences: the stale merge-candidate refresh,
     the re-review hunter, the threat scan of new heads, the watch that records
     new and pushed-to PRs from GitHub, the author-responses sweep, the Docker
-    disk check, and the clustering lane. Skipped under pytest."""
+    disk check, the clustering lane and its PR summary cards. Skipped under
+    pytest."""
     import sys
     if "pytest" in sys.modules:
         return
@@ -279,6 +283,7 @@ def _launch_worker_cadences():
     responses_sweep.start()
     disk_watch.start()
     cluster_refresh.startup()
+    display_refresh.start()
     worker_loops.publish()
 
 
@@ -863,6 +868,22 @@ def pr_history_endpoint(n: int):
     comments, reviews, commits and state events read live, Prospector's own
     writes tagged from the activity log, and a Prospector summary per commit."""
     return {"items": pr_history.timeline(n)}
+
+
+@app.post("/api/prs/{n}/display")
+def pr_display_write(n: int):
+    """Write PR #n's plain-language card now (pipeline/display_pass.py), as
+    the operator. 422 when no reply passed the checks."""
+    try:
+        sec = display_pass.write(data.store(), n, trigger="operator")
+    except KeyError:
+        raise HTTPException(404, f"PR #{n} not found")
+    except headless_agent.AgentUnavailable as e:
+        raise HTTPException(503, str(e))
+    if sec is None:
+        raise HTTPException(422, "no summary passed the checks; try again")
+    data.refresh()
+    return sec
 
 
 @app.get("/api/prs/{n}/diff")

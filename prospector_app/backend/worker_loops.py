@@ -19,6 +19,7 @@ LABELS: dict[str, str] = {
     "rereview": "Re-review requests",
     "responses": "Author responses sweep",
     "cluster": "Clustering pass",
+    "display": "PR summary cards",
     "issue-followup": "Issue follow-up",
     "docker-disk": "Docker disk check",
 }
