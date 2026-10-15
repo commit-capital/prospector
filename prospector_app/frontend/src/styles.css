@@ -788,6 +788,8 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .lane-queue li { margin: 2px 0; }
 .lane-queue li .linkish { margin-left: 8px; }
 .lane-section { margin: 0 0 10px; }
+.log-tail { margin: 4px 0 8px; }
+.log-tail-body { max-height: 320px; overflow: auto; margin: 0; padding: 8px 10px; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; font-size: 11px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
 .lane-section-title { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; margin: 0 0 4px; }
 .loop-chip { display: inline-block; margin-right: 14px; }
 .timeline { display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
