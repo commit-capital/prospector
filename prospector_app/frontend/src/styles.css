@@ -891,23 +891,28 @@ html.ap-resizing .agentpane { transition: none; }
 .ap-new-chat { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 12px; padding: 0 3px; opacity: 0.6; line-height: 1; vertical-align: middle; }
 .ap-new-chat:hover { color: var(--accent); opacity: 1; }
 .agentpane-body { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; padding: 10px 14px; }
-.ap-sessions-strip { display: flex; align-items: center; gap: 5px; flex-wrap: nowrap; overflow-x: auto;
-  padding-bottom: 2px; cursor: default; }
-.ap-session-pill { flex: 0 0 auto; max-width: 150px; overflow: hidden; white-space: nowrap; display: inline-flex; align-items: center;
-  border: 1px solid var(--border); background: var(--panel); color: var(--muted); border-radius: 20px;
-  font-size: 11px; }
-.ap-session-select { min-width: 0; max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  border: none; background: none; color: inherit; padding: 2px 4px 2px 10px; font: inherit; font-weight: inherit; cursor: pointer; }
-.ap-session-remove { flex: 0 0 auto; border: none; background: none; color: inherit; padding: 2px 7px 2px 3px;
-  font: inherit; font-size: 13px; line-height: 1; cursor: pointer; opacity: .55; }
-.ap-session-pill:hover { border-color: var(--accent); color: var(--text); }
-.ap-session-pill.live { padding: 2px 10px; cursor: pointer; font-style: italic; border-style: dashed; }
-.ap-session-pill.active { background: color-mix(in srgb, var(--accent) 14%, transparent);
-  border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.ap-chat-switcher { display: flex; align-items: center; gap: 6px; cursor: default; }
+.ap-chat-current { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 12px; font-weight: 600; color: var(--text); }
+.ap-session-new, .ap-recent-toggle { flex: 0 0 auto; border: 1px solid var(--border); background: none; color: var(--muted);
+  border-radius: 20px; padding: 2px 10px; font-size: 11px; cursor: pointer; white-space: nowrap; }
+.ap-session-new:hover, .ap-recent-toggle:hover, .ap-recent-toggle[aria-expanded="true"] { border-color: var(--accent); color: var(--accent); }
+.ap-recent { position: relative; flex: 0 0 auto; }
+.ap-recent-menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 5; width: min(280px, 80vw);
+  max-height: 320px; overflow-y: auto; background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .18); padding: 4px; }
+.ap-recent-item { display: flex; align-items: center; border-radius: 6px; }
+.ap-recent-item:hover { background: var(--panel2); }
+.ap-recent-item.active { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.ap-recent-select { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
+  border: none; background: none; color: var(--text); padding: 5px 8px; font: inherit; text-align: left; cursor: pointer; }
+.ap-recent-name, .ap-recent-subject { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ap-recent-name { font-size: 12px; }
+.ap-recent-item.active .ap-recent-name { color: var(--accent); font-weight: 600; }
+.ap-recent-subject { font-size: 10.5px; color: var(--muted); }
+.ap-session-remove { flex: 0 0 auto; border: none; background: none; color: var(--muted); padding: 2px 8px;
+  font: inherit; font-size: 14px; line-height: 1; cursor: pointer; opacity: .55; }
 .ap-session-remove:hover, .ap-session-remove:focus-visible { color: var(--red); opacity: 1; }
-.ap-session-new { flex: 0 0 auto; border: 1px dashed var(--border); background: none; color: var(--muted);
-  border-radius: 20px; padding: 2px 10px; font-size: 11px; cursor: pointer; }
-.ap-session-new:hover { border-color: var(--accent); color: var(--accent); }
 .agentpane-log-wrap { position: relative; flex: 1; min-height: 0; display: flex; }
 .agentpane-log { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
 .ap-follow-latest { position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); z-index: 1;
