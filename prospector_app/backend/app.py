@@ -36,6 +36,7 @@ from prospector_app.backend import chat
 from prospector_app.backend import claims
 from prospector_app.backend import machine_activity
 from prospector_app.backend import control_overview
+from prospector_app.backend import lane_pause
 from prospector_app.backend import machine_mode
 from prospector_app.backend import machines
 from prospector_app.backend import merge_progress
@@ -337,6 +338,29 @@ def machines_stand_down(host: str, body: dict = Body(default={})):
 @app.post("/api/machines/{host}/stand-up")
 def machines_stand_up(host: str):
     return {"cleared": machine_mode.stand_up(host)}
+
+
+@app.post("/api/worker/lanes/{lane}/pause")
+def worker_lane_pause(lane: str, body: dict = Body(default={})):
+    """Pause one lane on one machine: it takes no new work until Resume."""
+    host = str(body.get("host") or "")
+    if not host:
+        raise HTTPException(400, "host required")
+    try:
+        return lane_pause.pause(host, lane, by=activity.operator()["name"])
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/worker/lanes/{lane}/resume")
+def worker_lane_resume(lane: str, body: dict = Body(default={})):
+    host = str(body.get("host") or "")
+    if not host:
+        raise HTTPException(400, "host required")
+    try:
+        return lane_pause.resume(host, lane)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @app.get("/api/control/overview")

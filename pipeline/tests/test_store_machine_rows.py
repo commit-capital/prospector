@@ -42,3 +42,11 @@ def test_new_rows_do_not_leak_into_worker_health(st):
     st.save_machine_mode({"host": "mac-1", "stood_down": True, "at": "t"})
     st.save_worker_loops({"host": "mac-1", "at": "t", "lanes": {}, "loops": {}})
     assert st.load_worker_health() == {"hosts": {}}
+
+
+def test_lane_pause_round_trips(st):
+    st.save_lane_pause({"host": "mac-1", "lanes": {"verify": {"at": "t", "by": "ops"}}})
+    assert st.load_lane_pauses() == {"mac-1": {"host": "mac-1",
+                                               "lanes": {"verify": {"at": "t", "by": "ops"}}}}
+    with pytest.raises(S.ValidationError):
+        st.save_lane_pause({"lanes": {}})

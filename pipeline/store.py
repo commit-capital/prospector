@@ -1399,6 +1399,18 @@ class Store:
     def load_worker_loops(self) -> dict[str, dict]:
         return self._rows_by_host(self._LOOPS_PREFIX)
 
+    _PAUSE_PREFIX = "lane_pause:"
+
+    def save_lane_pause(self, record: dict) -> None:
+        """The lanes an operator paused on one machine, keyed by `host`:
+        `{host, lanes: {lane: {at, by}}}`."""
+        if not record.get("host"):
+            raise ValidationError("lane_pause.host: required")
+        self._save_registry(f"{self._PAUSE_PREFIX}{record['host']}", record)
+
+    def load_lane_pauses(self) -> dict[str, dict]:
+        return self._rows_by_host(self._PAUSE_PREFIX)
+
     def _delete_registry(self, name: str) -> bool:
         from sqlalchemy import delete as sa_delete
         storekit.assert_writable(self.engine)
