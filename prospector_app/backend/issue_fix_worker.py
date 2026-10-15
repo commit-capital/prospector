@@ -43,7 +43,7 @@ from issue_triage import (
 )
 from issue_triage.issue_store import IssueStore
 from pipeline import capacity, gates, headless_agent, settings, storekit
-from prospector_app.backend import data, lane_health, verify_worker, worker_loops
+from prospector_app.backend import data, lane_health, verify_worker, worker_log, worker_loops
 
 LANE = "issue-fix"
 POLL_SECONDS = 20.0
@@ -96,6 +96,7 @@ def startup() -> bool:
         return False
     if running():
         return True
+    worker_log.install()
     stop.clear()
     _drained.clear()
     _threads[:] = [

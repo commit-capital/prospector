@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from pipeline import capacity, cluster_driver, cluster_pass, freshness, settings, storekit
-from prospector_app.backend import data, lane_health, worker_children, worker_loops
+from prospector_app.backend import data, lane_health, worker_children, worker_log, worker_loops
 from prospector_app.backend.jobs import PIPELINE_PY, REPO_ROOT
 
 if TYPE_CHECKING:
@@ -162,6 +162,7 @@ def startup() -> bool:
         return False
     if running():
         return True
+    worker_log.install()
     _stop.clear()
     _thread = threading.Thread(target=_loop, daemon=True, name="cluster-refresh")
     _thread.start()

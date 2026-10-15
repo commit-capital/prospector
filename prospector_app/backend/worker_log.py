@@ -1,10 +1,11 @@
 """A durable copy of the worker's stdout.
 
-Both workers report by printing to the backend's stdout, which is a terminal
-or a service log outside this process's control. An operator diagnosing a
-machine that has been failing for days needs more than the terminal's
-scrollback, so the workers also mirror every line to a file under the verify
-scratch directory.
+The worker lanes report by printing to the backend's stdout, which is a
+terminal or a service log outside this process's control. An operator
+diagnosing a machine that has been failing for days needs more than the
+terminal's scrollback, so every lane mirrors the process's stdout to a file
+under the verify scratch directory, which the Health & queues page follows
+(`read`).
 """
 from __future__ import annotations
 

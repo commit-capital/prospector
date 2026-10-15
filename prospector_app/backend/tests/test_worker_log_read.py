@@ -83,3 +83,22 @@ def test_deployment_secrets_never_leave_in_a_line(log, monkeypatch):
     text = "\n".join(worker_log.read(None)["lines"])
     assert "s3kretpw" not in text and "ghp_feedbacktoken123" not in text and "zzz" not in text
     assert text.count("[redacted]") == 4
+
+
+@pytest.mark.parametrize("module", ["issue_fix_worker", "cluster_refresh"])
+def test_every_lane_mirrors_its_output_to_the_log(module, monkeypatch):
+    import importlib
+    import threading
+    mod = importlib.import_module(f"prospector_app.backend.{module}")
+    installed = []
+    monkeypatch.setattr(worker_log, "install", lambda: installed.append(1))
+    monkeypatch.setattr(mod, "enabled", lambda: True)
+    monkeypatch.setattr(mod, "running", lambda: False)
+
+    class Idle:
+        def __init__(self, *a, **k) -> None: ...
+        def start(self) -> None: ...
+        def is_alive(self) -> bool: return False
+    monkeypatch.setattr(threading, "Thread", Idle)
+    assert mod.startup() is True
+    assert installed == [1]
