@@ -829,6 +829,16 @@ capacity panel and the health strip show each account's windows, the cap in
 effect, whether unattended work may start, and the cost of today's background
 runs at API prices.
 
+**AUTHOR RESPONSES** (`prospector_app/backend/responses.py` +
+`responses_sweep.py`) reads, as the operator, how authors answered us: for each
+PR's latest landed action and each issue we closed, the human replies, reopens,
+new commits and same-author resubmissions since, and the `#N`/URL mentions in
+the author's own comments. The signals live in the store's `responses` registry,
+keyed by kind; a worker machine (`TRIAGE_RESPONSES_SWEEP`, default on) rebuilds
+it every half hour under the `responses-sweep` lease, ledger phase
+`responses:scan`, and the Control tab's Scan responses runs the same sweep.
+`author_returns.py` reads the mentions to find an author's follow-up to a close.
+
 **HOME** (`prospector_app/backend/automation.py` + `prospector_app/frontend/src/views/homeCards.ts`)
 shows every open PR by whose move it is. `automation.classify` is the ONE
 derivation, computed on read into each PR row as `automation`

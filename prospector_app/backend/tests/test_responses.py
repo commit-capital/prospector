@@ -364,6 +364,13 @@ class TestFetchResilience:
         assert failed == []
 
 
+def _isolate(monkeypatch, tmp_path) -> Store:
+    store = Store(tmp_path)          # Store takes a root *directory*, not a db path
+    monkeypatch.setattr(responses.data, "store", lambda: store)
+    monkeypatch.setattr(responses, "_cache", None)
+    return store
+
+
 class TestScanFailureResilience:
     """scan() must not erase a PR's previously-detected response just because
     this sweep's gh call for its chunk failed (#537)."""
@@ -375,27 +382,28 @@ class TestScanFailureResilience:
                     "our_action": {"kind": "close", "at": ACT}, "detected_at": ACT}}
 
     def test_scan_preserves_prior_entry_when_chunk_fetch_fails(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(responses, "REG", tmp_path / "responses.json")
-        monkeypatch.setattr(responses, "_cache", None)
-        responses._save(self._prior_entry())
-        monkeypatch.setattr(responses, "_acted_baseline", lambda: {99: {"at": ACT, "kind": "close"}})
-        monkeypatch.setattr(responses, "_fetch", lambda prs: ({}, [99]))
+        _isolate(monkeypatch, tmp_path)
+        responses._save({"pr": self._prior_entry(), "issue": {}})
+        monkeypatch.setattr(responses, "_acted_baseline",
+                            lambda: {"pr": {99: {"at": ACT, "kind": "close"}}, "issue": {}})
+        monkeypatch.setattr(responses, "_fetch", lambda prs, kind: ({}, [99] if kind == "pr" else []))
 
         out = responses.scan()
 
-        assert out == {"checked": 1, "with_response": 1, "prs": [99], "failed": [99]}
+        assert out == {"checked": 1, "with_response": 1, "prs": [99], "issues": [],
+                       "failed": [99], "failed_issues": []}
         assert responses.load()[99]["replied"] is True  # carried forward untouched
 
     def test_scan_drops_entry_when_chunk_succeeds_with_no_signal(self, monkeypatch, tmp_path):
         # Regression guard: only a *failed* chunk preserves stale data — a
         # successful re-check that finds nothing still clears the entry.
-        monkeypatch.setattr(responses, "REG", tmp_path / "responses.json")
-        monkeypatch.setattr(responses, "_cache", None)
-        responses._save(self._prior_entry())
-        monkeypatch.setattr(responses, "_acted_baseline", lambda: {99: {"at": ACT, "kind": "close"}})
+        _isolate(monkeypatch, tmp_path)
+        responses._save({"pr": self._prior_entry(), "issue": {}})
+        monkeypatch.setattr(responses, "_acted_baseline",
+                            lambda: {"pr": {99: {"at": ACT, "kind": "close"}}, "issue": {}})
         node = {"number": 99, "state": "closed", "author": {"login": "alice"},
                "comments": {"nodes": []}, "timelineItems": {"nodes": []}, "commits": {"nodes": []}}
-        monkeypatch.setattr(responses, "_fetch", lambda prs: ({99: node}, []))
+        monkeypatch.setattr(responses, "_fetch", lambda prs, kind: ({99: node} if kind == "pr" else {}, []))
 
         out = responses.scan()
 
@@ -408,14 +416,11 @@ class TestAck:
     operators, until a newer response supersedes it (#537)."""
 
     def _seed(self, monkeypatch, tmp_path, reg):
-        """Local response registry + an isolated in-memory ack store."""
-        monkeypatch.setattr(responses, "REG", tmp_path / "responses.json")
-        monkeypatch.setattr(responses, "_cache", None)
+        """An isolated store holding the response registry and the acks."""
+        store = _isolate(monkeypatch, tmp_path)
         monkeypatch.setattr(responses, "_acks_cache", None)
         monkeypatch.setattr(responses.activity, "operator", lambda: {"name": "Ada"})
-        store = Store(tmp_path)          # Store takes a root *directory*, not a db path
-        monkeypatch.setattr(responses.data, "store", lambda: store)
-        responses._save(reg)
+        responses._save({"pr": reg, "issue": {}})
         return store
 
     def test_unacked_signal_has_no_ack(self, monkeypatch, tmp_path):
@@ -483,3 +488,62 @@ class TestAck:
         responses.for_pr(42)
         responses.for_pr(42)
         assert calls["n"] == 1
+
+
+class TestIssues:
+    """Issues we closed are swept beside the PRs, keyed by kind."""
+
+    def test_baseline_keeps_issues_apart_and_only_our_closes(self):
+        ev = lambda at, kind, **k: {"at": at, "kind": kind, "status": "executed",
+                                    "dry_run": False, **k}
+        events = [ev(LATER, "issue-reopen", issue=8),
+                  ev(AFTER, "issue-close", issue=7),
+                  ev(AFTER, "close", pr=7),
+                  ev(ACT, "issue-close", issue=8)]
+        base = responses._acted_baseline(events)
+        assert base["pr"] == {7: {"at": AFTER, "kind": "close"}}
+        assert base["issue"] == {7: {"at": AFTER, "kind": "issue-close"}}
+
+    def test_issue_query_reads_issue_aliases_without_commits(self):
+        q = responses._query([5, 6], "issue")
+        assert "p0: issue(number: 5)" in q and "p1: issue(number: 6)" in q
+        assert "pullRequest(number" not in q and "commits" not in q
+
+    def test_reopened_issue_reads_as_reopened(self):
+        sig = responses.classify(ACT, "issue-close", state="open", comments=[], reopens=[],
+                                 commit_dates=[])
+        assert sig is not None and sig["reopened"] is True
+
+    def test_scan_records_an_issue_authors_mentions_without_touching_the_same_pr_number(
+            self, monkeypatch, tmp_path):
+        _isolate(monkeypatch, tmp_path)
+        monkeypatch.setattr(responses, "_acted_baseline", lambda: {
+            "pr": {7: {"at": ACT, "kind": "close"}},
+            "issue": {7: {"at": ACT, "kind": "issue-close"}}})
+        issue = {"number": 7, "state": "CLOSED", "author": {"login": "alice"},
+                 "comments": {"nodes": [_comment("alice", AFTER, "filed #12 instead")]},
+                 "timelineItems": {"nodes": []}}
+        asked: list[tuple[list[int], str]] = []
+
+        def fetch(numbers, kind):
+            asked.append((list(numbers), kind))
+            return ({7: issue} if kind == "issue" else {}, [])
+        monkeypatch.setattr(responses, "_fetch", fetch)
+
+        out = responses.scan()
+        assert asked == [([7], "pr"), ([7], "issue")]
+        assert (out["prs"], out["issues"]) == ([], [7])
+        reg = responses.load_all()
+        assert reg["issue"][7]["mentions"] == [12] and reg["issue"][7]["issue"] == 7
+        assert responses.for_pr(7) is None
+
+    def test_a_partial_scan_keeps_every_other_entry(self, monkeypatch, tmp_path):
+        _isolate(monkeypatch, tmp_path)
+        responses._save({"pr": {1: {"pr": 1}, 2: {"pr": 2}}, "issue": {3: {"issue": 3}}})
+        monkeypatch.setattr(responses, "_acted_baseline", lambda: {
+            "pr": {1: {"at": ACT, "kind": "close"}, 2: {"at": ACT, "kind": "close"}},
+            "issue": {3: {"at": ACT, "kind": "issue-close"}}})
+        monkeypatch.setattr(responses, "_fetch", lambda numbers, kind: ({}, []))
+        responses.scan(prs=[1])
+        reg = responses.load_all()
+        assert sorted(reg["pr"]) == [2] and sorted(reg["issue"]) == [3]

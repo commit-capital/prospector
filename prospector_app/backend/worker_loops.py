@@ -17,6 +17,7 @@ LABELS: dict[str, str] = {
     "pr-watch": "PR watch",
     "stale-refresh": "Stale merge-candidate refresh",
     "rereview": "Re-review requests",
+    "responses": "Author responses sweep",
     "cluster": "Clustering pass",
     "issue-followup": "Issue follow-up",
 }

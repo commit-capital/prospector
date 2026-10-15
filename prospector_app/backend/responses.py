@@ -1,24 +1,27 @@
-"""Community response signals — how authors react after we triage their PR.
+"""Community response signals — how authors react after we triage their PR or
+close their issue.
 
 After we close / request-changes / comment as the configured bot, the author may
 reply (argue back, ask why), reopen a PR we closed, or push new commits to fix
-what we flagged. This module sweeps the PRs we've acted on, reads each one's
-upstream timeline *since our action*, and classifies the response so the PR
-explorer can surface it as a sortable column + filterable chips.
+what we flagged. This module sweeps the PRs we've acted on and the issues we
+closed, reads each one's upstream timeline *since our action*, and classifies
+the response so the PR explorer can surface it as a sortable column +
+filterable chips, and `author_returns` can follow the submissions an author
+names in a comment.
 
-Read-only upstream (one batched GraphQL request per ~20 PRs, the freshness_live
-pattern). The classified signals are a derived cache — `scan` rebuilds them from
-upstream — so they live in an app-local registry. Operator acks are human
-input that exists nowhere else, so they live in the shared store's
-`response_acks` registry and are visible to every operator.
+Read-only upstream (one batched GraphQL request per ~20 items, the
+freshness_live pattern). The classified signals are a derived cache — `scan`
+rebuilds them from upstream — kept in the shared store's `responses` registry,
+keyed by kind (PRs and issues share GitHub's number space but are read apart),
+so one machine's sweep (`responses_sweep`) serves every app. Operator acks are
+human input that exists nowhere else, in the store's `response_acks` registry.
 """
 from __future__ import annotations
 
-import json
 import logging
 import re
 import time
-from pathlib import Path
+from typing import Literal
 
 from prospector_app.backend import activity
 from prospector_app.backend import data
@@ -29,7 +32,9 @@ from pipeline.storekit import parse_ts as _dt
 
 _log = logging.getLogger(__name__)
 
-REG = Path(__file__).resolve().parents[1] / "approved-actions" / "responses.json"
+Kind = Literal["pr", "issue"]
+KINDS: tuple[Kind, ...] = ("pr", "issue")
+
 _CHUNK = 20
 SNIPPET_LEN = 160
 
@@ -118,7 +123,7 @@ def classify(action_at: str, action_kind: str, *, state: str,
     reopen_after = [r for r in reopens
                     if _is_human(_actor(r, "actor")) and (_dt(r.get("createdAt")) or cut) > cut]
     reopen_at = max((d for r in reopen_after if (d := r.get("createdAt")) is not None), default=None)
-    reopened = bool(reopen_after) or (state == "open" and action_kind == "close")
+    reopened = bool(reopen_after) or (state == "open" and action_kind in ("close", "issue-close"))
 
     # new_commits — any commit pushed after our action
     new_commit_dates = [d for d in commit_dates if (_dt(d) or cut) > cut]
@@ -178,38 +183,49 @@ def classify(action_at: str, action_kind: str, *, state: str,
     }
 
 
-def _acted_baseline() -> dict[int, dict]:
-    """The latest LANDED action per PR (the cutoff a response is measured against).
-    A dry-run never counts (is_landed). Reopen counts as our latest action too —
-    we measure responses against whatever we last did."""
-    out: dict[int, dict] = {}
-    for ev in activity.all_events():  # newest-first; first landed hit per PR wins
-        pr = ev.get("pr")
-        if pr is None or not activity.is_landed(ev):
+def _acted_baseline(events: list[dict] | None = None) -> dict[Kind, dict[int, dict]]:
+    """The cutoff a response is measured against, per kind: each PR's latest
+    LANDED action — reopen too, we measure against whatever we last did — and
+    each issue whose latest landed state action is our close. A dry-run never
+    counts (is_landed)."""
+    events = activity.all_events() if events is None else events
+    prs: dict[int, dict] = {}
+    issues: dict[int, dict] = {}
+    for ev in events:  # newest-first; first landed hit per item wins
+        if not activity.is_landed(ev):
             continue
-        pr = int(pr)
-        if pr not in out:
-            out[pr] = {"at": ev.get("at"), "kind": ev.get("kind")}
-    return out
+        kind = ev.get("kind")
+        if kind in ("issue-close", "issue-reopen") and ev.get("issue") is not None:
+            issues.setdefault(int(ev["issue"]), {"at": ev.get("at"), "kind": kind})
+        elif ev.get("pr") is not None:
+            prs.setdefault(int(ev["pr"]), {"at": ev.get("at"), "kind": kind})
+    return {"pr": prs,
+            "issue": {n: b for n, b in issues.items() if b["kind"] == "issue-close"}}
 
 
-def _query(prs: list[int]) -> str:
-    # Every actor carries __typename so a GitHub App is recognised as a Bot:
-    # a Bot's login here is bare, with no REST-style `[bot]` suffix to read it
-    # off (`_is_human`).
-    fields = ("number state headRefOid "
-              "author { login __typename } "
-              "comments(last: 20) { nodes { author { login __typename } createdAt url bodyText } } "
-              "timelineItems(last: 20, itemTypes: [REOPENED_EVENT, CROSS_REFERENCED_EVENT]) { "
-              "nodes { __typename "
-              "... on ReopenedEvent { createdAt actor { login __typename } } "
-              "... on CrossReferencedEvent { createdAt "
-              "source { __typename "
-              "... on PullRequest { number createdAt author { login } "
-              "repository { nameWithOwner } } } } } } "
-              "commits(last: 10) { nodes { commit { committedDate oid } } }")
-    aliases = " ".join(f"p{i}: pullRequest(number: {int(n)}) {{ {fields} }}"
-                       for i, n in enumerate(prs))
+# Every actor carries __typename so a GitHub App is recognised as a Bot: a
+# Bot's login here is bare, with no REST-style `[bot]` suffix to read it off
+# (`_is_human`).
+_COMMON = ("number state "
+           "author { login __typename } "
+           "comments(last: 20) { nodes { author { login __typename } createdAt url bodyText } } "
+           "timelineItems(last: 20, itemTypes: [REOPENED_EVENT, CROSS_REFERENCED_EVENT]) { "
+           "nodes { __typename "
+           "... on ReopenedEvent { createdAt actor { login __typename } } "
+           "... on CrossReferencedEvent { createdAt "
+           "source { __typename "
+           "... on PullRequest { number createdAt author { login } "
+           "repository { nameWithOwner } } } } } } ")
+_FIELDS: dict[Kind, tuple[str, str]] = {
+    "pr": ("pullRequest", _COMMON + "headRefOid commits(last: 10) { nodes { commit { committedDate oid } } }"),
+    "issue": ("issue", _COMMON),
+}
+
+
+def _query(numbers: list[int], kind: Kind = "pr") -> str:
+    field, fields = _FIELDS[kind]
+    aliases = " ".join(f"p{i}: {field}(number: {int(n)}) {{ {fields} }}"
+                       for i, n in enumerate(numbers))
     return f'query {{ repository(owner: "{settings.repo_owner()}", name: "{settings.repo_name()}") {{ {aliases} }} }}'
 
 
@@ -235,8 +251,9 @@ def _not_found_aliases(body: dict) -> set[str]:
     return out
 
 
-def _fetch(prs: list[int]) -> tuple[dict[int, dict], list[int]]:
-    """Batched live timeline node per PR via GraphQL. Returns ``(nodes, failed)``.
+def _fetch(prs: list[int], kind: Kind = "pr") -> tuple[dict[int, dict], list[int]]:
+    """Batched live timeline node per PR (or issue) via GraphQL. Returns
+    ``(nodes, failed)``.
 
     ``failed`` lists every PR this sweep could not read: the whole chunk when the
     call yields nothing usable (a `gh` timeout, or a response with no
@@ -254,7 +271,7 @@ def _fetch(prs: list[int]) -> tuple[dict[int, dict], list[int]]:
     failed: list[int] = []
     for i in range(0, len(prs), _CHUNK):
         chunk = prs[i:i + _CHUNK]
-        body = gh.gh_graphql(_query(chunk), timeout=90) or {}
+        body = gh.gh_graphql(_query(chunk, kind), timeout=90) or {}
         repo = (body.get("data") or {}).get("repository")
         # An empty `repository` is a real answer (its aliases resolved to
         # nothing); only its absence means the call yielded nothing to read.
@@ -297,24 +314,17 @@ def _node_signals(node: dict, base: dict) -> dict | None:
                     cross_refs=cross_refs, pr_author=pr_author)
 
 
-def scan(prs: list[int] | None = None) -> dict:
-    """Sweep the PRs we've acted on, classify each one's response, and rewrite the
-    registry. Returns {checked, with_response, prs, failed}. Recomputes every
-    successfully-fetched PR from scratch (the registry is current truth for
-    those) but preserves each PR's first `detected_at`, and — for any PR whose
-    chunk failed to fetch this sweep (`failed`) — carries its prior entry
-    forward unchanged rather than treating "couldn't check" as "no response"."""
-    baseline = _acted_baseline()
-    targets = [int(n) for n in (prs if prs is not None else baseline.keys()) if int(n) in baseline]
-    nodes, failed = _fetch(targets)
+def _sweep(kind: Kind, baseline: dict[int, dict], targets: list[int],
+           prior: dict[int, dict], now: str) -> tuple[dict[int, dict], list[int]]:
+    """The fresh registry entries for `targets` of `kind`, and the ones that
+    could not be read — each of those keeps its prior entry."""
+    nodes, failed = _fetch(targets, kind)
     failed_set = set(failed)
-    prior = load()
-    now = _now()
-    reg: dict[int, dict] = {}
+    out: dict[int, dict] = {}
     for n in targets:
         if n in failed_set:
             if n in prior:
-                reg[n] = prior[n]
+                out[n] = prior[n]
             continue
         node = nodes.get(n)
         if not node:
@@ -322,42 +332,83 @@ def scan(prs: list[int] | None = None) -> dict:
         sig = _node_signals(node, baseline[n])
         if not sig:
             continue
-        sig["pr"] = n
+        sig[kind] = n
         sig["our_action"] = {"kind": baseline[n]["kind"], "at": baseline[n]["at"]}
         sig["detected_at"] = (prior.get(n) or {}).get("detected_at") or now
-        reg[n] = sig
+        out[n] = sig
+    return out, sorted(failed_set)
+
+
+def scan(prs: list[int] | None = None, issues: list[int] | None = None) -> dict:
+    """Sweep the PRs we've acted on and the issues we closed, classify each
+    one's response, and rewrite the registry. With `prs` or `issues`, sweep
+    just those and keep every other entry. Returns {checked, with_response,
+    prs, issues, failed, failed_issues}.
+
+    Every fetched item is recomputed from scratch (the registry is current
+    truth for it) but keeps its first `detected_at`; an item whose fetch failed
+    (`failed`, `failed_issues`) carries its prior entry forward unchanged
+    rather than treating "couldn't check" as "no response"."""
+    baseline = _acted_baseline()
+    partial = prs is not None or issues is not None
+    wanted: dict[Kind, list[int] | None] = {"pr": prs, "issue": issues}
+    prior = load_all()
+    now = _now()
+    reg: dict[Kind, dict[int, dict]] = {"pr": {}, "issue": {}}
+    failed: dict[Kind, list[int]] = {"pr": [], "issue": []}
+    checked = 0
+    for kind in KINDS:
+        names = wanted[kind]
+        if partial and names is None:
+            reg[kind] = dict(prior[kind])
+            continue
+        base = baseline[kind]
+        targets = [int(n) for n in (names if names is not None else base) if int(n) in base]
+        checked += len(targets)
+        fresh, failed[kind] = _sweep(kind, base, targets, prior[kind], now)
+        kept = {n: v for n, v in prior[kind].items() if n not in targets} if partial else {}
+        reg[kind] = {**kept, **fresh}
     _save(reg)
-    return {"checked": len(targets), "with_response": len(reg), "prs": sorted(reg),
-            "failed": sorted(failed_set)}
+    return {"checked": checked, "with_response": len(reg["pr"]) + len(reg["issue"]),
+            "prs": sorted(reg["pr"]), "issues": sorted(reg["issue"]),
+            "failed": failed["pr"], "failed_issues": failed["issue"]}
 
 
-# --- registry persistence (mtime-cached read) ------------------------------
-_cache: tuple[float, dict[int, dict]] | None = None
+# --- registry persistence (shared store, TTL-cached read) -------------------
+# `for_pr` runs once per row of a list request while the store is a network
+# round-trip; the TTL bounds how long another machine's sweep takes to appear.
+_REG_TTL_SEC = 30.0
+_cache: tuple[float, dict[Kind, dict[int, dict]]] | None = None
 
 
-def _save(reg: dict[int, dict]) -> None:
+def _save(reg: dict[Kind, dict[int, dict]]) -> None:
     global _cache
-    REG.parent.mkdir(parents=True, exist_ok=True)
-    REG.write_text(json.dumps({str(k): v for k, v in sorted(reg.items())}, indent=2))
-    _cache = None  # invalidate
+    data.store().save_responses(
+        {kind: {str(k): v for k, v in sorted(reg[kind].items())} for kind in KINDS})
+    _cache = (time.monotonic(), reg)
+
+
+def load_all() -> dict[Kind, dict[int, dict]]:
+    """The response registry, {kind: {number: signals}}. Fails soft: an
+    unreadable store reads as no responses, cached like a read."""
+    global _cache
+    now = time.monotonic()
+    if _cache and now - _cache[0] < _REG_TTL_SEC:
+        return _cache[1]
+    try:
+        raw = data.store().load_responses()
+    except Exception:
+        _log.warning("responses.load_all: store read failed", exc_info=True)
+        raw = {}
+    reg: dict[Kind, dict[int, dict]] = {
+        kind: {int(k): v for k, v in (raw.get(kind) or {}).items()} for kind in KINDS}
+    _cache = (now, reg)
+    return reg
 
 
 def load() -> dict[int, dict]:
-    """The response registry, {pr: signals}. Cached on the file's mtime so a
-    per-row lookup in list_prs doesn't re-read/parse the file 50 times."""
-    global _cache
-    if not REG.exists():
-        return {}
-    mtime = REG.stat().st_mtime
-    if _cache and _cache[0] == mtime:
-        return _cache[1]
-    try:
-        raw = json.loads(REG.read_text())
-    except (ValueError, OSError):
-        return {}
-    reg = {int(k): v for k, v in raw.items()}
-    _cache = (mtime, reg)
-    return reg
+    """The PRs' response signals, {pr: signals}."""
+    return load_all()["pr"]
 
 
 def for_pr(n: int) -> dict | None:

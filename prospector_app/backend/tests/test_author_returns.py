@@ -72,8 +72,27 @@ def test_follow_up_requires_same_author_later_open_and_exact_number():
 
 def test_follow_up_named_from_the_closed_pr_side():
     prs = {10: Item(state="closed"), 11: Item(created_at="2026-06-22T00:00:00Z")}
-    [r] = _run(prs, named={10: {11}})
+    [r] = _run(prs, named={("pr", 10): {11}})
     assert [f["number"] for f in r["follow_ups"]] == [11]
+    assert _run(prs, named={("issue", 10): {11}}) == []
+
+
+def test_follow_up_named_from_the_closed_issue_side():
+    issues = {20: Item(state="closed"), 21: Item(created_at="2026-06-22T00:00:00Z")}
+    [r] = _run({}, issues, [CLOSE_ISSUE], named={("issue", 20): {21}})
+    assert (r["kind"], r["number"]) == ("issue", 20)
+    assert [(f["kind"], f["number"]) for f in r["follow_ups"]] == [("issue", 21)]
+
+
+def test_current_reads_issue_mentions_from_the_registry(monkeypatch):
+    from prospector_app.backend import data, issue_data
+    monkeypatch.setattr(responses, "load_all", lambda: {
+        "pr": {}, "issue": {20: {"mentions": [21], "resubmitted_pr": None}}})
+    monkeypatch.setattr(data, "pr_bodies", lambda ns: {})
+    monkeypatch.setattr(issue_data, "issues", lambda: {
+        20: Item(state="closed"), 21: Item(created_at="2026-06-22T00:00:00Z")})
+    [r] = author_returns.current(prs={}, events=[CLOSE_ISSUE])
+    assert [f["number"] for f in r["follow_ups"]] == [21]
 
 
 def test_issues_reopened_and_followed_up():
