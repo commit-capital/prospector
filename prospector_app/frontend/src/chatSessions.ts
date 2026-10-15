@@ -1,13 +1,13 @@
 import type { AgentSubject } from "./agentSubject";
 
 // A named conversation thread (#343), independent of whatever the operator is
-// currently viewing — created via "+ New", switched between via the sessions
-// strip. Its subject is frozen at creation so the session keeps asking
+// currently viewing — created via "+ New", switched between via the Recent
+// menu. Its subject is frozen at creation so the session keeps asking
 // about its own subject even after the operator navigates elsewhere. Persisted
 // to localStorage only (no cross-device sync); the backend thread itself is
 // addressed by `id` as an opaque chat_id and needs no record of the label.
-// An archived session (`archivedAt` set) leaves the strip and the Recent list
-// and is reachable from the Recent menu's Archived flyout.
+// An archived session (`archivedAt` set) moves to the Recent menu's Archived
+// flyout.
 export interface ChatSession {
   id: string;
   label: string;
