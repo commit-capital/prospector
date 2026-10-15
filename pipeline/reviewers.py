@@ -452,10 +452,21 @@ DESIGN_BLOCKING = frozenset({"blocking", "major"})
 # its findings are judged; a review stamped with an earlier rubric reads stale
 # and is taken again.
 DESIGN_RUBRIC = 3
+# The rubric that set what the severities mean. Rubric 3 only verifies blocking
+# and major findings, so an earlier review with none of them still stands.
+DESIGN_SEVERITY_RUBRIC = 2
 
 
 def design_rubric(entry: dict) -> int:
     return int((entry.get("extra") or {}).get("rubric") or 1)
+
+
+def design_outdated(entry: dict) -> bool:
+    """Whether the current rubric may overturn `entry`'s verdict, so it is taken again."""
+    rubric = design_rubric(entry)
+    return rubric < DESIGN_SEVERITY_RUBRIC or (
+        rubric < DESIGN_RUBRIC
+        and any(f.get("severity") in DESIGN_BLOCKING for f in open_findings(entry)))
 
 
 def _design_bar(entry: dict | None, head_sha: str | None) -> Bar:
@@ -464,7 +475,7 @@ def _design_bar(entry: dict | None, head_sha: str | None) -> Bar:
     reviewed = entry.get("reviewed_sha")
     if reviewed and head_sha and reviewed != head_sha:
         return Bar(STALE, "design review stale", None)
-    if design_rubric(entry) < DESIGN_RUBRIC:
+    if design_outdated(entry):
         return Bar(STALE, "design review predates the current rubric", None)
     blocking = design_standing(entry)
     if blocking:
@@ -589,6 +600,8 @@ def _summary_line_one(reviewer: Reviewer, entry: dict | None, b: Bar, stale: boo
                               if counts else f" {b.status}")
     if stale:
         s += " ⚠stale"
+    elif reviewer is DESIGN and design_outdated(entry):
+        s += " ⚠older rubric"
     return s
 
 

@@ -241,5 +241,11 @@ def test_huntable_re_reviews_an_earlier_rubric():
     assert design_review.huntable(_pr(reviews=old)) is True
 
 
+def test_huntable_keeps_an_earlier_rubric_with_no_blocking_findings():
+    kept = {"design": {"kind": "review", "reviewed_sha": HEAD, "findings": [], "checks": [],
+                       "extra": {"rubric": reviewers.DESIGN_SEVERITY_RUBRIC}}}
+    assert design_review.huntable(_pr(reviews=kept)) is False
+
+
 def test_profile_accepts_design_as_a_fixable_gate():
     assert "design" in profile.AUTOFIX_GATES
