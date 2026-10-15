@@ -336,6 +336,16 @@ class TestDesign:
     def test_an_earlier_rubric_reads_stale(self):
         entry = {**_design([_df("minor")]), "extra": {}}
         assert reviewers.bar(reviewers.DESIGN, entry, HEAD).status == "stale"
+        b = reviewers.bar(reviewers.DESIGN, entry, HEAD)
+        assert reviewers.digest(reviewers.DESIGN, entry, b, HEAD)["summary_line"] == \
+            "Design review 1 minor ⚠older rubric"
+
+    def test_an_unverified_rubric_stands_without_blocking_findings(self):
+        def rubric2(findings: list[dict]) -> dict:
+            return {**_design(findings), "extra": {"rubric": reviewers.DESIGN_SEVERITY_RUBRIC}}
+        assert reviewers.bar(reviewers.DESIGN, rubric2([_df("minor")]), HEAD).status == "pass"
+        assert reviewers.bar(reviewers.DESIGN, rubric2([]), HEAD).status == "pass"
+        assert reviewers.bar(reviewers.DESIGN, rubric2([_df("major")]), HEAD).status == "stale"
 
     def test_ingest_carries_the_stored_entry(self):
         prev = {"design": _design([_df("major")])}

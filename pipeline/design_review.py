@@ -110,7 +110,7 @@ def huntable(pr: Pr) -> bool:
     if pr.threat_verdict != "clear" or gates.threat_blocks(pr) or not freshness.is_current(pr, "threat"):
         return False
     entry = pr.review_entry(reviewers.DESIGN.id) or {}
-    return entry.get("reviewed_sha") != head or reviewers.design_rubric(entry) < reviewers.DESIGN_RUBRIC
+    return entry.get("reviewed_sha") != head or reviewers.design_outdated(entry)
 
 
 def _within(clone: Path, path: str) -> bool:
