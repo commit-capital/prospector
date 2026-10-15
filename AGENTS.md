@@ -464,7 +464,8 @@ Propose, and the pull request body warns of every crossing under Risks. All
 proof runs on the pinned base's image — `prove.pinned` reads the verify pin,
 `prove.held(sha, tier)` names a base by hand — and neither builds one; every
 fault (an agent outage, a sandbox that could not run, a base that fails the
-compile) is a machine condition, never a verdict, and the clones are removed on
+compile, an agent that gave up when every sandbox check it ran faulted —
+`issue_gates.checks_fault`) is a machine condition, never a verdict, and the clones are removed on
 the way out. The command `python -m issue_triage.fix_lane --issue N
 [--lane staged|solo|cross] [--reproduce-only] [--base-sha SHA --tier T]`
 resolves the report from the issue store or a live fetch, cancels when the issue

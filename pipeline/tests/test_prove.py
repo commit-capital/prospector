@@ -118,6 +118,14 @@ def test_a_probe_failure_raises(phases):
         prove.red_legs(BASE, patch=prove.compose("i", TEST), test_cmd="t", label="l")
 
 
+@pytest.mark.parametrize("code", [gates.SENTINEL_PATCH_UNREADABLE, gates.SENTINEL_SETUP_FAIL])
+def test_a_harness_exit_raises_rather_than_reading_as_a_verdict(phases, code):
+    _, exits = phases
+    exits[:] = [code]
+    with pytest.raises(prove.SandboxFault):
+        prove.red_legs(BASE, patch=prove.compose("i", TEST), test_cmd="t", label="l")
+
+
 def test_run_command_refuses_a_dependency_manifest(phases, tmp_path):
     p = tmp_path / "d.patch"
     p.write_text("diff --git a/package.json b/package.json\n--- a/package.json\n"

@@ -111,8 +111,9 @@ def _author(spec: fix_lane.LaneSpec, workdir: Path, cand: Candidate,
                                    contributor_docs=authoring.docs_from_tree(spec.base.clone))
         cand.checks = check_records.collect(records, solo_lane.MAX_RUNS)
         if "give_up" in verdict:
-            cand.ending = "not-a-defect" if verdict["kind"] == "not-a-defect" else "no-fix"
-            cand.detail = verdict["give_up"]
+            cand.ending, cand.detail = issue_gates.give_up_ending(
+                cand.checks, "not-a-defect" if verdict["kind"] == "not-a-defect" else "no-fix",
+                verdict["give_up"])
             return cand
         cand.verdict = verdict
         patch = lane_tree.authored_patch(clone)
@@ -313,12 +314,12 @@ def _faulted(e: Exception) -> tuple[str, str]:
         return "agent-unavailable", str(e)
     if isinstance(e, headless_agent.AgentDeclined):
         return "declined", str(e)
-    if isinstance(e, (prove.NoBase, prove.SuiteFault, verify_driver.ProbeFailure)):
+    if isinstance(e, (prove.NoBase, prove.SandboxFault, verify_driver.ProbeFailure)):
         return "sandbox", str(e)
     return "run-failed", str(e)
 
 
-_LANE_ERRORS = (prove.NoBase, prove.SuiteFault, verify_driver.ProbeFailure,
+_LANE_ERRORS = (prove.NoBase, prove.SandboxFault, verify_driver.ProbeFailure,
                 headless_agent.EditsBlockedError, RuntimeError, ValueError)
 
 
@@ -397,6 +398,9 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
                 return finish("not-a-defect", cands[0].detail)
             if all(e == "run-failed" for e in endings):
                 return finish("run-failed", cands[0].detail)
+            faulted = [c for c in cands if c.ending == "sandbox"]
+            if faulted:
+                return finish("sandbox", faulted[0].detail)
             return finish("no-fix", "; ".join(f"{c.model}: {c.ending}" for c in cands)[:400])
 
         on_step("proving each reproduction on the unfixed tree")

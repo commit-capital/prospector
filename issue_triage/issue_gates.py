@@ -217,6 +217,25 @@ def sandbox_fault(record: dict | None) -> str | None:
     return str(record["error"])
 
 
+def checks_fault(checks: list[dict]) -> str | None:
+    """The machine fault behind an agent's give-up, or None: every sandbox run
+    the agent made (`check_records.CheckRecord`) that the check tool did not
+    refuse failed before its command concluded, and at least one did — so the
+    agent never saw a verdict and its give-up is the machine's, not a judgment
+    on the issue."""
+    runs = [c for c in checks if c.get("error_kind") != "refused"]
+    if not runs or any(c.get("error_kind") != "infrastructure" for c in runs):
+        return None
+    return f"every sandbox check the agent ran failed: {runs[-1].get('error')}"
+
+
+def give_up_ending(checks: list[dict], ending: str, detail: str) -> tuple[str, str]:
+    """The ending of an agent's give-up: "sandbox" when its checks show the
+    machine kept it from any verdict (checks_fault), else `ending`."""
+    fault = checks_fault(checks)
+    return ("sandbox", fault) if fault else (ending, detail)
+
+
 def fix_proof_bar(result: dict) -> tuple[str | None, str]:
     """(None, …) when a fix is proven and reviewed, else the ending it falls
     short at — "fix-unproven" for the host's proof, "fix-rejected" for a

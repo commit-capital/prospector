@@ -336,3 +336,23 @@ def test_the_bar_names_the_shortfall(over, ending):
     assert got == ending and why
 
 
+
+
+_FAULT = {"kind": "test", "exit": None, "error_kind": "infrastructure",
+          "error": "the sandbox could not apply the patch for a reason that is not the "
+                   "patch's: error: unable to create temporary file: No space left on device"}
+
+
+@pytest.mark.parametrize("checks,faulted", [
+    ([_FAULT, _FAULT], True),
+    ([{"kind": "test", "error_kind": "refused", "error": "cap"}, _FAULT], True),
+    ([_FAULT, {"kind": "test", "exit": 20, "error_kind": None, "error": None}], False),
+    ([{"kind": "compile", "exit": 20, "error_kind": "base-compile", "error": "base"}], False),
+    ([{"kind": "test", "error_kind": "refused", "error": "cap"}], False),
+    ([], False),
+])
+def test_a_give_up_is_the_machine_s_only_when_no_check_concluded(checks, faulted):
+    fault = issue_gates.checks_fault(checks)
+    assert bool(fault) is faulted
+    if faulted:
+        assert "No space left on device" in fault

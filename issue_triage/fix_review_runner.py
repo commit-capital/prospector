@@ -308,7 +308,7 @@ def run_request(store: IssueStore, n: int, req: dict, *,
     except headless_agent.AgentUnavailable as e:
         _finish(store, n, req, "failed", f"the agent is unavailable: {e}")
         raise
-    except (RequestFailed, prove.NoBase, prove.SuiteFault, RuntimeError, ValueError) as e:
+    except (RequestFailed, prove.NoBase, prove.SandboxFault, RuntimeError, ValueError) as e:
         outcome, status = f"{action} failed: {e}", "failed"
     _finish(store, n, req, status, outcome)
     _note(store, n, outcome)
