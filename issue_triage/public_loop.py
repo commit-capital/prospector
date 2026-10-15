@@ -13,7 +13,11 @@ GitHub. In scope (`in_scope`) are the issues a maintainer filed
 
 `sync` also starts what an operator's click starts in the app: a fixed attempt
 with no pull request queues `propose`, and a drafted question queues
-`ask-reporter`, once per attempt, with source `public`. `refresh` ingests the
+`ask-reporter`, once per attempt, with source `public`. A fixed attempt on an
+issue out of scope still opens its pull request when nothing holds it
+(`trust_boundary.held`), and gets no label or comment; on any issue a
+maintainer did not file, the proposal is left to an operator while another
+open pull request claims to fix the issue. `refresh` ingests the
 in-scope issues GitHub reports as updated since its last pass, so a new one
 reaches the store, and the hunter, without a full ingest; it reads them through
 the full ingest's GraphQL selection, so the bot's own labels and comments leave
@@ -43,7 +47,8 @@ A request the loop queued (or the hunter did) that a machine fault ended is
 queued again after RETRY_COOLDOWN, at most MAX_RETRIES times per issue, and the
 issue reads `fix in progress` meanwhile. An attempt that
 finished more than QUEUE_MAX_AGE ago starts nothing on its own. An issue that
-leaves scope has the labels recorded for it taken off, and nothing more.
+leaves scope has the labels recorded for it taken off, and only a clean fix's
+pull request opens.
 
 Under `TRIAGE_ISSUE_FIX_PUBLIC=dry-run` each write is logged as a dry-run and
 noted once on the issue's thread, and the record of what it would have written
@@ -64,6 +69,7 @@ from issue_triage import (
     fix_review,
     issue_ingest,
     public_comments,
+    related_prs,
     reply_router,
     trust_boundary,
 )
@@ -90,7 +96,7 @@ LABELS: dict[str, tuple[str, str]] = {
 # first read it are left where they are; the request it starts on its own
 # starts only within QUEUE_MAX_AGE.
 REPLY_MAX_AGE = timedelta(days=1)
-QUEUE_MAX_AGE = timedelta(days=3)
+QUEUE_MAX_AGE = timedelta(days=14)
 RETRY_COOLDOWN = timedelta(hours=1)
 MAX_RETRIES = 3
 LEASE = timedelta(minutes=5)
@@ -323,11 +329,15 @@ def work_for(issue: Issue, mode: str, now: datetime) -> _Work:
         want.setdefault(number, None)
     labels = {number: (label, have.get(number)) for number, label in want.items()
               if have.get(number) != label}
+    queue = queue_due(issue, now, view)
     if not scoped:
-        return _Work(labels=labels, comments=[], queue=None)
+        # Out of scope, a clean fix still opens its pull request; nothing else.
+        queue = queue if queue and queue.action == "propose" else None
+        if queue and queue.key in (view.get("queued") or {}):
+            queue = None
+        return _Work(labels=labels, comments=[], queue=queue)
     posted = view.get("posted") or {}
     comments = [d for d in comments_due(issue, now, view) if d.key not in posted]
-    queue = queue_due(issue, now, view)
     if queue and queue.key in (view.get("queued") or {}):
         queue = None
     return _Work(labels=labels, comments=comments, queue=queue)
@@ -396,6 +406,23 @@ def _first_line(body: str) -> str:
     return body.strip().splitlines()[0][:160] if body.strip() else ""
 
 
+def _rival_claim(issue: Issue) -> str | None:
+    """Why a fix on an issue a maintainer did not file should not open its own
+    pull request on its own: another open pull request already claims to fix it.
+    "" when the search could not run, so the proposal waits for the next pass;
+    None when nothing stands in the way, and always for a maintainer's issue."""
+    if gates.priority_author(issue.author, issue.author_association):
+        return None
+    found = related_prs.search(issue.number)
+    if found is None:
+        return ""
+    claims = [p for p in found if p["state"] == "open" and p["closes"]]
+    if not claims:
+        return None
+    return "an open pull request already claims to fix it: " + ", ".join(
+        f"#{p['number']}" for p in claims[:3])
+
+
 def sync_issue(store: IssueStore, issue: Issue, *, mode: str, token: str | None,
                host: str, now: datetime) -> bool:
     """Bring GitHub in line with issue `issue`'s attempt. Whether it wrote, or
@@ -442,16 +469,23 @@ def sync_issue(store: IssueStore, issue: Issue, *, mode: str, token: str | None,
                   + _first_line(due.body))
         if work.queue and not failed:
             q = work.queue
-            if dry:
+            rival = _rival_claim(leased) if q.action == "propose" else None
+            if rival is not None:
+                # The search did not answer (try again next pass), or another
+                # pull request already claims the issue (an operator decides).
+                if rival:
+                    _record(store, n, mode, "queued", q.key, {"at": _iso(now), "left": rival})
+                    _note(store, n, f"Left the proposal for an operator: {rival}.")
+            elif dry:
                 _note(store, n, f"Dry run: would queue {q.action}.")
-                ok = True
+                _record(store, n, mode, "queued", q.key, _iso(now))
             else:
                 ok, why = fix_review.queue(store, n, q.action, by="public", source="public",
                                            guidance=q.guidance, answer=q.answer, notes=q.notes)
-                if not ok:
+                if ok:
+                    _record(store, n, mode, "queued", q.key, _iso(now))
+                else:
                     _note(store, n, f"Could not queue {q.action}: {why}.")
-            if ok:
-                _record(store, n, mode, "queued", q.key, _iso(now))
     finally:
         def release(pub: dict) -> None:
             pub.pop("lease", None)
@@ -485,7 +519,8 @@ def sync(store: IssueStore, *, mode: str | None = None,
     for issue in store.all_issues(omit_candidates=True).values():
         if not (issue.fix_run or issue.fix_request or issue.fix_public):
             continue
-        if not in_scope(issue) and not any((issue.fix_public.get("labels") or {}).values()):
+        if (not in_scope(issue) and not any((issue.fix_public.get("labels") or {}).values())
+                and (issue.fix_run or {}).get("ending") != "fixed"):
             continue
         try:
             acted += sync_issue(store, issue, mode=issue_mode(issue, mode), token=token,

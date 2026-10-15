@@ -143,7 +143,9 @@ def test_a_fixed_attempt_opens_its_pull_request_and_a_drafted_question_is_asked(
     store.edit_issue(1).record_fix_run(_run(ending="fix-disputed", question=QUESTION))
     assert public_loop.queue_due(store.load_issue(1), NOW) == Queued(
         "ask-reporter", f"{FINISHED}:ask-reporter")
-    assert public_loop.queue_due(store.load_issue(1), NOW + timedelta(days=4)) is None
+    assert public_loop.queue_due(store.load_issue(1), NOW + timedelta(days=13)) == Queued(
+        "ask-reporter", f"{FINISHED}:ask-reporter")
+    assert public_loop.queue_due(store.load_issue(1), NOW + timedelta(days=15)) is None
 
 
 CROSSING = {"kind": "network", "where": "src/x.ts:2", "what": "posts to a new host",
@@ -270,7 +272,7 @@ def test_scope_all_serves_every_issue(store, writes, monkeypatch):
     assert ("label", 2, NEEDS_ANSWER, None, False) in writes
 
 
-def test_scope_all_opens_a_community_fix_and_says_nothing_of_a_failure(store, writes,
+def test_scope_all_opens_a_community_fix_and_says_nothing_of_a_failure(store, writes, rivals,
                                                                         monkeypatch):
     monkeypatch.setenv("TRIAGE_ISSUE_FIX_PUBLIC_SCOPE", "all")
     for n in (2, 3):
@@ -285,12 +287,88 @@ def test_scope_all_opens_a_community_fix_and_says_nothing_of_a_failure(store, wr
     assert store.load_issue(3).fix_request is None
 
 
-def test_a_community_fix_is_not_proposed_under_the_default_scope(store, writes):
+@pytest.fixture
+def rivals(monkeypatch):
+    """The other pull requests `related_prs.search` reports on an issue."""
+    from issue_triage import related_prs
+
+    found: dict = {"prs": [], "searched": []}
+
+    def search(issue, *, exclude=None):
+        found["searched"].append(issue)
+        return found["prs"]
+
+    monkeypatch.setattr(related_prs, "search", search)
+    return found
+
+
+def _rival(number: int, *, state: str = "open", closes: bool = True) -> dict:
+    return {"number": number, "title": "t", "state": state, "author": "someone",
+            "closes": closes}
+
+
+def test_a_clean_community_fix_is_proposed_under_the_default_scope(store, writes, rivals):
     _save(store, 2, association="NONE")
     store.edit_issue(2).record_fix_run(_run(ending="fixed", patch="p",
                                             boundary={"crossings": []}))
     public_loop.sync(store, mode="live", now=NOW)
-    assert store.load_issue(2).fix_request is None and writes == []
+    req = store.load_issue(2).fix_request
+    assert (req["action"], req["source"], req["status"]) == ("propose", "public", "queued")
+    assert writes == []
+
+
+def test_a_community_fix_the_trust_review_holds_waits_for_an_operator(store, writes, rivals):
+    _save(store, 2, association="NONE")
+    store.edit_issue(2).record_fix_run(_run(ending="fixed", patch="p"))
+    _save(store, 3, association="NONE")
+    store.edit_issue(3).record_fix_run(_run(ending="fixed", patch="p",
+                                            boundary={"crossings": [CROSSING]}))
+    public_loop.sync(store, mode="live", now=NOW)
+    assert store.load_issue(2).fix_request is None
+    assert store.load_issue(3).fix_request is None
+    assert rivals["searched"] == []
+
+
+def test_a_community_issue_gets_only_its_pull_request_not_labels_or_comments(store, writes,
+                                                                             rivals):
+    _save(store, 2, association="NONE")
+    store.edit_issue(2).record_fix_run(_run(**ASKED))
+    public_loop.sync(store, mode="live", now=NOW)
+    assert writes == [] and store.load_issue(2).fix_request is None
+
+
+def test_a_community_fix_another_open_pull_request_claims_is_left_for_an_operator(
+        store, writes, rivals):
+    _save(store, 2, association="NONE")
+    store.edit_issue(2).record_fix_run(_run(ending="fixed", patch="p",
+                                            boundary={"crossings": []}))
+    rivals["prs"] = [_rival(40, state="closed"), _rival(41, closes=False), _rival(42)]
+    public_loop.sync(store, mode="live", now=NOW)
+    issue = store.load_issue(2)
+    assert issue.fix_request is None
+    assert "#42" in issue.fix_thread[-1]["text"]
+    public_loop.sync(store, mode="live", now=NOW)
+    assert rivals["searched"] == [2]
+
+
+def test_a_community_fix_waits_while_the_search_for_rivals_cannot_run(store, writes, rivals):
+    _save(store, 2, association="NONE")
+    store.edit_issue(2).record_fix_run(_run(ending="fixed", patch="p",
+                                            boundary={"crossings": []}))
+    rivals["prs"] = None
+    public_loop.sync(store, mode="live", now=NOW)
+    assert store.load_issue(2).fix_request is None
+    rivals["prs"] = []
+    public_loop.sync(store, mode="live", now=NOW)
+    assert store.load_issue(2).fix_request["action"] == "propose"
+
+
+def test_a_maintainer_s_fix_is_proposed_without_a_rival_search(store, writes, rivals):
+    store.edit_issue(1).record_fix_run(_run(ending="fixed", patch="p"))
+    rivals["prs"] = [_rival(42)]
+    public_loop.sync(store, mode="live", now=NOW)
+    assert store.load_issue(1).fix_request["action"] == "propose"
+    assert rivals["searched"] == []
 
 
 def test_a_couldn_t_fix_label_set_earlier_is_taken_off(store, writes):
