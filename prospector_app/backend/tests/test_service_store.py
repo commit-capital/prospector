@@ -310,7 +310,7 @@ class TestChecks:
         rec = _pr(security=_green(against_head_sha="OLD"))
         c = pr_checks.checks_for_record(rec)
         sec = next(x for x in c["checks"] if x["name"] == "Security review")
-        assert sec["status"] == "warn" and "STALE" in sec["detail"]
+        assert sec["status"] == "warn" and "older commit" in sec["detail"]
 
     def test_an_old_security_review_at_the_current_head_passes(self):
         old = "2026-01-05T00:00:00+00:00"

@@ -173,7 +173,6 @@ export const TERMS: Record<string, GlossaryEntry> = {
   "freshness.stale": { title: "Stale analysis", meaning: "The PR changed since we reviewed it, so our results may be out of date. Re-run to refresh." },
   "freshness.current": { title: "Current", meaning: "Our results match the latest version of the PR." },
   "freshness.uningested": { title: "New commits upstream", meaning: "The author pushed changes we haven't picked up yet. What you see here is about the older version.", note: "It will update on its own shortly." },
-  "freshness.provenance": { title: "Where these facts come from", meaning: "When each result was produced, and whether it still matches the latest version of the PR.", note: "Worth a look before you act." },
 
   // author responses since we acted
   "resp.reopened": { title: "Reopened", meaning: "The author reopened this PR after we closed it." },

@@ -16,21 +16,22 @@ from pipeline import reviewers
 from pipeline import settings
 
 if TYPE_CHECKING:
-    from pipeline.model import Pr
+    from pipeline.model import Cluster, Pr
 
 
 def _c(key: str, name: str, status: str, detail: str = "", at: str | None = None,
-       advisory: bool = False) -> dict:
+       advisory: bool = False, stale: bool = False) -> dict:
     """One rollup row. An `advisory` row is shown without counting toward
-    readiness or the passed/total tally."""
+    readiness or the passed/total tally; a `stale` one describes an older
+    commit than the PR's head, which `against` names."""
     return {"key": key, "name": name, "status": status, "detail": detail, "at": at,
-            "advisory": advisory}
+            "advisory": advisory, "stale": stale, "against": None}
 
 
 # Stable identifiers for each named check, independent of the display name
 # (which varies with the default branch) — what
 # the PR Explorer's per-check filter (#578) matches against.
-CHECK_KEYS = ("review", "design", "ci", "scans", "mergeable", "tests", "drift", "secrets", "security",
+CHECK_KEYS = ("ci", "mergeable", "tests", "drift", "review", "scans", "secrets", "design", "security",
               "verify")
 
 
@@ -57,7 +58,7 @@ def _aggregate(key: str, name: str, rec: Pr, kind: str, at: str | None) -> dict:
         status = "warn"
     else:
         status = "pass"
-    return _c(key, name, status, " · ".join(parts), at)
+    return _c(key, name, status, " · ".join(parts), at, stale=reviewers.STALE in live)
 
 
 _BAR_CHECK = {reviewers.PASS: "pass", reviewers.FAIL: "fail", reviewers.STALE: "warn",
@@ -78,9 +79,41 @@ def _design(rec: Pr) -> dict:
     covered = coverage.summary(((entry or {}).get("extra") or {}).get("coverage"))
     if covered:
         detail = f"{detail} · {covered}"
-    return _c("design", d.label, _BAR_CHECK[b.status],
-              detail if gating else f"{detail} · advisory", (entry or {}).get("observed_at"),
-              advisory=not gating)
+    row = _c("design", d.label, _BAR_CHECK[b.status],
+             detail if gating else f"{detail} · advisory", (entry or {}).get("observed_at"),
+             advisory=not gating)
+    reviewed = (entry or {}).get("reviewed_sha")
+    row["against"] = reviewed
+    row["stale"] = bool(reviewed and reviewed != rec.effective_head_sha)
+    return row
+
+
+# The store section each row reads; its `against_head_sha` is the commit the
+# row describes.
+_SECTION = {"review": "reviews", "scans": "reviews", "ci": "signals", "mergeable": "signals",
+            "tests": "signals", "drift": "drift", "secrets": "threat", "security": "security",
+            "verify": "verify"}
+# A failing verdict that blocks at any head (a malicious or credential-leak
+# threat verdict, a RED or YELLOW security review) stays failing on an older
+# commit; every other verdict of an older commit is a caution.
+_FAILS_AT_ANY_HEAD = {"secrets", "security"}
+
+
+def _mark_commit(rec: Pr, row: dict) -> None:
+    """Stamp `row` with the commit it describes, and demote it to a caution
+    reading "older commit" when that is no longer the PR's head."""
+    section = _SECTION.get(row["key"])
+    sec = rec.section(section) if section else None
+    if not sec:
+        return
+    row["against"] = sec.get("against_head_sha")
+    why = freshness.currency_failure(rec, section) if section else None
+    if row["status"] == "na" or not (why or "").startswith("stale"):
+        return
+    row["stale"] = True
+    if row["status"] == "pass" or (row["status"] == "fail" and row["key"] not in _FAILS_AT_ANY_HEAD):
+        row["status"] = "warn"
+    row["detail"] = f"{row['detail']} · older commit"
 
 
 def checks_for_record(rec: Pr, today: str | None = None) -> dict:
@@ -121,10 +154,6 @@ def checks_for_record(rec: Pr, today: str | None = None) -> dict:
     else:
         by_key["tests"] = _c("tests", "Includes tests", "na", "not checked yet", None)
 
-    extra: list[dict] = []
-    if sig and not freshness.is_current(rec, "signals"):
-        extra.append(_c("signals_fresh", "Up to date", "warn", "the PR changed since this was checked", sig_at))
-
     drift = rec.section("drift") or {}
     ds = rec.drift_state
     if ds:
@@ -159,10 +188,6 @@ def checks_for_record(rec: Pr, today: str | None = None) -> dict:
             by_key["secrets"] = _c("secrets", "Threat scan", "fail", unscannable, threat_at)
         elif verdict == "suspicious" and found:
             by_key["secrets"] = _c("secrets", "Threat scan", "warn", "suspicious: " + ", ".join(found), threat_at)
-        elif not freshness.is_current(rec, "threat"):
-            reason = freshness.currency_failure(rec, "threat") or "stale"
-            tail = "older version of the PR" if reason.startswith("stale") else reason
-            by_key["secrets"] = _c("secrets", "Threat scan", "warn", f"{clear} · STALE — {tail}", threat_at)
         else:
             by_key["secrets"] = _c("secrets", "Threat scan", "pass", clear, threat_at)
     else:
@@ -173,14 +198,8 @@ def checks_for_record(rec: Pr, today: str | None = None) -> dict:
         v = rec.security_verdict
         st = {"GREEN": "pass", "YELLOW": "warn", "RED": "fail"}.get(v or "", "na")
         detail = f"{v} · {len(rec.findings)} finding(s)"
-        if not freshness.is_current(rec, "security"):
-            reason = freshness.currency_failure(rec, "security") or "stale"
-            tail = "older version of the PR" if reason.startswith("stale") else reason
-            if v == "GREEN":
-                st, detail = "warn", f"{detail} · STALE — {tail}"
-            else:
-                detail = (f"{detail} · {tail} — blocks merge until a GREEN review "
-                          "of the latest version")
+        if v != "GREEN" and not freshness.is_current(rec, "security"):
+            detail += " · blocks merge until a GREEN review of the latest commit"
         by_key["security"] = _c("security", "Security review", st, detail, security.get("checked_at"))
     else:
         by_key["security"] = _c("security", "Security review", "na", "not run yet", None)
@@ -200,26 +219,90 @@ def checks_for_record(rec: Pr, today: str | None = None) -> dict:
         detail = o or "in progress — no result yet"
         if rec.verify_findings:
             detail += f" · {len(rec.verify_findings)} finding(s)"
-        why_stale = freshness.currency_failure(rec, "verify",
-                                               max_age_days=settings.verify_max_age_days())
+        aged = (freshness.is_current(rec, "verify")
+                and freshness.currency_failure(rec, "verify",
+                                               max_age_days=settings.verify_max_age_days()))
         if o is None:
             st = "warn"
-        elif (why_stale and o not in gates.VERIFY_AGES_OUT
-              and freshness.is_current(rec, "verify")):
-            st, detail = "fail", f"{detail} · {why_stale} — blocks merge until the tests are re-run"
-        elif why_stale:
-            tail = "older version of the PR" if why_stale.startswith("stale") else why_stale
-            st, detail = "warn", f"{detail} · STALE — {tail}"
+        elif aged and o not in gates.VERIFY_AGES_OUT:
+            st, detail = "fail", f"{detail} · {aged} — blocks merge until the tests are re-run"
+        elif aged:
+            st, detail = "warn", f"{detail} · {aged}"
         else:
             st = "pass" if o == "verified-fix" else "fail"
             partial = gates.verify_signals_incomplete(rec) if st == "pass" else None
             if partial:
                 st, detail = "warn", f"{detail} · PARTIAL — {partial}"
-        by_key["verify"] = _c("verify", "Test run", st, detail, verify.get("checked_at"))
+        by_key["verify"] = _c("verify", "Validation test run", st, detail, verify.get("checked_at"))
     else:
-        by_key["verify"] = _c("verify", "Test run", "na", "not run yet", None)
+        by_key["verify"] = _c("verify", "Validation test run", "na", "not run yet", None)
 
-    out = [by_key[k] for k in CHECK_KEYS if k in by_key] + extra
+    out = [by_key[k] for k in CHECK_KEYS if k in by_key]
+    for row in out:
+        _mark_commit(rec, row)
     ran = [c for c in out if c["status"] != "na" and not c["advisory"]]
     passed = [c for c in ran if c["status"] == "pass"]
     return {"checks": out, "passed": len(passed), "total": len(ran)}
+
+
+def _stage_commit(rec: Pr, row: dict, section: str) -> None:
+    """Stamp a stage row with its commit and mark it stale when its section is
+    no longer current (a moved head, or a summary of an older format)."""
+    sec = rec.section(section) or {}
+    row["against"] = sec.get("against_head_sha")
+    why = freshness.currency_failure(rec, section)
+    if why and why != "missing":
+        row["stale"], row["status"] = True, "warn"
+        row["detail"] += " · older summary format" if why.startswith("produced") else " · older commit"
+
+
+def _siblings_moved(rec: Pr, cluster: Cluster, prs: dict[int, Pr]) -> list[int]:
+    """Other open members of `cluster` whose change its analysis has not
+    seen: a moved head, or a PR that joined after it."""
+    return [n for n in cluster.prs
+            if n != rec.n and (r := prs.get(n)) is not None and r.state == "open"
+            and ((r.section("analysis") and not freshness.is_current(r, "analysis"))
+                 or cluster.proposal_for(n) is None)]
+
+
+def stages_for_record(rec: Pr, clusters: dict[int, Cluster], prs: dict[int, Pr]) -> list[dict]:
+    """The processing rows ahead of the checks — summarized, clustered,
+    analyzed — each with the commit it describes. They never count toward
+    the checks tally."""
+    summary = rec.section("summary")
+    if summary:
+        row = _c("summary", "Summarized", "pass", summary.get("one_liner") or "summarized",
+                 summary.get("checked_at"))
+        _stage_commit(rec, row, "summary")
+    else:
+        row = _c("summary", "Summarized", "na", "not summarized yet — the clustering lane picks it up")
+    out = [row]
+
+    cluster = rec.section("cluster")
+    ids = rec.cluster_ids
+    if cluster is None:
+        row = _c("cluster", "Clustered", "na",
+                 "not clustered yet — the clustering lane places it after summarizing")
+    else:
+        detail = (" · ".join(f"cluster #{i} · {len(clusters[i].prs) if i in clusters else '?'} PRs"
+                             for i in ids)
+                  or "standalone — no related PRs")
+        row = _c("cluster", "Clustered", "pass", detail, cluster.get("checked_at"))
+        _stage_commit(rec, row, "cluster")
+    out.append(row)
+
+    analysis = rec.section("analysis")
+    if analysis:
+        row = _c("analysis", "Analyzed", "pass", f"recommends {rec.disposition or 'no action'}",
+                 analysis.get("checked_at"))
+        _stage_commit(rec, row, "analysis")
+        moved = sorted({n for i in ids if i in clusters
+                        for n in _siblings_moved(rec, clusters[i], prs)})
+        if moved:
+            row["status"] = "warn"
+            row["detail"] += " · " + ", ".join(f"#{n}" for n in moved) + " changed since"
+    else:
+        row = _c("analysis", "Analyzed", "na",
+                 "not analyzed yet — the clustering lane analyzes it after clustering")
+    out.append(row)
+    return out

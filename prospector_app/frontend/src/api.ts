@@ -470,7 +470,6 @@ export interface PRRow {
   clean_reasons?: string[];
   stale_sections?: string[];
   live_head_sha?: string | null;
-  fact_freshness?: FactFreshness[];
   issues?: IssueLink[];
   trusted_author?: boolean;
   proposed_action?: ProposedAction;
@@ -514,16 +513,6 @@ export interface LocBreakdown {
   by_category: Record<string, SizeBucket>;
 }
 export interface HumanMerge { required: boolean; paths: string[]; owners: string[] }
-// One sha-bound fact's provenance: when it was computed, the head it describes,
-// and whether it still holds. `why` is the short reason it doesn't.
-export interface FactFreshness {
-  section: string;
-  checked_at?: string | null;
-  against_head_sha?: string | null;
-  current: boolean;
-  why?: string | null;
-}
-
 // The executor's refusal payload when a write would quote facts the author has
 // moved past — mirrors executor._stale_gate.
 export interface StaleBlock {
@@ -598,7 +587,8 @@ export interface CoverageRecord {
   duration_s: number;
 }
 
-export interface CheckItem { key: string; name: string; status: "pass" | "warn" | "fail" | "na"; detail: string; at?: string | null; advisory?: boolean }
+// `stale`: the row describes `against`, an older commit than the PR's head.
+export interface CheckItem { key: string; name: string; status: "pass" | "warn" | "fail" | "na"; detail: string; at?: string | null; advisory?: boolean; stale?: boolean; against?: string | null }
 export interface ChecksRollup { checks: CheckItem[]; passed: number; total: number }
 
 export interface AuthorStats {
@@ -1288,6 +1278,8 @@ export interface PRDetail extends PRRow {
   reviews_detail?: ReviewsDetail | null;
   ci_checks?: { name: string; conclusion: string; status: string }[];
   summary?: { one_liner?: string | null; mechanism?: string | null } | null;
+  // the processing rows ahead of the checks: summary, cluster, analysis
+  stages?: CheckItem[];
   merge_gate?: { ok: boolean; reason: string; overridable?: boolean; override_kind?: "security" | "unreviewed" | "verify" | null };
   // the changed paths that pinned risk_tier (the detail view's "why this tier")
   risk_tier_paths?: string[];

@@ -25,7 +25,6 @@ import { useExec } from "../ExecContext";
 import { useRepoMeta } from "../RepoMetaContext";
 import { useFreshness } from "../useFreshness";
 import { FreshnessBar, FreshnessCallout } from "../components/Freshness";
-import { FactFreshnessPanel } from "../components/FactFreshness";
 import { useRunState } from "../useRunState";
 import { useJobStream } from "../useJobStream";
 import { LinkedIssues } from "../components/LinkedIssues";
@@ -411,6 +410,17 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
     );
   }
 
+  // Analysis is cluster-scoped: re-running it re-analyzes every PR in the cluster.
+  const analysisStage = pr.stages?.find((s) => s.key === "analysis");
+  if (pr.clusters.length && analysisStage && analysisStage.status !== "pass") {
+    checksActions.analysis = (
+      <button className="btn-secondary sm" onClick={runAnalyze} disabled={analyzeJob.running}
+        title={`Analyze cluster ${pr.clusters[0]} — every PR in it — against its current heads.`}>
+        {analyzeJob.running ? "Analyzing…" : analysisStage.status === "na" ? "Analyze now" : "↻ Re-analyze"}
+      </button>
+    );
+  }
+
   checksActions.verify = (
     <VerifyAction v={pr.verify_detail ?? null} req={pr.verify_request ?? null}
       busy={verifyBusy} canQueue={!resolved} onQueue={queueVerify} onDequeue={dequeueVerify} />
@@ -616,13 +626,10 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
        </>
       )}
 
-      {/* Provenance for every fact above and below — one line that expands. */}
-      <FactFreshnessPanel facts={pr.fact_freshness} headSha={pr.head_sha}
-        liveHeadSha={pr.live_head_sha} />
-
       {/* #550/#581: what checks ran, when, and what they found — plus the
           action that unblocks each one, right there. */}
-      <ChecksPanel c={checks} actions={checksActions} bodies={checksBodies} />
+      <ChecksPanel c={checks} stages={pr.stages} headSha={pr.live_head_sha ?? pr.head_sha}
+        actions={checksActions} bodies={checksBodies} />
 
       {/* Autofix: have the configured machine user push a small fix to the
           contributor's branch, rather than asking the author and waiting.

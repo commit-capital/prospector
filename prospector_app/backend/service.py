@@ -224,28 +224,6 @@ def _age_days(pr: Pr) -> int | None:
     return None if at is None else (datetime.now(timezone.utc) - at).days
 
 
-def _fact_freshness(rec: Pr) -> list[dict]:
-    """Per-fact provenance for every sha-bound section the PR carries: when it was
-    computed, which head it describes, whether it still holds, and why not.
-
-    This is the answer to "when is this recommendation from, and does it still
-    apply?" — the question a rationale alone cannot settle."""
-    out: list[dict] = []
-    for section in freshness.SHA_BOUND:
-        sec = rec.section(section)
-        if not sec:
-            continue
-        max_age = settings.verify_max_age_days() if section == "verify" else None
-        out.append({
-            "section": section,
-            "checked_at": sec.get("checked_at"),
-            "against_head_sha": sec.get("against_head_sha"),
-            "current": freshness.is_current(rec, section, max_age_days=max_age),
-            "why": freshness.currency_failure(rec, section, max_age_days=max_age),
-        })
-    return out
-
-
 def _merge_gate_fields(rec: Pr) -> dict:
     """The merge gate for the app: ok/reason from gates.merge_eligibility,
     plus `overridable` (a reason at merge time clears the block) and
@@ -299,7 +277,6 @@ def pr_row(n: int, rec: Pr | None = None) -> dict | None:
         "author": rec.author,
         "head_sha": rec.head_sha,
         "live_head_sha": rec.live_head_sha,
-        "fact_freshness": _fact_freshness(rec),
         "url": rec.url,
         "created_at": rec.created_at,
         "updated_at": rec.updated_at,
@@ -806,6 +783,7 @@ def pr_detail(n: int) -> dict | None:
     row["concerns"] = rec.concerns
     row["sanity_trips"] = rec.sanity_trips
     row["summary"] = rec.section("summary")
+    row["stages"] = pr_checks.stages_for_record(rec, data.clusters(), data.prs())
     row["author_stats"] = data.author_stats(rec.author)
     sig = rec.signals or {}
     ds = sig.get("diffstat") or {}

@@ -592,6 +592,9 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .check-row-line .check-name { font-weight: 600; flex: none; }
 .check-row-line .check-detail { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .check-row-line .check-age { flex: none; cursor: help; white-space: nowrap; }
+.check-row-line .check-age-stale { color: var(--gold); font-weight: 600; }
+.checks-divider { border-top: 2px solid var(--border); margin: 4px 0; }
+.checks-stale-note { color: var(--gold); margin: 0 0 8px; }
 .check-row-line .check-action { flex: none; margin-left: 4px; }
 .check-ico.st-pass { color: var(--green); }
 .check-ico.st-warn { color: var(--gold); }
