@@ -56,3 +56,13 @@ def test_endpoints(store, monkeypatch):
     assert not lane_pause.paused("mac-1", "verify")
     assert client.post("/api/worker/lanes/nope/pause", json={"host": "mac-1"}).status_code == 400
     assert client.post("/api/worker/lanes/verify/pause", json={}).status_code == 400
+
+
+def test_a_paused_lane_tripped_on_the_agent_pushes_nothing(store, monkeypatch):
+    from prospector_app.backend import fix_worker, worker_selftest
+    agent_kind = sorted(worker_selftest.AGENT_KINDS)[0]
+    worker_health.update(store, "mac-1", lambda r: worker_health.trip(
+        r, "fix", kind=agent_kind, reason="claude CLI is not authenticated"))
+    assert fix_worker.pushes_open(False) is True
+    lane_pause.pause("mac-1", "fix", by="ops")
+    assert fix_worker.pushes_open(False) is False

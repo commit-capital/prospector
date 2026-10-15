@@ -12,6 +12,12 @@ export function healthLane(lane: string): string {
   return lane === "autofix" ? "fix" : lane;
 }
 
+/** Whether Move to top and Remove apply to a queued row: the backend acts on
+ *  a request still waiting, and an approved autofix push is not. */
+export function canReorder(lane: string, status: string): boolean {
+  return status === "queued" || (lane === "verify" && status === "waiting-for-base");
+}
+
 export function cellLabel(state: OverviewCellState): string {
   return CELL[state];
 }

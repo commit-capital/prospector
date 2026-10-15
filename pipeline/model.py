@@ -32,6 +32,18 @@ def _stamp(rec: dict, section: str, payload: dict, against_head_sha: str | None)
     storekit.stamp(rec, section, payload, token_field, token_value)
 
 
+# The request statuses a queue still holds: an operator's priority
+# (queue_order) carries across them and ends with the request.
+_VERIFY_LIVE = frozenset({"queued", "waiting-for-base", "running"})
+_FIX_LIVE = frozenset({"queued", "running", "awaiting-review", "approved", "pushing"})
+
+
+def _keep_priority(prior: object, section: dict, live: frozenset[str]) -> None:
+    if (isinstance(prior, dict) and prior.get("status") in live
+            and section["status"] in live and prior.get("priority") is not None):
+        section["priority"] = prior["priority"]
+
+
 class Pr:
     """A store-bound, auto-saving wrapper around one PR record."""
 
@@ -484,6 +496,7 @@ class Pr:
                              ("source", source), ("host", host)):
             if value is not None:
                 section[field] = value
+        _keep_priority(self.rec.get("verify_request"), section, _VERIFY_LIVE)
         _stamp(self.rec, "verify_request", section, head_sha)
         self._persist()
 
@@ -525,6 +538,7 @@ class Pr:
                              ("objection", objection)):
             if value is not None:
                 section[field] = value
+        _keep_priority(self.rec.get("fix_request"), section, _FIX_LIVE)
         _stamp(self.rec, "fix_request", section, head_sha)
         self._persist()
 

@@ -14,9 +14,15 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import TypedDict
 
+from collections.abc import Mapping
+from typing import TYPE_CHECKING
+
 from pipeline.storekit import now as _now
-from pipeline import store
+from pipeline import gates, store
 from prospector_app.backend import data
+
+if TYPE_CHECKING:
+    from pipeline.model import Pr
 
 # A worker heartbeat older than this reads as offline: the worker beats every
 # poll tick (verify_worker.POLL_SECONDS), so several missed beats mean the
@@ -82,32 +88,43 @@ class QueueEntry(TypedDict):
     priority: float | None
 
 
-# Live verify_request statuses that mean "in flight", ranked in the order the
-# queue view lists them: currently running, then waiting on a base refresh,
-# then merely queued.
-_QUEUE_STATUS_ORDER = {"running": 0, "waiting-for-base": 1, "queued": 2}
+# Live verify_request statuses that mean "in flight".
+_IN_FLIGHT = frozenset({"running", "waiting-for-base", "queued"})
+
+
+def priority_of(req: Mapping[str, object]) -> float:
+    """A request's queue priority (queue_order); absent reads as 0."""
+    p = req.get("priority")
+    return float(p) if isinstance(p, (int, float)) else 0.0
+
+
+def run_order(rec: Pr, req: Mapping[str, object]) -> tuple[float, bool, bool, str]:
+    """The order the worker takes waiting requests in: an operator's priority
+    (queue_order, higher first), operator picks before auto-picks, a
+    maintainer's PR (gates.priority_author) first, then oldest queued_at."""
+    return (-priority_of(req), req.get("source") in store.AUTO_REQUEST_SOURCES,
+            not gates.priority_author(rec.author, rec.author_association),
+            str(req.get("queued_at") or ""))
 
 
 def queue_entries() -> list[QueueEntry]:
     """Every PR with a verification request in flight, running first, then
-    waiting-for-base, then queued — oldest queued_at first within each group,
-    matching the order the worker will pick them up in (`next_queued`)."""
-    out: list[QueueEntry] = []
+    the waiting ones in the order the worker takes them (`run_order`)."""
+    rows: list[tuple[tuple[bool, tuple[float, bool, bool, str]], QueueEntry]] = []
     for n, rec in data.prs().items():
         req = rec.verify_request or {}
         status = req.get("status")
-        if status not in _QUEUE_STATUS_ORDER:
+        if status not in _IN_FLIGHT:
             continue
-        out.append({
+        rows.append(((status != "running", run_order(rec, req)), {
             "pr": n, "title": rec.title, "status": status,
             "source": req.get("source"), "step": req.get("step"),
             "queued_at": req.get("queued_at"), "started_at": req.get("started_at"),
             "host": req.get("host"),
             "priority": float(p) if (p := req.get("priority")) is not None else None,
-        })
-    out.sort(key=lambda e: (_QUEUE_STATUS_ORDER[e["status"]], -(e["priority"] or 0),
-                            str(e["queued_at"] or "")))
-    return out
+        }))
+    rows.sort(key=lambda r: r[0])
+    return [entry for _, entry in rows]
 
 
 def beat_online(last: object) -> bool:

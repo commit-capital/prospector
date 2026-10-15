@@ -67,3 +67,35 @@ def test_top_refuses_an_item_that_is_not_waiting(store):
     data.refresh()
     with pytest.raises(ValueError):
         queue_order.top("verify", 1)
+
+
+def _drain_order(pick, n_items: int, section: str, store) -> list[int]:
+    out = []
+    for _ in range(n_items):
+        n = pick()
+        out.append(n)
+        rec = store.load_pr(n).raw
+        rec[section]["status"] = "cancelled"
+        store.save_pr(rec)
+        data.refresh()
+    return out
+
+
+def test_verify_queue_view_lists_in_the_order_the_worker_runs(store):
+    from prospector_app.backend import verify_queue
+    store.save_pr(_pr(1, "verify_request", source="auto"))
+    store.save_pr(_pr(2, "verify_request"))
+    store.save_pr(_pr(3, "verify_request", source="auto"))
+    data.refresh()
+    queue_order.top("verify", 3)
+    listed = [e["pr"] for e in verify_queue.queue_entries()]
+    assert listed == _drain_order(verify_worker.next_queued, 3, "verify_request", store) == [3, 2, 1]
+
+
+def test_fix_queue_view_lists_in_the_order_the_worker_runs(store):
+    from prospector_app.backend import fix_queue
+    store.save_pr(_pr(1, "fix_request", source="auto"))
+    store.save_pr(_pr(2, "fix_request"))
+    data.refresh()
+    listed = [e["pr"] for e in fix_queue.queue_entries()]
+    assert listed == _drain_order(lambda: fix_worker._oldest("queued"), 2, "fix_request", store) == [2, 1]

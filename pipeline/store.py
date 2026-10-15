@@ -1266,6 +1266,8 @@ class Store:
         section: wire.VerifyRequest = {
             "status": "running", "step": "claimed", "host": host,
             "started_at": storekit.now()}
+        if isinstance(req.get("priority"), (int, float)):
+            section["priority"] = float(req["priority"])
         for field in ("queued_at", "source", "attempts"):
             if req.get(field) is not None:
                 if field == "attempts" and isinstance(req[field], int):
@@ -1466,7 +1468,7 @@ class Store:
                          "step": "claimed", "host": host,
                          "started_at": storekit.now()}
         for field in ("queued_at", "source", "attempts", "base_sha", "result",
-                      "guidance", "objection"):
+                      "guidance", "objection", "priority"):
             if req.get(field) is not None:
                 section[field] = req[field]
         head = (rec.get("meta") or {}).get("head_sha")

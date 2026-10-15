@@ -31,3 +31,22 @@ def test_fix_hunter_lists_its_picks_in_pick_order(store, monkeypatch):
     monkeypatch.setattr(fix_worker, "auto_fixable",
                         lambda pr, budget_ok=True: ("rebase", None) if pr.number != 5 else None)
     assert fix_worker.hunt_candidates(limit=2) == [("rebase", 3), ("rebase", 7)]
+
+
+def test_fix_hunter_leads_with_a_fix_while_a_slot_is_free(store, monkeypatch):
+    monkeypatch.setattr(fix_worker, "auto_fixable",
+                        lambda pr, budget_ok=True: ("fix", None) if pr.number == 9 else ("rebase", None))
+    monkeypatch.setattr(fix_worker, "_auto_in_flight", lambda action: 0)
+    monkeypatch.setenv("TRIAGE_FIX_HUNT_LIMIT", "3")
+    picks = fix_worker.hunt_candidates(limit=3)
+    assert picks[0] == ("fix", 9)
+    monkeypatch.setattr(fix_worker, "_auto_in_flight", lambda action: 3)
+    assert ("fix", 9) not in fix_worker.hunt_candidates(limit=5)
+
+
+def test_no_design_picks_while_design_review_is_off(store, monkeypatch):
+    monkeypatch.setattr(gates, "blocked_on_security", lambda pr: False)
+    monkeypatch.setattr(verify_worker, "auto_verifiable", lambda pr: False)
+    monkeypatch.setattr(design_review, "huntable", lambda pr: True)
+    monkeypatch.setenv("TRIAGE_DESIGN_REVIEW", "off")
+    assert verify_worker.hunt_candidates()["design"] == []

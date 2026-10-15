@@ -90,3 +90,27 @@ def test_prioritize_refuses_a_claimed_request(st):
     st._prs.stamped = real
     req = st.load_pr(1).verify_request
     assert req["status"] == "running" and "priority" not in req
+
+
+def test_priority_survives_a_claim_and_a_requeue_and_ends_with_the_request(st):
+    _queued(st, 1, "verify_request")
+    assert st.prioritize_verify_request(1, 4.0)
+    assert st.claim_verify_request(1, host="w")["priority"] == 4.0
+    st.load_pr(1).record_verify_request("queued", queued_at="2026-10-01T00:00:00+00:00", attempts=1)
+    assert st.load_pr(1).verify_request["priority"] == 4.0
+    st.load_pr(1).record_verify_request("waiting-for-base", queued_at="q")
+    assert st.load_pr(1).verify_request["priority"] == 4.0
+    st.load_pr(1).record_verify_request("done", queued_at="q")
+    assert "priority" not in st.load_pr(1).verify_request
+    st.load_pr(1).record_verify_request("queued", queued_at="later")
+    assert "priority" not in st.load_pr(1).verify_request
+
+
+def test_fix_priority_survives_a_claim_and_a_requeue(st):
+    _queued(st, 2, "fix_request")
+    assert st.prioritize_fix_request(2, 2.0)
+    assert st.claim_fix_request(2, host="w")["priority"] == 2.0
+    st.load_pr(2).record_fix_request("queued", "rebase", queued_at="q", attempts=1)
+    assert st.load_pr(2).fix_request["priority"] == 2.0
+    st.load_pr(2).record_fix_request("pushed", "rebase", queued_at="q")
+    assert "priority" not in st.load_pr(2).fix_request

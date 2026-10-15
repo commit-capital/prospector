@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { cellLabel, healthLane, nextText, statusLine } from "./overviewText.ts";
+import { canReorder, cellLabel, healthLane, nextText, statusLine } from "./overviewText.ts";
 import type { ControlOverview, OverviewLane } from "../../api.ts";
 
 const lane = (over: Partial<OverviewLane>): OverviewLane => ({
@@ -47,4 +47,12 @@ test("health lane names map the overview's lanes", () => {
   assert.equal(healthLane("autofix"), "fix");
   assert.equal(healthLane("issue-fix"), "issue-fix");
   assert.equal(healthLane("verify"), "verify");
+});
+
+test("only a waiting row can be moved or removed", () => {
+  assert.equal(canReorder("verify", "waiting-for-base"), true);
+  assert.equal(canReorder("verify", "queued"), true);
+  assert.equal(canReorder("autofix", "queued"), true);
+  assert.equal(canReorder("autofix", "approved"), false);
+  assert.equal(canReorder("issue-fix", "queued"), true);
 });

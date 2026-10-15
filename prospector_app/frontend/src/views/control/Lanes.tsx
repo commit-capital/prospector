@@ -3,7 +3,7 @@ import { api, type ControlOverview, type FixQueue, type OverviewLane, type Overv
 import { FlyoutIssueLink } from "../../components/FlyoutIssueLink";
 import { PRLink } from "../../components/PRLink";
 import { ago, elapsed } from "./format";
-import { cellLabel, healthLane, nextText } from "./overviewText";
+import { canReorder, cellLabel, healthLane, nextText } from "./overviewText";
 import { FixTable } from "./Queues";
 
 const TONE: Record<string, string> = {
@@ -83,12 +83,15 @@ function QueueList({ lane, onChanged }: { lane: OverviewLane; onChanged: () => v
               {q.pr != null ? <PRLink n={q.pr} /> : <FlyoutIssueLink n={n} />}
               {q.title && <span className="muted"> {q.title.slice(0, 70)}</span>}
               <span className="muted"> · {q.source ?? "auto"} · {ago(q.queued_at)}{q.priority ? " · moved up" : ""}</span>
-              {i > 0 && (
+              {q.status === "approved" && <span className="muted"> · approved, pushing next</span>}
+              {canReorder(lane.lane, q.status) && i > 0 && (
                 <button className="linkish small" disabled={busy} onClick={() => run(() => api.queueTop(kind, n))}
                   title="Run this next">move to top</button>
               )}
-              <button className="linkish small" disabled={busy} onClick={() => run(() => remove(q))}
-                title="Take this out of the queue">remove</button>
+              {canReorder(lane.lane, q.status) && (
+                <button className="linkish small" disabled={busy} onClick={() => run(() => remove(q))}
+                  title="Take this out of the queue">remove</button>
+              )}
             </li>
           );
         })}

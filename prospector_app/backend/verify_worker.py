@@ -389,9 +389,7 @@ def next_queued(skip_auto: bool = False) -> int | None:
                 continue
         else:
             continue
-        key = (-float(req.get("priority") or 0), auto,
-               not gates.priority_author(rec.author, rec.author_association),
-               str(req.get("queued_at") or ""))
+        key = verify_queue.run_order(rec, req)
         if best_key is None or key < best_key:
             best_n, best_key = n, key
     return best_n
@@ -579,8 +577,10 @@ def _pools(prs: dict[int, Pr], open_lanes: frozenset[str]) -> dict[str, list[tup
 
 def hunt_candidates(limit: int = 5) -> dict[str, list[int]]:
     """Each hunt lane's next `limit` picks in the order the hunter takes them,
-    read without picking."""
-    pools = _pools(data.prs(), frozenset(HUNT_ROTATION))
+    read without picking; design review switched off has none."""
+    lanes = frozenset(lane for lane in HUNT_ROTATION
+                      if lane != "design" or settings.design_review_mode() != "off")
+    pools = _pools(data.prs(), lanes)
     return {lane: [n for n, _ in sorted(pool, key=hunt_key)[:limit]]
             for lane, pool in pools.items()}
 
