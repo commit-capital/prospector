@@ -1,20 +1,47 @@
 """Port-wait helper: bound port detected, closed port times out, a dead
 backend process short-circuits the wait; the reload-dir arguments are ones
 uvicorn accepts and honours, and they cover the backend's own source without
-reaching the rest of the repo root; the backend's graceful shutdown is bounded."""
+reaching the rest of the repo root; the backend's graceful shutdown is bounded;
+Ctrl-C, a closed terminal and SIGTERM each stop both servers."""
 from __future__ import annotations
 
+import os
+import signal
 import socket
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
+import pytest
 from uvicorn.config import resolve_reload_patterns
 from uvicorn.main import main as uvicorn_main
 
 from pipeline import devserve
 from pipeline import settings
+
+# Runs devserve.run() over a scratch root (argv[1]) with stand-in servers: a
+# backend that binds the API port, and a frontend that sleeps. Each records
+# its pid in the root.
+SUPERVISOR = """
+import sys
+from pathlib import Path
+from pipeline import devserve, settings
+
+root = Path(sys.argv[1])
+settings.REPO_ROOT = root
+backend = (
+    "import os, socket, sys, time; "
+    "s = socket.create_server(('localhost', int(sys.argv[1]))); "
+    "open(sys.argv[2], 'w').write(str(os.getpid())); "
+    "time.sleep(60)"
+)
+devserve.backend_command = lambda _root, port: [
+    sys.executable, "-c", backend, str(port), str(root / "backend.pid")]
+devserve.FRONTEND_CMD = 'echo $$ > "$0/frontend.pid" && exec sleep 60'
+sys.exit(devserve.run())
+"""
 
 
 def _watched(root: Path) -> list[Path]:
@@ -40,6 +67,31 @@ def _tree(root: Path) -> None:
 
 def _running_proc() -> subprocess.Popen[bytes]:
     return subprocess.Popen([sys.executable, "-c", "import time; time.sleep(5)"])
+
+
+def _free_port() -> int:
+    with socket.create_server(("localhost", 0)) as sock:
+        return sock.getsockname()[1]
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _pids(root: Path, timeout: float) -> list[int]:
+    """The stand-in servers' pids, once both have started."""
+    files = [root / "backend.pid", root / "frontend.pid"]
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        texts = [f.read_text().strip() if f.exists() else "" for f in files]
+        if all(texts):
+            return [int(t) for t in texts]
+        time.sleep(0.1)
+    raise AssertionError("the stand-in servers never started")
 
 
 def test_is_port_open_true_on_bound_port():
@@ -144,6 +196,44 @@ def test_the_backend_bounds_its_graceful_shutdown():
     params = uvicorn_main.make_context("uvicorn", cmd[3:]).params
     assert params["reload"] is True
     assert params["timeout_graceful_shutdown"] == devserve.SHUTDOWN_GRACE_SECONDS
+
+
+@pytest.mark.parametrize("sig", [signal.SIGINT, signal.SIGHUP, signal.SIGTERM],
+                         ids=["ctrl-c", "tab-close", "kill"])
+def test_a_stop_signal_stops_both_servers(tmp_path: Path, sig: signal.Signals):
+    """Each server runs in its own session, so a signal meant for the dev
+    server — Ctrl-C, the hangup a closed terminal tab sends, a plain `kill` —
+    reaches the supervisor alone, which must stop both on the way out. Under
+    `uv run` a closed tab delivers a burst: the shell's hangup, the
+    terminal's, and the copies uv forwards, all within a millisecond."""
+    (tmp_path / "setup.sh").write_text("exit 0\n")
+    env = {**os.environ, "API_PORT": str(_free_port()), "VITE_PORT": str(_free_port()),
+           "TRIAGE_SKIP_DOTENV": "1"}
+    with (tmp_path / "supervisor.log").open("wb") as log:
+        supervisor = subprocess.Popen(
+            [sys.executable, "-c", SUPERVISOR, str(tmp_path)],
+            cwd=settings.REPO_ROOT, env=env, stdout=log, stderr=log,
+        )
+    pids: list[int] = []
+    try:
+        pids = _pids(tmp_path, timeout=30.0)
+        burst_end = time.monotonic() + 0.005
+        while time.monotonic() < burst_end:
+            try:
+                os.kill(supervisor.pid, sig)
+            except ProcessLookupError:
+                break
+        supervisor.wait(timeout=10)
+        deadline = time.monotonic() + 5.0
+        while any(_alive(pid) for pid in pids) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert [pid for pid in pids if _alive(pid)] == [], (tmp_path / "supervisor.log").read_text()
+        assert supervisor.returncode == 0
+    finally:
+        supervisor.kill()
+        for pid in pids:
+            if _alive(pid):
+                os.killpg(pid, signal.SIGKILL)
 
 
 def test_the_repo_has_every_reload_dir():

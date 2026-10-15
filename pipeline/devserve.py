@@ -3,8 +3,11 @@
 Refuses to start when the API port is already bound by another process, runs
 setup.sh (idempotent), waits for the API port before starting Vite so the
 dev server never proxies into a closed socket, and kills both process groups on
-exit. uvicorn's --reload worker tree shuts down on SIGINT but ignores SIGTERM,
-so teardown sends SIGINT to each group, waits briefly, then SIGKILLs survivors.
+exit. Each group runs in its own session, so Ctrl-C, the SIGHUP a closed
+terminal tab sends, and SIGTERM reach this process alone, and each of them
+stops it through that teardown. uvicorn's --reload worker tree shuts down on
+SIGINT but ignores SIGTERM, so teardown sends SIGINT to each group, waits
+briefly, then SIGKILLs survivors.
 Node/pnpm discovery stays in frontend-toolchain.sh, sourced by the bash child.
 """
 from __future__ import annotations
@@ -16,6 +19,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from types import FrameType
 
 from pipeline import settings
 
@@ -30,6 +34,9 @@ FRONTEND_CMD = (
 # frontend's node_modules — and a restart there costs the verification worker
 # its in-flight sandbox run.
 SOURCE_DIRS = ("pipeline", "issue_triage", "prospector_app/backend")
+
+# Ctrl-C, a closed terminal, `kill`.
+STOP_SIGNALS = (signal.SIGINT, signal.SIGHUP, signal.SIGTERM)
 
 # How long a stopping backend waits for in-flight requests before cancelling
 # them. The reloader starts the new server only once the old one exits, and
@@ -87,11 +94,20 @@ def _killpg(proc: subprocess.Popen[bytes], sig: signal.Signals) -> None:
         pass
 
 
+def _stop(signum: int, frame: FrameType | None) -> None:
+    """The first stop signal ends the supervision loop; the copies that follow
+    it (a closed tab under `uv run` delivers several) are ignored, so none of
+    them interrupts the teardown."""
+    for sig in STOP_SIGNALS:
+        signal.signal(sig, signal.SIG_IGN)
+    raise KeyboardInterrupt
+
+
 def _teardown(procs: list[subprocess.Popen[bytes]]) -> None:
-    # A second Ctrl-C during cleanup must not abort it; ignore further
-    # interrupts in this process while the children are being stopped.
-    signal.signal(signal.SIGINT, signal.SIG_IGN)
-    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    # A stop signal during cleanup must not abort it; ignore them in this
+    # process while the children are being stopped.
+    for sig in STOP_SIGNALS:
+        signal.signal(sig, signal.SIG_IGN)
     for proc in procs:
         _killpg(proc, signal.SIGINT)
     deadline = time.monotonic() + 3.0
@@ -116,6 +132,8 @@ def run() -> int:
         print(f"✗ port {api_port} is already in use — another instance may be running.", file=sys.stderr)
         return 1
 
+    for sig in STOP_SIGNALS:
+        signal.signal(sig, _stop)
     procs: list[subprocess.Popen[bytes]] = []
     try:
         print(f"→ backend  http://localhost:{api_port}  (API)")
