@@ -4,12 +4,11 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api, type PRDetail as PD, type DiffResult, type VerifyRunner, type FixAction as FixActionName, type FixRunner, type ReviewDigest, type ReviewEntry, type CoverageRecord } from "../api";
 import { DriftChip, TierChip, authorTip } from "../components/Chips";
-import { InfoTip } from "../components/InfoTip";
-import { dispositionEntry } from "../glossary";
 import { ChecksPanel } from "../components/ChecksPanel";
 import { DiffView } from "../components/DiffView";
 import { Collapsible } from "../components/Collapsible";
 import { PRActionBar } from "../components/PRActionBar";
+import { ProblemFix, StoryDetails } from "../components/PRStory";
 import { ClaimControl } from "../components/ClaimControl";
 import { VerifyAction, VerifyBody } from "../components/VerifyPanel";
 import { FixAction, FixBody, ResolveConflictsButton } from "../components/FixPanel";
@@ -32,9 +31,6 @@ import { splitDiffSizes } from "../testPaths";
 
 const LEVEL_ICON: Record<string, string> = { safe: "🛡️", caution: "⚠️", risk: "⛔", unknown: "❔" };
 const SEV_TONE: Record<string, "red" | "yellow" | "muted"> = { critical: "red", high: "red", medium: "yellow", low: "muted" };
-const DISPO_ICON: Record<string, string> = {
-  "merge": "✅", "request-changes": "✋", "close-dup": "🗑️", "close-fixed": "🗑️", "close-wontfix": "🗑️", "close-stale": "🗑️", "needs-human": "👤",
-};
 
 /** PR detail content — designed for the flyout. Verdict and primary action
  *  first, then the merge blockers, checks, summary context, and the diff at
@@ -485,6 +481,10 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
             </div>
           </div>
         </div>
+        <section className="prc-section verdict-card">
+          <ProblemFix pr={pr} />
+          <StoryDetails pr={pr} showWhy={false} onWritten={reloadPr} />
+        </section>
         {/* A malicious PR's evidence outlives the PR: closing it upstream is
             when GitHub may stop serving it. */}
         {pr.threat === "malicious" && (
@@ -496,31 +496,11 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
         </>
       ) : (
        <>
-      {/* the one action surface — comment / approve / request-changes / merge /
-          close, with the agent's recommendation folded in as the pre-selected
-          action, so the primary button matches what the agent suggests. */}
-      <section className="prc-section">
-        <h3>Action</h3>
-        {pr.disposition && (() => {
-          const entry = dispositionEntry(pr.disposition);
-          const attn = pr.disposition === "needs-human";
-          return (
-            <div className={`dispo-banner ${attn ? "dispo-attn" : ""}`}>
-              <span className="dispo-ico" aria-hidden="true">{DISPO_ICON[pr.disposition] ?? "•"}</span>
-              <div>
-                <div className="dispo-head">
-                  <InfoTip entry={entry}>{entry?.title ?? pr.disposition}</InfoTip>
-                </div>
-                {pr.proposed_action?.rationale
-                  ? <div className="dispo-why">{pr.proposed_action.rationale}</div>
-                  : entry?.triggers && <div className="dispo-why muted">{entry.triggers}</div>}
-                {pr.proposed_action?.fresh === false && (
-                  <div className="dispo-stale">⟳ The PR changed since we reviewed it, so this may be out of date.</div>
-                )}
-              </div>
-            </div>
-          );
-        })()}
+      {/* The verdict card: what the PR fixes, the suggestion with the one
+          action surface under it, and the why/how folded away below. */}
+      <section className="prc-section verdict-card">
+        <ProblemFix pr={pr} />
+        <PRActionBar pr={pr} runState={rs} onActed={() => { run.refresh(); setActLog((k) => k + 1); reloadPr(); }} />
         {Boolean(pr.concerns?.length) && (
           <div className="dup-coverage">
             <div className="muted small dup-coverage-title"
@@ -558,7 +538,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
             )}
           </div>
         )}
-        <PRActionBar pr={pr} runState={rs} onActed={() => { run.refresh(); setActLog((k) => k + 1); reloadPr(); }} />
+        <StoryDetails pr={pr} showWhy onWritten={reloadPr} />
       </section>
 
       {/* Blockers, directly under the action they gate. SECURITY / SAFETY
@@ -691,18 +671,6 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
           );
         })}
       </section>
-
-      {/* agent summary — diff-grounded one-liner + mechanism, distinct from
-          the submitter's PR description below. */}
-      {pr.summary?.one_liner && (
-        <section className="prc-section">
-          <Collapsible summary={<>🧭 Agent summary — <span className="muted small" style={{ textTransform: "none", letterSpacing: 0 }}>{pr.summary.one_liner}</span></>}>
-            {pr.summary.mechanism
-              ? <div className="prbody">{pr.summary.mechanism}</div>
-              : <div className="muted small">No more detail.</div>}
-          </Collapsible>
-        </section>
-      )}
 
       {/* description */}
       {pr.body && (

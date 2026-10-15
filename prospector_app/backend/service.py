@@ -30,6 +30,7 @@ from prospector_app.backend.safety_guard import run
 
 from pipeline import settings
 from pipeline import codeowners  # pipeline (path set up by data import)
+from pipeline import display_pass
 from pipeline import gh
 from pipeline import reviewers
 from pipeline import freshness
@@ -783,6 +784,7 @@ def pr_detail(n: int) -> dict | None:
     row["concerns"] = rec.concerns
     row["sanity_trips"] = rec.sanity_trips
     row["summary"] = rec.section("summary")
+    row["display"] = display_pass.current(rec)
     row["stages"] = pr_checks.stages_for_record(rec, data.clusters(), data.prs())
     row["author_stats"] = data.author_stats(rec.author)
     sig = rec.signals or {}

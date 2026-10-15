@@ -419,17 +419,20 @@ select { background: var(--panel); border: 1px solid var(--border); color: var(-
 .glo-asks li { margin: 1px 0; }
 .glo-stale { color: var(--yellow); font-size: 11.5px; }
 
-/* Disposition banner — the plain-language "what we decided and why" at the top
-   of the PR detail Action section, so the reason is the first thing you see. */
-.dispo-banner { display: flex; gap: 10px; align-items: flex-start; margin: 0 0 10px;
-  padding: 9px 12px; border: 1px solid var(--border); border-left: 3px solid var(--accent);
-  border-radius: 0 8px 8px 0; background: var(--panel); }
-.dispo-banner.dispo-attn { border-left-color: var(--red); background: var(--reason-tint); }
-.dispo-ico { font-size: 18px; line-height: 1.2; }
-.dispo-head { font-weight: 700; font-size: 13px; }
-.dispo-why { font-size: 12.5px; color: var(--text); margin-top: 2px; line-height: 1.5; }
-.dispo-why.muted { color: var(--muted); }
-.dispo-stale { font-size: 11.5px; color: var(--yellow); margin-top: 3px; }
+/* The PR page's verdict card: problem and fix, then the suggestion line that
+   heads the action bar, then the why/how folded away. */
+.pr-story { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 0 0 10px; font-size: 13.5px; line-height: 1.5; }
+.pr-story dt { font-weight: 700; color: var(--muted); }
+.pr-story dd { margin: 0; }
+.sug-headline { font-size: 15.5px; font-weight: 600; line-height: 1.4; }
+.sug-headline b { font-weight: 800; }
+.sug-checks { font-weight: 600; color: var(--muted); }
+.sug-stale { font-size: 11.5px; color: var(--yellow); }
+.pr-story-details { margin-top: 6px; }
+.pr-story-part + .pr-story-part { margin-top: 8px; }
+.pr-story-head { font-weight: 700; font-size: 12.5px; }
+.pr-story-part ul { margin: 2px 0 0; padding-left: 18px; font-size: 12.5px; line-height: 1.5; }
+.pr-story-rationale { font-size: 12.5px; line-height: 1.5; white-space: pre-wrap; }
 
 /* buttons */
 /* Every button uses the app's typeface. Unclassed buttons get the panel look

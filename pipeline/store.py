@@ -107,7 +107,7 @@ FIX_REQUEST_SOURCES = {"operator", "auto", "objection"}
 # round-trips newer records without loss
 PR_SECTIONS = ("meta", "signals", "reviews", "drift", "summary", "cluster", "analysis",
                "security", "issues", "threat", "greptile_review", "verify", "verify_request",
-               "fix_request", "security_run", "design_run")
+               "fix_request", "security_run", "design_run", "display")
 
 
 def run_claim_held_elsewhere(run: dict | None, *, host: str,
@@ -256,6 +256,10 @@ def validate_pr(rec: dict) -> None:
                 raise ValidationError(
                     f"greptile_review.findings[].class: {f.get('class')!r} not in "
                     f"{sorted(GREPTILE_FINDING_CLASSES)}")
+    dp = rec.get("display")
+    if dp and not (isinstance(dp.get("problem"), str) and isinstance(dp.get("fix"), str)
+                   and all(isinstance(dp.get(k), list) for k in ("why", "how"))):
+        raise ValidationError("display: needs problem, fix (strings) and why, how (lists)")
     rv = rec.get("reviews")
     if rv:
         for rid, entry in rv.items():

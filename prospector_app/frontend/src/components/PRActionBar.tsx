@@ -8,6 +8,8 @@ import { landed, ExecResultChip } from "./execResult";
 import { StaleOverrideConfirm } from "./FactFreshness";
 import { confirmUnclaimed } from "./claimGuard";
 import { suggestedAct, suggestedCanonical, type Act } from "../prAction";
+import { InfoTip } from "./InfoTip";
+import { dispositionEntry } from "../glossary";
 
 // How often the action bar asks for a live merge's step while it waits.
 const MERGE_POLL_MS = 2000;
@@ -27,13 +29,20 @@ const OPTS: { v: Act; label: string }[] = [
   { v: "CLOSE_OVERSIZED", label: "close — too big (break up)" },
 ];
 
+// The suggestion action each disposition renders as (suggest.py).
+const DISPO_ACTION: Record<string, string> = {
+  "merge": "MERGE", "request-changes": "REQUEST_CHANGES", "close-dup": "CLOSE_DUP",
+  "close-fixed": "CLOSE_FIXED", "close-stale": "CLOSE_STALE", "close-wontfix": "CLOSE_WONTFIX",
+  "close-oversized": "CLOSE_OVERSIZED", "needs-human": "REVIEW",
+};
+
 const isClose = (a: Act) => a.startsWith("CLOSE");
 const isReviewEvent = (a: Act) => a === "APPROVE" || a === "REQUEST_CHANGES" || a === "COMMENT";
 const reviewEvent = (a: Act) => a === "APPROVE" ? "approve" : a === "REQUEST_CHANGES" ? "request-changes" : "comment";
 
 /** One action surface for the PR detail page: comment / approve / request-changes
- *  / merge / close, plus reopen. The agent's recommendation is folded in as the
- *  pre-selected action with its rationale; merge is gated by pr.merge_gate. */
+ *  / merge / close, plus reopen. The agent's recommendation heads it and is
+ *  the pre-selected action; merge is gated by pr.merge_gate. */
 export function PRActionBar({ pr, runState, onActed }:
   { pr: PRDetail; runState?: RunState; onActed?: () => void }) {
   const { botLogin, dryRun, canMergeUpstream, reportResult } = useExec();
@@ -74,6 +83,11 @@ export function PRActionBar({ pr, runState, onActed }:
 
   const sug = pr.suggestion;
   const mergeGate = pr.merge_gate;
+  const checks = pr.checks;
+  const dispoEntry = dispositionEntry(pr.disposition);
+  // The suggestion's own rationale shows only when it departs from the
+  // disposition, whose reasons the card's Details already carry.
+  const sugDiffers = !!sug && sug.action !== (pr.disposition ? DISPO_ACTION[pr.disposition] : undefined);
   const postsComment = action !== "MERGE";
 
   useEffect(() => { setResult(null); setStaleBlock(null); }, [dryRun]); // eslint-disable-line react-hooks/set-state-in-effect -- clear stale chip on mode flip
@@ -193,23 +207,23 @@ export function PRActionBar({ pr, runState, onActed }:
 
   return (
     <div className={`suggestion tone-${sug?.tone ?? "muted"}`}>
-      {/* agent recommendation, folded in (no separate banner) */}
       {sug && (
-        <div className="sug-row">
-          <div className="sug-main">
-            <span className="sug-label">
-              {TONE_ICON[sug.tone]} Agent suggests: <b>{sug.label}</b>
-              {sug.accept && (sug.reversible
-                ? <span className="rev-badge rev-ok" title="Reversible — closes can be reopened, comments deleted.">reversible</span>
-                : <span className="rev-badge rev-perm" title="PERMANENT — a merge cannot be undone. Review carefully.">⚠ permanent</span>)}
-              {runState && <> <RunBadge rs={runState} compact /></>}
+        <div className="sug-headline">
+          {TONE_ICON[sug.tone]} Suggestion:{" "}
+          <b>{dispoEntry ? <InfoTip entry={dispoEntry}>{sug.label}</InfoTip> : sug.label}</b>
+          {checks && checks.total > 0 && (
+            <span className="sug-checks" title="Checks passed out of the checks that ran on this PR (the Checks table below).">
+              {" "}· Checks {checks.passed}/{checks.total}
             </span>
-            <span className="sug-why">{sug.rationale}</span>
-          </div>
+          )}
+          {sug.accept && (sug.reversible
+            ? <span className="rev-badge rev-ok" title="Reversible — closes can be reopened, comments deleted.">reversible</span>
+            : <span className="rev-badge rev-perm" title="PERMANENT — a merge cannot be undone. Review carefully.">⚠ permanent</span>)}
+          {runState && <> <RunBadge rs={runState} compact /></>}
         </div>
       )}
-      {sug?.needs_verify && (
-        <div className="sug-verify" title="The AI's evidence here is thin — check it before firing.">⚠ Needs your check: {sug.needs_verify}</div>
+      {pr.disposition && pr.proposed_action?.fresh === false && (
+        <div className="sug-stale">⟳ The PR changed since we reviewed it, so this may be out of date.</div>
       )}
 
       {/* the one action row */}
@@ -239,6 +253,12 @@ export function PRActionBar({ pr, runState, onActed }:
           {runState && !result && <RunBadge rs={runState} compact />}
           {result && <ExecResultChip result={result} />}
         </div>
+        {sug && sugDiffers && !(action === "MERGE" && !mergeGate?.ok && sug.rationale === mergeGate?.reason) && (
+          <div className="sug-verify">{sug.label}: {sug.rationale}</div>
+        )}
+        {sug?.needs_verify && (
+          <div className="sug-verify" title="The AI's evidence here is thin — check it before firing.">⚠ Needs your check: {sug.needs_verify}</div>
+        )}
         {result?.detail && (result.status === "error" || result.status === "blocked") && (
           <div className="sug-comment muted-note" role="alert">⛔ {result.detail}</div>
         )}

@@ -107,6 +107,8 @@ SETTINGS: tuple[Setting, ...] = (
        "PRs the clustering worker summarizes and places into clusters per UTC day."),
     _i("TRIAGE_CLUSTER_DAILY_CLUSTERS", "behavior", "Clusters analyzed per day", "30",
        "Clusters the clustering worker analyzes per UTC day."),
+    _i("TRIAGE_DISPLAY_DAILY", "behavior", "PR summary cards per day", "60",
+       "Plain-language PR page summaries the clustering worker writes per UTC day."),
     _i("TRIAGE_FIX_OBJECTION_BUDGET", "behavior", "Objection fixes per day", "20",
        "Continuations from a machine objection, per worker per UTC day."),
     _i("TRIAGE_REREVIEW_BUDGET", "behavior", "Re-review requests per day", "40",
