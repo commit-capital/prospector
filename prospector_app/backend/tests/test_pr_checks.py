@@ -43,9 +43,10 @@ def test_clear_threat_passes_check():
     assert chk and chk["name"] == "Threat scan" and chk["status"] == "pass"
 
 
-def test_a_clear_verdict_from_an_earlier_head_warns_stale():
+def test_a_clear_verdict_from_an_earlier_head_reads_older_commit():
     chk = _check(_pr(threat={"verdict": "clear", "signatures": [], "against_head_sha": "old"}))
-    assert chk and chk["status"] == "warn" and "STALE" in chk["detail"]
+    assert chk and chk["status"] == "warn" and chk["stale"] and chk["against"] == "old"
+    assert "older commit" in chk["detail"]
 
 
 def test_a_malicious_verdict_from_an_earlier_head_still_fails():
@@ -85,7 +86,7 @@ def test_checks_carry_stable_keys():
         "mergeable": "No merge conflicts",
         "tests": "Includes tests", "drift": "Still applies to trunk",
         "secrets": "Threat scan", "security": "Security review",
-        "verify": "Test run",
+        "verify": "Validation test run",
     }
 
 
@@ -95,7 +96,7 @@ def test_all_checks_shown_even_with_no_data():
     # shows every row (na/never-run for the ones nothing has run yet).
     c = pr_checks.checks_for_record(_pr())  # signals + drift only; no threat/security/verify
     keys = [x["key"] for x in c["checks"]]
-    assert keys == ["review", "design", "ci", "scans", "mergeable", "tests", "drift", "secrets",
+    assert keys == ["ci", "mergeable", "tests", "drift", "review", "scans", "secrets", "design",
                     "security", "verify"]
     never_run = {x["key"] for x in c["checks"] if x["status"] == "na"}
     assert never_run == {"design", "scans", "secrets", "security", "verify"}
@@ -142,7 +143,7 @@ def test_review_and_scans_rows_aggregate_every_active_reviewer(monkeypatch, acti
 
 def _verify_check(rec):
     c = pr_checks.checks_for_record(rec)
-    return next((x for x in c["checks"] if x["name"] == "Test run"), None)
+    return next((x for x in c["checks"] if x["key"] == "verify"), None)
 
 
 def _verify_section(outcome, *, head=HEAD, at=None, findings=(), signals=None):
@@ -217,7 +218,7 @@ def test_current_blocking_outcomes_fail_check():
 
 def test_stale_verify_warns():
     chk = _verify_check(_pr(verify=_verify_section("verified-fix", head="older")))
-    assert chk and chk["status"] == "warn" and "STALE" in chk["detail"]
+    assert chk and chk["status"] == "warn" and "older commit" in chk["detail"]
 
 
 def test_null_outcome_warns_as_in_progress():
@@ -310,3 +311,86 @@ def test_gating_design_row_passes_with_only_minor_or_unconfirmed_findings(monkey
     entry = {**_DESIGN_BLOCKING, "findings": findings}
     chk = _design_check(_pr(reviews=reviews_section(HEAD, NOW, design=entry)))
     assert chk["status"] == "pass" and not chk["advisory"]
+
+
+def _rows(rec):
+    return {x["key"]: x for x in pr_checks.checks_for_record(rec)["checks"]}
+
+
+def test_every_row_names_the_commit_it_describes():
+    rows = _rows(_pr())
+    assert rows["ci"]["against"] == HEAD and not rows["ci"]["stale"]
+
+
+def test_an_unseen_push_turns_every_passing_row_to_older_commit():
+    rec = _pr()
+    rec.rec["meta"]["live_head_sha"] = "newer"
+    rows = _rows(rec)
+    for key in ("ci", "mergeable", "tests", "drift"):
+        assert rows[key]["status"] == "warn" and rows[key]["stale"], key
+        assert rows[key]["detail"].endswith("older commit")
+
+
+def test_a_failing_row_of_an_older_commit_is_a_caution():
+    rec = _pr(signals={"ci": "failing", "mergeable": True, "has_tests": True,
+                       "checked_at": NOW, "against_head_sha": "old"})
+    assert _rows(rec)["ci"]["status"] == "warn"
+
+
+def test_a_red_security_verdict_of_an_older_commit_still_fails():
+    rec = _pr(security={"verdict": "RED", "findings": [], "checked_at": NOW, "against_head_sha": "old"})
+    row = _rows(rec)["security"]
+    assert row["status"] == "fail" and row["stale"]
+
+
+class _Cluster:
+    def __init__(self, prs, proposals):
+        self.prs, self._proposals = prs, proposals
+
+    def proposal_for(self, n):
+        return {"disposition": "merge"} if n in self._proposals else None
+
+
+def _stages(rec, clusters=None, prs=None):
+    return {x["key"]: x for x in pr_checks.stages_for_record(rec, clusters or {}, prs or {})}
+
+
+def test_stages_never_run_name_the_clustering_lane():
+    stages = _stages(_pr())
+    assert [s["status"] for s in stages.values()] == ["na", "na", "na"]
+    assert "clustering lane" in stages["summary"]["detail"]
+
+
+def _processed(**over):
+    sections = {"summary": {"one_liner": "Accepts the token", "checked_at": NOW,
+                            "against_head_sha": HEAD, "schema_version": 2},
+                "cluster": {"ids": [7], "checked_at": NOW, "against_head_sha": HEAD},
+                "analysis": {"disposition": "merge", "checked_at": NOW, "against_head_sha": HEAD}}
+    return _pr(**{**sections, **over})
+
+
+def test_processed_stages_pass_with_their_results():
+    rec = _processed()
+    stages = _stages(rec, {7: _Cluster([1, 2], {1, 2})}, {1: rec})
+    assert stages["summary"]["detail"] == "Accepts the token"
+    assert stages["cluster"]["detail"] == "cluster #7 · 2 PRs"
+    assert stages["analysis"]["status"] == "pass"
+
+
+def test_a_standalone_pr_reads_standalone():
+    rec = _processed(cluster={"ids": [], "checked_at": NOW, "against_head_sha": HEAD})
+    assert _stages(rec)["cluster"]["detail"] == "standalone — no related PRs"
+
+
+def test_a_summary_of_an_older_format_reads_stale():
+    rec = _processed(summary={"one_liner": "x", "checked_at": NOW, "against_head_sha": HEAD})
+    row = _stages(rec)["summary"]
+    assert row["stale"] and "older summary format" in row["detail"]
+
+
+def test_a_sibling_that_moved_puts_the_analysis_due():
+    rec = _processed()
+    sibling = _processed(analysis={"disposition": "merge", "checked_at": NOW, "against_head_sha": "old"})
+    sibling.rec["pr"] = 2
+    row = _stages(rec, {7: _Cluster([1, 2], {1, 2})}, {1: rec, 2: sibling})["analysis"]
+    assert row["status"] == "warn" and "#2 changed since" in row["detail"]
