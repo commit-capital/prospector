@@ -1279,6 +1279,26 @@ class Store:
             rec, "verify_request", cast(dict, section), "against_head_sha", head)
         return section if self._prs.save_if(rec, stamp) else None
 
+    def _prioritize(self, n: int, section: str, waiting: tuple[str, ...], priority: float) -> bool:
+        """Set PR `n`'s `section` request's queue `priority` while it is still
+        waiting, under a compare-and-swap on the saved_at write-stamp, so a
+        worker's claim landing first is never undone. Whether it was set."""
+        row = self._prs.stamped(n)
+        if row is None:
+            return False
+        rec, stamp = row
+        req = rec.get(section)
+        if not isinstance(req, dict) or req.get("status") not in waiting:
+            return False
+        rec[section] = {**req, "priority": float(priority)}
+        return self._prs.save_if(rec, stamp)
+
+    def prioritize_verify_request(self, n: int, priority: float) -> bool:
+        return self._prioritize(n, "verify_request", ("queued", "waiting-for-base"), priority)
+
+    def prioritize_fix_request(self, n: int, priority: float) -> bool:
+        return self._prioritize(n, "fix_request", ("queued",), priority)
+
     def load_fix_worker(self) -> dict:
         """Autofix-worker heartbeats, one record per host (`{hosts: {<hostname>:
         {host, pid, last_beat, current_pr, autohunt}}}`) — which machines' fix

@@ -50,3 +50,43 @@ def test_lane_pause_round_trips(st):
                                                "lanes": {"verify": {"at": "t", "by": "ops"}}}}
     with pytest.raises(S.ValidationError):
         st.save_lane_pause({"lanes": {}})
+
+
+def _queued(st, n: int, section: str, status: str = "queued") -> None:
+    st.save_pr({"pr": n, "meta": {"title": f"pr {n}", "state": "open", "head_sha": "a" * 40},
+                section: {"status": status, "queued_at": f"2026-10-0{n}T00:00:00+00:00",
+                          "source": "operator", **({"action": "rebase"} if section == "fix_request" else {})}})
+
+
+def test_prioritize_sets_priority_on_a_waiting_request(st):
+    _queued(st, 1, "verify_request")
+    _queued(st, 2, "fix_request")
+    assert st.prioritize_verify_request(1, 3.0) is True
+    assert st.prioritize_fix_request(2, 1.0) is True
+    assert st.load_pr(1).verify_request["priority"] == 3.0
+    assert st.load_pr(2).fix_request["priority"] == 1.0
+    assert st.load_pr(2).fix_request["status"] == "queued"
+
+
+def test_prioritize_refuses_a_request_that_is_not_waiting(st):
+    _queued(st, 1, "verify_request", status="running")
+    assert st.prioritize_verify_request(1, 3.0) is False
+    assert "priority" not in st.load_pr(1).verify_request
+
+
+def test_prioritize_refuses_a_claimed_request(st):
+    _queued(st, 1, "verify_request")
+    real = st._prs.stamped
+    raced = []
+
+    def racing(n):
+        row = real(n)
+        if not raced:
+            raced.append(1)
+            assert st.claim_verify_request(n, host="worker") is not None
+        return row
+    st._prs.stamped = racing
+    assert st.prioritize_verify_request(1, 5.0) is False
+    st._prs.stamped = real
+    req = st.load_pr(1).verify_request
+    assert req["status"] == "running" and "priority" not in req

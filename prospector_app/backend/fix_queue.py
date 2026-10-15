@@ -209,6 +209,7 @@ class FixQueueEntry(TypedDict):
     source: str | None
     step: str | None
     queued_at: str | None
+    priority: float | None
     started_at: str | None
     finished_at: str | None
     host: str | None
@@ -287,6 +288,7 @@ def _entry(n: int, title: str | None, req: dict) -> FixQueueEntry:
         "step": req.get("step"), "started_at": req.get("started_at"),
         "finished_at": req.get("finished_at"), "host": req.get("host"),
         "queued_at": req.get("queued_at"), "base_sha": req.get("base_sha"),
+        "priority": float(p) if (p := req.get("priority")) is not None else None,
         "guidance": req.get("guidance"), "detail": _detail(req),
         "conflict_paths": [str(p) for p in paths] if isinstance(paths, list) else [],
         "resolvable": status == "awaiting-review" and (pf is None or pf.get("exit") == 0),
@@ -325,7 +327,8 @@ def queue_entries() -> list[FixQueueEntry]:
             live.append(_entry(n, rec.title, req))
         elif status in FINISHED_STATUSES and _recent(req):
             finished.append(_entry(n, rec.title, req))
-    live.sort(key=lambda e: (_QUEUE_STATUS_ORDER[e["status"]], str(e["queued_at"] or "")))
+    live.sort(key=lambda e: (_QUEUE_STATUS_ORDER[e["status"]], -(e["priority"] or 0),
+                             str(e["queued_at"] or "")))
     finished.sort(key=lambda e: str(e["finished_at"] or ""), reverse=True)
     return live + finished
 

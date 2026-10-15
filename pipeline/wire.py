@@ -234,6 +234,8 @@ class VerifyRequest(TypedDict):
     host: NotRequired[str]
     checked_at: NotRequired[str]
     against_head_sha: NotRequired[str]
+    # Queue order an operator set: higher goes first; absent reads as 0.
+    priority: NotRequired[float]
 
 
 class VerifyPin(TypedDict):

@@ -79,6 +79,7 @@ class QueueEntry(TypedDict):
     queued_at: str | None
     started_at: str | None
     host: str | None
+    priority: float | None
 
 
 # Live verify_request statuses that mean "in flight", ranked in the order the
@@ -102,8 +103,10 @@ def queue_entries() -> list[QueueEntry]:
             "source": req.get("source"), "step": req.get("step"),
             "queued_at": req.get("queued_at"), "started_at": req.get("started_at"),
             "host": req.get("host"),
+            "priority": float(p) if (p := req.get("priority")) is not None else None,
         })
-    out.sort(key=lambda e: (_QUEUE_STATUS_ORDER[e["status"]], str(e["queued_at"] or "")))
+    out.sort(key=lambda e: (_QUEUE_STATUS_ORDER[e["status"]], -(e["priority"] or 0),
+                            str(e["queued_at"] or "")))
     return out
 
 

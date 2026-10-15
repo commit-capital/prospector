@@ -354,7 +354,8 @@ def next_queued(skip_auto: bool = False) -> int | None:
     """The best runnable PR, or None: every `queued` request (a transiently
     re-queued one — a nonzero `attempts` — only once rested since its last
     attempt), plus each `waiting-for-base` request rested since its last
-    attempt, ranked operator picks before auto-picks and, within each group,
+    attempt, ranked by an operator's priority (queue_order, higher first),
+    then operator picks before auto-picks and, within each group,
     a maintainer's PR (gates.priority_author) first, then oldest queued_at — so an operator click never waits behind an
     earlier auto-queued request. `skip_auto` leaves the hunter's requests
     out. Reads the backend's incremental store snapshot, so the scan costs no
@@ -366,7 +367,7 @@ def next_queued(skip_auto: bool = False) -> int | None:
     request is never gated by it, so its preflight is what records why it
     cannot proceed."""
     best_n: int | None = None
-    best_key: tuple[bool, bool, str] | None = None
+    best_key: tuple[float, bool, bool, str] | None = None
     daemon: bool | None = None
     for n, rec in data.prs().items():
         req = rec.verify_request
@@ -388,7 +389,7 @@ def next_queued(skip_auto: bool = False) -> int | None:
                 continue
         else:
             continue
-        key = (auto,
+        key = (-float(req.get("priority") or 0), auto,
                not gates.priority_author(rec.author, rec.author_association),
                str(req.get("queued_at") or ""))
         if best_key is None or key < best_key:

@@ -420,14 +420,15 @@ def next_reviewable() -> int | None:
 
 def _oldest(status: str, mine_only: tuple[str, ...] = (),
             hold: Callable[[dict], bool] | None = None) -> int | None:
-    """The best PR at `status`, operator picks before auto-picks and, within
+    """The best PR at `status`: an operator's priority (queue_order, higher
+    first), then operator picks before auto-picks and, within
     each, a maintainer's PR (gates.priority_author) first, then oldest. An action named in `mine_only` is passed over unless this
     machine recorded it (or the record names none, from before hosts were
     stamped) — it depends on state only that machine holds. A request `hold`
     names is passed over."""
     me = settings.worker_id()
     best_n: int | None = None
-    best_key: tuple[bool, bool, str] | None = None
+    best_key: tuple[float, bool, bool, str] | None = None
     for n, rec in data.prs().items():
         req = rec.fix_request or {}
         if req.get("status") != status:
@@ -438,7 +439,7 @@ def _oldest(status: str, mine_only: tuple[str, ...] = (),
             continue
         if req.get("attempts") and not _rested(req, TRANSIENT_RETRY_SECONDS):
             continue
-        key = (req.get("source") in AUTO_SOURCES,
+        key = (-float(req.get("priority") or 0), req.get("source") in AUTO_SOURCES,
                not gates.priority_author(rec.author, rec.author_association),
                str(req.get("queued_at") or ""))
         if best_key is None or key < best_key:
