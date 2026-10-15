@@ -2833,6 +2833,14 @@ class TestBaseBuildSharing:
         vd.build_base_image(self.SHA, tier=1)
         assert len(builds["clones"]) == 2
 
+    def test_a_failed_image_build_prunes_its_leftovers(self, builds, monkeypatch):
+        pruned: list[bool] = []
+        monkeypatch.setattr(vd.verify_gc, "prune_build_leftovers", lambda: pruned.append(True))
+        builds["fail"] = "building"
+        with pytest.raises(vd.BuildFailure):
+            vd.build_base_image(self.SHA, tier=1)
+        assert pruned == [True]
+
     def test_an_image_without_a_finished_build_beside_it_is_rebuilt(self, builds):
         builds["built"][vd.base_image_tag(self.SHA, 1)] = vd.sandbox_image()
         vd.build_base_image(self.SHA, tier=1)

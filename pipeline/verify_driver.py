@@ -547,13 +547,19 @@ def _build_base_image(sha: str, tier: int, ctx: Path, tag: str) -> None:
         prefetch_store(src, pnpm_store)
         prefetch_rust(src, rust)
 
-    _run_build_step(
-        f"building {tag}",
-        ["docker", "build", "--force-rm", "--network", "none", "-t", tag,
-         "--build-arg", f"TIER={tier}",
-         "--build-arg", f"BASE_IMAGE={sandbox_image()}",
-         "-f", str(SANDBOX / "Dockerfile.base"), str(ctx)],
-        env=launcher_env())
+    try:
+        _run_build_step(
+            f"building {tag}",
+            ["docker", "build", "--force-rm", "--network", "none", "-t", tag,
+             "--build-arg", f"TIER={tier}",
+             "--build-arg", f"BASE_IMAGE={sandbox_image()}",
+             "-f", str(SANDBOX / "Dockerfile.base"), str(ctx)],
+            env=launcher_env())
+    except BuildFailure:
+        # A failed build leaves its builder stage, the staged pnpm store among it,
+        # as dangling images that no sweep reaches while every retry fails.
+        verify_gc.prune_build_leftovers()
+        raise
 
 
 def prepare_base(store: Store, *, base_sha: str | None = None, tier: int = 0) -> str:
