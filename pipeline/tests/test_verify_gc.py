@@ -437,7 +437,7 @@ class TestTeardown:
             "b" * 12: [(f"pr-verify-base:{'b' * 12}-t0", NOW),
                         (f"pr-verify-base:{'b' * 12}-t1", NOW)]})
         monkeypatch.setattr(gc, "_rmi", lambda image: (removed.append(image), rmi_ok)[1])
-        monkeypatch.setattr(gc, "_prune_build_leftovers", lambda: pruned.append(1))
+        monkeypatch.setattr(gc, "prune_build_leftovers", lambda: pruned.append(1))
         from pipeline import verify_driver
         monkeypatch.setattr(verify_driver, "sandbox_image", lambda: "pr-verify:pnpm-9.9.9")
         monkeypatch.setattr(gc, "sandbox_images",

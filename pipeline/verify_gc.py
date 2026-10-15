@@ -322,7 +322,7 @@ def _rmi(image: str) -> bool:
     return p.returncode == 0
 
 
-def _prune_build_leftovers() -> None:
+def prune_build_leftovers() -> None:
     """Reclaim what the two-stage base build leaves behind. Dockerfile.base
     stages a multi-gigabyte pnpm store that never enters the shipped image; the
     layers land as dangling images under the classic builder, pruned under our
@@ -424,7 +424,7 @@ def collect(pinned_sha: str | None, *, sandbox_tag: str | None = None,
                 if dry_run or _rmi(tag):
                     result["sandbox_reclaimed"].append(tag)
         if not dry_run:
-            _prune_build_leftovers()
+            prune_build_leftovers()
     except (OSError, subprocess.SubprocessError) as e:
         result["ok"] = False
         result["error"] = f"{type(e).__name__}: {e}"
@@ -459,7 +459,7 @@ def teardown(*, dry_run: bool = False) -> dict:
         if SCRATCH.exists():
             shutil.rmtree(SCRATCH)
             result["scratch"] = str(SCRATCH)
-        _prune_build_leftovers()
+        prune_build_leftovers()
         result["ok"] = not result["kept_images"]
     except (OSError, subprocess.SubprocessError) as e:
         result["ok"] = False

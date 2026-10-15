@@ -8,7 +8,10 @@ FROM node:lts-trixie-slim
 # that test identically in red and green). rustup, a C toolchain, cmake and
 # pkg-config build a tree's Rust crates, native ones among them (ring,
 # aws-lc-sys); rustup installs no toolchain here — a base build installs the one
-# the tree pins (`verify_driver.prefetch_rust`).
+# the tree pins (`verify_driver.prefetch_rust`). python3 is node-gyp's
+# interpreter: a native npm package with no prebuilt binary (cpu-features,
+# under ssh2) compiles from its install script, and a script that fails fails
+# the whole install.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     bash \
@@ -19,6 +22,7 @@ RUN apt-get update \
     jq \
     pkg-config \
     postgresql-client \
+    python3 \
     rustup \
   && rm -rf /var/lib/apt/lists/*
 
