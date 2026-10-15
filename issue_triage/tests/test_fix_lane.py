@@ -5,6 +5,7 @@ the gates, and the git-backed clone work run for real, so a test proves the
 integrator's own wiring — which host exit and which policy name each ending."""
 from __future__ import annotations
 
+import json
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -347,6 +348,18 @@ def test_fix_giving_up_ends_no_fix(lane):
     res = lane.run()
     assert res.ending == "no-fix" and res.fault is False
     assert lane.calls["green"] == 0
+
+
+def test_fix_giving_up_after_every_check_faulted_ends_sandbox(lane):
+    def gives_up(wt):
+        (lane.workdir / "fix.checks.jsonl").write_text(json.dumps(
+            {"kind": "test", "exit": None, "error_kind": "infrastructure",
+             "error": "No space left on device"}) + "\n")
+        return {"give_up": "could not run anything"}
+
+    lane.scripts.fix = gives_up
+    res = lane.run()
+    assert res.ending == "sandbox" and res.fault is True
 
 
 def test_a_fix_touching_a_test_file_ends_fix_untrusted(lane):

@@ -379,7 +379,9 @@ def run(spec: LaneSpec, *, workdir: Path,
             return finish("sandbox", f"the reproduction exited {red.get('exit')} on the "
                                      "base without a test verdict")
         if outcome != "reproduced":
-            return finish(outcome, _repro_detail(outcome, gave_up, invalid))
+            return finish(*issue_gates.give_up_ending(
+                reproduction["checks"], outcome,
+                _repro_detail(outcome, gave_up, invalid)))
         if spec.action == "reproduce":
             return finish("reproduced", "reproduced on the pinned base")
 
@@ -409,7 +411,8 @@ def run(spec: LaneSpec, *, workdir: Path,
         fix_checks = check_records.collect(
             lane_check.records_path(workdir, "fix"), CHECKS_LIMIT)
         if "give_up" in fix_verdict:
-            return finish("no-fix", str(fix_verdict["give_up"]))
+            return finish(*issue_gates.give_up_ending(fix_checks, "no-fix",
+                                                      str(fix_verdict["give_up"])))
 
         on_step("re-gating the fix")
         fix_patch = lane_tree.authored_patch(fix_clone)
@@ -510,7 +513,7 @@ def run(spec: LaneSpec, *, workdir: Path,
         return finish("agent-unavailable", str(e))
     except headless_agent.AgentDeclined as e:
         return finish("declined", str(e))
-    except (prove.NoBase, prove.SuiteFault, verify_driver.ProbeFailure) as e:
+    except (prove.NoBase, prove.SandboxFault, verify_driver.ProbeFailure) as e:
         return finish("sandbox", str(e))
     except (headless_agent.EditsBlockedError, RuntimeError, ValueError) as e:
         return finish("run-failed", str(e))

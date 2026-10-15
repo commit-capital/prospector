@@ -319,7 +319,7 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
         checks = check_records.collect(lane_check.records_path(workdir, "solo"), MAX_RUNS)
         if "give_up" in verdict:
             ending = "not-a-defect" if verdict["kind"] == "not-a-defect" else "no-fix"
-            return finish(ending, verdict["give_up"])
+            return finish(*issue_gates.give_up_ending(checks, ending, verdict["give_up"]))
 
         on_step("re-gating the fix")
         patch = lane_tree.authored_patch(clone)
@@ -387,7 +387,7 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
         return finish("agent-unavailable", str(e))
     except headless_agent.AgentDeclined as e:
         return finish("declined", str(e))
-    except (prove.NoBase, prove.SuiteFault, verify_driver.ProbeFailure) as e:
+    except (prove.NoBase, prove.SandboxFault, verify_driver.ProbeFailure) as e:
         return finish("sandbox", str(e))
     except (headless_agent.EditsBlockedError, RuntimeError, ValueError) as e:
         return finish("run-failed", str(e))
