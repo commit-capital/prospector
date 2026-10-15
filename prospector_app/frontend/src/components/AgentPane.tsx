@@ -2,9 +2,13 @@ import { createContext, useCallback, useContext, useEffect, useLayoutEffect, use
 import { useLocation } from "react-router";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { addSubjectParams, subjectFromLocation, type AgentSubject } from "../agentSubject";
+import { addSubjectParams, subjectFromLocation } from "../agentSubject";
 import { api, type ChatReady, type FilterSpec } from "../api";
 import { shouldFollowChatAfterScroll } from "../chatScroll";
+import {
+  archiveSession, archivedSessions, capSessions, liveSessions, restoreSession, touchSession,
+  type ChatSession,
+} from "../chatSessions";
 import { useRepoMeta } from "../RepoMetaContext";
 import { useSpeechInput } from "../useSpeechInput";
 
@@ -69,19 +73,6 @@ export const useAgentPane = () => useContext(Ctx);
 
 interface Msg { role: "user" | "assistant"; text: string }
 
-// A named conversation thread (#343), independent of whatever the operator is
-// currently viewing — created via "+ New", switched between via the sessions
-// strip. Its subject is frozen at creation so the session keeps asking
-// about its own subject even after the operator navigates elsewhere. Persisted
-// to localStorage only (no cross-device sync); the backend thread itself is
-// addressed by `id` as an opaque chat_id and needs no record of the label.
-interface ChatSession {
-  id: string;
-  label: string;
-  subject: AgentSubject;
-  lastActiveAt: number;
-}
-
 // The session list and the active session belong to a deployment, so their
 // keys carry the repository: two deployments served from one origin (two
 // checkouts taking turns on a port) never hand each other their threads. The
@@ -90,7 +81,6 @@ interface ChatSession {
 const SESSIONS_KEY = "agentpane-sessions-v2";
 const ACTIVE_SESSION_KEY = "agentpane-active-session";
 const scopedKey = (base: string, repo: string): string => `${base}@${repo}`;
-const MAX_STORED_SESSIONS = 20;
 const MAX_VISIBLE_SESSION_PILLS = 6;
 
 function storedArray(key: string): unknown[] | null {
@@ -193,7 +183,9 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
   const [sessions, setSessions] = useState<ChatSession[]>(() => loadSessions(repo));
   const [activeSessionId, setActiveSessionId] = useState<string | null>(
     () => loadActiveSessionId(repo));
-  const activeSession = activeSessionId ? sessions.find((s) => s.id === activeSessionId) ?? null : null;
+  const activeSession = activeSessionId
+    ? sessions.find((s) => s.id === activeSessionId && s.archivedAt === undefined) ?? null
+    : null;
   const effectiveActiveId = activeSession ? activeSessionId : null;
   useEffect(() => {
     localStorage.setItem(scopedKey(SESSIONS_KEY, repo), JSON.stringify(sessions));
@@ -214,7 +206,9 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
   // different subject stays persisted and will reappear when that subject is
   // revisited; only the active session remains visible across navigation so it
   // is never possible for the pane to show a conversation with no selected pill.
-  const visibleSessions = sessions
+  const recentSessions = liveSessions(sessions);
+  const archived = archivedSessions(sessions);
+  const visibleSessions = recentSessions
     .filter((s) => s.id === effectiveActiveId
       || s.subject.key === liveSubj.key)
     .slice(0, MAX_VISIBLE_SESSION_PILLS);
@@ -371,9 +365,7 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
     // Fresh activity floats a named session back to the front of the strip.
     if (effectiveActiveId) {
       const id = effectiveActiveId;
-      setSessions((prev) => [...prev]
-        .map((s) => s.id === id ? { ...s, lastActiveAt: Date.now() } : s)
-        .sort((a, b) => b.lastActiveAt - a.lastActiveAt));
+      setSessions((prev) => touchSession(prev, id, Date.now()));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streaming, anchor, subj.key, effectiveActiveId, speech.stop, visible, setFollowLatest]);
@@ -413,7 +405,7 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
     const session: ChatSession = {
       id: newSessionId(), label: s.label, subject: s, lastActiveAt: Date.now(),
     };
-    setSessions((prev) => [session, ...prev].slice(0, MAX_STORED_SESSIONS));
+    setSessions((prev) => capSessions([session, ...prev]));
     setActiveSessionId(session.id);
     setMsgs([]);
     setInput("");
@@ -421,7 +413,8 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
   }, [clearAnchor, loc.pathname, loc.search, speech.stop]);
 
   // Switch to another stored session, or back to the live "whatever page I'm on"
-  // thread (id null) — the pseudo-pill always shown first in the strip.
+  // thread (id null) — the pseudo-pill always shown first in the strip. An
+  // archived session comes back to the live list.
   const switchSession = useCallback((id: string | null) => {
     if (id === effectiveActiveId) return;
     esRef.current?.close();
@@ -432,9 +425,7 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
     setInput("");
     setMsgs([]);
     if (id) {
-      setSessions((prev) => [...prev]
-        .map((s) => s.id === id ? { ...s, lastActiveAt: Date.now() } : s)
-        .sort((a, b) => b.lastActiveAt - a.lastActiveAt));
+      setSessions((prev) => restoreSession(prev, id, Date.now()));
     } else {
       setFrozenSubj(subjectFromLocation(loc.pathname, loc.search));
     }
@@ -442,12 +433,12 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [effectiveActiveId, clearAnchor, speech.stop, loc.pathname, loc.search]);
 
-  // Remove a named session from the persistent strip. If it is the session the
-  // operator is currently viewing, return to the live current-page thread; an
-  // in-flight answer also needs stopping so it does not keep running after its
-  // UI has disappeared. The transcript remains in the backend store (the
-  // browser only owns this list of session shortcuts).
-  const removeSession = useCallback((id: string) => {
+  // Archive a named session: it leaves the strip and the Recent list for the
+  // Recent menu's Archived flyout. If it is the session the operator is
+  // currently viewing, return to the live current-page thread; an in-flight
+  // answer also needs stopping so it does not keep running after its UI has
+  // disappeared. The transcript remains in the backend store.
+  const archive = useCallback((id: string) => {
     const removingActive = id === effectiveActiveId;
     if (removingActive) {
       esRef.current?.close();
@@ -464,7 +455,7 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
       setFrozenSubj(subjectFromLocation(loc.pathname, loc.search));
       setActiveSessionId(null);
     }
-    setSessions((prev) => prev.filter((s) => s.id !== id));
+    setSessions((prev) => archiveSession(prev, id, Date.now()));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [effectiveActiveId, streaming, clearAnchor, speech.stop, loc.pathname, loc.search]);
 
@@ -500,31 +491,35 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
             {anchor && <span className="ap-anchor" onClick={(e) => { e.stopPropagation(); clearAnchor(); }}>📍 {anchor.file.split("/").pop()}:{anchor.line} ✕</span>}
           </div>
           <div className="agentpane-body">
-            <div className="ap-sessions-strip" onClick={(e) => e.stopPropagation()}>
-              <button
-                className={`ap-session-pill live${!effectiveActiveId ? " active" : ""}`}
-                onClick={() => switchSession(null)}
-                title={`Current page: ${liveSubj.label}`}
-              >{liveSubj.label}</button>
-              {visibleSessions.map((s) => (
-                <span
-                  key={s.id}
-                  className={`ap-session-pill${s.id === effectiveActiveId ? " active" : ""}`}
-                >
-                  <button
-                    className="ap-session-select"
-                    onClick={() => switchSession(s.id)}
-                    title={s.label}
-                  >{s.label}</button>
-                  <button
-                    className="ap-session-remove"
-                    onClick={() => removeSession(s.id)}
-                    title={`Remove ${s.label} session`}
-                    aria-label={`Remove ${s.label} session`}
-                  >×</button>
-                </span>
-              ))}
-              <button className="ap-session-new" onClick={createSession} title="Start a new chat session">+ New</button>
+            <div className="ap-sessions-row">
+              <div className="ap-sessions-strip" onClick={(e) => e.stopPropagation()}>
+                <button
+                  className={`ap-session-pill live${!effectiveActiveId ? " active" : ""}`}
+                  onClick={() => switchSession(null)}
+                  title={`This page's conversation: ${liveSubj.label}. It follows you as you navigate, so it has no ×; + New starts a separate one.`}
+                >{liveSubj.label}</button>
+                {visibleSessions.map((s) => (
+                  <span
+                    key={s.id}
+                    className={`ap-session-pill${s.id === effectiveActiveId ? " active" : ""}`}
+                  >
+                    <button
+                      className="ap-session-select"
+                      onClick={() => switchSession(s.id)}
+                      title={s.label}
+                    >{s.label}</button>
+                    <button
+                      className="ap-session-remove"
+                      onClick={() => archive(s.id)}
+                      title={`Archive ${s.label} session`}
+                      aria-label={`Archive ${s.label} session`}
+                    >×</button>
+                  </span>
+                ))}
+                <button className="ap-session-new" onClick={createSession} title="Start a new chat session">+ New</button>
+              </div>
+              <RecentMenu recent={recentSessions} archived={archived}
+                activeId={effectiveActiveId} onSelect={switchSession} onArchive={archive} />
             </div>
             <div className="agentpane-log-wrap">
               <div className="agentpane-log" ref={logRef} onScroll={handleLogScroll}>
@@ -596,6 +591,64 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
           <span className="ap-tab-icon">🤖</span>
           <span className="ap-tab-caret">›</span>
         </button>
+      )}
+    </div>
+  );
+}
+
+// The Recent menu beside the sessions strip: every live named session (the
+// strip shows only this page's and a few at most), and an Archived flyout
+// whose entries restore on click.
+function RecentMenu({ recent, archived, activeId, onSelect, onArchive }: {
+  recent: ChatSession[]; archived: ChatSession[]; activeId: string | null;
+  onSelect: (id: string) => void; onArchive: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) { setOpen(false); setShowArchived(false); }
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { setOpen(false); setShowArchived(false); } };
+    document.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", onDown); window.removeEventListener("keydown", onKey); };
+  }, [open]);
+  const pick = (id: string) => { setOpen(false); setShowArchived(false); onSelect(id); };
+  if (!recent.length && !archived.length) return null;
+  return (
+    <div className="ap-recent" ref={ref}>
+      <button className="ap-recent-toggle" aria-expanded={open} onClick={() => { setOpen(!open); setShowArchived(false); }}
+        title="Recent conversations">Recent ▾</button>
+      {open && (
+        <div className="ap-recent-menu" role="menu">
+          {recent.length === 0 && <div className="ap-recent-empty muted small">No open conversations</div>}
+          {recent.map((s) => (
+            <div key={s.id} className={`ap-recent-item${s.id === activeId ? " active" : ""}`}>
+              <button className="ap-recent-select" role="menuitem" onClick={() => pick(s.id)} title={s.label}>{s.label}</button>
+              <button className="ap-session-remove" onClick={() => onArchive(s.id)}
+                title={`Archive ${s.label} session`} aria-label={`Archive ${s.label} session`}>×</button>
+            </div>
+          ))}
+          {archived.length > 0 && (
+            <div className="ap-recent-archived">
+              <button className="ap-recent-select" role="menuitem" aria-expanded={showArchived}
+                onClick={() => setShowArchived(!showArchived)}>Archived ({archived.length}) ›</button>
+              {showArchived && (
+                <div className="ap-recent-menu ap-recent-sub" role="menu">
+                  {archived.map((s) => (
+                    <div key={s.id} className="ap-recent-item">
+                      <button className="ap-recent-select" role="menuitem" onClick={() => pick(s.id)}
+                        title={`Restore ${s.label}`}>{s.label}</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
